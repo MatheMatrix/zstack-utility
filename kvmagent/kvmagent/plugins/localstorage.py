@@ -198,7 +198,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         rsp.md5s = []
 
         def _get_progress(progress, synced):
-            logger.debug("getProgress in ceph-bs-agent, synced: %s, total: %s" % (synced, progress.total))
+            logger.debug("getProgress in get_md5, synced: %s, total: %s" % (synced, progress.total))
             if not os.path.exists(progress.pfile):
                 return synced, ""
             last = shell.call('tail -1 %s' % progress.pfile).strip()
@@ -224,7 +224,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
         def _get_progress(progress, synced):
-            logger.debug("getProgress in ceph-bs-agent, synced: %s, total: %s" % (synced, progress.total))
+            logger.debug("getProgress in check_md5, synced: %s, total: %s" % (synced, progress.total))
             if not os.path.exists(progress.pfile):
                 return synced, ""
             last = shell.call('tail -1 %s' % progress.pfile).strip()
@@ -287,11 +287,13 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         progress.resourceUuid = cmd.uuid
         progress.stages = {1: "0:10", 2: "10:90", 3: "90:100"}
         progress.stage = 2
+        progress.pfile = shell.call('mktemp /tmp/tmp-XXXXXX').strip()
         progress.func = _get_progress
         for path in set(chain):
             total = total + os.path.getsize(path)
 
         progress.total = total
+        err = None
         for path in set(chain):
             PATH = path
             PASSWORD = cmd.dstPassword

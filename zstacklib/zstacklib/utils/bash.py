@@ -98,19 +98,14 @@ def bash_progress(cmd, progress):
     ctx = __collect_locals_on_stack()
     cmd = bash_eval(cmd, ctx)
     logger.debug(cmd)
-    fpwrite = None
 
-    if not progress.pfile:
-        progress_report = shell.call('mktemp /tmp/tmp-XXXXXX').strip()
-        fpwrite = open(progress_report, 'w')
-        p = subprocess.Popen('/bin/bash', stdout=fpwrite, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-        progress.pfile = progress_report
-    else:
-        progress_report = progress.pfile
-        p = subprocess.Popen('/bin/bash', stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    fpwrite = open(progress.pfile, 'w')
+    p = subprocess.Popen('/bin/bash', stdout=fpwrite, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
     watch_thread = WatchThread(p, progress)
-
+    o = None
+    e = None
+    r = 0
     try:
         watch_thread.start()
         o, e = p.communicate(cmd)
@@ -121,7 +116,7 @@ def bash_progress(cmd, progress):
         watch_thread.stop()
         if fpwrite:
             fpwrite.close()
-        os.remove(progress_report)
+        os.remove(progress.pfile)
         return r, o, e
 
 
