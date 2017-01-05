@@ -26,7 +26,7 @@ class WatchThread(threading.Thread):
         start, end = self.progress.getScale()
         try:
             self._progress_report(start, self.progress.getStart())
-            synced = self.written
+            synced = self.progress.written
             while self.keepRunning and self.popen and self.popen.poll() is None:
                 time.sleep(1)
                 synced, percent = self.progress.func(self.progress, synced)
