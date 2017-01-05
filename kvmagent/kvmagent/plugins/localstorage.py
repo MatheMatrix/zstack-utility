@@ -256,17 +256,23 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
             if not os.path.exists(progress.pfile):
                 return synced, ""
             fpread = open(progress.pfile, 'r')
+            logger.debug("aaaaaaaaaa")
             lines = fpread.readlines()
+            logger.debug("bbbbbbbbbb")
             if not lines:
                 fpread.close()
                 return synced, ""
+            logger.debug("cccccccccc")
             last = str(lines[-1]).strip().split('\r')[-1]
+            logger.debug("ddddddddddd: %s" % last)
             if not last or len(last.split()) < 1:
                 fpread.close()
                 return synced, ""
             written = last.split()[0]
+            logger.debug("eeeeeeeee: %s" % written)
             if not written.isdigit():
                 return synced, ""
+            logger.debug("fffffffff")
             if progress.total > 0:
                 synced = long(written)
                 if synced < progress.total:
@@ -274,6 +280,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
                     fpread.close()
                     return synced, percent
             fpread.close()
+            logger.debug("ggggggggg")
             return synced, ""
 
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
