@@ -274,7 +274,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
                 return synced, ""
             logger.debug("fffffffff")
             if progress.total > 0:
-                synced = long(written)
+                synced = synced + long(written)
                 if synced < progress.total:
                     percent = int(round(float(synced) / float(progress.total) * 80 + 10))
                     fpread.close()
