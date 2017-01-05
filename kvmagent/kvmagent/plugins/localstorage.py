@@ -279,6 +279,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         chain = sum([linux.qcow2_get_file_chain(p) for p in cmd.paths], [])
         total = 0
+        written = 0
         if cmd.sendCommandUrl:
             logger.debug("cmd.sendCommandUrl: %s" % cmd.sendCommandUrl)
             Report.url = cmd.sendCommandUrl
@@ -302,10 +303,12 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
             PORT = (cmd.dstPort and cmd.dstPort or "22")
 
             if cmd.sendCommandUrl:
+                progress.written = written
                 _, err, _ = bash_progress('rsync -avz --progress --relative {{PATH}} --rsh="/usr/bin/sshpass -p {{PASSWORD}} ssh -o StrictHostKeyChecking=no -p {{PORT}} -l {{USER}}" {{IP}}:/', progress)
             else:
                 bash_errorout('rsync -avz --relative {{PATH}} --rsh="/usr/bin/sshpass -p {{PASSWORD}} ssh -o StrictHostKeyChecking=no -p {{PORT}} -l {{USER}}" {{IP}}:/')
             bash_errorout('/usr/bin/sshpass -p {{PASSWORD}} ssh -p {{PORT}} {{USER}}@{{IP}} "/bin/sync {{PATH}}"')
+            written += os.path.getsize(path)
 
         rsp = AgentResponse()
         if err:

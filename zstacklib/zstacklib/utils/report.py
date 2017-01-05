@@ -20,6 +20,7 @@ class Progress(object):
         self.resourceUuid = None
         self.pfile = None
         self.func = None
+        self.written = 0
 
     def getScale(self):
         stages = self.stages.get(self.stage) if self.stages.get(self.stage) else "0:100"
