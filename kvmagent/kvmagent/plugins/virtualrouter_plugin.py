@@ -51,6 +51,8 @@ class VirtualRouterPlugin(kvmagent.KvmAgent):
     VR_KVM_CREATE_BOOTSTRAP_ISO_PATH = "/virtualrouter/createbootstrapiso"
     VR_KVM_DELETE_BOOTSTRAP_ISO_PATH = "/virtualrouter/deletebootstrapiso" 
     VR_KVM_SET_BOOTSTRAP_INFO_PATH = "/appliancevm/setbootstrapinfo"
+
+    DEFAULT_ISO_PATH = "/var/lib/zstack/configDrive"
     
     def start(self):
         http_server = kvmagent.get_http_server()
@@ -60,11 +62,12 @@ class VirtualRouterPlugin(kvmagent.KvmAgent):
     
     def stop(self):
         pass
-    
+
     @kvmagent.replyerror
     def set_bootstrap_info(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         info = jsonobject.dumps(cmd.info, True)
+
         socket_path = cmd.socketPath
         
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -104,7 +107,7 @@ class VirtualRouterPlugin(kvmagent.KvmAgent):
                 shutil.rmtree(isodir)
             if not tmpfile:
                 os.remove(tmpfile)
-    
+
     @kvmagent.replyerror
     def delete_bootstrap_iso(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])

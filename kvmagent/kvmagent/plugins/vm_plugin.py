@@ -2,8 +2,11 @@
 @author: Frank
 '''
 import Queue
+import base64
 import os.path
+import shutil
 import time
+import tempfile
 import traceback
 import xml.etree.ElementTree as etree
 import re
@@ -2684,6 +2687,35 @@ class Vm(object):
             pciDevices = cmd.addons['pciDevice']
             if pciDevices:
                 make_pci_device(pciDevices)
+
+            configDrive = cmd.addons['configDrive']
+            if configDrive != None:
+                configDrive = jsonobject.loads(configDrive)
+                make_config_drive(configDrive['isoInfo'], configDrive['isoPath'])
+                make_config_drive_xml(configDrive['isoPath'])
+
+        def make_config_drive_xml(isoPath):
+            devices = elements['devices']
+            cdrom = e(devices, 'disk', None, {'type': 'file', 'device': 'cdrom'})
+            e(cdrom, 'driver', None, {'name': 'qemu', 'type': 'raw'})
+            e(cdrom, 'source', None, {'file': isoPath})
+            e(cdrom, 'target', None, {'dev': 'hda', 'bus': 'ide'})
+            e(cdrom, 'readonly', None)
+
+        def make_config_drive(isoInfo, isoPath):
+            isoinfo = jsonobject.dumps(isoInfo, True)
+            tmpfile = linux.write_to_temp_file(base64.b64decode(isoinfo))
+            isodir = tempfile.mkdtemp()
+            try:
+                dst = os.path.join(isodir, 'context.sh')
+                shell.ShellCmd('cp %s %s' % (tmpfile, dst))()
+                shell.ShellCmd('mkdir -p %s' % os.path.split(isoPath)[0])
+                shell.ShellCmd('/usr/bin/mkisofs -V config-2 -quiet -r -o %s %s' % (isoPath, isodir))()
+            finally:
+                if not isodir:
+                    shutil.rmtree(isodir)
+                if not tmpfile:
+                    os.remove(tmpfile)
 
         def make_pci_device(addresses):
             devices = elements['devices']
