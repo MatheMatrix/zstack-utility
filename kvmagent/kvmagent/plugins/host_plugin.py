@@ -49,6 +49,9 @@ IS_LOONGARCH64 = host_arch == 'loongarch64'
 GRUB_ROCKY_ENV = "/boot/grub2/grubenv"
 GRUB_FILES = ["/boot/grub2/grub.cfg", "/boot/grub/grub.cfg", "/etc/grub2-efi.cfg", "/etc/grub-efi.cfg"] \
                 + ["/boot/efi/EFI/{}/grub.cfg".format(platform.dist()[0])]
+IS_SW64 = host_arch == 'sw_64'
+GRUB_FILES = ["/boot/grub2/grub.cfg", "/boot/grub/grub.cfg", "/etc/grub2-efi.cfg",
+              "/etc/grub-efi.cfg", "/boot/efi/EFI/centos/grub.cfg", "/boot/efi/EFI/kylin/grub.cfg"]
 IPTABLES_CMD = iptables.get_iptables_cmd()
 EBTABLES_CMD = ebtables.get_ebtables_cmd()
 
@@ -1222,6 +1225,22 @@ class HostPlugin(kvmagent.KvmAgent):
             host_cpu_model_name = host_cpu_info[0]
             rsp.hostCpuModelName = host_cpu_model_name
 
+            transient_cpuGHz = '%.2f' % (float(host_cpu_info[1]) / 1000)
+            static_cpuGHz_re = re.search('[0-9.]*GHz', host_cpu_model_name)
+            rsp.cpuGHz = static_cpuGHz_re.group(0)[:-3] if static_cpuGHz_re else transient_cpuGHz
+        elif IS_SW64:
+            rsp.hvmCpuFlag = 'vt'
+            cpu_model = None
+            try:
+                cpu_model = self._get_host_cpu_model()
+            except AttributeError:
+                logger.debug("maybe XmlObject has no attribute model, use host cpu model lscpu get one")
+                if cpu_model is None:
+                    cpu_model = shell.call("lscpu | awk -F':' '/Model name/{print $2}'")
+            rsp.cpuModelName = cpu_model
+            host_cpu_info = shell.call("grep -m2 -P -o -i '(model name|cpu MHz)\s*:\s*\K.*' /proc/cpuinfo").splitlines()
+            host_cpu_model_name = host_cpu_info[0]
+            rsp.hostCpuModelName = host_cpu_model_name
             transient_cpuGHz = '%.2f' % (float(host_cpu_info[1]) / 1000)
             static_cpuGHz_re = re.search('[0-9.]*GHz', host_cpu_model_name)
             rsp.cpuGHz = static_cpuGHz_re.group(0)[:-3] if static_cpuGHz_re else transient_cpuGHz
