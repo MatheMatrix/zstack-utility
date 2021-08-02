@@ -72,6 +72,7 @@ host_post_info.releasever = releasever
 IS_AARCH64 = host_info.host_arch == 'aarch64'
 IS_MIPS64EL = host_info.host_arch == 'mips64el'
 IS_LOONGARCH64 = host_info.host_arch == 'loongarch64'
+IS_SW64 = host_info.host_arch == 'sw_64'
 
 if host_info.host_arch == 'x86_64':
     src_pkg_imagestorebackupstorage = "zstack-store.bin"

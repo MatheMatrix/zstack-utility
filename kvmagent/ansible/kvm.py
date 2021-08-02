@@ -91,6 +91,7 @@ host_post_info.releasever = releasever
 IS_AARCH64 = host_info.host_arch == 'aarch64'
 IS_MIPS64EL = host_info.host_arch == 'mips64el'
 IS_LOONGARCH64 = host_info.host_arch == 'loongarch64'
+IS_SW = host_info.host_arch == 'sw64'
 
 repo_dir = "/opt/zstack-dvd/{}".format(host_info.host_arch)
 if not os.path.isdir(repo_dir):
@@ -242,12 +243,12 @@ def install_kvm_pkg():
         if zstack_repo != 'false':
             distro_head = host_info.distro.split("_")[
                 0] if releasever in kylin or releasever in uos else host_info.distro
-            common_dep_list = "%s %s %s %s" % (
+            common_dep_list = "%s %s %s %s %s" % (
                 os_base_dep,
                 distro_mapping.get(distro_head, ''),
                 releasever_mapping.get(releasever, ''),
                 edk2_mapping.get(host_info.host_arch, ''),
-                gfb_qemu_mapping(host_info.host_arch + ' ' + releasever, ''))
+                gfb_qemu_mapping.get(host_info.host_arch + ' ' + releasever, ''))
             # common kvmagent deps of x86 and arm that need to update
             common_update_list = ("sanlock sysfsutils hwdata sg3_utils lvm2"
                                   " lvm2-libs lvm2-lockd systemd openssh"

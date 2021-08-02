@@ -1,7 +1,11 @@
 from setuptools import setup, find_packages
-import sys, os
+import sys, os, platform
 
 version = '4.8.0'
+requires = 'websockify == 0.6.1'
+if platform.machine() == 'sw_64':
+    requires = 'websockify == 0.8.0'
+
 
 setup(name='consoleproxy',
       version=version,
@@ -18,7 +22,7 @@ setup(name='consoleproxy',
       include_package_data=True,
       zip_safe=True,
       install_requires=[
-        'websockify',
+        requires,
       ],
       entry_points="""
       # -*- Entry points: -*-
