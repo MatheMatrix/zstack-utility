@@ -7549,18 +7549,41 @@ host side snapshot files chian:
         iso.deviceId = 0
         iso.path = GUEST_TOOLS_ISO_PATH
 
+        r, o, _ = bash.bash_roe("virsh domblklist %s | grep %s | cut -c 11-" % (vm_uuid, vm.ISO_DEVICE_LETTERS[iso.deviceId]))
+
         # in case same iso already attached
-        detach_cmd = DetachIsoCmd()
-        detach_cmd.vmUuid = vm_uuid
-        detach_cmd.deviceId = iso.deviceId
-        vm.detach_iso(detach_cmd)
+        if o == GUEST_TOOLS_ISO_PATH:
+            detach_cmd = DetachIsoCmd()
+            detach_cmd.vmUuid = vm_uuid
+            detach_cmd.deviceId = iso.deviceId
+            vm.detach_iso(detach_cmd)
 
-        attach_cmd = AttachIsoCmd()
-        attach_cmd.iso = iso
-        attach_cmd.vmUuid = vm_uuid
-        vm.attach_iso(attach_cmd)
-        return jsonobject.dumps(rsp)
+        # virsh domblklist vm_uuid  result example
+        #  Target Source
+        # ---------------------------------------------------------------------------------------
+        #  hda      /dev/fe006c3901b646d5b70539daa337d5a5/353514cd5e50437fbf8e922bb6dbc8f3
+        #  hdc      -
+        # if hdc is empty, it shows "-"
+        # if hdc is empty, attach guest tools iso to it directly.
+        if o == GUEST_TOOLS_ISO_PATH or o == "-":
+            attach_cmd = AttachIsoCmd()
+            attach_cmd.iso = iso
+            attach_cmd.vmUuid = vm_uuid
+            vm.attach_iso(attach_cmd)
+            return jsonobject.dumps(rsp)
 
+        if r != 0:
+            # Guest tools can not be attached when no cdrom device, report error directly.
+            rsp.success = False
+            rsp.error = "vm[uuid:%s] cdrom[id: %d, device: hd%s] unable to attach guest tools, because cdrom is not exited" % (vm_uuid, iso.deviceId, vm.ISO_DEVICE_LETTERS[iso.deviceId])
+            logger.warn("cannot attach guest tools iso to vm[uuid:%s].Need to add cdrom[id: %d, device: hd%s]" % (vm_uuid, iso.deviceId, vm.ISO_DEVICE_LETTERS[iso.deviceId]))
+            return jsonobject.dumps(rsp)
+        else:
+            # Guest tools can not be attached when cdrom occupied, report error directly.
+            rsp.success = False
+            rsp.error = "vm[uuid:%s] cdrom[id: %d, device: hd%s] unable to attach guest tools, because cdrom has attached iso" % (vm_uuid, iso.deviceId, vm.ISO_DEVICE_LETTERS[iso.deviceId])
+            logger.warn("cannot attach guest tools iso to vm[uuid:%s].The iso %s is still on cdrom" % (vm_uuid, o))
+            return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
     @in_bash
@@ -7569,14 +7592,40 @@ host side snapshot files chian:
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         vm_uuid = cmd.vmInstanceUuid
 
-        # detach temp_disk from vm
         spath = self._create_xml_for_guesttools_temp_disk(vm_uuid)
-        r, _, _ = bash.bash_roe("virsh detach-device %s %s" % (vm_uuid, spath))
-        if r == 0:
-            # delete temp disk after device detached refer: http://jira.zstack.io/browse/ZSTAC-45490
-            temp_disk = "/var/lib/zstack/guesttools/temp_disk_%s.qcow2" % vm_uuid
-            linux.rm_file_force(temp_disk)
+        # detach temp_disk from vm
+        # libvirt has a bug that if detaching device just after vm created, it likely fails. So we retry three time here
+        try:
+            @linux.retry(times=3, sleep_time=5)
+            def detach():
+                def check_device(_):
+                    r, _, _ = bash.bash_roe("virsh dumpxml %s | grep \"dev='vdz' bus='virtio'\"" % vm_uuid)
+                    if r == 0:
+                        return False
+                    else:
+                        return True
 
+                if check_device(None):
+                    return
+
+                try:
+                    bash.bash_roe("virsh detach-device %s %s" % (vm_uuid, spath))
+                    if not linux.wait_callback_success(check_device, interval=0.5, timeout=5):
+                        raise Exception("failed to detach vdz from vm[uuid:%s], need to check whether guest tools is being used or vm is running normally" % vm_uuid)
+                except:
+                    if not check_device(None):
+                        logger.warn("unable to detach the device vdz from the vm[uuid:%s];"
+                                        "it's still attached after 5 seconds" % vm_uuid)
+                        raise
+            detach()
+        except Exception as e:
+            rsp.success = False
+            rsp.error = str(e)
+            logger.warn(str(e))
+            return jsonobject.dumps(rsp)
+        # delete temp disk after device detached refer: http://jira.zstack.io/browse/ZSTAC-45490
+        temp_disk = "/var/lib/zstack/guesttools/temp_disk_%s.qcow2" % vm_uuid
+        linux.rm_file_force(temp_disk)
         # detach guesttools iso from vm
         r, _, _ = bash.bash_roe("virsh dumpxml %s | grep %s" % (vm_uuid, GUEST_TOOLS_ISO_PATH))
         if r == 0:
