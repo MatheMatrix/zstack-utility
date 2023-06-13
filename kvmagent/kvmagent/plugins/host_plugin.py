@@ -56,6 +56,7 @@ COLO_QEMU_KVM_VERSION = '/var/lib/zstack/colo/qemu_kvm_version'
 COLO_LIB_PATH = '/var/lib/zstack/colo/'
 HOST_TAKEOVER_FLAG_PATH = 'var/run/zstack/takeOver'
 NODE_INFO_PATH = '/sys/devices/system/node/'
+PCI_CONFIG_PATH = '/etc/pci_config'
 
 BOND_MODE_ACTIVE_0 = "balance-rr"
 BOND_MODE_ACTIVE_1 = "active-backup"
@@ -2297,6 +2298,14 @@ done
             rsp.success = False
             rsp.error = "%s, %s" % (e, o)
             return
+        pci_device_mapper = {}
+
+        for line in linux.read_file_lines(PCI_CONFIG_PATH):
+            parts = line.strip().split(':')
+            if len(parts) == 2:
+                key = parts[0].strip()
+                value = parts[1].strip()
+                pci_device_mapper[key] = value
 
         # parse lspci output
         for part in o.split('\n\n'):
@@ -2335,33 +2344,46 @@ done
             def _set_pci_to_type():
                 gpu_vendors = ["NVIDIA", "AMD"]
                 if any(vendor in to.description for vendor in gpu_vendors) \
-                        and 'VGA compatible controller' in to.type:
+                        and ('VGA compatible controller' in to.type or
+                             (pci_device_mapper.get('VGA compatible controller') is not None
+                               and pci_device_mapper.get('VGA compatible controller') in to.type)):
                     to.type = "GPU_Video_Controller"
                 elif any(vendor in to.description for vendor in gpu_vendors) \
-                        and 'Audio device' in to.type:
+                        and ('Audio device' in to.type or (pci_device_mapper.get('Audio device') is not None
+                                                           and pci_device_mapper.get('Audio device') in to.type)):
                     to.type = "GPU_Audio_Controller"
                 elif any(vendor in to.description for vendor in gpu_vendors) \
-                        and 'USB controller' in to.type:
+                        and ('USB controller' in to.type or (pci_device_mapper.get('USB controller') is not None
+                                                             and pci_device_mapper.get('USB controller') in to.type)):
                     to.type = "GPU_USB_Controller"
                 elif any(vendor in to.description for vendor in gpu_vendors) \
-                        and 'Serial bus controller' in to.type:
+                        and ('Serial bus controller' in to.type or (pci_device_mapper.get('Serial bus controller') is not None
+                                                                    and pci_device_mapper.get('Serial bus controller') in to.type)):
                     to.type = "GPU_Serial_Controller"
                 elif any(vendor in to.description for vendor in gpu_vendors) \
-                        and '3D controller' in to.type:
+                        and ('3D controller' in to.type or (pci_device_mapper.get('3D controller') is not None
+                                                            and pci_device_mapper.get('3D controller') in to.type)):
                     to.type = "GPU_3D_Controller"
-                elif 'Ethernet controller' in to.type:
+                elif 'Ethernet controller' in to.type or (pci_device_mapper.get('Ethernet controller') is not None
+                                                          and pci_device_mapper.get('Ethernet controller') in to.type):
                     to.type = "Ethernet_Controller"
-                elif 'Audio device' in to.type:
+                elif 'Audio device' in to.type or (pci_device_mapper.get('Audio device') is not None
+                                                   and pci_device_mapper.get('Audio device') in to.type):
                     to.type = "Audio_Controller"
-                elif 'USB controller' in to.type:
+                elif 'USB controller' in to.type or (pci_device_mapper.get('USB controller') is not None
+                                                     and pci_device_mapper.get('USB controller') in to.type):
                     to.type = "USB_Controller"
-                elif 'Serial controller' in to.type:
+                elif 'Serial controller' in to.type or (pci_device_mapper.get('Serial controller') is not None
+                                                        and pci_device_mapper.get('Serial controller') in to.type):
                     to.type = "Serial_Controller"
-                elif 'Moxa Technologies' in to.type:
+                elif 'Moxa Technologies' in to.type or (pci_device_mapper.get('Moxa Technologies') is not None
+                                                        and pci_device_mapper.get('Moxa Technologies') in to.type):
                     to.type = "Moxa_Device"
-                elif 'Host bridge' in to.type:
+                elif 'Host bridge' in to.type or (pci_device_mapper.get('Host bridge') is not None
+                                                  and pci_device_mapper.get('Host bridge') in to.type):
                     to.type = "Host_Bridge"
-                elif 'PCI bridge' in to.type:
+                elif 'PCI bridge' in to.type or (pci_device_mapper.get('PCI bridge') is not None
+                                                 and pci_device_mapper.get('PCI bridge') in to.type):
                     to.type = "PCI_Bridge"
                 else:
                     to.type = "Generic"
@@ -2437,8 +2459,9 @@ done
     @in_bash
     def _generate_sriov_gpu_devices(self, cmd, rsp):
         # make install mxgpu driver if need to
+        pci_device_mapper = {}
         mxgpu_driver_tar = "/var/lib/zstack/mxgpu_driver.tar.gz"
-        if os.path.exists(mxgpu_driver_tar):
+        if os.path.exists(mxgpu_driver_tar) and not os.path.exists(PCI_CONFIG_PATH):
             r, o, e = bash_roe("tar xvf %s -C /tmp; cd /tmp/mxgpu_driver; make; make install" % mxgpu_driver_tar)
             if r != 0:
                 rsp.success = False
@@ -2468,8 +2491,19 @@ done
         with open(gim_config, 'w') as f:
             f.write("vf_num=%s" % cmd.virtPartNum)
 
+        command = 'modprobe gim'
+        for line in linux.read_file_lines(PCI_CONFIG_PATH):
+            parts = line.strip().split(':')
+            if len(parts) == 2:
+                key = parts[0].strip()
+                value = parts[1].strip()
+                pci_device_mapper[key] = value
+
+        if 'command' in pci_device_mapper:
+            command = pci_device_mapper['command'] % cmd.virtPartNum
+
         # install gim.ko
-        r, o, e = bash_roe("modprobe gim")
+        r, o, e = bash_roe(command)
         if r != 0:
             rsp.success = False
             rsp.error = "failed to install gim.ko, %s, %s" % (o, e)
