@@ -4340,11 +4340,8 @@ class Vm(object):
                         cpu = e(root, 'cpu', attrib={'mode': 'host-passthrough'})
                         e(cpu, 'model', attrib={'fallback': 'allow'})
                     elif cmd.nestedVirtualization == 'custom':
-                        if cmd.vmCpuModel == 'Hygon_Customized':
-                            cpu = e(root, 'cpu')
-                        else:
-                            cpu = e(root, 'cpu', attrib={'mode': 'custom'})
-                            e(cpu, 'model', cmd.vmCpuModel, attrib={'fallback': 'allow'})
+                        cpu = e(root, 'cpu', attrib={'mode': 'custom'})
+                        e(cpu, 'model', cmd.vmCpuModel, attrib={'fallback': 'allow'})
                     else:
                         cpu = e(root, 'cpu')
 
@@ -4429,11 +4426,8 @@ class Vm(object):
                         cpu = e(root, 'cpu', attrib={'mode': 'host-passthrough'})
                         e(cpu, 'model', attrib={'fallback': 'allow'})
                     elif cmd.nestedVirtualization == 'custom':
-                        if cmd.vmCpuModel == 'Hygon_Customized':
-                            cpu = e(root, 'cpu')
-                        else:
-                            cpu = e(root, 'cpu', attrib={'mode': 'custom'})
-                            e(cpu, 'model', cmd.vmCpuModel, attrib={'fallback': 'allow'})
+                        cpu = e(root, 'cpu', attrib={'mode': 'custom'})
+                        e(cpu, 'model', cmd.vmCpuModel, attrib={'fallback': 'allow'})
                     else:
                         cpu = e(root, 'cpu')
                     return cpu
