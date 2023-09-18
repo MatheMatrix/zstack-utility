@@ -38,7 +38,8 @@ Python support library for zstack""",
           "python-dateutil",
           "enum34==1.1.6",
           "cachetools==3.1.1",
-          "xxhash==2.0.2"
+          "xxhash==2.0.2",
+          "pillow==2.9.0"
       ],
       entry_points="""
       # -*- Entry points: -*-
