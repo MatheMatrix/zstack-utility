@@ -207,6 +207,52 @@ class GetHostPhysicalMemoryFactsResponse(kvmagent.AgentResponse):
         self.physicalMemoryFacts = []
 
 
+class SetHostKernelInterfaceCmd(kvmagent.AgentCommand):
+    interfaces = None   # type: list[HostKernelInterfaceTO]
+    actionCode = None
+
+    def __init__(self):
+        super(SetHostKernelInterfaceCmd, self).__init__()
+        self.interfaces = None
+        self.actionCode = None
+
+
+class SetHostKernelInterfaceResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(SetHostKernelInterfaceResponse, self).__init__()
+
+
+class GetHostKernelInterfaceCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(GetHostKernelInterfaceCmd, self).__init__()
+        self.hostUuid = None
+        self.targetIp = None
+
+
+class GetHostKernelInterfaceResponse(kvmagent.AgentResponse):
+    interfaces = None  # type: list[HostKernelInterfaceTO]
+
+    def __init__(self):
+        super(GetHostKernelInterfaceResponse, self).__init__()
+        self.interfaces = None
+
+
+class UsedIpTO(object):
+    def __init__(self, ipVersion=None, ip=None, netmask=None, gateway=None):
+        super(UsedIpTO, self).__init__()
+        self.ipVersion = ipVersion
+        self.ip = ip
+        self.netmask = netmask
+        self.gateway = gateway
+
+
+class HostKernelInterfaceTO(object):
+    def __init__(self, interfaceName=None, vlanId=None):
+        super(HostKernelInterfaceTO, self).__init__()
+        self.interfaceName = interfaceName
+        self.vlanId = vlanId
+        self.ips = []   # type: list[UsedIpTO]
+
 class GetHostNetworkBongdingCmd(kvmagent.AgentCommand):
     def __init__(self):
         super(GetHostNetworkBongdingCmd, self).__init__()
@@ -830,6 +876,8 @@ class HostPlugin(kvmagent.KvmAgent):
     GET_NUMA_TOPOLOGY_PATH = "/numa/topology"
     ATTACH_VOLUME_PATH = "/host/volume/attach"
     DETACH_VOLUME_PATH = "/host/volume/detach"
+    GET_KERNEL_INTERFACE_PATH = "/host/kernelinterface/get"
+    SET_KERNEL_INTERFACE_PATH = "/host/kernelinterface/set"
 
     def __init__(self):
         self.IS_YUM = False
@@ -1847,6 +1895,104 @@ done
 
         rsp.bondings = self.get_host_networking_bonds(cmd.managementServerIp)
         rsp.nics = self.get_host_networking_interfaces(cmd.managementServerIp)
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    @in_bash
+    def get_kernel_interface(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetHostKernelInterfaceResponse()
+
+        def _make_host_kernel_interface(self, interfaceName=None, vlanId=None):
+            if not interfaceName:
+                return None
+            interface = HostKernelInterfaceTO()
+            interface.interfaceName = interfaceName
+            interface.vlanId = vlanId
+            return interface
+
+        link_name = linux.get_nic_name_by_ip(cmd.ip)
+        if not link_name:
+            rsp.error = "cannot find interface by ip[%s]" % cmd.ip
+            rsp.success = False
+            return jsonobject.dumps(rsp)
+
+        interface = None
+        if linux.is_bridge(link_name):  # ip on bridge
+            all_slaves = linux.get_all_bridge_interface(link_name)
+            for slave in all_slaves:
+                if linux.is_bond(slave):
+                    interface = _make_host_kernel_interface(slave, 0)
+                    break
+                if linux.is_physical_nic(slave):
+                    interface = _make_host_kernel_interface(slave, 0)
+                    break
+                if linux.is_vlan(slave):
+                    vlan_parent = linux.get_vlan_parent(slave)
+                    if linux.is_bond(vlan_parent):
+                        interface = _make_host_kernel_interface(vlan_parent, linux.get_vlan_id(slave))
+                        break
+                    if linux.is_physical_nic(vlan_parent):
+                        interface = _make_host_kernel_interface(vlan_parent, linux.get_vlan_id(slave))
+                        break
+
+        else if linux.is_bond(link_name):   # ip on bond
+            interface = _make_host_kernel_interface(link_name, 0)
+
+        else if linux.is_vlan(link_name):   # ip on vlan
+            vlan_parent = linux.get_vlan_parent(slave)
+            if linux.is_bond(vlan_parent):
+                interface = _make_host_kernel_interface(vlan_parent, linux.get_vlan_id(link_name))
+
+        else if linux.is_physical_nic(link_name):  # ip on physical nic
+            interface = _make_host_kernel_interface(link_name, 0)
+
+        else:
+            rsp.error = "cannot find interface by ip[%s]" % cmd.ip
+            rsp.success = False
+            return jsonobject.dumps(rsp)
+
+        if not interface:
+            rsp.error = "cannot find bond by ip[%s]" % cmd.ip
+            rsp.success = False
+            return jsonobject.dumps(rsp)
+
+        rsp.interface = interface
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    @in_bash
+    def set_kernel_interface(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = SetHostKernelInterfaceResponse()
+
+        for interface in cmd.interfaces:
+            if not interface.interfaceName or not linux.is_bond(interface.interfaceName):
+                raise Exception('cannot find bond[%s]' % interface.interfaceName)
+
+            pyhsical_dev = interface.interfaceName if interface.vlaId == 0 else '%s.%s' % (interface.interfaceName, interface.vlaId)
+            if not linux.is_device_exists(pyhsical_dev):
+                raise Exception('cannot find device[%s]' % pyhsical_dev)
+
+            bridge_dev = linux.get_device_master(pyhsical_dev)
+            target_dev = bridge_dev if bridge_dev else pyhsical_dev
+
+            if interface.actionCode == 'deleteAction':
+                for item in interface.ips:
+                    shell.call('ip addr del %s/%s dev %s' % (item.ip, item.netmask, target_dev))
+            else:
+                ip_list = linux.get_ip_list_by_nic_name(target_dev)
+                to_create_ips = [item for item in interface.ips if item.ip not in [obj.ip for obj in ip_list]]
+                to_delete_ips = [item for item in ip_list if item.ip not in [obj.ip for obj in interface.ips]]
+
+                if to_create_ips:
+                    for item in to_create_ips:
+                        shell.call('ip addr add %s/%s dev %s' % (item.ip, item.netmask, target_dev))
+                if to_delete_ips:
+                    for item in to_delete_ips:
+                        shell.call('ip addr del %s/%s dev %s' % (item.ip, item.netmask, target_dev))
 
         return jsonobject.dumps(rsp)
 
@@ -3042,6 +3188,8 @@ done
         http_server.register_async_uri(self.GET_NUMA_TOPOLOGY_PATH, self.get_numa_topology)
         http_server.register_async_uri(self.ATTACH_VOLUME_PATH, self.attach_volume_path)
         http_server.register_async_uri(self.DETACH_VOLUME_PATH, self.detach_volume__path)
+        http_server.register_async_uri(self.GET_KERNEL_INTERFACE_PATH, self.get_kernel_interface)
+        http_server.register_async_uri(self.SET_KERNEL_INTERFACE_PATH, self.set_kernel_interface)
 
         self.heartbeat_timer = {}
         self.libvirt_version = linux.get_libvirt_version()
