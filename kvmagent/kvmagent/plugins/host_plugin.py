@@ -1257,6 +1257,7 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.ipAddresses = ipV4Addrs
         rsp.cpuArchitecture = platform.machine()
         rsp.uptime = shell.call('uptime -s').strip()
+        rsp.iscsiInitiatorName = linux.get_iscsi_initiator_name()
 
         rsp.iscsiInitiatorName = self._get_iscsi_initiator_name()
 
