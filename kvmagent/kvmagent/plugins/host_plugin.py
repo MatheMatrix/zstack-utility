@@ -1918,6 +1918,9 @@ done
             rsp.success = False
             return jsonobject.dumps(rsp)
 
+        ip_list = linux.get_ip_list_by_nic_name(link_name)
+
+        interfaces = []
         interface = None
         if linux.is_bridge(link_name):  # ip on bridge
             all_slaves = linux.get_all_bridge_interface(link_name)
@@ -1936,18 +1939,14 @@ done
                     if linux.is_physical_nic(vlan_parent):
                         interface = _make_host_kernel_interface(vlan_parent, linux.get_vlan_id(slave))
                         break
-
-        else if linux.is_bond(link_name):   # ip on bond
+        elif linux.is_bond(link_name):   # ip on bond
             interface = _make_host_kernel_interface(link_name, 0)
-
-        else if linux.is_vlan(link_name):   # ip on vlan
+        elif linux.is_vlan(link_name):   # ip on vlan
             vlan_parent = linux.get_vlan_parent(slave)
             if linux.is_bond(vlan_parent):
                 interface = _make_host_kernel_interface(vlan_parent, linux.get_vlan_id(link_name))
-
-        else if linux.is_physical_nic(link_name):  # ip on physical nic
+        elif linux.is_physical_nic(link_name):  # ip on physical nic
             interface = _make_host_kernel_interface(link_name, 0)
-
         else:
             rsp.error = "cannot find interface by ip[%s]" % cmd.ip
             rsp.success = False
@@ -1957,8 +1956,11 @@ done
             rsp.error = "cannot find bond by ip[%s]" % cmd.ip
             rsp.success = False
             return jsonobject.dumps(rsp)
+        else:
+            interface.ips = [UsedIpTO(ip=item.ip, netmask=item.netmask, ipVersion=4) for item in ip_list]
+            interfaces.append(interface)
 
-        rsp.interface = interface
+        rsp.interfaces = interfaces
 
         return jsonobject.dumps(rsp)
 
