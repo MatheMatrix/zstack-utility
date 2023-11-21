@@ -1974,11 +1974,11 @@ done
             if not interface.interfaceName or not linux.is_bond(interface.interfaceName):
                 raise Exception('cannot find bond[%s]' % interface.interfaceName)
 
-            pyhsical_dev = interface.interfaceName if interface.vlaId == 0 else '%s.%s' % (interface.interfaceName, interface.vlaId)
+            pyhsical_dev = interface.interfaceName if interface.vlanId == 0 else '%s.%s' % (interface.interfaceName, interface.vlanId)
             if not linux.is_device_exists(pyhsical_dev):
                 raise Exception('cannot find device[%s]' % pyhsical_dev)
 
-            bridge_dev = linux.get_device_master(pyhsical_dev)
+            bridge_dev = linux.get_master_device(pyhsical_dev)
             target_dev = bridge_dev if bridge_dev else pyhsical_dev
 
             if interface.actionCode == 'deleteAction':
