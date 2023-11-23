@@ -13,6 +13,8 @@ from zstacklib.utils import qemu_img
 from zstacklib.utils import ceph
 from zstacklib.utils import sanlock
 from zstacklib.utils import xmlobject
+from zstacklib.utils import jsonobject
+from zstacklib.utils import iscsi
 import os.path
 import time
 import traceback
@@ -29,6 +31,7 @@ import zstacklib.utils.ip as ipUtils
 
 logger = log.get_logger(__name__)
 
+EOF = "this_is_end"
 
 class UmountException(Exception):
     pass
@@ -55,6 +58,12 @@ class CheckFileSystemVmStateRsp(AgentRsp):
 class CheckShareBlockVmStateRsp(AgentRsp):
     def __init__(self):
         super(CheckShareBlockVmStateRsp, self).__init__()
+        self.result = None
+        self.vmUuids = []
+
+class CheckIscsiVmStateRsp(AgentRsp):
+    def __init__(self):
+        super(CheckIscsiVmStateRsp, self).__init__()
         self.result = None
         self.vmUuids = []
 
@@ -103,6 +112,7 @@ class AbstractHaFencer(object):
         self._ha_fencers[self.get_ha_fencer_name()] = self
         self.storage_name = None
         self.ha_fencer = None
+        self.failure = 0
         self.interval = interval
         self.max_attempts = max_attempts
         self.ps_uuid = ps_uuid
@@ -324,7 +334,6 @@ class PhysicalNicFencer(AbstractHaFencer):
         pass
 
 
-
 class AbstractStorageFencer(AbstractHaFencer):
     def __init__(self, interval, max_attempts, ps_uuid, run_fencer_list):
         super(AbstractStorageFencer, self).__init__(interval, max_attempts, ps_uuid, run_fencer_list)
@@ -524,10 +533,11 @@ class SanlockHealthChecker(AbstractStorageFencer):
         current_vm_uuids = [None]
         volume_abs_path = self.get_record_vm_lun(vg_uuid, host_uuid)
 
+        # writer has been moved to sharedblock agent, ZSTAC-58438
         def read_content_from_lv():
             with open(volume_abs_path, "r+") as f:
                 content = f.read().strip().replace(b'\u0000', b'').replace(b'\x00', b'')
-                content = content.split("this_is_end")[0]
+                content = content.split(EOF)[0]
                 if len(content) == 0:
                     return None, None
 
@@ -603,7 +613,6 @@ class SanlockHealthChecker(AbstractStorageFencer):
 class FileSystemHeartbeatController(AbstractStorageFencer):
     def __init__(self, interval, max_attempts, ps_uuid, run_fencer_list):
         super(FileSystemHeartbeatController, self).__init__(interval, max_attempts, ps_uuid, run_fencer_list)
-        self.failure = 0
         self.storage_failure = False
         self.report_storage_status = False
         self.max_attempts = 0
@@ -612,7 +621,6 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
         self.strategy = None
         self.storage_check_timeout = None
         self.heartbeat_object_name = None
-        self.fencer_triggered_callback = None
         self.heartbeat_file_dir = 'zs-heartbeat'
         self.heartbeat_file_name = 'heartbeat-file-kvm-host-%s.hb'
         self.mount_path = None
@@ -729,13 +737,13 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
                 self.fencer_triggered_callback([self.ps_uuid], ','.join(killed_vms.keys()))
                 clean_network_config(killed_vms.keys())
 
-            self.after_kill_vm(killed_vms.keys(), on_storage_vm_uuids)
+            self.after_kill_vm(killed_vms.keys(), killed_vms.values(), on_storage_vm_uuids)
 
             if self.mounted_by_zstack and not linux.is_mounted(self.mount_path):
                 self.try_remount_fs_callback(self.mount_path, self.ps_uuid, self.created_time, self, self.url, self.options)
                 self.prepare_heartbeat_dir()
 
-    def after_kill_vm(self, killed_vm_uuids, on_storage_vm_uuids):
+    def after_kill_vm(self, killed_vm_uuids, killed_vm_pids, on_storage_vm_uuids):
         if not self.mounted_by_zstack:
             return
 
@@ -769,7 +777,6 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
 class CephHeartbeatController(AbstractStorageFencer):
     def __init__(self, interval, max_attempts, ps_uuid, run_fencer_list):
         super(CephHeartbeatController, self).__init__(interval, max_attempts, ps_uuid, run_fencer_list)
-        self.failure = 0
         self.storage_failure = False
         self.report_storage_status = False
         self.max_attempts = None
@@ -944,6 +951,116 @@ class CephHeartbeatController(AbstractStorageFencer):
 
     def exec_fencer(self):
         self.check_ceph_fencer()
+
+
+class IscsiNodeStatus(object):
+    def __init__(self, vm_uuids):
+        self.vm_uuids = vm_uuids
+        self.heartbeat_time = time.time()
+
+class IscsiHeartbeatController(AbstractStorageFencer):
+    ha_fencer_name = "iscsi"
+
+    def __init__(self, interval, max_attempts, ps_uuid, run_fencer_list):
+        super(IscsiHeartbeatController, self).__init__(interval, max_attempts, ps_uuid, run_fencer_list)
+        self.heartbeat_url = None
+        self.heartbeat_path = None
+        self.host_id = -1
+        self.heartbeat_required_space = 1024 * 1024  # 1MiB
+        self.host_uuid = None
+        self.covering_paths = []
+
+        self.fencer_triggered_callback = None  # type: callable[list[str], str]
+        self.report_storage_status_callback = None  # type: callable
+
+    def get_ha_fencer_name(self):
+        return IscsiHeartbeatController.ha_fencer_name
+
+    def write_fencer_heartbeat(self):
+        running_vm_uuids = set()
+        for covering_path in self.covering_paths:
+            running_vm_uuids.update(find_ps_running_vm(covering_path))
+
+        if self._heartbeat_io_check() and self._fill_heartbeat_file(list(running_vm_uuids)):
+            self.failure = 0
+            return True
+
+        self.failure += 1
+        if self.failure == self.max_attempts:
+            logger.warn('failed to touch the heartbeat file[%s] %s times, we lost the connection to the storage,'
+                        'shutdown ourselves' % (self.heartbeat_path, self.max_attempts))
+
+            return False
+        return True
+
+    def read_fencer_heartbeat(self, host_uuid, ps_uuid):
+        # type: (str, str) -> (float, list[str])
+        status = self._read_heartbeat_file()
+        return status.heartbeat_time, status.vm_uuids
+
+    def exec_fencer(self):
+        try:
+            self._exec_fencer()
+        except Exception as e:
+            logger.warn(linux.get_exception_stacktrace())
+
+    def _exec_fencer(self):
+        if self.write_fencer_heartbeat() is False:
+            self.report_storage_status_callback([self.ps_uuid], 'Disconnected')
+            killed_vms = self._kill_vm()
+
+            if len(killed_vms) != 0:
+                self.fencer_triggered_callback([self.ps_uuid], ','.join(killed_vms.keys()))
+                clean_network_config(killed_vms.keys())
+
+    def is_fencer_private_args_change(self, cmd):
+        pass
+
+    def update_ha_fencer(self, cmd, ha_fencer):
+        pass
+
+    @bash.in_bash
+    def _fill_heartbeat_file(self, vm_uuids):
+        # type: (list[str]) -> bool
+        offset = self.host_id * self.heartbeat_required_space
+        tmp_file = linux.write_to_temp_file(jsonobject.dumps(IscsiNodeStatus(vm_uuids)) + EOF)
+
+        cmd = "dd if=%s of=%s bs=%s seek=%s oflag=direct" % \
+              (tmp_file, self.heartbeat_path, self.heartbeat_required_space, self.host_id)
+
+        r, o, e = bash.bash_roe("timeout 20 " + cmd)
+        linux.rm_file_force(tmp_file)
+        return r == 0
+
+    def _read_heartbeat_file(self):
+        # type: () -> IscsiNodeStatus
+
+        offset = self.host_id * self.heartbeat_required_space
+        with open(self.heartbeat_path, 'r') as fd:
+            fd.seek(offset)
+            return jsonobject.loads(fd.read(1024*1024).split(EOF)[0])
+
+    def _heartbeat_io_check(self):
+        heartbeat_check = shell.ShellCmd('sg_inq %s' % self.heartbeat_path)
+        heartbeat_check(False)
+        if heartbeat_check.return_code != 0:
+            logger.warn('failed to check heartbeat[%s], %s' % (self.heartbeat_path, heartbeat_check.stderr))
+            return False
+
+        return True
+
+    def _kill_vm(self):
+        running_vm_uuids = set()
+        ret = {}
+        for covering_path in self.covering_paths:
+            running_vm_uuids.update(find_ps_running_vm(covering_path))
+
+        for vm_uuid in running_vm_uuids:
+            pid = linux.get_vm_pid(vm_uuid)
+            linux.kill_process(pid)
+            ret[vm_uuid] = pid
+        return ret
+
 
 last_multipath_run = time.time()
 QEMU_VERSION = qemu.get_version()
@@ -1293,6 +1410,22 @@ def need_kill(vm_uuid, storage_paths, is_file_system):
 
     return False
 
+def login_heartbeat_path(url):
+    if not url.startswith("iscsi://"):
+        raise Exception("unsupported install path[%s]" % url)
+    login = iscsi.IscsiLogin(url)
+    login.login()
+    login.rescan()
+
+    heartbeat_path = login.get_device_path()
+
+    def wait_device_to_show(_):
+        return os.path.exists(heartbeat_path)
+
+    if not linux.wait_callback_success(wait_device_to_show, timeout=30, interval=0.5):
+        raise Exception('ISCSI device[%s] is not shown up after 30s' % heartbeat_path)
+    return heartbeat_path
+
 
 class HaPlugin(kvmagent.KvmAgent):
     SCAN_HOST_PATH = "/ha/scanhost"
@@ -1306,20 +1439,22 @@ class HaPlugin(kvmagent.KvmAgent):
     CANCEL_SHAREDBLOCK_SELF_FENCER = "/ha/sharedblock/cancelselffencer"
     ALIYUN_NAS_SELF_FENCER = "/ha/aliyun/nas/setupselffencer"
     CANCEL_NAS_SELF_FENCER = "/ha/aliyun/nas/cancelselffencer"
+    ISCSI_SELF_FENCER = "/ha/iscsi/setupselffencer"
+    CANCEL_ISCSI_SELF_FENCER = "/ha/iscsi/cancelselffencer"
     BLOCK_SELF_FENCER = "/ha/block/setupselffencer"
     CANCEL_BLOCK_SELF_FENCER = "/ha/block/cancelselffencer"
     FILESYSTEM_CHECK_VMSTATE_PATH = "/filesystem/check/vmstate"
     SHAREDBLOCK_CHECK_VMSTATE_PATH = "/sharedblock/check/vmstate"
+    ISCSI_CHECK_VMSTATE_PATH = "/iscsi/check/vmstate"
     ADD_VM_FENCER_RULE_TO_HOST = "/add/vm/fencer/rule/to/host"
     REMOVE_VM_FENCER_RULE_FROM_HOST = "/remove/vm/fencer/rule/from/host"
     GET_VM_FENCER_RULE = "/get/vm/fencer/rule/"
-
 
     RET_SUCCESS = "success"
     RET_FAILURE = "failure"
     RET_NOT_STABLE = "unstable"
     STORAGE_DISCONNECTED = "Disconnected"
-    STORAGE_CONNECTED  = "Connected"
+    STORAGE_CONNECTED = "Connected"
 
     def __init__(self):
         # {ps_uuid: created_time} e.g. {'07ee15b2f68648abb489f43182bd59d7': 1544513500.163033}
@@ -1356,6 +1491,12 @@ class HaPlugin(kvmagent.KvmAgent):
 
     @kvmagent.replyerror
     def cancel_block_self_fencer(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        self.cancel_fencer(cmd.uuid)
+        return jsonobject.dumps(AgentRsp())
+
+    @kvmagent.replyerror
+    def cancel_iscsi_self_fencer(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         self.cancel_fencer(cmd.uuid)
         return jsonobject.dumps(AgentRsp())
@@ -1423,7 +1564,7 @@ class HaPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         created_time = time.time()
         self.setup_fencer(cmd.uuid, created_time)
-        install_path = cmd.installPath;
+        install_path = cmd.installPath
         heart_beat_wwn_path = install_path.replace("block://", "/dev/disk/by-id/wwn-0x")
         rsp = AgentRsp()
 
@@ -1498,6 +1639,58 @@ class HaPlugin(kvmagent.KvmAgent):
 
         heartbeat_on_block()
         return jsonobject.dumps(AgentRsp())
+
+    @kvmagent.replyerror
+    def setup_iscsi_self_fencer(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        created_time = time.time()
+        self.setup_fencer(cmd.uuid, created_time)
+
+        heartbeat_path = login_heartbeat_path(cmd.heartbeatUrl)
+
+        @thread.AsyncThread
+        def heartbeat_on_iscsi(ps_uuid, covering_paths):
+            fencer_list = []
+            if cmd.fencers is not None:
+                fencer_list = cmd.fencers
+
+            if host_storage_name in fencer_list:
+                fencer_list.append(IscsiHeartbeatController.ha_fencer_name)
+
+            iscsi_controller = IscsiHeartbeatController(cmd.interval, cmd.maxAttempts, ps_uuid, fencer_list)
+            iscsi_controller.covering_paths = covering_paths
+            iscsi_controller.report_storage_status = False
+            iscsi_controller.storage_failure = False
+            iscsi_controller.failure = 0
+            iscsi_controller.strategy = cmd.strategy
+            iscsi_controller.storage_check_timeout = cmd.storageCheckerTimeout
+            iscsi_controller.host_uuid = cmd.hostUuid
+            iscsi_controller.host_id = cmd.hostId
+            iscsi_controller.heartbeat_required_space = cmd.heartbeatRequiredSpace
+            iscsi_controller.heartbeat_path = heartbeat_path
+            iscsi_controller.fencer_triggered_callback = self.report_self_fencer_triggered
+            iscsi_controller.report_storage_status_callback = self.report_storage_status
+
+            self.setup_fencer(ps_uuid, created_time)
+            update_fencer = True
+            try:
+                fencer_init = {iscsi_controller.get_ha_fencer_name(): iscsi_controller}
+                logger.debug("iscsi start run fencer list :%s" % ",".join(fencer_list))
+                while self.run_fencer(ps_uuid, created_time):
+                    time.sleep(cmd.interval)
+                    iscsi_controller.exec_fencer_list(fencer_init, update_fencer)
+                    update_fencer = False
+
+                logger.debug('stop self-fencer on of iscsi protocol storage ' + ps_uuid)
+            except Exception as e:
+                logger.debug('self-fencer on iscsi protocol storage %s stopped abnormally, %s' % (ps_uuid, e))
+                content = traceback.format_exc()
+                logger.warn(content)
+                self.report_storage_status([cmd.uuid], self.STORAGE_DISCONNECTED)
+
+        heartbeat_on_iscsi(cmd.uuid, cmd.coveringPaths)
+        return jsonobject.dumps(AgentRsp())
+
 
 
     @kvmagent.replyerror
@@ -1702,7 +1895,6 @@ class HaPlugin(kvmagent.KvmAgent):
             ceph_controller.max_attempts = cmd.maxAttempts
             ceph_controller.report_storage_status = False
             ceph_controller.storage_failure = False
-            ceph_controller.failure = 0
             ceph_controller.strategy = cmd.strategy
             ceph_controller.storage_check_timeout = cmd.storageCheckerTimeout
             ceph_controller.host_uuid = cmd.hostUuid
@@ -2016,6 +2208,30 @@ class HaPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    def iscsi_check_vmstate(self, req):
+        rsp = CheckIscsiVmStateRsp()
+        rsp.result = {}
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CheckIscsiVmStateRsp()
+
+        iscsi_controller = IscsiHeartbeatController(cmd.interval, cmd.times, cmd.primaryStorageUuid, None)
+        iscsi_controller.heartbeat_path = login_heartbeat_path(cmd.heartbeatUrl)
+        iscsi_controller.host_uuid = cmd.hostUuid
+        iscsi_controller.host_id = cmd.hostId
+        iscsi_controller.storage_check_timeout = cmd.storageCheckerTimeout
+        iscsi_controller.max_attempts = cmd.times
+        iscsi_controller.interval = cmd.interval
+        iscsi_controller.ps_uuid = cmd.primaryStorageUuid
+
+        heartbeat_success, vm_uuids = iscsi_controller.check_fencer_heartbeat(
+            iscsi_controller.host_id, iscsi_controller.storage_check_timeout, iscsi_controller.interval,
+            iscsi_controller.max_attempts, cmd.primaryStorageUuid)
+
+        rsp.result = {cmd.primaryStorageUuid: heartbeat_success}
+        rsp.vmUuids = list(set(vm_uuids))
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
     def add_vm_fencer_rule_to_host(self, req):
         rsp = AgentRsp()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -2043,7 +2259,6 @@ class HaPlugin(kvmagent.KvmAgent):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.SCAN_HOST_PATH, self.scan_host)
         http_server.register_async_uri(self.SANLOCK_SCAN_HOST_PATH, self.sanlock_scan_host)
-        http_server.register_async_uri(self.CEPH_HOST_HEARTBEAT_CHECK_PATH, self.ceph_host_heartbeat_check)
         http_server.register_async_uri(self.SETUP_SELF_FENCER_PATH, self.setup_self_fencer)
         http_server.register_async_uri(self.CEPH_SELF_FENCER, self.setup_ceph_self_fencer)
         http_server.register_async_uri(self.CANCEL_SELF_FENCER_PATH, self.cancel_filesystem_self_fencer)
@@ -2054,8 +2269,12 @@ class HaPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.CANCEL_NAS_SELF_FENCER, self.cancel_aliyun_nas_self_fencer)
         http_server.register_async_uri(self.BLOCK_SELF_FENCER, self.setup_block_self_fencer)
         http_server.register_async_uri(self.CANCEL_BLOCK_SELF_FENCER, self.cancel_block_self_fencer)
+        http_server.register_async_uri(self.ISCSI_SELF_FENCER, self.setup_iscsi_self_fencer)
+        http_server.register_async_uri(self.CANCEL_ISCSI_SELF_FENCER, self.cancel_iscsi_self_fencer)
+        http_server.register_async_uri(self.CEPH_HOST_HEARTBEAT_CHECK_PATH, self.ceph_host_heartbeat_check)
         http_server.register_async_uri(self.FILESYSTEM_CHECK_VMSTATE_PATH, self.file_system_check_vmstate)
         http_server.register_async_uri(self.SHAREDBLOCK_CHECK_VMSTATE_PATH, self.sharedblock_check_vmstate)
+        http_server.register_async_uri(self.ISCSI_CHECK_VMSTATE_PATH, self.iscsi_check_vmstate)
         http_server.register_async_uri(self.ADD_VM_FENCER_RULE_TO_HOST, self.add_vm_fencer_rule_to_host)
         http_server.register_async_uri(self.REMOVE_VM_FENCER_RULE_FROM_HOST, self.remove_vm_fencer_rule_from_host)
         http_server.register_async_uri(self.GET_VM_FENCER_RULE, self.get_vm_fencer_rule)
