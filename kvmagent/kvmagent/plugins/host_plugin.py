@@ -1898,75 +1898,79 @@ done
 
         return jsonobject.dumps(rsp)
 
+    def _make_host_kernel_interface(self, interfaceName=None, vlanId=None):
+        if not interfaceName:
+            logger.debug("interfaceName is None")
+            return None
+        to = HostKernelInterfaceTO()
+        to.interfaceName = interfaceName
+        to.vlanId = vlanId
+        return to
+
     @kvmagent.replyerror
     @in_bash
     def get_kernel_interface(self, req):
+        # cmd format: {"hostUuid":"edfea52447f14b54b2f3f04eb3aee0f5","targetIp":"172.25.228.27"}
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GetHostKernelInterfaceResponse()
+        rsp.interfaces = []
 
-        def _make_host_kernel_interface(self, interfaceName=None, vlanId=None):
-            if not interfaceName:
-                return None
-            interface = HostKernelInterfaceTO()
-            interface.interfaceName = interfaceName
-            interface.vlanId = vlanId
-            return interface
-
-        link_name = linux.get_nic_name_by_ip(cmd.ip)
+        link_name = linux.get_nic_name_by_ip(cmd.targetIp)
         if not link_name:
-            rsp.error = "cannot find interface by ip[%s]" % cmd.ip
+            rsp.error = "cannot find interface by ip[%s]" % cmd.targetIp
             rsp.success = False
             return jsonobject.dumps(rsp)
 
         ip_list = linux.get_ip_list_by_nic_name(link_name)
 
-        interfaces = []
         interface = None
         if linux.is_bridge(link_name):  # ip on bridge
             all_slaves = linux.get_all_bridge_interface(link_name)
             for slave in all_slaves:
                 if linux.is_bond(slave):
-                    interface = _make_host_kernel_interface(slave, 0)
+                    interface = self._make_host_kernel_interface(slave, 0)
                     break
                 if linux.is_physical_nic(slave):
-                    interface = _make_host_kernel_interface(slave, 0)
+                    interface = self._make_host_kernel_interface(slave, 0)
                     break
                 if linux.is_vlan(slave):
                     vlan_parent = linux.get_vlan_parent(slave)
                     if linux.is_bond(vlan_parent):
-                        interface = _make_host_kernel_interface(vlan_parent, linux.get_vlan_id(slave))
+                        interface = self._make_host_kernel_interface(vlan_parent, linux.get_vlan_id(slave))
                         break
                     if linux.is_physical_nic(vlan_parent):
-                        interface = _make_host_kernel_interface(vlan_parent, linux.get_vlan_id(slave))
+                        interface = self._make_host_kernel_interface(vlan_parent, linux.get_vlan_id(slave))
                         break
         elif linux.is_bond(link_name):   # ip on bond
-            interface = _make_host_kernel_interface(link_name, 0)
+            interface = self._make_host_kernel_interface(link_name, 0)
         elif linux.is_vlan(link_name):   # ip on vlan
             vlan_parent = linux.get_vlan_parent(slave)
             if linux.is_bond(vlan_parent):
-                interface = _make_host_kernel_interface(vlan_parent, linux.get_vlan_id(link_name))
+                interface = self._make_host_kernel_interface(vlan_parent, linux.get_vlan_id(link_name))
         elif linux.is_physical_nic(link_name):  # ip on physical nic
-            interface = _make_host_kernel_interface(link_name, 0)
+            interface = self._make_host_kernel_interface(link_name, 0)
         else:
-            rsp.error = "cannot find interface by ip[%s]" % cmd.ip
+            rsp.error = "cannot parse interface[%s] by ip[%s]" % (link_name, cmd.targetIp)
             rsp.success = False
             return jsonobject.dumps(rsp)
 
         if not interface:
-            rsp.error = "cannot find bond by ip[%s]" % cmd.ip
+            rsp.error = "cannot find interface by ip[%s]" % cmd.targetIp
             rsp.success = False
-            return jsonobject.dumps(rsp)
         else:
             interface.ips = [UsedIpTO(ip=item.ip, netmask=item.netmask, ipVersion=4) for item in ip_list]
-            interfaces.append(interface)
-
-        rsp.interfaces = interfaces
+            rsp.interfaces.append(interface)
 
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
     @in_bash
     def set_kernel_interface(self, req):
+        # cmd format: "{\"interfaces\":[{\"interfaceName\":\"bond2\",
+        #                                \"vlanId\":222,
+        #                                \"ips\":[{\"ipVersion\":4,\"ip\":\"1.1.1.1\",\"netmask\":\"255.255.255.0\"}]
+        #                               }],
+        #               \"actionCode\":\"updateAction\"}"
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = SetHostKernelInterfaceResponse()
 
