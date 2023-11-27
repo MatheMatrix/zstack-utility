@@ -28,7 +28,28 @@ def get_process(cmd, shell=None, workdir=None, pipe=None, executable=None):
 
 class ShellError(Exception):
     '''shell error'''
-    
+
+    def __init__(self, message, return_code, stdout, stderr):
+        self.message = message
+        self.return_code = return_code
+        self.stdout = stdout
+        self.stderr = stderr
+
+    def __str__(self):
+        return self.message
+
+    def get_return_code(self):
+        return self.return_code
+
+    def get_stdout(self):
+        return self.stdout
+
+    def get_stderr(self):
+        return self.stderr
+
+    def is_shell_timed_out(self):
+        return int(self.return_code) == 124
+
 class ShellCmd(object):
     '''
     classdocs
@@ -52,12 +73,12 @@ class ShellCmd(object):
         err.append('return code: %s' % self.process.returncode)
         err.append('stdout: %s' % self.stdout)
         err.append('stderr: %s' % self.stderr)
-        raise ShellError('\n'.join(err))
-        
+        raise ShellError('\n'.join(err), self.process.returncode, self.stdout, self.stderr)
+
     def __call__(self, is_exception=True, logcmd=True):
         if logcmd:
             log.get_logger(__name__).debug(self.cmd)
-            
+
         (self.stdout, self.stderr) = self.process.communicate()
         if is_exception and self.process.returncode != 0:
             self.raise_error()
