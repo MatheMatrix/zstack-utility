@@ -3963,7 +3963,7 @@ class Vm(object):
                 login = iscsi.IscsiLogin(iso.path)
                 login.login()
                 login.rescan()
-                iso.path = login.get_device_path()
+                iso.path = login.retry_get_device_path()
                 iso.type = 'block'
 
             iso = iso_check(iso)
@@ -5165,7 +5165,7 @@ class Vm(object):
                         login = iscsi.IscsiLogin(iso.path)
                         login.login()
                         login.rescan()
-                        iso.path = login.get_device_path()
+                        iso.path = login.retry_get_device_path()
                         iso.type = 'block'
 
                     cdrom = make_empty_cdrom(iso, cdrom_config, iso.bootOrder, iso.resourceUuid)
