@@ -215,7 +215,7 @@ def install_kvm_pkg():
             'h76c': ('%s qemu-kvm libvirt-admin seabios-bin nping '
                      'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
             'h79c': ('%s qemu-kvm libvirt-admin seabios-bin nping '
-                     'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
+                     'elfutils-libelf-devel vconfig OVMF libicu lldpd') % helix_rhel_rpms,
             'h84r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm '
                      'seabios-bin elfutils-libelf-devel collectd-disk lldpd') % helix_rhel_rpms,
             'rl84': 'qemu-kvm libvirt-daemon libvirt-daemon-kvm seabios-bin elfutils-libelf-devel lldpd',
