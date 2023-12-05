@@ -1974,24 +1974,24 @@ done
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = SetHostKernelInterfaceResponse()
 
-        for interface in cmd.interfaces:
-            if not interface.interfaceName or not linux.is_bond(interface.interfaceName):
-                raise Exception('cannot find bond[%s]' % interface.interfaceName)
+        for iface in cmd.interfaces:
+            if not iface.interfaceName or not linux.is_bond(iface.interfaceName):
+                raise Exception('cannot find bond[%s]' % iface.interfaceName)
 
-            pyhsical_dev = interface.interfaceName if interface.vlanId == 0 else '%s.%s' % (interface.interfaceName, interface.vlanId)
+            pyhsical_dev = iface.interfaceName if iface.vlanId == 0 else '%s.%s' % (iface.interfaceName, iface.vlanId)
             if not linux.is_device_exists(pyhsical_dev):
                 raise Exception('cannot find device[%s]' % pyhsical_dev)
 
             bridge_dev = linux.get_master_device(pyhsical_dev)
             target_dev = bridge_dev if bridge_dev else pyhsical_dev
 
-            if interface.actionCode == 'deleteAction':
-                for item in interface.ips:
+            if cmd.actionCode == 'deleteAction':
+                for item in iface.ips:
                     shell.call('ip addr del %s/%s dev %s' % (item.ip, item.netmask, target_dev))
             else:
                 ip_list = linux.get_ip_list_by_nic_name(target_dev)
-                to_create_ips = [item for item in interface.ips if item.ip not in [obj.ip for obj in ip_list]]
-                to_delete_ips = [item for item in ip_list if item.ip not in [obj.ip for obj in interface.ips]]
+                to_create_ips = [item for item in iface.ips if item.ip not in [obj.ip for obj in ip_list]]
+                to_delete_ips = [item for item in ip_list if item.ip not in [obj.ip for obj in iface.ips]]
 
                 if to_create_ips:
                     for item in to_create_ips:
