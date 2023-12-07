@@ -700,11 +700,11 @@ configure lldp status rx-only \n
                     if len(parts) >= 6:
                         old_mode = parts[5]
                         lines[index] = line.replace('configure ports %s lldp status %s' % (interface_name, old_mode),
-                                                    'configure ports %s lldp status %s' % (interface_name, mode))
+                                                    'configure ports %s lldp status %s' % (interface_name, mode.replace('_', '-')))
                         updated_existing_line = True
                         break
             if not updated_existing_line:
-                lines.append('configure ports %s lldp status %s \n' % (interface_name, mode))
+                lines.append('configure ports %s lldp status %s \n' % (interface_name, mode.replace('_', '-')))
 
         with open(config_file, 'w') as f:
             f.writelines(lines)
