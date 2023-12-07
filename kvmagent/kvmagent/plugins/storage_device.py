@@ -202,6 +202,16 @@ class FcSanScanRsp(AgentRsp):
         self.fiberChannelLunStructs = []
         self.hbaWwnns = []
 
+class GetMultipathTopologyRsp(AgentRsp):
+    def __init__(self):
+        super(GetMultipathTopologyRsp, self).__init__()
+        self.devices = {} # type: dict[str, Device]
+
+class Device(object):
+    def __init__(self, disk, status, state):
+        self.disk = disk
+        self.status = status
+        self.state = state
 
 class NvmeSanScanRsp(AgentRsp):
     def __init__(self):
@@ -254,6 +264,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
     NVME_DISCONNECT_PATH = "/storagedevice/nvme/disconnect"
     MULTIPATH_ENABLE_PATH = "/storagedevice/multipath/enable"
     MULTIPATH_DISABLE_PATH = "/storagedevice/multipath/disable"
+    GET_MULTIPATH_TOPOLOGY_PATH = "/storagedevice/multipath/topology"
     ATTACH_SCSI_LUN_PATH = "/storagedevice/scsilun/attach"
     DETACH_SCSI_LUN_PATH = "/storagedevice/scsilun/detach"
     DETACH_SCSI_DEV_PATH = "/storagedevice/scsilun/detachdev"
@@ -281,6 +292,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.RAID_LOCATE_PATH, self.raid_locate)
         http_server.register_async_uri(self.RAID_SELF_TEST_PATH, self.drive_self_test)
         http_server.register_async_uri(self.HBA_SCAN_PATH, self.hba_scan)
+        http_server.register_async_uri(self.GET_MULTIPATH_TOPOLOGY_PATH, self.get_multipath_topology)
 
     def stop(self):
         pass
@@ -1188,6 +1200,52 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
     def disable_multipath(self, req):
         rsp = AgentRsp()
         lvm.disable_multipath()
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def get_multipath_topology(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetMultipathTopologyRsp()
+
+        def convert_state(s):
+            return "running" if s in ["running", "active", "live"] else "failed"
+
+        def parse_multipath_topology():
+            # multipathd process needs to be running
+            r, multipaths = bash.bash_ro("multipathd show multipaths json")
+            if r != 0:
+                return {}
+            multipaths = jsonobject.loads(multipaths)
+            if not multipaths.maps:
+                return {}
+            results = {}
+            for mpath in multipaths.maps:
+                if not mpath.path_groups:
+                    continue
+
+                wwid = mpath.uuid
+                results.update({wwid: []})
+                for path_group in mpath.path_groups:
+                    for path in path_group.paths:
+                        results.get(wwid).append(Device("/dev/"+path.dev, path_group.dm_st, convert_state(path.dm_st)))
+            return results
+
+        def get_disk_by_wwid(wwid):
+            for cond in ['scsi-', "nvme-"]:
+                rp = os.path.realpath("/dev/disk/by-id/%s%s" % (cond, wwid))
+                if os.path.exists(rp):
+                    return rp
+
+        multipath_topology = parse_multipath_topology()
+        for wwid in cmd.wwids:
+            if wwid not in multipath_topology:
+                disk = get_disk_by_wwid(wwid)
+                if disk is not None:
+                    rsp.devices.update({wwid: [Device(disk, "active", convert_state(linux.read_file("/sys/block/%s/device/state" %
+                                                                                      os.path.basename(disk)).strip()))]})
+            else:
+                rsp.devices.update({wwid: multipath_topology.get(wwid)})
+
         return jsonobject.dumps(rsp)
 
     @staticmethod
