@@ -156,7 +156,7 @@ def replyerror(func):
     return wrap
 
 
-def deleteImage(path):
+def deleteImage(path, zeroed=False):
      if zeroed:
         linux.zeroed_file_dev(path)
      linux.rm_file_checked(path)
