@@ -34,6 +34,7 @@ import zstacklib.utils.ip as ip
 import zstacklib.utils.ebtables as ebtables
 import zstacklib.utils.iptables as iptables
 import zstacklib.utils.lock as lock
+import zstacklib.utils.exception as exception
 
 from kvmagent import kvmagent
 from kvmagent.plugins.baremetal_v2_gateway_agent import \
@@ -3047,7 +3048,9 @@ class Vm(object):
                     return not bool(disk)
 
                 try:
-                    self.domain.detachDeviceFlags(xmlstr, libvirt.VIR_DOMAIN_AFFECT_LIVE)
+                    disk_is_unplugging = "is already in the process of unplug"
+                    with exception.ignore_exception(disk_is_unplugging, libvirt.libvirtError):
+                        self.domain.detachDeviceFlags(xmlstr, libvirt.VIR_DOMAIN_AFFECT_LIVE)
 
                     if not linux.wait_callback_success(wait_for_detach, None, 5, 1):
                         raise Exception("unable to detach the volume[uuid:%s] from the vm[uuid:%s];"
@@ -3072,7 +3075,6 @@ class Vm(object):
             if volume.deviceType == 'iscsi':
                 if not volume.useVirtio:
                     logout_iscsi()
-
 
         except libvirt.libvirtError as ex:
             vm = get_vm_by_uuid(self.uuid)
