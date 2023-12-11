@@ -1266,6 +1266,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                                                  "%s::%s::%s" % (VOLUME_TAG, cmd.hostUuid, time.time()))
             if cmd.volumeFormat != 'raw':
                 qcow2_options = self.calc_qcow2_option(self, cmd.kvmHostAddons, False, cmd.provisioning)
+                if cmd.qcow2Options:
+                    qcow2_options += cmd.qcow2Options
                 with lvm.OperateLv(install_abs_path, shared=False, delete_when_exception=True):
                     linux.qcow2_create_with_option(install_abs_path, cmd.size, qcow2_options)
                     linux.qcow2_fill(0, 1048576, install_abs_path)
