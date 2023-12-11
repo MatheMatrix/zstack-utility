@@ -1383,10 +1383,11 @@ def get_vlan_id(dev):
     if not is_vlan(dev):
         return None
 
-    with open("/proc/net/vlan/%s" % dev, 'r') as fd:
+    with open('/proc/net/vlan/%s' % dev, 'r') as fd:
         for line in fd.readlines():
-            if line.startswith("VID:"):
-                return int(line.split()[1])
+            if 'VID:' in line:
+                return line.split()[2]
+    return None
 
 def get_vlan_parent(dev):
     if not is_vlan(dev):
@@ -1396,6 +1397,7 @@ def get_vlan_parent(dev):
         for line in fd.readlines():
             if line.startswith("Device:"):
                 return line.split()[1]
+    return None
 
 def get_master_device(dev):
     path = "/sys/class/net/%s/master" % dev

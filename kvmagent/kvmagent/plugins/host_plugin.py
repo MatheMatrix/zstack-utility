@@ -1899,8 +1899,8 @@ done
         return jsonobject.dumps(rsp)
 
     def _make_host_kernel_interface(self, interfaceName=None, vlanId=None):
-        if not interfaceName:
-            logger.debug("interfaceName is None")
+        if not interfaceName or vlanId is None:
+            logger.debug("interface name or vlan id is None")
             return None
         to = HostKernelInterfaceTO()
         to.interfaceName = interfaceName
@@ -1921,6 +1921,7 @@ done
             rsp.success = False
             return jsonobject.dumps(rsp)
 
+        logger.debug('find management ip[%s] on interface: %s' % (cmd.targetIp, link_name))
         ip_list = linux.get_ip_list_by_nic_name(link_name)
 
         interface = None
@@ -1944,7 +1945,7 @@ done
         elif linux.is_bond(link_name):   # ip on bond
             interface = self._make_host_kernel_interface(link_name, 0)
         elif linux.is_vlan(link_name):   # ip on vlan
-            vlan_parent = linux.get_vlan_parent(slave)
+            vlan_parent = linux.get_vlan_parent(link_name)
             if linux.is_bond(vlan_parent):
                 interface = self._make_host_kernel_interface(vlan_parent, linux.get_vlan_id(link_name))
         elif linux.is_physical_nic(link_name):  # ip on physical nic
@@ -1958,6 +1959,7 @@ done
             rsp.error = "cannot find interface by ip[%s]" % cmd.targetIp
             rsp.success = False
         else:
+            logger.debug('host kernel interface is: %s, vlan id is: %s' % (interface.interfaceName, interface.vlanId))
             interface.ips = [UsedIpTO(ip=item.ip, netmask=item.netmask, ipVersion=4) for item in ip_list]
             rsp.interfaces.append(interface)
 
