@@ -770,7 +770,7 @@ configure lldp status rx-only \n
 
         return interface_lldp_info
 
-    @linux.retry_if_unexpected_value(None, times=5, sleep_time=5)
+    @linux.retry_if_unexpected_value(None, times=5, sleep_time=0.5)
     def _get_interface_lldp(self, interface_name):
         lldpinfo = None
         r, info = bash_ro('lldpctl ports %s -f json' % interface_name)
