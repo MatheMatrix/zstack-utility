@@ -142,6 +142,8 @@ class VolumeTO(object):
             return shared_block_to_file(install_path)
         elif install_path.startswith('block'):
             return block_to_path(install_path)
+        elif install_path.startswith('ceph'):
+            return ceph_to_file(install_path)
         return install_path
 
 
@@ -1210,6 +1212,9 @@ def is_qemu_support_migrate_with_bitmap(version):
 def is_libvirt_support_migrate_with_bitmap(version):
     return LooseVersion(version) < LooseVersion('6.0.0')
 
+def is_libvirt_support_block_driver(version):
+    return LooseVersion(version) < LooseVersion('6.0.0')
+
 def block_device_use_block_type():
     return user_specify_driver() or not file_type_support_block_device()
 
@@ -2111,6 +2116,9 @@ def cleanup_stale_vnc_iptable_chains():
 
 def shared_block_to_file(sbkpath):
     return sbkpath.replace("sharedblock:/", "/dev")
+
+def ceph_to_file(cephpath):
+    return cephpath.replace("ceph://", "")
 
 def block_to_path(blockpath):
     return blockpath.replace("block://", "/dev/disk/by-id/wwn-0x")
@@ -3073,6 +3081,45 @@ class Vm(object):
                 if not volume.useVirtio:
                     logout_iscsi()
 
+            def delete_residual_blockdevs():
+                if volume.deviceType == 'ceph':
+                    residual_blockdevs = []
+                    installPath = VolumeTO.get_volume_actual_installpath(volume.installPath)
+                    pool = installPath.split('/')[0]
+                    img = installPath.split('/')[1]
+
+                    logger.debug("-------------------------------------------1")
+                    logger.debug("-------------------------------------------1")
+                    logger.debug("-------------------------------------------1")
+                    logger.debug(pool)
+                    logger.debug(img)
+
+                    try :
+                        node_name_and_file = get_blockdev_node_name_and_file(self.uuid)
+                    except Exception as exception:
+                        logger.debug(str(exception))
+                        return
+
+                    for node_name, file in node_name_and_file.items():
+                        if pool in file and img in file:
+                            residual_blockdevs.append(node_name)
+
+                    logger.debug("-------------------------------------------2")
+                    logger.debug("-------------------------------------------2")
+                    logger.debug("-------------------------------------------2")
+                    logger.debug(residual_blockdevs)
+
+                    for node in residual_blockdevs:
+                        r, o, err = execute_qmp_command(self.uuid,
+                                                        '{ "execute": "blockdev-del", "arguments": { "node-name": "%s" } }' % node)
+                        if r == 0:
+                            logger.debug("delete vm[%s] residual block driver node[%s] success" % (self.uuid, node))
+                        else:
+                            logger.debug("failed to delete vm[%s] residual block driver node[%s], because %s" % (
+                            self.uuid, node, err))
+
+            if not is_libvirt_support_block_driver(linux.get_libvirt_version()):
+                delete_residual_blockdevs()
 
         except libvirt.libvirtError as ex:
             vm = get_vm_by_uuid(self.uuid)
@@ -6144,6 +6191,25 @@ def get_block_node_name_by_disk_name(domain_id, disk_name):
     if LooseVersion(LIBVIRT_VERSION) < LooseVersion("6.0.0"):
         return block['device']
     return block["inserted"]['node-name']
+
+def get_vm_blockdev_nodes(domain_uuid):
+    r, o, err = execute_qmp_command(domain_uuid, '{ "execute": "query-named-block-nodes" }')
+    if r != 0:
+        raise kvmagent.KvmError("failed to query blocks on vm[uuid:{}], libvirt error:{}".format(domain_uuid, err))
+
+    block_nodes = json.loads(o)["return"]
+    if not block_nodes:
+        raise kvmagent.KvmError("No blocks found on vm[uuid:{}]".format(domain_uuid))
+
+    return block_nodes
+
+def get_blockdev_node_name_and_file(domain_id):
+    blockdev_nodes = get_vm_blockdev_nodes(domain_id)
+    node_name_and_file = {}
+    for blockdev_node in blockdev_nodes:
+        node_name_and_file[blockdev_node['node-name']] = blockdev_node["file"]
+    return node_name_and_file
+
 
 def get_vm_migration_caps(domain_id, cap_key):
     r, o, e = execute_qmp_command(domain_id, '{"execute": "query-migrate-capabilities"}')
