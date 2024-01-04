@@ -297,10 +297,6 @@ append initrd=zstack/x86_64/initrd.img devfs=nomount ksdevice=bootif ks=ftp://{P
         with open(self.PXELINUX_DEFAULT_CFG, 'w') as f:
             f.write(pxelinux_cfg)
 
-        # create link for grub.cfg
-        link = os.path.relpath(self.UEFI_BOOT_GRUB_CFG, self.UEFI_DEFAULT_GRUB_CFG)
-        os.symlink(self.UEFI_BOOT_GRUB_CFG, link)
-
         # init default uefi grub.cfg for x86_64 and aarch64
         grub_cfg = """set timeout=1
 set arch='x86_64'
