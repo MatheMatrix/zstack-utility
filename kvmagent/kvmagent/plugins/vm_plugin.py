@@ -7097,14 +7097,14 @@ class VmPlugin(kvmagent.KvmAgent):
         try:
             vmUuid = cmd.uuid
             strategy = str(cmd.type)
-            forceStopIfNoOS = bool(cmd.forceStopIfNoOperatingSystemDetected)
+            # forceStopIfNoOS = bool(cmd.forceStopIfNoOperatingSystemDetected)
             vm = get_vm_by_uuid(vmUuid)
             vmUseOpenvSwitch = ovs.isVmUseOpenvSwitch(vmUuid)
 
             if strategy == "cold" or strategy == "force":
-                vm.stop(strategy=strategy, forceStopIfNoOS=forceStopIfNoOS)
+                vm.stop(strategy=strategy)
             else:
-                vm.stop(timeout=cmd.timeout / 2, forceStopIfNoOS=forceStopIfNoOS)
+                vm.stop(timeout=cmd.timeout / 2)
 
             if vmUseOpenvSwitch:
                 ovs.getOvsCtl(with_dpdk=True).destoryNicBackend(vmUuid)
