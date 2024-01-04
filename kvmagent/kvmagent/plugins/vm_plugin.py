@@ -2517,7 +2517,8 @@ class Vm(object):
         else:
             self._wait_for_vm_running(timeout, wait_console)
 
-    def stop(self, strategy='grace', timeout=5, undefine=True, forceStopIfNoOS=False):
+    # stop
+    def stop(self, strategy='grace', timeout=5, undefine=True):
         def cleanup_addons():
             for chan in self.domain_xmlobject.devices.get_child_node_as_list('channel'):
                 if chan.type_ == 'unix':
@@ -2593,17 +2594,6 @@ class Vm(object):
                     raise
 
         # Used to determine if the VM has an operating system
-        # return true -> VM has operating system
-        # return false -> VM has no operating system
-        def check_vm_os_state_by_memory():
-            memory_state = self.domain.memoryStats()
-            if memory_state is None or 'last_update' not in memory_state:
-                return False
-            return memory_state['last_update'] > 0
-
-        if forceStopIfNoOS and strategy == 'grace' and not check_vm_os_state_by_memory():
-            logger.info('vm has no operating system. stop it use \'force\' mode')
-            strategy = 'force'
 
         do_destroy, isPersistent = strategy == 'grace' or strategy == 'cold', self.domain.isPersistent()
         if strategy == 'grace':
@@ -7097,14 +7087,14 @@ class VmPlugin(kvmagent.KvmAgent):
         try:
             vmUuid = cmd.uuid
             strategy = str(cmd.type)
-            forceStopIfNoOS = bool(cmd.forceStopIfNoOperatingSystemDetected)
+            # forceStopIfNoOS = bool(cmd.forceStopIfNoOperatingSystemDetected)
             vm = get_vm_by_uuid(vmUuid)
             vmUseOpenvSwitch = ovs.isVmUseOpenvSwitch(vmUuid)
 
             if strategy == "cold" or strategy == "force":
-                vm.stop(strategy=strategy, forceStopIfNoOS=forceStopIfNoOS)
+                vm.stop(strategy=strategy)
             else:
-                vm.stop(timeout=cmd.timeout / 2, forceStopIfNoOS=forceStopIfNoOS)
+                vm.stop(timeout=cmd.timeout / 2)
 
             if vmUseOpenvSwitch:
                 ovs.getOvsCtl(with_dpdk=True).destoryNicBackend(vmUuid)
