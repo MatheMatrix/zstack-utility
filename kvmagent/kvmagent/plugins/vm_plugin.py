@@ -3390,6 +3390,9 @@ class Vm(object):
         if not memory_snapshot_required:
             snap_flags |= libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY
 
+        if is_qga_connected(self.domain):
+            snap_flags = snap_flags | libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_QUIESCE
+
         try:
             self.domain.snapshotCreateXML(xml, snap_flags)
 
@@ -3534,6 +3537,9 @@ class Vm(object):
             snap_flags = libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY | libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA
             if os.path.exists(install_path):
                 snap_flags = snap_flags | libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_REUSE_EXT
+
+            if is_qga_connected(self.domain):
+                snap_flags = snap_flags | libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_QUIESCE
 
             try:
                 self.domain.snapshotCreateXML(xml, snap_flags)
