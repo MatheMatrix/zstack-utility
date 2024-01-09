@@ -46,7 +46,8 @@ host_arch = platform.machine()
 IS_AARCH64 = host_arch == 'aarch64'
 IS_MIPS64EL = host_arch == 'mips64el'
 IS_LOONGARCH64 = host_arch == 'loongarch64'
-GRUB_ROCKY_ENV = "/boot/grub2/grubenv"
+output = subprocess.check_output(['find', '/boot', '-name', 'grubenv'])
+GRUB_ROCKY_ENVS = output.decode('utf-8').strip().split("\n")
 GRUB_FILES = ["/boot/grub2/grub.cfg", "/boot/grub/grub.cfg", "/etc/grub2-efi.cfg", "/etc/grub-efi.cfg"] \
                 + ["/boot/efi/EFI/{}/grub.cfg".format(platform.dist()[0])]
 IPTABLES_CMD = iptables.get_iptables_cmd()
@@ -846,12 +847,13 @@ class UpdateConfigration(object):
                                      r'\1 {0}=on modprobe.blacklist=snd_hda_intel,amd76x_edac,vga16fb,nouveau,rivafb,nvidiafb,rivatv,amdgpu,radeon'.format(
                                          self.iommu_type), content)
                 linux.write_file(grub_path, content)
-        if os.path.exists(GRUB_ROCKY_ENV) and self.enableIommu:
-            env = updateGrubContent(linux.read_file(GRUB_ROCKY_ENV))
-            env = re.sub(r'(kernelopts=.*)',
-                         r'\1 {0}=on modprobe.blacklist=snd_hda_intel,amd76x_edac,vga16fb,nouveau,rivafb,nvidiafb,rivatv,amdgpu,radeon'.format(
-                             self.iommu_type), env)
-            linux.write_file(GRUB_ROCKY_ENV, env)
+        for grub_rocky_env in GRUB_ROCKY_ENVS:
+            if os.path.exists(grub_rocky_env) and self.enableIommu:
+                env = updateGrubContent(linux.read_file(grub_rocky_env))
+                env = re.sub(r'(kernelopts=.*)',
+                             r'\1 {0}=on modprobe.blacklist=snd_hda_intel,amd76x_edac,vga16fb,nouveau,rivafb,nvidiafb,rivatv,amdgpu,radeon'.format(
+                                 self.iommu_type), env)
+                linux.write_file(grub_rocky_env, env)
         bash_o("modprobe vfio && modprobe vfio-pci")
 
 logger = log.get_logger(__name__)
@@ -1765,6 +1767,7 @@ if __name__ == "__main__":
     def _close_hugepage(self):
         disable_hugepage_script = '''#!/bin/sh
 grubs="%s"
+grubRockyEnvs="%s"
 
 # config nr_hugepages
 sysctl -w vm.nr_hugepages=0
@@ -1793,7 +1796,18 @@ do
        sed -i '/^[[:space:]]*linux/s/[[:blank:]]*transparent_hugepage[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $var
    fi    
 done
-''' % (' '.join(GRUB_FILES))
+
+#clean boot rocky grub config
+for env in $grubRockyEnvs
+do 
+  if [ -f $env ]; then
+       sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*default_[[:graph:]]*//g' $env
+       sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*hugepagesz[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $env
+       sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*hugepages[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $env
+       sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*transparent_hugepage[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $env
+  fi
+done  
+''' % (' '.join(GRUB_FILES), ' '.join(GRUB_ROCKY_ENVS))
         disable_hugepage_script_path = linux.create_temp_file()
         with open(disable_hugepage_script_path, 'w') as f:
             f.write(disable_hugepage_script)
@@ -1825,6 +1839,7 @@ grubs="%s"
 # byte to mib
 let "reserveSize=%s/1024/1024"
 pageSize=%s
+grubRockyEnvs="%s"
 memSize=`free -m | awk '/:/ {print $2;exit}'`
 let "pageNum=(memSize-reserveSize)/pageSize"
 if [ $memSize -lt $reserveSize ]                                                                                                                                                                                   
@@ -1848,7 +1863,16 @@ do
        sed -i '/^[[:space:]]*linux/s/$/ transparent_hugepage=always default_hugepagesz=\'\"$pageSize\"\'M hugepagesz=\'\"$pageSize\"\'M hugepages=\'\"$pageNum\"\'/g' $var
    fi    
 done
-''' % (' '.join(GRUB_FILES), reserveSize, pageSize)
+
+#config boot rocky grub
+for env in $grubRockyEnvs
+do 
+   if [ -f $env ]; then
+       sed -i '/^[[:space:]]*kernelopts/s/$/ transparent_hugepage=always default_hugepagesz=\'\"$pageSize\"\'M hugepagesz=\'\"$pageSize\"\'M hugepages=\'\"$pageNum\"\'/g' $env
+   fi
+done   
+''' % (' '.join(GRUB_FILES), reserveSize, pageSize, ' '.join(GRUB_ROCKY_ENVS))
+
 
         enable_hugepage_script_path = linux.create_temp_file()
         with open(enable_hugepage_script_path, 'w') as f:
