@@ -46,6 +46,7 @@ host_arch = platform.machine()
 IS_AARCH64 = host_arch == 'aarch64'
 IS_MIPS64EL = host_arch == 'mips64el'
 IS_LOONGARCH64 = host_arch == 'loongarch64'
+GRUB_ROCKY_ENV = "/boot/efi/EFI/rocky/grubenv"
 GRUB_FILES = ["/boot/grub2/grub.cfg", "/boot/grub/grub.cfg", "/etc/grub2-efi.cfg", "/etc/grub-efi.cfg"] \
                 + ["/boot/efi/EFI/{}/grub.cfg".format(platform.dist()[0])]
 IPTABLES_CMD = iptables.get_iptables_cmd()
@@ -1751,8 +1752,10 @@ if __name__ == "__main__":
         return jsonobject.dumps(rsp)
 
     def _close_hugepage(self):
+        grubRockyEnv = GRUB_ROCKY_ENV
         disable_hugepage_script = '''#!/bin/sh
 grubs="%s"
+grubRockyEnv=%s
 
 # config nr_hugepages
 sysctl -w vm.nr_hugepages=0
@@ -1781,7 +1784,15 @@ do
        sed -i '/^[[:space:]]*linux/s/[[:blank:]]*transparent_hugepage[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $var
    fi    
 done
-''' % (' '.join(GRUB_FILES))
+
+#clean boot rocky grub config
+if [ -f $grubRockyEnv ]; then
+       sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*default_[[:graph:]]*//g' $grubRockyEnv
+       sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*hugepagesz[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $grubRockyEnv
+       sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*hugepages[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $grubRockyEnv
+       sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*transparent_hugepage[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $grubRockyEnv
+fi
+''' % (' '.join(GRUB_FILES), grubRockyEnv)
         disable_hugepage_script_path = linux.create_temp_file()
         with open(disable_hugepage_script_path, 'w') as f:
             f.write(disable_hugepage_script)
@@ -1807,12 +1818,14 @@ done
 
         pageSize = cmd.pageSize
         reserveSize = cmd.reserveSize
+        grubRockyEnv = GRUB_ROCKY_ENV
         enable_hugepage_script = '''#!/bin/sh
 grubs="%s"
 
 # byte to mib
 let "reserveSize=%s/1024/1024"
 pageSize=%s
+grubRockyEnv=%s
 memSize=`free -m | awk '/:/ {print $2;exit}'`
 let "pageNum=(memSize-reserveSize)/pageSize"
 if [ $memSize -lt $reserveSize ]                                                                                                                                                                                   
@@ -1836,7 +1849,13 @@ do
        sed -i '/^[[:space:]]*linux/s/$/ transparent_hugepage=always default_hugepagesz=\'\"$pageSize\"\'M hugepagesz=\'\"$pageSize\"\'M hugepages=\'\"$pageNum\"\'/g' $var
    fi    
 done
-''' % (' '.join(GRUB_FILES), reserveSize, pageSize)
+
+#config boot rocky grub
+if [ -f $grubRockyEnv ]; then
+    sed -i '/^[[:space:]]*kernelopts/s/$/ transparent_hugepage=always default_hugepagesz=\'\"$pageSize\"\'M hugepagesz=\'\"$pageSize\"\'M hugepages=\'\"$pageNum\"\'/g' $grubRockyEnv
+fi
+''' % (' '.join(GRUB_FILES), reserveSize, pageSize, grubRockyEnv)
+
 
         enable_hugepage_script_path = linux.create_temp_file()
         with open(enable_hugepage_script_path, 'w') as f:
