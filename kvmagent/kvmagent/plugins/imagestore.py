@@ -143,7 +143,6 @@ class ImageStoreClient(object):
                 return maxInfoMap, minInfoMap
 
             with open(PFILE) as fd:
-                linux.rm_file_force(PFILE)
                 for line in fd.readlines():
                     infosMap = {}
                     j = jsonobject.loads(line.strip())
@@ -155,14 +154,20 @@ class ImageStoreClient(object):
                 if maxLatencies:
                     maxLatency = max(maxLatencies)
                     minLatency = min(maxLatencies)
+                    logger.debug("xxx vm, is %s maxLatency is %s, minLatency is %s  maxLatencies is %s" % (
+                    vm,maxLatency, minLatency, maxLatencies))
                     for infoMap in infosMaps:
                         k = [k for k, v in infoMap.items() if v == maxLatency]
                         if k:
+                            logger.debug("xxx vm is %s max infoMap.items() is %s  infoMap is %s" % (
+                            vm, infoMap.items(), infoMap))
                             maxInfoMap = infoMap
                             break
                     for infoMap in infosMaps:
-                        k = [k for k, v in infoMap.items() if v == minLatency]
-                        if k:
+                        values = infoMap.values()
+                        if values and all(i <= minLatency for i in values):
+                            logger.debug("xxx vm is %s min infoMap.items() is %s  infoMap is %s" % (
+                            vm, infoMap.items(), infoMap))
                             minInfoMap = infoMap
                             break
             return vm, maxInfoMap, minInfoMap
