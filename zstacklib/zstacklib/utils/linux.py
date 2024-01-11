@@ -3297,3 +3297,17 @@ class VmUsbManager(object):
         logger.info("Current USB slot status:")
         for usb_type, count in self.usb_slots.iteritems():
             logger.info("bus:%s: %d" % (usb_type, count))
+
+
+def is_rpm_installed(rpm_name):
+    cmd = shell.ShellCmd('rpm -q %s' % rpm_name)
+    cmd(False)
+    if ('not installed' in cmd.stdout or 'command not found' in cmd.stdout or
+        cmd.return_code != 0):
+        return False
+    return True
+
+
+def get_rpm_version(rpm_name):
+    return shell.call(
+        'rpm -q --queryformat "%%{VERSION}-%%{RELEASE}" %s' % rpm_name)
