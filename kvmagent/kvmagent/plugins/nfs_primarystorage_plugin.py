@@ -7,6 +7,7 @@ import os
 import os.path
 import tempfile
 import traceback
+import string
 
 import zstacklib.utils.uuidhelper as uuidhelper
 from kvmagent import kvmagent
@@ -332,52 +333,60 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
             linux.mkdir(dst_folder_path)
 
             t_shell = traceable_shell.get_shell(cmd)
-            rsync_excludes = ""
-            rsync_exclude_files = set()
+            exclude_files = set()
             if cmd.filtPaths:
                 for filtPath in cmd.filtPaths:
                     # filtPath cannot start with '/', because it must be a relative path
                     if filtPath.startswith('/'):
                         filtPath = filtPath[1:]
                     if filtPath != '':
-                        rsync_exclude_files.add(filtPath)
-                        rsync_excludes = rsync_excludes + " --exclude=%s" % filtPath
+                        exclude_files.add(filtPath)
 
-            total_size = long(shell.call("rsync -anv %s/ %s %s | grep  -o -P 'total size is \K[\d|,]+'" %
-                                        (cmd.srcFolderPath, dst_folder_path, rsync_excludes)).replace(",", ""))
+            src_files = t_shell.call("find %s -name '*.qcow2'" % cmd.srcFolderPath).strip().splitlines()
+            if cmd.dependentFiles:
+                src_files += cmd.dependentFiles
+            src_files = filter(lambda src_file: os.path.relpath(src_file, cmd.srcFolderPath) not in exclude_files, src_files)
 
-            src_qcow2s = t_shell.call("find %s -name '*.qcow2'" % cmd.srcFolderPath).strip().splitlines()
-            src_qcow2s = filter(lambda src_file: os.path.relpath(src_file, cmd.srcFolderPath) not in rsync_exclude_files, src_qcow2s)
+            src_files_size = {}
+            total_size = 0
+            for src_file in set(src_files):
+                _, actual_size = linux.qcow2_size_and_actual_size(src_file)
+                actual_size = long(actual_size)
+                src_files_size.update({src_file: actual_size})
+                total_size += actual_size
+
             parent_stage = get_task_stage(cmd)
             migrated_size = 0
-            for src_qcow2 in src_qcow2s:
-                dst_qcow2 = os.path.join(dst_folder_path, os.path.relpath(src_qcow2, cmd.srcFolderPath))
-                dir_name = os.path.dirname(dst_qcow2)
+            for src_file in set(src_files):
+                dst_file = os.path.join(dst_folder_path, os.path.relpath(src_file, cmd.srcFolderPath))
+                dir_name = os.path.dirname(dst_file)
                 if not os.path.exists(dir_name):
                     linux.mkdir(dir_name)
 
-                _, src_qcow2_size = linux.qcow2_size_and_actual_size(src_qcow2)
-                src_qcow2_size = long(src_qcow2_size)
-                start = get_exact_percent(float(migrated_size) / total_size * 100, parent_stage)
-                end = get_exact_percent(float(migrated_size + src_qcow2_size) / total_size * 100, parent_stage)
+                if linux.get_img_fmt(src_file) == 'raw':
+                    t_shell.bash_errorout("pv -n %s > %s" % (src_file, dst_file))
+                    migrated_size += src_files_size[src_file]
+                    continue
 
-                opts = cmd.kvmHostAddons.qcow2Options if cmd.volumeInstallPath == src_qcow2 else re.sub("-o preallocation=\w* ", " ",
+                start = get_exact_percent(float(migrated_size) / total_size * 100, parent_stage)
+                end = get_exact_percent(float(migrated_size + src_files_size[src_file]) / total_size * 100, parent_stage)
+                opts = cmd.kvmHostAddons.qcow2Options if cmd.volumeInstallPath == src_file else re.sub("-o preallocation=\w* ", " ",
                                                                                                         cmd.kvmHostAddons.qcow2Options)
-                backing_file = linux.qcow2_get_backing_file(src_qcow2)
+                backing_file = linux.qcow2_get_backing_file(src_file)
                 if backing_file != "":
                     opts = re.sub("-o preallocation=\w* ", "", opts) + " -B %s " % backing_file
                     if not qemu_img.take_default_backing_fmt_for_convert():
                         opts += " -F %s " % linux.get_img_fmt(backing_file)
 
-                qcow2.create_template_with_task_daemon(src_qcow2, dst_qcow2, cmd,
+                qcow2.create_template_with_task_daemon(src_file, dst_file, cmd,
                                                        opts=opts,
                                                        stage="%s-%s" % (start, end),
                                                        task_name="MigrateVolumes")
 
-                _, dst_qcow2_size = linux.qcow2_size_and_actual_size(dst_qcow2)
-                rsp.dstFilesActualSize.update({dst_qcow2 : long(dst_qcow2_size)})
+                _, dst_qcow2_size = linux.qcow2_size_and_actual_size(dst_file)
+                rsp.dstFilesActualSize.update({dst_file: long(dst_qcow2_size)})
 
-                migrated_size += src_qcow2_size
+                migrated_size += src_files_size[src_file]
             if cmd.independentPath:
                 dst_path = os.path.join(dst_folder_path, os.path.relpath(cmd.independentPath, cmd.srcFolderPath))
                 linux.qcow2_rebase("", dst_path)
@@ -406,10 +415,10 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = NfsRebaseVolumeBackingFileRsp()
 
-        if not cmd.dstImageCacheTemplateFolderPath:
+        if not cmd.dstImageCacheTemplateFoldersPath:
             qcow2s = shell.call("find %s -type f -regex '.*\.qcow2$'" % cmd.dstVolumeFolderPath)
         else:
-            qcow2s = shell.call("find %s %s -type f -regex '.*\.qcow2$'" % (cmd.dstVolumeFolderPath, cmd.dstImageCacheTemplateFolderPath))
+            qcow2s = shell.call("find %s %s -type f -regex '.*\.qcow2$'" % (cmd.dstVolumeFolderPath, string.join(cmd.dstImageCacheTemplateFoldersPath)))
 
         for qcow2 in qcow2s.split():
             fmt = shell.call("%s %s | grep '^file format' | awk -F ': ' '{ print $2 }'" % (qemu_img.subcmd('info'), qcow2))
