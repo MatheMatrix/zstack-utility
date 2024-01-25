@@ -3312,58 +3312,49 @@ class Vm(object):
             raise kvmagent.KvmError(
                 'unable to resize volume[id:{1}] of vm[uuid:{0}] because {2}'.format(device_id, self.uuid, e))
 
-    def take_live_volumes_delta_snapshots(self, vs_structs):
-        """
+    def handle_memory_snapshot(self, vs_struct, snapshot):
+        snapshot_dir = os.path.dirname(vs_struct.installPath)
+        if not os.path.exists(snapshot_dir):
+            os.makedirs(snapshot_dir)
+
+        memory_snapshot_path = None
+        if vs_struct.installPath.startswith("/dev/"):
+            lvm.active_lv(vs_struct.installPath)
+            shell.call("mkfs.xfs -f %s" % vs_struct.installPath)
+            mount_path = vs_struct.installPath.replace("/dev/", "/tmp/")
+            if not os.path.exists(mount_path):
+                linux.mkdir(mount_path)
+
+            if not linux.is_mounted(mount_path):
+                linux.mount(vs_struct.installPath, mount_path)
+
+            memory_snapshot_path = mount_path + '/' + mount_path.rsplit('/', 1)[-1]
+        else:
+            memory_snapshot_path = vs_struct.installPath
+
+        e(snapshot, 'memory', None, attrib={'snapshot': 'external', 'file': memory_snapshot_path})
+        memory_snapshot_struct = vs_struct
+
+        return memory_snapshot_struct, snapshot
+
+
+    def before_take_live_volumes_delta_snapshots(self, vs_structs):
+        '''
         :type vs_structs: list[VolumeSnapshotJobStruct]
-        :rtype: list[VolumeSnapshotResultStruct]
-        """
+        :rtype (etree.Element, list[str], list[VolumeSnapshotResultStruct], VolumeSnapshotResultStruct, etree.Element)
+        '''
+        snapshot = etree.Element('domainsnapshot')
+        disks = e(snapshot, 'disks')
         disk_names = []
         return_structs = []
         memory_snapshot_struct = None
-
-        snapshot = etree.Element('domainsnapshot')
-        disks = e(snapshot, 'disks')
-        logger.debug(snapshot)
-
-        if len(vs_structs) == 0:
-            return return_structs
-
-        def get_size(install_path):
-            """
-            :rtype: long
-            """
-            return VmPlugin._get_snapshot_size(install_path)
-
-        logger.debug(vs_structs)
-        memory_snapshot_required = False
         for vs_struct in vs_structs:
             if vs_struct.live is False or vs_struct.full is True:
                 raise kvmagent.KvmError("volume %s is not live or full snapshot specified, "
                                         "can not proceed")
 
             if vs_struct.memory:
-                memory_snapshot_required = True
-                snapshot_dir = os.path.dirname(vs_struct.installPath)
-                if not os.path.exists(snapshot_dir):
-                    os.makedirs(snapshot_dir)
-
-                memory_snapshot_path = None
-                if vs_struct.installPath.startswith("/dev/"):
-                    lvm.active_lv(vs_struct.installPath)
-                    shell.call("mkfs.xfs -f %s" % vs_struct.installPath)
-                    mount_path = vs_struct.installPath.replace("/dev/", "/tmp/")
-                    if not os.path.exists(mount_path):
-                        linux.mkdir(mount_path)
-
-                    if not linux.is_mounted(mount_path):
-                        linux.mount(vs_struct.installPath, mount_path)
-
-                    memory_snapshot_path = mount_path + '/' + mount_path.rsplit('/', 1)[-1]
-                else:
-                    memory_snapshot_path = vs_struct.installPath
-
-                e(snapshot, 'memory', None, attrib={'snapshot': 'external', 'file': memory_snapshot_path})
-                memory_snapshot_struct = vs_struct
+                memory_snapshot_struct, snapshot = self.handle_memory_snapshot(vs_struct, snapshot)
                 continue
 
             target_disk, disk_name = self._get_target_disk(vs_struct.volume)
@@ -3384,32 +3375,51 @@ class Vm(object):
                 vs_struct.volumeUuid,
                 source_file,
                 vs_struct.installPath,
-                get_size(source_file),
+                VmPlugin._get_snapshot_size(source_file),
                 vs_struct.memory))
+
+        return disks, disk_names, return_structs, memory_snapshot_struct, snapshot
+
+    def after_take_live_volumes_delta_snapshots(self, return_structs, memory_snapshot_struct):
+        if not memory_snapshot_struct:
+            return
+
+        return_structs.append(VolumeSnapshotResultStruct(
+            memory_snapshot_struct.volumeUuid,
+            memory_snapshot_struct.installPath,
+            memory_snapshot_struct.installPath,
+            VmPlugin._get_snapshot_size(memory_snapshot_struct.installPath),
+            True))
+
+    def take_live_volumes_delta_snapshots(self, vs_structs):
+        """
+        :type vs_structs: list[VolumeSnapshotJobStruct]
+        :rtype: list[VolumeSnapshotResultStruct]
+        """
+        disks, disk_names, return_structs, memory_snapshot_struct, snapshot = self.before_take_live_volumes_delta_snapshots(vs_structs)
+        logger.debug(snapshot)
+
+        if len(vs_structs) == 0:
+            return return_structs
+
+        logger.debug(vs_structs)
 
         self.refresh()
         for disk in self.domain_xmlobject.devices.get_child_node_as_list('disk'):
             if disk.target.dev_ not in disk_names:
                 e(disks, 'disk', None, attrib={'name': disk.target.dev_, 'snapshot': 'no'})
 
+        e(snapshot, 'disks', disks)
         xml = etree.tostring(snapshot)
         logger.debug('creating live snapshot for vm[uuid:{0}] volumes[id:{1}]:\n{2}'.format(self.uuid, disk_names, xml))
 
         snap_flags = libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA | libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_ATOMIC
-        if not memory_snapshot_required:
+        if not memory_snapshot_struct:
             snap_flags |= libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY
 
         try:
             self.domain.snapshotCreateXML(xml, snap_flags)
-
-            if memory_snapshot_struct:
-                return_structs.append(VolumeSnapshotResultStruct(
-                    memory_snapshot_struct.volumeUuid,
-                    memory_snapshot_struct.installPath,
-                    memory_snapshot_struct.installPath,
-                    get_size(memory_snapshot_struct.installPath),
-                    True))
-
+            self.after_take_live_volumes_delta_snapshots(return_structs, memory_snapshot_struct)
             return return_structs
         except libvirt.libvirtError as ex:
             logger.warn(linux.get_exception_stacktrace())
@@ -3435,7 +3445,7 @@ class Vm(object):
                 logger.debug("after create snapshot by libvirt, expected volume[install path: %s] does%s exist."
                              % (struct.installPath, "" if existing else " not"))
 
-            if memory_snapshot_required:
+            if memory_snapshot_struct:
                 self.dump_vm_xml_to_log()
                 self.rollback_memory_snapshot(memory_snapshot_struct.installPath)
 
@@ -7938,12 +7948,6 @@ class VmPlugin(kvmagent.KvmAgent):
             dirname = os.path.dirname(new_path)
             if not os.path.exists(dirname):
                 os.makedirs(dirname, 0o755)
-
-        def get_size(install_path):
-            """
-            :rtype: long
-            """
-            return VmPlugin._get_snapshot_size(install_path)
 
         def take_full_snapshot_by_qemu_img_convert(previous_install_path, install_path, new_volume_install_path):
             """
