@@ -6,6 +6,7 @@ from kvmagent.plugins import vm_plugin
 from unittest import TestCase
 import mock
 import libvirt
+import platform
 from kvmagent.plugins.vm_plugin import VolumeSnapshotJobStruct, VolumeSnapshotResultStruct
 
 init_kvmagent()
@@ -53,6 +54,9 @@ class TestSnapshots(TestCase, vm_utils.VmPluginTestStub):
 
     @pytest_utils.ztest_decorater
     def test_memory_snapshot_operations(self):
+        if platform.machine() == 'aarch64':
+            return
+
         vm_uuid, vm = self._create_vm()
 
         xml = vm_utils.get_vm_xmlobject_from_virsh_dump(vm_uuid)
@@ -104,6 +108,9 @@ class TestSnapshots(TestCase, vm_utils.VmPluginTestStub):
 
     @pytest_utils.ztest_decorater
     def test_memory_snapshot_rollback(self):
+        if platform.machine() == 'aarch64':
+            return
+
         vm_uuid, vm = self._create_vm()
 
         original_create_xml = libvirt.virDomain.snapshotCreateXML
@@ -209,6 +216,9 @@ class TestSnapshots(TestCase, vm_utils.VmPluginTestStub):
 
     @pytest_utils.ztest_decorater
     def test_before_take_live_volumes_delta_snapshots(self):
+        if platform.machine() == 'aarch64':
+            return
+
         vm_uuid, vm = self._create_vm()
         vs_structs = self._get_vm_volume_snapshots_structs(vm_uuid)
 

@@ -3312,6 +3312,18 @@ class Vm(object):
             raise kvmagent.KvmError(
                 'unable to resize volume[id:{1}] of vm[uuid:{0}] because {2}'.format(device_id, self.uuid, e))
 
+    def make_block_device_for_memory_snapshot(self, installPath):
+        lvm.active_lv(installPath)
+        shell.call("mkfs.xfs -f %s" % installPath)
+        mount_path = installPath.replace("/dev/", "/tmp/")
+        if not os.path.exists(mount_path):
+            linux.mkdir(mount_path)
+
+        if not linux.is_mounted(mount_path):
+            linux.mount(installPath, mount_path)
+
+        return mount_path
+
     def handle_memory_snapshot(self, vs_struct, snapshot):
         snapshot_dir = os.path.dirname(vs_struct.installPath)
         if not os.path.exists(snapshot_dir):
@@ -3319,15 +3331,7 @@ class Vm(object):
 
         memory_snapshot_path = None
         if vs_struct.installPath.startswith("/dev/"):
-            lvm.active_lv(vs_struct.installPath)
-            shell.call("mkfs.xfs -f %s" % vs_struct.installPath)
-            mount_path = vs_struct.installPath.replace("/dev/", "/tmp/")
-            if not os.path.exists(mount_path):
-                linux.mkdir(mount_path)
-
-            if not linux.is_mounted(mount_path):
-                linux.mount(vs_struct.installPath, mount_path)
-
+            mount_path = self.make_block_device_for_memory_snapshot(vs_struct.installPath)
             memory_snapshot_path = mount_path + '/' + mount_path.rsplit('/', 1)[-1]
         else:
             memory_snapshot_path = vs_struct.installPath
