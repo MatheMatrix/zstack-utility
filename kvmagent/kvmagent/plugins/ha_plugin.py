@@ -135,22 +135,25 @@ class AbstractHaFencer(object):
         raise NotImplementedError
 
     def exec_fencer_list(self, fencer_init, update_fencer):
-        if self.ha_fencer is None or update_fencer:
-            self.is_fencer_regenerated(fencer_init)
+        try:
+            if self.ha_fencer is None or update_fencer:
+                self.is_fencer_regenerated(fencer_init)
 
-        if self.run_fencer_list is None:
-            return
-        self.run_fencer_list = set(list(self.run_fencer_list))
+            if self.run_fencer_list is None:
+                return
+            self.run_fencer_list = set(list(self.run_fencer_list))
 
-        threads = []
-        for fencer in self.run_fencer_list:
-            if fencer in self.ha_fencer:
-                thread = threading.Thread(target=self.ha_fencer[fencer].exec_fencer())
-                thread.start()
-                threads.append(thread)
+            threads = []
+            for fencer in self.run_fencer_list:
+                if fencer in self.ha_fencer:
+                    thread = threading.Thread(target=self.ha_fencer[fencer].exec_fencer())
+                    thread.start()
+                    threads.append(thread)
 
-        for t in threads:
-            t.join()
+            for t in threads:
+                t.join()
+        except Exception as e:
+            logger.warn("failed to exec fencer %s" % e)
 
     def is_fencer_regenerated(self, fencer_init):
         self.inspect_fencer()
