@@ -50,6 +50,7 @@ unittest_flag = 'false'
 mn_ip = None
 isInstallHostShutdownHook = 'false'
 isEnableKsm = 'none'
+restartLibvirtd = 'false'
 
 
 # get parameter from shell
@@ -801,8 +802,9 @@ def start_kvmagent():
     if chroot_env != 'false':
         return
 
-    if init == 'true':
+    if init == 'true' or restartLibvirtd == 'true':
         # name: restart libvirtd when init installation to make sure qemu.conf changes
+        # or restart libvirtd when restartLibvirtd is true (from control plane settings)
         # take effects
         service_status("libvirtd", "state=restarted enabled=yes", host_post_info)
 
