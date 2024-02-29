@@ -534,6 +534,18 @@ class CephAgent(object):
 
         return self.ioctx[pool_name]
 
+    def reconnect_cluster(self):
+        with self.op_lock:
+            origin_cluster = self.cluster
+            cluster = rados.Rados(conffile=self.CEPH_CONF_PATH)
+            cluster.connect()
+            self.cluster = cluster
+
+            if origin_cluster:
+                origin_cluster.shutdown()
+                logger.debug("reconnect to rados cluster. shutdown before cluster.")
+            else:
+                logger.debug("connected to rados cluster.")
 
     def _get_capacity(self):
         o = shell.call('ceph df -f json')
@@ -758,7 +770,8 @@ class CephAgent(object):
             shell.call('ceph osd pool create %s 128' % pool.name)
 
         rsp = InitRsp()
-        rsp.fsid = ceph.get_fsid()
+        self.reconnect_cluster()
+        rsp.fsid = self.cluster.get_fsid()
         self._set_capacity_to_response(rsp)
 
         return jsonobject.dumps(rsp)
