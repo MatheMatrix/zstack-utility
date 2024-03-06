@@ -3007,8 +3007,7 @@ cs_enable_console_proxy_cert(){
 cs_enable_ui_ssl_cert(){
     echo_subtitle "Configure UI server SSL certificate"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    zstack-ctl config_ui server_port=5443
-    zstack-ctl config_ui enable_ssl=true
+    zstack-ctl config_ui --enable-ssl=true --server_port=5443 > /dev/null
 }
 
 check_zstack_server(){
