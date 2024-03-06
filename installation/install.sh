@@ -146,7 +146,10 @@ ZSTACK_OLD_LICENSE_FOLDER=$ZSTACK_INSTALL_ROOT/license
 DEFAULT_MN_PORT='8080'
 MN_PORT="$DEFAULT_MN_PORT"
 
-DEFAULT_UI_PORT='5000'
+DEFAULT_UI_PORT='443'
+DEFAULT_UI_SCHEMA='https'
+DEFAULT_SNS_PORT='5000'
+DEFAULT_SNS_SCHEMA='http'
 RESOLV_CONF='/etc/resolv.conf'
 
 BASEARCH=`uname -m`
@@ -1463,11 +1466,11 @@ upgrade_zstack(){
 
     # set ticket.sns.topic.http.url if not exists
     zstack-ctl show_configuration | grep 'ticket.sns.topic.http.url' >/dev/null 2>&1
-    [ $? -ne 0 ] && zstack-ctl configure ticket.sns.topic.http.url=http://localhost:5000/zwatch/webhook
+    [ $? -ne 0 ] && zstack-ctl configure ticket.sns.topic.http.url=$DEFAULT_SNS_SCHEMA://localhost:$DEFAULT_SNS_PORT/zwatch/webhook
 
     # set sns.systemTopic.endpoints.http.url if not exists
     zstack-ctl show_configuration | grep 'sns.systemTopic.endpoints.http.url' >/dev/null 2>&1
-    [ $? -ne 0 ] && zstack-ctl configure sns.systemTopic.endpoints.http.url=http://localhost:5000/zwatch/webhook
+    [ $? -ne 0 ] && zstack-ctl configure sns.systemTopic.endpoints.http.url=$DEFAULT_SNS_SCHEMA://localhost:$DEFAULT_SNS_PORT/zwatch/webhook
 
     # upgrade legacy mini zwatch webhook
     upgrade_mini_zwatch_webhook
@@ -3007,7 +3010,7 @@ cs_enable_console_proxy_cert(){
 cs_enable_ui_ssl_cert(){
     echo_subtitle "Configure UI server SSL certificate"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    zstack-ctl config_ui --enable-ssl=true --server_port=5443 > /dev/null
+    zstack-ctl config_ui --enable-ssl=true --server_port=443 > /dev/null
 }
 
 check_zstack_server(){
@@ -4557,7 +4560,7 @@ echo_star_line
 touch $README
 
 echo -e "${PRODUCT_NAME} All In One ${VERSION} Installation Completed:
- - UI is running, visit $(tput setaf 4)http://$MANAGEMENT_IP:$DEFAULT_UI_PORT$(tput sgr0) in Chrome
+ - UI is running, visit $(tput setaf 4)$DEFAULT_UI_SCHEMA://$MANAGEMENT_IP:$DEFAULT_UI_PORT$(tput sgr0) in Chrome
       Use $(tput setaf 3)${PRODUCT_NAME,,}-ctl [stop_ui|start_ui]$(tput sgr0) to stop/start the UI service
 
  - Management node is running
