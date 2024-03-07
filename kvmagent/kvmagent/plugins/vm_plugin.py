@@ -1765,7 +1765,7 @@ class MergeSnapshotDaemon(plugin.TaskDaemon):
 
     def check_vm_xml_backing_file_consistency(self, base_disk_install_path, dest_disk_install_path):
         expected = False
-        for disk_backing_file_chain in self.vm.get_backing_store_source_recursively():
+        for disk_backing_file_chain in self.vm.get_vm_all_disks_backing_file_chain_recursively():
             chain_depth = len(disk_backing_file_chain)
             if dest_disk_install_path in disk_backing_file_chain.keys():
                 dest_disk_install_path_depth = disk_backing_file_chain[dest_disk_install_path]
@@ -3409,6 +3409,23 @@ class Vm(object):
 
                 return self._check_target_disk_existing_by_path(path, True)
 
+            def check_install_path_chain_consistency():
+                if not active_commit:
+                    return True
+
+                aliveChainInstallPathInDb = task_spec.aliveChainInstallPathInDb
+                aliveChainInstallPathInXml = {v: k for k, v in self.get_vm_disk_backing_file_chain(base).iteritems()}
+
+                errorStr = ('block commit failed, alive chain is not consistent between db[%s] and disk xml[%s]' % (
+                aliveChainInstallPathInDb, aliveChainInstallPathInXml))
+
+                if len(aliveChainInstallPathInDb) != len(aliveChainInstallPathInXml):
+                    raise kvmagent.KvmError(errorStr)
+
+                for i in xrange(len(aliveChainInstallPathInDb)):
+                    if aliveChainInstallPathInDb[i] != aliveChainInstallPathInXml[i]:
+                        raise kvmagent.KvmError(errorStr)
+
             def abort_block_commit_job(_):
                 flag = libvirt.VIR_DOMAIN_BLOCK_JOB_ABORT_ASYNC
                 if active_commit:
@@ -3427,8 +3444,22 @@ class Vm(object):
                     logger.warn("pivot active layer failed, %s" % e)
                     return False
 
+            class CommitStruct(object):
+                def __init__(self, top_install_path, base_install_path):
+                    self.top_install_path = top_install_path
+                    self.base_install_path = base_install_path
+
+            def check_volume_xml_backing_file_consistency(commit_struct):
+                top_install_path = commit_struct.top_install_path
+                base_install_path = commit_struct.base_install_path
+                disk_backing_file_chain = self.get_vm_disk_backing_file_chain(base_install_path)
+                return top_install_path not in disk_backing_file_chain.keys()
+
             logger.debug('start block commit for disk %s, from %s, to %s, active commit: %s'
                          % (disk_name, top, base, active_commit))
+
+            check_install_path_chain_consistency()
+
             flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
 
             # currently we only handle active commit
@@ -3443,9 +3474,15 @@ class Vm(object):
 
             if not linux.wait_callback_success(wait_job, timeout=d.get_remaining_timeout(),
                                                ignore_exception_in_callback=True):
-                if not check_overlay_file(base):
+                if check_overlay_file(base):
+                    logger.debug("although the block commit job failed, device install path has been changed to %s" % base)
+                else:
                     raise kvmagent.KvmError('block commit failed')
-                logger.debug("although the block commit job failed, device install path has been changed to %s" % base)
+
+                if check_volume_xml_backing_file_consistency(CommitStruct(top, base)):
+                    logger.debug("although the block commit job failed, top [%s] has been committed to base [%s]" % (top, base))
+                else:
+                    raise kvmagent.KvmError('block commit failed, top file[%s] is still in vm xml' % top)
 
             if not linux.wait_callback_success(abort_block_commit_job, d.get_remaining_timeout(),
                                                ignore_exception_in_callback=True):
@@ -3454,6 +3491,10 @@ class Vm(object):
             if not linux.wait_callback_success(check_overlay_file, base, d.get_remaining_timeout(),
                                                ignore_exception_in_callback=True):
                 raise kvmagent.KvmError('block commit succeeded, but overlay file is not cleared')
+
+            if not linux.wait_callback_success(check_volume_xml_backing_file_consistency, CommitStruct(top, base),
+                                               d.get_remaining_timeout(), ignore_exception_in_callback=True):
+                raise kvmagent.KvmError('block commit succeeded, but top file[%s] is still in vm xml' % top)
 
             return base
 
@@ -3569,7 +3610,7 @@ class Vm(object):
 
         return res
 
-    def get_backing_store_source_recursively(self):
+    def get_vm_all_disks_backing_file_chain_recursively(self):
         # type: () -> list
         all_disks_backing_file_chain = []
         disk_backing_file_chain = {}
@@ -3601,6 +3642,7 @@ class Vm(object):
             disk_backing_file_chain[etree.tostring(backingStore.find('source')).split('"')[1]] = depth
             get_backing_store_source(backingStore.find('backingStore'), depth)
 
+        self.refresh()
         tree = etree.fromstring(self.domain_xml)
         for disk in tree.findall('devices/disk'):
             depth = 0
@@ -3615,6 +3657,15 @@ class Vm(object):
             disk_backing_file_chain = {}
 
         return all_disks_backing_file_chain
+
+    def get_vm_disk_backing_file_chain(self, target_disk_install_path):
+        # type: (str) -> dict[str, int]
+        disk_backing_file_chain = {}
+        for chain in self.get_vm_all_disks_backing_file_chain_recursively():
+            if target_disk_install_path in chain.keys():
+                disk_backing_file_chain = chain
+                break
+        return disk_backing_file_chain
 
     def _build_domain_new_xml(self, volumeDicts):
         migrate_disks = {}
@@ -4748,7 +4799,7 @@ class Vm(object):
             def make_cpu_vendor():
                 if HOST_ARCH != "x86_64":
                     return
-                
+
                 if cmd.vmCpuVendorId and cmd.vmCpuVendorId != "None":
                     if cmd.nestedVirtualization in ['host-model', 'custom']:
                         model = root.find('cpu/model')
@@ -5339,7 +5390,7 @@ class Vm(object):
                     driver_elements["iothread"] = str(_v.ioThreadId)
                 e(disk, 'driver', None, driver_elements)
                 e(disk, 'source', None, {'dev': _v.installPath})
-                
+
                 if _v.shareable:
                     e(disk, 'shareable')
 
@@ -5924,7 +5975,7 @@ class Vm(object):
 
             if cmd.nestedVirtualization not in ['host-passthrough', 'none']:
                 return
-            
+
             root = elements['root']
             libvirtXml = etree.tostring(root)
             cpuFlags = get_cpu_flags_from_xml(libvirtXml)
@@ -5974,7 +6025,7 @@ class Vm(object):
             make_memory_backing()
 
         if HOST_ARCH == "x86_64" and cmd.vmCpuVendorId and cmd.vmCpuVendorId != "None":
-            add_cpu_vendor_id_to_cpu_flags()    
+            add_cpu_vendor_id_to_cpu_flags()
 
         root = elements['root']
         xml = etree.tostring(root)
@@ -6635,7 +6686,7 @@ class VmPlugin(kvmagent.KvmAgent):
                 ]
                 notify_vrouter(vrouter_cmd)
         return jsonobject.dumps(rsp)
-    
+
     @kvmagent.replyerror
     def update_nic(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -6739,7 +6790,7 @@ class VmPlugin(kvmagent.KvmAgent):
             if not s or s == Vm.VM_STATE_RUNNING:
                 s = self.get_vm_stat_with_ps(uuid)
             rsp.states[uuid] = s
-        
+
         return jsonobject.dumps(rsp)
 
     def _escape(self, size):
@@ -7086,7 +7137,7 @@ class VmPlugin(kvmagent.KvmAgent):
     def take_console_screenshot(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = TakeVmConsoleScreenshotRsp()
-        
+
         @LibvirtAutoReconnect
         def create_stream(conn):
             return conn.newStream()
@@ -7095,13 +7146,13 @@ class VmPlugin(kvmagent.KvmAgent):
             with open(file_path, 'wb') as f:
                 for data in iter(lambda: stream.recv(262120), b''):
                     f.write(data)
-        
+
         stream = create_stream()
         if stream is None:
             rsp.success = False
             rsp.error = "failed to create libvirt stream"
             return jsonobject.dumps(rsp)
-        
+
         tmp_ppm = "/tmp/%s.ppm" % cmd.vmUuid
         tmp_img = "/tmp/%s.png" % cmd.vmUuid
         try:
