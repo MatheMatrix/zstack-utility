@@ -40,7 +40,7 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.imagestore import ImageStoreClient
-from zstacklib.utils import bash, plugin
+from zstacklib.utils import bash, plugin, blockJob
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import lvm
 from zstacklib.utils import ft
@@ -1723,7 +1723,7 @@ class VirtioIscsi(object):
         return secret.UUIDString()
 
 
-class BlockCommitDaemon(plugin.TaskDaemon):
+class BlockCommitDaemon(plugin.TaskDaemon, blockJob.BlockJob):
     def __init__(self, task_spec, vm, disk_name, top, base=None, timeout=0, active_commit=False):
         # type: (object, Vm, str, str, str, int, bool) -> None
         super(BlockCommitDaemon, self).__init__(task_spec, 'blockCommit', timeout)
@@ -1742,6 +1742,76 @@ class BlockCommitDaemon(plugin.TaskDaemon):
         if end != 0:
             percent = min(99, cur * 100.0 / end)
             return get_exact_percent(percent, self.stage)
+
+    def __exit__(self, exc_type, ex, exc_tb):
+        super(BlockCommitDaemon, self).__exit__(exc_type, ex, exc_tb)
+        if exc_type is None:
+            return
+
+        current_backing = self.vm._get_back_file(self.top)
+        if current_backing != self.base:
+            logger.debug("live merge snapshot failed. expected backing %s, "
+                         "actually backing %s" % (self.base, current_backing))
+            raise ex
+
+        consistent_backing_store_by_libvirt = False
+        for i in xrange(5):
+            self.vm.refresh()
+            consistent_backing_store_by_libvirt = self.check_vm_xml_backing_file_consistency(self.base, self.top)
+            if consistent_backing_store_by_libvirt:
+                break
+            time.sleep(1)
+
+        if consistent_backing_store_by_libvirt:
+            logger.debug("libvirt return live merge snapshot failure, but it succeed actually! "
+                         "expected volume[install path: %s] backing file is %s. "
+                         "check the vm xml meets expectations" % (self.base, current_backing))
+        else:
+            logger.debug("live merge snapshot failed. expected backing %s, actually backing %s. "
+                         "check the vm xml does not meet expectations" % (self.base, current_backing))
+            raise ex
+
+    logger.debug('before block commit, check disk chains ' % (disk_name, top, base))
+
+    disk_backing_chains = []
+    for chains in self.get_all_disk_backing_chains_in_xml():
+        if top in chains and base in chains:
+            disk_backing_chains = chains
+            break
+    if len(disk_backing_chains) == 0:
+        raise kvmagent.KvmError('unable to find disk[%s] in the backing chain of vm[uuid:%s]' % (disk_name, self.uuid))
+
+    expectDiskChainBeforeCommit = task_spec.aliveChainInstallPathInDb
+    if len(expectDiskChainBeforeCommit) != len(disk_backing_chains):
+        raise kvmagent.KvmError('before block commit, alive chain is not consistent between db[%s] and disk xml[%s]' % (
+            expectDiskChainBeforeCommit, disk_backing_chains))
+
+    def check_disk_chain_consistency():
+        if not active_commit:
+            return True
+
+        expectDiskChainBeforeCommit = task_spec.aliveChainInstallPathInDb
+        aliveChainInstallPathInXml = {v: k for k, v in self.get_vm_disk_backing_file_chain(base).iteritems()}
+
+        errorStr = ('before block commit, alive chain is not consistent between db[%s] and disk xml[%s]' % (
+        expectDiskChainBeforeCommit, aliveChainInstallPathInXml))
+
+        if len(expectDiskChainBeforeCommit) != len(aliveChainInstallPathInXml):
+            raise kvmagent.KvmError(errorStr)
+
+        for i in xrange(len(expectDiskChainBeforeCommit)):
+            if expectDiskChainBeforeCommit[i] != aliveChainInstallPathInXml[i]:
+                raise kvmagent.KvmError(errorStr)
+
+
+    def execute(self):
+        pass
+
+    def check(self):
+        pass
+
+    def evaluate(self):
+        pass
 
 
 class MergeSnapshotDaemon(plugin.TaskDaemon):
@@ -1765,10 +1835,10 @@ class MergeSnapshotDaemon(plugin.TaskDaemon):
 
     def check_vm_xml_backing_file_consistency(self, base_disk_install_path, dest_disk_install_path):
         expected = False
-        for disk_backing_file_chain in self.vm.get_backing_store_source_recursively():
+        for disk_backing_file_chain in self.vm.get_all_disk_backing_chains_in_xml():
             chain_depth = len(disk_backing_file_chain)
-            if dest_disk_install_path in disk_backing_file_chain.keys():
-                dest_disk_install_path_depth = disk_backing_file_chain[dest_disk_install_path]
+            if dest_disk_install_path in disk_backing_file_chain:
+                dest_disk_install_path_depth = disk_backing_file_chain.index(dest_disk_install_path)
                 # for fullRebase, new top layer do not depend on image cache
                 # the depth of disk chain depth will reset
                 if base_disk_install_path is None:
@@ -3403,12 +3473,6 @@ class Vm(object):
                 logger.debug('block commit is waiting for %s blockCommit job completion' % disk_name)
                 return not self._wait_for_block_job(disk_name, abort_on_error=True)
 
-            def check_overlay_file(path):
-                if not active_commit:
-                    return True
-
-                return self._check_target_disk_existing_by_path(path, True)
-
             def abort_block_commit_job(_):
                 flag = libvirt.VIR_DOMAIN_BLOCK_JOB_ABORT_ASYNC
                 if active_commit:
@@ -3429,9 +3493,8 @@ class Vm(object):
 
             logger.debug('start block commit for disk %s, from %s, to %s, active commit: %s'
                          % (disk_name, top, base, active_commit))
-            flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
 
-            # currently we only handle active commit
+            flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
             if active_commit:
                 # Pass a flag to libvirt to indicate that we expect a two phase
                 # block job. We must tell libvirt to pivot to the new active layer (base).
@@ -3443,17 +3506,11 @@ class Vm(object):
 
             if not linux.wait_callback_success(wait_job, timeout=d.get_remaining_timeout(),
                                                ignore_exception_in_callback=True):
-                if not check_overlay_file(base):
-                    raise kvmagent.KvmError('block commit failed')
-                logger.debug("although the block commit job failed, device install path has been changed to %s" % base)
+                pass
 
             if not linux.wait_callback_success(abort_block_commit_job, d.get_remaining_timeout(),
                                                ignore_exception_in_callback=True):
                 raise kvmagent.KvmError('block commit abort failed')
-
-            if not linux.wait_callback_success(check_overlay_file, base, d.get_remaining_timeout(),
-                                               ignore_exception_in_callback=True):
-                raise kvmagent.KvmError('block commit succeeded, but overlay file is not cleared')
 
             return base
 
@@ -3569,50 +3626,61 @@ class Vm(object):
 
         return res
 
-    def get_backing_store_source_recursively(self):
+    def get_all_disk_backing_chains_in_xml(self):
         # type: () -> list
-        all_disks_backing_file_chain = []
-        disk_backing_file_chain = {}
 
-        '''
+        """
         <disk type='file' device='disk'>
           <driver name='qemu' type='qcow2'/>
-          <source file='/tmp/pull4.qcow2'/>
+          <source file='/a3.qcow2'/>
           <backingStore type='file'>
             <format type='qcow2'/>
-            <source file='/tmp/pull3.qcow2'/>
+            <source file='/a2.qcow2'/>
             <backingStore type='file'>
               <format type='qcow2'/>
-              <source file='/tmp/pull2.qcow2'/>
+              <source file='/a1.qcow2'/>
               <backingStore/>
             </backingStore>
           </backingStore>
-          <target dev='vda' bus='virtio'/>
-          <address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/>
         </disk>
-        
-        An empty <backingStore/> element signals the end of the chain. 
-        '''
+        <disk type='file' device='disk'>
+          <driver name='qemu' type='qcow2'/>
+          <source file='/b3.qcow2'/>
+          <backingStore type='file'>
+            <format type='qcow2'/>
+            <source file='/b2.qcow2'/>
+            <backingStore type='file'>
+              <format type='qcow2'/>
+              <source file='/b1.qcow2'/>
+              <backingStore/>
+            </backingStore>
+          </backingStore>
+        </disk>
 
-        def get_backing_store_source(backingStore, depth):
+        ps: An empty <backingStore/> element signals the end of the chain.
+        return: all_disks_backing_file_chain=[[a3,a2,a1], [b3,b2,b1]]
+        """
+
+        all_disks_backing_file_chain = []
+
+        def get_backing_store_source(backingStore):
             if backingStore.find("source") is None:
                 return
-            depth += 1
-            disk_backing_file_chain[etree.tostring(backingStore.find('source')).split('"')[1]] = depth
-            get_backing_store_source(backingStore.find('backingStore'), depth)
+            disk_backing_file_chain.append(etree.tostring(backingStore.find('source')).split('"')[1])
+            get_backing_store_source(backingStore.find('backingStore'))
 
+        self.refresh()
         tree = etree.fromstring(self.domain_xml)
         for disk in tree.findall('devices/disk'):
-            depth = 0
+            disk_backing_file_chain = []
             if disk.get("device") == 'cdrom':
                 continue
             if disk.find("source") is not None:
-                disk_backing_file_chain[etree.tostring(disk.find('source')).split('"')[1]] = depth
+                disk_backing_file_chain.append(etree.tostring(disk.find('source')).split('"')[1])
             if disk.find("backingStore") is not None:
-                get_backing_store_source(disk.find('backingStore'), depth)
+                get_backing_store_source(disk.find('backingStore'))
 
             all_disks_backing_file_chain.append(disk_backing_file_chain)
-            disk_backing_file_chain = {}
 
         return all_disks_backing_file_chain
 
@@ -4748,7 +4816,7 @@ class Vm(object):
             def make_cpu_vendor():
                 if HOST_ARCH != "x86_64":
                     return
-                
+
                 if cmd.vmCpuVendorId and cmd.vmCpuVendorId != "None":
                     if cmd.nestedVirtualization in ['host-model', 'custom']:
                         model = root.find('cpu/model')
@@ -5339,7 +5407,7 @@ class Vm(object):
                     driver_elements["iothread"] = str(_v.ioThreadId)
                 e(disk, 'driver', None, driver_elements)
                 e(disk, 'source', None, {'dev': _v.installPath})
-                
+
                 if _v.shareable:
                     e(disk, 'shareable')
 
@@ -5924,7 +5992,7 @@ class Vm(object):
 
             if cmd.nestedVirtualization not in ['host-passthrough', 'none']:
                 return
-            
+
             root = elements['root']
             libvirtXml = etree.tostring(root)
             cpuFlags = get_cpu_flags_from_xml(libvirtXml)
@@ -5974,7 +6042,7 @@ class Vm(object):
             make_memory_backing()
 
         if HOST_ARCH == "x86_64" and cmd.vmCpuVendorId and cmd.vmCpuVendorId != "None":
-            add_cpu_vendor_id_to_cpu_flags()    
+            add_cpu_vendor_id_to_cpu_flags()
 
         root = elements['root']
         xml = etree.tostring(root)
@@ -6635,7 +6703,7 @@ class VmPlugin(kvmagent.KvmAgent):
                 ]
                 notify_vrouter(vrouter_cmd)
         return jsonobject.dumps(rsp)
-    
+
     @kvmagent.replyerror
     def update_nic(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -6739,7 +6807,7 @@ class VmPlugin(kvmagent.KvmAgent):
             if not s or s == Vm.VM_STATE_RUNNING:
                 s = self.get_vm_stat_with_ps(uuid)
             rsp.states[uuid] = s
-        
+
         return jsonobject.dumps(rsp)
 
     def _escape(self, size):
@@ -7086,7 +7154,7 @@ class VmPlugin(kvmagent.KvmAgent):
     def take_console_screenshot(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = TakeVmConsoleScreenshotRsp()
-        
+
         @LibvirtAutoReconnect
         def create_stream(conn):
             return conn.newStream()
@@ -7095,13 +7163,13 @@ class VmPlugin(kvmagent.KvmAgent):
             with open(file_path, 'wb') as f:
                 for data in iter(lambda: stream.recv(262120), b''):
                     f.write(data)
-        
+
         stream = create_stream()
         if stream is None:
             rsp.success = False
             rsp.error = "failed to create libvirt stream"
             return jsonobject.dumps(rsp)
-        
+
         tmp_ppm = "/tmp/%s.ppm" % cmd.vmUuid
         tmp_img = "/tmp/%s.png" % cmd.vmUuid
         try:
