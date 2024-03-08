@@ -90,6 +90,10 @@ MAX_MEMORY = 34359738368 if (HOST_ARCH != "aarch64") else linux.get_max_vm_ipa_s
 MIPS64EL_CPU_MODEL = "Loongson-3A4000-COMP"
 LOONGARCH64_CPU_MODEL = "Loongson-3A5000"
 
+GPU_ALWAYS_USED_BUS_1 = 1
+GPU_ALWAYS_USED_FUNCTION = 0
+
+
 class RetryException(Exception):
     pass
 
@@ -5745,7 +5749,9 @@ class Vm(object):
 
         def make_pci_device(pciDevices):
             devices = elements['devices']
+            num = 1
             for pci in pciDevices:
+                num += 1
                 addr, spec_uuid = pci.split(',')
 
                 if os.path.exists('/usr/lib/nvidia/sriov-manage'):
@@ -5776,6 +5782,11 @@ class Vm(object):
                     # only turn bar on when rom file exists
                     if os.path.exists(rom_file):
                         e(hostdev, "rom", None, {'bar': 'on', 'file': rom_file})
+
+                slot = hex(num).zfill(2)
+                e(hostdev, 'address', None,
+                  attrib={'type': 'pci', 'domain': '0x0000', 'bus': '0x' + str(GPU_ALWAYS_USED_BUS_1), 'slot': str(slot),
+                          'function': '0x' + str(GPU_ALWAYS_USED_FUNCTION)})
 
         def make_mdev_device(mdevUuids):
             devices = elements['devices']
@@ -5937,6 +5948,8 @@ class Vm(object):
                     e(devices, 'controller', None, {'type': 'pci', 'model': 'pcie-root-port', 'index': str(i)})
             else:
                 if not cmd.predefinedPciBridgeNum:
+                    # for TIC-2496 add default 1 pci-bridge
+                    e(devices, 'controller', None, {'type': 'pci', 'index': str(1), 'model': 'pci-bridge'})
                     return
 
                 for i in xrange(cmd.predefinedPciBridgeNum):
@@ -8658,19 +8671,48 @@ host side snapshot files chian:
 
     @kvmagent.replyerror
     @in_bash
+    @lock.lock(name="find-free-slot-lock")
     def hot_plug_pci_device(self, req):
+        # for leagcy mode
+        def find_vm_free_slot_number_by_bus(uuid, qbus):
+            def find_slots(data):
+                slots = []
+                if isinstance(data, list):
+                    for item in data:
+                        slots.extend(find_slots(item))
+                elif isinstance(data, dict):
+                    if "bus" in data and data["bus"] == qbus and "slot" in data:
+                        slots.append(data["slot"])
+                    for key, value in data.items():
+                        slots.extend(find_slots(value))
+                return slots
+
+            # get query pci result
+            _, o, _ = execute_qmp_command(uuid, '{"execute": "query-pci"}' )
+            used_slots = find_slots(json.loads(o)["return"])
+
+            # get free slot
+            filtered_slots = [slot for slot in range(1, 16) if slot not in used_slots]
+            if filtered_slots:
+                return filtered_slots[0]
+            raise Exception("There are no free slots for pci device attaching")
+
+
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = HotPlugPciDeviceRsp()
         addr = cmd.pciDeviceAddress
         domain, bus, slot, function = parse_pci_device_address(addr)
 
+        qslot = find_vm_free_slot_number_by_bus(cmd.vmUuid, GPU_ALWAYS_USED_BUS_1)
+        hex_qslot = str(hex(qslot).zfill(2)) # 0x01
         content = '''
 <hostdev mode='subsystem' type='pci'>
      <driver name='vfio'/>
      <source>
        <address type='pci' domain='0x%s' bus='0x%s' slot='0x%s' function='0x%s'/>
      </source>
-</hostdev>''' % (domain, bus, slot, function)
+     <address type='pci' domain='0x%s' bus='0x%s' slot='%s' function='0x%s'/>
+</hostdev>''' % (domain, bus, slot, function, domain, str(GPU_ALWAYS_USED_BUS_1), hex_qslot, str(GPU_ALWAYS_USED_FUNCTION))
         spath = linux.write_to_temp_file(content)
 
         # do not attach pci device immediately after detach pci device from same vm
