@@ -2629,6 +2629,17 @@ cs_config_zstack_properties(){
         fi
     fi
 
+    # update UI server port for upgrading system
+    if [ x"$UPGRADE" = x'y' ];then
+        old_server_port=`zstack-ctl show_ui_config | grep server_port | awk -F'=' '{ print $2 }' | sed -e 's/^[[:space:]]*//'`
+        old_enable_ssl=`zstack-ctl show_ui_config | grep enable_ssl | awk -F'=' '{ print $2 }' | sed -e 's/^[[:space:]]*//'`
+        if [ x"$old_enable_ssl" = x"true" ] && [ x"$old_server_port" = x"5000" ];then
+            zstack-ctl config_ui --enable-ssl=true --server_port=5443 > /dev/null
+        elif [ x"$old_enable_ssl" = x"false" ] && [ x"$old_server_port" = x"5443" ];then
+            zstack-ctl config_ui --enable-ssl=false --server_port=5000 > /dev/null
+        fi
+    fi
+
     pass
 }
 
