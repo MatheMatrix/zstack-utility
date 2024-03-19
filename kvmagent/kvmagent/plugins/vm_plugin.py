@@ -6670,6 +6670,7 @@ def execute_qmp_command(domain_id, command, raise_exception=False):
     warnings.warn("Use qmp.execute_qmp_command instead", DeprecationWarning)
     return qmp._execute_qmp_command(domain_id, command, raise_exception=raise_exception)
 
+
 def get_vm_blocks(domain_id):
     blocks = qmp.execute_qmp_command(domain_id, "query-block")
     if not blocks:
