@@ -143,7 +143,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         yum_release = kvmagent.get_host_yum_release()
 
         _extra_x86_64 = ['syslinux', 'python-docutils']
-        if yum_release in ['rl84']:
+        if yum_release in ['rl84', 'h84r']:
             _extra_x86_64 = ['syslinux', 'python2-docutils']
 
         extra_rpm_mapping = {
@@ -951,7 +951,8 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             chassis_port=cmd.chassisInfo.port,
             api_id=cmd.threadContext.api,
             task_name=cmd.threadContext["task-name"],
-            provision_mac=instance_obj.provision_mac
+            provision_mac=instance_obj.provision_mac,
+            instance_uuid=instance_obj.uuid
         )
 
         with open(ks_config_path, 'w') as f:
