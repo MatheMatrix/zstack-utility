@@ -2657,7 +2657,11 @@ class Fencer(ABC):
         # filter vm running on current fencer
         need_be_fenced_uuid_list = filter(lambda uuid: self.filter_need_be_fenced_vm(uuid), vm_pids_dict.keys())
 
-        # TODO: kill vm
+        vm_pids_dict = {uuid: vm_pids_dict[uuid] for uuid in need_be_fenced_uuid_list}
+
+        logger.debug("vm_pids_dict: %s\n" % jsonobject.dumps(vm_pids_dict))
+        reason = "because we lost connection to the storage, failed to read the heartbeat file %s times" % max_failures
+        kill_vm_use_pid(vm_pids_dict, reason)
 
     def start(self):
         while True:
@@ -2775,9 +2779,10 @@ class FileSystemFencer(StorageFencer):
 
 
 class SharedBlockStorageFencer(Fencer):
-    def __init__(self, name, max_failures, interval, timeout, vg_name):
-        super().__init__(name, max_failures, interval, timeout)
+    def __init__(self, name, max_failures, interval, timeout, vg_name, cmd):
+        super().__init__(name, max_failures, interval, timeout, cmd)
         self.vg_name = vg_name
+        self.cmd = cmd
 
     def do_check(self):
         """
@@ -2810,7 +2815,7 @@ class SharedBlockStorageFencer(Fencer):
         # TODO fix this
         if not os.path.exists(SHAREBLOCK_VM_HA_PARAMS_PATH):
             with open(SHAREBLOCK_VM_HA_PARAMS_PATH, 'w') as f:
-                f.write("test")
+                f.write(jsonobject.dumps(self.cmd))
             return True
 
         with open(SHAREBLOCK_VM_HA_PARAMS_PATH, 'r+') as f:
@@ -2827,7 +2832,7 @@ class SharedBlockStorageFencer(Fencer):
         return True
 
 
-class CephSystemFencer(Fencer):
+class CephFencer(Fencer):
     def __init__(self, name, max_failures, interval, timeout, cluster_name, cmd):
         super().__init__(name, max_failures, interval, timeout)
         self.cluster_name = cluster_name
@@ -2836,11 +2841,13 @@ class CephSystemFencer(Fencer):
 
         self.heartbeat_object_name = ceph.get_heartbeat_object_name(cmd.uuid, cmd.hostUuid)
         self.ioctx = ceph.get_ioctx()
+
+        self.fencer_name = "ceph-fencer-%s" % cluster_name
     
     def __exit__(self):
         if self.ioctx:
             # TODO: close ioctx
-            self.heartbeat_counter = 0
+            pass
 
         return
 
@@ -2874,7 +2881,7 @@ class CephSystemFencer(Fencer):
         return True, waited_time
 
     def get_ha_fencer_name(self):
-        return "cephFencer"
+        return 
 
     def write_fencer_heartbeat(self):
         if self.heartbeat_counter > 100000:
@@ -2883,11 +2890,3 @@ class CephSystemFencer(Fencer):
             self.heartbeat_counter += 1
 
         return self.update_heartbeat_timestamp(self.ioctx, self.heartbeat_object_name, self.heartbeat_counter, self.timeout)
-
-class FailureStrategy(ABC):
-    @abstractmethod
-    def handle(self, fencer):
-        """
-        处理失败的情况。
-        """
-        pass
