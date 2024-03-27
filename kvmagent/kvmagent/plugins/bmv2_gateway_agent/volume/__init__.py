@@ -2,11 +2,13 @@ from kvmagent.plugins.bmv2_gateway_agent import exception
 from kvmagent.plugins.bmv2_gateway_agent.volume import ceph
 from kvmagent.plugins.bmv2_gateway_agent.volume import sharedblock
 from kvmagent.plugins.bmv2_gateway_agent.volume import thirdparty_ceph
+from kvmagent.plugins.bmv2_gateway_agent.volume import addon
 
 mapping = {
     'ceph': ceph.CephVolume,
     'sharedblock': sharedblock.SharedBlockVolume,
-    'thirdpartyCeph': thirdparty_ceph.ThirdPartyCephVolume
+    'thirdpartyCeph': thirdparty_ceph.ThirdPartyCephVolume,
+    'addon': addon.AddonVolume
 }
 
 
