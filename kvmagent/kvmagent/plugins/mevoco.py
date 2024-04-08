@@ -441,6 +441,7 @@ class Mevoco(kvmagent.KvmAgent):
     BATCH_APPLY_USER_DATA = "/flatnetworkprovider/userdata/batchapply"
     DHCP_DELETE_NAMESPACE_PATH = "/flatnetworkprovider/dhcp/deletenamespace"
     CLEANUP_USER_DATA = "/flatnetworkprovider/userdata/cleanup"
+    BATCH_CLEANUP_USER_DATA = "/flatnetworkprovider/userdata/batchcleanup"
     SET_DNS_FORWARD_PATH = '/dns/forward/set'
     REMOVE_DNS_FORWARD_PATH = '/dns/forward/remove'
 
@@ -477,6 +478,7 @@ class Mevoco(kvmagent.KvmAgent):
         http_server.register_async_uri(self.RESET_DEFAULT_GATEWAY_PATH, self.reset_default_gateway)
         http_server.register_async_uri(self.DHCP_DELETE_NAMESPACE_PATH, self.delete_dhcp_namespace)
         http_server.register_async_uri(self.CLEANUP_USER_DATA, self.cleanup_userdata)
+        http_server.register_async_uri(self.BATCH_CLEANUP_USER_DATA, self.batch_cleanup_userdata)
         http_server.register_async_uri(self.SET_DNS_FORWARD_PATH, self.setup_dns_forward)
         http_server.register_async_uri(self.REMOVE_DNS_FORWARD_PATH, self.remove_dns_forward)
         self.register_dnsmasq_logRotate()
@@ -796,6 +798,45 @@ tag:{{TAG}},option:dns-server,{{DNS}}
 
         if cmd.l3NetworkUuid in self.userData_vms:
             del self.userData_vms[cmd.l3NetworkUuid]
+
+        return jsonobject.dumps(kvmagent.AgentResponse())
+
+    @kvmagent.replyerror
+    @in_bash
+    def batch_cleanup_userdata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        BR_NAME = cmd.bridgeName
+
+        for l3NetworkUuid in cmd.l3NetworkUuids:
+            if (len(BR_NAME) <= 12):
+                CHAIN_NAME = "USERDATA-%s-%s" % (BR_NAME, l3NetworkUuid[0:8])
+            else:
+                CHAIN_NAME = "USERDATA-%s-%s" % (BR_NAME[len(BR_NAME) - 12: len(BR_NAME)], l3NetworkUuid[0:8])
+
+            cmds = []
+            o = bash_o("ebtables-save | grep {{CHAIN_NAME}} | grep -- -A")
+            o = o.strip(" \t\r\n")
+            if o:
+                for l in o.split("\n"):
+                    cmds.append(EBTABLES_CMD + " -t filter %s" % l.replace("-A", "-D"))
+                    cmds.append(EBTABLES_CMD + " -t nat %s" % l.replace("-A", "-D"))
+
+            if bash_r("ebtables-save | grep :{{CHAIN_NAME}}") == 0:
+                cmds.append(EBTABLES_CMD + " -t filter -X %s" % CHAIN_NAME)
+                cmds.append(EBTABLES_CMD + " -t nat -X %s" % CHAIN_NAME)
+
+            if len(cmds) > 0:
+                bash_r("\n".join(cmds))
+
+            bash_errorout("pkill -9 -f 'lighttpd.*/userdata/{{BR_NAME}}.*_%s' || true" % l3NetworkUuid)
+
+        for namespaceName in cmd.namespaceNames:
+            html_folder = os.path.join(self.USERDATA_ROOT, namespaceName)
+            linux.rm_dir_force(html_folder)
+
+        for l3NetworkUuid in cmd.l3NetworkUuids:
+            if l3NetworkUuid in self.userData_vms:
+                del self.userData_vms[l3NetworkUuid]
 
         return jsonobject.dumps(kvmagent.AgentResponse())
 
