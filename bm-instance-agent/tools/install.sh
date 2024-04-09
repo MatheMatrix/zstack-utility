@@ -32,8 +32,9 @@ popd
 sed -i '/SELINUX=/s/enforcing/permissive/g' /etc/selinux/config >/dev/null 2>&1 || true
 setenforce 0 >/dev/null 2>&1 || true
 
-mkdir -p /usr/lib/systemd/system/
-cat << EOF > /usr/lib/systemd/system/zstack-baremetal-instance-agent.service
+if which systemctl &> /dev/null; then
+    mkdir -p /usr/lib/systemd/system/
+    cat << EOF > /usr/lib/systemd/system/zstack-baremetal-instance-agent.service
 [Unit]
 Description=ZStack baremetal instance agent
 After=network.target
@@ -54,9 +55,79 @@ ExecStart=/var/lib/zstack/baremetalv2/bm-instance-agent/bm-instance-agent.pex
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload \
-    && systemctl enable zstack-baremetal-instance-agent \
-    && systemctl restart zstack-baremetal-instance-agent
+    systemctl daemon-reload \
+        && systemctl enable zstack-baremetal-instance-agent \
+        && systemctl restart zstack-baremetal-instance-agent
+else
+    cat << 'EOF' > /etc/init.d/zstack-baremetal-instance-agent
+#!/bin/bash
+# chkconfig: 2345 77 22
+# description: ZStack Baremetal Agent Service
+
+# return value
+RETVAL=0
+server_dir="/var/lib/zstack/baremetalv2/bm-instance-agent"
+server_name="zstack-baremetal-instance-agent"
+server_pid="$server_dir/run.pid"
+
+
+start() {
+    echo -n "Starting ${server_name}:"
+        /bin/sh -c "/sbin/iptables -t filter -C INPUT -p tcp --dport=7090 -j ACCEPT 2>/dev/null || /sbin/iptables -t filter -I INPUT -p tcp --dport=7090 -j ACCEPT || true"
+        /bin/sh -c "/sbin/iptables -t filter -C INPUT -p tcp --dport=4200 -j ACCEPT 2>/dev/null || /sbin/iptables -t filter -I INPUT -p tcp --dport=4200 -j ACCEPT || true"
+        # /bin/sh -c "firewall-cmd --permanent --add-port=7090/tcp && firewall-cmd --reload || true"
+        # /bin/sh -c "firewall-cmd --permanent --add-port=4200/tcp && firewall-cmd --reload || true"
+        PIDS=`ps -ef |grep /var/log/zstack/baremetalv2/bm-instance-agent.log |grep -v grep | awk '{print $2}'`
+    if [ "$PIDS" != "" ]; then
+        echo "${server_name} is runing!"
+    else
+        source /opt/rh/python27/enable
+        nohup /var/lib/zstack/baremetalv2/bm-instance-agent/bm-instance-agent.pex --log-file=/var/log/zstack/baremetalv2/bm-instance-agent.log >> nohup.log 2>&1 & echo $! > $server_pid
+        echo "ok"
+    fi
+}
+
+
+stop(){
+    echo -n "Stopping ${server_name}:"
+
+    if [ ! -f $server_pid ];then
+        echo "PID file \"${server_pid}\" does not exist"
+        echo "Is ${server_name} running?"
+    else
+        kill -9 $(cat $server_pid)
+        sleep 10s
+        rm -f $server_pid
+        echo "ok"
+    fi
+}
+
+case "$1" in
+        start)
+                start
+                ;;
+        stop)
+                stop
+                ;;
+        restart)
+                stop
+                start
+                RETVAL=$?
+                ;;
+        *)
+                echo $"Usage: $0 {start|stop|restart}"
+                exit 1
+esac
+
+exit $RETVAL
+EOF
+
+    cd /etc/init.d/
+    chkconfig --add zstack-baremetal-instance-agent
+    chkconfig --level 2345 zstack-baremetal-instance-agent on
+    chmod +x zstack-baremetal-instance-agent
+    service zstack-baremetal-instance-agent start
+fi
 
 chmod +x /var/lib/zstack/baremetalv2/bm-instance-agent/zwatch-vm-agent-`uname -m`
 /var/lib/zstack/baremetalv2/bm-instance-agent/zwatch-vm-agent-`uname -m` -i
