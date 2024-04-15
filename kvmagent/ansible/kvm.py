@@ -235,6 +235,13 @@ def install_kvm_pkg():
             'aarch64': 'edk2-aarch64'
         }
 
+        cube_rpm_mapping = {
+            'x86_64_centos': "lm_sensors",
+            'aarch64_kylin': "lm_sensors edac-utils",
+            'x86_64_kylin': "lm_sensors edac-utils Arcconf",
+            'x86_64_rocky': "lm_sensors"
+        }
+
         # handle zstack_repo
         if zstack_repo != 'false':
             distro_head = host_info.distro.split("_")[0] if releasever in kylin or releasever in uos else host_info.distro
