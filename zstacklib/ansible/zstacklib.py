@@ -47,7 +47,7 @@ supported_arch_list = ["x86_64", "aarch64", "mips64el", "loongarch64"]
 
 RPM_BASED_OS = ["kylin_zstack", "kylin_tercel", "kylin_sword", "kylin_lance",
                 "alibaba", "centos", "openeuler", "uniontech_kongzi", "nfs",
-                "redhat", "rocky", "helix"]
+                "redhat", "rocky", "helix", "isseos"]
 DEB_BASED_OS = ["ubuntu", "uos", "kylin4.0.2", "debian", "uniontech_fou"]
 DISTRO_WITH_RPM_DEB = ["kylin", "uniontech"]
 
@@ -1549,7 +1549,7 @@ class HostInfo(object):
 
     @property
     def major_version(self):
-        return int(self.major_version_str)
+        return int(self.major_version_str[1:]) if self.major_version_str[0] == 'V' else int(self.major_version_str)
 
 
 @retry(times=3, sleep_time=3)
