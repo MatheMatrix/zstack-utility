@@ -1,3 +1,5 @@
+import logging
+
 from kvmagent.plugins.bmv2_gateway_agent.volume import base
 
 from zstacklib.utils import shell, linux
@@ -34,7 +36,9 @@ class ExponVolume(base.BaseVolume):
         pass
 
     def detach_volume(self):
-        pass
+        rescan_session = "timeout 30 iscsiadm -m session -R"
+        logging.info(rescan_session)
+        shell.run(rescan_session)
 
 # monIp: 172.27.16.181,172.27.16.99,...
     def prepare_instance_resource(self):
