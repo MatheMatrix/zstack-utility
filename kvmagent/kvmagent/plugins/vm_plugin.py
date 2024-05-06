@@ -2155,6 +2155,16 @@ def make_spool_conf(imgfmt, dev_letter, volume):
     os.chmod(fpath, 0o600)
     return fpath
 
+
+def make_cbd_conf(install_path):
+    default_zbs_user_name = "zbs"
+    default_zbs_conf_dir = "/etc/zbs/client.conf"
+
+    pool_lun_name = install_path[len("cbd:"):]
+
+    return '%s_%s_:%s' % (pool_lun_name, default_zbs_user_name, default_zbs_conf_dir)
+
+
 def is_spice_tls():
     return bash.bash_r("grep '^[[:space:]]*spice_tls[[:space:]]*=[[:space:]]*1' /etc/libvirt/qemu.conf")
 
@@ -5474,6 +5484,13 @@ class Vm(object):
                         allocat_ide_config(disk, _v)
                 return disk
 
+            def cbd_volume(_dev_letter, _v):
+                disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
+                e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
+                e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(_v.installPath)})
+                e(disk, 'target', None, {'dev': 'vd%s' % _dev_letter, 'bus': 'virtio'})
+                return disk
+
             def volume_qos(volume_xml_obj):
                 if not cmd.addons:
                     return
@@ -5549,6 +5566,8 @@ class Vm(object):
                     vol = spool_volume(dev_letter, v)
                 elif v.deviceType == 'vhost':
                     vol = vhost_volume(dev_letter, v)
+                elif v.deviceType == 'cbd':
+                    vol = cbd_volume(dev_letter, v)
                 else:
                     raise Exception('unknown volume deviceType: %s' % v.deviceType)
 

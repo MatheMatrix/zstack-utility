@@ -25,6 +25,25 @@ class AgentResponse(object):
         self.error = error
 
 
+class QueryVolumeRsp(AgentResponse):
+    def __init__(self):
+        super(QueryVolumeRsp, self).__init__()
+        self.size = 0
+
+
+class CloneVolumeRsp(AgentResponse):
+    def __init__(self):
+        super(CloneVolumeRsp, self).__init__()
+        self.installPath = None
+        self.size = 0
+
+
+class CreateSnapshotRsp(AgentResponse):
+    def __init__(self):
+        super(CreateSnapshotRsp, self).__init__()
+        self.size = 0
+
+
 class CreateVolumeRsp(AgentResponse):
     def __init__(self):
         super(CreateVolumeRsp, self).__init__()
@@ -66,6 +85,10 @@ class ZbsAgent(plugin.TaskManager):
     GET_CAPACITY_PATH = "/zbs/primarystorage/capacity"
     CREATE_VOLUME_PATH = "/zbs/primarystorage/volume/create"
     DELETE_VOLUME_PATH = "/zbs/primarystorage/volume/delete"
+    CBD_TO_NBD_PATH = "/zbs/primarystorage/volume/cbd2nbd"
+    CREATE_SNAPSHOT_PATH = "/zbs/primarystorage/snapshot/create"
+    CLONE_VOLUME_PATH = "/zbs/primarystorage/volume/clone"
+    QUERY_VOLUME_PATH = "/zbs/primarystorage/volume/query"
 
     http_server = http.HttpServer(port=7763)
     http_server.logfile_path = log.get_logfile_path()
@@ -77,6 +100,104 @@ class ZbsAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.GET_CAPACITY_PATH, self.get_capacity)
         self.http_server.register_async_uri(self.CREATE_VOLUME_PATH, self.create_volume)
         self.http_server.register_async_uri(self.DELETE_VOLUME_PATH, self.delete_volume)
+        self.http_server.register_async_uri(self.CBD_TO_NBD_PATH, self.cbd_to_nbd)
+        self.http_server.register_async_uri(self.CREATE_SNAPSHOT_PATH, self.create_snapshot)
+        self.http_server.register_async_uri(self.CLONE_VOLUME_PATH, self.clone_volume)
+        self.http_server.register_async_uri(self.QUERY_VOLUME_PATH, self.query_volume)
+
+    @replyerror
+    def query_volume(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = QueryVolumeRsp()
+
+        logical_pool_name = cmd.installPath.split("/")[1]
+        volume_name = cmd.installPath.split("/")[2]
+
+        if zbsutils.do_query_volume(logical_pool_name, volume_name) == 0:
+            o = zbsutils.do_query_volume_info(logical_pool_name, volume_name)
+            rsp.size = jsonobject.loads(o).result.info.fileInfo.length
+        else:
+            raise Exception('failed to query volume[%s] info on zbs' % volume_name)
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def clone_volume(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CloneVolumeRsp()
+
+        snap_logical_pool_lun_name = cmd.srcPath.split("@")[0]
+        snap_file_name = cmd.srcPath.split("@")[1]
+        dest_logical_pool_name = cmd.destPath.split("/")[1]
+        dest_lun_name = cmd.destPath.split("/")[2]
+        dest_logical_pool_lun_name = dest_logical_pool_name + "/" + dest_lun_name
+
+        isProtected = False
+        o = zbsutils.do_query_snapshot_info(snap_logical_pool_lun_name)
+        ret = jsonobject.loads(o)
+        if ret.result.fileInfo:
+            for info in ret.result.fileInfo:
+                if snap_file_name in info.fileName:
+                    isProtected = info.isProtected
+                    break
+        else:
+            raise Exception('failed to find snapshot for volume[%s]' % snap_logical_pool_lun_name)
+
+        if not isProtected:
+            zbsutils.do_protect_snapshot(cmd.srcPath)
+
+        o = zbsutils.do_clone_volume(cmd.srcPath, dest_logical_pool_lun_name)
+        ret = jsonobject.loads(o)
+        if ret.error.code == 0:
+            rsp.installPath = cmd.destPath
+            rsp.size = ret.result.fileInfo.length
+        else:
+            raise Exception('failed to clone volume[%s] to volume[%s], error[%s]' % (cmd.srcPath, cmd.destPath, ret.error.message))
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def create_snapshot(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CreateSnapshotRsp()
+
+        snap_logical_pool_name = cmd.snapPath.split("/")[0]
+        snap_logical_pool_lun_name = cmd.snapPath.split("@")[0]
+        snap_file_name = cmd.snapPath.split("@")[1]
+
+        found = False
+        o = zbsutils.do_query_snapshot_info(snap_logical_pool_lun_name)
+        ret = jsonobject.loads(o)
+        if ret.result.fileInfo is not None:
+            for info in ret.result.fileInfo:
+                if snap_file_name in info.fileName:
+                    found = True
+                    break
+
+        if cmd.skipOnExisting and found:
+            return jsonobject.dumps(rsp)
+
+        o = zbsutils.do_create_snapshot(cmd.snapPath)
+        ret = jsonobject.loads(o)
+        if ret.error is None:
+            rsp.size = ret.result.snapShotFileInfo.length
+            physicalPoolName = zbsutils.get_physical_pool_name(snap_logical_pool_name)
+            rsp.installPath = "cbd:%s/%s" % (physicalPoolName, cmd.snapPath)
+        else:
+            raise Exception('failed to create snapshot[%s] on zbs, error[%s]' % (cmd.snapPath, ret.error.message))
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def cbd_to_nbd(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+
+        zbsutils.do_cbd_to_nbd("10086", cmd.installPath)
+
+        rsp.cbdToNbdPath = "cbd://" + cmd.mdsAddr + ":10086"
+
+        return jsonobject.dumps(rsp)
 
     @replyerror
     def delete_volume(self, req):
