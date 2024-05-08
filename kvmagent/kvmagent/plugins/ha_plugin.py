@@ -788,6 +788,10 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
         try:
             kill_and_umount(self.mount_path, mount_path_is_nfs(self.mount_path))
         except UmountException:
+            if not killed_vm_pids:
+                logger.debug('umount %s failed, but no vm is killed' % self.mount_path)
+                return
+
             if shell.run('ps -p %s' % ' '.join(killed_vm_pids)) == 0:
                 virsh_list = shell.call("timeout 10 virsh list --all || echo 'cannot obtain virsh list'")
                 logger.debug("virsh_list:\n" + virsh_list)
