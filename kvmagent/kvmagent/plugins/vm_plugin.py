@@ -146,7 +146,6 @@ class DomainVolume(object):
         self.backing_store = None
         self.deviceType = ''
         self.disk_device = ''
-
         self._origin_xml_obj = None
 
     @classmethod
