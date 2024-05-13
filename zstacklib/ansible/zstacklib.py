@@ -46,7 +46,7 @@ enable_networkmanager_list = kylin + ["euler20", "uos1021a", "nfs4", "oe2203sp1"
 supported_arch_list = ["x86_64", "aarch64", "mips64el", "loongarch64"]
 
 RPM_BASED_OS = ["kylin_zstack", "kylin_tercel", "kylin_sword", "kylin_lance",
-                "alibaba", "centos", "openeuler", "uniontech_kongzi", "nfs",
+                "alibaba", "centos", "openeuler", "isseos", "uniontech_kongzi", "nfs",
                 "redhat", "rocky", "helix"]
 DEB_BASED_OS = ["ubuntu", "uos", "kylin4.0.2", "debian", "uniontech_fou"]
 DISTRO_WITH_RPM_DEB = ["kylin", "uniontech"]
@@ -1549,8 +1549,15 @@ class HostInfo(object):
 
     @property
     def major_version(self):
-        return int(self.major_version_str)
+        return parse_version_code(self.major_version_str)
 
+# parse version code like '4' or 'V20'
+def parse_version_code(version_text):
+    for i in range(len(version_text)):
+        sub_version_text = version_text[i:]
+        if sub_version_text.isdigit():
+            return int(sub_version_text)
+    raise Exception('Invalid version code: %s' % version_text)
 
 @retry(times=3, sleep_time=3)
 def get_remote_host_info_obj(host_post_info):

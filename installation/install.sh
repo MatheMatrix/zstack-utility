@@ -850,7 +850,7 @@ check_system(){
     echo_title "Check System"
     echo ""
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    cat /etc/*-release |egrep -i -h "centos |Helix|Red Hat Enterprise|Alibaba|NeoKylin|Kylin Linux Advanced Server release V10|openEuler|UnionTech OS Server release 20 \(kongzi\)|NFSChina Server release 4.0.220727 \(RTM3\)|Rocky Linux" >>$ZSTACK_INSTALL_LOG 2>&1
+    cat /etc/*-release |egrep -i -h "centos |Helix|Red Hat Enterprise|Alibaba|NeoKylin|Kylin Linux Advanced Server release V10|openEuler|ISSEOS release V|UnionTech OS Server release 20 \(kongzi\)|NFSChina Server release 4.0.220727 \(RTM3\)|Rocky Linux" >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -eq 0 ]; then
         grep -qi 'CentOS release 6' /etc/system-release && OS="CENTOS6"
         grep -qi 'CentOS Linux release 7' /etc/system-release && OS="CENTOS7"
@@ -861,6 +861,7 @@ check_system(){
         grep -qi 'Kylin Linux Advanced Server release V10' /etc/system-release && OS="KYLIN10"
         grep -qi 'openEuler release 20.03 (LTS-SP1)' /etc/system-release && OS="EULER20"
         grep -qi 'openEuler release 22.03 (LTS-SP1)' /etc/system-release && OS="OE2203"
+        grep -qi 'ISSEOS release V22' /etc/system-release && OS="EULER20"  # use EULER20
         grep -qi 'helix release 22.03 (LTS-SP1)' /etc/system-release && OS="H2203SP1O"
         grep -qi 'UnionTech OS Server release 20 (kongzi)' /etc/system-release && OS="UOS1020A"
         grep -qi 'NFSChina Server release 4.0.220727 (RTM3)' /etc/system-release && OS="NFS4"
