@@ -3433,13 +3433,15 @@ class Vm(object):
 
             logger.debug('start block commit for disk %s, from %s, to %s, active commit: %s'
                          % (disk_name, top, base, active_commit))
-            flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
 
             # currently we only handle active commit
             if active_commit:
                 # Pass a flag to libvirt to indicate that we expect a two phase
                 # block job. We must tell libvirt to pivot to the new active layer (base).
+                flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
                 flags |= libvirt.VIR_DOMAIN_BLOCK_COMMIT_ACTIVE
+            else:
+                flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_DELETE
 
             self.domain.blockCommit(disk_name, base, top, 0, flags)
             touchQmpSocketWhenExists(task_spec.vmUuid)
