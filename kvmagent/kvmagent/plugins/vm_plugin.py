@@ -2247,7 +2247,6 @@ def get_all_vm_states_with_process():
         if guest.lower() == "ZStack Management Node VM".lower()\
                 or guest.startswith("guestfs-"):
             continue
-
         states[guest] = Vm.VM_STATE_RUNNING
 
     return states
