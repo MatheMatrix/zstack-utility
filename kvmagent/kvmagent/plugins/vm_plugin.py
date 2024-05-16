@@ -8358,6 +8358,8 @@ class VmPlugin(kvmagent.KvmAgent):
             volume = DomainVolume.from_xmlobject(old_disk)
             if not volume.over_incorrect_driver():
                 return old_disk  # no change
+            volume.dvbs.update_backing_store_type_to_block()
+            block_backing_store = volume.dvbs._origin_xml_obj
 
         # vm created by ISO image or storage migrated may not have backing store info
         if volume.backing_store is not None:
