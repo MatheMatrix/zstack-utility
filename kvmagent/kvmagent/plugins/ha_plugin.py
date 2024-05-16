@@ -2666,6 +2666,8 @@ class Fencer(object):
 
     @thread.AsyncThread
     def start(self):
+        self.stop_flag = False
+
         while True:
             # stop run fencer but not expected without api changes
             if self.stop_flag:
@@ -2684,8 +2686,12 @@ class Fencer(object):
 
             # fence the vm if the fencer failed
             if self.is_failed():
-                logger.error("Fencer %s failed %s times, execute failure strategy" % self.name, self.failure_count)
-                self.handle_fencer_failure()
+                logger.error("Fencer %s failed %s times, execute failure strategy" % (self.name, self.failure_count))
+                try:
+                    self.handle_fencer_failure()
+                except Exception as e:
+                    logger.error("Fencer %s failed to handle failure: %s" % (self.name, e))
+
                 self.failure_count = 0
 
             time.sleep(self.interval)
@@ -2703,7 +2709,7 @@ fencer_manager = FencerManager()
 
 class StorageFencer(Fencer):
     def __init__(self, name, max_failures, interval, timeout, strategy):
-        super().__init__(name, max_failures, interval, timeout, strategy)
+        super(StorageFencer, self).__init__(name, max_failures, interval, timeout, strategy)
 
     def retry_to_recover_storage(self):
         """
@@ -2733,15 +2739,33 @@ class StorageFencer(Fencer):
 
 class FileSyetemMountPoint:
     def __init__(self, url, mount_path, mounted_by_zstack, options):
+        """
+        :param url: file system url
+        :param mount_path: file system mount path
+        :param mounted_by_zstack: whether the file system is mounted by zstack
+        :param options: mount options
+        """
+
         self.url = url
         self.mount_path = mount_path
         self.mounted_by_zstack = mounted_by_zstack
         self.options = options
 
 class FileSystemFencer(StorageFencer):
-    def __init__(self, name, max_failures, interval, timeout, strategy, host_uuid, mount_point):
-        super().__init__(name, max_failures, interval, timeout, strategy)
+    def __init__(self, ps_uuid, max_failures, interval, timeout, strategy, host_uuid, mount_point):
+        """
+        :param ps_uuid: primary storage uuid
+        :param max_failures: max failures before fencer
+        :param interval: interval to check the storage
+        :param timeout: timeout to check the storage
+        :param strategy: ha strategy
+        :param host_uuid: host uuid
+        :param mount_point: file system mount point
+        """
+
+        super(FileSystemFencer, self).__init__(ps_uuid, max_failures, interval, timeout, strategy)
         self.mount_point = mount_point
+        self.ps_uuid = ps_uuid
 
         self.heartbeat_file_dir = os.path.join(self.mount_point.mount_path, 'heartbeat')
         self.heartbeat_file_name = 'heartbeat-file-kvm-host-%s.hb' % host_uuid
@@ -2770,14 +2794,15 @@ class FileSystemFencer(StorageFencer):
             return False
 
         logger.debug("remount the file system[%s] because it is mounted by zstack" % self.mount_point.mount_path)
+        return True
 
     def get_status(self):
-        return self.do_check()
+        return self.failure_count < self.max_failures
 
 
 class SharedBlockStorageFencer(Fencer):
     def __init__(self, name, max_failures, interval, timeout, vg_name, cmd):
-        super().__init__(name, max_failures, interval, timeout, cmd)
+        super(SharedBlockStorageFencer, self).__init__(name, max_failures, interval, timeout, cmd)
         self.vg_name = vg_name
         self.cmd = cmd
 
@@ -2828,7 +2853,7 @@ class SharedBlockStorageFencer(Fencer):
 
 class CephFencer(Fencer):
     def __init__(self, name, max_failures, interval, timeout, pool_name, cmd):
-        super().__init__(name, max_failures, interval, timeout)
+        super(CephFencer, self).__init__(name, max_failures, interval, timeout)
         self.pool_name = pool_name
         self.cmd = cmd
         self.heartbeat_counter = 0
