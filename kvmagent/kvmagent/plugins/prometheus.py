@@ -36,6 +36,7 @@ cpu_status_abnormal_list_record = set()
 memory_status_abnormal_list_record = set()
 fan_status_abnormal_list_record = set()
 power_supply_status_abnormal_list_record = set()
+gpu_status_abnormal_list_record = set()
 disk_status_abnormal_list_record = {}
 
 # collect domain max memory
@@ -72,6 +73,31 @@ def send_cpu_status_alarm_to_mn(cpu_id, status):
         http.json_dump_post(url, physical_cpu_status_alarm, {'commandpath': '/host/physical/cpu/status/alarm'})
         cpu_status_abnormal_list_record.add(cpu_id)
 
+@thread.AsyncThread
+def send_physical_gpu_status_alarm_to_mn(pcideviceAddress, status):
+    class PhysicalGpuStatusAlarm(object):
+        def __init__(self):
+            self.status = None
+            self.pcideviceAddress = None
+            self.host = None
+
+    if ALARM_CONFIG is None:
+        return
+
+    url = ALARM_CONFIG.get(kvmagent.SEND_COMMAND_URL)
+    if not url:
+        logger.warn(
+            "cannot find SEND_COMMAND_URL, unable to transmit physical gpu status alarm info to management node")
+        return
+
+    global gpu_status_abnormal_list_record
+    if pcideviceAddress not in gpu_status_abnormal_list_record:
+        physical_gpu_status_alarm = PhysicalGpuStatusAlarm()
+        physical_gpu_status_alarm.host = ALARM_CONFIG.get(kvmagent.HOST_UUID)
+        physical_gpu_status_alarm.pcideviceAddress = pcideviceAddress
+        physical_gpu_status_alarm.status = status
+        http.json_dump_post(url, physical_gpu_status_alarm, {'commandpath': '/host/physical/gpu/status/alarm'})
+        disk_status_abnormal_list_record.add(pcideviceAddress)
 
 @thread.AsyncThread
 def send_physical_memory_status_alarm_to_mn(locator, status):
