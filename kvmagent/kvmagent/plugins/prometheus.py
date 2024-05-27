@@ -38,9 +38,13 @@ fan_status_abnormal_list_record = set()
 power_supply_status_abnormal_list_record = set()
 gpu_status_abnormal_list_record = set()
 disk_status_abnormal_list_record = {}
-
 # collect domain max memory
 domain_max_memory = {}
+
+#hard code for cube
+nvme_serial_numbers_record = None
+is_hygon = True if 'hygon' in linux.get_cpu_model()[1].lower() else False
+
 
 def read_number(fname):
     res = linux.read_file(fname)
@@ -791,6 +795,8 @@ def collect_ssd_state():
         'ssd_life_left': GaugeMetricFamily('ssd_life_left', 'ssd life left', None, ['disk', 'serial_number']),
         'ssd_temperature': GaugeMetricFamily('ssd_temperature', 'ssd temperature', None, ['disk', 'serial_number']),
     }
+
+    nvme_serial_numbers = set()
     
     r, o = bash_ro("lsblk -d -o name,type,rota | grep -w disk | awk '$3 == 0 {print $1}'")  # type: (int, str)
     if r != 0 or o.strip() == "":
@@ -804,6 +810,7 @@ def collect_ssd_state():
         serial_number = o.strip()
         
         if disk_name.startswith('nvme'):
+            nvme_serial_numbers.add(serial_number)
             r, o = bash_ro("smartctl -A /dev/%s | grep -E '^Percentage Used:|^Temperature:'" % disk_name)
             if r != 0 or o.strip() == "":
                 continue
@@ -824,8 +831,27 @@ def collect_ssd_state():
                     metrics['ssd_life_left'].add_metric([disk_name, serial_number], float(info.split()[4].strip()))
                 elif "Temperature_Celsius" in info and info.split()[9].strip().isdigit():
                     metrics['ssd_temperature'].add_metric([disk_name, serial_number], float(info.split()[9].strip()))
-        
+    check_nvme_disk_insert_and_remove(nvme_serial_numbers)
     return metrics.values()
+
+def check_nvme_disk_insert_and_remove(nvme_serial_numbers):
+    global nvme_serial_numbers_record
+    if nvme_serial_numbers_record is None:
+        nvme_serial_numbers_record = nvme_serial_numbers
+        return
+
+    if nvme_serial_numbers_record == nvme_serial_numbers:
+        return
+
+    for serial_number in nvme_serial_numbers:
+        if serial_number not in nvme_serial_numbers_record:
+            send_physical_disk_insert_alarm_to_mn(serial_number, "unknown-unknown")
+
+    for serial_number in nvme_serial_numbers_record:
+        if serial_number not in nvme_serial_numbers:
+            send_physical_disk_remove_alarm_to_mn(serial_number, "unknown-unknown")
+
+    nvme_serial_numbers_record = nvme_serial_numbers
 
 
 collect_equipment_state_last_time = None
@@ -860,23 +886,24 @@ def collect_ipmi_state():
     metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
 
     # get cpu info
-    r, cpu_temps = bash_ro("sensors")
-    if r == 0:
-        count = 0
-        for info in cpu_temps.splitlines():
-            match = re.search( r'^Physical id[^+]*\+(\d*\.\d+)', info)
-            if match:
-                cpu_id = "CPU" + str(count)
-                metrics['cpu_temperature'].add_metric([cpu_id], float(match.group(1).strip()))
-                count = count + 1
-
-        if count == 0:
+    if not is_hygon:
+        r, cpu_temps = bash_ro("sensors")
+        if r == 0:
+            count = 0
             for info in cpu_temps.splitlines():
-                match = re.search(r'^temp[^+]*\+(\d*\.\d+)', info)
+                match = re.search(r'^(Physical|Package) id[^+]*\+(\d*\.\d+)', info)
                 if match:
                     cpu_id = "CPU" + str(count)
-                    metrics['cpu_temperature'].add_metric([cpu_id], float(match.group(1).strip()))
+                    metrics['cpu_temperature'].add_metric([cpu_id], float(match.group(2).strip()))
                     count = count + 1
+
+            if count == 0:
+                for info in cpu_temps.splitlines():
+                    match = re.search(r'^temp[^+]*\+(\d*\.\d+)', info)
+                    if match:
+                        cpu_id = "CPU" + str(count)
+                        metrics['cpu_temperature'].add_metric([cpu_id], float(match.group(1).strip()))
+                        count = count + 1
 
     # get cpu status
     r, cpu_infos = bash_ro("hd_ctl -c cpu")
@@ -993,6 +1020,16 @@ def collect_ipmi_state():
                     fan_status_abnormal_list_record.remove(fan_name)
                 elif fan_state == 10:
                     send_physical_fan_status_alarm_to_mn(fan_name, info.split("|")[2].strip())
+            elif re.match(r"^cpu\d+_core_temp", info):
+                if not is_hygon:
+                    continue
+                pattern = r'cpu(\d+)_core_temp.*?(\d+) degrees c'
+                match = re.search(pattern, info)
+                if not match:
+                    continue
+                cpu_id = "CPU" + str(match.group(1))
+                temp = float(match.group(2).strip())
+                metrics['cpu_temperature'].add_metric([cpu_id], temp)
 
     collect_equipment_state_last_result = metrics.values()
     return collect_equipment_state_last_result
