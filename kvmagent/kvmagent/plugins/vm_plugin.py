@@ -8539,14 +8539,34 @@ host side snapshot files chian:
 
     @kvmagent.replyerror
     def block_commit(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = BlockCommitResponse()
+
         def block_commit_with_qemu_img():
+            def check_backing_file():
+                if cmd.srcChildrenInstallPathInDb is None or len(cmd.srcChildrenInstallPathInDb) == 0:
+                    return
+
+                mismatched_backing_files = []
+                for child_path in cmd.srcChildrenInstallPathInDb:
+                    backing_file = linux.qcow2_get_backing_file(child_path)
+                    if backing_file != cmd.top:
+                        mismatched_backing_files.append(backing_file)
+                if len(mismatched_backing_files) > 0:
+                    raise kvmagent.KvmError(
+                        'top[%s] is not the backing file of children[%s]' % (cmd.top, mismatched_backing_files))
+
+            check_backing_file()
             top = VolumeTO.get_volume_actual_installpath(cmd.top)
             base = VolumeTO.get_volume_actual_installpath(cmd.base)
             linux.qcow2_commit(top, base)
+
+            if cmd.srcChildrenInstallPathInDb is not None and len(cmd.srcChildrenInstallPathInDb) > 0:
+                for child_path in cmd.srcChildrenInstallPathInDb:
+                    linux.qcow2_rebase(base, child_path)
+
             return base
 
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = BlockCommitResponse()
         try:
             if not cmd.vmUuid:
                 rsp.newVolumeInstallPath = block_commit_with_qemu_img()
