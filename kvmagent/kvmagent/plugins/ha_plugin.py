@@ -1624,7 +1624,7 @@ class HaPlugin(kvmagent.KvmAgent):
             cmd = self.sblk_health_checker.get_vg_fencer_cmd(vg)
 
             # we will check one io to determine volumes on pv should be kill
-            invalid_pv_uuids = lvm.get_invalid_pv_uuids(vg, cmd.checkIo)
+            _, invalid_pv_uuids = lvm.get_invalid_pv_uuids(vg, cmd.checkIo)
             logger.debug("got invalid pv uuids: %s" % invalid_pv_uuids)
             vms = lvm.get_running_vm_root_volume_on_pv(vg, invalid_pv_uuids, True)
             killed_vm_uuids = []

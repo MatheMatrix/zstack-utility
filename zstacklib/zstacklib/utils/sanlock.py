@@ -94,6 +94,7 @@ class SanlockClientStatus(object):
                 elif k == 'renewal_last_attempt': self.renewal_last_attempt = int(v)
                 elif k == 'renewal_last_success': self.renewal_last_success = int(v)
                 elif k == 'io_timeout': self.io_timeout = int(v)
+                elif k == 'space_dead': self.space_dead = int(v)
             except ValueError:
                 logger.warn("unexpected sanlock client status: %s" % line)
 
@@ -111,6 +112,9 @@ class SanlockClientStatus(object):
 
     def get_io_timeout(self):
         return self.io_timeout
+
+    def is_space_dead(self):
+        return bool(self.space_dead)
 
 
 class SanlockClientStatusParser(object):
