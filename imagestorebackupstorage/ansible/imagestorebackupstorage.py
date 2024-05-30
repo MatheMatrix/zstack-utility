@@ -125,7 +125,7 @@ if host_info.distro in RPM_BASED_OS:
     qemu_pkg = ' '.join(_qemu_pkg)
     svr_pkgs = 'ntfs-3g exfat-utils fuse-exfat btrfs-progs nmap-ncat lvm2 lvm2-libs'
     # common imagestorebackupstorage deps of ky10 that need to update
-    ky10_update_list = " nettle collectd collectd-disk collectd-virt qemu-block-rbd"
+    ky10_update_list = " nettle collectd collectd-disk collectd-virt exfat-utils fuse-exfat qemu-block-rbd"
     common_update_list = 'qemu-storage-daemon'
     common_update_list += ky10_update_list if releasever in kylin else ''
 
