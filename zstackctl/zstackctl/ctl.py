@@ -513,6 +513,9 @@ def get_zstack_version(db_hostname, db_port, db_user, db_password):
     version = versions[0]
     return version
 
+def get_database_type():
+    return 'multiDatabase' if os.path.exists("/usr/local/bin/zsha2") else 'singleDatabase'
+
 def get_zstack_installed_on(db_hostname, db_port, db_user, db_password):
     query = MySqlCommandLineQuery()
     query.host = db_hostname
@@ -5590,7 +5593,9 @@ class DumpMysqlCmd(Command):
     def run(self, args):
         (db_hostname, db_port, db_user, db_password) = ctl.get_live_mysql_portal()
         (ui_db_hostname, ui_db_port, ui_db_user, ui_db_password) = ctl.get_live_mysql_portal(ui=True)
-        file_name = args.file_name
+        database_version = get_zstack_version(db_hostname, db_port, db_user, db_password)
+        file_name = "zsphere-backup-db" if get_deploy_mode() == "zsv" else "zstack-backup-db"
+
         keep_amount = args.keep_amount
         backup_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         if os.path.exists(self.mysql_backup_dir) is False:
@@ -5606,7 +5611,8 @@ class DumpMysqlCmd(Command):
         if args.file_path:
             db_backupf_file_path = args.file_path
         else:
-            db_backupf_file_path = self.mysql_backup_dir + db_local_hostname + "-" + file_name + "-" + backup_timestamp + ".gz"
+            db_backupf_file_path = (self.mysql_backup_dir + db_local_hostname + "-" + get_database_type() + "-"
+                                    + database_version + "-" + file_name + "-" + backup_timestamp + ".gz")
 
         zstone_backup_file_path = self.zstone_backup_dir + db_local_hostname + "-" + self.zstone_file_name + "-" + backup_timestamp + ".gz"
 
@@ -6822,6 +6828,11 @@ def is_zsv_env():
     properties_file_path = os.path.join(os.environ['ZSTACK_HOME'], 'WEB-INF/classes/zstack.properties')
     properties = PropertyFile(properties_file_path)
     return properties.read_property('deploy_mode') == 'zsv'
+
+def get_deploy_mode():
+    properties_file_path = os.path.join(os.environ['ZSTACK_HOME'], 'WEB-INF/classes/zstack.properties')
+    properties = PropertyFile(properties_file_path)
+    return properties.read_property('deploy_mode')
 
 def get_hci_full_version():
     detailed_version_file = "/usr/local/hyperconverged/conf/VERSION"
