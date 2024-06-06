@@ -2585,7 +2585,7 @@ EOF
     if [ $? -ne 0 ]; then
         crontab - <<EOF
 `crontab -l 2>/dev/null`
-30 0,12 * * * zstack-ctl dump_mysql --keep-amount 14
+30 0,12 * * * zstack-ctl dump_mysql --keep-amount 2
 EOF
     fi
 
