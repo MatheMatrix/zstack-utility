@@ -513,6 +513,23 @@ def get_zstack_version(db_hostname, db_port, db_user, db_password):
     version = versions[0]
     return version
 
+
+def get_zsv_schema_version_map(home):
+    version_map = {}
+    version_path = os.path.join(home, "apache-tomcat-8.5.87/webapps/zstack/WEB-INF/classes/db/zsv")
+    all_version = os.listdir(version_path)
+    for version in all_version:
+        with open(os.path.join(version_path, version), 'r') as f:
+            content = f.readline().strip()
+            schema_version = content.split('V')[1].split('__')[0]
+            version_map[schema_version] = version
+    return version_map
+
+
+def get_database_type():
+    return 'multiDatabase' if os.path.exists("/usr/local/bin/zsha2") else 'singleDatabase'
+
+
 def get_zstack_installed_on(db_hostname, db_port, db_user, db_password):
     query = MySqlCommandLineQuery()
     query.host = db_hostname
@@ -5501,7 +5518,7 @@ class DumpMysqlCmd(Command):
         parser.add_argument('--file-name',
                             help="The filename prefix you want to save the backup database under local backup dir, default filename "
                                  "prefix is 'zstack-backup-db', local backup dir is '/var/lib/zstack/mysql-backup/'",
-                            default="zstack-backup-db")
+                            required=False)
         parser.add_argument('--file-path',
                             help="specify a absolute path to dump db, default is '/var/lib/zstack/mysql-backup/zstack-backup-db-$TIMESTAMP.gz'",
                             required=False)
@@ -5590,7 +5607,19 @@ class DumpMysqlCmd(Command):
     def run(self, args):
         (db_hostname, db_port, db_user, db_password) = ctl.get_live_mysql_portal()
         (ui_db_hostname, ui_db_port, ui_db_user, ui_db_password) = ctl.get_live_mysql_portal(ui=True)
-        file_name = args.file_name
+        database_version = get_zstack_version(db_hostname, db_port, db_user, db_password)
+        if args.file_name is not None:
+            file_name = args.file_name
+        else:
+            deploy_mode = get_deploy_mode()
+            if deploy_mode is None:
+                file_name = "zstack-backup-db"
+            elif deploy_mode == "zsv":
+                file_name = "zsphere-backup-db"
+                zsv_version = get_zsv_schema_version_map(ctl.USER_ZSTACK_HOME_DIR)[database_version]
+                if zsv_version is not None:
+                    database_version = zsv_version
+
         keep_amount = args.keep_amount
         backup_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         if os.path.exists(self.mysql_backup_dir) is False:
@@ -5606,7 +5635,8 @@ class DumpMysqlCmd(Command):
         if args.file_path:
             db_backupf_file_path = args.file_path
         else:
-            db_backupf_file_path = self.mysql_backup_dir + db_local_hostname + "-" + file_name + "-" + backup_timestamp + ".gz"
+            db_backupf_file_path = (self.mysql_backup_dir + db_local_hostname + "-" + get_database_type() + "-"
+                                    + database_version + "-" + file_name + "-" + backup_timestamp + ".gz")
 
         zstone_backup_file_path = self.zstone_backup_dir + db_local_hostname + "-" + self.zstone_file_name + "-" + backup_timestamp + ".gz"
 
@@ -6822,6 +6852,11 @@ def is_zsv_env():
     properties_file_path = os.path.join(os.environ['ZSTACK_HOME'], 'WEB-INF/classes/zstack.properties')
     properties = PropertyFile(properties_file_path)
     return properties.read_property('deploy_mode') == 'zsv'
+
+def get_deploy_mode():
+    properties_file_path = os.path.join(os.environ['ZSTACK_HOME'], 'WEB-INF/classes/zstack.properties')
+    properties = PropertyFile(properties_file_path)
+    return properties.read_property('deploy_mode')
 
 def get_hci_full_version():
     detailed_version_file = "/usr/local/hyperconverged/conf/VERSION"
