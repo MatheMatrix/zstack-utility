@@ -5500,7 +5500,7 @@ class DumpMysqlCmd(Command):
         parser.add_argument('--file-name',
                             help="The filename prefix you want to save the backup database under local backup dir, default filename "
                                  "prefix is 'zstack-backup-db', local backup dir is '/var/lib/zstack/mysql-backup/'",
-                            default="zstack-backup-db")
+                            required=False)
         parser.add_argument('--file-path',
                             help="specify a absolute path to dump db, default is '/var/lib/zstack/mysql-backup/zstack-backup-db-$TIMESTAMP.gz'",
                             required=False)
@@ -5583,7 +5583,11 @@ class DumpMysqlCmd(Command):
     def run(self, args):
         (db_hostname, db_port, db_user, db_password) = ctl.get_live_mysql_portal()
         (ui_db_hostname, ui_db_port, ui_db_user, ui_db_password) = ctl.get_live_mysql_portal(ui=True)
-        file_name = args.file_name
+        if args.file_name is not None:
+            file_name = args.file_name
+        else:
+            deploy_mode = get_deploy_mode()
+            file_name = "zstack-backup-db" if deploy_mode is None else "%s-backup-db" % deploy_mode
         keep_amount = args.keep_amount
         backup_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         if os.path.exists(self.mysql_backup_dir) is False:
@@ -5596,10 +5600,14 @@ class DumpMysqlCmd(Command):
         if not db_local_hostname:
             db_local_hostname = db_hostname
 
+        database_version = get_zstack_version(db_hostname, db_port, db_user, db_password)
+        database_type = 'multiDatabase' if os.path.exists("/usr/local/bin/zsha2") else 'singleDatabase'
+
         if args.file_path:
             db_backupf_file_path = args.file_path
         else:
-            db_backupf_file_path = self.mysql_backup_dir + db_local_hostname + "-" + file_name + "-" + backup_timestamp + ".gz"
+            db_backupf_file_path = (self.mysql_backup_dir + db_local_hostname + "=" + database_type + "=" + file_name
+                                    + "=" + database_version + "=" + backup_timestamp + ".gz")
 
         zstone_backup_file_path = self.zstone_backup_dir + db_local_hostname + "-" + "zstone-backup-db" + "-" + backup_timestamp + ".gz"
 
@@ -6815,6 +6823,13 @@ def is_zsv_env():
     properties_file_path = os.path.join(os.environ['ZSTACK_HOME'], 'WEB-INF/classes/zstack.properties')
     properties = PropertyFile(properties_file_path)
     return properties.read_property('deploy_mode') == 'zsv'
+
+
+def get_deploy_mode():
+    properties_file_path = os.path.join(os.environ['ZSTACK_HOME'], 'WEB-INF/classes/zstack.properties')
+    properties = PropertyFile(properties_file_path)
+    return properties.read_property('deploy_mode')
+
 
 def get_hci_full_version():
     detailed_version_file = "/usr/local/hyperconverged/conf/VERSION"
