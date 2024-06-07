@@ -900,7 +900,7 @@ def check_equipment_state_from_ipmitool():
     sensor_handlers = {
         "Memory": send_physical_memory_status_alarm_to_mn,
         "Fan": send_physical_fan_status_alarm_to_mn,
-        "Power_Supply": send_physical_power_supply_status_alarm_to_mn
+        "Power Supply": send_physical_power_supply_status_alarm_to_mn
     }
 
     r, memory_infos = bash_ro("ipmi-sensors --sensor-types=Memory,fan,Power_Supply -Q --ignore-unrecognized-events --comma-separated-output "
