@@ -1603,9 +1603,11 @@ class IscsiNodeStatus(object):
 
 class IscsiFencer(StorageFencer):
     def __init__(self, cmd, heartbeat_path, covering_paths):
-        super(IscsiFencer, self).__init__(cmd.vgUuid, cmd.maxAttempts, cmd.interval, cmd.storageCheckerTimeout, cmd)
+        super(IscsiFencer, self).__init__(cmd.uuid, cmd.maxAttempts, cmd.interval, cmd.storageCheckerTimeout, cmd)
         self.coveringPaths = covering_paths
         self.heartbeat_path = heartbeat_path
+        self.host_id = cmd.hostId
+        self.heartbeat_required_space = 1024 * 1024
         self.cmd = cmd
 
     @bash.in_bash
