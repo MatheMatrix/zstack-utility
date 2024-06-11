@@ -108,48 +108,6 @@ class ReportSelfFencerCmd(object):
         self.reason = None
         self.fencerFailure = None
 
-# TODO: sharedblock lun reader
-    # def get_record_vm_lun(self, vg_uuid, host_uuid):
-        # return '/dev/%s/host_%s' % (vg_uuid, host_uuid)
-
-    # def read_fencer_heartbeat(self, host_uuid, vg_uuid):
-    #     current_read_heartbeat_time = [None]
-    #     current_vm_uuids = [None]
-    #     volume_abs_path = self.get_record_vm_lun(vg_uuid, host_uuid)
-
-    #     # writer has been moved to sharedblock agent, ZSTAC-58438
-    #     def read_content_from_lv():
-    #         with open(volume_abs_path, "r+") as f:
-    #             content = f.read().strip().replace(b'\u0000', b'').replace(b'\x00', b'')
-    #             content = content.split(EOF)[0]
-    #             if len(content) == 0:
-    #                 return None, None
-
-    #             sbl_data = json.loads(content)
-    #             current_read_heartbeat_time[0] = int(sbl_data.get('heartbeat_time'))
-    #             if sbl_data.get('vm_uuids') is None:
-    #                 current_vm_uuids[0] = []
-    #             else:
-    #                 current_vm_uuids[0] = sbl_data.get('vm_uuids').split(',')
-
-    #             logger.debug("read shareblock current_read_heartbeat_time:%s, current_vm_uuids: %s" %
-    #                          (current_read_heartbeat_time[0], current_vm_uuids[0]))
-
-    #             if int(time.time()) - 4 * 60 < current_read_heartbeat_time[0]:
-    #                 current_read_heartbeat_time[0] += random.randint(1, 100)
-
-    #             return current_read_heartbeat_time[0], current_vm_uuids[0]
-
-    #     if os.path.exists(volume_abs_path):
-    #         return read_content_from_lv()
-
-    #     r, o, e = bash.bash_roe("timeout -s SIGKILL %s lvchange -asy %s" % (self.storage_timeout, volume_abs_path))
-    #     if r == 0:
-    #         return read_content_from_lv()
-
-    #     return None, None
-
-# TODO: sblk fencer args updated
 
 last_multipath_run = time.time()
 QEMU_VERSION = qemu.get_version()
@@ -589,12 +547,9 @@ class HaPlugin(kvmagent.KvmAgent):
         # TODO: fix aliyun nas url
         mount_point = FileSystemMountPoint(cmd.url, cmd.mountPath, True, None)
         fencer = FileSystemFencer(cmd.uuid,
-                                       cmd.maxAttempts,
-                                       cmd.interval,
-                                       cmd.storageCheckerTimeout,
-                                       cmd.strategy,
                                        cmd.hostUuid,
-                                       mount_point)
+                                       mount_point,
+                                       cmd)
         fencer_manager.register_fencer(fencer)
         fencer_manager.start_fencer(fencer)
         return jsonobject.dumps(AgentRsp())
@@ -622,7 +577,7 @@ class HaPlugin(kvmagent.KvmAgent):
             rsp.error = err_msg
             return jsonobject.dumps(rsp)
 
-        block_fencer = IscsiFencer(cmd, heartbeat_wwn_path, recover_storage_if_failed=True)
+        block_fencer = IscsiFencer(cmd, heartbeat_wwn_path, None, recover_storage_if_failed=True)
         fencer_manager.register_fencer(block_fencer)
         fencer_manager.start_fencer(block_fencer)
         return jsonobject.dumps(AgentRsp())
@@ -1101,19 +1056,21 @@ class FencerManager:
 
 
 class Fencer(object):
-    def __init__(self, name, max_failures, interval, timeout, strategy):
+    # max_failures, interval, timeout, strategy
+    def __init__(self, name, cmd):
         self.name = name
-        self.max_failures = max_failures
-        self.interval = interval
-        self.timeout = timeout
+        self.max_failures = cmd.maxAttempts
+        self.interval = cmd.interval
+        self.timeout = cmd.storageCheckerTimeout
+        self.host_uuid = cmd.hostUuid
         self.failure_count = 0
 
         # keep legacy ha strategy for compatibility
-        self.strategy = strategy
+        self.strategy = cmd.strategy
 
         self.stop_flag = False
 
-    def check(self):
+    def fencer_check(self):
         pass
 
     def get_status(self):
@@ -1146,7 +1103,7 @@ class Fencer(object):
         vm_pids_dict = {uuid: vm_pids_dict[uuid] for uuid in need_be_fenced_uuid_list}
 
         logger.debug("vm_pids_dict: %s\n" % jsonobject.dumps(vm_pids_dict))
-        reason = "because we lost connection to the storage, failed to read the heartbeat file %s times" % max_failures
+        reason = "because we lost connection to the storage, failed to read the heartbeat file %s times" % self.max_failures
         kill_vm_use_pid(vm_pids_dict, reason)
 
     @thread.AsyncThread
@@ -1158,7 +1115,7 @@ class Fencer(object):
             if self.stop_flag:
                 break
 
-            result = self.check()
+            result = self.fencer_check()
 
             # reset failure count to avoid unstable status
             if result == FencerResult.SUCCESS:
@@ -1198,7 +1155,7 @@ class VmNetworkFencer(Fencer):
         super(VmNetworkFencer, self).__init__(name, cmd.maxAttempts, cmd.interval, cmd.storageCheckerTimeout, cmd.strategy)
         self.falut_nic_count = {}
 
-    def do_check(self):
+    def run_fencer(self):
         vm_use_falut_nic_pids_dict, falut_nic = self.find_vm_use_falut_nic()
         if len(vm_use_falut_nic_pids_dict) == 0:
             return True
@@ -1277,6 +1234,14 @@ class StorageType(Enum):
     ISCSI = 3
     SHARED_BLOCK = 4
 
+class HostHeartbeatStatus(object):
+    def __init__(self, vm_uuids, created_time=None):
+        self.vm_uuids = vm_uuids
+
+        if created_time:
+            self.created_time = created_time
+        else:
+            self.heartbeat_time = time.time()
 
 def check_peer_host_storage_heartbeat(storage_type, cmd):
     if storage_type == StorageType.FILE_SYSTEM:
@@ -1398,8 +1363,9 @@ class FileSystemHeartbeatReader(HostHeartbeatReader):
 
 
 class StorageFencer(Fencer):
-    def __init__(self, name, max_failures, interval, timeout, strategy):
-        super(StorageFencer, self).__init__(name, max_failures, interval, timeout, strategy)
+    def __init__(self, name, primary_storage_uuid, cmd):
+        super(StorageFencer, self).__init__(name, cmd)
+        self.primary_storage_uuid = primary_storage_uuid
 
     def retry_to_recover_storage(self):
         """
@@ -1407,15 +1373,15 @@ class StorageFencer(Fencer):
         """
         pass
 
-    def do_check(self):
+    def run_fencer(self):
         """
         how to check connection to storage
         """
         raise NotImplementedError("do_check is not implemented")
 
-    def check(self):
+    def fencer_check(self):
         try:
-            if self.do_check():
+            if self.run_fencer():
                 return FencerResult.SUCCESS
 
             return FencerResult.FAILURE
@@ -1471,25 +1437,22 @@ class FileSystemMountPoint:
 
 
 class FileSystemFencer(StorageFencer):
-    def __init__(self, ps_uuid, max_failures, interval, timeout, strategy, host_uuid, mount_point):
+    def __init__(self, ps_uuid, host_uuid, mount_point, cmd):
         """
         :param ps_uuid: primary storage uuid
-        :param max_failures: max failures before fencer
-        :param interval: interval to check the storage
-        :param timeout: timeout to check the storage
-        :param strategy: ha strategy
         :param host_uuid: host uuid
         :param mount_point: file system mount point
+        :param cmd: fencer setup command
         """
 
-        super(FileSystemFencer, self).__init__(ps_uuid, max_failures, interval, timeout, strategy)
+        super(FileSystemFencer, self).__init__(ps_uuid, ps_uuid, cmd)
         self.mount_point = mount_point
-        self.ps_uuid = ps_uuid
 
+        # TODO: duplicate code, need to be refactored
         self.heartbeat_file_path = os.path.join(os.path.join(self.mount_point.mount_path, 'heartbeat'),
                                                  'heartbeat-file-kvm-host-%s.hb' % host_uuid)
 
-    def do_check(self):
+    def run_fencer(self):
         touch = shell.ShellCmd('timeout %s touch %s' 
                                 % (self.timeout, self.heartbeat_file_path))
         touch(False)
@@ -1498,7 +1461,7 @@ class FileSystemFencer(StorageFencer):
                           % (self.heartbeat_file_path, touch.stderr, touch.stdout))
             return False
 
-        content = self.generate_heartbeat_content(self.ps_uuid)
+        content = self.generate_heartbeat_content(self.primary_storage_uuid)
         with open(self.heartbeat_file_path, 'w') as f:
             f.write(json.dumps(content))
         return True
@@ -1513,12 +1476,12 @@ class FileSystemFencer(StorageFencer):
 
     def get_status(self):
         return "FileSystemFencer Status:\n" \
-                "ps_uuid: %s\n" \
+                "primary_storage_uuid: %s\n" \
                 "max_failures: %s\n" \
                 "interval: %s\n" \
                 "timeout: %s\n" \
                 "strategy: %s\n" \
-                "mount_point: %s\n" % (self.ps_uuid,
+                "mount_point: %s\n" % (self.primary_storage_uuid,
                                         self.max_failures,
                                         self.interval,
                                         self.timeout,
@@ -1528,15 +1491,15 @@ class FileSystemFencer(StorageFencer):
 
 class SanlockVolumeGroupFencer(StorageFencer):
     def __init__(self, cmd):
-        super(SanlockVolumeGroupFencer, self).__init__(cmd.vgUuid, cmd.maxAttempts, cmd.interval, cmd.storageCheckerTimeout, cmd.strategy)
-        self.cmd = cmd
+        super(SanlockVolumeGroupFencer, self).__init__(cmd.vgUuid, cmd.vgUuid, cmd)
+        self.check_io = cmd.checkIo
 
-    def do_check(self):
+    def run_fencer(self):
         # Note: sanlock use function lru_cache to accelerate fencers execution performance
         # when large number of volume groups exist
         lockspaces = sanlock.get_lockspaces()
         p = sanlock.get_sanlock_client_status()
-        vg = self.cmd.vgUuid
+        vg = self.primary_storage_uuid
         r = p.get_lockspace_record(vg)
         if not r:
             failure = "lockspace for vg %s not found" % vg
@@ -1567,36 +1530,36 @@ class SanlockVolumeGroupFencer(StorageFencer):
         return True
 
     def retry_to_recover_storage(self):
-        lvm.remove_partial_lv_dm(self.cmd.vgUuid)
-        if lvm.check_vg_status(self.cmd.vgUuid, self.cmd.storageCheckerTimeout, True)[0]:
+        vg = self.primary_storage_uuid
+        lvm.remove_partial_lv_dm(vg)
+        if lvm.check_vg_status(vg, self.cmd.storageCheckerTimeout, True)[0]:
             return
 
-        lvm.drop_vg_lock(self.cmd.vgUuid)
-        lvm.remove_device_map_for_vg(self.cmd.vgUuid)
+        lvm.drop_vg_lock(vg)
+        lvm.remove_device_map_for_vg(vg)
 
     # TODO: fix performance issue by support find vm from different source
     def filter_need_be_fenced_vm(self, vm_uuid):
         # we will check one io to determine volumes on pv should be kill
-        invalid_pv_uuids = lvm.get_invalid_pv_uuids(self.vg_uuid, self.cmd.checkIo)
+        invalid_pv_uuids = lvm.get_invalid_pv_uuids(self.primary_storage_uuid, self.check_io)
         logger.debug("got invalid pv uuids: %s" % invalid_pv_uuids)
-        vms = lvm.get_running_vm_root_volume_on_pv(self.vg_uuid, invalid_pv_uuids, True)
+        vms = lvm.get_running_vm_root_volume_on_pv(self.primary_storage_uuid, invalid_pv_uuids, True)
         vms = [vm for vm in vms if vm['vm_uuid'] == vm_uuid]
         return len(vms) > 0
 
 
 class SharedBlockStorageFencer(StorageFencer):
     def __init__(self, cmd):
-        super(SharedBlockStorageFencer, self).__init__(cmd.vgUuid, cmd.maxAttempts, cmd.interval, cmd.storageCheckerTimeout, cmd)
-        self.vg_name = cmd.vgUuid
+        super(SharedBlockStorageFencer, self).__init__(cmd.vgUuid, cmd.vgUuid, cmd)
         self.cmd = cmd
 
-    def do_check(self):
-        success, original_conf, updated_conf = self.update_sharedblock_agent_param([self.cmd.vgUuid])
+    def run_fencer(self):
+        success, original_conf, updated_conf = self.update_sharedblock_agent_param([self.primary_storage_uuid])
 
         if not success:
             logger.warn('failed to update sblk fencer heartbeat param on the shared block storage[%s],' \
                         ' param_path: %s'
-                         % (self.vg_name, SHAREBLOCK_VM_HA_PARAMS_PATH))
+                         % (self.primary_storage_uuid, SHAREBLOCK_VM_HA_PARAMS_PATH))
             return False
 
         logger.debug("update sblk fencer heartbeat param from: \n" \
@@ -1611,7 +1574,7 @@ class SharedBlockStorageFencer(StorageFencer):
                 "max_failures: %s\n" \
                 "interval: %s\n" \
                 "timeout: %s\n" \
-                "strategy: %s\n" % (self.vg_name,
+                "strategy: %s\n" % (self.primary_storage_uuid,
                                     self.max_failures,
                                     self.interval,
                                     self.timeout,
@@ -1635,20 +1598,9 @@ class SharedBlockStorageFencer(StorageFencer):
 
         return True, original_conf, updated_conf
 
-
-
-class HostHeartbeatStatus(object):
-    def __init__(self, vm_uuids, created_time=None):
-        self.vm_uuids = vm_uuids
-
-        if created_time:
-            self.created_time = created_time
-        else:
-            self.heartbeat_time = time.time()
-
 class IscsiFencer(StorageFencer):
     def __init__(self, cmd, heartbeat_path, covering_paths, recover_storage_if_failed=False):
-        super(IscsiFencer, self).__init__(cmd.uuid, cmd.maxAttempts, cmd.interval, cmd.storageCheckerTimeout, cmd)
+        super(IscsiFencer, self).__init__(cmd.uuid, cmd.uuid, cmd)
         self.coveringPaths = covering_paths
         self.heartbeat_path = heartbeat_path
         self.host_id = cmd.hostId
@@ -1656,7 +1608,7 @@ class IscsiFencer(StorageFencer):
         self.cmd = cmd
         self.recover_storage_if_failed = recover_storage_if_failed
 
-    def do_check(self):
+    def run_fencer(self):
         if not self._heartbeat_io_check():
             return False
 
@@ -1705,19 +1657,14 @@ class IscsiFencer(StorageFencer):
 
 class CephFencer(StorageFencer):
     def __init__(self, fencer_name, pool_name,  cmd):
-        super(CephFencer, self).__init__(fencer_name, cmd.maxAttempts, cmd.interval, cmd.storageCheckerTimeout, cmd.strategy)
+        super(CephFencer, self).__init__(fencer_name, cmd.uuid, cmd)
         self.pool_name = pool_name
-        self.cmd = cmd
+        self.manufacturer = cmd.manufacturer
 
         # used as content of the heartbeat object
         self.heartbeat_counter = 0
-        self.heartbeat_object_name = ceph.get_heartbeat_object_name(cmd.uuid, cmd.hostUuid)
-        self.ioctx = ceph.get_ioctx(cmd.primaryStorageUuid, cmd.manufacturer, pool_name)
-
-        self.fencer_name = "ceph-fencer-%s" % pool_name
-
-    def get_ha_fencer_name(self):
-        return self.fencer_name
+        self.heartbeat_object_name = ceph.get_heartbeat_object_name(self.primary_storage_uuid, self.host_uuid)
+        self.ioctx = ceph.get_ioctx(self.primary_storage_uuid, self.manufacturer, pool_name)
 
     def __exit__(self):
         if self.ioctx:
@@ -1726,7 +1673,7 @@ class CephFencer(StorageFencer):
 
         return
 
-    def do_check(self):
+    def run_fencer(self):
         try:
             return self.write_fencer_heartbeat()
         except Exception as e:
