@@ -1545,6 +1545,8 @@ class SanlockVolumeGroupFencer(StorageFencer):
         self.cmd = cmd
 
     def do_check(self):
+        # Note: sanlock use function lru_cache to accelerate fencers execution performance
+        # when large number of volume groups exist
         lockspaces = sanlock.get_lockspaces()
         p = sanlock.get_sanlock_client_status()
         vg = self.cmd.vgUuid
@@ -1566,6 +1568,8 @@ class SanlockVolumeGroupFencer(StorageFencer):
         if r.get_renewal_last_result() == 1:
             return True
 
+        # if attemp time is over 100 seconds, we consider it as a failure
+        # because sanlock will try to renew the lockspace every 10 seconds
         if math.fabs(r.get_renewal_last_attempt() - r.get_renewal_last_success()) > 100:
             failure = "sanlock last renewal failed with %s and last attempt is %s, last success is %s, which is over 100 seconds" % \
                     (r.get_renewal_last_result(), r.get_renewal_last_attempt(), r.get_renewal_last_success())
@@ -1700,7 +1704,7 @@ class CephFencer(StorageFencer):
         # used as content of the heartbeat object
         self.heartbeat_counter = 0
         self.heartbeat_object_name = ceph.get_heartbeat_object_name(cmd.uuid, cmd.hostUuid)
-        self.ioctx = ceph.get_ioctx()
+        self.ioctx = ceph.get_ioctx(cmd.primaryStorageUuid, cmd.manufacturer, pool_name)
 
         self.fencer_name = "ceph-fencer-%s" % pool_name
 
