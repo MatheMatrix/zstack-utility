@@ -5,10 +5,11 @@ import helper
 from kvmagent.plugins import ha_plugin
 from mock import patch
 from zstacklib.utils import shell
+from zstacklib.utils import linux
 
 fail_on_purpose = False
 
-class TestCephFencerManager(unittest.TestCase):
+class TestIscsiFencer(unittest.TestCase):
     class FakeFencerCmd(object):
         def __init__(self):
             self.uuid = "fake_uuid"
@@ -17,14 +18,15 @@ class TestCephFencerManager(unittest.TestCase):
             self.storageCheckerTimeout = 1
             self.strategy = "Force"
             self.fencers = []
-            self.heartbeat_path = "/tmp/heartbeat"
-            self.covering_paths = ["/tmp/heartbeat"]
-            self.hostId = "fake_host_id"
+            self.heartbeat_path = "/tmp/heartbeat-iscsi"
+            self.covering_paths = ["/tmp/heartbeat-iscsi"]
+            self.hostId = 1024
 
     def setUp(self):
         self.fake_cmd = self.FakeFencerCmd()
         self.fencer_manager = ha_plugin.fencer_manager
         self.fencer = ha_plugin.IscsiFencer(self.fake_cmd, self.fake_cmd.heartbeat_path, self.fake_cmd.covering_paths)
+        linux.write_file(self.fake_cmd.heartbeat_path, "test_heartbeat", True)
 
     def tearDown(self):
         self.fencer.stop()
@@ -50,10 +52,14 @@ class TestCephFencerManager(unittest.TestCase):
 
         self.fencer.do_check()
 
+    @patch.object(shell.ShellCmd, '__call__', shell_failure_mock)
     def test_failed_to_write_heartbeat_file(self):
+        global fail_on_purpose
+        fail_on_purpose = False
         # confirm success and prepare hb file
         self.assertTrue(self.fencer.do_check())
 
+        fail_on_purpose = True
         try:
             self.fencer.do_check()
         except Exception as e:
@@ -61,6 +67,7 @@ class TestCephFencerManager(unittest.TestCase):
 
         self.assertEqual(self.fencer.check(), ha_plugin.FencerResult.FAILURE)
 
+        fail_on_purpose = False
         # check heartbeat file created
         self.assertEqual(self.fencer.check(), ha_plugin.FencerResult.SUCCESS)
 

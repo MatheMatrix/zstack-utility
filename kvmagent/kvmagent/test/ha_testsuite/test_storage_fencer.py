@@ -109,3 +109,8 @@ class TestAbstractFencer(unittest.TestCase):
         # confirm failure will not break the loop
         self.fencer.checkResult = False
         self.stop_fencer_after_n_loop(3)
+    
+    def test_unregister_fencer(self):
+        self.fencer_manager.register_fencer(self.fencer)
+        self.fencer_manager.unregister_fencer('fencer1')
+        self.assertEqual(self.fencer_manager.fencers, {})

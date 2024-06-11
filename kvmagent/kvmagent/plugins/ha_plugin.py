@@ -641,7 +641,7 @@ class HaPlugin(kvmagent.KvmAgent):
     def setup_aliyun_nas_self_fencer(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         # TODO: fix aliyun nas url
-        mount_point = FileSyetemMountPoint(cmd.url, cmd.mountPath, True, None)
+        mount_point = FileSystemMountPoint(cmd.url, cmd.mountPath, True, None)
         fencer = FileSystemFencer(cmd.uuid,
                                        cmd.maxAttempts,
                                        cmd.interval,
@@ -818,7 +818,7 @@ class HaPlugin(kvmagent.KvmAgent):
             # file_system_controller = FileSystemHeartbeatController(cmd.interval, cmd.maxAttempts, ps_uuid, None)
             # file_system_controller.fencer_triggered_callback = self.report_self_fencer_triggered
             # file_system_controller.try_remount_fs_callback = self.try_remount_fs
-            mount_point = FileSyetemMountPoint(url, mount_path, mounted_by_zstack, options)
+            mount_point = FileSystemMountPoint(url, mount_path, mounted_by_zstack, options)
             fencer = FileSystemFencer(uuid,
                                        cmd.maxAttempts,
                                        cmd.interval,
@@ -878,21 +878,15 @@ class HaPlugin(kvmagent.KvmAgent):
         rsp.result = {}
 
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        file_system_controller = FileSystemHeartbeatController(cmd.interval, cmd.times, cmd.primaryStorageUuid, None)
-        file_system_controller.host_uuid = cmd.targetHostUuid
-        file_system_controller.mount_path = cmd.mountPath
+
         ps_uuid = cmd.primaryStorageUuid
-
-        record_vm_running_path = file_system_controller.get_heartbeat_file_path()
-
+        record_vm_running_path = FileSystemFencer.format_heartbeat_path(cmd.mountPath, cmd.targetHostUuid)
         if not os.path.exists(record_vm_running_path):
             rsp.result[ps_uuid] = False
             return jsonobject.dumps(rsp)
 
         logger.debug("check if host[%s] is still alive" % cmd.targetHostUuid)
-        heartbeat_success, vm_running_uuids = file_system_controller.check_fencer_heartbeat(
-            cmd.targetHostUuid, cmd.storageCheckerTimeout, cmd.interval, cmd.times, cmd.primaryStorageUuid)
-
+        heartbeat_success, vm_running_uuids = FileSystemFencer.read_heartbeat_file(record_vm_running_path)
         result = {ps_uuid: heartbeat_success}
         rsp.result = result
         rsp.vmUuids = vm_running_uuids
@@ -1326,7 +1320,7 @@ class VmNetworkFencer(Fencer):
         if len(vm_use_falut_nic_pids_dict) == 0:
             return True
 
-        logger.debug("Physical nic[%s] status has been checked %s times and is still down" % (",".join(falut_nic), self.max_attempts))
+        logger.debug("Physical nic[%s] status has been checked %s times and is still down" % (",".join(falut_nic), self.max_failures))
         return False
 
     def get_ha_fencer_name(self):
@@ -1385,7 +1379,7 @@ class VmNetworkFencer(Fencer):
                 logger.warn('iproute query_links is except, %s' % e)
                 continue
 
-        return [nic for nic, count in self.falut_nic_count.items() if count > self.max_attempts]
+        return [nic for nic, count in self.falut_nic_count.items() if count > self.max_failures]
 
     def get_nomal_bond_nic(self):
         bond_path = "/proc/net/bonding/"
@@ -1423,8 +1417,23 @@ class StorageFencer(Fencer):
     def recover(self):
         return self.retry_to_recover_storage()
 
+    def get_storage_heartbeat_content(self, unique_str_in_storage_path):
+        vm_uuids = find_ps_running_vm(unique_str_in_storage_path)
+        dict = {"heartbeat_time": time.time(),
+                    "vm_uuids": "" if len(vm_uuids) == 0 else ','.join(str(x) for x in vm_uuids)}
+        return json.dumps(dict)
 
-class FileSyetemMountPoint:
+    @staticmethod
+    def read_heartbeat_file(heartbeat_file_path):
+        try:
+            with open(heartbeat_file_path, 'r') as f:
+                return json.loads(f.read())
+        except Exception as e:
+            logger.warn("read heartbeat file %s failed: %s" % (heartbeat_file_path, e))
+            return None
+
+
+class FileSystemMountPoint:
     def __init__(self, url, mount_path, mounted_by_zstack, options):
         """
         :param url: file system url
@@ -1440,6 +1449,10 @@ class FileSyetemMountPoint:
 
 
 class FileSystemFencer(StorageFencer):
+    @staticmethod
+    def format_heartbeat_path(storage_mount_path, host_uuid):
+        return os.path.join(os.path.join(storage_mount_path, 'heartbeat'), 'heartbeat-file-%s.hb' % host_uuid)
+
     def __init__(self, ps_uuid, max_failures, interval, timeout, strategy, host_uuid, mount_point):
         """
         :param ps_uuid: primary storage uuid
@@ -1468,10 +1481,7 @@ class FileSystemFencer(StorageFencer):
                           % (self.heartbeat_file_path, touch.stderr, touch.stdout))
             return False
 
-        vm_uuids = find_ps_running_vm(self.ps_uuid)
-        content = {"heartbeat_time": time.time(),
-                    "vm_uuids": None if len(vm_uuids) == 0 else ','.join(str(x) for x in vm_uuids)}
-
+        content = self.get_storage_heartbeat_content(self.ps_uuid)
         with open(self.heartbeat_file_path, 'w') as f:
             f.write(json.dumps(content))
         return True
@@ -1485,7 +1495,18 @@ class FileSystemFencer(StorageFencer):
         return True
 
     def get_status(self):
-        return self.failure_count < self.max_failures
+        return "FileSystemFencer Status:\n" \
+                "ps_uuid: %s\n" \
+                "max_failures: %s\n" \
+                "interval: %s\n" \
+                "timeout: %s\n" \
+                "strategy: %s\n" \
+                "mount_point: %s\n" % (self.ps_uuid,
+                                        self.max_failures,
+                                        self.interval,
+                                        self.timeout,
+                                        self.strategy,
+                                        self.mount_point.mount_path)
 
 
 class SanlockVolumeGroupFencer(StorageFencer):
@@ -1571,11 +1592,16 @@ class SharedBlockStorageFencer(StorageFencer):
         return True
 
     def get_status(self):
-        try:
-            return self.do_check()
-        except Exception as e:
-            logger.warn('failed to get the status of the shared block storage, %s' % e)
-            return False
+        return "SharedBlockStorageFencer Status:\n" \
+                "vg_uuid: %s\n" \
+                "max_failures: %s\n" \
+                "interval: %s\n" \
+                "timeout: %s\n" \
+                "strategy: %s\n" % (self.vg_name,
+                                    self.max_failures,
+                                    self.interval,
+                                    self.timeout,
+                                    self.strategy)
 
     def update_sharedblock_agent_param(self, vg_uuids):
         if len(vg_uuids) == 0:
@@ -1615,9 +1641,8 @@ class IscsiFencer(StorageFencer):
         # type -> (list[str])
         offset = self.host_id * self.heartbeat_required_space
         tmp_file = linux.write_to_temp_file(jsonobject.dumps(IscsiNodeStatus(vm_uuids)) + EOF)
-
         cmd = "dd if=%s of=%s bs=%s seek=%s oflag=direct" % \
-              (tmp_file, self.heartbeat_path, self.heartbeat_required_space, self.host_id)
+              (tmp_file, self.heartbeat_path, offset, self.host_id)
 
         r, o, e = bash.bash_roe("timeout 20 " + cmd)
         linux.rm_file_force(tmp_file)
@@ -1704,18 +1729,19 @@ class CephFencer(StorageFencer):
 
 
 class BlockStorageFencer(StorageFencer):
-    def __init__(self, cmd, heart_beat_wwn_path):
+    def __init__(self, cmd, heartbeat_wwn_path):
         super(BlockStorageFencer, self).__init__(cmd.vgUuid, cmd.maxAttempts, cmd.interval, cmd.storageCheckerTimeout, cmd)
-        self.heart_beat_wwn_path = heart_beat_wwn_path
+        self.heartbeat_wwn_path = heartbeat_wwn_path
         self.cmd = cmd
 
     def do_check(self):
-        heartbeat_check = shell.ShellCmd('sg_inq %s' % self.heart_beat_wwn_path)
+        heartbeat_check = shell.ShellCmd('sg_inq %s' % self.heartbeat_wwn_path)
         heartbeat_check(False)
         if heartbeat_check.return_code != 0:
             return False
 
         return True
+
     # TODO: need fix this
     def try_recover_storage(self):
         bash.bash_roe("timeout 120 /usr/bin/rescan-scsi-bus.sh -r >/dev/null")
