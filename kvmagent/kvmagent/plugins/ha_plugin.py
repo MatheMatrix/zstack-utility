@@ -21,6 +21,7 @@ import threading
 import rados
 import rbd
 import json
+import math
 from enum import Enum
 from datetime import datetime, timedelta
 from distutils.version import LooseVersion
@@ -1468,9 +1469,8 @@ class FileSystemFencer(StorageFencer):
         self.mount_point = mount_point
         self.ps_uuid = ps_uuid
 
-        self.heartbeat_file_dir = os.path.join(self.mount_point.mount_path, 'heartbeat')
-        self.heartbeat_file_name = 'heartbeat-file-kvm-host-%s.hb' % host_uuid
-        self.heartbeat_file_path = os.path.join(self.heartbeat_file_dir, self.heartbeat_file_name)
+        self.heartbeat_file_path = os.path.join(os.path.join(self.mount_point.mount_path, 'heartbeat'),
+                                                 'heartbeat-file-kvm-host-%s.hb' % host_uuid)
 
     def do_check(self):
         touch = shell.ShellCmd('timeout %s touch %s' 
@@ -1509,23 +1509,17 @@ class FileSystemFencer(StorageFencer):
                                         self.mount_point.mount_path)
 
 
+
 class SanlockVolumeGroupFencer(StorageFencer):
     def __init__(self, cmd):
         super(SanlockVolumeGroupFencer, self).__init__(cmd.vgUuid, cmd.maxAttempts, cmd.interval, cmd.storageCheckerTimeout, cmd.strategy)
         self.cmd = cmd
 
-    # use cache instead of real time check
-    def _do_get_client_status(self):
-        return bash.bash_o("sanlock client status -D")
-
-    def _do_get_lockspaces(self):
-        lines = bash.bash_o("sanlock client gets").splitlines()
-        return [s.split()[1] for s in lines if s.startswith('s ') ]
-
     def do_check(self):
-        lockspaces = self._do_get_lockspaces()
-        p = sanlock.SanlockClientStatusParser(self._do_get_client_status())
-        r = p.get_lockspace_record(self.cmd.vgUuid)
+        lockspaces = sanlock.get_lockspaces()
+        p = sanlock.get_sanlock_client_status()
+        vg = self.cmd.vgUuid
+        r = p.get_lockspace_record(vg)
         if not r:
             failure = "lockspace for vg %s not found" % vg
             logger.warn(failure)
@@ -1540,14 +1534,14 @@ class SanlockVolumeGroupFencer(StorageFencer):
             logger.warn(failure)
             return False
 
-        if r.get_renewal_last_result() != 1:
-            if (r.get_renewal_last_attempt() > r.get_renewal_last_success() and \
-                    r.get_renewal_last_attempt() - r.get_renewal_last_success() > 100) or \
-                    (r.get_renewal_last_attempt() < r.get_renewal_last_success() - 100 < r.get_renewal_last_success()):
-                failure = "sanlock last renewal failed with %s and last attempt is %s, last success is %s" % \
-                        (r.get_renewal_last_result(), r.get_renewal_last_attempt(), r.get_renewal_last_success())
-                logger.warn(failure)
-                return False
+        if r.get_renewal_last_result() == 1:
+            return True
+
+        if math.fabs(r.get_renewal_last_attempt() - r.get_renewal_last_success()) > 100:
+            failure = "sanlock last renewal failed with %s and last attempt is %s, last success is %s, which is over 100 seconds" % \
+                    (r.get_renewal_last_result(), r.get_renewal_last_attempt(), r.get_renewal_last_success())
+            logger.warn(failure)
+            return False
 
         return True
 
