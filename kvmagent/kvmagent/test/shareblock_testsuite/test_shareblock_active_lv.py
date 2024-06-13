@@ -138,10 +138,33 @@ class TestSharedBlockPlugin(TestCase,SharedBlockPluginTestStub):
         volumeUuid = misc.uuid()
         bash.bash_r("lvcreate --size 4M --name %s %s --addtag zs::sharedblock::volume" % (volumeUuid, vgUuid))
         lvUuid = bash.bash_o("lvs -ouuid --noheading /dev/%s/%s" % (vgUuid, volumeUuid)).strip()
+        lvm.LV_UUID_REFRESH_INTERVAL_IN_SEC = 30
         lvm.lv_uuid_cache_last_refresh_time = 0
         # test ping update lv uuid cache
-        rsp = sharedblock_utils.sharedblock_ping(vgUuid)
+        rsp = sharedblock_utils.sharedblock_check_lock(vgUuid)
         self.assertEqual(lvm.lv_uuid_cache.get("/dev/%s/%s" % (vgUuid, volumeUuid) ), lvUuid)
+        self.assertEqual(rsp.cacheRefreshed, True)
+        rsp = sharedblock_utils.sharedblock_check_lock(vgUuid)
+        self.assertEqual(rsp.cacheRefreshed, True)
+        rsp = sharedblock_utils.sharedblock_check_lock(vgUuid)
+        self.assertEqual(rsp.cacheRefreshed, None)
+        ## lvcreate trigger cache update
+        volumeUuid = misc.uuid()
+        bash.bash_r("lvcreate --size 4M --name %s %s --addtag zs::sharedblock::volume" % (volumeUuid, vgUuid))
+        rsp = sharedblock_utils.sharedblock_check_lock(vgUuid)
+        lvUuid = bash.bash_o("lvs -ouuid --noheading /dev/%s/%s" % (vgUuid, volumeUuid)).strip()
+        self.assertEqual(lvm.lv_uuid_cache.get("/dev/%s/%s" % (vgUuid, volumeUuid)), lvUuid)
+        self.assertEqual(rsp.cacheRefreshed, True)
+        ## lvremove trigger cache update
+        bash.bash_r("lvremove -y /dev/%s/%s" % (vgUuid, volumeUuid))
+        rsp = sharedblock_utils.sharedblock_check_lock(vgUuid)
+        self.assertEqual(lvm.lv_uuid_cache.get("/dev/%s/%s" % (vgUuid, volumeUuid)), None)
+        self.assertEqual(rsp.cacheRefreshed, True)
+        rsp = sharedblock_utils.sharedblock_check_lock(vgUuid)
+        self.assertEqual(rsp.cacheRefreshed, None)
+        time.sleep(30)
+        rsp = sharedblock_utils.sharedblock_check_lock(vgUuid)
+        self.assertEqual(rsp.cacheRefreshed, True)
 
         volumeUuid = misc.uuid()
         bash.bash_r("lvcreate --size 4M --name %s %s --addtag zs::sharedblock::volume" % (volumeUuid, vgUuid))
