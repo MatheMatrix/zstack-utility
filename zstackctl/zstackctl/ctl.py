@@ -2280,10 +2280,17 @@ EOF
         path = os.path.expanduser(args.use_file)
         if not os.path.isfile(path):
             raise CtlError('cannot find file %s' % path)
-
-        shell('cp -f %s %s' % (path, ctl.properties_file_path))
+        if path != ctl.properties_file_path:
+            shell('cp -f %s %s' % (path, ctl.properties_file_path))
+        self._report_property_updated()
 
     def _report_property_updated(self):
+        collector = ManagementNodeStatusCollector()
+        mn_status, _ = collector.get_mn_ui_status()
+        if mn_status != "running":
+            mysql("DELETE FROM FileIntegrityVerificationVO WHERE nodeType = 'managementNode'")
+            logger.debug("cleared management node FileIntegrityVerification")
+            return
         config_cmd = UpdatePropertyCmd()
         config_cmd.propertiesDigestValue = file_hex_digest(self.properties_algorithm, ctl.properties_file_path)
         config_cmd.mnIp = ctl.read_property('management.server.ip')
@@ -7206,6 +7213,7 @@ class ChangeIpCmd(Command):
             shell('iptables -I INPUT -p tcp --dport %s -d %s -j ACCEPT' % (port, args.ip))
             shell('iptables -I INPUT -p tcp --dport %s -d 127.0.0.1 -j ACCEPT' % port)
 
+        ctl.internal_run('configure', '--use-file %s' % ctl.properties_file_path)
         info("update iptables rules successfully")
         info("Change ip successfully")
 
