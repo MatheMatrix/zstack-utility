@@ -210,12 +210,15 @@ class PhysicalNicFencer(AbstractHaFencer):
         self.falut_nic_count = {} #type: dict[str, int]
 
     def exec_fencer(self):
-        vm_use_falut_nic_pids_dict, falut_nic = self.find_vm_use_falut_nic()
+        try:
+            vm_use_falut_nic_pids_dict, falut_nic = self.find_vm_use_falut_nic()
 
-        if len(vm_use_falut_nic_pids_dict) == 0:
-            return
-        reason = "because physical nic[%s] status has been checked %s times and is still down" % (",".join(falut_nic), self.max_attempts)
-        kill_vm_use_pid(vm_use_falut_nic_pids_dict, reason)
+            if len(vm_use_falut_nic_pids_dict) == 0:
+                return
+            reason = "because physical nic[%s] status has been checked %s times and is still down" % (",".join(falut_nic), self.max_attempts)
+            kill_vm_use_pid(vm_use_falut_nic_pids_dict, reason)
+        except Exception as e:
+            logger.warn("PhysicalNicFencer exec_fencer  failed, %s" % e)
 
     def get_ha_fencer_name(self):
         return "hostBusinessNic"
