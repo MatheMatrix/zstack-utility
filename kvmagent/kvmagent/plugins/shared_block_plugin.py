@@ -345,6 +345,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     BATCH_GET_VOLUME_SIZE_PATH = "/sharedblock/volume/batchgetsize"
     CHECK_DISKS_PATH = "/sharedblock/disks/check"
     ADD_SHARED_BLOCK = "/sharedblock/disks/add"
+    REMOVE_SHARED_BLOCK = "/sharedblock/disks/remove"
     MIGRATE_DATA_PATH = "/sharedblock/volume/migrate"
     GET_BLOCK_DEVICES_PATH = "/sharedblock/blockdevices"
     DOWNLOAD_BITS_FROM_KVM_HOST_PATH = "/sharedblock/kvmhost/download"
@@ -396,6 +397,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.BATCH_GET_VOLUME_SIZE_PATH, self.batch_get_volume_size)
         http_server.register_async_uri(self.CHECK_DISKS_PATH, self.check_disks)
         http_server.register_async_uri(self.ADD_SHARED_BLOCK, self.add_disk)
+        http_server.register_async_uri(self.REMOVE_SHARED_BLOCK, self.remove_disk)
         http_server.register_async_uri(self.MIGRATE_DATA_PATH, self.migrate_volumes)
         http_server.register_async_uri(self.GET_BLOCK_DEVICES_PATH, self.get_block_devices)
         http_server.register_async_uri(self.DOWNLOAD_BITS_FROM_KVM_HOST_PATH, self.download_from_kvmhost)
@@ -854,6 +856,31 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             lvm.add_pv(cmd.vgUuid, disk.get_path(), DEFAULT_VG_METADATA_SIZE)
 
         rsp = AgentRsp()
+        rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
+        rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
+        return jsonobject.dumps(rsp)
+
+
+    @kvmagent.replyerror
+    @lock.file_lock(LOCK_FILE)
+    def remove_disk(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentRsp()
+
+        disk = CheckDisk(cmd.diskUuid)
+        path = disk.get_path(raise_exception=True)
+
+        o = bash.bash_errorout("lvs -a -Svg_name=%s --nolocking --noheading -t -oseg_pe_ranges" % cmd.vgUuid)
+        for line in o.splitlines():
+            pv = line.strip().split(":")[0]
+            if os.path.realpath(pv) == path:
+                rsp.success = False
+                rsp.error = "disk %s still has logical volume" % cmd.diskUuid
+                return jsonobject.dumps(rsp)
+
+        lvm.check_gl_lock()
+        lvm.reduce_pv(cmd.vgUuid, path)
+
         rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
         rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
         return jsonobject.dumps(rsp)
