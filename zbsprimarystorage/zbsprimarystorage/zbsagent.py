@@ -2,12 +2,16 @@ __author__ = 'Xingwei Yu'
 
 import traceback
 import pprint
+import socket
+import threading
 
 import zbsutils
 import zstacklib.utils.jsonobject as jsonobject
 
 from zstacklib.utils import plugin
 from zstacklib.utils import daemon
+from zstacklib.utils import linux
+from zstacklib.utils import traceable_shell
 from zstacklib.utils.report import *
 from zstacklib.utils.bash import *
 
@@ -18,6 +22,7 @@ logger = log.get_logger(__name__)
 
 PROTOCOL_CBD_PREFIX = "cbd:"
 PROTOCOL_NBD_PREFIX = "nbd://"
+port_lock = threading.Lock()
 
 
 class AgentResponse(object):
@@ -121,6 +126,16 @@ def get_lun_name(install_path):
 
 def get_snapshot_name(install_path):
     return install_path.split(":")[1].split("/")[2].split("@")[1]
+
+
+def get_free_port_in_range(start_port, end_port):
+    for port in range(start_port, end_port):
+        s = socket.socket()
+        s.bind(('', port))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+    raise Exception("no free port found in the specified range[%d, %d]" % (start_port, end_port))
 
 
 class ZbsAgent(plugin.TaskManager):
@@ -320,6 +335,17 @@ class ZbsAgent(plugin.TaskManager):
 
     @replyerror
     def cbd_to_nbd(self, req):
+        class CbdToNbdDaemon(plugin.TaskDaemon):
+            def __init__(self, port, task_spec):
+                super(CbdToNbdDaemon, self).__init__(task_spec, "cbd to nbd")
+                self.task_spec = task_spec
+                self.port = port
+
+            def _cancel(self):
+                traceable_shell.cancel_job_by_api(self.api_id)
+                fullname = 'qemu-nbd -f raw -p %d' % port
+                linux.kill_process_by_fullname(fullname, 9)
+
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = CbdToNbdRsp()
 
@@ -343,12 +369,13 @@ class ZbsAgent(plugin.TaskManager):
         else:
             install_path = cmd.installPath
 
-        zbsutils.cbd_to_nbd(10086, install_path)
-
-        rsp.ip = cmd.mdsAddr
-        rsp.port = 10086
-
-        return jsonobject.dumps(rsp)
+        with port_lock:
+            port = get_free_port_in_range(10600, 10800)
+            with CbdToNbdDaemon(port, task_spec=cmd):
+                zbsutils.cbd_to_nbd(port, install_path)
+                rsp.ip = cmd.mdsAddr
+                rsp.port = port
+                return jsonobject.dumps(rsp)
 
     @replyerror
     def delete_volume(self, req):
