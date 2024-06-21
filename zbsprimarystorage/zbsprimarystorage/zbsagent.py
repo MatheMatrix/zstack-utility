@@ -193,28 +193,20 @@ class ZbsAgent(plugin.TaskManager):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = CopySnapshotRsp()
 
-        seq_num = ""
         o = zbsutils.query_snapshot_info(cmd.logicalPoolName, cmd.lunName)
         ret = jsonobject.loads(o)
         if not ret.result.hasattr('fileInfo'):
             raise Exception('failed to found snapshot for lun[%s]' % cmd.lunName)
-        for info in ret.result.fileInfo:
-            if cmd.snapshotName in info.fileName:
-                seq_num = info.seqNum
-                break
 
         path_prefix = PROTOCOL_CBD_PREFIX + cmd.physicalPoolName + "/" + cmd.logicalPoolName
-        src_snapshot_path = path_prefix + "/" + cmd.lunName + "@" + str(seq_num)
+        src_snapshot_path = path_prefix + "/" + cmd.lunName + "@" + cmd.snapshotName
         dst_lun_path = path_prefix + "/" + cmd.dstLunName
 
-        o = zbsutils.create_volume(cmd.logicalPoolName, cmd.dstLunName, cmd.dstLunSize)
+        # traceable_shell timeout
+        o = zbsutils.copy(src_snapshot_path, dst_lun_path, True)
         ret = jsonobject.loads(o)
-        if ret.error.code != 0:
-            raise Exception('failed to create lun[%s], error[%s]' % (dst_lun_path, ret.error.message))
-
-        if zbsutils.copy_snapshot(src_snapshot_path, dst_lun_path) != 0:
-            raise Exception('failed to copy snapshot[%s] to lun[%s]' % (src_snapshot_path, dst_lun_path))
-        rsp.size = cmd.dstLunSize
+        if ret.error.code != 0 or (ret.result.hasattr('fileStatus') and ret.result.fileStatus != 0):
+            raise Exception('failed to copy snapshot[%s] to lun[%s], error[%s]' % (src_snapshot_path, dst_lun_path, ret.error.message))
         rsp.installPath = dst_lun_path
 
         return jsonobject.dumps(rsp)
