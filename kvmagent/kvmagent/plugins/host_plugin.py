@@ -244,6 +244,14 @@ class HostPhysicalMemoryStruct(object):
         self.voltage = ""
         self.type = ""
 
+class HostPhysicalCpuStruct(object):
+    def __init__(self):
+        self.designation = ""
+        self.version = ""
+        self.currentSpeed = ""
+        self.coreCount = ""
+        self.threadCount = ""
+
 
 class GetHostPhysicalMemoryFactsResponse(kvmagent.AgentResponse):
     physicalMemoryFacts = None  # type: list[HostPhysicalMemoryStruct]
@@ -926,6 +934,7 @@ class HostPlugin(kvmagent.KvmAgent):
 
     CONNECT_PATH = '/host/connect'
     CAPACITY_PATH = '/host/capacity'
+
     ECHO_PATH = '/host/echo'
     FACT_PATH = '/host/fact'
     PING_PATH = "/host/ping"
@@ -1646,17 +1655,16 @@ if __name__ == "__main__":
         # If upgrade qemu-kvm and libvirt at the same time
         # you need to upgrade qemu-kvm and then upgrade libvirt
         # to ensure that libvirtd is rebooted after upgrading qemu-kvm
-        if "qemu-kvm" in updates or (cmd.releaseVersion != '' and "qemu-kvm" not in exclude):
+        if "qemu-kvm" in updates or (cmd.releaseVersion is not None and "qemu-kvm" not in exclude):
             update_qemu_cmd = "export YUM0={0};yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} swap -y -- remove qemu-img-ev -- install qemu-img " \
                               "&& yum remove qemu-kvm-ev qemu-kvm-common-ev -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} update " \
                               "qemu-storage-daemon -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} install qemu-kvm qemu-kvm-common -y && "
             yum_cmd = yum_cmd + update_qemu_cmd.format(releasever,
                                                        ',zstack-experimental-mn' if cmd.enableExpRepo else '')
-        if "libvirt" in updates or (cmd.releaseVersion != '' and "libvirt" not in exclude):
-            update_libvirt_cmd = "export YUM0={};yum remove libvirt libvirt-libs libvirt-client libvirt-python libvirt-admin libvirt-bash-completion libvirt-daemon-driver-lxc -y {} && " \
+        if "libvirt" in updates or (cmd.releaseVersion is not None and "libvirt" not in exclude):
+            update_libvirt_cmd = "export YUM0={};yum remove libvirt libvirt-libs libvirt-client libvirt-python libvirt-admin libvirt-bash-completion libvirt-daemon-driver-lxc -y && " \
                                  "yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{} install libvirt libvirt-client libvirt-python -y && "
             yum_cmd = yum_cmd + update_libvirt_cmd.format(releasever,
-                                                          '--noautoremove' if releasever in ['rl84', 'h84r'] else '',
                                                           ',zstack-experimental-mn' if cmd.enableExpRepo else '')
         upgrade_os_cmd = "export YUM0={};echo {}>/etc/yum/vars/YUM0;yum --enablerepo=* clean all && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{} {} update {} -y"
         yum_cmd = yum_cmd + upgrade_os_cmd.format(releasever, releasever, ',zstack-experimental-mn' if cmd.enableExpRepo else '', exclude, updates)
@@ -2000,6 +2008,44 @@ done
                         m.voltage = v
                         results.append(m)
         rsp.physicalMemoryFacts = results
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def get_host_physical_cpu_facts(self, req):
+        rsp = GetHostPhysicalMemoryFactsResponse()
+        r, o, e = bash_roe("dmidecode -q -t processor")
+        if r != 0:
+            rsp.success = False
+            rsp.error = e
+            return jsonobject.dumps(rsp)
+
+        results = []
+        memory_arr = o.split("Processor Information")
+        for infos in memory_arr[1:]:
+            designation = version = current_speed = core_count = None
+            for line in infos.splitlines():
+                if line.strip() == "" or ":" not in line:
+                    continue
+                k = line.split(":")[0].lower().strip()
+                v = ":".join(line.split(":")[1:]).strip()
+
+                if "socket designation" == k:
+                    designation = v
+                elif "version" == k:
+                    version = v
+                elif "current speed" == k:
+                    current_speed = v
+                elif "core count" == k:
+                    core_count = v
+                elif "thread count" == k:
+                    m = HostPhysicalCpuStruct()
+                    m.designation = designation
+                    m.version = version
+                    m.currentSpeed = current_speed
+                    m.coreCount = core_count
+                    m.threadCount = v
+                    results.append(m)
+        rsp.physicalCpuFacts = results
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
