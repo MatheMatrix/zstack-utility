@@ -179,6 +179,12 @@ class FcSanScanRsp(AgentRsp):
         self.hbaWwnns = []
 
 
+class EnableMultipathRsp(AgentRsp):
+    def __init__(self):
+        super(EnableMultipathRsp, self).__init__()
+        self.multipathConfigChanged = False
+
+
 class NvmeSanScanRsp(AgentRsp):
     def __init__(self):
         super(NvmeSanScanRsp, self).__init__()
@@ -1087,7 +1093,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
     @kvmagent.replyerror
     @bash.in_bash
     def enable_multipath(self, req):
-        rsp = AgentRsp()
+        rsp = EnableMultipathRsp()
         cmd_dict = simplejson.loads(req[http.REQUEST_BODY])
 
         if self.multipath_conf_cannot_change():
@@ -1102,7 +1108,8 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
             bash.bash_roe("sed -i 's/^[[:space:]]*alias/#alias/g' /etc/multipath.conf")
             bash.bash_roe("systemctl reload multipathd")
 
-        if multipath.write_multipath_conf("/etc/multipath.conf", cmd_dict.get("blacklist", None)):
+        modified, rsp.multipathConfigChanged = multipath.write_multipath_conf("/etc/multipath.conf", cmd_dict.get("blacklist", None))
+        if modified:
             bash.bash_roe("systemctl reload multipathd")
 
         linux.set_fail_if_no_path()

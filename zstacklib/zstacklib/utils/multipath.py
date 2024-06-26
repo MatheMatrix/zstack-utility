@@ -44,11 +44,12 @@ def sorted_conf(sections):
 
 
 def write_multipath_conf(path, blacklist=None):
-    # type: (str, list[dict[str, object]]) -> bool
+    # type: (str, list[dict[str, object]]) -> (bool, bool)
 
     default_device = {'device': [{'features': '0'}, {'no_path_retry': 'fail'}, {'product': '.*'}, {'vendor': '.*'}]}
     feature_to_remove = 'queue_if_no_path'
     modified = False
+    multipath_config_changed = False
     with open(path, 'r+') as fd:
         config = parse_multipath_conf(fd)
         has_devices_section = False
@@ -77,6 +78,7 @@ def write_multipath_conf(path, blacklist=None):
                 if not has_default_device:
                     section['devices'].append(default_device)
                     modified = True
+                multipath_config_changed |= modified
 
         if blacklist is not None and blacklist_changed:  # None blacklist means ignore
             config = filter(lambda cfg : 'blacklist' not in cfg, config)
@@ -86,6 +88,7 @@ def write_multipath_conf(path, blacklist=None):
         if not has_devices_section:
             config.append({'devices': [default_device]})
             modified = True
+            multipath_config_changed = True
 
         logger.info(config)
         if modified:
@@ -110,4 +113,4 @@ def write_multipath_conf(path, blacklist=None):
                     fd.write("\t}\n")
                 fd.write("}\n")
 
-    return modified
+    return modified, multipath_config_changed
