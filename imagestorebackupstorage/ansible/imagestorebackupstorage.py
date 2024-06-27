@@ -114,7 +114,10 @@ if host_info.distro in RPM_BASED_OS:
 
     for k in kylin:
         releasever_mapping[k] = ' python2-pyparted nettle'
-    qemu_pkg += releasever_mapping.get(releasever, ' pyparted')
+    if IS_MIPS64EL and releasever in kylin:
+        qemu_pkg = qemu_pkg + ' python3-pyparted nettle'
+    else:
+        qemu_pkg += releasever_mapping.get(releasever, ' pyparted')
 
     if not remote_bin_installed(host_post_info, "qemu-img", return_status=True):
         qemu_pkg += ' qemu-img'
