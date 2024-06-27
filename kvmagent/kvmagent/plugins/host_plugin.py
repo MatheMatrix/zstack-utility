@@ -928,8 +928,10 @@ class HostPlugin(kvmagent.KvmAgent):
     def _get_features_in_libvirt(conn):
         try:
             xml_object = xmlobject.loads(conn.getCapabilities())
-            if len(xml_object.guest) > 0:
+            if isinstance(xml_object.guest, list) and len(xml_object.guest) > 0:
                 return xml_object.guest[0].features
+            elif isinstance(xml_object.guest, xmlobject.XmlObject):
+                return xml_object.guest.features
             return None
         except (AttributeError, KeyError):
             return None
