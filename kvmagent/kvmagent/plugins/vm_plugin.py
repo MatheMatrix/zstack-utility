@@ -100,15 +100,31 @@ class VolumeTO(object):
     def __init__(self):
         self.installPath = None
         self.deviceType = None
+        self.cacheMode = None
 
     @staticmethod
     def from_xmlobject(xml_obj):
         # type: (etree.Element) -> VolumeTO
+        source = xml_obj.find('source')
+        if source is None:
+            return None
 
-        if xml_obj.attrib['type'] == 'file' and xml_obj.find('source') is not None:
+        driver = xml_obj.find('driver')
+        if driver is None:
+            return None
+
+        if xml_obj.attrib['type'] == 'file':
             v = VolumeTO()
-            v.installPath = xml_obj.find('source').attrib['file']
+            v.installPath = source.attrib['file']
+            v.cacheMode = driver.attrib.get('cache', 'default')
             v.deviceType = "file"
+            return v
+
+        if xml_obj.attrib['type'] == 'network':
+            v = VolumeTO()
+            v.installPath = source.attrib['name']
+            v.cacheMode = driver.attrib.get('cache', 'default')
+            v.deviceType = "ceph"
             return v
 
 
@@ -1384,8 +1400,10 @@ class BlkCeph(object):
         self.bus_type = None
 
     def to_xmlobject(self):
+        cache_mode = self.volume.cacheMode if self.volume.cacheMode else 'writeback'
+
         disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
-        e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
+        e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': cache_mode})
         source = e(disk, 'source', None,
                    {'name': self.volume.installPath.lstrip('ceph:').lstrip('//'), 'protocol': 'rbd'})
         if self.volume.secretUuid:
@@ -1407,8 +1425,9 @@ class VirtioCeph(object):
         self.dev_letter = None
 
     def to_xmlobject(self):
+        cache_mode = self.volume.cacheMode if self.volume.cacheMode else 'writeback'
         disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
-        e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
+        e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': cache_mode})
         source = e(disk, 'source', None,
                    {'name': self.volume.installPath.lstrip('ceph:').lstrip('//'), 'protocol': 'rbd'})
         if self.volume.secretUuid:
@@ -1428,8 +1447,9 @@ class VirtioSCSICeph(object):
         self.dev_letter = None
 
     def to_xmlobject(self):
+        cache_mode = self.volume.cacheMode if self.volume.cacheMode else 'writeback'
         disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
-        e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
+        e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': cache_mode})
         source = e(disk, 'source', None,
                    {'name': self.volume.installPath.lstrip('ceph:').lstrip('//'), 'protocol': 'rbd'})
         if self.volume.secretUuid:
@@ -6369,31 +6389,41 @@ class VmPlugin(kvmagent.KvmAgent):
             e(disk, 'source', None, {'dev': _v.installPath})
             return disk
 
+        def build_new_vol_xml(vol):
+            volume = file_volume_check(vol)
+            if volume.deviceType == 'file':
+                ele = filebased_volume(volume)
+            elif volume.deviceType == 'ceph':
+                ele = ceph_volume(volume)
+            elif volume.deviceType == 'block':
+                ele = block_volume(volume)
+            else:
+                raise Exception('unsupported volume deviceType[%s]' % volume.deviceType)
+
+
+            tags_to_keep = [ 'target', 'boot', 'alias', 'address', 'wwn', 'serial']
+            for c in old_disk.getchildren():
+                if c.tag in tags_to_keep:
+                    child = ele.find(c.tag)
+                    if child is not None: ele.remove(child)
+                    ele.append(c)
+
+            logger.info("updated disk XML: " + etree.tostring(ele))
+            return ele
+
         if volume is None:
             volume = VolumeTO.from_xmlobject(old_disk)
-            if not (volume and block_volume_over_incorrect_driver(volume) and user_specify_driver()):
-                return old_disk  # no change
+            if not volume:
+                return old_disk  # filter out by type
 
-        volume = file_volume_check(volume)
-        if volume.deviceType == 'file':
-            ele = filebased_volume(volume)
-        elif volume.deviceType == 'ceph':
-            ele = ceph_volume(volume)
-        elif volume.deviceType == 'block':
-            ele = block_volume(volume)
-        else:
-            raise Exception('unsupported volume deviceType[%s]' % volume.deviceType)
+            if block_volume_over_incorrect_driver(volume) and user_specify_driver():
+                return build_new_vol_xml(volume)
+            if volume.cacheMode != 'writeback' and volume.deviceType == 'ceph':
+                old_disk.find('driver').attrib['cache'] = 'writeback'
+                return etree.fromstring(etree.tostring(old_disk))
 
 
-        tags_to_keep = [ 'target', 'boot', 'alias', 'address', 'wwn', 'serial']
-        for c in old_disk.getchildren():
-            if c.tag in tags_to_keep:
-                child = ele.find(c.tag)
-                if child is not None: ele.remove(child)
-                ele.append(c)
-
-        logger.info("updated disk XML: " + etree.tostring(ele))
-        return ele
+        return build_new_vol_xml(volume)
 
     def _build_domain_new_xml(self, vm, volumeDicts):
         migrate_disks = {}
