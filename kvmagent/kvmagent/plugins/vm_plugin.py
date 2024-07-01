@@ -7702,11 +7702,28 @@ class VmPlugin(kvmagent.KvmAgent):
         states_from_qemu_process = get_all_vm_states_with_process()
         for guest, state in states_from_qemu_process.items():
             if guest not in rsp.states:
+                logger.warn('guest [%s] not found in virsh list' % guest)
+                rsp.states[guest] = state
+
+        states_from_cache = get_vm_states_from_cache()
+        for guest, state in states_from_cache.items():
+            if guest not in rsp.states:
+                logger.warn('guest [%s] not found in virsh list and qemu process, load from cache' % guest)
                 rsp.states[guest] = state
 
         libvirt_running_vms = rsp.states.keys()
         no_qemu_process_running_vms = list(set(libvirt_running_vms).difference(set(states_from_qemu_process.keys())))
+        state_cached_vms = states_from_cache.keys()
+        # if vm cached means kvmagent manually control the sync result, should be used 
+        # as filter.
+        # if vm not have qemu process means libvirt and qemu is inconsistent use filter
+        # to make sure the vm state is correct.
+        # vm meet both the above conditions should be shutdown
         for vm in no_qemu_process_running_vms:
+            if vm in state_cached_vms:
+                logger.warn('guest [%s] not found in qemu process, but in cache, keep the state' % vm)
+                continue
+
             rsp.states[vm] = Vm.VM_STATE_SHUTDOWN
 
         states_from_qemu_process = get_all_vm_states_with_process()
