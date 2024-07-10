@@ -408,7 +408,12 @@ class ZbsAgent(plugin.TaskManager):
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
             raise Exception('failed to create lun[%s], error[%s]' % (cmd.lunName, ret.error.message))
-        rsp.size = jsonobject.loads(o).result.info.fileInfo.length
+
+        o = zbsutils.query_volume_info(cmd.logicalPoolName, cmd.lunName)
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception('cannot found lun[%s/%s] info, error[%s]' % (cmd.logicalPoolName, cmd.lunName, ret.error.message))
+        rsp.size = ret.result.info.fileInfo.length
         rsp.installPath = install_path
 
         return jsonobject.dumps(rsp)
