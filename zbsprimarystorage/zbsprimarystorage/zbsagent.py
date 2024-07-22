@@ -69,6 +69,7 @@ class QueryVolumeRsp(AgentResponse):
     def __init__(self):
         super(QueryVolumeRsp, self).__init__()
         self.size = 0
+        self.actualSize = 0
 
 
 class CloneVolumeRsp(AgentResponse):
@@ -76,18 +77,21 @@ class CloneVolumeRsp(AgentResponse):
         super(CloneVolumeRsp, self).__init__()
         self.installPath = None
         self.size = 0
+        self.actualSize = 0
 
 
 class CreateSnapshotRsp(AgentResponse):
     def __init__(self):
         super(CreateSnapshotRsp, self).__init__()
         self.size = 0
+        self.actualSize = 0
 
 
 class CreateVolumeRsp(AgentResponse):
     def __init__(self):
         super(CreateVolumeRsp, self).__init__()
         self.size = 0
+        self.actualSize = 0
 
 
 class GetCapacityRsp(AgentResponse):
@@ -222,7 +226,13 @@ class ZbsAgent(plugin.TaskManager):
             elif ret.result.hasattr('fileStatus') and ret.result.fileStatus != 0:
                 zbsutils.delete_volume(cmd.logicalPoolName, cmd.dstLunName)
                 raise Exception('target lun[%s] exception[fileStatus:%d], deleted' % (dst_lun_path, ret.result.fileStatus))
-            rsp.size = ret.result.fileLength
+
+            o = zbsutils.query_volume_info(cmd.logicalPoolName, cmd.dstLunName)
+            ret = jsonobject.loads(o)
+            if ret.error.code != 0:
+                raise Exception('cannot found lun[%s/%s] info, error[%s]' % (cmd.logicalPoolName, cmd.dstLunName, ret.error.message))
+            rsp.size = ret.result.info.fileInfo.length
+            rsp.actualSize = ret.result.info.fileInfo.usedSize
             rsp.installPath = FORMAT_CBD_LUN_PATH.format(zbsutils.get_physical_pool_name(cmd.logicalPoolName), cmd.logicalPoolName, cmd.dstLunName)
 
             return jsonobject.dumps(rsp)
@@ -281,7 +291,8 @@ class ZbsAgent(plugin.TaskManager):
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
             raise Exception('cannot found lun[%s/%s] info, error[%s]' % (cmd.logicalPoolName, cmd.lunName, ret.error.message))
-        rsp.size = jsonobject.loads(o).result.info.fileInfo.length
+        rsp.size = ret.result.info.fileInfo.length
+        rsp.actualSize = ret.result.info.fileInfo.usedSize
 
         return jsonobject.dumps(rsp)
 
@@ -308,8 +319,14 @@ class ZbsAgent(plugin.TaskManager):
         if ret.error.code != 0:
             raise Exception('failed to clone lun[%s] to lun[%s], error[%s]' % (cmd.srcPath, cmd.destPath, ret.error.message))
 
+        o = zbsutils.query_volume_info(cmd.logicalPoolName, cmd.dstLunName)
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception(
+                'cannot found lun[%s/%s] info, error[%s]' % (cmd.logicalPoolName, cmd.lunName, ret.error.message))
+        rsp.size = ret.result.info.fileInfo.length
+        rsp.actualSize = ret.result.info.fileInfo.usedSize
         rsp.installPath = FORMAT_CBD_LUN_PATH.format(zbsutils.get_physical_pool_name(cmd.logicalPoolName), cmd.logicalPoolName, cmd.dstLunName)
-        rsp.size = ret.result.fileInfo.length
 
         return jsonobject.dumps(rsp)
 
@@ -340,6 +357,7 @@ class ZbsAgent(plugin.TaskManager):
             raise Exception('failed to create snapshot[%s@%s], error[%s]' % (cmd.lunName, cmd.snapshotName, ret.error.message))
 
         rsp.size = ret.result.snapShotFileInfo.length
+        rsp.actualSize = ret.result.snapShotFileInfo.usedSize
         rsp.installPath = install_path
 
         return jsonobject.dumps(rsp)
@@ -406,7 +424,8 @@ class ZbsAgent(plugin.TaskManager):
         o = zbsutils.query_volume_info(cmd.logicalPoolName, cmd.lunName)
         ret = jsonobject.loads(o)
         if ret.error.code == 0 and cmd.skipIfExisting:
-            rsp.size = jsonobject.loads(o).result.info.fileInfo.length
+            rsp.size = ret.result.info.fileInfo.length
+            rsp.actualSize = ret.result.info.fileInfo.usedSize
             rsp.installPath = install_path
             return jsonobject.dumps(rsp)
 
@@ -420,6 +439,7 @@ class ZbsAgent(plugin.TaskManager):
         if ret.error.code != 0:
             raise Exception('cannot found lun[%s/%s] info, error[%s]' % (cmd.logicalPoolName, cmd.lunName, ret.error.message))
         rsp.size = ret.result.info.fileInfo.length
+        rsp.actualSize = ret.result.info.fileInfo.usedSize
         rsp.installPath = install_path
 
         return jsonobject.dumps(rsp)
