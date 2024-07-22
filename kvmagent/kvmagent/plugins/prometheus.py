@@ -36,7 +36,8 @@ disk_list_record = None
 gpu_devices = {
     'NVIDIA': set(),
     'AMD': set(),
-    'HY': set()
+    'HY': set(),
+    'HUAWEI': set()
 }
 
 hw_status_abnormal_list_record = {
@@ -1059,7 +1060,7 @@ def collect_equipment_state_from_ipmi():
         CPU_Temp_01      | 39h | ok  |  7.18 | 34 degrees C
         CPU1 Temp        | 39h | ok  |  7.18 | 34 degrees C
         CPU1 Core Rem    | 04h | ok  |  3.96 | 41 degrees C
-        
+
         ================
         CPU STATUS
         ================
@@ -1116,7 +1117,7 @@ def fetch_vm_qemu_processes():
     processes = []
     for process in psutil.process_iter():
         try:
-            if process.name() == QEMU_CMD or QEMU_CMD in process.cmdline(): # /usr/libexec/qemu-kvm
+            if process.name() == QEMU_CMD or QEMU_CMD in process.cmdline():  # /usr/libexec/qemu-kvm
                 processes.append(process)
         except psutil.NoSuchProcess:
             pass
@@ -1132,7 +1133,7 @@ def find_vm_uuid_from_vm_qemu_process(process):
         for word in process.cmdline():
             # word like 'guest=707e9d31751e499eb6110cce557b4168,debug-threads=on'
             if word.startswith(prefix) and word.endswith(suffix):
-                return word[len(prefix) : len(word) - len(suffix)]
+                return word[len(prefix): len(word) - len(suffix)]
         return None
     except psutil.NoSuchProcess:
         return None
@@ -1394,20 +1395,21 @@ def handle_gpu_status(gpu_status, pci_device_address):
 def get_gpu_metrics():
     return {
         "host_gpu_power_draw": GaugeMetricFamily('host_gpu_power_draw', 'gpu power draw', None,
-                                            ['pci_device_address', 'gpu_serial']),
+                                                 ['pci_device_address', 'gpu_serial']),
         "host_gpu_temperature": GaugeMetricFamily('host_gpu_temperature', 'gpu temperature', None,
-                                             ['pci_device_address', 'gpu_serial']),
+                                                  ['pci_device_address', 'gpu_serial']),
         "host_gpu_fan_speed": GaugeMetricFamily('host_gpu_fan_speed', 'current percentage of gpu fan speed', None,
-                                           ['pci_device_address', 'gpu_serial']),
-        "host_gpu_utilization": GaugeMetricFamily('host_gpu_utilization', 'gpu utilization', None, ['pci_device_address']),
+                                                ['pci_device_address', 'gpu_serial']),
+        "host_gpu_utilization": GaugeMetricFamily('host_gpu_utilization', 'gpu utilization', None,
+                                                  ['pci_device_address']),
         "host_gpu_memory_utilization": GaugeMetricFamily('host_gpu_memory_utilization', 'gpu memory utilization', None,
-                                                    ['pci_device_address', 'gpu_serial']),
+                                                         ['pci_device_address', 'gpu_serial']),
         "host_gpu_rxpci_in_bytes": GaugeMetricFamily('host_gpu_rxpci_in_bytes', 'gpu rxpci in bytes', None,
-                                                ['pci_device_address', 'gpu_serial']),
+                                                     ['pci_device_address', 'gpu_serial']),
         "host_gpu_txpci_in_bytes": GaugeMetricFamily('host_gpu_txpci_in_bytes', 'gpu txpci in bytes', None,
-                                                ['pci_device_address', 'gpu_serial']),
+                                                     ['pci_device_address', 'gpu_serial']),
         "host_gpu_status": GaugeMetricFamily('host_gpu_status', 'gpu status, 0 is critical, 1 is nominal', None,
-                                        ['pci_device_address', 'gpuStatus', 'gpu_serial']),
+                                             ['pci_device_address', 'gpuStatus', 'gpu_serial']),
         "vgpu_utilization": GaugeMetricFamily('vgpu_utilization', 'vgpu utilization', None, ['vm_uuid', 'mdev_uuid']),
         "vgpu_memory_utilization": GaugeMetricFamily('vgpu_memory_utilization', 'vgpu memory utilization', None,
                                                      ['vm_uuid', 'mdev_uuid'])
@@ -1418,6 +1420,7 @@ def add_gpu_pci_device_address(type, pci_device_address, gpu_serial):
     pci_device_address_list = gpu_devices.get(type, set())
     pci_device_address_list.add((pci_device_address, gpu_serial))
     gpu_devices[type] = pci_device_address_list
+
 
 def check_gpu_status_and_save_gpu_status(type, metrics):
     pci_device_address_list = gpu_devices.get(type, set())
@@ -1474,8 +1477,10 @@ def collect_nvidia_gpu_status():
             logger.error("No PCI address found for GPU index {index_rx_tx[0]}")
             continue
 
-        metrics['host_gpu_rxpci_in_bytes'].add_metric([pci_device_address, gpu_serial], float(index_rx_tx[1]) * 1024 * 1024)
-        metrics['host_gpu_txpci_in_bytes'].add_metric([pci_device_address, gpu_serial], float(index_rx_tx[2]) * 1024 * 1024)
+        metrics['host_gpu_rxpci_in_bytes'].add_metric([pci_device_address, gpu_serial],
+                                                      float(index_rx_tx[1]) * 1024 * 1024)
+        metrics['host_gpu_txpci_in_bytes'].add_metric([pci_device_address, gpu_serial],
+                                                      float(index_rx_tx[2]) * 1024 * 1024)
 
     r, vgpu_info = bash_ro("nvidia-smi vgpu -q")
     if r != 0 or "VM Name" not in vgpu_info:
@@ -1486,6 +1491,58 @@ def collect_nvidia_gpu_status():
         mdev_uuid = vgpu["MDEV UUID"].replace('-', '')
         add_metrics('vgpu_utilization', vgpu['Gpu'].replace('%', '').strip(), [vm_uuid, mdev_uuid], metrics)
         add_metrics('vgpu_memory_utilization', vgpu['Memory'].replace('%', '').strip(), [vm_uuid, mdev_uuid], metrics)
+    return metrics.values()
+
+
+@in_bash
+def collect_huawei_gpu_status():
+    metrics = get_gpu_metrics()
+    if has_npu_smi() is False:
+        return metrics.values()
+
+    r, gpu_info_out = bash_ro("stdbuf -oL timeout 2 npu-smi info watch -d 2 -s ptam")
+    if r != 0 and r != 124:
+        check_gpu_status_and_save_gpu_status("HUAWEI", metrics)
+        return metrics.values()
+    npu_ids = set()
+    pci_device_address = None
+    gpu_serial = None
+    for info in gpu_info_out.splitlines():
+        if 'NpuID' in info:
+            continue
+        gpu_info = [s for s in info.split() if s]
+
+        npu_id = gpu_info[0].strip()
+        if npu_id in npu_ids:
+            continue
+        npu_ids.add(npu_id)
+
+        r, info_out = bash_ro("npu-smi info -t board -i %s" % npu_id)
+        if r != 0:
+            logger.error("npu query gpu board is error, %s " % info_out)
+            break
+
+        for line in info_out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if "PCIe Bus Info" in line:
+                pci_device_address = line.split(":", 1)[1].strip().lower()
+                continue
+            if "Serial Number" in line:
+                gpu_serial = line.split(":")[1].strip()
+                continue
+
+            if pci_device_address is not None and gpu_serial is not None:
+                break
+
+        add_gpu_pci_device_address("HUAWEI", pci_device_address, gpu_serial)
+        add_metrics('host_gpu_power_draw', gpu_info[2].strip(), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_temperature', gpu_info[3].strip(), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_utilization', gpu_info[4].strip(), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_memory_utilization', gpu_info[5].strip(), [pci_device_address, gpu_serial], metrics)
+
+    check_gpu_status_and_save_gpu_status("HUAWEI", metrics)
     return metrics.values()
 
 
@@ -1505,13 +1562,16 @@ def collect_hy_gpu_status():
         gpu_serial = card_data['Serial Number']
         pci_device_address = card_data["PCI Bus"].lower()
         add_gpu_pci_device_address("HY", pci_device_address, gpu_serial)
-        add_metrics('host_gpu_power_draw', card_data.get("Average Graphics Package Power (W)"), [pci_device_address, gpu_serial],
+        add_metrics('host_gpu_power_draw', card_data.get("Average Graphics Package Power (W)"),
+                    [pci_device_address, gpu_serial],
                     metrics)
-        add_metrics('host_gpu_temperature', card_data.get("Temperature (Sensor junction) (C)"), [pci_device_address, gpu_serial],
+        add_metrics('host_gpu_temperature', card_data.get("Temperature (Sensor junction) (C)"),
+                    [pci_device_address, gpu_serial],
                     metrics)
         add_metrics('host_gpu_fan_speed', card_data.get("Fan speed (%)"), [pci_device_address, gpu_serial], metrics)
         add_metrics('host_gpu_utilization', card_data.get("DCU use (%)"), [pci_device_address, gpu_serial], metrics)
-        add_metrics('host_gpu_memory_utilization', card_data.get("DCU memory use (%)"), [pci_device_address, gpu_serial],
+        add_metrics('host_gpu_memory_utilization', card_data.get("DCU memory use (%)"),
+                    [pci_device_address, gpu_serial],
                     metrics)
     check_gpu_status_and_save_gpu_status("HY", metrics)
     return metrics.values()
@@ -1534,9 +1594,11 @@ def collect_amd_gpu_status():
         gpu_serial = card_data['Serial Number']
         pci_device_address = card_data['PCI Bus'].lower()
         add_gpu_pci_device_address("AMD", pci_device_address, gpu_serial)
-        add_metrics('host_gpu_power_draw', card_data.get('Average Graphics Package Power (W)'), [pci_device_address, gpu_serial],
+        add_metrics('host_gpu_power_draw', card_data.get('Average Graphics Package Power (W)'),
+                    [pci_device_address, gpu_serial],
                     metrics)
-        add_metrics('host_gpu_temperature', card_data.get('Temperature (Sensor edge) (C)'), [pci_device_address, gpu_serial],
+        add_metrics('host_gpu_temperature', card_data.get('Temperature (Sensor edge) (C)'),
+                    [pci_device_address, gpu_serial],
                     metrics)
         add_metrics('host_gpu_fan_speed', card_data.get('Fan speed (%)'), [pci_device_address, gpu_serial], metrics)
         add_metrics('host_gpu_utilization', card_data.get('GPU use (%)'), [pci_device_address, gpu_serial], metrics)
@@ -1574,18 +1636,22 @@ def convert_pci_status_to_int(pci_address):
 
 
 def has_hy_smi():
-    return shell.run("which hy-smi") == 0
+    return shell.run_without_log("which hy-smi") == 0
 
 
 def has_nvidia_smi():
-    return shell.run("which nvidia-smi") == 0
+    return shell.run_without_log("which nvidia-smi") == 0
 
 
 def has_rocm_smi():
     if bash_r("lsmod | grep -q amdgpu") != 0:
         if bash_r("modprobe amdgpu") != 0:
             return False
-    return shell.run("which rocm-smi") == 0
+    return shell.run_without_log("which rocm-smi") == 0
+
+
+def has_npu_smi():
+    return shell.run_without_log("which npu-smi") == 0
 
 
 kvmagent.register_prometheus_collector(collect_host_network_statistics)
@@ -1612,6 +1678,7 @@ kvmagent.register_prometheus_collector(collect_ssd_state)
 kvmagent.register_prometheus_collector(collect_nvidia_gpu_status)
 kvmagent.register_prometheus_collector(collect_amd_gpu_status)
 kvmagent.register_prometheus_collector(collect_hy_gpu_status)
+kvmagent.register_prometheus_collector(collect_huawei_gpu_status)
 
 
 class SetServiceTypeOnHostNetworkInterfaceRsp(kvmagent.AgentResponse):
@@ -1756,6 +1823,8 @@ LoadPlugin virt
                     return "node_exporter"
                 elif "pushgateway" in path:
                     return "pushgateway"
+                elif "ipmi_exporter" in path:
+                    return "ipmi_exporter"
 
             def reload_and_restart_service(service_name):
                 bash_errorout("systemctl daemon-reload && systemctl restart %s.service" % service_name)
@@ -1763,7 +1832,24 @@ LoadPlugin virt
             service_name = get_systemd_name(binPath)
             service_path = '/etc/systemd/system/%s.service' % service_name
 
-            service_conf = '''
+            if service_name == "ipmi_exporter":
+                service_conf = '''
+[Unit]
+Description=prometheus %s
+After=network.target
+
+[Service]
+ExecStart=/bin/sh -c '%s %s > %s 2>&1'
+ExecStop=/bin/sh -c 'pkill -TERM -f %s'
+
+MemoryLimit=64M
+Restart=always
+RestartSec=30s
+[Install]
+WantedBy=multi-user.target
+''' % (service_name, binPath, args, log, binPath)
+            else:
+                service_conf = '''
 [Unit]
 Description=prometheus %s
 After=network.target
@@ -1836,6 +1922,8 @@ modules:
                     fd.write(conf)
 
             os.chmod(EXPORTER_PATH, 0o755)
+            if shell.run("pgrep %s" % EXPORTER_PATH) == 0:
+                bash_errorout("pkill -TERM -f %s" % EXPORTER_PATH)
             run_in_systemd(EXPORTER_PATH, ARGUMENTS, LOG_FILE)
 
         para = jsonobject.loads(req[http.REQUEST_BODY])
