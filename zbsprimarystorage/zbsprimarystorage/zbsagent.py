@@ -101,11 +101,18 @@ class CreateVolumeRsp(AgentResponse):
         self.actualSize = 0
 
 
+class LogicalPoolInfo(object):
+    def __init__(self, logicalPoolName, physicalPoolName, totalCapacity, availableCapacity):
+        self.logicalPoolName = logicalPoolName
+        self.physicalPoolName = physicalPoolName
+        self.totalCapacity = totalCapacity
+        self.availableCapacity = availableCapacity
+
+
 class GetCapacityRsp(AgentResponse):
     def __init__(self):
         super(GetCapacityRsp, self).__init__()
-        self.capacity = None
-        self.storedSize = None
+        self.logicalPoolInfos = []
 
 
 class GetFactsRsp(AgentResponse):
@@ -447,12 +454,15 @@ class ZbsAgent(plugin.TaskManager):
 
         found = False
         for lp in jsonobject.loads(o).result[0].logicalPoolInfos:
-            if cmd.logicalPoolName in lp.logicalPoolName:
-                rsp.capacity = lp.capacity
-                rsp.storedSize = lp.storedSize
+            if lp.logicalPoolName in cmd.logicalPoolNames:
+                logical_pool_info = LogicalPoolInfo(
+                    logicalPoolName=lp.logicalPoolName,
+                    physicalPoolName=lp.physicalPoolName,
+                    totalCapacity=lp.capacity,
+                    availableCapacity=lp.capacity - lp.storedSize
+                )
+                rsp.logicalPoolInfos.append(logical_pool_info)
                 found = True
-                break
-
         if not found:
             raise Exception('cannot found logical pool[%s], you must create it manually' % cmd.logicalPoolName)
 
