@@ -1,6 +1,6 @@
 import zstacklib.utils.sizeunit as sizeunit
 
-from zstacklib.utils import ceph
+from zstacklib.utils import ceph, bash
 import zstacklib.utils.jsonobject as jsonobject
 from zstacklib.utils.bash import *
 import rbd
@@ -95,3 +95,39 @@ class CephDriver(object):
     def rollback_snapshot(self, cmd):
         spath = self._normalize_install_path(cmd.snapshotPath)
         shell.call('rbd snap rollback %s' % spath)
+
+    @in_bash
+    def get_file_actual_size(self, path):
+        fast_diff_enabled = shell.run(
+            "rbd --format json info %s | grep fast-diff | grep -qv 'fast diff invalid'" % path) == 0
+
+        # if no fast-diff supported and not xsky ceph skip actual size check
+        if not fast_diff_enabled and not ceph.is_xsky():
+            return None
+
+        r, jstr = bash.bash_ro("rbd du %s --format json" % path)
+        total_size = 0
+        result = jsonobject.loads(jstr)
+        if result.images is not None:
+            for item in result.images:
+                total_size += int(item.used_size)
+            return sizeunit.get_size(total_size)
+
+        return self.get_file_actual_size_by_rbd_du(path)
+
+    @in_bash
+    def get_file_actual_size_by_rbd_du(self, path):
+        r, size = bash.bash_ro(
+            "rbd du %s | awk 'END {if(NF==3) {print $3} else {print $4,$5} }' | sed s/[[:space:]]//g" % path,
+            pipe_fail=True)
+        if r != 0:
+            return None
+
+        size = size.strip()
+        if not size:
+            return None
+
+        return sizeunit.get_size(size)
+
+    def volume_size_with_internal_snapshot(self):
+        return True

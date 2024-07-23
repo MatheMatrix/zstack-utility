@@ -37,6 +37,11 @@ def is_xsky():
 def is_sandstone():
     return os.path.exists("/opt/sandstone/bin/sds") or os.path.exists("/var/lib/ceph/bin/ceph")
 
+
+def is_snapshot(path):
+    return path.contains('@')
+
+
 def support_defer_deleting():
     global SUPPORT_DEFER_DELETING
     if SUPPORT_DEFER_DELETING is None:

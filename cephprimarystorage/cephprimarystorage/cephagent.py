@@ -16,7 +16,6 @@ import simplejson
 import zstacklib.utils.daemon as daemon
 import zstacklib.utils.jsonobject as jsonobject
 import zstacklib.utils.lock as lock
-import zstacklib.utils.sizeunit as sizeunit
 from zstacklib.utils.ceph import get_mon_addr
 from zstacklib.utils.report import *
 from zstacklib.utils.bash import *
@@ -36,6 +35,9 @@ from imagestore import ImageStoreClient
 from zstacklib.utils.linux import remote_shell_quote
 from cephdriver import CephDriver
 from thirdpartycephdriver import ThirdpartyCephDriver
+from zstonedriver import ZstoneDriver
+from xskydriver import XskyDriver
+from sandstonedriver import SandstoneDriver
 from zstacklib.utils.misc import IgnoreError
 from distutils.version import LooseVersion
 
@@ -152,11 +154,13 @@ class GetVolumeSizeRsp(AgentResponse):
         super(GetVolumeSizeRsp, self).__init__()
         self.size = None
         self.actualSize = None
+        self.withInternalSnapshot = None
 
 class GetBatchVolumeSizeRsp(AgentResponse):
     def __init__(self):
         super(GetBatchVolumeSizeRsp, self).__init__()
         self.actualSizes = {}
+        self.withInternalSnapshots = {}
 
 class GetVolumeWatchersRsp(AgentResponse):
     def __init__(self):
@@ -345,6 +349,10 @@ class CephAgent(plugin.TaskManager):
     http_server.logfile_path = log.get_logfile_path()
 
     mapping = {
+        'zstone': ZstoneDriver,
+        'xsky': XskyDriver,
+        'sandstone': SandstoneDriver,
+        'open-source': CephDriver,
         'ceph': CephDriver,
         'thirdpartyCeph': ThirdpartyCephDriver
     }
@@ -353,7 +361,7 @@ class CephAgent(plugin.TaskManager):
         if self.is_third_party_ceph(cmd):
             ps_type = 'thirdpartyCeph'
         else:
-            ps_type = 'ceph'
+            ps_type = ceph.get_ceph_manufacturer()
 
         return self.mapping.get(ps_type)(cmd)
 
@@ -492,34 +500,6 @@ class CephAgent(plugin.TaskManager):
                                              pool.replicated_size, pool.security_policy, pool.disk_utilization,
                                              pool.get_related_osds(), pool.related_osd_capacity)
             rsp.poolCapacities.append(pool_capacity)
-
-    @in_bash
-    def _get_file_actual_size(self, path):
-        fast_diff_enabled = shell.run("rbd --format json info %s | grep fast-diff | grep -qv 'fast diff invalid'" % path) == 0
-
-        # if no fast-diff supported and not xsky ceph skip actual size check
-        if not fast_diff_enabled and not ceph.is_xsky():
-            return None
-
-        # use json format result first
-        r, jstr = bash.bash_ro("rbd du %s --format json" % path)
-        if r == 0 and bool(jstr):
-            total_size = 0
-            result = jsonobject.loads(jstr)
-            if result.images is not None:
-                for item in result.images:
-                    total_size += int(item.used_size)
-                return total_size
-
-        r, size = bash.bash_ro("rbd du %s | awk 'END {if(NF==3) {print $3} else {print $4,$5} }' | sed s/[[:space:]]//g" % path, pipe_fail=True)
-        if r != 0:
-            return None
-
-        size = size.strip()
-        if not size:
-            return None
-
-        return sizeunit.get_size(size)
 
     def _get_file_size(self, path):
         o = shell.call('rbd --format json info %s' % path)
@@ -691,7 +671,9 @@ class CephAgent(plugin.TaskManager):
         path = self._normalize_install_path(cmd.installPath)
         rsp = GetVolumeSizeRsp()
         rsp.size = self._get_file_size(path)
-        rsp.actualSize = self._get_file_actual_size(path)
+        driver = self.get_driver(cmd)
+        rsp.actualSize = driver.get_file_actual_size(path)
+        rsp.withInternalSnapshot = driver.volume_size_with_internal_snapshot()
         return jsonobject.dumps(rsp)
 
     @replyerror
@@ -699,10 +681,12 @@ class CephAgent(plugin.TaskManager):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GetBatchVolumeSizeRsp()
 
+        driver = self.get_driver(cmd)
         for uuid, installPath in cmd.volumeUuidInstallPaths.__dict__.items():
             with IgnoreError():
                 path = self._normalize_install_path(installPath)
-                rsp.actualSizes[uuid] = self._get_file_actual_size(path)
+                rsp.actualSizes[uuid] = driver.get_file_actual_size(path)
+                rsp.withInternalSnapshots[uuid] = driver.volume_size_with_internal_snapshot()
 
         return jsonobject.dumps(rsp)
 
@@ -729,7 +713,8 @@ class CephAgent(plugin.TaskManager):
         path = self._normalize_install_path(cmd.installPath)
         rsp = GetVolumeSnapshotSizeRsp()
         rsp.size = self._get_file_size(path)
-        rsp.actualSize = self._get_file_actual_size(path)
+        driver = self.get_driver(cmd)
+        rsp.actualSize = driver.get_file_actual_size(path)
         return jsonobject.dumps(rsp)
 
     @replyerror
@@ -857,7 +842,8 @@ class CephAgent(plugin.TaskManager):
         if do_create:
             driver = self.get_driver(cmd)
             rsp = driver.create_snapshot(cmd, rsp)
-            rsp.actualSize = self._get_file_actual_size(spath)
+            rsp.actualSize = driver.get_file_actual_size(spath)
+            rsp.volume_size_with_internal_snapshot = driver.volume_size_with_internal_snapshot()
 
         self._set_capacity_to_response(rsp)
         return jsonobject.dumps(rsp)
@@ -949,7 +935,7 @@ class CephAgent(plugin.TaskManager):
             rsp.size = new_size
             logger.info("image size must be an integer multiple of 4KB, now resize it to %s bytes" % new_size)
         self._set_capacity_to_response(rsp)
-        rsp.actualSize = self._get_file_actual_size(dst_path)
+        rsp.actualSize = driver.get_file_actual_size(dst_path)
         return jsonobject.dumps(rsp)
 
     @replyerror
@@ -1071,7 +1057,7 @@ class CephAgent(plugin.TaskManager):
         rsp = driver.create_volume(cmd, rsp, agent=self)
 
         self._set_capacity_to_response(rsp)
-        rsp.actualSize = self._get_file_actual_size(self._normalize_install_path(cmd.installPath))
+        rsp.actualSize = driver.get_file_actual_size(self._normalize_install_path(cmd.installPath))
         return jsonobject.dumps(rsp)
 
     @replyerror
@@ -1404,12 +1390,13 @@ class CephAgent(plugin.TaskManager):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GetDownloadBitsFromKvmHostProgressRsp()
         totalSize = 0
+        driver = self.get_driver(cmd)
         for path in cmd.volumePaths:
             pool, image_name = self._parse_install_path(path)
             path = "%s/tmp-%s" % (pool, image_name)
             if bash_r('rbd info %s' % path) != 0:
                 continue
-            size = self._get_file_actual_size(path)
+            size = driver.get_file_actual_size(path)
             if size is not None:
                 totalSize += long(size)
 
@@ -1562,7 +1549,7 @@ class CephAgent(plugin.TaskManager):
         driver = self.get_third_party_driver(cmd)
         rsp = driver.create_volume(cmd, rsp, agent=self)
         self._set_capacity_to_response(rsp)
-        rsp.actualSize = self._get_file_actual_size(self._normalize_install_path(cmd.installPath))
+        rsp.actualSize = driver.get_file_actual_size(self._normalize_install_path(cmd.installPath))
         return jsonobject.dumps(rsp)
 
     @replyerror
