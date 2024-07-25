@@ -981,6 +981,10 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.totalMemory = _get_total_memory()
         rsp.usedMemory = used_memory
 
+        if HostPlugin.cpu_sockets < 1 and shell.run('lscpu | grep -q -w HygonGenuine') == 0:
+            sockets = int(shell.call("dmidecode -t processor | grep 'Socket Designation' | wc -l").strip())
+            HostPlugin.cpu_sockets = sockets if sockets > 0 else 1
+
         if HostPlugin.cpu_sockets < 1:
             sockets = len(bash_o('grep "physical id" /proc/cpuinfo | sort -u').splitlines())
             HostPlugin.cpu_sockets = sockets if sockets > 0 else 1
