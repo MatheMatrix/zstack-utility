@@ -128,13 +128,18 @@ def check_nested_kvm(host_post_info):
             command = "modprobe -r kvm_intel"
             run_remote_command(command, host_post_info, return_status=True)
         modprobe_arg.name = 'kvm_intel'
-    elif 'amd' in host_info.cpu_info or 'hygon' in host_info.cpu_info:
+    elif 'amd' in host_info.cpu_info:
         if enabled_nested_flag is False:
             command = "mkdir -p /etc/modprobe.d/ && echo 'options kvm_amd nested=1' >  /etc/modprobe.d/kvm-nested.conf"
             run_remote_command(command, host_post_info)
             command = "modprobe -r kvm_amd"
             run_remote_command(command, host_post_info, return_status=True)
         modprobe_arg.name = 'kvm_amd'
+    elif 'hygon' in host_info.cpu_info:
+        if enabled_nested_flag is False:
+            command = "modprobe -r kvm"
+            run_remote_command(command, host_post_info, return_status=True)
+        modprobe_arg.name = 'kvm'
     else:
         handle_ansible_info("Unknown CPU type detected when modprobe kvm", host_post_info, "WARNING")
     modprobe_arg.state = 'present'
