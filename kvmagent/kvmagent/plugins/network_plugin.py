@@ -938,6 +938,7 @@ configure lldp status rx-only \n
 
                 for vlan_eth in vlan_eth_list:
                     linux.delete_vlan_eth_and_ifcfg(vlan_eth)
+                vlan_eth_list = []
 
                 for param in cmd.bridgeParams:
                     bridge_name = param.bridgeName
@@ -945,6 +946,7 @@ configure lldp status rx-only \n
                     l2_network_uuid = param.l2NetworkUuid
                     if vlan_id:
                         new_vlan_interface = linux.create_vlan_eth_with_bridge(new_interface, vlan_id, bridge_name)
+                        vlan_eth_list.append(new_vlan_interface)
                     else:
                         new_vlan_interface = new_interface
 
@@ -952,6 +954,8 @@ configure lldp status rx-only \n
 
                 attach_rsp = self.do_attach_nic_to_bonding(attach_cmd)
                 if not attach_rsp.success:
+                    for vlan_eth in vlan_eth_list:
+                        linux.delete_vlan_eth_and_ifcfg(vlan_eth)
                     del_cmd = DeleteBondingCmd()
                     del_cmd.bondName = attach_cmd.bondName
                     self.do_delete_bonding(del_cmd)
