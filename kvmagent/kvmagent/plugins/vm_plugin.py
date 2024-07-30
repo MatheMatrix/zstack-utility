@@ -557,6 +557,12 @@ class QueryVolumeMirrorResponse(kvmagent.AgentResponse):
         self.extraMirrorVolumes = [] # type:list[str]
 
 
+class GetVolumeMirrorModeResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(GetVolumeMirrorModeResponse, self).__init__()
+        self.mode = None
+
+
 class QueryBlockJobStatusResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(QueryBlockJobStatusResponse, self).__init__()
@@ -2911,7 +2917,12 @@ class Vm(object):
                 raise Exception("vhostuser disk %s does not exist" % volume.installPath)
 
             disk = etree.Element('disk', {'type': 'vhostuser', 'device': 'disk', 'snapshot': 'no'})
-            e(disk, 'driver', None, {'name': 'qemu', 'type': volume.format})
+
+            driver_elements = {'name': 'qemu', 'type': volume.format}
+            if volume.hasattr("multiQueues") and volume.multiQueues:
+                driver_elements["queues"] = volume.multiQueues
+            e(disk, 'driver', None, driver_elements)
+
             source = e(disk, 'source', None, {'type': 'unix', 'path': volume.installPath})
             e(source, 'reconnect', None, {'enabled': 'yes', 'timeout': '10'})
 
@@ -5036,8 +5047,10 @@ class Vm(object):
                 e(qcmd, "qemu:arg", attrib={"value": '/usr/share/qemu-kvm/'})
 
             if cmd.qemu64BitPciMmioSetup:
-                e(qcmd, "qemu:arg", attrib={"value": '-fw_cfg'})
-                e(qcmd, "qemu:arg", attrib={"value": 'opt/ovmf/X-PciMmio64Mb,string=98304'})
+                if pci.need_config_pcimmio():
+                    e(qcmd, "qemu:arg", attrib={"value": '-fw_cfg'})
+                    e(qcmd, "qemu:arg", attrib={"value": 'opt/ovmf/X-PciMmio64Mb,string=%s'
+                                                         % pci.get_bars_max_addressable_memory()})
 
             if cmd.coloPrimary:
                 e(qcmd, "qemu:arg", attrib={"value": '-L'})
@@ -5513,7 +5526,12 @@ class Vm(object):
                     raise Exception("vhostuser disk %s does not exist" % _v.installPath)
             
                 disk = etree.Element('disk', {'type': 'vhostuser', 'device': 'disk', 'snapshot': 'no'})
-                e(disk, 'driver', None, {'name': 'qemu', 'type': _v.format})
+
+                driver_elements = {'name': 'qemu', 'type': _v.format}
+                if _v.hasattr("multiQueues") and _v.multiQueues:
+                    driver_elements["queues"] = _v.multiQueues
+                e(disk, 'driver', None, driver_elements)
+
                 source = e(disk, 'source', None, {'type': 'unix', 'path': _v.installPath})
                 e(source, 'reconnect', None, {'enabled': 'yes', 'timeout': '10'})
 
@@ -6479,6 +6497,7 @@ class VmPlugin(kvmagent.KvmAgent):
     KVM_CHECK_VOLUME_SNAPSHOT_PATH = "/vm/volume/checksnapshot"
     KVM_TAKE_VOLUME_BACKUP_PATH = "/vm/volume/takebackup"
     KVM_TAKE_VOLUME_MIRROR_PATH = "/vm/volume/takemirror"
+    KVM_GET_VOLUME_MIRROR_MODE_PATH = "/vm/volume/getmirrormode"
     KVM_CANCEL_VOLUME_MIRROR_PATH = "/vm/volume/cancelmirror"
     KVM_QUERY_VOLUME_MIRROR_PATH = "/vm/volume/querymirror"
     KVM_QUERY_MIRROR_LATENCY_BOUNDARY_PATH = "/vm/volume/querylatencyboundary"
@@ -8595,6 +8614,30 @@ host side snapshot files chian:
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    def get_volume_mirror_mode(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetVolumeMirrorModeResponse()
+
+        vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
+        if not vm:
+            raise kvmagent.KvmError("vm[uuid: %s] not found by libvirt" % cmd.vmUuid)
+
+        target_disk, _ = vm._get_target_disk(cmd.volume)
+        node_name = self.get_disk_device_name(target_disk)
+        installPath = cmd.volume.installPath
+        lastVolume, currVolume, volumeType = "", "", "raw"
+
+        if not installPath.startswith("ceph://"):
+            lastVolume = cmd.lastMirrorVolume
+            currVolume = installPath.split(":/")[-1]
+            volumeType = "qcow2"
+
+        isc = ImageStoreClient()
+        mode = isc.get_mirror_mode(cmd.vmUuid, node_name, lastVolume, currVolume, volumeType)
+        rsp.mode = mode
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
     def query_volume_mirror(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = QueryVolumeMirrorResponse()
@@ -10649,6 +10692,7 @@ host side snapshot files chian:
         http_server.register_async_uri(self.KVM_CHECK_VOLUME_SNAPSHOT_PATH, self.check_volume_snapshot)
         http_server.register_async_uri(self.KVM_TAKE_VOLUME_BACKUP_PATH, self.take_volume_backup, cmd=TakeVolumeBackupCommand())
         http_server.register_async_uri(self.KVM_TAKE_VOLUME_MIRROR_PATH, self.take_volume_mirror)
+        http_server.register_async_uri(self.KVM_GET_VOLUME_MIRROR_MODE_PATH, self.get_volume_mirror_mode)
         http_server.register_async_uri(self.KVM_CANCEL_VOLUME_MIRROR_PATH, self.cancel_volume_mirror)
         http_server.register_async_uri(self.KVM_QUERY_VOLUME_MIRROR_PATH, self.query_volume_mirror)
         http_server.register_async_uri(self.KVM_QUERY_MIRROR_LATENCY_BOUNDARY_PATH, self.query_vm_mirror_latencies_boundary)
@@ -11209,13 +11253,12 @@ host side snapshot files chian:
 
         @thread.AsyncThread
         @bash.in_bash
-        def deactivate_volume(event_str, file, vm_uuid):
+        def deactivate_volume(event_str, volume, vm_uuid):
             # type: (str, str, str) -> object
-            volume = file.strip().split("'")[1]
-            syslog.syslog("deactivating volume %s for vm %s" % (file, vm_uuid))
+            syslog.syslog("deactivating volume %s for vm %s" % (volume, vm_uuid))
             lock_type = bash.bash_o("lvs --noheading --nolocking -t %s -ovg_lock_type" % volume).strip()
             if "sanlock" not in lock_type:
-                syslog.syslog("%s has no sanlock, skip to deactive" % file)
+                syslog.syslog("%s has no sanlock, skip to deactive" % volume)
                 return
             try:
                 wait_volume_unused(volume)
@@ -11243,10 +11286,13 @@ host side snapshot files chian:
                 logger.info("expected event for zstack op %s, ignore event %s on vm %s" % (vm_op_judger.op, event_str, vm_uuid))
                 return
 
-            out = bash.bash_o("virsh dumpxml %s | grep \"source file='/dev/\"" % vm_uuid).strip().splitlines()
+            out = bash.bash_o("virsh dumpxml %s" % vm_uuid).strip()
             if len(out) != 0:
-                for file in out:
-                    deactivate_volume(event_str, file, vm_uuid)
+                tree = etree.ElementTree(etree.fromstring(out))
+                for disk in tree.iterfind('devices/disk'):
+                    volume = DomainVolume.from_xmlobject(disk)
+                    if volume.source.startswith("/dev/"):
+                        deactivate_volume(event_str, volume.source, vm_uuid)
 
             out = bash.bash_o('virsh dumpxml %s | grep -E "(active|hidden) file="' % vm_uuid).strip().splitlines()
             if len(out) != 0:
