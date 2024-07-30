@@ -928,8 +928,10 @@ class HostPlugin(kvmagent.KvmAgent):
     def _get_features_in_libvirt(conn):
         try:
             xml_object = xmlobject.loads(conn.getCapabilities())
-            if len(xml_object.guest) > 0:
+            if isinstance(xml_object.guest, list) and len(xml_object.guest) > 0:
                 return xml_object.guest[0].features
+            elif isinstance(xml_object.guest, xmlobject.XmlObject):
+                return xml_object.guest.features
             return None
         except (AttributeError, KeyError):
             return None
@@ -978,6 +980,10 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.usedCpu = used_cpu
         rsp.totalMemory = _get_total_memory()
         rsp.usedMemory = used_memory
+
+        if HostPlugin.cpu_sockets < 1 and shell.run('lscpu | grep -q -w HygonGenuine') == 0:
+            sockets = int(shell.call("dmidecode -t processor | grep 'Socket Designation' | wc -l").strip())
+            HostPlugin.cpu_sockets = sockets if sockets > 0 else 1
 
         if HostPlugin.cpu_sockets < 1:
             sockets = len(bash_o('grep "physical id" /proc/cpuinfo | sort -u').splitlines())
