@@ -157,10 +157,11 @@ class ZbsAgent(plugin.TaskManager):
     CLONE_VOLUME_PATH = "/zbs/primarystorage/volume/clone"
     CBD_TO_NBD_PATH = "/zbs/primarystorage/volume/cbdtonbd"
     CLEAN_NBD_PATH = "/zbs/primarystorage/volume/cleannbd"
+    EXPAND_VOLUME_PATH = "/zbs/primarystorage/volume/expand"
     CREATE_SNAPSHOT_PATH = "/zbs/primarystorage/snapshot/create"
     DELETE_SNAPSHOT_PATH = "/zbs/primarystorage/snapshot/delete"
     ROLLBACK_SNAPSHOT_PATH = "/zbs/primarystorage/snapshot/rollback"
-    EXPAND_VOLUME_PATH = "/zbs/primarystorage/volume/expand"
+    QUERY_SNAPSHOT_PATH = "/zbs/primarystorage/snapshot/query"
 
     http_server = http.HttpServer(port=7763)
     http_server.logfile_path = log.get_logfile_path()
