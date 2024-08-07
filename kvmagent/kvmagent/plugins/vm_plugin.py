@@ -3466,13 +3466,16 @@ class Vm(object):
 
             logger.debug('start block commit for disk %s, from %s, to %s, active commit: %s'
                          % (disk_name, top, base, active_commit))
-            flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
 
             # currently we only handle active commit
             if active_commit:
                 # Pass a flag to libvirt to indicate that we expect a two phase
                 # block job. We must tell libvirt to pivot to the new active layer (base).
+
+                flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
                 flags |= libvirt.VIR_DOMAIN_BLOCK_COMMIT_ACTIVE
+            else:
+                flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_DELETE
 
             self.domain.blockCommit(disk_name, base, top, 0, flags)
             touchQmpSocketWhenExists(task_spec.vmUuid)
@@ -8585,6 +8588,17 @@ host side snapshot files chian:
 
     @kvmagent.replyerror
     def block_commit(self, req):
+        def rebase_top_children():
+            if cmd.topChildrenInstallPathInDb is None:
+                return
+            for childPath in cmd.topChildrenInstallPathInDb:
+                if cmd.aliveChainInstallPathInDb is not None and childPath in cmd.aliveChainInstallPathInDb and online_commit:
+                    continue
+                if not os.path.exists(cmd.top):
+                    linux.qcow2_rebase(cmd.base, childPath, unsafe_mode=True, skip_resize=True)
+                else:
+                    linux.qcow2_rebase(cmd.base, childPath, skip_resize=True)
+
         def block_commit_with_qemu_img():
             top = VolumeTO.get_volume_actual_installpath(cmd.top)
             base = VolumeTO.get_volume_actual_installpath(cmd.base)
@@ -8593,17 +8607,29 @@ host side snapshot files chian:
 
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = BlockCommitResponse()
-        try:
-            if not cmd.vmUuid:
-                rsp.newVolumeInstallPath = block_commit_with_qemu_img()
-            else:
-                vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
-                vm_state = Vm.VM_STATE_SHUTDOWN if vm is None else vm.state
-                if vm and (vm_state == vm.VM_STATE_RUNNING or vm_state == vm.VM_STATE_PAUSED):
-                    rsp.newVolumeInstallPath = vm.do_block_commit(cmd, cmd.volume)
-                else:
-                    rsp.newVolumeInstallPath = block_commit_with_qemu_img()
 
+        logger.debug("11--------------------topChildrenInstallPathInDb-------------------")
+        if cmd.topChildrenInstallPathInDb is not None:
+            for index, path in enumerate(cmd.topChildrenInstallPathInDb):
+                logger.debug("[%s] -> [%s]\n" % (index, path))
+        logger.debug("22--------------------aliveChainInstallPathInDb-------------------")
+        if cmd.aliveChainInstallPathInDb is not None:
+            for index, path in enumerate(cmd.aliveChainInstallPathInDb):
+                logger.debug("[%s] -> [%s]\n" % (index, path))
+        logger.debug("33--------------------top_base-------------------")
+        logger.debug('cmd.top  -> %s' % cmd.top)
+        logger.debug('cmd.base -> %s' % cmd.base)
+
+        online_commit = False
+        try:
+            vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
+            vm_state = Vm.VM_STATE_SHUTDOWN if vm is None else vm.state
+            if vm and (vm_state == vm.VM_STATE_RUNNING or vm_state == vm.VM_STATE_PAUSED):
+                rsp.newVolumeInstallPath = vm.do_block_commit(cmd, cmd.volume)
+                online_commit = True
+            else:
+                rsp.newVolumeInstallPath = block_commit_with_qemu_img()
+            rebase_top_children()
         except kvmagent.KvmError as e:
             logger.warn(linux.get_exception_stacktrace())
             rsp.error = str(e)
