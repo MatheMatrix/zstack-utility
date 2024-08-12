@@ -3174,7 +3174,7 @@ class Vm(object):
 
         return status.get('cur', 0), status.get('end', 0)
 
-
+1
     # NOTE: code from Openstack nova
     def _wait_for_block_job(self, disk_path, abort_on_error=False,
                             wait_for_job_clean=False):
@@ -8588,26 +8588,39 @@ host side snapshot files chian:
 
     @kvmagent.replyerror
     def block_commit(self, req):
-        logger.debug("--------------------block_commit-------------------")
-        logger.debug("--------------------block_commit-------------------")
-        logger.debug("--------------------block_commit-------------------")
-
         def block_commit_with_qemu_img():
             top = VolumeTO.get_volume_actual_installpath(cmd.top)
             base = VolumeTO.get_volume_actual_installpath(cmd.base)
             linux.qcow2_commit(top, base)
             return base
 
-        def rebased_children():
-            if cmd.srcChildrenInstallPath is not None and len(cmd.srcChildrenInstallPath) > 0:
-                for srcChildPath in cmd.srcChildrenInstallPath:
-                    if srcChildPath in cmd.aliveChainInstallPathInDb and online:
-                        continue
-                    linux.qcow2_rebase(cmd.base, srcChildPath)
+        def rebase_top_children():
+            if cmd.topChildrenInstallPathInDb is None:
+                return
+            for childPath in cmd.topChildrenInstallPathInDb:
+                if cmd.aliveChainInstallPathInDb is not None and childPath in cmd.aliveChainInstallPathInDb and online_commit:
+                    continue
+                if not os.path.exists(cmd.top):
+                    linux.qcow2_rebase(cmd.base, childPath, unsafe_mode=True, skip_resize=True)
+                else:
+                    linux.qcow2_rebase(cmd.base, childPath, skip_resize=True)
 
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = BlockCommitResponse()
-        online = False
+
+        logger.debug("11--------------------topChildrenInstallPathInDb-------------------")
+        if cmd.topChildrenInstallPathInDb is not None:
+            for index, path in enumerate(cmd.topChildrenInstallPathInDb):
+                logger.debug("[%s] -> [%s]\n" % (index, path))
+        logger.debug("22--------------------aliveChainInstallPathInDb-------------------")
+        if cmd.aliveChainInstallPathInDb is not None:
+            for index, path in enumerate(cmd.aliveChainInstallPathInDb):
+                logger.debug("[%s] -> [%s]\n" % (index, path))
+        logger.debug("33--------------------top_base-------------------")
+        logger.debug('cmd.top  -> %s' % cmd.top)
+        logger.debug('cmd.base -> %s' % cmd.base)
+
+        online_commit = False
         try:
             if not cmd.vmUuid:
                 rsp.newVolumeInstallPath = block_commit_with_qemu_img()
@@ -8616,11 +8629,10 @@ host side snapshot files chian:
                 vm_state = Vm.VM_STATE_SHUTDOWN if vm is None else vm.state
                 if vm and (vm_state == vm.VM_STATE_RUNNING or vm_state == vm.VM_STATE_PAUSED):
                     rsp.newVolumeInstallPath = vm.do_block_commit(cmd, cmd.volume)
-                    online = True
+                    online_commit = True
                 else:
                     rsp.newVolumeInstallPath = block_commit_with_qemu_img()
-            rebased_children()
-
+            rebase_top_children()
         except kvmagent.KvmError as e:
             logger.warn(linux.get_exception_stacktrace())
             rsp.error = str(e)
@@ -8628,10 +8640,6 @@ host side snapshot files chian:
             return jsonobject.dumps(rsp)
 
         rsp.size = VmPlugin._get_snapshot_size(rsp.newVolumeInstallPath)
-
-        logger.debug("--------------------block_commit-------------------")
-        logger.debug("--------------------block_commit-------------------")
-        logger.debug("--------------------block_commit-------------------")
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
