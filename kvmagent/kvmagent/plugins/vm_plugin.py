@@ -4,6 +4,7 @@
 import contextlib
 import difflib
 import os.path
+import glob
 import tempfile
 import time
 import datetime
@@ -40,7 +41,7 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.imagestore import ImageStoreClient
-from zstacklib.utils import bash, plugin
+from zstacklib.utils import bash, plugin, iscsi
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import lvm
 from zstacklib.utils import ft
@@ -136,6 +137,7 @@ class VolumeTO(object):
                 v.is_cdrom = xml_obj.attrib['device'] == 'cdrom'
                 return v
 
+    # TODO remove it, should converted in MN
     @staticmethod
     def get_volume_actual_installpath(install_path):
         if install_path.startswith('sharedblock'):
@@ -458,6 +460,13 @@ class VmSyncResponse(kvmagent.AgentResponse):
         super(VmSyncResponse, self).__init__()
         self.states = None
         self.vmInShutdowns = None
+
+
+last_inactive_vol_paths = {}  # type: dict[str, set[str]]
+class VolumeSyncResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(VolumeSyncResponse, self).__init__()
+        self.inactiveVolumePaths = {}  # type: dict[str, list[str]]
 
 
 class AttachDataVolumeCmd(kvmagent.AgentCommand):
@@ -871,6 +880,7 @@ class IsoTo(object):
         self.imageUuid = None
         self.deviceId = None
         self.isEmpty = False
+        self.protocol = None
 
 class AttachIsoCmd(object):
     def __init__(self):
@@ -926,7 +936,7 @@ class GetVirtualizerInfoRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(GetVirtualizerInfoRsp, self).__init__()
         self.hostInfo = VirtualizerInfoTO()
-        self.vmInfoList = [] # type: VirtualizerInfoTO[]
+        self.vmInfoList = []  # type: list[VirtualizerInfoTO]
 
 class VirtualizerInfoTO(object):
     def __init__(self):
@@ -1497,48 +1507,6 @@ class LibvirtAutoReconnect(object):
             else:
                 raise
 
-class IscsiLogin(object):
-    def __init__(self):
-        self.server_hostname = None
-        self.server_port = None
-        self.target = None
-        self.chap_username = None
-        self.chap_password = None
-        self.lun = 1
-
-    @lock.lock('iscsiadm')
-    def login(self):
-        assert self.server_hostname, "hostname cannot be None"
-        assert self.server_port, "port cannot be None"
-        assert self.target, "target cannot be None"
-
-        device_path = os.path.join('/dev/disk/by-path/', 'ip-%s:%s-iscsi-%s-lun-%s' % (
-            self.server_hostname, self.server_port, self.target, self.lun))
-
-        shell.call('iscsiadm -m discovery -t sendtargets -p %s:%s' % (self.server_hostname, self.server_port))
-
-        if self.chap_username and self.chap_password:
-            shell.call(
-                'iscsiadm   --mode node  --targetname "%s"  -p %s:%s --op=update --name node.session.auth.authmethod --value=CHAP' % (
-                    self.target, self.server_hostname, self.server_port))
-            shell.call(
-                'iscsiadm   --mode node  --targetname "%s"  -p %s:%s --op=update --name node.session.auth.username --value=%s' % (
-                    self.target, self.server_hostname, self.server_port, self.chap_username))
-            shell.call(
-                'iscsiadm   --mode node  --targetname "%s"  -p %s:%s --op=update --name node.session.auth.password --value=%s' % (
-                    self.target, self.server_hostname, self.server_port, self.chap_password))
-
-        shell.call('iscsiadm  --mode node  --targetname "%s"  -p %s:%s --login' % (
-            self.target, self.server_hostname, self.server_port))
-
-        def wait_device_to_show(_):
-            return os.path.exists(device_path)
-
-        if not linux.wait_callback_success(wait_device_to_show, timeout=30, interval=0.5):
-            raise Exception('ISCSI device[%s] is not shown up after 30s' % device_path)
-
-        return device_path
-
 
 class BlkIscsi(object):
     def __init__(self):
@@ -1556,7 +1524,7 @@ class BlkIscsi(object):
         self.cache_mode = None
 
     def _login_portal(self):
-        login = IscsiLogin()
+        login = iscsi.IscsiLogin()
         login.server_hostname = self.server_hostname
         login.server_port = self.server_port
         login.target = self.target
@@ -2796,8 +2764,12 @@ class Vm(object):
 
     @staticmethod
     def set_volume_serial_id(vol_uuid, volume_xml_obj):
-        if volume_xml_obj.get('type') != 'block' or volume_xml_obj.get('device') != 'lun':
-            e(volume_xml_obj, 'serial', vol_uuid)
+        vol_type = volume_xml_obj.get('type')
+        if vol_type == 'vhostuser':
+            return
+        if vol_type == 'block' and volume_xml_obj.get('device') == 'lun':
+            return
+        e(volume_xml_obj, 'serial', vol_uuid)
 
     def _attach_data_volume(self, volume, addons):
         Vm.check_device_exceed_limit(volume.deviceId)
@@ -2953,6 +2925,34 @@ class Vm(object):
 
             return blk()
 
+        def vhost_volume():
+            if not os.path.exists(volume.installPath):
+                raise Exception("vhostuser disk %s does not exist" % volume.installPath)
+
+            disk = etree.Element('disk', {'type': 'vhostuser', 'device': 'disk', 'snapshot': 'no'})
+
+            driver_elements = {'name': 'qemu', 'type': volume.format}
+            if volume.hasattr("multiQueues") and volume.multiQueues:
+                driver_elements["queues"] = volume.multiQueues
+            e(disk, 'driver', None, driver_elements)
+
+            source = e(disk, 'source', None, {'type': 'unix', 'path': volume.installPath})
+            e(source, 'reconnect', None, {'enabled': 'yes', 'timeout': '10'})
+
+            if volume.shareable:
+                e(disk, 'shareable')
+
+            if volume.useVirtioSCSI:
+                e(disk, 'target', None, {'dev': 'sd%s' % dev_letter, 'bus': 'scsi'})
+                e(disk, 'wwn', volume.wwn)
+            elif volume.useVirtio:
+                e(disk, 'target', None, {'dev': 'vd%s' % self.DEVICE_LETTERS[volume.deviceId], 'bus': 'virtio'})
+            else:
+                bus_type = self._get_controller_type()
+                dev_format = Vm._get_disk_target_dev_format(bus_type)
+                e(disk, 'target', None, {'dev': dev_format % dev_letter, 'bus': bus_type})
+            return disk
+
         dev_letter = self._get_device_letter(volume, addons)
         volume = file_volume_check(volume)
 
@@ -2975,6 +2975,8 @@ class Vm(object):
             disk_element = block_volume()
         elif volume.deviceType == 'spool':
             disk_element = spool_volume()
+        elif volume.deviceType == 'vhost':
+            disk_element = vhost_volume()
         else:
             raise Exception('unsupported volume deviceType[%s]' % volume.deviceType)
 
@@ -3232,6 +3234,10 @@ class Vm(object):
             # 'block':
             if disk.source.dev__ and disk.source.dev_ in installPath:
                 return disk, disk.target.dev_
+            
+            # vhost
+            if disk.source.path__ and disk.source.path_ == installPath:
+                return disk, disk.target.dev_
 
         if not is_exception:
             return None, None
@@ -3283,6 +3289,10 @@ class Vm(object):
                     disk.driver.type_ = "qcow2"
                     disk.source = disk.backingStore.source
                     return disk, disk.backingStore.source.file_
+            elif volume.deviceType == 'vhost':
+                if disk.source.path__ and disk.source.path_ == volume.installPath:
+                    return disk, disk.target.dev_
+
         if not is_exception:
             return None, None
 
@@ -3961,11 +3971,18 @@ class Vm(object):
             cdrom = ic.to_xmlobject(dev, bus)
         else:
             iso.path = VolumeTO.get_volume_actual_installpath(iso.path)
+            if iso.path.startswith('iscsi://'):
+                iso.path = iscsi.connect_iscsi_target(iso.path)
+                iso.type = 'block'
 
             iso = iso_check(iso)
             cdrom = etree.Element('disk', {'type': iso.type, 'device': 'cdrom'})
             e(cdrom, 'driver', None, {'name': 'qemu', 'type': 'raw'})
-            e(cdrom, 'source', None, {Vm.disk_source_attrname.get(iso.type): iso.path})
+            if iso.type == 'vhostuser':
+                source = e(cdrom, 'source', None, {'type': 'unix', 'path': iso.path})
+                e(source, 'reconnect', None, {'enabled': 'yes', 'timeout': '10'})
+            else:
+                e(cdrom, 'source', None, {Vm.disk_source_attrname.get(iso.type): iso.path})
             e(cdrom, 'target', None, {'dev': dev, 'bus': bus})
             e(cdrom, 'readonly', None)
 
@@ -5148,7 +5165,15 @@ class Vm(object):
                     ic = IsoCeph()
                     ic.iso = iso
                     devices.append(ic.to_xmlobject(cdrom_config.targetDev, default_bus_type, cdrom_config.bus, cdrom_config.unit, iso.bootOrder))
+                elif iso.type == "vhostuser":
+                    cdrom = make_empty_cdrom(iso, cdrom_config, iso.bootOrder, iso.resourceUuid)
+                    source = e(cdrom, 'source', None, {'type': 'unix', 'path': iso.path})
+                    e(source, 'reconnect', None, {'enabled': 'yes', 'timeout': '10'})
                 else:
+                    if iso.path.startswith('iscsi://'):
+                        iso.path = iscsi.connect_iscsi_target(iso.path)
+                        iso.type = 'block'
+
                     cdrom = make_empty_cdrom(iso, cdrom_config, iso.bootOrder, iso.resourceUuid)
                     e(cdrom, 'source', None, {Vm.disk_source_attrname.get(iso.type): iso.path})
 
@@ -5395,6 +5420,37 @@ class Vm(object):
 
                 return disk
 
+            def vhost_volume(_dev_letter, _v):
+                if not os.path.exists(_v.installPath):
+                    raise Exception("vhostuser disk %s does not exist" % _v.installPath)
+            
+                disk = etree.Element('disk', {'type': 'vhostuser', 'device': 'disk', 'snapshot': 'no'})
+
+                driver_elements = {'name': 'qemu', 'type': _v.format}
+                if _v.hasattr("multiQueues") and _v.multiQueues:
+                    driver_elements["queues"] = _v.multiQueues
+                e(disk, 'driver', None, driver_elements)
+
+                source = e(disk, 'source', None, {'type': 'unix', 'path': _v.installPath})
+                e(source, 'reconnect', None, {'enabled': 'yes', 'timeout': '10'})
+
+                if _v.shareable:
+                    e(disk, 'shareable')
+
+                if _v.useVirtioSCSI:
+                    e(disk, 'target', None, {'dev': 'sd%s' % _dev_letter, 'bus': 'scsi'})
+                    e(disk, 'wwn', _v.wwn)
+                    return disk
+
+                if _v.useVirtio:
+                    e(disk, 'target', None, {'dev': 'vd%s' % _dev_letter, 'bus': 'virtio'})
+                else:
+                    dev_format = Vm._get_disk_target_dev_format(default_bus_type)
+                    e(disk, 'target', None, {'dev': dev_format % _dev_letter, 'bus': default_bus_type})
+                    if default_bus_type == "ide" and cmd.imagePlatform.lower() == "other":
+                        allocat_ide_config(disk, _v)
+                return disk
+
             def volume_qos(volume_xml_obj):
                 if not cmd.addons:
                     return
@@ -5471,6 +5527,8 @@ class Vm(object):
                     vol = block_volume(dev_letter, v)
                 elif v.deviceType == 'spool':
                     vol = spool_volume(dev_letter, v)
+                elif v.deviceType == 'vhost':
+                    vol = vhost_volume(dev_letter, v)
                 else:
                     raise Exception('unknown volume deviceType: %s' % v.deviceType)
 
@@ -6012,7 +6070,7 @@ class Vm(object):
         if cmd.additionalQmp:
             make_qemu_commandline()
 
-        if cmd.useHugePage or cmd.MemAccess in "shared":
+        if cmd.useHugePage or cmd.MemAccess in "shared" or cmd.noSharePages:
             make_memory_backing()
 
         if HOST_ARCH == "x86_64" and cmd.vmCpuVendorId and cmd.vmCpuVendorId != "None":
@@ -6189,6 +6247,9 @@ def qmp_subcmd(s_cmd):
 def block_volume_over_incorrect_driver(volume):
     return volume.deviceType == "file" and volume.installPath.startswith("/dev/")
 
+def volume_support_block_node(volume):
+    return volume.deviceType != "vhost"
+
 def file_volume_check(volume):
     # `file` support has been removed with block/char devices since qemu-6.0.0
     # https://github.com/qemu/qemu/commit/8d17adf34f501ded65a106572740760f0a75577c
@@ -6206,6 +6267,9 @@ def iso_check(iso):
         return iso
     if iso.path.startswith("/dev/") and block_device_use_block_type():
         iso.type = "block"
+
+    if iso.protocol and iso.protocol.lower() == "vhost":
+        iso.type = "vhostuser"
 
     return iso
 
@@ -6302,6 +6366,7 @@ class VmPlugin(kvmagent.KvmAgent):
     KVM_ONLINE_INCREASE_MEMORY_PATH = "/vm/increase/mem"
     KVM_GET_CONSOLE_PORT_PATH = "/vm/getvncport"
     KVM_VM_SYNC_PATH = "/vm/vmsync"
+    KVM_VOLUME_SYNC_PATH = "/vm/volumesync"
     KVM_ATTACH_VOLUME = "/vm/attachdatavolume"
     KVM_DETACH_VOLUME = "/vm/detachdatavolume"
     KVM_MIGRATE_VM_PATH = "/vm/migrate"
@@ -7030,6 +7095,44 @@ class VmPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    @lock.lock('volume-sync-task')
+    def volume_sync(self, req):
+        rsp = VolumeSyncResponse()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+
+        global last_inactive_vol_paths
+        current_inactive_vol_paths = {}  # type: dict[str, set[str]]
+
+        def get_inactive_vols_from_file_path(fpath):
+            file_dir = fpath if os.path.isdir(fpath) else os.path.dirname(fpath)
+            o = bash.bash_o('grep -Eo "%s[_/a-z0-9\\-]*" %s' % (file_dir, os.path.join(linux.LIVE_LIBVIRT_XML_DIR, "*.xml")))
+            active_vol_paths = set(line.split(":")[-1].strip() for line in o.splitlines())
+
+            file_name = "" if os.path.isdir(fpath) else os.path.basename(fpath)
+            wildcard_name = file_name if "*" in file_name else "%s*" % file_name
+            all_vol_paths = set(glob.glob(os.path.join(file_dir, wildcard_name)))
+
+            return all_vol_paths - active_vol_paths
+
+        for storage_url in cmd.storagePaths:
+            # TODO support other protocols
+            if storage_url.startswith("file://"):
+                inactive_vol_paths = get_inactive_vols_from_file_path(storage_url[7:])
+            else:
+                inactive_vol_paths = set()
+
+            current_inactive_vol_paths[storage_url] = inactive_vol_paths
+
+        for storage_url in current_inactive_vol_paths:
+            if storage_url in last_inactive_vol_paths:
+                twice_inactive_vol_paths = current_inactive_vol_paths[storage_url] & last_inactive_vol_paths[storage_url]
+                if twice_inactive_vol_paths:
+                    rsp.inactiveVolumePaths[storage_url] = list(twice_inactive_vol_paths)
+
+        last_inactive_vol_paths = current_inactive_vol_paths
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
     def online_increase_mem(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = IncreaseMemoryResponse()
@@ -7332,7 +7435,7 @@ class VmPlugin(kvmagent.KvmAgent):
 
         return jsonobject.dumps(rsp)
 
-    def get_device_address_info(self, device):
+    def get_device_address_info(self, device, resource_uuid=None):
         virtualDeviceInfo = VirtualDeviceInfo()
         virtualDeviceInfo.deviceAddress.bus = device.address.bus_ if device.address.bus__ else None
         virtualDeviceInfo.deviceAddress.domain = device.address.domain_ if device.address.domain__ else None
@@ -7345,6 +7448,8 @@ class VmPlugin(kvmagent.KvmAgent):
 
         if device.has_element('serial'):
             virtualDeviceInfo.resourceUuid = device.serial.text_
+        elif resource_uuid:
+            virtualDeviceInfo.resourceUuid = resource_uuid
 
         return virtualDeviceInfo
 
@@ -7377,7 +7482,7 @@ class VmPlugin(kvmagent.KvmAgent):
             vm.refresh()
 
             disk, _ = vm._get_target_disk(volume)
-            rsp.virtualDeviceInfoList.append(self.get_device_address_info(disk))
+            rsp.virtualDeviceInfoList.append(self.get_device_address_info(disk, volume.volumeUuid))
         except kvmagent.KvmError as e:
             logger.warn(linux.get_exception_stacktrace())
             rsp.error = str(e)
@@ -7405,9 +7510,10 @@ class VmPlugin(kvmagent.KvmAgent):
                     return jsonobject.dumps(rsp)
                 raise kvmagent.KvmError('unable to find data volume[%s] on vm[uuid:%s]' % (volume.installPath, vm.uuid))
 
-            node_name = self.get_disk_device_name(target_disk)
-            isc = ImageStoreClient()
-            isc.stop_mirror(cmd.vmInstanceUuid, True, node_name)
+            if volume_support_block_node(volume):
+                node_name = self.get_disk_device_name(target_disk)
+                isc = ImageStoreClient()
+                isc.stop_mirror(cmd.vmInstanceUuid, True, node_name)
 
             vm.detach_data_volume(volume)
         except kvmagent.KvmError as e:
@@ -8626,13 +8732,17 @@ host side snapshot files chian:
     def login_iscsi_target(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
-        login = IscsiLogin()
-        login.server_hostname = cmd.hostname
-        login.server_port = cmd.port
-        login.chap_password = cmd.chapPassword
-        login.chap_username = cmd.chapUsername
-        login.target = cmd.target
-        login.login()
+        if cmd.url:
+            iscsi.connect_iscsi_target(cmd.url)
+        else:
+            login = iscsi.IscsiLogin()
+            login.server_hostname = cmd.hostname
+            login.server_port = cmd.port
+            login.chap_password = cmd.chapPassword
+            login.chap_username = cmd.chapUsername
+            login.target = cmd.target
+            login.login()
+            login.rescan()
 
         return jsonobject.dumps(LoginIscsiTargetRsp())
 
@@ -10195,6 +10305,7 @@ host side snapshot files chian:
         http_server.register_async_uri(self.KVM_ONLINE_INCREASE_CPU_PATH, self.online_increase_cpu)
         http_server.register_async_uri(self.KVM_ONLINE_INCREASE_MEMORY_PATH, self.online_increase_mem)
         http_server.register_async_uri(self.KVM_VM_SYNC_PATH, self.vm_sync)
+        http_server.register_async_uri(self.KVM_VOLUME_SYNC_PATH, self.volume_sync)
         http_server.register_async_uri(self.KVM_ATTACH_VOLUME, self.attach_data_volume)
         http_server.register_async_uri(self.KVM_DETACH_VOLUME, self.detach_data_volume)
         http_server.register_async_uri(self.KVM_ATTACH_ISO_PATH, self.attach_iso)
