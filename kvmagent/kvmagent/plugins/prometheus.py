@@ -59,6 +59,23 @@ def read_number(fname):
     res = linux.read_file(fname)
     return 0 if not res else int(res)
 
+def send_gpu_remove_alarm_to_mn(pci_device_address):
+    if ALARM_CONFIG is None:
+        return
+
+    url = ALARM_CONFIG.get(kvmagent.SEND_COMMAND_URL)
+    if not url:
+        logger.warn(
+            "Cannot find SEND_COMMAND_URL, unable to transmit {alarm_type} alarm info to management node".format(
+                alarm_type=alarm_type))
+        return
+
+    alarm = {
+        "host": ALARM_CONFIG.get(kvmagent.HOST_UUID),
+        "pcideviceAddress": pci_device_address
+    }
+    http.json_dump_post(url, alarm,
+                        {'commandpath': '/host/physical/gpu/remove/alarm'})
 
 class PhysicalStatusAlarm:
     def __init__(self, host=None, alarm_type=None, **kwargs):
@@ -1426,6 +1443,7 @@ def check_gpu_status_and_save_gpu_status(type, metrics):
     for pci_device_address, gpu_serial in pci_device_address_list:
         gpuStatus, gpu_status_int_value = convert_pci_status_to_int(pci_device_address)
         if gpu_status_int_value == 2:
+            send_gpu_remove_alarm_to_mn(pci_device_address)
             pci_device_address_list.discard((pci_device_address, gpu_serial))
             gpu_devices[type] = pci_device_address_lis
             continue
