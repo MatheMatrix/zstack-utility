@@ -300,6 +300,7 @@ class StartVmCmd(kvmagent.AgentCommand):
         self.memBalloon = None # type:VirtualDeviceInfo
         self.suspendToRam = None
         self.suspendToDisk = None
+        self.vmCpuQuota = None
 
 class StartVmResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -837,6 +838,10 @@ class UpdateVmPriorityRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(UpdateVmPriorityRsp, self).__init__()
 
+class UpdateVmCpuQuotaRsp(kvmagent.AgentResponse):
+    def _init_(self):
+        super(UpdateVmCpuQuotaRsp,  self)._init_()
+        
 class BlockStreamResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(BlockStreamResponse, self).__init__()
@@ -4604,6 +4609,8 @@ class Vm(object):
             if use_numa:
                 root = elements['root']
                 tune = e(root, 'cputune')
+                e(tune,'period','1000000')
+                e(tune,'quota', str(cmd.vmCpuQuota))
 
                 if cmd.addons and cmd.addons.hasattr("ioThreadPins") and cmd.addons.ioThreadPins:
                     for pin in cmd.addons.ioThreadPins:
@@ -4694,6 +4701,8 @@ class Vm(object):
                 root = elements['root']
                 e(root, 'vcpu', str(cmd.cpuNum), {'placement': 'static'})
                 tune = e(root, 'cputune')
+                e(tune,'period','1000000')
+                e(tune,'quota', str(cmd.vmCpuQuota))
 
                 if cmd.addons and cmd.addons.hasattr("ioThreadPins") and cmd.addons.ioThreadPins:
                     for pin in cmd.addons.ioThreadPins:
@@ -6344,6 +6353,7 @@ class VmPlugin(kvmagent.KvmAgent):
     CHECK_MOUNT_DOMAIN_PATH = "/check/mount/domain"
     KVM_RESIZE_VOLUME_PATH = "/volume/resize"
     VM_PRIORITY_PATH = "/vm/priority"
+    VM_UPDATE_CPU_QUOTA_PATH = "/vm/cpu/quota"
     ATTACH_GUEST_TOOLS_ISO_TO_VM_PATH = "/vm/guesttools/attachiso"
     DETACH_GUEST_TOOLS_ISO_FROM_VM_PATH = "/vm/guesttools/detachiso"
     GET_VM_GUEST_TOOLS_INFO_PATH = "/vm/guesttools/getinfo"
@@ -9147,7 +9157,25 @@ host side snapshot files chian:
             pid = linux.find_vm_pid_by_uuid(pcs.vmUuid)
             linux.set_vm_priority(pid, pcs)
         return jsonobject.dumps(rsp)
-
+    
+    @kvmagent.replyerror
+    def vm_cpuQuota(self, req):
+        cmd = json.loads(req[http.REQUEST_BODY])
+        rsp = UpdateVmCpuQuotaRsp()
+        
+        r,o,e = bash.bash_roe("virsh schedinfo %s --set vcpu_quota=%s" % (cmd.vmInstanceUuid, str(cmd.vmCpuQuota)))
+        if r != 0:
+            rsp.success = False
+            rsp.error = "%s, %s" % (o, e)
+            return jsonobject.dumps(rsp)
+        logger.debug("update vm cpu quota to %s" % str(cmd.vmCpuQuota))
+        
+        r,o,e = bash.bash_roe("virsh dumpxml %s | grep quota")
+        if str(cmd.vmCpuQuota) not in o:
+            rsp.success = False
+            rsp.error = "The script for updating vm cpu quota has been executed, but the XML configuration of the virtual machine has not been updated correctly."
+        return jsonobject.dumps(rsp)  
+        
     @kvmagent.replyerror
     def kvm_resize_volume(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -10237,6 +10265,7 @@ host side snapshot files chian:
         http_server.register_async_uri(self.CHECK_MOUNT_DOMAIN_PATH, self.check_mount_domain)
         http_server.register_async_uri(self.KVM_RESIZE_VOLUME_PATH, self.kvm_resize_volume)
         http_server.register_async_uri(self.VM_PRIORITY_PATH, self.vm_priority)
+        http_server.register_async_uri(self.VM_UPDATE_CPU_QUOTA_PATH, self.vm_cpuQuota)
         http_server.register_async_uri(self.ATTACH_GUEST_TOOLS_ISO_TO_VM_PATH, self.attach_guest_tools_iso_to_vm)
         http_server.register_async_uri(self.DETACH_GUEST_TOOLS_ISO_FROM_VM_PATH, self.detach_guest_tools_iso_from_vm)
         http_server.register_async_uri(self.GET_VM_GUEST_TOOLS_INFO_PATH, self.get_vm_guest_tools_info)
