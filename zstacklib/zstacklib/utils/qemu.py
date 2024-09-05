@@ -1,13 +1,14 @@
 
 import bash
+import base64
 import os
 import log
 import jsonobject
 import shell
 import json
-import re
+import zlib
+from zstacklib.utils import qemu_img
 from linux import get_vm_pid, HOST_ARCH
-from distutils.version import LooseVersion
 
 logger = log.get_logger(__name__)
 
@@ -118,4 +119,54 @@ def _parse_version(version_output):
 # return 2.12.0
 def _parse_version2(version_output):
     return version_output.splitlines()[0].strip().split(" ")[3]
+
+
+def get_device_map(path, option=None):
+    out = shell.call("%s --output=json %s %s" % (qemu_img.subcmd('map'), option, path))
+    return out.strip()
+
+
+def get_data_bitmap(path, max_length, zero, data, qemu_img_command_option=None):
+    map = get_device_map(path, qemu_img_command_option)
+    json_map = jsonobject.loads(map)
+    result = {}
+    for item in json_map:
+        if item['zero'] is zero and item['data'] is data:
+            if item['length'] > max_length:
+                result.update(split_large_blocks(item, max_length))
+            else:
+                result[item['start']] = item['length']
+    return result
+
+
+def get_rbd_data_bitmap(path, max_length):
+    o = shell.call("""rbd diff %s --format json""" % (path))
+    o = jsonobject.loads(o.strip())
+    result = {}
+    for item in o:
+        if item['exists'] == 'true':
+            if item['length'] > max_length:
+                result.update(split_large_blocks(item, max_length))
+            else:
+                result[item['start']] = item['length']
+    return result
+
+
+def split_large_blocks(item, max_length):
+    start = item['start']
+    length = item['length']
+    result = {}
+
+    while length > 0:
+        chunk_length = min(length, max_length)
+        result[start] = chunk_length
+        start += chunk_length
+        length -= chunk_length
+    return result
+
+
+def compress_and_encode_bitmap(bitmap_map):
+    bitmap_json = json.dumps(bitmap_map)
+    compressed_data = zlib.compress(bitmap_json.encode('utf-8'))
+    return base64.b64encode(compressed_data).decode('utf-8')
 
