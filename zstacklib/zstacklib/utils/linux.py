@@ -1052,9 +1052,11 @@ def raw_clone(src, dst):
     shell.check_run('/usr/bin/qemu-img create -b %s -f raw %s' % (src, dst))
     os.chmod(dst, 0o660)
 
-def qcow2_create(dst, size):
+
+def qcow2_create(dst, size, chmod=True):
     shell.check_run('/usr/bin/qemu-img create -f qcow2 %s %s' % (dst, size))
-    os.chmod(dst, 0o660)
+    if (chmod):
+        os.chmod(dst, 0o660)
 
 def qemu_img_resize(target, size, fmt='qcow2', force=False):
     fmt_option = '-f %s' % fmt
