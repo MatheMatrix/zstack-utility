@@ -41,7 +41,10 @@ class CephDriver(object):
             return rsp
 
         multiple_of_MB = cmd.size % sizeunit.m == 0
-        if multiple_of_MB:
+        if cmd.format == 'qcow2':
+            vol_path = "rbd:%s" % path
+            linux.qcow2_create(vol_path, cmd.size, False)
+        elif multiple_of_MB:
             call_string = 'rbd create --size %s --image-format 2 %s' % (sizeunit.Byte.toMegaByte(cmd.size), path)
             call_string = self._wrap_shareable_cmd(cmd, call_string)
             shell.call(call_string)
