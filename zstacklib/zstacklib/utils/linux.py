@@ -47,6 +47,7 @@ ARM_ACPI_SUPPORT_OS = ['kylin10', 'openEuler20.03', 'openEuler22.03']
 SUPPORTED_ARCH = ['x86_64', 'aarch64', 'mips64el', 'loongarch64']
 DIST_WITH_RPM_DEB = ['kylin']
 HOST_ARCH = platform.machine()
+tcp_port_lock = threading.Lock()
 
 
 '''
@@ -63,6 +64,7 @@ KVM_CAP_ARM_VM_IPA_SIZE = 165
 KVM_CHECK_EXTENSION = 44547
 DEFAULT_VM_IPA_SIZE = 40
 LIVE_LIBVIRT_XML_DIR = "/var/run/libvirt/qemu"
+MAX_NBD_READ_SIZE = 32768000
 
 def ignoreerror(func):
     @functools.wraps(func)
@@ -1064,9 +1066,11 @@ def raw_clone(src, dst):
     shell.check_run('/usr/bin/qemu-img create -b %s -f raw %s' % (src, dst))
     os.chmod(dst, 0o660)
 
-def qcow2_create(dst, size):
+
+def qcow2_create(dst, size, chmod=True):
     shell.check_run('/usr/bin/qemu-img create -f qcow2 %s %s' % (dst, size))
-    os.chmod(dst, 0o660)
+    if (chmod):
+        os.chmod(dst, 0o660)
 
 def qemu_img_resize(target, size, fmt='qcow2', force=False, skip_if_sufficient=False):
     if skip_if_sufficient:
@@ -1333,6 +1337,12 @@ def get_block_discard_max_bytes(path):
 
 def support_blkdiscard(path):
     return get_block_discard_max_bytes(path) > 0
+
+
+def pkill_by_pattern(*args):
+    command = "pkill -9 -f '%s'" % "' '".join(str(arg) for arg in args)
+    return shell.run(command)
+
 
 class AbstractFileConverter(object):
     __metaclass__ = abc.ABCMeta
@@ -2497,6 +2507,55 @@ def get_free_port():
     port = s.getsockname()[1]
     s.close()
     return port
+
+@lock.lock('port_lock')
+def get_free_port_in_range(start_port, end_port):
+    for port in range(start_port, end_port):
+        if tcp_port_is_free(port):
+            return port
+
+    raise Exception("no free port found in range[%d, %d]" % (start_port, end_port))
+
+def tcp_port_is_free(port):
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('', port))
+        sock.close()
+        return True
+    except socket.error:
+        return False
+
+def find_free_port_with_locking(start_port, end_port):
+    keep_lock = False
+    tcp_port_lock.acquire()
+    try:
+        for p in range(start_port, end_port + 1):
+            if tcp_port_is_free(p):
+                keep_lock = True
+                return p, tcp_port_lock
+        raise Exception("no free port found in range[%d, %d]" % (start_port, end_port))
+    finally:
+        if not keep_lock:
+            tcp_port_lock.release()
+
+def parse_port_range(port_range):
+    start_port, end_port = map(int, port_range.split(':'))
+    return start_port, end_port
+
+def check_socket_available(host, port, timeout=10):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            if result == 0:
+                return True
+        except:
+            pass
+        time.sleep(1)
+    return False
 
 def is_port_available(port):
     with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
