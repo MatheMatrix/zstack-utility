@@ -1794,6 +1794,10 @@ LoadPlugin virt
                 bash_errorout("systemctl daemon-reload && systemctl restart %s.service" % service_name)
 
             service_name = get_systemd_name(binPath)
+            if not service_name:
+                logger.warn("cannot get service name from binPath: %s" % binPath)
+                return
+
             service_path = '/etc/systemd/system/%s.service' % service_name
             memory_limit_config = ""
             if service_name == "ipmi_exporter":
@@ -1874,6 +1878,8 @@ modules:
             os.chmod(EXPORTER_PATH, 0o755)
             if shell.run("pgrep %s" % EXPORTER_PATH) == 0:
                 bash_errorout("pkill -TERM -f %s" % EXPORTER_PATH)
+            if os.path.exists("/etc/systemd/system/None.service"):
+                os.remove("/etc/systemd/system/None.service")
             run_in_systemd(EXPORTER_PATH, ARGUMENTS, LOG_FILE)
 
 
