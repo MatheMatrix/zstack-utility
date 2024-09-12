@@ -1,3 +1,4 @@
+import os
 import time
 from kvmagent.test.shareblock_testsuite.shared_block_plugin_teststub import SharedBlockPluginTestStub
 from kvmagent.test.utils import sharedblock_utils,pytest_utils,storage_device_utils, vm_utils, ha_utils, network_utils
@@ -45,15 +46,11 @@ class TestHaShareBlockPlugin(TestCase, SharedBlockPluginTestStub):
 
         imageUuid = misc.uuid()
         # download image to shareblock
-        print('lvcreate -ay --wipesignatures y --addtag zs::sharedblock::image --size 7995392b --name {} {}'.format(
-            imageUuid, vgUuid))
-        r, o = bash.bash_ro(
-            'lvcreate -ay --wipesignatures y --addtag zs::sharedblock::image --size 7995392b --name {} {}'.format(
-                imageUuid, vgUuid))
-        self.assertEqual(0, r, "create lv failed, because {}".format(o))
-
-        r, o = bash.bash_ro("cp /root/.zguest/min-vm.qcow2 /dev/{}/{}".format(vgUuid, imageUuid))
-        self.assertEqual(0, r, "cp image failed, because {}".format(o))
+        size = os.stat("/root/.zguest/min-vm.qcow2").st_size
+        ecmd = 'lvcreate -ay --wipesignatures y --addtag zs::sharedblock::image --size {}b --name {} {}'.format(size, imageUuid, vgUuid)
+        print(ecmd)
+        bash.bash_errorout(ecmd)
+        bash.bash_errorout("cp /root/.zguest/min-vm.qcow2 /dev/%s/%s" % (vgUuid, imageUuid))
 
         # create volume
         # test disconnect shareblock
@@ -178,8 +175,8 @@ class TestHaShareBlockPlugin(TestCase, SharedBlockPluginTestStub):
 
         r, o = bash.bash_ro("virsh destroy %s" % vm.vmInstanceUuid)
         self.assertEqual(0, r)
-        time.sleep(10)
-        self.check_record_vm_uuids_not_exists(hostUuid, vgUuid)
+        time.sleep(300)
+        self.check_heartbeat_not_update(hostUuid, vgUuid, vm.vmInstanceUuid)
 
         rsp = ha_utils.setup_sharedblock_self_fencer(vgUuid, hostUuid, "None", addons, "None", 1, 1, 5, "Force", [])
         self.assertEqual(True, rsp.success)
@@ -205,12 +202,12 @@ class TestHaShareBlockPlugin(TestCase, SharedBlockPluginTestStub):
         assert vm_uuid in rsp.vmUuids
 
     @pytest.mark.flaky(reruns=3)
-    def check_record_vm_uuids_not_exists(self, host_uuid, vg_uuid):
+    def check_heartbeat_not_update(self, host_uuid, vg_uuid, vm_uuid):
         r, o = bash.bash_ro("lvs --nolocking -t |grep %s" % "host_{}".format(host_uuid))
         self.assertEqual(r, 0)
 
         rsp = ha_utils.sharedblock_check_vmstate(host_uuid, 5, 5, 5, vg_uuid)
-        assert rsp.vmUuids == []
+        assert not rsp.result[vg_uuid]
 
     @pytest.mark.flaky(reruns=3)
     def lv_exists(self, path):

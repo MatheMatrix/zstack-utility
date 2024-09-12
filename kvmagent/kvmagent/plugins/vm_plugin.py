@@ -4,6 +4,7 @@
 import contextlib
 import difflib
 import os.path
+import string
 import tempfile
 import time
 import datetime
@@ -35,6 +36,7 @@ import zstacklib.utils.ebtables as ebtables
 import zstacklib.utils.iptables as iptables
 import zstacklib.utils.lock as lock
 
+from jinja2 import Template
 from kvmagent import kvmagent
 from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
@@ -56,6 +58,7 @@ from zstacklib.utils import pci
 from zstacklib.utils import iproute
 from zstacklib.utils import ovs
 from zstacklib.utils import drbd
+from zstacklib.utils.jsonobject import JsonObject
 from zstacklib.utils.qga import *
 from zstacklib.utils import jsonobject
 from zstacklib.utils.report import *
@@ -89,8 +92,27 @@ MAX_MEMORY = 34359738368 if (HOST_ARCH != "aarch64") else linux.get_max_vm_ipa_s
 MIPS64EL_CPU_MODEL = "Loongson-3A4000-COMP"
 LOONGARCH64_CPU_MODEL = "Loongson-3A5000"
 
+LINUX_SCRIPT_LIB_PATH = "/var/lib/zstack/script/"
+WINDOWS_SCRIPT_LIB_PATH = "C:/Program Files/Qemu-ga/script/"
+
 class RetryException(Exception):
     pass
+
+
+# vm memory stat in bytes
+class DomainMemoryStats(object):
+    def __init__(self):
+        self.max = None
+        self.swap_out = None
+        self.swap_in = None
+        self.available = None
+        self.usable = None
+        self.actual = None
+        self.unused = None
+        self.major_fault = None
+        self.minor_fault = None
+        self.last_update = None
+        self.rss = None
 
 
 class NicTO(object):
@@ -886,6 +908,23 @@ class FailColoPrimaryVmCmd(kvmagent.AgentCommand):
         self.targetHostPort = None
         self.targetHostPassword = None
 
+class QgaExecOutputRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(QgaExecOutputRsp, self).__init__()
+        self.exitCode = 0
+        self.stdout = ""
+        self.stderr = ""
+
+class QgaOpenFileRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(QgaOpenFileRsp, self).__init__()
+        self.fileHandle = 0
+
+class QgaUploadfileRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(QgaUploadfileRsp, self).__init__()
+        self.fileSize = ""
+
 
 class GetVirtualizerInfoRsp(kvmagent.AgentResponse):
     def __init__(self):
@@ -1166,6 +1205,10 @@ def user_specify_driver():
 
 def file_type_support_block_device():
     return LooseVersion(QEMU_VERSION) < LooseVersion("6.0.0")
+
+def is_qemu_support_migrate_with_bitmap(version):
+    return LooseVersion(version) >= LooseVersion("4.2.0-640")
+
 
 def block_device_use_block_type():
     return user_specify_driver() or not file_type_support_block_device()
@@ -2278,11 +2321,42 @@ class Vm(object):
             # TODO: return system cpu capacity
             return 512
 
+
+    def get_memory_stats(self):
+        # type: () -> dict[str, int]
+        memory_stats_dict = self.domain.memoryStats()
+        memory_stats = DomainMemoryStats()
+        memory_stats.swap_out = memory_stats_dict.get('swap_out', None)
+        memory_stats.available = memory_stats_dict.get('available', None)
+        memory_stats.usable = memory_stats_dict.get('usable', None)
+        memory_stats.actual = memory_stats_dict.get('actual', None)
+        memory_stats.major_fault = memory_stats_dict.get('major_fault', None)
+        memory_stats.swap_in = memory_stats_dict.get('swap_in', None)
+        memory_stats.last_update = memory_stats_dict.get('last_update', None)
+        memory_stats.unused = memory_stats_dict.get('unused', None)
+        memory_stats.minor_fault = memory_stats_dict.get('minor_fault', None)
+        memory_stats.rss = memory_stats_dict.get('rss', None)
+
+        max_memory = self.domain.maxMemory()
+        memory_stats.max = max_memory
+
+        return memory_stats
+
+    def set_memory(self, memory_size_in_mega_bytes):
+        self.domain.setMemoryFlags(memory_size_in_mega_bytes)
+
     def get_memory(self):
         return long(self.domain_xmlobject.currentMemory.text_) * 1024
 
     def get_name(self):
         return self.domain_xmlobject.description.text_
+
+    def get_migratable_xml(self):
+        try:
+            return self.domain.XMLDesc(libvirt.VIR_DOMAIN_XML_MIGRATABLE)
+        except Exception as e:
+            logger.warn("unable to get migratable xml for vm[uuid:%s], %s" % (self.uuid, str(e)))
+            return self.domain_xml
 
     def refresh(self):
         (state, _, _, _, _) = self.domain.info()
@@ -3393,7 +3467,7 @@ class Vm(object):
             migrate_disks[disk_name] = volume
 
         xml_changed = False
-        tree = etree.ElementTree(etree.fromstring(self.domain_xml))
+        tree = etree.ElementTree(etree.fromstring(self.get_migratable_xml()))
         devices = tree.getroot().find('devices')
         for disk in tree.iterfind('devices/disk'):
             dev = disk.find('target').attrib['dev']
@@ -3531,9 +3605,8 @@ class Vm(object):
                         raise kvmagent.KvmError(err)
 
         self._is_vm_paused_with_readonly_flag_on_disk()
-        # is_migrate_without_bitmaps = self._is_vm_migrate_without_dirty_bitmap()
-        # migrate bitmap is not safe for now
-        check_mirror_jobs(cmd.vmUuid, migrate_without_bitmaps=True)
+        is_migrate_without_bitmaps = self._is_vm_migrate_without_dirty_bitmap()
+        check_mirror_jobs(cmd.vmUuid, is_migrate_without_bitmaps)
 
         with MigrateDaemon(self.domain):
             logger.debug('migrating vm[uuid:{0}] to dest url[{1}]'.format(self.uuid, destUrl))
@@ -3588,6 +3661,13 @@ class Vm(object):
         return [line.split()[3] for line in lines]
 
     def _is_vm_migrate_without_dirty_bitmap(self):
+        # From ZSTAC-57974, qemu version like '6.2.0-201.gca43b80.el7'
+        qemu_version = qemu.get_running_version(self.uuid)
+        if qemu_version == "":
+            qemu_version = QEMU_VERSION
+        if not is_qemu_support_migrate_with_bitmap(qemu_version):
+            return True
+
         libvirt_version = linux.get_libvirt_version()
         if LooseVersion(libvirt_version) < LooseVersion('6.0.0') or LooseVersion(libvirt_version) >= LooseVersion('8.0.0'):
             return False
@@ -4586,7 +4666,7 @@ class Vm(object):
                 e(features, f)
 
             def make_acpi():
-                if HOST_ARCH == "x86_64" or (cmd.acpi and DIST_NAME_VERSION in linux.ARM_ACPI_SUPPORT_OS and not is_virtual_machine()):
+                if cmd.acpi:
                     e(features, 'acpi')
 
             make_acpi()
@@ -5693,6 +5773,9 @@ class Vm(object):
         elif vhostSrcPath is not None:
             iftype = 'vhostuser'
             device_attr = {'type': iftype}
+        elif nic.type == "MACVLAN":
+            iftype = 'direct'
+            device_attr = {'type': iftype}
         else:
             iftype = 'bridge'
             device_attr = {'type': iftype}
@@ -5706,7 +5789,7 @@ class Vm(object):
         if action != 'Update':
             e(interface, 'alias', None, {'name': 'net%s' % nic.nicInternalName.split('.')[1]})
 
-        if iftype != 'hostdev' and nic.type not in ovs.OvsDpdkSupportVnic:
+        if iftype != 'hostdev' and iftype != "direct" and nic.type not in ovs.OvsDpdkSupportVnic:
             e(interface, 'mtu', None, attrib={'size': '%d' % nic.mtu})
 
         # logger.warn("nic.state : [%s]" % nic.state)
@@ -5730,28 +5813,38 @@ class Vm(object):
             else:
                 e(interface, 'source', None, attrib={'type': 'unix', 'path': '/var/run/phynic{}'.format(index+1), 'mode':'server'})
                 e(interface, 'driver', None, attrib={'queues': '8'})
+        elif iftype == 'direct':
+            nicDev = nic.physicalInterface
+            if nic.vlanId is not None:
+                nicDev = linux.make_vlan_eth_name(nic.physicalInterface, nic.vlanId)
+            e(interface, 'source', None, attrib={'dev': nicDev, 'mode': 'vepa'})
+            e(interface, 'target', None, attrib={'dev': nic.nicInternalName})
         else:
             e(interface, 'source', None, attrib={'bridge': nic.bridgeName})
             e(interface, 'target', None, attrib={'dev': nic.nicInternalName})
 
-        if nic.pci is not None and (iftype == 'bridge' or iftype == 'vhostuser'):
+        if nic.pci is not None and (iftype == 'bridge' or iftype == 'direct' or iftype == 'vhostuser'):
             e(interface, 'address', None, attrib={'type': nic.pci.type, 'domain': nic.pci.domain, 'bus': nic.pci.bus, 'slot': nic.pci.slot, "function": nic.pci.function})
         else:
             e(interface, 'address', None, attrib={'type': "pci"})
 
-        if nic.ips and iftype == 'bridge':
-            ip4Addr = None
-            ip6Addrs = []
-            for addr in nic.ips:
-                version = netaddr.IPAddress(addr).version
-                if version == 4:
-                    ip4Addr = addr
-                else:
-                    ip6Addrs.append(addr)
-            # ipv4 nic
-            if ip4Addr is not None:
+        if nic.cleanTraffic and iftype == 'bridge':
+            if nic.ips:
+                ip4Addr = None
+                ip6Addrs = []
+                for addr in nic.ips:
+                    version = netaddr.IPAddress(addr).version
+                    if version == 4:
+                        ip4Addr = addr
+                    else:
+                        ip6Addrs.append(addr)
+                # ipv4 nic
+                if ip4Addr is not None:
+                    filterref = e(interface, 'filterref', None, {'filter': 'clean-traffic'})
+                    e(filterref, 'parameter', None, {'name': 'IP', 'value': ip4Addr})
+            else:
+                # no ip nic only filter by mac
                 filterref = e(interface, 'filterref', None, {'filter': 'clean-traffic'})
-                e(filterref, 'parameter', None, {'name': 'IP', 'value': ip4Addr})
 
         if iftype != 'hostdev':
             if nic.driverType:
@@ -5942,6 +6035,9 @@ class VmPlugin(kvmagent.KvmAgent):
     CHECK_MOUNT_DOMAIN_PATH = "/check/mount/domain"
     KVM_RESIZE_VOLUME_PATH = "/volume/resize"
     VM_PRIORITY_PATH = "/vm/priority"
+    GET_FILE_HANDLE_PATH = "/vm/guesttools/handle"
+    UPLOAD_FILE_GUEST_TOOLS_FOR_VM_PATH = "/vm/guesttools/upload_file"
+    EXEC_CMD_IN_VM_PATH = "/vm/guesttools/exec"
     ATTACH_GUEST_TOOLS_ISO_TO_VM_PATH = "/vm/guesttools/attachiso"
     DETACH_GUEST_TOOLS_ISO_FROM_VM_PATH = "/vm/guesttools/detachiso"
     GET_VM_GUEST_TOOLS_INFO_PATH = "/vm/guesttools/getinfo"
@@ -5962,6 +6058,7 @@ class VmPlugin(kvmagent.KvmAgent):
     SET_SYNC_VM_CLOCK_TASK_PATH = "/vm/clock/sync/task"
     KVM_SYNC_VM_DEVICEINFO_PATH = "/sync/vm/deviceinfo"
     CLEAN_FIRMWARE_FLASH = "/clean/firmware/flash"
+    APPLY_MEMORY_BALLOON_PATH = "/vm/apply/memory/balloon"
 
     VM_CONSOLE_LOGROTATE_PATH = "/etc/logrotate.d/vm-console-log"
 
@@ -5970,6 +6067,9 @@ class VmPlugin(kvmagent.KvmAgent):
     GET_VM_IOTHREADPIN_PATH = '/vm/getiothreadpin'
     SET_VM_SCSI_CONTROLLER = '/vm/setscsicontroller'
     DEL_VM_SCSI_CONTROLLER = '/vm/delscsicontroller'
+
+    SSH_KEY_PAIR_ATTACH_TO_VM = "/sshkeypair/attach"
+    SSH_KEY_PAIR_DETACH_FROM_VM = "/sshkeypair/detach"
 
     VM_OP_START = "start"
     VM_OP_STOP = "stop"
@@ -6376,6 +6476,209 @@ class VmPlugin(kvmagent.KvmAgent):
             read_bytes_sec = self._get_volume_bandwidth_value(cmd.vmUuid, device_id, "read")
             shell.call('%s --read_bytes_sec %s --write_bytes_sec %s' % (cmd_base, read_bytes_sec, cmd.writeBandwidth))
 
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def get_file_handle(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = QgaOpenFileRsp()
+
+        @LibvirtAutoReconnect
+        def call_libvirt(conn):
+            return conn.lookupByName(cmd.vmUuid)
+
+        def create_path(qga, file):
+            exit_code = 0
+            path = os.path.dirname(file)
+            if qga.os == "mswindows":
+                noExist, _, _ = qga.guest_exec_cmd(["/c", "dir", "/ad", path.replace("/", "\\")])
+                if noExist:
+                    exit_code, _, _ = qga.guest_exec_cmd(["/c", "md", path.replace("/", "\\")])
+            else:
+                noExist, _, _ = qga.guest_exec_bash("test -d {}".format(path))
+                if noExist:
+                    exit_code, _, _ = qga.guest_exec_bash("mkdir -p {}".format(path))
+            return not exit_code
+
+
+        script_type_dict = {
+            "Python": os.path.join(LINUX_SCRIPT_LIB_PATH, cmd.vmUuid + ".py"),
+            "Perl": os.path.join(LINUX_SCRIPT_LIB_PATH, cmd.vmUuid + ".pl"),
+            "Shell": os.path.join(LINUX_SCRIPT_LIB_PATH, cmd.vmUuid + ".sh"),
+            "Bat": os.path.join(WINDOWS_SCRIPT_LIB_PATH, cmd.vmUuid + ".bat"),
+            "Powershell": os.path.join(WINDOWS_SCRIPT_LIB_PATH, cmd.vmUuid + ".ps1"),
+        }
+
+        qga = VmQga(call_libvirt())
+        fw = 0
+        if cmd.fileType == "Script":
+            dst = script_type_dict.get(cmd.scriptType)
+            if create_path(qga, dst):
+                fw = qga.guest_file_open(dst, True)
+        else:
+            if create_path(qga, cmd.dstPath):
+                fw = qga.call_qga_command("guest-file-open", {"path": cmd.dstPath, "mode": "wb"})
+
+        if fw != 0:
+            rsp.fileHandle = fw
+        else:
+            rsp.success = False
+            rsp.error = "do not get handle"
+        return jsonobject.dumps(rsp)
+
+
+    @kvmagent.replyerror
+    @in_bash
+    def upload_vm_file(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = QgaUploadfileRsp()
+
+        @LibvirtAutoReconnect
+        def call_libvirt(conn):
+            return conn.lookupByName(cmd.vmUuid)
+
+        def conversion_template(template_text, param):
+            template = Template(template_text)
+            return template.render(param)
+
+        def create_path(qga, file):
+            exit_code = 0
+            path = os.path.dirname(file)
+            if qga.os == "mswindows":
+                noExist, _, _ = qga.guest_exec_cmd(["/c", "dir", "/ad", path.replace("/", "\\")])
+                if noExist:
+                    exit_code, _, _ = qga.guest_exec_cmd(["/c", "md", path.replace("/", "\\")])
+            else:
+                noExist, _, _ = qga.guest_exec_bash("test -d {}".format(path))
+                if noExist:
+                    exit_code, _, _ = qga.guest_exec_bash("mkdir -p {}".format(path))
+            return not exit_code
+
+        script_type_dict = {
+            "Python": os.path.join(LINUX_SCRIPT_LIB_PATH, cmd.vmUuid + ".py"),
+            "Perl": os.path.join(LINUX_SCRIPT_LIB_PATH, cmd.vmUuid + ".pl"),
+            "Shell": os.path.join(LINUX_SCRIPT_LIB_PATH, cmd.vmUuid + ".sh"),
+            "Bat": os.path.join(WINDOWS_SCRIPT_LIB_PATH, cmd.vmUuid + ".bat"),
+            "Powershell": os.path.join(WINDOWS_SCRIPT_LIB_PATH, cmd.vmUuid + ".ps1"),
+        }
+
+        qga = VmQga(call_libvirt())
+
+        fw = 0
+        dst = ""
+        if cmd.fileType == "Script":
+            # text wrote
+            dst = script_type_dict.get(cmd.scriptType)
+            if create_path(qga, dst):
+                fw = qga.guest_file_open(dst, True)
+        else:
+            # binary wrote
+            if create_path(qga, cmd.dstPath):
+                fw = qga.call_qga_command("guest-file-open", {"path": cmd.dstPath, "mode": "wb"})
+
+        if fw == 0:
+            rsp.success = False
+            rsp.error = "do not open file {}".format(dst)
+            return jsonobject.dumps(rsp)
+
+
+        fileSize = 0
+        dict_param = {}
+
+        fileContent = base64.b64decode(cmd.fileContent)
+        if cmd.param is not None:
+            param = jsonobject.loads(cmd.param)
+            for i in param:
+                dict_param.setdefault(i.key, i.value)
+            fileContent = conversion_template(fileContent, dict_param)
+
+        try:
+            if fileContent != "":
+                ret = qga.call_qga_command("guest-file-write", {"handle": fw, "buf-b64": fileContent})
+                fileSize = ret["count"]
+                rsp.fileSize = fileSize
+        except Exception as e:
+            rsp.success = False
+            rsp.error = "copy file exception {}".format(e)
+        finally:
+            logger.info("upload finished file size {}".format(fileSize))
+            if fw != 0:
+                qga.guest_file_close(fw)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def script_exec_on_vm(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = QgaExecOutputRsp()
+
+        @LibvirtAutoReconnect
+        def call_libvirt(conn):
+            return conn.lookupByName(cmd.vmUuid)
+
+        def streamSplit(stream, lineNum):
+            streamLines = stream.split("\n")
+            streamLineNum = streamLines.__len__()
+            if streamLineNum < lineNum:
+                streamLines = streamLines[-streamLineNum:]
+                streamLines = "\n".join(streamLines)
+            else:
+                streamLines = streamLines[-lineNum:]
+                streamLines = "\n".join(streamLines)
+            if streamLines.__sizeof__() >= (2<<19):
+                streamLines = streamLines[-(2<<19):]
+            return streamLines
+
+        def createLog(logDir, logName, log):
+            if not os.path.exists(logDir):
+                os.mkdir(logDir)
+            with open(os.path.join(logDir, logName), mode="a", buffering=4096) as logFile:
+                if logFile.tell() != 0:
+                    logFile.write("\n")
+                logFile.write(log)
+
+
+        script_type_dict = {
+            "Python": os.path.join(LINUX_SCRIPT_LIB_PATH, cmd.vmUuid + ".py"),
+            "Perl": os.path.join(LINUX_SCRIPT_LIB_PATH, cmd.vmUuid + ".pl"),
+            "Shell": os.path.join(LINUX_SCRIPT_LIB_PATH, cmd.vmUuid + ".sh"),
+            "Bat": os.path.join(WINDOWS_SCRIPT_LIB_PATH, cmd.vmUuid + ".bat"),
+            "Powershell": os.path.join(WINDOWS_SCRIPT_LIB_PATH, cmd.vmUuid + ".ps1"),
+        }
+
+        qga = VmQga(call_libvirt())
+        dst = script_type_dict.get(cmd.scriptType)
+        exitCode = 0
+        stdout = ""
+        stderr = ""
+        if cmd.scriptType == "Python":
+            exitCode, stdout, stderr = qga.guest_exec_python(dst, retry=cmd.scriptTimeout)
+            if exitCode != 0:
+                rsp.success = False
+        if cmd.scriptType == "Perl":
+            exitCode, stdout, stderr = qga.guest_exec_bash("perl {}".format(dst), retry=cmd.scriptTimeout)
+            if exitCode != 0:
+                rsp.success = False
+        if cmd.scriptType == "Shell":
+            exitCode, stdout, stderr = qga.guest_exec_bash("bash {}".format(dst), retry=cmd.scriptTimeout)
+            if exitCode != 0:
+                rsp.success = False
+        if cmd.scriptType == "Bat":
+            exitCode, stdout, stderr = qga.guest_exec_cmd(["/c", "call", dst], retry=cmd.scriptTimeout)
+            if exitCode != 0:
+                rsp.success = False
+        if cmd.scriptType == "Powershell":
+            exitCode, stdout, stderr = qga.guest_exec_powershell_script(dst, retry=cmd.scriptTimeout)
+            if exitCode != 0:
+                rsp.success = False
+        if stdout is not None:
+            if cmd.logPath is not None:
+                createLog(cmd.logPath, cmd.vmUuid, stdout)
+            rsp.stdout = streamSplit(stdout, 1000)
+        if stderr is not None:
+            if cmd.logPath is not None:
+                createLog(cmd.logPath, cmd.vmUuid, stderr)
+            rsp.stderr = streamSplit(stderr, 1000)
+        rsp.exitCode = exitCode
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -6942,7 +7245,7 @@ class VmPlugin(kvmagent.KvmAgent):
             if sh_cmd.stdout.strip():
                 rsp.cpuXml = sh_cmd.stdout.strip()
 
-        rsp.cpuModelName = shell.call("grep -m1 -P -o '(model name|cpu MHz)\s*:\s*\K.*' /proc/cpuinfo").strip()
+        _, rsp.cpuModelName = linux.get_cpu_model()
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -7207,6 +7510,22 @@ class VmPlugin(kvmagent.KvmAgent):
             vm = get_vm_by_uuid(vmUuid)
             return vm._get_target_disk_by_path(task_spec.newVolume.installPath, is_exception=False) is not None
 
+        job_over = False
+        @thread.AsyncThread
+        @linux.retry(times=10, sleep_time=1)
+        def _touch_qmp_socket():
+            if job_over:
+                return
+            r, o, e = execute_qmp_command(vmUuid, '{ "execute": "query-named-block-nodes" }')
+            if r == 0 and task_spec.newVolume.installPath in o:
+                logger.debug("touch qmp socket for block[diskName: %s, vmUuid: %s] migration" % (disk_name, vmUuid))
+                touchQmpSocketWhenExists(vmUuid)
+                return
+            raise RetryException("cannot find dst volume block node for disk %s, vmUuid %s" % (disk_name, vmUuid))
+
+        if task_spec.newVolume.installPath.startswith("/dev"):
+            _touch_qmp_socket()
+
         logger.info("start copying %s:%s to %s ..." % (vmUuid, disk_name, task_spec.newVolume.installPath))
         with BlockCopyDaemon(task_spec, get_vm_by_uuid(vmUuid).domain, disk_name):
             bandwidth = ' --bandwidth {}'.format(task_spec.bandwidth) if task_spec.bandwidth > 0 else ''
@@ -7215,6 +7534,7 @@ class VmPlugin(kvmagent.KvmAgent):
 
             shell_cmd = shell.ShellCmd(cmd)
             shell_cmd(False)
+            job_over = True
             if shell_cmd.return_code != 0 or not check_volume():
                 logger.debug("block copy failed from %s:%s to %s: %s" % (vmUuid, disk_name, task_spec.newVolume.installPath, shell_cmd.stderr))
                 return False, shell_cmd.stderr
@@ -7918,13 +8238,13 @@ host side snapshot files chian:
     def query_block_job_status(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = kvmagent.AgentResponse()
-        for i in range(0, 3):
+        for i in range(0, 6):
             r, o, err = execute_qmp_command(cmd.vmUuid, '{"execute":"query-block-jobs"}')
             if err:
                 rsp.success = False
                 rsp.error = "Failed to query block jobs, report error"
                 return jsonobject.dumps(rsp)
-            time.sleep(1)
+            time.sleep(0.5)
 
         return jsonobject.dumps(rsp)
 
@@ -8628,9 +8948,12 @@ host side snapshot files chian:
 
         @linux.retry(times=3, sleep_time=2)
         def detach_temp_disk_and_retry(vm):
-            vm.domain.detachDevice(self._create_xml_for_guesttools_temp_disk(vm.uuid))
+            try:
+                vm.domain.detachDevice(self._create_xml_for_guesttools_temp_disk(vm.uuid))
+            except Exception:
+                logger.info("detach device success, can not find disk vdz")
             if vm._check_target_disk_existing_by_path(self._guesttools_temp_disk_file_path(vm.uuid)):
-                raise RetryException("failed to detach guest tools temp disk")
+                raise RetryException("current vm %s can not detach guest tools temp disk" % vm.uuid)
 
         if vm._check_target_disk_existing_by_path(self._guesttools_temp_disk_file_path(vm.uuid)):
             detach_temp_disk_and_retry(vm)
@@ -8821,6 +9144,82 @@ host side snapshot files chian:
             self.clean_vm_firmware_flash(vm_uuid)
 
         return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def apply_memory_balloon(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+
+        for vm_uuid in cmd.vmUuids:
+            reserved_memory = cmd.vmReservedMemory[vm_uuid] / 1024 if cmd.vmReservedMemory and cmd.vmReservedMemory.hasattr(vm_uuid) else 0
+            self.do_apply_memory_balloon_to_vm(vm_uuid, cmd.direction, cmd.adjustPercent, reserved_memory)
+
+        return jsonobject.dumps(rsp)
+
+    def do_apply_memory_balloon_to_vm(self, vm_uuid, direction, precentage, preserved_memory):
+        vm = get_vm_by_uuid_no_retry(vm_uuid, False)
+        if not vm:
+            logger.debug("vm[uuid:%s] is not running, skip memory balloon" % vm_uuid)
+            return
+
+        if vm.state != Vm.VM_STATE_RUNNING:
+            logger.debug("vm[uuid:%s] is not running, skip memory balloon" % vm_uuid)
+            return
+
+        mem = vm.get_memory_stats()
+        if not mem.usable:
+            logger.debug("vm[uuid:%s] do not support virtio memory balloon, skip it" % vm_uuid)
+            return
+
+        actual_mem = mem.actual
+        if actual_mem <= preserved_memory and direction == 'Decrease':
+            logger.debug("vm[uuid:%s] actual memory[%s] is less than preserved memory[%s], skip memory balloon" % (vm_uuid, actual_mem, preserved_memory))
+            return
+
+        if direction == 'Decrease':
+            # do not decrease memory over unused memory
+            delta = actual_mem * precentage / 100
+            delta = delta if delta < mem.usable else mem.usable
+            changed_to = actual_mem - delta
+        elif direction == 'Increase':
+            # do not increase memory over max memory
+            changed_to = actual_mem + mem.max * precentage / 100
+            changed_to = changed_to if changed_to < mem.max else mem.max
+        else:
+            raise Exception('unknown direction[%s]' % direction)
+
+        logger.debug("change vm[uuid:%s] memory from %s to %s" % (vm_uuid, mem.actual, changed_to))
+        if mem.actual == changed_to:
+            logger.debug("vm[uuid:%s] memory is already changed to %s, skip it" % (vm_uuid, changed_to))
+            return
+
+        if changed_to < mem.max * 30 / 100:
+            logger.debug("vm[uuid:%s] memory can not changed lower than 30% of its max memory %s, skip it" % (vm_uuid, mem.max))
+            return
+
+        if changed_to < 1 * 1024 * 1024:
+            logger.debug("vm[uuid:%s] memory can not changed lower than 1GB, skip it" % vm_uuid)
+            return
+
+        vm.set_memory(changed_to)
+        self.wait_memory_changed(vm_uuid, changed_to)
+
+        vm.set_memory(changed_to)
+        self.wait_memory_changed(vm_uuid, changed_to)
+
+
+    def wait_memory_changed(self, vm_uuid, changed_to):
+        def wait_for_actual_memory_change(_):
+            vm = get_vm_by_uuid_no_retry(vm_uuid, False)
+            if not vm:
+                raise Exception('vm[uuid:%s] not exists, failed' % vm_uuid)
+
+            mem = vm.get_memory_stats()
+            return mem.actual == changed_to
+
+        if not linux.wait_callback_success(wait_for_actual_memory_change, None, interval=3, timeout=24):
+            logger.warn('unable to wait vm[uuid:%s] memory changed, after %s seconds' % (vm_uuid, 24))
+
 
     @kvmagent.replyerror
     @in_bash
@@ -9538,6 +9937,9 @@ host side snapshot files chian:
         http_server.register_async_uri(self.CHECK_MOUNT_DOMAIN_PATH, self.check_mount_domain)
         http_server.register_async_uri(self.KVM_RESIZE_VOLUME_PATH, self.kvm_resize_volume)
         http_server.register_async_uri(self.VM_PRIORITY_PATH, self.vm_priority)
+        http_server.register_async_uri(self.GET_FILE_HANDLE_PATH, self.get_file_handle)
+        http_server.register_async_uri(self.UPLOAD_FILE_GUEST_TOOLS_FOR_VM_PATH, self.upload_vm_file)
+        http_server.register_async_uri(self.EXEC_CMD_IN_VM_PATH, self.script_exec_on_vm)
         http_server.register_async_uri(self.ATTACH_GUEST_TOOLS_ISO_TO_VM_PATH, self.attach_guest_tools_iso_to_vm)
         http_server.register_async_uri(self.DETACH_GUEST_TOOLS_ISO_FROM_VM_PATH, self.detach_guest_tools_iso_from_vm)
         http_server.register_async_uri(self.GET_VM_GUEST_TOOLS_INFO_PATH, self.get_vm_guest_tools_info)
@@ -9563,6 +9965,9 @@ host side snapshot files chian:
         http_server.register_async_uri(self.SET_VM_SCSI_CONTROLLER, self.set_scsi_controller)
         http_server.register_async_uri(self.DEL_VM_SCSI_CONTROLLER, self.del_scsi_controller)
         http_server.register_async_uri(self.CLEAN_FIRMWARE_FLASH, self.clean_firmware_flash)
+        http_server.register_async_uri(self.SSH_KEY_PAIR_ATTACH_TO_VM, self.attach_ssh_key_pair)
+        http_server.register_async_uri(self.SSH_KEY_PAIR_DETACH_FROM_VM, self.detach_ssh_key_pair)
+        http_server.register_async_uri(self.APPLY_MEMORY_BALLOON_PATH, self.apply_memory_balloon)
 
         self.clean_old_sshfs_mount_points()
         self.register_libvirt_event()
@@ -9784,7 +10189,7 @@ host side snapshot files chian:
     # WARNING: it contains quite a few hacks to avoid xmlobject#loads()
     def _vm_reboot_event(self, conn, dom, opaque):
         try:
-            domain_xml = dom.XMLDesc(libvirt.VIR_DOMAIN_XML_SECURE)
+            domain_xml = dom.XMLDesc(libvirt.VIR_DOMAIN_XML_MIGRATABLE)
             vm_uuid = dom.name()
 
             @thread.AsyncThread
@@ -10484,6 +10889,95 @@ host side snapshot files chian:
         if cmd_res and cmd_res.startswith("error:"):
             res = cmd_res
         return res
+
+    @kvmagent.replyerror
+    def attach_ssh_key_pair(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+
+        self.do_attach_ssh_key_pair(cmd.vmInstanceUuid, cmd.publicKey)
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def detach_ssh_key_pair(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+
+        self.do_detach_ssh_key_pair(cmd.vmInstanceUuid, cmd.publicKey)
+
+        return jsonobject.dumps(rsp)
+
+    def do_attach_ssh_key_pair(self, vm_uuid, public_key):
+        @LibvirtAutoReconnect
+        def call_libvirt(conn):
+            return conn.lookupByName(vm_uuid)
+
+        def leagacy_add_authorized_keys():
+            command = ("mkdir -p /root/.ssh; if ! cat "
+                       "/root/.ssh/authorized_keys | grep -q '%s'; "
+                       "then echo '%s' >> /root/.ssh/authorized_keys; fi" % (
+                           public_key, public_key))
+            args = {
+                'path': '/bin/sh',
+                'arg': ['-c', command],
+                'capture-output': True
+            }
+            qga.guest_exec_bash_no_exitcode(command)
+
+        def ga_add_authorized_keys():
+            ret = qga.guest_ssh_add_authorized_keys(public_key)
+            if ret:
+                raise Exception(('Guest add ssh authrozed keys return '
+                                 'unexpected result: %s') % ret)
+
+        qga = VmQga(call_libvirt())
+        if qga.state != VmQga.QGA_STATE_RUNNING:
+            raise Exception(('The qemu guest agent not in running state'))
+
+        ga_version = qga.guest_info()['version']
+        if LooseVersion(ga_version) < LooseVersion('2.5'):
+            raise Exception(('The guest agent version %s less '
+                             'than minimum requirement 2.5.0') % ga_version)
+        elif LooseVersion(ga_version) >= LooseVersion('5.2'):
+            ga_add_authorized_keys()
+        else:
+            leagacy_add_authorized_keys()
+
+    def do_detach_ssh_key_pair(self, vm_uuid, public_key):
+        @LibvirtAutoReconnect
+        def call_libvirt(conn):
+            return conn.lookupByName(vm_uuid)
+
+        def leagacy_remove_authorized_keys():
+            command = ("if [ -f /root/.ssh/authorized_keys ]; "
+                       "then sed -i '/%s/d' /root/.ssh/authorized_keys; "
+                       "fi") % public_key.replace('/', '\/')
+            args = {
+                'path': '/bin/sh',
+                'arg': ['-c', command],
+                'capture-output': True
+            }
+            qga.guest_exec_bash_no_exitcode(command)
+
+        def ga_remove_authorized_keys():
+            ret = qga.guest_ssh_remove_authorized_keys(public_key)
+            if ret:
+                raise Exception(('Guest remove ssh authrozed keys return '
+                                 'unexpected result: %s') % ret)
+
+        qga = VmQga(call_libvirt())
+        if qga.state != VmQga.QGA_STATE_RUNNING:
+            raise Exception(('The qemu guest agent not in running state'))
+
+        ga_version = qga.guest_info()['version']
+        if LooseVersion(ga_version) < LooseVersion('2.5'):
+            raise Exception(('The guest agent version %s less than '
+                             'minimum requirement version 2.5') % ga_version)
+        elif LooseVersion(ga_version) >= LooseVersion('5.2'):
+            ga_remove_authorized_keys()
+        else:
+            leagacy_remove_authorized_keys()
 
 
 class EmptyCdromConfig():

@@ -41,7 +41,7 @@ logger = log.get_logger(__name__)
 
 RPM_BASED_OS = ['redhat', 'centos', 'alibaba', 'kylin10', 'rocky']
 DEB_BASED_OS = ['uos', 'kylin4.0.2', 'debian', 'ubuntu', 'uniontech']
-ARM_ACPI_SUPPORT_OS = ['kylin10', 'openEuler20.03']
+ARM_ACPI_SUPPORT_OS = ['kylin10', 'openEuler20.03', 'openEuler22.03']
 SUPPORTED_ARCH = ['x86_64', 'aarch64', 'mips64el', 'loongarch64']
 DIST_WITH_RPM_DEB = ['kylin']
 HOST_ARCH = platform.machine()
@@ -997,6 +997,8 @@ def qcow2_create_with_cmd(dst, size, cmd=None):
 
 def qcow2_create_with_option(dst, size, opt=""):
     shell.check_run('/usr/bin/qemu-img create -f qcow2 %s %s %s' % (opt, dst, size))
+    if 'preallocation=metadata' in opt:
+        qcow2_discard(dst)
     os.chmod(dst, 0o660)
 
 def qcow2_create_with_backing_file(backing_file, dst, size=""):
@@ -1024,15 +1026,17 @@ def raw_create(dst, size):
     shell.check_run('/usr/bin/qemu-img create -f raw %s %s' % (dst, size))
     os.chmod(dst, 0o660)
 
-def create_template(src, dst, compress=False, shell=shell, progress_output=None):
+
+def create_template(src, dst, compress=False, shell=shell, progress_output=None, opts=None):
     fmt = get_img_fmt(src)
     if fmt == 'raw':
         return raw_create_template(src, dst, shell=shell, progress_output=progress_output)
     if fmt == 'qcow2':
-        return qcow2_create_template(src, dst, compress, shell=shell, progress_output=progress_output)
+        return qcow2_create_template(src, dst, compress, shell=shell, progress_output=progress_output, opts=opts)
     raise Exception('unknown format[%s] of the image file[%s]' % (fmt, src))
 
-def qcow2_create_template(src, dst, compress, shell=shell, progress_output=None):
+
+def qcow2_create_template(src, dst, compress, shell=shell, progress_output=None, opts=None):
     redirect, ext_opts = "", []
     if progress_output:
         redirect = " > " + progress_output
@@ -1040,6 +1044,9 @@ def qcow2_create_template(src, dst, compress, shell=shell, progress_output=None)
 
     if compress:
         ext_opts.append("-c")
+
+    if opts:
+        ext_opts.append(opts)
 
     shell.call('%s %s -f qcow2 -O qcow2 %s %s %s' % (qemu_img.subcmd('convert'), " ".join(ext_opts), src, dst, redirect))
 
@@ -1579,9 +1586,29 @@ def get_cpu_num():
     return int(out)
 
 def get_cpu_model():
-    vendor_id = shell.call("lscpu |awk -F':' '{IGNORECASE=1}/Vendor ID/{print $2}'").strip()
-    model_name = shell.call("lscpu |awk -F':' '{IGNORECASE=1}/Model name/{print $2}'").strip()
+    vendor_id = shell.call("lscpu |awk -F':' '{IGNORECASE=1}/^ *Vendor ID/{print $2}'").strip()
+    model_name = shell.call("lscpu |awk -F':' '{IGNORECASE=1}/^ *Model name/{print $2}'").strip()
     return vendor_id, model_name
+
+def get_socket_num():
+    num_dmidecode = int(shell.call("dmidecode -t processor | grep 'Socket Designation' | wc -l").strip())
+    num_lscpu = int(shell.call("lscpu | awk '/Socket\(s\)/{print $2}'").strip())
+    num_cpuinfo = int(shell.call("grep 'physical id' /proc/cpuinfo | sort -u | wc -l").strip())
+    '''
+    Seems not all platforms can get these values correctly, 
+    depending on the system and the version of tools like util-linux and dmidecode.
+    
+    Return the value if two or three values are equal, else treated as 1 cpu.
+    '''
+    freq = {}
+    for num in [num_dmidecode, num_lscpu, num_cpuinfo]:
+        if num in freq:
+            freq[num] += 1
+            if freq[num] >= 2:
+                return num
+        else:
+            freq[num] = 1
+    return 1
 
 @retry(times=3, sleep_time=3)
 def get_cpu_speed():
@@ -1757,18 +1784,29 @@ def int_to_ip_string(ip):
             str((ip & 0x000000ff))
             )
 
+def vlan_eth_exists(ethname, vlan):
+    vlan = int(vlan)
+    if not is_network_device_existing(ethname):
+        raise LinuxError('cannot find ethernet device %s' % ethname)
+    vlan_dev_name = make_vlan_eth_name(ethname, vlan)
+    return is_network_device_existing(vlan_dev_name)
+
+
 def delete_vlan_eth(vlan_dev_name):
     if not is_network_device_existing(vlan_dev_name):
         return
     shell.call('ip link set dev %s down' % vlan_dev_name)
     iproute.delete_link_no_error(vlan_dev_name)
 
+def make_vlan_eth_name(ethname, vlan):
+    return '%s.%s' % (ethname, vlan)
+
 def create_vlan_eth(ethname, vlan, ip=None, netmask=None):
     vlan = int(vlan)
     if not is_network_device_existing(ethname):
         raise LinuxError('cannot find ethernet device %s' % ethname)
 
-    vlan_dev_name = '%s.%s' % (ethname, vlan)
+    vlan_dev_name = make_vlan_eth_name(ethname, vlan)
     if not is_network_device_existing(vlan_dev_name):
         shell.call('ip link add link %s name %s type vlan id %s' % (ethname, vlan_dev_name, vlan))
         if ip:
@@ -2362,6 +2400,14 @@ def populate_vxlan_fdbs(interf, ips):
 
     return True
 
+def delete_vxlan_fdbs(interf, ips):
+    try:
+        iproute.batch_delete_vxlan_fdbs(interf, "00:00:00:00:00:00", ips)
+    except Exception as e:
+        logger.debug(e)
+        return False
+
+    return True
 
 def bridge_fdb_has_self_rule(mac, dev):
     return shell.run("bridge fdb show dev %s | grep -m 1 '%s dev %s self permanent'" % (dev, mac, dev)) == 0

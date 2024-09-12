@@ -120,7 +120,8 @@ startVmCmdBody = {
     "kvmHostAddons": {
         "qcow2Options": " -o cluster_size=2097152 "
     },
-    "x2apic": True
+    "x2apic": True,
+    "acpi": True
 }
 
 migrate_vm_cmd_body = {
@@ -360,6 +361,16 @@ def online_increase_cpu(vm_uuid, cpu_num):
     return VM_PLUGIN.online_increase_cpu(misc.make_a_request({
         'vmUuid': vm_uuid,
         'cpuNum': cpu_num
+    }))
+
+
+def apply_memory_balloon(vm_uuid_list, direction, percent):
+    # type: (list, str, int) -> None
+
+    return VM_PLUGIN.apply_memory_balloon(misc.make_a_request({
+        'vmUuids': vm_uuid_list,
+        'direction': direction,
+        'adjustPercent': percent
     }))
 
 

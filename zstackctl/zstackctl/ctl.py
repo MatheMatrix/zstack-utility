@@ -128,14 +128,14 @@ fi
 
 grep 'interactive_timeout' $mysql_conf >/dev/null 2>&1
 if [ $? -ne 0 ]; then
-    echo "interactive_timeout=100"
-    sed -i '/\[mysqld\]/a interactive_timeout=100\' $mysql_conf
+    echo "interactive_timeout=600"
+    sed -i '/\[mysqld\]/a interactive_timeout=600\' $mysql_conf
 fi
 
 grep 'wait_timeout' $mysql_conf >/dev/null 2>&1
 if [ $? -ne 0 ]; then
-    echo "wait_timeout=100"
-    sed -i '/\[mysqld\]/a wait_timeout=100\' $mysql_conf
+    echo "wait_timeout=600"
+    sed -i '/\[mysqld\]/a wait_timeout=600\' $mysql_conf
 fi
 
 grep 'log-error' $mysql_conf >/dev/null 2>&1
@@ -148,6 +148,12 @@ grep 'slave_net_timeout=' $mysql_conf >/dev/null 2>&1
 if [ $? -ne 0 ]; then
     echo "slave_net_timeout=60"
     sed -i '/\[mysqld\]/a slave_net_timeout=60\' $mysql_conf
+fi
+
+grep 'TimeoutStartSec' /usr/lib/systemd/system/mariadb.service >/dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "TimeoutStartSec=300"
+    sed -i '/\[Service\]/a TimeoutStartSec=300' /usr/lib/systemd/system/mariadb.service
 fi
 
 mkdir -p /etc/systemd/system/mariadb.service.d/
@@ -360,6 +366,20 @@ def get_zstack_version(db_hostname, db_port, db_user, db_password):
 
     version = versions[0]
     return version
+
+def get_zstack_installed_on(db_hostname, db_port, db_user, db_password):
+    query = MySqlCommandLineQuery()
+    query.host = db_hostname
+    query.port = db_port
+    query.user = db_user
+    query.password = db_password
+    query.table = 'zstack'
+    query.sql = "select installed_on from schema_version order by installed_on desc"
+    ret = query.query()
+    installed_ons = [r['installed_on'] for r in ret]
+
+    installed_on = installed_ons[0]
+    return installed_on
 
 def get_default_gateway_ip():
     '''This function will return default route gateway ip address'''
@@ -1760,6 +1780,54 @@ class ShowStatus2Cmd(Command):
         self._format_str_color("MN", mn_status)
         self._format_str_color("MN-UI", ui_status)
 
+class ShowStatus3Cmd(Command):
+    def __init__(self):
+        super(ShowStatus3Cmd, self).__init__()
+        self.name = 'status3'
+        self.description = 'show project num(PJNUM) and version installed_on info'
+        ctl.register_command(self)
+
+    def install_argparse_arguments(self, parser):
+        parser.add_argument('--host',
+                            help='SSH URL, for example, root@192.168.0.10, to show the management node status on a remote machine')
+        parser.add_argument('--quiet', '-q', help='Do not log this action.', action='store_true', default=False)
+
+    def _stop_remote(self, args):
+        shell_no_pipe(
+            'ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no %s "/usr/bin/zstack-ctl status"' % args.host)
+
+    def run(self, args):
+        self.quiet = args.quiet
+        if args.host:
+            self._stop_remote(args)
+            return
+
+        try:
+            db_hostname, db_port, db_user, db_password = ctl.get_live_mysql_portal()
+        except CtlError as e:
+            info('version: %s' % colored('unknown, %s' % e.message.strip(), 'yellow'))
+            return
+
+        def get_pjnum():
+            pjnum_path = ctl.zstack_home + "/PJNUM"
+            if not os.path.exists(pjnum_path):
+                return 'unknown'
+            with open(pjnum_path, 'r') as fd:
+                line = fd.readline()
+                if line.startswith('PJNUM='):
+                    num = line.strip('\t\n\r').split('=')[1]
+                    if num == '001':
+                        return 'universal'
+                    else:
+                        return 'particular'
+                else:
+                    return 'unknown'
+
+        pjnum = get_pjnum()
+        info('project num(PJNUM): %s' % pjnum)
+        installed_on = get_zstack_installed_on(db_hostname, db_port, db_user, db_password)
+        info('installed on: %s' % installed_on)
+        
 class DeployDBCmd(Command):
     DEPLOY_DB_SCRIPT_PATH = "WEB-INF/classes/deploydb.sh"
     ZSTACK_PROPERTY_FILE = "WEB-INF/classes/zstack.properties"
@@ -2950,37 +3018,41 @@ class InstallDbCmd(Command):
       ansible_python_interpreter: /usr/bin/python2
 
   tasks:
+    - name: set ansible_distribution_major_version
+      set_fact:
+        ansible_distribution_major_version: "{{ansible_distribution_major_version | int }}"
+
     - name: pre-install script
       script: $pre_install_script
 
     - name: install MySQL for RedHat 6 through user defined repos
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version < '7' and yum_repo != 'false'
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and yum_repo != 'false'
       shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y mysql mysql-server
       register: install_result
 
     - name: install MySQL for RedHat 6 through system defined repos
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version < '7' and yum_repo == 'false'
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and yum_repo == 'false'
       shell: "yum clean metadata; yum --nogpgcheck install -y mysql mysql-server "
       register: install_result
 
     - name: install MySQL for RedHat 7/Kylin10/openEuler/UnionTech kongzi/Nfs from local
-      when: (ansible_os_family == 'RedHat' and ansible_distribution_version >= '7' and yum_repo != 'false') or ansible_os_family == 'Kylin' \
+      when: (ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 7 and yum_repo != 'false') or ansible_os_family == 'Kylin' \
             or ansible_os_family == 'Openeuler' or ansible_os_family == 'Nfs' or (ansible_os_family == 'UnionTech' and ansible_distribution_release == 'kongzi')
       shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y  mariadb mariadb-server iptables-services
       register: install_result
 
     - name: install MySQL for RedHat 7/Kylin10 or from local
-      when: (ansible_os_family == 'RedHat' and ansible_distribution_version >= '7' and yum_repo == 'false') or (ansible_os_family == 'Kylin' and ansible_distribution_version == '10' and yum_repo == 'false')
+      when: (ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 7 and yum_repo == 'false') or (ansible_os_family == 'Kylin' and ansible_distribution_major_version == '10' and yum_repo == 'false')
       shell: yum clean metadata; yum --nogpgcheck install -y  mariadb mariadb-server iptables-services
       register: install_result
 
     - name: install MySQL for AliOS 7 from local
-      when: ansible_os_family == 'Alibaba' and ansible_distribution_version >= '7' and yum_repo != 'false'
+      when: ansible_os_family == 'Alibaba' and ansible_distribution_major_version >= 7 and yum_repo != 'false'
       shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y  mariadb mariadb-server iptables-services
       register: install_result
 
     - name: install MySQL for AliOS 7 from local
-      when: ansible_os_family == 'Alibaba' and ansible_distribution_version >= '7' and yum_repo == 'false'
+      when: ansible_os_family == 'Alibaba' and ansible_distribution_major_version >= 7 and yum_repo == 'false'
       shell: yum clean metadata; yum --nogpgcheck install -y  mariadb mariadb-server iptables-services
       register: install_result
 
@@ -3007,16 +3079,16 @@ class InstallDbCmd(Command):
       script: $post_install_script
 
     - name: enable MySQL daemon on RedHat 6
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version < '7'
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7
       service: name=mysqld state=restarted enabled=yes
 
     - name: enable MySQL daemon on RedHat 7/Kyliin10/openEuler/UnionTech kongzi/Nfs
-      when: (ansible_os_family == 'RedHat' and ansible_distribution_version >= '7') or ansible_os_family == 'Kylin' or ansible_os_family == 'Openeuler'
+      when: (ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 7) or ansible_os_family == 'Kylin' or ansible_os_family == 'Openeuler'
             or ansible_os_family == 'Nfs' or (ansible_os_family == 'UnionTech' and ansible_distribution_release == 'kongzi')
       service: name=mariadb state=restarted enabled=yes
 
     - name: enable MySQL daemon on AliOS 7
-      when: ansible_os_family == 'Alibaba' and ansible_distribution_version >= '7'
+      when: ansible_os_family == 'Alibaba' and ansible_distribution_major_version >= 7
       service: name=mariadb state=restarted enabled=yes
 
     - name: enable MySQL on Ubuntu
@@ -3037,19 +3109,19 @@ class InstallDbCmd(Command):
       shell: $grant_access_cmd
 
     - name: rollback MySQL installation on RedHat 6
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version < '7' and change_root_result.rc != 0 and install_result.changed == True
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mysql mysql-server
 
     - name: rollback MySQL installation on RedHat 7
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version >= '7' and change_root_result.rc != 0 and install_result.changed == True
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 7 and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mariadb mariadb-server
       
     - name: rollback MySQL installation on Kylin10
-      when: ansible_os_family == 'Kylin' and ansible_distribution_version == '10' and change_root_result.rc != 0 and install_result.changed == True
+      when: ansible_os_family == 'Kylin' and ansible_distribution_major_version == 10 and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mariadb mariadb-server
 
     - name: rollback MySQL installation on AliOS 7
-      when: ansible_os_family == 'Alibaba' and ansible_distribution_version >= '7' and change_root_result.rc != 0 and install_result.changed == True
+      when: ansible_os_family == 'Alibaba' and ansible_distribution_major_version >= 7 and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mariadb mariadb-server
 
     - name: rollback MySql installation on Ubuntu
@@ -3081,8 +3153,11 @@ class InstallDbCmd(Command):
             for ip in current_host_ips:
                 if not ip:
                     continue
-                more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' IDENTIFIED BY '' WITH GRANT OPTION;"  % ip
-            grant_access_cmd = '''/usr/bin/mysql -u root -e "GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' IDENTIFIED BY '' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' IDENTIFIED BY '' WITH GRANT OPTION; %s FLUSH PRIVILEGES;"''' % (args.host, args.host.replace(".", "-"), more_cmd)
+                more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{}' IDENTIFIED BY '' WITH GRANT OPTION;".format(ip)
+            grant_access_cmd = '''/usr/bin/mysql -u root -e ''' \
+                               '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '' WITH GRANT OPTION; '''\
+                               '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{}' IDENTIFIED BY '' WITH GRANT OPTION; '''\
+                               '''{} FLUSH PRIVILEGES;"'''.format(args.host, more_cmd)
         else:
             if not args.root_password:
                 args.root_password = args.login_password
@@ -3090,8 +3165,11 @@ class InstallDbCmd(Command):
             for ip in current_host_ips:
                 if not ip:
                     continue
-                more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;"  % (ip, args.root_password)
-            grant_access_cmd = '''/usr/bin/mysql -u root -p%s -e "GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '%s' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION; %s FLUSH PRIVILEGES;"''' % (args.root_password, args.root_password, args.host, args.root_password, args.host.replace(".", "-"), args.root_password, more_cmd)
+                more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{}' IDENTIFIED BY '{}' WITH GRANT OPTION;".format(ip, args.root_password)
+            grant_access_cmd = '''/usr/bin/mysql -u root -p{root_pass} -e '''\
+                               '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
+                               '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
+                               '''{more_cmd} FLUSH PRIVILEGES;"'''.format(root_pass=args.root_password, host=args.host, more_cmd=more_cmd)
 
         if args.login_password is not None:
             change_root_password_cmd = '/usr/bin/mysqladmin -u root -p{{login_password}} password {{root_password}}'
@@ -5133,7 +5211,8 @@ class MysqlRestrictConnection(Command):
             error("failed to get mysql views definer: %s" % output)
 
         if output is not None and output.strip() != "":
-           return  "USE mysql;  GRANT USAGE ON *.* TO %s IDENTIFIED BY '%s' WITH GRANT OPTION;" % (output, root_password)
+            user, host = output.split("@")
+            return  "USE mysql;  GRANT USAGE ON *.* TO '%s'@%s IDENTIFIED BY '%s' WITH GRANT OPTION;" % (user, host, root_password)
 
         return ""
 
@@ -5241,10 +5320,12 @@ class ChangeMysqlPasswordCmd(Command):
         if check_pswd_rules(args.new_password) == False:
             error("Failed! The password you entered doesn't meet the password policy requirements.\nA strong password must contain at least 8 characters in length, and include a combination of letters, numbers and special characters.")
         if (args.user_name in self.normal_users) or (args.user_name == 'root'):
-            if args.remote_ip is not None:
-                sql = '''mysql -u root -p%s -h '%s' -e "UPDATE mysql.user SET Password=PASSWORD('%s') , Host = '%s' WHERE USER='%s';FLUSH PRIVILEGES;" ''' % (root_password_, args.remote_ip, new_password_, args.remote_ip, args.user_name)
-            else:
-                sql = '''mysql -u root -p%s -e "UPDATE mysql.user SET Password=PASSWORD('%s') WHERE USER='%s';FLUSH PRIVILEGES;" ''' % (root_password_, new_password_, args.user_name)
+            mn_ip = ctl.read_property('management.server.ip') if not args.remote_ip else args.remote_ip
+            set_password_sql = "SET PASSWORD FOR {user}@localhost = PASSWORD('{new_pass}');" \
+                               "SET PASSWORD FOR {user}@127.0.0.1 = PASSWORD('{new_pass}');" \
+                               "SET PASSWORD FOR {user}@{mn_ip} = PASSWORD('{new_pass}');" \
+                               "FLUSH PRIVILEGES;".format(user=args.user_name, new_pass=new_password_, mn_ip=mn_ip)
+            sql = '''mysql -u root -p{root_pass} -h '{ip}' -e "{sql}" '''.format(root_pass=root_password_, ip=mn_ip, sql=set_password_sql)
             status, output = commands.getstatusoutput(sql)
             if status != 0:
                 error(output)
@@ -9865,6 +9946,13 @@ class ConfigUiCmd(Command):
             ctl.write_ui_property("webhook_port", args.webhook_port.strip())
         if args.server_port or args.server_port == '':
             ctl.write_ui_property("server_port", args.server_port.strip())
+            distro = platform.dist()[0]
+            if distro in RPM_BASED_OS:
+                shell('iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport %s -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT && service iptables save)' % (args.server_port, args.server_port))
+            elif distro in DEB_BASED_OS:
+                shell('iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport %s -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT && /etc/init.d/iptables-persistent save)' % (args.server_port, args.server_port))
+            else:
+                shell('iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport %s -j ACCEPT" > /dev/null || iptables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT ' % (args.server_port, args.server_port))
         if args.log or args.log == '':
             ctl.write_ui_property("log", args.log.strip())
 
@@ -10593,6 +10681,7 @@ def main():
     RecoverHACmd()
     ScanDatabaseBackupCmd()
     ShowStatus2Cmd()
+    ShowStatus3Cmd()
     ShowStatusCmd()
     StartCmd()
     StopCmd()

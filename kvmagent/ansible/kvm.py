@@ -37,6 +37,7 @@ remote_port = None
 host_uuid = None
 libvirtd_conf_file = "/etc/libvirt/libvirtd.conf"
 skip_packages = ""
+extra_packages = ""
 update_packages = 'false'
 zstack_lib_dir = "/var/lib/zstack"
 zstack_libvirt_nwfilter_dir = "%s/nwfilter" % zstack_lib_dir
@@ -49,6 +50,7 @@ unsupported_iproute_list = ["nfs4"]
 unittest_flag = 'false'
 mn_ip = None
 isInstallHostShutdownHook = 'false'
+isEnableKsm = 'none'
 
 
 # get parameter from shell
@@ -192,31 +194,35 @@ run_remote_command("rm -rf {}/*; mkdir -p /usr/local/zstack/ || true".format(kvm
 
 def install_kvm_pkg():
     def rpm_based_install():
-        mlnx_ofed = " python3 unbound libnl3-devel lsof \
-                        libibverbs ibacm librdmacm mlnx-ethtool libibumad ofed-scripts mlnx-dpdk infiniband-diags \
-                        mlnx-dpdk-tools rdma-core mlnx-ofa_kernel kmod-mlnx-ofa_kernel kmod-iser mlnx-ofa_kernel-devel \
-                        rdma-core-devel mstflint kmod-isert mlnx-iproute2 mlnx-dpdk-doc libibverbs-utils librdmacm-utils \
-                        mlnx-dpdk-devel openvswitch kmod-srp mlnx-ofed-dpdk-upstream-libs"
-
         os_base_dep = "bridge-utils chrony conntrack-tools cyrus-sasl-md5 device-mapper-multipath expect ipmitool iproute ipset \
                         usbredir-server iputils libvirt libvirt-client libvirt-python lighttpd lsof net-tools nfs-utils nmap openssh-clients \
                         smartmontools sshpass usbutils wget audit dnsmasq collectd-virt storcli nvme-cli pv rsync sed pciutils tar"
 
         distro_mapping = {
-            'centos': 'vconfig iscsi-initiator-utils OpenIPMI-modalias OVMF mcelog MegaCli Arcconf python-pyudev kernel-devel libicu',
-            'kylin': 'vconfig open-iscsi python2-pyudev collectd-disk OpenIPMI libselinux-devel nettle tuned qemu-kvm libicu',
+            'centos': 'vconfig iscsi-initiator-utils OpenIPMI-modalias OVMF mcelog MegaCli Arcconf python-pyudev kernel-devel libicu edac-utils',
+            'kylin': 'vconfig open-iscsi python2-pyudev collectd-disk OpenIPMI libselinux-devel nettle tuned qemu-kvm libicu ',
             'uniontech': 'vconfig iscsi-initiator-utils OpenIPMI nettle qemu-kvm python-pyudev collectd-disk',
-            'rocky': 'iscsi-initiator-utils OpenIPMI-modalias mcelog MegaCli Arcconf python-pyudev kernel-devel collectd-disk'
+            'rocky': 'iscsi-initiator-utils OpenIPMI-modalias mcelog MegaCli Arcconf python-pyudev kernel-devel collectd-disk edac-utils',
         }
+
+        helix_rhel_rpms = ('iscsi-initiator-utils OpenIPMI-modalias mcelog '
+                           'MegaCli Arcconf python-pyudev kernel-devel '
+                           'edac-utils')
 
         releasever_mapping = {
             'c74': 'qemu-kvm-ev ',
             'c76': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel',
             'c79': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel',
-            'h76c': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel',
-            'h79c': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel',
+            'h76c': ('%s qemu-kvm libvirt-admin seabios-bin nping '
+                     'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
+            'h79c': ('%s qemu-kvm libvirt-admin seabios-bin nping '
+                     'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
+            'h84r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm '
+                     'seabios-bin elfutils-libelf-devel collectd-disk') % helix_rhel_rpms,
             'rl84': 'qemu-kvm libvirt-daemon libvirt-daemon-kvm seabios-bin elfutils-libelf-devel',
             'euler20': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
+            'oe2203sp1': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
+            'h2203sp1o': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
             'nfs4': 'vconfig iscsi-initiator-utils OpenIPMI nettle libselinux-devel iptables iptables-services qemu-kvm python2-pyudev collectd-disk'
         }
 
@@ -248,7 +254,7 @@ def install_kvm_pkg():
                 common_dep_list += mini_dep_list
 
             if isCube:
-                cube_dep_list = " lm_sensors edac-utils"
+                cube_dep_list = " lm_sensors"
                 if releasever not in kylin:
                     cube_dep_list += " lm_sensors-libs"
                 common_dep_list += cube_dep_list
@@ -257,14 +263,26 @@ def install_kvm_pkg():
             update_list = common_update_list
             no_update_list = common_no_update_list
 
+            # libvirt does not need to be updated
             command = "which virsh"
             host_post_info.post_label = "ansible.shell.install.pkg"
             host_post_info.post_label_param = "libvirt"
             (status, output) = run_remote_command(command, host_post_info, True, True)
+            if output:
+            	# libvirt-python installation does not affect the libvirt installation
+            	command = ("yum --disablerepo=* --enablerepo={0} --assumeno install libvirt-python |awk '{{print $1}}' | grep -Ew '^\s*libvirt\s*$'").format(zstack_repo)
+            	host_post_info.post_label = "ansible.shell.install.pkg"
+            	host_post_info.post_label_param = "libvirt-python"
+            	(status, output) = run_remote_command(command, host_post_info, True, True)
+            	if status is True:
+                    dep_list =' '.join([pkg for pkg in dep_list.split() if not pkg.startswith("libvirt")])
+                else:
+                    dep_list =' '.join([pkg for pkg in dep_list.split() if pkg == 'libvirt-python' or not pkg.startswith("libvirt")])                    
 
-            versions = host_info.distro_version.split('.')
-            if output and len(versions) > 2 and versions[0] == '7' and versions[1] == '2':
-                dep_list = dep_list.replace('libvirt libvirt-client libvirt-python ', '')
+            # add extra package
+            if extra_packages != '':
+                dep_list = dep_list + " " + extra_packages
+
 
             # skip these packages when connect host
             _skip_list = re.split(r'[|;,\s]\s*', skip_packages)
@@ -751,6 +769,17 @@ def set_legacy_iptables_ebtables():
     run_remote_command(command, host_post_info)
 
 
+def do_ksm_config():
+    if isEnableKsm == 'none':
+        return
+
+    oprator = "1" if isEnableKsm == 'true' else "0"
+    command = "echo %s > /sys/kernel/mm/ksm/run" % oprator
+    host_post_info.post_label = "ansible.shell.host-ksm"
+    host_post_info.post_label_param = None
+    run_remote_command(command, host_post_info)
+
+
 def do_auditd_config():
     """add audit rules for signals"""
     AUDIT_CONF_FILE = '/etc/audit/auditd.conf'
@@ -761,6 +790,15 @@ def do_auditd_config():
               "auditctl -a always,exit -F arch=b64 -F a1=9 -S kill -k zstack_log_kill || true; " \
               "auditctl -a always,exit -F arch=b64 -F a1=15 -S kill -k zstack_log_kill || true"
     host_post_info.post_label = "ansible.shell.audit.signal"
+    host_post_info.post_label_param = None
+    run_remote_command(command, host_post_info)
+
+def do_systemd_config():
+    systemd_config_file = '/etc/systemd/system.conf'
+    command = "sed -i 's/\#\?DefaultTimeoutStartSec.*/DefaultTimeoutStartSec=10s/g' {0}; " \
+              "sed -i 's/\#\?DefaultTimeoutStopSec.*/DefaultTimeoutStopSec=10s/g' {0}; " \
+              "systemctl daemon-reload".format(systemd_config_file)
+    host_post_info.post_label = "ansible.shell.configure.systemd"
     host_post_info.post_label_param = None
     run_remote_command(command, host_post_info)
 
@@ -858,6 +896,8 @@ install_python_pkg()
 set_legacy_iptables_ebtables()
 install_agent_pkg()
 do_auditd_config()
+do_systemd_config()
+do_ksm_config()
 modprobe_usb_module()
 modprobe_mpci_module()
 set_gpu_blacklist()

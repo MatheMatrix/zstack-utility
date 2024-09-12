@@ -67,7 +67,6 @@ BOND_MODE_ACTIVE_6 = "balance-alb"
 class ConnectResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(ConnectResponse, self).__init__()
-        self.iptablesSucc = None
 
 class HostCapacityResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -920,8 +919,6 @@ class HostPlugin(kvmagent.KvmAgent):
     ATTACH_VOLUME_PATH = "/host/volume/attach"
     DETACH_VOLUME_PATH = "/host/volume/detach"
 
-    cpu_sockets = 0
-
     def __init__(self):
         self.IS_YUM = False
         self.IS_APT = False
@@ -997,8 +994,7 @@ class HostPlugin(kvmagent.KvmAgent):
         linux.write_uuids("host", "host=%s" % self.host_uuid)
 
         vm_plugin.cleanup_stale_vnc_iptable_chains()
-        apply_iptables_result = self.apply_iptables_rules(cmd.iptablesRules)
-        rsp.iptablesSucc = apply_iptables_result
+        self.apply_iptables_rules(cmd.iptablesRules)
 
         if self.host_socket is not None:
             self.host_socket.close()
@@ -1089,6 +1085,8 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp = HostFactResponse()
         rsp.osDistribution, rsp.osVersion, rsp.osRelease = platform.dist()
         if rsp.osDistribution == 'centos':
+            rsp.osDistribution = platform.linux_distribution()[0].lower()
+        if rsp.osDistribution == 'openEuler':
             rsp.osDistribution = platform.linux_distribution()[0].lower()
         rsp.osRelease = rsp.osRelease if rsp.osRelease else "Core"
         # compatible with Kylin SP2 HostOS ISO and standardized ISO
@@ -1186,6 +1184,9 @@ class HostPlugin(kvmagent.KvmAgent):
             cpuMHz = "2500.0000" if cpuMHz.strip() == '' else cpuMHz
             rsp.cpuGHz = '%.2f' % (float(cpuMHz) / 1000)
             cpu_cores_per_socket = shell.call("lscpu | awk -F':' '/per socket/{print $NF}'")
+            # On openeuler, lscpu otuputs 'per cluster' instead of 'per socket'
+            if not cpu_cores_per_socket:
+                cpu_cores_per_socket = shell.call("lscpu | awk -F':' '/per cluster/{print $NF}'")
             cpu_threads_per_core = shell.call("lscpu | awk -F':' '/per core/{print $NF}'")
             rsp.cpuProcessorNum = int(cpu_cores_per_socket.strip()) * int(cpu_threads_per_core)
 
@@ -1233,6 +1234,9 @@ class HostPlugin(kvmagent.KvmAgent):
             rsp.cpuGHz = static_cpuGHz_re.group(0)[:-3] if static_cpuGHz_re else transient_cpuGHz
 
             cpu_cores_per_socket = shell.call("lscpu | awk -F':' '/per socket/{print $NF}'")
+            # On openeuler, lscpu otuputs 'per cluster' instead of 'per socket'
+            if not cpu_cores_per_socket:
+                cpu_cores_per_socket = shell.call("lscpu | awk -F':' '/per cluster/{print $NF}'")
             cpu_threads_per_core = shell.call("lscpu | awk -F':' '/per core/{print $NF}'")
             rsp.cpuProcessorNum = int(cpu_cores_per_socket.strip()) * int(cpu_threads_per_core)
 
@@ -1303,21 +1307,9 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.usedCpu = used_cpu
         rsp.totalMemory = _get_total_memory()
         rsp.usedMemory = used_memory
+        rsp.cpuSockets = linux.get_socket_num()
 
-        if HostPlugin.cpu_sockets < 1:
-            if IS_AARCH64:
-                # Not sure if other arm cpus have this problem.
-                o = bash_o("lscpu | grep 'Socket(s)' | awk '{print $2}'").strip()
-                sockets =  int(o) if o != '' else 0
-            else:
-                sockets = len(bash_o('grep "physical id" /proc/cpuinfo | sort -u').splitlines())
-            HostPlugin.cpu_sockets = sockets if sockets > 0 else 1
-
-        rsp.cpuSockets = HostPlugin.cpu_sockets
-
-        ret = jsonobject.dumps(rsp)
-        logger.debug('get host capacity: %s' % ret)
-        return ret
+        return jsonobject.dumps(rsp)
 
     def _heartbeat_func(self, heartbeat_file):
         class Heartbeat(object):

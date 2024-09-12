@@ -35,7 +35,7 @@ export TERM=xterm
 
 OS=''
 IS_UBUNTU='n'
-REDHAT_OS="CENTOS6 CENTOS7 RHEL7 HELIX7 ALIOS7 ISOFT4 KYLIN10 EULER20 UOS1020A NFS4 ROCKY8"
+REDHAT_OS="CENTOS6 CENTOS7 RHEL7 HELIX7 HELIX8 ALIOS7 ISOFT4 KYLIN10 EULER20 UOS1020A NFS4 ROCKY8 OE2203 H2203SP1O"
 DEBIAN_OS="UBUNTU14.04 UBUNTU16.04 UBUNTU KYLIN4.0.2 DEBIAN9 UOS20"
 KYLIN_V10_OS="ky10sp1 ky10sp2 ky10sp3"
 XINCHUANG_OS="$KYLIN10_OS uos20"
@@ -215,6 +215,8 @@ declare -a upgrade_params_array=(
     '4.5.0,-DAddTagToSchedulerSnapshot=true'
     '4.6.0,-DupgradeVipSnatNetworkServiceRefRecord=true'
     '4.6.0,-DupgradeLinuxGuestTools=true'
+    '4.7.21,-DupgradeSecurityGroup=true'
+    '4.7.21,-DupgradeSshKeyPairFromSystemTag=true'
 )
 #other than the upon params_array, this one could be persisted in zstack.properties
 declare -a upgrade_persist_params_array=(
@@ -877,10 +879,13 @@ check_system(){
         grep -qi 'NeoKylin Linux' /etc/system-release && OS="RHEL7"
         grep -qi 'Kylin Linux Advanced Server release V10' /etc/system-release && OS="KYLIN10"
         grep -qi 'openEuler release 20.03 (LTS-SP1)' /etc/system-release && OS="EULER20"
+        grep -qi 'openEuler release 22.03 (LTS-SP1)' /etc/system-release && OS="OE2203"
+        grep -qi 'helix release 22.03 (LTS-SP1)' /etc/system-release && OS="H2203SP1O"
         grep -qi 'UnionTech OS Server release 20 (kongzi)' /etc/system-release && OS="UOS1020A"
         grep -qi 'NFSChina Server release 4.0.220727 (RTM3)' /etc/system-release && OS="NFS4"
         grep -qi 'Rocky Linux release 8.4 (Green Obsidian)' /etc/system-release && OS="ROCKY8"
         grep -qi 'Helix release 7' /etc/system-release && OS="HELIX7"
+        grep -qi 'Helix release 8.4r (Green Obsidian)' /etc/system-release && OS="HELIX8"
         if [[ -z "$OS" ]];then
             fail2 "Host OS checking failure: your system is: `cat /etc/redhat-release`, $PRODUCT_NAME management node only supports $SUPPORTED_OS currently"
         elif [[ $OS == "CENTOS7" ]];then
@@ -1025,16 +1030,12 @@ do_config_networkmanager(){
 
 do_config_limits(){
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    if [ "$OS" == "KYLIN10" ]; then
-      nr_open=1048576
-    else
-      nr_open=`sysctl -n fs.nr_open`
-    fi
+    rm -rf /etc/security/limits.d/10-zstack.conf
     cat > /etc/security/limits.d/10-zstack.conf << EOF
-zstack  soft  nofile  $nr_open
-zstack  hard  nofile  $nr_open
-zstack  soft  nproc  $nr_open
-zstack  hard  nproc  $nr_open
+zstack  soft  nofile  65536
+zstack  hard  nofile  65536
+zstack  soft  nproc  65536
+zstack  hard  nproc  65536
 EOF
 }
 
@@ -1053,6 +1054,13 @@ executable = /bin/bash
 log_path = /var/log/ansible/ansible.log
 host_key_checking = False
 EOF
+}
+
+do_config_systemd(){
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    sed -i 's/\#\?DefaultTimeoutStartSec.*/DefaultTimeoutStartSec=10s/g' /etc/systemd/system.conf
+    sed -i 's/\#\?DefaultTimeoutStopSec.*/DefaultTimeoutStopSec=10s/g' /etc/systemd/system.conf
+    systemctl daemon-reload
 }
 
 do_check_system(){
@@ -1386,6 +1394,7 @@ upgrade_zstack(){
     #rerun install system libs, upgrade might need new libs
     is_install_system_libs
     do_config_ansible
+    do_config_systemd
     show_spinner is_enable_chronyd
     show_spinner uz_stop_zstack
     show_spinner prepare_zops_user_and_db
@@ -1657,7 +1666,8 @@ is_install_general_libs_rh(){
             avahi-tools \
             audit \
             redis \
-            nodejs"
+            nodejs \
+            zs-forecast-capacity"
     if [ "$BASEARCH" == "x86_64" ]; then
       deps_list="${deps_list} mcelog"
     fi
@@ -2096,6 +2106,8 @@ get_mysql_conf_file(){
     elif [ -f /etc/mysql/my.cnf ]; then
         # Ubuntu 14.04
         MYSQL_CONF_FILE=/etc/mysql/my.cnf
+    elif [ -f /etc/my.cnf.d/mariadb-server.cnf ];then
+        MYSQL_CONF_FILE=/etc/my.cnf.d/mariadb-server.cnf
     elif [ -f /etc/my.cnf ]; then
         # centos
         MYSQL_CONF_FILE=/etc/my.cnf
@@ -2119,6 +2131,27 @@ upgrade_mysql_configuration(){
     if [ $? -ne 0 ]; then
         echo "max_allowed_packet=2M" >>$ZSTACK_INSTALL_LOG 2>&1
         sed -i '/\[mysqld\]/a max_allowed_packet=2M\' $MYSQL_CONF_FILE
+    fi
+
+    grep 'interactive_timeout' $MYSQL_CONF_FILE >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        sed -i '/\[mysqld\]/a interactive_timeout=600\' $MYSQL_CONF_FILE
+    else
+        sed -i 's/interactive_timeout.*/interactive_timeout=600/g' $MYSQL_CONF_FILE
+    fi
+
+    grep 'wait_timeout' $MYSQL_CONF_FILE >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "wait_timeout=600" >>$ZSTACK_INSTALL_LOG 2>&1
+        sed -i '/\[mysqld\]/a wait_timeout=600\' $MYSQL_CONF_FILE
+    else
+        sed -i 's/wait_timeout.*/wait_timeout=600/g' $MYSQL_CONF_FILE
+    fi
+
+    grep 'TimeoutStartSec' /usr/lib/systemd/system/mariadb.service >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        sed -i '/\[Service\]/a TimeoutStartSec=300' /usr/lib/systemd/system/mariadb.service
+        systemctl daemon-reload
     fi
 
     [ x`systemctl is-enabled zstack-ha 2>/dev/null` == x"enabled" ] && systemctl stop keepalived.service
@@ -2531,6 +2564,7 @@ config_system(){
     fi
     do_enable_sudo
     do_config_networkmanager
+    do_config_systemd
 }
 
 cs_add_cronjob(){
@@ -3353,7 +3387,7 @@ get_zstack_repo(){
 install_sync_repo_dependences() {
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     pkg_list="createrepo curl rsync"
-    if [ x"$OS" != x"KYLIN10" -a x"$OS" != x"EULER20" ]; then
+    if [ x"$OS" != x"KYLIN10" -a x"$OS" != x"EULER20" -a x"$OS" != x"OE2203" -a x"$OS" != x"H2203SP1O" ]; then
         pkg_list="$pkg_list yum-utils"
     fi
     missing_list=`LANG=en_US.UTF-8 && rpm -q $pkg_list | grep 'not installed' | awk 'BEGIN{ORS=" "}{ print $2 }'`

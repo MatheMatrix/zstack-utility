@@ -238,7 +238,7 @@ def get_mpath_block_devices(scsi_info):
     return filter(None, block_devices_list), slave_devices
 
 def get_disk_block_devices(slave_devices, scsi_info):
-    disks = shell.call("lsblk -p -o NAME,TYPE | awk '/disk/{print $1}'").strip().split()
+    disks = shell.call("lsblk -e 43 -p -o NAME,TYPE | awk '/disk/{print $1}'").strip().split()
     block_devices_list = [None] * len(disks)
 
     slave_multipaths = shell.call("multipath -l | grep -A 1 policy | grep -v policy |awk -F - '{print $2}'| awk '{print $2}'").strip().splitlines()
@@ -772,6 +772,28 @@ def start_vg_lock(vgUuid, retry_times_for_checking_vg_lockspace):
     except Exception as e:
         raise e
 
+@bash.in_bash
+def check_missing_pv(vgUuid):
+    pvs_outs = bash.bash_o(
+        "timeout -s SIGKILL 10 pvs --noheading --nolocking -t -Svg_name=%s -ouuid,name,missing" % vgUuid).strip().splitlines()
+    if len(pvs_outs) == 0:
+        return
+
+    @linux.retry(times=3, sleep_time=random.uniform(0.1, 1))
+    def restore_missing_pv(pv_name):
+        r, o, e = bash.bash_roe("vgextend --restoremissing %s %s" % (vgUuid, pv_name))
+        if r != 0:
+            raise Exception("unable to restore missing pv %s for vg %s, stdout:%s, stderr:%s" % (pv_name, vgUuid, str(o), str(e)))
+        logger.debug("restore missing pv[name:%s, uuid:%s] for vg %s successfully" % (pv_name, pv_uuid, vgUuid))
+
+    check_gl_lock()
+    for pvs_out in pvs_outs:
+        pv_uuid = pvs_out.strip().split(" ")[0]
+        pv_name = pvs_out.strip().split(" ")[1]
+        if "missing" in pvs_out:
+            if "unknown" in pv_name:
+                raise Exception("vg %s was missing pv[name:%s, uuid:%s] , unable to restore" % (vgUuid, pv_name, pv_uuid))
+            restore_missing_pv(pv_name)
 
 def stop_vg_lock(vgUuid):
     @linux.retry(times=3, sleep_time=random.uniform(0.1, 1))
@@ -1052,7 +1074,7 @@ def create_lv_from_absolute_path(path, size, tag="zs::sharedblock::volume", lock
 
     exact_size |= tag == IMAGE_TAG
     size = round_to(size, 512) if exact_size else round_to(calcLvReservedSize(size), 512)
-    r, o, e = bash.bash_roe("lvcreate -ay --wipesignatures y --addtag %s --size %sb --name %s %s %s" %
+    r, o, e = bash.bash_roe("lvcreate -ay --wipesignatures y -y --addtag %s --size %sb --name %s %s %s" %
                          (tag, size, lvName, vgName, pe_range))
 
     if not lv_exists(path):
@@ -1090,7 +1112,7 @@ def create_thin_lv_from_absolute_path(path, size, tag, lock=False):
     thin_pool = get_thin_pool_from_vg(vgName)
     assert thin_pool != ""
 
-    r, o, e = bash.bash_roe("lvcreate --wipesignatures y --addtag %s -n %s -V %sb --thinpool %s %s" %
+    r, o, e = bash.bash_roe("lvcreate --wipesignatures y -y --addtag %s -n %s -V %sb --thinpool %s %s" %
                   (tag, lvName, round_to(calcLvReservedSize(size), 512), thin_pool, vgName))
     if not lv_exists(path):
         raise Exception("can not find lv %s after create, lvcreate return : %s, %s, %s" %
