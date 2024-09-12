@@ -124,11 +124,15 @@ class ImageStoreClient(object):
 
         try:
             t_shell.call(cmdstr)
-        except Exception as ex:
+        except shell.ShellError as ex:
             err = str(ex)
             if 'Please check whether ImageStore directory is correctly mounted' in err:
                 raise Exception(
                     "Target image not found, please check whether ImageStore directory is correctly mounted.")
+
+            if ex.is_shell_timed_out():
+                raise Exception("timeout when pulling image from imageStorage.")
+
             raise ex
 
         logger.debug('%s:%s pulled to ceph storage' % (name, imageid))
