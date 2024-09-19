@@ -76,6 +76,7 @@ ZS_XML_NAMESPACE = 'http://zstack.org'
 
 etree.register_namespace('zs', ZS_XML_NAMESPACE)
 
+GUEST_TOOLS_DIRECTORY = "/var/lib/zstack/guesttools/"
 GUEST_TOOLS_ISO_PATH = "/var/lib/zstack/guesttools/GuestTools.iso"
 GUEST_TOOLS_ISO_LINUX_PATH = "/var/lib/zstack/guesttools/GuestTools_linux.iso"
 
@@ -9289,15 +9290,29 @@ host side snapshot files chian:
             iso_path = GUEST_TOOLS_ISO_PATH
         else:
             rsp.success = False
-            rsp.error = "not support platform %s" % cmd.platFrom
+            rsp.error = "failed to detach guest-tools: platform %s not support" % cmd.platform
+            return jsonobject.dumps(rsp)
+        
+        if vm.domain_xml.find(iso_path) < 0:
+            return jsonobject.dumps(rsp)
+
+        # find which cdrom guest-tools attached, and what deviceId is
+        domain_xmlobject = xmlobject.loads(vm.domain_xml)
+        disks = filter(lambda disk: disk.source.dev_.startswith(GUEST_TOOLS_DIRECTORY), domain_xmlobject.devices.get_child_node('disk')) # type: list
+        if len(disks) == 0:
+            return jsonobject.dumps(rsp)
+
+        # disks[0].target.dev_ maybe 'hdc'
+        dev = disks[0].target.dev_ # type: str
+        device_id = Vm.ISO_DEVICE_LETTERS.find(dev[2]) # type: int
+        if device_id < 0:
             return jsonobject.dumps(rsp)
 
         # detach guesttools iso from vm
-        if vm.domain_xml.find(iso_path) > 0:
-            detach_cmd = DetachIsoCmd()
-            detach_cmd.vmUuid = vm_uuid
-            detach_cmd.deviceId = 0
-            vm.detach_iso(detach_cmd)
+        detach_cmd = DetachIsoCmd()
+        detach_cmd.vmUuid = vm_uuid
+        detach_cmd.deviceId = device_id
+        vm.detach_iso(detach_cmd)
 
         return jsonobject.dumps(rsp)
 
