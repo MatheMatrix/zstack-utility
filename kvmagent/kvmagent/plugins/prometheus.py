@@ -32,6 +32,7 @@ QEMU_CMD = os.path.basename(kvmagent.get_qemu_path())
 ALARM_CONFIG = None
 PAGE_SIZE = None
 disk_list_record = None
+block_devices_record = None
 
 gpu_devices = {
     'NVIDIA': set(),
@@ -1552,6 +1553,87 @@ def has_rocm_smi():
     return shell.run("which rocm-smi") == 0
 
 
+class BlockDevice:
+    def __init__(self, name, size, children):
+        self.name = name
+        self.size = size
+        self.children = children or []
+        self.media_type = None
+        self.model = None
+        self.serial_num = None
+
+    def to_dict(self):
+        return {
+            'name': self.name,
+            'size': self.size,
+            'children': self.children,
+            'media_type': self.media_type,
+            'model': self.model,
+            'serial_number': self.serial_num
+        }
+
+    def to_json(self):
+        return json.dumps(self.to_dict())
+
+
+def collect_block_device():
+    metrics = {
+        "block_device": GaugeMetricFamily('block_device', 'block devices',
+                                          labels=["name", "model", "media_type", "serial_number", "size", "children"])
+
+    }
+    r, o, e = bash_roe('lsblk -p -b -o NAME,ROTA,SIZE,MOUNTPOINT,FSTYPE -J')
+    if r != 0:
+        logger.error("Failed to execute lsblk command.")
+        return metrics.values()
+
+    block_devices = {}
+    for device in json.loads(o).get('blockdevices', []):
+        blockDevice = BlockDevice(device['name'], device['size'], device.get('children'))
+        blockDevice.media_type = 'SSD' if device['rota'] == '0' else 'HDD'
+
+        cmd = 'udevadm info --query=all --name=%s | grep -E "ID_MODEL=|ID_SERIAL="' % blockDevice.name
+        r, o, e = bash_roe(cmd)
+        if r == 0:
+            for line in o.splitlines():
+                if "ID_MODEL=" in line:
+                    blockDevice.model = line.split("=")[1]
+                elif "ID_SERIAL=" in line:
+                    blockDevice.serial_num = line.split("=")[1]
+
+            blockDevice.model = blockDevice.model or ''
+            blockDevice.serial_num = blockDevice.serial_num or ''
+
+        block_devices[blockDevice.name + blockDevice.serial_num] = blockDevice
+
+        labels = [blockDevice.name, blockDevice.model, blockDevice.media_type, blockDevice.serial_num,
+                  blockDevice.size, json.dumps(blockDevice.children)]
+        metrics['block_device'].add_metric(labels, 1)
+
+    return metrics.values()
+
+
+def check_block_devices_insert_and_remove(block_devices):
+    global block_devices_record
+    if block_devices_record is None:
+        block_devices_record = block_devices
+        return
+
+    if cmp(block_devices_record, block_devices) == 0:
+        return
+
+    # check device insert
+    for device in block_devices.keys():
+        if device not in block_devices_record.keys():
+            send_physical_disk_insert_alarm_to_mn(device, block_devices[device])
+
+    # check device remove
+    for device in block_devices_record.keys():
+        if device not in block_devices.keys():
+            send_physical_disk_remove_alarm_to_mn(device, block_devices_record[device])
+
+    block_devices_record = block_devices
+
 
 kvmagent.register_prometheus_collector(collect_host_network_statistics)
 kvmagent.register_prometheus_collector(collect_host_capacity_statistics)
@@ -1577,6 +1659,7 @@ kvmagent.register_prometheus_collector(collect_ssd_state)
 kvmagent.register_prometheus_collector(collect_nvidia_gpu_status)
 kvmagent.register_prometheus_collector(collect_amd_gpu_status)
 kvmagent.register_prometheus_collector(collect_hy_gpu_status)
+kvmagent.register_prometheus_collector(collect_block_device)
 
 
 class PrometheusPlugin(kvmagent.KvmAgent):
