@@ -283,6 +283,18 @@ class GetHostKernelInterfaceResponse(kvmagent.AgentResponse):
         self.interfaces = None
 
 
+class GetBlockDevicesResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(GetBlockDevicesResponse, self).__init__()
+        self.blockDevices = []
+
+
+class GetSensorsResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(GetSensorsResponse, self).__init__()
+        self.sensors = []
+
+
 class UsedIpTO(object):
     def __init__(self, ipVersion=None, ip=None, netmask=None, gateway=None):
         super(UsedIpTO, self).__init__()
@@ -985,6 +997,7 @@ class HostPlugin(kvmagent.KvmAgent):
     DETACH_VOLUME_PATH = "/host/volume/detach"
     GET_KERNEL_INTERFACE_PATH = "/host/kernelinterface/get"
     SET_KERNEL_INTERFACE_PATH = "/host/kernelinterface/set"
+    GET_BLOCK_DEVICES_PATH = "/host/blockdevices/get"
 
     def __init__(self):
         self.IS_YUM = False
@@ -3454,6 +3467,64 @@ done
     def qemu_version(self):
         return qemu.get_version()
 
+    @kvmagent.replyerror
+    @in_bash
+    def get_block_devices(self, req):
+        rsp = GetBlockDevicesResponse()
+
+        class BlockDevice:
+            def __init__(self, name, type, size, model, serial_number, fs_type, mount_point):
+                self.name = name
+                self.type = type
+                self.size = size
+                self.children = []
+                self.model = model
+                self.serialNumber = serial_number
+                self.FSType = fs_type
+                self.mountPoint = mount_point
+                self.partitionTable = None
+                self.usedRatio = None
+                self.mediaType = None
+
+        def get_used_ratio(name):
+            ratio_r, ratio_o = bash_ro('df -h --output=pcent %s  | sed -n "2p"' % name)
+            return ratio_o.strip().replace('%', '') if ratio_r == 0 else None
+
+        def get_partition_table(name):
+            partition_r, partition_o = bash_ro(
+                'parted -s %s print | grep "Partition Table" | awk \'{print $3}\'' % name)
+            return partition_o.strip() if partition_r == 0 else None
+
+        def process_device(dev):
+            name = dev['name']
+            block_dev = BlockDevice(dev['name'], dev['type'], dev['size'], dev['model'], dev['serial'], dev['fstype'],
+                                    dev['mountpoint'])
+            block_dev.partitionTable = get_partition_table(name)
+            block_dev.usedRatio = get_used_ratio(name)
+            if name.startswith('nvme'):
+                block_dev.mediaType = 'SSD'
+            else:
+                block_dev.mediaType = 'SSD' if dev['rota'] == '0' else 'HDD'
+
+            if dev['children'] is None:
+                return block_dev
+
+            for child in dev['children']:
+                block_dev.children.append(process_device(child))
+
+            return block_dev
+
+        r, o, e = bash_roe('lsblk -p -b -o NAME,TYPE,ROTA,SIZE,MOUNTPOINT,FSTYPE,SERIAL,MODEL -J')
+        if r != 0:
+            rsp.success = False
+            rsp.error = e
+            return jsonobject.dumps(rsp)
+
+        for device in jsonobject.loads(o)['blockdevices']:
+            rsp.blockDevices.append(process_device(device))
+        return jsonobject.dumps(rsp)
+
+
     def start(self):
         self.host_uuid = None
         self.host_socket = None
@@ -3517,6 +3588,7 @@ done
         http_server.register_async_uri(self.DETACH_VOLUME_PATH, self.detach_volume__path)
         http_server.register_async_uri(self.GET_KERNEL_INTERFACE_PATH, self.get_kernel_interface)
         http_server.register_async_uri(self.SET_KERNEL_INTERFACE_PATH, self.set_kernel_interface)
+        http_server.register_async_uri(self.GET_BLOCK_DEVICES_PATH, self.get_block_devices)
 
         self.heartbeat_timer = {}
         filepath = r'/etc/libvirt/qemu/networks/autostart/default.xml'

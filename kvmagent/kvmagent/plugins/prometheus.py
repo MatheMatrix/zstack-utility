@@ -6,7 +6,7 @@ from collections import defaultdict
 
 import typing
 from prometheus_client import start_http_server
-from prometheus_client.core import GaugeMetricFamily, REGISTRY
+from prometheus_client.core import GaugeMetricFamily, REGISTRY, InfoMetricFamily , EnumMetricFamily
 import psutil
 
 from kvmagent import kvmagent
@@ -32,6 +32,7 @@ QEMU_CMD = os.path.basename(kvmagent.get_qemu_path())
 ALARM_CONFIG = None
 PAGE_SIZE = None
 disk_list_record = None
+block_devices_record = None
 
 gpu_devices = {
     'NVIDIA': set(),
@@ -183,7 +184,8 @@ def send_physical_disk_status_alarm_to_mn(serial_number, slot_number, enclosure_
 def send_raid_state_alarm_to_mn(target_id, state):
     send_alarm_to_mn('raid', target_id, target_id=target_id, status=state)
 
-def send_disk_insert_or_remove_alarm_to_mn(alarm_type, serial_number, slot):
+
+def send_disk_insert_or_remove_alarm_to_mn(alarm_type, serial_number, slot=None, name=None):
     if ALARM_CONFIG is None:
         return
 
@@ -192,22 +194,24 @@ def send_disk_insert_or_remove_alarm_to_mn(alarm_type, serial_number, slot):
         logger.warn("Cannot find SEND_COMMAND_URL, unable to transmit {alarm_type} alarm info to management node".format(alarm_type=alarm_type))
         return
 
+    enclosure_device_id, slot_number = slot.split("-") if slot else (None, None)
     alarm = PhysicalStatusAlarm(
         host=ALARM_CONFIG.get(kvmagent.HOST_UUID),
         serial_number=serial_number,
-        enclosure_device_id=slot.split("-")[0],
-        slot_number=slot.split("-")[1]
+        enclosure_device_id=enclosure_device_id,
+        slot_number=slot_number,
+        name=name
     )
     http.json_dump_post(url, alarm, {'commandpath': '/host/physical/disk/{alarm_type}/alarm'.format(alarm_type=alarm_type)})
 
 @thread.AsyncThread
-def send_physical_disk_insert_alarm_to_mn(serial_number, slot):
-    send_disk_insert_or_remove_alarm_to_mn('insert', serial_number, slot)
+def send_physical_disk_insert_alarm_to_mn(serial_number, slot=None, name=None):
+    send_disk_insert_or_remove_alarm_to_mn('insert', serial_number, slot, name)
 
 
 @thread.AsyncThread
-def send_physical_disk_remove_alarm_to_mn(serial_number, slot):
-    send_disk_insert_or_remove_alarm_to_mn('remove', serial_number, slot)
+def send_physical_disk_remove_alarm_to_mn(serial_number, slot=None, name=None):
+    send_disk_insert_or_remove_alarm_to_mn('remove', serial_number, slot, name)
 
 
 def collect_memory_locator():
@@ -987,55 +991,98 @@ def collect_equipment_state_from_ipmi():
         "cpu_temperature": GaugeMetricFamily('cpu_temperature', 'cpu temperature', None, ['cpu']),
         "cpu_status": GaugeMetricFamily('cpu_status', 'cpu status', None, ['cpu']),
         "ipmi_memory_status": GaugeMetricFamily('ipmi_memory_status', 'ipmi memory status', None, ['name', 'type']),
+        "sensors": GaugeMetricFamily('sensors', 'sensors', None, ["sensors"]),
     }
     metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
 
-    r, cpu_info = bash_ro("ipmitool sdr elist | grep -i cpu")  # type: (int, str)
+    class Sensors:
+        def __init__(self, sensor_info):
+            self.name = sensor_info[0].strip() or ""
+            self.status = sensor_info[2].strip() or ""
+            self.value = ""
+            self.unit = ""
+            self.type = ""
+            self.set_value_and_unit(reading_value=sensor_info[4].strip())
+
+        def to_dict(self):
+            return {
+                'name': self.name,
+                'status': self.status,
+                'value': self.value,
+                'unit': self.unit
+            }
+
+        '''
+        CPU Temp         | 01h | ok  |  3.1 | 33 degrees C
+        FAN1             | 41h | ok  | 29.1 | 2500 RPM
+        DIMMF1 Temp      | BAh | ns  | 32.10 | No Reading
+        12V              | 30h | ok  |  7.32 | 12.23 Volts
+        VBAT             | 33h | ok  | 40.0 | Presence Detected
+        Chassis Intru    | AAh | ok  | 23.0 |
+        '''
+
+        def set_value_and_unit(self, reading_value):
+            if reading_value is None:
+                return
+            if bool(re.search(r'\d', reading_value)):
+                self.value = filter(str.isdigit, reading_value)
+                self.unit = reading_value.replace(self.value, "").strip()
+            else:
+                self.value = reading_value
+
+    r, info = bash_ro("ipmitool sdr elist")  # type: (int, str)
     if r != 0:
         return metrics.values()
 
     check_equipment_state_from_ipmitool(metrics)
 
-    '''
-        ================
-        CPU TEMPERATURE
-        ================
-        CPU1_Temp        | 39h | ok  |  7.18 | 34 degrees C
-        CPU1_Core_Temp   | 39h | ok  |  7.18 | 34 degrees C
-        CPU_Temp_01      | 39h | ok  |  7.18 | 34 degrees C
-        CPU1 Temp        | 39h | ok  |  7.18 | 34 degrees C
-        CPU1 Core Rem    | 04h | ok  |  3.96 | 41 degrees C
-        
-        ================
-        CPU STATUS
-        ================
-        CPU_STATUS_01    | 52h | ok  |  3.0 | Presence detected
-        CPU1 Status      | 3Ch | ok  |  3.96 | Presence detected
-        CPU1_Status      | 7Eh | ok  |  3.0 | Presence detected
-    '''
-
-    cpu_temperature_pattern = r'^(cpu\d+_temp|cpu\d+_core_temp|cpu_temp_\d+|cpu\d+ temp|cpu\d+ core rem)$'
-    cpu_status_pattern = r'^(cpu_status_\d+|cpu\d+ status|cpu\d+_status)$'
-
-    for line in cpu_info.lower().splitlines():
+    sensors = []
+    for line in info.splitlines():
         sensor = line.split("|")
         if len(sensor) != 5:
             continue
-        sensor_id = sensor[0].strip()
-        sensor_value = sensor[4].strip()
-        if re.match(cpu_temperature_pattern, sensor_id):
-            cpu_id = int(re.sub(r'\D', '', sensor_id))
-            cpu_temperature = filter(str.isdigit, sensor_value) if bool(re.search(r'\d', sensor_value)) else 0
-            metrics['cpu_temperature'].add_metric(["CPU%d" % cpu_id], float(cpu_temperature))
-        if re.match(cpu_status_pattern, sensor_id):
-            cpu_id = int(re.sub(r'\D', '', sensor_id))
-            cpu_status = 0 if "presence detected" == sensor_value else 10
-            metrics['cpu_status'].add_metric(["CPU%d" % cpu_id], float(cpu_status))
-            if cpu_status == 10:
-                send_cpu_status_alarm_to_mn(cpu_id, info.Status)
-            else:
-                remove_cpu_status_abnormal(cpu_id)
 
+        sensors.append(Sensors(sensor))
+
+        if "cpu" in sensor:
+            '''
+                ================
+                CPU TEMPERATURE
+                ================
+                CPU1_Temp        | 39h | ok  |  7.18 | 34 degrees C
+                CPU1_Core_Temp   | 39h | ok  |  7.18 | 34 degrees C
+                CPU_Temp_01      | 39h | ok  |  7.18 | 34 degrees C
+                CPU1 Temp        | 39h | ok  |  7.18 | 34 degrees C
+                CPU1 Core Rem    | 04h | ok  |  3.96 | 41 degrees C
+
+                ================
+                CPU STATUS
+                ================
+                CPU_STATUS_01    | 52h | ok  |  3.0 | Presence detected
+                CPU1 Status      | 3Ch | ok  |  3.96 | Presence detected
+                CPU1_Status      | 7Eh | ok  |  3.0 | Presence detected
+            '''
+
+            cpu_temperature_pattern = r'^(cpu\d+_temp|cpu\d+_core_temp|cpu_temp_\d+|cpu\d+ temp|cpu\d+ core rem)$'
+            cpu_status_pattern = r'^(cpu_status_\d+|cpu\d+ status|cpu\d+_status)$'
+
+            sensor = line.lower().split("|")
+            sensor_id = sensor[0].strip()
+            sensor_value = sensor[4].strip()
+            if re.match(cpu_temperature_pattern, sensor_id):
+                cpu_id = int(re.sub(r'\D', '', sensor_id))
+                cpu_temperature = filter(str.isdigit, sensor_value) if bool(re.search(r'\d', sensor_value)) else 0
+                metrics['cpu_temperature'].add_metric(["CPU%d" % cpu_id], float(cpu_temperature))
+            if re.match(cpu_status_pattern, sensor_id):
+                cpu_id = int(re.sub(r'\D', '', sensor_id))
+                cpu_status = 0 if "presence detected" == sensor_value else 10
+                metrics['cpu_status'].add_metric(["CPU%d" % cpu_id], float(cpu_status))
+                if cpu_status == 10:
+                    send_cpu_status_alarm_to_mn(cpu_id, info.Status)
+                else:
+                    remove_cpu_status_abnormal(cpu_id)
+
+    metrics['sensors'].add_metric([json.dumps([sensor.to_dict() for sensor in sensors])], 1)
     return metrics.values()
 
 
@@ -1552,6 +1599,61 @@ def has_rocm_smi():
     return shell.run("which rocm-smi") == 0
 
 
+class BlockDevice:
+    def __init__(self, name, size, children):
+        self.name = name
+        self.size = size
+        self.children = children or []
+        self.media_type = None
+        self.model = None
+        self.serial_num = None
+
+    def to_dict(self):
+        return {
+            'name': self.name,
+            'size': self.size,
+            'children': self.children,
+            'media_type': self.media_type,
+            'model': self.model,
+            'serial_number': self.serial_num
+        }
+
+    def to_json(self):
+        return json.dumps(self.to_dict())
+
+
+def collect_block_device_status():
+    block_devices = {}
+    r, o = bash_ro('lsblk -p -d -n -o NAME,SERIAL')
+    if r == 0:
+        for line in o.strip().split('\n'):
+            name, serial_num = line.split()
+            block_devices[serial_num] = name
+        check_block_devices_insert_and_remove(block_devices)
+    return {}
+
+
+def check_block_devices_insert_and_remove(block_devices):
+    global block_devices_record
+    if block_devices_record is None:
+        block_devices_record = block_devices
+        return
+
+    if cmp(block_devices_record, block_devices) == 0:
+        return
+
+    # check disk insert
+    for serial_number in block_devices.keys():
+        if serial_number not in block_devices_record.keys():
+            send_physical_disk_insert_alarm_to_mn(serial_number, name=block_devices[serial_number])
+
+    # check disk remove
+    for serial_number in block_devices_record.keys():
+        if serial_number not in block_devices.keys():
+            send_physical_disk_remove_alarm_to_mn(serial_number, name=block_devices[serial_number])
+
+    block_devices_record = block_devices
+
 
 kvmagent.register_prometheus_collector(collect_host_network_statistics)
 kvmagent.register_prometheus_collector(collect_host_capacity_statistics)
@@ -1577,6 +1679,7 @@ kvmagent.register_prometheus_collector(collect_ssd_state)
 kvmagent.register_prometheus_collector(collect_nvidia_gpu_status)
 kvmagent.register_prometheus_collector(collect_amd_gpu_status)
 kvmagent.register_prometheus_collector(collect_hy_gpu_status)
+kvmagent.register_prometheus_collector(collect_block_device_status)
 
 
 class PrometheusPlugin(kvmagent.KvmAgent):
