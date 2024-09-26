@@ -259,7 +259,7 @@ class HostPhysicalMemoryStruct(object):
 
 class HostPhysicalCpuStruct(object):
     def __init__(self):
-        self.designation = ""
+        self.socketDesignation = ""
         self.version = ""
         self.serialNumber = ""
         self.currentSpeed = ""
@@ -2094,7 +2094,7 @@ done
         results = []
         cpu_arr = o.split("Processor Information")
         for infos in cpu_arr[1:]:
-            designation = version = current_speed = core_count = None
+            socket_designation = version = current_speed = core_count = None
             for line in infos.splitlines():
                 if line.strip() == "" or ":" not in line:
                     continue
@@ -2102,7 +2102,7 @@ done
                 v = ":".join(line.split(":")[1:]).strip()
 
                 if "socket designation" == k:
-                    designation = v
+                    socket_designation = v
                 elif "version" == k:
                     version = v
                 elif "serial number" == k:
@@ -2113,7 +2113,7 @@ done
                     core_count = v
                 elif "thread count" == k:
                     m = HostPhysicalCpuStruct()
-                    m.designation = designation
+                    m.socketDesignation = socket_designation
                     m.version = version
                     m.serialNumber = serial_number
                     m.currentSpeed = current_speed
@@ -2652,6 +2652,12 @@ done
                     to.type = "Serial_Controller"
                 elif 'Moxa Technologies' in to.type:
                     to.type = "Moxa_Device"
+                elif 'Memory controller' in to.type:
+                    to.type = "Memory_Controller"
+                elif 'System peripheral' in to.type:
+                    to.type = "System_Peripheral"
+                elif 'ISA bridge' in to.type:
+                    to.type = "ISA_Bridge"
                 elif 'Host bridge' in to.type:
                     to.type = "Host_Bridge"
                 elif 'PCI bridge' in to.type:
