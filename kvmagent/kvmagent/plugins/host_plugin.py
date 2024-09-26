@@ -2600,6 +2600,12 @@ done
                     to.type = "Serial_Controller"
                 elif 'Moxa Technologies' in to.type:
                     to.type = "Moxa_Device"
+                elif 'Memory controller' in to.type:
+                    to.type = "Memory_Controller"
+                elif 'System peripheral' in to.type:
+                    to.type = "System_Peripheral"
+                elif 'ISA bridge' in to.type:
+                    to.type = "ISA_Bridge"
                 elif 'Host bridge' in to.type:
                     to.type = "Host_Bridge"
                 elif 'PCI bridge' in to.type:
