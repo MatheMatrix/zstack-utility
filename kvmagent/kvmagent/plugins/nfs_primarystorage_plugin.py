@@ -55,6 +55,7 @@ class ReInitImageResponse(NfsResponse):
     def __init__(self):
         super(ReInitImageResponse, self).__init__()
         self.newVolumeInstallPath = None
+        self.newVolumeSize = None
 
 
 class NfsError(Exception):
@@ -706,6 +707,7 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         new_volume_path = os.path.join(dirname, '{0}.qcow2'.format(uuidhelper.uuid()))
         linux.qcow2_clone_with_cmd(install_path, new_volume_path, cmd)
         rsp.newVolumeInstallPath = new_volume_path
+        rsp.newVolumeSize = linux.qcow2_virtualsize(new_volume_path)
         self._set_capacity_to_response(cmd.uuid, rsp)
         return jsonobject.dumps(rsp)
 

@@ -65,6 +65,7 @@ class ReinitImageRsp(AgentResponse):
     def __init__(self):
         super(ReinitImageRsp, self).__init__()
         self.newVolumeInstallPath = None
+        self.newVolumeSize = None
 
 class CreateTemplateFromVolumeRsp(AgentResponse):
     def __init__(self):
@@ -733,6 +734,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         new_volume_path = os.path.join(dirname, '{0}.qcow2'.format(uuidhelper.uuid()))
         linux.qcow2_clone_with_cmd(install_path, new_volume_path, cmd)
         rsp.newVolumeInstallPath = new_volume_path
+        rsp.newVolumeSize = linux.qcow2_virtualsize(new_volume_path)
 
         return jsonobject.dumps(rsp)
 
