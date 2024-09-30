@@ -544,7 +544,7 @@ def collect_raid_state():
 
 
 def handle_raid_state(target_id, state_int):
-    if state_int == 100:
+    if state_int != 0:
         send_raid_state_alarm_to_mn(target_id, state_int)
         return
     remove_raid_status_abnormal(target_id)
@@ -1368,6 +1368,12 @@ def check_gpu_status_and_save_gpu_status(type, metrics):
         handle_gpu_status(gpuStatus, pci_device_address)
 
 
+def calculate_percentage(part, total):
+    if total == 0:
+        return "0.0"
+    percentage = (float(part) / float(total)) * 100
+    return round(percentage, 1)
+
 
 def collect_nvidia_gpu_status():
     metrics = {
@@ -1387,7 +1393,8 @@ def collect_nvidia_gpu_status():
         return metrics.values()
 
     r, gpu_info = bash_ro(
-        "nvidia-smi --query-gpu=power.draw,temperature.gpu,fan.speed,utilization.gpu,utilization.memory,index,gpu_bus_id,gpu_serial --format=csv,noheader")
+        "nvidia-smi --query-gpu=power.draw,temperature.gpu,fan.speed,utilization.gpu,utilization.memory,index,"
+        "gpu_bus_id,gpu_serial,memory.used,memory.total --format=csv,noheader")
     if r != 0:
         check_gpu_status_and_save_gpu_status("NIVIDIA", metrics)
         return metrics.values()
@@ -1395,8 +1402,8 @@ def collect_nvidia_gpu_status():
     gpu_index_mapping_pciaddress = {}
     for info in gpu_info.splitlines():
         info = info.strip().split(',')
-        pci_device_address = info[-2].strip()
-        gpu_serial = info[-1].strip()
+        pci_device_address = info[6].strip().lower()
+        gpu_serial = info[7].strip()
         if len(pci_device_address.split(':')[0]) == 8:
             pci_device_address = pci_device_address[4:]
 
@@ -1407,8 +1414,8 @@ def collect_nvidia_gpu_status():
         add_metrics('host_gpu_temperature', info[1].strip(), [pci_device_address, gpu_serial], metrics)
         add_metrics('host_gpu_fan_speed', info[2].replace('%', '').strip(), [pci_device_address, gpu_serial], metrics)
         add_metrics('host_gpu_utilization', info[3].replace('%', '').strip(), [pci_device_address, gpu_serial], metrics)
-        add_metrics('host_gpu_memory_utilization', info[4].replace('%', '').strip(), [pci_device_address, gpu_serial],
-                    metrics)
+        add_metrics('host_gpu_memory_utilization', calculate_percentage(info[8].replace('MiB', '').strip(), info[9].replace('MiB', '').strip()),
+                    [pci_device_address, gpu_serial], metrics)
         gpu_index_mapping_pciaddress[info[5].strip()] = pci_device_address
 
     check_gpu_status_and_save_gpu_status("NIVIDIA", metrics)
@@ -1423,8 +1430,8 @@ def collect_nvidia_gpu_status():
             logger.error("No PCI address found for GPU index {index_rx_tx[0]}")
             continue
 
-        metrics['gpu_rxpci_in_bytes'].add_metric([pci_device_address, gpu_serial], float(index_rx_tx[1]) * 1024 * 1024)
-        metrics['gpu_txpci_in_bytes'].add_metric([pci_device_address, gpu_serial], float(index_rx_tx[2]) * 1024 * 1024)
+        metrics['host_gpu_rxpci_in_bytes'].add_metric([pci_device_address, gpu_serial], float(index_rx_tx[1]))
+        metrics['host_gpu_txpci_in_bytes'].add_metric([pci_device_address, gpu_serial], float(index_rx_tx[2]))
 
     r, vgpu_info = bash_ro("nvidia-smi vgpu -q")
     if r != 0 or "VM Name" not in vgpu_info:
@@ -1780,12 +1787,21 @@ LoadPlugin virt
                     return "node_exporter"
                 elif "pushgateway" in path:
                     return "pushgateway"
+                elif "ipmi_exporter" in path:
+                    return "ipmi_exporter"
 
             def reload_and_restart_service(service_name):
                 bash_errorout("systemctl daemon-reload && systemctl restart %s.service" % service_name)
 
             service_name = get_systemd_name(binPath)
+            if not service_name:
+                logger.warn("cannot get service name from binPath: %s" % binPath)
+                return
+
             service_path = '/etc/systemd/system/%s.service' % service_name
+            memory_limit_config = ""
+            if service_name == "ipmi_exporter":
+                memory_limit_config = "MemoryLimit=64M"
 
             service_conf = '''
 [Unit]
@@ -1796,11 +1812,12 @@ After=network.target
 ExecStart=/bin/sh -c '%s %s > %s 2>&1'
 ExecStop=/bin/sh -c 'pkill -TERM -f %s'
 
+%s
 Restart=always
 RestartSec=30s
 [Install]
 WantedBy=multi-user.target
-''' % (service_name, binPath, args, '/dev/null' if log.endswith('/pushgateway.log') else log, binPath)
+''' % (service_name, binPath, args, '/dev/null' if log.endswith('/pushgateway.log') else log, binPath, memory_limit_config)
 
             if not os.path.exists(service_path):
                 linux.write_file(service_path, service_conf, True)
@@ -1859,6 +1876,10 @@ modules:
                     fd.write(conf)
 
             os.chmod(EXPORTER_PATH, 0o755)
+            if shell.run("pgrep %s" % EXPORTER_PATH) == 0:
+                bash_errorout("pkill -TERM -f %s" % EXPORTER_PATH)
+            if os.path.exists("/etc/systemd/system/None.service"):
+                os.remove("/etc/systemd/system/None.service")
             run_in_systemd(EXPORTER_PATH, ARGUMENTS, LOG_FILE)
 
 
