@@ -101,6 +101,7 @@ class GetCapacityRsp(AgentResponse):
 class GetFactsRsp(AgentResponse):
     def __init__(self):
         super(GetFactsRsp, self).__init__()
+        self.externalAddr = None
         self.version = None
 
 
@@ -182,13 +183,13 @@ class ZbsAgent(plugin.TaskManager):
 
         found = False
         for mds in ret.result:
-            if cmd.mdsAddr in mds.addr:
+            if cmd.externalAddr in mds.externalAddr:
                 found = True
                 break
 
         if not found:
             rsp.success = False
-            rsp.error = 'mds addr was not found on the server[uuid:%s], not %s anymore.' % (cmd.psUuid, cmd.mdsAddr)
+            rsp.error = 'mds external address was not found on the server[uuid:%s], not %s anymore.' % (cmd.psUuid, cmd.externalAddr)
             return jsonobject.dumps(rsp)
 
         return jsonobject.dumps(rsp)
@@ -474,9 +475,11 @@ class ZbsAgent(plugin.TaskManager):
         if ret.error.code != 0:
             raise Exception('cannot found mds info, error[%s]' % ret.error.message)
 
+        ipv4addr = shell.call("ip -4 addr show | awk '/inet / {print $2}' | cut -d/ -f1 | sed 's/$/:%s/'" % cmd.mdsPort).splitlines()
         found = False
         for mds in ret.result:
-            if cmd.mdsAddr in mds.addr:
+            if mds.externalAddr in ipv4addr:
+                rsp.externalAddr = mds.externalAddr
                 rsp.version = mds.version
                 found = True
                 break
