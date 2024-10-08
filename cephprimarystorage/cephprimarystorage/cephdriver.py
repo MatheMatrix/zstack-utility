@@ -40,7 +40,10 @@ class CephDriver(object):
         if cmd.skipIfExisting and shell.run("rbd info %s" % path) == 0:
             return rsp
 
-        if ceph.is_xsky():
+        if cmd.systemTags and ceph.is_qcow2_format(cmd.systemTags):
+            vol_path = "rbd:%s" % path
+            linux.qcow2_create(vol_path, cmd.size, False)
+        elif ceph.is_xsky():
             # do NOT round to MB
             call_string = 'rbd create --size %dB --image-format 2 %s' % (cmd.size, path)
             call_string = self._wrap_shareable_cmd(cmd, call_string)
