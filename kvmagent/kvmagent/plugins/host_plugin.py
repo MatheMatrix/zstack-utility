@@ -2650,10 +2650,18 @@ done
                     to.type = "USB_Controller"
                 elif 'Serial controller' in to.type:
                     to.type = "Serial_Controller"
-                elif 'Moxa Technologies' in to.type:
-                    to.type = "Moxa_Device"
+                elif 'RAID bus controller' in to.type:
+                    to.type = "RAID_Controller"
+                elif 'SATA controller' in to.type:
+                    to.type = "SATA_Controller"
                 elif 'Memory controller' in to.type:
                     to.type = "Memory_Controller"
+                elif 'Non-Volatile memory controller' in to.type:
+                    to.type = "Non_Volatile_Memory_Controller"
+                elif 'Fibre Channel' in to.type:
+                    to.type = "Fibre_Channel"
+                elif 'Moxa Technologies' in to.type:
+                    to.type = "Moxa_Device"
                 elif 'System peripheral' in to.type:
                     to.type = "System_Peripheral"
                 elif 'ISA bridge' in to.type:
