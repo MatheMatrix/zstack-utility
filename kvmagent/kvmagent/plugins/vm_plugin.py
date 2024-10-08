@@ -8538,6 +8538,11 @@ host side snapshot files chian:
 
     @kvmagent.replyerror
     def get_volumes_cbt_bitmaps(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetVolumesBitmapResponse()
+        bitmap_json = None
+        infos = []
+
         def _split_large_blocks(item):
             start = item['start']
             length = item['length']
@@ -8554,31 +8559,83 @@ host side snapshot files chian:
 
             return result
 
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = GetVolumesBitmapResponse()
-        bitmap_json = None
-        infos = []
+        def _merge_json_data(rbd_list, qcow2_list):
+            result = []
+            for rbd in rbd_list:
+                rbd_offset = rbd["start"]
+                rbd_length = rbd["length"]
+                rbd_end = rbd_offset + rbd_length
+
+                for qcow2 in qcow2_list:
+                    qcow2_start = qcow2["start"]
+                    qcow2_length = qcow2["length"]
+                    qcow2_end = qcow2_start + qcow2_length
+
+                    if (qcow2_start >= rbd_offset and qcow2_start < rbd_end) or (
+                            rbd_offset >= qcow2_start and rbd_offset < qcow2_end):
+                        start = max(rbd_offset, qcow2_start)
+                        end = min(rbd_end, qcow2_end)
+                        length = end - start
+
+                        result.append({"start": start, "length": length})
+
+            return result
+
+        def _getQcow2Bitmap(volume_info):
+            o = shell.call("qemu-img map --output=json -f raw nbd://%s:%s/%s" % (
+                volume_info.nbdServer, volume_info.nbdPort, volume_info.scrachNodeName))
+            o = jsonobject.loads(o.strip())
+            result = []
+            for item in o:
+                if item['zero'] is False and item['data'] is True:
+                    if item['length'] > MAX_NBD_READ_SIZE:
+                        result.extend(_split_large_blocks(item))
+                    else:
+                        result.append({
+                            "start": item['start'],
+                            "length": item['length']
+                        })
+            return json.dumps(result, indent=4)
+
+        def _getRawBitmap(volume_info):
+            o = shell.call("""rbd diff %s --format json | jq '.[] | select(.exists == "true")'""" % (volume_info.volume.installPath.replace('ceph://', '')))
+            o = jsonobject.loads(o.strip())
+            diff_result = []
+            for item in o:
+                if item['exists'] is True:
+                    if item['length'] > MAX_NBD_READ_SIZE:
+                        diff_result.extend(_split_large_blocks(item))
+                    else:
+                        diff_result.append({
+                            "start": item['offset'],
+                            "length": item['length']
+                        })
+
+            o = shell.call("""qemu-img map --output=json rbd:%s""" % (volume_info.target.replace('ceph://', '')))
+            o = jsonobject.loads(o.strip())
+            map_result = []
+            for item in o:
+                if item['zero'] is False and item['data'] is True:
+                    if item['length'] > MAX_NBD_READ_SIZE:
+                        map_result.extend(_split_large_blocks(item))
+                    else:
+                        map_result.append({
+                            "start": item['start'],
+                            "length": item['length']
+                        })
+
+            result = _merge_json_data(map_result, diff_result)
+            return json.dumps(result, indent=4)
 
         try:
             volume_infos = cmd.volumeInfos
             for volume_info in volume_infos:
                 if volume_info.mode == "full":
-                    logger.debug("xxx 111")
-                    o = shell.call("qemu-img map --output=json -f raw nbd://%s:%s/%s" % (
-                    volume_info.nbdServer, volume_info.nbdPort, volume_info.scrachNodeName))
-                    logger.debug("xxx %s",o)
-                    o = jsonobject.loads(o.strip())
-                    result = []
-                    for item in o:
-                        if item['zero'] is False and item['data'] is True:
-                            if item['length'] > MAX_NBD_READ_SIZE:
-                                result.extend(_split_large_blocks(item))
-                            else:
-                                result.append({
-                                    "start": item['start'],
-                                    "length": item['length']
-                                })
-                    bitmap_json = json.dumps(result, indent=4)
+                    if volume_info.volume.primaryStorageType == 'Ceph':
+                        bitmap_json = _getRawBitmap(volume_info)
+                    else:
+                        bitmap_json = _getQcow2Bitmap(volume_info)
+
                 else:
                     o = bash.bash_o(
                         "qemu-img map --output=json --image-opts driver=nbd,export=%s,server.type=inet,server.host=%s,server.port=%s,x-dirty-bitmap=qemu:dirty-bitmap:%s" % (
