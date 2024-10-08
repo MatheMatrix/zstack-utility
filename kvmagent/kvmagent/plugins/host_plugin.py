@@ -2064,7 +2064,7 @@ done
                     serial_number = v
                 elif "rank" == k:
                     rank = v
-                elif "configured clock speed" == k:
+                elif k in ["configured clock speed", "configured memory speed"]:
                     clock_speed = v
                 elif "configured voltage" == k:
                     if serial_number.lower() != "no dimm" and serial_number.lower() != "unknown" and serial_number is not None:
