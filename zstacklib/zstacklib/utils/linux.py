@@ -2100,6 +2100,32 @@ def find_process_by_command(comm, cmdlines=None):
             continue
     return None
 
+
+def find_process_list_by_command(comm, cmdlines=None):
+    pids = [pid for pid in os.listdir('/proc') if pid.isdigit()]
+    match_pids = []
+    for pid in pids:
+        try:
+            comm_path = os.readlink(os.path.join('/proc', pid, 'exe')).split(";")[0]
+            if comm_path.endswith("(deleted)") and not os.path.exists(comm_path):
+                comm_path = comm_path[0:-9].strip()
+
+            if comm_path != comm and os.path.basename(comm_path) != comm:
+                continue
+
+            if not cmdlines:
+                match_pids.append(pid)
+                continue
+
+            with open(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
+                cmdline = fd.read().replace('\x00', ' ').strip()
+                if all(c in cmdline for c in cmdlines):
+                    match_pids.append(pid)
+                    continue
+        except (IOError, OSError):
+            continue
+    return match_pids
+
 def error_if_path_missing(path):
     if not os.path.exists(path):
         raise LinuxError('cannot find file or dir at path[%s]' % path)
