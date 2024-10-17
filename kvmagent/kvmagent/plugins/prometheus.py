@@ -917,27 +917,10 @@ def collect_ipmi_state():
     # get power info
     r, sdr_data = bash_ro("ipmitool sdr elist")
     if r == 0:
-        power_list = []
+        get_power_info_from_ipmi(sdr_data,metrics)
         for line in sdr_data.splitlines():
             info = line.lower().strip()
-            if re.match(r"^ps\w*(\ |_)status", info):
-                ps_id = info.split("|")[0].strip().split(" ")[0].split("_")[0]
-                ps_state = info.split("|")[4].strip()
-                if "presence detected" == ps_state:
-                    metrics['power_supply'].add_metric([ps_id], 0)
-                elif "presence detected" in ps_state and "ac lost" in ps_state:
-                    metrics['power_supply'].add_metric([ps_id], 10)
-                else:
-                    metrics['power_supply'].add_metric([ps_id], 20)
-            elif re.match(r"^ps\w*(\ |_)(pin|pout)", info):
-                ps_id = info.split("|")[0].strip().split(" ")[0].split("_")[0]
-                if "pout" in info and ps_id in power_list:
-                    continue
-                ps_out_power = info.split("|")[4].strip().lower()
-                ps_out_power = float(filter(str.isdigit, ps_out_power)) if bool(re.search(r'\d', ps_out_power)) else float(0)
-                metrics['power_supply_current_output_power'].add_metric([ps_id], ps_out_power)
-                power_list.append(ps_id)
-            elif re.match(r"\w*fan(\w*(_|\ )speed|[a-z0-9]\ *\|)\w*", info):
+            if re.match(r"\w*fan(\w*(_|\ )speed|[a-z0-9]\ *\|)\w*", info):
                 if not origin_fan_flag:
                     continue
                 if "m2" in info:
@@ -986,8 +969,37 @@ def check_equipment_state_from_ipmitool(metrics):
                 remove_power_supply_status_abnormal(sensor_name)
                 remove_memory_status_abnormal(sensor_name)
 
+
+def get_power_info_from_ipmi(ipmi_sdr_data, metrics):
+    power_list = []
+    for line in ipmi_sdr_data.splitlines():
+        info = line.lower().strip()
+        if re.match(r"^ps\w*(\ |_)status", info):
+            ps_id = info.split("|")[0].strip().split(" ")[0].split("_")[0]
+            ps_state = info.split("|")[4].strip()
+            if "presence detected" == ps_state:
+                metrics['power_supply'].add_metric([ps_id], 0)
+            elif "presence detected" in ps_state and "ac lost" in ps_state:
+                metrics['power_supply'].add_metric([ps_id], 10)
+            else:
+                metrics['power_supply'].add_metric([ps_id], 20)
+        elif re.match(r"^ps\w*(\ |_)(pin|pout)", info):
+            ps_id = info.split("|")[0].strip().split(" ")[0].split("_")[0]
+            if "pout" in info and ps_id in power_list:
+                continue
+            ps_out_power = info.split("|")[4].strip().lower()
+            ps_out_power = float(filter(str.isdigit, ps_out_power)) if bool(re.search(r'\d', ps_out_power)) else float(
+                0)
+            metrics['power_supply_current_output_power'].add_metric([ps_id], ps_out_power)
+            power_list.append(ps_id)
+
+
+
 def collect_equipment_state_from_ipmi():
     metrics = {
+        'power_supply': GaugeMetricFamily('power_supply', 'power supply', None, ['ps_id']),
+        "power_supply_current_output_power": GaugeMetricFamily('power_supply_current_output_power',
+                                                               'power supply current output power', None, ['ps_id']),
         "ipmi_status": GaugeMetricFamily('ipmi_status', 'ipmi status', None, []),
         "cpu_temperature": GaugeMetricFamily('cpu_temperature', 'cpu temperature', None, ['cpu']),
         "cpu_status": GaugeMetricFamily('cpu_status', 'cpu status', None, ['cpu']),
@@ -999,6 +1011,7 @@ def collect_equipment_state_from_ipmi():
     if info is None:
         return metrics.values()
 
+    get_power_info_from_ipmi(info, metrics)
     check_equipment_state_from_ipmitool(metrics)
 
     '''
