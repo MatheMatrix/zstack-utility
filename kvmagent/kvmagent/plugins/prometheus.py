@@ -1397,10 +1397,10 @@ LoadPlugin virt
             service_path = '/etc/systemd/system/%s.service' % service_name
 
             if service_name == "pushgateway":
-                # password used: htpasswd -bnBC 12 "" 123456 | tr -d ':\n'
+                # password used: htpasswd -bnBC 12 "" zstack@123 | tr -d ':\n'
                 # https://github.com/prometheus/pushgateway?tab=readme-ov-file#tls-and-basic-authentication
                 content = """basic_auth_users:
-                              admin: "$2y$12$Tf7suRl0fqOdo8xns2lAHufji..N3vZ/DTz06P5kQKsgHAh0eaIZq"
+                              admin: "$2y$12$xS/cyhx8dTQrbfG8CgiRM.RDimcr85TTq9/g6Pv4sVuaXwRH5DZmC"
                             """
                 if not os.path.exists(pushgateway_conf):
                     with open(pushgateway_conf, 'w') as f:
