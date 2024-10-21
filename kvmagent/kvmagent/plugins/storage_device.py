@@ -128,12 +128,12 @@ class FiberChannelLunStruct(ScsiLunStruct):
 
 
 class HbaStruct(object):
-    def __int__(self):
+    def __init__(self):
         self.name = ""
 
 
 class FcHbaStruct(HbaStruct):
-    def __int__(self):
+    def __init__(self):
         super(FcHbaStruct, self).__init__()
         self.name = ""
         self.portName = ""
