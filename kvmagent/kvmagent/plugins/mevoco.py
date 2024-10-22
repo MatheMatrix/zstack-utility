@@ -1008,7 +1008,7 @@ accesslog.filename = "/var/log/lighttpd/lighttpd_access.log"
 server.errorlog = "/var/log/lighttpd/lighttpd_error.log"
 
 auth.backend = "plain"
-auth.backend.plain.users = ( "admin" => "123456" )
+auth.backend.plain.users = ( "admin" => "zstack@123" )
 
 $HTTP["remoteip"] =~ "^(.*)$" {
     $HTTP["url"] =~ "^/metrics/job" {
