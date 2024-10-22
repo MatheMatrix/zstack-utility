@@ -157,8 +157,8 @@ def send_cpu_status_alarm_to_mn(cpu_id, status):
 
 
 @thread.AsyncThread
-def send_physical_gpu_status_alarm_to_mn(pcideviceAddress, status):
-    send_alarm_to_mn('gpu', pcideviceAddress, pcideviceAddress=pcideviceAddress, status=status)
+def send_physical_gpu_status_alarm_to_mn(status, pci_device_address):
+    send_alarm_to_mn('gpu', pci_device_address, pcideviceAddress=pci_device_address, status=status)
 
 
 @thread.AsyncThread
@@ -1374,7 +1374,7 @@ def check_gpu_status_and_save_gpu_status(type, metrics):
         gpuStatus, gpu_status_int_value = convert_pci_status_to_int(pci_device_address)
         if gpu_status_int_value == 2:
             pci_device_address_list.discard((pci_device_address, gpu_serial))
-            gpu_devices[type] = pci_device_address_lis
+            gpu_devices[type] = pci_device_address_list
             continue
 
         metrics['host_gpu_status'].add_metric([pci_device_address, gpuStatus, gpu_serial], gpu_status_int_value)
