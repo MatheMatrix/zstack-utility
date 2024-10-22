@@ -200,7 +200,7 @@ def install_kvm_pkg():
 
         distro_mapping = {
             'centos': 'vconfig iscsi-initiator-utils OpenIPMI-modalias OVMF mcelog MegaCli Arcconf python-pyudev kernel-devel libicu edac-utils',
-            'kylin': 'vconfig open-iscsi python2-pyudev collectd-disk OpenIPMI libselinux-devel nettle tuned qemu-kvm libicu lldpd',
+            'kylin': 'vconfig open-iscsi python2-pyudev collectd-disk OpenIPMI libselinux-devel nettle tuned qemu-kvm libicu edac-utils lldpd freeipmi',
             'uniontech': 'vconfig iscsi-initiator-utils OpenIPMI nettle qemu-kvm python-pyudev collectd-disk',
             'rocky': 'iscsi-initiator-utils OpenIPMI-modalias mcelog MegaCli Arcconf python-pyudev kernel-devel collectd-disk edac-utils',
         }
@@ -210,14 +210,14 @@ def install_kvm_pkg():
                            'edac-utils')
 
         releasever_mapping = {
-            'c74': 'qemu-kvm ',
-            'c76': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel',
-            'c79': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel',
-            'h76c': ('%s qemu-kvm libvirt-admin seabios-bin nping '
+            'c74': 'qemu-kvm',
+            'c76': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel freeipmi',
+            'c79': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel freeipmi',
+            'h76c': ('%s qemu-kvm libvirt-admin seabios-bin nping freeipmi '
                      'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
-            'h79c': ('%s qemu-kvm libvirt-admin seabios-bin nping '
+            'h79c': ('%s qemu-kvm libvirt-admin seabios-bin nping freeipmi '
                      'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
-            'h84r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm '
+            'h84r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm freeipmi '
                      'seabios-bin elfutils-libelf-devel collectd-disk lldpd') % helix_rhel_rpms,
             'rl84': 'qemu-kvm libvirt-daemon libvirt-daemon-kvm seabios-bin elfutils-libelf-devel lldpd',
             'euler20': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
@@ -457,7 +457,7 @@ def install_kvm_pkg():
 
 def copy_tools():
     """copy binary tools"""
-    tool_list = ['collectd_exporter', 'node_exporter', 'dnsmasq', 'zwatch-vm-agent', 'zwatch-vm-agent_freebsd_amd64', 'pushgateway', 'sas3ircu', 'zs-raid-heartbeat']
+    tool_list = ['collectd_exporter', 'node_exporter', 'ipmi_exporter', 'dnsmasq', 'zwatch-vm-agent', 'zwatch-vm-agent_freebsd_amd64', 'pushgateway', 'sas3ircu', 'zs-raid-heartbeat']
     for tool in tool_list:
         arch_lable = '' if host_info.host_arch == 'x86_64' else '_' + host_info.host_arch
         real_name = tool + arch_lable
