@@ -959,7 +959,7 @@ def check_equipment_state_from_ipmitool(metrics):
             sensor_state = sensor[3].strip()
             sensor_event = sensor[6].strip()
 
-            if sensor_type == "Memory" and "Presence detected" in sensor_event:
+            if sensor_type == "Memory":
                 metrics['ipmi_memory_status'].add_metric([sensor_name, sensor_type], 0 if sensor_state == 'Nominal' else 1)
 
             if sensor_state.lower() == "critical" and sensor_type in sensor_handlers:
