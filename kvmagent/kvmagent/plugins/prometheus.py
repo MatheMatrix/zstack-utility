@@ -228,7 +228,7 @@ def send_disk_insert_or_remove_alarm_to_mn(alarm_type, serial_number, slot):
 @thread.AsyncThread
 def send_hba_port_state_abnormal_alarm_to_mn(name, port_name, prot_state):
     class HBAPortStateAbnormalAlarm(object):
-        def __int__(self):
+        def __init__(self):
             self.portName = None
             self.protState = None
             self.host = None
@@ -243,7 +243,7 @@ def send_hba_port_state_abnormal_alarm_to_mn(name, port_name, prot_state):
             "cannot find SEND_COMMAND_URL, unable to transmit hba port state abnormal alarm info to management node")
         return
 
-    if port_name not in hba_port_state_list_record_map.keys():
+    if port_name in hba_port_state_list_record_map.keys():
         hba_port_state_abnormal_alarm = HBAPortStateAbnormalAlarm()
         hba_port_state_abnormal_alarm.host = ALARM_CONFIG.get(kvmagent.HOST_UUID)
         hba_port_state_abnormal_alarm.portName = port_name
