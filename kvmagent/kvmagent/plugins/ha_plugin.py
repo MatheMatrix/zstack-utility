@@ -1,5 +1,4 @@
 from kvmagent import kvmagent
-from kvmagent.plugins import vm_plugin
 from zstacklib.utils import bash
 from zstacklib.utils import jsonobject
 from zstacklib.utils import http
@@ -355,40 +354,41 @@ class AbstractStorageFencer(AbstractHaFencer):
 
     def check_fencer_heartbeat(self, host_uuid, storage_check_timeout, interval, max_attempts, ps_uuid):
         heartbeat_success = False
-        lastest_heartbeat_count = [None]
-        current_heartbeat_count = [None]
-        current_vm_uuids = [None]
+        lastest_heartbeat_count = None
         vm_uuids = []
 
         logger.debug("check if %s is still alive" % host_uuid)
         wait_heartbeat_count_failure = 0
         remain_timeout = storage_check_timeout
         while wait_heartbeat_count_failure < int(max_attempts) + 1:
-            if lastest_heartbeat_count[0]:
+            if lastest_heartbeat_count:
                 time.sleep(interval + remain_timeout)
             remain_timeout = storage_check_timeout
 
-            failure_count = 0
-            current_heartbeat_count[0], current_vm_uuids[0] = self.read_fencer_hearbeat(host_uuid, ps_uuid)
+            current_heartbeat_count, current_vm_uuids = self.read_fencer_hearbeat(host_uuid, ps_uuid)
             logger.debug("host last heartbeat is %s, host current heartbeat count is %s, vm running : %s" %
-                         (lastest_heartbeat_count[0], current_heartbeat_count[0], current_vm_uuids[0]))
+                         (lastest_heartbeat_count, current_heartbeat_count, current_vm_uuids))
 
-            if current_heartbeat_count[0] is None:
+            if current_heartbeat_count is None:
                 wait_heartbeat_count_failure += 1
                 continue
 
-            if lastest_heartbeat_count[0] is None:
-                lastest_heartbeat_count[0] = current_heartbeat_count[0]
+            if lastest_heartbeat_count is None:
+                lastest_heartbeat_count = current_heartbeat_count
                 continue
 
-            heartbeat_success = current_heartbeat_count[0] != lastest_heartbeat_count[0]
-            if heartbeat_success and lastest_heartbeat_count[0] is not None:
-                vm_uuids = current_vm_uuids[0]
+            heartbeat_success = current_heartbeat_count != lastest_heartbeat_count
+            if heartbeat_success and lastest_heartbeat_count is not None:
+                vm_uuids = current_vm_uuids
                 logger.debug("host[uuid:%s]'s heartbeat updated, it is still alive, running vm_uuids: %s" % (
                 host_uuid, vm_uuids))
                 break
             else:
                 wait_heartbeat_count_failure += 1
+
+        if lastest_heartbeat_count is None:
+            # no way to check if the host is still alive
+            raise Exception("host[uuid:%s] heartbeat check failed, cannot read content from hb" % host_uuid)
 
         return heartbeat_success, vm_uuids
 
@@ -1216,8 +1216,10 @@ def kill_progresses_using_mount_path(mount_path):
 
 
 def get_block_vm_root_volume_path(vm_uuid, root_volume_path):
-    vm = vm_plugin.get_vm_by_uuid(vm_uuid)
-    sysinfo = vm.domain_xmlobject.sysinfo
+    file_name = "%s.xml" % vm_uuid
+    xml = linux.read_file(os.path.join(LIVE_LIBVIRT_XML_DIR, file_name))
+    xmlobj = xmlobject.loads(xml)
+    sysinfo = xmlobj.sysinfo
     if xmlobject.has_element(sysinfo, "oemStrings") is not True:
         return root_volume_path
 
