@@ -29,6 +29,7 @@ from zstacklib.utils import iproute
 from zstacklib.utils import ebtables
 from zstacklib.utils import jsonobject
 from zstacklib.utils import lock
+from zstacklib.utils import pci
 from zstacklib.utils import sizeunit
 from zstacklib.utils import thread
 from zstacklib.utils import xmlobject
@@ -592,25 +593,24 @@ class HostNetworkInterfaceInventory(object):
 
     @in_bash
     def _init_interfacemodel(self):
-        # todo: read file
-        r, o, e = bash_roe("lspci -Dmmnnv -s %s" % self.pciDeviceAddress)
-        if r == 0:
-            for line in o.split('\n'):
-                if len(line.split(':')) < 2: continue
-                title = line.split(':')[0].strip()
-                content = line.split(':')[1].strip()
-                if title == 'Vendor':
-                    self.vendorName = self._simplify_device_name('['.join(content.split('[')[:-1]).strip())
-                    self.vendorId = content.split('[')[-1].strip(']')
-                elif title == "Device":
-                    self.deviceName = self._simplify_device_name('['.join(content.split('[')[:-1]).strip())
-                    self.deviceId = content.split('[')[-1].strip(']')
-                elif title == "SVendor":
-                    self.subvendorName = self._simplify_device_name('['.join(content.split('[')[:-1]).strip())
-                    self.subvendorId = content.split('[')[-1].strip(']')
-                elif title == "SDevice":
-                    self.subdeviceId = content.split('[')[-1].strip(']')
-            self.interfaceModel = "%s_%s" % (self.subvendorName if self.subvendorName and "Unknown" not in self.subvendorName else self.vendorName, self.deviceName)
+        pci_list = pci.lspci_s(self.pciDeviceAddress) # type: list[dict]
+        if pci_list == None or len(pci_list) == 0:
+            logger.warn('failed to init interfacemodel: pci device %s not found' % self.pciDeviceAddress)
+            return
+
+        pci_info = pci_list[0]
+        if pci_info.has_key('Vendor'):
+            self.vendorName = self._simplify_device_name(pci_info['Vendor'])
+            self.vendorId = pci_info['VendorId']
+        if pci_info.has_key('Device'):
+            self.deviceName = self._simplify_device_name(pci_info['Device'])
+            self.deviceId = pci_info['DeviceId']
+        if pci_info.has_key('SVendor'):
+            self.subvendorName = self._simplify_device_name(pci_info['SVendor'])
+            self.subvendorId = pci_info['SVendorId']
+        if pci_info.has_key('SDevice'):
+            self.subvendorId = pci_info['SDeviceId']
+        self.interfaceModel = "%s_%s" % (self.subvendorName if self.subvendorName and "Unknown" not in self.subvendorName else self.vendorName, self.deviceName)
 
     def _simplify_device_name(self, name):
         if 'Intel Corporation' in name:
@@ -2534,46 +2534,36 @@ done
             return name.replace('Co., Ltd ', '')
 
     def _collect_format_pci_device_info(self, rsp):
-        r, o, e = bash_roe("lspci -Dmmnnv")
-        if r != 0:
-            rsp.success = False
-            rsp.error = "%s, %s" % (e, o)
-            return
+        pci_list = pci.lspci_or_throw() # type: list[dict]
 
-        # parse lspci output
-        for part in o.split('\n\n'):
+        for pci_info in pci_list:
             vendor_name = ""
             device_name = ""
             subvendor_name = ""
             to = PciDeviceTO()
-            for line in part.split('\n'):
-                if len(line.split(':')) < 2: continue
-                title = line.split(':')[0].strip()
-                content = line.split(':')[1].strip()
-                if title == 'Slot':
-                    content = line[5:].strip()
-                    to.pciDeviceAddress = content
-                    group_path = os.path.join('/sys/bus/pci/devices/', to.pciDeviceAddress, 'iommu_group')
-                    to.iommuGroup = os.path.realpath(group_path)
-                elif title == 'Class':
-                    _class = content.split('[')[0].strip()
-                    to.type = _class
-                    to.description = _class + ": "
-                elif title == 'Vendor':
-                    vendor_name = self._simplify_pci_device_name('['.join(content.split('[')[:-1]).strip())
-                    to.vendor = vendor_name
-                    to.vendorId = content.split('[')[-1].strip(']')
-                    to.description += vendor_name + " "
-                elif title == "Device":
-                    to.device = content
-                    device_name = self._simplify_pci_device_name('['.join(content.split('[')[:-1]).strip())
-                    to.deviceId = content.split('[')[-1].strip(']')
-                    to.description += device_name
-                elif title == "SVendor":
-                    subvendor_name = self._simplify_pci_device_name('['.join(content.split('[')[:-1]).strip())
-                    to.subvendorId = content.split('[')[-1].strip(']')
-                elif title == "SDevice":
-                    to.subdeviceId = content.split('[')[-1].strip(']')
+
+            to.pciDeviceAddress = pci_info['Slot']
+            group_path = os.path.join('/sys/bus/pci/devices/', to.pciDeviceAddress, 'iommu_group')
+            to.iommuGroup = os.path.realpath(group_path)
+
+            if pci_info.has_key('Class'):
+                to.type = pci_info['Class']
+                to.description = pci_info['Class'] + ": "
+            if pci_info.has_key('Vendor'):
+                to.vendor = self._simplify_pci_device_name(pci_info['Vendor'])
+                vendor_name = to.vendor
+                to.vendorId = pci_info['VendorId']
+                to.description += to.vendor + " "
+            if pci_info.has_key('Device'):
+                to.device = '%s [%s]' % (pci_info['Device'], pci_info['DeviceId'])
+                device_name = self._simplify_pci_device_name(pci_info['Device'])
+                to.deviceId = pci_info['DeviceId']
+                to.description += device_name
+            if pci_info.has_key('SVendor'):
+                subvendor_name = pci_info['SVendor']
+                to.subvendorId = pci_info['SVendorId']
+            if pci_info.has_key('SDevice'):
+                to.subdeviceId = pci_info['SDeviceId']
             to.name = "%s_%s" % (subvendor_name if subvendor_name else vendor_name, device_name)
 
             def _set_pci_to_type():
