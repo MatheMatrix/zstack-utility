@@ -3513,12 +3513,13 @@ done
                 self.children = []
                 self.model = model
                 self.serialNumber = serial_number
-                self.FSType = fs_type
+                self.fsType = fs_type
                 self.mountPoint = mount_point
                 self.partitionTable = None
                 self.usedRatio = None
                 self.mediaType = None
-                self.status = None
+                self.smartPassed = None
+                self.smartMessage = None
 
         def get_size_info(name):
             df_r, df_o = bash_ro('df %s' % name)
@@ -3534,13 +3535,19 @@ done
                 usedRatio = size_info['Use%'].replace('%', '')
             return used, available, usedRatio
 
-        def get_status(name):
-            status_r, status_o = bash_ro('smartctl -H %s -j' % name)
-            if status_r == 0:
-                status = jsonobject.loads(status_o)
-                if status['smart_status'] is not None:
-                    return status['smart_status']['passed']
-            return None
+        def get_smart_passed_and_message(name):
+            smartPassed = None
+            smartMessage = None
+            _, status_o = bash_ro('smartctl -H %s -j' % name)
+            status_info = jsonobject.loads(status_o)
+            if status_info['smartctl'] is not None:
+                messages = status_info['smartctl']['messages']
+                if messages is not None and messages[0] is not None:
+                    smartMessage = "%s: %s" % (messages[0]['severity'], messages[0]['string'])
+
+            if status_info['smart_status'] is not None:
+                smartPassed = status_info['smart_status']['passed']
+            return smartPassed, smartMessage
 
         def get_partition_table(name):
             partition_r, partition_o = bash_ro('parted -s %s print' % name)
@@ -3560,11 +3567,11 @@ done
 
             block_dev.partitionTable = get_partition_table(name)
             block_dev.used, block_dev.available, block_dev.usedRatio = get_size_info(name)
-            block_dev.status = get_status(name)
+            block_dev.smartPassed, block_dev.smartMessage = get_smart_passed_and_message(name)
             if name.startswith('nvme'):
                 block_dev.mediaType = 'SSD'
             else:
-                block_dev.mediaType = 'SSD' if dev['rota'] == '0' else 'HDD'
+                block_dev.mediaType = 'SSD' if (dev['rota'] == '0' or dev['rota'] == False) else 'HDD'
 
             return block_dev
 
