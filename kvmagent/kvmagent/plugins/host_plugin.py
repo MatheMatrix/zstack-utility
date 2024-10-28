@@ -1013,7 +1013,7 @@ class HostPlugin(kvmagent.KvmAgent):
         logger.debug(http.path_msg(self.CONNECT_PATH, 'host[uuid: %s] connected' % cmd.hostUuid))
         rsp.libvirtVersion = self.libvirt_version
         rsp.qemuVersion = self.qemu_version
-        
+
         # save kvmagent version
         self.save_kvmagent_version(cmd.version)
 
@@ -1075,11 +1075,11 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.hostUuid = self.host_uuid
         rsp.sendCommandUrl = self.config.get(kvmagent.SEND_COMMAND_URL)
         rsp.version = self.config.get(kvmagent.VERSION)
-        
+
         if rsp.version is None and os.path.exists(KVMAGENT_VERSION_PATH):
             with open(KVMAGENT_VERSION_PATH, 'r') as rfd:
                 rsp.version = rfd.read().strip()
-        
+
         if os.path.exists(HOST_TAKEOVER_FLAG_PATH):
             linux.touch_file(HOST_TAKEOVER_FLAG_PATH)
         return jsonobject.dumps(rsp)
@@ -1612,7 +1612,7 @@ if __name__ == "__main__":
                 flag = True if version != rfd.read().strip() else False
         else:
             flag = True
-        
+
         if flag:
             with open(KVMAGENT_VERSION_PATH, 'w') as fd:
                 fd.write(version)
@@ -2595,25 +2595,38 @@ done
         if r != 0:
             logger.error("npu query gpu is error, %s " % npu_ids_out)
             return
-        npu_id = gpu.get_huawei_npu_id(npu_ids_out)
-        if npu_id is None:
+        npu_ids = gpu.get_huawei_npu_id(npu_ids_out)
+        if len(npu_ids) == 0:
             return
 
-        r, o, e = bash_roe(gpu.get_huawei_gpu_basic_info_cmd(npu_id))
-        if r != 0:
-            logger.error("npu query gpu board is error, %s " % e)
-            return
-        self._update_to_addon_info_from_gpu_infos(gpu.parse_huawei_gpu_output_by_npu_id(o), to)
+        npu_infos = []
+        for npu_id in npu_ids:
+            r, o, e = bash_roe(gpu.get_huawei_gpu_basic_info_cmd(npu_id))
+            if r != 0:
+                logger.error("npu query gpu board is error, %s " % e)
+                return
 
-        r, o, e = bash_roe(gpu.get_huawei_gpu_product_name_cmd(npu_id))
-        if r != 0:
-            logger.error("npu-smi query gpu product type is error, %s " % e)
-            return
+            npu_infos.extend(gpu.parse_huawei_gpu_output_by_npu_id(o))
 
-        product_type = gpu.get_huawei_product_type(o)
-        if product_type:
-            to.device = "-"
-            to.name = product_type
+        self._update_to_addon_info_from_gpu_infos(npu_infos, to)
+
+        for npu_info in npu_infos:
+            if to.pciDeviceAddress not in npu_info.get("pciAddress"):
+                continue
+
+            r, o, e = bash_roe(gpu.get_huawei_gpu_product_name_cmd(npu_ids))
+            if r != 0:
+                logger.error("npu-smi query gpu product type is error, %s " % e)
+                return
+
+            if "not support" in o:
+                logger.error("current gpu device not support query product")
+                return
+
+            product_type = gpu.get_huawei_product_type(o)
+            if product_type:
+                to.device = "-"
+                to.name = product_type
 
     @in_bash
     def _collect_haiguang_gpu_info(self, to):
@@ -2643,11 +2656,11 @@ done
 
     def _update_to_addon_info_from_gpu_infos(self, gpu_infos, to):
         for gpuinfo in gpu_infos:
-            if to.pciDeviceAddress not in gpuinfo["pciAddress"]:
+            if to.pciDeviceAddress not in gpuinfo.get("pciAddress"):
                 continue
-            to.addonInfo["memory"] = gpuinfo["memory"]
-            to.addonInfo["power"] = gpuinfo["power"]
-            to.addonInfo["serialNumber"] = gpuinfo["serialNumber"]
+            to.addonInfo["memory"] = gpuinfo.get("memory")
+            to.addonInfo["power"] = gpuinfo.get("power")
+            to.addonInfo["serialNumber"] = gpuinfo.get("serialNumber")
             to.addonInfo["isDriverLoaded"] = True
 
     @in_bash
@@ -2690,7 +2703,7 @@ done
         # check whether /sys/class/iommu is empty, if not then iommu is activated in bios
         iommu_folder = '/sys/class/iommu'
         r_bios = os.path.isdir(iommu_folder) and os.listdir(iommu_folder)
-        r_kernel, o_kernel, e_kernel = bash_roe("grep '{}=on' /proc/cmdline".format(iommu_type))
+        r_kernel, _, _ = bash_roe("grep '{}=on' /proc/cmdline".format(iommu_type))
         if r_bios and r_kernel == 0:
             rsp.hostIommuStatus = True
         else:
@@ -2775,7 +2788,6 @@ done
         if r != 0:
             rsp.success = False
             rsp.error = "failed to install gim.ko, %s, %s" % (o, e)
-            return
 
 
     @in_bash
