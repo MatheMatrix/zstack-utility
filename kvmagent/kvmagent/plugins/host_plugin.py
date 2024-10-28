@@ -2219,8 +2219,8 @@ done
         rsp = SetHostKernelInterfaceResponse()
 
         for iface in cmd.interfaces:
-            if not iface.interfaceName or not linux.is_bond(iface.interfaceName):
-                raise Exception('cannot find bond[%s]' % iface.interfaceName)
+            if not iface.interfaceName and not linux.is_physical_nic(iface.interfaceName) and not linux.is_bond(iface.interfaceName):
+                raise Exception('cannot find interface or bond[%s]' % iface.interfaceName)
 
             physical_dev = iface.interfaceName if iface.vlanId == 0 else '%s.%s' % (iface.interfaceName, iface.vlanId)
             if not linux.is_device_exists(physical_dev):
