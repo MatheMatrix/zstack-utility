@@ -34,6 +34,7 @@ import zstacklib.utils.ip as ip
 import zstacklib.utils.ebtables as ebtables
 import zstacklib.utils.iptables as iptables
 import zstacklib.utils.lock as lock
+import zstacklib.utils.pci as pciUtils
 
 from kvmagent import kvmagent
 from kvmagent.plugins.baremetal_v2_gateway_agent import \
@@ -5790,10 +5791,21 @@ class Vm(object):
 
         def make_pci_device(pciDevices):
             devices = elements['devices']
+            sriov_manage_exists = os.path.exists('/usr/lib/nvidia/sriov-manage')
+
+            pci_list = pciUtils.lspci() # type: list[dict]
             for pci in pciDevices:
                 addr, spec_uuid = pci.split(',')
+                pci_info_filtered = filter(lambda p: p['Slot'] == addr, pci_list) # type: list[dict]
+                if len(pci_info_filtered) == 0:
+                    raise kvmagent.KvmError('failed to find pci device with address %s' % addr)
 
-                if os.path.exists('/usr/lib/nvidia/sriov-manage'):
+                pci_info = pci_info_filtered[0]
+                navida_pci = pci_info.has_key('Vendor') and 'NVIDIA' in pci_info['Vendor'] or \
+                             pci_info.has_key('Device') and 'NVIDIA' in pci_info['Device'] or \
+                             pci_info.has_key('SVendor') and 'NVIDIA' in pci_info['SVendor']
+
+                if navida_pci and sriov_manage_exists:
                     r, o, stderr = bash.bash_roe("/usr/lib/nvidia/sriov-manage -d %s" % addr)
                     if r != 0:
                         raise kvmagent.KvmError('failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s' % (addr, o, stderr))
