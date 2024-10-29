@@ -62,6 +62,7 @@ from zstacklib.utils import iproute
 from zstacklib.utils import ovs
 from zstacklib.utils import drbd
 from zstacklib.utils.jsonobject import JsonObject
+from zstacklib.utils.linux import is_virtual_machine
 from zstacklib.utils.qga import *
 from zstacklib.utils import jsonobject
 from zstacklib.utils.qmp import get_block_node_name_and_file, QmpResult
@@ -1405,10 +1406,6 @@ def is_kylin402():
 def is_spiceport_driver_supported():
     # qemu-system-aarch64 not supported char driver: spiceport
     return shell.run("%s -h | grep 'chardev spiceport'" % kvmagent.get_qemu_path()) == 0
-
-def is_virtual_machine():
-    product_name = shell.call("dmidecode -s system-product-name").strip()
-    return product_name == "KVM Virtual Machine" or product_name == "KVM"
 
 def get_domain_type():
     return "qemu" if HOST_ARCH == "aarch64" and is_virtual_machine() else "kvm"

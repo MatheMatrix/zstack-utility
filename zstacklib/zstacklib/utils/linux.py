@@ -3132,6 +3132,9 @@ def check_unixsock_connection(socket_path, timeout=10):
     # NOTE: -z option may not be supported in some lower versions of Ncat, such as 6.40
     return shell.run("nc -z -U %s -w %s" % (socket_path, timeout))
 
+def is_virtual_machine():
+    product_name = shell.call("dmidecode -s system-product-name").strip()
+    return product_name == "KVM Virtual Machine" or product_name == "KVM"
 
 class VmUsbManager(object):
     def __init__(self):
