@@ -10,18 +10,21 @@ import os.path
 import platform
 import re
 import tempfile
+import threading
 import time
 import uuid
 import string
 import socket
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import yaml
 import subprocess
 
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
-from zstacklib.utils import http, lvm, ceph, form
+from zstacklib.utils import http, lvm, ceph, form, report
 from zstacklib.utils import qemu
 from zstacklib.utils import linux
 from zstacklib.utils import iptables
@@ -3647,6 +3650,10 @@ done
     @in_bash
     def get_sensors(self, req):
         rsp = GetSensorsResponse()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        timeout = report.get_timeout(cmd)
+        start_time = time.time()
+        sensor_type_lock = threading.Lock()
 
         class Sensor:
             def __init__(self, info):
@@ -3655,9 +3662,9 @@ done
                 self.status = info['status'].strip() or ""
                 self.type = ""
                 self.classification = ""
-                self.set_type_and_classification()
 
             def set_type_and_classification(self):
+                logger.debug("111111111111111111 get sensor type for %s" % self.name)
                 if self.name is "":
                     return
 
@@ -3674,7 +3681,8 @@ done
                     sensor_type = filter_lines_by_str_list(type_o.splitlines(), ["Sensor Type"])
                     self.type = sensor_type[0].split(':')[1].split('(')[0].strip()
                     self.classification = "Discrete" if "Discrete" in sensor_type else "Threshold"
-                    sensor_type_by_name[self.name] = self.type
+                    with sensor_type_lock:
+                        sensor_type_by_name[self.name] = self.type
 
         def update_sensor_type_by_name():
             sensor_names = {sensor.name for sensor in sensors}
@@ -3685,6 +3693,20 @@ done
         sensors = []
         for info in form.load('name|sensorId|status|entityId|value\n' + get_sensor_info_from_ipmi(), sep='|'):
             sensors.append(Sensor(info))
+
+        def process_sensor(sensor):
+            if time.time() - start_time < timeout:
+                sensor.set_type_and_classification()
+            return sensor
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_sensor = {executor.submit(process_sensor, sensor): sensor for sensor in sensors}
+            for future in as_completed(future_to_sensor):
+                sensor = future_to_sensor[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    logger.error("failed to process sensor %s: %s" % (sensor.name, str(exc)))
 
         update_sensor_type_by_name()
 
