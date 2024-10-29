@@ -660,6 +660,7 @@ def do_network_config():
             copy_arg.src = "%s/ip6tables" % file_root
             copy_arg.dest = "/etc/sysconfig/ip6tables"
             copy(copy_arg, host_post_info)
+            run_remote_command('mkdir -p /var/lock/subsys/', host_post_info)
             replace_content(IP6TABLE_SERVICE_FILE, "regexp='syslog.target,iptables.service' replace='syslog.target iptables.service'", host_post_info)
             service_status("ip6tables", "state=restarted enabled=yes", host_post_info)
         elif host_info.distro in DEB_BASED_OS:

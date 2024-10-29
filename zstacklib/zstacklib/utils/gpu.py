@@ -23,6 +23,7 @@ def parse_nvidia_gpu_output(output):
         gpuinfos.append(gpuinfo)
     return gpuinfos
 
+
 def parse_amd_gpu_output(output):
     gpuinfos = []
     try:
@@ -66,13 +67,14 @@ def parse_hy_gpu_output(output):
 
 
 def get_huawei_npu_id(npu_id_output):
+    npu_ids = []
     for line in npu_id_output.splitlines():
         line = line.strip()
         if not line:
             continue
         if "NPU ID" in line:
-            return line.split(":")[1].strip()
-    return None
+            npu_ids.append(line.split(":")[1].strip())
+    return npu_ids
 
 
 def parse_huawei_gpu_output_by_npu_id(output):
@@ -94,6 +96,7 @@ def parse_huawei_gpu_output_by_npu_id(output):
     gpuinfos.append(gpuinfo)
     return gpuinfos
 
+
 def get_huawei_product_type(output):
     for line in output.splitlines():
         line = line.strip()
@@ -102,6 +105,7 @@ def get_huawei_product_type(output):
         if "Product Type" in line:
             return line.split(":")[1].strip()
     return None
+
 
 def parse_tianshu_gpu_output(output):
     gpuinfos = []
@@ -122,6 +126,7 @@ def parse_tianshu_gpu_output(output):
 
     return gpuinfos
 
+
 def get_tianshu_product_name(output):
     for line in output.splitlines():
         line = line.strip()
@@ -131,48 +136,55 @@ def get_tianshu_product_name(output):
             return line.split(":")[1].strip()
     return None
 
-def get_nvidia_gpu_basic_info_cmd(iswindows = False):
+
+def get_nvidia_gpu_basic_info_cmd(iswindows=False):
     cmd = "nvidia-smi --query-gpu=gpu_bus_id,memory.total,power.limit,gpu_serial --format=csv,noheader"
     if iswindows:
         cmd = cmd.replace(" ", "|")
     return cmd
 
-def get_amd_gpu_basic_info_cmd(iswindows = False):
+
+def get_amd_gpu_basic_info_cmd(iswindows=False):
     cmd = "rocm-smi --showbus --showmeminfo vram --showpower --showserial --json"
     if iswindows:
         cmd = cmd.replace(" ", "|")
     return cmd
 
-def get_hy_gpu_basic_info_cmd(iswindows = False):
+
+def get_hy_gpu_basic_info_cmd(iswindows=False):
     cmd = "hy-smi --showserial --showmaxpower --showmemavailable --showbus --json"
     if iswindows:
         cmd = cmd.replace(" ", "|")
     return cmd
 
-def get_tianshu_gpu_basic_info_cmd(iswindows = False):
+
+def get_tianshu_gpu_basic_info_cmd(iswindows=False):
     cmd = "ixsmi --query-gpu=gpu_bus_id,memory.total,gpu.power.limit,gpu_serial --format=csv,noheader"
     if iswindows:
         cmd = cmd.replace(" ", "|")
     return cmd
 
-def get_tianshu_gpu_product_name_cmd(iswindows = False):
+
+def get_tianshu_gpu_product_name_cmd(iswindows=False):
     cmd = "ixsmi -q |grep 'Product Name'"
     if iswindows:
         cmd = cmd.replace(" ", "|")
     return cmd
 
+
 def get_huawei_gpu_npu_id_cmd():
     return "npu-smi info -l"
 
-def get_huawei_gpu_basic_info_cmd(npu_id, iswindows = False):
+
+def get_huawei_gpu_basic_info_cmd(npu_id, iswindows=False):
     cmd = "npu-smi info -t board -i {0};npu-smi info -i {0} -t memory;npu-smi info -t power -i {0}".format(npu_id)
     if iswindows:
         cmd = cmd.replace(" ", "|")
     return cmd
 
-def get_huawei_gpu_product_name_cmd(npu_id, iswindows = False):
+
+def get_huawei_gpu_product_name_cmd(npu_id, iswindows=False):
     cmd = "npu-smi info -t product -i {0}".format(npu_id)
     if iswindows:
         cmd = cmd.replace(" ", "|")
     return cmd
-
