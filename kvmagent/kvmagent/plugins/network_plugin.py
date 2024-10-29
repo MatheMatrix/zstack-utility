@@ -498,6 +498,10 @@ class NetworkPlugin(kvmagent.KvmAgent):
         # zs-bond -u mtu 1450
         shell.call('/usr/local/bin/zs-bond -u %s mtu %s' % (cmd.bondName, min_mtu))
 
+    def _enable_bridge_igmp_snooping(self, bridgeName):
+        shell.call("echo 1 >  /sys/class/net/%s/bridge/multicast_querier" % bridgeName, False)
+        shell.call("echo 1 >  /sys/class/net/%s/bridge/multicast_snooping" % bridgeName, False)
+
     @kvmagent.replyerror
     def check_physical_network_interface(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -1163,6 +1167,7 @@ configure lldp status rx-only \n
             self._configure_bridge(cmd.disableIptables)
             self._configure_bridge_mtu(cmd.bridgeName, cmd.physicalInterfaceName, mtu)
             self._configure_bridge_learning(cmd.bridgeName, cmd.physicalInterfaceName)
+            self._enable_bridge_igmp_snooping(cmd.bridgeName)
             linux.set_bridge_alias_using_phy_nic_name(cmd.bridgeName, cmd.physicalInterfaceName)
 
             # restore ifcfg file
@@ -1205,6 +1210,7 @@ configure lldp status rx-only \n
             self._configure_bridge(cmd.disableIptables)
             self._configure_bridge_mtu(cmd.bridgeName, vlanInterfName, mtu)
             self._configure_bridge_learning(cmd.bridgeName, vlanInterfName)
+            self._enable_bridge_igmp_snooping(cmd.bridgeName)
             linux.set_bridge_alias_using_phy_nic_name(cmd.bridgeName, cmd.physicalInterfaceName)
             linux.set_device_uuid_alias('%s.%s' % (cmd.physicalInterfaceName, cmd.vlan), cmd.l2NetworkUuid)
 
@@ -1392,6 +1398,7 @@ configure lldp status rx-only \n
         linux.create_vxlan_bridge(interf, cmd.bridgeName, cmd.peers)
         linux.set_device_uuid_alias(interf, cmd.l2NetworkUuid)
         self._configure_bridge_mtu(cmd.bridgeName, interf, mtu)
+        self._enable_bridge_igmp_snooping(cmd.bridgeName)
 
     @lock.lock('bridge')
     @kvmagent.replyerror
