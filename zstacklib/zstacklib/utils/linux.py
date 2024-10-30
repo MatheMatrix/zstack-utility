@@ -94,14 +94,6 @@ class MountError(Exception):
         super(MountError, self).__init__(msg)
 
 
-class IpInfo(object):
-    def __init__(self):
-        self.version = 4
-        self.ip = None
-        self.netmask = None
-        self.gateway = None
-        self.is_default = False
-
 class EthernetInfo(object):
     def __init__(self):
         self.mac = None
@@ -110,7 +102,7 @@ class EthernetInfo(object):
         self.netmask = None
         self.interface = None
         self.ip = None
-        self.ip_list = []   # type: IpInfo
+        self.ip_list = []   # type: list[netconfig.IpConfig]
 
     def __str__(self):
         return 'interface:%s, mac:%s, ip:%s, netmask:%s' % (self.interface, self.mac, self.ip, self.netmask)
@@ -347,7 +339,6 @@ def netmask_to_cidr(netmask):
 def get_ethernet_info():
     link_info = shell.call('ip -o link show')
     inet_info = shell.call('ip -o -f inet addr show')
-    route_info = shell.call('ip route show')
 
     devices = {}
     for link in link_info.split('\n'):
@@ -375,29 +366,6 @@ def get_ethernet_info():
 
         assert mac, 'cannot find mac for ethernet device[%s], %s' % (ethname, link)
         eth.mac = mac
-
-    gateway_dict = {}
-
-    for route in route_info.split('\n'):
-        route = route.strip('\t\n\r ')
-        if not route:
-            continue
-
-        tokens = route.split()
-        if 'default' in tokens:
-            ethname = tokens[tokens.index('dev') + 1]
-            gateway = tokens[tokens.index('via') + 1]
-            gateway_dict[ethname] = {
-                'gateway': gateway,
-                'is_default': True
-            }
-        elif 'via' in tokens:
-            ethname = tokens[tokens.index('dev') + 1]
-            gateway = tokens[tokens.index('via') + 1]
-            gateway_dict[ethname] = {
-                'gateway': gateway,
-                'is_default': False
-            }
 
     ip_dict = {}
 
@@ -430,13 +398,7 @@ def get_ethernet_info():
 
         assert ip, 'cannot find ip for ethernet device[%s]' % ethname
         assert netmask, 'cannot find netmask for ethernet device[%s]' % ethname
-        ip_info = IpInfo()
-        ip_info.ip = ip
-        ip_info.netmask = netmask
-        if ethname in gateway_dict:
-            ip_info.gateway = gateway_dict[ethname]['gateway']
-            ip_info.is_default = gateway_dict[ethname]['is_default']
-
+        ip_info = netconfig.IpConfig(ip, netmask)
         if ethname in ip_dict:
             ip_dict[ethname].append(ip_info)
         else:
@@ -1704,11 +1666,19 @@ def delete_novlan_bridge(bridge_name, interface, move_route=True):
         logger.debug("can not find bridge %s" % bridge_name)
         return
 
-    ifcfg = netconfig.NetConfig(interface)
-    if is_vif_on_bridge(bridge_name, interface):
-        if move_route:
-            move_dev_route(bridge_name, interface)
+    if is_bond(interface):
+        ifcfg = netconfig.NetBondConfig(interface)
+    else:
+        ifcfg = netconfig.NetEtherConfig(interface)
+    if is_vif_on_bridge(bridge_name, interface) and move_route:
+        move_dev_route(bridge_name, interface)
+        ifcfg_bridge = netconfig.NetBridgeConfig(bridge_name)
+        ifcfg.boot_proto = ifcfg_bridge.get_boot_proto()
+        if ifcfg_bridge.is_boot_proto_dhcp():
+            ifcfg.config_dict.update(ifcfg_bridge.get_default_routes_dict())
+        else:
             ips = get_ip_list_by_nic_name(interface)
+            ips.extend(ifcfg_bridge.get_ip_configs())
             for ip in ips:
                 ifcfg.add_ip_config(ip.ip, ip.netmask, ip.gateway, ip.version, ip.is_default)
     else:
@@ -1771,14 +1741,15 @@ def create_bridge(bridge_name, interface, move_route=True):
 
     ifcfgs = []
     ifcfg_bridge = netconfig.NetBridgeConfig(bridge_name)
-    ifcfg_bridge.stp = netconfig.NET_CONFIG_STP_NO
-    ips = get_ip_list_by_nic_name(bridge_name)
-    for ip in ips:
-        ifcfg_bridge.add_ip_config(ip.ip, ip.netmask, ip.gateway, ip.version, ip.is_default)
-
-    slave_ips = ifcfg_slave.get_ip_configs()
-    for slave_ip in slave_ips:
-        ifcfg_bridge.add_ip_config(slave_ip.ip, slave_ip.netmask, slave_ip.gateway, slave_ip.is_default)
+    ifcfg_bridge.boot_proto = ifcfg_slave.get_boot_proto()
+    ifcfg_bridge.stp = netconfig.NET_CONFIG_NO
+    if ifcfg_slave.is_boot_proto_dhcp():
+        ifcfg_bridge.config_dict.update(ifcfg_slave.get_default_routes_dict())
+    else:
+        ips = get_ip_list_by_nic_name(bridge_name)
+        ips.extend(ifcfg_slave.get_ip_configs())
+        for ip in ips:
+            ifcfg_bridge.add_ip_config(ip.ip, ip.netmask, ip.gateway, ip.version, ip.is_default)
 
     ifcfgs.extend([ifcfg_bridge, ifcfg_slave])
     return ifcfgs
@@ -2175,9 +2146,15 @@ def delete_vlan_bridge(bridge_name, vlan_interface):
         if has_ip:
             move_dev_route(bridge_name, vlan_interface)
             ifcfg = netconfig.NetVlanConfig(vlan_interface)
-            ips = get_ip_list_by_nic_name(vlan_interface)
-            for ip in ips:
-                ifcfg.add_ip_config(ip.ip, ip.netmask, ip.gateway, ip.version, ip.is_default)
+            ifcfg_bridge = netconfig.NetBridgeConfig(bridge_name)
+            ifcfg.boot_proto = ifcfg_bridge.get_boot_proto()
+            if ifcfg_bridge.is_boot_proto_dhcp():
+                ifcfg.config_dict.update(ifcfg_bridge.get_default_routes_dict())
+            else:
+                ips = get_ip_list_by_nic_name(vlan_interface)
+                ips.extend(ifcfg_bridge.get_ip_configs())
+                for ip in ips:
+                    ifcfg.add_ip_config(ip.ip, ip.netmask, ip.gateway, ip.version, ip.is_default)
             delete_bridge_and_ifcfg(bridge_name)
             ifcfg.flush_config()
         else:
