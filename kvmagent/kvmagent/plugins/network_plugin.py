@@ -456,10 +456,10 @@ class NetworkPlugin(kvmagent.KvmAgent):
     def _enable_bridge_igmp_snooping(self, bridgeName, igmpVersion, mldVersion):
         shell.call("echo 1 >  /sys/class/net/%s/bridge/multicast_querier" % bridgeName, False)
         shell.call("echo 1 >  /sys/class/net/%s/bridge/multicast_snooping" % bridgeName, False)
-        if igmpVersion != 0:
-            shell.call("echo %d >  /sys/class/net/%s/bridge/multicast_igmp_version" % (igmpVersion, bridgeName), False)
-        if mldVersion != 0:
-            shell.call("echo %d >  /sys/class/net/%s/bridge/multicast_mld_version" % (mldVersion, bridgeName), False)
+        #if igmpVersion != 0:
+        #    shell.call("echo %d >  /sys/class/net/%s/bridge/multicast_igmp_version" % (igmpVersion, bridgeName), False)
+        #if mldVersion != 0:
+        #    shell.call("echo %d >  /sys/class/net/%s/bridge/multicast_mld_version" % (mldVersion, bridgeName), False)
 
     def _configure_isolated(self, vlan_interface):
         isolated_br = "isolated_%s" % vlan_interface
