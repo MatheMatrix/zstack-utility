@@ -1570,8 +1570,10 @@ def collect_block_device_status():
     r, o = bash_ro('lsblk -p -d -n -o NAME,SERIAL')
     if r == 0:
         for line in o.strip().split('\n'):
-            name, serial_number = line.split()
-            block_devices[serial_number] = name
+            splits = line.split()
+            if len(splits) == 2:
+                name, serial_number = splits
+                block_devices[serial_number] = name
         check_block_devices_insert_and_remove(block_devices)
     return metrics.values()
 
