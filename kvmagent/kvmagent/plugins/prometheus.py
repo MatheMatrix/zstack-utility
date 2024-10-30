@@ -1752,6 +1752,7 @@ def collect_hba_port_device_state():
         if k == "device path":
             if port_name not in hba_port_state_list_record_map.keys():
                 hba_port_state_list_record_map[port_name] = port_state
+                send_hba_port_state_abnormal_alarm_to_mn(name, port_name, port_state)
 
             if hba_port_state_list_record_map[port_name] != port_state:
                 hba_port_state_list_record_map[port_name] = port_state
