@@ -867,6 +867,10 @@ class UpdateConfigration(object):
                              r'\1 {0}=on modprobe.blacklist=snd_hda_intel,amd76x_edac,vga16fb,nouveau,rivafb,nvidiafb,rivatv,amdgpu,radeon'.format(
                                  self.iommu_type), env)
                 linux.write_file(grub_rocky_env, env)
+
+        self.enable_vfio_module()
+
+    def enable_vfio_module(self):
         bash_o("modprobe vfio && modprobe vfio-pci")
 
 logger = log.get_logger(__name__)
@@ -2683,13 +2687,17 @@ done
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GetPciDevicesResponse()
 
+        updateConfigration = UpdateConfigration()
+        if not os.path.exists("/dev/vfio/vfio"):
+            logger.info("enable vfio/vfio-pci module")
+            updateConfigration.enable_vfio_module()
+
         if cmd.skipGrubConfig:
             rsp.hostIommuStatus = True
             self._collect_format_pci_device_info(rsp)
             return jsonobject.dumps(rsp)
 
         # update grub to enable/disable iommu in host
-        updateConfigration = UpdateConfigration()
         updateConfigration.path = "/etc/default/grub"
         updateConfigration.enableIommu = cmd.enableIommu
         success, error = updateConfigration.updateHostIommu()
