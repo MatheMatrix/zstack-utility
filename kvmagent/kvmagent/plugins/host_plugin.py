@@ -36,6 +36,7 @@ from zstacklib.utils import xmlobject
 from zstacklib.utils import ovs
 from zstacklib.utils import shell
 from zstacklib.utils.bash import *
+from zstacklib.utils.concurrentProcessor import ConcurrentProcessor
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.ip import get_nic_driver_type
 from zstacklib.utils.ipmitool import get_sensor_info_from_ipmi
@@ -3661,6 +3662,10 @@ done
     @kvmagent.replyerror
     @in_bash
     def get_sensors(self, req):
+        logger.debug("get sensors11111111111111111111111111111111111111111111111111111")
+        logger.debug(sensor_type_by_name)
+        logger.debug("get sensors11111111111111111111111111111111111111111111111111111")
+
         rsp = GetSensorsResponse()
 
         class Sensor:
@@ -3673,6 +3678,8 @@ done
                 self.set_type_and_classification()
 
             def set_type_and_classification(self):
+                logger.debug("do set_type_and_classification---------------------------------")
+
                 if self.name is "":
                     return
 
@@ -3689,7 +3696,15 @@ done
                     sensor_type = filter_lines_by_str_list(type_o.splitlines(), ["Sensor Type"])
                     self.type = sensor_type[0].split(':')[1].split('(')[0].strip()
                     self.classification = "Discrete" if "Discrete" in sensor_type else "Threshold"
+
+                    logger.debug("---------------------------------")
+                    logger.debug(self.type)
+                    logger.debug(self.classification)
                     sensor_type_by_name[self.name] = self.type
+
+        class SensorProcessor(ConcurrentProcessor):
+            def process_item(self, info):
+                return Sensor(info)
 
         def update_sensor_type_by_name():
             sensor_names = {sensor.name for sensor in sensors}
@@ -3697,9 +3712,9 @@ done
             for key in keys_to_remove:
                 del sensor_type_by_name[key]
 
-        sensors = []
-        for info in form.load('name|sensorId|status|entityId|value\n' + get_sensor_info_from_ipmi(), sep='|'):
-            sensors.append(Sensor(info))
+        sensor_info = form.load('name|sensorId|status|entityId|value\n' + get_sensor_info_from_ipmi(), sep='|')
+        processor = SensorProcessor(max_queue_size=50)
+        sensors = processor.run(sensor_info)
 
         update_sensor_type_by_name()
 
