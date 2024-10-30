@@ -40,7 +40,7 @@ from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.ip import get_nic_driver_type
 from zstacklib.utils.ipmitool import get_sensor_info_from_ipmi
 from zstacklib.utils.linux import filter_lines_by_str_list
-from zstacklib.utils.report import Report
+from zstacklib.utils.report import Report, get_timeout
 import zstacklib.utils.ip as ip
 from zstacklib.utils import netconfig
 import zstacklib.utils.plugin as plugin
@@ -3662,6 +3662,9 @@ done
     @in_bash
     def get_sensors(self, req):
         rsp = GetSensorsResponse()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        start_time = linux.get_current_timestamp()
+        time_out = get_timeout(cmd) - 10
 
         class Sensor:
             def __init__(self, info):
@@ -3673,6 +3676,9 @@ done
                 self.set_type_and_classification()
 
             def set_type_and_classification(self):
+                if linux.get_current_timestamp() - start_time > time_out:
+                    return
+
                 if self.name is "":
                     return
 
