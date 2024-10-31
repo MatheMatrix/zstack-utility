@@ -34,7 +34,6 @@ import zstacklib.utils.ip as ip
 import zstacklib.utils.ebtables as ebtables
 import zstacklib.utils.iptables as iptables
 import zstacklib.utils.lock as lock
-import zstacklib.utils.pci as pciUtils
 
 from kvmagent import kvmagent
 from kvmagent.plugins.baremetal_v2_gateway_agent import \
@@ -5792,9 +5791,9 @@ class Vm(object):
         def make_pci_device(pciDevices):
             devices = elements['devices']
 
-            pci_list = pciUtils.lspci() # type: list[dict]
-            for pci in pciDevices:
-                addr, spec_uuid = pci.split(',')
+            pci_list = pci.lspci() # type: list[dict]
+            for pciDevice in pciDevices:
+                addr, spec_uuid = pciDevice.split(',')
                 pci_info_filtered = filter(lambda p: p['Slot'] == addr, pci_list) # type: list[dict]
                 if len(pci_info_filtered) == 0:
                     raise kvmagent.KvmError('failed to find pci device with address %s' % addr)
