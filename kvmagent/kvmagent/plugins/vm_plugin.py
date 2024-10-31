@@ -5791,7 +5791,6 @@ class Vm(object):
 
         def make_pci_device(pciDevices):
             devices = elements['devices']
-            sriov_manage_exists = os.path.exists('/usr/lib/nvidia/sriov-manage')
 
             pci_list = pciUtils.lspci() # type: list[dict]
             for pci in pciDevices:
@@ -5801,15 +5800,10 @@ class Vm(object):
                     raise kvmagent.KvmError('failed to find pci device with address %s' % addr)
 
                 pci_info = pci_info_filtered[0]
-                navida_pci = pci_info.has_key('Vendor') and 'NVIDIA' in pci_info['Vendor'] or \
-                             pci_info.has_key('Device') and 'NVIDIA' in pci_info['Device'] or \
-                             pci_info.has_key('SVendor') and 'NVIDIA' in pci_info['SVendor']
-
-                if navida_pci and sriov_manage_exists:
-                    r, o, stderr = bash.bash_roe("/usr/lib/nvidia/sriov-manage -d %s" % addr)
-                    if r != 0:
-                        raise kvmagent.KvmError('failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s' % (addr, o, stderr))
-
+                if pci.is_nvidia_pci_device(pci_info):
+                    err = pci.disable_nvidia_vgpu_by_sriov_manage(pci_info) # type: str | None
+                    if err:
+                        raise kvmagent.KvmError(err)
 
                 ret, out, err = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
                 if ret != 0:
@@ -8985,7 +8979,13 @@ host side snapshot files chian:
     def attach_pci_device_to_host(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AttachPciDeviceToHostRsp()
-        addr = cmd.pciDeviceAddress
+
+        addr = cmd.pciDeviceAddress # type: str
+        pci_list = pci.lspci_s(addr) # type: list[dict]
+        if not pci_list:
+            rsp.success = False
+            rsp.error = "Failed to find pci device %s" % addr
+            return jsonobject.dumps(rsp)
 
         r, o, e = bash.bash_roe("virsh nodedev-reattach pci_%s" % addr.replace(':', '_').replace('.', '_'))
         logger.debug("nodedev-reattach %s: %s, %s" % (addr, o, e))
@@ -8994,11 +8994,9 @@ host side snapshot files chian:
             rsp.error = "failed to nodedev-reattach %s: %s, %s" % (addr, o, e)
             return jsonobject.dumps(rsp)
 
-        if os.path.exists('/usr/lib/nvidia/sriov-manage'):
-            ret, out, err = self._exec_sriov_manage(addr, True)
-            if ret != 0:
-                rsp.success = False
-                rsp.error = "failed to /usr/lib/nvidia/sriov-manage -e %s: %s, %s" % (addr, o, e)
+        pci_info = pci_list[0]
+        if pci.is_nvidia_pci_device(pci_info):
+            self._enable_navida_vgpu(pci_info)
 
         return jsonobject.dumps(rsp)
 
@@ -9007,14 +9005,17 @@ host side snapshot files chian:
     def detach_pci_device_from_host(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = DetachPciDeviceFromHostRsp()
-        addr = cmd.pciDeviceAddress
 
-        if os.path.exists('/usr/lib/nvidia/sriov-manage'):
-            ret, out, err = self._exec_sriov_manage(addr, False)
-            if ret != 0:
-                rsp.success = False
-                rsp.error = "failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s" % (addr, out, err)
-                return jsonobject.dumps(rsp)
+        addr = cmd.pciDeviceAddress # type: str
+        pci_list = pci.lspci_s(addr) # type: list[dict]
+        if not pci_list:
+            rsp.success = False
+            rsp.error = "Failed to find pci device %s" % addr
+            return jsonobject.dumps(rsp)
+
+        pci_info = pci_list[0]
+        if pci.is_nvidia_pci_device(pci_info):
+            self._disable_navida_vgpu(pci_info)
 
         r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
         logger.debug("nodedev-detach %s: %s, %s" % (addr, o, e))
@@ -9025,11 +9026,18 @@ host side snapshot files chian:
         return jsonobject.dumps(rsp)
 
     @linux.retry(times=30, sleep_time=5)
-    def _exec_sriov_manage(self, addr, is_enable = True):
-        if is_enable:
-            return bash.bash_roe("/usr/lib/nvidia/sriov-manage -e %s" % addr)
-        else:
-            return bash.bash_roe("/usr/lib/nvidia/sriov-manage -d %s" % addr)
+    def _enable_navida_vgpu(self, pci_info):
+        # type: (dict) -> None
+        err = pci.enable_nvidia_vgpu_by_sriov_manage(pci_info)
+        if err:
+            raise kvmagent.KvmError(err)
+
+    @linux.retry(times=30, sleep_time=5)
+    def _disable_navida_vgpu(self, pci_info):
+        # type: (dict) -> None
+        err = pci.disable_nvidia_vgpu_by_sriov_manage(pci_info)
+        if err:
+            raise kvmagent.KvmError(err)
 
     def _get_next_usb_port(self, dom, bus):
         domain_xml = dom.XMLDesc(0)
