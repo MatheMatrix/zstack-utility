@@ -199,11 +199,17 @@ class PhysicalNicFencer(AbstractHaFencer):
     def exec_fencer(self):
         vm_use_fault_nic_pids_dict, fault_nic = self.find_vm_use_fault_nic()
 
-        if len(vm_use_fault_nic_pids_dict) == 0:
+        global ha_vm_list, fence_all_vms
+        if fence_all_vms:
+            vm_need_fence_dict = vm_use_fault_nic_pids_dict
+        else:
+            vm_need_fence_dict = {key: value for key, value in vm_use_fault_nic_pids_dict.items() if key not in ha_vm_list}
+
+        if len(vm_need_fence_dict) == 0:
             logger.debug("[%s] report no VMs related to the fault nics" % self.get_ha_fencer_name())
             return
         reason = "because physical nic[%s] status has been checked %s times and is still down" % (",".join(fault_nic), self.max_attempts)
-        kill_vm_use_pid(vm_use_fault_nic_pids_dict, reason)
+        kill_vm_use_pid(vm_need_fence_dict, reason)
 
     def get_ha_fencer_name(self):
         return "hostBusinessNic"
@@ -228,7 +234,7 @@ class PhysicalNicFencer(AbstractHaFencer):
         else:
             vm_use_fault_nic_pids_dict = self.find_vm_use_fault_nic_without_virsh(fault_nics)
 
-        return vm_use_fault_nic_pids_dict, fault_nics
+        return results_vm_dict, fault_nics
 
 
     def is_bridge_related_to_nic(self, bridge, nics):
@@ -955,6 +961,8 @@ global_block_fencer_rule = {} # type: dict[str, list]
 global_fencer_rule_lock = threading.Lock()
 SHAREBLOCK_VM_HA_PARAMS_PATH = "/var/run/zstack/shareBlockVmHaParams"
 WRITE_SHAREBLOCKVMHAPARAMS_LOCK = threading.Lock()
+ha_vm_list = [] # type: list[str]
+fence_all_vms = True
 
 
 def create_shareblock_vm_ha_params(cmd):
@@ -1022,6 +1030,10 @@ def remove_fencer_rule(cmd):
 
 
 def is_allow_fencer(fencer_name, vm_uuid):
+    global ha_vm_list, fence_all_vms
+    if vm_uuid not in ha_vm_list and not fence_all_vms:
+        return False
+
     with global_fencer_rule_lock:
         global global_allow_fencer_rule
         logger.debug("global allow fencer: %s" % global_allow_fencer_rule)
@@ -1296,6 +1308,7 @@ def need_kill(vm_uuid, storage_paths, is_file_system):
 
 class HaPlugin(kvmagent.KvmAgent):
     SCAN_HOST_PATH = "/ha/scanhost"
+    SYNC_HA_VM_LIST_PATH = "/ha/sync/vm/list"
     SANLOCK_SCAN_HOST_PATH = "/sanlock/scanhost"
     CEPH_HOST_HEARTBEAT_CHECK_PATH = "/ceph/host/heartbeat/check"
     SETUP_SELF_FENCER_PATH = "/ha/selffencer/setup"
@@ -1882,6 +1895,17 @@ class HaPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    def sync_ha_vm_list(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentRsp()
+
+        logger.info('The VMs with HA enabled on this host are: %s' % (cmd.vmUuids))
+        global ha_vm_list, fence_all_vms
+        ha_vm_list[:] = list(cmd.vmUuids)
+        fence_all_vms = False
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
     def file_system_check_vmstate(self, req):
         rsp = CheckFileSystemVmStateRsp()
         rsp.result = {}
@@ -2042,6 +2066,7 @@ class HaPlugin(kvmagent.KvmAgent):
     def start(self):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.SCAN_HOST_PATH, self.scan_host)
+        http_server.register_async_uri(self.SYNC_HA_VM_LIST_PATH, self.sync_ha_vm_list)
         http_server.register_async_uri(self.SANLOCK_SCAN_HOST_PATH, self.sanlock_scan_host)
         http_server.register_async_uri(self.CEPH_HOST_HEARTBEAT_CHECK_PATH, self.ceph_host_heartbeat_check)
         http_server.register_async_uri(self.SETUP_SELF_FENCER_PATH, self.setup_self_fencer)
