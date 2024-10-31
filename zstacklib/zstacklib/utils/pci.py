@@ -1,3 +1,5 @@
+import os
+
 from zstacklib.utils import bash
 
 def fmt_pci_address(pci_device):
@@ -91,3 +93,58 @@ def _parse_lspci(o):
         else:
             current[key] = value
     return results
+
+NAIDIA_SRIOV_MANAGE_PATH = '/usr/lib/nvidia/sriov-manage'
+
+def is_nvidia_pci_device(pci_info):
+    # type: (dict) -> bool
+    # ex:
+    #   is_nvidia_pci_device(lspci_s('0000:00:04.0'))
+    #   is_nvidia_pci_device(lspci()[0])
+    return  pci_info.has_key('Vendor') and 'NVIDIA' in pci_info['Vendor'] or \
+            pci_info.has_key('Device') and 'NVIDIA' in pci_info['Device'] or \
+            pci_info.has_key('SVendor') and 'NVIDIA' in pci_info['SVendor']
+
+def disable_nvidia_vgpu_by_sriov_manage(pci_info):
+    # type: (dict) -> str | None
+    # return: error message
+    # ex:
+    #   disable_nvidia_vgpu_by_sriov_manage(lspci_s('0000:00:04.0'))
+    #   disable_nvidia_vgpu_by_sriov_manage(lspci()[0])
+    return disable_nvidia_vgpu_address_by_sriov_manager(pci_info['Slot'])
+
+def disable_nvidia_vgpu_address_by_sriov_manager(address):
+    # type: (str) -> str | None
+    # return: error message
+    # ex:
+    #   disable_nvidia_vgpu_address_by_sriov_manager('0000:00:04.0')
+    sriov_manage_exists = os.path.exists(NAIDIA_SRIOV_MANAGE_PATH)
+    if not sriov_manage_exists:
+        return None
+
+    r, _, stderr = bash.bash_roe("/usr/lib/nvidia/sriov-manage -d %s" % address)
+    if r != 0:
+        return 'Failed to disable vgpu device %s by sriov-manage: %s' % (address, stderr)
+    return None
+
+def enable_nvidia_vgpu_by_sriov_manage(pci_info):
+    # type: (dict) -> str | None
+    # return: error message
+    # ex:
+    #   enable_nvidia_vgpu_by_sriov_manage(lspci_s('0000:00:04.0'))
+    #   enable_nvidia_vgpu_by_sriov_manage(lspci()[0])
+    return enable_nvidia_vgpu_address_by_sriov_manage(pci_info['Slot'])
+
+def enable_nvidia_vgpu_address_by_sriov_manage(address):
+    # type: (str) -> str | None
+    # return: error message
+    # ex:
+    #   enable_nvidia_vgpu_address_by_sriov_manage('0000:00:04.0')
+    sriov_manage_exists = os.path.exists(NAIDIA_SRIOV_MANAGE_PATH)
+    if not sriov_manage_exists:
+        return 'Failed to enable vgpu device %s: sriov-manage not found' % address
+
+    r, _, stderr = bash.bash_roe("/usr/lib/nvidia/sriov-manage -e %s" % address)
+    if r != 0:
+        return 'Failed to enable vgpu device %s by sriov-manage: %s' % (address, stderr)
+    return None
