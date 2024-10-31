@@ -456,10 +456,10 @@ class NetworkPlugin(kvmagent.KvmAgent):
     def _enable_bridge_igmp_snooping(self, bridgeName, igmpVersion, mldVersion):
         shell.call("echo 1 >  /sys/class/net/%s/bridge/multicast_querier" % bridgeName, False)
         shell.call("echo 1 >  /sys/class/net/%s/bridge/multicast_snooping" % bridgeName, False)
-        if igmpVersion != 0:
-            shell.call("echo %d >  /sys/class/net/%s/bridge/multicast_igmp_version" % (igmpVersion, bridgeName), False)
-        if mldVersion != 0:
-            shell.call("echo %d >  /sys/class/net/%s/bridge/multicast_mld_version" % (mldVersion, bridgeName), False)
+        #if igmpVersion != 0:
+        #    shell.call("echo %d >  /sys/class/net/%s/bridge/multicast_igmp_version" % (igmpVersion, bridgeName), False)
+        #if mldVersion != 0:
+        #    shell.call("echo %d >  /sys/class/net/%s/bridge/multicast_mld_version" % (mldVersion, bridgeName), False)
 
     def _configure_isolated(self, vlan_interface):
         isolated_br = "isolated_%s" % vlan_interface
@@ -1064,12 +1064,14 @@ configure lldp status rx-only \n
             mtu = oldMtu
 
         try:
+            igmpVersion = getattr(cmd, 'igmpVersion', 0)
+            mldVersion = getattr(cmd, 'mldVersion', 0)
             linux.create_bridge(cmd.bridgeName, cmd.physicalInterfaceName)
             linux.set_device_uuid_alias(cmd.physicalInterfaceName, cmd.l2NetworkUuid)
             self._configure_bridge(cmd.disableIptables)
             self._configure_bridge_mtu(cmd.bridgeName, cmd.physicalInterfaceName, mtu)
             self._configure_bridge_learning(cmd.bridgeName, cmd.physicalInterfaceName)
-            self._enable_bridge_igmp_snooping(cmd.bridgeName, cmd.igmpVersion, cmd.mldVersion)
+            self._enable_bridge_igmp_snooping(cmd.bridgeName, igmpVersion, mldVersion)
             linux.set_bridge_alias_using_phy_nic_name(cmd.bridgeName, cmd.physicalInterfaceName)
             logger.debug(
                 'successfully realize bridge[%s] from device[%s]' % (cmd.bridgeName, cmd.physicalInterfaceName))
@@ -1105,11 +1107,13 @@ configure lldp status rx-only \n
         pvlan = getattr(cmd, 'pvlan', None)
         isolated = getattr(cmd, 'isolated', False)
         try:
+            igmpVersion = getattr(cmd, 'igmpVersion', 0)
+            mldVersion = getattr(cmd, 'mldVersion', 0)
             linux.create_vlan_bridge(cmd.bridgeName, cmd.physicalInterfaceName, cmd.vlan)
             self._configure_bridge(cmd.disableIptables)
             self._configure_bridge_mtu(cmd.bridgeName, vlanInterfName, mtu)
             self._configure_bridge_learning(cmd.bridgeName, vlanInterfName)
-            self._enable_bridge_igmp_snooping(cmd.bridgeName, cmd.igmpVersion, cmd.mldVersion)
+            self._enable_bridge_igmp_snooping(cmd.bridgeName, igmpVersion, mldVersion)
             linux.set_bridge_alias_using_phy_nic_name(cmd.bridgeName, cmd.physicalInterfaceName)
             linux.set_device_uuid_alias('%s.%s' % (cmd.physicalInterfaceName, cmd.vlan), cmd.l2NetworkUuid)
             # if pvlan:
@@ -1288,6 +1292,9 @@ configure lldp status rx-only \n
         if oldMtu > cmd.mtu:
             mtu = oldMtu
 
+        igmpVersion = getattr(cmd, 'igmpVersion', 0)
+        mldVersion = getattr(cmd, 'mldVersion', 0)
+
         if cmd.dstport == None:
             cmd.dstport = VXLAN_DEFAULT_PORT
         linux.create_vxlan_interface(cmd.vni, cmd.vtepIp, cmd.dstport)
@@ -1295,7 +1302,7 @@ configure lldp status rx-only \n
         linux.create_vxlan_bridge(interf, cmd.bridgeName, cmd.peers)
         linux.set_device_uuid_alias(interf, cmd.l2NetworkUuid)
         self._configure_bridge_mtu(cmd.bridgeName, interf, mtu)
-        self._enable_bridge_igmp_snooping(cmd.bridgeName, cmd.igmpVersion, cmd.mldVersion)
+        self._enable_bridge_igmp_snooping(cmd.bridgeName, igmpVersion, mldVersion)
 
     @lock.lock('bridge')
     @kvmagent.replyerror
