@@ -2663,6 +2663,16 @@ done
                     to.type = "Host_Bridge"
                 elif 'PCI bridge' in to.type:
                     to.type = "PCI_Bridge"
+                elif 'Performance counters' in to.type:
+                    to.type = "Performance_Counters"
+                elif 'Signal processing controller' in to.type:
+                    to.type = "Signal_Processing_Controller"
+                elif 'Communication controller' in to.type:
+                    to.type = "Communication_Controller"
+                elif 'PIC' in to.type:
+                    to.type = "PIC"
+                elif 'SMBus' in to.type:
+                    to.type = "SMBus"
                 else:
                     to.type = "Generic"
 
