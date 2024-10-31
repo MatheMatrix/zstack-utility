@@ -2246,16 +2246,9 @@ done
                     ifcfg.delete_ip_config(item.ip)
             else:
                 to_create_ips = [item for item in iface.ips if item.ip not in [obj.ip for obj in ip_list]]
-                to_delete_ips = [item for item in ip_list if item.ip not in [obj.ip for obj in iface.ips]]
-
-                if to_create_ips:
-                    for item in to_create_ips:
-                        shell.call('ip addr add %s/%s dev %s' % (item.ip, item.netmask, target_dev))
-                        ifcfg.add_ip_config(item.ip, item.netmask, item.gateway, item.version, item.is_default)
-                if to_delete_ips:
-                    for item in to_delete_ips:
-                        shell.call('ip addr del %s/%s dev %s || true' % (item.ip, item.netmask, target_dev))
-                        ifcfg.delete_ip_config(item.ip)
+                for item in to_create_ips:
+                    shell.call('ip addr add %s/%s dev %s' % (item.ip, item.netmask, target_dev))
+                    ifcfg.add_ip_config(item.ip, item.netmask, item.gateway, item.version, item.is_default)
 
             ifcfg.restore_config()
 
