@@ -1776,6 +1776,7 @@ LoadPlugin interface
 LoadPlugin memory
 LoadPlugin network
 LoadPlugin virt
+LoadPlugin tcpconns
 
 <Plugin aggregation>
 	<Aggregation>
@@ -1836,6 +1837,13 @@ LoadPlugin virt
 
 <Plugin network>
 	Server "localhost" "25826"
+</Plugin>
+
+<Plugin "tcpconns">
+    ListeningPorts false
+
+    # Locally listening kvmagent port:
+    LocalPort "7070"
 </Plugin>
 
 '''
