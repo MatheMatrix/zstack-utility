@@ -1,5 +1,4 @@
 from kvmagent import kvmagent
-from kvmagent.plugins import vm_plugin
 from zstacklib.utils import bash
 from zstacklib.utils import jsonobject
 from zstacklib.utils import http
@@ -25,11 +24,11 @@ import json
 from enum import Enum
 from datetime import datetime, timedelta
 from distutils.version import LooseVersion
-from abc import ABC, abstractmethod
 import functools
 import pprint
 import inspect
 import random
+from zstacklib.utils import singleton
 from zstacklib.utils import iproute
 import zstacklib.utils.ip as ipUtils
 
@@ -108,6 +107,55 @@ class ReportSelfFencerCmd(object):
         self.reason = None
         self.fencerFailure = None
 
+class AbstractHaFencer(object):
+    def __init__(self, interval, max_attempts, ps_uuid, run_fencer_list):
+        self.interval = interval
+        self.max_attempts = max_attempts
+        self.ps_uuid = ps_uuid
+        self.run_fencer_list = run_fencer_list
+        self.failure = 0
+
+    def reset_failure_count(self):
+        self.failure = 0
+
+    def write_fencer_heartbeat(self):
+        pass
+
+    def read_fencer_heartbeat(self, host_uuid, ps_uuid):
+        pass
+
+    def exec_fencer(self):
+        pass
+
+    def is_fencer_private_args_change(self, cmd):
+        pass
+
+    def update_ha_fencer(self, cmd, ha_fencer):
+        pass
+
+class AbstractStorageFencer(AbstractHaFencer):
+    def __init__(self, interval, max_attempts, ps_uuid, run_fencer_list):
+        super(AbstractStorageFencer, self).__init__(interval, max_attempts, ps_uuid, run_fencer_list)
+        self.fencer_triggered_callback = None  # type: callable[list[str], str]
+        self.report_storage_status_callback = None  # type: callable
+
+    def get_ha_fencer_name(self):
+        pass
+
+    def write_fencer_heartbeat(self):
+        pass
+
+    def read_fencer_heartbeat(self, host_uuid, ps_uuid):
+        pass
+
+    def exec_fencer(self):
+        pass
+
+    def is_fencer_private_args_change(self, cmd):
+        pass
+
+    def update_ha_fencer(self, cmd, ha_fencer):
+        pass
 
 class AbstractHaFencer(object):
     _ha_fencers = {}
@@ -1040,7 +1088,7 @@ class IscsiHeartbeatController(AbstractStorageFencer):
 
     @bash.in_bash
     def _fill_heartbeat_file(self, vm_uuids):
-        # type: (list[str]) -> bool
+        # type: (list[str])
         offset = self.host_id * self.heartbeat_required_space
         tmp_file = linux.write_to_temp_file(jsonobject.dumps(IscsiNodeStatus(vm_uuids)) + EOF)
 
@@ -1446,7 +1494,7 @@ def kill_progresses_using_mount_path(mount_path):
     o(False)
     logger.warn('kill the progresses with mount path: %s, killed process: %s' % (mount_path, o.stdout))
 
-
+# TODO: fix this
 def get_block_vm_root_volume_path(vm_uuid, root_volume_path):
     vm = vm_plugin.get_vm_by_uuid(vm_uuid)
     sysinfo = vm.domain_xmlobject.sysinfo
@@ -2156,56 +2204,23 @@ class HaPlugin(kvmagent.KvmAgent):
     def setup_self_fencer(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
-        @thread.AsyncThread
-        def heartbeat_file_fencer(mount_path, ps_uuid, mounted_by_zstack, url, options):
-            file_system_controller = FileSystemHeartbeatController(cmd.interval, cmd.maxAttempts, ps_uuid, None)
-            file_system_controller.mount_path = mount_path
-            file_system_controller.ps_uuid = ps_uuid
-            file_system_controller.mounted_by_zstack = mounted_by_zstack
-            file_system_controller.url = url
-            file_system_controller.options = options
-            file_system_controller.host_uuid = cmd.hostUuid
-            file_system_controller.interval = cmd.interval
-            file_system_controller.max_attempts = cmd.maxAttempts
-            file_system_controller.strategy = cmd.strategy
-            file_system_controller.storage_check_timeout = cmd.storageCheckerTimeout
-            file_system_controller.fencer_triggered_callback = self.report_self_fencer_triggered
-            file_system_controller.try_remount_fs_callback = self.try_remount_fs
-            fencer_list = []
-            if cmd.fencers is not None:
-                fencer_list = cmd.fencers
-
-            if host_storage_name in fencer_list:
-                fencer_list.append(file_system_controller.get_ha_fencer_name())
-
-            file_system_controller.prepare_heartbeat_dir()
-            heartbeat_file_path = file_system_controller.get_heartbeat_file_path()
-
-            created_time = time.time()
-            self.setup_fencer(ps_uuid, created_time)
-            file_system_controller.created_time = created_time
-
-            ha_fencer = AbstractHaFencer(cmd.interval, cmd.maxAttempts, cmd.vgUuid, fencer_list)
-            update_fencer = True
-            fencer_init = {}
-            fencer_init[file_system_controller.get_ha_fencer_name()] = file_system_controller
-            logger.debug("file system start run fencer list :%s" % ",".join(fencer_list))
-            try:
-                while self.run_fencer(ps_uuid, created_time):
-                    time.sleep(file_system_controller.interval)
-                    ha_fencer.exec_fencer_list(fencer_init, update_fencer)
-                    update_fencer = False
-                logger.debug('stop heartbeat[%s] for filesystem self-fencer' % heartbeat_file_path)
-
-            except:
-                content = traceback.format_exc()
-                logger.warn(content)
-
         for mount_path, uuid, mounted_by_zstack, url, options in zip(cmd.mountPaths, cmd.uuids, cmd.mountedByZStack, cmd.urls, cmd.mountOptions):
             if not linux.timeout_isdir(mount_path):
                 raise Exception('the mount path[%s] is not a directory' % mount_path)
 
-            heartbeat_file_fencer(mount_path, uuid, mounted_by_zstack, url, options)
+            # file_system_controller = FileSystemHeartbeatController(cmd.interval, cmd.maxAttempts, ps_uuid, None)
+            # file_system_controller.fencer_triggered_callback = self.report_self_fencer_triggered
+            # file_system_controller.try_remount_fs_callback = self.try_remount_fs
+            mount_point = FileSyetemMountPoint(url, mount_path, mounted_by_zstack, options)
+            fencer = FileSystemFencer(uuid,
+                                       cmd.maxAttempts,
+                                       cmd.interval,
+                                       cmd.storageCheckerTimeout,
+                                       cmd.strategy,
+                                       cmd.hostUuid,
+                                       mount_point)
+            FencerManager.register_fencer(fencer)
+            FencerManager.start_fencer(fencer)
 
         return jsonobject.dumps(AgentRsp())
 
@@ -2583,16 +2598,12 @@ class FencerResult(Enum):
     FAILURE = 3
 
 
+class FencerPosition(Enum):
+    BEFORE = 1
+    AFTER = 2
+
+@singleton.singleton
 class FencerManager:
-
-    __instance = None
-
-    @staticmethod
-    def get_instance():
-        if FencerManager.__instance is None:
-            FencerManager.__instance = FencerManager()
-        return FencerManager.__instance
-
     def __init__(self):
         self.fencers = {}
 
@@ -2615,37 +2626,27 @@ class FencerManager:
         return self.fencers[name].get_status()
 
 
-class Fencer(ABC):
-    def __init__(self, name, max_failures, interval, timeout):
+class Fencer(object):
+    def __init__(self, name, max_failures, interval, timeout, strategy):
         self.name = name
         self.max_failures = max_failures
         self.interval = interval
         self.timeout = timeout
         self.failure_count = 0
 
+        # keep legacy ha strategy for compatibility
+        self.strategy = strategy
+
         self.stop_flag = False
 
-    @abstractmethod
-    def check(self) -> FencerResult:
-        """
-        执行Fencer操作并返回结果。
-        """
+    def check(self):
         pass
 
-    @abstractmethod
     def get_status(self):
-        """
-        获取Fencer的状态。
-        """
         pass
 
-    @abstractmethod
     def filter_need_be_fenced_vm(self, uuid):
-        """
-        过滤需要被fence的虚拟机
-        """
         pass
-        
 
     def handle_fencer_failure(self):
         # find all running vm uuid set
@@ -2663,6 +2664,7 @@ class Fencer(ABC):
         reason = "because we lost connection to the storage, failed to read the heartbeat file %s times" % max_failures
         kill_vm_use_pid(vm_pids_dict, reason)
 
+    @thread.AsyncThread
     def start(self):
         while True:
             # stop run fencer but not expected without api changes
@@ -2697,66 +2699,80 @@ class Fencer(ABC):
     def is_failed(self):
         return self.failure_count >= self.max_failures
 
+fencer_manager = FencerManager()
 
 class StorageFencer(Fencer):
-    def __init__(self, name, max_failures, interval, timeout):
-        super().__init__(name, max_failures, interval, timeout)
+    def __init__(self, name, max_failures, interval, timeout, strategy):
+        super().__init__(name, max_failures, interval, timeout, strategy)
 
-    @abstractmethod
-    def do_check(self) -> bool:
+    def retry_to_recover_storage(self):
         """
-        执行具体的存储心跳探测。
+        retry to recover storage connection
         """
         pass
 
-    def check(self) -> FencerResult:
+    def do_check(self):
+        """
+        how to check connection to storage
+        """
+        pass
+
+    def check(self):
         try:
             if self.do_check():
                 return FencerResult.SUCCESS
 
             return FencerResult.FAILURE
         except Exception as e:
-            print(f"Fencer {self.name} check failed: {e}")
+            logger.warn("Fencer %s check failed: %s" % (self.name, e))
             return FencerResult.FAILURE
 
+    def recover(self):
+        return self.retry_to_recover_storage()
+
+
+class FileSyetemMountPoint:
+    def __init__(self, url, mount_path, mounted_by_zstack, options):
+        self.url = url
+        self.mount_path = mount_path
+        self.mounted_by_zstack = mounted_by_zstack
+        self.options = options
 
 class FileSystemFencer(StorageFencer):
-    def __init__(self, name, max_failures, interval, timeout, mount_point, host_uuid):
-        super().__init__(name, max_failures, interval, timeout)
+    def __init__(self, name, max_failures, interval, timeout, strategy, host_uuid, mount_point):
+        super().__init__(name, max_failures, interval, timeout, strategy)
         self.mount_point = mount_point
 
-        self.heartbeat_file_dir = os.path.join(self.mount_point, "zs-heartbeat")
+        self.heartbeat_file_dir = os.path.join(self.mount_point.mount_path, 'heartbeat')
         self.heartbeat_file_name = 'heartbeat-file-kvm-host-%s.hb' % host_uuid
         self.heartbeat_file_path = os.path.join(self.heartbeat_file_dir, self.heartbeat_file_name)
 
-    def do_file_system_check(self):
-        touch = shell.ShellCmd('timeout %s touch %s' % (self.storage_check_timeout, self.get_heartbeat_file_path()))
+    def do_check(self):
+        touch = shell.ShellCmd('timeout %s touch %s' 
+                                % (self.timeout, self.heartbeat_file_path))
         touch(False)
         if touch.return_code != 0:
-            logger.warn('unable to touch %s, %s %s' % (self.get_heartbeat_file_path(), touch.stderr, touch.stdout))
+            logger.warn('unable to touch %s, %s %s'
+                          % (self.heartbeat_file_path, touch.stderr, touch.stdout))
             return False
 
         vm_uuids = find_ps_running_vm(self.ps_uuid)
         content = {"heartbeat_time": time.time(),
-                   "vm_uuids": None if len(vm_uuids) == 0 else ','.join(str(x) for x in vm_uuids)}
+                    "vm_uuids": None if len(vm_uuids) == 0 else ','.join(str(x) for x in vm_uuids)}
 
         with open(self.heartbeat_file_path, 'w') as f:
             f.write(json.dumps(content))
         return True
 
-    def do_check(self):
-        try:
-            return self.do_file_system_check()
-        except Exception as e:
-            logger.warn('failed to check the file system heartbeat, %s' % e)
+    def retry_to_recover_storage(self):
+        if not self.mount_point.mounted_by_zstack:
+            logger.debug("skip to remount the file system[%s] because it is not mounted by zstack" % self.mount_point.mount_path)
             return False
 
+        logger.debug("remount the file system[%s] because it is mounted by zstack" % self.mount_point.mount_path)
+
     def get_status(self):
-        try:
-            return self.do_check()
-        except Exception as e:
-            logger.warn('failed to get the status of the file system, %s' % e)
-            return False
+        return self.do_check()
 
 
 class SharedBlockStorageFencer(Fencer):
@@ -2766,9 +2782,6 @@ class SharedBlockStorageFencer(Fencer):
         self.cmd = cmd
 
     def do_check(self):
-        """
-        执行共享块存储心跳探测。
-        """
         try:
             return self.do_sharedblock_check()
         except Exception as e:
@@ -2836,9 +2849,6 @@ class CephFencer(Fencer):
         return
 
     def do_check(self):
-        """
-        执行Ceph
-        """
         try:
             return self.write_fencer_heartbeat()
         except Exception as e:
