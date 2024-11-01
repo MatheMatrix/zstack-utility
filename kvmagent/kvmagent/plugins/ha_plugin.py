@@ -2665,14 +2665,13 @@ class Fencer(ABC):
 
     def start(self):
         while True:
-            # 检查是否需要停止
+            # stop run fencer but not expected without api changes
             if self.stop_flag:
                 break
 
-            # 执行心跳探测
             result = self.check()
 
-            # 根据结果采取不同的策略
+            # reset failure count to avoid unstable status
             if result == FencerResult.SUCCESS:
                 self.failure_count = 0
             elif result == FencerResult.FAILURE:
@@ -2681,13 +2680,12 @@ class Fencer(ABC):
             logger.debug("fencer %s heartbeat of on storage failure(%d/%d)" %
                     (self.name, self.failure_count, self.max_failures))
 
-            # 检查是否超过失败上限
+            # fence the vm if the fencer failed
             if self.is_failed():
                 logger.error("Fencer %s failed %s times, execute failure strategy" % self.name, self.failure_count)
                 self.handle_fencer_failure()
                 self.failure_count = 0
 
-            # 等待执行间隔
             time.sleep(self.interval)
 
     def stop(self):
@@ -2732,16 +2730,21 @@ class FileSystemFencer(StorageFencer):
         self.heartbeat_file_path = os.path.join(self.heartbeat_file_dir, self.heartbeat_file_name)
 
     def do_file_system_check(self):
-        if self.update_heartbeat_file():
-            return True
+        touch = shell.ShellCmd('timeout %s touch %s' % (self.storage_check_timeout, self.get_heartbeat_file_path()))
+        touch(False)
+        if touch.return_code != 0:
+            logger.warn('unable to touch %s, %s %s' % (self.get_heartbeat_file_path(), touch.stderr, touch.stdout))
+            return False
 
-        logger.warn('failed to touch the heartbeat file[%s]' % (self.heartbeat_file_path, self.max_attempts))
-        return False
+        vm_uuids = find_ps_running_vm(self.ps_uuid)
+        content = {"heartbeat_time": time.time(),
+                   "vm_uuids": None if len(vm_uuids) == 0 else ','.join(str(x) for x in vm_uuids)}
+
+        with open(self.heartbeat_file_path, 'w') as f:
+            f.write(json.dumps(content))
+        return True
 
     def do_check(self):
-        """
-        执行文件系统心跳探测。
-        """
         try:
             return self.do_file_system_check()
         except Exception as e:
@@ -2754,28 +2757,6 @@ class FileSystemFencer(StorageFencer):
         except Exception as e:
             logger.warn('failed to get the status of the file system, %s' % e)
             return False
-
-    def touch_heartbeat_file(self):
-        touch = shell.ShellCmd('timeout %s touch %s' % (self.storage_check_timeout, self.get_heartbeat_file_path()))
-        touch(False)
-        if touch.return_code != 0:
-            logger.warn('unable to touch %s, %s %s' % (self.get_heartbeat_file_path(), touch.stderr, touch.stdout))
-        return touch.return_code == 0
-
-    def update_heartbeat_file(self):
-        if self.touch_heartbeat_file() is False:
-            return False
-        self.write_vm_uuid()
-        return True
-
-    @thread.AsyncThread
-    def write_vm_uuid(self):
-        vm_uuids = find_ps_running_vm(self.ps_uuid)
-        content = {"heartbeat_time": time.time(),
-                   "vm_uuids": None if len(vm_uuids) == 0 else ','.join(str(x) for x in vm_uuids)}
-
-        with open(self.heartbeat_file_path, 'w') as f:
-            f.write(json.dumps(content))
 
 
 class SharedBlockStorageFencer(Fencer):
@@ -2833,17 +2814,20 @@ class SharedBlockStorageFencer(Fencer):
 
 
 class CephFencer(Fencer):
-    def __init__(self, name, max_failures, interval, timeout, cluster_name, cmd):
+    def __init__(self, name, max_failures, interval, timeout, pool_name, cmd):
         super().__init__(name, max_failures, interval, timeout)
-        self.cluster_name = cluster_name
+        self.pool_name = pool_name
         self.cmd = cmd
         self.heartbeat_counter = 0
 
         self.heartbeat_object_name = ceph.get_heartbeat_object_name(cmd.uuid, cmd.hostUuid)
         self.ioctx = ceph.get_ioctx()
 
-        self.fencer_name = "ceph-fencer-%s" % cluster_name
-    
+        self.fencer_name = "ceph-fencer-%s" % pool_name
+
+    def get_ha_fencer_name(self):
+        return self.fencer_name
+
     def __exit__(self):
         if self.ioctx:
             # TODO: close ioctx
@@ -2856,37 +2840,36 @@ class CephFencer(Fencer):
         执行Ceph
         """
         try:
-            return self.do_ceph_check()
+            return self.write_fencer_heartbeat()
         except Exception as e:
             logger.warn('failed to check the ceph storage heartbeat, %s' % e)
             return False
-    
-    def do_ceph_check(self):
-        return self.write_fencer_heartbeat()
-
-    def update_heartbeat_timestamp(self, ioctx, heartbeat_object_name, heartbeat_count, write_timeout=5):
-        vm_in_ps_uuid_list = find_ps_running_vm(self.pool_name)
-        content = {"heartbeat_count": str(heartbeat_count), "vm_uuids": None if len(vm_in_ps_uuid_list) == 0 else ','.join(str(x) for x in vm_in_ps_uuid_list)}
-        completion = ioctx.aio_write_full(heartbeat_object_name, str(content))
-
-        waited_time = 0
-        while not completion.is_complete():
-            time.sleep(1)
-            waited_time += 1
-            if waited_time == write_timeout:
-                logger.debug("write operation to %s not finished util timeout, report update failure" % heartbeat_object_name)
-                return False, waited_time
-
-        del completion
-        return True, waited_time
-
-    def get_ha_fencer_name(self):
-        return 
 
     def write_fencer_heartbeat(self):
+        """
+        Increase the heartbeat counter and write the heartbeat content to the ceph storage.
+
+        :return: True if the operation is successful, False otherwise.
+        """
+
         if self.heartbeat_counter > 100000:
             self.heartbeat_counter = 0
         else:
             self.heartbeat_counter += 1
 
-        return self.update_heartbeat_timestamp(self.ioctx, self.heartbeat_object_name, self.heartbeat_counter, self.timeout)
+        vm_in_ps_uuid_list = find_ps_running_vm(self.pool_name)
+        content = {"heartbeat_count": str(self.heartbeat_counter), "vm_uuids": None if len(vm_in_ps_uuid_list) == 0 else ','.join(str(x) for x in vm_in_ps_uuid_list)}
+        completion = self.ioctx.aio_write_full(self.heartbeat_object_name, str(content))
+
+        waited_time = 0
+        while not completion.is_complete():
+            time.sleep(1)
+            waited_time += 1
+            if waited_time == self.timeout:
+                logger.debug("write operation to %s not finished util fencer's timeout[%d], report update failure" % (self.heartbeat_object_name, self.timeout))
+                return False, waited_time
+
+        # del completion to avoid threading deadlock ZSTAC-57892
+        # refer: https://github.com/python/cpython/issues/88588
+        del completion
+        return True, waited_time
