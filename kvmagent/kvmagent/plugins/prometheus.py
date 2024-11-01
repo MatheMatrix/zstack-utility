@@ -120,6 +120,10 @@ def remove_cpu_status_abnormal(unique_id):
     remove_abnormal_status('cpu', unique_id)
 
 
+def remove_physical_volume_state_abnormal(unique_id):
+    remove_abnormal_status('physical_volume', unique_id)
+
+
 def is_memory_status_abnormal(unique_id):
     return is_abnormal_status('memory', unique_id)
 
@@ -197,6 +201,10 @@ def send_physical_fan_status_alarm_to_mn(fan_name, status):
 def send_physical_disk_status_alarm_to_mn(serial_number, slot_number, enclosure_device_id, drive_state):
     send_alarm_to_mn('disk', serial_number, serial_number=serial_number, slot_number=slot_number,
                      enclosure_device_id=enclosure_device_id, drive_state=drive_state)
+
+@thread.AsyncThread
+def send_physical_volume_status_alarm_to_mn(disk_name, pv_identities, state, vg):
+    send_alarm_to_mn('physical_volume', disk_name, name=disk_name, diskUuids=pv_identities, state=state, volumeGroup=vg)
 
 
 @thread.AsyncThread
@@ -1215,6 +1223,9 @@ def collect_vm_pvpanic_enable_in_domain_xml():
 
 collect_node_disk_wwid_last_time = None
 collect_node_disk_wwid_last_result = None
+sblk_pv_vg = {}
+sblk_pv_identities = {}
+sblk_pv_state_fail_last_report_time = {}
 
 
 def collect_node_disk_wwid():
@@ -1239,6 +1250,8 @@ def collect_node_disk_wwid():
 
     global collect_node_disk_wwid_last_time
     global collect_node_disk_wwid_last_result
+    global sblk_pv_vg
+    global sblk_pv_identities
 
     # NOTE(weiw): some storage can not afford frequent TUR. ref: ZSTAC-23416
     if collect_node_disk_wwid_last_time is None or (time.time() - collect_node_disk_wwid_last_time) >= 300:
@@ -1253,11 +1266,13 @@ def collect_node_disk_wwid():
 
     collect_node_disk_wwid_last_result = metrics.values()
 
-    pvs = bash_o("pvs --nolocking -t --noheading -o pv_name").strip().splitlines()
+    o = bash_o("pvs --nolocking -t --noheading -o pv_name,vg_name").strip().splitlines()
     context = pyudev.Context()
 
-    for pv in pvs:
-        pv = pv.strip()
+    sblk_pv_vg = {}
+    sblk_pv_identities = {}
+    for line in o:
+        pv, vg = line.strip().split()
         dm_uuid = get_device_from_path(context, pv).get("DM_UUID", "")
         multipath_wwid = dm_uuid[6:] if dm_uuid.startswith("mpath-") else None
 
@@ -1268,6 +1283,9 @@ def collect_node_disk_wwid():
                 wwids.append(multipath_wwid)
             if len(wwids) > 0:
                 metrics['node_disk_wwid'].add_metric([disk_name, ";".join([w.strip() for w in wwids])], 1)
+                sblk_pv_identities[disk_name] = ";".join([w.strip() for w in wwids])
+
+            sblk_pv_vg[disk_name] = vg
 
     collect_node_disk_wwid_last_result = metrics.values()
     return collect_node_disk_wwid_last_result
@@ -1672,6 +1690,116 @@ def collect_amd_gpu_status():
     return metrics.values()
 
 
+def collect_disk_stat():
+    global sblk_pv_state_fail_last_report_time
+    class BlockInfo(object):
+        def __init__(self):
+            self.dev_name = None
+            self.state = None
+            self.status = None
+
+        def convert_status_to_int(self):
+            return 1 if self.status == "active" else 0
+
+        def convert_state_to_int(self):
+            return 1 if self.state in ["running", "live"] else 0
+
+    def report_disk_state_abnormal_if_need(b):
+        if b.dev_name not in sblk_pv_vg:
+            return
+        elif b.state in ["running", "live"]:
+            sblk_pv_state_fail_last_report_time[b.dev_name] = None
+            return
+
+        if sblk_pv_state_fail_last_report_time.get(b.dev_name) is not None \
+                and linux.get_current_timestamp() - sblk_pv_state_fail_last_report_time.get(b.dev_name) < 3600:
+            logger.debug("sblk pv %s for vg %s state is %s, skip reporting to mn because it has been reported in the past hour"
+                         % (b.dev_name, sblk_pv_vg.get(b.dev_name), b.state))
+            return
+
+        remove_physical_volume_state_abnormal(b.dev_name)
+        send_physical_volume_status_alarm_to_mn(b.dev_name, sblk_pv_identities.get(b.dev_name), b.state, sblk_pv_vg.get(b.dev_name))
+        sblk_pv_state_fail_last_report_time[b.dev_name] = linux.get_current_timestamp()
+
+
+    class BlockInfoGenerator(object):
+        def __init__(self):
+            self.mpath_generated = False
+            self.dev_multipath_stat = {}  # type: dict[str, BlockInfo]
+
+        def _generate_block_mpath_basic_info(self):
+            # collect multipath dm info, output example:
+            # 0 13107200 multipath 2 0 0 0 3 1 A 0 1 2 8:16 A 0 0 1 E 0 1 2 8:128 A 0 0 1 E 0 1 2 8:224 A 0 0 1
+            # 0 13107200 multipath 2 0 0 0 1 1 A 0 3 0 8:16 A 0 8:128 A 0 8:224 A 0
+            # 0 88080384 multipath 2 0 0 0 2 1 A 0 1 2 259:0 A 0 0 1 E 0 1 2 259:1 F 1 0 1
+            # 0 100663296000 multipath 2 0 0 0 2 1 A 0 2 0 8:224 A 0 8:64 A 0 E 0 2 0 65:144 A 0 65:80 A 0
+            r, o = bash_ro("dmsetup status --target multipath")
+            if r != 0:
+                return
+            for line in o.strip().splitlines():
+                line = line.strip()
+                path_groups = re.findall(r'[ADE] [ 0-9]+(?:\d \d+:\d+ [AF]\s+)+', line)
+                for match in path_groups:
+                    status = match[0]
+                    paths = re.findall(r' \d+:\d+ [AF]', match)
+                    for p in paths:
+                        dev, state = p.strip().split(" ")
+                        blk = BlockInfo()
+                        blk.status = "enabled" if status == 'E' else "active"
+                        blk.state = "failed" if state == 'F' else "running"
+                        self.dev_multipath_stat[dev] = blk
+
+        def generate(self, dev_name):
+            if not self.mpath_generated:
+                self._generate_block_mpath_basic_info()
+                self.mpath_generated = True
+            block = BlockInfo()
+            block.dev_name = dev_name
+            dev = linux.read_file("/sys/block/%s/dev" % block.dev_name).strip()
+            block.status = self.dev_multipath_stat[dev].status if dev in self.dev_multipath_stat else "active"
+            block.state = self.dev_multipath_stat[dev].state if dev in self.dev_multipath_stat else \
+                linux.read_file("/sys/block/%s/device/state" % block.dev_name).strip()
+            report_disk_state_abnormal_if_need(block)
+            return block
+
+
+    metrics = {
+        'disk_device_status': GaugeMetricFamily('disk_device_status', 'disk device status', None, ['disk']),
+        'disk_device_state': GaugeMetricFamily('disk_device_state', 'disk device state', None, ['disk'])
+    }
+
+    def collect_scsi_disk_stat():
+        if not os.path.exists("/sys/class/scsi_disk"):
+            return
+        for disk in os.listdir("/sys/class/scsi_disk"):
+            dev_name = os.listdir("/sys/class/scsi_disk/%s/device/block" % disk)
+            if not dev_name:
+                continue
+
+            dev_name = dev_name[0]
+            block = generator.generate(dev_name)
+            metrics['disk_device_status'].add_metric([block.dev_name], float(block.convert_status_to_int()))
+            metrics['disk_device_state'].add_metric([block.dev_name], float(block.convert_state_to_int()))
+
+    def collect_nvme_disk_stat():
+        if not os.path.exists("/sys/class/nvme"):
+            return
+        for controller in filter(lambda c: os.path.isdir(os.path.join("/sys/class/nvme", c)), os.listdir("/sys/class/nvme")):
+            for device in filter(lambda d: d.startswith("nvme"), os.listdir("/sys/class/nvme/%s" % controller)):
+                wwid_path = os.path.join("/sys/class/nvme", controller, device, "wwid")
+                if not os.path.exists(wwid_path):
+                    continue
+
+                block = generator.generate(device)
+                metrics['disk_device_status'].add_metric([block.dev_name], float(block.convert_status_to_int()))
+                metrics['disk_device_state'].add_metric([block.dev_name], float(block.convert_state_to_int()))
+
+    generator = BlockInfoGenerator()
+    collect_scsi_disk_stat()
+    collect_nvme_disk_stat()
+    return metrics.values()
+
+
 def add_metrics(metric_name, value, labels, metrics):
     if value is None or value == "":
         return
@@ -1744,7 +1872,7 @@ kvmagent.register_prometheus_collector(collect_amd_gpu_status)
 kvmagent.register_prometheus_collector(collect_hy_gpu_status)
 kvmagent.register_prometheus_collector(collect_huawei_gpu_status)
 kvmagent.register_prometheus_collector(collect_tianshu_gpu_status)
-
+kvmagent.register_prometheus_collector(collect_disk_stat)
 
 class SetServiceTypeOnHostNetworkInterfaceRsp(kvmagent.AgentResponse):
     def __init__(self):
