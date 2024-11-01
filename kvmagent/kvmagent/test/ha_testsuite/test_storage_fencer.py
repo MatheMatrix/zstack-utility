@@ -1,10 +1,7 @@
 import unittest
 from kvmagent.plugins import ha_plugin
-import mock
 from mock import patch
 import time
-from zstacklib.utils import shell
-
 
 class DummyFencer(ha_plugin.StorageFencer):
     def __init__(self, name, max_failures, interval, timeout, strategy):
@@ -69,6 +66,7 @@ class TestAbstractFencer(unittest.TestCase):
         self.assertEqual(self.fencer_manager.fencers['fencer1'], self.fencer)
 
         # test fencer no failures
+        self.fencer.checkResult = True
         self.stop_fencer_after_one_loop()
         self.assertFalse(self.fencer.is_failed())
         self.assertFalse(self.fencer.handleFencerFailureCalled)
@@ -83,7 +81,7 @@ class TestAbstractFencer(unittest.TestCase):
         self.fencer.checkResult = True
         self.fencer.checkError = True
         self.stop_fencer_after_one_loop()
-        self.assertFalse(self.fencer.is_failed())
+        self.assertTrue(self.fencer.is_failed())
         self.assertFalse(self.fencer.handleFencerFailureCalled)
 
     def shell_failure_mock(self, is_exception=True, logcmd=True):

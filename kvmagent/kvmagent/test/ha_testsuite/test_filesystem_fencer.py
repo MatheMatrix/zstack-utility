@@ -7,7 +7,7 @@ from mock import patch
 from zstacklib.utils import shell
 from zstacklib.utils import linux
 
-class TestFencerManager(unittest.TestCase):
+class TestFileSystemFencer(unittest.TestCase):
     def setUp(self):
         self.fencer_manager = ha_plugin.fencer_manager
         self.fencer = ha_plugin.FileSystemFencer(
