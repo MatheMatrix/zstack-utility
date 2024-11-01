@@ -74,14 +74,26 @@ class TestAbstractFencer(unittest.TestCase):
         # test fencer with check failure
         self.fencer.checkResult = False
         self.stop_fencer_after_one_loop()
-        self.assertFalse(self.fencer.is_failed())
-        self.assertFalse(self.fencer.handleFencerFailureCalled)
+        self.assertTrue(self.fencer.is_failed())
+        i = 0
+        while i < 2 and self.fencer.handleFencerFailureCalled:
+            if self.fencer.handleFencerFailureCalled:
+                break
+
+            time.sleep(0.5)
+        self.assertTrue(self.fencer.handleFencerFailureCalled)
 
         # test fencer with check exception
         self.fencer.checkResult = True
         self.fencer.checkError = True
         self.stop_fencer_after_one_loop()
         self.assertTrue(self.fencer.is_failed())
+        i = 0
+        while i < 2 and not self.fencer.handleFencerFailureCalled:
+            if not self.fencer.handleFencerFailureCalled:
+                break
+
+            time.sleep(0.5)
         self.assertFalse(self.fencer.handleFencerFailureCalled)
 
     def shell_failure_mock(self, is_exception=True, logcmd=True):
