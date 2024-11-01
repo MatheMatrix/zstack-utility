@@ -34,6 +34,8 @@ def get_fsid(conffile='/etc/ceph/ceph.conf'):
 def is_xsky():
     return os.path.exists("/usr/bin/xms-cli")
 
+def get_ioctx():
+    return None
 
 def is_sandstone():
     return os.path.exists("/opt/sandstone/bin/sds") or os.path.exists("/var/lib/ceph/bin/ceph")
