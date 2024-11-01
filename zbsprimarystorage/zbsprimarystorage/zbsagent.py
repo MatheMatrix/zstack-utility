@@ -101,7 +101,7 @@ class GetCapacityRsp(AgentResponse):
 class GetFactsRsp(AgentResponse):
     def __init__(self):
         super(GetFactsRsp, self).__init__()
-        self.version = None
+        self.mdsExternalAddr = None
 
 
 def replyerror(func):
@@ -135,6 +135,7 @@ def get_snapshot_name(install_path):
 class ZbsAgent(plugin.TaskManager):
     ECHO_PATH = "/zbs/primarystorage/echo"
     PING_PATH = "/zbs/primarystorage/ping"
+    DEPLOY_CLIENT_PATH = "/zbs/primarystorage/client/deploy"
     GET_FACTS_PATH = "/zbs/primarystorage/facts"
     GET_CAPACITY_PATH = "/zbs/primarystorage/capacity"
     COPY_PATH = "/zbs/primarystorage/copy"
@@ -156,6 +157,7 @@ class ZbsAgent(plugin.TaskManager):
         super(ZbsAgent, self).__init__()
         self.http_server.register_sync_uri(self.ECHO_PATH, self.echo)
         self.http_server.register_async_uri(self.PING_PATH, self.ping)
+        self.http_server.register_async_uri(self.DEPLOY_CLIENT_PATH, self.deploy_client)
         self.http_server.register_async_uri(self.GET_FACTS_PATH, self.get_facts)
         self.http_server.register_async_uri(self.GET_CAPACITY_PATH, self.get_capacity)
         self.http_server.register_async_uri(self.COPY_PATH, self.copy)
@@ -182,13 +184,13 @@ class ZbsAgent(plugin.TaskManager):
 
         found = False
         for mds in ret.result:
-            if cmd.mdsAddr in mds.addr:
+            if cmd.mdsExternalAddr in mds.externalAddr:
                 found = True
                 break
 
         if not found:
             rsp.success = False
-            rsp.error = 'mds addr was not found on the server[uuid:%s], not %s anymore.' % (cmd.psUuid, cmd.mdsAddr)
+            rsp.error = 'mds external address[%s] was not found on the server.' % cmd.mdsExternalAddr
             return jsonobject.dumps(rsp)
 
         return jsonobject.dumps(rsp)
@@ -228,8 +230,8 @@ class ZbsAgent(plugin.TaskManager):
         with CopyDaemon(task_spec=cmd):
             o = zbsutils.query_snapshot_info(cmd.logicalPoolName, cmd.lunName)
             ret = jsonobject.loads(o)
-            if not ret.result.hasattr('fileInfo'):
-                raise Exception('failed to found snapshot for lun[%s]' % cmd.lunName)
+            if ret.error.code != 0:
+                raise Exception('failed to query snapshot info for lun[%s], error[%s]' % (cmd.lunName, ret.error.message))
 
             o = zbsutils.copy(snapshot_path, dst_lun_path, True)
             ret = jsonobject.loads(o)
@@ -460,30 +462,39 @@ class ZbsAgent(plugin.TaskManager):
         return jsonobject.dumps(rsp)
 
     @replyerror
+    def deploy_client(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+
+        o = zbsutils.deploy_client(cmd.clientIp, cmd.clientPassword)
+        r = jsonobject.loads(o)
+        if r.error.code != 0:
+            rsp.success = False
+            rsp.error = 'failed to deploy client, error[%s].' % r.error.message
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
     def get_facts(self, req):
+        def get_mds_external_addr(mds_map):
+            for r in mds_map.result:
+                ADDR = r.externalAddr.split(':')[0]
+                cmd = 'ip route | grep -w "proto kernel" | grep -w {{ADDR}} > /dev/null'
+                if bash_r(cmd) == 0:
+                    return r.externalAddr
+
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GetFactsRsp()
-
-        if not os.path.exists(ZBS_CLIENT_CONF):
-            raise Exception('missing directory %s, please check the environment libcbd installation' % ZBS_CLIENT_CONF)
-
-        shell.call('sed -i "s/^mds\.listen\.addr=.*/mds.listen.addr=%s/" %s' % (cmd.mdsListenAddr, ZBS_CLIENT_CONF))
 
         o = zbsutils.query_mds_status_info()
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
             raise Exception('cannot found mds info, error[%s]' % ret.error.message)
 
-        found = False
-        for mds in ret.result:
-            if cmd.mdsAddr in mds.addr:
-                rsp.version = mds.version
-                found = True
-                break
-
-        if not found:
+        rsp.mdsExternalAddr = get_mds_external_addr(ret)
+        if not rsp.mdsExternalAddr:
             rsp.success = False
-            rsp.error = 'mds addr was not found on the server[uuid:%s], not %s anymore.' % (cmd.psUuid, cmd.mdsAddr)
+            rsp.error = 'mds management address[%s] was not found on the server.' % cmd.mdsAddr
             return jsonobject.dumps(rsp)
 
         return jsonobject.dumps(rsp)
