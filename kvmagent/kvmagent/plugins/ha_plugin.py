@@ -1675,68 +1675,12 @@ class HaPlugin(kvmagent.KvmAgent):
         heartbeat_on_iscsi(cmd.uuid, cmd.coveringPaths)
         return jsonobject.dumps(AgentRsp())
 
-
-
     @kvmagent.replyerror
     def cancel_sharedblock_self_fencer(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        self.cancel_fencer(cmd.vgUuid)
-        if len(self.sblk_health_checker.all_vgs) == 0:
-            remove_shareblock_vm_ha_params()
+        FencerManager.stop_fencer(cmd.uuid)
+        FencerManager.unregister_fencer(cmd.uuid)
         return jsonobject.dumps(AgentRsp())
-
-    def do_heartbeat_on_sharedblock(self, cmd):
-
-        @thread.AsyncThread
-        def fire_fencer(failed_vgs):
-            for vg, failure in failed_vgs.items():
-                try:
-                    if _do_fencer_vg(vg, failure):
-                        self.sblk_health_checker.firevg(vg)
-                except Exception as e:
-                    logger.warn("sharedblock fencer for vg %s failed, %s\n%s" % (vg, e, traceback.format_exc()))
-
-        try:
-            global last_multipath_run
-            if self.sblk_health_checker.fail_if_no_path and time.time() - last_multipath_run > 3600:
-                last_multipath_run = time.time()
-                thread.ThreadFacade.run_in_thread(linux.set_fail_if_no_path)
-
-            failed_vgs = self.sblk_health_checker.write_fencer_heartbeat()
-
-            no_fenced_vgs = {}
-            if len(failed_vgs) != 0:
-                logger.warn("sharedblock heartbeat failed on vgs %s" % failed_vgs)
-                for vg in failed_vgs:
-                    self.storage_status.update({vg : self.STORAGE_DISCONNECTED})
-                    if vg not in self.sblk_health_checker.fired_vgs:
-                        no_fenced_vgs[vg] = failed_vgs[vg]
-
-            if len(no_fenced_vgs) != 0:
-                logger.warn("sharedblock fire fencers on vgs %s" % no_fenced_vgs)
-                fire_fencer(no_fenced_vgs)
-
-            recovered_vg = []
-            if len(self.sblk_health_checker.fired_vgs) != 0:
-                for vg in self.sblk_health_checker.fired_vgs:
-                    if not failed_vgs.has_key(vg):
-                        recovered_vg.append(vg)
-
-            if len(recovered_vg) != 0:
-                logger.warn("sharedblock vgs %s recovered" % recovered_vg)
-                for vg in recovered_vg:
-                    self.storage_status.update({vg : self.STORAGE_CONNECTED})
-                    self.sblk_health_checker.fired_vgs.pop(vg)
-
-            if len(self.sblk_health_checker.fired_vgs) != 0:
-                logger.warn(
-                    "sharedblock fencer for vgs %s fired before and not recover yet" % self.sblk_health_checker.fired_vgs)
-
-        except Exception as e:
-            logger.debug(
-                'self-fencer on sharedblock primary storage stopped abnormally[%s], try again soon...' % e)
-            content = traceback.format_exc()
-            logger.warn(content)
 
     def setup_sharedblock_self_fencer_from_json(self, cmd):
         # setup sharedblock agent parameters
@@ -1761,72 +1705,15 @@ class HaPlugin(kvmagent.KvmAgent):
         mon_url = '\;'.join(cmd.monUrls)
         mon_url = mon_url.replace(':', '\\\:')
 
-        created_time = time.time()
-
-        def get_fencer_key(ps_uuid, pool_name):
-            return '%s-%s' % (ps_uuid, pool_name)
-
-        @thread.AsyncThread
-        def heartbeat_on_ceph(ps_uuid, pool_name):
-            ceph_controller = CephHeartbeatController(cmd.interval, cmd.maxAttempts, ps_uuid, None)
-            ceph_controller.pool_name = pool_name
-            ceph_controller.primary_storage_uuid = ps_uuid
-            ceph_controller.max_attempts = cmd.maxAttempts
-            ceph_controller.report_storage_status = False
-            ceph_controller.storage_failure = False
-            ceph_controller.strategy = cmd.strategy
-            ceph_controller.storage_check_timeout = cmd.storageCheckerTimeout
-            ceph_controller.host_uuid = cmd.hostUuid
-            ceph_controller.heartbeat_object_name = ceph.get_heartbeat_object_name(cmd.uuid, cmd.hostUuid)
-            ceph_controller.fencer_triggered_callback = self.report_self_fencer_triggered
-            ceph_controller.report_storage_status_callback = self.report_storage_status
-            fencer_list = []
-            if cmd.fencers is not None:
-                fencer_list = cmd.fencers
-
-            if host_storage_name in fencer_list:
-                fencer_list.append(ceph_controller.get_ha_fencer_name())
-
-            self.setup_fencer(get_fencer_key(ps_uuid, pool_name), created_time)
-
-            ha_fencer = AbstractHaFencer(cmd.interval, cmd.maxAttempts, cmd.vgUuid, fencer_list)
-            update_fencer = True
-            try:
-                conf_path, keyring_path, username = ceph.update_ceph_client_access_conf(ps_uuid, cmd.monUrls, cmd.userKey, cmd.manufacturer, cmd.fsId)
-                logger.debug("config file: %s, pool name: %s" % (conf_path, pool_name))
-                heartbeat_counter = 0
-                additional_conf_dict = {}
-                fencer_init = {}
-                if keyring_path:
-                    additional_conf_dict['keyring'] = keyring_path
-
-                with rados.Rados(conffile=conf_path, conf=additional_conf_dict, name=username) as cluster:
-                    logger.debug("connected to ceph[uuid: %s] cluster" % ceph_controller.primary_storage_uuid)
-                    with cluster.open_ioctx(pool_name) as ioctx:
-                        logger.debug("open ceph[uuid: %s] pool: %s]" % (ceph_controller.primary_storage_uuid, ceph_controller.pool_name))
-                        write_heartbeat_used_time = None
-                        ceph_controller.ioctx = ioctx
-                        fencer_init[ceph_controller.get_ha_fencer_name()] = ceph_controller
-                        logger.debug("ceph start run fencer list :%s" % ",".join(fencer_list))
-                        while self.run_fencer(get_fencer_key(ps_uuid, pool_name), created_time):
-                            if write_heartbeat_used_time:
-                                # wait an interval before next heartbeat
-                                time.sleep(cmd.interval)
-                            # reset variables
-                            write_heartbeat_used_time = 0
-                            ha_fencer.exec_fencer_list(fencer_init, update_fencer)
-                            update_fencer = False
-
-
-                logger.debug('stop self-fencer on pool %s of ceph primary storage' % pool_name)
-            except Exception as e:
-                logger.debug('self-fencer on pool %s ceph primary storage stopped abnormally, %s' % (pool_name, e))
-                content = traceback.format_exc()
-                logger.warn(content)
-                self.report_storage_status([cmd.uuid], self.STORAGE_DISCONNECTED)
-
         for pool_name in cmd.poolNames:
-            heartbeat_on_ceph(cmd.uuid, pool_name)
+            ceph_fencer = CephFencer("%s-%s" % (cmd.uuid, pool_name),
+                                     cmd.maxAttempts,
+                                     cmd.interval,
+                                     cmd.storageCheckerTimeout,
+                                     pool_name,
+                                     cmd)
+            FencerManager.register_fencer(ceph_fencer)
+            FencerManager.start_fencer(ceph_fencer)
 
         return jsonobject.dumps(AgentRsp())
 
