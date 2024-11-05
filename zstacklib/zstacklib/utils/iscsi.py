@@ -17,7 +17,7 @@ def get_device_path_by_wwn(disk_id):
             continue
         link_path = os.path.join('/dev/disk/by-id/', fname)
         wwid = device.get_device_wwid(os.path.basename(os.readlink(link_path)))
-        if id in wwid:
+        if disk_id in wwid:
             return link_path
 
 
