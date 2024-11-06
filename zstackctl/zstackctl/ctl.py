@@ -2403,7 +2403,7 @@ class StopAllCmd(Command):
 
     def run(self, args):
         def stop_mgmt_node():
-            info_and_debug(colored('Stopping ZStack management node, it may take a few minutes...', 'blue'))
+            info_and_debug(colored('Stopping Cloud management node, it may take a few minutes...', 'blue'))
             ctl.internal_run('stop_node')
 
         def stop_ui():
@@ -2412,7 +2412,7 @@ class StopAllCmd(Command):
                 info_and_debug('skip stopping web UI, it is not installed')
                 return
 
-            info_and_debug(colored('Stopping ZStack web UI, it may take a few minutes...', 'blue'))
+            info_and_debug(colored('Stopping Cloud web UI, it may take a few minutes...', 'blue'))
             ctl.internal_run('stop_ui')
 
         stop_ui()
@@ -2432,7 +2432,7 @@ class StartAllCmd(Command):
 
     def run(self, args):
         def start_mgmt_node():
-            info_and_debug(colored('Starting ZStack management node, it may take a few minutes...', 'blue'))
+            info_and_debug(colored('Starting Cloud management node, it may take a few minutes...', 'blue'))
             if args.daemon:
                 ctl.internal_run('start_node', '--daemon')
             else:
@@ -2444,7 +2444,7 @@ class StartAllCmd(Command):
                 info('skip starting web UI, it is not installed')
                 return
 
-            info(colored('Starting ZStack web UI, it may take a few minutes...', 'blue'))
+            info(colored('Starting Cloud web UI, it may take a few minutes...', 'blue'))
             ctl.internal_run('start_ui')
 
         start_mgmt_node()
@@ -2683,7 +2683,7 @@ class StartCmd(Command):
 
             co = ctl.get_env('CATALINA_OPTS')
             if co:
-                info('use CATALINA_OPTS[%s] set in environment zstack environment variables; check out them by "zstack-ctl getenv"' % co)
+                info('use CATALINA_OPTS[%s] set in environment zstack environment variables; check out them by "hci_system-ctl getenv"' % co)
                 catalina_opts.extend(co.split(' '))
 
             def has_opt(prefix):
