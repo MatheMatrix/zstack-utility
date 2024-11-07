@@ -1715,6 +1715,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    @lock.lock('check_vg')
     def check_vg_state(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentRsp()
