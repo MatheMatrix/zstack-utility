@@ -5524,7 +5524,7 @@ class MysqlRestrictConnection(Command):
                 restrict_ips.append(ui_db_host)
 
         if args.restrict:
-            grant_access_cmd = "USE mysql;" + self.delete_privilege("%", args.include_root)
+            grant_access_cmd = "USE mysql;"
 
             for ip in restrict_ips:
                 grant_access_cmd = grant_access_cmd + self.grant_restrict_privilege(db_password, ui_db_password, root_password_, ip, args.include_root)
@@ -5543,6 +5543,8 @@ class MysqlRestrictConnection(Command):
                 zsha2_utils.execute_on_peer('''`mysql -u root -p%s -e "%s %s"` \n echo %s > %s''' % (
                 root_password_, remote_grant_views_access_cmd, grant_access_cmd, restrict_flags, self.file))
 
+            shell('iptables -D INPUT -p tcp --dport %s -j DROP' % db_port)
+            shell('iptables -A INPUT -p tcp --dport %s -j DROP' % db_port)
             info("Successfully set mysql restrict connection")
             return
 
