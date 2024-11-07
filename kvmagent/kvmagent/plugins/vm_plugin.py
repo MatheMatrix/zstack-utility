@@ -5071,13 +5071,16 @@ class Vm(object):
                 hyperv = e(features, "hyperv")
                 e(hyperv, 'relaxed', attrib={'state': 'on'})
                 e(hyperv, 'vapic', attrib={'state': 'on'})
-                if is_hv_freq_supported(): e(hyperv, 'frequencies', attrib={'state': 'on'})
-                if is_hv_synic_supported() and cmd.hypervClock:
-                    e(hyperv, 'vpindex', attrib={'state': 'on'})
-                    # Requires: hv-vpindex
-                    e(hyperv, 'synic', attrib={'state': 'on'})
-                    # Requires: hv-vpindex, hv-synic, hv-time
-                    e(hyperv, 'stimer', attrib={'state': 'on'})
+                vendor_id, model_name = linux.get_cpu_model()
+                if not ("hygon" in model_name.lower() and cmd.vmCpuModel == 'Hygon_Customized'):
+                    if is_hv_freq_supported():
+                        e(hyperv, 'frequencies', attrib={'state': 'on'})
+                    if is_hv_synic_supported() and cmd.hypervClock:
+                        e(hyperv, 'vpindex', attrib={'state': 'on'})
+                        # Requires: hv-vpindex
+                        e(hyperv, 'synic', attrib={'state': 'on'})
+                        # Requires: hv-vpindex, hv-synic, hv-time
+                        e(hyperv, 'stimer', attrib={'state': 'on'})
                 # refer to: https://access.redhat.com/articles/2470791
                 # increase spinlocks retries
                 e(hyperv, 'spinlocks', attrib={'state': 'on', 'retries': '8191'})
