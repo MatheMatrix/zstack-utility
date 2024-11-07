@@ -55,6 +55,13 @@ def get_timeout(spec):
     else:
         return 0
 
+
+def get_deadline(spec):
+    timeout = get_timeout(spec)
+    if timeout:
+        return int(time.time() + timeout)
+
+
 class Report(object):
     url = None
     serverUuid = None
