@@ -177,6 +177,9 @@ class ZbsAgent(plugin.TaskManager):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
 
+        if not cmd.mdsExternalAddr:
+            return jsonobject.dumps(rsp)
+
         o = zbsutils.query_mds_status_info()
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
