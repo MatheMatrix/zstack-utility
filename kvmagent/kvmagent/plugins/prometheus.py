@@ -1924,24 +1924,25 @@ LoadPlugin virt
                     fd.write(conf)
                 need_restart_collectd = True
 
-            cpid = linux.find_process_by_command('collectd', [conf_path])
-            mpid = linux.find_process_by_command('collectdmon', [conf_path])
+            mpidList = linux.find_process_list_by_command('collectdmon', [conf_path])
+            cpidList = linux.find_process_list_by_command('collectd', [conf_path])
+            logger.info("need_restart_collectd: %s, mpidList: %s, cpidList: %s" % (need_restart_collectd, mpidList, cpidList))
 
-            if not cpid:
-                if not mpid:
-                    bash_errorout('collectdmon -- -C %s' % conf_path)
-                else:
-                    bash_errorout('kill -TERM %s;collectdmon -- -C %s' % (mpid, conf_path))
-            else:
-                bash_errorout('kill -TERM %s' % cpid)
-                if need_restart_collectd:
-                    if not mpid:
-                        bash_errorout('collectdmon -- -C %s' % conf_path)
-                    else:
-                        bash_errorout('kill -HUP %s' % mpid)
-                else:
-                    if not mpid:
-                        bash_errorout('collectdmon -- -C %s' % conf_path)
+            if need_restart_collectd:
+                for pid in mpidList:
+                    bash_errorout('kill -TERM %s' % pid)
+                for pid in cpidList:
+                    bash_errorout('kill -TERM %s' % pid)
+                bash_errorout('collectdmon -- -C %s' % conf_path)
+            elif mpidList and len(mpidList) > 1:
+                for pid in mpidList[1:]:
+                    bash_errorout('kill -TERM %s' % pid)
+                for pid in cpidList:
+                    bash_errorout('kill -TERM %s' % pid)
+            elif len(mpidList) == 0:
+                for pid in cpidList:
+                    bash_errorout('kill -TERM %s' % pid)
+                bash_errorout('collectdmon -- -C %s' % conf_path)
 
         def run_in_systemd(binPath, args, log):
             def get_env_config(path):
