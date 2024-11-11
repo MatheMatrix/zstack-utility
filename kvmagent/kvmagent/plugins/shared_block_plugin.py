@@ -871,7 +871,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         install_abs_path = translate_absolute_path_from_install_path(cmd.installPath)
 
-        with lvm.RecursiveOperateLv(install_abs_path, shared=False):
+        with lvm.RecursiveOperateLv(install_abs_path, shared=cmd.isShareLockType):
             if cmd.force:
                 lvm.resize_lv(install_abs_path, cmd.size, True)
             else:
@@ -881,9 +881,9 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                 linux.qemu_img_resize(install_abs_path, cmd.size, 'qcow2', cmd.force)
             ret = linux.qcow2_virtualsize(install_abs_path)
 
-        rsp = ResizeVolumeRsp()
-        rsp.size = ret
-        return jsonobject.dumps(rsp)
+            rsp = ResizeVolumeRsp()
+            rsp.size = ret
+            return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
     def create_root_volume(self, req):
