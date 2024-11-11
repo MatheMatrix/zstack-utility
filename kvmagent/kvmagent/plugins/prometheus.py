@@ -354,7 +354,11 @@ def collect_host_network_statistics():
         all_out_packets += read_number("/sys/class/net/{}/statistics/tx_packets".format(intf))
         all_out_errors += read_number("/sys/class/net/{}/statistics/tx_errors".format(intf))
 
-    service_types = ['ManagementNetwork', 'TenantNetwork', 'StorageNetwork', 'BackupNetwork', 'MigrationNetwork']
+    host_network_interface_service_type_map = get_service_type_map()
+    service_types = set()
+    for types in host_network_interface_service_type_map.values():
+        service_types.update(types)
+
     all_in_bytes_by_service_type = {service_type: 0 for service_type in service_types}
     all_in_packets_by_service_type = {service_type: 0 for service_type in service_types}
     all_in_errors_by_service_type = {service_type: 0 for service_type in service_types}
@@ -362,7 +366,6 @@ def collect_host_network_statistics():
     all_out_packets_by_service_type = {service_type: 0 for service_type in service_types}
     all_out_errors_by_service_type = {service_type: 0 for service_type in service_types}
 
-    host_network_interface_service_type_map = get_service_type_map()
     host_network_service_type_interface_map = defaultdict(list)
     for interface, types in host_network_interface_service_type_map.items():
         for service_type in types:
