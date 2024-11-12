@@ -618,7 +618,7 @@ class VmQga(object):
             'username': 'root',
             'keys': [public_key]
         }
-        ret = self.call_qga_command('guest-ssh-add-authorized_keys', args)
+        ret = self.call_qga_command('guest-ssh-add-authorized-keys', args)
         return ret
 
     def guest_ssh_remove_authorized_keys(self, public_key):
@@ -626,5 +626,5 @@ class VmQga(object):
             'username': 'root',
             'keys': [public_key]
         }
-        ret = self.call_qga_command('guest-ssh-remove-authorized_keys', args)
+        ret = self.call_qga_command('guest-ssh-remove-authorized-keys', args)
         return ret
