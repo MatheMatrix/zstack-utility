@@ -548,6 +548,11 @@ class ExportNbdVolumesResponse(kvmagent.AgentResponse):
         super(ExportNbdVolumesResponse, self).__init__()
         self.volumeInfos = None
 
+class QueryVolumesExportResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(QueryVolumesExportResponse, self).__init__()
+        self.volumeExportInfos = {}
+
 
 class TakeVolumeCbtBackupResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -6421,6 +6426,8 @@ class VmPlugin(kvmagent.KvmAgent):
     KVM_TAKE_VOLUME_BACKUP_PATH = "/vm/volume/takebackup"
     KVM_TAKE_VOLUME_CBT_BACKUP_PATH = "/vm/volume/takecbtbackup"
     KVM_EXPORT_NDB_VOLUMES_PATH = "/vm/volume/exportnbdvolumes"
+    KVM_QUERY_VOLUME_EXPORT_PATH = "/vm/volume/queryvolumesexport"
+    KVM_UNEXPORT_NDB_VOLUMES_PATH = "/vm/volume/unexportnbdvolumes"
     KVM_CANCEL_VOLUME_CBT_BACKUP_PATH = "/vm/volume/cancelcbtbackup"
     KVM_GET_VOLUMES_BITMAPS_PATH = "/vm/volume/getvolumebitmaps"
     KVM_TAKE_VOLUME_MIRROR_PATH = "/vm/volume/takemirror"
@@ -8507,11 +8514,36 @@ host side snapshot files chian:
 
         except Exception as e:
             content = traceback.format_exc()
-            logger.warn("stop vm cbt task failed: " + str(e) + '\n' + content)
+            logger.warn("export nbd volumes failed: " + str(e) + '\n' + content)
             rsp.error = str(e)
             rsp.success = False
 
         rsp.volumeInfos = infos
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def unexport_nbd_volumes(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+        for volume in cmd.volumes:
+            shell.run("pkill -9 -f 'qemu-nbd -p.*%s'" % volume.installPath)
+
+        rsp.success = True
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def query_volumes_export(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = QueryVolumesExportResponse()
+        volume_export_info = {}
+        for volume in cmd.volumes:
+            volume_export_info[volume.volumeUuid] = False
+            if shell.run('pgrep -a qemu-nbd | grep %s' % volume.installPath) == 0:
+                volume_export_info[volume.volumeUuid] = True
+
+        rsp.volumeExportInfos = volume_export_info
+        rsp.success = True
+        logger.debug("xxx rsp %s success is %s", rsp.volumeExportInfos, rsp.success)
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -10763,6 +10795,8 @@ host side snapshot files chian:
         http_server.register_async_uri(self.KVM_CHECK_VOLUME_SNAPSHOT_PATH, self.check_volume_snapshot)
         http_server.register_async_uri(self.KVM_TAKE_VOLUME_BACKUP_PATH, self.take_volume_backup, cmd=TakeVolumeBackupCommand())
         http_server.register_async_uri(self.KVM_EXPORT_NDB_VOLUMES_PATH, self.export_nbd_volumes)
+        http_server.register_async_uri(self.KVM_UNEXPORT_NDB_VOLUMES_PATH, self.unexport_nbd_volumes)
+        http_server.register_async_uri(self.KVM_QUERY_VOLUME_EXPORT_PATH, self.query_volumes_export)
         http_server.register_async_uri(self.KVM_TAKE_VOLUME_CBT_BACKUP_PATH, self.take_volume_cbt_backup)
         http_server.register_async_uri(self.KVM_CANCEL_VOLUME_CBT_BACKUP_PATH, self.cancel_volume_cbt_backup)
         http_server.register_async_uri(self.KVM_GET_VOLUMES_BITMAPS_PATH, self.get_volumes_cbt_bitmaps)
