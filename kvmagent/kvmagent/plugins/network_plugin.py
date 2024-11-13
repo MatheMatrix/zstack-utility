@@ -1053,6 +1053,12 @@ configure lldp status rx-only \n
 
             if cmd.oldVirtualNetworkId:
                 linux.delete_vlan_eth_and_ifcfg(old_vlan_interface)
+            elif linux.is_bond(old_vlan_interface):
+                ifcfg = netconfig.NetBondConfig(old_vlan_interface)
+                ifcfg.flush_config()
+            else:
+                ifcfg = netconfig.NetEtherConfig(old_vlan_interface)
+                ifcfg.flush_config()
 
             # switch to NoVlan Network need keep physical dev ip and route in bridge
             if not cmd.newVirtualNetworkId and cmd.oldVirtualNetworkId:
