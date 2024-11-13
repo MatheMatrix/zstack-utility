@@ -3056,6 +3056,10 @@ start_zstack(){
     echo_title "Start ${PRODUCT_NAME} Server"
     echo ""
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    # update consoleProxyCertFile if necessary
+    certfile=`zstack-ctl show_configuration | grep consoleProxyCertFile | grep /usr/local/zstack/zstack-ui/ | awk -F '=' '{ print $NF }'`
+    [ x"$certfile" != x"" ] && zstack-ctl configure consoleProxyCertFile=`echo $certfile | sed "s~/usr/local/zstack/~$ZSTACK_INSTALL_ROOT/~g"`
+
     show_spinner sz_start_zstack
 }
 
