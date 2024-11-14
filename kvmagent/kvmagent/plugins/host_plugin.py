@@ -61,6 +61,7 @@ COLO_LIB_PATH = '/var/lib/zstack/colo/'
 HOST_TAKEOVER_FLAG_PATH = 'var/run/zstack/takeOver'
 NODE_INFO_PATH = '/sys/devices/system/node/'
 ISCSI_INITIATOR_NAME_PATH = '/etc/iscsi/initiatorname.iscsi'
+HOST_NQN_PATH = '/etc/nvme/hostnqn'
 
 BOND_MODE_ACTIVE_0 = "balance-rr"
 BOND_MODE_ACTIVE_1 = "active-backup"
@@ -105,6 +106,7 @@ class HostFactResponse(kvmagent.AgentResponse):
         self.libvirtCapabilities = []
         self.virtualizerInfo = vm_plugin.VirtualizerInfoTO()
         self.iscsiInitiatorName = None
+        self.nqn = None
         self.cpuProcessorNum = 0
         self.cpuSockets = 0
         self.cpuCoresPerSocket = 0
@@ -1201,6 +1203,10 @@ class HostPlugin(kvmagent.KvmAgent):
         # InitiatorName=iqn.1994-05.com.redhat:aa9bf5ec494c
         return initiator_name.strip().split('=')[-1]
 
+    def _get_host_nqn(self):
+        nqn = linux.read_file(HOST_NQN_PATH)
+        return nqn if nqn else None
+
     @kvmagent.replyerror
     def fact(self, req):
         rsp = HostFactResponse()
@@ -1259,6 +1265,7 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.uptime = shell.call('uptime -s').strip()
 
         rsp.iscsiInitiatorName = self._get_iscsi_initiator_name()
+        rsp.nqn = self._get_host_nqn()
 
         if not IS_LOONGARCH64:
             libvirtCapabilitiesList = []
