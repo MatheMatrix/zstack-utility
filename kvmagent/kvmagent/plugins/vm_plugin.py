@@ -11470,7 +11470,7 @@ host side snapshot files chian:
         if LooseVersion(ga_version) < LooseVersion('2.5'):
             raise Exception(('The guest agent version %s less '
                              'than minimum requirement 2.5.0') % ga_version)
-        elif LooseVersion(ga_version) >= LooseVersion('5.2'):
+        elif LooseVersion('100.0') > LooseVersion(ga_version) >= LooseVersion('5.2'):
             ga_add_authorized_keys()
         else:
             leagacy_add_authorized_keys()
@@ -11505,7 +11505,7 @@ host side snapshot files chian:
         if LooseVersion(ga_version) < LooseVersion('2.5'):
             raise Exception(('The guest agent version %s less than '
                              'minimum requirement version 2.5') % ga_version)
-        elif LooseVersion(ga_version) >= LooseVersion('5.2'):
+        elif LooseVersion('100.0') > LooseVersion(ga_version) >= LooseVersion('5.2'):
             ga_remove_authorized_keys()
         else:
             leagacy_remove_authorized_keys()
