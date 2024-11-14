@@ -34,6 +34,7 @@ ALARM_CONFIG = None
 PAGE_SIZE = None
 disk_list_record = None
 block_devices_record = None
+hba_port_state_list_record_map = {}
 
 gpu_devices = {
     'NVIDIA': set(),
@@ -208,6 +209,33 @@ def send_disk_insert_or_remove_alarm_to_mn(alarm_type, serial_number, slot=None,
 @thread.AsyncThread
 def send_physical_disk_insert_alarm_to_mn(serial_number, slot=None, name=None):
     send_disk_insert_or_remove_alarm_to_mn('insert', serial_number, slot, name)
+
+@thread.AsyncThread
+def send_hba_port_state_abnormal_alarm_to_mn(name, port_name, port_state):
+    class HBAPortStateAbnormalAlarm(object):
+        def __init__(self):
+            self.portName = None
+            self.portState = None
+            self.host = None
+            self.name = None
+
+    if ALARM_CONFIG is None:
+        return
+
+    url = ALARM_CONFIG.get(kvmagent.SEND_COMMAND_URL)
+    if not url:
+        logger.warn(
+            "cannot find SEND_COMMAND_URL, unable to transmit hba port state abnormal alarm info to management node")
+        return
+
+    if port_name in hba_port_state_list_record_map.keys():
+        hba_port_state_abnormal_alarm = HBAPortStateAbnormalAlarm()
+        hba_port_state_abnormal_alarm.host = ALARM_CONFIG.get(kvmagent.HOST_UUID)
+        hba_port_state_abnormal_alarm.portName = port_name
+        hba_port_state_abnormal_alarm.portState = port_state
+        hba_port_state_abnormal_alarm.name = name
+        http.json_dump_post(url, hba_port_state_abnormal_alarm,
+                            {'commandpath': '/storagedevice/hba/state/alarm'})
 
 
 @thread.AsyncThread
@@ -1528,6 +1556,42 @@ def convert_pci_status_to_int(pci_address):
     return "nominal", 1
 
 
+def collect_hba_port_device_state():
+    metrics = {'hba_port_state': GaugeMetricFamily('hba_port_state','hba device port state', None, ['port_name'])}
+
+    r, o = bash_ro("systool -c fc_host -v")
+    if r != 0:
+        return metrics.values()
+    port_name = None
+    port_state = None
+    name = None
+
+    for line in o.strip().split("\n"):
+        infos = line.split("=")
+        if len(infos) != 2:
+            continue
+        k = infos[0].lower().strip()
+        v = infos[1].strip().strip('"')
+        if k == "class device":
+            name = v
+        if k == "port_name":
+            port_name = v
+        if k == "port_state":
+            port_state = v
+        if k == "device path":
+            if port_name not in hba_port_state_list_record_map.keys():
+                hba_port_state_list_record_map[port_name] = port_state
+
+            if hba_port_state_list_record_map[port_name] != port_state:
+                hba_port_state_list_record_map[port_name] = port_state
+                send_hba_port_state_abnormal_alarm_to_mn(name, port_name, port_state)
+
+            port_name = None
+            port_state = None
+            name = None
+    return metrics.values()
+
+
 def has_hy_smi():
     return shell.run("which hy-smi") == 0
 
@@ -1625,7 +1689,7 @@ kvmagent.register_prometheus_collector(collect_nvidia_gpu_status)
 kvmagent.register_prometheus_collector(collect_amd_gpu_status)
 kvmagent.register_prometheus_collector(collect_hy_gpu_status)
 kvmagent.register_prometheus_collector(collect_block_device_status)
-
+kvmagent.register_prometheus_collector(collect_hba_port_device_state)
 
 class PrometheusPlugin(kvmagent.KvmAgent):
 
