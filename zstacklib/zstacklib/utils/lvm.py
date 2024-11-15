@@ -1641,11 +1641,13 @@ def delete_lv_meta(path, raise_exception=True):
 
 
 @bash.in_bash
-def remove_device_map_for_vg(vgUuid):
+def remove_device_map_for_vg(vgUuid, keep_device_map=None):
     o = bash.bash_o("dmsetup ls | awk '/%s/{print $1}'" % vgUuid).strip().splitlines()
     if len(o) == 0:
         return
     for dm in o:
+        if keep_device_map is not None and dm in keep_device_map:
+            continue
         bash.bash_roe("dmsetup remove %s" % dm.strip())
 
 

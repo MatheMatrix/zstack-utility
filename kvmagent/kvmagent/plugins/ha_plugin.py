@@ -537,6 +537,9 @@ class SblkHealthChecker(AbstractStorageFencer):
     def get_record_vm_lun(self, vg_uuid, host_uuid):
         return '/dev/%s/host_%s' % (vg_uuid, host_uuid)
 
+    def get_record_vm_device_map(self, vg_uuid):
+        return '%s-host_%s' % (vg_uuid, self.host_uuid)
+
     def check_host_is_alive_by_sanlock(self, ps_uuid, dst_host_uuid, dst_host_id):
         hstatus = sanlock.get_hosts_state("lvm_%s" % ps_uuid)
         alive = False
@@ -1937,7 +1940,7 @@ class HaPlugin(kvmagent.KvmAgent):
 
             if lvm.check_vg_status(vg, cmd.storageCheckerTimeout, True)[0] is False:
                 lvm.drop_vg_lock(vg)
-                lvm.remove_device_map_for_vg(vg)
+                lvm.remove_device_map_for_vg(vg, keep_device_map=[self.sblk_health_checker.get_record_vm_device_map(vg)])
 
             return True
 
