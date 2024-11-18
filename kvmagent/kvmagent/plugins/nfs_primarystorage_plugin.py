@@ -413,12 +413,8 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
             qcow2s = shell.call("find %s %s -type f -regex '.*\.qcow2$'" % (cmd.dstVolumeFolderPath, cmd.dstImageCacheTemplateFolderPath))
 
         for qcow2 in qcow2s.split():
-            fmt = shell.call("%s %s | grep '^file format' | awk -F ': ' '{ print $2 }'" % (qemu_img.subcmd('info'), qcow2))
-            if fmt.strip() != "qcow2":
-                continue
-
             backing_file = linux.qcow2_get_backing_file(qcow2)
-            if backing_file == "":
+            if not backing_file or cmd.dstPsMountPath in backing_file:
                 continue
 
             # actions like `create snapshot -> recover snapshot -> delete snapshot` may produce garbage qcow2, whose backing file doesn't exist
