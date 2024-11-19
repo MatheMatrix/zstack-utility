@@ -1315,7 +1315,7 @@ def collect_node_disk_wwid():
             if multipath_wwid is not None:
                 wwids.append(multipath_wwid)
             if len(wwids) > 0:
-                metrics['node_disk_wwid'].add_metric([disk_name, ";".join([w.strip() for w in wwids])], 1)
+                metrics['node_disk_wwid'].add_metric([disk_name, ";".join([w.strip() for w in sorted(wwids)])], 1)
                 sblk_pv_identities[disk_name] = ";".join([w.strip() for w in wwids])
 
             sblk_pv_vg[disk_name] = vg
