@@ -4,6 +4,9 @@
 import contextlib
 import difflib
 import os.path
+import string
+import glob
+import zlib
 import tempfile
 import time
 import datetime
@@ -8607,27 +8610,24 @@ host side snapshot files chian:
     def get_volumes_cbt_bitmaps(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GetVolumesBitmapResponse()
-        bitmap_json = None
+        bitmap_map = {}
         infos = []
 
         def _split_large_blocks(item):
             start = item['start']
             length = item['length']
-            result = []
+            result = {}
 
             while length > 0:
                 chunk_length = min(length, MAX_NBD_READ_SIZE)
-                result.append({
-                    "start": start,
-                    "length": chunk_length
-                })
+                result[start] = chunk_length
                 start += chunk_length
                 length -= chunk_length
 
             return result
 
         def _merge_json_data(rbd_list, qcow2_list):
-            result = []
+            result = {}
             for rbd in rbd_list:
                 rbd_offset = rbd["start"]
                 rbd_length = rbd["length"]
@@ -8643,8 +8643,7 @@ host side snapshot files chian:
                         start = max(rbd_offset, qcow2_start)
                         end = min(rbd_end, qcow2_end)
                         length = end - start
-
-                        result.append({"start": start, "length": length})
+                        result[start] = length
 
             return result
 
@@ -8652,17 +8651,14 @@ host side snapshot files chian:
             o = shell.call("qemu-img map --output=json -f raw nbd://%s:%s/%s" % (
                 volume_info.nbdServer, volume_info.nbdPort, volume_info.scrachNodeName))
             o = jsonobject.loads(o.strip())
-            result = []
+            result = {}
             for item in o:
                 if item['zero'] is False and item['data'] is True:
                     if item['length'] > MAX_NBD_READ_SIZE:
-                        result.extend(_split_large_blocks(item))
+                        result.update(_split_large_blocks(item))
                     else:
-                        result.append({
-                            "start": item['start'],
-                            "length": item['length']
-                        })
-            return json.dumps(result, indent=4)
+                        result[item['start']] = item['length']
+            return result
 
         def _getRawBitmap(volume_info):
             o = shell.call("""rbd diff %s --format json | jq '.[] | select(.exists == "true")'""" % (volume_info.volume.installPath.replace('ceph://', '')))
@@ -8691,35 +8687,34 @@ host side snapshot files chian:
                             "length": item['length']
                         })
 
-            result = _merge_json_data(map_result, diff_result)
-            return json.dumps(result, indent=4)
+            return _merge_json_data(map_result, diff_result)
 
         try:
             volume_infos = cmd.volumeInfos
             for volume_info in volume_infos:
                 if volume_info.mode == "full":
                     if volume_info.volume.primaryStorageType == 'Ceph':
-                        bitmap_json = _getRawBitmap(volume_info)
+                        bitmap_map = _getRawBitmap(volume_info)
                     else:
-                        bitmap_json = _getQcow2Bitmap(volume_info)
+                        bitmap_map = _getQcow2Bitmap(volume_info)
 
                 else:
                     o = bash.bash_o(
                         "qemu-img map --output=json --image-opts driver=nbd,export=%s,server.type=inet,server.host=%s,server.port=%s,x-dirty-bitmap=qemu:dirty-bitmap:%s" % (
                             volume_info.scrachNodeName, volume_info.nbdServer, volume_info.nbdPort, cmd.bitmapTimestamp))
                     o = json.loads(o.strip())
-                    result = []
+                    result = {}
                     for item in o:
                         if item['zero'] is False and item['data'] is False:
                             if item['length'] > MAX_NBD_READ_SIZE:
-                                result.extend(_split_large_blocks(item))
+                                result.update(_split_large_blocks(item))
                             else:
-                                result.append({
-                                    "start": item['start'],
-                                    "length": item['length']
-                                })
-                    bitmap_json = json.dumps(result, indent=4)
-                volume_info.bitmapBase64 = base64.b64encode(bitmap_json.encode('utf-8')).decode('utf-8')
+                                result[item['start']] = item['length']
+                    bitmap_map = result
+                bitmap_json = json.dumps(bitmap_map)
+                compressed_data = zlib.compress(bitmap_json.encode('utf-8'))
+                logger.debug("xxx json data is %s", bitmap_json)
+                volume_info.bitmapBase64 = base64.b64encode(compressed_data).decode('utf-8')
                 infos.append(volume_info)
 
         except Exception as e:
