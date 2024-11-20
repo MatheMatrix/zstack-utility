@@ -1641,9 +1641,12 @@ class Zsha2Utils(object):
     def execute_on_peer(self, cmd, useSudo=False):
         remote_path = '/tmp/%s.sh' % uuid.uuid4()
         script = script_text % (remote_path, cmd, remote_path, ' '.join([]), remote_path)
+        peer_port = self.config.get('peerport', 22)
+        if peer_port == '':
+            peer_port = 22
         scmd = ShellCmd(
-            "sudo -u %s ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s %s \"%s\"" % (
-                self.ssh_exec_user, self.config['peerip'], "sudo" if useSudo else "", script))
+            "sudo -u %s ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s -p %s %s \"%s\"" % (
+                self.ssh_exec_user, self.config['peerip'], peer_port, "sudo" if useSudo else "", script))
         scmd(False)
         if scmd.return_code != 0:
             scmd.raise_error()
