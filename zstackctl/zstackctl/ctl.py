@@ -1635,7 +1635,10 @@ class Zsha2Utils(object):
             error('cannot ssh peer node with sshkey')
 
     def excute_on_peer(self, cmd):
-        ssh_run_no_pipe(self.config['peerip'], cmd)
+        peer_port = self.config.get('peerport', 22)
+        if peer_port == '':
+            peer_port = 22
+        ssh_run_no_pipe("%s -p %s" % (self.config['peerip'], peer_port), cmd)
 
 
     def scp_to_peer(self, src_path, dst_path):
