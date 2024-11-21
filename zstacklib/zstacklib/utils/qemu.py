@@ -1,17 +1,19 @@
 
-import bash
 import base64
-import os
-import log
-import jsonobject
-import shell
-import string
 import json
+import os
+import string
 import zlib
+
+import bash
+import jsonobject
+import log
+import shell
+from linux import get_vm_pid, get_process_start_time, HOST_ARCH
 from zstacklib.utils import qemu_img
-from linux import get_vm_pid, HOST_ARCH
 
 logger = log.get_logger(__name__)
+
 
 def get_colo_path():
     return '/var/lib/zstack/colo/qemu-system-x86_64'
@@ -48,10 +50,20 @@ def get_version():
 
     return version
 
+def get_install_date():
+    r, o, e = bash.bash_roe("rpm -q --queryformat '%{INSTALLTIME}' qemu-kvm")
+    if r == 0:
+        return int(o.strip())
+
+QEMU_INSTALL_DATE = get_install_date()
+QEMU_VERSION = get_version()
+
 
 def get_running_version(vm_uuid):
     pid = get_vm_pid(vm_uuid)
     if pid:
+        if get_process_start_time(pid) > QEMU_INSTALL_DATE:
+            return QEMU_VERSION
         exe = "/proc/%s/exe" % pid
         r = get_version_from_exe_file(exe)
         if r:
