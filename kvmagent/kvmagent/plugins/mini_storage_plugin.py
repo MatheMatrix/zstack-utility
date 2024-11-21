@@ -280,7 +280,7 @@ class MiniFileConverter(linux.AbstractFileConverter):
 
     def convert_from_file_with_backing(self, src, dst, dst_backing, backing_fmt):
         # type: (str, str, str, str) -> int
-        if self.cmd.srcInstallPath != src:  # base:
+        if self._cmd.srcInstallPath != src:  # base:
             return self._convert_image_from_file(src, dst, dst_backing, backing_fmt)
         else:  # top
             return self._convert_volume_from_file(src, dst, dst_backing, backing_fmt)

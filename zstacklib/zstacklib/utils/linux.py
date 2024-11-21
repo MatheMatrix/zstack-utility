@@ -1730,6 +1730,21 @@ def get_process_up_time_in_second(pid):
     return day * 24 * 3600 + hour * 3600 + minute * 60 + second
 
 
+def get_process_start_time(pid):
+    if not os.path.exists('/proc/%s/stat' % pid):
+        return
+
+    with open('/proc/%s/stat' % pid, 'r') as f:
+        stats = f.read().split()
+    start_time = float(stats[21]) / os.sysconf('SC_CLK_TCK')
+
+    with open('/proc/uptime', 'r') as f:
+        uptime = float(f.read().split()[0])
+    current_time = time.time()
+    boot_time = current_time - uptime
+    return boot_time + start_time
+
+
 def get_cpu_num():
     out = shell.call("grep -c processor /proc/cpuinfo")
     return int(out)
