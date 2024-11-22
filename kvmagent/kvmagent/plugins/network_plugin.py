@@ -381,6 +381,20 @@ def del_novlan_bridge(cmd):
         cmd.bridgeName, cmd.physicalInterfaceName))
 
 
+def check_ifcfg_files_for_consistency():
+    infos = linux.get_ethernet_info()  # type: list[linux.EthernetInfo]
+    nics = [info.interface for info in infos]
+    for nic in nics:
+        if linux.is_bridge(nic):
+            continue
+
+        ifcfg = linux.get_device_ifcfg(nic)
+        bridge = ifcfg.bridge if ifcfg.bridge else ifcfg.config_dict.get('BRIDGE')
+        if bridge is not None and not linux.is_vif_on_bridge(bridge, nic):
+            logger.warn('interface[%s] is configured to bridge[%s] but not attached to it' % (nic, bridge))
+            ifcfg.flush_config()
+
+
 class NetworkPlugin(kvmagent.KvmAgent):
     '''
     classdocs
@@ -1047,18 +1061,19 @@ configure lldp status rx-only \n
             self._ifup_device_if_down(cmd.physicalInterfaceName)
             if cmd.newVirtualNetworkId:
                 linux.create_vlan_eth_with_bridge(cmd.physicalInterfaceName, cmd.newVirtualNetworkId, cmd.bridgeName)
+            else:
+                ifcfg = linux.get_device_ifcfg(new_vlan_interface)
+                ifcfg.bridge = cmd.bridgeName
+                ifcfg.restore_config(restore_only=True)
 
             linux.update_bridge_interface_configuration(old_vlan_interface, new_vlan_interface,
                                                         cmd.bridgeName, cmd.l2NetworkUuid)
 
             if cmd.oldVirtualNetworkId:
                 linux.delete_vlan_eth_and_ifcfg(old_vlan_interface)
-            elif linux.is_bond(old_vlan_interface):
-                ifcfg = netconfig.NetBondConfig(old_vlan_interface)
-                ifcfg.flush_config()
             else:
-                ifcfg = netconfig.NetEtherConfig(old_vlan_interface)
-                ifcfg.flush_config()
+                old_ifcfg = linux.get_device_ifcfg(old_vlan_interface)
+                old_ifcfg.flush_config()
 
             # switch to NoVlan Network need keep physical dev ip and route in bridge
             if not cmd.newVirtualNetworkId and cmd.oldVirtualNetworkId:
@@ -1573,6 +1588,7 @@ configure lldp status rx-only \n
         return jsonobject.dumps(rsp)
 
     def start(self):
+        check_ifcfg_files_for_consistency()
         http_server = kvmagent.get_http_server()
         http_server.register_sync_uri(CHECK_PHYSICAL_NETWORK_INTERFACE_PATH, self.check_physical_network_interface)
         http_server.register_async_uri(ADD_INTERFACE_TO_BRIDGE_PATH, self.add_interface_to_bridge)

@@ -2234,10 +2234,8 @@ done
                 ifcfg = netconfig.NetBridgeConfig(bridge_dev)
             elif iface.vlanId != 0:
                 ifcfg = netconfig.NetVlanConfig(physical_dev)
-            elif linux.is_bond(physical_dev):
-                ifcfg = netconfig.NetBondConfig(physical_dev)
             else:
-                ifcfg = netconfig.NetEtherConfig(physical_dev)
+                ifcfg = linux.get_device_ifcfg(physical_dev)
 
             ip_list = linux.get_ip_list_by_nic_name(target_dev)
             if cmd.actionCode == 'deleteAction':

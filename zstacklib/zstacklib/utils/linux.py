@@ -1495,6 +1495,20 @@ def is_physical_nic(dev):
             return True
     return False
 
+
+def get_device_ifcfg(dev):
+    if is_physical_nic(dev):
+        return netconfig.NetEtherConfig(dev)
+    if is_bond(dev):
+        return netconfig.NetBondConfig(dev)
+    if is_vlan(dev):
+        return netconfig.NetVlanConfig(dev)
+    if is_vxlan(dev):
+        return netconfig.NetVxlanConfig(dev)
+
+    raise Exception('interface %s type not in ethernet, bond, vlan or vxlan' % dev)
+
+
 def get_vlan_id(dev):
     if not is_vlan(dev):
         return None
@@ -1666,10 +1680,7 @@ def delete_novlan_bridge(bridge_name, interface, move_route=True):
         logger.debug("can not find bridge %s" % bridge_name)
         return
 
-    if is_bond(interface):
-        ifcfg = netconfig.NetBondConfig(interface)
-    else:
-        ifcfg = netconfig.NetEtherConfig(interface)
+    ifcfg = get_device_ifcfg(interface)
     if is_vif_on_bridge(bridge_name, interface) and move_route:
         move_dev_route(bridge_name, interface)
         ifcfg_bridge = netconfig.NetBridgeConfig(bridge_name)
@@ -1724,21 +1735,8 @@ def create_bridge(bridge_name, interface, move_route=True):
         move_dev_route(interface, bridge_name)
 
     # restore bridge and interface ifcfg file
-    if is_vlan(interface):
-        ifcfg_slave = netconfig.NetVlanConfig(interface)
-        ifcfg_slave.bridge = bridge_name
-    elif is_bond(interface):
-        ifcfg_slave = netconfig.NetBondConfig(interface)
-        ifcfg_slave.bridge = bridge_name
-    elif is_physical_nic(interface):
-        ifcfg_slave = netconfig.NetEtherConfig(interface)
-        ifcfg_slave.bridge = bridge_name
-    elif is_vxlan(interface):
-        ifcfg_slave = netconfig.NetVxlanConfig(interface)
-        ifcfg_slave.bridge = bridge_name
-    else:
-        raise Exception('interface %s type not in ethernet, bond or vlan' % interface)
-
+    ifcfg_slave = get_device_ifcfg(interface)
+    ifcfg_slave.bridge = bridge_name
     ifcfgs = []
     ifcfg_bridge = netconfig.NetBridgeConfig(bridge_name)
     ifcfg_bridge.boot_proto = ifcfg_slave.get_boot_proto()
