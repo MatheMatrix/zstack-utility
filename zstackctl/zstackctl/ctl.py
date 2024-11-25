@@ -5545,11 +5545,8 @@ class MysqlRestrictConnection(Command):
                 remote_grant_views_access_cmd = self.grant_views_definer_privilege(root_password_, zsha2_utils.config['peerip'])
                 zsha2_utils.execute_on_peer('''`mysql -u root -p%s -e "%s %s"` \n echo %s > %s''' % (
                 root_password_, remote_grant_views_access_cmd, grant_access_cmd, restrict_flags, self.file))
-                for ip in restrict_ips:
-                    zsha2_utils.execute_on_peer('iptables -A INPUT -p tcp -s %s --dport %s -j ACCEPT' % (ip, db_port))
 
-            for ip in restrict_ips:
-                shell('iptables -A INPUT -p tcp -s %s --dport %s -j ACCEPT' % (ip, db_port))
+            shell('iptables -D INPUT -p tcp --dport %s -j DROP' % db_port)
             shell('iptables -A INPUT -p tcp --dport %s -j DROP' % db_port)
             info("Successfully set mysql restrict connection")
             return
@@ -5564,12 +5561,6 @@ class MysqlRestrictConnection(Command):
             if is_ha:
                 zsha2_utils.execute_on_peer(
                     '''`mysql -u root -p%s -e "%s"`\n rm -f %s''' % (root_password_, grant_access_cmd, self.file))
-                for ip in restrict_ips:
-                    zsha2_utils.execute_on_peer('iptables -A INPUT -p tcp -s %s --dport %s -j ACCEPT 2>/dev/null' % (ip, db_port))
-
-            for ip in restrict_ips:
-                shell_return('iptables -D INPUT -p tcp -s %s --dport %s -j ACCEPT 2>/dev/null' % (ip, db_port))
-            shell_return('iptables -D INPUT -p tcp --dport %s -j DROP 2>/dev/null' % db_port)
 
             info("Successfully restore mysql restrict connection")
             return
