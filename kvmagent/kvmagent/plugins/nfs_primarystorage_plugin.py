@@ -154,6 +154,11 @@ class OfflineMergeSnapshotRsp(NfsResponse):
     def __init__(self):
         super(OfflineMergeSnapshotRsp, self).__init__()
 
+class OfflineCommitSnapshotRsp(NfsResponse):
+    def __init__(self):
+        super(OfflineCommitSnapshotRsp, self).__init__()
+        self.size = None
+
 class GetVolumeSizeRsp(NfsResponse):
     def __init__(self):
         super(GetVolumeSizeRsp, self).__init__()
@@ -238,6 +243,7 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
     REBASE_MERGE_SNAPSHOT_PATH = "/nfsprimarystorage/rebaseandmergesnapshot"
     MOVE_BITS_PATH = "/nfsprimarystorage/movebits"
     OFFLINE_SNAPSHOT_MERGE = "/nfsprimarystorage/offlinesnapshotmerge"
+    OFFLINE_SNAPSHOT_COMMIT = "/nfsprimarystorage/offlinesnapshotcommit"
     REMOUNT_PATH = "/nfsprimarystorage/remount"
     GET_VOLUME_SIZE_PATH = "/nfsprimarystorage/getvolumesize"
     BATCH_GET_VOLUME_SIZE_PATH = "/nfsprimarystorage/batchgetvolumesize"
@@ -282,6 +288,7 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.REBASE_MERGE_SNAPSHOT_PATH, self.rebase_and_merge_snapshot)
         http_server.register_async_uri(self.MOVE_BITS_PATH, self.move_bits)
         http_server.register_async_uri(self.OFFLINE_SNAPSHOT_MERGE, self.merge_snapshot_to_volume)
+        http_server.register_async_uri(self.OFFLINE_SNAPSHOT_COMMIT, self.commit_snapshot)
         http_server.register_async_uri(self.REMOUNT_PATH, self.remount)
         http_server.register_async_uri(self.GET_VOLUME_SIZE_PATH, self.get_volume_size)
         http_server.register_async_uri(self.BATCH_GET_VOLUME_SIZE_PATH, self.batch_get_volume_size)
@@ -568,6 +575,17 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
             tmp = os.path.join(os.path.dirname(cmd.destPath), '%s.qcow2' % uuidhelper.uuid())
             qcow2.create_template_with_task_daemon(cmd.destPath, tmp, task_spec=cmd)
             shell.call("mv %s %s" % (tmp, cmd.destPath))
+
+        self._set_capacity_to_response(cmd.uuid, rsp)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def commit_snapshot(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = OfflineCommitSnapshotRsp()
+
+        linux.qcow2_commit(cmd.srcPath, cmd.dstPath)
+        _, rsp.size = linux.qcow2_size_and_actual_size(cmd.base)
 
         self._set_capacity_to_response(cmd.uuid, rsp)
         return jsonobject.dumps(rsp)

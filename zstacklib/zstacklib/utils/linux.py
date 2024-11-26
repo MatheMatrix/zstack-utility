@@ -1150,12 +1150,15 @@ def qcow2_commit(top, base):
     shell.call('%s -f qcow2 -b %s %s' % (qemu_img.subcmd('commit'), base, top))
 
 
-def qcow2_rebase(backing_file, target):
+def qcow2_rebase(backing_file, target, unsafe_mode=False):
     if backing_file:
         fmt = get_img_fmt(backing_file)
         backing_option = '-F %s -b "%s"' % (fmt, backing_file)
     else:
         backing_option = '-b "%s"' % backing_file
+
+    if unsafe_mode:
+        backing_option = '-u ' + backing_option
 
     top_virtual_size = int(qcow2_get_virtual_size(target))
     backing_chain = qcow2_get_backing_chain(target)

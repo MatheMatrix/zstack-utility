@@ -855,6 +855,12 @@ class BlockStreamResponse(kvmagent.AgentResponse):
 class BlockCommitResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(BlockCommitResponse, self).__init__()
+        self.size = None
+
+class BlockPullVolumeResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(BlockPullVolumeResponse, self).__init__()
+        self.size = None
 
 class AttachGuestToolsIsoToVmCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -1773,6 +1779,7 @@ class BlockCommitDaemon(plugin.TaskDaemon):
         self.base = base
         self.disk_name = disk_name
         self.active_commit = active_commit
+        self.task_spec = task_spec
 
     def _cancel(self):
         # if canceled with task success, need pivot abort
@@ -1784,6 +1791,50 @@ class BlockCommitDaemon(plugin.TaskDaemon):
             percent = min(99, cur * 100.0 / end)
             return get_exact_percent(percent, self.stage)
 
+    def check_vm_xml_backing_file_consistency(self, top_disk_install_path, dest_disk_install_path, distanceFromSrcToDst):
+        expected = False
+        for disk_backing_file_chain in self.vm.get_all_disk_backing_chain():
+            chain_depth = len(disk_backing_file_chain)
+            if dest_disk_install_path in disk_backing_file_chain:
+                dest_disk_install_path_depth = disk_backing_file_chain.index(dest_disk_install_path)
+                # for fullRebase, new top layer do not depend on image cache
+                # the depth of disk chain depth will reset
+                if top_disk_install_path is None:
+                    expected = dest_disk_install_path_depth == chain_depth - 1
+                # for not fullRebase, check the current_install_path depth increased 1
+                if top_disk_install_path is not None:
+                    expected = disk_backing_file_chain[top_disk_install_path] == dest_disk_install_path_depth + 1
+                break
+        return expected
+
+    def __exit__(self, exc_type, ex, exc_tb):
+        super(BlockCommitDaemon, self).__exit__(exc_type, ex, exc_tb)
+        if exc_type is None:
+            return
+
+        current_backing = self.vm._get_back_file(self.top)
+        if current_backing != self.base:
+            logger.debug("live merge snapshot failed. expected backing %s, "
+                         "actually backing %s" % (self.base, current_backing))
+            raise ex
+
+        consistent_backing_store_by_libvirt = False
+        for i in xrange(5):
+            self.vm.refresh()
+            distanceFromSrcToDst = len(self.task_spec.snapshotChainFromSrcToDst)
+            consistent_backing_store_by_libvirt = self.check_vm_xml_backing_file_consistency(self.base, self.top, distanceFromSrcToDst)
+            if consistent_backing_store_by_libvirt:
+                break
+            time.sleep(1)
+
+        if consistent_backing_store_by_libvirt:
+            logger.debug("libvirt return live merge snapshot failure, but it succeed actually! "
+                         "expected volume[install path: %s] backing file is %s. "
+                         "check the vm xml meets expectations" % (self.base, current_backing))
+        else:
+            logger.debug("live merge snapshot failed. expected backing %s, actually backing %s. "
+                         "check the vm xml does not meet expectations" % (self.base, current_backing))
+            raise ex
 
 class MergeSnapshotDaemon(plugin.TaskDaemon):
     def __init__(self, task_spec, vm, disk_name, top, base=None):
@@ -1806,10 +1857,10 @@ class MergeSnapshotDaemon(plugin.TaskDaemon):
 
     def check_vm_xml_backing_file_consistency(self, base_disk_install_path, dest_disk_install_path):
         expected = False
-        for disk_backing_file_chain in self.vm.get_backing_store_source_recursively():
+        for disk_backing_file_chain in self.vm.get_all_disk_backing_chain():
             chain_depth = len(disk_backing_file_chain)
-            if dest_disk_install_path in disk_backing_file_chain.keys():
-                dest_disk_install_path_depth = disk_backing_file_chain[dest_disk_install_path]
+            if dest_disk_install_path in disk_backing_file_chain:
+                dest_disk_install_path_depth = disk_backing_file_chain.index(dest_disk_install_path)
                 # for fullRebase, new top layer do not depend on image cache
                 # the depth of disk chain depth will reset
                 if base_disk_install_path is None:
@@ -3492,13 +3543,14 @@ class Vm(object):
 
             logger.debug('start block commit for disk %s, from %s, to %s, active commit: %s'
                          % (disk_name, top, base, active_commit))
-            flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
 
-            # currently we only handle active commit
             if active_commit:
                 # Pass a flag to libvirt to indicate that we expect a two phase
                 # block job. We must tell libvirt to pivot to the new active layer (base).
+                flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
                 flags |= libvirt.VIR_DOMAIN_BLOCK_COMMIT_ACTIVE
+            else:
+                flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_DELETE
 
             self.domain.blockCommit(disk_name, base, top, 0, flags)
             touchQmpSocketWhenExists(task_spec.vmUuid)
@@ -3591,10 +3643,10 @@ class Vm(object):
         else:
             return take_delta_snapshot()
 
-    def _do_block_stream_disk(self, task_spec, target_disk, disk_name):
+    def _do_block_stream_disk(self, task_spec, target_disk, disk_name, base=None):
         install_path = VmPlugin.get_source_file_by_disk(target_disk)
         logger.debug('start block stream for disk %s' % disk_name)
-        self.domain.blockRebase(disk_name, None, 0, 0)
+        self.domain.blockRebase(disk_name, base, 0, 0)
 
         logger.debug('block stream for disk %s in processing' % disk_name)
 
@@ -3605,17 +3657,25 @@ class Vm(object):
         if not linux.wait_callback_success(wait_job, timeout=get_timeout(task_spec), ignore_exception_in_callback=True):
             raise kvmagent.KvmError('block stream failed')
 
+        if base is not None:
+            current_backing = self._get_back_file(install_path)
+            if current_backing != base:
+                logger.debug("block stream snapshot failed. Expected backing %s, "
+                             "actually backing %s" % (base, current_backing))
+                raise kvmagent.KvmError('[libvirt bug] block stream snapshot failed')
+            return
+
         def wait_backing_file_cleared(_):
             return not linux.qcow2_get_backing_file(install_path)
 
         if not linux.wait_callback_success(wait_backing_file_cleared, timeout=60, ignore_exception_in_callback=True):
             raise kvmagent.KvmError('block stream succeeded, but backing file is not cleared')
 
-    def block_stream_disk(self, task_spec, volume):
+    def block_stream_disk(self, task_spec, volume, base=None):
         target_disk, disk_name = self._get_target_disk(volume)
         top = VolumeTO.get_volume_actual_installpath(volume.installPath)
-        with MergeSnapshotDaemon(task_spec, self, disk_name, top=top):
-            self._do_block_stream_disk(task_spec, target_disk, disk_name)
+        with MergeSnapshotDaemon(task_spec, self, disk_name, top=top, base=base):
+            self._do_block_stream_disk(task_spec, target_disk, disk_name, base=base)
 
     def list_blk_sources(self):
         """list domain blocks (aka. domblklist) -- but with sources only"""
@@ -3632,10 +3692,10 @@ class Vm(object):
 
         return res
 
-    def get_backing_store_source_recursively(self):
+    def get_all_disk_backing_chain(self):
         # type: () -> list
         all_disks_backing_file_chain = []
-        disk_backing_file_chain = {}
+        disk_backing_file_chain = []
 
         '''
         <disk type='file' device='disk'>
@@ -3657,25 +3717,22 @@ class Vm(object):
         An empty <backingStore/> element signals the end of the chain. 
         '''
 
-        def get_backing_store_source(backingStore, depth):
+        def get_backing_store_source(backingStore):
             if backingStore.find("source") is None:
                 return
-            depth += 1
-            disk_backing_file_chain[etree.tostring(backingStore.find('source')).split('"')[1]] = depth
-            get_backing_store_source(backingStore.find('backingStore'), depth)
+            disk_backing_file_chain.append(etree.tostring(backingStore.find('source')).split('"')[1])
+            get_backing_store_source(backingStore.find('backingStore'))
 
         tree = etree.fromstring(self.domain_xml)
         for disk in tree.findall('devices/disk'):
-            depth = 0
             if disk.get("device") == 'cdrom':
                 continue
             if disk.find("source") is not None:
-                disk_backing_file_chain[etree.tostring(disk.find('source')).split('"')[1]] = depth
+                disk_backing_file_chain.append(etree.tostring(disk.find('source')).split('"')[1])
             if disk.find("backingStore") is not None:
-                get_backing_store_source(disk.find('backingStore'), depth)
-
+                get_backing_store_source(disk.find('backingStore'))
             all_disks_backing_file_chain.append(disk_backing_file_chain)
-            disk_backing_file_chain = {}
+            disk_backing_file_chain = []
 
         return all_disks_backing_file_chain
 
@@ -6364,6 +6421,7 @@ class VmPlugin(kvmagent.KvmAgent):
     KVM_QUERY_BLOCKJOB_STATUS = "/vm/volume/queryblockjobstatus"
     KVM_BLOCK_STREAM_VOLUME_PATH = "/vm/volume/blockstream"
     KVM_BLOCK_COMMIT_VOLUME_PATH = "/vm/volume/blockcommit"
+    KVM_BLOCK_PULL_VOLUME_PATH = "/vm/volume/blockpull"
     KVM_TAKE_VOLUMES_SNAPSHOT_PATH = "/vm/volumes/takesnapshot"
     KVM_TAKE_VOLUMES_BACKUP_PATH = "/vm/volumes/takebackup"
     KVM_CANCEL_VOLUME_BACKUP_JOBS_PATH = "/vm/volume/cancel/backupjobs"
@@ -8635,31 +8693,109 @@ host side snapshot files chian:
 
     @kvmagent.replyerror
     def block_commit(self, req):
-        def block_commit_with_qemu_img():
-            top = VolumeTO.get_volume_actual_installpath(cmd.top)
-            base = VolumeTO.get_volume_actual_installpath(cmd.base)
-            linux.qcow2_commit(top, base)
-            return base
-
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = BlockCommitResponse()
-        try:
-            if not cmd.vmUuid:
-                rsp.newVolumeInstallPath = block_commit_with_qemu_img()
-            else:
-                vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
-                vm_state = Vm.VM_STATE_SHUTDOWN if vm is None else vm.state
-                if vm and (vm_state == vm.VM_STATE_RUNNING or vm_state == vm.VM_STATE_PAUSED):
-                    rsp.newVolumeInstallPath = vm.do_block_commit(cmd, cmd.volume)
-                else:
-                    rsp.newVolumeInstallPath = block_commit_with_qemu_img()
 
-        except kvmagent.KvmError as e:
+        def rebase_top_children_to_base():
+            if cmd.topChildrenInstallPathInDb is None:
+                return
+            for path in cmd.topChildrenInstallPathInDb:
+                if linux.qcow2_get_backing_file(path) != cmd.base:
+                    linux.qcow2_rebase(cmd.base, path, unsafe_mode=True)
+
+        # def _check_vm_online_rebase_status():
+        #     vm = get_vm_by_uuid(cmd.vmUuid)
+        #     if vm.state != vm.VM_STATE_RUNNING:
+        #         logger.debug("vm[uuid:%s] state is not running, unable to recover online rebase snapshot" % cmd.vmuuid)
+        #         return False
+        #
+        #     def _wait_job(_):
+        #         _, disk_name = vm._get_target_disk(cmd.volume)
+        #         logger.debug('block stream is waiting for %s blockRebase job completion' % disk_name)
+        #         return not vm._wait_for_block_job(disk_name, abort_on_error=True)
+        #
+        #     logger.debug('migrate vm[%s] with block is waiting for job completion' % vm.uuid)
+        #     timeout = 259200 if get_timeout(cmd) <= 0 else get_timeout(cmd)
+        #     if not linux.wait_callback_success(_wait_job, timeout=timeout, ignore_exception_in_callback=True):
+        #         raise kvmagent.KvmError('caught an exception on waiting for storage migration job completion')
+        #
+        # if cmd.reload:
+        #     # commit 期间 mn 断了，会出现那些情形：
+        #     # 在线pull：还在pull（）
+        #     # 在线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功
+        #     _check_vm_online_rebase_status()
+        #
+        #     if cmd.topChildrenInstallPathInDb is not None:
+        #         for path in cmd.topChildrenInstallPathInDb:
+        #             if linux.qcow2_get_backing_file(path) != cmd.base:
+        #                 linux.qcow2_rebase(cmd.base, path, unsafe_mode=True)
+        #
+        #     rsp.size = VmPlugin._get_snapshot_size(cmd.base)
+        #     jsonobject.dumps(rsp)
+
+        vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
+        if not vm:
+            raise kvmagent.KvmError("vm[uuid: %s] not found by libvirt" % cmd.vmUuid)
+        if vm.state != Vm.VM_STATE_RUNNING and vm.state != Vm.VM_STATE_PAUSED:
+            raise kvmagent.KvmError('unable to commit volume snapshot, vm must be running or paused')
+
+        try:
+            vm.do_block_commit(cmd, cmd.volume)
+            rebase_top_children_to_base()
+        except kvmagent.KvmError as err:
             logger.warn(linux.get_exception_stacktrace())
-            rsp.error = str(e)
+            rsp.error = str(err)
             rsp.success = False
             return jsonobject.dumps(rsp)
 
+        rsp.size = VmPlugin._get_snapshot_size(cmd.base)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def block_pull(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = BlockPullVolumeResponse()
+
+        # def _check_vm_online_rebase_status():
+        #     vm = get_vm_by_uuid(cmd.vmUuid)
+        #     if vm.state != vm.VM_STATE_RUNNING:
+        #         logger.debug("vm[uuid:%s] state is not running, unable to recover online rebase snapshot" % cmd.vmuuid)
+        #         return False
+        #
+        #     def _wait_job(_):
+        #         _, disk_name = vm._get_target_disk(cmd.volume)
+        #         logger.debug('block stream is waiting for %s blockRebase job completion' % disk_name)
+        #         return not vm._wait_for_block_job(disk_name, abort_on_error=True)
+        #
+        #     logger.debug('migrate vm[%s] with block is waiting for job completion' % vm.uuid)
+        #     timeout = 259200 if get_timeout(cmd) <= 0 else get_timeout(cmd)
+        #     if not linux.wait_callback_success(_wait_job, timeout=timeout, ignore_exception_in_callback=True):
+        #         raise kvmagent.KvmError('caught an exception on waiting for storage migration job completion')
+        #
+        # if cmd.reload:
+        #     # commit 期间 mn 断了，会出现那些情形：
+        #     # 在线pull：还在pull（）
+        #     # 在线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功
+        #     _check_vm_online_rebase_status()
+        #
+        #     rsp.newVolumeInstallPath = cmd.top
+        #     rsp.size = VmPlugin._get_snapshot_size(rsp.newVolumeInstallPath)
+        #     return jsonobject.dumps(rsp)
+
+        vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
+        if not vm:
+            raise kvmagent.KvmError("vm[uuid: %s] not found by libvirt" % cmd.vmUuid)
+        if vm.state != Vm.VM_STATE_RUNNING and vm.state != Vm.VM_STATE_PAUSED:
+            raise kvmagent.KvmError('unable to commit volume snapshot, vm must be running or paused')
+
+        try:
+            vm.block_stream_disk(cmd, cmd.volume, cmd.base)
+        except kvmagent.KvmError as err:
+            logger.warn(linux.get_exception_stacktrace())
+            rsp.error = str(err)
+            rsp.success = False
+
+        rsp.newVolumeInstallPath = cmd.base
         rsp.size = VmPlugin._get_snapshot_size(rsp.newVolumeInstallPath)
         return jsonobject.dumps(rsp)
 
@@ -10495,6 +10631,7 @@ host side snapshot files chian:
         http_server.register_async_uri(self.KVM_CANCEL_VOLUME_BACKUP_JOB_PATH, self.cancel_backup_job)
         http_server.register_async_uri(self.KVM_BLOCK_STREAM_VOLUME_PATH, self.block_stream)
         http_server.register_async_uri(self.KVM_BLOCK_COMMIT_VOLUME_PATH, self.block_commit)
+        http_server.register_async_uri(self.KVM_BLOCK_PULL_VOLUME_PATH, self.block_pull)
         http_server.register_async_uri(self.KVM_MERGE_SNAPSHOT_PATH, self.merge_snapshot_to_volume)
         http_server.register_async_uri(self.KVM_LOGOUT_ISCSI_TARGET_PATH, self.logout_iscsi_target, cmd=LoginIscsiTargetCmd())
         http_server.register_async_uri(self.KVM_LOGIN_ISCSI_TARGET_PATH, self.login_iscsi_target)
