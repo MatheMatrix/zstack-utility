@@ -40,6 +40,7 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.imagestore import ImageStoreClient
+from zstacklib.test.test_qemu import excepts
 from zstacklib.utils import bash, plugin
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import lvm
@@ -855,6 +856,12 @@ class BlockStreamResponse(kvmagent.AgentResponse):
 class BlockCommitResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(BlockCommitResponse, self).__init__()
+
+class BlockPullVolumeResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(BlockPullVolumeResponse, self).__init__()
+        self.newVolumeInstallPath = None
+        self.size = None
 
 class AttachGuestToolsIsoToVmCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -3492,13 +3499,14 @@ class Vm(object):
 
             logger.debug('start block commit for disk %s, from %s, to %s, active commit: %s'
                          % (disk_name, top, base, active_commit))
-            flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
 
-            # currently we only handle active commit
             if active_commit:
                 # Pass a flag to libvirt to indicate that we expect a two phase
                 # block job. We must tell libvirt to pivot to the new active layer (base).
+                flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
                 flags |= libvirt.VIR_DOMAIN_BLOCK_COMMIT_ACTIVE
+            else:
+                flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_DELETE
 
             self.domain.blockCommit(disk_name, base, top, 0, flags)
             touchQmpSocketWhenExists(task_spec.vmUuid)
@@ -3591,10 +3599,10 @@ class Vm(object):
         else:
             return take_delta_snapshot()
 
-    def _do_block_stream_disk(self, task_spec, target_disk, disk_name):
+    def _do_block_stream_disk(self, task_spec, target_disk, disk_name, base=None):
         install_path = VmPlugin.get_source_file_by_disk(target_disk)
         logger.debug('start block stream for disk %s' % disk_name)
-        self.domain.blockRebase(disk_name, None, 0, 0)
+        self.domain.blockRebase(disk_name, base, 0, 0)
 
         logger.debug('block stream for disk %s in processing' % disk_name)
 
@@ -3605,17 +3613,25 @@ class Vm(object):
         if not linux.wait_callback_success(wait_job, timeout=get_timeout(task_spec), ignore_exception_in_callback=True):
             raise kvmagent.KvmError('block stream failed')
 
+        if base is not None:
+            current_backing = self._get_back_file(install_path)
+            if current_backing != base:
+                logger.debug("block stream snapshot failed. Expected backing %s, "
+                             "actually backing %s" % (base, current_backing))
+                raise kvmagent.KvmError('[libvirt bug] block stream snapshot failed')
+            return
+
         def wait_backing_file_cleared(_):
             return not linux.qcow2_get_backing_file(install_path)
 
         if not linux.wait_callback_success(wait_backing_file_cleared, timeout=60, ignore_exception_in_callback=True):
             raise kvmagent.KvmError('block stream succeeded, but backing file is not cleared')
 
-    def block_stream_disk(self, task_spec, volume):
+    def block_stream_disk(self, task_spec, volume, base=None):
         target_disk, disk_name = self._get_target_disk(volume)
         top = VolumeTO.get_volume_actual_installpath(volume.installPath)
-        with MergeSnapshotDaemon(task_spec, self, disk_name, top=top):
-            self._do_block_stream_disk(task_spec, target_disk, disk_name)
+        with MergeSnapshotDaemon(task_spec, self, disk_name, top=top, base=base):
+            self._do_block_stream_disk(task_spec, target_disk, disk_name, base=base)
 
     def list_blk_sources(self):
         """list domain blocks (aka. domblklist) -- but with sources only"""
@@ -6364,6 +6380,7 @@ class VmPlugin(kvmagent.KvmAgent):
     KVM_QUERY_BLOCKJOB_STATUS = "/vm/volume/queryblockjobstatus"
     KVM_BLOCK_STREAM_VOLUME_PATH = "/vm/volume/blockstream"
     KVM_BLOCK_COMMIT_VOLUME_PATH = "/vm/volume/blockcommit"
+    KVM_BLOCK_PULL_VOLUME_PATH = "/vm/volume/blockpull"
     KVM_TAKE_VOLUMES_SNAPSHOT_PATH = "/vm/volumes/takesnapshot"
     KVM_TAKE_VOLUMES_BACKUP_PATH = "/vm/volumes/takebackup"
     KVM_CANCEL_VOLUME_BACKUP_JOBS_PATH = "/vm/volume/cancel/backupjobs"
@@ -7951,7 +7968,7 @@ class VmPlugin(kvmagent.KvmAgent):
             rsp.success = False
             return jsonobject.dumps(rsp)
 
-        vm.merge_snapshot(cmd)
+        vm.merge_snapshot(cmd, cmd.volume, cmd.srcPath, cmd.destPath, cmd.fullRebase)
         return jsonobject.dumps(rsp)
 
     @staticmethod
@@ -8635,31 +8652,111 @@ host side snapshot files chian:
 
     @kvmagent.replyerror
     def block_commit(self, req):
-        def block_commit_with_qemu_img():
-            top = VolumeTO.get_volume_actual_installpath(cmd.top)
-            base = VolumeTO.get_volume_actual_installpath(cmd.base)
-            linux.qcow2_commit(top, base)
-            return base
-
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = BlockCommitResponse()
+
+        def block_commit_by_qemu_img():
+            try:
+                linux.qcow2_commit(cmd.top, cmd.base)
+            except excepts as err:
+                # err 包含了 top 和 base 有写锁，则继续等待（sblk 可能在其他物理机上执行）
+                # 可能查不到进程信息，只能通过文件是不是被锁住了判断
+                # nfs 会有写锁，所以需要等待（可能不是当前物理机）
+                # locl 会有写锁，所以需要等待（当前物理机）
+                # sblk 会有写锁，所以需要等待（可能不是当前物理机）
+                pass
+
+        def rebase_top_children_to_base(online=False):
+            if cmd.topChildrenInstallPathInDb is None:
+                return
+            for path in cmd.topChildrenInstallPathInDb:
+                if (online and cmd.aliveChainInstallPathInDb is not None and path in cmd.aliveChainInstallPathInDb):
+                    continue
+                linux.qcow2_rebase(cmd.base, path, unsafe_mode=True)
+
+        # commit 期间 mn 断了，会出现那些情形：
+
+        # 离线commit：还在pull（）
+        # 离线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功，此时，中间节点文件还在需要删除
+
+        # 在线pull：还在pull（）
+        # 在线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功，此时，中间节点文件还在需要删除
+
+        def skip():
+            has_commited = False
+            if cmd.topChildrenInstallPathInDb is not None:
+                for path in cmd.topChildrenInstallPathInDb:
+                    if linux.qcow2_get_backing_file(path) != cmd.base:
+                        has_commited = False
+                        break
+                has_commited = True
+            if has_commited:
+                return True
+
+        if skip():
+            rsp.newVolumeInstallPath = cmd.base
+            rsp.size = VmPlugin._get_snapshot_size(rsp.newVolumeInstallPath)
+            return jsonobject.dumps(rsp)
+
         try:
             if not cmd.vmUuid:
-                rsp.newVolumeInstallPath = block_commit_with_qemu_img()
+                block_commit_by_qemu_img()
+                rsp.newVolumeInstallPath = cmd.base
+                rebase_top_children_to_base()
             else:
                 vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
                 vm_state = Vm.VM_STATE_SHUTDOWN if vm is None else vm.state
                 if vm and (vm_state == vm.VM_STATE_RUNNING or vm_state == vm.VM_STATE_PAUSED):
                     rsp.newVolumeInstallPath = vm.do_block_commit(cmd, cmd.volume)
+                    rebase_top_children_to_base(online=True)
                 else:
-                    rsp.newVolumeInstallPath = block_commit_with_qemu_img()
-
-        except kvmagent.KvmError as e:
+                    block_commit_by_qemu_img()
+                    rsp.newVolumeInstallPath = cmd.base
+                    rebase_top_children_to_base()
+        except kvmagent.KvmError as err:
             logger.warn(linux.get_exception_stacktrace())
-            rsp.error = str(e)
+            rsp.error = str(err)
             rsp.success = False
             return jsonobject.dumps(rsp)
 
+        rsp.size = VmPlugin._get_snapshot_size(rsp.newVolumeInstallPath)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def block_pull(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = BlockPullVolumeResponse()
+
+        # pull 期间 mn 断了，会出现那些情形：
+
+        # 离线pull：还在pull（）
+        # 离线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功，此时，中间节点文件还在需要删除
+
+        # 在线pull：还在pull（）
+        # 在线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功，此时，中间节点文件还在需要删除
+
+        if linux.qcow2_get_backing_file(cmd.top) == cmd.base:
+            rsp.newVolumeInstallPath = cmd.top
+            rsp.size = VmPlugin._get_snapshot_size(rsp.newVolumeInstallPath)
+            return jsonobject.dumps(rsp)
+
+        backing_file = "" if cmd.base is None else cmd.base
+        try:
+            if not cmd.vmUuid:
+                linux.qcow2_rebase(backing_file, cmd.top)
+            else:
+                vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
+                vm_state = Vm.VM_STATE_SHUTDOWN if vm is None else vm.state
+                if vm and (vm_state == vm.VM_STATE_RUNNING or vm_state == vm.VM_STATE_PAUSED):
+                    vm.block_stream_disk(cmd, cmd.volume, cmd.base)
+                else:
+                    linux.qcow2_rebase(backing_file, cmd.top)
+        except kvmagent.KvmError as err:
+            logger.warn(linux.get_exception_stacktrace())
+            rsp.error = str(err)
+            rsp.success = False
+
+        rsp.newVolumeInstallPath = cmd.top
         rsp.size = VmPlugin._get_snapshot_size(rsp.newVolumeInstallPath)
         return jsonobject.dumps(rsp)
 
@@ -10495,6 +10592,7 @@ host side snapshot files chian:
         http_server.register_async_uri(self.KVM_CANCEL_VOLUME_BACKUP_JOB_PATH, self.cancel_backup_job)
         http_server.register_async_uri(self.KVM_BLOCK_STREAM_VOLUME_PATH, self.block_stream)
         http_server.register_async_uri(self.KVM_BLOCK_COMMIT_VOLUME_PATH, self.block_commit)
+        http_server.register_async_uri(self.KVM_BLOCK_PULL_VOLUME_PATH, self.block_pull)
         http_server.register_async_uri(self.KVM_MERGE_SNAPSHOT_PATH, self.merge_snapshot_to_volume)
         http_server.register_async_uri(self.KVM_LOGOUT_ISCSI_TARGET_PATH, self.logout_iscsi_target, cmd=LoginIscsiTargetCmd())
         http_server.register_async_uri(self.KVM_LOGIN_ISCSI_TARGET_PATH, self.login_iscsi_target)

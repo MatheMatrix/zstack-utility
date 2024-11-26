@@ -87,8 +87,7 @@ class CreateDataVolumeWithBackingRsp(AgentRsp):
 class CheckBitsRsp(AgentRsp):
     def __init__(self):
         super(CheckBitsRsp, self).__init__()
-        self.existing = False
-
+        self.bitsStatus = {}
 
 class GetVolumeSizeRsp(AgentRsp):
     def __init__(self):
@@ -871,7 +870,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         install_abs_path = translate_absolute_path_from_install_path(cmd.installPath)
 
-        with lvm.RecursiveOperateLv(install_abs_path, shared=False):
+        shared = cmd.addons and cmd.addons.lockopt and cmd.addons.lockopt == "skiplv"
+        with lvm.RecursiveOperateLv(install_abs_path, shared=shared):
             if cmd.force:
                 lvm.resize_lv(install_abs_path, cmd.size, True)
             else:
@@ -1319,8 +1319,21 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     def check_bits(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = CheckBitsRsp()
-        install_abs_path = translate_absolute_path_from_install_path(cmd.path)
-        rsp.existing = lvm.lv_exists(install_abs_path)
+
+        class BitsStatus:
+            def __init__(self):
+                self.existing = False
+                self.active = False
+
+        if cmd.paths is not None:
+            for path in cmd.paths:
+                install_abs_path = translate_absolute_path_from_install_path(path)
+                bitsStatus = BitsStatus()
+                bitsStatus.existing = lvm.lv_exists(install_abs_path)
+                if bitsStatus.existing:
+                    bitsStatus.active = lvm.lv_is_active(install_abs_path)
+                rsp.bitsStatus[path] = bitsStatus
+
         if cmd.vgUuid is not None and lvm.vg_exists(cmd.vgUuid):
             rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid, False)
         return jsonobject.dumps(rsp)
