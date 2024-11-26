@@ -87,8 +87,7 @@ class CreateDataVolumeWithBackingRsp(AgentRsp):
 class CheckBitsRsp(AgentRsp):
     def __init__(self):
         super(CheckBitsRsp, self).__init__()
-        self.existing = False
-
+        self.bitsStatus = {}
 
 class GetVolumeSizeRsp(AgentRsp):
     def __init__(self):
@@ -110,6 +109,7 @@ class ResizeVolumeRsp(AgentRsp):
 class ExtendMergeTargetRsp(AgentRsp):
     def __init__(self):
         super(ExtendMergeTargetRsp, self).__init__()
+        self.size = None
 
 
 class ExtendMigarteTargetRsp(AgentRsp):
@@ -121,6 +121,13 @@ class OfflineMergeSnapshotRsp(AgentRsp):
     def __init__(self):
         super(OfflineMergeSnapshotRsp, self).__init__()
         self.deleted = False
+        self.size = None
+
+
+class OfflineCommitSnapshotRsp(AgentRsp):
+    def __init__(self):
+        super(OfflineCommitSnapshotRsp, self).__init__()
+        self.size = None
 
 
 class ConvertVolumeFormatRsp(AgentRsp):
@@ -336,6 +343,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     EXTEND_MERGE_TARGET_PATH = "/sharedblock/snapshot/extendmergetarget"
     EXTEND_MIGRATE_TARGET_PATH = "/sharedblock/volume/extendmigratetarget"
     OFFLINE_MERGE_SNAPSHOT_PATH = "/sharedblock/snapshot/offlinemerge"
+    OFFLINE_COMMIT_SNAPSHOT_PATH = "/sharedblock/snapshot/offlinecommit"
     CREATE_EMPTY_VOLUME_PATH = "/sharedblock/volume/createempty"
     CREATE_DATA_VOLUME_WITH_BACKING_PATH = "/sharedblock/volume/createwithbacking"
     CHECK_BITS_PATH = "/sharedblock/bits/check"
@@ -388,6 +396,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.EXTEND_MERGE_TARGET_PATH, self.extend_merge_target)
         http_server.register_async_uri(self.EXTEND_MIGRATE_TARGET_PATH, self.extend_migrate_target)
         http_server.register_async_uri(self.OFFLINE_MERGE_SNAPSHOT_PATH, self.offline_merge_snapshots)
+        http_server.register_async_uri(self.OFFLINE_COMMIT_SNAPSHOT_PATH, self.offline_commit_snapshots)
         http_server.register_async_uri(self.CREATE_EMPTY_VOLUME_PATH, self.create_empty_volume)
         http_server.register_async_uri(self.CONVERT_IMAGE_TO_VOLUME, self.convert_image_to_volume)
         http_server.register_async_uri(self.CHECK_BITS_PATH, self.check_bits)
@@ -1212,6 +1221,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             current_size = int(lvm.get_lv_size(dst_abs_path))
             if current_size < measure_size:
                 lvm.extend_lv_from_cmd(dst_abs_path, measure_size, cmd, extend_thin_by_specified_size=True)
+            rsp.size = max(measure_size, current_size)
 
         rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
         return jsonobject.dumps(rsp)
@@ -1261,6 +1271,21 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                     qcow2.create_template_with_task_daemon(dst_abs_path, tmp_abs_path, task_spec=cmd)
                     lvm.lv_rename(tmp_abs_path, dst_abs_path, overwrite=True)
 
+        _, rsp.size = linux.qcow2_size_and_actual_size(dst_abs_path)
+        rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def offline_commit_snapshots(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = OfflineCommitSnapshotRsp()
+        top = translate_absolute_path_from_install_path(cmd.top)
+        base = translate_absolute_path_from_install_path(cmd.base)
+
+        with lvm.RecursiveOperateLv(top, shared=True):
+            linux.qcow2_commit(top, base)
+
+        _, rsp.size = linux.qcow2_size_and_actual_size(base)
         rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
         return jsonobject.dumps(rsp)
 
@@ -1319,8 +1344,21 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     def check_bits(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = CheckBitsRsp()
-        install_abs_path = translate_absolute_path_from_install_path(cmd.path)
-        rsp.existing = lvm.lv_exists(install_abs_path)
+
+        class BitsStatus:
+            def __init__(self):
+                self.existing = False
+                self.active = False
+
+        if cmd.paths is not None:
+            for path in cmd.paths:
+                install_abs_path = translate_absolute_path_from_install_path(path)
+                bitsStatus = BitsStatus()
+                bitsStatus.existing = lvm.lv_exists(install_abs_path)
+                if bitsStatus.existing:
+                    bitsStatus.active = lvm.lv_is_active(install_abs_path)
+                rsp.bitsStatus[path] = bitsStatus
+
         if cmd.vgUuid is not None and lvm.vg_exists(cmd.vgUuid):
             rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid, False)
         return jsonobject.dumps(rsp)
