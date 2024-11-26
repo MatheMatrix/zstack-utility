@@ -9,6 +9,7 @@ import subprocess
 import signal
 import getpass
 import urlparse
+import xml.etree.ElementTree as ET
 
 import gzip
 import simplejson
@@ -7058,7 +7059,7 @@ class ConfiguredCollectLogCmd(Command):
     def clear_log_file(self, log_name):
         if "/" in log_name:
             error("clear log failed, value[%s] is invalid" % log_name)
-        
+
         log_path = self.ui_log_download_dir + log_name
         if os.path.isfile(log_path):
             shell('rm -f %s' % log_path)
@@ -7073,7 +7074,7 @@ class ConfiguredCollectLogCmd(Command):
         if args.clear_log:
             self.clear_log_file(args.clear_log)
             return
-        
+
         # dump mn status
         mn_pid = get_management_node_pid()
         if mn_pid:
@@ -7850,6 +7851,24 @@ class MNServerPortChange(Command):
     def install_argparse_arguments(self, parser):
         parser.add_argument('--update_value', help='Modified port value', required=True)
 
+    def update_tomcat_port(self, xml_file_path, new_port):
+        tree = ET.parse(xml_file_path)
+        root = tree.getroot()
+
+        found = False
+        old_port = None
+        for connector in root.iter('Connector'):
+            if connector.get('executor') == 'tomcatThreadPool':
+                old_port = connector.get('port')
+                connector.set('port', str(new_port))
+                found = True
+                break
+        if not found or not old_port:
+            raise CtlError("Cannot find tomcat port in the file.")
+        tree.write(xml_file_path, encoding='utf-8', xml_declaration=True)
+        success_info = 'Successfully modify the port from %s to %s, please restart mn to take effect' % (old_port, new_port)
+        info(success_info)
+
     def run(self, args):
         if not os.path.exists(ctl.properties_file_path):
             raise CtlError('cannot find properties file(%s)' % ctl.properties_file_path)
@@ -7859,20 +7878,10 @@ class MNServerPortChange(Command):
             raise CtlError('cannot find properties file(%s)' % ctl.tomcat_xml_file_path)
         ctl.write_property('RESTFacade.port', args.update_value)
         ctl.write_ui_property("mn_port", args.update_value)
-        original_port = shell(
-            ''' awk '/<Connector executor=\"tomcatThreadPool\"  port=\"[0-9]+\"/ { match($0, /port=\"([0-9]+)\"/, arr); print arr[1] }' %s''' % ctl.tomcat_xml_file_path).strip(
-            '\t\n\r')
-        if len(original_port) == 0:
-            error = "tomcat original_port no found"
-            logger.debug(error)
-            raise CtlError(error)
-        shell(
-            "sed -i 's/<Connector executor=\"tomcatThreadPool\"  port=\"[0-9]\+\"/<Connector executor=\"tomcatThreadPool\"  port=\"%s\"/' %s" % (
-                args.update_value, ctl.tomcat_xml_file_path))
-        linux.sync_file(ctl.tomcat_xml_file_path)
-        success_info = 'Successfully modify the port from %s to %s, please restart mn to take effect' % (original_port, args.update_value)
-        info(success_info)
-        logger.debug(success_info)
+        try:
+            self.update_tomcat_port(ctl.tomcat_xml_file_path, args.update_value)
+        except ET.ParseError as e:
+            raise CtlError("Error parsing Tomcat XML configuration: %s" % e)
 
 class SetEnvironmentVariableCmd(Command):
     PATH = os.path.join(ctl.USER_ZSTACK_HOME_DIR, "zstack-ctl/ctl-env")
@@ -8268,7 +8277,7 @@ class UpgradeManagementNodeCmd(Command):
 
                 copyfile(custom_pcidevice_xml_backup_path, os.path.join(custom_pcidevice_xml_path, 'customPciDevices.xml'))
                 info('successfully restored the customPciDevices.xml')
-                
+
             def update_gray_upgrade_json():
                 info('update the grayUpgrade.json ...')
                 gray_upgrade_json_backup_path = os.path.join(upgrade_tmp_dir, 'zstack/WEB-INF/classes/grayUpgrade/grayUpgrade.json')
