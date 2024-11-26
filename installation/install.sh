@@ -665,6 +665,9 @@ set_tomcat_config() {
     tomcat_config_path=$ZSTACK_INSTALL_ROOT/apache-tomcat/conf
     cp $tomcat_config_path/server.xml $tomcat_config_path/server.xml.bak || true
 
+    # set global var `MN_PORT`
+    get_mn_port()
+
     cat > $tomcat_config_path/server.xml <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <Server port="8005" shutdown="SHUTDOWN">
@@ -683,7 +686,7 @@ set_tomcat_config() {
   </GlobalNamingResources>
 
   <Service name="Catalina">
-    <Connector executor="tomcatThreadPool" port="8080" protocol="HTTP/1.1"
+    <Connector executor="tomcatThreadPool" port="$MN_PORT" protocol="HTTP/1.1"
                connectionTimeout="$new_timeout"
                redirectPort="8443"
                maxParameterCount="1000"
