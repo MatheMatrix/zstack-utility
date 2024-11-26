@@ -1635,7 +1635,7 @@ if __name__ == "__main__":
             return
 
         shell_cmd = shell.ShellCmd(
-            "/bin/cp -f %s %s && chmod 755 %s" % (KVMAGENT_SHUTDOWN_PATH, KVMAGENT_SHUTDOWN_INIT_PATH), None, False)
+            "/bin/cp -f %s %s && chmod 755 %s" % (KVMAGENT_SHUTDOWN_PATH, KVMAGENT_SHUTDOWN_INIT_PATH, KVMAGENT_SHUTDOWN_INIT_PATH), None, False)
         shell_cmd(False)
         if shell_cmd.return_code != 0:
             logger.debug("failed to copy %s to %s,%s, stdout: %s, stderr: %s" % (
