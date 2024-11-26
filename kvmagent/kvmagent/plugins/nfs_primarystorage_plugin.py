@@ -11,6 +11,7 @@ import traceback
 import zstacklib.utils.uuidhelper as uuidhelper
 from kvmagent import kvmagent
 from kvmagent.plugins.imagestore import ImageStoreClient
+from kvmagent.plugins.shared_block_plugin import GetBackingFileRsp
 from zstacklib.utils import jsonobject
 from zstacklib.utils import lock
 from zstacklib.utils import qemu_img, qcow2
@@ -153,6 +154,13 @@ class MoveBitsRsp(NfsResponse):
 class OfflineMergeSnapshotRsp(NfsResponse):
     def __init__(self):
         super(OfflineMergeSnapshotRsp, self).__init__()
+        self.actualSize = None
+
+class OfflineCommitSnapshotRsp(NfsResponse):
+    def __init__(self):
+        super(OfflineCommitSnapshotRsp, self).__init__()
+        self.actualSize = None
+        self.newInstallPath = None
 
 class GetVolumeSizeRsp(NfsResponse):
     def __init__(self):
@@ -238,12 +246,14 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
     REBASE_MERGE_SNAPSHOT_PATH = "/nfsprimarystorage/rebaseandmergesnapshot"
     MOVE_BITS_PATH = "/nfsprimarystorage/movebits"
     OFFLINE_SNAPSHOT_MERGE = "/nfsprimarystorage/offlinesnapshotmerge"
+    OFFLINE_SNAPSHOT_COMMIT = "/nfsprimarystorage/offlinesnapshotcommit"
     REMOUNT_PATH = "/nfsprimarystorage/remount"
     GET_VOLUME_SIZE_PATH = "/nfsprimarystorage/getvolumesize"
     BATCH_GET_VOLUME_SIZE_PATH = "/nfsprimarystorage/batchgetvolumesize"
     PING_PATH = "/nfsprimarystorage/ping"
     GET_VOLUME_BASE_IMAGE_PATH = "/nfsprimarystorage/getvolumebaseimage"
     GET_BACKING_CHAIN_PATH = "/nfsprimarystorage/volume/getbackingchain"
+    GET_BACKING_FILE_PATH = "/nfsprimarystorage/volume/backingfile"
     UPDATE_MOUNT_POINT_PATH = "/nfsprimarystorage/updatemountpoint"
     RESIZE_VOLUME_PATH = "/nfsprimarystorage/volume/resize"
     HARD_LINK_VOLUME = "/nfsprimarystorage/volume/hardlink"
@@ -282,12 +292,14 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.REBASE_MERGE_SNAPSHOT_PATH, self.rebase_and_merge_snapshot)
         http_server.register_async_uri(self.MOVE_BITS_PATH, self.move_bits)
         http_server.register_async_uri(self.OFFLINE_SNAPSHOT_MERGE, self.merge_snapshot_to_volume)
+        http_server.register_async_uri(self.OFFLINE_SNAPSHOT_COMMIT, self.commit_snapshot)
         http_server.register_async_uri(self.REMOUNT_PATH, self.remount)
         http_server.register_async_uri(self.GET_VOLUME_SIZE_PATH, self.get_volume_size)
         http_server.register_async_uri(self.BATCH_GET_VOLUME_SIZE_PATH, self.batch_get_volume_size)
         http_server.register_async_uri(self.PING_PATH, self.ping)
         http_server.register_async_uri(self.GET_VOLUME_BASE_IMAGE_PATH, self.get_volume_base_image_path)
         http_server.register_async_uri(self.GET_BACKING_CHAIN_PATH, self.get_backing_chain)
+        http_server.register_async_uri(self.GET_BACKING_FILE_PATH, self.get_backing_file)
         http_server.register_async_uri(self.UPDATE_MOUNT_POINT_PATH, self.update_mount_point)
         http_server.register_async_uri(self.RESIZE_VOLUME_PATH, self.resize_volume)
         http_server.register_async_uri(self.HARD_LINK_VOLUME, self.hardlink_volume)
@@ -510,6 +522,18 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    def get_backing_file(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetBackingFileRsp()
+
+        backingFile = linux.qcow2_get_backing_file(cmd.installPath)
+        if backingFile:
+            rsp.backingFile = backingFile
+            rsp.size = os.path.getsize(backingFile)
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
     @in_bash
     def ping(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -559,16 +583,33 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
 
         src_path = cmd.srcPath if not cmd.fullRebase else ""
         if linux.qcow2_get_backing_file(cmd.destPath) == src_path:
+            _, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.destPath)
             self._set_capacity_to_response(cmd.uuid, rsp)
             return jsonobject.dumps(rsp)
 
         if not cmd.fullRebase:
             linux.qcow2_rebase(cmd.srcPath, cmd.destPath)
+            self.imagestore_client.clean_meta(cmd.destPath)
         else:
             tmp = os.path.join(os.path.dirname(cmd.destPath), '%s.qcow2' % uuidhelper.uuid())
             qcow2.create_template_with_task_daemon(cmd.destPath, tmp, task_spec=cmd)
             shell.call("mv %s %s" % (tmp, cmd.destPath))
 
+        _, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.destPath)
+        self._set_capacity_to_response(cmd.uuid, rsp)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def commit_snapshot(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = OfflineCommitSnapshotRsp()
+
+        linux.qcow2_commit(cmd.srcPath, cmd.dstPath)
+        linux.update_snapshots_backing_file(cmd.dstPath, cmd.srcChildrenInstallPathInDb, unsafe_mode=True)
+        self.imagestore_client.clean_meta(cmd.dstPath)
+
+        _, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.dstPath)
+        rsp.newInstallPath = cmd.dstPath
         self._set_capacity_to_response(cmd.uuid, rsp)
         return jsonobject.dumps(rsp)
 
