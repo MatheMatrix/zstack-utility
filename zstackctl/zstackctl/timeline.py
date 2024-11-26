@@ -64,8 +64,8 @@ class CloudBusTask(TaskLet):
     def __init__(self, msgid):
         super(CloudBusTask, self).__init__()
         self.task_type = "MESG"
-        self.msg_name = None
-        self.reply_name = None
+        self.msg_name = ""
+        self.reply_name = ""
         self.task_id = msgid
 
     def get_task_name(self):
