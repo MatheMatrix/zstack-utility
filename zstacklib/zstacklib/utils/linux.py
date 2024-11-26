@@ -1068,7 +1068,13 @@ def qcow2_create(dst, size):
     shell.check_run('/usr/bin/qemu-img create -f qcow2 %s %s' % (dst, size))
     os.chmod(dst, 0o660)
 
-def qemu_img_resize(target, size, fmt='qcow2', force=False):
+def qemu_img_resize(target, size, fmt='qcow2', force=False, skip_if_sufficient=False):
+    if skip_if_sufficient:
+        virtual_size, _ = qcow2_size_and_actual_size(target)
+        if virtual_size >= size:
+            logger.debug('skip resize the image[%s] as the virtual size[%s] '
+                         'is already larger than the required size[%s]' % (target, virtual_size, size))
+            return
     fmt_option = '-f %s' % fmt
     force_option = '--shrink' if force else ''
     shell.check_run('/usr/bin/qemu-img resize %s %s %s %s' % (fmt_option, force_option, target, size))
@@ -1150,23 +1156,26 @@ def qcow2_commit(top, base):
     shell.call('%s -f qcow2 -b %s %s' % (qemu_img.subcmd('commit'), base, top))
 
 
-def qcow2_rebase(backing_file, target):
+def qcow2_rebase(backing_file, target, unsafe_mode=False):
     if backing_file:
         fmt = get_img_fmt(backing_file)
         backing_option = '-F %s -b "%s"' % (fmt, backing_file)
     else:
         backing_option = '-b "%s"' % backing_file
 
-    top_virtual_size = int(qcow2_get_virtual_size(target))
-    backing_chain = qcow2_get_backing_chain(target)
-    for idx, bf in enumerate(backing_chain):
-        if idx == len(backing_chain)-1 and get_img_fmt(bf) != 'qcow2':
-            break
-        bf_virtual_size = int(qcow2_get_virtual_size(bf))
-        if bf_virtual_size < top_virtual_size:
-            qemu_img_resize(bf, top_virtual_size)
-        if bf == backing_file:
-            break
+    if unsafe_mode:
+        backing_option = '-u ' + backing_option
+    else:
+        top_virtual_size = int(qcow2_get_virtual_size(target))
+        backing_chain = qcow2_get_backing_chain(target)
+        for idx, bf in enumerate(backing_chain):
+            if idx == len(backing_chain)-1 and get_img_fmt(bf) != 'qcow2':
+                break
+            bf_virtual_size = int(qcow2_get_virtual_size(bf))
+            if bf_virtual_size < top_virtual_size:
+                qemu_img_resize(bf, top_virtual_size)
+            if bf == backing_file:
+                break
 
     with TempAccessible(target):
         shell.call('%s -f qcow2 %s %s' % (qemu_img.subcmd('rebase'), backing_option, target))
