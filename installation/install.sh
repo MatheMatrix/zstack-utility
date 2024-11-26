@@ -662,11 +662,12 @@ set_tomcat_config() {
     new_max_thread_num=400
     new_min_spare_threads=50
     new_max_queue_size=100
+    # call fun, get mn port
+    get_mn_port
+    local current_port=$MN_PORT
+    echo "current tomcat port=$current_port"
     tomcat_config_path=$ZSTACK_INSTALL_ROOT/apache-tomcat/conf
     cp $tomcat_config_path/server.xml $tomcat_config_path/server.xml.bak || true
-
-    # set global var `MN_PORT`
-    get_mn_port()
 
     cat > $tomcat_config_path/server.xml <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -686,7 +687,7 @@ set_tomcat_config() {
   </GlobalNamingResources>
 
   <Service name="Catalina">
-    <Connector executor="tomcatThreadPool" port="$MN_PORT" protocol="HTTP/1.1"
+    <Connector executor="tomcatThreadPool" port="$current_port" protocol="HTTP/1.1"
                connectionTimeout="$new_timeout"
                redirectPort="8443"
                maxParameterCount="1000"
