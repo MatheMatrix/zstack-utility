@@ -1150,23 +1150,27 @@ def qcow2_commit(top, base):
     shell.call('%s -f qcow2 -b %s %s' % (qemu_img.subcmd('commit'), base, top))
 
 
-def qcow2_rebase(backing_file, target):
+def qcow2_rebase(backing_file, target, unsafe_mode=False, skip_resize=False):
     if backing_file:
         fmt = get_img_fmt(backing_file)
         backing_option = '-F %s -b "%s"' % (fmt, backing_file)
     else:
         backing_option = '-b "%s"' % backing_file
 
-    top_virtual_size = int(qcow2_get_virtual_size(target))
-    backing_chain = qcow2_get_backing_chain(target)
-    for idx, bf in enumerate(backing_chain):
-        if idx == len(backing_chain)-1 and get_img_fmt(bf) != 'qcow2':
-            break
-        bf_virtual_size = int(qcow2_get_virtual_size(bf))
-        if bf_virtual_size < top_virtual_size:
-            qemu_img_resize(bf, top_virtual_size)
-        if bf == backing_file:
-            break
+    if unsafe_mode:
+        backing_option = '-u ' + backing_option
+
+    if not skip_resize:
+        top_virtual_size = int(qcow2_get_virtual_size(target))
+        backing_chain = qcow2_get_backing_chain(target)
+        for idx, bf in enumerate(backing_chain):
+            if idx == len(backing_chain)-1 and get_img_fmt(bf) != 'qcow2':
+                break
+            bf_virtual_size = int(qcow2_get_virtual_size(bf))
+            if bf_virtual_size < top_virtual_size:
+                qemu_img_resize(bf, top_virtual_size)
+            if bf == backing_file:
+                break
 
     with TempAccessible(target):
         shell.call('%s -f qcow2 %s %s' % (qemu_img.subcmd('rebase'), backing_option, target))
