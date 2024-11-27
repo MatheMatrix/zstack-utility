@@ -36,17 +36,17 @@ class TraceableShell(object):
             return s.return_code
         self.raise_error(s, cmd)
 
-    def bash_progress_1(self, cmd, func, errorout=True):
-        cmd = self.wrap_cmd(cmd)
-        return bash.bash_progress_1(cmd, func=func, errorout=errorout)
+    def bash_progress_1(self, cmd, func, errorout=True, pipe_fail=False):
+        cmd = self.wrap_bash_cmd(cmd)
+        return bash.bash_progress_1(cmd, func=func, errorout=errorout, pipe_fail=pipe_fail)
 
     def bash_roe(self, cmd, errorout=False, ret_code=0, pipe_fail=False):
-        cmd = self.wrap_cmd(cmd)
+        cmd = self.wrap_bash_cmd(cmd)
         return bash.bash_roe(cmd, errorout=errorout, ret_code=ret_code, pipe_fail=pipe_fail)
 
     def bash_errorout(self, cmd, code=0, pipe_fail=False):
-        cmd = self.wrap_cmd(cmd)
-        _, o, _ = self.bash_roe(cmd, errorout=True, ret_code=code, pipe_fail=pipe_fail)
+        cmd = self.wrap_bash_cmd(cmd)
+        _, o, _ = bash.bash_roe(cmd, errorout=True, ret_code=code, pipe_fail=pipe_fail)
         return o
 
     def wrap_cmd(self, cmd):
@@ -57,6 +57,10 @@ class TraceableShell(object):
         if self.id:
             cmd = _build_id_cmd(self.id) + "; " + cmd
         return cmd
+
+    def wrap_bash_cmd(self, cmd):
+        cmd = cmd.replace("'", "'\\''")
+        return "bash -c '%s'" % self.wrap_cmd(cmd) if self.id else cmd
 
     def raise_error(self, s, origin_cmd):
         # type: (shell.ShellCmd, str) -> None

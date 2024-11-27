@@ -1,6 +1,7 @@
 import unittest
 import time
-from zstacklib.utils.traceable_shell import TraceableShell
+import threading
+from zstacklib.utils.traceable_shell import TraceableShell, cancel_job_by_api
 from zstacklib.utils import shell
 
 class TestTraceableShell(unittest.TestCase):
@@ -72,6 +73,37 @@ class TestTraceableShell(unittest.TestCase):
             self.shell.check_run("sleep 2")
         self.assertIn("execution timeout", str(e.exception))
         self.assertIn("sleep", str(e.exception))
+
+    def test_timeout_error4(self):
+        self.shell = TraceableShell(id="test_id", deadline=int(time.time()) + 1)
+        r, o, e = self.shell.bash_roe("sleep 2", pipe_fail=True)
+        self.assertEqual(r, 124)
+
+
+    def test_shell_call_traceable(self):
+        def execute_shell_command(command):
+            shell = TraceableShell(id="fake_shell_id", deadline=0)
+            shell.call(command)
+
+        command = "echo 'Hello, World!'; sleep 10"
+        thread = threading.Thread(target=execute_shell_command, args=(command,))
+        thread.start()
+
+        time.sleep(1)
+        self.assertTrue(cancel_job_by_api("fake_shell_id"))
+
+
+    def test_bash_call_traceable(self):
+        def execute_shell_command(command):
+            shell = TraceableShell(id="fake_bash_id", deadline=0)
+            shell.bash_errorout(command)
+
+        command = "echo 'Hello, World!'; sleep 10;"
+        thread = threading.Thread(target=execute_shell_command, args=(command,))
+        thread.start()
+
+        time.sleep(1)
+        self.assertTrue(cancel_job_by_api("fake_bash_id"))
 
 
     def tearDown(self):

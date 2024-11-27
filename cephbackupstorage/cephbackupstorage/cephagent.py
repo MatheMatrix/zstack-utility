@@ -1066,9 +1066,9 @@ class CephAgent(object):
 
             logger.debug("content-length is: %s" % total)
 
-            _, _, err = shell.bash_progress_1('set -o pipefail;wget --no-check-certificate -O - %s 2>%s| rbd import '
+            _, _, err = shell.bash_progress_1('wget --no-check-certificate -O - %s 2>%s| rbd import '
                                               '--image-format 2 - %s/%s ' % (cmd.url, PFILE, pool, tmp_image_name)
-                                              , _getProgress)
+                                              , _getProgress, pipe_fail=True)
             if err:
                 raise err
             actual_size = linux.get_file_size_by_http_head(cmd.url)
@@ -1106,8 +1106,9 @@ class CephAgent(object):
 
             get_content_from_pipe_cmd = "pv -s %s -n %s 2>%s" % (actual_size, pipe_path, PFILE)
             import_from_pipe_cmd = "rbd import --image-format 2 - %s/%s" % (pool, tmp_image_name)
-            _, _, err = shell.bash_progress_1('set -o pipefail; %s & %s | %s' %
-                                        (scp_to_pipe_cmd, get_content_from_pipe_cmd, import_from_pipe_cmd), _get_progress)
+            _, _, err = shell.bash_progress_1('%s & %s | %s' %
+                                        (scp_to_pipe_cmd, get_content_from_pipe_cmd, import_from_pipe_cmd),
+                                              _get_progress, pipe_fail=True)
 
             if ssh_pswd_file:
                 linux.rm_file_force(ssh_pswd_file)
