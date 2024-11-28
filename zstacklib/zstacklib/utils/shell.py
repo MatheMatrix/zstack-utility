@@ -46,8 +46,13 @@ class ShellCmd(object):
         self.stderr = None
         self.return_code = None
 
-    def raise_error(self):
-        err = []
+    def raise_error(self, err=()):
+        """
+        :param err: extend error message
+        :return:
+        """
+        if err is ():
+            err = []
         err.append('failed to execute shell command: %s' % self.cmd.split(' ', 1)[0])
         err.append('return code: %s' % self.process.returncode)
         err.append('stdout: %s' % self.stdout)
