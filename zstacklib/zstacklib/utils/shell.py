@@ -47,6 +47,10 @@ class ShellCmd(object):
         self.return_code = None
 
     def raise_error(self, err=()):
+        """
+        :param err: extend error message
+        :return:
+        """
         if err is ():
             err = []
         err.append('failed to execute shell command: %s' % self.cmd.split(' ', 1)[0])

@@ -1295,11 +1295,11 @@ class CephAgent(plugin.TaskManager):
         traceable_bash = traceable_shell.get_shell(cmd)
         ssh_cmd, tmp_file = linux.build_sshpass_cmd(dst_mon_addr, dst_mon_passwd, "tee >(md5sum >/tmp/%s_dst_md5) | rbd import-diff - %s"
                                                     % (resource_uuid, dst_install_path), dst_mon_user, dst_mon_port)
-        r, _, e = traceable_bash.bash_roe('set -o pipefail; rbd export-diff {FROM_SNAP} {SRC_INSTALL_PATH} - | tee >(md5sum >/tmp/{RESOURCE_UUID}_src_md5) | {SSH_CMD}'.format(
+        r, _, e = traceable_bash.bash_roe('rbd export-diff {FROM_SNAP} {SRC_INSTALL_PATH} - | tee >(md5sum >/tmp/{RESOURCE_UUID}_src_md5) | {SSH_CMD}'.format(
             RESOURCE_UUID=resource_uuid,
             SSH_CMD=ssh_cmd,
             SRC_INSTALL_PATH=src_install_path,
-            FROM_SNAP='--from-snap ' + parent_uuid if parent_uuid != '' else ''))
+            FROM_SNAP='--from-snap ' + parent_uuid if parent_uuid != '' else ''), pipe_fail=True)
         linux.rm_file_force(tmp_file)
         if r != 0:
             logger.error('failed to migrate volume %s: %s' % (src_install_path, e))
