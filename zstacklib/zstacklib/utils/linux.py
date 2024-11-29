@@ -1611,7 +1611,6 @@ def detach_interface_from_bridge(interface, bridge_name):
 
 def attach_interface_to_bridge(interface, bridge_name, l2_network_uuid):
     ip_link_set_net_device_master(interface, bridge_name)
-    set_bridge_alias_using_phy_nic_name(bridge_name, interface)
     set_device_uuid_alias(interface, l2_network_uuid)
 
 
