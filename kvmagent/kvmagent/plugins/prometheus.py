@@ -1421,19 +1421,15 @@ def add_gpu_pci_device_address(type, pci_device_address, gpu_serial):
 
 def check_gpu_status_and_save_gpu_status(type, metrics):
     pci_device_address_list = gpu_devices.get(type, set())
-    for pci_device_address, gpu_serial in pci_device_address_list:
-        gpuStatus, gpu_status_int_value = convert_pci_status_to_int(pci_device_address)
-        if gpu_status_int_value == 2:
-            pci_device_address_list.discard((pci_device_address, gpu_serial))
-            gpu_devices[type] = pci_device_address_lis
-            continue
-
-        metrics['host_gpu_status'].add_metric([pci_device_address, gpuStatus, gpu_serial], gpu_status_int_value)
+    pcis_status = get_pci_status_from_type(type)
+    for pci_device_address, gpuStatus in pcis_status.items():
+        metrics['host_gpu_status'].add_metric([pci_device_address, gpuStatus], conver_pci_status_to_int(gpuStatus))
         handle_gpu_status(gpuStatus, pci_device_address)
 
 
 def collect_nvidia_gpu_status():
     metrics = get_gpu_metrics()
+    check_gpu_status_and_save_gpu_status("NVIDIA", metrics)
 
     if has_nvidia_smi() is False:
         return metrics.values()
@@ -1441,7 +1437,6 @@ def collect_nvidia_gpu_status():
     r, gpu_info = bash_ro(
         "nvidia-smi --query-gpu=power.draw,temperature.gpu,fan.speed,utilization.gpu,utilization.memory,index,gpu_bus_id,gpu_serial --format=csv,noheader")
     if r != 0:
-        check_gpu_status_and_save_gpu_status("NIVIDIA", metrics)
         return metrics.values()
 
     gpu_index_mapping_pciaddress = {}
@@ -1452,7 +1447,7 @@ def collect_nvidia_gpu_status():
         if len(pci_device_address.split(':')[0]) == 8:
             pci_device_address = pci_device_address[4:].lower()
 
-        add_gpu_pci_device_address("NIVIDIA", pci_device_address, gpu_serial)
+        add_gpu_pci_device_address("NVIDIA", pci_device_address, gpu_serial)
 
         add_metrics('host_gpu_power_draw', info[0].replace('W', '').strip(), [pci_device_address, gpu_serial], metrics)
         add_metrics('host_gpu_temperature', info[1].strip(), [pci_device_address, gpu_serial], metrics)
@@ -1462,7 +1457,6 @@ def collect_nvidia_gpu_status():
                     metrics)
         gpu_index_mapping_pciaddress[info[5].strip()] = pci_device_address
 
-    check_gpu_status_and_save_gpu_status("NIVIDIA", metrics)
     r, gpu_pci_rx_tx = bash_ro("nvidia-smi dmon -c 1 -s t")
     if r != 0:
         return metrics.values()
@@ -1491,13 +1485,12 @@ def collect_nvidia_gpu_status():
 
 def collect_hy_gpu_status():
     metrics = get_gpu_metrics()
-
+    check_gpu_status_and_save_gpu_status("HY", metrics)
     if has_hy_smi() is False:
         return metrics.values()
 
     r, gpu_info = bash_ro('hy-smi --showuse --showmemuse  --showpower --showtemp --showserial --showbus --json')
     if r != 0:
-        check_gpu_status_and_save_gpu_status("HY", metrics)
         return metrics.values()
 
     gpu_info_json = json.loads(gpu_info)
@@ -1513,20 +1506,18 @@ def collect_hy_gpu_status():
         add_metrics('host_gpu_utilization', card_data.get("DCU use (%)"), [pci_device_address, gpu_serial], metrics)
         add_metrics('host_gpu_memory_utilization', card_data.get("DCU memory use (%)"), [pci_device_address, gpu_serial],
                     metrics)
-    check_gpu_status_and_save_gpu_status("HY", metrics)
     return metrics.values()
 
 
 def collect_amd_gpu_status():
     metrics = get_gpu_metrics()
-
+    check_gpu_status_and_save_gpu_status("AMD", metrics)
     if has_rocm_smi() is False:
         return metrics.values()
 
     r, gpu_info = bash_ro(
         'rocm-smi --showpower --showtemp  --showmemuse --showuse --showfan --showbus  --showserial --json')
     if r != 0:
-        check_gpu_status_and_save_gpu_status("AMD", metrics)
         return metrics.values()
 
     gpu_info_json = json.loads(gpu_info.strip())
@@ -1542,7 +1533,6 @@ def collect_amd_gpu_status():
         add_metrics('host_gpu_utilization', card_data.get('GPU use (%)'), [pci_device_address, gpu_serial], metrics)
         add_metrics('host_gpu_memory_utilization', card_data.get('GPU Memory Allocated (VRAM%)'),
                     [pci_device_address, gpu_serial], metrics)
-    check_gpu_status_and_save_gpu_status("AMD", metrics)
     return metrics.values()
 
 
@@ -1562,16 +1552,27 @@ def add_metrics(metric_name, value, labels, metrics):
 
 
 @in_bash
-def convert_pci_status_to_int(pci_address):
-    r, pci_status = bash_ro("lspci -s %s" % pci_address)
-    if r != 0:
-        return "no_exist", 2
+def get_pci_status_from_type(pci_class_type):
+    pcis_status = {}
+    r, pci_infos = bash_ro("lspci -D |grep -i %s" % pci_class_type)
+    if r != 0 or pci_infos.strip() == "":
+        return pcis_status
 
-    if 'rev ff' in pci_status:
-        return "critical", 0
+    for pci_info in pci_infos.splitlines():
+        pci = pci_info.split(" ", 1)
+        add_gpu_pci_device_address(pci_class_type, pci[0], None)
+        if "rev ff" in pci[1]:
+            pcis_status[pci[0]] = 'critical'
+        else:
+            pcis_status[pci[0]] = 'normal'
 
-    return "nominal", 1
+    return pcis_status
 
+def conver_pci_status_to_int(gpu_status):
+    if gpu_status == 'critical':
+        return 0
+    else:
+        return 1
 
 def has_hy_smi():
     return shell.run("which hy-smi") == 0
