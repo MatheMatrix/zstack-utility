@@ -1,9 +1,12 @@
+import os
+
 from zstacklib.utils import log, linux, thread
 
 import re
 import random
 from string import whitespace
 from zstacklib.utils import bash
+from zstacklib.utils import shell
 
 GLLK_BEGIN = 65
 VGLK_BEGIN = 66
@@ -94,6 +97,9 @@ class SanlockClientStatus(object):
                 elif k == 'renewal_last_attempt': self.renewal_last_attempt = int(v)
                 elif k == 'renewal_last_success': self.renewal_last_success = int(v)
                 elif k == 'io_timeout': self.io_timeout = int(v)
+                elif k == 'space_dead': self.space_dead = int(v)
+                elif k == 'sector_size': self.sector_size = int(v)
+                elif k == 'align_size': self.align_size = int(v)
             except ValueError:
                 logger.warn("unexpected sanlock client status: %s" % line)
 
@@ -112,10 +118,19 @@ class SanlockClientStatus(object):
     def get_io_timeout(self):
         return self.io_timeout
 
+    def is_space_dead(self):
+        return bool(self.space_dead)
+
+    def get_sector_size(self):
+        return self.sector_size
+
+    def get_align_size(self):
+        return self.align_size
+
 
 class SanlockClientStatusParser(object):
-    def __init__(self, status=None):
-        self.status = status
+    def __init__(self):
+        self.status = self._init()
         self.lockspace_records = None  # type: list[SanlockClientStatus]
 
     def get_lockspace_records(self):
@@ -129,9 +144,9 @@ class SanlockClientStatusParser(object):
                 return r
         return None
 
-    @linux.retry(3, 1)
-    def _get_sanlock_status(self):
-        return bash.bash_errorout("sanlock client status -D")
+    @linux.ignore_error_retry(times=3, sleep_time=1, return_after_exception="")
+    def _init(self):
+        return bash.bash_errorout("timeout 10 sanlock client status -D")
 
     def _do_get_lockspace_records(self):
         records = []
@@ -159,8 +174,6 @@ class SanlockClientStatusParser(object):
         return records
 
     def get_config(self, config_key):
-        if self.status is None:
-            self.status = self._get_sanlock_status()
         for line in self.status.splitlines():
             if config_key in line:
                 return line.strip().split("=")[-1]
@@ -334,7 +347,7 @@ class HostsState(object):
 
     def is_host_dead(self, host_id):
         return self.hosts.get(str(host_id)) == "DEAD"
-    
+
     def get_live_min_hostid(self):
         ids = [int(id) for id in self.hosts.keys() if self.is_host_live(id)]
         if len(ids) == 0:
@@ -361,12 +374,17 @@ def direct_dump_resource(path, offset, size=SMALL_ALIGN_SIZE):
     return bash.bash_roe("sanlock direct dump %s:%s:%s" % (path, offset, size))
 
 @bash.in_bash
-def vertify_delta_lease(vg_uuid, host_id):
-    return bash.bash_r("sanlock client read -s lvm_%s:%s:/dev/mapper/%s-lvmlock:0" % (vg_uuid, host_id, vg_uuid))
+@linux.ignore_error_retry(times=3, sleep_time=random.uniform(0.1, 2), return_after_exception=True)
+def delta_lease_corrupted(vg_uuid, host_id, sector_size, align_size):
+    bash.bash_errorout("sanlock direct read_leader -s lvm_%s:%s:/dev/mapper/%s-lvmlock:0 -A %sM -Z %s" %
+                       (vg_uuid, host_id, vg_uuid, align_size/SMALL_ALIGN_SIZE, sector_size))
+    return False
 
 @bash.in_bash
-def vertify_paxos_lease(vg_uuid, resource_name, offset):
-    return bash.bash_r("sanlock client read -r lvm_%s:%s:/dev/mapper/%s-lvmlock:%s" % (vg_uuid, resource_name, vg_uuid, offset))
+@linux.ignore_error_retry(times=3, sleep_time=random.uniform(0.1, 2), return_after_exception=True)
+def paxos_lease_corrupted(vg_uuid, resource_name, offset):
+    bash.bash_errorout("sanlock direct read_leader -r lvm_%s:%s:/dev/mapper/%s-lvmlock:%s" % (vg_uuid, resource_name, vg_uuid, offset))
+    return False
 
 def get_vglks():
     result = []
@@ -433,35 +451,62 @@ def get_lockspace(vg_uuid):
         return o.split()[1].strip()
     return None
 
-@bash.in_bash
+def get_running_host_id(vgUuid):
+    cmd = shell.ShellCmd("sanlock client gets | awk -F':' '/%s/{ print $2 }'" % vgUuid)
+    cmd(is_exception=False)
+    if cmd.stdout.strip() == "":
+        raise Exception("can not get running host id for vg %s" % vgUuid)
+    return cmd.stdout.strip()
+
+
 def check_delta_lease(vg_uuid, host_id):
-    r = vertify_delta_lease(vg_uuid, host_id)
-    if r == 0:
-        return False
-    sector_size = get_sector_size(vg_uuid)
+    sector_size, align_size = get_sector_size_and_align_size(vg_uuid)
+    # the first sector records sector/align size of the entire lock space, we need to verify it
+    if delta_lease_corrupted(vg_uuid, 1, sector_size, align_size):
+        repair_delta_lease(vg_uuid, 1, sector_size, align_size)
+
+    if delta_lease_corrupted(vg_uuid, host_id, sector_size, align_size):
+        repair_delta_lease(vg_uuid, host_id, sector_size, align_size)
+
+
+@bash.in_bash
+def repair_delta_lease(vg_uuid, host_id, sector_size, align_size):
     seek = int(host_id) - 1
-    bash.bash_r("dd if=/dev/mapper/{0}-lvmlock bs={1} count=1 skip=1999 iflag=direct | "
-                "dd of=/dev/mapper/{0}-lvmlock bs={1} seek={2} count=1 oflag=direct".format(vg_uuid, sector_size, seek))
-    return True
+    tf = linux.create_temp_file()
+    bash.bash_r("sanlock direct init -s lvm_{0}:1:{3}:0 -A {4}M -Z {1} && "
+                "dd if={3} of=/dev/mapper/{0}-lvmlock bs={1} seek={2} count=1 oflag=direct"
+                .format(vg_uuid, sector_size, seek, tf, align_size/SMALL_ALIGN_SIZE))
+    os.remove(tf)
+
 
 @bash.in_bash
 def init_vglk_if_need(vg_uuid):
-    sector_size = get_sector_size(vg_uuid)
-    if vertify_paxos_lease(vg_uuid, "VGLK", VGLK_BEGIN * sector_size_to_align_size(sector_size)) == 0:
-        return False
-
-    direct_init_resource("lvm_%s:VGLK:/dev/mapper/%s-lvmlock:%s" % (vg_uuid, vg_uuid, VGLK_BEGIN * sector_size_to_align_size(sector_size)))
-    return True
+    _, align_size = get_sector_size_and_align_size(vg_uuid)
+    vglk_offset = VGLK_BEGIN * align_size
+    hosts_state = get_hosts_state("lvm_" + vg_uuid)
+    # direct init by live host with the smallest hostId
+    if hosts_state is not None and hosts_state.get_live_min_hostid() == int(get_running_host_id(vg_uuid)):
+        direct_init_resource("lvm_%s:VGLK:/dev/mapper/%s-lvmlock:%s" % (vg_uuid, vg_uuid, vglk_offset))
 
 
 @bash.in_bash
-def init_gllk_if_need(vg_uuid):
-    sector_size = get_sector_size(vg_uuid)
-    if vertify_paxos_lease(vg_uuid, "_GLLK_disabled", GLLK_BEGIN * sector_size_to_align_size(sector_size)) == 0 or \
-            vertify_paxos_lease(vg_uuid, "GLLK", GLLK_BEGIN * sector_size_to_align_size(sector_size)) == 0:
+def vglk_corrupted(vg_uuid, align_size=None):
+    if not align_size:
+        _, align_size = get_sector_size_and_align_size(vg_uuid)
+    vglk_offset = VGLK_BEGIN * align_size
+    return paxos_lease_corrupted(vg_uuid, "VGLK", vglk_offset)
+
+
+def init_gllk_if_corrupted(vg_uuid, align_size=None, enable=False):
+    if not align_size:
+        _, align_size = get_sector_size_and_align_size(vg_uuid)
+    gllk_offset = GLLK_BEGIN * align_size
+    if not paxos_lease_corrupted(vg_uuid, "_GLLK_disabled", gllk_offset) or \
+            not paxos_lease_corrupted(vg_uuid, "GLLK", gllk_offset):
         return False
 
-    direct_init_resource("lvm_%s:_GLLK_disabled:/dev/mapper/%s-lvmlock:%s" % (vg_uuid, vg_uuid, GLLK_BEGIN * sector_size_to_align_size(sector_size)))
+    direct_init_resource("lvm_%s:%s:/dev/mapper/%s-lvmlock:%s" % (vg_uuid, "GLLK" if enable else "_GLLK_disabled",
+                                                                  vg_uuid, gllk_offset))
     return True
 
 
@@ -469,22 +514,43 @@ def dd_check_lockspace(path):
     return bash.bash_r("dd if=%s of=/dev/null bs=1M count=1 iflag=direct" % path)
 
 
-def get_sector_size(vg_uuid):
+def get_sector_size_and_align_size(vg_uuid):
+    p = SanlockClientStatusParser()
+    ls = p.get_lockspace_record(vg_uuid)
+    if ls is not None:
+        return ls.get_sector_size(), ls.get_align_size()
+
+    o = bash.bash_o("sanlock client align -s lvm_{0}:1:/dev/mapper/{0}-lvmlock:0 | grep 'align done'".format(vg_uuid)).strip()
+    if o != '':
+        align_size = int(o.split()[-1])
+        if align_size == BIG_ALIGN_SIZE or align_size == SMALL_ALIGN_SIZE:
+            return align_size_to_sector_size(align_size), align_size
+
+    r, o = bash.bash_r("blkid -i -o value -s LOGICAL_SECTOR_SIZE /dev/mapper/%s-lvmlock" % vg_uuid)
+    if r == 0 and o.strip().isdigit():
+        return int(o.strip()), sector_size_to_align_size(int(o.strip()))
+
     r = bash.bash_r("dd if=/dev/mapper/%s-lvmlock bs=%s count=2 skip=%s | grep -E 'VGLK|GLLK'" % (vg_uuid, SMALL_ALIGN_SIZE, GLLK_BEGIN))
     if r == 0:
-        return SECTOR_SIZE_512
+        return SECTOR_SIZE_512, sector_size_to_align_size(SECTOR_SIZE_512)
     r = bash.bash_r("dd if=/dev/mapper/%s-lvmlock bs=%s count=2 skip=%s | grep -E 'VGLK|GLLK'" % (vg_uuid, BIG_ALIGN_SIZE, GLLK_BEGIN))
     if r == 0:
-        return SECTOR_SIZE_4K
-    raise Exception("unable to find sector size")
+        return SECTOR_SIZE_4K, sector_size_to_align_size(SECTOR_SIZE_4K)
+    raise Exception("unable to find sector size, align size for vg %s" % vg_uuid)
 
 def sector_size_to_align_size(sector_size):
-    if sector_size == SECTOR_SIZE_512:
+    if int(sector_size) == SECTOR_SIZE_512:
         return SMALL_ALIGN_SIZE
-    elif sector_size == SECTOR_SIZE_4K:
+    elif int(sector_size) == SECTOR_SIZE_4K:
         return BIG_ALIGN_SIZE
     raise Exception("invalid sector size %s" % sector_size)
 
+def align_size_to_sector_size(align_size):
+    if int(align_size) == SMALL_ALIGN_SIZE:
+        return SECTOR_SIZE_512
+    elif int(align_size) == BIG_ALIGN_SIZE:
+        return SECTOR_SIZE_4K
+    raise Exception("invalid align size %s" % align_size)
 
 class RetryException(Exception):
     pass

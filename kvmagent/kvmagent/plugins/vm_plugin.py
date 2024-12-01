@@ -2917,7 +2917,12 @@ class Vm(object):
                 raise Exception("vhostuser disk %s does not exist" % volume.installPath)
 
             disk = etree.Element('disk', {'type': 'vhostuser', 'device': 'disk', 'snapshot': 'no'})
-            e(disk, 'driver', None, {'name': 'qemu', 'type': volume.format})
+
+            driver_elements = {'name': 'qemu', 'type': volume.format}
+            if volume.hasattr("multiQueues") and volume.multiQueues:
+                driver_elements["queues"] = volume.multiQueues
+            e(disk, 'driver', None, driver_elements)
+
             source = e(disk, 'source', None, {'type': 'unix', 'path': volume.installPath})
             e(source, 'reconnect', None, {'enabled': 'yes', 'timeout': '10'})
 
@@ -5042,8 +5047,10 @@ class Vm(object):
                 e(qcmd, "qemu:arg", attrib={"value": '/usr/share/qemu-kvm/'})
 
             if cmd.qemu64BitPciMmioSetup:
-                e(qcmd, "qemu:arg", attrib={"value": '-fw_cfg'})
-                e(qcmd, "qemu:arg", attrib={"value": 'opt/ovmf/X-PciMmio64Mb,string=98304'})
+                if pci.need_config_pcimmio():
+                    e(qcmd, "qemu:arg", attrib={"value": '-fw_cfg'})
+                    e(qcmd, "qemu:arg", attrib={"value": 'opt/ovmf/X-PciMmio64Mb,string=%s'
+                                                         % pci.get_bars_max_addressable_memory()})
 
             if cmd.coloPrimary:
                 e(qcmd, "qemu:arg", attrib={"value": '-L'})
@@ -5519,7 +5526,12 @@ class Vm(object):
                     raise Exception("vhostuser disk %s does not exist" % _v.installPath)
             
                 disk = etree.Element('disk', {'type': 'vhostuser', 'device': 'disk', 'snapshot': 'no'})
-                e(disk, 'driver', None, {'name': 'qemu', 'type': _v.format})
+
+                driver_elements = {'name': 'qemu', 'type': _v.format}
+                if _v.hasattr("multiQueues") and _v.multiQueues:
+                    driver_elements["queues"] = _v.multiQueues
+                e(disk, 'driver', None, driver_elements)
+
                 source = e(disk, 'source', None, {'type': 'unix', 'path': _v.installPath})
                 e(source, 'reconnect', None, {'enabled': 'yes', 'timeout': '10'})
 
@@ -11241,13 +11253,12 @@ host side snapshot files chian:
 
         @thread.AsyncThread
         @bash.in_bash
-        def deactivate_volume(event_str, file, vm_uuid):
+        def deactivate_volume(event_str, volume, vm_uuid):
             # type: (str, str, str) -> object
-            volume = file.strip().split("'")[1]
-            syslog.syslog("deactivating volume %s for vm %s" % (file, vm_uuid))
+            syslog.syslog("deactivating volume %s for vm %s" % (volume, vm_uuid))
             lock_type = bash.bash_o("lvs --noheading --nolocking -t %s -ovg_lock_type" % volume).strip()
             if "sanlock" not in lock_type:
-                syslog.syslog("%s has no sanlock, skip to deactive" % file)
+                syslog.syslog("%s has no sanlock, skip to deactive" % volume)
                 return
             try:
                 wait_volume_unused(volume)
@@ -11275,10 +11286,13 @@ host side snapshot files chian:
                 logger.info("expected event for zstack op %s, ignore event %s on vm %s" % (vm_op_judger.op, event_str, vm_uuid))
                 return
 
-            out = bash.bash_o("virsh dumpxml %s | grep \"source file='/dev/\"" % vm_uuid).strip().splitlines()
+            out = bash.bash_o("virsh dumpxml %s" % vm_uuid).strip()
             if len(out) != 0:
-                for file in out:
-                    deactivate_volume(event_str, file, vm_uuid)
+                tree = etree.ElementTree(etree.fromstring(out))
+                for disk in tree.iterfind('devices/disk'):
+                    volume = DomainVolume.from_xmlobject(disk)
+                    if volume.source.startswith("/dev/"):
+                        deactivate_volume(event_str, volume.source, vm_uuid)
 
             out = bash.bash_o('virsh dumpxml %s | grep -E "(active|hidden) file="' % vm_uuid).strip().splitlines()
             if len(out) != 0:
