@@ -13,6 +13,7 @@ from zstacklib.utils import lock
 from zstacklib.utils import lvm, sanlock
 from zstacklib.utils import list_ops
 from zstacklib.utils import bash
+from zstacklib.utils import sanlock
 from zstacklib.utils import qemu_img, qcow2
 from zstacklib.utils import traceable_shell
 from zstacklib.utils.report import *
@@ -712,7 +713,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         lvm.check_missing_pv(cmd.vgUuid)
 
         rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
-        rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
+        rsp.hostId = sanlock.get_running_host_id(cmd.vgUuid)
         rsp.vgLvmUuid = lvm.get_vg_lvm_uuid(cmd.vgUuid)
         rsp.hostUuid = cmd.hostUuid
         rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
@@ -1734,6 +1735,10 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
             if sanlock_ls.get_lockspace_record(cur_vg) is None or sanlock_ls.get_lockspace_record(cur_vg).is_space_dead():
                 return "no working lockspace for vg %s on sanlock" % cur_vg
+
+            if sanlock.vglk_corrupted(cur_vg, align_size=sanlock_ls.get_lockspace_record(cur_vg).get_align_size()):
+                return "VGLK of vg %s metadata is corrupted, we will fix it later or please reconnect to the " \
+                       "primary storage now to repair it." % cur_vg
 
             invalid_pv_uuid, err = lvm.get_invalid_pv_uuids(cur_vg, checkIo=False, timeout=60)
             if err:
