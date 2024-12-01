@@ -1166,6 +1166,14 @@ def add_pv(vg_uuid, disk_path, metadata_size):
         raise Exception("disk %s not added to vg %s after vgextend" % (disk_path, vg_uuid))
 
 
+@bash.in_bash
+@linux.retry(times=5, sleep_time=random.uniform(0.1, 3))
+def reduce_pv(vg_uuid, disk_path):
+    bash.bash_errorout("vgreduce %s %s" % (vg_uuid, disk_path))
+    if bash.bash_r("pvs --nolocking -t --readonly %s | grep %s" % (disk_path, vg_uuid)) == 0:
+        raise Exception("disk %s not removed from vg %s after vgreduce" % (disk_path, vg_uuid))
+
+
 def get_vg_size(vgUuid, raise_exception=True):
     r, o, _ = bash.bash_roe("vgs --nolocking -t %s --noheadings --separator : --units b -o vg_size,vg_free,vg_lock_type" % vgUuid, errorout=raise_exception)
     if r != 0:
