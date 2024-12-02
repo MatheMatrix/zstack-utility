@@ -109,12 +109,16 @@ class NoFailurePingRsp(AgentRsp):
         self.disconnectedPSInstallPath = []
 
 
-def translate_absolute_path_from_install_paht(path):
-    if path is None:
+def translate_absolute_path_from_install_path(install_path, ps_uuid_sysid_mapping):
+    if install_path is None:
         raise Exception("install path can not be null")
-    if path.startswith("rbd:"):
-        return path
-    return path.replace("block://", "/dev/disk/by-id/wwn-0x")
+    if install_path.startswith("rbd:"):
+        ps_uuid = install_path.split("/")[-1].split("-")[-1]
+        ps_sysid = ps_uuid_sysid_mapping[ps_uuid]
+        if ps_sysid is None:
+            raise Exception("ps uuid not found in ps uuid and sysid mapping: {}".format(ps_sysid))
+        return "{0}:conf={1}".format(install_path, linux.get_config_path_from_fs_id(ps_sysid))
+    return install_path.replace("block://", "/dev/disk/by-id/wwn-0x")
 
 
 def translate_absolute_path_from_wwn(wwn):
@@ -175,7 +179,7 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
 
     @bash.in_bash
     def _rescan_disk(self, install_path):
-        disk_path = translate_absolute_path_from_install_paht(install_path)
+        disk_path = translate_absolute_path_from_install_path(install_path)
         device_letter = bash.bash_o("ls -al %s | awk -F '/' '{print $NF}'" % disk_path).strip();
         linux.write_file("/sys/block/%s/device/rescan" % device_letter, "1")
 
@@ -183,7 +187,7 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
     def convert_image_cache_to_lun(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         image_path = cmd.imagePath
-        lun_install_path = translate_absolute_path_from_install_paht(cmd.lunInstallPath)
+        lun_install_path = translate_absolute_path_from_install_path(cmd.lunInstallPath)
         r, o, e = bash.bash_roe("qemu-img convert -f qcow2 -O qcow2 %s %s" % (image_path, lun_install_path))
 
         tmp_dir_path = os.path.dirname(image_path)
@@ -212,7 +216,7 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
     @bash.in_bash
     def mount_temp_image_cache_lun(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        lun_install_path = translate_absolute_path_from_install_paht(cmd.lunInstallPath)
+        lun_install_path = translate_absolute_path_from_install_path(cmd.lunInstallPath)
         mount_path = cmd.mountPath
         rsp = AgentRsp()
         r, o, e = bash.bash_roe("file -Ls %s | grep -i ext4" % lun_install_path)
@@ -243,7 +247,7 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
 
         self._rescan_disk(cmd.installPath)
 
-        disk_path = translate_absolute_path_from_install_paht(cmd.installPath)
+        disk_path = translate_absolute_path_from_install_path(cmd.installPath)
         shell.call("qemu-img resize %s %s" % (disk_path, cmd.size))
         ret = linux.qcow2_virtualsize(disk_path)
         rsp.size = ret
@@ -482,7 +486,8 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
         fmt = linux.get_img_fmt(cmd.backupStorageInstallPath)
         if not cmd.concurrency or cmd.concurrency <= 0:
             cmd.concurrency = 4
-        linux.qcow2_convert_to_raw(cmd.backupStorageInstallPath, cmd.primaryStorageInstallPath,
+        primary_storage_install_path = "{0}:conf={1}".format(cmd.primaryStorageInstallPath, linux.get_config_path_from_fs_id(cmd.primaryStorageSysid))
+        linux.qcow2_convert_to_raw(cmd.backupStorageInstallPath, primary_storage_install_path,
                                    "-f", fmt, "-n", "-Wm", str(cmd.concurrency))
         rsp = AgentRsp()
         return jsonobject.dumps(rsp)
@@ -507,7 +512,7 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
         rsp.success = True
 
         for heartbeat_install_path in cmd.psHeartbeatLunInstallPath:
-            heartbeat_lun_path = translate_absolute_path_from_install_paht(heartbeat_install_path)
+            heartbeat_lun_path = translate_absolute_path_from_install_path(heartbeat_install_path, cmd.psUuidSysIdMapping)
             successfully_create_heartbeat = heartbeat_io_check(heartbeat_lun_path)
             if not successfully_create_heartbeat and not heartbeat_install_path.startswith("rbd:"):
                 bash.bash_roe("timeout 120 /usr/bin/rescan-scsi-bus.sh -u >/dev/null")

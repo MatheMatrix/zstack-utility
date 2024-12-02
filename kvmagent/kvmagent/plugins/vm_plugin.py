@@ -1711,7 +1711,8 @@ class IsoCeph(object):
             e(auth, 'secret', attrib={'type': 'ceph', 'uuid': self.iso.secretUuid})
         for minfo in self.iso.monInfo:
             e(source, 'host', None, {'name': minfo.hostname, 'port': str(minfo.port)})
-
+        if self.iso.fsId:
+            e(source, 'config', None, {'file': linux.get_config_path_from_fs_id(self.iso.fsId)})
         e(disk, 'target', None, {'dev': target_dev, 'bus': target_bus_type})
         if bus and unit:
             e(disk, 'address', None, {'type': 'drive', 'bus': bus, 'unit': unit})
@@ -1766,6 +1767,8 @@ class VirtioCeph(object):
             e(auth, 'secret', attrib={'type': 'ceph', 'uuid': self.volume.secretUuid})
         for minfo in self.volume.monInfo:
             e(source, 'host', None, {'name': minfo.hostname, 'port': str(minfo.port)})
+        if self.volume.fsId:
+            e(source, 'config', None, {'file': linux.get_config_path_from_fs_id(self.volume.fsId)})
         e(disk, 'target', None, {'dev': 'vd%s' % self.dev_letter, 'bus': 'virtio'})
         if self.volume.physicalBlockSize:
             e(disk, 'blockio', None, {'physical_block_size': str(self.volume.physicalBlockSize)})
