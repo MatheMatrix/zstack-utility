@@ -9911,6 +9911,9 @@ class ConfigUiCmd(Command):
         # arguments for ui_redis
         parser.add_argument('--redis-password', help="password of zstack_ui redis")
 
+        # arguments for ui_nginx
+        parser.add_argument('--reload-upstream-nginx', help="reload upstream nginx configuration now")
+
     def _configure_remote_node(self, args):
         shell_no_pipe('ssh %s "/usr/bin/zstack-ctl config_ui %s"' % (args.host, ' '.join(ctl.extra_arguments)))
 
@@ -10080,6 +10083,11 @@ class ConfigUiCmd(Command):
         # catalina opts
         if args.catalina_opts:
             ctl.write_ui_property("catalina_opts", args.catalina_opts)
+
+        # ui_nginx configure and reloading
+        if args.reload_upstream_nginx:
+            scmd = Template("runuser -l root -s /bin/bash -c 'bash ${SCRIPT}'")
+            scmd = scmd.substitute(SCRIPT = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'zstack-ui', 'scripts', 'reload-upstream-nginx.sh'))
 
 # For UI 2.0
 class ShowUiCfgCmd(Command):
