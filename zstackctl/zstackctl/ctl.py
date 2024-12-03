@@ -2072,10 +2072,8 @@ class DeployUIDBCmd(Command):
 
         if args.root_password:
             check_existing_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "use zstack_ui"' % (args.root_password, args.host, args.port)
-            drop_mini_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "DROP DATABASE IF EXISTS zstack_mini;"' % (args.root_password, args.host, args.port)
         else:
             check_existing_db = 'mysql --user=root --host=%s --port=%s -e "use zstack_ui"' % (args.host, args.port)
-            drop_mini_db = 'mysql --user=root --host=%s --port=%s -e "DROP DATABASE IF EXISTS zstack_mini;"' % (args.host, args.port)
 
         self.update_db_config()
         cmd = ShellCmd(check_existing_db)
@@ -2113,9 +2111,6 @@ class DeployUIDBCmd(Command):
                     ("db_password", args.zstack_ui_password),
             ]
             ctl.write_ui_properties(properties)
-        if args.drop:
-            drop_mini_db_cmd = ShellCmd(drop_mini_db)
-            drop_mini_db_cmd(True)
         info_and_debug('Successfully deployed zstack_ui database')
 
 class TailLogCmd(Command):
@@ -5895,8 +5890,6 @@ class RestoreMysqlCmd(Command):
         info("Restoring UI database ...")
 
         ui_db_names = ['zstack_ui']
-        if shell_return('gunzip < %s | grep -q \'USE `zstack_mini`;\'' % db_backup_name) == 0:
-            ui_db_names.append('zstack_mini')
 
         for database in ui_db_names:
             command = "mysql -uroot --password=%s -P %s  %s" \
@@ -6277,7 +6270,7 @@ class CollectLogCmd(Command):
     zstack_log_dir = "/var/log/zstack/"
     vrouter_log_dir_list = ["/home/vyos/zvr", "/var/log/zstack"]
     host_log_list = ['zstack.log','zstack-kvmagent.log','zstack-iscsi-filesystem-agent.log',
-                     'zstack-agent/collectd.log','zstack-agent/server.log', 'mini-fencer.log']
+                     'zstack-agent/collectd.log','zstack-agent/server.log']
     bs_log_list = ['zstack-sftpbackupstorage.log','ceph-backupstorage.log','zstack-store/zstore.log']
     ps_log_list = ['ceph-primarystorage.log']
     # management-server.log is not in the same dir, will collect separately
@@ -7956,17 +7949,7 @@ class InstallZstackUiCmd(Command):
         info('found installation script at %s, start installing ZStack web UI' % install_script)
         shell("runuser -l root -s /bin/bash -c 'bash %s > %s'" % (install_script, os.path.join(ui_install_log,'ui-install.log')))
 
-    def install_mini_ui(self):
-        mini_bin = "/opt/zstack-dvd/{}/{}/zstack_mini_server.bin".format(ctl.BASEARCH, ctl.ZS_RELEASE)
-        if not os.path.exists(mini_bin):
-            raise CtlError('cannot find %s, please make sure you have the mini installation package.' % mini_bin)
-        shell('bash {}'.format(mini_bin))
-
     def run(self, args):
-        ui_mode = ctl.read_property('ui_mode')
-        if ui_mode == 'mini':
-            self.install_mini_ui()
-
         if not args.host:
             self._install_to_local(args)
             return
@@ -8931,30 +8914,8 @@ class StopUiCmd(Command):
         if show_info:
             info('successfully stopped the UI server')
 
-    def stop_mini_ui(self):
-        shell_return("systemctl stop zstack-mini")
-        check_status = "zstack-ctl ui_status"
-        (status_code, status_output) = commands.getstatusoutput(check_status)
-        if status_code != 0 or "Running" in status_output:
-            info('failed to stop MINI UI server on the localhost. Use zstack-ctl stop_ui to restart it.')
-            return False
-
-        if "Stopped" in status_output:
-            mini_pid = get_ui_pid('mini')
-            if mini_pid:
-                kill_process(pid, signal.SIGKILL)
-            linux.rm_dir_force("/var/run/zstack/zstack-mini-ui.port")
-            linux.rm_dir_force("/var/run/zstack/zstack-mini-ui.pid")
-            info('successfully stopped the MINI UI server')
-            return True
-
     def run(self, args):
-        ui_mode = ctl.read_property('ui_mode')
-        if ui_mode == "mini":
-            self.stop_zstack_ui(args, show_info=False)
-            self.stop_mini_ui()
-        else :
-            self.stop_zstack_ui(args)
+        self.stop_zstack_ui(args)
 
 # For VDI UI 2.1
 class StopVDIUiCmd(Command):
@@ -9042,12 +9003,10 @@ class DashboardStatusCmd(Command):
         else:
             info('UI status: %s [PID: %s]' % (colored('Stopped', 'red'), pid))
 
-def get_ui_pid(ui_mode='zstack'):
+def get_ui_pid():
     # no need to consider ha because it's not supported any more
     # ha_info_file = '/var/lib/zstack/ha/ha.yaml'
     pidfile = '/var/run/zstack/zstack-ui.pid'
-    if ui_mode == 'mini':
-        pidfile = '/var/run/zstack/zstack-mini-ui.pid'
     if os.path.exists(pidfile):
         with open(pidfile, 'r') as fd:
             pid = fd.readline().strip()
@@ -9079,14 +9038,10 @@ class UiStatusCmd(Command):
             self._remote_status(args.host)
             return
 
-        ui_mode = ctl.read_property('ui_mode')
         # no need to consider ha because it's not supported any more
         #ha_info_file = '/var/lib/zstack/ha/ha.yaml'
         portfile = '/var/run/zstack/zstack-ui.port'
         ui_port = 80
-        if ui_mode == "mini":
-            portfile = '/var/run/zstack/zstack-mini-ui.port'
-            ui_port = 8200
         if os.path.exists(portfile):
             with open(portfile, 'r') as fd2:
                 port = fd2.readline()
@@ -9096,41 +9051,6 @@ class UiStatusCmd(Command):
 
         def write_status(status):
             info('UI status: %s' % status)
-        if ui_mode == "mini":
-            pid = get_ui_pid(ui_mode)
-            check_pid_cmd = ShellCmd('ps %s' % pid)
-            output = check_pid_cmd(is_exception=False)
-            cmd = create_check_ui_status_command(ui_port=ui_port, if_https='--ssl.enabled=true' in output)
-
-            if not cmd:
-                write_status('cannot detect status, no wget and curl installed')
-                return
-
-            cmd(False)
-
-            if cmd.return_code != 0:
-                if cmd.stdout or 'Failed' in cmd.stdout and pid:
-                    write_status('Starting, should be ready in a few seconds')
-                elif pid:
-                    write_status(
-                        '%s, the ui seems to become zombie as it stops responding APIs but the '
-                        'process(PID: %s) is still running. Please stop the node using zstack-ctl stop_ui' %
-                        (colored('Zombie', 'yellow'), pid))
-                else:
-                    write_status(colored('Stopped', 'red'))
-                return False
-            elif 'UP' in cmd.stdout:
-                default_ip = get_ui_address()
-
-                if not default_ip:
-                    info('UI status: %s [PID:%s]' % (colored('Running', 'green'), pid))
-                else:
-                    http = 'https' if '--ssl.enabled=true' in output else 'http'
-                    info('UI status: %s [PID:%s] %s://%s:%s' % (
-                        colored('Running', 'green'), pid, http, default_ip, port))
-            else:
-                write_status(colored('Unknown', 'yellow'))
-            return True
         default_protcol='http'
         if os.path.exists(StartUiCmd.HTTP_FILE):
             with open(StartUiCmd.HTTP_FILE, 'r') as fd2:
@@ -9673,9 +9593,6 @@ class StartUiCmd(Command):
         # arguments for ui_redis
         parser.add_argument('--redis-password', help="zstack_ui redis password")
 
-        # arguments for mini judgment
-        parser.add_argument('--force', help="Force start_ui on mini", action='store_true', default=False)
-
     def _remote_start(self, host, mn_host, mn_port, webhook_host, webhook_port, server_port, log, enable_ssl, ssl_keyalias, ssl_keystore, ssl_keystore_type, ssl_keystore_password, db_url, db_username, db_password):
         if enable_ssl:
             cmd = 'zstack-ctl start_ui --mn-host %s --mn-port %s --webhook-host %s --webhook-port %s --server-port %s --log %s --enable-ssl --ssl-keyalias %s --ssl-keystore %s --ssl-keystore-type %s --ssl-keystore-password %s --db-url %s --db-username %s --db-password %s' % (mn_host, mn_port, webhook_host, webhook_port, server_port, log, ssl_keyalias, ssl_keystore, ssl_keystore_type, ssl_keystore_password, db_url, db_username, db_password)
@@ -9940,30 +9857,6 @@ class StartUiCmd(Command):
         else:
             info('successfully started UI server on the local host %s://%s:%s' % ('https' if args.enable_ssl else 'http', default_ip, args.server_port))
 
-    def run_mini_ui(self):
-        shell_return("systemctl start zstack-mini")
-        @loop_until_timeout(60)
-        def check_ui_status():
-            command = 'zstack-ctl ui_status'
-            (status, output) = commands.getstatusoutput(command)
-            if status != 0:
-                return False
-            return "Running" in output
-
-        if not check_ui_status():
-            info('failed to start MINI UI server on the localhost. Use zstack-ctl start_ui to restart it.')
-            shell('systemctl stop zstack-mini')
-            linux.rm_dir_force("/var/run/zstack/zstack-mini-ui.port")
-            linux.rm_dir_force("/var/run/zstack/zstack-mini-ui.pid")
-            return False
-
-        default_ip = get_default_ip()
-        mini_pid = get_ui_pid('mini')
-        mini_port = 8200
-        ui_addr = ", http://{}:{}".format(default_ip, mini_port) if default_ip else ""
-        info('successfully started MINI UI server on the local host, PID[{}]{}'.format(mini_pid, ui_addr))
-
-
     def run(self, args):
         def encrypt_properties_if_need():
             cipher = AESCipher()
@@ -9974,13 +9867,7 @@ class StartUiCmd(Command):
 
         ui_mode = ctl.read_property('ui_mode')
         encrypt_properties_if_need()
-        if ui_mode == "zstack":
-            self.run_zstack_ui(args)
-        elif ui_mode == "mini" and not args.force:
-            self.run_mini_ui()
-        elif ui_mode == "mini" and args.force:
-            self.run_zstack_ui(args)
-        elif ui_mode == None:
+        if ui_mode == "zstack" or ui_mode == None:
             self.run_zstack_ui(args)
         else :
             raise CtlError("Unknown ui_mode {}, please make sure your configuration is correct.".format(ui_mode))
@@ -10023,6 +9910,9 @@ class ConfigUiCmd(Command):
 
         # arguments for ui_redis
         parser.add_argument('--redis-password', help="password of zstack_ui redis")
+
+        # arguments for ui_nginx
+        parser.add_argument('--reload-upstream-nginx', help="reload upstream nginx configuration now")
 
     def _configure_remote_node(self, args):
         shell_no_pipe('ssh %s "/usr/bin/zstack-ctl config_ui %s"' % (args.host, ' '.join(ctl.extra_arguments)))
@@ -10193,6 +10083,11 @@ class ConfigUiCmd(Command):
         # catalina opts
         if args.catalina_opts:
             ctl.write_ui_property("catalina_opts", args.catalina_opts)
+
+        # ui_nginx configure and reloading
+        if args.reload_upstream_nginx:
+            scmd = Template("runuser -l root -s /bin/bash -c 'bash ${SCRIPT}'")
+            scmd = scmd.substitute(SCRIPT = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'zstack-ui', 'scripts', 'reload-upstream-nginx.sh'))
 
 # For UI 2.0
 class ShowUiCfgCmd(Command):
@@ -10393,132 +10288,6 @@ class ResetAdminPasswordCmd(Command):
             reset_privilege_admin('Secauditor#', 'e2e2cf3ae26c44379ab0bb4c7bc1e77e')
 
         info("reset password succeed")
-
-
-class MiniResetHostCmd(Command):
-    def __init__(self):
-        super(MiniResetHostCmd, self).__init__()
-        self.name = "reset_mini_host"
-        self.description = "reset mini host"
-        ctl.register_command(self)
-
-        self.target = {"local", "peer", "both"}
-        self.script_path = "/tmp/reset_mini.py"
-        self.local_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reset_mini.py")
-        self.key = "/usr/local/zstack/mini_fencer.key"
-        _, self.sn, _ = shell_return_stdout_stderr("dmidecode -s system-serial-number")
-        self.sn = self.sn.strip()
-
-    def install_argparse_arguments(self, parser):
-        parser.add_argument('--target', help='reset target, could be %s, default is both' % self.target, required=False)
-
-    def run(self, args):
-        args = self._intercept(args)
-        if args.target in ["peer", "both"]:
-            peer_ip = self._get_peer_address()
-            info("reseting host %s ..." % peer_ip)
-            self._copy_script(peer_ip)
-            self._run_script(peer_ip)
-            self._wait_node_has_ip("peer")
-        if args.target in ["local", "both"]:
-            info("reseting local host ...")
-            self._run_script()
-            self._wait_node_has_ip("local")
-        info("mini host reset complete!")
-
-    def _write_to_temp_file(self, content):
-        (tmp_fd, tmp_path) = tempfile.mkstemp()
-        tmp_fd = os.fdopen(tmp_fd, 'w')
-        tmp_fd.write(content)
-        tmp_fd.close()
-        return tmp_path
-
-    def _check_root_password(self):
-        import getpass
-        if sys.stdin.isatty():
-            password = getpass.getpass(prompt='Enter root password for localhost to continue...\n')
-        else:
-            print("Enter root password for localhost to continue...\n")
-            password = sys.stdin.readline().rstrip()
-        tmpfile = self._write_to_temp_file(str(password))
-        r = shell_return("timeout 5 sshpass -f %s ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1 date" % tmpfile)
-        os.remove(tmpfile)
-        if r != 0:
-            error("check root password of localhost failed!")
-
-    def _intercept(self, args):
-        self._check_root_password()
-        if args.target == "local":
-            return args
-
-        if args.target is None or args.target.strip() == "":
-            warn("target not specified, will reset node A and B both...")
-            time.sleep(3)
-            args.target = "both"
-
-        _, o, _ = shell_return_stdout_stderr("curl 127.0.0.1:7274/bootstrap/hosts/local")
-        j = simplejson.loads(o)
-        if j.get("peer") is None:
-            error("Can not connect to peer, you can reset local node via "
-                            "'zstack-ctl reset_mini_host --target local'")
-        return args
-
-    def _wait_node_has_ip(self, node):
-        info("script copy complete\nwaiting node %s reset complete ..." % node)
-        for i in range(100):
-            if self._node_has_special_ip(node):
-                return
-            time.sleep(6)
-        error("%s reset not success after 600 secondes" % node)
-
-    @staticmethod
-    def _node_has_special_ip(node):
-        _, o, _ = shell_return_stdout_stderr("curl 127.0.0.1:7274/bootstrap/hosts/local")
-        try:
-            j = simplejson.loads(o)
-        except Exception:
-            return False
-        if j.get(node) is None:
-            return False
-        return "100.66.66" in j.get(node).get("ipv4Address")
-
-    def _validate_args(self, args):
-        if args.target not in self.target:
-            error("target must be local, peer or both")
-
-    @staticmethod
-    def _get_peer_address():
-        _, o, _ = shell_return_stdout_stderr("curl 127.0.0.1:7274/bootstrap/hosts/local")
-        j = simplejson.loads(o)
-        return j.get("peer").get("ipv4Address")
-
-    def _ssh_no_auth(self, peer_ip):
-        r = shell_return("timeout 5 ssh root@%s date" % peer_ip)
-        if r == 0:
-            return True
-        r = shell_return("timeout 5 ssh -i %s root@%s date" % (self.key, peer_ip))
-        if r == 0:
-            return False
-        error("can not connect %s via ssh" % peer_ip)
-
-    def _run_script(self, peer_ip=None):
-        if not peer_ip:
-            shell_return("/bin/cp %s %s" % (self.local_script_path, self.script_path))
-            shell_return("python %s > /tmp/reset_mini.log 2>&1" % self.script_path)
-        elif self._ssh_no_auth(peer_ip):
-            cmd = ShellCmd("ssh root@%s 'nohup python %s > /tmp/reset_mini.log 2>&1 &'" % (peer_ip, self.script_path))
-            cmd(True)
-        else:
-            cmd = ShellCmd("ssh -i %s root@%s 'nohup python %s > /tmp/reset_mini.log 2>&1 &'" % (self.key, peer_ip, self.script_path))
-            cmd(True)
-
-    def _copy_script(self, peer_ip):
-        if self._ssh_no_auth(peer_ip):
-            cmd = ShellCmd("scp %s root@%s:%s" % (self.local_script_path, peer_ip, self.script_path))
-            cmd(True)
-        else:
-            cmd = ShellCmd("scp -i %s %s root@%s:%s" % (self.key, self.local_script_path, peer_ip, self.script_path))
-            cmd(True)
 
 
 class SharedBlockQcow2SharedVolumeFixCmd(Command):
@@ -10945,7 +10714,6 @@ def main():
     RemovePrometheusDataCmd()
     GetZStackVersion()
     SharedBlockQcow2SharedVolumeFixCmd()
-    MiniResetHostCmd()
     RefreshAuditCmd()
     MysqlProcessList()
     MysqlRestrictConnection()
