@@ -6,10 +6,12 @@ import jsonobject
 import shell
 import json
 import re
-from linux import get_vm_pid, HOST_ARCH
+from linux import get_vm_pid, get_process_start_time, HOST_ARCH
 from distutils.version import LooseVersion
 
 logger = log.get_logger(__name__)
+
+
 
 def get_colo_path():
     return '/var/lib/zstack/colo/qemu-system-x86_64'
@@ -46,10 +48,20 @@ def get_version():
 
     return version
 
+def get_install_date():
+    r, o, e = bash.bash_roe("rpm -q --queryformat '%{INSTALLTIME}' qemu-kvm")
+    if r == 0:
+        return int(o.strip())
+
+QEMU_INSTALL_DATE = get_install_date()
+QEMU_VERSION = get_version()
+
 
 def get_running_version(vm_uuid):
     pid = get_vm_pid(vm_uuid)
     if pid:
+        if get_process_start_time(pid) > QEMU_INSTALL_DATE:
+            return QEMU_VERSION
         exe = "/proc/%s/exe" % pid
         r = get_version_from_exe_file(exe)
         if r:
@@ -119,4 +131,6 @@ def _parse_version(version_output):
 # return 2.12.0
 def _parse_version2(version_output):
     return version_output.splitlines()[0].strip().split(" ")[3].split("(")[0]
+
+
 
