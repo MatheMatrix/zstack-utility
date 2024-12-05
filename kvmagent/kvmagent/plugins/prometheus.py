@@ -10,7 +10,7 @@ from prometheus_client.core import GaugeMetricFamily, REGISTRY
 import psutil
 
 from kvmagent import kvmagent
-from zstacklib.utils import http
+from zstacklib.utils import http, debug
 from zstacklib.utils import jsonobject
 from zstacklib.utils import linux
 from zstacklib.utils import lock
@@ -36,6 +36,8 @@ disk_list_record = None
 hba_port_state_list_record_map = {}
 nvme_serial_numbers_record = None
 is_hygon = True if 'hygon' in linux.get_cpu_model()[1].lower() else False
+dump_stack_and_objects = True
+kvmagent_physical_memory_usage_alarm_time = None
 
 gpu_devices = {
     'NVIDIA': set(),
@@ -1947,6 +1949,71 @@ def has_rocm_smi():
 def has_npu_smi():
     return shell.run_without_log("which npu-smi") == 0
 
+
+class ProcessPhysicalMemoryUsageAlarm(object):
+    def __init__(self, pid, process_name, mem_usage, **kwargs):
+        self.pid = pid
+        self.process_name = process_name
+        self.memory_usage = mem_usage
+        self.additionalProperties = kwargs
+
+    def to_dict(self):
+        result = {
+            "hostUuid": ALARM_CONFIG.get(kvmagent.HOST_UUID),
+            "pid": self.pid,
+            "processName": self.process_name,
+            "memoryUsage": self.memory_usage,
+            "additionalProperties": self.additionalProperties
+        }
+        return result
+
+    @thread.AsyncThread
+    def send_alarm_to_mn(self):
+        if ALARM_CONFIG is None:
+            logger.warn("Cannot find ALARM_CONFIG")
+            return
+        url = ALARM_CONFIG.get(kvmagent.SEND_COMMAND_URL)
+        if not url:
+            logger.warn("Cannot find SEND_COMMAND_URL, unable to transmit alarm info to management node")
+            return
+
+        http.json_dump_post(url, self.to_dict(), {'commandpath': '/host/process/physicalMemory/usage/alarm'})
+
+
+def report_self_abnormal_memory_usage_if_need(usage):
+    global kvmagent_physical_memory_usage_alarm_time
+    if kvmagent_physical_memory_usage_alarm_time and linux.get_current_timestamp() - kvmagent_physical_memory_usage_alarm_time <= 1800:
+        return
+
+    ProcessPhysicalMemoryUsageAlarm(os.getpid(), "zstack-kvmagent", long(usage)).send_alarm_to_mn()
+    kvmagent_physical_memory_usage_alarm_time = linux.get_current_timestamp()
+
+
+def dump_debug_info_if_need():
+    global dump_stack_and_objects
+    if dump_stack_and_objects:
+        debug.dump_debug_info(None, None)
+    dump_stack_and_objects = False
+
+
+def collect_kvmagent_memory_statistics():
+    metrics = {
+        'kvmagent_used_physical_memory': GaugeMetricFamily('kvmagent_used_physical_memory', 'kvmagent used physical memory', None, ['pid'])
+    }
+
+    used_physical_memory = float(psutil.Process().memory_info().rss)
+    metrics['kvmagent_used_physical_memory'].add_metric([str(os.getpid())], used_physical_memory)
+
+    if kvmagent.kvmagent_physical_memory_usage_hardlimit:
+        if used_physical_memory > kvmagent.kvmagent_physical_memory_usage_hardlimit or \
+                used_physical_memory > kvmagent.kvmagent_physical_memory_usage_alarm_threshold:
+            logger.warn("kvmagent used physical memory abnormal, used: %s" % used_physical_memory)
+            report_self_abnormal_memory_usage_if_need(used_physical_memory)
+            dump_debug_info_if_need()
+
+    return metrics.values()
+
+
 kvmagent.register_prometheus_collector(collect_host_network_statistics)
 kvmagent.register_prometheus_collector(collect_host_capacity_statistics)
 kvmagent.register_prometheus_collector(collect_vm_statistics)
@@ -1975,6 +2042,7 @@ kvmagent.register_prometheus_collector(collect_huawei_gpu_status)
 kvmagent.register_prometheus_collector(collect_tianshu_gpu_status)
 kvmagent.register_prometheus_collector(collect_hba_port_device_state)
 kvmagent.register_prometheus_collector(collect_disk_stat)
+kvmagent.register_prometheus_collector(collect_kvmagent_memory_statistics)
 
 class SetServiceTypeOnHostNetworkInterfaceRsp(kvmagent.AgentResponse):
     def __init__(self):
