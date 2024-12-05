@@ -34,6 +34,7 @@ ALARM_CONFIG = None
 PAGE_SIZE = None
 disk_list_record = None
 hba_port_state_list_record_map = {}
+kvmagent_physical_usage_memory_soft_limit = 500 * 1024 * 1024 # 500 MB
 
 gpu_devices = {
     'NVIDIA': set(),
@@ -1912,6 +1913,50 @@ def has_rocm_smi():
 def has_npu_smi():
     return shell.run_without_log("which npu-smi") == 0
 
+
+class ProcessMemoryUsageAlarm(object):
+    def __init__(self, pid, process_name, mem_usage, **kwargs):
+        self.pid = pid
+        self.process_name = process_name
+        self.memory_usage = mem_usage
+        self.additionalProperties = kwargs
+
+    def to_dict(self):
+        result = {
+            "host": ALARM_CONFIG.get(kvmagent.HOST_UUID),
+            "pid": self.pid,
+            "processName": self.process_name,
+            "memoryUsage": self.memory_usage,
+            "additionalProperties": self.additionalProperties
+        }
+        return result
+
+    def send_alarm_to_mn(self):
+        if ALARM_CONFIG is None:
+            return
+        url = ALARM_CONFIG.get(kvmagent.SEND_COMMAND_URL)
+        if not url:
+            logger.warn("Cannot find SEND_COMMAND_URL, unable to transmit alarm info to management node")
+            return
+
+        http.json_dump_post(url, self.to_dict(), {'commandpath': '/host/process/memory/usage/alarm'})
+
+
+def collect_kvmagent_memory_statistics():
+    metrics = {
+        'kvmagent_used_physical_memory': GaugeMetricFamily('kvmagent_used_physical_memory', 'kvmagent used physical memory', None, ['pid'])
+    }
+
+    used_physical_memory = psutil.Process().memory_info().rss
+    metrics['kvmagent_used_physical_memory'].add_metric([str(os.getpid())], float(used_physical_memory))
+
+    def report_abnormal_memory_usage():
+        if used_physical_memory > kvmagent_physical_usage_memory_soft_limit:
+            ProcessMemoryUsageAlarm(os.getpid(), "zstack-kvmagent", long(used_physical_memory)).send_alarm_to_mn()
+    report_abnormal_memory_usage()
+    return metrics.values()
+
+
 kvmagent.register_prometheus_collector(collect_host_network_statistics)
 kvmagent.register_prometheus_collector(collect_host_capacity_statistics)
 kvmagent.register_prometheus_collector(collect_vm_statistics)
@@ -1940,6 +1985,7 @@ kvmagent.register_prometheus_collector(collect_huawei_gpu_status)
 kvmagent.register_prometheus_collector(collect_tianshu_gpu_status)
 kvmagent.register_prometheus_collector(collect_hba_port_device_state)
 kvmagent.register_prometheus_collector(collect_disk_stat)
+kvmagent.register_prometheus_collector(collect_kvmagent_memory_statistics)
 
 class SetServiceTypeOnHostNetworkInterfaceRsp(kvmagent.AgentResponse):
     def __init__(self):
