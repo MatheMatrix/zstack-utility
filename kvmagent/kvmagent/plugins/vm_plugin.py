@@ -2257,6 +2257,7 @@ class Vm(object):
         'aarch64': 'abfghijklmnopqrstuvwxyzde',
         'mips64el': 'abfghijklmnopqrstuvwxyz',
         'loongarch64': 'abfghijklmnopqrstuvwxyz',
+        'sw_64': 'abfghijklmnopqrstuvwxyz',
         'x86_64': 'abdefghijklmnopqrstuvwxyz'
     }
     DEVICE_LETTERS = device_letter_config[HOST_ARCH]
@@ -4062,11 +4063,14 @@ class Vm(object):
 
     def _get_controller_type(self):
         is_q35 = 'q35' in self.domain_xmlobject.os.type.machine_
+
+        if HOST_ARCH == 'sw_64':
+            return 'virtio'
         return ('ide', 'sata', 'scsi')[max(is_q35, (HOST_ARCH in ['aarch64', 'mips64el', 'loongarch64']) * 2)]
 
     @staticmethod
     def _get_iso_target_dev(device_letter):
-        return "sd%s" % device_letter if (HOST_ARCH in ['aarch64', 'mips64el', 'loongarch64']) else 'hd%s' % device_letter
+        return "sd%s" % device_letter if (HOST_ARCH in ['aarch64', 'mips64el', 'loongarch64', 'sw_64']) else 'hd%s' % device_letter
 
     @staticmethod
     def _get_disk_target_dev_format(bus_type):
@@ -4583,7 +4587,7 @@ class Vm(object):
             raise kvmagent.KvmError("Aarch64 does not support legacy, please change boot mode to UEFI instead of Legacy on your VM or Image.")
         if cmd.architecture and cmd.architecture != HOST_ARCH:
             raise kvmagent.KvmError("Image architecture[{}] not matched host architecture[{}].".format(cmd.architecture, HOST_ARCH))
-        default_bus_type = ('ide', 'sata', 'scsi')[max(machine_type == 'q35', (HOST_ARCH in ['aarch64', 'mips64el', 'loongarch64']) * 2)]
+        default_bus_type = ('ide', 'sata', 'scsi')[max(machine_type == 'q35', (HOST_ARCH in ['aarch64', 'mips64el', 'loongarch64', 'sw_64']) * 2)]
         elements = {}
 
         def make_root():
@@ -4695,6 +4699,18 @@ class Vm(object):
                         cpus = "{0}-{1}".format(i * cores, i * cores + (cores - 1))
                         e(numa, 'cell', attrib={'id': str(i), 'cpus': str(cpus), 'memory': str(mem), 'unit': 'KiB'})
 
+                def on_sw_64():
+                    e(root, 'vcpu', '128', {'placement': 'static', 'current': str(cmd.cpuNum)})
+                    cpu = e(root, 'cpu')
+                    e(cpu, 'topology', attrib={'sockets': '2', 'cores': '32', 'threads': '1'})
+                    mem = cmd.memory / 1024
+                    numa = e(cpu, 'numa')
+                    e(numa, 'cell', attrib={'id': '0', 'cpus': '0-127', 'memory': str(mem), 'unit': 'KiB'})
+                    e(tune, 'shares','1024')
+
+                    resource = e(root, 'resource')
+                    e(resource, 'partition', '/machine')
+
                 eval("on_{}".format(HOST_ARCH))()
             else:
                 root = elements['root']
@@ -4746,6 +4762,12 @@ class Vm(object):
                 def on_loongarch64():
                     cpu = e(root, 'cpu', attrib={'mode': 'custom', 'match': 'exact', 'check': 'partial'})
                     e(cpu, 'model', str(LOONGARCH64_CPU_MODEL), attrib={'fallback': 'allow'})
+                    return cpu
+
+                def on_sw_64():
+                    cpu = e(root, 'cpu')
+                    e(tune, 'shares','1024')
+
                     return cpu
 
                 cpu = eval("on_{}".format(HOST_ARCH))()
@@ -4836,6 +4858,9 @@ class Vm(object):
                 e(os, 'type', 'hvm', attrib={'arch': 'loongarch64', 'machine': 'loongson7a'})
                 e(os, 'loader', '{}loongarch_bios.bin'.format(qemu.get_bin_dir()), attrib={'readonly': 'yes', 'type': 'rom'})
 
+            def on_sw_64():
+                e(os, 'type', 'hvm', attrib={'arch': 'sw_64', 'machine': 'core3'})
+
             VmPlugin.clean_vm_firmware_flash(cmd.vmInstanceUuid)
             eval("on_{}".format(host_arch))()
 
@@ -4847,11 +4872,11 @@ class Vm(object):
 
                 e(os, 'bootmenu', attrib=boot_menu_attrib)
 
-            if cmd.systemSerialNumber and HOST_ARCH != 'mips64el':
+            if cmd.systemSerialNumber and HOST_ARCH != 'mips64el' and HOST_ARCH != 'sw_64':
                 e(os, 'smbios', attrib={'mode': 'sysinfo'})
 
         def make_sysinfo():
-            if not cmd.systemSerialNumber:
+            if not cmd.systemSerialNumber or HOST_ARCH == 'sw_64':
                 return
 
             root = elements['root']
@@ -5019,14 +5044,18 @@ class Vm(object):
                 else:
                     e(devices, 'emulator', kvmagent.get_qemu_path())
 
-            @linux.with_arch(todo_list=['aarch64', 'mips64el', 'loongarch64'])
+            @linux.with_arch(todo_list=['aarch64', 'mips64el', 'loongarch64', 'sw_64'])
             def set_keyboard():
                 keyboard = e(devices, 'input', None, {'type': 'keyboard', 'bus': 'usb'})
                 e(keyboard, 'address', None, {'type': 'usb', 'bus': '0', 'port': '2'})
 
+            @linux.with_arch(todo_list=['sw_64'])
             def set_tablet():
                 tablet = e(devices, 'input', None, {'type': 'tablet', 'bus': 'usb'})
-                e(tablet, 'address', None, {'type':'usb', 'bus':'0', 'port':'1'})
+                if HOST_ARCH in ['sw_64']:
+                    e(tablet, 'address', None, {'type':'usb', 'bus':'0', 'port':'3'})
+                else:
+                    e(tablet, 'address', None, {'type':'usb', 'bus':'0', 'port':'1'})
 
             # no default usb controller and tablet device for appliance vm
             if cmd.isApplianceVm:
@@ -5044,7 +5073,7 @@ class Vm(object):
             max_cdrom_num = len(Vm.ISO_DEVICE_LETTERS)
             empty_cdrom_configs = None
 
-            if HOST_ARCH in ['aarch64', 'mips64el', 'loongarch64']:
+            if HOST_ARCH in ['aarch64', 'mips64el', 'loongarch64', 'sw_64']:
                 # SCSI controller only supports 1 bus
                 empty_cdrom_configs = [
                     EmptyCdromConfig('sd%s' % Vm.ISO_DEVICE_LETTERS[0], '0', Vm.get_iso_device_unit(0)),
@@ -5089,7 +5118,10 @@ class Vm(object):
             def make_empty_cdrom(iso, legacy_cdrom_config, bootOrder, resourceUuid):
                 cdrom = e(devices, 'disk', None, {'type': iso.type, 'device': 'cdrom'})
                 e(cdrom, 'driver', None, {'name': 'qemu', 'type': 'raw'})
-                e(cdrom, 'target', None, {'dev': legacy_cdrom_config.targetDev, 'bus': default_bus_type})
+                iso_bus_type = default_bus_type
+                if HOST_ARCH in ['sw_64']:
+                    iso_bus_type = 'sata'
+                e(cdrom, 'target', None, {'dev': legacy_cdrom_config.targetDev, 'bus': iso_bus_type})
 
                 if iso.deviceAddress:
                     e(cdrom, 'address', None, {'type': 'drive', 'controller': iso.deviceAddress.controller, 'bus': iso.deviceAddress.bus,
@@ -5615,10 +5647,13 @@ class Vm(object):
 
         def make_usb_redirect():
             devices = elements['devices']
-            e(devices, 'controller', None, {'type': 'usb', 'index': '0'})
+            if HOST_ARCH in ['sw_64']:
+                e(devices, 'controller', None, {'type': 'usb', 'index': '0', 'model': 'nec-xhci'})
+            else:
+                e(devices, 'controller', None, {'type': 'usb', 'index': '0'})
             # make sure there are three usb controllers, each for USB 1.1/2.0/3.0
             @linux.on_redhat_based(DIST_NAME)
-            @linux.with_arch(todo_list=['aarch64'])
+            @linux.with_arch(todo_list=['aarch64', 'sw_64'])
             def set_default():
                 # for aarch64 centos, only support default controller(qemu-xhci 3.0) on current qemu version(2.12_0-18)
                 e(devices, 'controller', None, {'type': 'usb', 'index': '1'})
@@ -5632,6 +5667,9 @@ class Vm(object):
                 else:
                     e(devices, 'controller', None, {'type': 'usb', 'index': '1', 'model': 'ehci'})
                 e(devices, 'controller', None, {'type': 'usb', 'index': '2', 'model': 'nec-xhci'})
+                # sw only support 10 pci device
+                if HOST_ARCH in ['sw_64']:
+                    return
 
                 # USB2.0 Controller for redirect
                 if HOST_ARCH == 'loongarch64':
@@ -5640,7 +5678,10 @@ class Vm(object):
                     e(devices, 'controller', None, {'type': 'usb', 'index': '3', 'model': 'ehci'})
                 e(devices, 'controller', None, {'type': 'usb', 'index': '4', 'model': 'nec-xhci'})
 
+            @linux.with_arch(todo_list=['sw_64'])
             def set_redirdev():
+                if HOST_ARCH in ['sw_64']:
+                    return
                 chan = e(devices, 'channel', None, {'type': 'spicevmc'})
                 e(chan, 'target', None, {'type': 'virtio', 'name': 'com.redhat.spice.0'})
                 e(chan, 'address', None, {'type': 'virtio-serial'})
@@ -5906,7 +5947,9 @@ class Vm(object):
 
         def make_sec_label():
             root = elements['root']
-            e(root, 'seclabel', None, {'type': 'none'})
+            seclabel = e(root, 'seclabel', None, {'type': 'dynamic', 'model': 'dac', 'relabel': 'yes'})
+            e(seclabel, 'label', '+0:+0')
+            e(seclabel, 'imagelabel', '+0:+0')
 
         def make_controllers():
             devices = elements['devices']
@@ -5936,7 +5979,13 @@ class Vm(object):
                 for i in pci_idx_generator:
                     e(devices, 'controller', None, {'type': 'pci', 'model': 'pcie-root-port', 'index': str(i)})
             else:
-                if not cmd.predefinedPciBridgeNum:
+                if HOST_ARCH in ['sw_64']:
+                    controller = e(devices, 'controller', None, {'type': 'sata', 'index': '0'})
+                    e(controller, 'alias', None, {'name': 'sata'})
+                    e(controller, 'address', None,
+                      {'type': 'pci', 'domain': '0', 'bus': '0', 'slot': '0', 'function': '0'})
+
+                if not cmd.predefinedPciBridgeNum or HOST_ARCH == 'mips64el' or HOST_ARCH == 'sw_64':
                     return
 
                 for i in xrange(cmd.predefinedPciBridgeNum):
@@ -6087,7 +6136,7 @@ class Vm(object):
             else:
                 e(interface, 'model', None, attrib={'type': 'e1000'})
 
-            if nic.driverType == 'virtio' and nic.vHostAddOn.queueNum != 1:
+            if nic.driverType == 'virtio' and nic.vHostAddOn.queueNum != 1 and HOST_ARCH != 'sw_64':
                 e(interface, 'driver ', None, attrib={'name': 'vhost', 'txmode': 'iothread', 'ioeventfd': 'on', 'event_idx': 'off', 'queues': str(nic.vHostAddOn.queueNum), 'rx_queue_size': str(nic.vHostAddOn.rxBufferSize) if nic.vHostAddOn.rxBufferSize is not None else '1024', 'tx_queue_size': str(nic.vHostAddOn.txBufferSize) if nic.vHostAddOn.txBufferSize is not None else '1024'})
 
         if nic.bootOrder is not None and nic.bootOrder > 0:

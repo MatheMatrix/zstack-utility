@@ -3684,6 +3684,7 @@ class AddManagementNodeCmd(Command):
         (status, output) = commands.getstatusoutput(command)
         command = "mkdir -p /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo" \
                   "ln -s /opt/zstack-dvd/x86_64 /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo/x86_64" \
+                  "ln -s /opt/zstack-dvd/sw_64 /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo/sw_64" \
                   "ln -s /opt/zstack-dvd/aarch64 /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo/aarch64"
         run_remote_command(command, host_info, True, True)
         if status != 0:
@@ -8122,7 +8123,7 @@ class UpgradeManagementNodeCmd(Command):
                 ShellCmd('unzip %s -d zstack' % os.path.basename(new_war.path), workdir=webapp_dir)()
                 #create local repo folder for possible zstack local yum repo
                 zstack_dvd_repo = '{}/zstack/static/zstack-repo'.format(webapp_dir)
-                shell('rm -f {0}; mkdir -p {0};ln -s /opt/zstack-dvd/x86_64 {0}/x86_64; ln -s /opt/zstack-dvd/aarch64 {0}/aarch64; ln -s /opt/zstack-dvd/mips64el {0}/mips64el; ln -s /opt/zstack-dvd/loongarch64 {0}/loongarch64; chown -R zstack:zstack {0}'.format(zstack_dvd_repo))
+                shell('rm -f {0}; mkdir -p {0};ln -s /opt/zstack-dvd/x86_64 {0}/x86_64; ln -s /opt/zstack-dvd/aarch64 {0}/aarch64; ln -s /opt/zstack-dvd/mips64el {0}/mips64el; ln -s /opt/zstack-dvd/loongarch64 {0}/loongarch64; ln -s /opt/zstack-dvd/sw_64 {0}/sw_64; chown -R zstack:zstack {0}'.format(zstack_dvd_repo))
 
             def restore_config():
                 info('restoring the zstack.properties ...')

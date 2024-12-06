@@ -29,4 +29,6 @@ md5-zwatch-vm-agent.linux-aarch64=139899531542cd4a40563887d5c9b4b1
 md5-zwatch-vm-agent.linux-mips64el=e580f8982e140ceb76a915771178f522
 md5-zwatch-vm-agent.linux-loongarch64=f0d330286ba4c54a2aa6ee00d585a844
 md5-zwatch-vm-agent.freebsd-amd64=e90cac90d0223b1adee240c50cf01cf0
+md5-zwatch-vm-agent.linux-sw_64=c7fefd56cf073bc9aed47b8f8d72c2da
+md5-zwatch-vm-agent.linux-sw_64=2cbd1124d06f2525bd0e57ff81b4c5f5
 ```

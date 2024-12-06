@@ -91,6 +91,7 @@ host_post_info.releasever = releasever
 IS_AARCH64 = host_info.host_arch == 'aarch64'
 IS_MIPS64EL = host_info.host_arch == 'mips64el'
 IS_LOONGARCH64 = host_info.host_arch == 'loongarch64'
+IS_SW = host_info.host_arch == 'sw64'
 
 repo_dir = "/opt/zstack-dvd/{}".format(host_info.host_arch)
 if not os.path.isdir(repo_dir):
@@ -193,13 +194,13 @@ run_remote_command("rm -rf {}/*; mkdir -p /usr/local/zstack/ || true".format(kvm
 
 def install_kvm_pkg():
     def rpm_based_install():
-        os_base_dep = "bridge-utils chrony conntrack-tools cyrus-sasl-md5 device-mapper-multipath expect ipmitool iproute ipset \
+        os_base_dep = "bridge-utils chrony conntrack-tools device-mapper-multipath expect ipmitool iproute ipset \
                         usbredir-server iputils libvirt libvirt-client libvirt-python lighttpd lsof net-tools nfs-utils nmap openssh-clients \
                         smartmontools sshpass usbutils wget audit collectd-virt storcli nvme-cli pv rsync sed pciutils tar"
 
         distro_mapping = {
             'centos': 'vconfig iscsi-initiator-utils OpenIPMI-modalias OVMF mcelog MegaCli Arcconf python-pyudev kernel-devel libicu edac-utils',
-            'kylin': 'vconfig open-iscsi python2-pyudev collectd-disk OpenIPMI libselinux-devel nettle tuned qemu-kvm libicu ',
+            'kylin': 'vconfig open-iscsi python2-pyudev collectd-disk OpenIPMI libselinux-devel nettle tuned libicu ',
             'uniontech': 'vconfig iscsi-initiator-utils OpenIPMI nettle qemu-kvm python-pyudev collectd-disk',
             'rocky': 'iscsi-initiator-utils OpenIPMI-modalias mcelog MegaCli Arcconf python-pyudev kernel-devel collectd-disk edac-utils',
         }
@@ -218,6 +219,9 @@ def install_kvm_pkg():
                      'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
             'h84r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm '
                      'seabios-bin elfutils-libelf-devel collectd-disk') % helix_rhel_rpms,
+            'ky10sp1': 'qemu-kvm ',
+            'ky10sp2': 'qemu-kvm ',
+            'ky10sp3': 'qemu-kvm ',
             'rl84': 'qemu-kvm libvirt-daemon libvirt-daemon-kvm seabios-bin elfutils-libelf-devel',
             'euler20': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
             'oe2203sp1': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
@@ -230,14 +234,21 @@ def install_kvm_pkg():
             'aarch64': 'edk2-aarch64'
         }
 
+        gfb_qemu_mapping = {
+            'x86_64 ky10gfb': 'qemu-kvm',
+            'aarch64 ky10gfb': 'qemu'
+        }
+
         # handle zstack_repo
         if zstack_repo != 'false':
-            distro_head = host_info.distro.split("_")[0] if releasever in kylin or releasever in uos else host_info.distro
-            common_dep_list = "%s %s %s %s" % (
+            distro_head = host_info.distro.split("_")[
+                0] if releasever in kylin or releasever in uos else host_info.distro
+            common_dep_list = "%s %s %s %s %s" % (
                 os_base_dep,
                 distro_mapping.get(distro_head, ''),
                 releasever_mapping.get(releasever, ''),
-                edk2_mapping.get(host_info.host_arch, ''))
+                edk2_mapping.get(host_info.host_arch, ''),
+                gfb_qemu_mapping.get(host_info.host_arch + ' ' + releasever, ''))
             # common kvmagent deps of x86 and arm that need to update
             common_update_list = ("sanlock sysfsutils hwdata sg3_utils lvm2"
                                   " lvm2-libs lvm2-lockd systemd openssh"
