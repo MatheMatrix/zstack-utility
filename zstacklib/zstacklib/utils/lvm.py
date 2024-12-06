@@ -1404,12 +1404,16 @@ def resize_lv(path, size, force=False):
 
 @bash.in_bash
 @linux.retry(times=15, sleep_time=random.uniform(0.1, 3))
-def extend_lv(path, extend_size, skip_if_sufficient=False):
+def extend_lv(path, extend_size, skip_if_sufficient=False, lockopt=None):
     final_size = calcLvReservedSize(extend_size)
     if skip_if_sufficient and int(get_lv_size(path)) >= final_size:
         return
 
-    r, o, e = bash.bash_roe("lvextend --size %sb %s" % (final_size, path))
+    command = "lvextend --size %sb %s" % (final_size, path)
+    if lockopt:
+        command += " --lockopt %s" % lockopt
+
+    r, o, e = bash.bash_roe(command)
     if r == 0:
         logger.debug("successfully extend lv %s size to %s" % (path, extend_size))
         return
@@ -1422,11 +1426,14 @@ def extend_lv(path, extend_size, skip_if_sufficient=False):
 
 @bash.in_bash
 def extend_lv_from_cmd(path, size, cmd, extend_thin_by_specified_size=False, skip_if_sufficient=False):
-    # type: (str, long, object, bool) -> None
+    # type: (str, long, object, bool, bool) -> None
+
+    lockopt = cmd.addons.lockopt if cmd.addons and cmd.addons.lockopt else None
+
     if cmd.provisioning is None or \
             cmd.addons is None or \
             cmd.provisioning != VolumeProvisioningStrategy.ThinProvisioning:
-        extend_lv(path, size, skip_if_sufficient)
+        extend_lv(path, size, skip_if_sufficient, lockopt)
         return
 
     current_size = int(get_lv_size(path))
@@ -1437,13 +1444,13 @@ def extend_lv_from_cmd(path, size, cmd, extend_thin_by_specified_size=False, ski
             size = v_size
         else:
             size = size + cmd.addons[thinProvisioningInitializeSize]
-        extend_lv(path, size, skip_if_sufficient)
+        extend_lv(path, size, skip_if_sufficient, lockopt)
         return
 
     if int(size) - current_size > cmd.addons[thinProvisioningInitializeSize]:
-        extend_lv(path, current_size + cmd.addons[thinProvisioningInitializeSize], skip_if_sufficient)
+        extend_lv(path, current_size + cmd.addons[thinProvisioningInitializeSize], skip_if_sufficient, lockopt)
     else:
-        extend_lv(path, size, True)
+        extend_lv(path, size, True, lockopt)
 
 
 def active_lv(path, shared=False):

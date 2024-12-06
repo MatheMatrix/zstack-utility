@@ -8,6 +8,8 @@ import tempfile
 import time
 import datetime
 import traceback
+from operator import indexOf
+
 import xml.etree.ElementTree as etree
 import re
 import platform
@@ -40,6 +42,7 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.imagestore import ImageStoreClient
+from transmission.ansible.transmission import index
 from zstacklib.utils import bash, plugin
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import lvm
@@ -57,6 +60,7 @@ from zstacklib.utils import image
 from zstacklib.utils import iproute
 from zstacklib.utils import ovs
 from zstacklib.utils import drbd
+from zstacklib.utils.linux import recover_fake_dead
 from zstacklib.utils.qga import *
 from zstacklib.utils import jsonobject
 from zstacklib.utils.report import *
@@ -1808,15 +1812,16 @@ class MergeSnapshotDaemon(plugin.TaskDaemon):
         expected = False
         for disk_backing_file_chain in self.vm.get_backing_store_source_recursively():
             chain_depth = len(disk_backing_file_chain)
+
             if dest_disk_install_path in disk_backing_file_chain.keys():
-                dest_disk_install_path_depth = disk_backing_file_chain[dest_disk_install_path]
+                dest_disk_install_path_depth = disk_backing_file_chain.index(dest_disk_install_path)
                 # for fullRebase, new top layer do not depend on image cache
                 # the depth of disk chain depth will reset
                 if base_disk_install_path is None:
                     expected = dest_disk_install_path_depth == chain_depth - 1
                 # for not fullRebase, check the current_install_path depth increased 1
                 if base_disk_install_path is not None:
-                    expected = disk_backing_file_chain[base_disk_install_path] == dest_disk_install_path_depth + 1
+                    expected = disk_backing_file_chain.index(base_disk_install_path) == dest_disk_install_path_depth + 1
                 break
         return expected
 
@@ -3467,10 +3472,8 @@ class Vm(object):
                 return not self._wait_for_block_job(disk_name, abort_on_error=True)
 
             def check_overlay_file(path):
-                if not active_commit:
-                    return True
-
-                return self._check_target_disk_existing_by_path(path, True)
+                for disk_backing_file_chain in self.vm.get_backing_store_source_recursively():
+                    if base in disk_backing_file_chain:
 
             def abort_block_commit_job(_):
                 flag = libvirt.VIR_DOMAIN_BLOCK_JOB_ABORT_ASYNC
@@ -3492,30 +3495,29 @@ class Vm(object):
 
             logger.debug('start block commit for disk %s, from %s, to %s, active commit: %s'
                          % (disk_name, top, base, active_commit))
-            flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
 
-            # currently we only handle active commit
             if active_commit:
                 # Pass a flag to libvirt to indicate that we expect a two phase
                 # block job. We must tell libvirt to pivot to the new active layer (base).
+                flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_RELATIVE
                 flags |= libvirt.VIR_DOMAIN_BLOCK_COMMIT_ACTIVE
+            else:
+                flags = libvirt.VIR_DOMAIN_BLOCK_COMMIT_DELETE
 
-            self.domain.blockCommit(disk_name, base, top, 0, flags)
-            touchQmpSocketWhenExists(task_spec.vmUuid)
-            logger.debug('block commit for disk %s in processing' % disk_name)
+            if not recover:
+                self.domain.blockCommit(disk_name, base, top, 0, flags)
+                touchQmpSocketWhenExists(task_spec.vmUuid)
+                logger.debug('block commit for disk %s in processing' % disk_name)
 
-            if not linux.wait_callback_success(wait_job, timeout=d.get_remaining_timeout(),
-                                               ignore_exception_in_callback=True):
+            if not linux.wait_callback_success(wait_job, timeout=d.get_remaining_timeout(),ignore_exception_in_callback=True):
                 if not check_overlay_file(base):
                     raise kvmagent.KvmError('block commit failed')
                 logger.debug("although the block commit job failed, device install path has been changed to %s" % base)
 
-            if not linux.wait_callback_success(abort_block_commit_job, d.get_remaining_timeout(),
-                                               ignore_exception_in_callback=True):
+            if not linux.wait_callback_success(abort_block_commit_job, d.get_remaining_timeout(),ignore_exception_in_callback=True):
                 raise kvmagent.KvmError('block commit abort failed')
 
-            if not linux.wait_callback_success(check_overlay_file, base, d.get_remaining_timeout(),
-                                               ignore_exception_in_callback=True):
+            if not linux.wait_callback_success(check_overlay_file, base, d.get_remaining_timeout(),ignore_exception_in_callback=True):
                 raise kvmagent.KvmError('block commit succeeded, but overlay file is not cleared')
 
             return base
@@ -3635,7 +3637,7 @@ class Vm(object):
     def get_backing_store_source_recursively(self):
         # type: () -> list
         all_disks_backing_file_chain = []
-        disk_backing_file_chain = {}
+        disk_backing_file_chain = []
 
         '''
         <disk type='file' device='disk'>
@@ -3653,29 +3655,27 @@ class Vm(object):
           <target dev='vda' bus='virtio'/>
           <address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/>
         </disk>
-        
         An empty <backingStore/> element signals the end of the chain. 
         '''
 
-        def get_backing_store_source(backingStore, depth):
-            if backingStore.find("source") is None:
+        def get_backing_store_source(backing_store):
+            if backing_store.find("source") is None:
                 return
-            depth += 1
-            disk_backing_file_chain[etree.tostring(backingStore.find('source')).split('"')[1]] = depth
-            get_backing_store_source(backingStore.find('backingStore'), depth)
+            disk_backing_file_chain.append(etree.tostring(backing_store.find('source')).split('"')[1])
+            get_backing_store_source(backing_store.find('backingStore'))
 
         tree = etree.fromstring(self.domain_xml)
+
         for disk in tree.findall('devices/disk'):
-            depth = 0
+            disk_backing_file_chain = []
             if disk.get("device") == 'cdrom':
                 continue
             if disk.find("source") is not None:
-                disk_backing_file_chain[etree.tostring(disk.find('source')).split('"')[1]] = depth
+                disk_backing_file_chain.append(etree.tostring(disk.find('source')).split('"')[1])
             if disk.find("backingStore") is not None:
-                get_backing_store_source(disk.find('backingStore'), depth)
-
+                get_backing_store_source(disk.find('backingStore'))
             all_disks_backing_file_chain.append(disk_backing_file_chain)
-            disk_backing_file_chain = {}
+            disk_backing_file_chain = []
 
         return all_disks_backing_file_chain
 
@@ -8635,6 +8635,17 @@ host side snapshot files chian:
 
     @kvmagent.replyerror
     def block_commit(self, req):
+        def rebase_top_children_to_base(online_commit):
+            if cmd.topChildrenInstallPathInDb is None:
+                return
+            for childPath in cmd.topChildrenInstallPathInDb:
+                if cmd.aliveChainInstallPathInDb is not None and childPath in cmd.aliveChainInstallPathInDb and online_commit:
+                    continue
+                if not os.path.exists(cmd.top):
+                    linux.qcow2_rebase(cmd.base, childPath, unsafe_mode=True, skip_resize=True)
+                else:
+                    linux.qcow2_rebase(cmd.base, childPath, skip_resize=True)
+
         def block_commit_with_qemu_img():
             top = VolumeTO.get_volume_actual_installpath(cmd.top)
             base = VolumeTO.get_volume_actual_installpath(cmd.base)
@@ -8643,17 +8654,25 @@ host side snapshot files chian:
 
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = BlockCommitResponse()
+
+        online_commit = False
         try:
             if not cmd.vmUuid:
                 rsp.newVolumeInstallPath = block_commit_with_qemu_img()
             else:
                 vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
                 vm_state = Vm.VM_STATE_SHUTDOWN if vm is None else vm.state
-                if vm and (vm_state == vm.VM_STATE_RUNNING or vm_state == vm.VM_STATE_PAUSED):
+                if (vm and (vm_state == vm.VM_STATE_RUNNING or vm_state == vm.VM_STATE_PAUSED)
+                        and cmd.top in cmd.aliveChainInstallPathInDb and cmd.base in cmd.aliveChainInstallPathInDb):
+
+                    cmd.aliveChainInstallPathInDb
+
                     rsp.newVolumeInstallPath = vm.do_block_commit(cmd, cmd.volume)
+                    online_commit = True
                 else:
                     rsp.newVolumeInstallPath = block_commit_with_qemu_img()
 
+            rebase_top_children_to_base(online_commit)
         except kvmagent.KvmError as e:
             logger.warn(linux.get_exception_stacktrace())
             rsp.error = str(e)

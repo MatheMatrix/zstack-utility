@@ -871,7 +871,9 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         install_abs_path = translate_absolute_path_from_install_path(cmd.installPath)
 
-        with lvm.RecursiveOperateLv(install_abs_path, shared=False):
+        shareLockType = cmd.addons and cmd.addons.lockopt and cmd.addons.lockopt == "skiplv"
+
+        with lvm.RecursiveOperateLv(install_abs_path, shared=shareLockType):
             if cmd.force:
                 lvm.resize_lv(install_abs_path, cmd.size, True)
             else:
