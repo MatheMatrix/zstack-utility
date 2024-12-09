@@ -531,6 +531,9 @@ class SanlockHealthChecker(AbstractStorageFencer):
     def get_record_vm_lun(self, vg_uuid, host_uuid):
         return '/dev/%s/host_%s' % (vg_uuid, host_uuid)
 
+    def get_record_vm_device_map(self, vg_uuid):
+        return '%s-host_%s' % (vg_uuid, self.host_uuid)
+
     def read_fencer_hearbeat(self, host_uuid, vg_uuid):
         current_read_heartbeat_time = [None]
         current_vm_uuids = [None]
@@ -1584,7 +1587,7 @@ class HaPlugin(kvmagent.KvmAgent):
 
             if lvm.check_vg_status(vg, cmd.storageCheckerTimeout, True)[0] is False:
                 lvm.drop_vg_lock(vg)
-                lvm.remove_device_map_for_vg(vg)
+                lvm.remove_device_map_for_vg(vg, keep_device_map=[self.sblk_health_checker.get_record_vm_device_map(vg)])
 
             return True
 
