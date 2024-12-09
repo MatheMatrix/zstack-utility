@@ -3,6 +3,7 @@ import os.path
 import re
 import random
 import traceback
+import difflib
 
 from kvmagent import kvmagent
 from kvmagent.plugins.imagestore import ImageStoreClient
@@ -536,7 +537,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             finally:
                 self.pvs_in_progress.remove(cmd.vgUuid)
 
-        lvm.refresh_lv_uuid_cache_if_need()
+        ## lvm.refresh_lv_uuid_cache_if_need()
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -615,28 +616,38 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
         def config_lvm(host_id, enableLvmetad=False):
             lvm.backup_lvm_config()
-            lvm.reset_lvm_conf_default()
-            lvm.config_lvm_by_sed("use_lvmlockd", "use_lvmlockd=1", ["lvm.conf", "lvmlocal.conf"])
-            if enableLvmetad:
-                lvm.config_lvm_by_sed("use_lvmetad", "use_lvmetad=1", ["lvm.conf", "lvmlocal.conf"])
-            else:
-                lvm.config_lvm_by_sed("use_lvmetad", "use_lvmetad=0", ["lvm.conf", "lvmlocal.conf"])
-            lvm.config_lvm_by_sed("host_id", "host_id=%s" % host_id, ["lvm.conf", "lvmlocal.conf"])
-            lvm.config_lvm_by_sed("sanlock_lv_extend", "sanlock_lv_extend=%s" % DEFAULT_SANLOCK_LV_SIZE, ["lvm.conf", "lvmlocal.conf"])
-            lvm.config_lvm_by_sed("lvmlockd_lock_retries", "lvmlockd_lock_retries=6", ["lvm.conf", "lvmlocal.conf"])
-            lvm.config_lvm_by_sed("issue_discards", "issue_discards=0", ["lvm.conf", "lvmlocal.conf"])
-            lvm.config_lvm_by_sed("reserved_stack", "reserved_stack=256", ["lvm.conf", "lvmlocal.conf"])
-            lvm.config_lvm_by_sed("reserved_memory", "reserved_memory=131072", ["lvm.conf", "lvmlocal.conf"])
+            config = lvm.get_lvm_default_config()
+            config.modify({
+                "use_lvmlockd": 1,
+                "host_id": host_id,
+                "sanlock_lv_extend": DEFAULT_SANLOCK_LV_SIZE,
+                "lvmlockd_lock_retries": 6,
+                "issue_discards": 0,
+                "reserved_stack": 256,
+                "reserved_memory": 131072,
+                "use_lvmetad": 1 if enableLvmetad else 0
+            })
             if kvmagent.get_host_os_type() == "debian":
-                lvm.config_lvm_by_sed("udev_rules", "udev_rules=0", ["lvm.conf", "lvmlocal.conf"])
-                lvm.config_lvm_by_sed("udev_sync", "udev_sync=0", ["lvm.conf", "lvmlocal.conf"])
-            lvm.config_lvm_filter(["lvm.conf", "lvmlocal.conf"], preserve_disks=allDiskPaths)
+                config.modify({"udev_rules": 0, "udev_sync": 0})
+            config.write_to_file(lvm.LVM_CONFIG_TMP_FILE)
+            lvm.config_lvm_filter([os.path.basename(lvm.LVM_CONFIG_TMP_FILE)], preserve_disks=allDiskPaths)
+
+            new_config = linux.read_file(lvm.LVM_CONFIG_TMP_FILE)
+            old_config = linux.read_file(lvm.LVM_LOCAL_CONFIG_FILE)
+            diff = list(difflib.unified_diff(old_config.splitlines() if old_config is not None else [], new_config.splitlines()))
+            if len(diff) == 0:
+                logger.debug("lvm config has not changed")
+            else:
+                linux.write_file(lvm.LVM_CONFIG_FILE, new_config, create_if_not_exist=True)
+                linux.write_file(lvm.LVM_LOCAL_CONFIG_FILE, new_config, create_if_not_exist=True)
+                logger.debug("lvm config has changed:\n %s" % '\n'.join(diff))
 
             lvm.modify_sanlock_config("sh_retries", 20)
             lvm.modify_sanlock_config("logfile_priority", 7)
             lvm.modify_sanlock_config("renewal_read_extend_sec", 24)
             lvm.modify_sanlock_config("debug_renew", 1)
             lvm.modify_sanlock_config("use_watchdog", 0)
+            lvm.modify_sanlock_config("max_sectors_kb", "ignore")
             lvm.modify_sanlock_config("zstack_vglock_timeout", 0)
             lvm.modify_sanlock_config("use_zstack_vglock_timeout", 0)
             lvm.modify_sanlock_config("zstack_vglock_large_delay", 8)
@@ -649,7 +660,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
         config_lvm(cmd.hostId, cmd.enableLvmetad)
 
-        lvm.start_lvmlockd(cmd.ioTimeout)
+        lvm.start_lock_service(cmd.ioTimeout)
         logger.debug("find/create vg %s lock..." % cmd.vgUuid)
         rsp.isFirst = self.create_vg_if_not_found(cmd.vgUuid, disks, cmd.hostUuid, allDisks, cmd.forceWipe, cmd.isFirst)
 
@@ -1358,7 +1369,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                     lvm.deactive_lv(fpath)
                 except Exception as e:
                     if killProcess:
-                        qemus = lvm.find_qemu_for_lv_in_use(fpath)
+                        qemus = linux.find_qemu_for_volume_in_use(fpath)
                         if len(qemus) == 0:
                             return
                         for qemu in qemus:
@@ -1450,12 +1461,14 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                     lv_size = int(linux.qcow2_virtualsize(current_abs_path))
                     lv_size = lvm.calcLvReservedSize(lv_size)
                 elif struct.independent:
-                    lv_size = int(linux.qcow2_measure_required_size(current_abs_path))
+                    cluster_size = linux.qcow2_get_cluster_size(current_abs_path)
+                    lv_size = linux.qcow2_measure_required_size(current_abs_path, cluster_size=cluster_size)
                     lv_size = lvm.calcLvReservedSize(lv_size)
                 else:
                     lv_size = int(lvm.get_lv_size(current_abs_path))
                     if linux.qcow2_get_backing_file(current_abs_path) == '':
-                        measure_size = int(linux.qcow2_measure_required_size(current_abs_path))
+                        cluster_size = linux.qcow2_get_cluster_size(current_abs_path)
+                        measure_size = linux.qcow2_measure_required_size(current_abs_path, cluster_size=cluster_size)
                         if lvm.calcLvReservedSize(measure_size) > lv_size:
                             struct.put('compressed_qcow2', True)
                 struct.put('lv_size', lv_size)

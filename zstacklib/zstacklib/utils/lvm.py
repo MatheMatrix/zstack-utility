@@ -7,6 +7,7 @@ import time
 import traceback
 import weakref
 import re
+import warnings
 import datetime
 import xml.etree.ElementTree as etree
 
@@ -30,6 +31,8 @@ logger = log.get_logger(__name__)
 LV_RESERVED_SIZE = 1024*1024*4
 LVM_CONFIG_PATH = "/etc/lvm"
 LVM_CONFIG_FILE = '/etc/lvm/lvm.conf'
+LVM_LOCAL_CONFIG_FILE = '/etc/lvm/lvmlocal.conf'
+LVM_CONFIG_TMP_FILE = '/etc/lvm/lvm.conf.tmp'
 SANLOCK_CONFIG_FILE_PATH = "/etc/sanlock/sanlock.conf"
 DEB_SANLOCK_CONFIG_FILE_PATH = "/etc/default/sanlock"
 LIVE_LIBVIRT_XML_DIR = "/var/run/libvirt/qemu"
@@ -444,6 +447,18 @@ def get_lvmlockd_version():
         LVMLOCKD_VERSION = shell.call("""lvmlockd --version | awk '{print $3}' | awk -F'.' '{print $1"."$2}'""").strip()
     return LVMLOCKD_VERSION
 
+def get_sanlock_patch_version():
+    return bash.bash_o("sanlock get_patch_version").strip()
+
+def get_sanlock_pid():
+    return linux.find_process_by_command('sanlock')
+
+def get_running_sanlock_patch_version():
+    pid = get_sanlock_pid()
+    if pid:
+        exe = "/proc/%s/exe" % pid
+        return bash.bash_o("%s get_patch_version" % exe).strip()
+
 def get_running_lvmlockd_version():
     pid = get_lvmlockd_pid()
     if pid:
@@ -586,7 +601,28 @@ def reset_lvm_conf_default():
     cmd(is_exception=False)
 
 
+
+def get_lvm_default_config():
+    class Config():
+        def __init__(self, config_str):
+            self.config_str = config_str
+
+        def modify(self, config_dict):
+            for keyword in config_dict:
+                self.config_str = re.sub(r'.*%s.*' % keyword, "%s=%s" % (keyword, config_dict[keyword]), self.config_str)
+
+        def write_to_file(self, path, create_if_not_exist=True):
+            linux.write_file(path, self.config_str, create_if_not_exist=create_if_not_exist)
+
+    @linux.retry(3, 1)
+    def _get_config():
+        return bash.bash_errorout("lvmconfig --type default")
+
+    return Config(_get_config())
+
+
 def config_lvm_by_sed(keyword, entry, files):
+    warnings.warn("config_lvm_by_sed() is deprecated", DeprecationWarning)
     if not os.path.exists(LVM_CONFIG_PATH):
         raise Exception("can not find lvm config path: %s, config lvm failed" % LVM_CONFIG_PATH)
 
@@ -612,7 +648,7 @@ def config_lvm_filter(files, no_drbd=False, preserve_disks=None):
         for f in files:
             bash.bash_r("sed -i 's/.*\\b%s.*/%s/g' %s/%s" % ("filter", filter_str, LVM_CONFIG_PATH, f))
             bash.bash_r("sed -i 's/.*\\b%s.*/global_%s/g' %s/%s" % ("global_filter", filter_str, LVM_CONFIG_PATH, f))
-        linux.sync_file(LVM_CONFIG_FILE)
+            linux.sync_file(os.path.join(LVM_CONFIG_PATH, f))
         return
 
     filter_str = 'filter=["r|\\/dev\\/cdrom|"'
@@ -626,7 +662,7 @@ def config_lvm_filter(files, no_drbd=False, preserve_disks=None):
 
     for f in files:
         bash.bash_r("sed -i 's/.*\\b%s.*/%s/g' %s/%s" % ("filter", filter_str, LVM_CONFIG_PATH, f))
-    linux.sync_file(LVM_CONFIG_FILE)
+        linux.sync_file(os.path.join(LVM_CONFIG_PATH, f))
 
 
 def modify_sanlock_config(key, value):
@@ -749,7 +785,7 @@ def is_lvmlockd_socket_abnormal():
         return True
 
 @bash.in_bash
-def start_lvmlockd(io_timeout=40):
+def start_lock_service(io_timeout=40):
     if not os.path.exists(os.path.dirname(LVMLOCKD_LOG_FILE_PATH)):
         os.mkdir(os.path.dirname(LVMLOCKD_LOG_FILE_PATH))
 
@@ -760,7 +796,28 @@ def start_lvmlockd(io_timeout=40):
         running_lockd_version = get_running_lvmlockd_version()
         return running_lockd_version is not None and LooseVersion(running_lockd_version) < LooseVersion(get_lvmlockd_version())
 
-    restart_lvmlockd = is_lvmlockd_upgraded() or (LooseVersion(get_lvmlockd_version()) >= LooseVersion("2.03") and is_lvmlockd_socket_abnormal())
+    def need_restart_sanlock():
+        running_patch_version = get_running_sanlock_patch_version()
+        local_patch_version = get_sanlock_patch_version()
+        if not running_patch_version:
+            # sanlock not running
+            return False
+        elif not local_patch_version.isdigit():
+            return False
+        elif not running_patch_version.isdigit() or int(local_patch_version) > int(running_patch_version):
+            # patch version N  ->  patch version >N or other version  ->  patch version N
+            return True
+        if sanlock.SanlockClientStatusParser().get_config("max_sectors_kb_ignore") == "0":
+            logger.debug("need restarting sanlock to reload config")
+            return True
+        return False
+
+
+    restart_sanlock = need_restart_sanlock()
+    restart_lvmlockd = restart_sanlock or is_lvmlockd_upgraded() \
+                       or (LooseVersion(get_lvmlockd_version()) >= LooseVersion("2.03") and is_lvmlockd_socket_abnormal())
+    if restart_sanlock:
+        stop_sanlock()
     if restart_lvmlockd:
         write_lvmlockd_adopt_file()
         stop_lvmlockd()
@@ -844,6 +901,13 @@ def stop_lvmlockd():
         linux.kill_process(pid)
 
 @bash.in_bash
+def stop_sanlock():
+    pid = get_sanlock_pid()
+    if pid:
+        linux.kill_process(pid)
+        bash.bash_r("timeout 30 systemctl stop sanlock.service")
+
+@bash.in_bash
 def start_vg_lock(vgUuid, hostId, retry_times_for_checking_vg_lockspace):
     @linux.retry(times=60, sleep_time=random.uniform(1, 10))
     def vg_lock_is_adding(vgUuid):
@@ -889,6 +953,7 @@ def start_vg_lock(vgUuid, hostId, retry_times_for_checking_vg_lockspace):
             vg_lock_exists(vgUuid)
         except Exception:
             check_lockspace()
+            sanlock.init_gllk_if_need(vgUuid)
             raise
     try:
         vg_lock_exists(vgUuid)
@@ -1476,21 +1541,33 @@ def _active_lv(path, shared=False):
 
 
 @bash.in_bash
-@linux.retry(times=3, sleep_time=random.uniform(0.1, 3))
 def _deactive_lv(path, raise_exception=True):
     if not lv_exists(path):
         return
     if not lv_is_active(path):
         return
-    r = 0
-    e = None
-    if raise_exception:
-        o = bash.bash_errorout("lvchange -an %s" % path)
-    else:
-        r, o, e = bash.bash_roe("lvchange -an %s" % path)
-    if lv_is_active(path):
-        raise RetryException("lv %s is still active after lvchange -an, returns code: %s, stdout: %s, stderr: %s"
-                             % (path, r, o, e))
+
+    @linux.retry(times=3, sleep_time=random.uniform(0.1, 3))
+    def _deactive():
+        r = 0
+        e = None
+        if raise_exception:
+            o = bash.bash_errorout("lvchange -an %s" % path)
+        else:
+            r, o, e = bash.bash_roe("lvchange -an %s" % path)
+        if lv_is_active(path):
+            raise RetryException("lv %s is still active after lvchange -an, returns code: %s, stdout: %s, stderr: %s"
+                                 % (path, r, o, e))
+    try:
+        _deactive()
+    except Exception as e:
+        if "in use" in str(e):
+            # just for debugging
+            o = linux.lsof(path)
+            if o == "":
+                o = ['vm-' + p.name for p in linux.find_qemu_for_volume_in_use(path)]
+            logger.warn("find lv used by other process:\n%s" % str(o))
+        raise
 
 
 @bash.in_bash
@@ -1565,14 +1642,11 @@ def refresh_lv_uuid_cache_if_need():
 
 
 def lv_uuid(path):
-    if path in lv_uuid_cache:
-        return lv_uuid_cache.get(path)
     cmd = shell.ShellCmd("lvs --nolocking -t --noheadings %s -ouuid" % path)
     cmd(is_exception=False)
     uuid = cmd.stdout.strip()
     if cmd.return_code == 0 and uuid != '':
-        lv_uuid_cache.update({path: uuid})
-    return uuid
+        return uuid
 
 
 def lv_is_active(lv_path):
@@ -1581,6 +1655,12 @@ def lv_is_active(lv_path):
     if r == 0:
         return True
     return os.path.exists(lv_path)
+
+
+def get_lv_attr(lv_path, *attr):
+    o = bash.bash_o("lvs --nolocking -t --noheadings %s -o%s --reportformat json" % (lv_path, ",".join(attr)))
+    o = simplejson.loads(o)
+    return o["report"][0]["lv"][0]
 
 
 @bash.in_bash
@@ -1711,19 +1791,22 @@ def get_new_snapshot_name(absolutePath, remove_oldest=True):
 def get_lv_locking_type(path):
     @linux.retry(times=5, sleep_time=random.uniform(0.1, 3))
     def _get_lv_locking_type(path):
-        output = bash.bash_o("lvmlockctl -i | grep %s | head -n1 | awk '{print $3}'" % lv_uuid(path))
+        output = bash.bash_o("lvmlockctl -i | grep %s | head -n1 | awk '{print $3}'" % uuid)
         return LvmlockdLockType.from_abbr(output.strip(), raise_exception=True)
 
     locking_type = LvmlockdLockType.NULL
     active = None
+    uuid = None
     with lock.NamedLock(path.split("/")[-1]):
         try:
-            active = lv_is_active(path)
+            attr = get_lv_attr(path, "lv_uuid", "lv_active")
+            uuid = attr.get("lv_uuid")
+            active = attr.get("lv_active") == "active"
             if not active:
                 return locking_type
             locking_type = _get_lv_locking_type(path)
         except Exception as e:
-            output = bash.bash_o("lvmlockctl -i | grep %s | head -n1 | awk '{print $3}'" % lv_uuid(path))
+            output = bash.bash_o("lvmlockctl -i | grep %s | head -n1 | awk '{print $3}'" % uuid)
             locking_type = LvmlockdLockType.from_abbr(output.strip(), raise_exception=False)
             if active is True and locking_type == LvmlockdLockType.NULL:
                 # NOTE(weiw): this usually because of manipulation of locking by hand
@@ -2408,21 +2491,6 @@ def disable_multipath():
     if is_multipath_running():
         raise RetryException("multipath is still running")
 
-
-class QemuStruct(object):
-    def __init__(self, pid):
-        self.pid = pid
-        args = bash.bash_o("ps -o args --width 99999 --pid %s" % pid)
-        self.name = args.split(' -uuid ')[-1].split(' ')[0].replace("-", "")
-        self.state = bash.bash_o("virsh domstate %s" % self.name).strip()
-
-
-@bash.in_bash
-def find_qemu_for_lv_in_use(lv_path):
-    # type: (str) -> list[QemuStruct]
-    dm_path = os.path.realpath(lv_path)
-    pids = [x.strip() for x in bash.bash_o("lsof -b -c qemu-kvm -c qemu-system| grep -w %s | awk '{print $2}'" % dm_path).splitlines()]
-    return [QemuStruct(pid) for pid in pids]
 
 
 pv_allocate_strategy = {}  # type:dict

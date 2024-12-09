@@ -25,6 +25,7 @@ import json
 import fcntl
 import simplejson
 import xxhash
+import glob
 
 from inspect import stack
 import xml.etree.ElementTree as etree
@@ -93,12 +94,6 @@ class MountError(Exception):
         super(MountError, self).__init__(msg)
 
 
-class IpInfo(object):
-    def __init__(self):
-        self.version = 4
-        self.ip = None
-        self.netmask = None
-
 class EthernetInfo(object):
     def __init__(self):
         self.mac = None
@@ -107,7 +102,7 @@ class EthernetInfo(object):
         self.netmask = None
         self.interface = None
         self.ip = None
-        self.ip_list = []   # type: IpInfo
+        self.ip_list = []   # type: list[netconfig.IpConfig]
 
     def __str__(self):
         return 'interface:%s, mac:%s, ip:%s, netmask:%s' % (self.interface, self.mac, self.ip, self.netmask)
@@ -403,9 +398,7 @@ def get_ethernet_info():
 
         assert ip, 'cannot find ip for ethernet device[%s]' % ethname
         assert netmask, 'cannot find netmask for ethernet device[%s]' % ethname
-        ip_info = IpInfo()
-        ip_info.ip = ip
-        ip_info.netmask = netmask
+        ip_info = netconfig.IpConfig(ip, netmask)
         if ethname in ip_dict:
             ip_dict[ethname].append(ip_info)
         else:
@@ -1024,6 +1017,10 @@ def get_img_file_fmt(src):
 
 
 def get_img_fmt(src):
+    if os.path.exists(src):
+        with open(src, 'rb') as f:
+            return get_fmt_from_magic(f.read(4))
+
     fmt = shell.call(
         "set -o pipefail; %s %s | grep -w '^file format' | awk '{print $3}'" % (qemu_img.subcmd('info'), src))
     fmt = fmt.strip(' \t\r\n')
@@ -1031,6 +1028,16 @@ def get_img_fmt(src):
         logger.debug("/usr/bin/qemu-img info %s" % src)
         raise Exception('unknown format[%s] of the image file[%s]' % (fmt, src))
     return fmt
+
+
+def get_fmt_from_magic(magic):
+    if magic == 'QFI\xfb':
+        return 'qcow2'
+    elif magic == 'KDMV':
+        return 'vmdk'
+    else:
+        return 'raw'
+
 
 def qcow2_clone(src, dst, size=""):
     fmt = get_img_fmt(src)
@@ -1261,42 +1268,38 @@ def get_qcow2_base_backing_file_recusively(path):
     chain = qcow2_get_file_chain(path)
     return chain[-1]
 
-def get_qcow2_base_image_recusively(vol_install_dir, image_cache_dir):
+def get_qcow2_base_images_recusively(vol_install_dir, image_cache_dir):
     real_vol_dir = os.path.realpath(vol_install_dir)
     real_cache_dir = os.path.realpath(image_cache_dir)
-    backing_files = shell.call(
-        "set -o pipefail; find %s -type f -name '*.qcow2' -exec %s {} \;| grep 'backing file:' | awk '{print $3}'"
-        % (real_vol_dir, qemu_img.subcmd('info'))).splitlines()
 
     base_image = set()
-    for backing_file in backing_files:
-        real_image_path = os.path.realpath(backing_file)
-        if real_image_path.startswith(real_cache_dir):
-            base_image.add(real_image_path)
+    for p in list_all_file(real_vol_dir):
+        backing_file = qcow2_get_backing_file(p)
+        if backing_file:
+            real_image_path = os.path.realpath(backing_file)
+            if real_image_path.startswith(real_cache_dir):
+                base_image.add(real_image_path)
 
-    if len(base_image) == 1:
-        return base_image.pop()
-
-    if len(base_image) == 0:
-        return None
-
-    if len(base_image) > 1:
-        raise Exception('more than one image file found in cache dir')
+    return base_image
 
 def qcow2_fill(seek, length, path, raise_excpetion=False):
     cmd = shell.ShellCmd("qemu-io -c 'write %s %s' %s -n" % (seek, length, path))
     cmd(raise_excpetion)
     logger.debug("qcow2_fill return code: %s, stdout: %s, stderr: %s" % (cmd.return_code, cmd.stdout, cmd.stderr))
 
-def qcow2_measure_required_size(path):
-    out = shell.call("%s --output=json -f qcow2 -O qcow2 %s" % (qemu_img.subcmd('measure'), path))
+
+def qcow2_measure_required_size(path, cluster_size=0):
+    opts = "" if cluster_size == 0 else "-o cluster_size=%s" % cluster_size
+
+    out = shell.call("%s --output=json -f qcow2 -O qcow2 %s %s" % (qemu_img.subcmd('measure'), opts, path))
     return long(simplejson.loads(out)["required"])
 
 
 def qcow2_get_cluster_size(path):
-    out = shell.call("%s %s | grep 'cluster_size:' | cut -d ':' -f 2" %
-                     (qemu_img.subcmd('info'), path))
-    return int(out.strip())
+    out = shell.call("%s --output=json %s" % (qemu_img.subcmd('info'), path))
+    ret = simplejson.loads(out)
+    return 0 if 'cluster-size' not in ret else ret['cluster-size']
+
 
 def qcow2_discard(path):
     virtual_size = int(qcow2_get_virtual_size(path))
@@ -1492,6 +1495,20 @@ def is_physical_nic(dev):
             return True
     return False
 
+
+def get_device_ifcfg(dev):
+    if is_physical_nic(dev):
+        return netconfig.NetEtherConfig(dev)
+    if is_bond(dev):
+        return netconfig.NetBondConfig(dev)
+    if is_vlan(dev):
+        return netconfig.NetVlanConfig(dev)
+    if is_vxlan(dev):
+        return netconfig.NetVxlanConfig(dev)
+
+    raise Exception('interface %s type not in ethernet, bond, vlan or vxlan' % dev)
+
+
 def get_vlan_id(dev):
     if not is_vlan(dev):
         return None
@@ -1532,7 +1549,38 @@ def get_all_bridge_interface(bridge_name):
     vifs = cmd.stdout.split('\n')
     return [v.strip(" \t\r\n") for v in vifs]
 
+
+def get_vf_index_by_pci_address(pci_address):
+    if not pci_address:
+        return None
+    physfn_path = "/sys/bus/pci/devices/%s/physfn" % pci_address
+    if not os.path.exists(physfn_path):
+        return None
+    virtfn_path = glob.glob("%s/virtfn*" % physfn_path)
+    if not virtfn_path:
+        return None
+    for virtfn_link in virtfn_path:
+        if os.readlink(virtfn_link).split('/')[-1] == pci_address:
+            return int(virtfn_link.split('/')[-1].split('virtfn')[-1])
+
+
+def get_pf_name_by_vf_pci_address(pci_address):
+    if not pci_address:
+        return None
+    physfn_path = "/sys/bus/pci/devices/%s/physfn" % pci_address
+    if not os.path.exists(physfn_path):
+        return None
+    netdev_dirs = glob.glob("%s/net/*" % physfn_path)
+    if not netdev_dirs:
+        return None
+    return netdev_dirs[0].split('/')[-1]
+
+
 def delete_bridge(bridge_name):
+    if netconfig.is_use_network_manager():
+        shell.run("nmcli con delete %s" % bridge_name)
+        return
+
     vifs = get_all_bridge_interface(bridge_name)
     for vif in vifs:
         if vif == '':
@@ -1563,7 +1611,6 @@ def detach_interface_from_bridge(interface, bridge_name):
 
 def attach_interface_to_bridge(interface, bridge_name, l2_network_uuid):
     ip_link_set_net_device_master(interface, bridge_name)
-    set_bridge_alias_using_phy_nic_name(bridge_name, interface)
     set_device_uuid_alias(interface, l2_network_uuid)
 
 
@@ -1607,6 +1654,7 @@ def get_interface_ip_addresses(interface):
     output = shell.call("ip -4 -o a show %s | awk '{print $4}'" % interface.strip())
     return output.splitlines() if output else []
 
+
 @retry(times=2, sleep_time=1)
 def ip_link_set_net_device_master(net_device, master):
     shell.call("ip link set %s master %s" % (net_device, master))
@@ -1616,6 +1664,7 @@ def ip_link_set_net_device_master(net_device, master):
     if not actual_result or actual_result != master:
         raise Exception("set net device[%s] master to [%s] failed, try again now" % (net_device, master))
 
+
 @retry(times=2, sleep_time=1)
 def ip_link_set_net_device_nomaster(net_device):
     shell.call("ip link set %s nomaster" % net_device)
@@ -1624,18 +1673,24 @@ def ip_link_set_net_device_nomaster(net_device):
     if actual_result:
         raise Exception("set net device[%s] nomaster failed, try again now" % net_device)
 
+
 def delete_novlan_bridge(bridge_name, interface, move_route=True):
     if not is_network_device_existing(bridge_name):
         logger.debug("can not find bridge %s" % bridge_name)
         return
 
-    ifcfg = netconfig.NetConfig(interface)
-    if is_vif_on_bridge(bridge_name, interface):
-        if move_route:
-            move_dev_route(bridge_name, interface)
+    ifcfg = get_device_ifcfg(interface)
+    if is_vif_on_bridge(bridge_name, interface) and move_route:
+        move_dev_route(bridge_name, interface)
+        ifcfg_bridge = netconfig.NetBridgeConfig(bridge_name)
+        ifcfg.boot_proto = ifcfg_bridge.get_boot_proto()
+        if ifcfg_bridge.is_boot_proto_dhcp():
+            ifcfg.config_dict.update(ifcfg_bridge.get_default_routes_dict())
+        else:
             ips = get_ip_list_by_nic_name(interface)
+            ips.extend(ifcfg_bridge.get_ip_configs())
             for ip in ips:
-                ifcfg.add_ip_config(ip.ip, ip.netmask)
+                ifcfg.add_ip_config(ip.ip, ip.netmask, ip.gateway, ip.version, ip.is_default)
     else:
         logger.debug("bridge %s do not have interface %s. only delete bridge. " % (bridge_name,interface))
 
@@ -1653,10 +1708,13 @@ def create_bridge(bridge_name, interface, move_route=True):
     if br_name and br_name != bridge_name:
         raise Exception('failed to create bridge[{0}], physical interface[{1}] has been occupied by bridge[{2}]'.format(bridge_name, interface, br_name))
 
-    if not is_bridge(bridge_name):
-        shell.call("brctl addbr %s" % bridge_name)
-    else:
+    if is_bridge(bridge_name):
         logger.debug('%s is a bridge device, no need to create bridge' % bridge_name)
+    elif netconfig.is_use_network_manager():
+        shell.call('nmcli con add type bridge autoconnect yes ifname %s con-name %s' % (bridge_name, bridge_name) +
+                   ' ipv4.method disabled ipv6.method ignore')
+    else:
+        shell.call("brctl addbr %s" % bridge_name)
 
     shell.call("brctl stp %s off" % bridge_name)
     shell.call("brctl setfd %s 0" % bridge_name)
@@ -1676,31 +1734,19 @@ def create_bridge(bridge_name, interface, move_route=True):
         move_dev_route(interface, bridge_name)
 
     # restore bridge and interface ifcfg file
-    if is_vlan(interface):
-        ifcfg_slave = netconfig.NetVlanConfig(interface)
-        ifcfg_slave.bridge = bridge_name
-    elif is_bond(interface):
-        ifcfg_slave = netconfig.NetBondConfig(interface)
-        ifcfg_slave.bridge = bridge_name
-    elif is_physical_nic(interface):
-        ifcfg_slave = netconfig.NetEtherConfig(interface)
-        ifcfg_slave.bridge = bridge_name
-    elif is_vxlan(interface):
-        ifcfg_slave = netconfig.NetVxlanConfig(interface)
-        ifcfg_slave.bridge = bridge_name
-    else:
-        raise Exception('interface %s type not in ethernet, bond or vlan' % interface)
-
+    ifcfg_slave = get_device_ifcfg(interface)
+    ifcfg_slave.bridge = bridge_name
     ifcfgs = []
     ifcfg_bridge = netconfig.NetBridgeConfig(bridge_name)
-    ifcfg_bridge.stp = netconfig.NET_CONFIG_STP_NO
-    ips = get_ip_list_by_nic_name(bridge_name)
-    for ip in ips:
-        ifcfg_bridge.add_ip_config(ip.ip, ip.netmask)
-
-    slave_ips = ifcfg_slave.get_ip_configs()
-    for slave_ip in slave_ips:
-        ifcfg_bridge.add_ip_config(slave_ip.ip, slave_ip.netmask, slave_ip.gateway, slave_ip.is_default)
+    ifcfg_bridge.boot_proto = ifcfg_slave.get_boot_proto()
+    ifcfg_bridge.stp = netconfig.NET_CONFIG_NO
+    if ifcfg_slave.is_boot_proto_dhcp():
+        ifcfg_bridge.config_dict.update(ifcfg_slave.get_default_routes_dict())
+    else:
+        ips = get_ip_list_by_nic_name(bridge_name)
+        ips.extend(ifcfg_slave.get_ip_configs())
+        for ip in ips:
+            ifcfg_bridge.add_ip_config(ip.ip, ip.netmask, ip.gateway, ip.version, ip.is_default)
 
     ifcfgs.extend([ifcfg_bridge, ifcfg_slave])
     return ifcfgs
@@ -2028,8 +2074,12 @@ def vlan_eth_exists(ethname, vlan):
 def delete_eth(dev_name):
     if not is_network_device_existing(dev_name):
         return
-    shell.call('ip link set dev %s down' % dev_name)
-    iproute.delete_link_no_error(dev_name)
+
+    if netconfig.is_use_network_manager():
+        shell.call('nmcli con delete %s' % dev_name)
+    else:
+        shell.call('ip link set dev %s down' % dev_name)
+        iproute.delete_link_no_error(dev_name)
 
 
 def delete_vlan_eth_and_ifcfg(vlan_dev_name):
@@ -2041,21 +2091,30 @@ def delete_vlan_eth_and_ifcfg(vlan_dev_name):
 def make_vlan_eth_name(ethname, vlan):
     return '%s.%s' % (ethname, vlan)
 
+
+def make_vxlan_eth_name(vni):
+    return 'vxlan%s' % (vni)
+
+
 def create_vlan_eth(ethname, vlan, ip=None, netmask=None):
     vlan = int(vlan)
     if not is_network_device_existing(ethname):
         raise LinuxError('cannot find ethernet device %s' % ethname)
 
     vlan_dev_name = make_vlan_eth_name(ethname, vlan)
+    if is_network_device_existing(vlan_dev_name) \
+            and ip is not None and ip.strip() != "" and get_device_ip(vlan_dev_name) != ip:
+        # recreate device and configure ip
+        delete_eth(vlan_dev_name)
+
     if not is_network_device_existing(vlan_dev_name):
-        shell.call('ip link add link %s name %s type vlan id %s' % (ethname, vlan_dev_name, vlan))
+        if netconfig.is_use_network_manager():
+            shell.call('nmcli con add type vlan con-name %s dev %s id %s' % (vlan_dev_name, ethname, vlan) +
+                       ' ipv4.method disabled ipv6.method ignore')
+        else:
+            shell.call('ip link add link %s name %s type vlan id %s' % (ethname, vlan_dev_name, vlan))
+
         if ip:
-            iproute.add_address(ip, netmask_to_cidr(netmask), 4, vlan_dev_name, broadcast=netmask_to_broadcast(ip, netmask))
-    else:
-        if ip is not None and ip.strip() != "" and get_device_ip(vlan_dev_name) != ip:
-            # recreate device and configure ip
-            delete_eth(vlan_dev_name)
-            shell.call('ip link add link %s name %s.%s type vlan id %s' % (ethname, ethname, vlan, vlan))
             iproute.add_address(ip, netmask_to_cidr(netmask), 4, vlan_dev_name, broadcast=netmask_to_broadcast(ip, netmask))
 
     iproute.set_link_up(vlan_dev_name)
@@ -2066,7 +2125,7 @@ def create_vlan_eth_with_bridge(ethname, vlan, bridge_name, ip=None, netmask=Non
     vlan_dev_name = create_vlan_eth(ethname, vlan, ip, netmask)
     ifcfg = netconfig.NetVlanConfig(vlan_dev_name)
     ifcfg.bridge = bridge_name
-    ifcfg.restore_config()
+    ifcfg.restore_config(restore_only=True)
     return vlan_dev_name
 
 
@@ -2084,13 +2143,19 @@ def delete_vlan_bridge(bridge_name, vlan_interface):
         if has_ip:
             move_dev_route(bridge_name, vlan_interface)
             ifcfg = netconfig.NetVlanConfig(vlan_interface)
-            ips = get_ip_list_by_nic_name(vlan_interface)
-            for ip in ips:
-                ifcfg.add_ip_config(ip.ip, ip.netmask)
+            ifcfg_bridge = netconfig.NetBridgeConfig(bridge_name)
+            ifcfg.boot_proto = ifcfg_bridge.get_boot_proto()
+            if ifcfg_bridge.is_boot_proto_dhcp():
+                ifcfg.config_dict.update(ifcfg_bridge.get_default_routes_dict())
+            else:
+                ips = get_ip_list_by_nic_name(vlan_interface)
+                ips.extend(ifcfg_bridge.get_ip_configs())
+                for ip in ips:
+                    ifcfg.add_ip_config(ip.ip, ip.netmask, ip.gateway, ip.version, ip.is_default)
+            delete_bridge_and_ifcfg(bridge_name)
             ifcfg.flush_config()
-
-        delete_bridge_and_ifcfg(bridge_name)
-        if not has_ip:
+        else:
+            delete_bridge_and_ifcfg(bridge_name)
             delete_vlan_eth_and_ifcfg(vlan_interface)
 
     else:
@@ -2185,6 +2250,9 @@ def find_process_by_command(comm, cmdlines=None):
     for pid in pids:
         try:
             comm_path = os.readlink(os.path.join('/proc', pid, 'exe')).split(";")[0]
+            if comm_path.endswith("(deleted)") and not os.path.exists(comm_path):
+                comm_path = comm_path[0:-9].strip()
+
             if comm_path != comm and os.path.basename(comm_path) != comm:
                 continue
 
@@ -2600,20 +2668,52 @@ def get_nics_by_cidr(cidr):
 
     return nics
 
-def create_vxlan_interface(vni, vtepIp,dstport):
-    vni = str(vni)
-    cmd = shell.ShellCmd("ip -d -o link show dev {name} | grep -w {ip} ".format(**{"name": "vxlan" + vni, "ip": vtepIp}))
+def get_vxlan_details(vxlan_interface):
+    cmd = shell.ShellCmd("ip -d link show dev {name}".format(name=vxlan_interface))
+    cmd(is_exception=False)
+    if cmd.return_code == 0:
+        for line in cmd.stdout.split("\n"):
+            if "vxlan id" in line:
+                vtep_ip = line.split("local ")[1].split(" ")[0]
+                dst_port = line.split("dstport ")[1].split(" ")[0]
+                return vtep_ip, dst_port
+    return None, None
+
+
+def change_vxlan_interface(old_vni, new_vni):
+    old_vxlan = make_vxlan_eth_name(old_vni)
+    vtep_ip, dst_port = get_vxlan_details(old_vxlan)
+    if not vtep_ip or not dst_port:
+        raise Exception("Failed to get details for VXLAN interface: {}".format(old_vxlan))
+    new_vxlan = make_vxlan_eth_name(new_vni)
+    create_vxlan_interface(new_vni, vtep_ip, dst_port)
+    cmd = shell.ShellCmd("ip link set %s address `cat /sys/class/net/%s/address`" % (new_vxlan, old_vxlan))
+    cmd(is_exception=False)
+    cmd = shell.ShellCmd("ip link set {name} down".format(name=old_vxlan))
+    cmd(is_exception=False)
+    cmd = shell.ShellCmd("ip link set {name} up".format(name=new_vxlan))
     cmd(is_exception=False)
     if cmd.return_code != 0:
-        cmd = shell.ShellCmd("ip link del {name}".format(**{"name": "vxlan" + vni}))
+        raise Exception("Failed to set new VXLAN interface up: {}".format(new_vxlan))
+
+    logger.debug("Successfully changed VXLAN interface from {old} to {new}.".format(old=old_vxlan, new=new_vxlan))
+
+
+def create_vxlan_interface(vni, vtepIp,dstport):
+    vni = str(vni)
+    vxlan_eth_name = make_vxlan_eth_name(vni)
+    cmd = shell.ShellCmd("ip -d -o link show dev {name} | grep -w {ip} ".format(**{"name": vxlan_eth_name, "ip": vtepIp}))
+    cmd(is_exception=False)
+    if cmd.return_code != 0:
+        cmd = shell.ShellCmd("ip link del {name}".format(**{"name": vxlan_eth_name}))
         cmd(is_exception=False)
 
         cmd = shell.ShellCmd("ip link add {name} type vxlan id {id} dstport {dstport} local {ip} learning noproxy nol2miss nol3miss".format(
-            **{"name": "vxlan" + vni, "id": vni, "dstport":dstport,"ip": vtepIp}))
+            **{"name": vxlan_eth_name, "id": vni, "dstport":dstport,"ip": vtepIp}))
 
         cmd(is_exception=False)
 
-    cmd = shell.ShellCmd("ip link set %s up" % ("vxlan" + vni))
+    cmd = shell.ShellCmd("ip link set %s up" % vxlan_eth_name)
     cmd(is_exception=False)
     return cmd.return_code == 0
 
@@ -2797,6 +2897,26 @@ def linux_lsof(abs_path, process="qemu-kvm", find_rpath=True):
                 r = r.strip() + "\n" + line
 
     return r.strip()
+
+def lsof(abs_path):
+    o = shell.call("lsof -nP %s" % abs_path, exception=False)
+    return o.strip()
+
+
+class QemuStruct(object):
+    def __init__(self, pid):
+        self.pid = pid
+        args = shell.call("ps -o args --width 99999 --pid %s" % pid, exception=False)
+        self.name = args.split(' -uuid ')[-1].split(' ')[0].replace("-", "")
+        self.state = shell.call("virsh domstate %s" % self.name, exception=False).strip()
+
+
+def find_qemu_for_volume_in_use(volume_path):
+    # type: (str) -> list[QemuStruct]
+    real_path = os.path.realpath(volume_path)
+    pids = [x.strip() for x in shell.call("lsof -b -c qemu-kvm -c qemu-system| grep -w %s | awk '{print $2}'" % real_path, exception=False).splitlines()]
+    return [QemuStruct(pid) for pid in pids]
+
 
 def touch_file(fpath):
     with open(fpath, 'a'):

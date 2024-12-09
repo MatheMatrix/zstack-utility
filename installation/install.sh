@@ -98,7 +98,6 @@ ONLY_INSTALL_LIBS=''
 ONLY_INSTALL_ZSTACK=''
 NOT_START_ZSTACK=''
 NEED_SET_MN_IP=''
-INSTALL_ENTERPRISE='n'
 REPO_MATCHED='true'
 
 MYSQL_ROOT_PASSWORD=''
@@ -224,6 +223,7 @@ declare -a upgrade_params_array=(
     '4.7.21,-DupgradeSshKeyPairFromSystemTag=true'
     '4.8.0,-DupgradeL2VirtualSwitchUplinkBonding=true'
     '4.8.0,-DupgradePortGroup=true'
+    '4.10.0,-DlegacyCpuTopologyFix=true'
 )
 #other than the upon params_array, this one could be persisted in zstack.properties
 declare -a upgrade_persist_params_array=(
@@ -662,13 +662,51 @@ set_tomcat_config() {
     new_min_spare_threads=50
     new_max_queue_size=100
     tomcat_config_path=$ZSTACK_INSTALL_ROOT/apache-tomcat/conf
+    cp $tomcat_config_path/server.xml $tomcat_config_path/server.xml.bak || true
 
-    sed -i 's/port="8080"/executor="tomcatThreadPool"  port="8080"/g' $tomcat_config_path/server.xml
-    sed -i 's/connectionTimeout=".*"/connectionTimeout="'"$new_timeout"'"/' $tomcat_config_path/server.xml
-    sed -i 's/redirectPort="8443" \/>/redirectPort="8443" maxHttpHeaderSize="65536" URIEncoding="UTF-8" useBodyEncodingForURI="UTF-8" \/>\n  \ \ \ \  <Executor name="tomcatThreadPool" namePrefix="catalina-exec-" maxThreads="'"$new_max_thread_num"'" minSpareThreads="'"$new_min_spare_threads"'" prestartminSpareThreads="true" maxQueueSize="'"$new_max_queue_size"'"\/>/g' $tomcat_config_path/server.xml
-    sed -i 's/maxThreads=".*"/maxThreads="'"$new_max_thread_num"'"/' $tomcat_config_path/server.xml
-    # Fix ZSTAC-13580
-    sed -i -e '/allowLinking/d' -e  '/autoDeploy/a \ \ \ \ \ \ \ \ <Context path="/zstack" reloadable="false" crossContext="true" allowLinking="true"/>' $tomcat_config_path/server.xml
+    cat > $tomcat_config_path/server.xml <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<Server port="8005" shutdown="SHUTDOWN">
+  <Listener className="org.apache.catalina.startup.VersionLoggerListener" />
+  <Listener className="org.apache.catalina.core.AprLifecycleListener" SSLEngine="on" />
+  <Listener className="org.apache.catalina.core.JreMemoryLeakPreventionListener" />
+  <Listener className="org.apache.catalina.mbeans.GlobalResourcesLifecycleListener" />
+  <Listener className="org.apache.catalina.core.ThreadLocalLeakPreventionListener" />
+
+  <GlobalNamingResources>
+    <Resource name="UserDatabase" auth="Container"
+              type="org.apache.catalina.UserDatabase"
+              description="User database that can be updated and saved"
+              factory="org.apache.catalina.users.MemoryUserDatabaseFactory"
+              pathname="conf/tomcat-users.xml" />
+  </GlobalNamingResources>
+
+  <Service name="Catalina">
+    <Connector executor="tomcatThreadPool" port="8080" protocol="HTTP/1.1"
+               connectionTimeout="$new_timeout"
+               redirectPort="8443"
+               maxParameterCount="1000"
+               maxHttpHeaderSize="65536" URIEncoding="UTF-8" useBodyEncodingForURI="UTF-8" />
+       <Executor name="tomcatThreadPool" namePrefix="catalina-exec-" maxThreads="$new_max_thread_num" minSpareThreads="$new_min_spare_threads" prestartminSpareThreads="true" maxQueueSize="$new_max_queue_size" />
+    <Engine name="Catalina" defaultHost="localhost">
+
+      <Realm className="org.apache.catalina.realm.LockOutRealm">
+        <Realm className="org.apache.catalina.realm.UserDatabaseRealm"
+               resourceName="UserDatabase"/>
+      </Realm>
+
+      <Host name="localhost"  appBase="webapps"
+            unpackWARs="true" autoDeploy="true">
+        <Context path="/zstack" reloadable="false" crossContext="true" allowLinking="true"/>
+
+        <Valve className="org.apache.catalina.valves.AccessLogValve" directory="logs"
+               prefix="localhost_access_log" suffix=".txt"
+               pattern="%h %l %u %t &quot;%r&quot; %s %b" />
+      </Host>
+    </Engine>
+  </Service>
+</Server>
+EOF
     sync
 
     enable_tomcat_linking
@@ -2018,11 +2056,10 @@ uz_upgrade_tomcat(){
         if [ $? -ne 0 ];then
            fail "chmod failed in: $TOMCAT_PATH/apache-tomcat/bin/*."
         fi
-
-        #If tomcat use the default conf update it
-        set_tomcat_config
     fi
 
+    #If tomcat use the default conf update it, ensure the configuration is latest
+    set_tomcat_config
     pass
 }
 
@@ -2523,8 +2560,7 @@ il_install_license(){
         else
             fail "License path ${LICENSE_PATH} does not exists."
         fi
-    elif [ x"$INSTALL_ENTERPRISE" = x'y' -o x"$ZSV_INSTALL" = x'y' ]; then
-      # if "-E" or "--zsv" is set
+    elif [ x"$ZSV_INSTALL" = x'y' ]; then
       zstack-ctl install_license --license $ZSTACK_TRIAL_LICENSE >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     chown -R zstack:zstack /var/lib/zstack/license >>$ZSTACK_INSTALL_LOG 2>&1
@@ -2585,7 +2621,7 @@ EOF
     if [ $? -ne 0 ]; then
         crontab - <<EOF
 `crontab -l 2>/dev/null`
-30 0,12 * * * zstack-ctl dump_mysql --keep-amount 14
+30 0 * * 0 zstack-ctl dump_mysql --keep-amount 2
 EOF
     fi
 
@@ -3693,8 +3729,6 @@ Options:
   -D    drop previous ${PRODUCT_NAME} database if it exists. An error will be raised
         if a previous ${PRODUCT_NAME} database is detected and no -D or -k option is provided.
 
-  -E    Install ${PRODUCT_NAME} Enterprise version. This option is only valid after ${PRODUCT_NAME} 2.0.
-
   -f LOCAL_PATH_OR_URL_OF_ZSTACK_ALL_IN_ONE_PACKAGE
         file path to ${PRODUCT_NAME} all-in-one package. By default the script
         will download the all-in-one package from ${PRODUCT_NAME} official website.
@@ -3844,7 +3878,7 @@ load_install_conf() {
 
 load_install_conf
 OPTIND=1
-TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDEFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum -- "$@"`
+TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum -- "$@"`
 if [ $? != 0 ]; then
     usage
 fi
@@ -3858,7 +3892,6 @@ do
         -C ) check_myarg $1 $2;CONSOLE_PROXY_ADDRESS=$2;shift 2;;
         -d ) DEBUG='y';shift;;
         -D ) NEED_DROP_DB='y';shift;;
-        -E ) INSTALL_ENTERPRISE='y';shift;;
         -H ) check_myarg $1 $2;NEED_HTTP='y' && HTTP_FOLDER=$2;shift 2;;
         -f ) check_myarg $1 $2;ZSTACK_ALL_IN_ONE=$2;shift 2;;
         -F ) FORCE='y';shift;;

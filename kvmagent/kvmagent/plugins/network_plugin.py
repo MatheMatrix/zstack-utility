@@ -37,6 +37,8 @@ KVM_REALIZE_L2NOVLAN_NETWORK_PATH = "/network/l2novlan/createbridge"
 KVM_REALIZE_L2VLAN_NETWORK_PATH = "/network/l2vlan/createbridge"
 KVM_CHECK_L2NOVLAN_NETWORK_PATH = "/network/l2novlan/checkbridge"
 KVM_CHECK_L2VLAN_NETWORK_PATH = "/network/l2vlan/checkbridge"
+KVM_UPDATE_L2VLAN_NETWORK_PATH = "/network/l2vlan/updatebridge"
+KVM_UPDATE_L2VXLAN_NETWORK_PATH = "/network/l2vxlan/updatebridge"
 KVM_CHECK_L2VXLAN_NETWORK_PATH = "/network/l2vxlan/checkcidr"
 KVM_REALIZE_L2VXLAN_NETWORK_PATH = "/network/l2vxlan/createbridge"
 KVM_REALIZE_L2VXLAN_NETWORKS_PATH = "/network/l2vxlan/createbridges"
@@ -102,6 +104,16 @@ class BatchUpdateBridgeCmd(kvmagent.AgentCommand):
         self.bridgeParams = None  # type: list[BridgeParam]
 
 
+class UpdateBridgeCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(UpdateBridgeCmd, self).__init__()
+        self.physicalInterfaceName = None
+        self.bridgeName = None
+        self.oldVirtualNetworkId = None
+        self.newVirtualNetworkId = None
+        self.l2NetworkUuid = None
+        self.peers = None  # type: list[str]
+
 
 class CheckVxlanCidrCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -158,6 +170,11 @@ class CreateVlanBridgeResponse(kvmagent.AgentResponse):
 class BatchUpdateBridgeResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(BatchUpdateBridgeResponse, self).__init__()
+
+
+class UpdateBridgeResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(UpdateBridgeResponse, self).__init__()
 
 
 class CheckVxlanCidrResponse(kvmagent.AgentResponse):
@@ -364,6 +381,20 @@ def del_novlan_bridge(cmd):
         cmd.bridgeName, cmd.physicalInterfaceName))
 
 
+def check_ifcfg_files_for_consistency():
+    infos = linux.get_ethernet_info()  # type: list[linux.EthernetInfo]
+    nics = [info.interface for info in infos]
+    for nic in nics:
+        if linux.is_bridge(nic):
+            continue
+
+        ifcfg = linux.get_device_ifcfg(nic)
+        bridge = ifcfg.bridge if ifcfg.bridge else ifcfg.config_dict.get('BRIDGE')
+        if bridge is not None and not linux.is_vif_on_bridge(bridge, nic):
+            logger.warn('interface[%s] is configured to bridge[%s] but not attached to it' % (nic, bridge))
+            ifcfg.flush_config()
+
+
 class NetworkPlugin(kvmagent.KvmAgent):
     '''
     classdocs
@@ -444,6 +475,17 @@ class NetworkPlugin(kvmagent.KvmAgent):
 
     def _configure_bridge_learning(self, bridgeName, interf, learning='on'):
         shell.call("bridge link set dev %s learning %s" % (interf, learning), False)
+
+    def _configure_bonding_mtu(self, cmd):
+        # take the mtu of the smallest interface as the mtu of the bond
+        min_mtu = 1500
+        for slave in cmd.slaves:  # type: HostNetworkInterfaceStruct
+            mtu = self._get_interface_mtu(slave.interfaceName)
+            if mtu < min_mtu:
+                min_mtu = mtu
+
+        # zs-bond -u mtu 1450
+        shell.call('/usr/local/bin/zs-bond -u %s mtu %s' % (cmd.bondName, min_mtu))
 
     @kvmagent.replyerror
     def check_physical_network_interface(self, req):
@@ -530,9 +572,9 @@ class NetworkPlugin(kvmagent.KvmAgent):
     @in_bash
     def create_bonding(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        return jsonobject.dumps(self.do_create_bonding(cmd))
+        return jsonobject.dumps(self._do_create_bonding(cmd))
 
-    def do_create_bonding(self, cmd):
+    def _do_create_bonding(self, cmd):
         rsp = CreateBondingResponse()
         try:
             try:
@@ -552,15 +594,7 @@ class NetworkPlugin(kvmagent.KvmAgent):
                 # zs-bond -c bond1 mode active-backup
                 shell.call('/usr/local/bin/zs-bond -c %s mode %s' % (cmd.bondName, cmd.mode))
 
-            # take the mtu of the smallest interface as the mtu of the bond
-            min_mtu = 1500
-            for slave in cmd.slaves:
-                mtu = self._get_interface_mtu(slave.interfaceName)
-                if mtu < min_mtu:
-                    min_mtu = mtu
-
-            # zs-bond -u mtu 1450
-            shell.call('/usr/local/bin/zs-bond -u %s mtu %s' % (cmd.bondName, min_mtu))
+            self._configure_bonding_mtu(cmd)
 
             # zs-nic-to-bond -a bond2 nic3
             for slave in cmd.slaves:
@@ -568,8 +602,9 @@ class NetworkPlugin(kvmagent.KvmAgent):
 
             # sync to collectd
             config_file = '/var/lib/zstack/kvm/collectd.conf'
-            self._add_interface_to_collectd_conf(config_file, cmd.bondName)
-            self._restart_collectd(config_file)
+            if os.path.exists(config_file):
+                self._add_interface_to_collectd_conf(config_file, cmd.bondName)
+                self._restart_collectd(config_file)
         except Exception as e:
             if "already exists" not in str(e):
                 shell.run('/usr/local/bin/zs-bond -d %s' % cmd.bondName)
@@ -627,9 +662,9 @@ class NetworkPlugin(kvmagent.KvmAgent):
     @in_bash
     def attach_nic_to_bonding(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        return jsonobject.dumps(self.do_attach_nic_to_bonding(cmd))
+        return jsonobject.dumps(self._do_attach_nic_to_bonding(cmd))
 
-    def do_attach_nic_to_bonding(self, cmd):
+    def _do_attach_nic_to_bonding(self, cmd):
         rsp = AttachNicToBondResponse()
 
         try:
@@ -665,9 +700,9 @@ class NetworkPlugin(kvmagent.KvmAgent):
     @in_bash
     def delete_bonding(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        return jsonobject.dumps(self.do_delete_bonding(cmd))
+        return jsonobject.dumps(self._do_delete_bonding(cmd))
 
-    def do_delete_bonding(self, cmd):
+    def _do_delete_bonding(self, cmd):
         rsp = DeleteBondingResponse()
         try:
             if self._has_vlan_or_bridge(cmd.bondName):
@@ -678,8 +713,9 @@ class NetworkPlugin(kvmagent.KvmAgent):
 
             # sync to collectd
             config_file = '/var/lib/zstack/kvm/collectd.conf'
-            self._remove_interface_from_collectd_conf(config_file, cmd.bondName)
-            self._restart_collectd(config_file)
+            if os.path.exists(config_file):
+                self._remove_interface_from_collectd_conf(config_file, cmd.bondName)
+                self._restart_collectd(config_file)
         except Exception as e:
             logger.warning(traceback.format_exc())
             rsp.error = 'unable to delete bonding[%s], because %s' % (cmd.bondName, str(e))
@@ -921,7 +957,7 @@ configure lldp status rx-only \n
 
                     linux.detach_interface_from_bridge(old_vlan_interface, bridge_name)
 
-                create_rsp = self.do_create_bonding(create_cmd)
+                create_rsp = self._do_create_bonding(create_cmd)
                 if not create_rsp.success:
                     for param in cmd.bridgeParams:
                         bridge_name = param.bridgeName
@@ -936,6 +972,8 @@ configure lldp status rx-only \n
                     rsp.error = create_rsp.error
                     return jsonobject.dumps(rsp)
 
+                self._configure_bonding_mtu(attach_cmd)
+
                 for vlan_eth in vlan_eth_list:
                     linux.delete_vlan_eth_and_ifcfg(vlan_eth)
                 vlan_eth_list = []
@@ -949,16 +987,19 @@ configure lldp status rx-only \n
                         vlan_eth_list.append(new_vlan_interface)
                     else:
                         new_vlan_interface = new_interface
+                        ifcfg = netconfig.NetBondConfig(new_interface)
+                        ifcfg.bridge = bridge_name
+                        ifcfg.restore_config(restore_only=True)
 
                     linux.attach_interface_to_bridge(new_vlan_interface, bridge_name, l2_network_uuid)
 
-                attach_rsp = self.do_attach_nic_to_bonding(attach_cmd)
+                attach_rsp = self._do_attach_nic_to_bonding(attach_cmd)
                 if not attach_rsp.success:
                     for vlan_eth in vlan_eth_list:
                         linux.delete_vlan_eth_and_ifcfg(vlan_eth)
                     del_cmd = DeleteBondingCmd()
                     del_cmd.bondName = attach_cmd.bondName
-                    self.do_delete_bonding(del_cmd)
+                    self._do_delete_bonding(del_cmd)
                     rsp.success = attach_rsp.success
                     rsp.error = attach_rsp.error
                     return jsonobject.dumps(rsp)
@@ -975,6 +1016,9 @@ configure lldp status rx-only \n
                     else:
                         old_vlan_interface = old_interface
                         new_vlan_interface = new_interface
+                        ifcfg = netconfig.NetEtherConfig(new_interface)
+                        ifcfg.bridge = bridge_name
+                        ifcfg.restore_config(restore_only=True)
 
                     linux.update_bridge_interface_configuration(old_vlan_interface, new_vlan_interface,
                                                                 bridge_name, l2_network_uuid)
@@ -985,7 +1029,7 @@ configure lldp status rx-only \n
             if cmd.oldBondingName:
                 del_cmd = DeleteBondingCmd()
                 del_cmd.bondName = old_interface
-                del_rsp = self.do_delete_bonding(del_cmd)
+                del_rsp = self._do_delete_bonding(del_cmd)
                 if not del_rsp.success:
                     logger.warning(del_rsp.error)
 
@@ -995,6 +1039,88 @@ configure lldp status rx-only \n
             logger.warning(traceback.format_exc())
             rsp.error = 'unable to update vlan bridge to change interface from device[%s] to device[%s], because %s' % (
                 old_interface, new_interface, str(e))
+            rsp.success = False
+        return jsonobject.dumps(rsp)
+
+    @lock.lock('bridge')
+    @kvmagent.replyerror
+    def update_vlan_bridge(self, req):
+        rsp = UpdateBridgeResponse()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])  # type: UpdateBridgeCmd
+
+        if cmd.oldVirtualNetworkId:
+            old_vlan_interface = linux.make_vlan_eth_name(cmd.physicalInterfaceName, cmd.oldVirtualNetworkId)
+        else:
+            old_vlan_interface = cmd.physicalInterfaceName
+        if cmd.newVirtualNetworkId:
+            new_vlan_interface = linux.make_vlan_eth_name(cmd.physicalInterfaceName, cmd.newVirtualNetworkId)
+        else:
+            new_vlan_interface = cmd.physicalInterfaceName
+
+        try:
+            self._ifup_device_if_down(cmd.physicalInterfaceName)
+            if cmd.newVirtualNetworkId:
+                linux.create_vlan_eth_with_bridge(cmd.physicalInterfaceName, cmd.newVirtualNetworkId, cmd.bridgeName)
+            else:
+                ifcfg = linux.get_device_ifcfg(new_vlan_interface)
+                ifcfg.bridge = cmd.bridgeName
+                ifcfg.restore_config(restore_only=True)
+
+            linux.update_bridge_interface_configuration(old_vlan_interface, new_vlan_interface,
+                                                        cmd.bridgeName, cmd.l2NetworkUuid)
+
+            if cmd.oldVirtualNetworkId:
+                linux.delete_vlan_eth_and_ifcfg(old_vlan_interface)
+            else:
+                old_ifcfg = linux.get_device_ifcfg(old_vlan_interface)
+                old_ifcfg.flush_config()
+
+            # switch to NoVlan Network need keep physical dev ip and route in bridge
+            if not cmd.newVirtualNetworkId and cmd.oldVirtualNetworkId:
+                linux.move_dev_route(cmd.physicalInterfaceName, cmd.bridgeName)
+            # switch to Vlan Network will return bridge ip and route to physical dev
+            if cmd.newVirtualNetworkId and not cmd.oldVirtualNetworkId:
+                linux.move_dev_route(cmd.bridgeName, cmd.physicalInterfaceName)
+
+            logger.debug('successfully update bridge[%s] vlan interface from device[%s] to device[%s]'
+                % (cmd.bridgeName, old_vlan_interface, new_vlan_interface))
+        except Exception as e:
+            logger.warning(traceback.format_exc())
+            rsp.error = ('unable to update bridge[%s] vlan interface from device[%s] to device[%s], because %s'
+                         % (cmd.bridgeName, old_vlan_interface, new_vlan_interface, str(e)))
+            rsp.success = False
+        return jsonobject.dumps(rsp)
+
+    @lock.lock('bridge')
+    @kvmagent.replyerror
+    def update_vxlan_bridge(self, req):
+        rsp = CreateBridgeResponse()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])  # type: UpdateBridgeCmd
+
+        if not cmd.oldVirtualNetworkId or not cmd.newVirtualNetworkId:
+            error_msg = 'both oldVirtualNetworkId and newVirtualNetworkId must be provided.'
+            logger.warning(error_msg)
+            rsp.error = error_msg
+            rsp.success = False
+            return jsonobject.dumps(rsp)
+
+        new_vxlan_interface = linux.make_vxlan_eth_name(cmd.newVirtualNetworkId)
+        old_vxlan_interface = linux.make_vxlan_eth_name(cmd.oldVirtualNetworkId)
+
+        try:
+            if cmd.peers:
+                linux.delete_vxlan_fdbs([old_vxlan_interface], cmd.peers)
+            linux.change_vxlan_interface(cmd.oldVirtualNetworkId, cmd.newVirtualNetworkId)
+            linux.update_bridge_interface_configuration(old_vxlan_interface, new_vxlan_interface,
+                                                        cmd.bridgeName, cmd.l2NetworkUuid)
+            if cmd.peers:
+                linux.populate_vxlan_fdbs([new_vxlan_interface], cmd.peers)
+            logger.debug('successfully update bridge[%s] vxlan interface from device[%s] to device[%s]'
+                % (cmd.bridgeName, old_vxlan_interface, new_vxlan_interface))
+        except Exception as e:
+            logger.warning(traceback.format_exc())
+            rsp.error = ('unable to update bridge[%s] vxlan interface from device[%s] to device[%s], because %s'
+                         % (cmd.bridgeName, old_vxlan_interface, new_vxlan_interface, str(e)))
             rsp.success = False
         return jsonobject.dumps(rsp)
 
@@ -1462,6 +1588,7 @@ configure lldp status rx-only \n
         return jsonobject.dumps(rsp)
 
     def start(self):
+        check_ifcfg_files_for_consistency()
         http_server = kvmagent.get_http_server()
         http_server.register_sync_uri(CHECK_PHYSICAL_NETWORK_INTERFACE_PATH, self.check_physical_network_interface)
         http_server.register_async_uri(ADD_INTERFACE_TO_BRIDGE_PATH, self.add_interface_to_bridge)
@@ -1480,6 +1607,8 @@ configure lldp status rx-only \n
         http_server.register_async_uri(KVM_CHECK_L2NOVLAN_NETWORK_PATH, self.check_bridge)
         http_server.register_async_uri(KVM_CHECK_MACVLAN_L2VLAN_NETWORK_PATH, self.check_macvlan_vlan_eth)
         http_server.register_async_uri(KVM_CHECK_L2VLAN_NETWORK_PATH, self.check_vlan_bridge)
+        http_server.register_async_uri(KVM_UPDATE_L2VLAN_NETWORK_PATH, self.update_vlan_bridge)
+        http_server.register_async_uri(KVM_UPDATE_L2VXLAN_NETWORK_PATH, self.update_vxlan_bridge)
         http_server.register_async_uri(KVM_CHECK_L2VXLAN_NETWORK_PATH, self.check_vxlan_cidr)
         http_server.register_async_uri(KVM_REALIZE_L2VXLAN_NETWORK_PATH, self.create_vxlan_bridge)
         http_server.register_async_uri(KVM_REALIZE_L2VXLAN_NETWORKS_PATH, self.create_vxlan_bridges)
