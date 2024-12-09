@@ -4970,7 +4970,7 @@ class Vm(object):
             if args is not None:
                 for arg in args:
                     e(qcmd, "qemu:arg", attrib={"value": arg.strip('"')})
-
+# http://dev.zstack.io:9080/zstackio/zstack-utility/-/merge_requests/5449/diffs
             if cmd.useColoBinary:
                 e(qcmd, "qemu:arg", attrib={"value": '-L'})
                 e(qcmd, "qemu:arg", attrib={"value": '/usr/share/qemu-kvm/'})
@@ -8642,9 +8642,9 @@ host side snapshot files chian:
                 if cmd.aliveChainInstallPathInDb is not None and childPath in cmd.aliveChainInstallPathInDb and online_commit:
                     continue
                 if not os.path.exists(cmd.top):
-                    linux.qcow2_rebase(cmd.base, childPath, unsafe_mode=True, skip_resize=True)
+                    linux.qcow2_rebase(cmd.base, childPath, unsafe_mode=True)
                 else:
-                    linux.qcow2_rebase(cmd.base, childPath, skip_resize=True)
+                    linux.qcow2_rebase(cmd.base, childPath)
 
         def block_commit_with_qemu_img():
             top = VolumeTO.get_volume_actual_installpath(cmd.top)
@@ -8664,9 +8664,6 @@ host side snapshot files chian:
                 vm_state = Vm.VM_STATE_SHUTDOWN if vm is None else vm.state
                 if (vm and (vm_state == vm.VM_STATE_RUNNING or vm_state == vm.VM_STATE_PAUSED)
                         and cmd.top in cmd.aliveChainInstallPathInDb and cmd.base in cmd.aliveChainInstallPathInDb):
-
-                    cmd.aliveChainInstallPathInDb
-
                     rsp.newVolumeInstallPath = vm.do_block_commit(cmd, cmd.volume)
                     online_commit = True
                 else:

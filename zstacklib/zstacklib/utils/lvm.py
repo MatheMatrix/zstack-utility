@@ -13,7 +13,7 @@ import xml.etree.ElementTree as etree
 
 import simplejson
 
-from zstacklib.utils import form, report
+from zstacklib.utils import form, report, jsonobject
 from zstacklib.utils import shell
 from zstacklib.utils import bash
 from zstacklib.utils import lock
@@ -1520,6 +1520,12 @@ def active_lv_with_check(path, shared=False):
 
 def deactive_lv(path, raise_exception=True):
     op = LvLockOperator.get_lock_cnt_or_else_none(path)
+
+    logger.debug("---------------deactive_lv op = LvLockOperator.get_lock_cnt_or_else_none(path)----------")
+    logger.debug(path)
+    logger.debug(op)
+    logger.debug("---------------deactive_lv op = LvLockOperator.get_lock_cnt_or_else_none(path)----------")
+
     if op:
         op.force_unlock(raise_exception)
     else:
@@ -1914,6 +1920,13 @@ class LvLockOperator(object):
     def get_lock_cnt(abs_path):
         global _lv_locks, _internal_lock
         with _internal_lock:
+
+            logger.debug("---------------get_lock_cnt----------")
+            logger.debug(abs_path)
+            logger.debug(_lv_locks)
+            logger.debug( _lv_locks.get(abs_path))
+            logger.debug("---------------get_lock_cnt----------")
+
             lock_cnt = _lv_locks.get(abs_path, LvLockOperator(abs_path))
             if not abs_path in _lv_locks:
                 _lv_locks[abs_path] = lock_cnt
@@ -1932,6 +1945,12 @@ class OperateLv(object):
         self.target_lock = LvmlockdLockType.EXCLUSIVE if shared is False else LvmlockdLockType.SHARE
         self.delete_when_exception = delete_when_exception
 
+        logger.debug("---------------OperateLv op = LvLockOperator.get_lock_cnt(path)----------")
+        logger.debug(abs_path)
+        logger.debug(self.lock_ref_cnt)
+        logger.debug(self.target_lock)
+        logger.debug("---------------OperateLv op = LvLockOperator.get_lock_cnt(path)----------")
+
     def __enter__(self):
         self.lock_ref_cnt.lock(self.target_lock)
 
@@ -1941,6 +1960,11 @@ class OperateLv(object):
             return
 
         self.lock_ref_cnt.unlock(self.target_lock)
+
+        logger.debug("---------------__exit__----------")
+        logger.debug(_lv_locks)
+        logger.debug(_lv_locks.keys())
+        logger.debug(_lv_locks.values())
 
 
 class RecursiveOperateLv(object):
