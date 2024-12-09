@@ -4975,6 +4975,12 @@ class Vm(object):
                 e(qcmd, "qemu:arg", attrib={"value": '-L'})
                 e(qcmd, "qemu:arg", attrib={"value": '/usr/share/qemu-kvm/'})
 
+            if cmd.qemu64BitPciMmioSetup:
+                if pci.need_config_pcimmio():
+                    e(qcmd, "qemu:arg", attrib={"value": '-fw_cfg'})
+                    e(qcmd, "qemu:arg", attrib={"value": 'opt/ovmf/X-PciMmio64Mb,string=%s'
+                                                         % pci.get_bars_max_addressable_memory()})
+
             if cmd.coloPrimary:
                 e(qcmd, "qemu:arg", attrib={"value": '-L'})
                 e(qcmd, "qemu:arg", attrib={"value": '/usr/share/qemu-kvm/'})
