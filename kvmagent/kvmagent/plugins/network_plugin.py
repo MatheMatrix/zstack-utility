@@ -390,9 +390,19 @@ def check_ifcfg_files_for_consistency():
 
         ifcfg = linux.get_device_ifcfg(nic)
         bridge = ifcfg.bridge if ifcfg.bridge else ifcfg.config_dict.get('BRIDGE')
-        if bridge is not None and not linux.is_vif_on_bridge(bridge, nic):
+        if bridge is None:
+            continue
+
+        ifcfg_bridge = netconfig.NetBridgeConfig(bridge)
+        if not linux.is_vif_on_bridge(bridge, nic):
             logger.warn('interface[%s] is configured to bridge[%s] but not attached to it' % (nic, bridge))
             ifcfg.flush_config()
+
+        elif ifcfg.is_boot_proto_dhcp() and not ifcfg_bridge.is_boot_proto_dhcp():
+            logger.warn('boot protocol of interface[%s] is DHCP but bridge[%s] is not' % (nic, bridge))
+            ifcfg_bridge.boot_proto = ifcfg.boot_proto
+            del ifcfg_bridge.ip_configs[:]
+            ifcfg_bridge.restore_config()
 
 
 class NetworkPlugin(kvmagent.KvmAgent):
