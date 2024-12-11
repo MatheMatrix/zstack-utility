@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 import sys, os, platform
 
 version = '4.8.0'
-requires = 'websockify == 0.6.1'
+requires = 'websockify'
 if platform.machine() == 'sw_64':
     requires = 'websockify == 0.8.0'
 
