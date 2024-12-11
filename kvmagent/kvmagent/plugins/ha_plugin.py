@@ -498,10 +498,6 @@ class SanlockHealthChecker(AbstractStorageFencer):
         return 0, None
 
     def _do_health_check(self, storage_timeout, max_failure):
-        @linux.ignore_error_retry(5, 0.5, return_after_exception="")
-        def _do_get_client_status():
-            return bash.bash_errorout("sanlock client status -D")
-
         # sanlock client command may fail to execute and succeed after retry
         @linux.ignore_error_retry(5, 0.5, return_after_exception=[])
         def _do_get_lockspaces():
@@ -509,7 +505,7 @@ class SanlockHealthChecker(AbstractStorageFencer):
             return [ s.split()[1] for s in lines if s.startswith('s ') ]
 
         lockspaces = _do_get_lockspaces()
-        p = sanlock.SanlockClientStatusParser(_do_get_client_status())
+        p = sanlock.SanlockClientStatusParser()
         victims = {}  # type: dict[str, str]
 
         for vg in self.all_vgs:
@@ -1549,7 +1545,7 @@ class HaPlugin(kvmagent.KvmAgent):
             cmd = self.sblk_health_checker.get_vg_fencer_cmd(vg)
 
             # we will check one io to determine volumes on pv should be kill
-            invalid_pv_uuids = lvm.get_invalid_pv_uuids(vg, cmd.checkIo)
+            invalid_pv_uuids, _ = lvm.get_invalid_pv_uuids(vg, cmd.checkIo)
             logger.debug("got invalid pv uuids: %s" % invalid_pv_uuids)
             vms = lvm.get_running_vm_root_volume_on_pv(vg, invalid_pv_uuids, True)
             killed_vm_uuids = []
