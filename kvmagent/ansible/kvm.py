@@ -91,6 +91,7 @@ host_post_info.releasever = releasever
 IS_AARCH64 = host_info.host_arch == 'aarch64'
 IS_MIPS64EL = host_info.host_arch == 'mips64el'
 IS_LOONGARCH64 = host_info.host_arch == 'loongarch64'
+IS_SW = host_info.host_arch == 'sw64'
 
 repo_dir = "/opt/zstack-dvd/{}".format(host_info.host_arch)
 if not os.path.isdir(repo_dir):

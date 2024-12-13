@@ -108,6 +108,8 @@ def _parse_version(version_output):
 
     if "(" in ver_line:
         full_ver = ver_line.split("(", 1)[1].split(")", 1)[0]
+    elif "version" in ver_line:
+        full_ver = ver_line.split("version ", 1)[1].split(" ")[0]
     else:
         full_ver = ver_line
 

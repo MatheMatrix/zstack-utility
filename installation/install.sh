@@ -850,7 +850,7 @@ check_system(){
     echo_title "Check System"
     echo ""
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    cat /etc/*-release |egrep -i -h "centos |Helix|Red Hat Enterprise|Alibaba|NeoKylin|Kylin Linux Advanced Server release V10|openEuler|UnionTech OS Server release 20 \(kongzi\)|NFSChina Server release 4.0.220727 \(RTM3\)|Rocky Linux" >>$ZSTACK_INSTALL_LOG 2>&1
+    cat /etc/*-release |egrep -i -h "centos |Helix|Red Hat Enterprise|Alibaba|NeoKylin|Kylin Linux Advanced Server release V10|openEuler|UnionTech OS Server release 20 \(kongzi\)|NFSChina Server release 4.0.220727 \(RTM3\)|Rocky Linux|Kylin Linux Advanced Server V10 \(Tercel\)|kylin release 10 \(Tercel\)" >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -eq 0 ]; then
         grep -qi 'CentOS release 6' /etc/system-release && OS="CENTOS6"
         grep -qi 'CentOS Linux release 7' /etc/system-release && OS="CENTOS7"
@@ -867,6 +867,7 @@ check_system(){
         grep -qi 'Rocky Linux release 8.4 (Green Obsidian)' /etc/system-release && OS="ROCKY8"
         grep -qi 'Helix release 7' /etc/system-release && OS="HELIX7"
         grep -qi 'Helix release 8.4r (Green Obsidian)' /etc/system-release && OS="HELIX8"
+        grep -qi 'kylin release 10 (Tercel)' /etc/system-release && OS="KYLIN10"
         if [[ -z "$OS" ]];then
             fail2 "Host OS checking failure: your system is: `cat /etc/redhat-release`, $PRODUCT_NAME management node only supports $SUPPORTED_OS currently"
         elif [[ $OS == "CENTOS7" ]];then
@@ -1239,6 +1240,7 @@ create_symbol_link() {
         ln -s /opt/zstack-dvd/aarch64 ${ZSTACK_HOME}/static/zstack-repo/aarch64 >/dev/null 2>&1
         ln -s /opt/zstack-dvd/mips64el ${ZSTACK_HOME}/static/zstack-repo/mips64el >/dev/null 2>&1
         ln -s /opt/zstack-dvd/loongarch64 ${ZSTACK_HOME}/static/zstack-repo/loongarch64 >/dev/null 2>&1
+        ln -s /opt/zstack-dvd/sw_64 ${ZSTACK_HOME}/static/zstack-repo/sw_64 >/dev/null 2>&1
     fi
     chown -R zstack:zstack ${ZSTACK_HOME}/static/zstack-repo
 }
@@ -1636,7 +1638,12 @@ is_install_general_libs_rh(){
             nodejs \
             zs-forecast-capacity"
     if [ "$BASEARCH" == "x86_64" ]; then
-      deps_list="${deps_list} mcelog"
+        deps_list="${deps_list} mcelog"
+    elif [ "${BASEARCH}" == "sw_64" ];then
+        deps_list=${deps_list/ java-1\.8\.0-openjdk / java-1.8.0-swjdk }
+        deps_list=${deps_list/ java-1\.8\.0-openjdk-devel / java-1.8.0-swjdk-devel }
+        deps_list=${deps_list/ grafana \ /}
+        deps_list=${deps_list/ redis5 / redis }
     fi
     always_update_list="openssh"
     missing_list=`LANG=en_US.UTF-8 && rpm -q $deps_list | grep 'not installed' | awk 'BEGIN{ORS=" "}{ print $2 }'`
@@ -3427,6 +3434,9 @@ install_sync_repo_dependences() {
     pkg_list="createrepo curl rsync"
     if [ x"$OS" != x"KYLIN10" -a x"$OS" != x"EULER20" -a x"$OS" != x"OE2203" -a x"$OS" != x"H2203SP1O" ]; then
         pkg_list="$pkg_list yum-utils"
+    fi
+    if [ x"$BASEARCH" == x"sw_64" ]; then
+        pkg_list="createrepo_c curl rsync"
     fi
     missing_list=`LANG=en_US.UTF-8 && rpm -q $pkg_list | grep 'not installed' | awk 'BEGIN{ORS=" "}{ print $2 }'`
     [ -z "$missing_list" ] || yum -y --disablerepo=* --enablerepo=zstack-local install ${missing_list} >>$ZSTACK_INSTALL_LOG 2>&1 || echo_hints_to_upgrade_iso
