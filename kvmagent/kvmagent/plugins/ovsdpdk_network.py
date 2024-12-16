@@ -458,7 +458,7 @@ class OvsDpdkNetworkPlugin(kvmagent.KvmAgent):
 
         #Bond can't config through UI, check bond status not run in current version
         #check_bond_status()
-        check_ovs_status()
+        # check_ovs_status()
 
     def stop(self):
         http.AsyncUirHandler.STOP_WORLD = True

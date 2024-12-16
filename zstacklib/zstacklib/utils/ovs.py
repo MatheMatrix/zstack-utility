@@ -36,7 +36,8 @@ SwitchCtlFilePath = "/var/run/openvswitch/ovs-vswitchd.zs.ctl"
 CtlBin = "ovs-vsctl --db=unix:{} ".format(DB_SOCK)
 OvsPackagesPath = "/var/lib/zstack/network/ovs-tools"
 
-OvsDpdkSupportVnic = ['vDPA', 'dpdkvhostuserclient']
+#ovsDpdk code will only hand mlnx smart nic network
+OvsDpdkSupportVnic = ['vDPA']
 OvsDpdkSupportBondType = ['dpdkBond', 'ovsBond']
 
 BridgeAndPfExist = 0
@@ -2603,7 +2604,8 @@ def getOvsCtl(with_dpdk=None):
 def isVmUseOpenvSwitch(vmUuid):
     try:
         vmInterfaceList = shell.call("virsh domiflist {}".format(vmUuid)).strip()
-        if "vhostuser" in vmInterfaceList:
+        ## only vdpa nic is managed by ovs.py
+        if "vdpa" in vmInterfaceList:
             return True
         return False
     except shell.ShellError as err:
