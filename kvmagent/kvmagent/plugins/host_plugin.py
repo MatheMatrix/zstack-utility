@@ -1097,6 +1097,47 @@ class HostPlugin(kvmagent.KvmAgent):
             return 0
         return float(sizeunit.get_size(str) / 1024)
 
+    def get_dmidecode_info(self):
+        dmidecode_info = {
+            "system_product_name": "unknown",
+            "baseboard_product_name": "unknown",
+            "system_serial_number": "unknown",
+            "system_manufacturer": "unknown",
+            "system_uuid": "unknown",
+            "bios_vendor": "unknown",
+            "bios_version": "unknown",
+            "bios_release_date": "unknown",
+            "memory_slots_maximum": "unknown",
+            "power_supply_manufacturer": "unknown",
+            "power_supply_model_name": "unknown",
+            "power_supply_max_power_capacity": None,
+        }
+
+        if shell.run("dmidecode") != 0:
+            return dmidecode_info
+
+        try:
+            dmidecode_info["system_product_name"] = shell.call('dmidecode -s system-product-name').strip()
+            dmidecode_info["baseboard_product_name"] = shell.call('dmidecode -s baseboard-product-name').strip()
+            dmidecode_info["system_serial_number"] = shell.call('dmidecode -s system-serial-number').strip()
+            dmidecode_info["system_manufacturer"] = shell.call('dmidecode -s system-manufacturer').strip()
+            dmidecode_info["system_uuid"] = shell.call('dmidecode -s system-uuid').strip()
+            dmidecode_info["bios_vendor"] = shell.call('dmidecode -s bios-vendor').strip()
+            dmidecode_info["bios_version"] = shell.call('dmidecode -s bios-version').strip()
+            dmidecode_info["bios_release_date"] = shell.call('dmidecode -s bios-release-date').strip()
+            dmidecode_info["memory_slots_maximum"] = shell.call('dmidecode -q -t memory | grep "Memory Device" | wc -l').strip()
+            power_supply_manufacturer = shell.call("dmidecode -t 39 | grep -vi 'not specified' | grep -m1 'Manufacturer' | awk -F ':' '{print $2}'").strip()
+            dmidecode_info["power_supply_manufacturer"] = power_supply_manufacturer if power_supply_manufacturer != "" else "unknown"
+            power_supply_model_name = shell.call("dmidecode -t 39 | grep -vi 'not specified' | grep -m1 'Name' | awk -F ':' '{print $2}'").strip()
+            dmidecode_info["power_supply_model_name"] = power_supply_model_name if power_supply_model_name != "" else "unknown"
+            power_supply_max_power_capacity = shell.call("dmidecode -t 39 | grep -vi 'unknown' | grep -m1 'Max Power Capacity' | awk -F ':' '{print $2}'")
+            if bool(re.search(r'\d', power_supply_max_power_capacity)):
+                dmidecode_info["power_supply_max_power_capacity"] = filter(str.isdigit, power_supply_max_power_capacity.strip())
+        except Exception as e:
+            logger.debug("failed to get dmidecode info, because %s" % str(e))
+
+        return dmidecode_info
+
     @kvmagent.replyerror
     def fact(self, req):
         rsp = HostFactResponse()
@@ -1122,31 +1163,19 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.biosReleaseDate = 'unknown'
         is_dmidecode = shell.run("dmidecode")
         if str(is_dmidecode) == '0':
-            system_product_name = shell.call('dmidecode -s system-product-name').strip()
-            baseboard_product_name = shell.call('dmidecode -s baseboard-product-name').strip()
-            system_serial_number = shell.call('dmidecode -s system-serial-number').strip()
-            system_manufacturer = shell.call('dmidecode -s system-manufacturer').strip()
-            system_uuid = shell.call('dmidecode -s system-uuid').strip()
-            bios_vendor = shell.call('dmidecode -s bios-vendor').strip()
-            bios_version = shell.call('dmidecode -s bios-version').strip()
-            bios_release_date = shell.call('dmidecode -s bios-release-date').strip()
-            rsp.systemSerialNumber = system_serial_number if system_serial_number else 'unknown'
-            rsp.systemProductName = system_product_name if system_product_name else baseboard_product_name
-            rsp.systemManufacturer = system_manufacturer if system_manufacturer else 'unknown'
-            rsp.systemUUID = system_uuid if system_uuid else 'unknown'
-            rsp.biosVendor = bios_vendor if bios_vendor else 'unknown'
-            rsp.biosVersion = bios_version if bios_version else 'unknown'
-            rsp.biosReleaseDate = bios_release_date if bios_release_date else 'unknown'
-            memory_slots_maximum = shell.call('dmidecode -q -t memory | grep "Memory Device" | wc -l')
-            rsp.memorySlotsMaximum = memory_slots_maximum.strip()
+            dmidecode_info = self.get_dmidecode_info()
+            rsp.systemSerialNumber = dmidecode_info["system_serial_number"]
+            rsp.systemProductName = dmidecode_info["system_product_name"]
+            rsp.systemManufacturer = dmidecode_info["system_manufacturer"]
+            rsp.systemUUID = dmidecode_info["system_uuid"]
+            rsp.biosVendor = dmidecode_info["bios_vendor"]
+            rsp.biosVersion = dmidecode_info["bios_version"]
+            rsp.biosReleaseDate = dmidecode_info["bios_release_date"]
+            rsp.memorySlotsMaximum = dmidecode_info["memory_slots_maximum"]
             # power not in presence cannot collect power info
-            power_supply_manufacturer = shell.call("dmidecode -t 39 | grep -vi 'not specified' | grep -m1 'Manufacturer' | awk -F ':' '{print $2}'").strip()
-            rsp.powerSupplyManufacturer = power_supply_manufacturer if power_supply_manufacturer != "" else "unknown"
-            power_supply_model_name = shell.call("dmidecode -t 39 | grep -vi 'not specified' | grep -m1 'Name' | awk -F ':' '{print $2}'").strip()
-            rsp.powerSupplyModelName = power_supply_model_name if power_supply_model_name != "" else "unknown"
-            power_supply_max_power_capacity = shell.call("dmidecode -t 39 | grep -vi 'unknown' | grep -m1 'Max Power Capacity' | awk -F ':' '{print $2}'")
-            if bool(re.search(r'\d', power_supply_max_power_capacity)):
-                rsp.powerSupplyMaxPowerCapacity = filter(str.isdigit, power_supply_max_power_capacity.strip())
+            rsp.powerSupplyManufacturer = dmidecode_info["power_supply_manufacturer"]
+            rsp.powerSupplyModelName = dmidecode_info["power_supply_model_name"]
+            rsp.powerSupplyMaxPowerCapacity = dmidecode_info["power_supply_max_power_capacity"]
 
         rsp.qemuImgVersion = qemu_img_version
         rsp.libvirtVersion = self.libvirt_version
@@ -1262,7 +1291,7 @@ class HostPlugin(kvmagent.KvmAgent):
             rsp.cpuCache = ",".join(str(cache) for cache in cpu_cache_list)
 
         # get virtualizer info
-        rsp.virtualizerInfo.uuid = self.config.get(kvmagent.HOST_UUID)
+        rsp.virtualizerInfo.uuid = self.config.get(kvmagent.HOST_UUID, None)
         rsp.virtualizerInfo.virtualizer = "qemu-kvm"
         rsp.virtualizerInfo.version = qemu.get_version_from_exe_file(qemu.get_path())
 
