@@ -60,6 +60,7 @@ from zstacklib.utils import pci
 from zstacklib.utils import image
 from zstacklib.utils import iproute
 from zstacklib.utils import ovs
+from zstacklib.utils import ovn
 from zstacklib.utils import drbd
 from zstacklib.utils.jsonobject import JsonObject
 from zstacklib.utils.linux import is_virtual_machine
@@ -4209,6 +4210,8 @@ class Vm(object):
 
         if cmd.nic.type in ovs.OvsDpdkSupportVnic:
             vhostSrcPath = cmd.nic.srcPath
+        elif cmd.nic.type == "OvnDpdkVhostUser":
+            vhostSrcPath = cmd.nic.srcPath
 
         if cmd.nic.type == "TFVNIC":
             interface = Vm._build_interface_xml(cmd.nic, action=action, cmd=cmd)
@@ -4445,6 +4448,10 @@ class Vm(object):
             if check_device(None):
                 return
 
+            if cmd.nic.type == "OvnDpdkVhostUser":
+                vsctl = ovn.VsCtl()
+                vsctl.addVnic(cmd.nic.nicInternalName, "dpdkvhostuserclient", cmd.nic.srcPath)
+
             # if nic type is vDPA/dpdkvhostuser, create vDPA/dpdkvhostuser backends in thread.
             if cmd.nic.type in ovs.OvsDpdkSupportVnic:
                 cmd.nic.srcPath = ovs.getOvsCtl(with_dpdk=True).createNicBackend(cmd.vmUuid, cmd.nic)
@@ -4469,6 +4476,10 @@ class Vm(object):
 
         except:
             #  check one more time
+            if cmd.nic.type == "OvnDpdkVhostUser":
+                vsctl = ovn.VsCtl()
+                vsctl.delVnic(cmd.nic.nicInternalName, "dpdkvhostuserclient", cmd.nic.srcPath)
+
             if not check_device(None):
                 raise
 
@@ -4516,6 +4527,10 @@ class Vm(object):
             return
 
         try:
+            if cmd.nic.type == "OvnDpdkVhostUser":
+                vsctl = ovn.VsCtl()
+                vsctl.delVnic(cmd.nic.nicInternalName, "dpdkvhostuserclient", cmd.nic.srcPath)
+
             # if nic type is vDPA/dpdkvhostuser, release it before detach.
             if cmd.nic.type in ovs.OvsDpdkSupportVnic:
                 cmd.nic.srcPath = ovs.getOvsCtl(with_dpdk=True).destoryNicBackend(cmd.vmUuid, cmd.nic.nicInternalName)
@@ -5936,6 +5951,8 @@ class Vm(object):
                     interface = Vm._build_interface_xml(nic, devices, nic.srcPath, 'Attach', brMode, index)
                 elif nic.type == 'TFVNIC':
                     interface = Vm._build_interface_xml(nic, devices, vhostSrcPath, 'Attach', brMode, index, cmd)
+                elif cmd.nic.type == "OvnDpdkVhostUser":
+                    interface = Vm._build_interface_xml(nic, devices, nic.srcPath, 'Attach', brMode, index)
                 else:
                     interface = Vm._build_interface_xml(nic, devices, vhostSrcPath, 'Attach', brMode, index)
                 addon(interface)
@@ -6455,7 +6472,7 @@ class Vm(object):
         if action != 'Update' and action != 'Detach':
             e(interface, 'alias', None, {'name': 'net%s' % nic.nicInternalName.split('.')[1]})
 
-        if iftype != 'hostdev' and iftype != "direct" and nic.type not in ovs.OvsDpdkSupportVnic:
+        if iftype != 'hostdev' and iftype != "direct" and nic.type not in ovs.OvsDpdkSupportVnic and nic.type != "OvnDpdkVhostUser":
             e(interface, 'mtu', None, attrib={'size': '%d' % nic.mtu})
 
         # logger.warn("nic.state : [%s]" % nic.state)
@@ -6471,7 +6488,10 @@ class Vm(object):
                 vlan = e(interface, 'vlan')
                 e(vlan, 'tag', None, attrib={'id': nic.vlanId})
         elif iftype == 'vhostuser':
-            if brMode != 'mocbr' and nic.type not in ovs.OvsDpdkSupportVnic:
+            if nic.type == "OvnDpdkVhostUser":
+                e(interface, 'source', None, attrib={'type': 'unix', 'path': vhostSrcPath, 'mode': 'server'})
+                e(interface, 'target', None, attrib={'dev': nic.nicInternalName})
+            elif brMode != 'mocbr' and nic.type not in ovs.OvsDpdkSupportVnic:
                 e(interface, 'source', None, attrib={'type': 'unix', 'path': vhostSrcPath, 'mode': 'client'})
                 e(interface, 'driver', None, attrib={'queues': '16', 'vhostforce': 'on'})
             elif nic.type in ovs.OvsDpdkSupportVnic:
@@ -6522,7 +6542,10 @@ class Vm(object):
                 e(interface, 'model', None, attrib={'type': 'e1000'})
 
             if nic.driverType == 'virtio' and nic.vHostAddOn.queueNum != 1:
-                e(interface, 'driver ', None, attrib={'name': 'vhost', 'txmode': 'iothread', 'ioeventfd': 'on', 'event_idx': 'off', 'queues': str(nic.vHostAddOn.queueNum), 'rx_queue_size': str(nic.vHostAddOn.rxBufferSize) if nic.vHostAddOn.rxBufferSize is not None else '1024', 'tx_queue_size': str(nic.vHostAddOn.txBufferSize) if nic.vHostAddOn.txBufferSize is not None else '1024'})
+                if nic.type == "OvnDpdkVhostUser":
+                    e(interface, 'driver ', None, attrib={'queues': str(nic.vHostAddOn.queueNum), 'rx_queue_size': str(nic.vHostAddOn.rxBufferSize) if nic.vHostAddOn.rxBufferSize is not None else '1024', 'tx_queue_size': str(nic.vHostAddOn.txBufferSize) if nic.vHostAddOn.txBufferSize is not None else '1024'})
+                else:
+                    e(interface, 'driver ', None, attrib={'name': 'vhost', 'txmode': 'iothread', 'ioeventfd': 'on', 'event_idx': 'off', 'queues': str(nic.vHostAddOn.queueNum), 'rx_queue_size': str(nic.vHostAddOn.rxBufferSize) if nic.vHostAddOn.rxBufferSize is not None else '1024', 'tx_queue_size': str(nic.vHostAddOn.txBufferSize) if nic.vHostAddOn.txBufferSize is not None else '1024'})
 
         if nic.bootOrder is not None and nic.bootOrder > 0:
             e(interface, 'boot', None, attrib={'order': str(nic.bootOrder)})
