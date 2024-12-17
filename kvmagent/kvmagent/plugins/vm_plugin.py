@@ -4965,7 +4965,11 @@ class Vm(object):
 
                     e(cpu, 'feature', attrib={'name': 'x2apic', 'policy': 'disable'})
 
-                if cmd.cpuHypervisorFeature is False:
+                # For Hygon_Customized, the cpu model is none, therefore the
+                # feature will not be set. Setup the feature in qemu arg.
+                if cmd.cpuHypervisorFeature is False \
+                    and not (cmd.nestedVirtualization == 'custom' \
+                        and cmd.vmCpuModel == 'Hygon_Customized'):
                     e(cpu, 'feature', attrib={'name': 'hypervisor', 'policy': 'disable'})
 
             make_cpu_features()
@@ -5102,14 +5106,18 @@ class Vm(object):
             qcmd = e(root, 'qemu:commandline')
             vendor_id, model_name = linux.get_cpu_model()
             if "hygon" in model_name.lower() and cmd.vmCpuModel == 'Hygon_Customized':
+                features = ""
+                if cmd.cpuHypervisorFeature is False:
+                    features = ",hypervisor=off"
+
                 # cloud hygon_customized
                 if cmd.nestedVirtualization == 'custom' and cmd.imagePlatform.lower() != "other":  
                     e(qcmd, "qemu:arg", attrib={"value": "-cpu"})
-                    e(qcmd, "qemu:arg", attrib={"value": "EPYC,vendor=AuthenticAMD,model_id={} Processor,+svm".format(" ".join(model_name.split(" ")[0:3]))})
+                    e(qcmd, "qemu:arg", attrib={"value": "EPYC,vendor=AuthenticAMD,model_id={} Processor,+svm{}".format(" ".join(model_name.split(" ")[0:3]), features)})
                 # zsv hygon_customized
                 elif cmd.nestedVirtualization == 'host-passthrough':
                     e(qcmd, "qemu:arg", attrib={"value": "-cpu"})
-                    e(qcmd, "qemu:arg", attrib={"value": "EPYC,vendor=AuthenticAMD,model_id={} Processor,+svm".format(" ".join(model_name.split(" ")[0:3]))})
+                    e(qcmd, "qemu:arg", attrib={"value": "EPYC,vendor=AuthenticAMD,model_id={} Processor,+svm{}".format(" ".join(model_name.split(" ")[0:3]), features)})
 
             e(qcmd, "qemu:arg", attrib={"value": "-qmp"})
             e(qcmd, "qemu:arg", attrib={"value": "unix:{}/{}.sock,server,nowait".format(QMP_SOCKET_PATH, cmd.vmInstanceUuid)})
