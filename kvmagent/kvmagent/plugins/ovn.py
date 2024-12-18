@@ -6,11 +6,14 @@ from kvmagent import kvmagent
 from zstacklib.utils import jsonobject
 from zstacklib.utils import log
 from zstacklib.utils import http
+from zstacklib.utils import ovn
 
 OVN_INSTALL_PACKAGE = '/network/ovn/install'
 OVN_UNINSTALL_PACKAGE = '/network/ovn/uninstall'
 OVN_START_SERVICE = '/network/ovn/start'
 OVN_STOP_SERVICE = '/network/ovn/stop'
+OVN_ADD_PORT = '/network/ovn/addport'
+OVN_DEL_PORT = '/network/ovn/delport'
 
 logger = log.get_logger(__name__)
 
@@ -58,6 +61,29 @@ class OvnStopServiceResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(OvnStopServiceResponse, self).__init__()
 
+class OvnAddPortCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(OvnAddPortCmd, self).__init__()
+        self.vswitchType = None
+        self.nicMap = None
+
+
+class OvnAddPortResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(OvnAddPortResponse, self).__init__()
+
+
+class OvnDelPortCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(OvnDelPortCmd, self).__init__()
+        self.vswitchType = None
+        self.nicMap = None
+
+
+class OvnDelPortResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(OvnDelPortResponse, self).__init__()
+
 
 class OvnNetworkPlugin(kvmagent.KvmAgent):
 
@@ -89,6 +115,31 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
 
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def ovn_add_port(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        logger.debug("cmd: %s: %s" % (cmd, cmd.__dict__))
+        logger.debug("cmd nicMap: %s: %s" % (cmd.nicMap, cmd.nicMap.__dict__))
+        vsctl = ovn.VsCtl()
+        for nicName, srcPath in cmd.nicMap.__dict__.items():
+            vsctl.addVnic(nicName, srcPath)
+        rsp = OvnAddPortResponse()
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def ovn_del_port(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = OvnDelPortResponse()
+
+        logger.debug("cmd: %s: %s" % (cmd, cmd.__dict__))
+        logger.debug("cmd nicMap: %s: %s" % (cmd.nicMap, cmd.nicMap.__dict__))
+        vsctl = ovn.VsCtl()
+        for nicName, _ in cmd.nicMap.__dict__.items():
+            vsctl.delVnic(nicName)
+
+        return jsonobject.dumps(rsp)
+
     def start(self):
 
         http_server = kvmagent.get_http_server()
@@ -101,6 +152,10 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             OVN_START_SERVICE, self.start_ovn_service)
         http_server.register_async_uri(
             OVN_STOP_SERVICE, self.stop_ovn_service)
+        http_server.register_async_uri(
+            OVN_ADD_PORT, self.ovn_add_port)
+        http_server.register_async_uri(
+            OVN_DEL_PORT, self.ovn_del_port)
 
     def stop(self):
         http.AsyncUirHandler.STOP_WORLD = True

@@ -4439,6 +4439,8 @@ class Vm(object):
                         return True
                     if cmd.nic.type in ovs.OvsDpdkSupportVnic:
                         return True
+                    if cmd.nic.type == "OvnDpdkVhostUser":
+                        return True
                     else:
                         return linux.is_network_device_existing(cmd.nic.nicInternalName)
 
@@ -4447,14 +4449,6 @@ class Vm(object):
         try:
             if check_device(None):
                 return
-
-            if cmd.nic.type == "OvnDpdkVhostUser":
-                vsctl = ovn.VsCtl()
-                vsctl.addVnic(cmd.nic.nicInternalName, "dpdkvhostuserclient", cmd.nic.srcPath)
-
-            # if nic type is vDPA/dpdkvhostuser, create vDPA/dpdkvhostuser backends in thread.
-            if cmd.nic.type in ovs.OvsDpdkSupportVnic:
-                cmd.nic.srcPath = ovs.getOvsCtl(with_dpdk=True).createNicBackend(cmd.vmUuid, cmd.nic)
 
             # Make sure key:vmInstanceUuid exists
             if cmd.nic.type == "TFVNIC":
@@ -4475,11 +4469,6 @@ class Vm(object):
                 iproute.config_link_isolated(cmd.nic.nicInternalName)
 
         except:
-            #  check one more time
-            if cmd.nic.type == "OvnDpdkVhostUser":
-                vsctl = ovn.VsCtl()
-                vsctl.delVnic(cmd.nic.nicInternalName, "dpdkvhostuserclient", cmd.nic.srcPath)
-
             if not check_device(None):
                 raise
 
@@ -4527,10 +4516,6 @@ class Vm(object):
             return
 
         try:
-            if cmd.nic.type == "OvnDpdkVhostUser":
-                vsctl = ovn.VsCtl()
-                vsctl.delVnic(cmd.nic.nicInternalName, "dpdkvhostuserclient", cmd.nic.srcPath)
-
             # if nic type is vDPA/dpdkvhostuser, release it before detach.
             if cmd.nic.type in ovs.OvsDpdkSupportVnic:
                 cmd.nic.srcPath = ovs.getOvsCtl(with_dpdk=True).destoryNicBackend(cmd.vmUuid, cmd.nic.nicInternalName)
@@ -5951,7 +5936,7 @@ class Vm(object):
                     interface = Vm._build_interface_xml(nic, devices, nic.srcPath, 'Attach', brMode, index)
                 elif nic.type == 'TFVNIC':
                     interface = Vm._build_interface_xml(nic, devices, vhostSrcPath, 'Attach', brMode, index, cmd)
-                elif cmd.nic.type == "OvnDpdkVhostUser":
+                elif nic.type == "OvnDpdkVhostUser":
                     interface = Vm._build_interface_xml(nic, devices, nic.srcPath, 'Attach', brMode, index)
                 else:
                     interface = Vm._build_interface_xml(nic, devices, vhostSrcPath, 'Attach', brMode, index)
@@ -7893,15 +7878,12 @@ class VmPlugin(kvmagent.KvmAgent):
             vmUuid = cmd.uuid
             strategy = str(cmd.type)
             vm = get_vm_by_uuid(vmUuid)
-            vmUseOpenvSwitch = ovs.isVmUseOpenvSwitch(vmUuid)
 
             if strategy == "cold" or strategy == "force":
                 vm.stop(strategy=strategy)
             else:
                 vm.stop(timeout=cmd.timeout / 2)
 
-            if vmUseOpenvSwitch:
-                ovs.getOvsCtl(with_dpdk=True).destoryNicBackend(vmUuid)
         except kvmagent.KvmError as e:
             logger.debug(linux.get_exception_stacktrace())
         finally:
@@ -8002,10 +7984,7 @@ class VmPlugin(kvmagent.KvmAgent):
 
             vm = get_vm_by_uuid(cmd.uuid, False)
             if vm:
-                vmUseOpenvSwitch = ovs.isVmUseOpenvSwitch(cmd.uuid)
                 vm.destroy()
-                if vmUseOpenvSwitch:
-                    ovs.getOvsCtl(with_dpdk=True).destoryNicBackend(cmd.uuid)
                 # notify vrouter agent nic removed from source host
                 for nic in cmd.vmNics:
                     if nic.type == 'TFVNIC':
