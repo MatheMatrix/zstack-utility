@@ -234,7 +234,7 @@ class PhysicalNicFencer(AbstractHaFencer):
         else:
             vm_use_fault_nic_pids_dict = self.find_vm_use_fault_nic_without_virsh(fault_nics)
 
-        return results_vm_dict, fault_nics
+        return vm_use_fault_nic_pids_dict, fault_nics
 
 
     def is_bridge_related_to_nic(self, bridge, nics):
