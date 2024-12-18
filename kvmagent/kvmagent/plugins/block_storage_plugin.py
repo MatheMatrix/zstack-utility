@@ -1,6 +1,7 @@
 import os.path
 import random
 import time
+import ConfigParser
 
 from kvmagent import kvmagent
 from kvmagent.plugins.imagestore import ImageStoreClient
@@ -117,7 +118,7 @@ def translate_absolute_path_from_install_path(install_path, ps_uuid_sysid_mappin
         ps_sysid = ps_uuid_sysid_mapping[ps_uuid]
         if ps_sysid is None:
             raise Exception("ps uuid not found in ps uuid and sysid mapping: {}".format(ps_sysid))
-        return "{0}:conf={1}".format(install_path, linux.get_config_path_from_fs_id(ps_sysid))
+        return "{0}:conf={1}".format(install_path, get_config_path_from_fs_id(ps_sysid))
     return install_path.replace("block://", "/dev/disk/by-id/wwn-0x")
 
 
@@ -138,6 +139,21 @@ def heartbeat_io_check(path):
         return False
 
     return True
+
+
+def get_config_path_from_fs_id(fs_id):
+    config_path = "/etc/xstor_{0}.conf".format(fs_id)
+    if os.path.exists(config_path):
+        return config_path
+    default_config_path = "/etc/xstor.conf"
+    if not os.path.exists(default_config_path):
+        raise Exception("no configuration file path is matched, system_id: {0}.".format(fs_id))
+    config = ConfigParser.ConfigParser()
+    config.read(default_config_path)
+    system_id = config.get('xstor', 'system_id', None)
+    if system_id is None or system_id != str(fs_id):
+        raise Exception("no configuration file path is matched, system_id: {0}.".format(fs_id))
+    return default_config_path
 
 
 class BlockStoragePlugin(kvmagent.KvmAgent):
@@ -486,7 +502,7 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
         fmt = linux.get_img_fmt(cmd.backupStorageInstallPath)
         if not cmd.concurrency or cmd.concurrency <= 0:
             cmd.concurrency = 4
-        primary_storage_install_path = "{0}:conf={1}".format(cmd.primaryStorageInstallPath, linux.get_config_path_from_fs_id(cmd.primaryStorageSysid))
+        primary_storage_install_path = "{0}:conf={1}".format(cmd.primaryStorageInstallPath, get_config_path_from_fs_id(cmd.primaryStorageSysid))
         linux.qcow2_convert_to_raw(cmd.backupStorageInstallPath, primary_storage_install_path,
                                    "-f", fmt, "-n", "-Wm", str(cmd.concurrency))
         rsp = AgentRsp()
