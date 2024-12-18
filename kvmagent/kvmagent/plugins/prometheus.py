@@ -1016,19 +1016,25 @@ def collect_equipment_state():
 def fetch_vm_qemu_processes():
     processes = []
     for process in psutil.process_iter():
-        if process.name() == QEMU_CMD: # /usr/libexec/qemu-kvm
-            processes.append(process)
+        try:
+            if process.name() == QEMU_CMD or QEMU_CMD in process.cmdline(): # /usr/libexec/qemu-kvm
+                processes.append(process)
+        except psutil.NoSuchProcess:
+            pass
     return processes
 
 
 def find_vm_uuid_from_vm_qemu_process(process):
     prefix = 'guest='
     suffix = ',debug-threads=on'
-    for word in process.cmdline():
-        # word like 'guest=707e9d31751e499eb6110cce557b4168,debug-threads=on'
-        if word.startswith(prefix) and word.endswith(suffix):
-            return word[len(prefix) : len(word) - len(suffix)]
-    return None
+    try:
+        for word in process.cmdline():
+            # word like 'guest=707e9d31751e499eb6110cce557b4168,debug-threads=on'
+            if word.startswith(prefix) and word.endswith(suffix):
+                return word[len(prefix) : len(word) - len(suffix)]
+        return None
+    except psutil.NoSuchProcess:
+        return None
 
 
 def collect_vm_statistics():
@@ -1087,8 +1093,12 @@ def collect_vm_pvpanic_enable_in_domain_xml():
     # if not, collect '0'
     for process in processes:
         vm_uuid = find_vm_uuid_from_vm_qemu_process(process)
+        r = ""
+        try:
+            r = filter(lambda word: word == 'pvpanic,ioport=1285', process.cmdline())
+        except psutil.NoSuchProcess:
+            pass
 
-        r = filter(lambda word: word == 'pvpanic,ioport=1285', process.cmdline())
         enable = 1 if len(r) > 0 else 0
         metrics[KEY].add_metric([vm_uuid], enable)
 
