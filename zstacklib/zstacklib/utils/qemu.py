@@ -170,3 +170,33 @@ def compress_and_encode_bitmap(bitmap_map):
     compressed_data = zlib.compress(bitmap_json.encode('utf-8'))
     return base64.b64encode(compressed_data).decode('utf-8')
 
+
+"""
+read image content with qemu-io read command, which only support -v option.
+so we should analyze the output to get the content.
+e.g.
+00000000:  31 31 31 31 31 31 31 31 0a 31 31 31 31 31 31 31  11111111.1111111
+00000010:  31 0a 31 31 31 31 31 31 31 31 0a 31 31 31 31 31  1.11111111.11111
+00000020:  31 31 31 0a 31 31 31 31 31 31 31 31 0a 31 31 31  111.11111111.111
+00000030:  31 31 31 31 31 0a 31 31 31 31 31 31 31 31 0a 31  11111.11111111.1
+00000040:  31 31 31 31 31 31 31 0a 31 31 31 31 31 31 31 31  1111111.11111111
+00000050:  0a 31 31 31 31 31 31 31 31 0a 31 31 31 31 31 31  .11111111.111111
+00000060:  31 31 0a 31 11 11 11 11 11 11 11 11 11 11 11 11  11.1............
+00000070:  11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11  ................
+read 128/128 bytes at offset 0
+128 bytes, 1 ops; 00.04 sec (3.405 KiB/sec and 27.2394 ops/sec)
+
+"""
+
+def read_image_content(image_path, offset, length, format):
+    l = (length + 15) & ~15  # align to 16 bytes
+    cmd = "qemu-io -c 'read -v %s %s' -f %s %s" % (offset, l, format, image_path)
+    o = shell.call(cmd)
+
+    content = ""
+    for line in o.splitlines():
+        if line.split(":", 1)[0].strip().isdigit():
+            # encode hex str to ascii
+            content += "".join(chr(int(x, 16)) for x in line.split()[1:17])
+
+    return content[0:length]
