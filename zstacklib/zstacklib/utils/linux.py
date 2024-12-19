@@ -242,8 +242,8 @@ def on_debian_based(distro=None, exclude=[]):
     return wrap
 
 def get_config_path_from_fs_id(fs_id):
-    pscli_path = "/usr/local/bin/pscli"
-    if os.path.exists(pscli_path):
+    xclient_path = "/home/xclient/"
+    if os.path.exists(xclient_path):
         config_path = "/etc/xstor_{0}.conf".format(fs_id)
         if os.path.exists(config_path):
             return config_path
