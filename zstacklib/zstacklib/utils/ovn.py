@@ -30,13 +30,17 @@ class OvsError(Exception):
 
 class VsCtl(object):
     def __init__(self):
-        super().__init__()
+        pass
 
-    def addVnic(self, nicName, nicType, srcPath, brName="br-int",):
+    def addVnic(self, nicName, srcPath, brName="br-int", nicType="dpdkvhostuserclient"):
+        """
+        TODO: replace external-ids with vmnic uuid
+        """
         try:
             cmd = CtlBin + \
-                'add-port {} {} -- set Interface {} type={} options:vhost-server-path={}'.format(
-                    brName, nicName, nicName, nicType, srcPath)
+                'add-port {} {} -- set Interface {} type={} options:vhost-server-path={} '\
+                    ' -- set interface {} external-ids:iface-id={}'.format(
+                    brName, nicName, nicName, nicType, srcPath, nicName, nicName)
             shell.call(cmd)
         except Exception as err:
             logger.error(
