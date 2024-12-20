@@ -760,9 +760,10 @@ class CollectFromYml(object):
                 else:
                     exec_cmd = self.get_host_sql(host_list['exec']) + ' | awk \'NR>1\''
                     try:
-                        (status, output) = commands.getstatusoutput(exec_cmd)
-                        if status == 0 and output.startswith('ERROR') is not True:
-                            host_list = output.split('\n')
+                        cmd = shell.ShellCmd(exec_cmd)
+                        cmd(False)
+                        if cmd.return_code == 0:
+                            host_list = cmd.stdout.split('\n')
                         else:
                             error_verbose('fail to exec %s' % host_list['exec'])
                     except Exception:
