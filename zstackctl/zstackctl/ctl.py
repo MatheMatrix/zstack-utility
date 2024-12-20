@@ -73,6 +73,8 @@ if [ -z $mysql_conf ]; then
     exit 1
 fi
 
+DB_VERSION=$(mysql --version)
+
 sed -i 's/^bind-address/#bind-address/' $mysql_conf
 sed -i 's/^skip-networking/#skip-networking/' $mysql_conf
 sed -i 's/^bind-address/#bind-address/' $mysql_conf
@@ -89,10 +91,12 @@ if [ $? -ne 0 ]; then
     sed -i '/\[mysqld\]/a log_bin_trust_function_creators=1\' $mysql_conf
 fi
 
-grep 'expire_logs=' $mysql_conf >/dev/null 2>&1
-if [ $? -ne 0 ]; then
-    echo "expire_logs=30"
-    sed -i '/\[mysqld\]/a expire_logs=30\' $mysql_conf
+if [[ $DB_VERSION == *"MariaDB"* ]]; then
+    grep 'expire_logs=' $mysql_conf >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "expire_logs=30"
+        sed -i '/\[mysqld\]/a expire_logs=30\' $mysql_conf
+    fi
 fi
 
 grep 'max_binlog_size=' $mysql_conf >/dev/null 2>&1
@@ -176,6 +180,56 @@ if [ $? -ne 0 ]; then
     fi
     echo "tmpdir=$mysql_tmp_path"
     sed -i "/\[mysqld\]/a tmpdir=$mysql_tmp_path" $mysql_conf
+fi
+
+if [[ $DB_VERSION == *"GreatSQL"* ]]; then    
+    grep 'explicit_defaults_for_timestamp=' $mysql_conf >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "explicit_defaults_for_timestamp=OFF"
+        sed -i '/\[mysqld\]/a explicit_defaults_for_timestamp=OFF\' $mysql_conf
+    fi
+    
+    grep 'sql_generate_invisible_primary_key=' $mysql_conf >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "sql_generate_invisible_primary_key=OFF"
+        sed -i '/\[mysqld\]/a sql_generate_invisible_primary_key=OFF\' $mysql_conf
+    fi
+    
+    grep 'default_authentication_plugin=' $mysql_conf >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "default_authentication_plugin=mysql_native_password"
+        sed -i '/\[mysqld\]/a default_authentication_plugin=mysql_native_password\' $mysql_conf
+    fi
+    
+    sql_mode="IGNORE_SPACE,STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
+    grep 'sql_mode' "$mysql_conf" >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "add sql_mode"
+        sed -i "/\[mysqld\]/a sql_mode = $sql_mode" "$mysql_conf"
+    else
+        echo "replace sql_mode"
+        sed -i "s/sql_mode.*/sql_mode = $sql_mode/" "$mysql_conf"
+    fi
+    
+    echo "init greatdb"
+    mysqld --initialize-insecure --user=mysql --datadir=/var/lib/mysql
+    echo "soft link greatdb"
+    sudo ln -sf /usr/bin/mysql /usr/bin/greatdb
+    sudo ln -sf /etc/systemd/system/mysql.service /etc/systemd/system/mariadb.service
+    sudo ln -sf /usr/bin/mysql /usr/bin/mariadb
+    sudo systemctl daemon-reload
+    
+    if [ ! -d /var/log/mysql ]; then
+        echo "init mysql dir"
+        # init mysqmysl dir
+        # mv /var/lib/mysql /var/lib/mysql_backup_$(date +%F_%T)
+        mkdir /var/lib/mysql
+        chown mysql:mysql /var/lib/mysql
+        chmod 750 /var/lib/mysql
+        mysqld --initialize-insecure --user=mysql --datadir=/var/lib/mysql
+    else
+        echo "mysql dir exist skip init"
+    fi
 fi
 
 ([ x`systemctl is-enabled zstack-ha 2>/dev/null` == x"enabled" ] && { systemctl stop keepalived.service || true; }) || true
@@ -3288,6 +3342,7 @@ class InstallDbCmd(Command):
         parser.add_argument('--yum', help="Use ZStack predefined yum repositories. The valid options include: alibase,aliepel,163base,ustcepel,zstack-local. NOTE: only use it when you know exactly what it does.", default=None)
         parser.add_argument('--no-backup', help='do NOT backup the database. If the database is very large and you have manually backup it, using this option will fast the upgrade process. [DEFAULT] false', default=False)
         parser.add_argument('--ssh-key', help="the path of private key for SSH login $host; if provided, Ansible will use the specified key as private key to SSH login the $host", default=None)
+        parser.add_argument('--chose-database', help="Choose database to install. Default is MariaDB.", default=None)
 
     def run(self, args):
         current_host_ips = get_all_ips()
@@ -3431,6 +3486,65 @@ class InstallDbCmd(Command):
       when: change_root_result.rc != 0 and install_result.changed == False
 '''
 
+        logger.info('GreatDB is chose %s' % args.chose_database)
+        if args.chose_database == 'GreatDB':
+            logger.info('replace database ansible script')
+            yaml = '''---
+- hosts: $host
+  remote_user: root
+
+  vars:
+      root_password: $root_password
+      login_password: $login_password
+      yum_repo: "$yum_repo"
+      ansible_python_interpreter: /usr/bin/python2
+
+  tasks:
+    - name: ansible_distribution_major_version
+      set_fact:
+        ansible_distribution_major_version: "{{ ansible_distribution_major_version | int }}"
+
+    - name: pre install script
+      script: $pre_install_script
+
+    - name: install GreatDB
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8 and yum_repo != 'false'
+      shell: yum clean all; yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
+      register: install_result
+
+    - name: open 3306 port
+      when: ansible_os_family == 'RedHat'
+      shell: iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport 3306 -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport 3306 -j ACCEPT && service iptables save)
+
+    - name: post install script
+      script: $post_install_script
+
+    - name: start GreatDB service
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8
+      service: name=mysql state=restarted enabled=yes
+
+    - name: update root password
+      shell: $change_password_cmd
+      register: change_root_result
+      ignore_errors: yes
+
+    - name: grant access
+      when: change_root_result.rc == 0
+      shell: $grant_access_cmd
+
+    - name: rollback GreatDB
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8 and change_root_result.rc != 0 and install_result.changed == True
+      shell: yum remove -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
+
+     - name: failure
+      fail: >
+        msg="failed to change root password of MySQL, see prior error in task 'change root password'; the possible cause
+        is the machine used to have MySQL installed and removed, the previous password of root user is remaining on the
+        machine; try using --login-password. We have rolled back the MySQL installation so you can safely run install_db
+        again with --login-password set."
+      when: change_root_result.rc != 0 and install_result.changed == False
+'''
+
         if not args.root_password and not args.login_password:
             args.root_password = '''"''"'''
             more_cmd = ' '
@@ -3442,6 +3556,22 @@ class InstallDbCmd(Command):
                                '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{}' IDENTIFIED BY '' WITH GRANT OPTION; '''\
                                '''{} FLUSH PRIVILEGES;"'''.format(args.host, more_cmd)
+            if args.chose_database == 'GreatDB':
+                more_cmd = ' '
+                grant_access_cmd = ' '
+                for ip in current_host_ips:
+                    if not ip:
+                        continue
+                    if args.chose_database == 'GreatDB':
+                        more_cmd += "CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '' WITH GRANT OPTION;".format(host=ip)
+                        more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}';".format(host=ip)
+                grant_access_cmd = '''/usr/bin/mysql -u root -e ''' \
+                                   '''"CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED BY '';''' \
+                                   '''CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '';''' \
+                                   '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;''' \
+                                   '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;''' \
+                                   '''{more_cmd} FLUSH PRIVILEGES;"'''.format(host=host, more_cmd=more_cmd)
+
         else:
             if not args.root_password:
                 args.root_password = args.login_password
@@ -3454,6 +3584,21 @@ class InstallDbCmd(Command):
                                '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''{more_cmd} FLUSH PRIVILEGES;"'''.format(root_pass=args.root_password, host=args.host, more_cmd=more_cmd)
+            if args.chose_database == 'GreatDB':
+                more_cmd = ' '
+                grant_access_cmd = ' '
+                for ip in current_host_ips:
+                    if not ip:
+                        continue
+                    more_cmd += "CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '{root_pass}';".format(host=ip, root_pass=args.root_password)
+                    more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;".format(host=ip)
+                grant_access_cmd = '''/usr/bin/mysql -u root -p{root_pass} -e ''' \
+                                   '''"CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED BY '{root_pass}';''' \
+                                   '''CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '{root_pass}';''' \
+                                   '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;''' \
+                                   '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;''' \
+                                   '''{more_cmd} FLUSH PRIVILEGES;"'''.format(root_pass=args.root_password, host=args.host, more_cmd=more_cmd)
+
 
         if args.login_password is not None:
             change_root_password_cmd = '/usr/bin/mysqladmin -u root -p{{login_password}} password {{root_password}}'
