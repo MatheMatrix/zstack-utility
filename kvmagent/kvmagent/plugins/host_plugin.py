@@ -966,6 +966,18 @@ def _get_free_memory():
 def _get_used_memory():
     return _get_total_memory() - _get_free_memory()
 
+
+@linux.ignoreerror
+def _update_global_variables_for_net_config():
+    if not os.path.exists('/usr/local/bin/zsha2'):
+        return
+
+    r, o = bash_ro("/usr/local/bin/zsha2 show-config")
+    if r == 0:
+        zsha2_config_info = jsonobject.loads(o)
+        netconfig.save_zsha2_vip(zsha2_config_info.dbvip)
+
+
 class HostPlugin(kvmagent.KvmAgent):
     '''
     classdocs
@@ -2163,6 +2175,7 @@ done
         rsp = GetHostKernelInterfaceResponse()
         rsp.interfaces = []
 
+        _update_global_variables_for_net_config()
         link_name = linux.get_nic_name_by_ip(cmd.targetIp)
         if not link_name:
             rsp.error = "cannot find interface by ip[%s]" % cmd.targetIp
