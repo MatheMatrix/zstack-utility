@@ -3816,7 +3816,7 @@ Options:
 
   --skip-pjnum    Ignore customized version checking.
 
-  -CD CHOSE_DATABASE
+  --chose-database CHOSE_DATABASE
         Choose database to install. Default is MariaDB.
 ------------
 Example:
@@ -3866,6 +3866,14 @@ Following command installs ${PRODUCT_NAME} management node and monitor. It will 
 
 # ${PROGNAME} -m -R aliyun -q
 
+--
+
+Chose database
+
+# ${PROGNAME} --chose-database MariaDB
+
+# ${PROGNAME} --chose-database GreatDB
+
 ------------
 "
     exit 1
@@ -3889,7 +3897,7 @@ load_install_conf() {
 
 load_install_conf
 OPTIND=1
-TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDEFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum -- "$@"`
+TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDEFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum,chose-database: -- "$@"`
 if [ $? != 0 ]; then
     usage
 fi
@@ -3953,6 +3961,14 @@ do
         --sds) SDS_INSTALL='y';shift;;
         --no-zops) SKIP_ZOPS_INSTALL='y';shift;;
         --skip-pjnum) SKIP_PJNUM_CHECK='y';shift;;
+        --chose-database )
+            check_myarg $1 $2;
+            if [[ "$2" != "MariaDB" && "$2" != "GreatDB" ]]; then
+                echo "Error: Invalid value for --chose-database. Valid options are 'MariaDB' or 'GreatDB'."
+                exit 1
+            fi
+            CHOSE_DATABASE=$2;
+            shift 2;;
         --) shift;;
         * ) usage;;
     esac
