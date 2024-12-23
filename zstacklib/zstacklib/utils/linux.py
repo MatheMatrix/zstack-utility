@@ -1064,9 +1064,11 @@ def raw_clone(src, dst):
     shell.check_run('/usr/bin/qemu-img create -b %s -f raw %s' % (src, dst))
     os.chmod(dst, 0o660)
 
-def qcow2_create(dst, size):
+
+def qcow2_create(dst, size, chmod=True):
     shell.check_run('/usr/bin/qemu-img create -f qcow2 %s %s' % (dst, size))
-    os.chmod(dst, 0o660)
+    if (chmod):
+        os.chmod(dst, 0o660)
 
 def qemu_img_resize(target, size, fmt='qcow2', force=False):
     fmt_option = '-f %s' % fmt
@@ -2485,6 +2487,20 @@ def get_free_port():
     port = s.getsockname()[1]
     s.close()
     return port
+
+def get_free_port_in_range(start_port, end_port):
+    for port in range(start_port, end_port):
+        try:
+            s = socket.socket()
+            s.bind(('', port))
+            s.close()
+            return port
+        except socket.error as e:
+            if e.errno == errno.EADDRINUSE:
+                continue
+            else:
+                raise
+    raise Exception("no free port found in range[%d, %d]" % (start_port, end_port))
 
 def is_port_available(port):
     with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:

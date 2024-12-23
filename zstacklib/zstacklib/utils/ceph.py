@@ -23,6 +23,7 @@ QEMU_NBD_SOCKET_DIR = "/var/lock/"
 QEMU_NBD_SOCKET_PREFIX = "qemu-nbd-nbd"
 NBD_DEV_PREFIX = "/dev/nbd"
 SUPPORT_DEFER_DELETING = None
+from distutils.version import LooseVersion
 
 def get_fsid(conffile='/etc/ceph/ceph.conf'):
     import rados
@@ -36,6 +37,11 @@ def is_xsky():
 
 def is_sandstone():
     return os.path.exists("/opt/sandstone/bin/sds") or os.path.exists("/var/lib/ceph/bin/ceph")
+
+
+def is_qcow2_format(tags):
+    return any("ephemeral::volume::qcow2" in tag for tag in tags)
+
 
 def support_defer_deleting():
     global SUPPORT_DEFER_DELETING
@@ -402,3 +408,10 @@ class DefaultCephPoolCapacityGetter:
 pool_capacity_getter_mapping = {
     "zstone":ZStoneCephPoolCapacityGetter()
 }
+
+def get_version():
+    return shell.call("ceph version").split(" ")[2]
+
+def rbd_create_support_byte():
+    # ceph hammer not support in bytes
+    return get_ceph_manufacturer() != "open-source" or LooseVersion(get_version()) >= LooseVersion("10.0.0")
