@@ -381,6 +381,7 @@ def del_novlan_bridge(cmd):
         cmd.bridgeName, cmd.physicalInterfaceName))
 
 
+@linux.ignoreerror
 def check_ifcfg_files_for_consistency():
     infos = linux.get_ethernet_info()  # type: list[linux.EthernetInfo]
     nics = [info.interface for info in infos]
