@@ -2,6 +2,8 @@ import base64
 import ctypes
 import traceback
 
+from zstacklib.utils.linux import get_config_path_from_fs_id
+
 ctypes.CDLL('/lib64/librados.so', ctypes.RTLD_GLOBAL)
 import sys
 sys.path.insert(0, "/home/xclient/bin/python2/")
@@ -33,10 +35,10 @@ class HeartbeatIOResult(object):
             self.data = base64.b64encode(self.data)
             return json.dumps(self.__dict__).replace('\n', '\\n')
 
-def get_cluster():
+def get_cluster(conf_pth):
     global cluster
     if not cluster:
-        temp_cluster = rados.Rados(conffile='/etc/xstor.conf', conf=external_conf)
+        temp_cluster = rados.Rados(conffile=conf_pth, conf=external_conf)
         temp_cluster.connect()
         if temp_cluster.state == 'connected':
             cluster = temp_cluster
@@ -45,26 +47,27 @@ def get_cluster():
     return cluster
 
 
-def get_ioctx(pool_name):
+def get_ioctx(pool_name, conf_path):
     global ioctx
     if pool_name not in ioctx:
-        ioctx[pool_name] = get_cluster().open_ioctx(pool_name)
+        ioctx[pool_name] = get_cluster(conf_path).open_ioctx(pool_name)
     return ioctx[pool_name]
 
 
-def get_image(pool_name, image_name):
+def get_image(pool_name, image_name, fs_id):
+    conf_path = get_config_path_from_fs_id(fs_id)
     global images
     key = pool_name + '/' + image_name
     if key not in images:
-        images[key] = rbd.Image(get_ioctx(pool_name), image_name)
+        images[key] = rbd.Image(get_ioctx(pool_name, conf_path), image_name)
     return images[key]
 
 
-def read_rbd_image(pool_name, image_name, offset=0, size=sys.maxsize, stream=None):
+def read_rbd_image(pool_name, image_name, fs_id, offset=0, size=sys.maxsize, stream=None):
     if stream is None and size > 1024 * 1024:
         raise Exception("size is too large to return value, please specify a stream to write the content to.")
 
-    image = get_image(pool_name, image_name)
+    image = get_image(pool_name, image_name, fs_id)
     # Read image size
     image_size = image.size()
     total_size = min(size, image_size - offset)
@@ -82,8 +85,8 @@ def read_rbd_image(pool_name, image_name, offset=0, size=sys.maxsize, stream=Non
         read_size += chunk
 
 
-def write_rbd_image(pool_name, image_name, offset=0, content=None):
-    image = get_image(pool_name, image_name)
+def write_rbd_image(pool_name, image_name, fs_id, offset=0, content=None):
+    image = get_image(pool_name, image_name, fs_id)
     _do_write_image(image, offset, content)
 
 
@@ -126,7 +129,7 @@ def listen_pipe():
 
         ### operation: read rbd:pool/image 0 100
         ### operation: write rbd:pool/image 0 content
-        splits = operation.split(None, 3)
+        splits = operation.split(None, 4)
         if len(splits) < 4:
             sys.stdout.write("Invalid operation: {}\n".format(operation))
             sys.stdout.flush()
@@ -141,15 +144,17 @@ def listen_pipe():
         result = None
         try:
             if op == 'readhb':
-                offset = int(splits[2])
-                size = int(splits[3])
-                content = read_rbd_image(pool_name, image_name, offset, size, stream=None)
+                fs_id = int(splits[2])
+                offset = int(splits[3])
+                size = int(splits[4])
+                content = read_rbd_image(pool_name, image_name, fs_id, offset, size, stream=None)
                 hbcontent = content.split('EOF')[0]
                 result = HeartbeatIOResult(True, (time.time() - start_time) * 1000, data=hbcontent)
             elif op == 'writehb':
-                offset = int(splits[2])
-                content = splits[3]
-                write_rbd_image(pool_name, image_name, offset, content)
+                fs_id = int(splits[2])
+                offset = int(splits[3])
+                content = splits[4]
+                write_rbd_image(pool_name, image_name, fs_id, offset, content)
                 result = HeartbeatIOResult(True, (time.time() - start_time) * 1000)
             else:
                 raise Exception("Invalid operation: {}".format(op))
@@ -213,17 +218,20 @@ if __name__ == '__main__':
     pool_name = path.split('/')[0]
     image_name = path.split('/')[1]
     if op == 'read':
-        if len(sys.argv) == 5:
-            offset = int(sys.argv[3])
-            size = int(sys.argv[4])
-            read_rbd_image(pool_name, image_name, offset, size, stream=sys.stdout)
+        if len(sys.argv) == 6:
+            fs_id = int(sys.argv[3])
+            offset = int(sys.argv[4])
+            size = int(sys.argv[5])
+            read_rbd_image(pool_name, image_name, fs_id, offset, size, stream=sys.stdout)
         else:
-            read_rbd_image(pool_name, image_name)
+            fs_id = int(sys.argv[3])
+            read_rbd_image(pool_name, image_name, fs_id)
     elif op == 'write':
-        if len(sys.argv) == 5:
-            offset = int(sys.argv[3])
-            content = sys.argv[4]
-            write_rbd_image(pool_name, image_name, offset, content)
+        if len(sys.argv) == 6:
+            fs_id = int(sys.argv[3])
+            offset = int(sys.argv[4])
+            content = sys.argv[5]
+            write_rbd_image(pool_name, image_name, fs_id, offset, content)
     else:
         print >> sys.stderr, "Unknown operation: {}".format(op)
         sys.exit(1)

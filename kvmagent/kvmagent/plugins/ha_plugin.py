@@ -834,6 +834,7 @@ class RbdHeartbeatController(AbstractStorageFencer):
         self.heartbeat_path = None
         self.fencer_triggered_callback = None
         self.interval = 0
+        self.fs_id = None
         self.report_storage_status_callback = None
         self.rbd_rw_path = "/var/lib/zstack/virtualenv/kvm/lib/python2.7/site-packages/zstacklib/scripts/rbd_rw.py"
         self.hb_chunk_size = 1024 * 1024
@@ -922,7 +923,8 @@ class RbdHeartbeatController(AbstractStorageFencer):
 
         logger.debug("use rbd_rw.py to update heartbeat [path:%s, hostId:%d] timestamp with content: %s"
                      % (self.heartbeat_path, self.host_id, hb_content))
-        cmd = "writehb %s %d %s\n" % (self.heartbeat_path, offset, str(hb_content) + EOF)
+        cmd = "writehb %s %d %d %s\n" % (self.heartbeat_path, self.fs_id, offset, str(hb_content) + EOF)
+        logger.info(cmd)
         ret_str = "{}"
         try:
             self.rbd_rw_process.stdin.write(cmd)
@@ -951,8 +953,8 @@ class RbdHeartbeatController(AbstractStorageFencer):
         offset = host_id * self.hb_chunk_size
 
         logger.debug("use rbd_rw.py to read heartbeat [path:%s, hostId:%d] timestamp" % (self.heartbeat_path, host_id))
-        cmd = "source /var/lib/zstack/virtualenv/kvm/bin/activate && timeout 20 python %s read %s %d %d" % (
-            self.rbd_rw_path, self.heartbeat_path, offset, self.hb_chunk_size)
+        cmd = "source /var/lib/zstack/virtualenv/kvm/bin/activate && timeout 20 python %s read %s %d %d %d" % (
+            self.rbd_rw_path, self.heartbeat_path, self.fs_id, offset, self.hb_chunk_size)
         r, o, e = bash.bash_roe(cmd)
         if r != 0:
             logger.warn("failed to use rbd_rw.py read heartbeat [path:%s, hostId:%d] timestamp\n"
@@ -1939,6 +1941,7 @@ class HaPlugin(kvmagent.KvmAgent):
             rbd_controller.fencer_triggered_callback = self.report_self_fencer_triggered
             rbd_controller.report_storage_status_callback = self.report_storage_status
             rbd_controller.heartbeat_path = cmd.installPath
+            rbd_controller.fs_id = cmd.fsId
             fencer_list = []
             if cmd.fencers is not None:
                 fencer_list = cmd.fencers
@@ -2644,8 +2647,9 @@ class HaPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
         ps_uuid = cmd.psUuid
-        rbd_controller = RbdHeartbeatController(cmd.interval, cmd.times, ps_uuid, None)
+        rbd_controller = RbdHeartbeatController(cmd.interval, cmd.times, ps_uuid, run_fencer_list=None)
         rbd_controller.heartbeat_path = cmd.heartbeatImagePath
+        rbd_controller.fs_id = cmd.fsId
 
         logger.debug("check if host[%s] is still alive on ps %s" % (cmd.targetHostId, ps_uuid))
         heartbeat_success, vm_running_uuids = rbd_controller.check_fencer_heartbeat(
