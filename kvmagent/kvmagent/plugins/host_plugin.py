@@ -1149,38 +1149,32 @@ class HostPlugin(kvmagent.KvmAgent):
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
         ipV4Addrs = [chunk.address for chunk in filter(
             lambda x: x.address != '127.0.0.1' and not x.ifname.endswith('zs'), iproute.query_addresses(ip_version=4))]
-        rsp.systemProductName = 'unknown'
-        rsp.systemSerialNumber = 'unknown'
-        rsp.systemManufacturer = 'unknown'
-        rsp.systemUUID = 'unknown'
-        rsp.biosVendor = 'unknown'
-        rsp.biosVersion = 'unknown'
-        rsp.biosReleaseDate = 'unknown'
+
+        def run_dmidecode(cmd, default=''):
+            try:
+                ret = shell.call(cmd).strip()
+                return ret if ret else default
+            except Exception as e:
+                logger.warn("run dmidecode cmd %s failed: %s" % (cmd, e))
+                return default
+
         is_dmidecode = shell.run("dmidecode")
         if str(is_dmidecode) == '0':
-            system_product_name = shell.call('dmidecode -s system-product-name').strip()
-            baseboard_product_name = shell.call('dmidecode -s baseboard-product-name').strip()
-            system_serial_number = shell.call('dmidecode -s system-serial-number').strip()
-            system_manufacturer = shell.call('dmidecode -s system-manufacturer').strip()
-            system_uuid = shell.call('dmidecode -s system-uuid').strip()
-            bios_vendor = shell.call('dmidecode -s bios-vendor').strip()
-            bios_version = shell.call('dmidecode -s bios-version').strip()
-            bios_release_date = shell.call('dmidecode -s bios-release-date').strip()
-            rsp.systemSerialNumber = system_serial_number if system_serial_number else 'unknown'
-            rsp.systemProductName = system_product_name if system_product_name else baseboard_product_name
-            rsp.systemManufacturer = system_manufacturer if system_manufacturer else 'unknown'
-            rsp.systemUUID = system_uuid if system_uuid else 'unknown'
-            rsp.biosVendor = bios_vendor if bios_vendor else 'unknown'
-            rsp.biosVersion = bios_version if bios_version else 'unknown'
-            rsp.biosReleaseDate = bios_release_date if bios_release_date else 'unknown'
-            memory_slots_maximum = shell.call('dmidecode -q -t memory | grep "Memory Device" | wc -l')
-            rsp.memorySlotsMaximum = memory_slots_maximum.strip()
-            # power not in presence cannot collect power info
-            power_supply_manufacturer = shell.call("dmidecode -t 39 | grep -vi 'not specified' | grep -m1 'Manufacturer' | awk -F ':' '{print $2}'").strip()
-            rsp.powerSupplyManufacturer = power_supply_manufacturer if power_supply_manufacturer != "" else "unknown"
-            power_supply_model_name = shell.call("dmidecode -t 39 | grep -vi 'not specified' | grep -m1 'Name' | awk -F ':' '{print $2}'").strip()
-            rsp.powerSupplyModelName = power_supply_model_name if power_supply_model_name != "" else "unknown"
-            power_supply_max_power_capacity = shell.call("dmidecode -t 39 | grep -vi 'unknown' | grep -m1 'Max Power Capacity' | awk -F ':' '{print $2}'")
+            rsp.systemSerialNumber = run_dmidecode('dmidecode -s system-serial-number', 'unknown')
+            system_product_name = run_dmidecode('dmidecode -s system-product-name')
+            if system_product_name:
+                rsp.systemProductName = system_product_name
+            else:
+                rsp.systemProductName = run_dmidecode('dmidecode -s baseboard-product-name')
+            rsp.systemManufacturer = run_dmidecode('dmidecode -s system-manufacturer', 'unknown')
+            rsp.systemUUID = run_dmidecode('dmidecode -s system-uuid', 'unknown')
+            rsp.biosVendor = run_dmidecode('dmidecode -s bios-vendor', 'unknown')
+            rsp.biosVersion = run_dmidecode('dmidecode -s bios-version', 'unknown')
+            rsp.biosReleaseDate = run_dmidecode('dmidecode -s bios-release-date', 'unknown')
+            rsp.memorySlotsMaximum = run_dmidecode('dmidecode -q -t memory | grep "Memory Device" | wc -l')
+            rsp.powerSupplyManufacturer = run_dmidecode("dmidecode -t 39 | grep -vi 'not specified' | grep -m1 'Manufacturer' | awk -F ':' '{print $2}'", 'unknown')
+            rsp.powerSupplyModelName = run_dmidecode("dmidecode -t 39 | grep -vi 'not specified' | grep -m1 'Name' | awk -F ':' '{print $2}'", 'unknown')
+            power_supply_max_power_capacity = run_dmidecode("dmidecode -t 39 | grep -vi 'unknown' | grep -m1 'Max Power Capacity' | awk -F ':' '{print $2}'")
             if bool(re.search(r'\d', power_supply_max_power_capacity)):
                 rsp.powerSupplyMaxPowerCapacity = filter(str.isdigit, power_supply_max_power_capacity.strip())
 
