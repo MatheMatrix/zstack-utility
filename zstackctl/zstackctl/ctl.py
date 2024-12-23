@@ -166,6 +166,7 @@ if [ $? -ne 0 ]; then
     echo "binlog_format=mixed"
     sed -i '/\[mysqld\]/a character-set-server=utf8\' $mysql_conf
 fi
+
 grep '^skip-name-resolve' $mysql_conf >/dev/null 2>&1
 if [ $? -ne 0 ]; then
     sed -i '/\[mysqld\]/a skip-name-resolve\' $mysql_conf
@@ -3509,7 +3510,11 @@ class InstallDbCmd(Command):
       script: $pre_install_script
 
     - name: install GreatDB
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8 and yum_repo != 'false'
+      when: >
+        (ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8)
+        or 
+        (ansible_os_family == 'Kylin' and ansible_distribution_version == '10') 
+        and yum_repo != 'false'
       shell: yum clean all; yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
       register: install_result
 
@@ -3537,7 +3542,7 @@ class InstallDbCmd(Command):
       when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8 and change_root_result.rc != 0 and install_result.changed == True
       shell: yum remove -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
 
-     - name: failure
+    - name: failure
       fail: >
         msg="failed to change root password of MySQL, see prior error in task 'change root password'; the possible cause
         is the machine used to have MySQL installed and removed, the previous password of root user is remaining on the
