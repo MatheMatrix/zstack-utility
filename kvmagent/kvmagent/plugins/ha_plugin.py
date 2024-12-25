@@ -203,7 +203,7 @@ class PhysicalNicFencer(AbstractHaFencer):
         if fence_all_vms:
             vm_need_fence_dict = vm_use_fault_nic_pids_dict
         else:
-            vm_need_fence_dict = {key: value for key, value in vm_use_fault_nic_pids_dict.items() if key not in ha_vm_list}
+            vm_need_fence_dict = {key: value for key, value in vm_use_fault_nic_pids_dict.items() if key in ha_vm_list}
 
         if len(vm_need_fence_dict) == 0:
             logger.debug("[%s] report no VMs related to the fault nics" % self.get_ha_fencer_name())
