@@ -16,7 +16,6 @@ import shutil
 import struct
 import netaddr
 import functools
-import threading
 import re
 import platform
 import pprint
@@ -32,7 +31,6 @@ from inspect import stack
 import xml.etree.ElementTree as etree
 from zstacklib.utils import thread
 from zstacklib.utils import qemu_img
-from zstacklib.utils import lock
 from zstacklib.utils import xmlobject
 from zstacklib.utils import shell
 from zstacklib.utils import log
@@ -277,24 +275,6 @@ def on_debian_based(distro=None, exclude=[]):
                 return f(*args, **kwargs)
         return innner
     return wrap
-
-def get_config_path_from_fs_id(fs_id):
-    xclient_path = "/home/xclient/"
-    if os.path.exists(xclient_path):
-        config_path = "/etc/xstor_{0}.conf".format(fs_id)
-        if os.path.exists(config_path):
-            return config_path
-        default_config_path = "/etc/xstor.conf"
-        if not os.path.exists(default_config_path):
-            raise Exception("no configuration file path is matched, system_id: {0}.".format(fs_id))
-        config = ConfigParser.ConfigParser()
-        config.read(default_config_path)
-        system_id = config.get('xstor', 'system_id', None)
-        if system_id is None or system_id != str(fs_id):
-            raise Exception("no configuration file path is matched, system_id: {0}.".format(fs_id))
-        return default_config_path
-    else:
-        raise Exception("no configuration file path is matched, fs id: {0}.".format(fs_id))
 
 def get_current_timestamp():
     return time.mktime(datetime.datetime.now().timetuple())
