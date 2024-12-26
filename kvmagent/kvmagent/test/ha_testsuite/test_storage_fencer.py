@@ -49,7 +49,7 @@ class TestAbstractFencer(unittest.TestCase):
 
     def stop_fencer_after_n_loop(self, n):
         self.fencer.failedCheckCalled = False
-        self.fencer_manager.start_fencer('fencer1')
+        self.fencer_manager.start_fencer(self.fencer)
         while(True):
             print("case counter: %s" % self.fencer.counter)
             if (self.fencer_manager.get_fencer('fencer1').counter >= n):

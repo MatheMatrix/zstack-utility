@@ -119,8 +119,10 @@ class SanlockClientStatus(object):
 
 
 class SanlockClientStatusParser(object):
-    def __init__(self):
-        self.status = self._init()
+    def __init__(self, status=None):
+        self.status = status
+        if not self.status:
+            self.status = self._init()
         self.lockspace_records = None  # type: list[SanlockClientStatus]
 
     def get_lockspace_records(self):

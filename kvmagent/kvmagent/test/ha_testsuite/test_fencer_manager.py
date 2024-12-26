@@ -44,18 +44,18 @@ class TestFencerManager(unittest.TestCase):
 
     def test_start_fencer(self):
         self.fencer_manager.register_fencer(self.fencer)
-        self.fencer_manager.start_fencer('fencer1')
+        self.fencer_manager.start_fencer(self.fencer)
         self.assertTrue(self.fencer.is_started())
 
     def test_stop_fencer(self):
         self.fencer_manager.register_fencer(self.fencer)
-        self.fencer_manager.start_fencer('fencer1')
+        self.fencer_manager.start_fencer(self.fencer)
         self.fencer_manager.stop_fencer('fencer1')
         self.assertFalse(self.fencer.is_started())
 
     def test_get_fencer_status(self):
         self.fencer_manager.register_fencer(self.fencer)
-        self.fencer_manager.start_fencer('fencer1')
+        self.fencer_manager.start_fencer(self.fencer)
         self.assertEqual(self.fencer_manager.get_fencer_status('fencer1'), 'running')
 
     def test_get_fencer_position(self):

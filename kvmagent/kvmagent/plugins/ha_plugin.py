@@ -1,3 +1,20 @@
+import functools
+import inspect
+import json
+import math
+import os.path
+import pprint
+import random
+import threading
+import time
+import traceback
+from datetime import datetime, timedelta
+from distutils.version import LooseVersion
+
+import rados
+import rbd
+from enum import Enum
+
 from kvmagent import kvmagent
 from zstacklib.utils import bash
 from zstacklib.utils import jsonobject
@@ -14,24 +31,10 @@ from zstacklib.utils import sanlock
 from zstacklib.utils import xmlobject
 from zstacklib.utils import jsonobject
 from zstacklib.utils import iscsi
-import os.path
-import time
-import traceback
-import threading
-import rados
-import rbd
-import json
-import math
-from enum import Enum
-from datetime import datetime, timedelta
-from distutils.version import LooseVersion
-import functools
-import pprint
-import inspect
-import random
 from zstacklib.utils import singleton
 from zstacklib.utils import iproute
 import zstacklib.utils.ip as ipUtils
+import zstacklib.utils.lock as lock
 
 logger = log.get_logger(__name__)
 
@@ -677,6 +680,7 @@ class HaPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         fencer_manager.stop_fencer(cmd.uuid)
         fencer_manager.unregister_fencer(cmd.uuid)
+        SanlockCache().remove(cmd.uuid)
         return jsonobject.dumps(AgentRsp())
 
     def setup_sharedblock_self_fencer_from_json(self, cmd):
@@ -686,6 +690,7 @@ class HaPlugin(kvmagent.KvmAgent):
         fencer_manager.start_fencer(sblk_fencer)
 
         # setup sharedblock check based on sanlock
+        SanlockCache().add(cmd)
         sanlock_vg_fencer = SanlockVolumeGroupFencer(cmd)
         fencer_manager.register_fencer(sanlock_vg_fencer)
         fencer_manager.start_fencer(sanlock_vg_fencer)
@@ -1071,9 +1076,9 @@ class FencerManager:
     def get_fencer(self, name):
         return self.fencers[name]
 
-    def start_fencer(self, name):
+    def start_fencer(self, fencer):
         with self.fencer_lock:
-            self.fencers[name].start()
+            self.fencers[fencer.name].start()
 
     def stop_fencer(self, name):
         with self.fencer_lock:
@@ -1518,6 +1523,90 @@ class FileSystemFencer(StorageFencer):
                                         self.mount_point.mount_path)
 
 
+class SanlockCache(object):
+    _instance_lock = threading.Lock()
+    _is_init = False
+
+    def __new__(cls, *args, **kwargs):
+        if not hasattr(SanlockCache, '_instance'):
+            with SanlockCache._instance_lock:
+                if not hasattr(SanlockCache, '_instance'):
+                    SanlockCache._instance = object.__new__(cls)
+        return SanlockCache._instance
+
+    def __init__(self):
+        if SanlockCache._is_init is True:
+            return
+
+        self._lockspaces = None
+        self._client_status = None
+        self._exp = None
+        self.uuids = {}
+        # interval will be refreshed after vg added
+        self.interval = 5
+        self.timestamp = int(time.time())
+        self._refresh()
+
+        SanlockCache._is_init = True
+
+    def _refresh_sanlock_client_status(self):
+        try:
+            self._lockspaces = sanlock.get_lockspaces()
+            self._client_status = sanlock.get_sanlock_client_status()
+            self.timestamp = int(time.time())
+            logger.debug("sanlock cache refreshed at %s for"
+                         " %s" % (self.timestamp, self.uuids.keys()))
+        except Exception as e:
+            logger.warn('sanlock cache refresh failed: %s' % str(e))
+            self._exp = e
+        else:
+            self._exp = None
+
+    @thread.AsyncThread
+    def _refresh(self):
+        while True:
+            if len(self.uuids) > 0:
+                self._refresh_sanlock_client_status()
+            time.sleep(self.interval)
+
+    def remove(self, uuid):
+        if uuid in self.uuids:
+            del self.uuids[uuid]
+
+    def add(self, cmd):
+        self.uuids[cmd.vgUuid] = cmd
+        self._update_interval()
+        self._refresh_sanlock_client_status()
+
+    def _update_interval(self):
+        if len(self.uuids) > 0:
+            self.interval = min([x.interval for x in self.uuids.values()])
+            logger.debug("sanlock cache interval updated to "
+                         "%s" % self.interval)
+
+    def _check_expired(self):
+        timestamp = int(time.time())
+        # Refreshing the sanlock cache also takes time, therefore set it to 2s,
+        # a very generous time
+        if timestamp - self.timestamp > self.interval + 2:
+            raise Exception("sanlock cache is expired, current timestamp: %s,"
+                            " last timestamp: %s, interval: %s" % (
+                                timestamp, self.timestamp, self.interval))
+
+    def get_lockspaces(self):
+        if self._exp is not None:
+            raise self._exp
+        self._check_expired()
+        return self._lockspaces
+
+    def get_lockspace_record(self, vg):
+        if self._exp is not None:
+            raise self._exp
+        self._check_expired()
+        if self._client_status is not None:
+            return self._client_status.get_lockspace_record(vg)
+
+
 class SanlockVolumeGroupFencer(StorageFencer):
     def __init__(self, cmd):
         super(SanlockVolumeGroupFencer, self).__init__(cmd.vgUuid, cmd.vgUuid, cmd)
@@ -1526,10 +1615,9 @@ class SanlockVolumeGroupFencer(StorageFencer):
     def run_fencer(self):
         # Note: sanlock use function lru_cache to accelerate fencers execution performance
         # when large number of volume groups exist
-        lockspaces = sanlock.get_lockspaces()
-        p = sanlock.get_sanlock_client_status()
+        lockspaces = SanlockCache().get_lockspaces()
         vg = self.primary_storage_uuid
-        r = p.get_lockspace_record(vg)
+        r = SanlockCache().get_lockspace_record(vg)
         if not r:
             failure = "lockspace for vg %s not found" % vg
             logger.warn(failure)
@@ -1558,6 +1646,9 @@ class SanlockVolumeGroupFencer(StorageFencer):
         # no data plane check for sanlock fencer
         return True
 
+    def _get_record_vm_device_map(self, vg_uuid):
+        return '%s-host_%s' % (vg_uuid, self.host_uuid)
+
     def retry_to_recover_storage(self):
         vg = self.primary_storage_uuid
         lvm.remove_partial_lv_dm(vg)
@@ -1565,7 +1656,8 @@ class SanlockVolumeGroupFencer(StorageFencer):
             return
 
         lvm.drop_vg_lock(vg)
-        lvm.remove_device_map_for_vg(vg)
+        lvm.remove_device_map_for_vg(vg, keep_device_map=[
+            self._get_record_vm_device_map(vg)])
 
     # TODO: fix performance issue by support find vm from different source
     def filter_need_be_fenced_vm(self, vm_uuid):
