@@ -1098,7 +1098,7 @@ class CbdHeartbeatController(AbstractStorageFencer):
         self.heartbeat_url = None
         self.heartbeat_path = None
         self.host_id = -1
-        self.heartbeat_required_space = 1024 * 1024 * 1024  # 1G
+        self.heartbeat_required_space = 1024 * 1024 # 1MiB
         self.host_uuid = None
         self.covering_paths = []
 
@@ -1110,7 +1110,8 @@ class CbdHeartbeatController(AbstractStorageFencer):
 
     def write_fencer_heartbeat(self):
         running_vm_uuids = set()
-        # running_vm_uuids.update(find_ps_running_vm(covering_path))
+        for covering_path in self.covering_paths:
+            running_vm_uuids.update(find_ps_running_vm(covering_path))
 
         if self._heartbeat_io_check() and self._fill_heartbeat_file(list(running_vm_uuids)):
             self.reset_failure_count()
@@ -1154,10 +1155,12 @@ class CbdHeartbeatController(AbstractStorageFencer):
     @bash.in_bash
     def _fill_heartbeat_file(self, vm_uuids):
         # type: (list[str]) -> bool
-        # offset = self.host_id * self.heartbeat_required_space
-        tmp_file = linux.write_to_temp_file(jsonobject.dumps(CbdNodeStatus(vm_uuids)) + EOF)
+        offset = self.host_id * self.heartbeat_required_space
+        content = jsonobject.dumps(CbdNodeStatus(vm_uuids)) + EOF
+        tmp_file = linux.write_to_temp_file(content)
 
-        cmd = 'qemu-io -c "write -q -P 0x04 0 4k" -f cbd {}_zbs_:/etc/zbs/client.conf'.format(self.heartbeat_path)
+        cmd = 'qemu-io -c "write -q -s {} {} {}" -f cbd {}_zbs_:/etc/zbs/client.conf'.format(
+            tmp_file, offset, len(content), self.heartbeat_path)
 
         r, o, e = bash.bash_roe("timeout 20 " + cmd)
         linux.rm_file_force(tmp_file)
@@ -1167,9 +1170,8 @@ class CbdHeartbeatController(AbstractStorageFencer):
         # type: () -> CbdNodeStatus
 
         offset = self.host_id * self.heartbeat_required_space
-        with open(self.heartbeat_path, 'r') as fd:
-            fd.seek(offset)
-            return jsonobject.loads(fd.read(1024*1024).split(EOF)[0])
+        content = qemu.read_image_content("%s_zbs_:/etc/zbs/client.conf" % self.heartbeat_path, offset, 1024*1024, format="cbd")
+        return jsonobject.loads(content.split(EOF)[0])
 
     def _heartbeat_io_check(self):
         heartbeat_check = shell.ShellCmd('qemu-io -c "read 0G 4k" -f cbd {}_zbs_:/etc/zbs/client.conf'.format(self.heartbeat_path))
@@ -1183,7 +1185,8 @@ class CbdHeartbeatController(AbstractStorageFencer):
     def _kill_vm(self):
         running_vm_uuids = set()
         ret = {}
-        running_vm_uuids.update(find_ps_running_vm('zbs'))
+        for covering_path in self.covering_paths:
+            running_vm_uuids.update(find_ps_running_vm(covering_path))
 
         for vm_uuid in running_vm_uuids:
             pid = linux.get_vm_pid(vm_uuid)
@@ -1576,6 +1579,7 @@ class HaPlugin(kvmagent.KvmAgent):
     FILESYSTEM_CHECK_VMSTATE_PATH = "/filesystem/check/vmstate"
     SHAREDBLOCK_CHECK_VMSTATE_PATH = "/sharedblock/check/vmstate"
     ISCSI_CHECK_VMSTATE_PATH = "/iscsi/check/vmstate"
+    CBD_CHECK_VMSTATE_PATH = "/cbd/check/vmstate"
     ADD_VM_FENCER_RULE_TO_HOST = "/add/vm/fencer/rule/to/host"
     REMOVE_VM_FENCER_RULE_FROM_HOST = "/remove/vm/fencer/rule/from/host"
     GET_VM_FENCER_RULE = "/get/vm/fencer/rule/"
@@ -1820,6 +1824,30 @@ class HaPlugin(kvmagent.KvmAgent):
 
         heartbeat_on_cbd(cmd.uuid, cmd.coveringPaths)
         return jsonobject.dumps(AgentRsp())
+
+    @kvmagent.replyerror
+    def cbd_check_vmstate(self, req):
+        rsp = CheckIscsiVmStateRsp()
+        rsp.result = {}
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CheckIscsiVmStateRsp()
+
+        cbd_controller = CbdHeartbeatController(cmd.interval, cmd.times, cmd.primaryStorageUuid, None)
+        cbd_controller.heartbeat_path = cmd.heartbeatUrl
+        cbd_controller.host_uuid = cmd.hostUuid
+        cbd_controller.host_id = cmd.hostId
+        cbd_controller.storage_check_timeout = cmd.storageCheckerTimeout
+        cbd_controller.max_attempts = cmd.times
+        cbd_controller.interval = cmd.interval
+        cbd_controller.ps_uuid = cmd.primaryStorageUuid
+
+        heartbeat_success, vm_uuids = cbd_controller.check_fencer_heartbeat(
+            cbd_controller.host_id, cbd_controller.storage_check_timeout, cbd_controller.interval,
+            cbd_controller.max_attempts, cmd.primaryStorageUuid)
+
+        rsp.result = {cmd.primaryStorageUuid: heartbeat_success}
+        rsp.vmUuids = list(set(vm_uuids))
+        return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
     def setup_iscsi_self_fencer(self, req):
@@ -2457,10 +2485,12 @@ class HaPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.FILESYSTEM_CHECK_VMSTATE_PATH, self.file_system_check_vmstate)
         http_server.register_async_uri(self.SHAREDBLOCK_CHECK_VMSTATE_PATH, self.sharedblock_check_vmstate)
         http_server.register_async_uri(self.ISCSI_CHECK_VMSTATE_PATH, self.iscsi_check_vmstate)
+        http_server.register_async_uri(self.CBD_CHECK_VMSTATE_PATH, self.cbd_check_vmstate)
         http_server.register_async_uri(self.ADD_VM_FENCER_RULE_TO_HOST, self.add_vm_fencer_rule_to_host)
         http_server.register_async_uri(self.REMOVE_VM_FENCER_RULE_FROM_HOST, self.remove_vm_fencer_rule_from_host)
         http_server.register_async_uri(self.GET_VM_FENCER_RULE, self.get_vm_fencer_rule)
         http_server.register_async_uri(self.CBD_SETUP_SELF_FENCER_PATH, self.setup_cbd_self_fencer)
+
 
 
     def stop(self):
