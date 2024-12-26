@@ -11,6 +11,7 @@ from zstacklib.utils import log
 from zstacklib.utils import shell
 from zstacklib.utils import bash
 from zstacklib.utils import lock
+from zstacklib.utils import rbd
 
 logger = log.get_logger(__name__)
 
@@ -117,7 +118,7 @@ def translate_absolute_path_from_install_path(install_path, ps_uuid_sysid_mappin
         ps_sysid = ps_uuid_sysid_mapping[ps_uuid]
         if ps_sysid is None:
             raise Exception("ps uuid not found in ps uuid and sysid mapping: {}".format(ps_sysid))
-        return "{0}:conf={1}".format(install_path, linux.get_config_path_from_fs_id(ps_sysid))
+        return "{0}:conf={1}".format(install_path, rbd.get_config_path_from_fs_id(ps_sysid))
     return install_path.replace("block://", "/dev/disk/by-id/wwn-0x")
 
 
@@ -486,7 +487,7 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
         fmt = linux.get_img_fmt(cmd.backupStorageInstallPath)
         if not cmd.concurrency or cmd.concurrency <= 0:
             cmd.concurrency = 4
-        primary_storage_install_path = "{0}:conf={1}".format(cmd.primaryStorageInstallPath, linux.get_config_path_from_fs_id(cmd.primaryStorageSysid))
+        primary_storage_install_path = "{0}:conf={1}".format(cmd.primaryStorageInstallPath, rbd.get_config_path_from_fs_id(cmd.primaryStorageSysId))
         linux.qcow2_convert_to_raw(cmd.backupStorageInstallPath, primary_storage_install_path,
                                    "-f", fmt, "-n", "-Wm", str(cmd.concurrency))
         rsp = AgentRsp()
@@ -495,6 +496,7 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
     @kvmagent.replyerror
     def upload_to_imagestore(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        cmd.primaryStorageInstallPath = "{0}:conf={1}".format(cmd.primaryStorageInstallPath, rbd.get_config_path_from_fs_id(cmd.primaryStorageSysId))
         return self.imagestore_client.upload_to_imagestore(cmd, req)
 
     @kvmagent.replyerror

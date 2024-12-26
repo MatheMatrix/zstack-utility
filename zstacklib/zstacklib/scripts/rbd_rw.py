@@ -2,7 +2,7 @@ import base64
 import ctypes
 import traceback
 
-from zstacklib.utils.linux import get_config_path_from_fs_id
+from zstacklib.utils.rbd import get_config_path_from_fs_id
 
 ctypes.CDLL('/lib64/librados.so', ctypes.RTLD_GLOBAL)
 import sys
