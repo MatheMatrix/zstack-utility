@@ -224,6 +224,7 @@ declare -a upgrade_params_array=(
     '4.8.0,-DupgradeL2VirtualSwitchUplinkBonding=true'
     '4.8.0,-DupgradePortGroup=true'
     '4.10.0,-DlegacyCpuTopologyFix=true'
+    '4.10.3,-Dzwatch.system.alarm.uuid.modification=true'
 )
 #other than the upon params_array, this one could be persisted in zstack.properties
 declare -a upgrade_persist_params_array=(
