@@ -665,7 +665,6 @@ set_tomcat_config() {
     # call fun, get mn port
     get_mn_port
     local current_port=$MN_PORT
-    echo "current tomcat port=$current_port"
     tomcat_config_path=$ZSTACK_INSTALL_ROOT/apache-tomcat/conf
     cp $tomcat_config_path/server.xml $tomcat_config_path/server.xml.bak || true
 
