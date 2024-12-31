@@ -3266,10 +3266,18 @@ is_install_marketplace_server(){
 is_install_fluentbit_server(){
     echo_subtitle "Install fluentbit server"
     if [ "$BASEARCH" = "x86_64" ]; then
-        echo "Installing libpq for fluent-bit..." >> $ZSTACK_INSTALL_LOG
-        yum install libpq --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y >> $ZSTACK_INSTALL_LOG 2>&1
-        if [ $? -ne 0 ]; then
-            fail "install libpq for fluent-bit failed."
+        if [ "$ZSTACK_RELEASE" = "h84r" ]; then
+            echo "Installing libpq for fluent-bit..." >> $ZSTACK_INSTALL_LOG
+            yum install libpq --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y >> $ZSTACK_INSTALL_LOG 2>&1
+            if [ $? -ne 0 ]; then
+                fail "install libpq for fluent-bit failed."
+            fi
+        else
+            echo "Installing postgresql-libs for fluent-bit..." >> $ZSTACK_INSTALL_LOG
+            yum install postgresql-libs --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y >> $ZSTACK_INSTALL_LOG 2>&1
+            if [ $? -ne 0 ]; then
+                fail "install postgresql-libs for fluent-bit failed."
+            fi
         fi
     fi
 
