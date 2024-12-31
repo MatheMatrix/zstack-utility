@@ -3508,6 +3508,10 @@ class InstallDbCmd(Command):
 
     - name: pre install script
       script: $pre_install_script
+      
+    - name: install readline needed by greatdb-client, greatdb-server
+      when: ansible_os_family == 'Kylin' and ansible_distribution_version == '10'
+      shell: yum clean all; yum --disablerepo="*" --enablerepo=zstack-local-greatdb install -y readline-8.0-3.ky10.x86_64
 
     - name: install GreatDB
       when: >
