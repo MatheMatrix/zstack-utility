@@ -3632,10 +3632,22 @@ done
                 return None
             return filter_lines_by_str_list(partition_o.splitlines(), ["Partition Table"])[0].split(':')[1].strip()
 
+        def is_pcie_nvme(dev_name):
+            transport = linux.read_file("/sys/class/block/%s/device/transport" % dev_name.replace("/dev/", ""))
+            if transport:
+                return transport == "pcie"
+            return False
+
         def process_device(dev):
             name = dev['name']
             block_dev = BlockDevice(dev['name'], dev['type'], dev['size'], dev['model'], dev['serial'], dev['fstype'],
                                     dev['mountpoint'])
+            if 'nvme' in name:
+                block_dev.mediaType = 'SSD'
+                if not is_pcie_nvme(name):
+                    return None
+            else:
+                block_dev.mediaType = 'SSD' if (dev['rota'] == '0' or dev['rota'] == False) else 'HDD'
 
             if dev['children'] is not None:
                 for child in dev['children']:
@@ -3645,10 +3657,6 @@ done
             block_dev.partitionTable = get_partition_table(name)
             block_dev.used, block_dev.available, block_dev.usedRatio = get_size_info(name)
             block_dev.smartPassed, block_dev.smartMessage = get_smart_passed_and_message(name)
-            if name.startswith('nvme'):
-                block_dev.mediaType = 'SSD'
-            else:
-                block_dev.mediaType = 'SSD' if (dev['rota'] == '0' or dev['rota'] == False) else 'HDD'
 
             return block_dev
 
@@ -3659,7 +3667,10 @@ done
             return jsonobject.dumps(rsp)
 
         for device in jsonobject.loads(o)['blockdevices']:
-            rsp.blockDevices.append(process_device(device))
+            blockDevice = process_device(device)
+            if blockDevice:
+                rsp.blockDevices.append(blockDevice)
+
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
