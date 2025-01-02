@@ -80,5 +80,5 @@ class TestSblkFencerManager(unittest.TestCase):
 
     def test_get_fencer_status(self):
         self.fencer_manager.register_fencer(self.fencer)
-        self.fencer_manager.start_fencer('fake_vg_uuid')
+        self.fencer_manager.start_fencer(self.fencer)
         self.assertTrue(self.fencer_manager.get_fencer_status('fake_vg_uuid'))
