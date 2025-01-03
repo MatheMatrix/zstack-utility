@@ -61,6 +61,7 @@ COLO_LIB_PATH = '/var/lib/zstack/colo/'
 HOST_TAKEOVER_FLAG_PATH = 'var/run/zstack/takeOver'
 NODE_INFO_PATH = '/sys/devices/system/node/'
 ISCSI_INITIATOR_NAME_PATH = '/etc/iscsi/initiatorname.iscsi'
+HOST_NQN_PATH = '/etc/nvme/hostnqn'
 
 BOND_MODE_ACTIVE_0 = "balance-rr"
 BOND_MODE_ACTIVE_1 = "active-backup"
@@ -105,6 +106,7 @@ class HostFactResponse(kvmagent.AgentResponse):
         self.libvirtCapabilities = []
         self.virtualizerInfo = vm_plugin.VirtualizerInfoTO()
         self.iscsiInitiatorName = None
+        self.nqn = None
         self.cpuProcessorNum = 0
         self.cpuSockets = 0
         self.cpuCoresPerSocket = 0
@@ -281,6 +283,26 @@ class GetHostPhysicalCpuFactsResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(GetHostPhysicalCpuFactsResponse, self).__init__()
         self.physicalCpuFacts = []
+
+
+class UpdateHostNqnCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(UpdateHostNqnCmd, self).__init__()
+        self.nqn = None
+
+class UpdateHostNqnResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(UpdateHostNqnResponse, self).__init__()
+
+
+class UpdateHostIscsiInitiatorNameCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(UpdateHostIscsiInitiatorNameCmd, self).__init__()
+        self.iscsiInitiatorName = None
+
+class UpdateHostIscsiInitiatorNameResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(UpdateHostIscsiInitiatorNameResponse, self).__init__()
 
 
 class SetHostKernelInterfaceCmd(kvmagent.AgentCommand):
@@ -1043,6 +1065,8 @@ class HostPlugin(kvmagent.KvmAgent):
     SET_KERNEL_INTERFACE_PATH = "/host/kernelinterface/set"
     GET_BLOCK_DEVICES_PATH = "/host/blockdevices/get"
     GET_SENSORS_PATH = "/host/sensors/get"
+    UPDATE_NQN_PATH = "/host/nqn/update"
+    UPDATE_ISCSI_INITIATOR_NAME_PATH = "/host/iscsiinitiatorname/update"
 
     def __init__(self):
         self.IS_YUM = False
@@ -1213,6 +1237,40 @@ class HostPlugin(kvmagent.KvmAgent):
         # InitiatorName=iqn.1994-05.com.redhat:aa9bf5ec494c
         return initiator_name.strip().split('=')[-1]
 
+    def _get_host_nqn(self):
+        nqn = linux.read_file(HOST_NQN_PATH)
+        return nqn if nqn else None
+
+    @kvmagent.replyerror
+    def update_nqn(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = UpdateHostNqnResponse()
+
+        if os.path.exists(HOST_NQN_PATH):
+            with open(HOST_NQN_PATH, 'w') as f:
+                f.write("%s\n" % (cmd.nqn))
+        else:
+            rsp.success = False
+            rsp.error = 'cannot find file %s' % HOST_NQN_PATH
+
+        return jsonobject.dumps(rsp)
+
+
+    @kvmagent.replyerror
+    def update_iscsi_initiator_name(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = UpdateHostIscsiInitiatorNameResponse()
+
+        if os.path.exists(ISCSI_INITIATOR_NAME_PATH):
+            with open(ISCSI_INITIATOR_NAME_PATH, 'w') as f:
+                f.write("InitiatorName=%s\n" % (cmd.iscsiInitiatorName))
+        else:
+            rsp.success = False
+            rsp.error = 'cannot find file %s' % ISCSI_INITIATOR_NAME_PATH
+                
+        return jsonobject.dumps(rsp)
+
+
     @kvmagent.replyerror
     def fact(self, req):
         rsp = HostFactResponse()
@@ -1271,6 +1329,7 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.uptime = shell.call('uptime -s').strip()
 
         rsp.iscsiInitiatorName = self._get_iscsi_initiator_name()
+        rsp.nqn = self._get_host_nqn()
 
         if not IS_LOONGARCH64:
             libvirtCapabilitiesList = []
@@ -3794,6 +3853,8 @@ done
         http_server.register_async_uri(self.SET_KERNEL_INTERFACE_PATH, self.set_kernel_interface)
         http_server.register_async_uri(self.GET_BLOCK_DEVICES_PATH, self.get_block_devices)
         http_server.register_async_uri(self.GET_SENSORS_PATH, self.get_sensors)
+        http_server.register_async_uri(self.UPDATE_NQN_PATH, self.update_nqn)
+        http_server.register_async_uri(self.UPDATE_ISCSI_INITIATOR_NAME_PATH, self.update_iscsi_initiator_name)
 
         self.heartbeat_timer = {}
         filepath = r'/etc/libvirt/qemu/networks/autostart/default.xml'
