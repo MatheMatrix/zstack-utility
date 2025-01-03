@@ -1003,7 +1003,7 @@ configure lldp status rx-only \n
             if cmd.peers:
                 linux.populate_vxlan_fdbs([new_vxlan_interface], cmd.peers)
             logger.debug('successfully update bridge[%s] vxlan interface from device[%s] to device[%s]'
-                % (cmd.bridgeName, cmd.oldVlanInterface, cmd.newVlanInterface))
+                % (cmd.bridgeName, old_vxlan_interface, new_vxlan_interface))
         except Exception as e:
             logger.warning(traceback.format_exc())
             rsp.error = ('unable to update bridge[%s] vxlan interface from device[%s] to device[%s], because %s'
@@ -1033,7 +1033,7 @@ configure lldp status rx-only \n
             if cmd.newVlan and not cmd.oldVlan:
                 linux.move_dev_route(cmd.bridgeName, cmd.physicalInterfaceName)
             logger.debug('successfully update bridge[%s] vlan interface from device[%s] to device[%s]'
-                % (cmd.bridgeName, cmd.oldVlanInterface, cmd.newVlanInterface))
+                % (cmd.bridgeName, old_vlan_interface, new_vlan_interface))
         except Exception as e:
             logger.warning(traceback.format_exc())
             rsp.error = ('unable to update bridge[%s] vlan interface from device[%s] to device[%s], because %s'

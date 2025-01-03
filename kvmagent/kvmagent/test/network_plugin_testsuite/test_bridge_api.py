@@ -63,11 +63,12 @@ class TestBridgeApi(TestCase):
     def test_create_vlan_bridge(self):
         r, o = bash.bash_ro("ip a| grep BROADCAST|grep -v virbr | awk -F ':' 'NR==1{print $2}' | sed 's/ //g'")
         interF = o.strip().replace(' ', '').replace('\n', '').replace('\r', '')
-        br_name = "br_" + interF
+        vlan_id = 1
+        br_name = "br_" + interF + "_" + str(vlan_id)
 
         rsp = network_plugin_utils.create_vlan_bridge(
             bridgeName=br_name,
-            vlan= 1,
+            vlan= vlan_id,
             l2NetworkUuid= misc.uuid(),
             disableIptables= True,
             physicalInterfaceName=interF)
