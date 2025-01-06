@@ -28,7 +28,7 @@ from zstacklib.utils import iproute
 import zstacklib.utils.ip as ipUtils
 
 logger = log.get_logger(__name__)
-
+KEY_REPORT_URL = 'report_url'
 
 class UmountException(Exception):
     pass
@@ -99,6 +99,11 @@ class ReportSelfFencerCmd(object):
 class AbstractHaFencer(object):
     _ha_fencers = {}
 
+    # the url report to MN
+    report_url = ''
+    need_report_mn_after_vm_killed = False
+    host_uuid = ''
+
     def __init__(self, interval, max_attempts, ps_uuid, run_fencer_list):
         self._ha_fencers[self.get_ha_fencer_name()] = self
         self.storage_name = None
@@ -106,7 +111,7 @@ class AbstractHaFencer(object):
         self.interval = interval
         self.max_attempts = max_attempts
         self.ps_uuid = ps_uuid
-        self.run_fencer_list = run_fencer_list
+        self.run_fencer_list = run_fencer_list # type: list[str]
 
     def inspect_fencer(self):
         self.ha_fencer = None
@@ -140,9 +145,13 @@ class AbstractHaFencer(object):
         self.run_fencer_list = set(list(self.run_fencer_list))
 
         threads = []
-        for fencer in self.run_fencer_list:
-            if fencer in self.ha_fencer:
-                thread = threading.Thread(target=self.ha_fencer[fencer].exec_fencer)
+        for fencer_name in self.run_fencer_list:
+            if fencer_name in self.ha_fencer:
+                fencer = self.ha_fencer[fencer_name]
+                fencer.report_url = fencer_init[KEY_REPORT_URL]
+                fencer.host_uuid = fencer_init[kvmagent.HOST_UUID]
+                
+                thread = threading.Thread(target=fencer.exec_fencer)
                 thread.start()
                 threads.append(thread)
 
@@ -189,27 +198,57 @@ class AbstractHaFencer(object):
     def update_child_fencer(self, fencer_name, fencer_class):
         self.ha_fencer[fencer_name] = fencer_class
 
+    def report_to_mn_that_vm_killed_if_needed(self, vm_uuids):  # type: (list[str]) -> None
+        if len(vm_uuids) == 0 or not self.need_report_mn_after_vm_killed:
+            return
+
+        if not self.host_uuid:
+            logger.warn('cannot find HOST_UUID, unable to report VM fencer event')
+            return
+
+        values = [] # type: list[dict[str, str]]
+        for uuid in vm_uuids:
+            values.append({
+                'vmUuid' : uuid,
+                'fencerName' : self.get_ha_fencer_name()
+            })
+
+        @thread.AsyncThread
+        def report():
+            logger.debug("[%s] report to MN that VMs %s has been fenced" % (self.get_ha_fencer_name(), vm_uuids))
+            cmd = {
+                'values': values,
+                'hostUuid': self.host_uuid
+            }
+            http.json_dump_post(self.report_url, cmd, {'commandpath': '/ha/events/vm-fenced'})
+
+        report()
 
 class PhysicalNicFencer(AbstractHaFencer):
     def __init__(self, interval, max_attempts, ps_uuid, run_fencer_list):
         super(PhysicalNicFencer, self).__init__(interval, max_attempts, ps_uuid, run_fencer_list)
         self.name = self.get_ha_fencer_name()
         self.fault_nic_count = {} #type: dict[str, int]
+        self.need_report_mn_after_vm_killed = True
 
     def exec_fencer(self):
-        vm_use_fault_nic_pids_dict, fault_nic = self.find_vm_use_fault_nic()
+        try:
+            vm_use_fault_nic_pids_dict = self.find_vm_use_fault_nic()
 
-        global ha_vm_list, fence_all_vms
-        if fence_all_vms:
-            vm_need_fence_dict = vm_use_fault_nic_pids_dict
-        else:
-            vm_need_fence_dict = {key: value for key, value in vm_use_fault_nic_pids_dict.items() if key in ha_vm_list}
+            global ha_vm_list, fence_all_vms
+            if fence_all_vms:
+                vm_need_fence_dict = vm_use_fault_nic_pids_dict
+            else:
+                vm_need_fence_dict = {key: value for key, value in vm_use_fault_nic_pids_dict.items() if key in ha_vm_list}
 
-        if len(vm_need_fence_dict) == 0:
-            logger.debug("[%s] report no VMs related to the fault nics" % self.get_ha_fencer_name())
-            return
-        reason = "because physical nic[%s] status has been checked %s times and is still down" % (",".join(fault_nic), self.max_attempts)
-        kill_vm_use_pid(vm_need_fence_dict, reason)
+            if len(vm_need_fence_dict) == 0:
+                logger.debug("[%s] report no VMs related to the fault nics" % self.get_ha_fencer_name())
+                return
+
+            vms_killed = kill_vm_use_pid(vm_need_fence_dict, self.get_ha_fencer_name())
+            self.report_to_mn_that_vm_killed_if_needed(vms_killed)
+        except Exception as e:
+            logger.warn("failed to exec fencer hostBusinessNic: %s" % e)
 
     def get_ha_fencer_name(self):
         return "hostBusinessNic"
@@ -222,11 +261,11 @@ class PhysicalNicFencer(AbstractHaFencer):
 
         return False
 
-    def find_vm_use_fault_nic(self):
+    def find_vm_use_fault_nic(self): # type: () -> dict[str, str]
         vm_use_fault_nic_pids_dict = {}
         fault_nics = self.find_fault_business_nics()
         if len(fault_nics) == 0:
-            return vm_use_fault_nic_pids_dict, fault_nics
+            return vm_use_fault_nic_pids_dict
 
         r = bash.bash_r("timeout 5 virsh list")
         if r == 0:
@@ -234,7 +273,7 @@ class PhysicalNicFencer(AbstractHaFencer):
         else:
             vm_use_fault_nic_pids_dict = self.find_vm_use_fault_nic_without_virsh(fault_nics)
 
-        return vm_use_fault_nic_pids_dict, fault_nics
+        return vm_use_fault_nic_pids_dict
 
 
     def is_bridge_related_to_nic(self, bridge, nics):
@@ -245,8 +284,11 @@ class PhysicalNicFencer(AbstractHaFencer):
         return phy_nic_name.strip() in nics
 
 
-    # get interface and bridge from xml
-    def find_vm_use_fault_nic_without_virsh(self, fault_nics):
+    def find_vm_use_fault_nic_without_virsh(self, fault_nics): # type: (list[str]) -> dict[str, str]
+        '''
+            get interface and bridge from xml
+            :return  dict: key=vm_uuid, value=pid
+        '''
         vm_use_fault_nic_pids_dict = {}
         vm_in_process_uuid_list = find_vm_uuid_list_by_process()
         for vm_uuid in vm_in_process_uuid_list:
@@ -280,7 +322,10 @@ class PhysicalNicFencer(AbstractHaFencer):
         return vm_use_fault_nic_pids_dict
 
 
-    def find_vm_use_fault_nic_with_virsh(self, fault_nics):
+    def find_vm_use_fault_nic_with_virsh(self, fault_nics): # type: (list[str]) -> dict[str, str]
+        '''
+            :return  dict: key=vm_uuid, value=pid
+        '''
         vm_use_fault_nic_pids_dict = {}
         vm_in_process_uuid_list = find_vm_uuid_list_by_virsh()
         for vm_uuid in vm_in_process_uuid_list:
@@ -328,8 +373,6 @@ class PhysicalNicFencer(AbstractHaFencer):
 
     def update_ha_fencer(self, cmd, ha_fencer):
         pass
-
-
 
 class AbstractStorageFencer(AbstractHaFencer):
     def __init__(self, interval, max_attempts, ps_uuid, run_fencer_list):
@@ -569,7 +612,7 @@ class SanlockHealthChecker(AbstractStorageFencer):
         return self._do_health_check(storage_timeout, max_failure)
 
     def get_ha_fencer_name(self):
-        return "shareblockFcener"
+        return "shareblockFencer"
 
     def write_fencer_heartbeat(self):
         return self.runonce(self.storage_timeout, self.max_failure)
@@ -722,9 +765,9 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
     def kill_vm(self):
         r = bash.bash_r("timeout 5 virsh list")
         if r == 0:
-            return kill_vm(self.max_attempts, self.strategy, [self.mount_path], True)
+            return kill_vm(self.get_ha_fencer_name(), self.strategy, [self.mount_path], True)
         else:
-            return kill_vm_by_xml(self.max_attempts, self.strategy, self.mount_path, True)
+            return kill_vm_by_xml(self.get_ha_fencer_name(), self.strategy, self.mount_path, True)
 
     def check_storage_heartbeat(self):
         if self.write_fencer_heartbeat() is False:
@@ -732,16 +775,17 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
             killed_vms, on_storage_vm_uuids = self.kill_vm()
 
             if len(killed_vms) != 0:
-                self.fencer_triggered_callback([self.ps_uuid], ','.join(killed_vms.keys()))
-                clean_network_config(killed_vms.keys())
+                self.fencer_triggered_callback([self.ps_uuid], ','.join(killed_vms))
+                clean_network_config(killed_vms)
+                self.report_to_mn_that_vm_killed_if_needed(killed_vms)
 
-            self.after_kill_vm(killed_vms.keys(), on_storage_vm_uuids)
+            self.after_kill_vm(killed_vms, on_storage_vm_uuids)
 
             if self.mounted_by_zstack and not linux.is_mounted(self.mount_path):
                 self.try_remount_fs_callback(self.mount_path, self.ps_uuid, self.created_time, self, self.url, self.options)
                 self.prepare_heartbeat_dir()
 
-    def after_kill_vm(self, killed_vm_uuids, on_storage_vm_uuids):
+    def after_kill_vm(self, killed_vm_uuids, on_storage_vm_uuids):  # type: (list[str], list[str]) -> None
         if not self.mounted_by_zstack:
             return
 
@@ -790,6 +834,7 @@ class CephHeartbeatController(AbstractStorageFencer):
         self.ioctx = None
         self.interval = 0
         self.report_storage_status_callback = None
+        self.need_report_mn_after_vm_killed = True
 
     def ceph_in_error_stat(self):
         # HEALTH_OK,HEALTH_WARN,HEALTH_ERR and others(may be empty)...
@@ -823,7 +868,7 @@ class CephHeartbeatController(AbstractStorageFencer):
                 # for example, pool name is aaa
                 # add slash to confirm kill_vm matches vm with volume aaa/volume_path
                 # but not aaa_suffix/volume_path
-                vm_uuids, _ = kill_vm(self.max_attempts, self.strategy, ['%s/' % self.pool_name], False)
+                vm_uuids, _ = kill_vm(self.get_ha_fencer_name(), self.strategy, ['%s/' % self.pool_name], False)
                 if self.strategy == 'Permissive':
                     self.reset_failure_count()
 
@@ -835,6 +880,7 @@ class CephHeartbeatController(AbstractStorageFencer):
                         content = traceback.format_exc()
                         logger.warn(content)
                     clean_network_config(vm_uuids)
+                    self.report_to_mn_that_vm_killed_if_needed(vm_uuids)
 
                 self.storage_failure = True
                 self.report_storage_status = True
@@ -1051,7 +1097,7 @@ def is_block_fencer(fencer_name, vm_uuid):
         return False
 
 
-def clean_network_config(vm_uuids):
+def clean_network_config(vm_uuids): # type: (list[str]) -> None
     for c in kvmagent.ha_cleanup_handlers:
         logger.debug('clean network config handler: %s\n' % c)
         thread.ThreadFacade.run_in_thread(c, (vm_uuids,))
@@ -1081,18 +1127,19 @@ def not_exec_kill_vm(strategy, vm_uuid, fencer_name):
     return strategy == 'Permissive' and not is_allow_fencer(fencer_name, vm_uuid)
 
 
-def kill_vm_by_xml(maxAttempts, strategy, mountPath, isFlushbufs = True):
-    vm_pids_dict, on_storage_vm_uuids = get_runnning_vm_root_volume_on_ps(maxAttempts, strategy, mountPath, isFlushbufs)
-    reason = "because we lost connection to the storage, failed to read the heartbeat file %s times" % maxAttempts
-    kill_vm_use_pid(vm_pids_dict, reason)
-    return vm_pids_dict, on_storage_vm_uuids
+def kill_vm_by_xml(fencer_name, strategy, mountPath, isFlushbufs = True):
+    vm_pids_dict, on_storage_vm_uuids = get_runnning_vm_root_volume_on_ps(strategy, mountPath, isFlushbufs)
+    vms_killed = kill_vm_use_pid(vm_pids_dict, fencer_name)
+    return vms_killed, on_storage_vm_uuids
 
 
 @bash.in_bash
-def get_runnning_vm_root_volume_on_ps(maxAttempts, strategy, mountPath, isFlushbufs = True, vm_uuid_only = False):
-    # 1. get root volume from live vm xml
-    # 2. make sure io has error
-    # 3. filter for mountPaths
+def get_runnning_vm_root_volume_on_ps(strategy, mountPath, isFlushbufs = True, vm_uuid_only = False): # type: (str, str, bool, bool) -> tuple[dict[str, str], list[str]]
+    '''
+        1. get root volume from live vm xml
+        2. make sure io has error
+        3. filter for mountPaths
+    '''
     vm_pids_dict = {}
     on_storage_vm_uuids = []
     for file_name in linux.listdir(LIVE_LIBVIRT_XML_DIR):
@@ -1136,7 +1183,7 @@ def get_runnning_vm_root_volume_on_ps(maxAttempts, strategy, mountPath, isFlushb
     return vm_pids_dict, on_storage_vm_uuids
 
 
-def kill_vm(maxAttempts, strategy, mountPaths=None, isFileSystem=None):
+def kill_vm(fencer_name, strategy, mountPaths=None, isFileSystem=None): # type: (str, str, list[str]|None, bool) -> tuple[list[str], list[str]]
     virsh_list = shell.call("virsh list --all")
     logger.debug("virsh_list:\n" + virsh_list)
     
@@ -1144,8 +1191,8 @@ def kill_vm(maxAttempts, strategy, mountPaths=None, isFileSystem=None):
     logger.debug('vm_in_process_uuid_list:\n' + '\n'.join(vm_in_process_uuid_list))
 
     # kill vm's qemu process
-    vm_pids_dict = {}
-    on_storage_vm_uuids = []
+    vm_pids_dict = {} # type: dict[str, str]
+    on_storage_vm_uuids = [] # type: list[str]
     for vm_uuid in vm_in_process_uuid_list:
         vm_uuid = vm_uuid.strip()
         if not vm_uuid:
@@ -1166,19 +1213,20 @@ def kill_vm(maxAttempts, strategy, mountPaths=None, isFileSystem=None):
             continue
 
         vm_pids_dict[vm_uuid] = vm_pid
-    reason = "because we lost connection to the storage, failed to read the heartbeat file %s times" % maxAttempts
-    kill_vm_use_pid(vm_pids_dict, reason)
-    return vm_pids_dict, on_storage_vm_uuids
+    vms_killed = kill_vm_use_pid(vm_pids_dict, fencer_name)
+    return vms_killed, on_storage_vm_uuids
 
-def kill_vm_use_pid(vm_pids_dict, reason):
+def kill_vm_use_pid(vm_pids_dict, fencer_name): # type: (dict[str, str], str) -> list[str]
+    vms_killed = []
     for vm_uuid, vm_pid in vm_pids_dict.items():
         kill = shell.ShellCmd('kill -9 %s' % vm_pid)
         kill(False)
         if kill.return_code == 0:
-            logger.warn('kill the vm[uuid:%s, pid:%s] %s' % (vm_uuid, vm_pid, reason))
+            logger.warn('kill the vm[uuid:%s, pid:%s] due to fencer: %s' % (vm_uuid, vm_pid, fencer_name))
+            vms_killed.append(vm_uuid)
         else:
             logger.warn('failed to kill the vm[uuid:%s, pid:%s] %s' % (vm_uuid, vm_pid, kill.stderr))
-
+    return vms_killed
 
 def mount_path_is_nfs(mount_path):
     typ = shell.call("mount | grep '%s' | awk '{print $5}'" % mount_path)
@@ -1404,9 +1452,9 @@ class HaPlugin(kvmagent.KvmAgent):
                         continue
 
                     try:
-                        logger.warn("aliyun nas storage %s fencer fired!" % cmd.uuid)
+                        logger.warn("aliyun nas storage %s fencer fired for %d attempts!" % (cmd.uuid, cmd.maxAttempts))
 
-                        vm_uuids, _ = kill_vm(cmd.maxAttempts, cmd.strategy)
+                        vm_uuids, _ = kill_vm('aliyunFencer', cmd.strategy)
 
                         if vm_uuids:
                             self.report_self_fencer_triggered([cmd.uuid], ','.join(vm_uuids))
@@ -1483,9 +1531,9 @@ class HaPlugin(kvmagent.KvmAgent):
                         continue
 
                     try:
-                        logger.warn("block storage %s fencer fired!" % cmd.uuid)
+                        logger.warn("block storage %s fencer fired for %d attempts!" % (cmd.uuid, cmd.maxAttempts))
 
-                        vm_uuids, _ = kill_vm(cmd.maxAttempts, cmd.strategy, cmd.uuid, True)
+                        vm_uuids, _ = kill_vm('blockStorageFencer', cmd.strategy, cmd.uuid, True)
 
                         if vm_uuids:
                             self.report_self_fencer_triggered([cmd.uuid], ','.join(vm_uuids))
@@ -1656,6 +1704,8 @@ class HaPlugin(kvmagent.KvmAgent):
             if self.sblk_health_checker.do_heartbeat_on_sharedblock_call is None:
                 self.sblk_health_checker.do_heartbeat_on_sharedblock_call = self.do_heartbeat_on_sharedblock
             fencer_init[self.sblk_health_checker.get_ha_fencer_name()] = self.sblk_health_checker
+            fencer_init[KEY_REPORT_URL] = self.config.get(kvmagent.SEND_COMMAND_URL)
+            fencer_init[kvmagent.HOST_UUID] = cmd.hostUuid
             logger.debug("shareblock start run fencer list :%s" % ",".join(fencer_list))
 
             while True:
@@ -1749,6 +1799,8 @@ class HaPlugin(kvmagent.KvmAgent):
                         write_heartbeat_used_time = None
                         ceph_controller.ioctx = ioctx
                         fencer_init[ceph_controller.get_ha_fencer_name()] = ceph_controller
+                        fencer_init[KEY_REPORT_URL] = self.config.get(kvmagent.SEND_COMMAND_URL)
+                        fencer_init[kvmagent.HOST_UUID] = cmd.hostUuid
                         logger.debug("ceph start run fencer list :%s" % ",".join(fencer_list))
                         while self.run_fencer(get_fencer_key(ps_uuid, pool_name), created_time):
                             if write_heartbeat_used_time:
@@ -1833,6 +1885,8 @@ class HaPlugin(kvmagent.KvmAgent):
             update_fencer = True
             fencer_init = {}
             fencer_init[file_system_controller.get_ha_fencer_name()] = file_system_controller
+            fencer_init[KEY_REPORT_URL] = self.config.get(kvmagent.SEND_COMMAND_URL)
+            fencer_init[kvmagent.HOST_UUID] = cmd.hostUuid
             logger.debug("file system start run fencer list :%s" % ",".join(fencer_list))
             try:
                 while self.run_fencer(ps_uuid, created_time):
