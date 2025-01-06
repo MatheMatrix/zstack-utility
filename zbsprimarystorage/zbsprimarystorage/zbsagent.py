@@ -98,10 +98,86 @@ class GetCapacityRsp(AgentResponse):
         self.usedSize = 0
 
 
-class GetFactsRsp(AgentResponse):
+class GetLogicalPoolInfoRsp(AgentResponse):
+    """
+    [root@zbs-8 ~]# zbs list logical-pool --format json
+    {
+      "error": {
+        "code": 0,
+        "message": "success"
+      },
+      "result": [
+        {
+          "statusCode": 0,
+          "logicalPoolInfos": [
+            {
+              "logicalPoolID": 1,
+              "logicalPoolName": "pool-e0f7d92fadb3446bb06ac0e48918172a",
+              "physicalPoolID": 1,
+              "physicalPoolName": "pool-e0f7d92fadb3446bb06ac0e48918172a_physical",
+              "type": 0,
+              "createTime": 1735627690,
+              "redundanceAndPlaceMentPolicy": "eyJjb3B5c2V0TnVtIjo2MDAsInJlcGxpY2FOdW0iOjMsInpvbmVOdW0iOjN9Cg==",
+              "userPolicy": "eyJwb2xpY3kiIDogMX0=",
+              "allocateStatus": 0,
+              "capacity": 42504271429632,
+              "usedSize": 84297121792,
+              "allocatedSize": 129922760704,
+              "rawUsedSize": 252891365376,
+              "rawWalUsedSize": 3123609600,
+              "quota": 0
+            }
+          ]
+        }
+      ]
+    }
+    [root@zbs-8 ~]#
+    """
     def __init__(self):
-        super(GetFactsRsp, self).__init__()
+        super(GetLogicalPoolInfoRsp, self).__init__()
+        self.logicalPoolInfo = None
+
+
+class GetMdsInfoRsp(AgentResponse):
+    def __init__(self):
+        super(GetMdsInfoRsp, self).__init__()
         self.mdsExternalAddr = None
+
+
+class LogicalPoolInfo:
+    def __init__(self):
+        self.logicalPoolID = None
+        self.logicalPoolName = None
+        self.physicalPoolID = None
+        self.physicalPoolName = None
+        self.type = None
+        self.createTime = None
+        self.redundanceAndPlaceMentPolicy = None
+        self.userPolicy = None
+        self.allocateStatus = None
+        self.capacity = None
+        self.usedSize = None
+        self.allocatedSize = None
+        self.rawUsedSize = None
+        self.rawWalUsedSize = None
+        self.quota = None
+
+    def assign_from(self, lp):
+        self.logicalPoolID = lp.logicalPoolID
+        self.logicalPoolName = lp.logicalPoolName
+        self.physicalPoolID = lp.physicalPoolID
+        self.physicalPoolName = lp.physicalPoolName
+        self.type = lp.type
+        self.createTime = lp.createTime
+        self.redundanceAndPlaceMentPolicy = lp.redundanceAndPlaceMentPolicy
+        self.userPolicy = lp.userPolicy
+        self.allocateStatus = lp.allocateStatus
+        self.capacity = lp.capacity
+        self.usedSize = lp.usedSize
+        self.allocatedSize = lp.allocatedSize
+        self.rawUsedSize = lp.rawUsedSize
+        self.rawWalUsedSize = lp.rawWalUsedSize
+        self.quota = lp.quota
 
 
 def replyerror(func):
@@ -136,7 +212,8 @@ class ZbsAgent(plugin.TaskManager):
     ECHO_PATH = "/zbs/primarystorage/echo"
     PING_PATH = "/zbs/primarystorage/ping"
     DEPLOY_CLIENT_PATH = "/zbs/primarystorage/client/deploy"
-    GET_FACTS_PATH = "/zbs/primarystorage/facts"
+    GET_MDS_INFO_PATH = "/zbs/primarystorage/mds/info"
+    GET_LOGICAL_POOL_INFO_PATH = "/zbs/primarystorage/logicalpool/info"
     GET_CAPACITY_PATH = "/zbs/primarystorage/capacity"
     COPY_PATH = "/zbs/primarystorage/copy"
     CREATE_VOLUME_PATH = "/zbs/primarystorage/volume/create"
@@ -158,7 +235,8 @@ class ZbsAgent(plugin.TaskManager):
         self.http_server.register_sync_uri(self.ECHO_PATH, self.echo)
         self.http_server.register_async_uri(self.PING_PATH, self.ping)
         self.http_server.register_async_uri(self.DEPLOY_CLIENT_PATH, self.deploy_client)
-        self.http_server.register_async_uri(self.GET_FACTS_PATH, self.get_facts)
+        self.http_server.register_async_uri(self.GET_MDS_INFO_PATH, self.get_mds_info)
+        self.http_server.register_async_uri(self.GET_LOGICAL_POOL_INFO_PATH, self.get_logical_pool_info)
         self.http_server.register_async_uri(self.GET_CAPACITY_PATH, self.get_capacity)
         self.http_server.register_async_uri(self.COPY_PATH, self.copy)
         self.http_server.register_async_uri(self.CREATE_VOLUME_PATH, self.create_volume)
@@ -478,7 +556,31 @@ class ZbsAgent(plugin.TaskManager):
         return jsonobject.dumps(rsp)
 
     @replyerror
-    def get_facts(self, req):
+    def get_logical_pool_info(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetLogicalPoolInfoRsp()
+
+        o = zbsutils.query_logical_pool_info()
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception('cannot found logical pool[%s] info, error[%s]' % cmd.logicalPoolName, ret.error.message)
+
+        found = False
+        for lp in ret.result[0].logicalPoolInfos:
+            if cmd.logicalPoolName in lp.logicalPoolName:
+                logical_pool_info = LogicalPoolInfo()
+                logical_pool_info.assign_from(lp)
+                rsp.logicalPoolInfo = logical_pool_info
+                found = True
+                break
+
+        if not found:
+            raise Exception('cannot found logical pool[%s], you must create it manually' % cmd.logicalPoolName)
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def get_mds_info(self, req):
         def get_mds_external_addr(mds_map):
             for r in mds_map.result:
                 ADDR = r.externalAddr.split(':')[0]
@@ -487,7 +589,7 @@ class ZbsAgent(plugin.TaskManager):
                     return r.externalAddr
 
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = GetFactsRsp()
+        rsp = GetMdsInfoRsp()
 
         o = zbsutils.query_mds_status_info()
         ret = jsonobject.loads(o)
