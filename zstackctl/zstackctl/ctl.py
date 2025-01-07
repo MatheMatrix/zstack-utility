@@ -218,6 +218,7 @@ if [[ $DB_VERSION == *"GreatSQL"* ]]; then
     echo "soft link greatdb"
     sudo ln -sf /usr/bin/mysql /usr/bin/greatdb
     sudo ln -sf /etc/systemd/system/mysql.service /etc/systemd/system/mariadb.service
+    sudo ln -sf /etc/systemd/system/mysql.service /usr/lib/systemd/system/mariadb.service
     sudo ln -sf /usr/bin/mysql /usr/bin/mariadb
     sudo systemctl daemon-reload
     
