@@ -92,16 +92,85 @@ class CreateVolumeRsp(AgentResponse):
 
 
 class GetCapacityRsp(AgentResponse):
+    """
+    [root@zbs-8 ~]# zbs list logical-pool --format json
+    {
+      "error": {
+        "code": 0,
+        "message": "success"
+      },
+      "result": [
+        {
+          "statusCode": 0,
+          "logicalPoolInfos": [
+            {
+              "logicalPoolID": 1,
+              "logicalPoolName": "pool-e0f7d92fadb3446bb06ac0e48918172a",
+              "physicalPoolID": 1,
+              "physicalPoolName": "pool-e0f7d92fadb3446bb06ac0e48918172a_physical",
+              "type": 0,
+              "createTime": 1735627690,
+              "redundanceAndPlaceMentPolicy": "eyJjb3B5c2V0TnVtIjo2MDAsInJlcGxpY2FOdW0iOjMsInpvbmVOdW0iOjN9Cg==",
+              "userPolicy": "eyJwb2xpY3kiIDogMX0=",
+              "allocateStatus": 0,
+              "capacity": 42504271429632,
+              "usedSize": 84297121792,
+              "allocatedSize": 129922760704,
+              "rawUsedSize": 252891365376,
+              "rawWalUsedSize": 3123609600,
+              "quota": 0
+            }
+          ]
+        }
+      ]
+    }
+    [root@zbs-8 ~]#
+    """
     def __init__(self):
         super(GetCapacityRsp, self).__init__()
-        self.capacity = 0
-        self.usedSize = 0
+        self.logicalPoolInfo = None
 
 
 class GetFactsRsp(AgentResponse):
     def __init__(self):
         super(GetFactsRsp, self).__init__()
         self.mdsExternalAddr = None
+
+
+class LogicalPoolInfo:
+    def __init__(self):
+        self.logicalPoolID = None
+        self.logicalPoolName = None
+        self.physicalPoolID = None
+        self.physicalPoolName = None
+        self.type = None
+        self.createTime = None
+        self.redundanceAndPlaceMentPolicy = None
+        self.userPolicy = None
+        self.allocateStatus = None
+        self.capacity = None
+        self.usedSize = None
+        self.allocatedSize = None
+        self.rawUsedSize = None
+        self.rawWalUsedSize = None
+        self.quota = None
+
+    def assign_from(self, lp):
+        self.logicalPoolID = lp.logicalPoolID
+        self.logicalPoolName = lp.logicalPoolName
+        self.physicalPoolID = lp.physicalPoolID
+        self.physicalPoolName = lp.physicalPoolName
+        self.type = lp.type
+        self.createTime = lp.createTime
+        self.redundanceAndPlaceMentPolicy = lp.redundanceAndPlaceMentPolicy
+        self.userPolicy = lp.userPolicy
+        self.allocateStatus = lp.allocateStatus
+        self.capacity = lp.capacity
+        self.usedSize = lp.usedSize
+        self.allocatedSize = lp.allocatedSize
+        self.rawUsedSize = lp.rawUsedSize
+        self.rawWalUsedSize = lp.rawWalUsedSize
+        self.quota = lp.quota
 
 
 def replyerror(func):
@@ -449,13 +518,14 @@ class ZbsAgent(plugin.TaskManager):
         o = zbsutils.query_logical_pool_info()
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
-            raise Exception('cannot found logical pool info, error[%s]' % ret.error.message)
+            raise Exception('cannot found logical pool[%s] info, error[%s]' % cmd.logicalPoolName, ret.error.message)
 
         found = False
-        for lp in jsonobject.loads(o).result[0].logicalPoolInfos:
+        for lp in ret.result[0].logicalPoolInfos:
             if cmd.logicalPoolName in lp.logicalPoolName:
-                rsp.capacity = lp.capacity
-                rsp.usedSize = lp.usedSize
+                logical_pool_info = LogicalPoolInfo()
+                logical_pool_info.assign_from(lp)
+                rsp.logicalPoolInfo = logical_pool_info
                 found = True
                 break
 
