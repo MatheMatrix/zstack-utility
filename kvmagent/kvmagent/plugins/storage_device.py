@@ -143,7 +143,10 @@ class FcHbaStruct(HbaStruct):
         self.symbolicName = ""
         self.supportedClasses = ""
         self.nodeName = ""
-
+        self.nodeName = ""
+        self.nodeName = ""
+        self.evice = ""
+        self.devicePath = ""
 
 class FcHbaScanRsp(AgentRsp):
     def __init__(self):
