@@ -115,17 +115,17 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                                     % (temp_dir, controllerIp, pack))
             if r != 0:
                 rsp.success = False
-                rsp.error = "fail to download package % from ovn controller, because: %s" % (pack, e)
+                rsp.error = "fail to download package {} from ovn controller, because: {}".format(pack, e)
                 break
 
             installFile = os.path.join(temp_dir, cmd.ovnControllerIp, "chassis", pack, "install.sh")
-            r, _, e = bash.bash_roe("bash -x %s" % installFile)
+            r, _, e = bash.bash_roe("bash -x {}".format(installFile))
             if r != 0:
                 rsp.success = False
-                rsp.error = "fail to install package % from ovn controller, because: %s" % (pack, e)
+                rsp.error = "fail to install package {} from ovn controller, because: {}".format(pack, e)
                 break
             else:
-                logger.debug("successfully install package from ovn controller" % pack)
+                logger.debug("successfully install package {} from ovn controller".format(pack))
 
         shutil.rmtree(temp_dir)
 
