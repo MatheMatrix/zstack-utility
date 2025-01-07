@@ -4,6 +4,7 @@ import re
 import random
 from string import whitespace
 from zstacklib.utils import bash
+import zstacklib.utils.lru_cache as lru_cache
 
 GLLK_BEGIN = 65
 VGLK_BEGIN = 66
@@ -118,8 +119,10 @@ class SanlockClientStatus(object):
 
 
 class SanlockClientStatusParser(object):
-    def __init__(self):
-        self.status = self._init()
+    def __init__(self, status=None):
+        self.status = status
+        if not self.status:
+            self.status = self._init()
         self.lockspace_records = None  # type: list[SanlockClientStatus]
 
     def get_lockspace_records(self):
@@ -178,6 +181,13 @@ def direct_init_resource(resource):
     cmd = "sanlock direct init -r %s" % resource
     return bash.bash_r(cmd)
 
+@lru_cache.lru_cache(timeout=10)
+@bash.in_bash
+def get_sanlock_client_status(show_extra_internal_daemon_status=True):
+    cmd = "sanlock client status"
+    if show_extra_internal_daemon_status:
+        cmd += " -D"
+    return SanlockClientStatusParser(bash.bash_r(cmd))
 
 def check_stuck_vglk_and_gllk():
     # 1. clear the vglk/gllk held by the dead host
@@ -426,6 +436,7 @@ def get_gllks():
     return result
 
 
+@lru_cache.lru_cache(timeout=10)
 def get_lockspaces():
     result = []
     r, o, e = bash.bash_roe("sanlock client gets")

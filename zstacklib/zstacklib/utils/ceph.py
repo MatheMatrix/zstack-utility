@@ -3,6 +3,8 @@
 @author: lining
 '''
 import os
+import rados
+import threading
 
 import zstacklib.utils.jsonobject as jsonobject
 from zstacklib.utils import shell
@@ -26,7 +28,6 @@ SUPPORT_DEFER_DELETING = None
 from distutils.version import LooseVersion
 
 def get_fsid(conffile='/etc/ceph/ceph.conf'):
-    import rados
     with rados.Rados(conffile=conffile) as cluster:
         return cluster.get_fsid()
 
@@ -34,6 +35,31 @@ def get_fsid(conffile='/etc/ceph/ceph.conf'):
 def is_xsky():
     return os.path.exists("/usr/bin/xms-cli")
 
+ioctx_cache = {}
+cluster_cache = {}
+ioctx_lock = threading.Lock()
+
+def get_ioctx(primary_storage_uuid, manufacturer, pool_name):
+    ceph_conf, keyring_path, username = get_ceph_client_conf(primary_storage_uuid, manufacturer)
+    if not os.path.exists(ceph_conf):
+        return None
+
+    additional_conf_dict = {}
+    if keyring_path:
+        # use additional_conf_dict to make keyring file a config of Rados connection
+        # and resolve compatibility issue of open-source and other types of ceph storage.
+        additional_conf_dict['keyring'] = keyring_path
+
+    if primary_storage_uuid in ioctx_cache:
+        cluster = ioctx_cache[primary_storage_uuid]
+    else:
+        cluster = rados.Rados(conffile=ceph_conf, conf=additional_conf_dict, name=username)
+        cluster.connect()
+        cluster_cache[primary_storage_uuid] = cluster
+
+    ioctx = cluster.open_ioctx(pool_name)
+    ioctx_cache["%s-%s" % (primary_storage_uuid, pool_name)] = ioctx
+    return ioctx
 
 def is_sandstone():
     return os.path.exists("/opt/sandstone/bin/sds") or os.path.exists("/var/lib/ceph/bin/ceph")
