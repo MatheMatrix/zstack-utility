@@ -3,6 +3,7 @@ __author__ = 'Xingwei Yu'
 import traceback
 import pprint
 import os
+import base64
 
 import zbsutils
 import zstacklib.utils.jsonobject as jsonobject
@@ -94,14 +95,56 @@ class CreateVolumeRsp(AgentResponse):
 class GetCapacityRsp(AgentResponse):
     def __init__(self):
         super(GetCapacityRsp, self).__init__()
-        self.capacity = 0
-        self.usedSize = 0
+        self.logicalPoolInfos = []
 
 
 class GetFactsRsp(AgentResponse):
     def __init__(self):
         super(GetFactsRsp, self).__init__()
         self.mdsExternalAddr = None
+
+
+class LogicalPoolInfo:
+    class RedundanceAndPlacementPolicy:
+        def __init__(self, copyset_number=None, replica_number=None, zone_number=None):
+            self.copysetNum = copyset_number
+            self.replicaNum = replica_number
+            self.zoneNum = zone_number
+
+    def __init__(self, logical_pool_info):
+        self.logicalPoolID = logical_pool_info.logicalPoolID
+        self.logicalPoolName = logical_pool_info.logicalPoolName
+        self.physicalPoolID = logical_pool_info.physicalPoolID
+        self.physicalPoolName = logical_pool_info.physicalPoolName
+        self.type = logical_pool_info.type
+        self.createTime = logical_pool_info.createTime
+        self.redundanceAndPlaceMentPolicy = self.decode_redundance_and_placement_policy(
+            logical_pool_info.redundanceAndPlaceMentPolicy
+        )
+        self.userPolicy = logical_pool_info.userPolicy
+        self.allocateStatus = logical_pool_info.allocateStatus
+        self.capacity = logical_pool_info.capacity
+        self.usedSize = logical_pool_info.usedSize
+        self.allocatedSize = logical_pool_info.allocatedSize
+        self.rawUsedSize = logical_pool_info.rawUsedSize
+        self.rawWalUsedSize = logical_pool_info.rawWalUsedSize
+        self.quota = logical_pool_info.quota
+
+    def decode_redundance_and_placement_policy(self, redundance_and_placement_policy):
+        if not redundance_and_placement_policy:
+            return None
+
+        try:
+            d = jsonobject.loads(base64.b64decode(redundance_and_placement_policy))
+            return self.RedundanceAndPlacementPolicy(
+                copyset_number=d.copysetNum,
+                replica_number=d.replicaNum,
+                zone_number=d.zoneNum
+            )
+        except Exception as e:
+            logger.error('failed to decode redundance and placement policy[%s], error[%s]' % (
+                redundance_and_placement_policy, e.message
+            ))
 
 
 def replyerror(func):
@@ -452,10 +495,9 @@ class ZbsAgent(plugin.TaskManager):
             raise Exception('cannot found logical pool info, error[%s]' % ret.error.message)
 
         found = False
-        for lp in jsonobject.loads(o).result[0].logicalPoolInfos:
-            if cmd.logicalPoolName in lp.logicalPoolName:
-                rsp.capacity = lp.capacity
-                rsp.usedSize = lp.usedSize
+        for i in ret.result[0].logicalPoolInfos:
+            if cmd.logicalPoolName in i.logicalPoolName:
+                rsp.logicalPoolInfos.append(LogicalPoolInfo(i))
                 found = True
                 break
 
