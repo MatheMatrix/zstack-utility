@@ -6090,7 +6090,7 @@ class RestoreMysqlPreCheckCmd(Command):
 
         # tag::check_restore_mysql[]
         create_tmp_table = "drop table if exists `TempVolumeEO`; " \
-                           "create table `TempVolumeEO` like .`VolumeEO`;"
+                           "create table `TempVolumeEO` like `zstack`.`VolumeEO`;"
 
         check_sql = "select tv.uuid,`name`,installPath from `TempVolumeEO` tv where tv.uuid in " \
         "(select uuid from `VolumeEO`)" \
