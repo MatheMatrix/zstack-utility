@@ -5774,8 +5774,16 @@ class ChangeMysqlPasswordCmd(Command):
                 hosts.append(host)
         return hosts
 
+    def check_greatsql_existence(self):
+        try:
+            result = subprocess.call(['which', "greatdb"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return result == 0
+        except Exception as e:
+            return False
+
 
     def run(self, args):
+        info('Check greatsql existence: {}'.format(self.check_greatsql_existence()))
         root_password_ = ''.join(map(check_special_root, args.root_password))
         new_password_ = ''.join(map(check_special_new, args.new_password))
         self.check_username_password(root_password_, args.remote_ip)
@@ -5784,7 +5792,10 @@ class ChangeMysqlPasswordCmd(Command):
         if (args.user_name in self.normal_users) or (args.user_name == 'root'):
             set_password_sql = ""
             for host in self.get_mysql_user_hosts(args.user_name, root_password_, args.remote_ip):
-                set_password_sql += "SET PASSWORD FOR '{user}'@'{host}' = PASSWORD('{new_pass}');".format(user=args.user_name, host=host, new_pass=new_password_)
+                if self.check_greatsql_existence():
+                    set_password_sql += "ALTER USER '{user}'@'{host}' IDENTIFIED BY '{new_pass}';".format(user=args.user_name, host=host, new_pass=new_password_)
+                else:
+                    set_password_sql += "SET PASSWORD FOR '{user}'@'{host}' = PASSWORD('{new_pass}');".format(user=args.user_name, host=host, new_pass=new_password_)
             set_password_sql += "FLUSH PRIVILEGES;"
             if args.remote_ip is not None:
                 sql = '''mysql -u root -p{root_pass} -h '{ip}' -e "{sql}" '''.format(root_pass=root_password_, ip=args.remote_ip, sql=set_password_sql)
