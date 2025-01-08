@@ -18,6 +18,7 @@ from zstacklib.utils import bash
 logger = log.get_logger(__name__)
 
 CtlBin = "/usr/local/bin/ovs-vsctl "
+DevBindBin = "/usr/bin/dpdk-devbind.py "
 
 
 class OvsError(Exception):
@@ -34,24 +35,24 @@ class OvsDpdkNic:
 @bash.in_bash
 def getAllDpdkNic():
     ret = []
-    r, o, e = bash.bash_roe("dpdk-devbind.py --status-dev net | grep drv=")
+    r, o, e = bash.bash_roe(DevBindBin + " --status-dev net | grep drv=")
     if r != 0:
-        logger.debug("dpdk-devbind.py --status-dev net | grep drv=, failed {err}".format(err=e))
+        logger.debug(DevBindBin + " --status-dev net | grep drv=, failed {err}".format(err=e))
         return ret
 
-    lines = o.spit("\n")
+    lines = o.split("\n")
     for line in lines:
         line = line.strip()
         if line == "":
             continue
 
         nic = OvsDpdkNic()
-        items = line.spilt(" ")
+        items = line.split(" ")
         nic.pciAddress = items[0]
         for item in items:
-            if item.startWith("if="):
+            if item.startswith("if="):
                 nic.name = item.split("=")[1]
-            if item.startWith("drv="):
+            if item.startswith("drv="):
                 nic.driver = item.split("=")[1]
 
         logger.debug("dpdk nic[%s] name: %s, driver: %s" % (nic.pciAddress, nic.name, nic.driver))

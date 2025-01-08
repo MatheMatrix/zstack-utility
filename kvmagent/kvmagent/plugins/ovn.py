@@ -105,7 +105,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         dpdkNics = ovn.getAllDpdkNic()
         for nic in dpdkNics:
             if nic.driver == "mlx5_core":
-                packages = ["ofed", "dpdk", "ovs", "ovn"]
+                # packages = ["ofed", "dpdk", "ovs", "ovn"]
+                packages = ["dpdk", "ovs", "ovn"]
                 break
 
         temp_dir = tempfile.mkdtemp()
@@ -132,6 +133,7 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    @bash.in_bash
     def uninstall_ovn_package(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = OvnUninstallPackageResponse()
@@ -140,6 +142,7 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    @bash.in_bash
     def start_ovn_service(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = OvnStartServiceResponse()
@@ -156,17 +159,19 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             rsp.error = "load kernel mode {driver} failed {err}".format(driver=dpdkDriver, err=e)
             return jsonobject.dumps(rsp)
 
-        """ TODO, this code should be run in huge memory api
-        r, _, e = bash.bash_roe("sysctl -w vm.nr_hugepages={nr_hugepages}".format(nr_hugepages=cmd.nr_hugepages))
+        """ TODO, this code should be run in huge memory api """
+        r, _, e = bash.bash_roe("sysctl -w vm.nr_hugepages={nr_hugepages}".format(nr_hugepages=cmd.hugePageNumber))
         if r != 0:
             rsp.success = False
             rsp.error = "sysctl -w vm.nr_hugepages={nr_hugepages}, failed: {err}" \
-                .format(nr_hugepages=cmd.nr_hugepages, err=e)
-            return jsonobject.dumps(rsp)"""
+                .format(nr_hugepages=cmd.hugePageNumber, err=e)
+            return jsonobject.dumps(rsp)
 
         # 1. bond nics to dpdk driver
         dpdkNics = ovn.getAllDpdkNic()
         targetDpdkNic = []
+
+        logger.debug("starting change nic driver")
 
         for nicName in cmd.nicNames:
             found = False
@@ -189,14 +194,20 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                 # mellanox nic(like cx-5) does not need vfio driver
                 continue
 
+            if driver == dpdkDriver:
+                logger.debug("nic {} already bond to dpdk driver{}".format(nicName, dpdkDriver))
+                continue
+
             # for nested vm, the driver is should be uio_pci_generic
-            r, _, e = bash.bash_roe("dpdk-devbind.py -b {driver} {pciAddress}"
+            r, _, e = bash.bash_roe(ovn.DevBindBin + " -b {driver} {pciAddress}"
                                     .format(driver=dpdkDriver, pciAddress=pciAddress))
             if r != 0:
                 rsp.success = False
-                rsp.error = "dpdk-devbind.py -b {driver} {pciAddress} failed: {err}"\
+                rsp.error = ovn.DevBindBin + " -b {driver} {pciAddress} failed: {err}"\
                     .format(driver=dpdkDriver, pciAddress=pciAddress, err=e)
                 return jsonobject.dumps(rsp)
+
+            logger.debug("change change nic [pci address: {}] driver to {}".format(pciAddress, dpdkDriver))
 
         r, _, e = bash.bash_roe("systemctl restart ovsdb-server;systemctl start openvswitch;systemctl start "
                                 "ovn-controller")
@@ -205,6 +216,7 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             rsp.error = "start ovn service, fail {err}".format(err=e)
             return jsonobject.dumps(rsp)
 
+        logger.debug("success start ovn services")
         """
         # ovs-vsctl set bridge br-int datapath_type=netdev
         # ovs-vsctl --no-wait set Open_vSwitch . other_config:dpdk-init=true
@@ -221,6 +233,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             rsp.error = "init ovs config, failed: {err}".format(err=e)
             return jsonobject.dumps(rsp)
 
+        logger.debug("set ovs-ctl parameters")
+
         # create external bridge: default name: br-phy
         # TODO: add ovs bond
         r, _, e = bash.bash_roe("ovs-vsctl --may-exist add-br {br_ex};"
@@ -235,10 +249,12 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             rsp.error = "init ovs config, failed: %s" % e
             return jsonobject.dumps(rsp)
 
+        logger.debug("create br-phy")
+
         r, _, e = bash.bash_roe("ovs-vsctl set Open_vSwitch . external-ids:ovn-remote={ovn_remote} "
                                 "external-ids:ovn-encap-ip={ovn_encap_ip} "
                                 "external-ids:ovn-encap-type={ovn_encap_type} "
-                                "external-ids:ovn-bridge-mappings=flat:{br_ex}\" "
+                                "external-ids:ovn-bridge-mappings=flat:{br_ex} "
                                 .format(ovn_remote=cmd.ovnRemoteConnection,
                                         ovn_encap_ip=cmd.ovnEncapIP,
                                         ovn_encap_type=cmd.ovnEncapType,
@@ -249,6 +265,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             rsp.error = "init ovs config, failed: %s" % e
             return jsonobject.dumps(rsp)
 
+        logger.debug("set ovs external-ids")
+
         r, _, e = bash.bash_roe("systemctl restart ovsdb-server;systemctl start openvswitch;systemctl start "
                                 "ovn-controller")
         if r != 0:
@@ -256,9 +274,12 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             rsp.error = "start ovn service, fail {err}".format(err=e)
             return jsonobject.dumps(rsp)
 
+        logger.debug("restart ovs services")
+
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    @bash.in_bash
     def stop_ovn_service(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = OvnStopServiceResponse()
