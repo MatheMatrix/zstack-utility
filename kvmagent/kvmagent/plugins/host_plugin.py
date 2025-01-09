@@ -496,6 +496,12 @@ class HostNetworkInterfaceInventory(object):
             self.interfaceType = "bridgeSlave"
 
         self.pciDeviceAddress = os.readlink("/sys/class/net/%s/device" % self.interfaceName).strip().split('/')[-1]
+        if "virtio" in self.pciDeviceAddress:
+            # readlink  /sys/class/net/ens3/device
+            # ../../../ virtio1
+            # readlink -f /sys/class/net/ens3/device
+            # /sys/devices/pci0000:00/0000:00:03.0/virtio1
+            self.pciDeviceAddress = bash_o("readlink -f /sys/class/net/%s/device | awk -F '/' '{print $5}'" % self.interfaceName)
 
         self.driverType = get_nic_driver_type(self.interfaceName)
         self.offloadStatus = ovs.getOffloadStatus(self.interfaceName)
