@@ -215,26 +215,22 @@ class ZbsAgent(plugin.TaskManager):
 
     @replyerror
     def ping(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
 
-        if not cmd.mdsExternalAddr:
-            return jsonobject.dumps(rsp)
-
         o = zbsutils.query_mds_status_info()
-        ret = jsonobject.loads(o)
-        if ret.error.code != 0:
-            raise Exception('failed to query mds status info, error[%s]' % ret.error.message)
+        r = jsonobject.loads(o)
+        if not r.result:
+            raise Exception('failed to query mds info, error[%s]' % r.error.message)
 
         found = False
-        for mds in ret.result:
-            if cmd.mdsExternalAddr in mds.externalAddr:
+        for m in r.result:
+            if m.status == "leader":
                 found = True
                 break
 
         if not found:
             rsp.success = False
-            rsp.error = 'mds external address[%s] was not found on the server.' % cmd.mdsExternalAddr
+            rsp.error = 'cannot found mds leader.'
             return jsonobject.dumps(rsp)
 
         return jsonobject.dumps(rsp)
