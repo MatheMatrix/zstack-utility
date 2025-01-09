@@ -179,7 +179,6 @@ class ZbsAgent(plugin.TaskManager):
     ECHO_PATH = "/zbs/primarystorage/echo"
     PING_PATH = "/zbs/primarystorage/ping"
     DEPLOY_CLIENT_PATH = "/zbs/primarystorage/client/deploy"
-    GET_FACTS_PATH = "/zbs/primarystorage/facts"
     GET_CAPACITY_PATH = "/zbs/primarystorage/capacity"
     COPY_PATH = "/zbs/primarystorage/copy"
     CREATE_VOLUME_PATH = "/zbs/primarystorage/volume/create"
@@ -201,7 +200,6 @@ class ZbsAgent(plugin.TaskManager):
         self.http_server.register_sync_uri(self.ECHO_PATH, self.echo)
         self.http_server.register_async_uri(self.PING_PATH, self.ping)
         self.http_server.register_async_uri(self.DEPLOY_CLIENT_PATH, self.deploy_client)
-        self.http_server.register_async_uri(self.GET_FACTS_PATH, self.get_facts)
         self.http_server.register_async_uri(self.GET_CAPACITY_PATH, self.get_capacity)
         self.http_server.register_async_uri(self.COPY_PATH, self.copy)
         self.http_server.register_async_uri(self.CREATE_VOLUME_PATH, self.create_volume)
@@ -217,26 +215,22 @@ class ZbsAgent(plugin.TaskManager):
 
     @replyerror
     def ping(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
 
-        if not cmd.mdsExternalAddr:
-            return jsonobject.dumps(rsp)
-
         o = zbsutils.query_mds_status_info()
-        ret = jsonobject.loads(o)
-        if ret.error.code != 0:
-            raise Exception('failed to query mds status info, error[%s]' % ret.error.message)
+        r = jsonobject.loads(o)
+        if not r.result:
+            raise Exception('failed to query mds info, error[%s]' % r.error.message)
 
         found = False
-        for mds in ret.result:
-            if cmd.mdsExternalAddr in mds.externalAddr:
+        for m in r.result:
+            if m.status == "leader":
                 found = True
                 break
 
         if not found:
             rsp.success = False
-            rsp.error = 'mds external address[%s] was not found on the server.' % cmd.mdsExternalAddr
+            rsp.error = 'cannot found mds leader.'
             return jsonobject.dumps(rsp)
 
         return jsonobject.dumps(rsp)
@@ -516,31 +510,6 @@ class ZbsAgent(plugin.TaskManager):
         if r.error.code != 0:
             rsp.success = False
             rsp.error = 'failed to deploy client, error[%s].' % r.error.message
-
-        return jsonobject.dumps(rsp)
-
-    @replyerror
-    def get_facts(self, req):
-        def get_mds_external_addr(mds_map):
-            for r in mds_map.result:
-                ADDR = r.externalAddr.split(':')[0]
-                cmd = 'ip route | grep -w "proto kernel" | grep -w {{ADDR}} > /dev/null'
-                if bash_r(cmd) == 0:
-                    return r.externalAddr
-
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = GetFactsRsp()
-
-        o = zbsutils.query_mds_status_info()
-        ret = jsonobject.loads(o)
-        if ret.error.code != 0:
-            raise Exception('cannot found mds info, error[%s]' % ret.error.message)
-
-        rsp.mdsExternalAddr = get_mds_external_addr(ret)
-        if not rsp.mdsExternalAddr:
-            rsp.success = False
-            rsp.error = 'mds management address[%s] was not found on the server.' % cmd.mdsAddr
-            return jsonobject.dumps(rsp)
 
         return jsonobject.dumps(rsp)
 
