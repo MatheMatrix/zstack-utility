@@ -105,7 +105,7 @@ MYSQL_PORT='3306'
 MYSQL_NEW_ROOT_PASSWORD='zstack.mysql.password'
 MYSQL_USER_PASSWORD='zstack.password'
 MYSQL_UI_USER_PASSWORD='zstack.ui.password'
-CHOSE_DATABASE='MariaDB'
+CHOOSE_DATABASE='MariaDB'
 
 YUM_ONLINE_REPO='y'
 INSTALL_MONITOR=''
@@ -2757,15 +2757,15 @@ cs_install_mysql(){
     rsa_key_file=$1/id_rsa
     if [ -z $ZSTACK_YUM_REPOS ];then
         if [ -z $MYSQL_ROOT_PASSWORD ]; then
-            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --root-password="$MYSQL_NEW_ROOT_PASSWORD" --chose-database="$CHOSE_DATABASE" --debug >>$ZSTACK_INSTALL_LOG 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --root-password="$MYSQL_NEW_ROOT_PASSWORD" --choose-database="$CHOOSE_DATABASE" --debug >>$ZSTACK_INSTALL_LOG 2>&1
         else
-            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --chose-database="$CHOSE_DATABASE" --debug >>$ZSTACK_INSTALL_LOG 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --choose-database="$CHOOSE_DATABASE" --debug >>$ZSTACK_INSTALL_LOG 2>&1
         fi
     else
         if [ -z $MYSQL_ROOT_PASSWORD ]; then
-            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS,zstack-local-greatdb --root-password="$MYSQL_NEW_ROOT_PASSWORD" >>$ZSTACK_INSTALL_LOG --chose-database="$CHOSE_DATABASE" --debug 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS,zstack-local-greatdb --root-password="$MYSQL_NEW_ROOT_PASSWORD" >>$ZSTACK_INSTALL_LOG --choose-database="$CHOOSE_DATABASE" --debug 2>&1
         else
-            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS,zstack-local-greatdb --debug --chose-database="$CHOSE_DATABASE" >>$ZSTACK_INSTALL_LOG 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS,zstack-local-greatdb --debug --choose-database="$CHOOSE_DATABASE" >>$ZSTACK_INSTALL_LOG 2>&1
         fi
     fi
     if [ $? -ne 0 ];then
@@ -3865,7 +3865,7 @@ Options:
 
   --skip-pjnum    Ignore customized version checking.
 
-  --chose-database CHOSE_DATABASE
+  --choose-database CHOOSE_DATABASE
         Choose database to install. Default is MariaDB.
 ------------
 Example:
@@ -3919,9 +3919,9 @@ Following command installs ${PRODUCT_NAME} management node and monitor. It will 
 
 Chose database
 
-# ${PROGNAME} --chose-database MariaDB
+# ${PROGNAME} --choose-database MariaDB
 
-# ${PROGNAME} --chose-database GreatDB
+# ${PROGNAME} --choose-database GreatDB
 
 ------------
 "
@@ -4010,13 +4010,13 @@ do
         --sds) SDS_INSTALL='y';shift;;
         --no-zops) SKIP_ZOPS_INSTALL='y';shift;;
         --skip-pjnum) SKIP_PJNUM_CHECK='y';shift;;
-        --chose-database )
+        --choose-database )
             check_myarg $1 $2;
             if [[ "$2" != "MariaDB" && "$2" != "GreatDB" ]]; then
-                echo "Error: Invalid value for --chose-database. Valid options are 'MariaDB' or 'GreatDB'."
+                echo "Error: Invalid value for --choose-database. Valid options are 'MariaDB' or 'GreatDB'."
                 exit 1
             fi
-            CHOSE_DATABASE=$2;
+            CHOOSE_DATABASE=$2;
             shift 2;;
         --) shift;;
         * ) usage;;
