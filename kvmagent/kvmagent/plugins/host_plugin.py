@@ -1081,6 +1081,9 @@ class HostPlugin(kvmagent.KvmAgent):
 
     @kvmagent.replyerror
     def ping(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        kvmagent.kvmagent_physical_memory_usage_alarm_threshold = cmd.kvmagentPhysicalMemoryUsageAlarmThreshold
+        kvmagent.kvmagent_physical_memory_usage_hardlimit = cmd.kvmagentPhysicalMemoryUsageHardLimit
         rsp = PingResponse()
         rsp.hostUuid = self.host_uuid
         rsp.sendCommandUrl = self.config.get(kvmagent.SEND_COMMAND_URL)

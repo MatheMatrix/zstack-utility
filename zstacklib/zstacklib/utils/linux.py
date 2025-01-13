@@ -1493,6 +1493,14 @@ def delete_bridge(bridge_name):
     shell.run("ip link set %s down" % bridge_name)
     shell.run("brctl delbr %s" % bridge_name)
 
+def check_interface_configuration_exist(ifnames):
+    existing_interfaces = []
+    for ifname in ifnames:
+        config_path = os.path.join("/etc/sysconfig/network-scripts", "ifcfg-%s" % ifname)
+        if os.path.exists(config_path):
+            existing_interfaces.append(ifname)
+    return existing_interfaces
+
 def check_bridge_with_interface(vlan_interface, expected_bridge_name):
     bridge_name = find_bridge_having_physical_interface(vlan_interface)
     if bridge_name and bridge_name != expected_bridge_name:
@@ -1501,9 +1509,24 @@ def check_bridge_with_interface(vlan_interface, expected_bridge_name):
 
 def update_bridge_interface_configuration(old_interface, new_interface, bridge_name, l2_network_uuid):
     check_bridge_with_interface(old_interface, bridge_name)
+    # Check if configuration files exist for the old or new interface to prevent conflicts due to automatic reload
+    interfaces_conf_exist = check_interface_configuration_exist([new_interface, old_interface])
+    if interfaces_conf_exist:
+        raise Exception(
+            "Detected static config files for interfaces: [%s]. "
+            "Please manually verify the '/etc/sysconfig/network-scripts/ifcfg-*' directory to ensure no outdated configurations exist, "
+            "as they may cause conflicts after the update."
+            % ", ".join(interfaces_conf_exist)
+        )
+    if get_device_ip(bridge_name) is not None:
+        raise Exception(
+            "The bridge [%s] is currently assigned an IP address. "
+            "Modifying the bridge binding while it has an active IP may cause network disruptions. "
+            "Please manually remove the IP configuration before proceeding."
+            % bridge_name
+        )
     ip_link_set_net_device_nomaster(old_interface)
     ip_link_set_net_device_master(new_interface, bridge_name)
-    set_bridge_alias_using_phy_nic_name(bridge_name, new_interface)
     set_device_uuid_alias(new_interface, l2_network_uuid)
 
 
@@ -1542,8 +1565,51 @@ def get_interface_ip_addresses(interface):
     output = shell.call("ip -4 -o a show %s | awk '{print $4}'" % interface.strip())
     return output.splitlines() if output else []
 
+def is_uplink_interface(iface):
+    sys_net_path = "/sys/class/net/%s" % iface
+    if not os.path.exists(sys_net_path):
+        return False
+    try:
+        if os.path.islink(sys_net_path):
+            link_target = os.readlink(sys_net_path)
+            if link_target and 'virtual' not in link_target:
+                return True
+    except OSError:
+        return False
+    uevent_file = os.path.join(sys_net_path, 'uevent')
+    if os.path.isfile(uevent_file):
+        with open(uevent_file, 'r') as f:
+            for line in f:
+                if line.strip().startswith('DEVTYPE=') and 'vlan' in line:
+                    return True
+    return False
+
+def get_bridge_lower_interfaces(bridge):
+    result = []
+    sys_bridge_dir = "/sys/class/net/%s" % bridge
+    if not os.path.isdir(sys_bridge_dir):
+        return result
+
+    try:
+        for entry in os.listdir(sys_bridge_dir):
+            if entry.startswith("lower_"):
+                iface = entry.replace("lower_", "", 1)
+                result.append(iface)
+    except OSError:
+        pass
+    return result
+
 @retry(times=2, sleep_time=1)
 def ip_link_set_net_device_master(net_device, master):
+    lower_ifaces = get_bridge_lower_interfaces(master)
+    for iface in lower_ifaces:
+        if iface != net_device and is_uplink_interface(iface):
+            raise Exception(
+                "Bridge [%s] already has another uplink interface [%s] "
+                "besides [%s], cannot add set it now!" %
+                (master, iface, net_device)
+            )
+
     shell.call("ip link set %s master %s" % (net_device, master))
 
     # double check, because sometimes the master is not set successfully, see jira: ZSTAC-54905, ZSV-3260

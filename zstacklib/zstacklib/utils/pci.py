@@ -95,10 +95,11 @@ def calculate_max_addressable_memory(pci_devices):
         mem_size_32bit, mem_size_64bit = get_total_addressable_memory(get_pci_resources(dev.pciDeviceAddress))
         logger.info("get pci device: %s, name: %s, max addressable memory: %s" %
                     (dev.pciDeviceAddress, dev.name, mem_size_64bit))
-        if max32bit < mem_size_32bit:
-            max32bit = mem_size_32bit
-        if max64bit < mem_size_64bit:
-            max64bit = mem_size_64bit
+        max32bit += mem_size_32bit
+        max64bit += mem_size_64bit
+
+    max32bit = calc_next_power_of_2(max32bit)
+    max64bit = calc_next_power_of_2(max64bit)
 
     max_addressable_memory_32bit = max32bit * 2
     max_addressable_memory_64bit = max64bit
@@ -132,9 +133,6 @@ def get_total_addressable_memory(resources):
             mem_size_32bit += mem_size
         if flags == PCI_BASE_ADDRESS_MEM_TYPE_64:
             mem_size_64bit += mem_size
-
-    mem_size_32bit = calc_next_power_of_2(mem_size_32bit)
-    mem_size_64bit = calc_next_power_of_2(mem_size_64bit)
 
     return mem_size_32bit, mem_size_64bit
 
