@@ -1,5 +1,5 @@
 from zstacklib.utils import debug
-debug.dump_debug_info(None, None)
+debug.track_objects()
 
 '''sample:
 [root@172-26-52-160 ~]# PYTHONPATH=/var/lib/zstack/virtualenv/kvm/lib/python2.7/site-packages python /var/lib/zstack/virtualenv/kvm/lib/python2.7/site-packages/zstacklib/test/utils/dump_debug_test.py
