@@ -173,21 +173,19 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
 
         logger.debug("starting change nic driver")
 
-        for nicName in cmd.nicNames:
+        for nicName, pciAddress in cmd.nicNamePciAddressMap.__dict__.items():
             found = False
-            pciAddress = ""
             driver = ""
             for dpdkNic in dpdkNics:
-                if dpdkNic.name == nicName:
+                if dpdkNic.pciAddress == pciAddress:
                     found = True
                     driver = dpdkNic.driver
-                    pciAddress = dpdkNic.pciAddress
                     targetDpdkNic.append(dpdkNic)
                     break
 
             if not found:
                 rsp.success = False
-                rsp.error = "nic %s is not found by dpdk-devbind.py"
+                rsp.error = "nic [pci address: %s] is not found by dpdk-devbind.py".format(pciAddress)
                 return jsonobject.dumps(rsp)
 
             if driver == "mlx5_core":
@@ -242,7 +240,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                                 "ovs-vsctl set bridge br-phy fail-mode=standalone;"
                                 "ovs-vsctl add-port br-phy {nic};"
                                 "ovs-vsctl set Interface {nic} type=dpdk options:dpdk-devargs={pciAddress};"
-                                .format(br_ex=cmd.brExName, nic=targetDpdkNic[0].name, pciAddress=targetDpdkNic[0].pciAddress))
+                                .format(br_ex=cmd.brExName, nic=targetDpdkNic[0].name,
+                                        pciAddress=targetDpdkNic[0].pciAddress))
         if r != 0:
             # TODO: rollback nic driver
             rsp.success = False
@@ -291,7 +290,41 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             rsp.success = False
             rsp.error = "stop ovn service, fail {err}".format(err=e)
 
-        # TODO change nic driver
+        dpdkNics = ovn.getAllDpdkNic()
+        targetDpdkNic = []
+
+        logger.debug("starting change nic driver")
+
+        for nicName, pciAddress in cmd.nicNamePciAddressMap.__dict__.items():
+            found = False
+            driver = ""
+            for dpdkNic in dpdkNics:
+                if dpdkNic.pciAddress == pciAddress:
+                    found = True
+                    driver = dpdkNic.driver
+                    targetDpdkNic.append(dpdkNic)
+                    break
+
+            if not found:
+                continue
+
+            targetDriver = cmd.nicNameDriverMap.__dict__[nicName]
+            if driver == "mlx5_core" or driver == targetDriver:
+                # mellanox nic(like cx-5) does not need vfio driver
+                continue
+
+            # for nested vm, the driver is should be uio_pci_generic
+            r, _, e = bash.bash_roe(ovn.DevBindBin + " -b {driver} {pciAddress}"
+                                    .format(driver=targetDriver, pciAddress=pciAddress))
+            if r != 0:
+                logger.debug(
+                    "change change nic [pci address: {}] driver to {} failed: {}}"
+                    .format(pciAddress, targetDriver, e))
+            else:
+                logger.debug(
+                    "successfully change change nic [pci address: {}] driver to {}".format(pciAddress, targetDriver))
+
+            logger.debug("successfully change change nic [pci address: {}] driver to {}".format(pciAddress, targetDriver))
 
         return jsonobject.dumps(rsp)
 

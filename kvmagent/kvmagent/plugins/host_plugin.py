@@ -438,6 +438,7 @@ class HostNetworkInterfaceInventory(object):
         self.subvendorId = None
         self.subdeviceId = None
         self.rev = None
+        self.driverType = None
 
         bonds = ovs.getAllBondFromFile()
 
@@ -450,7 +451,7 @@ class HostNetworkInterfaceInventory(object):
             self._init_from_ovs()
         else:
             self._init_from_name(managementServerIp)
-        self.driverType = None
+
 
     def __new__(cls, name, master=None, managementServerIp=None, *args, **kwargs):
         o = super(HostNetworkInterfaceInventory, cls).__new__(cls)
