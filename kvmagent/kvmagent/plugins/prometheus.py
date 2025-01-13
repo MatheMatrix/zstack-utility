@@ -1989,10 +1989,11 @@ def report_self_abnormal_memory_usage_if_need(usage):
     kvmagent_physical_memory_usage_alarm_time = linux.get_current_timestamp()
 
 
+@lock.lock('dump_debug')
 def dump_debug_info_if_need():
     global dump_stack_and_objects
     if dump_stack_and_objects:
-        debug.dump_debug_info(None, None)
+        debug.track_memory_growth()
     dump_stack_and_objects = False
 
 
@@ -2004,12 +2005,16 @@ def collect_kvmagent_memory_statistics():
     used_physical_memory = float(psutil.Process().memory_info().rss)
     metrics['kvmagent_used_physical_memory'].add_metric([str(os.getpid())], used_physical_memory)
 
-    if kvmagent.kvmagent_physical_memory_usage_hardlimit:
-        if used_physical_memory > kvmagent.kvmagent_physical_memory_usage_hardlimit or \
-                used_physical_memory > kvmagent.kvmagent_physical_memory_usage_alarm_threshold:
-            logger.warn("kvmagent used physical memory abnormal, used: %s" % used_physical_memory)
-            report_self_abnormal_memory_usage_if_need(used_physical_memory)
-            dump_debug_info_if_need()
+    if not kvmagent.kvmagent_physical_memory_usage_hardlimit or not kvmagent.kvmagent_physical_memory_usage_alarm_threshold:
+        return metrics.values()
+
+    if used_physical_memory <= min(kvmagent.kvmagent_physical_memory_usage_hardlimit, kvmagent.kvmagent_physical_memory_usage_alarm_threshold):
+        return metrics.values()
+
+    logger.warn("kvmagent used physical memory abnormal, used: %s" % used_physical_memory)
+    report_self_abnormal_memory_usage_if_need(used_physical_memory)
+    if used_physical_memory <= 4 * 1024**3:  # 4GB
+        dump_debug_info_if_need()
 
     return metrics.values()
 
@@ -2543,3 +2548,6 @@ modules:
     def configure(self, config):
         global ALARM_CONFIG
         ALARM_CONFIG = config
+        debug.CONFIG = config
+        debug.SEND_COMMAND_URL = kvmagent.SEND_COMMAND_URL
+        debug.HOST_UUID = kvmagent.HOST_UUID
