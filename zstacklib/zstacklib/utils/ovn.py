@@ -17,7 +17,7 @@ from zstacklib.utils import bash
 
 logger = log.get_logger(__name__)
 
-CtlBin = "/usr/local/bin/ovs-vsctl "
+CtlBin = "/usr/bin/ovs-vsctl "
 DevBindBin = "/usr/bin/dpdk-devbind.py "
 
 
@@ -59,6 +59,7 @@ def getAllDpdkNic():
         ret.append(nic)
 
     return ret
+
 
 class VsCtl(object):
     def __init__(self):
