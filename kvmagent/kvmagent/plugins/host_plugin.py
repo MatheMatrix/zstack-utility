@@ -3635,7 +3635,7 @@ done
         def is_pcie_nvme(dev_name):
             transport = linux.read_file("/sys/class/block/%s/device/transport" % dev_name.replace("/dev/", ""))
             if transport:
-                return transport == "pcie"
+                return transport.strip() == "pcie"
             return False
 
         def process_device(dev):
