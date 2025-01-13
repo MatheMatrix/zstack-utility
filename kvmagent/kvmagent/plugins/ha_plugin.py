@@ -749,12 +749,9 @@ class HaPlugin(kvmagent.KvmAgent):
                 raise Exception('the mount path[%s] is not a directory' % mount_path)
             mount_point = FileSystemMountPoint(url, mount_path, mounted_by_zstack, options)
             fencer = FileSystemFencer(uuid,
-                                       cmd.maxAttempts,
-                                       cmd.interval,
-                                       cmd.storageCheckerTimeout,
-                                       cmd.strategy,
                                        cmd.hostUuid,
-                                       mount_point)
+                                       mount_point,
+                                       cmd)
             fencer_manager.register_fencer(fencer)
             fencer_manager.start_fencer(fencer)
 
