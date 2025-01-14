@@ -3345,7 +3345,7 @@ class InstallDbCmd(Command):
         parser.add_argument('--yum', help="Use ZStack predefined yum repositories. The valid options include: alibase,aliepel,163base,ustcepel,zstack-local. NOTE: only use it when you know exactly what it does.", default=None)
         parser.add_argument('--no-backup', help='do NOT backup the database. If the database is very large and you have manually backup it, using this option will fast the upgrade process. [DEFAULT] false', default=False)
         parser.add_argument('--ssh-key', help="the path of private key for SSH login $host; if provided, Ansible will use the specified key as private key to SSH login the $host", default=None)
-        parser.add_argument('--chose-database', help="Choose database to install. Default is MariaDB.", default=None)
+        parser.add_argument('--choose-database', help="Choose database to install. Default is MariaDB.", default=None)
 
     def run(self, args):
         current_host_ips = get_all_ips()
@@ -3489,7 +3489,7 @@ class InstallDbCmd(Command):
       when: change_root_result.rc != 0 and install_result.changed == False
 '''
 
-        logger.info('GreatDB is chose %s' % args.chose_database)
+        logger.info('GreatDB is chose %s' % args.choose_database)
         if args.chose_database == 'GreatDB':
             logger.info('replace database ansible script')
             yaml = '''---
