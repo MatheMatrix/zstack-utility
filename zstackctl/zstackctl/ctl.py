@@ -5616,20 +5616,45 @@ class MysqlRestrictConnection(Command):
 
         return mn_ip
 
-    def grant_restrict_privilege(self, db_password, ui_db_password, root_password_, host, include_root):
-        grant_access_cmd = " GRANT USAGE ON *.* TO 'zstack'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, db_password)
-        grant_access_cmd = grant_access_cmd + (" GRANT USAGE ON *.* TO 'zstack_ui'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, ui_db_password))
+    def check_greatsql_existence(self):
+        try:
+            result = subprocess.call(['which', "greatdb"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return result == 0
+        except Exception as e:
+            return False
 
-        if include_root:
-            grant_access_cmd = grant_access_cmd + (" GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, root_password_))
+    def grant_restrict_privilege(self, db_password, ui_db_password, root_password_, host, include_root):
+        if self.check_greatsql_existence():
+            grant_access_cmd = "CREATE USER IF NOT EXISTS 'zstack'@'%s' IDENTIFIED BY '%s';" % (host, db_password)
+            grant_access_cmd += "CREATE USER IF NOT EXISTS 'zstack_ui'@'%s' IDENTIFIED BY '%s';" % (host, ui_db_password)
+            grant_access_cmd += "GRANT USAGE ON *.* TO 'zstack'@'%s' WITH GRANT OPTION;" % (host)
+            grant_access_cmd += "GRANT USAGE ON *.* TO 'zstack_ui'@'%s' WITH GRANT OPTION;" % (host)
+
+            if include_root:
+                grant_access_cmd += " GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' WITH GRANT OPTION;" % (host)
+        else:
+            grant_access_cmd = " GRANT USAGE ON *.* TO 'zstack'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, db_password)
+            grant_access_cmd = grant_access_cmd + (" GRANT USAGE ON *.* TO 'zstack_ui'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, ui_db_password))
+
+            if include_root:
+                grant_access_cmd = grant_access_cmd + (" GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, root_password_))
 
         return grant_access_cmd
 
     def grant_restore_privilege(self, db_password, ui_db_password, root_password_):
-        grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
-               " GRANT USAGE ON *.* TO 'zstack'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
-               " GRANT USAGE ON *.* TO 'zstack_ui'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
-               " GRANT USAGE ON *.* TO 'root'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (db_password, ui_db_password, root_password_)
+        if self.check_greatsql_existence():
+            grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
+               " CREATE USER IF NOT EXISTS 'zstack'@'%%' IDENTIFIED BY '%s';" \
+               " CREATE USER IF NOT EXISTS 'zstack_ui'@'%%' IDENTIFIED BY '%s';" \
+               " CREATE USER IF NOT EXISTS 'root'@'%%' IDENTIFIED BY '%s';" \
+               " GRANT USAGE ON *.* TO 'zstack'@'%%' WITH GRANT OPTION;" \
+               " GRANT USAGE ON *.* TO 'zstack_ui'@'%%' WITH GRANT OPTION;" \
+               " GRANT USAGE ON *.* TO 'root'@'%%' WITH GRANT OPTION;" % (db_password, ui_db_password, root_password_)
+        else:
+            grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
+                   " GRANT USAGE ON *.* TO 'zstack'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
+                   " GRANT USAGE ON *.* TO 'zstack_ui'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
+                   " GRANT USAGE ON *.* TO 'root'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (db_password, ui_db_password, root_password_)
         return grant_access_cmd
 
     def delete_privilege(self, host, include_root):
@@ -5642,21 +5667,30 @@ class MysqlRestrictConnection(Command):
     def grant_views_definer_privilege(self, root_password, remote_ip=None):
         if remote_ip is not None:
             status, output = commands.getstatusoutput(
-                "mysql -N -u root -p%s -h '%s' -e 'select definer from information_schema.VIEWS limit 1;'" % (root_password, remote_ip))
+                "mysql -N -u root -p%s -h '%s' -e 'select definer from information_schema.VIEWS where table_name like \"%s\" limit 1;'" % (root_password, remote_ip, "%VO"))
         else:
             status, output = commands.getstatusoutput(
-                "mysql -N -u root -p%s -e 'select definer from information_schema.VIEWS limit 1;'" % root_password)
+                "mysql -N -u root -p%s -e 'select definer from information_schema.VIEWS where table_name like \"%s\" limit 1;'" % (root_password, "%VO"))
 
         if status != 0:
             error("failed to get mysql views definer: %s" % output)
 
-        if output is not None and output.strip() != "":
-            user, host = output.split("@")
-            return  "USE mysql;  GRANT USAGE ON *.* TO '%s'@%s IDENTIFIED BY '%s' WITH GRANT OPTION;" % (user, host, root_password)
+        info("mysql views definer: %s" % output)
+        filtered_output = [line for line in output.splitlines() if not line.startswith("mysql:")]
 
+        if filtered_output:
+            result = filtered_output[-1]
+            user, host = result.split("@")
+            if self.check_greatsql_existence():
+                grant_access_sql = "USE mysql; CREATE USER IF NOT EXISTS '%s'@'%s' IDENTIFIED BY '%s';" % (user, host, root_password)
+                grant_access_sql += " GRANT USAGE ON *.* TO '%s'@%s WITH GRANT OPTION;" % (user, host)
+                return grant_access_sql
+            else:
+                return "USE mysql;  GRANT USAGE ON *.* TO '%s'@%s IDENTIFIED BY '%s' WITH GRANT OPTION;" % (user, host, root_password)
         return ""
 
     def run(self, args):
+        info('Check greatsql existence: {}'.format(self.check_greatsql_existence()))
         if args.restrict and args.restore:
             error("argument: '--restrict' or '--restore' can only choose one")
         if args.restrict == False and args.restore == False:
