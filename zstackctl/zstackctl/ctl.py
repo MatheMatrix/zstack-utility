@@ -3490,7 +3490,7 @@ class InstallDbCmd(Command):
 '''
 
         logger.info('GreatDB is chose %s' % args.choose_database)
-        if args.chose_database == 'GreatDB':
+        if args.choose_database == 'GreatDB':
             logger.info('replace database ansible script')
             yaml = '''---
 - hosts: $host
@@ -3567,13 +3567,13 @@ class InstallDbCmd(Command):
                                '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{}' IDENTIFIED BY '' WITH GRANT OPTION; '''\
                                '''{} FLUSH PRIVILEGES;"'''.format(args.host, more_cmd)
-            if args.chose_database == 'GreatDB':
+            if args.choose_database == 'GreatDB':
                 more_cmd = ' '
                 grant_access_cmd = ' '
                 for ip in current_host_ips:
                     if not ip:
                         continue
-                    if args.chose_database == 'GreatDB':
+                    if args.choose_database == 'GreatDB':
                         more_cmd += "CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '' WITH GRANT OPTION;".format(host=ip)
                         more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}';".format(host=ip)
                 grant_access_cmd = '''/usr/bin/mysql -u root -e ''' \
@@ -3595,7 +3595,7 @@ class InstallDbCmd(Command):
                                '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''{more_cmd} FLUSH PRIVILEGES;"'''.format(root_pass=args.root_password, host=args.host, more_cmd=more_cmd)
-            if args.chose_database == 'GreatDB':
+            if args.choose_database == 'GreatDB':
                 more_cmd = ' '
                 grant_access_cmd = ' '
                 for ip in current_host_ips:
