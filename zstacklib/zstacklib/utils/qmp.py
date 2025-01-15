@@ -55,7 +55,7 @@ def query_block_jobs_by_device(vm):
     return {job['device']: job for job in jobs}
 
 def block_job_cancel(vm, device):
-    execute_qmp_command(vm, "block-job-cancel", device=device)
+    execute_qmp_command(vm, "block-job-cancel", raise_exception=False, device=device)
 
 
 def migrate_set_speed(vm, bandwidth):
