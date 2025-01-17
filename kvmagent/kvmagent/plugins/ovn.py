@@ -152,18 +152,6 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = OvnStartServiceResponse()
 
-        # uio_pci_generic is used for nest virtual
-        dpdkDriver = "vfio-pci"
-        ret = bash.bash_r("lscpu | grep -i \"Hypervisor vendor\"")
-        if ret == 0:
-            dpdkDriver = "uio_pci_generic"
-
-        ret, _, e = bash.bash_roe("modprobe {driver}".format(driver=dpdkDriver))
-        if ret != 0:
-            rsp.success = False
-            rsp.error = "load kernel mode {driver} failed {err}".format(driver=dpdkDriver, err=e)
-            return jsonobject.dumps(rsp)
-
         """ TODO, this code should be run in huge memory api """
         r, _, e = bash.bash_roe("sysctl -w vm.nr_hugepages={nr_hugepages}".format(nr_hugepages=cmd.hugePageNumber))
         if r != 0:
@@ -172,46 +160,14 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                 .format(nr_hugepages=cmd.hugePageNumber, err=e)
             return jsonobject.dumps(rsp)
 
-        # 1. bond nics to dpdk driver
-        dpdkNics = ovn.getAllDpdkNic()
-        targetDpdkNic = []
+        # bond nics to dpdk driver
+        r, e = ovn.changeNicToDpdkDriver(cmd.nicNamePciAddressMap)
+        if r != 0:
+            rsp.success = False
+            rsp.error = "start ovn service, fail {err}".format(err=e)
+            return jsonobject.dumps(rsp)
 
-        logger.debug("starting change nic driver")
-
-        for nicName, pciAddress in cmd.nicNamePciAddressMap.__dict__.items():
-            found = False
-            driver = ""
-            for dpdkNic in dpdkNics:
-                if dpdkNic.pciAddress == pciAddress:
-                    found = True
-                    driver = dpdkNic.driver
-                    targetDpdkNic.append(dpdkNic)
-                    break
-
-            if not found:
-                rsp.success = False
-                rsp.error = "nic [pci address: %s] is not found by dpdk-devbind.py".format(pciAddress)
-                return jsonobject.dumps(rsp)
-
-            if driver == "mlx5_core":
-                # mellanox nic(like cx-5) does not need vfio driver
-                continue
-
-            if driver == dpdkDriver:
-                logger.debug("nic {} already bond to dpdk driver{}".format(nicName, dpdkDriver))
-                continue
-
-            # for nested vm, the driver is should be uio_pci_generic
-            r, _, e = bash.bash_roe(ovn.DevBindBin + " -b {driver} {pciAddress}"
-                                    .format(driver=dpdkDriver, pciAddress=pciAddress))
-            if r != 0:
-                rsp.success = False
-                rsp.error = ovn.DevBindBin + " -b {driver} {pciAddress} failed: {err}"\
-                    .format(driver=dpdkDriver, pciAddress=pciAddress, err=e)
-                return jsonobject.dumps(rsp)
-
-            logger.debug("change change nic [pci address: {}] driver to {}".format(pciAddress, dpdkDriver))
-
+        # start ovs to init config
         r, _, e = bash.bash_roe("systemctl restart ovsdb-server;systemctl start openvswitch;systemctl start "
                                 "ovn-controller")
         if r != 0:
@@ -220,35 +176,22 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             return jsonobject.dumps(rsp)
 
         logger.debug("success start ovn services")
-        """
-        # ovs-vsctl set bridge br-int datapath_type=netdev
-        # ovs-vsctl --no-wait set Open_vSwitch . other_config:dpdk-init=true
-        # ovs-vsctl set Open_vSwitch . external-ids:ovn-remote="tcp:172.25.116.181:6642" external-ids:ovn-encap-ip="172.25.16.161" external-ids:ovn-encap-type=vxlan external-ids:system-id=172-25-116-181
-        # ovs-ctl start
-        # ovs-ctl restart
-        """
         # TODO only dpdk is supported, ovs-kernel is not supported
         r, _, e = bash.bash_roe("ovs-vsctl set bridge br-int datapath_type=netdev;"
                                 "ovs-vsctl --no-wait set Open_vSwitch . other_config:dpdk-init=true")
         if r != 0:
-            # TODO: rollback nic driver
+            ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
             rsp.success = False
             rsp.error = "init ovs config, failed: {err}".format(err=e)
             return jsonobject.dumps(rsp)
 
         logger.debug("set ovs-ctl parameters")
 
-        # create external bridge: default name: br-phy
-        # TODO: add ovs bond
-        r, _, e = bash.bash_roe("ovs-vsctl --may-exist add-br {br_ex};"
-                                "ovs-vsctl set Bridge br-phy datapath_type=netdev;"
-                                "ovs-vsctl set bridge br-phy fail-mode=standalone;"
-                                "ovs-vsctl add-port br-phy {nic};"
-                                "ovs-vsctl set Interface {nic} type=dpdk options:dpdk-devargs={pciAddress};"
-                                .format(br_ex=cmd.brExName, nic=targetDpdkNic[0].name,
-                                        pciAddress=targetDpdkNic[0].pciAddress))
+        # create external bridge: br-phy
+        vsctl = ovn.VsCtl()
+        r, e = vsctl.addUplink(cmd.nicNamePciAddressMap)
         if r != 0:
-            # TODO: rollback nic driver
+            ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
             rsp.success = False
             rsp.error = "init ovs config, failed: %s" % e
             return jsonobject.dumps(rsp)
@@ -264,7 +207,7 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                                         ovn_encap_type=cmd.ovnEncapType,
                                         br_ex=cmd.brExName))
         if r != 0:
-            # TODO: rollback nic driver
+            ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
             rsp.success = False
             rsp.error = "init ovs config, failed: %s" % e
             return jsonobject.dumps(rsp)
@@ -295,41 +238,13 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             rsp.success = False
             rsp.error = "stop ovn service, fail {err}".format(err=e)
 
-        dpdkNics = ovn.getAllDpdkNic()
-        targetDpdkNic = []
-
         logger.debug("starting change nic driver")
-
-        for nicName, pciAddress in cmd.nicNamePciAddressMap.__dict__.items():
-            found = False
-            driver = ""
-            for dpdkNic in dpdkNics:
-                if dpdkNic.pciAddress == pciAddress:
-                    found = True
-                    driver = dpdkNic.driver
-                    targetDpdkNic.append(dpdkNic)
-                    break
-
-            if not found:
-                continue
-
-            targetDriver = cmd.nicNameDriverMap.__dict__[nicName]
-            if driver == "mlx5_core" or driver == targetDriver:
-                # mellanox nic(like cx-5) does not need vfio driver
-                continue
-
-            # for nested vm, the driver is should be uio_pci_generic
-            r, _, e = bash.bash_roe(ovn.DevBindBin + " -b {driver} {pciAddress}"
-                                    .format(driver=targetDriver, pciAddress=pciAddress))
-            if r != 0:
-                logger.debug(
-                    "change change nic [pci address: {}] driver to {} failed: {}}"
-                    .format(pciAddress, targetDriver, e))
-            else:
-                logger.debug(
-                    "successfully change change nic [pci address: {}] driver to {}".format(pciAddress, targetDriver))
-
-            logger.debug("successfully change change nic [pci address: {}] driver to {}".format(pciAddress, targetDriver))
+        r, e = ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
+        if r != 0:
+            rsp.success = False
+            rsp.error = e
+        else:
+            logger.debug("successfully change nic driver")
 
         return jsonobject.dumps(rsp)
 
