@@ -300,8 +300,8 @@ class CollectFromYml(object):
     def get_host_sql(self, suffix_sql):
         db_hostname, db_port, db_user, db_password = self.ctl.get_live_mysql_portal()
         if db_password:
-            cmd = "mysql --host %s --port %s -u%s -p%s zstack -e \'%s\'" % (
-                db_hostname, db_port, db_user, zstackctl.ctl.shell_quote(db_password), suffix_sql)
+            cmd = "MYSQL_PWD=%s mysql --host %s --port %s -u%s zstack -e \'%s\'" % (
+                zstackctl.ctl.shell_quote(db_password), db_hostname, db_port, db_user,  suffix_sql)
         else:
             cmd = "mysql --host %s --port %s -u%s zstack -e \'%s\'" % (db_hostname, db_port, db_user, suffix_sql)
         return cmd
@@ -563,6 +563,7 @@ class CollectFromYml(object):
         return cmd
 
     def generate_host_post_info(self, host_ip, type):
+        print("generate_host_post_info host_ip = %s, type = %s" % (host_ip, type))
         host_post_info = HostPostInfo()
         # update inventory
         with open(self.ctl.zstack_home + "/../../../ansible/hosts") as f:
@@ -580,6 +581,7 @@ class CollectFromYml(object):
             host_post_info.post_url = ""
             host_post_info.private_key = self.ctl.zstack_home + "/WEB-INF/classes/ansible/rsaKeys/id_rsa"
             return host_post_info
+        print("host ip is %s" % host_ip)
         (host_user, host_password, host_port) = self.get_host_ssh_info(host_ip, type)
         if host_user != 'root' and host_password is not None:
             host_post_info.become = True
@@ -590,6 +592,7 @@ class CollectFromYml(object):
         host_post_info.host_inventory = self.ctl.zstack_home + "/../../../ansible/hosts"
         host_post_info.private_key = self.ctl.zstack_home + "/WEB-INF/classes/ansible/rsaKeys/id_rsa"
         host_post_info.post_url = ""
+        print("generate_host_post_info host_post_info = %s" % host_post_info)
         return host_post_info
 
     def get_host_ssh_info(self, host_ip, type):
@@ -743,6 +746,7 @@ class CollectFromYml(object):
         return ha_mn_list
 
     def collect_configure_log(self, host_list, log_list, collect_dir, type):
+        print("collect_configure_log host_list = %s" % host_list)
         if isinstance(host_list, str):
             if host_list is None:
                 return
@@ -761,6 +765,8 @@ class CollectFromYml(object):
                     exec_cmd = self.get_host_sql(host_list['exec']) + ' | awk \'NR>1\''
                     try:
                         (status, output) = commands.getstatusoutput(exec_cmd)
+                        print("exec_cmd = %s" % exec_cmd)
+                        print("output = %s" % output)
                         if status == 0 and output.startswith('ERROR') is not True:
                             host_list = output.split('\n')
                         else:
@@ -769,7 +775,9 @@ class CollectFromYml(object):
                         error_verbose('fail to exec %s' % host_list['exec'])
 
         host_list = list(set(host_list))
+        print("collect_configure_log host_list2 = %s" % host_list)
         for host_ip in host_list:
+            print("collect_configure_log host_ip = %s" % host_ip)
             if host_ip is None or host_ip == '':
                 return
             if host_ip == 'localhost' or host_ip == get_default_ip():
@@ -1180,6 +1188,7 @@ test "$(ls -A "%s" 2>/dev/null)" || echo The directory is empty
             error_verbose("timeout must be a positive integer")
 
     def dump_agent_threads(self, args):
+        print("dump_agent_threads args = %s" % args)
         if not args.dump_thread_info:
             return
 
@@ -1196,9 +1205,11 @@ test "$(ls -A "%s" 2>/dev/null)" || echo The directory is empty
             if len(host_list) == 1 and not host_list[0]:
                 return
 
+            print("dump_anent_threads host_list=%s" % host_list)
             for host_ip in host_list:
                 info_verbose("dump kvm-agent thread for host: %s ..." % host_ip)
                 stack_command = "pkill -USR2 -P 1 -ef 'kvmagent import kdaemon'"
+                print("dump_anent_threads host_ip=%s" % host_ip)
                 if self.check_host_reachable_in_queen(self.generate_host_post_info(host_ip, "host")) is True:
                     (dump_status, dump_output) = run_remote_command(stack_command,
                                                                     self.generate_host_post_info(host_ip, "host"),
@@ -1244,6 +1255,7 @@ test "$(ls -A "%s" 2>/dev/null)" || echo The directory is empty
             if key == 'decode_error':
                 continue
             else:
+                print("value['list']=%s" % value['list'])
                 self.collect_configure_log(value['list'], value['logs'], collect_dir, key)
         self.thread_run(int(args.timeout))
         if self.check:
