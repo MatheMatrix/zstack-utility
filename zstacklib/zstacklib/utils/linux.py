@@ -1566,6 +1566,8 @@ def get_interface_ip_addresses(interface):
     return output.splitlines() if output else []
 
 def is_uplink_interface(iface):
+    if iface.startswith('vxlan'):
+        return True
     sys_net_path = "/sys/class/net/%s" % iface
     if not os.path.exists(sys_net_path):
         return False
@@ -2659,8 +2661,7 @@ def create_vxlan_bridge(interf, bridgeName, ips):
     if not is_bridge(bridgeName):
         create_bridge(bridgeName, interf, False)
     elif is_vif_on_bridge(bridgeName, interf) is None:
-        cmd = shell.ShellCmd("brctl addif %s %s" % (bridgeName, interf))
-        cmd(is_exception=False)
+        ip_link_set_net_device_master(interf, bridgeName)
 
     # Fix ZSTAC-54704. It is expected that the bridge to be reset when the host reconnects. However, the above code
     # does not necessarily execute create_bridge(), and additional testing is required if it must be executed.
