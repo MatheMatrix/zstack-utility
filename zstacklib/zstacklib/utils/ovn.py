@@ -14,12 +14,21 @@ from enum import Enum, unique
 from zstacklib.utils import log
 from zstacklib.utils import shell
 from zstacklib.utils import bash
+from zstacklib.utils import iproute
+from zstacklib.utils import linux
 
 logger = log.get_logger(__name__)
 
 CtlBin = "/usr/bin/ovs-vsctl "
 DevBindBin = "/usr/bin/dpdk-devbind.py "
 
+BONDING_MODE_AB = "active-backup"
+BONDING_MODE_SLB = "balance-slb"
+BONDING_MODE_TCP = "balance-tcp"
+
+LACP_MODE_OFF = "off"
+LACP_MODE_ACTIVE = "active"
+LACP_MODE_PASSIVE = "passive"
 
 class OvsError(Exception):
     '''ovs error'''
@@ -200,7 +209,7 @@ class VsCtl(object):
         return ret
 
     @bash.in_bash
-    def addUplink(self, portPciMap, brName="br-phy", bondName="dpdkbond"):
+    def addUplink(self, portPciMap, bondMode, lacpmode, ip, netmask, brName="br-phy", bondName="dpdkbond"):
         bash.bash_roe(CtlBin + " --may-exist add-br {};"
                                "ovs-vsctl set Bridge br-phy datapath_type=netdev;"
                                "ovs-vsctl set bridge br-phy fail-mode=standalone".format(brName))
@@ -232,5 +241,16 @@ class VsCtl(object):
                     logger.debug("ovs-vsctl set Interface {} type=dpdk options:dpdk-devargs={} faild {}"
                                  .format(nicName, pciAddress, e))
                     return r, e
+
+            if bondMode is not None:
+                bash.bash_roe(CtlBin + " set port dpdkbond bond_mode={mode} ".format(mode=bondMode))
+
+            if lacpmode is not None:
+                bash.bash_roe(CtlBin + " set port dpdkbond lacp={mode} ".format(mode=lacpmode))
+
+        if ip is not None:
+            iproute.flush_address_no_error(brName)
+            iproute.add_address_no_error(ip, linux.netmask_to_cidr(netmask), 4, brName)
+
 
         return 0, ""

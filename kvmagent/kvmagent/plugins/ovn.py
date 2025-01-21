@@ -133,8 +133,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         # change ovs-switchd and ovn-controller user to root
         bash.bash_roe("sed -i 's/^OVS_USER_ID=\"openvswitch:hugetlbfs\"/OVS_USER_ID=\"root:root\"/' "
                       "/etc/sysconfig/openvswitch")
-        bash.bash_roe("sed -i 's/^OVS_USER_ID=\"openvswitch:hugetlbfs\"/OVS_USER_ID=\"root:root\"/' "
-                      "/etc/sysconfig/ovn-controller")
+        bash.bash_roe("sed -i 's/^OVS_USER_ID=\"openvswitch:openvswitch\"/OVS_USER_ID=\"root:root\"/' "
+                      "/etc/sysconfig/ovn")
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -146,6 +146,12 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         # we will not uninstall ovn package
         return jsonobject.dumps(rsp)
 
+    """
+    this api will be called on multiple scenarios:
+    1. add host to sdn controller
+    2. reconnect host which is added to sdn controller
+    3. change host parameters
+    """
     @kvmagent.replyerror
     @bash.in_bash
     def start_ovn_service(self, req):
@@ -177,7 +183,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
 
         logger.debug("success start ovn services")
         # TODO only dpdk is supported, ovs-kernel is not supported
-        r, _, e = bash.bash_roe("ovs-vsctl set bridge br-int datapath_type=netdev;"
+        r, _, e = bash.bash_roe("ovs-vsctl --may-exist add-br br-int;"
+                                "ovs-vsctl set bridge br-int datapath_type=netdev;"
                                 "ovs-vsctl --no-wait set Open_vSwitch . other_config:dpdk-init=true")
         if r != 0:
             ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
@@ -189,7 +196,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
 
         # create external bridge: br-phy
         vsctl = ovn.VsCtl()
-        r, e = vsctl.addUplink(cmd.nicNamePciAddressMap)
+        r, e = vsctl.addUplink(cmd.nicNamePciAddressMap, cmd.bondingMode, cmd.lacpMode,
+                               cmd.ovnEncapIP, cmd.ovnEncapNetmask)
         if r != 0:
             ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
             rsp.success = False
@@ -217,6 +225,7 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         r, _, e = bash.bash_roe("systemctl restart ovsdb-server;systemctl start openvswitch;systemctl start "
                                 "ovn-controller")
         if r != 0:
+            ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
             rsp.success = False
             rsp.error = "start ovn service, fail {err}".format(err=e)
             return jsonobject.dumps(rsp)
@@ -245,6 +254,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             rsp.error = e
         else:
             logger.debug("successfully change nic driver")
+
+        bash.bash_roe("mv /etc/openvswitch/conf.db /etc/openvswitch/conf.db.bak")
 
         return jsonobject.dumps(rsp)
 
