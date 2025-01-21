@@ -19,6 +19,7 @@ from zstacklib.utils import bash
 from zstacklib.utils import linux
 from zstacklib.utils import thread
 from zstacklib.utils import misc
+from zstacklib.utils.linux import check_kernel_module_is_loaded
 
 logger = log.get_logger(__name__)
 
@@ -1373,6 +1374,10 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
 
     @bash.in_bash
     def connect_nvme_controller(self, cmd):
+        if cmd.transport in ["tcp", "rdma"]:
+            if not check_kernel_module_is_loaded("nvme_%s" % cmd.transport):
+                shell.call('modprobe nvme_%s' % cmd.transport)
+
         r, o, e = bash.bash_roe("timeout 60 nvme discover -a %s -s %s -t %s | grep subnqn:" % (cmd.ip, cmd.port, cmd.transport))
         if r != 0:
             raise Exception("unable find any nqn on server[%s:%s, transport:%s], error: %s" % (cmd.ip, cmd.port, cmd.transport, str(e)))
