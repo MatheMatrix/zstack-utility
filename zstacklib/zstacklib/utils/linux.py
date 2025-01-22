@@ -3240,12 +3240,8 @@ def get_fs_type(path):
         raise Exception("Make sure you path name with absolute path")
     return shell.call("""stat -f -c '%T' {}""".format(path)).strip()
 
-
-def check_nbd():
-    cmd = shell.ShellCmd("modinfo nbd")
-    cmd(is_exception=False)
-    if cmd.return_code != 0:
-        raise Exception('nbd kernel module not found. try load nbd by `modprobe nbd`.')
+def check_kernel_module_is_loaded(mod_name):
+    return len(filter_file_lines_by_regex('/proc/modules', mod_name + " ")) != 0
 
 def get_file_xxhash(path, blocksize=1048576):
     hasher = xxhash.xxh64()

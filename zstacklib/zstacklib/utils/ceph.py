@@ -11,7 +11,7 @@ from zstacklib.utils import bash
 from zstacklib.utils import linux
 from zstacklib.utils import remoteStorage
 from zstacklib.utils.bash import bash_r
-from zstacklib.utils.linux import get_fs_type, check_nbd
+from zstacklib.utils.linux import get_fs_type, check_kernel_module_is_loaded
 from zstacklib.utils.zstone import ZStoneCephPoolCapacityGetter
 
 logger = log.get_logger(__name__)
@@ -343,7 +343,8 @@ class NbdRemoteStorage(remoteStorage.RemoteStorage):
 
     def do_mount(self, fstype=None):
         try:
-            check_nbd()
+            if not check_kernel_module_is_loaded('nbd'):
+                shell.call('modprobe nbd')
             self.get_cmd()
             shell.call(self.cmd)
             if fstype is not None:
