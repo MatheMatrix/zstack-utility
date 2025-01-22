@@ -133,7 +133,7 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         # change ovs-switchd and ovn-controller user to root
         bash.bash_roe("sed -i 's/^OVS_USER_ID=\"openvswitch:hugetlbfs\"/OVS_USER_ID=\"root:root\"/' "
                       "/etc/sysconfig/openvswitch")
-        bash.bash_roe("sed -i 's/^OVS_USER_ID=\"openvswitch:openvswitch\"/OVS_USER_ID=\"root:root\"/' "
+        bash.bash_roe("sed -i 's/^OVN_USER_ID=\"openvswitch:openvswitch\"/OVN_USER_ID=\"root:root\"/' "
                       "/etc/sysconfig/ovn")
         return jsonobject.dumps(rsp)
 
