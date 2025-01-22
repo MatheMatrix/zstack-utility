@@ -1322,6 +1322,12 @@ def get_block_discard_max_bytes(path):
 def support_blkdiscard(path):
     return get_block_discard_max_bytes(path) > 0
 
+
+def get_device_map(path, option=None):
+    out = shell.call("%s --output=json %s %s" % (qemu_img.subcmd('map'), option, path))
+    return out.strip()
+
+
 class AbstractFileConverter(object):
     __metaclass__ = abc.ABCMeta
 
@@ -2344,6 +2350,7 @@ def get_free_port():
     s.close()
     return port
 
+@lock.lock('port_lock')
 def get_free_port_in_range(start_port, end_port):
     for port in range(start_port, end_port):
         try:
@@ -2357,6 +2364,10 @@ def get_free_port_in_range(start_port, end_port):
             else:
                 raise
     raise Exception("no free port found in range[%d, %d]" % (start_port, end_port))
+
+def parse_port_range(range):
+    start_port, end_port = map(int, range.split('-'))
+    return start_port, end_port
 
 def is_port_available(port):
     with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:

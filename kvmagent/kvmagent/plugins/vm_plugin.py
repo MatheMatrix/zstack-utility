@@ -9123,9 +9123,10 @@ host side snapshot files chian:
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = ExportNbdVolumesResponse()
         infos = []
+        start_port, end_port = linux.parse_port_range(cmd.portRange)
         try:
             for volumeInfo in cmd.volumeInfos:
-                nbd_port = linux.get_free_port_in_range(10501, 10999)
+                nbd_port = linux.get_free_port_in_range(start_port, end_port)
                 command = 'qemu-nbd -p %s -b 0.0.0.0 %s -x %s' % (nbd_port,
                                                                   volumeInfo.volume.installPath,
                                                                   volumeInfo.volume.volumeUuid)
@@ -9194,7 +9195,7 @@ host side snapshot files chian:
             if volumes is not None:
                 isc.stop_backup_jobs(cmd.vmUuid)
 
-            infos = isc.cbt_backup_volume(vm, cmd.volumeInfos, cmd.bitmapTimestamp)
+            infos = isc.cbt_backup_volume(vm, cmd.volumeInfos, cmd.bitmapTimestamp, cmd.portRange)
             execute_qmp_command(cmd.vmUuid, '{"execute": "migrate-set-capabilities","arguments":'
                                             '{"capabilities":[ {"capability": "dirty-bitmaps", "state":true}]}}')
             logger.info('finished create cbt backup on vm[%s]' % cmd.vmUuid)
@@ -9273,11 +9274,11 @@ host side snapshot files chian:
             return result
 
         def _getQcow2Bitmap(volume_info):
-            o = shell.call("qemu-img map --output=json -f raw nbd://%s:%s/%s" % (
-                volume_info.nbdServer, volume_info.nbdPort, volume_info.scrachNodeName))
-            o = jsonobject.loads(o.strip())
+            path = "nbd://%s:%s/%s" % (volume_info.nbdServer, volume_info.nbdPort, volume_info.scrachNodeName)
+            map = linux.get_device_map(path, "-f raw")
+            json_map = jsonobject.loads(map)
             result = {}
-            for item in o:
+            for item in json_map:
                 if item['zero'] is False and item['data'] is True:
                     if item['length'] > MAX_NBD_READ_SIZE:
                         result.update(_split_large_blocks(item))
@@ -9299,10 +9300,11 @@ host side snapshot files chian:
                             "length": item['length']
                         })
 
-            o = shell.call("""qemu-img map --output=json rbd:%s""" % (volume_info.target.replace('ceph://', '')))
-            o = jsonobject.loads(o.strip())
+            path = "rbd:%s" % (volume_info.target.replace('ceph://', ''))
+            map = linux.get_device_map(path)
+            json_map = jsonobject.loads(map)
             qcow2_result = []
-            for item in o:
+            for item in json_map:
                 if item['zero'] is False and item['data'] is True:
                     if item['length'] > MAX_NBD_READ_SIZE:
                         qcow2_result.extend(_split_large_blocks(item))
@@ -9324,12 +9326,12 @@ host side snapshot files chian:
                         bitmap_map = _getQcow2Bitmap(volume_info)
 
                 else:
-                    o = bash.bash_o(
-                        "qemu-img map --output=json --image-opts driver=nbd,export=%s,server.type=inet,server.host=%s,server.port=%s,x-dirty-bitmap=qemu:dirty-bitmap:%s" % (
-                            volume_info.scrachNodeName, volume_info.nbdServer, volume_info.nbdPort, cmd.bitmapTimestamp))
-                    o = json.loads(o.strip())
+                    path = "driver=nbd,export=%s,server.type=inet,server.host=%s,server.port=%s,x-dirty-bitmap=qemu:dirty-bitmap:%s" % (
+                    volume_info.scrachNodeName, volume_info.nbdServer, volume_info.nbdPort, cmd.bitmapTimestamp)
+                    map = linux.get_device_map(path, "--image-opts")
+                    json_map = json.loads(map)
                     result = {}
-                    for item in o:
+                    for item in json_map:
                         if item['zero'] is False and item['data'] is False:
                             if item['length'] > MAX_NBD_READ_SIZE:
                                 result.update(_split_large_blocks(item))

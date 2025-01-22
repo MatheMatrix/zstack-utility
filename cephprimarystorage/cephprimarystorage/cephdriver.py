@@ -41,7 +41,7 @@ class CephDriver(object):
             return rsp
 
         multiple_of_MB = cmd.size % sizeunit.m == 0
-        if cmd.systemTags and ceph.is_qcow2_format(cmd.systemTags):
+        if cmd.format == 'qcow2':
             vol_path = "rbd:%s" % path
             linux.qcow2_create(vol_path, cmd.size, False)
         elif multiple_of_MB:

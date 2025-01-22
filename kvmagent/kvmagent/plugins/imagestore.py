@@ -136,7 +136,7 @@ class ImageStoreClient(object):
             if err:
                 raise Exception('fail to mirror volume %s, because %s' % (vm, str(err)))
 
-    def cbt_backup_volume(self, vm, volume_infos, bitmapTimestamp):
+    def cbt_backup_volume(self, vm, volume_infos, bitmapTimestamp, portRange):
         def _parse_json_and_update_mode(volume_infos, json_data):
             json_list = json.loads(json_data)
             infos = []
@@ -170,8 +170,8 @@ class ImageStoreClient(object):
 
         PFILE = linux.create_temp_file()
         with linux.ShowLibvirtErrorOnException(vm):
-            cmdstr = '%s cbtbak -domain %s -volumes "%s" -bitmap "%s" -portrange "10001-10400" > %s' % \
-                     (self.ZSTORE_CLI_PATH, vm.uuid, volumes, bitmapTimestamp, PFILE)
+            cmdstr = '%s cbtbak -domain %s -volumes "%s" -bitmap "%s" -portrange "%s" > %s' % \
+                     (self.ZSTORE_CLI_PATH, vm.uuid, volumes, bitmapTimestamp, portRange, PFILE)
             shell.call(cmdstr)
             with open(PFILE) as fd:
                 linux.rm_file_force(PFILE)
