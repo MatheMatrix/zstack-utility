@@ -854,6 +854,12 @@ def modprobe_mpci_module():
     host_post_info.post_label_param = None
     run_remote_command(command, host_post_info)
 
+def modprobe_nvme_module():
+    cmd = ('echo -e "nvme-rdma\nnvme-fc\nnvme-tcp" > /etc/modules-load.d/zsv_nvme.conf; '
+           'modprobe -a nvme-rdma nvme-fc nvme-tcp || true')
+    host_post_info.post_label = "ansible.shell.modprobe.nvme"
+    host_post_info.post_label_param = None
+    run_remote_command(cmd, host_post_info)
 
 @with_arch(todo_list=['aarch64'], host_arch=host_info.host_arch)
 def set_gpu_blacklist():
@@ -895,6 +901,7 @@ do_systemd_config()
 do_ksm_config()
 modprobe_usb_module()
 modprobe_mpci_module()
+modprobe_nvme_module()
 set_gpu_blacklist()
 start_kvmagent()
 
