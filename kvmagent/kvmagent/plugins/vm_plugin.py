@@ -25,6 +25,7 @@ import socket
 from signal import SIGKILL
 import syslog
 import threading
+import warnings
 
 import libvirt
 import xml.dom.minidom as minidom
@@ -63,9 +64,10 @@ from zstacklib.utils import ovs
 from zstacklib.utils import drbd
 from zstacklib.utils.jsonobject import JsonObject
 from zstacklib.utils.linux import is_virtual_machine
+from zstacklib.utils.plugin import TaskManager, TaskResult
 from zstacklib.utils.qga import *
 from zstacklib.utils import jsonobject
-from zstacklib.utils.qmp import get_block_node_name_and_file, QmpResult
+from zstacklib.utils.qmp import get_block_node_name_and_file
 from zstacklib.utils.report import *
 from zstacklib.utils.vm_plugin_queue_singleton import VmPluginQueueSingleton
 from zstacklib.utils.libvirt_singleton import LibvirtEventManager
@@ -3344,12 +3346,8 @@ class Vm(object):
 
                     @linux.retry(times=10, sleep_time=30)
                     def do_clean_orphan_block_nodes(node):
-                        _, err = execute_qmp_command(self.uuid, '{ "execute": "blockdev-del", "arguments": { "node-name": "%s" } }' % node)
-                        if err:
-                            logger.debug(err)
-                            raise Exception(err)
-                        else:
-                            logger.debug("delete vm[%s] orphan block node[%s] success" % (self.uuid, node))
+                        qmp.execute_qmp_command(self.uuid, "blockdev-del", node_name=node)
+                        logger.debug("delete vm[%s] orphan block node[%s] success" % (self.uuid, node))
 
                     for block_node in orphan_block_nodes:
                         try:
@@ -3959,6 +3957,24 @@ class Vm(object):
         else:
             return None, None
 
+    MIGRATE_VM_TASK_NAME = "MigrateVm"
+    @staticmethod
+    def wait_live_migrate(cmd):
+        def check_migrated(task_name, api_id):
+            r = TaskResult()
+            with contextlib.closing(get_connect(cmd.destHostIp)) as conn:
+                dst_vm = get_vm_by_uuid(cmd.vmUuid, False, conn)
+                if not dst_vm or dst_vm.state != Vm.VM_STATE_RUNNING:
+                    r.fail("cannot find task[name=%s] for api[%s] and "
+                                    "vm[uuid:%s] is not running on destination host" % (task_name, api_id, cmd.vmUuid))
+                logger.debug("vm[uuid:%s] is running on destination host[%s], we assume migration is completed."
+                             % (cmd.vmUuid, cmd.destHostIp))
+                return r
+
+        ret = TaskManager.wait_task(cmd, Vm.MIGRATE_VM_TASK_NAME, check_migrated)
+        if not ret.success:
+            raise Exception(ret.error)
+
     def migrate(self, cmd):
         if self.state == Vm.VM_STATE_SHUTDOWN:
             raise kvmagent.KvmError('vm[uuid:%s] is stopped, cannot live migrate,' % cmd.vmUuid)
@@ -3989,6 +4005,7 @@ class Vm(object):
         else:
             disks, destXml = self._build_domain_new_xml({})
         logger.debug("migrate dest xml:%s" % destXml)
+        logger.debug("migrate param: %s" % parameter_map)
 
         flag = (libvirt.VIR_MIGRATE_LIVE |
                 libvirt.VIR_MIGRATE_PEER2PEER |
@@ -4027,13 +4044,50 @@ class Vm(object):
         timeout = get_timeout(cmd)
         class MigrateDaemon(plugin.TaskDaemon):
             def __init__(self, domain, uuid):
-                super(MigrateDaemon, self).__init__(cmd, 'MigrateVm')
+                super(MigrateDaemon, self).__init__(cmd, Vm.MIGRATE_VM_TASK_NAME)
                 self.domain = domain
                 self.uuid = uuid
                 self.progress_status =deque(maxlen=60)
+                self.to_migrate_disks = disks
+                self.ready_disks = []
+                self.bandwidth = bandwidth  # in MiB/s
+
+            def check_bandwidth_mismatch(self):
+                ready_blocks = []
+                for disk in disks:
+                    # {'end': 21474836480L, 'bandwidth': 5L, 'type': 2, 'cur': 21474836480L}
+                    blkjob = self.domain.blockJobInfo(disk)  # type: dict
+                    end = blkjob.get('end', 1L)
+                    if blkjob and end and end - blkjob.get("cur", 0L) == 0L:
+                        ready_blocks.append(disk)
+
+                ready_blocks.sort()
+                mismatch = ready_blocks != self.ready_disks
+                if mismatch:
+                    logger.debug('now ready devices: %s, before ready disks: %s' % (ready_blocks, self.ready_disks))
+                    self.ready_disks = ready_blocks
+                return mismatch
+
+            def reset_bandwidth(self):
+                block_jobs = qmp.query_block_jobs_by_device(self.uuid)
+                to_set_bw_devices = []
+                for device, job in block_jobs.items():
+                    if job.get('status') != 'ready':
+                        to_set_bw_devices.append(device)
+                if not to_set_bw_devices:
+                    qmp.migrate_set_speed(self.uuid, self.bandwidth * 1024 * 1024)
+                    return
+
+                bw = (self.bandwidth + len(to_set_bw_devices) - 1) // len(to_set_bw_devices)
+                for device in to_set_bw_devices:
+                    qmp.block_job_set_speed(self.uuid, device, bw * 1024 * 1024)
 
             def _get_percent(self):
                 try:
+                    if self.to_migrate_disks and self.check_bandwidth_mismatch():
+                        logger.debug('bandwitdh mismatch, reset other device bandwidth')
+                        self.reset_bandwidth()
+
                     stats = self.domain.jobStats()
                     if libvirt.VIR_DOMAIN_JOB_DATA_REMAINING in stats and libvirt.VIR_DOMAIN_JOB_DATA_TOTAL in stats:
                         remain = stats[libvirt.VIR_DOMAIN_JOB_DATA_REMAINING]
@@ -4113,7 +4167,6 @@ class Vm(object):
                 self.domain.migrateToURI2(destUrl, tcpUri, destXml, flag, None, bandwidth)
 
         try:
-            logger.debug('migrating vm[uuid:{0}] to dest url[{1}]'.format(self.uuid, destUrl))
             if not linux.wait_callback_success(self.wait_for_state_change, callback_data=None, timeout=timeout):
                 try: self.domain.abortJob()
                 except: pass
@@ -4180,8 +4233,8 @@ class Vm(object):
 
         # node-name : libvirt-10-format
         pattern = r'libvirt\-[0-9]+\-format'
-        block_nodes, err = execute_qmp_command(self.uuid, '{ "execute": "query-named-block-nodes" }')
-        if err:
+        block_nodes = qmp.execute_qmp_command(self.uuid, "query-named-block-nodes", raise_exception=False)
+        if block_nodes is None:
             logger.warn("query-named-block-nodes failed of vm[uuid: %s]" % self.uuid)
             return True
 
@@ -6597,14 +6650,13 @@ def iso_check(iso):
 
     return iso
 
-def execute_qmp_command(domain_id, command):
-    return qmp.execute_qmp_command(domain_id, command)
+
+def execute_qmp_command(domain_id, command, raise_exception=False):
+    warnings.warn("Use qmp.execute_qmp_command instead", DeprecationWarning)
+    return qmp._execute_qmp_command(domain_id, command, raise_exception=raise_exception)
 
 def get_vm_blocks(domain_id):
-    blocks, err = execute_qmp_command(domain_id, '{ "execute": "query-block" }')
-    if err:
-        raise kvmagent.KvmError(err)
-
+    blocks = qmp.execute_qmp_command(domain_id, "query-block")
     if not blocks:
         raise kvmagent.KvmError("No blocks found on vm[uuid:{}]".format(domain_id))
 
@@ -6621,9 +6673,8 @@ def get_block_node_name_by_disk_name(domain_id, disk_name):
 
 
 def get_vm_migration_caps(domain_id, cap_key):
-    caps, err = execute_qmp_command(domain_id, '{"execute": "query-migrate-capabilities"}')
-    if err:
-        logger.warn("query-migrate-capabilities: %s: %s" % (domain_id, err))
+    caps = qmp.execute_qmp_command(domain_id, "query-migrate-capabilities", raise_exception=False)
+    if caps is None:
         return None
 
     for cap in caps:
@@ -6642,8 +6693,8 @@ def check_mirror_jobs(domain_id, migrate_without_bitmaps):
         return
 
     if migrate_without_bitmaps:
-        execute_qmp_command(domain_id, '{"execute": "migrate-set-capabilities","arguments":'
-                                       '{"capabilities":[ {"capability": "dirty-bitmaps", "state":false}]}}')
+        qmp.execute_qmp_command(domain_id, "migrate-set-capabilities", raise_exception=False,
+                                capabilities=[{"capability": "dirty-bitmaps", "sta te":False}])
 
 
 def get_block_file_content_by_disk_name(domain_id, disk_name):
@@ -8088,52 +8139,16 @@ class VmPlugin(kvmagent.KvmAgent):
 
         return jsonobject.dumps(rsp)
 
-    def _check_vm_live_migate_status(self, cmd):
-        def _check_vm_on_dsthost(retry_times=1):
-            @linux.retry(times=retry_times, sleep_time=2)
-            def _check():
-                with contextlib.closing(get_connect(cmd.destHostIp)) as conn:
-                    vm = get_vm_by_uuid(cmd.vmUuid, False, conn)
-                    if vm is not None and vm.state == vm.VM_STATE_RUNNING:
-                        return True
-                    raise RetryException("")
-            try:
-                return _check()
-            except Exception:
-                return False
-
-        if _check_vm_on_dsthost():
-            return True
-
-        vm = get_vm_by_uuid(cmd.vmUuid)
-        if vm.state != vm.VM_STATE_RUNNING:
-            logger.debug("vm[uuid:%s] state is not running, unable to recover live storage migration" % cmd.vmuuid)
-            return False
-
-        def _wait_job(_):
-            vm.refresh()
-            for oldpath, volume in cmd.disks.__dict__.items():
-                _, disk_name = vm._get_target_disk_by_path(oldpath, is_exception=False)
-                if disk_name is not None and vm._wait_for_block_job(disk_name, abort_on_error=False):
-                    return False
-            return True
-
-        try:
-            logger.debug('migrate vm[%s] with block is waiting for job completion' % vm.uuid)
-            timeout = 259200 if get_timeout(cmd) <= 0 else get_timeout(cmd)
-            linux.wait_callback_success(_wait_job, timeout=timeout, interval=10)
-        except Exception as e:
-            logger.warn("caught an exception on waiting for storage migration job completion: %s" % str(e))
-        finally:
-            return _check_vm_on_dsthost(retry_times=5)
-
     @kvmagent.replyerror
     def migrate_vm(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = MigrateVmResponse()
         try:
-            self._record_operation(cmd.vmUuid, self.VM_OP_MIGRATE)
+            if cmd.reload:
+                Vm.wait_live_migrate(cmd)
+                return jsonobject.dumps(rsp)
 
+            self._record_operation(cmd.vmUuid, self.VM_OP_MIGRATE)
             if cmd.migrateFromDestination:
                 with contextlib.closing(get_connect(cmd.srcHostIp)) as conn:
                     vm = get_vm_by_uuid(cmd.vmUuid, False, conn)
@@ -8141,12 +8156,6 @@ class VmPlugin(kvmagent.KvmAgent):
                         logger.warn('unable to find vm {0} on host {1}'.format(cmd.vmUuid, cmd.srcHostIp))
                         raise kvmagent.KvmError('unable to find vm %s on host %s' % (cmd.vmUuid, cmd.srcHostIp))
                     vm.migrate(cmd)
-            elif cmd.reload and cmd.disks:
-                ## storage migration recovery
-                rsp.success = self._check_vm_live_migate_status(cmd)
-                if not rsp.success:
-                    rsp.error = 'unable to resume storage migration of vm %s' % cmd.vmUuid
-                return jsonobject.dumps(rsp)
             else:
                 vm = get_vm_by_uuid(cmd.vmUuid)
                 vm.migrate(cmd)
@@ -8423,8 +8432,8 @@ class VmPlugin(kvmagent.KvmAgent):
             def _get_detail(self):
                 try:
                     result = jsonobject.JsonObject()
-                    block_jobs, err = execute_qmp_command(vmUuid, '{"execute":"query-block-jobs"}')
-                    if err:
+                    block_jobs = qmp.execute_qmp_command(vmUuid, "query-block-jobs", raise_exception=False)
+                    if block_jobs is None:
                         return
 
                     job = next((job for job in block_jobs if job['status'] == 'running'), None)
@@ -8468,8 +8477,8 @@ class VmPlugin(kvmagent.KvmAgent):
         def _touch_qmp_socket():
             if job_over:
                 return
-            block_nodes, err = execute_qmp_command(vmUuid, '{ "execute": "query-named-block-nodes" }')
-            if not err and task_spec.newVolume.installPath in str(block_nodes):
+            block_nodes = qmp.execute_qmp_command(vmUuid, "query-named-block-nodes")
+            if task_spec.newVolume.installPath in str(block_nodes):
                 logger.debug("touch qmp socket for block[diskName: %s, vmUuid: %s] migration" % (disk_name, vmUuid))
                 touchQmpSocketWhenExists(vmUuid)
                 return
@@ -9209,8 +9218,8 @@ host side snapshot files chian:
 
             isc.mirror_volume(cmd.vmUuid, node_name, cmd.mirrorTarget, lastVolume, currVolume, volumeType, cmd.mode, cmd.speed, Report.from_spec(cmd, "TakeMirror"))
 
-            execute_qmp_command(cmd.vmUuid, '{"execute": "migrate-set-capabilities","arguments":'
-                                            '{"capabilities":[ {"capability": "dirty-bitmaps", "state":true}]}}')
+            qmp.execute_qmp_command(cmd.vmUuid, "migrate-set-capabilities",raise_exception=False,
+                                    capabilities=[{"capability": "dirty-bitmaps", "state":True}])
             logger.info('finished mirroring volume[%s]: %s' % (node_name, cmd.volume))
 
         except Exception as e:
@@ -9256,11 +9265,8 @@ host side snapshot files chian:
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = kvmagent.AgentResponse()
         for i in range(0, 6):
-            _, err = execute_qmp_command(cmd.vmUuid, '{"execute":"query-block-jobs"}')
-            if err:
-                rsp.success = False
-                rsp.error = "Failed to query block jobs, report error"
-                return jsonobject.dumps(rsp)
+            # for log
+            qmp.execute_qmp_command(cmd.vmUuid, "query-block-jobs")
             time.sleep(0.5)
 
         return jsonobject.dumps(rsp)
@@ -10283,21 +10289,21 @@ host side snapshot files chian:
 
         count = 0
         for alias_name in vm._get_all_volume_alias_names(cmd.volumes):
-            execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "x-blockdev-change",'
-                                                    ' "arguments": {"parent": "%s", "child": "children.1"}}' % alias_name)
-            execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "human-monitor-command",'
-                                                    ' "arguments":{"command-line": "drive_del replication%s"}}' % count)
+            qmp.execute_qmp_command(cmd.vmInstanceUuid, "x-blockdev-change", raise_exception=False,
+                                    parent=alias_name, child="children.1")
+            qmp.execute_qmp_command(cmd.vmInstanceUuid, "human-monitor-command", raise_exception=False,
+                                command_line="drive_del replication%s" % count)
             count += 1
 
         for i in xrange(0, cmd.nicNumber):
-            execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "object-del",'
-                                                    '"arguments":{"id":"fm-%s"}}' % i)
-            execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "object-del",'
-                                                    '"arguments":{"id":"primary-out-redirect-%s"}}' % i)
-            execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "object-del",'
-                                                    '"arguments":{"id":"primary-in-redirect-%s"}}' % i)
-            execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "object-del",'
-                                                    '"arguments":{"id":"comp-%s"}}' % i)
+            qmp.execute_qmp_command(cmd.vmInstanceUuid, "object-del", raise_exception=False,
+                                                    id="fm-%s" % i)
+            qmp.execute_qmp_command(cmd.vmInstanceUuid, "object-del", raise_exception=False,
+                                                    id="primary-out-redirect-%s" % i)
+            qmp.execute_qmp_command(cmd.vmInstanceUuid, "object-del", raise_exception=False,
+                                                    id="primary-in-redirect-%s" % i)
+            qmp.execute_qmp_command(cmd.vmInstanceUuid, "object-del", raise_exception=False,
+                                                    id="comp-%s" % i)
 
         return jsonobject.dumps(rsp)
 
@@ -10325,10 +10331,7 @@ host side snapshot files chian:
             if not vm:
                 raise Exception('vm[uuid:%s] not exists, failed' % cmd.vmInstanceUuid)
 
-            colo_status, err = execute_qmp_command(cmd.vmInstanceUuid, '{"execute":"query-colo-status"}')
-            if err:
-                raise Exception('Failed to check vm[uuid:%s] colo status by query-colo-status' % cmd.vmInstanceUuid)
-
+            colo_status = qmp.execute_qmp_command(cmd.vmInstanceUuid, "query-colo-status")
             mode = colo_status['mode']
             return mode == 'secondary'
 
@@ -10349,12 +10352,7 @@ host side snapshot files chian:
             rsp.state = state
             return jsonobject.dumps(rsp)
 
-        colo_status, err = execute_qmp_command(cmd.vmInstanceUuid, '{"execute":"query-colo-status"}')
-        if err:
-            rsp.success = False
-            rsp.error = "Failed to check vm colo status"
-            return jsonobject.dumps(rsp)
-
+        colo_status = qmp.execute_qmp_command(cmd.vmInstanceUuid, "query-colo-status")
         rsp.mode = colo_status['mode']
 
         return jsonobject.dumps(rsp)
@@ -10398,8 +10396,6 @@ host side snapshot files chian:
     def start_colo_sync(self, req):
         rsp = kvmagent.AgentResponse()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "qmp_capabilities"}')
-
         vm = get_vm_by_uuid_no_retry(cmd.vmInstanceUuid, False)
         if not vm:
             raise Exception('vm[uuid:%s] not exists, failed' % cmd.vmInstanceUuid)
@@ -10410,39 +10406,28 @@ host side snapshot files chian:
         def colo_qemu_replication_cleanup():
             for replication in replication_list:
                 if replication.alias_name:
-                    execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "x-blockdev-change",'
-                                                        ' "arguments": {"parent": "%s", "child": "children.1"}}' % replication.alias_name)
-                execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "human-monitor-command",'
-                                                    ' "arguments":{"command-line": "drive_del replication%s"}}' % replication.replication_id)
+                    qmp.execute_qmp_command(cmd.vmInstanceUuid, "x-blockdev-change", raise_exception=False,
+                                            parent=replication.alias_name, child="children.1")
+                qmp.execute_qmp_command(cmd.vmInstanceUuid, "human-monitor-command", raise_exception=False,
+                                        command_line="drive_del replication%s" % replication.replication_id)
 
         @linux.retry(times=3, sleep_time=0.5)
         def add_nbd_client_to_quorum(alias_name, count):
-            ret, err = execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "x-blockdev-change","arguments":'
-                                                '{"parent": "%s","node": "replication%s" } }' % (alias_name, count))
-
-            if err:
-                return False
-            elif 'does not support adding a child' in str(ret):
-                raise RetryException("failed to add child to %s" % alias_name)
-            else:
-                return True
+            qmp.execute_qmp_command(cmd.vmInstanceUuid, "x-blockdev-change",
+                                    parent=alias_name, node="replication%s" % count)
+            return True
 
 
         for alias_name in vm._get_all_volume_alias_names(cmd.volumes):
             if cmd.fullSync:
-                execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "drive-mirror", "arguments":{ "device": "%s",'
-                                                        ' "job-id": "zs-ft-resync", "target": "nbd://%s:%s/parent%s",'
-                                                        ' "mode": "existing", "format": "nbd", "sync": "full"} }'
-                                    % (alias_name, cmd.secondaryVmHostIp, cmd.nbdServerPort, count))
+                qmp.execute_qmp_command(cmd.vmInstanceUuid, "drive-mirror", raise_exception=False,
+                                    device=alias_name, job_id="zs-ft-resync",
+                                    target="nbd://%s:%s/parent%s" % (cmd.secondaryVmHostIp, cmd.nbdServerPort, count),
+                                    mode="existing", format="nbd", sync="full"
+                                    )
                 while True:
                     time.sleep(3)
-                    block_jobs, err = execute_qmp_command(cmd.vmInstanceUuid, '{"execute":"query-block-jobs"}')
-                    if err:
-                        rsp.success = False
-                        rsp.error = "Failed to get zs-ft-resync job, report error"
-                        return jsonobject.dumps(rsp)
-
-
+                    block_jobs = qmp.execute_qmp_command(cmd.vmInstanceUuid, "query-block-jobs")
                     job = next((job for job in block_jobs if job['device'] == 'zs-ft-resync'), None)
 
                     if not job:
@@ -10455,28 +10440,22 @@ host side snapshot files chian:
                     logger.debug("current resync %s/%s, percentage %s" % (
                         job['len'], job['offset'], 100 * (float(job['offset'] / float(job['len'])))))
 
-                execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "stop"}')
-                execute_qmp_command(cmd.vmInstanceUuid,
-                                '{"execute": "block-job-cancel", "arguments":{ "device": "zs-ft-resync"}}')
+                qmp.execute_qmp_command(cmd.vmInstanceUuid, "stop", raise_exception=False)
+                qmp.execute_qmp_command(cmd.vmInstanceUuid, "block-job-cancel", raise_exception=False,
+                                        device="zs-ft-resync")
 
                 while True:
                     time.sleep(1)
-                    block_jobs, err = execute_qmp_command(cmd.vmInstanceUuid, '{"execute":"query-block-jobs"}')
-                    if err:
-                        rsp.success = False
-                        rsp.error = "Failed to query block jobs, report error"
-                        return jsonobject.dumps(rsp)
-
+                    block_jobs = qmp.execute_qmp_command(cmd.vmInstanceUuid, "query-block-jobs")
                     job = next((job for job in block_jobs if job['device'] == 'zs-ft-resync'), None)
                     if job:
                         continue
 
                     break
 
-            execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "human-monitor-command","arguments":'
-                                                ' {"command-line":"drive_add -n buddy'
-                                                ' driver=replication,mode=primary,file.driver=nbd,file.host=%s,'
-                                                'file.port=%s,file.export=parent%s,node-name=replication%s"}}'
+            qmp.execute_qmp_command(cmd.vmInstanceUuid, "human-monitor-command", raise_exception=False,
+                                    command_line='drive_add -n buddy driver=replication,mode=primary,file.driver=nbd,'
+                                                 'file.host=%s,file.port=%s,file.export=parent%s,node-name=replication%s'
                                                 % (cmd.secondaryVmHostIp, cmd.nbdServerPort, count, count))
 
             successed = False
@@ -10488,7 +10467,7 @@ host side snapshot files chian:
             if not successed:
                 replication_list.append(ColoReplicationConfig(None, count))
                 colo_qemu_replication_cleanup()
-                execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "cont"}')
+                qmp.execute_qmp_command(cmd.vmInstanceUuid, "cont", raise_exception=False)
                 rsp.success = False
                 rsp.error = "Failed to setup quorum replication node, report error"
                 return jsonobject.dumps(rsp)
@@ -10567,10 +10546,11 @@ host side snapshot files chian:
         # wait primary vm migrate job finished
         failure = 0
         while True:
-            migrate_info, err = execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "query-migrate"}')
-            if err:
+            try:
+                migrate_info = qmp.execute_qmp_command(cmd.vmInstanceUuid, "query-migrate")
+            except Exception as e:
                 rsp.success = False
-                rsp.error = "Failed to query migrate info, because %s" % err
+                rsp.error = "Failed to query migrate info, because %s" % str(e)
                 colo_qemu_object_cleanup()
                 break
 
@@ -10621,7 +10601,6 @@ host side snapshot files chian:
     def config_secondary_vm(self, req):
         rsp = kvmagent.AgentResponse()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "qmp_capabilities"}')
         execute_qmp_command(cmd.vmInstanceUuid, '{"execute":"nbd-server-start", "arguments":{"addr":{"type":"inet",'
                                                 ' "data":{"host":"%s", "port":"%s"}}}}'
                             % (cmd.primaryVmHostIp, cmd.nbdServerPort))
@@ -10633,15 +10612,9 @@ host side snapshot files chian:
     def config_primary_vm(self, req):
         rsp = GetVmFirstBootDeviceRsp()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        execute_qmp_command(cmd.vmInstanceUuid, '{"execute": "qmp_capabilities"}')
 
         ft.cleanup_vm_before_setup_colo_primary_vm(cmd.vmInstanceUuid)
-        char_devices, err = execute_qmp_command(cmd.vmInstanceUuid, '{"execute":"query-chardev"}')
-        if err:
-            rsp.success = False
-            rsp.error = "Failed to check qemu config, report error"
-            return jsonobject.dumps(rsp)
-
+        char_devices = qmp.execute_qmp_command(cmd.vmInstanceUuid, "query-chardev")
         vm = get_vm_by_uuid(cmd.vmInstanceUuid)
 
         domain_xml = vm.domain.XMLDesc(0)
