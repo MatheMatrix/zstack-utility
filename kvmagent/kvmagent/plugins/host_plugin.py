@@ -1238,7 +1238,7 @@ class HostPlugin(kvmagent.KvmAgent):
         return initiator_name.strip().split('=')[-1]
 
     def _get_host_nqn(self):
-        nqn = linux.read_file(HOST_NQN_PATH)
+        nqn = linux.read_file(HOST_NQN_PATH).strip()
         return nqn if nqn else None
 
     @kvmagent.replyerror
