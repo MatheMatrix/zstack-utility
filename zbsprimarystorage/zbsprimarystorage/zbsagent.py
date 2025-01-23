@@ -484,16 +484,16 @@ class ZbsAgent(plugin.TaskManager):
         rsp = GetCapacityRsp()
 
         o = zbsutils.query_logical_pool_info()
-        ret = jsonobject.loads(o)
-        if ret.error.code != 0:
-            raise Exception('cannot found logical pool info, error[%s]' % ret.error.message)
+        r = jsonobject.loads(o)
+        if r.error.code != 0:
+            raise Exception('cannot found logical pool info, error[%s]' % r.error.message)
 
         found = False
-        for i in ret.result[0].logicalPoolInfos:
-            if cmd.logicalPoolName in i.logicalPoolName:
-                rsp.logicalPoolInfos.append(LogicalPoolInfo(i))
-                found = True
-                break
+        for physical_pool in r.result:
+            for logical_pool in physical_pool.logicalPoolInfos:
+                rsp.logicalPoolInfos.append(LogicalPoolInfo(logical_pool))
+                if cmd.logicalPoolName in logical_pool.logicalPoolName:
+                    found = True
 
         if not found:
             raise Exception('cannot found logical pool[%s], you must create it manually' % cmd.logicalPoolName)
