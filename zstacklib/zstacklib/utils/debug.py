@@ -1,5 +1,6 @@
 __author__ = 'frank'
 
+import random
 import time
 
 import linux
@@ -14,6 +15,8 @@ import lock
 import inspect
 import datetime
 import os
+import functools
+import psutil
 from types import *
 try:
     from types import InstanceType
@@ -31,6 +34,61 @@ from zstacklib.utils import log
 from zstacklib.utils import thread
 
 logger = log.get_logger(__name__)
+CONFIG = None
+SEND_COMMAND_URL = None
+HOST_UUID = None
+
+class DumpReporter(object):
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.dump_thread_count = 0
+        self.report_thread = None
+
+    @linux.retry(times=5, sleep_time=random.uniform(1, 2))
+    def _send_to_mn(self):
+        if not CONFIG or not SEND_COMMAND_URL or not CONFIG.get(SEND_COMMAND_URL):
+            logger.warn("Cannot find SEND_COMMAND_URL, unable to send '/host/kvmagent/status' to management node ")
+            return
+        import http
+        data = {"status": "busy" if self.dump_thread_count > 0 else "available",
+                "hostUuid": CONFIG.get(HOST_UUID),
+                "memoryUsage": long(psutil.Process().memory_info().rss)}
+        http.json_dump_post(CONFIG.get(SEND_COMMAND_URL), data, {'commandpath': '/host/kvmagent/status'})
+
+    def start_dump(self):
+        def _report():
+            while True:
+                self._send_to_mn()
+                with self._lock:
+                    if self.dump_thread_count <= 0:
+                        self.report_thread = None
+                        break
+                time.sleep(60)
+
+        with self._lock:
+            self.dump_thread_count += 1
+            if self.report_thread is None:
+                self.report_thread = thread.ThreadFacade.run_in_thread(_report)
+            logger.debug("dump thread count inc: %s" % self.dump_thread_count)
+
+
+    def end_dump(self):
+        with self._lock:
+            self.dump_thread_count -= 1
+            logger.debug("dump thread count dec: %s" % self.dump_thread_count)
+
+
+dump_reporter = DumpReporter()
+def dump_track(func):
+    @functools.wraps(func)
+    def wrap(*args, **kwargs):
+        try:
+            dump_reporter.start_dump()
+            return func(*args, **kwargs)
+        finally:
+            dump_reporter.end_dump()
+
+    return wrap
 
 
 def dump(sig, frame):
@@ -52,12 +110,20 @@ def dump_stack():
 def dump_debug_info(signum, fram, *argv):
     try:
         thread.ThreadFacade.run_in_thread(dump_threads)
-        thread.ThreadFacade.run_in_thread(track_objects)
+        thread.ThreadFacade.run_in_thread(dump_objects)
     except Exception as e:
         logger.warn("get error when dump debug info %s" % e.message)
 
 
+def track_memory_growth():
+    try:
+        thread.ThreadFacade.run_in_thread(dump_threads)
+        thread.ThreadFacade.run_in_thread(track_objects)
+    except Exception as e:
+        logger.warn("get error when track memory info %s" % e.message)
 
+
+@dump_track
 def dump_threads():
     logger.debug('dumping threads')
     output = []
@@ -141,14 +207,15 @@ def show_backrefs(obj_types):
     def edge_filter(target):
         return not inspect.isfunction(target)
 
-    obj_dict = by_types(obj_types)
-    for t, objs in obj_dict.items():
+    obj_dict = by_types(obj_types, obj_num=3)
+    for t, objs in obj_dict.items()[:50]:
         try:
             f = "%s/%s-%s.dot" % (ref_dir, now, t)
             with open(f, 'wb') as fd:
                 writer = BufferWriter(fd, 1048576)
-                objgraph.show_backrefs(objs, max_depth=10, filter=edge_filter, output=writer)
+                objgraph.show_backrefs(objs, max_depth=5, filter=edge_filter, output=writer)
                 writer.close()
+            time.sleep(random.uniform(5, 10))
         except Exception as e:
             logger.debug("get an error on parsing objects back references: %s" % str(e))
     del obj_dict
@@ -199,6 +266,7 @@ def type_stats(objects=None, shortname=False):
 
 
 @lock.file_lock("/var/run/zstack/mem_track.lock")
+@dump_track
 def track_objects(times=5, interval=300):
     """
     1. Traverse the objects tracked by gc and count the number and size of objects of the same type.
@@ -239,6 +307,12 @@ def track_objects(times=5, interval=300):
     show_backrefs(increasing_continuously_types)
     logger.debug("complete tracking objects")
     return
+
+
+@dump_track
+def dump_objects():
+    old_num_stats, old_size_stats, total_num, total_size = type_stats()
+    log_objs_statistics(old_num_stats, old_size_stats, {}, {}, total_size, total_num)
 
 
 def _short_typename(obj):
