@@ -1468,18 +1468,18 @@ LoadPlugin virt
 
             if need_restart_collectd:
                 for pid in mpidList:
-                    bash_errorout('kill -TERM %s' % pid)
+                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
                 for pid in cpidList:
-                    bash_errorout('kill -TERM %s' % pid)
+                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
                 bash_errorout('collectdmon -- -C %s' % conf_path)
             elif mpidList and len(mpidList) > 1:
                 for pid in mpidList[1:]:
-                    bash_errorout('kill -TERM %s' % pid)
+                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
                 for pid in cpidList:
-                    bash_errorout('kill -TERM %s' % pid)
+                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
             elif len(mpidList) == 0:
                 for pid in cpidList:
-                    bash_errorout('kill -TERM %s' % pid)
+                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
                 bash_errorout('collectdmon -- -C %s' % conf_path)
 
         def run_in_systemd(binPath, args, log):
