@@ -9131,10 +9131,9 @@ host side snapshot files chian:
                                                                   volumeInfo.volume.installPath,
                                                                   volumeInfo.volume.volumeUuid)
                 subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                volumeInfo.scrachNodeName = volumeInfo.volume.volumeUuid
+                volumeInfo.scratchNodeName = volumeInfo.volume.volumeUuid
                 volumeInfo.nbdPort = nbd_port
                 infos.append(volumeInfo)
-                time.sleep(1)
 
         except Exception as e:
             content = traceback.format_exc()
@@ -9235,30 +9234,14 @@ host side snapshot files chian:
         bitmap_map = {}
         infos = []
 
-        def _split_large_blocks(item):
-            start = item['start']
-            length = item['length']
-            result = {}
-
-            while length > 0:
-                chunk_length = min(length, MAX_NBD_READ_SIZE)
-                result[start] = chunk_length
-                start += chunk_length
-                length -= chunk_length
-            return result
-
         def _merge_json_data(rbd_list, qcow2_list):
             result = {}
             qcow2_result = {}
-            for rbd in rbd_list:
-                rbd_start = rbd["start"]
-                rbd_length = rbd["length"]
+            for rbd_start, rbd_length in rbd_list.items():
                 rbd_end = rbd_start + rbd_length
                 result[rbd_start] = rbd_length
 
-                for qcow2 in qcow2_list:
-                    qcow2_start = qcow2["start"]
-                    qcow2_length = qcow2["length"]
+                for qcow2_start, qcow2_length in qcow2_list.items():
                     qcow2_end = qcow2_start + qcow2_length
 
                     if (qcow2_start >= rbd_start and rbd_start <= qcow2_end) or (rbd_start >= qcow2_start >= rbd_end):
@@ -9273,74 +9256,32 @@ host side snapshot files chian:
             result.update(qcow2_result)
             return result
 
-        def _getQcow2Bitmap(volume_info):
-            path = "nbd://%s:%s/%s" % (volume_info.nbdServer, volume_info.nbdPort, volume_info.scrachNodeName)
-            map = linux.get_device_map(path, "-f raw")
-            json_map = jsonobject.loads(map)
-            result = {}
-            for item in json_map:
-                if item['zero'] is False and item['data'] is True:
-                    if item['length'] > MAX_NBD_READ_SIZE:
-                        result.update(_split_large_blocks(item))
-                    else:
-                        result[item['start']] = item['length']
-            return result
+        def _get_volume_bitmap(volume_info):
+            bitmap_map = {}
+            if volume_info.mode == "full":
+                if volume_info.volume.primaryStorageType == 'Ceph':
+                    qcow2_path = "rbd:%s" % (volume_info.target.replace('ceph://', ''))
+                    qcow2_result = linux.get_data_bitmap(qcow2_path, False, True, MAX_NBD_READ_SIZE)
 
-        def _getRawBitmap(volume_info):
-            o = shell.call("""rbd diff %s --format json""" % (volume_info.volume.installPath.replace('ceph://', '')))
-            o = jsonobject.loads(o.strip())
-            rbd_result = []
-            for item in o:
-                if item['exists'] == 'true':
-                    if item['length'] > MAX_NBD_READ_SIZE:
-                        rbd_result.extend(_split_large_blocks(item))
-                    else:
-                        rbd_result.append({
-                            "start": item['offset'],
-                            "length": item['length']
-                        })
+                    raw_path = volume_info.volume.installPath.replace('ceph://', '')
+                    raw_result = linux.get_rbd_data_bitmap(raw_path, MAX_NBD_READ_SIZE)
+                    bitmap_map = _merge_json_data(raw_result, qcow2_result)
+                else:
+                    path = "nbd://%s:%s/%s" % (
+                        volume_info.nbdServer, volume_info.nbdPort, volume_info.scratchNodeName)
+                    bitmap_map = linux.get_data_bitmap(path, MAX_NBD_READ_SIZE, False, True, "-f raw")
+            else:
+                path = "driver=nbd,export=%s,server.type=inet,server.host=%s,server.port=%s,x-dirty-bitmap=qemu:dirty-bitmap:%s" % (
+                    volume_info.scratchNodeName, volume_info.nbdServer, volume_info.nbdPort, cmd.bitmapTimestamp)
+                bitmap_map = linux.get_data_bitmap(path, False, False, MAX_NBD_READ_SIZE, "--image-opts")
 
-            path = "rbd:%s" % (volume_info.target.replace('ceph://', ''))
-            map = linux.get_device_map(path)
-            json_map = jsonobject.loads(map)
-            qcow2_result = []
-            for item in json_map:
-                if item['zero'] is False and item['data'] is True:
-                    if item['length'] > MAX_NBD_READ_SIZE:
-                        qcow2_result.extend(_split_large_blocks(item))
-                    else:
-                        qcow2_result.append({
-                            "start": item['start'],
-                            "length": item['length']
-                        })
-
-            return _merge_json_data(rbd_result, qcow2_result)
+            return bitmap_map
 
         try:
             volume_infos = cmd.volumeInfos
             for volume_info in volume_infos:
-                if volume_info.mode == "full":
-                    if volume_info.volume.primaryStorageType == 'Ceph':
-                        bitmap_map = _getRawBitmap(volume_info)
-                    else:
-                        bitmap_map = _getQcow2Bitmap(volume_info)
-
-                else:
-                    path = "driver=nbd,export=%s,server.type=inet,server.host=%s,server.port=%s,x-dirty-bitmap=qemu:dirty-bitmap:%s" % (
-                    volume_info.scrachNodeName, volume_info.nbdServer, volume_info.nbdPort, cmd.bitmapTimestamp)
-                    map = linux.get_device_map(path, "--image-opts")
-                    json_map = json.loads(map)
-                    result = {}
-                    for item in json_map:
-                        if item['zero'] is False and item['data'] is False:
-                            if item['length'] > MAX_NBD_READ_SIZE:
-                                result.update(_split_large_blocks(item))
-                            else:
-                                result[item['start']] = item['length']
-                    bitmap_map = result
-                bitmap_json = json.dumps(bitmap_map)
-                compressed_data = zlib.compress(bitmap_json.encode('utf-8'))
-                volume_info.bitmapBase64 = base64.b64encode(compressed_data).decode('utf-8')
+                bitmap_map = _get_volume_bitmap(volume_info)
+                volume_info.bitmapBase64 = linux.compress_and_encode_bitmap(bitmap_map)
                 infos.append(volume_info)
 
         except Exception as e:

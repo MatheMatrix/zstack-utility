@@ -3,6 +3,7 @@
 @author: frank
 '''
 import abc
+import base64
 import contextlib
 import os
 import os.path
@@ -26,6 +27,7 @@ import fcntl
 import simplejson
 import xxhash
 import glob
+import zlib
 
 from inspect import stack
 import xml.etree.ElementTree as etree
@@ -36,6 +38,7 @@ from zstacklib.utils import xmlobject
 from zstacklib.utils import shell
 from zstacklib.utils import log
 from zstacklib.utils import iproute
+from zstacklib.utils import jsonobject
 
 
 logger = log.get_logger(__name__)
@@ -62,6 +65,7 @@ KVM_CAP_ARM_VM_IPA_SIZE = 165
 KVM_CHECK_EXTENSION = 44547
 DEFAULT_VM_IPA_SIZE = 40
 LIVE_LIBVIRT_XML_DIR = "/var/run/libvirt/qemu"
+MAX_NBD_READ_SIZE = 32768000
 
 def ignoreerror(func):
     @functools.wraps(func)
@@ -1326,6 +1330,54 @@ def support_blkdiscard(path):
 def get_device_map(path, option=None):
     out = shell.call("%s --output=json %s %s" % (qemu_img.subcmd('map'), option, path))
     return out.strip()
+
+
+def get_data_bitmap(path, max_length, zero, data, qemu_img_command_option=None):
+    map = get_device_map(path, qemu_img_command_option)
+    json_map = jsonobject.loads(map)
+    result = {}
+    for item in json_map:
+        if item['zero'] is zero and item['data'] is data:
+            if item['length'] > max_length:
+                result.update(split_large_blocks(item, max_length))
+            else:
+                result[item['start']] = item['length']
+                logger.debug("xxx start is %s length is %s"%(item['start'], item['length']))
+    return result
+
+
+def get_rbd_data_bitmap(path, max_length):
+    o = shell.call("""rbd diff %s --format json""" % (path))
+    o = jsonobject.loads(o.strip())
+    result = {}
+    for item in o:
+        if item['exists'] == 'true':
+            if item['length'] > max_length:
+                result.update(split_large_blocks(item, max_length))
+            else:
+                result[item['start']] = item['length']
+    return result
+
+
+def split_large_blocks(item, max_length):
+    start = item['start']
+    length = item['length']
+    result = {}
+
+    while length > 0:
+        chunk_length = min(length, max_length)
+        result[start] = chunk_length
+        start += chunk_length
+        length -= chunk_length
+        logger.debug("xxx111 start is %s length is %s" % (start, chunk_length))
+    return result
+
+
+def compress_and_encode_bitmap(bitmap_map):
+    bitmap_json = json.dumps(bitmap_map)
+    logger.debug("xxx bitmap json is %s" % (bitmap_json))
+    compressed_data = zlib.compress(bitmap_json.encode('utf-8'))
+    return base64.b64encode(compressed_data).decode('utf-8')
 
 
 class AbstractFileConverter(object):

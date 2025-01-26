@@ -147,7 +147,7 @@ class ImageStoreClient(object):
                 for item in json_list:
                     if item['device'] == node_name:
                         info.mode = item['mode']
-                        info.scrachNodeName = item['scrachNodeName']
+                        info.scratchNodeName = item['scratchNodeName']
                         info.nbdPort = item['nbdTarget']
                         info.bitmapName = item['bitmap']
                         infos.append(info)
