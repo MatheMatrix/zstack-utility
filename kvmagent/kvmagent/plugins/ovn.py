@@ -210,10 +210,12 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                                 "external-ids:ovn-encap-ip={ovn_encap_ip} "
                                 "external-ids:ovn-encap-type={ovn_encap_type} "
                                 "external-ids:ovn-bridge-mappings=flat:{br_ex} "
+                                "external-ids:hostname={hostIp} "
                                 .format(ovn_remote=cmd.ovnRemoteConnection,
                                         ovn_encap_ip=cmd.ovnEncapIP,
                                         ovn_encap_type=cmd.ovnEncapType,
-                                        br_ex=cmd.brExName))
+                                        br_ex=cmd.brExName,
+                                        hostIp=cmd.hostIp))
         if r != 0:
             ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
             rsp.success = False

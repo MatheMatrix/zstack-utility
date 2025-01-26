@@ -248,9 +248,10 @@ class VsCtl(object):
             if lacpmode is not None:
                 bash.bash_roe(CtlBin + " set port dpdkbond lacp={mode} ".format(mode=lacpmode))
 
-        if ip is not None:
-            iproute.flush_address_no_error(brName)
-            iproute.add_address_no_error(ip, linux.netmask_to_cidr(netmask), 4, brName)
+        # TODO configure ip when we need overlay nrtwork
+        #if ip is not None:
+        #    iproute.flush_address_no_error(brName)
+        #    iproute.add_address_no_error(ip, linux.netmask_to_cidr(netmask), 4, brName)
 
 
         return 0, ""
