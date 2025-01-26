@@ -158,14 +158,6 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = OvnStartServiceResponse()
 
-        """ TODO, this code should be run in huge memory api """
-        r, _, e = bash.bash_roe("sysctl -w vm.nr_hugepages={nr_hugepages}".format(nr_hugepages=cmd.hugePageNumber))
-        if r != 0:
-            rsp.success = False
-            rsp.error = "sysctl -w vm.nr_hugepages={nr_hugepages}, failed: {err}" \
-                .format(nr_hugepages=cmd.hugePageNumber, err=e)
-            return jsonobject.dumps(rsp)
-
         # bond nics to dpdk driver
         r, e = ovn.changeNicToDpdkDriver(cmd.nicNamePciAddressMap)
         if r != 0:
