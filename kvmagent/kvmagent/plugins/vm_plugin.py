@@ -8655,17 +8655,6 @@ host side snapshot files chian:
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = BlockCommitResponse()
 
-        def block_commit_by_qemu_img():
-            try:
-                linux.qcow2_commit(cmd.top, cmd.base)
-            except excepts as err:
-                # err 包含了 top 和 base 有写锁，则继续等待（sblk 可能在其他物理机上执行）
-                # 可能查不到进程信息，只能通过文件是不是被锁住了判断
-                # nfs 会有写锁，所以需要等待（可能不是当前物理机）
-                # locl 会有写锁，所以需要等待（当前物理机）
-                # sblk 会有写锁，所以需要等待（可能不是当前物理机）
-                pass
-
         def rebase_top_children_to_base(online=False):
             if cmd.topChildrenInstallPathInDb is None:
                 return
@@ -8674,33 +8663,58 @@ host side snapshot files chian:
                     continue
                 linux.qcow2_rebase(cmd.base, path, unsafe_mode=True)
 
-        # commit 期间 mn 断了，会出现那些情形：
+        def _check_vm_online_rebase_status():
+            vm = get_vm_by_uuid(cmd.vmUuid)
+            if vm.state != vm.VM_STATE_RUNNING:
+                logger.debug("vm[uuid:%s] state is not running, unable to recover online rebase snapshot" % cmd.vmuuid)
+                return False
 
-        # 离线commit：还在pull（）
-        # 离线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功，此时，中间节点文件还在需要删除
+            def _wait_job(_):
+                _, disk_name = vm._get_target_disk(cmd.volume)
+                logger.debug('block stream is waiting for %s blockRebase job completion' % disk_name)
+                return not vm._wait_for_block_job(disk_name, abort_on_error=True)
 
-        # 在线pull：还在pull（）
-        # 在线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功，此时，中间节点文件还在需要删除
+            logger.debug('migrate vm[%s] with block is waiting for job completion' % vm.uuid)
+            timeout = 259200 if get_timeout(cmd) <= 0 else get_timeout(cmd)
+            if not linux.wait_callback_success(_wait_job, timeout=timeout, ignore_exception_in_callback=True):
+                raise kvmagent.KvmError('caught an exception on waiting for storage migration job completion')
 
-        def skip():
-            has_commited = False
+        if cmd.reload:
+            # commit 期间 mn 断了，会出现那些情形：
+            # 离线commit：还在pull（）
+            # 离线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功
+            # 只有 创建镜像时，才会有离线commit
+
+            # 在线pull：还在pull（）
+            # 在线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功
+
+            topChildrenWhichInAliveChain
+            for path in cmd.topChildrenInstallPathInDb:
+                if cmd.aliveChainInstallPathInDb is not None and path in cmd.aliveChainInstallPathInDb:
+                    topChildrenWhichInAliveChain = path
+
+            snap_has_not_commit = []
             if cmd.topChildrenInstallPathInDb is not None:
                 for path in cmd.topChildrenInstallPathInDb:
                     if linux.qcow2_get_backing_file(path) != cmd.base:
-                        has_commited = False
-                        break
-                has_commited = True
-            if has_commited:
-                return True
+                        snap_has_not_commit.append(path)
 
-        if skip():
+            if len(snap_has_not_commit) == 0:
+                rsp.newVolumeInstallPath = cmd.base
+                rsp.size = VmPlugin._get_snapshot_size(rsp.newVolumeInstallPath)
+                return jsonobject.dumps(rsp)
+
+            _check_vm_online_rebase_status()
+            if topChildrenWhichInAliveChain in snap_has_not_commit:
+                rebase_top_children_to_base(online=True)
+
             rsp.newVolumeInstallPath = cmd.base
             rsp.size = VmPlugin._get_snapshot_size(rsp.newVolumeInstallPath)
             return jsonobject.dumps(rsp)
 
         try:
             if not cmd.vmUuid:
-                block_commit_by_qemu_img()
+                linux.qcow2_commit(cmd.top, cmd.base)
                 rsp.newVolumeInstallPath = cmd.base
                 rebase_top_children_to_base()
             else:
@@ -8710,7 +8724,7 @@ host side snapshot files chian:
                     rsp.newVolumeInstallPath = vm.do_block_commit(cmd, cmd.volume)
                     rebase_top_children_to_base(online=True)
                 else:
-                    block_commit_by_qemu_img()
+                    linux.qcow2_commit(cmd.top, cmd.base)
                     rsp.newVolumeInstallPath = cmd.base
                     rebase_top_children_to_base()
         except kvmagent.KvmError as err:
@@ -8727,18 +8741,51 @@ host side snapshot files chian:
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = BlockPullVolumeResponse()
 
-        # pull 期间 mn 断了，会出现那些情形：
+        def _check_vm_offline_rebase_status():
+            def _wait_job(_):
+                r = bash.bash_r("ps -ef | grep qemu-img rebase | grep %s | grep %s" % (cmd.top, cmd.base))
+                return r != 0
+            logger.debug('migrate vm[%s] with block is waiting for job completion' % vm.uuid)
+            timeout = 259200 if get_timeout(cmd) <= 0 else get_timeout(cmd)
+            if not linux.wait_callback_success(_wait_job, timeout=timeout, ignore_exception_in_callback=True):
+                raise kvmagent.KvmError('caught an exception on waiting for storage migration job completion')
 
-        # 离线pull：还在pull（）
-        # 离线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功，此时，中间节点文件还在需要删除
+        def _check_vm_online_rebase_status():
+            vm = get_vm_by_uuid(cmd.vmUuid)
+            if vm.state != vm.VM_STATE_RUNNING:
+                logger.debug("vm[uuid:%s] state is not running, unable to recover online rebase snapshot" % cmd.vmuuid)
+                return False
 
-        # 在线pull：还在pull（）
-        # 在线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功，此时，中间节点文件还在需要删除
+            def _wait_job(_):
+                _, disk_name = vm._get_target_disk(cmd.volume)
+                logger.debug('block stream is waiting for %s blockRebase job completion' % disk_name)
+                return not self._wait_for_block_job(disk_name, abort_on_error=True)
 
-        if linux.qcow2_get_backing_file(cmd.top) == cmd.base:
-            rsp.newVolumeInstallPath = cmd.top
-            rsp.size = VmPlugin._get_snapshot_size(rsp.newVolumeInstallPath)
-            return jsonobject.dumps(rsp)
+            logger.debug('migrate vm[%s] with block is waiting for job completion' % vm.uuid)
+            timeout = 259200 if get_timeout(cmd) <= 0 else get_timeout(cmd)
+            if not linux.wait_callback_success(_wait_job, timeout=timeout, ignore_exception_in_callback=True):
+                raise kvmagent.KvmError('caught an exception on waiting for storage migration job completion')
+
+        if cmd.reload:
+            # pull 期间 mn 断了，会出现那些情形：
+            # 离线pull：还在pull（）
+            # 离线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功，
+
+            # 在线pull：还在pull（）
+            # 在线pull：pull完成（cmd.top 的 backing_file 是 cmd.base）直接返回成功
+
+            if linux.qcow2_get_backing_file(cmd.top) == cmd.base:
+                rsp.newVolumeInstallPath = cmd.top
+                rsp.size = VmPlugin._get_snapshot_size(rsp.newVolumeInstallPath)
+                return jsonobject.dumps(rsp)
+
+            _check_vm_offline_rebase_status()
+            _check_vm_online_rebase_status()
+
+            if linux.qcow2_get_backing_file(cmd.top) == cmd.base:
+                rsp.newVolumeInstallPath = cmd.top
+                rsp.size = VmPlugin._get_snapshot_size(rsp.newVolumeInstallPath)
+                return jsonobject.dumps(rsp)
 
         backing_file = "" if cmd.base is None else cmd.base
         try:
