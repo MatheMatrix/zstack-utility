@@ -324,7 +324,9 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
         self._stop_event = threading.Event()
         self._bond_whitelist = None
 
-    def configure(self, config):
+    def configure(self, config=None):
+        if config is None:
+            config = {}
         self.config = config
 
     def start(self):

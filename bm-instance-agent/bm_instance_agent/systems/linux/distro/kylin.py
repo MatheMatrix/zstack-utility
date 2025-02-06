@@ -9,8 +9,8 @@ import time
 from bm_instance_agent.common import utils as agent_utils
 from bm_instance_agent import exception
 
-from centos_network_config import CentOSNetworkConfig as config
-from centos import CentOSDriver
+from .centos_network_config import CentOSNetworkConfig as config
+from .centos import CentOSDriver
 
 LOG = logging.getLogger(__name__)
 

@@ -2,7 +2,6 @@
 
 @author: frank
 '''
-import copy
 from kvmagent import kvmagent
 from zstacklib.utils import jsonobject
 from zstacklib.utils import http
@@ -17,7 +16,6 @@ from zstacklib.utils import ovs
 from jinja2 import Template
 import os
 import traceback
-import netaddr
 import subprocess
 import json
 
@@ -312,7 +310,7 @@ class GetLldpInfoResponse(kvmagent.AgentResponse):
 class ApplyLldpConfigCmd(kvmagent.AgentCommand):
     def __init__(self):
         super(ApplyLldpConfigCmd, self).__init__()
-        self.lldpConfig = None # type: list[HostNetworkLldpConfigureStruct]
+        self.lldpConfig = None # type: list[HostNetworkLldpConfigStruct]
 
 class ApplyLldpConfigResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -863,7 +861,7 @@ configure lldp status rx-only \n
         interface_lldp_info = HostNetworkInterfaceLldpStruct()
         # Chassis information
         chassis_data = interface_data.get("chassis", {})
-        for chassis_key, chassis_value in chassis_data.items():
+        for chassis_key, chassis_value in list(chassis_data.items()):
             interface_lldp_info.chassisId = chassis_value.get("id", {}).get("value")
             # no mgmt-ip field for H3C
             mgmt_ip = chassis_value.get('mgmt-ip')
@@ -1202,12 +1200,12 @@ configure lldp status rx-only \n
 
             if interf:
                 for nic in nics:
-                    if interf in nic.keys():
+                    if interf in list(nic.keys()):
                         valid_nics.append(nic)
 
             if requireIp:
                 for nic in nics:
-                    if requireIp in nic.values():
+                    if requireIp in list(nic.values()):
                         valid_nics.append(nic)
 
             return valid_nics
@@ -1224,9 +1222,9 @@ configure lldp status rx-only \n
         if len(temp_nics) != 0:
             nics = temp_nics
 
-        temp_ips = [d.values()[0] for d in nics]
+        temp_ips = [list(d.values())[0] for d in nics]
         ips = sorted(set(temp_ips), key=temp_ips.index)
-        temp_nicnames = [d.keys()[0] for d in nics]
+        temp_nicnames = [list(d.keys())[0] for d in nics]
         nicnames = sorted(set(temp_nicnames), key=temp_nicnames.index)
 
         ''' there are 7 cases:
@@ -1513,7 +1511,7 @@ configure lldp status rx-only \n
             l2_mac_dict = cmd.l2MacMap.__dict__
             interface_dict = cmd.interfaceMap.__dict__
             vlan_dict = cmd.vlanMap.__dict__
-            for l2, mac_list in l2_mac_dict.items():
+            for l2, mac_list in list(l2_mac_dict.items()):
                 for mac in mac_list:
                     shell.call('ipset add isolated_%s.%s %s'
                                % (interface_dict.get(l2), vlan_dict.get(l2), mac), exception=False)
@@ -1529,7 +1527,7 @@ configure lldp status rx-only \n
             l2_mac_dict = cmd.l2MacMap.__dict__
             interface_dict = cmd.interfaceMap.__dict__
             vlan_dict = cmd.vlanMap.__dict__
-            for l2, mac_list in l2_mac_dict.items():
+            for l2, mac_list in list(l2_mac_dict.items()):
                 for mac in mac_list:
                     shell.call('ipset del isolated_%s.%s %s'
                                % (interface_dict.get(l2), vlan_dict.get(l2), mac), exception=False)
@@ -1548,7 +1546,7 @@ configure lldp status rx-only \n
             l2_mac_dict = cmd.l2MacMap.__dict__
             interface_dict = cmd.interfaceMap.__dict__
             vlan_dict = cmd.vlanMap.__dict__
-            for l2, mac_list in l2_mac_dict.items():
+            for l2, mac_list in list(l2_mac_dict.items()):
                 isolated_br = 'isolated_%s.%s' % (interface_dict.get(l2), vlan_dict.get(l2))
                 physdev_in = '%s.%s' % (interface_dict.get(l2), vlan_dict.get(l2))
                 ipset_list = shell.ShellCmd("ipset list %s" % isolated_br)

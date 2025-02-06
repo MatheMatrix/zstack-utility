@@ -67,7 +67,7 @@ class TestMemoryBallooning(TestCase, vm_utils.VmPluginTestStub):
 
         vm_utils.create_vm(vm)
 
-        TestMemoryBallooning.vm_original_memory_in_mb = vm.memory / 1024 / 1024
+        TestMemoryBallooning.vm_original_memory_in_mb = vm.memory // 1024 // 1024
         TestMemoryBallooning.vm_uuid = vm.vmInstanceUuid
 
         pid = linux.find_vm_pid_by_uuid(vm.vmInstanceUuid)
@@ -86,11 +86,11 @@ class TestMemoryBallooning(TestCase, vm_utils.VmPluginTestStub):
         """
         r, _ = bash.bash_ro("virsh setmem --domain %s --size %dM --current"
                              % (TestMemoryBallooning.vm_uuid,
-                                 TestMemoryBallooning.vm_original_memory_in_mb / 2))
+                                 TestMemoryBallooning.vm_original_memory_in_mb // 2))
 
         self.assertEqual(r, 0, "virsh setmem shrink failed")
-        self.check_used_memory(TestMemoryBallooning.vm_original_memory_in_mb / 2)
-        self.check_dommemstat(TestMemoryBallooning.vm_original_memory_in_mb / 2)
+        self.check_used_memory(TestMemoryBallooning.vm_original_memory_in_mb // 2)
+        self.check_dommemstat(TestMemoryBallooning.vm_original_memory_in_mb // 2)
 
     @bash.in_bash
     def increase_libvirt_guest_memory(self):

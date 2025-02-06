@@ -9,12 +9,10 @@ import os
 import os.path
 import platform
 import re
-import tempfile
-import time
 import uuid
+import sys
 import string
 import socket
-import sys
 import yaml
 import subprocess
 import pipes
@@ -24,7 +22,6 @@ from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
 from zstacklib.utils import http, lvm, ceph, pci, gpu
 from zstacklib.utils import qemu
-from zstacklib.utils import linux
 from zstacklib.utils import iptables
 from zstacklib.utils import iproute
 from zstacklib.utils import ebtables
@@ -34,7 +31,6 @@ from zstacklib.utils import sizeunit
 from zstacklib.utils import thread
 from zstacklib.utils import xmlobject
 from zstacklib.utils import ovs
-from zstacklib.utils import shell
 from zstacklib.utils import misc
 from zstacklib.utils.bash import *
 from zstacklib.utils.ip import get_nic_supported_max_speed
@@ -47,13 +43,18 @@ import zstacklib.utils.ip as ip
 import zstacklib.utils.plugin as plugin
 from zstacklib.utils.sizeunit import get_size
 
+os_info = platform.freedesktop_os_release()
+DIST_NAME = os_info.get('ID', '').lower()
+# FIXME(py3): remove it
+DIST_NAME = 'centos' if DIST_NAME == 'helix' else DIST_NAME
+
 host_arch = platform.machine()
 IS_AARCH64 = host_arch == 'aarch64'
 IS_MIPS64EL = host_arch == 'mips64el'
 IS_LOONGARCH64 = host_arch == 'loongarch64'
 GRUB_ROCKY_ENVS = bash_o("find /boot -name grubenv").strip().split("\n")
 GRUB_FILES = ["/boot/grub2/grub.cfg", "/boot/grub/grub.cfg", "/etc/grub2-efi.cfg", "/etc/grub-efi.cfg"] \
-    + ["/boot/efi/EFI/{}/grub.cfg".format(platform.dist()[0])]
+    + ["/boot/efi/EFI/{}/grub.cfg".format(DIST_NAME)]
 IPTABLES_CMD = iptables.get_iptables_cmd()
 EBTABLES_CMD = ebtables.get_ebtables_cmd()
 
@@ -310,17 +311,14 @@ class GetHostNetworkBongdingCmd(kvmagent.AgentCommand):
 
 
 class GetHostNetworkBongdingResponse(kvmagent.AgentResponse):
-    bondings = None  # type: list[HostNetworkBondingInventory]
-    nics = None  # type: list[HostNetworkInterfaceInventory]
-
     def __init__(self):
         super(GetHostNetworkBongdingResponse, self).__init__()
-        self.bondings = None
-        self.nics = None
+        self.bondings = [] # type: list[HostNetworkBondingInventory]
+        self.nics = [] # type: list[HostNetworkInterfaceInventory]
 
 
 class HostNetworkBondingInventory(object):
-    slaves = None  # type: list(HostNetworkInterfaceInventory)
+    slaves = None  # type: list[HostNetworkInterfaceInventory]
 
     def __init__(self, bondingName=None, type=None, managementServerIp=None):
         super(HostNetworkBondingInventory, self).__init__()
@@ -418,21 +416,22 @@ class HostNetworkBondingInventory(object):
             self.slaves[i] = o
 
         bondData = self.bondingName
-        self.speed = get_nic_supported_max_speed(self.interfaceName)
+        # TODO no test?
+        self.speed = get_nic_supported_max_speed(self.bondingName)
 
-        if not bondData.has_key('bond'):
+        if 'bond' not in bondData:
             return
 
-        if bondData['bond'].has_key('name'):
+        if 'name' in bondData['bond']:
             self.bondingName = bondData['bond']['name']
 
-        if bondData['bond'].has_key('mode'):
+        if 'mode' in bondData['bond']:
             if type(bondData['bond']['mode']) is int:
                 self.mode = bondModeList[bondData['bond']['mode']]
             else:
                 self.mode = bondData['bond']['mode']
 
-        if bondData['bond'].has_key('policy'):
+        if 'policy' in bondData['bond']:
             self.xmitHashPolicy = bondPolicyMap[bondData['bond']['policy']]
 
         self.type = "OvsBonding"
@@ -442,7 +441,7 @@ class HostNetworkBondingInventory(object):
         self.miimon = None
         self.allSlavesActive = None
 
-        if not bondData['bond'].has_key('slaves'):
+        if 'slaves' not in bondData['bond']:
             return
 
         self.slaves = [None] * len(bondData['bond']['slaves'])
@@ -455,7 +454,7 @@ class HostNetworkBondingInventory(object):
 
     def _to_dict(self):
         to_dict = self.__dict__
-        for k in to_dict.keys():
+        for k in list(to_dict.keys()):
             if k == "slaves":
                 v = copy.deepcopy(to_dict[k])
                 to_dict[k] = [i.__dict__ for i in v]
@@ -854,7 +853,7 @@ class ZwatchInstallResult(object):
 
 class ZwatchInstallResultRsp(kvmagent.AgentResponse):
     def __init__(self):
-        super(kvmagent.AgentResponse, self).__init__()
+        super(ZwatchInstallResultRsp, self).__init__()
 
 
 class ScanVmPortRsp(kvmagent.AgentResponse):
@@ -1041,7 +1040,7 @@ def _get_memory(word):
     (name, capacity) = out.split(':')
     capacity = re.sub('[k|K][b|B]', '', capacity).strip()
     # capacity = capacity.rstrip('kB').rstrip('KB').rstrip('kb').strip()
-    return sizeunit.KiloByte.toByte(long(capacity))
+    return sizeunit.KiloByte.toByte(int(capacity))
 
 
 def _get_total_memory():
@@ -1230,12 +1229,12 @@ class HostPlugin(kvmagent.KvmAgent):
         pkt_counter = 0
         while True:
             try:
-                self.host_socket.send(str(pkt_counter))
+                self.host_socket.send(str(pkt_counter).encode())
             except Exception as e:
                 logger.debug("failed to send pkg to mn")
                 break
 
-            if pkt_counter == sys.maxint:
+            if pkt_counter == sys.maxsize:
                 pkt_counter = 0
 
             pkt_counter += 1
@@ -1292,17 +1291,15 @@ class HostPlugin(kvmagent.KvmAgent):
     def _cache_units_convert(self, str):
         if str is None or str == '':
             return 0
-        return float(sizeunit.get_size(str) / 1024)
+        return float(sizeunit.get_size(str) // 1024)
 
     @kvmagent.replyerror
     def fact(self, req):
         rsp = HostFactResponse()
-        rsp.osDistribution, rsp.osVersion, rsp.osRelease = platform.dist()
-        if rsp.osDistribution == 'centos':
-            rsp.osDistribution = platform.linux_distribution()[0].lower()
-        if rsp.osDistribution == 'openEuler':
-            rsp.osDistribution = platform.linux_distribution()[0].lower()
-        rsp.osRelease = rsp.osRelease if rsp.osRelease else "Core"
+        os_info = platform.freedesktop_os_release()
+        rsp.osDistribution = os_info['ID']
+        rsp.osVersion = re.sub(r'[a-zA-Z]+$', '', os_info['VERSION_ID'])
+        rsp.osRelease = "Core" # TODO get os release
         # compatible with Kylin SP2 HostOS ISO and standardized ISO
         if rsp.osDistribution == "kylin":
             rsp.osRelease = rsp.osRelease.replace('ZStack', 'Sword')
@@ -1313,8 +1310,9 @@ class HostPlugin(kvmagent.KvmAgent):
         qemu_img_version = shell.call(
             "qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1")
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
-        ipV4Addrs = [chunk.address for chunk in filter(
-            lambda x: x.address != '127.0.0.1' and not x.ifname.endswith('zs'), iproute.query_addresses(ip_version=4))]
+        ipV4Addrs = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if
+                                         x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
+
 
         def run_dmidecode(cmd, default=''):
             try:
@@ -1354,8 +1352,7 @@ class HostPlugin(kvmagent.KvmAgent):
             power_supply_max_power_capacity = run_dmidecode(
                 "dmidecode -t 39 | grep -vi 'unknown' | grep -m1 'Max Power Capacity' | awk -F ':' '{print $2}'")
             if bool(re.search(r'\d', power_supply_max_power_capacity)):
-                rsp.powerSupplyMaxPowerCapacity = filter(
-                    str.isdigit, power_supply_max_power_capacity.strip())
+                rsp.powerSupplyMaxPowerCapacity = ''.join(re.findall(r'\d+', power_supply_max_power_capacity.strip()))
 
         rsp.qemuImgVersion = qemu_img_version
         rsp.libvirtVersion = self.libvirt_version
@@ -1631,7 +1628,7 @@ class HostPlugin(kvmagent.KvmAgent):
 
             hb_dir = os.path.dirname(hb)
             if not os.path.exists(hb_dir):
-                os.makedirs(hb_dir, 0755)
+                os.makedirs(hb_dir, 0o755)
 
             t = thread.timer(cmd.heartbeatInterval, self._heartbeat_func, args=[
                              hb], stop_on_exception=False)
@@ -1788,13 +1785,13 @@ class HostPlugin(kvmagent.KvmAgent):
                 rsp.error = "%s %s" % (e, o)
                 return jsonobject.dumps(rsp)
 
+            info = UsbDeviceInfo()
             for line in o.split('\n'):
                 line = line.strip().split()
                 if len(line) < 2:
                     continue
 
                 if line[0] == 'Bus' and len(line) > 3:
-                    info = UsbDeviceInfo()
                     info.idVendor, info.idProduct = dev_id.split(':')
                     info.busNum = line[1]
                     info.devNum = line[3].rsplit(':')[0]
@@ -1816,7 +1813,7 @@ class HostPlugin(kvmagent.KvmAgent):
                     info.iProduct = ' '.join(line[2:])
                 elif line[0] == 'iSerial':
                     info.iSerial = ' '.join(line[2:]) if len(line) > 2 else ""
-                    append_usb_device(info, dev_id)
+            append_usb_device(info, dev_id)
 
         rsp.usbDevicesInfo = usb_device_infos
         return jsonobject.dumps(rsp)
@@ -1930,7 +1927,7 @@ if __name__ == "__main__":
             dracut_conf_map = {
                 '/etc/dracut.conf.d/no_lvmconf.conf': 'lvmconf=no',
                 '/etc/dracut.conf.d/no_hostonly.conf': 'hostonly=no'}
-            for conf_path, conf_content in dracut_conf_map.items():
+            for conf_path, conf_content in list(dracut_conf_map.items()):
                 linux.mkdir(os.path.dirname(conf_path))
                 with open(conf_path, 'w') as f:
                     f.write(conf_content)
@@ -2061,7 +2058,7 @@ if __name__ == "__main__":
 
         volume_path_dict = cmd.volumePathMap.__dict__
         if volume_path_dict is not None:
-            for key, value in volume_path_dict.items():
+            for key, value in list(volume_path_dict.items()):
                 r, o = bash_ro("xfs_bmap %s | wc -l" % value, True)
                 if r == 0:
                     o = o.strip()
@@ -2309,7 +2306,7 @@ done
 
                 if "size" == k:
                     if "mb" in v.lower():
-                        size = str(int(v.split(" ")[0]) / 1024) + " GB"
+                        size = str(int(v.split(" ")[0]) // 1024) + " GB"
                     elif "no module installed" in v.lower():
                         size = None
                     else:
@@ -3235,7 +3232,7 @@ done
                 logger.debug(
                     "delete rom file %s because no content in db anymore" % rom_file)
                 os.remove(rom_file)
-        elif cmd.romMd5sum != hashlib.md5(cmd.romContent).hexdigest():
+        elif cmd.romMd5sum != hashlib.md5(cmd.romContent.encode()).hexdigest():
             rsp.success = False
             rsp.error = "md5sum of pci rom file[uuid:%s] does not match" % cmd.specUuid
             return jsonobject.dumps(rsp)
@@ -3430,9 +3427,8 @@ done
             if len(_addr.split(':')) != 3:
                 _addr = '0000:' + _addr
 
-            pf = "pci_%s_%s_%s_%s" % tuple(re.split(':|\\.', _addr))
-            r, vf_lines, e = bash_roe(
-                "virsh nodedev-dumpxml %s | grep 'address domain'" % pf)
+            pf = "pci_%s_%s_%s_%s" % tuple(re.split('[:.]', _addr))
+            r, vf_lines, e = bash_roe("virsh nodedev-dumpxml %s | grep 'address domain'" % pf)
             if r != 0:
                 return "failed to run `virsh nodedev-dumpxml %s`: %s" % (pf, e)
 
@@ -3958,7 +3954,7 @@ done
         qemu_url = string.Template(cmd.qemuUrl).substitute(tmpl)
 
         if not os.path.exists(COLO_LIB_PATH):
-            os.makedirs(COLO_LIB_PATH, 0775)
+            os.makedirs(COLO_LIB_PATH, 0o775)
 
         def get_dep_version_from_version_file(version_file):
             if not os.path.exists(version_file):
@@ -4155,7 +4151,7 @@ done
 
                 free, size = 0, 0
                 for mem in data:
-                    temp = filter(lambda i: i, mem.strip().split(" "))[-2]
+                    temp = [i for i in mem.strip().split(" ") if i][-2]
                     if temp == "0":
                         continue
                     if "MemTotal" in mem:
@@ -4172,7 +4168,7 @@ done
                 if data is None or (not data):
                     return
                 data = data.strip()
-                return filter(lambda i: i, data.split(" "))
+                return [i for i in data.split(" ") if i]
 
         rsp = GetNumaTopologyResponse()
         rsp.topology = NumaTopology()()
@@ -4405,5 +4401,7 @@ done
 
         pass
 
-    def configure(self, config={}):
+    def configure(self, config=None):
+        if config is None:
+            config = {}
         self.config = config
