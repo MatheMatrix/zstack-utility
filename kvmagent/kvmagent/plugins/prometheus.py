@@ -18,6 +18,7 @@ from zstacklib.utils import lvm
 from zstacklib.utils import shell
 from zstacklib.utils import misc
 from zstacklib.utils import thread
+from zstacklib.utils import gpu
 from zstacklib.utils.bash import *
 from zstacklib.utils.ip import get_host_physicl_nics
 from zstacklib.utils.ip import get_nic_supported_max_speed
@@ -1534,18 +1535,20 @@ def collect_tianshu_gpu_status():
 
     if has_ix_smi() is False:
         return metrics.values()
-    r, gpu_info = bash_ro(
-        "ixsmi --query-gpu=gpu.power.draw,temperature.gpu,fan.speed,utilization.gpu,utilization.memory,index,gpu_bus_id,gpu_serial "
-        "--format=csv,noheader,nounits")
+    if shell.run(gpu.is_tianshu_v1()) == 0:
+        cmd = gpu.get_tianshu_gpu_metric_info_cmd_v1()
+    else:
+        cmd = gpu.get_tianshu_gpu_metric_info_cmd_v2()
 
+    r, gpu_info = bash_ro(cmd)
     if r != 0:
         check_gpu_status_and_save_gpu_status("TIANSHU", metrics)
         return metrics.values()
 
     for info in gpu_info.splitlines():
         info = info.strip().split(',')
-        pci_device_address = info[6].strip().lower()
-        gpu_serial = info[7].strip()
+        pci_device_address = info[5].strip().lower()
+        gpu_serial = info[6].strip()
         if len(pci_device_address.split(':')[0]) == 8:
             pci_device_address = pci_device_address[4:].lower()
 
@@ -1553,10 +1556,10 @@ def collect_tianshu_gpu_status():
 
         add_metrics('host_gpu_power_draw', info[0].strip(), [pci_device_address, gpu_serial], metrics)
         add_metrics('host_gpu_temperature', info[1].strip(), [pci_device_address, gpu_serial], metrics)
-        add_metrics('host_gpu_fan_speed', info[2].strip(), [pci_device_address, gpu_serial], metrics)
-        add_metrics('host_gpu_utilization', info[3].strip(), [pci_device_address, gpu_serial], metrics)
-        add_metrics('host_gpu_memory_utilization', info[4].strip(),
-                    [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_utilization', info[2].strip(), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_memory_utilization', info[3].strip(), [pci_device_address, gpu_serial], metrics)
+        if len(info) == 8:
+            add_metrics('host_gpu_fan_speed', info[7].strip(), [pci_device_address, gpu_serial], metrics)
         check_gpu_status_and_save_gpu_status("TIANSHU", metrics)
     return metrics.values()
 

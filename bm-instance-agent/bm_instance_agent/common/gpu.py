@@ -142,8 +142,22 @@ def get_hy_gpu_basic_info_cmd(iswindows=False):
     return cmd
 
 
-def get_tianshu_gpu_basic_info_cmd(iswindows=False):
+def is_tianshu_v1(iswindows=False):
+    cmd = "ixsmi --query-gpu=fan.speed --format=csv,noheader"
+    if iswindows:
+        cmd = cmd.replace(" ", "|")
+    return cmd
+
+
+def get_tianshu_gpu_basic_info_cmd_v1(iswindows=False):
     cmd = "ixsmi --query-gpu=gpu_bus_id,memory.total,gpu.power.limit,gpu_serial --format=csv,noheader"
+    if iswindows:
+        cmd = cmd.replace(" ", "|")
+    return cmd
+
+
+def get_tianshu_gpu_basic_info_cmd_v2(iswindows=False):
+    cmd = "ixsmi --query-gpu=gpu_bus_id,memory.total,power.limit,gpu_serial --format=csv,noheader"
     if iswindows:
         cmd = cmd.replace(" ", "|")
     return cmd
