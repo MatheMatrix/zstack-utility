@@ -19,14 +19,14 @@ zstack management tool""",
       package_data={'':['zstack_ctl/conf/*']},
       zip_safe=True,
       install_requires=[
-          'argparse',
           'termcolor',
-          'simplejson',
-          'configobj',
-          'pyyaml',
-          'ansible',
-          'pyroute2==0.5.14',
-          'pyOpenSSL',
+          'simplejson==3.18.4',
+          'configobj==5.0.9',
+          'pyyaml==5.3.1',
+          'ansible==9.13.0',
+          'pyroute2>=0.5.14',
+          'pycryptodome==3.19.1',
+          'pyOpenSSL', # TODO upgrade
           # -*- Extra requirements: -*-
       ],
       entry_points="""

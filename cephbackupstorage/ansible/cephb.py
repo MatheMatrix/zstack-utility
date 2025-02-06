@@ -105,11 +105,11 @@ if virtual_env_status is False:
     sys.exit(1)
 
 # name: make sure virtualenv has been setup
-command = "[ -f %s/bin/python ] || virtualenv-2.7 --system-site-packages %s " % (virtenv_path, virtenv_path)
+command = "[ -f %s/bin/python ] || python3.11 -m venv %s --system-site-packages" % (virtenv_path, virtenv_path)
 run_remote_command(command, host_post_info)
 
 # name: install python pkg and replace ceph python path
-replace_content(ceph_file_path, "regexp='/usr/bin/env python' replace='/usr/bin/python2.7'", host_post_info)
+replace_content(ceph_file_path, "regexp='/usr/bin/env python' replace='/usr/bin/python3.11'", host_post_info)
 # name: install python pkg
 extra_args = "\"--trusted-host %s -i %s \"" % (trusted_host, pip_url)
 pip_install_arg = PipInstallArg()
@@ -136,6 +136,9 @@ if host_info.distro in RPM_BASED_OS:
         # qemu-kvm-ev
         if releasever == 'c74' and get_mn_release() in ['c76', 'c79', 'h76c', 'h79c']:
             install_rpm_list += " qemu-kvm"
+
+    if get_mn_release() in ['h84r']:
+        install_rpm_list += " python3.11 python3.11-devel python3.11-pip"
 
     if zstack_repo != 'false':
         command = """pkg_list=`rpm -q {} | grep "not installed" | awk '{{ print $2 }}'` && for pkg"""\

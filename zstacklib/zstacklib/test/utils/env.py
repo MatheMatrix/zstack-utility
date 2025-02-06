@@ -106,7 +106,7 @@ def dict2obj(dictObj):
     if not isinstance(dictObj, dict):
         return dictObj
     d = Dict()
-    for k, v in dictObj.items():
+    for k, v in list(dictObj.items()):
         d[k] = dict2obj(v)
     return d
 

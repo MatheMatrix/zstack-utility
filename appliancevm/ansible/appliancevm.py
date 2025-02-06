@@ -61,7 +61,7 @@ host_post_info.releasever = releasever
 zstacklib_args = ZstackLibArgs()
 zstacklib_args.distro = host_info.distro
 zstacklib_args.distro_release = host_info.distro_release
-zstacklib_args.distro_version = host_info.distro_version
+zstacklib_args.distro_version = host_info.major_version
 zstacklib_args.zstack_repo = zstack_repo
 zstacklib_args.zstack_root = zstack_root
 zstacklib_args.host_post_info = host_post_info
@@ -120,7 +120,7 @@ if virtual_env_status is False:
     sys.exit(1)
 
 # name: make sure virtualenv has been setup
-command = "[ -f %s/bin/python ] || virtualenv %s " % (virtenv_path, virtenv_path)
+command = "[ -f %s/bin/python ] || python3.11 -m venv %s " % (virtenv_path, virtenv_path)
 run_remote_command(command, host_post_info)
 
 

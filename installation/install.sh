@@ -128,7 +128,7 @@ MIRROR_ALI_YUM_REPOS='alibase,aliupdates,aliextras,aliepel,ali-qemu-ev'
 MIRROR_ALI_YUM_WEBSITE='mirrors.aliyun.com'
 #used for zstack.properties Ansible.var.zstack_repo
 ZSTACK_PROPERTIES_REPO=''
-ZSTACK_ANSIBLE_EXECUTABLE='python2'
+ZSTACK_ANSIBLE_EXECUTABLE='python3.11'
 ZSTACK_OFFLINE_INSTALL='n'
 
 QUIET_INSTALLATION=''
@@ -989,10 +989,10 @@ cs_create_repo(){
 
 cs_check_python_installed(){
     # ansible1.9.6 is depended on by python2
-    which python2 >/dev/null 2>&1
-    [ $? -ne 0 ] && yum --disablerepo=* --enablerepo=zstack-local install -y python2 >/dev/null 2>&1
-    [ ! -f /usr/bin/python -a -f /usr/bin/python2 ] && ln -s /usr/bin/python2 /usr/bin/python
-    [ ! -f /usr/bin/easy_install -a -f /usr/bin/easy_install-2 ] && ln -s /usr/bin/easy_install-2 /usr/bin/easy_install
+    which python3.11 >/dev/null 2>&1
+    [ $? -ne 0 ] && yum --disablerepo=* --enablerepo=zstack-local install -y python3.11 >/dev/null 2>&1
+    [ ! -f /usr/bin/python -a -f /usr/bin/python3.11 ] && ln -s /usr/bin/python3.11 /usr/bin/python
+    [ ! -f /usr/bin/easy_install -a -f /usr/bin/easy_install-3 ] && ln -s /usr/bin/easy_install-3 /usr/bin/easy_install
 }
 
 cs_check_epel(){
@@ -1189,8 +1189,9 @@ ia_check_ip_hijack(){
 ia_install_python_gcc_rh(){
     echo_subtitle "Install Python and GCC"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    req_pkgs='python2 python2-devel gcc'
-    [ ! -d /usr/lib64/python2.7/site-packages/pycrypto-2.6.1-py2.7.egg-info ] && req_pkgs=${req_pkgs}" python2-crypto"
+    req_pkgs='alternatives python2 python3.11 python3.11-devel python3.11-pip gcc'
+    # TODO py3
+    # [ ! -d /usr/lib64/python2.7/site-packages/pycrypto-2.6.1-py2.7.egg-info ] && req_pkgs=${req_pkgs}" python2-crypto"
     if [ ! -z $ZSTACK_YUM_REPOS ];then
         if [ -z $DEBUG ];then
             yum clean metadata >/dev/null 2>&1
@@ -1220,12 +1221,12 @@ ia_install_python_gcc_rh(){
 ia_install_pip(){
     echo_subtitle "Install PIP"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    which pip >/dev/null 2>&1 && which pip2 >/dev/null && return
+    which pip >/dev/null 2>&1 && which pip3.11 >/dev/null && return
 
     if [ ! -z $DEBUG ]; then
         easy_install -i $pypi_source_easy_install --upgrade pip
     else
-        easy_install -i $pypi_source_easy_install --upgrade pip >>$ZSTACK_INSTALL_LOG 2>&1
+        easy_install -i $pypi_source_easy_install --upgrade pip3.11 >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     [ $? -ne 0 ] && fail "install PIP failed"
     pass
@@ -1235,9 +1236,9 @@ ia_install_python_gcc_db(){
     echo_subtitle "Install Python GCC."
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     if [ ! -z $DEBUG ]; then
-        apt-get -y install python python-dev gcc
+        apt-get -y install python3.11 python3.11-dev python3.11-pip gcc
     else
-        apt-get -y install python python-dev gcc >>$ZSTACK_INSTALL_LOG 2>&1
+        apt-get -y install python3.11 python3.11-dev python3.11-pip gcc >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     [ $? -ne 0 ] && fail "Install python and gcc fail."
     pass
@@ -1640,6 +1641,7 @@ is_install_general_libs_rh(){
 
     # Just install what is not installed
     deps_list="libselinux-python \
+            python3-libselinux \
             java-1.8.0-openjdk \
             java-1.8.0-openjdk-devel \
             bridge-utils \
@@ -1674,7 +1676,6 @@ is_install_general_libs_rh(){
             nginx \
             nginx-all-modules \
             psmisc \
-            python2-backports-ssl_match_hostname \
             python2-setuptools \
             avahi \
             gnutls-utils \
@@ -1702,7 +1703,7 @@ is_install_general_libs_rh(){
         yum install --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y $always_update_list $missing_list >>$ZSTACK_INSTALL_LOG 2>&1
     else
         yum clean metadata >/dev/null 2>&1
-        echo "yum install -y libselinux-python java ..." >>$ZSTACK_INSTALL_LOG
+        echo "yum install -y python3-libselinux libselinux-python java ..." >>$ZSTACK_INSTALL_LOG
         yum install -y $always_update_list $missing_list >>$ZSTACK_INSTALL_LOG 2>&1
     fi
 
@@ -1834,8 +1835,6 @@ install_system_libs(){
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     is_install_system_libs
     #mysql will be installed by zstack-ctl later
-    show_spinner ia_install_pip
-    show_spinner is_install_virtualenv
     #enable chronyd
     show_spinner is_enable_chronyd
 
