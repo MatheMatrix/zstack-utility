@@ -17,7 +17,7 @@ class TestShell(unittest.TestCase):
         out = shell.ShellCmd("cat /proc/cpuinfo  | grep 'cpu MHz' | tail -n 1")()
         (name, speed) = out.split(':')
         speed = speed.strip()
-        print speed
+        print(speed)
     
     def test_failure(self):
         cmd = shell.ShellCmd('find -name nothing')

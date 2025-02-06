@@ -77,7 +77,7 @@ class VirtualRouterPlugin(kvmagent.KvmAgent):
         # as there is no fflush() in python, we have to create a message
         # matching to the socket buffer to force it to send the message immediately
         if info_len % buf_size != 0:
-            padding_len = buf_size * ((info_len / buf_size) + 1) - info_len
+            padding_len = buf_size * ((info_len // buf_size) + 1) - info_len
             padding = ' ' * padding_len
             info = '%s%s' % (info, padding)
 

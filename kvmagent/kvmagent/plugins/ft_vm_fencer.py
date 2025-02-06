@@ -14,7 +14,7 @@ import os.path
 import time
 import traceback
 import threading
-import commands
+import subprocess
 
 logger = log.get_logger(__name__)
 
@@ -60,7 +60,7 @@ class FaultToleranceFecnerPlugin(kvmagent.KvmAgent):
         def getstatusoutput(c):
             # type: (str) -> (int, str)
             start_time = time.time()
-            r, o = commands.getstatusoutput(c)
+            r, o = subprocess.getstatusoutput(c)
             end_time = time.time()
             logger.debug("command:[%s], returnCode:[%s], output:[%s], spendTime:[%s] ms" % (c, r, o, (end_time - start_time) * 1000))
             return r, o
@@ -86,7 +86,7 @@ class FaultToleranceFecnerPlugin(kvmagent.KvmAgent):
                     continue
                 elif "DiskGroup" in info:
                     kvs = info.replace("Drive's position: ", "").split(",")
-                    disk_group = filter(lambda x: "DiskGroup" in x, kvs)[0]
+                    disk_group = [x for x in kvs if "DiskGroup" in x][0]
                     disk_group = disk_group.split(" ")[-1]
                 else:
                     disk_group = "unknown" if disk_group is None else disk_group
@@ -114,12 +114,13 @@ class FaultToleranceFecnerPlugin(kvmagent.KvmAgent):
                     report_to_mn_for_host_maintenance()
                     return
 
-                for key, value in group_health_dict.iteritems():
+                for key, value in group_health_dict.items():
                     if key == "1" and value <= 2:
                         report_to_mn_for_host_maintenance()
 
         def report_to_mn_for_host_maintenance():
             url = self.config.get(kvmagent.SEND_COMMAND_URL)
+            ps_uuids = "unknown" # FIXME where is ps_uuids?
             if not url:
                 logger.warn('cannot find SEND_COMMAND_URL, unable to report self fencer triggered on [psList:%s]' % ps_uuids)
                 return
@@ -167,7 +168,7 @@ class FaultToleranceFecnerPlugin(kvmagent.KvmAgent):
             # kill vm's qemu process
             vm_pids_dict = {}
             for vm_uuid in vm_in_process_uuid_list.split('\n'):
-                vm_uuid = vm_uuid.strip(' \t\n\r')
+                vm_uuid = vm_uuid.strip()
                 if not vm_uuid:
                     continue
 
@@ -183,10 +184,10 @@ class FaultToleranceFecnerPlugin(kvmagent.KvmAgent):
                     continue
 
                 vm_pid = shell.call("ps aux | grep colo\/qemu-system | grep -v grep | awk '/%s/{print $2}'" % vm_uuid)
-                vm_pid = vm_pid.strip(' \t\n\r')
+                vm_pid = vm_pid.strip()
                 vm_pids_dict[vm_uuid] = vm_pid
             
-            for vm_uuid, vm_pid in vm_pids_dict.items():
+            for vm_uuid, vm_pid in list(vm_pids_dict.items()):
                 delVnicFromOvsByVmUuidIfExist(vm_uuid)
                 kill = shell.ShellCmd('kill -9 %s' % vm_pid)
                 kill(False)
@@ -317,5 +318,7 @@ class FaultToleranceFecnerPlugin(kvmagent.KvmAgent):
     def stop(self):
         pass
 
-    def configure(self, config):
+    def configure(self, config=None):
+        if config is None:
+            config = {}
         self.config = config

@@ -1,7 +1,5 @@
 import os
-import difflib
 from zstacklib.utils import log
-
 
 logger = log.get_logger(__name__)
 MULTIPATH_PATH = "/etc/multipath.conf"
@@ -34,7 +32,7 @@ def sorted_conf(sections):
     if not sections:
         return result
 
-    for section in sorted(sections, key=lambda s: s.keys()[0]):
+    for section in sorted(sections, key=lambda s: list(s.keys())[0]):
         section_name, section_value = next(iter(section.items()))
         if type(section_value) is list:
             result.append({section_name: sorted_conf(section_value)})

@@ -61,7 +61,7 @@ except ImportError:
 # clobbering that the builtin class allows.
 
 # sibling module than handles all the ugly platform-specific details of file locking
-from portalocker import lock, unlock, LOCK_EX, LOCK_NB, LockException
+from .portalocker import lock, unlock, LOCK_EX, LOCK_NB, LockException
 
 
 # Workaround for handleError() in Python 2.7+ where record is written to stderr
@@ -126,7 +126,9 @@ class ConcurrentRotatingFileHandler(BaseRotatingHandler):
         the RotatingFileHandler is used by another.
         """
         # Absolute file name handling done by FileHandler since Python 2.5
-        BaseRotatingHandler.__init__(self, filename, mode, encoding, delay)
+        if encoding:
+            print("encoding:" + encoding)
+        super(ConcurrentRotatingFileHandler, self).__init__(filename, mode, encoding, delay)
         self.delay = delay
         self._rotateFailed = False
         self.maxBytes = maxBytes
@@ -154,7 +156,7 @@ class ConcurrentRotatingFileHandler(BaseRotatingHandler):
         """
         if mode is None:
             mode = self.mode
-        if self.encoding is None:
+        if self.encoding is None or self.encoding == 'locale':
             stream = open(self.baseFilename, mode)
         else:
             stream = codecs.open(self.baseFilename, mode, self.encoding)

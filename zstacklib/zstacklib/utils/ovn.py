@@ -3,11 +3,6 @@
 @author: haibiao.xiao
 '''
 import os
-import shutil
-import time
-from os.path import split
-from tarfile import DEFAULT_FORMAT
-
 import yaml
 import glob
 import uuid
@@ -16,11 +11,9 @@ import simplejson
 from enum import Enum, unique
 
 from zstacklib.utils import log
-from zstacklib.utils import shell
 from zstacklib.utils import bash
 from zstacklib.utils import iproute
 from zstacklib.utils import linux
-from zstacklib.utils.lvm import lvm_check_operation
 
 logger = log.get_logger(__name__)
 
