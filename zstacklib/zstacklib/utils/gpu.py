@@ -161,7 +161,7 @@ def parse_amd_gpu_output(output):
             return gpuinfos
 
         # Legacy format: top-level dict of card_name -> card_data
-        for card_name, card_data in gpu_info_json.items():
+        for card_name, card_data in list(gpu_info_json.items()):
             if not isinstance(card_data, dict):
                 continue
             gpuinfo = {}
@@ -188,7 +188,7 @@ def parse_hy_gpu_output(output):
         if gpu_info_json is None:
             return gpuinfos
 
-        for card_name, card_data in gpu_info_json.items():
+        for card_name, card_data in list(gpu_info_json.items()):
             gpuinfo = {}
             pci_device_address = card_data['PCI Bus'].lower()
             if len(pci_device_address.split(':')[0]) == 8:
