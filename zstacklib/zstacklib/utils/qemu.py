@@ -1,14 +1,11 @@
 
-import bash
+from . import bash
 import os
-import log
-import jsonobject
-import shell
 import string
-import json
-import re
-from linux import get_vm_pid, get_process_start_time, HOST_ARCH
-from distutils.version import LooseVersion
+from . import log
+from . import jsonobject
+from . import shell
+from .linux import get_vm_pid, get_process_start_time, HOST_ARCH
 
 logger = log.get_logger(__name__)
 
@@ -101,7 +98,7 @@ def _parse_version(version_output):
     else:
         full_ver = ver_line
 
-    return "-".join(filter(lambda s: s[0].isdigit(), full_ver.split("-")))
+    return "-".join([s for s in full_ver.split("-") if s[0].isdigit()])
 
 # QEMU emulator version 2.9.0(qemu-kvm-ev-2.9.0-16.el7_4.14.1)
 # QEMU emulator version 2.12.0 (qemu-kvm-ev-2.12.0-44.1.el7_9.1)

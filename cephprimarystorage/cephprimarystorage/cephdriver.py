@@ -23,7 +23,7 @@ class CephDriver(object):
     def _get_file_size(self, path):
         o = shell.call('rbd --format json info %s' % path)
         o = jsonobject.loads(o)
-        return long(o.size_)
+        return int(o.size_)
 
     def clone_volume(self, cmd, rsp):
         src_path = self._normalize_install_path(cmd.srcPath)

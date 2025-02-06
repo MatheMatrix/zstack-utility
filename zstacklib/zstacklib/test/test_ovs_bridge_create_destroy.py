@@ -41,7 +41,7 @@ class Test(unittest.TestCase):
         request_json = ({"body": jsonobject.dumps(command)})
         # check back json result
         response_json = plugin.create_ovs_bridge(request_json)
-        print("create_ovs_bridge() rsp: %s" % (response_json))
+        print(("create_ovs_bridge() rsp: %s" % (response_json)))
         response_object = jsonobject.loads(response_json)
         self.assertEqual(response_object.success, True)
         # check if vSwitch restarted
@@ -77,7 +77,7 @@ class Test(unittest.TestCase):
         request_json = ({"body": jsonobject.dumps(command)})
         # check back json result
         response_json = plugin.create_ovs_bridge(request_json)
-        print("create_ovs_bridge() rsp: %s" % (response_json))
+        print(("create_ovs_bridge() rsp: %s" % (response_json)))
         response_object = jsonobject.loads(response_json)
         self.assertEqual(response_object.success, True)
         # check if vSwitch restarted
@@ -114,7 +114,7 @@ class Test(unittest.TestCase):
         request_json = ({"body": jsonobject.dumps(command)})
         # check back json result
         response_json = plugin.delete_ovs_bridge(request_json)
-        print("delete_ovs_bridge() rsp: %s" % (response_json))
+        print(("delete_ovs_bridge() rsp: %s" % (response_json)))
         response_object = jsonobject.loads(response_json)
         self.assertEqual(response_object.success, True)
         print("================")

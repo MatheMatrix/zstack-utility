@@ -1,8 +1,8 @@
 import time
 import unittest
 
-from plugin import task_plugin1
-from plugin import task_plugin2
+from .plugin import task_plugin1
+from .plugin import task_plugin2
 from zstacklib.test.utils import misc
 from zstacklib.utils import jsonobject, plugin
 from zstacklib.utils.misc import ignore_exception

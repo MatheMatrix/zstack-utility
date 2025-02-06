@@ -3,54 +3,44 @@
 
 import argparse
 import hashlib
-import sys
-import os
-import subprocess
 import signal
 import getpass
-import urlparse
+import urllib.parse
 import xml.etree.ElementTree as ET
 
 import gzip
 import simplejson
 from termcolor import colored
-import ConfigParser
-import StringIO
-import functools
-import time
 import random
 import string
 from configobj import ConfigObj
 import tempfile
 import pwd, grp
-import traceback
 import uuid
 import yaml
-import re
 import OpenSSL
-import glob
 from shutil import copyfile
 from shutil import rmtree
 
-from utils import linux, lock
-from zstacklib import *
-import log_collector
+from .utils import linux, lock
+from .zstacklib import *
+from . import log_collector
 import jinja2
 import socket
 import struct
 import fcntl
-import commands
+import subprocess
 import threading
 import itertools
 import platform
-from  datetime import datetime, timedelta
+from datetime import datetime, timedelta
 import multiprocessing
 import base64
 from Crypto.Cipher import AES
 from Crypto.Util.py3compat import *
 from hashlib import md5
 from string import Template
-from timeline import TaskTimeline, __doc__ as timeline_doc
+from .timeline import TaskTimeline, __doc__ as timeline_doc
 
 mysql_db_config_script='''
 #!/bin/bash
@@ -399,28 +389,6 @@ def loop_until_timeout(timeout, interval=1):
         return inner
     return wrap
 
-def find_process_by_cmdline(cmdlines):
-    pids = [pid for pid in os.listdir('/proc') if pid.isdigit()]
-    for pid in pids:
-        try:
-            with open(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
-                cmdline = fd.read()
-
-            is_find = True
-            for c in cmdlines:
-                if c not in cmdline:
-                    is_find = False
-                    break
-
-            if not is_find:
-                continue
-
-            return pid
-        except IOError:
-            continue
-
-    return None
-
 def ssh_run_full(ip, cmd, params=[], pipe=True):
     remote_path = '/tmp/%s.sh' % uuid.uuid4()
     script = script_text % (remote_path, cmd, remote_path, ' '.join(params), remote_path)
@@ -498,12 +466,10 @@ def check_ip_port(host, port):
     result = sock.connect_ex((host, int(port)))
     return result == 0
 
-def compare_version(version1, version2):
+def get_zstack_version(db_hostname, db_port, db_user, db_password):
     def normalize(v):
         return [int(x) for x in re.sub(r'(\.0+)*$','', v).split(".")]
-    return cmp(normalize(version2), normalize(version1))
 
-def get_zstack_version(db_hostname, db_port, db_user, db_password):
     query = MySqlCommandLineQuery()
     query.host = db_hostname
     query.port = db_port
@@ -514,7 +480,7 @@ def get_zstack_version(db_hostname, db_port, db_user, db_password):
     ret = query.query()
 
     versions = [r['version'] for r in ret]
-    versions.sort(cmp=compare_version)
+    versions.sort(key=normalize, reverse=True)
 
     version = versions[0]
     return version
@@ -614,7 +580,7 @@ def get_ha_mn_list(conf_file):
 def stop_mevoco(host_post_info):
     command = "zstack-ctl stop_node && zstack-ctl stop_ui"
     logger.debug("[ HOST: %s ] INFO: starting run shell command: '%s' " % (host_post_info.host, command))
-    (status, output)= commands.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
+    (status, output)= subprocess.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
                                                (host_post_info.private_key, host_post_info.host, command))
     if status != 0:
         logger.error("[ HOST: %s ] INFO: shell command: '%s' failed" % (host_post_info.host, command))
@@ -625,7 +591,7 @@ def stop_mevoco(host_post_info):
 def start_mevoco(host_post_info):
     command = "zstack-ctl start_node && zstack-ctl start_ui"
     logger.debug("[ HOST: %s ] INFO: starting run shell command: '%s' " % (host_post_info.host, command))
-    (status, output)= commands.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
+    (status, output)= subprocess.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
                                                (host_post_info.private_key, host_post_info.host, command))
     if status != 0:
         logger.error("[ HOST: %s ] FAIL: shell command: '%s' failed" % (host_post_info.host, command))
@@ -718,7 +684,7 @@ def check_host_info_format(host_info, with_public_key=False):
 def check_host_password(password, ip):
     command ='timeout 10 sshpass -p %s ssh -q -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no -o ' \
              'StrictHostKeyChecking=no root@%s echo ""' % (shell_quote(password), ip)
-    (status, output) = commands.getstatusoutput(command)
+    (status, output) = subprocess.getstatusoutput(command)
     if status != 0:
         error("Connect to host: '%s' with password '%s' failed! Please check password firstly and make sure you have "
               "disabled UseDNS in '/etc/ssh/sshd_config' on %s" % (ip, password, ip))
@@ -741,7 +707,7 @@ def get_ip_by_interface(device_name):
 
 def start_remote_mn( host_post_info):
     command = "zstack-ctl start_node && zstack-ctl start_ui"
-    (status, output) = commands.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
+    (status, output) = subprocess.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
                                                 (UpgradeHACmd.private_key_name, host_post_info.host, command))
     if status != 0:
         error("Something wrong on host: %s\n %s" % (host_post_info.host, output))
@@ -773,7 +739,7 @@ class ZstackSpinner(object):
                 sys.stdout.write("\r %s: ... %s " % (self.output, next(self.spinner)))
                 sys.stdout.flush()
                 time.sleep(.1)
-        print "\r %s: ... %s" % (self.output, colored("PASS","green"))
+        print("\r %s: ... %s" % (self.output, colored("PASS","green")))
 
 
 class Ansible(object):
@@ -896,7 +862,7 @@ class ConfigObjEx(ConfigObj):
     def __init__(self, filename):
         super(ConfigObjEx, self).__init__(filename, write_empty_values=True)
 
-    def write(self):
+    def write(self, **kwargs):
         with open(self.filename, 'wb') as f:
             super(ConfigObjEx, self).write(f)
             f.flush()
@@ -917,7 +883,7 @@ class PropertyFile(object):
 
     def read_all_properties(self):
         with on_error("errors on reading %s" % self.path):
-            return self.config.items()
+            return list(self.config.items())
 
     @lock.file_lock('/run/zstack.properties.lock')
     def delete_properties(self, keys):
@@ -1005,7 +971,7 @@ class Ctl(object):
         if os.path.exists(versionFile):
             with open(versionFile, 'r') as fd2:
                 self.uiVersion = fd2.readline()
-                self.uiVersion = self.uiVersion.strip(' \t\n\r')
+                self.uiVersion = self.uiVersion.strip()
                 self.uiPrimaryVersion = self.uiVersion[0]
         self.commands = {}
         self.command_list = []
@@ -1430,6 +1396,9 @@ class ShellCmd(object):
             info('executing shell command[%s]:' % self.cmd)
 
         (self.stdout, self.stderr) = self.process.communicate()
+        self.stdout = self.stdout.decode() if self.stdout else ''
+        self.stderr = self.stderr.decode() if self.stderr else ''
+
         if is_exception and self.process.returncode != 0:
             self.raise_error()
 
@@ -1533,7 +1502,7 @@ class Command(object):
     def run(self, args):
         raise CtlError('the command is not implemented')
 
-def create_check_ui_status_command(timeout=10, ui_ip='127.0.0.1', ui_port='5000', if_https=False):
+def create_check_ui_status_command(timeout=10, ui_ip='127.0.0.1', ui_port=5000, if_https=False):
     protocol = 'https' if if_https else 'http'
     if shell_return('which wget') == 0:
         return ShellCmd(
@@ -1557,9 +1526,9 @@ def get_mgmt_node_state_from_result(cmd):
 
     try:
         result = str(json.loads(cmd.stdout)["result"])
-        if string.find(result, "success\":true") != -1:
+        if 'success":true' in result:
             return True
-        if string.find(result, "success\":false") != -1:
+        if 'success":false' in result:
             return False
         return None
     except:
@@ -1683,7 +1652,7 @@ class MySqlCommandLineQuery(object):
             cmd = '''mysql -u %s --host %s --port %s -t %s -e "%s"''' % (self.user, self.host, self.port, self.table, sql)
 
         output = shell(cmd)
-        output = output.strip(' \t\n\r')
+        output = output.strip()
         ret = []
         if not output:
             return ret
@@ -1762,7 +1731,7 @@ class ShowGrayscaleUpgradeStatusCmd(Command):
                 passed = False
                 message = 'the following hosts are not connected to the management node:\n%s' % out
 
-            info('grayscale upgrade hosts check: %s' % colored('Passed' if passed else 'Failed', 'green' if passed else 'red'))
+            info('grayscale upgrade hosts check: %s' % colored('Passed' if passed else 'Failed', 'green' if passed else 'red')) # type: ignore
             if message:
                 info(message)
 
@@ -1783,7 +1752,7 @@ class ShowGrayscaleUpgradeStatusCmd(Command):
                 passed = False
                 message = 'the following hosts have not reported their agent version to the management node:\n%s' % out
 
-            info('grayscale upgrade agent version check: %s' % colored('Passed' if passed else 'Failed', 'green' if passed else 'red'))
+            info('grayscale upgrade agent version check: %s' % colored('Passed' if passed else 'Failed', 'green' if passed else 'red')) # type: ignore
             if message:
                 info(message)
 
@@ -1804,7 +1773,7 @@ class ShowGrayscaleUpgradeStatusCmd(Command):
                 passed = False
                 message = 'the following VPCs are not connected to the management node:\n%s' % out
 
-            info('grayscale upgrade VPC check: %s' % colored('Passed' if passed else 'Failed', 'green' if passed else 'red'))
+            info('grayscale upgrade VPC check: %s' % colored('Passed' if passed else 'Failed', 'green' if passed else 'red')) # type: ignore
             if message:
                 info(message)
 
@@ -1890,7 +1859,7 @@ class ShowStatusCmd(Command):
             try:
                 db_hostname, db_port, db_user, db_password = ctl.get_live_mysql_portal()
             except CtlError as e:
-                info('version: %s' % colored('unknown, %s' % e.message.strip(), 'yellow'))
+                info('version: %s' % colored('unknown, %s' % str(e).strip(), 'yellow'))
                 return
 
             if db_password:
@@ -1923,7 +1892,7 @@ class ShowStatusCmd(Command):
             full_version = get_hci_full_version()
             if not full_version:
                 return
-            version = full_version.strip(' \t\n\r')
+            version = full_version.strip()
             if version is not None:
                 if version[0].isdigit():
                     info('Cube version: %s (Cube %s)' % (version.split('-')[0], version))
@@ -2031,7 +2000,7 @@ class ShowStatus2Cmd(Command):
 
         index = self.service_names.index(service_name)
         format_str = "[{}]{}[{}]".format(("%d" % (index + 1)),
-                                         service_name.ljust(50, ".").replace(".","·"), colored(status, status_color))
+                                         service_name.ljust(50, ".").replace(".","·"), colored(status, status_color)) # type: ignore
         info_and_debug(format_str)
 
     def run(self, args):
@@ -2088,7 +2057,7 @@ class ShowStatus3Cmd(Command):
         try:
             db_hostname, db_port, db_user, db_password = ctl.get_live_mysql_portal()
         except CtlError as e:
-            info('version: %s' % colored('unknown, %s' % e.message.strip(), 'yellow'))
+            info('version: %s' % colored('unknown, %s' % str(e).strip(), 'yellow'))
             return
 
         def get_pjnum():
@@ -2576,16 +2545,16 @@ class AESCipher:
     """
 
     def __init__(self, key='ZStack open source'):
-        self.key = md5(key).hexdigest()
-        self.cipher = AES.new(self.key, AES.MODE_ECB)
+        self.key = md5(key.encode()).hexdigest()
+        self.cipher = AES.new(self.key.encode(), AES.MODE_ECB)
         self.prefix = "crypt_key_for_v1::"
         self.BLOCK_SIZE = 16
 
     # PKCS#7
-    def _pad(self, data_to_pad, block_size):
+    def _pad(self, data_to_pad: str, block_size: int) -> bytes:
         padding_len = block_size - len(data_to_pad) % block_size
         padding = bchr(padding_len) * padding_len
-        return data_to_pad + padding
+        return data_to_pad.encode() + padding
 
     # PKCS#7
     def _unpad(self, padded_data, block_size):
@@ -2599,11 +2568,11 @@ class AESCipher:
             raise ValueError("PKCS#7 padding is incorrect.")
         return padded_data[:-padding_len]
 
-    def encrypt(self, raw):
+    def encrypt(self, raw:str) -> str:
         raw = self._pad(self.prefix + raw, self.BLOCK_SIZE)
-        return base64.b64encode(self.cipher.encrypt(raw))
+        return base64.b64encode(self.cipher.encrypt(raw)).decode()
 
-    def decrypt(self, enc):
+    def decrypt(self, enc:str) -> str:
         denc = base64.b64decode(enc)
         ret = self._unpad(self.cipher.decrypt(denc), self.BLOCK_SIZE).decode('utf8')
         return ret[len(self.prefix):] if ret.startswith(self.prefix) else enc
@@ -2652,7 +2621,7 @@ class StartCmd(Command):
     def check_cpu_mem(self):
         if multiprocessing.cpu_count() < StartCmd.MINIMAL_CPU_NUMBER:
             error("CPU number should not less than %d" % StartCmd.MINIMAL_CPU_NUMBER)
-        status, output = commands.getstatusoutput("cat /proc/meminfo | grep MemTotal |   awk -F \":\" '{print $2}' | awk -F \" \" '{print $1}'")
+        status, output = subprocess.getstatusoutput("cat /proc/meminfo | grep MemTotal |   awk -F \":\" '{print $2}' | awk -F \" \" '{print $1}'")
         if status == 0:
             if int(output) < StartCmd.MINIMAL_MEM_SIZE:
                 error("Memory size should not less than %d KB" % StartCmd.MINIMAL_MEM_SIZE)
@@ -2709,7 +2678,7 @@ class StartCmd(Command):
                 ctl.internal_run('mysql_process_list', '--check')
 
         def open_iptables_port(protocol, port_list):
-            distro = platform.dist()[0]
+            distro = platform.freedesktop_os_release()['ID'].lower()
             if type(port_list) is not list:
                 error("port list should be list")
             for port in port_list:
@@ -2884,7 +2853,7 @@ class StartCmd(Command):
             else:
                 beanXml = "zstack.xml"
 
-            commands.getstatusoutput("zstack-ctl configure beanConf=%s" % beanXml)
+            subprocess.getstatusoutput("zstack-ctl configure beanConf=%s" % beanXml)
 
         def check_start_mode(mode):
             if mode and mode != '':
@@ -3608,7 +3577,7 @@ class UpgradeHACmd(Command):
         mevoco_bin = os.path.basename(mevoco_installer)
         command = "rm -rf /tmp/zstack_upgrade.lock && cd %s && bash %s -u -i " % (mevoco_dir, mevoco_bin)
         logger.debug("[ HOST: %s ] INFO: starting run shell command: '%s' " % (host_post_info.host, command))
-        (status, output)= commands.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
+        (status, output)= subprocess.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
                                                    (UpgradeHACmd.private_key_name, host_post_info.host, command))
         if status != 0:
             error("Something wrong on host: %s\n %s" % (host_post_info.host, output))
@@ -3637,6 +3606,7 @@ class UpgradeHACmd(Command):
         mn_list = get_ha_mn_list(UpgradeHACmd.conf_file)
         host1_ip = mn_list[0]
         host2_ip = mn_list[1]
+        host3_ip = None
         if len(mn_list) > 2:
             host3_ip = mn_list[2]
 
@@ -3703,7 +3673,7 @@ class UpgradeHACmd(Command):
         SpinnerInfo.spinner_status = reset_dict_value(SpinnerInfo.spinner_status,False)
         SpinnerInfo.spinner_status['backup_db'] = True
         ZstackSpinner(spinner_info)
-        (status, output) =  commands.getstatusoutput("zstack-ctl dump_mysql >> /dev/null 2>&1")
+        (status, output) =  subprocess.getstatusoutput("zstack-ctl dump_mysql >> /dev/null 2>&1")
 
         spinner_info = SpinnerInfo()
         spinner_info.output = "Starting to upgrade mevoco"
@@ -3720,7 +3690,7 @@ class UpgradeHACmd(Command):
         SpinnerInfo.spinner_status = reset_dict_value(SpinnerInfo.spinner_status,False)
         SpinnerInfo.spinner_status['upgrade_db'] = True
         ZstackSpinner(spinner_info)
-        (status, output) =  commands.getstatusoutput("zstack-ctl upgrade_db")
+        (status, output) =  subprocess.getstatusoutput("zstack-ctl upgrade_db")
         if status != 0:
             error("Upgrade mysql failed: %s" % output)
         else:
@@ -3764,7 +3734,7 @@ class AddManagementNodeCmd(Command):
     def add_public_key_to_host(self, key_path, host_info):
         command ='timeout 10 sshpass -p %s ssh-copy-id -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no' \
                  ' -o StrictHostKeyChecking=no -i %s root@%s' % (shell_quote(host_info.remote_pass), key_path, host_info.host)
-        (status, output) = commands.getstatusoutput(command)
+        (status, output) = subprocess.getstatusoutput(command)
         if status != 0:
             error("Copy public key '%s' to host: '%s' failed:\n %s" % (key_path, host_info.host,  output))
 
@@ -3773,13 +3743,13 @@ class AddManagementNodeCmd(Command):
             command = 'zstack-ctl install_management_node --host=%s --ssh-key="%s" --force-reinstall' % (host_info.remote_user+':'+host_info.remote_pass+'@'+host_info.host, key)
         else:
             command = 'zstack-ctl install_management_node --host=%s --ssh-key="%s"' % (host_info.remote_user+':'+host_info.remote_pass+'@'+host_info.host, key)
-        (status, output) = commands.getstatusoutput(command)
+        (status, output) = subprocess.getstatusoutput(command)
         if status != 0:
             error("deploy mn on host %s failed:\n %s" % (host_info.host, output))
 
     def install_ui_on_host(self, key, host_info):
         command = 'zstack-ctl install_ui --host=%s --ssh-key=%s' % (host_info.host, key)
-        (status, output) = commands.getstatusoutput(command)
+        (status, output) = subprocess.getstatusoutput(command)
         if status != 0:
             error("deploy ui on host %s failed:\n %s" % (host_info.host, output))
 
@@ -3787,19 +3757,19 @@ class AddManagementNodeCmd(Command):
         command = "mkdir -p `dirname %s`" % ctl.properties_file_path
         run_remote_command(command, host_info)
         command = "scp -i %s %s root@%s:%s" % (key, ctl.properties_file_path, host_info.host, ctl.properties_file_path)
-        (status, output) = commands.getstatusoutput(command)
+        (status, output) = subprocess.getstatusoutput(command)
         if status != 0:
             error("copy config to host %s failed:\n %s" % (host_info.host, output))
         command = "ssh -q -i %s -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@%s zstack-ctl configure " \
                   "management.server.ip=%s && zstack-ctl save_config" % (key, host_info.host, host_info.host)
-        (status, output) = commands.getstatusoutput(command)
+        (status, output) = subprocess.getstatusoutput(command)
         if status != 0:
             error("config management server %s failed:\n %s" % (host_info.host, output))
 
     def start_mn_on_host(self, host_info, key):
         command = "ssh -q -i %s -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@%s zstack-ctl " \
                   "start_node " % (key, host_info.host)
-        (status, output) = commands.getstatusoutput(command)
+        (status, output) = subprocess.getstatusoutput(command)
         command = "mkdir -p /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo" \
                   "ln -s /opt/zstack-dvd/x86_64 /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo/x86_64" \
                   "ln -s /opt/zstack-dvd/aarch64 /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo/aarch64"
@@ -3808,12 +3778,12 @@ class AddManagementNodeCmd(Command):
             error("start node on host %s failed:\n %s" % (host_info.host, output))
         command = "ssh -q -i %s -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@%s zstack-ctl " \
                   "start_ui" % (key, host_info.host)
-        (status, output) = commands.getstatusoutput(command)
+        (status, output) = subprocess.getstatusoutput(command)
         if status != 0:
             error("start ui on host %s failed:\n %s" % (host_info.host, output))
 
     def install_packages(self, pkg_list, host_info):
-        distro = platform.dist()[0]
+        distro = platform.freedesktop_os_release()['ID'].lower()
         if distro in RPM_BASED_OS:
             for pkg in pkg_list:
                 yum_install_package(pkg, host_info)
@@ -3842,7 +3812,7 @@ class AddManagementNodeCmd(Command):
             (host_info.remote_user, host_info.remote_pass, host_info.host, host_info.remote_port) = check_host_info_format(host)
             check_host_password(host_info.remote_pass, host_info.host)
             command = "cat %s | grep %s || echo %s >> %s" % (inventory_file, host_info.host, host_info.host, inventory_file)
-            (status, output) = commands.getstatusoutput(command)
+            (status, output) = subprocess.getstatusoutput(command)
             if status != 0 :
                 error(output)
             host_info_list.append(host_info)
@@ -3903,7 +3873,7 @@ class RecoverHACmd(Command):
     logger_dir = "/var/log/zstack/"
     logger_file = "ha.log"
     bridge = ""
-    SpinnerInfo.spinner_status = {'cluster':False, 'mysql':False,'mevoco':False, 'check_init':False, 'cluster':False}
+    SpinnerInfo.spinner_status = {'cluster': False, 'mysql': False, 'mevoco': False, 'check_init': False}
     ha_config_content = None
     def __init__(self):
         super(RecoverHACmd, self).__init__()
@@ -3967,6 +3937,7 @@ class RecoverHACmd(Command):
             error("Didn't find host_list in config file %s" % RecoverHACmd.conf_file)
 
         host_list = RecoverHACmd.ha_config_content['host_list'].split(',')
+        host1_ip, host2_ip, host3_ip = None, None, None
         if len(host_list) == 2:
             host1_ip = host_list[0]
             host2_ip = host_list[1]
@@ -4133,15 +4104,14 @@ class InstallHACmd(Command):
             error("Install HA must assign a vip")
 
         # check gw ip is available
-        if args.gateway is None:
-            if get_default_gateway_ip() is None:
-                error("Can't get the gateway IP address from system, please check your route table or pass specific " \
+        gateway_ip = args.gateway
+        if not gateway_ip:
+            gateway_ip = get_default_gateway_ip()
+            if not gateway_ip:
+                error("Can't get the gateway IP address from system, please check your route table or pass specific "
                       "gateway through \"--gateway\" argument")
-            else:
-                gateway_ip = get_default_gateway_ip()
-        else:
-            gateway_ip = args.gateway
-        (status, output) = commands.getstatusoutput('ping -c 1 %s' % gateway_ip)
+
+        (status, output) = subprocess.getstatusoutput('ping -c 1 %s' % gateway_ip)
         if status != 0:
             error("The gateway %s unreachable!" % gateway_ip)
         # check input host info
@@ -4212,7 +4182,7 @@ class InstallHACmd(Command):
         public_key_name = InstallHACmd.conf_dir+ "ha_key.pub"
         if os.path.isfile(public_key_name) is not True:
             command = "echo -e  'y\n'|ssh-keygen -q -t rsa -N \"\" -f %s" % private_key_name
-            (status, output) = commands.getstatusoutput(command)
+            (status, output) = subprocess.getstatusoutput(command)
             if status != 0:
                 error("Generate private key %s failed! Generate manually or rerun the process!" % private_key_name)
         with open(public_key_name) as public_key_file:
@@ -4291,7 +4261,7 @@ class InstallHACmd(Command):
         ssh_add_public_key_command = "sshpass -p %s ssh -q -o UserKnownHostsFile=/dev/null -o " \
                                   "PubkeyAuthentication=no -o StrictHostKeyChecking=no root@%s '%s'" % \
                                   (shell_quote(args.host1_password), args.host1, add_public_key_command)
-        (status, output) = commands.getstatusoutput(ssh_add_public_key_command)
+        (status, output) = subprocess.getstatusoutput(ssh_add_public_key_command)
         if status != 0:
             error(output)
 
@@ -4299,7 +4269,7 @@ class InstallHACmd(Command):
         ssh_add_public_key_command = "sshpass -p %s ssh -q -o UserKnownHostsFile=/dev/null -o " \
                                   "PubkeyAuthentication=no -o StrictHostKeyChecking=no root@%s '%s' " % \
                                   (shell_quote(args.host2_password), args.host2, add_public_key_command)
-        (status, output) = commands.getstatusoutput(ssh_add_public_key_command)
+        (status, output) = subprocess.getstatusoutput(ssh_add_public_key_command)
         if status != 0:
             error(output)
 
@@ -4308,7 +4278,7 @@ class InstallHACmd(Command):
             ssh_add_public_key_command = "sshpass -p %s ssh -q -o UserKnownHostsFile=/dev/null -o " \
                                               "PubkeyAuthentication=no -o StrictHostKeyChecking=no root@%s '%s' " % \
                                               (shell_quote(args.host3_password), args.host3, add_public_key_command)
-            (status, output) = commands.getstatusoutput(ssh_add_public_key_command)
+            (status, output) = subprocess.getstatusoutput(ssh_add_public_key_command)
             if status != 0:
                 error(output)
 
@@ -4372,7 +4342,7 @@ class InstallHACmd(Command):
                     run_remote_command("lsof -i tcp:4567 | awk 'NR!=1 {print $2}' | xargs kill -9", self.host3_post_info)
 
             command = "service mysql bootstrap"
-            (status, output) = commands.getstatusoutput(command)
+            (status, output) = subprocess.getstatusoutput(command)
             if status != 0:
                 error(output)
             else:
@@ -4616,16 +4586,16 @@ class InstallHACmd(Command):
         if args.host3_info is not False:
             run_remote_command(command, self.host3_post_info)
         command = "zstack-ctl start"
-        (status, output)= commands.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
+        (status, output)= subprocess.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
                                                              (private_key_name, args.host1, command))
         if status != 0:
             error("Something wrong on host: %s\n %s" % (args.host1, output))
-        (status, output)= commands.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
+        (status, output)= subprocess.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
                                                              (private_key_name, args.host2, command))
         if status != 0:
             error("Something wrong on host: %s\n %s" % (args.host2, output))
         if args.host3_info is not False:
-            (status, output)= commands.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
+            (status, output)= subprocess.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
                                                                  (private_key_name, args.host3, command))
             if status != 0:
                 error("Something wrong on host: %s\n %s" % (args.host3, output))
@@ -4640,14 +4610,14 @@ class InstallHACmd(Command):
         if args.host3_info is not False:
             copy(copy_arg, self.host2_post_info)
 
-        print '''HA deploy finished!
+        print('''HA deploy finished!
 Mysql user 'root' password: %s
 Mysql user 'zstack' password: %s
 Mevoco is running, visit %s in Chrome or Firefox with default user/password : %s
 You can check the cluster status at %s with user/passwd : %s
        ''' % (args.mysql_root_password, args.mysql_user_password,
               colored('http://%s:8888' % args.vip, 'blue'), colored('admin/password', 'yellow'),
-              colored('http://%s:9132/zstack' % args.vip, 'blue'), colored('zstack/zstack123', 'yellow'))
+              colored('http://%s:9132/zstack' % args.vip, 'blue'), colored('zstack/zstack123', 'yellow')))
 
 class HaproxyKeepalived(InstallHACmd):
     def __init__(self):
@@ -5427,10 +5397,10 @@ class MysqlRestrictConnection(Command):
 
     def check_root_password(self, root_password, remote_ip=None):
         if remote_ip is not None:
-            status, output = commands.getstatusoutput(
+            status, output = subprocess.getstatusoutput(
                 "mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
         else:
-            status, output = commands.getstatusoutput(
+            status, output = subprocess.getstatusoutput(
                 "mysql -u root -p%s -e 'show databases;'" % root_password)
 
         if status != 0:
@@ -5486,10 +5456,10 @@ class MysqlRestrictConnection(Command):
 
     def grant_views_definer_privilege(self, root_password, remote_ip=None):
         if remote_ip is not None:
-            status, output = commands.getstatusoutput(
+            status, output = subprocess.getstatusoutput(
                 "mysql -N -u root -p%s -h '%s' -e 'select definer from information_schema.VIEWS limit 1;'" % (root_password, remote_ip))
         else:
-            status, output = commands.getstatusoutput(
+            status, output = subprocess.getstatusoutput(
                 "mysql -N -u root -p%s -e 'select definer from information_schema.VIEWS limit 1;'" % root_password)
 
         if status != 0:
@@ -5593,16 +5563,16 @@ class ChangeMysqlPasswordCmd(Command):
 
     def check_username_password(self, root_password, remote_ip):
         if remote_ip is not None:
-            status, output = commands.getstatusoutput("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
+            status, output = subprocess.getstatusoutput("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
         else:
-            status, output = commands.getstatusoutput("mysql -u root -p%s -e 'show databases;'" % root_password)
+            status, output = subprocess.getstatusoutput("mysql -u root -p%s -e 'show databases;'" % root_password)
         if status != 0:
             error(output)
 
     def get_mysql_user_hosts(self, user, root_password, remote_ip):
         if remote_ip is None:
             remote_ip = "localhost"
-        status, output = commands.getstatusoutput(
+        status, output = subprocess.getstatusoutput(
             '''mysql -u root -p{root_pass} -h{remote_ip} mysql -BN -e \"select Host from user where User='{user}';\"''' \
                     .format(root_pass=root_password, remote_ip=remote_ip, user=user))
         if status != 0:
@@ -5612,7 +5582,7 @@ class ChangeMysqlPasswordCmd(Command):
 
         # in mariadb 10.4, no grants user cannot change password
         for host in output.split("\n"):
-            status, output = commands.getstatusoutput(
+            status, output = subprocess.getstatusoutput(
                 '''mysql -u root -p{root_pass} -h{remote_ip} mysql -e \"SHOW GRANTS FOR '{user}'@'{host}';\"'''\
                     .format(root_pass=root_password, remote_ip=remote_ip, user=user, host=host))
             if status == 0:
@@ -5636,7 +5606,7 @@ class ChangeMysqlPasswordCmd(Command):
             else:
                 sql = '''mysql -u root -p{root_pass} -e "{sql}" '''.format(root_pass=root_password_, sql=set_password_sql)
 
-            status, output = commands.getstatusoutput(sql)
+            status, output = subprocess.getstatusoutput(sql)
             if status != 0:
                 error(output)
             info("Change mysql password for user '%s' successfully! " % args.user_name)
@@ -5900,7 +5870,7 @@ class RestoreMysqlPreCheckCmd(Command):
 
     def finish_check(self):
         if len(self.check_fail_list) != 0:
-            error_msg = string.join(self.check_fail_list, '\n')
+            error_msg = '\n'.join(self.check_fail_list)
             error(error_msg)
         else:
             info("Check pass")
@@ -5920,11 +5890,11 @@ class RestoreMysqlPreCheckCmd(Command):
         try:
             error_if_tool_is_missing('gunzip')
         except CtlError as err:
-            self.check_fail_list.append(err.message)
+            self.check_fail_list.append(str(err))
 
         # tag::check_restore_mysql[]
         create_tmp_table = "drop table if exists `TempVolumeEO`; " \
-                           "create table `TempVolumeEO` like .`VolumeEO`;"
+                           "create table `TempVolumeEO` like `VolumeEO`;"
 
         check_sql = "select tv.uuid,`name`,installPath from `TempVolumeEO` tv where tv.uuid in " \
         "(select uuid from `VolumeEO`)" \
@@ -5934,10 +5904,10 @@ class RestoreMysqlPreCheckCmd(Command):
         # end::check_restore_mysql[]
 
         fd, fname = tempfile.mkstemp()
-        os.write(fd, create_tmp_table + "\n")
+        os.write(fd, (create_tmp_table + "\n").encode())
         shell("gunzip < %s | sed -ne 's/INSERT INTO `VolumeEO`/INSERT INTO `TempVolumeEO`/p' >> %s" % (args.from_file, fname))
         os.lseek(fd, 0, os.SEEK_END)
-        os.write(fd, check_sql + "\n" + drop_table)
+        os.write(fd, (check_sql + "\n" + drop_table).encode())
         os.close(fd)
 
         r, o, e = self.execute_sql(args.mysql_root_password, "use zstack; source %s;" % fname)
@@ -5952,7 +5922,7 @@ class RestoreMysqlPreCheckCmd(Command):
 
 
 class RestoreMysqlCmd(Command):
-    status, all_local_ip = commands.getstatusoutput("ip a")
+    status, all_local_ip = subprocess.getstatusoutput("ip a")
 
     def __init__(self):
         super(RestoreMysqlCmd, self).__init__()
@@ -6118,7 +6088,7 @@ class MysqlRestorer(object):
 class MultiMysqlRestorer(MysqlRestorer):
     def __init__(self):
         self.utils = Zsha2Utils()
-        _, self.all_local_ip = commands.getstatusoutput("ip a")
+        _, self.all_local_ip = subprocess.getstatusoutput("ip a")
 
     def start_node(self, args):
         if not args.only_restore_self:
@@ -6157,7 +6127,7 @@ class MultiMysqlRestorer(MysqlRestorer):
 
 class SingleMysqlRestorer(MysqlRestorer):
     def __init__(self):
-        _, self.all_local_ip = commands.getstatusoutput("ip a")
+        _, self.all_local_ip = subprocess.getstatusoutput("ip a")
 
     def start_node(self, args):
         ctl.internal_run('start_node')
@@ -6269,7 +6239,7 @@ class ZBoxBackupRestoreCmd(Command):
                             recover_succ[0] = line.strip().endswith("success")
                             return
 
-                        info(colored(line.strip(), 'red' if line.startswith("fail") else 'blue'))
+                        info(colored(line.strip(), 'red' if line.startswith("fail") else 'blue'))  # type: ignore
 
         t = threading.Thread(target=get_progress)
         t.start()
@@ -6326,6 +6296,7 @@ class PullDatabaseBackupCmd(Command):
         if not os.path.exists(self.mysql_backup_dir):
             os.mkdir(self.mysql_backup_dir)
 
+        info("type of url: %s" % type(args.backup_storage_url))
         cmd = "pull -installpath %s %s" % (local_path, back_info)
         runImageStoreCliCmd(args.backup_storage_url, args.registry_port, cmd)
 
@@ -6342,7 +6313,7 @@ class PullDatabaseBackupCmd(Command):
                 root = simplejson.loads(text)
                 desc = root['desc']
                 metadata = simplejson.loads(desc)
-                metadata['type'] = metadata['type'] if 'type' in metadata.keys() else 'unknown'
+                metadata['type'] = metadata['type'] if 'type' in list(metadata.keys()) else 'unknown'
                 assert metadata['name'] and metadata['version'] and metadata['createdTime']
                 return metadata
             except:
@@ -6408,7 +6379,7 @@ class ScanDatabaseBackupCmd(Command):
                                                  backup['type'], backup['size'], backup['createdTime']))
 
 
-def runImageStoreCliCmd(raw_bs_url, registry_port, command, is_exception=True):
+def runImageStoreCliCmd(raw_bs_url: str, registry_port, command, is_exception=True):
     ZSTORE_CLI_PATH = "/usr/local/zstack/imagestore/bin/zstcli"
     ZSTORE_CLI_CA = "/var/lib/zstack/imagestorebackupstorage/package/certs/ca.pem"
     ZSTORE_DEF_PORT = 8000
@@ -6427,13 +6398,13 @@ def runImageStoreCliCmd(raw_bs_url, registry_port, command, is_exception=True):
 
         shell("%s 'ps -e | grep zstore || %s'" % (ssh_cmd, start_cmd))
 
-    url = urlparse.urlparse(raw_bs_url)
+    url = urllib.parse.urlparse(raw_bs_url)
     if not url.username or not url.password or not url.hostname:
         error("wrong url, get guide from help.")
 
-    username = urllib2.unquote(url.username)
-    password = urllib2.unquote(url.password)
-    hostname = urllib2.unquote(url.hostname)
+    username = urllib.parse.unquote(url.username)
+    password = urllib.parse.unquote(url.password)
+    hostname = urllib.parse.unquote(url.hostname)
 
     port = (url.port, 22)[url.port is None]
     registry_port = (ZSTORE_DEF_PORT, registry_port)[registry_port is not None]
@@ -6498,11 +6469,11 @@ class CollectLogCmd(Command):
         fetch(fetch_arg, host_post_info)
         command = "rm -rf %s %s/../collect-log.tar.gz" % (tmp_log_dir, tmp_log_dir)
         run_remote_command(command, host_post_info)
-        (status, output) = commands.getstatusoutput("cd %s && tar zxf collect-log.tar.gz" % local_collect_dir)
+        (status, output) = subprocess.getstatusoutput("cd %s && tar zxf collect-log.tar.gz" % local_collect_dir)
         if status != 0:
             warn("Uncompress %s/collect-log.tar.gz meet problem: %s" % (local_collect_dir, output))
 
-        (status, output) = commands.getstatusoutput("rm -f %s/collect-log.tar.gz" % local_collect_dir)
+        (status, output) = subprocess.getstatusoutput("rm -f %s/collect-log.tar.gz" % local_collect_dir)
 
 
     @ignoreerror
@@ -6814,23 +6785,23 @@ class CollectLogCmd(Command):
 
         command = "mn_log=`find %s/../..//logs/management-serve* -maxdepth 1 -type f -printf '%%T+\\t%%p\\n' | sort -r | " \
                 "awk '{print $2; exit}'`; /bin/cp -rf $mn_log %s/" % (ctl.zstack_home, mn_log_dir)
-        (status, output) = commands.getstatusoutput(command)
+        (status, output) = subprocess.getstatusoutput(command)
         if status !=0:
             warn("get management-server log failed: %s" % output)
 
         # collect zstack-ui log if exists
         command = "/bin/cp -f  %s %s" % (os.path.join(ctl.read_ui_property('log'),'zstack-ui-server.log'), mn_log_dir)
-        (status, output) = commands.getstatusoutput(command)
+        (status, output) = subprocess.getstatusoutput(command)
         if status != 0:
             warn("get zstack-ui-server log failed: %s" % output)
 
         command = "/bin/cp -f  %s/../../logs/zstack-api.log %s" % (ctl.zstack_home, mn_log_dir)
-        (status, output) = commands.getstatusoutput(command)
+        (status, output) = subprocess.getstatusoutput(command)
         if status != 0:
             warn("get zstack-api log failed: %s" % output)
 
         command = "/bin/cp -f  %s/../../logs/catalina.out %s" % (ctl.zstack_home, mn_log_dir)
-        (status, output) = commands.getstatusoutput(command)
+        (status, output) = subprocess.getstatusoutput(command)
         if status != 0:
             warn("get catalina log failed: %s" % output)
 
@@ -6838,35 +6809,35 @@ class CollectLogCmd(Command):
             for item in range(0, 15):
                 log_name = "management-server-" + (datetime.today() - timedelta(days=item)).strftime("%Y-%m-%d")
                 command = "/bin/cp -rf %s/../../logs/%s* %s/" % (ctl.zstack_home, log_name, mn_log_dir)
-                (status, output) = commands.getstatusoutput(command)
+                (status, output) = subprocess.getstatusoutput(command)
 
                 log_name = "catalina." + (datetime.today() - timedelta(days=item)).strftime("%Y-%m-%d")
                 command = "/bin/cp -rf %s/../../logs/%s* %s/" % (ctl.zstack_home, log_name, mn_log_dir)
-                (status, output) = commands.getstatusoutput(command)
+                (status, output) = subprocess.getstatusoutput(command)
 
         for log in CollectLogCmd.mn_log_list:
             if os.path.exists(CollectLogCmd.zstack_log_dir + log):
                 command = ( "tail -n %d %s/%s > %s/%s " % (CollectLogCmd.collect_lines, CollectLogCmd.zstack_log_dir, log, mn_log_dir, log))
-                (status, output) = commands.getstatusoutput(command)
+                (status, output) = subprocess.getstatusoutput(command)
                 if status != 0:
                     warn("get %s failed: %s" % (log, output))
         host_info_log = mn_log_dir + "/host_info"
         command = "uptime > %s && last reboot >> %s && free -h >> %s && cat /proc/cpuinfo >> %s  && ip addr >> %s && df -h >> %s" % \
                   (host_info_log, host_info_log, host_info_log, host_info_log, host_info_log, host_info_log)
-        commands.getstatusoutput(command)
+        subprocess.getstatusoutput(command)
         command = "cp /var/log/dmesg* /var/log/messages* %s/" % mn_log_dir
-        commands.getstatusoutput(command)
+        subprocess.getstatusoutput(command)
         command = "cp %s/*git-commit %s/" % (ctl.zstack_home, mn_log_dir)
-        commands.getstatusoutput(command)
+        subprocess.getstatusoutput(command)
         command = " rpm -qa | sort  > %s/pkg_list" % mn_log_dir
-        commands.getstatusoutput(command)
+        subprocess.getstatusoutput(command)
         command = " rpm -qa | sort  > %s/pkg_list" % mn_log_dir
-        commands.getstatusoutput(command)
+        subprocess.getstatusoutput(command)
         command = "journalctl -x > %s/journalctl_info" % mn_log_dir
-        commands.getstatusoutput(command)
+        subprocess.getstatusoutput(command)
 
     def generate_tar_ball(self, run_command_dir, detail_version, time_stamp):
-        (status, output) = commands.getstatusoutput("cd %s && tar zcf collect-log-%s-%s.tar.gz collect-log-%s-%s"
+        (status, output) = subprocess.getstatusoutput("cd %s && tar zcf collect-log-%s-%s.tar.gz collect-log-%s-%s"
                                                     % (run_command_dir, detail_version, time_stamp, detail_version, time_stamp))
         if status != 0:
             error("Generate tarball failed: %s " % output)
@@ -6922,7 +6893,7 @@ class CollectLogCmd(Command):
             os.makedirs(collect_dir)
         if len(get_mn_list()) > 1:
             warn("there are multiple zstack management node[hostName: %s] exist, need to collect management log on others manually" %
-                 map(lambda x: x["hostName"], get_mn_list()))
+                 [x["hostName"] for x in get_mn_list()])
         if os.path.exists(InstallHACmd.conf_file) is not True:
             self.get_local_mn_log(collect_dir, args.full)
         else:
@@ -7145,7 +7116,7 @@ class ChangeIpCmd(Command):
         return shell("ip a | grep -w %s" % ip, False).strip().endswith("zs")
 
     def check_mysql_password(self, user, password):
-        status, output = commands.getstatusoutput("mysql -u%s -p%s -e 'show databases;'" % (user, password))
+        status, output = subprocess.getstatusoutput("mysql -u%s -p%s -e 'show databases;'" % (user, password))
         if status != 0:
             error(output)
 
@@ -7171,7 +7142,7 @@ class ChangeIpCmd(Command):
         shell('''mysql -u root -p%s -e "%s"''' % (root_password, grant_access_cmd))
 
     def checkMysqlConnection(self, mysql_ip, root_password):
-        (status, output) = commands.getstatusoutput("cat %s/mysql_restrict_connection" % ctl.USER_ZSTACK_HOME_DIR)
+        (status, output) = subprocess.getstatusoutput("cat %s/mysql_restrict_connection" % ctl.USER_ZSTACK_HOME_DIR)
         if status != 0 or (output != "non-root" and output != "root"):
             return
 
@@ -7357,7 +7328,7 @@ class InstallManagementNodeCmd(Command):
     def add_public_key_to_host(self, key_path, host_info):
         command ='timeout 10 sshpass -p %s ssh-copy-id -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no' \
                  ' -o StrictHostKeyChecking=no -i %s root@%s' % (shell_quote(host_info.remote_pass), key_path, host_info.host)
-        (status, output) = commands.getstatusoutput(command)
+        (status, output) = subprocess.getstatusoutput(command)
         if status != 0:
             error("Copy public key '%s' to host: '%s' failed:\n %s" % (key_path, host_info.host,  output))
 
@@ -7772,7 +7743,7 @@ yum clean all >/dev/null 2>&1
         command = "yum --disablerepo=* --enablerepo=zstack-mn repoinfo | grep Repo-baseurl | awk -F ' : ' '{ print $NF }'"
         (status, baseurl, stderr) = shell_return_stdout_stderr(command)
         if status != 0:
-            baseurl = 'http://localhost:%s/zstack/static/zstack-dvd/' % ctl.get_mn_port()
+            baseurl = 'http://localhost:%s/zstack/static/zstack-dvd/' % get_mn_port()
 
         with open('/opt/zstack-dvd/{}/{}/.repo_version'.format(ctl.BASEARCH, ctl.ZS_RELEASE)) as f:
             repoversion = f.readline().strip()
@@ -8452,7 +8423,7 @@ class UpgradeMultiManagementNodeCmd(Command):
     def start_mn(self, host_post_info):
         command = "zstack-ctl start_node && zstack-ctl start_ui"
         #Ansible finish command will lead mn stop, so use ssh native connection to start mn
-        (status, output) = commands.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
+        (status, output) = subprocess.getstatusoutput("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
                                                     (host_post_info.private_key, host_post_info.host, command))
         if status != 0:
             error("Something wrong on host: %s\n %s" % (host_post_info.host, output))
@@ -8552,7 +8523,7 @@ class UpgradeMultiManagementNodeCmd(Command):
                 ZstackSpinner(spinner_info)
                 war_file = ctl.zstack_home + "/../../../apache-tomcat/webapps/zstack.war"
                 ssh_key = ctl.zstack_home + "/WEB-INF/classes/ansible/rsaKeys/id_rsa"
-                status,output = commands.getstatusoutput("zstack-ctl upgrade_management_node --host %s --ssh-key %s --war-file %s" % (mn_ip, ssh_key, war_file))
+                status,output = subprocess.getstatusoutput("zstack-ctl upgrade_management_node --host %s --ssh-key %s --war-file %s" % (mn_ip, ssh_key, war_file))
                 if status != 0:
                     error(output)
 
@@ -8734,7 +8705,7 @@ class UpgradeUIDbCmd(Command):
             raise CtlError('cannot find %s' % upgrading_schema_dir)
 
         if not args.force:
-            (status, output)= commands.getstatusoutput("zstack-ctl ui_status")
+            (status, output)= subprocess.getstatusoutput("zstack-ctl ui_status")
             if status == 0 and 'Running' in output:
                 raise CtlError('ZStack UI is still running. Please stop it before upgrade zstack_ui database.')
 
@@ -9074,7 +9045,7 @@ class StopDashboardCmd(Command):
         if os.path.exists(pidfile):
             with open(pidfile, 'r') as fd:
                 pid = fd.readline()
-                pid = pid.strip(' \t\n\r')
+                pid = pid.strip()
                 kill_process(pid)
 
         def stop_all():
@@ -9114,7 +9085,7 @@ class StopUiCmd(Command):
             return
         stop_sh = 'runuser -l root -s /bin/bash -c "bash %s"' % StopUiCmd.ZSTACK_UI_STOP
         status_sh = 'runuser -l root -s /bin/bash -c "bash %s"' % StopUiCmd.ZSTACK_UI_STATUS
-        (stop_code, stop_output) = commands.getstatusoutput(stop_sh)
+        (stop_code, stop_output) = subprocess.getstatusoutput(stop_sh)
         if stop_code != 0:
             info('failed to stop UI server since '+ stop_output)
             return
@@ -9123,15 +9094,15 @@ class StopUiCmd(Command):
         if os.path.exists(portfile):
             with open(portfile, 'r') as fd2:
                 port = fd2.readline()
-                port = port.strip(' \t\n\r')
+                port = port.strip()
         else:
             port = '5000'
-        (_, pids) = commands.getstatusoutput("netstat -lnp | grep ':%s' |  awk '{sub(/\/.*/,""); print $NF}'" % port)
+        (_, pids) = subprocess.getstatusoutput("netstat -lnp | grep ':%s' |  awk '{sub(/\/.*/,""); print $NF}'" % port)
         if _ == 0 and pids.strip() != '':
             info("find pids %s at ui port: %s, kill it" % (pids,port))
             logger.debug("find pids %s at ui port: %s, kill it" % (pids,port))
-            commands.getstatusoutput("echo '%s' | xargs kill -9" % pids)
-        (status_code, status_output) = commands.getstatusoutput(status_sh)
+            subprocess.getstatusoutput("echo '%s' | xargs kill -9" % pids)
+        (status_code, status_output) = subprocess.getstatusoutput(status_sh)
         # some server not inactive got 512
         if status_code == 512:
             info('failed to stop UI server since '+ status_output)
@@ -9145,7 +9116,7 @@ class StopUiCmd(Command):
     def stop_mini_ui(self):
         shell_return("systemctl stop zstack-mini")
         check_status = "zstack-ctl ui_status"
-        (status_code, status_output) = commands.getstatusoutput(check_status)
+        (status_code, status_output) = subprocess.getstatusoutput(check_status)
         if status_code != 0 or "Running" in status_output:
             info('failed to stop MINI UI server on the localhost. Use zstack-ctl stop_ui to restart it.')
             return False
@@ -9153,7 +9124,7 @@ class StopUiCmd(Command):
         if "Stopped" in status_output:
             mini_pid = get_ui_pid('mini')
             if mini_pid:
-                kill_process(pid, signal.SIGKILL)
+                kill_process(mini_pid, signal.SIGKILL)
             linux.rm_dir_force("/var/run/zstack/zstack-mini-ui.port")
             linux.rm_dir_force("/var/run/zstack/zstack-mini-ui.pid")
             info('successfully stopped the MINI UI server')
@@ -9180,7 +9151,7 @@ class StopVDIUiCmd(Command):
         if os.path.exists(pidfile):
             with open(pidfile, 'r') as fd:
                 pid = fd.readline()
-                pid = pid.strip(' \t\n\r')
+                pid = pid.strip()
                 kill_process(pid)
 
         def stop_all():
@@ -9222,7 +9193,7 @@ class DashboardStatusCmd(Command):
         if os.path.exists(pidfile):
             with open(pidfile, 'r') as fd:
                 pid = fd.readline()
-                pid = pid.strip(' \t\n\r')
+                pid = pid.strip()
                 check_pid_cmd = ShellCmd('ps -p %s > /dev/null' % pid)
                 check_pid_cmd(is_exception=False)
                 if check_pid_cmd.return_code == 0:
@@ -9241,7 +9212,7 @@ class DashboardStatusCmd(Command):
                         if os.path.exists(portfile):
                             with open(portfile, 'r') as fd2:
                                 port = fd2.readline()
-                                port = port.strip(' \t\n\r')
+                                port = port.strip()
                         else:
                             port = 5000
                         info('UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, default_ip, port))
@@ -9301,7 +9272,7 @@ class UiStatusCmd(Command):
         if os.path.exists(portfile):
             with open(portfile, 'r') as fd2:
                 port = fd2.readline()
-                port = port.strip(' \t\n\r')
+                port = port.strip()
         else:
             port = ui_port
 
@@ -9346,7 +9317,7 @@ class UiStatusCmd(Command):
         if os.path.exists(StartUiCmd.HTTP_FILE):
             with open(StartUiCmd.HTTP_FILE, 'r') as fd2:
                 default_protcol = fd2.readline()
-                default_protcol = default_protcol.strip(' \t\n\r')
+                default_protcol = default_protcol.strip()
         cmd = ShellCmd("runuser -l root -s /bin/bash -c 'bash %s %s://%s:%s'" %
                        (UiStatusCmd.ZSTACK_UI_STATUS, default_protcol, '127.0.0.1', port), pipe=False)
         cmd(False)
@@ -9364,7 +9335,7 @@ class UiStatusCmd(Command):
                 if os.path.exists(StartUiCmd.HTTP_FILE):
                     with open(StartUiCmd.HTTP_FILE, 'r') as fd2:
                         protcol = fd2.readline()
-                        protcol = protcol.strip(' \t\n\r')
+                        protcol = protcol.strip()
                         info('UI status: %s [PID:%s] %s://%s:%s' % (
                             colored('Running', 'green'),output, protcol, default_ip, port))
 
@@ -9387,7 +9358,7 @@ class VDIUiStatusCmd(Command):
         if os.path.exists(pidfile):
             with open(pidfile, 'r') as fd:
                 pid = fd.readline()
-                pid = pid.strip(' \t\n\r')
+                pid = pid.strip()
                 check_pid_cmd = ShellCmd('ps -p %s > /dev/null' % pid)
                 check_pid_cmd(is_exception=False)
                 if check_pid_cmd.return_code == 0:
@@ -9398,7 +9369,7 @@ class VDIUiStatusCmd(Command):
                         if os.path.exists(portfile):
                             with open(portfile, 'r') as fd2:
                                 port = fd2.readline()
-                                port = port.strip(' \t\n\r')
+                                port = port.strip()
                         info('VDI UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, default_ip,port))
                     return
 
@@ -9453,7 +9424,7 @@ class RemovePrometheusDataCmd(Command):
     def run(self, args):
         doDelete = False
         while True:
-            answer = input("remove promethues data? (yes or no)\n")
+            answer = eval(input("remove promethues data? (yes or no)\n"))
             if any(answer.lower() == f for f in ["yes", 'y']):
                 doDelete = True
                 break
@@ -9660,7 +9631,7 @@ class SetDeploymentCmd(Command):
         ctl.register_command(self)
 
     def install_argparse_arguments(self, parser):
-        parser.add_argument('--size', '-s', help="instance size, one of %s" % deploymentProfiles.keys(), required=True)
+        parser.add_argument('--size', '-s', help="instance size, one of %s" % list(deploymentProfiles.keys()), required=True)
 
     def find_opt(self, opts, prefix):
         for opt in opts:
@@ -9683,15 +9654,15 @@ class SetDeploymentCmd(Command):
 
     def run(self, args):
         s = args.size.lower()
-        if not s in deploymentProfiles.keys():
+        if not s in list(deploymentProfiles.keys()):
             raise CtlError('unexpected size: %s' % args.size)
 
         heap, psize, ratio, sint = deploymentProfiles[s]
         # tag::setdeploymentconfig[]
-        commands.getstatusoutput("zstack-ctl setenv CATALINA_OPTS='%s'" % self.build_catalina_opts(heap))
-        commands.getstatusoutput("zstack-ctl configure DbFacadeDataSource.maxPoolSize=%s" % psize)
-        commands.getstatusoutput("zstack-ctl configure KvmHost.maxThreads.ratio=%s" % ratio)
-        commands.getstatusoutput("zstack-ctl configure Prometheus.scrapeInterval=%s" % sint)
+        subprocess.getstatusoutput("zstack-ctl setenv CATALINA_OPTS='%s'" % self.build_catalina_opts(heap))
+        subprocess.getstatusoutput("zstack-ctl configure DbFacadeDataSource.maxPoolSize=%s" % psize)
+        subprocess.getstatusoutput("zstack-ctl configure KvmHost.maxThreads.ratio=%s" % ratio)
+        subprocess.getstatusoutput("zstack-ctl configure Prometheus.scrapeInterval=%s" % sint)
         # end::setdeploymentconfig[]
 
 class ClearLicenseCmd(Command):
@@ -9750,7 +9721,7 @@ class StartDashboardCmd(Command):
         if os.path.exists(self.PID_FILE):
             with open(self.PID_FILE, 'r') as fd:
                 pid = fd.readline()
-                pid = pid.strip(' \t\n\r')
+                pid = pid.strip()
                 check_pid_cmd = ShellCmd('ps -p %s > /dev/null' % pid)
                 check_pid_cmd(is_exception=False)
                 if check_pid_cmd.return_code == 0:
@@ -9804,7 +9775,7 @@ class StartDashboardCmd(Command):
         if not self._check_status(args.port):
             return
 
-        distro = platform.dist()[0]
+        distro = platform.freedesktop_os_release()['ID'].lower()
         if distro in RPM_BASED_OS:
             shell('iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport %s -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport 5000 -j ACCEPT && service iptables save)' % args.port)
         elif distro in DEB_BASED_OS:
@@ -9815,7 +9786,7 @@ class StartDashboardCmd(Command):
         scmd = '. %s/bin/activate\nZSTACK_DASHBOARD_PORT=%s nohup python -c "from zstack_dashboard import web; web.main()" --rabbitmq %s >/var/log/zstack/zstack-dashboard.log 2>&1 </dev/null &' % (virtualenv, args.port, param)
         script(scmd, no_pipe=True)
 
-        @loop_until_timeout(5, 0.5)
+        @loop_until_timeout(5, 1)
         def write_pid():
             pid = find_process_by_cmdline('zstack_dashboard')
             if pid:
@@ -9923,22 +9894,22 @@ class StartUiCmd(Command):
         cert.gmtime_adj_notBefore(0)
         cert.gmtime_adj_notAfter(10*365*24*60*60)
         cert.set_pubkey(key)
-        cert.sign(key, 'sha256')
+        cert.sign(key, 'sha256')  # type: ignore
         p12 = OpenSSL.crypto.PKCS12()
         p12.set_privatekey(key)
         p12.set_certificate(cert)
-        p12.set_friendlyname('zstackui')
-        with open(ctl.ZSTACK_UI_KEYSTORE, 'w') as f:
+        p12.set_friendlyname('zstackui'.encode())
+        with open(ctl.ZSTACK_UI_KEYSTORE, 'wb') as f:
             f.write(p12.export(b'password'))
 
     def _gen_ssl_keystore_pem_from_pkcs12(self, ssl_keystore, ssl_keystore_password):
         try:
-            p12 = OpenSSL.crypto.load_pkcs12(file(ssl_keystore, 'rb').read(), ssl_keystore_password)
+            p12 = OpenSSL.crypto.load_pkcs12(open(ssl_keystore, 'rb').read(), ssl_keystore_password)
         except Exception as e:
             raise CtlError('failed to convert %s to %s because %s' % (ssl_keystore, ctl.ZSTACK_UI_KEYSTORE_PEM, str(e)))
         cert_pem = OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM, p12.get_certificate())
         pkey_pem = OpenSSL.crypto.dump_privatekey(OpenSSL.crypto.FILETYPE_PEM, p12.get_privatekey())
-        with open(ctl.ZSTACK_UI_KEYSTORE_PEM, 'w') as f:
+        with open(ctl.ZSTACK_UI_KEYSTORE_PEM, 'wb') as f:
             f.write(cert_pem + pkey_pem)
 
     def _get_db_info(self):
@@ -10099,7 +10070,7 @@ class StartUiCmd(Command):
         #if not self._check_status():
         #    return
 
-        distro = platform.dist()[0]
+        distro = platform.freedesktop_os_release()['ID'].lower()
         if distro in RPM_BASED_OS:
             shell('iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport %s -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport 5000 -j ACCEPT && service iptables save)' % args.server_port)
             shell('iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport %s -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT && service iptables save)' % (args.server_port, args.server_port))
@@ -10137,7 +10108,7 @@ class StartUiCmd(Command):
         @loop_until_timeout(timeout)
         def check_ui_status():
             command = 'zstack-ctl ui_status'
-            (status, output) = commands.getstatusoutput(command)
+            (status, output) = subprocess.getstatusoutput(command)
             if status != 0:
                 return False
 
@@ -10165,7 +10136,7 @@ class StartUiCmd(Command):
         @loop_until_timeout(60)
         def check_ui_status():
             command = 'zstack-ctl ui_status'
-            (status, output) = commands.getstatusoutput(command)
+            (status, output) = subprocess.getstatusoutput(command)
             if status != 0:
                 return False
             return "Running" in output
@@ -10385,7 +10356,7 @@ class ConfigUiCmd(Command):
             ctl.write_ui_property("webhook_port", args.webhook_port.strip())
         if args.server_port or args.server_port == '':
             ctl.write_ui_property("server_port", args.server_port.strip())
-            distro = platform.dist()[0]
+            distro = platform.freedesktop_os_release()['ID'].lower()
             if distro in RPM_BASED_OS:
                 shell('iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport %s -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT && service iptables save)' % (args.server_port, args.server_port))
             elif distro in DEB_BASED_OS:
@@ -10470,11 +10441,11 @@ class StartVDIUICmd(Command):
         if os.path.exists(self.PORT_FILE):
             with open(self.PORT_FILE, 'r') as fd:
                 VDI_UI_PORT = fd.readline()
-                VDI_UI_PORT = VDI_UI_PORT.strip(' \t\n\r')
+                VDI_UI_PORT = VDI_UI_PORT.strip()
         if os.path.exists(self.PID_FILE):
             with open(self.PID_FILE, 'r') as fd:
                 pid = fd.readline()
-                pid = pid.strip(' \t\n\r')
+                pid = pid.strip()
                 check_pid_cmd = ShellCmd('ps -p %s > /dev/null' % pid)
                 check_pid_cmd(is_exception=False)
                 if check_pid_cmd.return_code == 0:
@@ -10501,7 +10472,7 @@ class StartVDIUICmd(Command):
         if not self._check_status():
             return
 
-        distro = platform.dist()[0]
+        distro = platform.freedesktop_os_release()['ID'].lower()
         if distro in RPM_BASED_OS:
             shell('iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport %s -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT && service iptables save)' % (args.server_port, args.server_port))
             shell('iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport %s -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT && service iptables save)' % (args.webhook_port, args.webhook_port))
@@ -10516,7 +10487,7 @@ class StartVDIUICmd(Command):
 
         script(scmd, no_pipe=True)
 
-        @loop_until_timeout(5, 0.5)
+        @loop_until_timeout(5, 1)
         def write_pid():
             pid = find_process_by_cmdline('zstack-vdi')
             if pid:
@@ -10594,9 +10565,9 @@ class ResetAdminPasswordCmd(Command):
     def run(self, args):
         info("start reset password")
 
-        def get_sha512_pwd(password):
+        def get_sha512_pwd(password:str):
             new_password = [password, args.password][args.password is not None]
-            return hashlib.sha512(new_password).hexdigest()
+            return hashlib.sha512(new_password.encode()).hexdigest()
 
         sha512_pwd = get_sha512_pwd('password')
         db_hostname, db_port, db_user, db_password = ctl.get_live_mysql_portal()
@@ -10796,7 +10767,7 @@ class SharedBlockQcow2SharedVolumeFixCmd(Command):
             info("not found any shared volume need to be convert")
             return
         warn("found shared volumes[uuid: %s, name: %s] need to be convert" %
-             (map(lambda x: x["uuid"], shared_volumes), map(lambda x: x["name"], shared_volumes)))
+             ([x["uuid"] for x in shared_volumes], [x["name"] for x in shared_volumes]))
         for volume in shared_volumes:
             self._check_attached_vm_online(volume["uuid"])
         if args.dryrun.lower() != "false":
@@ -10823,14 +10794,14 @@ class SharedBlockQcow2SharedVolumeFixCmd(Command):
 
     def _deactivate_volume(self, volume, hosts):
         info("deactivating volume[uuid: %s, name: %s, installPath: %s] on hosts[%s]..." %
-             (volume["uuid"], volume["name"], volume["installPath"], map(lambda x: x["managementIp"], hosts)))
+             (volume["uuid"], volume["name"], volume["installPath"], [x["managementIp"] for x in hosts]))
         volume_abs_path = volume["installPath"].replace("sharedblock:/", "/dev")
         for host in hosts:
             cmd = ShellCmd("ssh -i %s root@%s 'lvchange -an %s'" % (self.key, host["managementIp"], volume_abs_path))
             cmd(True)
 
     def _do_convert_volume(self, volume_install_path, hostIp, psUuid):
-        # type: (str, str, str) -> void
+        # type: (str, str, str) -> None
         # 0. check lv tag, if start convet exists, raise;
         #    if convert done exists, raise
         # 1. create a lv with original lv size
@@ -10902,7 +10873,7 @@ class SharedBlockQcow2SharedVolumeFixCmd(Command):
             info("not found any snapshots of shared volume on sharedblock group storage")
             return
         warn("find snapshots of shared volume on sharedblock group primary storage: [name: %s, uuid: %s]" %
-             (map(lambda x: x["name"], snaps), map(lambda x: x["uuid"], snaps)))
+             ([x["name"] for x in snaps], [x["uuid"] for x in snaps]))
         if args.dryrun.lower() != "false":
             info("run in dryrun mode, return now")
             return
@@ -10925,7 +10896,7 @@ class SharedBlockQcow2SharedVolumeFixCmd(Command):
             info("not found any snapshots of shared volume on sharedblock group storage")
             return
         warn("find snapshots of shared volume on sharedblock group primary storage: [name: %s, uuid: %s, installPath: %s]" %
-             (map(lambda x: x["name"], snaps), map(lambda x: x["uuid"], snaps), map(lambda x: x["primaryStorageInstallPath"], snaps)))
+             ([x["name"] for x in snaps], [x["uuid"] for x in snaps], [x["primaryStorageInstallPath"] for x in snaps]))
         if args.dryrun.lower() != "false":
             info("run in dryrun mode, return now")
             return
@@ -10987,7 +10958,7 @@ class DumpMNTaskQueueCmd(Command):
         time.sleep(1)
         # only print last matched TASK QUEUE BLOCK
         output = shell("sed -n '/BEGIN TASK QUEUE DUMP/,/END TASK QUEUE DUMP/p' %s | tac | awk '/BEGIN TASK QUEUE DUMP/{ print; exit} 1' | tac " % mn_log_path)
-        output = output.strip(' \t\n\r')
+        output = output.strip()
         info(output)
 
 
@@ -11056,7 +11027,7 @@ class DiagnoseCmd(Command):
         parser.add_argument('-k', '--key-word', default="", help='key word for search in mn logs, like apiid/taskid/uuid.')
 
     def run(self, args):
-        from trait_parser import diagnose
+        from .trait_parser import diagnose
         time_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
         diagnose_log_file = '%s-diagnose-log-%s' % (args.type, time_stamp)
         log_dir = '-'.join(['diagnose', args.type, time_stamp])

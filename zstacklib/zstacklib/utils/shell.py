@@ -33,7 +33,6 @@ class ShellCmd(object):
     '''
     classdocs
     '''
-    stdout = None  # type: str
 
     def __init__(self, cmd, workdir=None, pipe=True):
         '''
@@ -64,6 +63,8 @@ class ShellCmd(object):
             log.get_logger(__name__).debug(self.cmd)
             
         (self.stdout, self.stderr) = self.process.communicate()
+        self.stdout = self.stdout.decode() if self.stdout else ''
+        self.stderr = self.stderr.decode() if self.stderr else ''
         if is_exception and self.process.returncode != 0:
             self.raise_error()
 

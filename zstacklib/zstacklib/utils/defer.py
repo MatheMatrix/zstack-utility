@@ -28,6 +28,6 @@ def protect(f):
                 try:
                     df()
                 except Exception:
-                    print('unhandled defer error:\n%s\n' % traceback.format_exc())
+                    print(('unhandled defer error:\n%s\n' % traceback.format_exc()))
 
     return inner

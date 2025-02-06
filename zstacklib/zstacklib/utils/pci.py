@@ -77,9 +77,9 @@ def get_bars_max_addressable_memory():
         logger.warn("max_addressable_memory is None, please reconnect host and try again")
 
     if max_addressable_memory_64bit < DEFAULT_PCDPCIMMIO64SIZE_MIN_SIZE:
-        return DEFAULT_PCDPCIMMIO64SIZE_MIN_SIZE / 1024 / 1024
+        return DEFAULT_PCDPCIMMIO64SIZE_MIN_SIZE // 1024 // 1024
 
-    return max_addressable_memory_64bit / 1024 / 1024
+    return max_addressable_memory_64bit // 1024 // 1024
 
 
 def calculate_max_addressable_memory(pci_devices):
@@ -118,7 +118,7 @@ def get_total_addressable_memory(resources):
     mem_size_32bit = 0
     mem_size_64bit = 0
 
-    for key in resources.keys():
+    for key in list(resources.keys()):
         # The PCIe spec only defines 5 BARs per device, we're
         # discarding everything after the 5th entry of the resources
         # file, see lspci.c
@@ -147,7 +147,7 @@ def parse_resources(device_path):
     try:
         with open(os.path.join(device_path, "resource"), "r") as f:
             for i, line in enumerate(f):
-                start, end, flags = map(lambda x: int(x, 16), line.strip().split())
+                start, end, flags = [int(x, 16) for x in line.strip().split()]
                 if start != 0 or end != 0:
                     resources[i] = MemoryResource(start, end, flags, os.path.join(device_path, "resource"))
     except Exception as e:

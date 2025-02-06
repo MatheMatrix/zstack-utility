@@ -5,7 +5,7 @@
 import unittest
 import time
 import uuid
-import urllib2
+import urllib.request, urllib.error, urllib.parse
 import cherrypy
 import logging
 import simplejson
@@ -27,8 +27,8 @@ class AsyncHttpServer(object):
     def callback(self, arg):
         headers = arg[http.REQUEST_HEADER]
         task_uuid = headers[http.TASK_UUID]
-        if headers.has_key(http.ERROR_CODE):
-            print "error:\n%s" % arg[http.REQUEST_BODY]
+        if http.ERROR_CODE in headers:
+            print("error:\n%s" % arg[http.REQUEST_BODY])
             return
         
         d = simplejson.loads(arg[http.REQUEST_BODY])

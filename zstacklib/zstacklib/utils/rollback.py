@@ -3,7 +3,7 @@ __author__ = 'frank'
 import threading
 import functools
 import traceback
-import log
+from . import log
 
 logger = log.get_logger(__name__)
 

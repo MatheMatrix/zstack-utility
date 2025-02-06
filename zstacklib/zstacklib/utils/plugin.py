@@ -13,13 +13,12 @@ import threading
 import traceback
 import warnings
 
-import log
-import ConfigParser
+from . import log
+import configparser
 
 import time
 
 from zstacklib.utils import jsonobject, http
-from zstacklib.utils.misc import ignore_exception
 from zstacklib.utils.report import get_api_id, AutoReporter, get_timeout, get_task_stage
 from zstacklib.utils import traceable_shell
 
@@ -70,15 +69,13 @@ class TaskResult(object):
         self.success = False
         self.error = error
 
-class TaskDaemon(object):
-    __metaclass__ = abc.ABCMeta
-
+class TaskDaemon(object, metaclass=abc.ABCMeta):
     '''
     A daemon to track a long task, task will be canceled automatically when timeout or canceled by api.
     '''
 
     def __init__(self, task_spec, task_name, timeout=0):
-        if self.__class__.__name__ != TaskDaemon.__name__ and self.__class__.__dict__.has_key("__exit__"):
+        if self.__class__.__name__ != TaskDaemon.__name__ and "__exit__" in self.__class__.__dict__:
             raise Exception("method __exit__ cannot be overridden")
         self.api_id = get_api_id(task_spec)
         self.task_name = task_name
@@ -225,7 +222,7 @@ class TaskManager(object):
         warnings.warn("deprecated function {}.".format(self.load_task.__name__), category=DeprecationWarning)
 
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        if cmd.identificationCode in self.longjob_progress_mapper.keys():
+        if cmd.identificationCode in list(self.longjob_progress_mapper.keys()):
             return self.longjob_progress_mapper[cmd.identificationCode]
         return None
 
@@ -238,7 +235,7 @@ class TaskManager(object):
         if not cmd.identificationCode:
             return None
         with self.mapper_lock:
-            if validate_task_result_existing(args) and cmd.identificationCode in self.longjob_progress_mapper.keys():
+            if validate_task_result_existing(args) and cmd.identificationCode in list(self.longjob_progress_mapper.keys()):
                 return self.longjob_progress_mapper[cmd.identificationCode]
             else:
                 self.longjob_progress_mapper[cmd.identificationCode] = TaskProgressInfo(req=req, rsp=rsp, key=cmd.identificationCode)
@@ -319,7 +316,7 @@ class TaskManager(object):
     @staticmethod
     def wait_task(task_spec, task_name, no_task_return=lambda task_name, api_id:
                 TaskResult(False, "cannot find task[name=%s] for api[%s]" % (task_name, api_id))):
-        # type: (object, str, function) -> TaskResult
+        # type: (object, str, callable) -> TaskResult
 
         api_id = get_api_id(task_spec)
         timeout = get_timeout(task_spec)
@@ -347,9 +344,7 @@ class TaskManager(object):
         return task.result
 
 
-class Plugin(TaskManager):
-    __metaclass__  = abc.ABCMeta
-
+class Plugin(TaskManager, metaclass=abc.ABCMeta):
     def __init__(self):
         super(Plugin, self).__init__()
         self.config = None
@@ -397,29 +392,29 @@ class PluginRegistry(object):
                 if f.endswith('.py'): self._load_module(os.path.join(root, f))
 
     def _parse_config(self):
-        config = ConfigParser.SafeConfigParser()
+        config = configparser.SafeConfigParser()
         config.read(self.plugin_config)
         for (module_name, path) in config.items(PLUGIN_CONFIG_SECTION_NAME):
             if config.has_option('DEFAULT', module_name): continue
             self._load_module(os.path.abspath(path), module_name)
 
     def configure_plugins(self, config={}):
-        for p in self.plugins.values():
+        for p in list(self.plugins.values()):
             p.configure(config)
 
     def start_plugins(self):
-        for p in self.plugins.values():
+        for p in list(self.plugins.values()):
             p.start()
 
     def stop_plugins(self):
-        for p in self.plugins.values():
+        for p in list(self.plugins.values()):
             p.stop()
 
     def get_plugin(self, name):
         return self.plugins[name]
 
     def get_plugins(self):
-        return self.plugins.values()
+        return list(self.plugins.values())
 
     def __init__(self, path):
         '''

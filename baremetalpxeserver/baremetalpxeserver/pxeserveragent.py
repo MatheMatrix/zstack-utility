@@ -18,7 +18,7 @@ import zstacklib.utils.daemon as daemon
 import zstacklib.utils.http as http
 import zstacklib.utils.jsonobject as json_object
 from zstacklib.utils.bash import *
-from imagestore import ImageStoreClient
+from .imagestore import ImageStoreClient
 
 logger = log.get_logger(__name__)
 
@@ -483,6 +483,8 @@ http {
         rsp = AgentResponse()
 
         # check preconfiguration md5sum
+        # FIXME: py3 Strings must be encoded before hashing
+        # TODO(py3)
         if hashlib.md5(cmd.preconfigurationContent).hexdigest() != cmd.preconfigurationMd5sum:
             raise PxeServerError("preconfiguration content not complete")
 

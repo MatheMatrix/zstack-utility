@@ -40,7 +40,7 @@ from zstacklib.utils import iproute
 
 logger = log.get_logger(__name__)
 
-RPM_BASED_OS = ['redhat', 'centos', 'alibaba', 'kylin10', 'rocky']
+RPM_BASED_OS = ['redhat', 'centos', 'alibaba', 'kylin10', 'rocky', 'helix']
 DEB_BASED_OS = ['uos', 'kylin4.0.2', 'debian', 'ubuntu', 'uniontech']
 ARM_ACPI_SUPPORT_OS = ['kylin10', 'openEuler20.03', 'openEuler22.03']
 SUPPORTED_ARCH = ['x86_64', 'aarch64', 'mips64el', 'loongarch64']
@@ -423,7 +423,7 @@ def get_ethernet_info():
             eth.broadcast_address = brd
             eth.netmask = netmask
 
-    return devices.values()
+    return list(devices.values())
 
 # only for novlan and vlan networks
 def set_bridge_alias_using_phy_nic_name(bridge_name, nic_name):
@@ -454,11 +454,11 @@ def get_used_disk_size(dir_path):
 
 def get_used_disk_apparent_size(dir_path, max_depth = 1, block_size = 1):
     output = shell.call('du --apparent-size --block-size=%s --max-depth=%s %s | tail -1' % (block_size, max_depth, dir_path))
-    return long(output.split()[0])
+    return int(output.split()[0])
 
 def get_directory_used_physical_size(dir_path, max_depth = 1, block_size = 1):
     output = shell.call('du --block-size=%s --max-depth=%s %s | tail -1' % (block_size, max_depth, dir_path))
-    return long(output.split()[0])
+    return int(output.split()[0])
 
 def get_total_file_size(paths):
     total = 0
@@ -473,7 +473,7 @@ def get_total_file_size(paths):
 
 def get_disk_capacity_by_df(dir_path):
     total, avail = shell.call("df %s|tail -1|awk '{print $(NF-4), $(NF-2)}'" % dir_path).split()
-    return long(total) * 1024, long(avail) * 1024
+    return int(total) * 1024, int(avail) * 1024
 
 def get_folder_size(path = "."):
     total_size = 0
@@ -512,7 +512,7 @@ def mount(url, path, options=None, fstype=None):
     if cmd.return_code == 0: raise MountError(url, '%s is occupied by another device. Details[%s]' % (path, cmd.stdout))
 
     if not os.path.exists(path):
-        os.makedirs(path, 0775)
+        os.makedirs(path, 0o775)
 
     cmdstr = "mount"
 
@@ -573,19 +573,17 @@ def sshfs_mount(username, hostname, port, password, url, mountpoint, writebandwi
     os.chmod(fname, 0o500)
 
     if not writebandwidth:
-        os.write(fd,
-                 "#!/bin/bash\n/usr/bin/sshpass -p %s ssh "
-                 "-o StrictHostKeyChecking=no "
-                 "-o UserKnownHostsFile=/dev/null -p %d $*\n" % (
-                 shellquote(password), port))
+        content = "#!/bin/bash\n/usr/bin/sshpass -p %s ssh " \
+                  "-o StrictHostKeyChecking=no " \
+                  "-o UserKnownHostsFile=/dev/null -p %d $*\n" % (
+                      shellquote(password), port)
     else:
-        os.write(fd,
-                 "#!/bin/bash\n/usr/bin/sshpass -p %s ssh "
-                 "-o 'ProxyCommand pv -q -L %sk | nc %s %s' "
-                 "-o StrictHostKeyChecking=no "
-                 "-o UserKnownHostsFile=/dev/null -p %d $*\n" % (
-                     shellquote(password), writebandwidth / 1024 / 8, hostname, port, port))
-
+        content = "#!/bin/bash\n/usr/bin/sshpass -p %s ssh " \
+                  "-o 'ProxyCommand pv -q -L %sk | nc %s %s' " \
+                  "-o StrictHostKeyChecking=no " \
+                  "-o UserKnownHostsFile=/dev/null -p %d $*\n" % (
+                      shellquote(password), writebandwidth // 1024 // 8, hostname, port, port)
+    os.write(fd, content.encode())
     os.close(fd)
 
     allow = 'allow_root' if uid == 0 else 'allow_other'
@@ -690,7 +688,7 @@ def get_file_size_by_http_head(url):
     for l in output.split('\n'):
         if 'Content-Length' in l:
             filesize = l.split(':')[1].strip()
-            return long(filesize)
+            return int(filesize)
     return None
 
 def shellquote(s):
@@ -714,7 +712,7 @@ def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callba
         for l in output.split('\n'):
             if 'Content-Length' in l:
                 filesize = l.split(':')[1].strip()
-                return True, long(filesize)
+                return True, int(filesize)
         return False, 0
 
     cmdlst = ['wget']
@@ -872,7 +870,7 @@ def scp_download(hostname, sshkey, src_filepath, dst_filepath, host_account='roo
 
     # scp bandwidth limit
     if bandWidth is not None:
-        bandWidth = '-l %s' % (long(bandWidth) / 1024)
+        bandWidth = '-l %s' % (int(bandWidth) // 1024)
     else:
         bandWidth = ''
 
@@ -925,7 +923,7 @@ def sftp_get(hostname, sshkey, filename, download_to, timeout=0, interval=1, cal
             output = cmd.stdout.strip()
             outputs = output.split('\n')
             size_pair = outputs[0]
-            return long(size_pair.split()[0])
+            return int(size_pair.split()[0])
         finally:
             if keyfile_path:
                 os.remove(keyfile_path)
@@ -999,12 +997,12 @@ def qcow2_size_and_actual_size(file_path):
 
     logger.debug('qcow2_info: %s' % cmd.stdout)
 
-    out = json.loads(cmd.stdout.strip(" \t\n\r"))
+    out = json.loads(cmd.stdout.strip())
     virtual_size, actual_size = out.get('virtual-size'), out.get('actual-size')
     if not virtual_size and not actual_size:
         raise Exception('cannot get the virtual/actual size of the file[%s], %s %s' % (shellquote(file_path), cmd.stdout, cmd.stderr))
 
-    virtual_size = long(virtual_size) if virtual_size else None
+    virtual_size = int(virtual_size) if virtual_size else None
     return virtual_size, actual_size
 
 '''  
@@ -1028,7 +1026,7 @@ def get_img_fmt(src):
 
     fmt = shell.call(
         "set -o pipefail; %s %s | grep -w '^file format' | awk '{print $3}'" % (qemu_img.subcmd('info'), src))
-    fmt = fmt.strip(' \t\r\n')
+    fmt = fmt.strip()
     if fmt not in ['raw', 'qcow2', 'vmdk']:
         logger.debug("/usr/bin/qemu-img info %s" % src)
         raise Exception('unknown format[%s] of the image file[%s]' % (fmt, src))
@@ -1193,19 +1191,19 @@ def qcow2_virtualsize(file_path):
     cmd(False)
     if cmd.return_code != 0:
         raise Exception('cannot get the virtual size of the file[%s], %s %s' % (file_path, cmd.stdout, cmd.stderr))
-    out = cmd.stdout.strip(' \t\r\n')
-    return long(out)
+    out = cmd.stdout.strip()
+    return int(out)
 
-def qcow2_get_backing_file(path):
+def qcow2_get_backing_file(path:str) -> str:
     if not os.path.exists(path):
         # for rbd image
         out = shell.call("%s %s | grep 'backing file:' | cut -d ':' -f 2" %
                 (qemu_img.subcmd('info'), path))
-        return out.strip(' \t\r\n')
+        return out.strip()
 
-    with open(path, 'r') as resp:
+    with open(path, 'rb') as resp:
         magic = resp.read(4)
-        if magic != 'QFI\xfb':
+        if magic != b'QFI\xfb':
             return ""
 
         # read backing file info from header
@@ -1217,7 +1215,7 @@ def qcow2_get_backing_file(path):
 
         backing_file_size = struct.unpack('>L', backing_file_info[8:])[0]
         resp.seek(backing_file_offset)
-        return resp.read(backing_file_size)
+        return resp.read(backing_file_size).decode()
 
 def qcow2_get_virtual_size(path):
     # type: (str) -> int
@@ -1227,9 +1225,9 @@ def qcow2_get_virtual_size(path):
                 (qemu_img.subcmd('info'), path))
         return int(out.strip())
 
-    with open(path, 'r') as resp:
+    with open(path, 'rb') as resp:
         magic = resp.read(4)
-        if magic != 'QFI\xfb':
+        if magic != b'QFI\xfb':
             return os.path.getsize(path)
 
         # read virtual size info from header
@@ -1244,11 +1242,11 @@ def qcow2_direct_get_backing_file(path):
 
     # read backing file info from header
     backing_file_info = o[8:20]
-    backing_file_offset = struct.unpack('>Q', backing_file_info[:8])[0]
+    backing_file_offset = struct.unpack('>Q', backing_file_info[:8].encode())[0]
     if backing_file_offset == 0:
         return ""
 
-    backing_file_size = struct.unpack('>L', backing_file_info[8:])[0]
+    backing_file_size = struct.unpack('>L', backing_file_info[8:].encode())[0]
     return o[backing_file_offset:backing_file_offset+backing_file_size]
 
 # Get derived file and all its backing files
@@ -1269,7 +1267,7 @@ def qcow2_get_backing_chain(path):
 
 def get_qcow2_file_chain_size(path):
     chain = qcow2_get_file_chain(path)
-    size = 0L
+    size = 0
     for path in chain:
         size += get_local_file_disk_usage(path)
     return size
@@ -1302,7 +1300,7 @@ def qcow2_measure_required_size(path, cluster_size=0):
     opts = "" if cluster_size == 0 else "-o cluster_size=%s" % cluster_size
 
     out = shell.call("%s --output=json -f qcow2 -O qcow2 %s %s" % (qemu_img.subcmd('measure'), opts, path))
-    return long(simplejson.loads(out)["required"])
+    return int(simplejson.loads(out)["required"])
 
 
 def qcow2_get_cluster_size(path):
@@ -1332,14 +1330,12 @@ def get_block_discard_max_bytes(path):
         raise Exception("block device %s not exists" % path)
 
     discard_max_bytes = read_file('/sys/class/block/%s/queue/discard_max_bytes' % os.path.basename(path))
-    return 0 if discard_max_bytes is None else long(discard_max_bytes)
+    return 0 if discard_max_bytes is None else int(discard_max_bytes)
 
 def support_blkdiscard(path):
     return get_block_discard_max_bytes(path) > 0
 
-class AbstractFileConverter(object):
-    __metaclass__ = abc.ABCMeta
-
+class AbstractFileConverter(object, metaclass=abc.ABCMeta):
     def __init__(self):
         pass
 
@@ -1474,7 +1470,7 @@ def get_all_bridge_interface(bridge_name):
     cmd = shell.ShellCmd("brctl show %s|sed -n '2,$p'|cut -f 6-10" % bridge_name)
     cmd(is_exception=False)
     vifs = cmd.stdout.split('\n')
-    return [v.strip(" \t\r\n") for v in vifs]
+    return [v.strip() for v in vifs]
 
 def get_vf_index_by_pci_address(pci_address):
     if not pci_address:
@@ -1863,7 +1859,7 @@ def get_socket_num():
 def get_cpu_speed():
     max_freq = '/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq'
     if os.path.exists(max_freq):
-        out = file(max_freq).read()
+        out = open(max_freq).read()
         return int(float(out) / 1000)
 
     if platform.machine() == 'aarch64':
@@ -1898,7 +1894,7 @@ def get_pid_by_process_param(param):
     output = cmd(False)
     if cmd.return_code != 0:
         return None
-    output = output.strip(" \t\n\r")
+    output = output.strip()
     return int(output)
 
 def get_pid_by_process_name(name):
@@ -2484,7 +2480,7 @@ class TimeoutObject(object):
         self.objects[name] = (val, time.time() + timeout)
 
     def has(self, name):
-        return name in self.objects.keys()
+        return name in list(self.objects.keys())
 
     def get(self, name):
         return self.objects.get(name)
@@ -2521,7 +2517,7 @@ class TimeoutObject(object):
     def _start(self):
         def clean_timeout_object():
             current_time = time.time()
-            for name, obj in self.objects.items():
+            for name, obj in list(self.objects.items()):
                 timeout = obj[1]
                 if current_time >= timeout:
                     del self.objects[name]
@@ -2632,7 +2628,7 @@ def get_eth_ips():
 def get_nics_by_cidr(cidr):
     eths = get_eth_ips()
     nics = []
-    for e in eths.itervalues():
+    for e in eths.values():
         if e.status == False:
             continue
         for ip in e.ips:
@@ -3001,7 +2997,7 @@ def link(source, link_name):
         return
 
     if not os.path.exists(os.path.dirname(link_name)):
-        os.makedirs(os.path.dirname(link_name), 0755)
+        os.makedirs(os.path.dirname(link_name), 0o755)
 
     os.link(source, link_name)
     logger.debug("link %s to %s" % (source, link_name))
@@ -3050,7 +3046,7 @@ def fake_dead(name):
     fakedead_file = '/tmp/fakedead-%s' % name
     if not os.path.exists(fakedead_file):
         return False
-    ctx = file(fakedead_file).read().strip()
+    ctx = open(fakedead_file).read().strip()
     if ctx == 'fakedead':
         return True
     return False
@@ -3063,7 +3059,7 @@ def recover_fake_dead(name):
 def get_agent_pid_by_name(name):
     cmd = shell.ShellCmd('ps -auxww | grep \'%s\' | grep -E \'start|restart\' | grep -v grep | awk \'{print $2}\'' % name)
     output = cmd(False)
-    print output
+    print(output)
     if cmd.return_code != 0:
         return None
     output = output.strip(" \t\r")
@@ -3107,8 +3103,7 @@ def set_fail_if_no_path():
         s(is_exception=False, logcmd=True)
 
 
-def get_physical_disk(disk=None, logCommand=True):
-    # type: () -> list[str]
+def get_physical_disk(disk=None, logCommand=True) -> list[str]:
     def remove_digits(str_list):
         pattern = '[0-9]'
         str_list = [re.sub(pattern, '', i) for i in str_list]
@@ -3279,7 +3274,7 @@ class VmUsbManager(object):
         }
 
     def request_slot(self, usb_type):
-        if usb_type not in self.usb_version_map.keys():
+        if usb_type not in list(self.usb_version_map.keys()):
             raise Exception("Invalid USB type: %s" % usb_type)
 
         bus_set = self.usb_version_map.get(usb_type)
@@ -3293,5 +3288,5 @@ class VmUsbManager(object):
 
     def print_status(self):
         logger.info("Current USB slot status:")
-        for usb_type, count in self.usb_slots.iteritems():
+        for usb_type, count in self.usb_slots.items():
             logger.info("bus:%s: %d" % (usb_type, count))

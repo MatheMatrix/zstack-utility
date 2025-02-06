@@ -1,4 +1,6 @@
 import os.path
+import re
+
 import pyudev  # installed by ansible
 import threading
 import time
@@ -25,7 +27,7 @@ from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.linux import is_virtual_machine
 
 logger = log.get_logger(__name__)
-collector_dict = {}  # type: Dict[str, threading.Thread]
+collector_dict = {}  # type: dict[str, threading.Thread]
 collectd_dir = "/var/lib/zstack/collectd/"
 latest_collect_result = {}
 collectResultLock = threading.RLock()
@@ -257,7 +259,7 @@ def send_hba_port_state_abnormal_alarm_to_mn(name, port_name, port_state):
             "cannot find SEND_COMMAND_URL, unable to transmit hba port state abnormal alarm info to management node")
         return
 
-    if port_name in hba_port_state_list_record_map.keys():
+    if port_name in list(hba_port_state_list_record_map.keys()):
         hba_port_state_abnormal_alarm = HBAPortStateAbnormalAlarm()
         hba_port_state_abnormal_alarm.host = ALARM_CONFIG.get(kvmagent.HOST_UUID)
         hba_port_state_abnormal_alarm.portName = port_name
@@ -303,17 +305,18 @@ def check_disk_insert_and_remove(disk_list):
         disk_list_record = disk_list
         return
 
-    if cmp(disk_list_record, disk_list) == 0:
+    # TODO(py3) test
+    if disk_list_record == disk_list:
         return
 
     # check disk insert
-    for sn in disk_list.keys():
-        if sn not in disk_list_record.keys():
+    for sn in list(disk_list.keys()):
+        if sn not in list(disk_list_record.keys()):
             send_physical_disk_insert_alarm_to_mn(sn, disk_list[sn])
 
     # check disk remove
-    for sn in disk_list_record.keys():
-        if sn not in disk_list.keys():
+    for sn in list(disk_list_record.keys()):
+        if sn not in list(disk_list.keys()):
             send_physical_disk_remove_alarm_to_mn(sn, disk_list_record[sn])
 
     disk_list_record = disk_list
@@ -343,7 +346,7 @@ def collect_host_network_statistics():
 
     interfaces = []
     for eth in all_eths:
-        eth = eth.strip(' \t\n\r')
+        eth = eth.strip()
         if eth in virtual_eths:
             continue
         elif eth == 'bonding_masters':
@@ -369,7 +372,7 @@ def collect_host_network_statistics():
 
     host_network_interface_service_type_map = get_service_type_map()
     service_types = set()
-    for types in host_network_interface_service_type_map.values():
+    for types in list(host_network_interface_service_type_map.values()):
         service_types.update(types)
 
     all_in_bytes_by_service_type = {service_type: 0 for service_type in service_types}
@@ -380,7 +383,7 @@ def collect_host_network_statistics():
     all_out_errors_by_service_type = {service_type: 0 for service_type in service_types}
 
     host_network_service_type_interface_map = defaultdict(list)
-    for interface, types in host_network_interface_service_type_map.items():
+    for interface, types in list(host_network_interface_service_type_map.items()):
         for service_type in types:
             host_network_service_type_interface_map[service_type].append(interface)
 
@@ -474,7 +477,7 @@ def collect_host_network_statistics():
         metrics['host_network_all_out_errors_by_service_type'].add_metric([service_type], float(
             all_out_errors_by_service_type[service_type]))
 
-    return metrics.values()
+    return list(metrics.values())
 
 
 collect_node_disk_capacity_last_time = None
@@ -522,20 +525,20 @@ def collect_host_capacity_statistics():
     r1, dfInfo = bash_ro("df | awk '{print $3,$6}' | tail -n +2")
     r2, lbkInfo = bash_ro("lsblk -e 43 -db -oname,size | tail -n +2")
     if r1 != 0 or r2 != 0:
-        collect_node_disk_capacity_last_result = metrics.values()
+        collect_node_disk_capacity_last_result = list(metrics.values())
         return collect_node_disk_capacity_last_result
 
     df_map = {}
     for df in dfInfo.splitlines():
-        df_size = long(df.split()[0].strip()) * 1024
+        df_size = int(df.split()[0].strip()) * 1024
         df_name = df.split()[-1].strip()
         df_map[df_name] = df_size
 
     for lbk in lbkInfo.splitlines():
         lbk_name = lbk.split()[0].strip()
-        lbk_size = long(lbk.split()[-1].strip())
+        lbk_size = int(lbk.split()[-1].strip())
 
-        lbk_used_size = 0L
+        lbk_used_size = 0
         ds = bash_o("lsblk -lb /dev/%s -omountpoint |awk '{if(length($1)>0) print $1}' | tail -n +2" % lbk_name)
         for d in ds.splitlines():
             if df_map.get(d.strip(), None) != None:
@@ -544,7 +547,7 @@ def collect_host_capacity_statistics():
         metrics['block_device_used_capacity_in_bytes'].add_metric([lbk_name], float(lbk_used_size))
         metrics['block_device_used_capacity_in_percent'].add_metric([lbk_name], float(lbk_used_size * 100) / lbk_size)
 
-    collect_node_disk_capacity_last_result = metrics.values()
+    collect_node_disk_capacity_last_result = list(metrics.values())
     return collect_node_disk_capacity_last_result
 
 
@@ -560,11 +563,11 @@ def collect_lvm_capacity_statistics():
         linux.set_fail_if_no_path()
 
     vg_sizes = lvm.get_all_vg_size()
-    for name, tpl in vg_sizes.items():
+    for name, tpl in list(vg_sizes.items()):
         metrics['vg_size'].add_metric([name], float(tpl[0]))
         metrics['vg_avail'].add_metric([name], float(tpl[1]))
 
-    return metrics.values()
+    return list(metrics.values())
 
 
 def convert_raid_state_to_int(state):
@@ -625,7 +628,7 @@ def collect_raid_state():
     if r == 0 and o.strip() != "":
         return collect_arcconf_raid_state(metrics, o)
 
-    return metrics.values()
+    return list(metrics.values())
 
 
 def handle_raid_state(target_id, state_int, origin_state):
@@ -695,7 +698,7 @@ def collect_arcconf_raid_state(metrics, infos):
                 send_physical_disk_status_alarm_to_mn(serial_number, slot_number, enclosure_device_id, drive_state)
 
     check_disk_insert_and_remove(disk_list)
-    return metrics.values()
+    return list(metrics.values())
 
 
 def collect_sas_raid_state(metrics, infos):
@@ -741,7 +744,7 @@ def collect_sas_raid_state(metrics, infos):
                     send_physical_disk_status_alarm_to_mn(serial_number, slot_number, enclosure_device_id, state)
 
     check_disk_insert_and_remove(disk_list)
-    return metrics.values()
+    return list(metrics.values())
 
 
 def collect_mega_raid_state(metrics, infos):
@@ -787,7 +790,7 @@ def collect_mega_raid_state(metrics, infos):
                 send_physical_disk_status_alarm_to_mn(serial_number, slot_id, enclosure_id, converted_pd_status)
 
     check_disk_insert_and_remove(disk_list)
-    return metrics.values()
+    return list(metrics.values())
 
 
 def collect_mini_raid_state():
@@ -802,7 +805,7 @@ def collect_mini_raid_state():
                                                        ['slot_number', 'disk_group']),
     }
     if bash_r("/opt/MegaRAID/MegaCli/MegaCli64 -LDInfo -LALL -aAll") != 0:
-        return metrics.values()
+        return list(metrics.values())
 
     raid_info = bash_o(
         "/opt/MegaRAID/MegaCli/MegaCli64 -LDInfo -LALL -aAll | grep -E 'Target Id|State'").strip().splitlines()
@@ -822,7 +825,7 @@ def collect_mini_raid_state():
             slot_number = info.strip().split(" ")[-1]
         elif "DiskGroup" in info:
             kvs = info.replace("Drive's position: ", "").split(",")
-            disk_group = filter(lambda x: "DiskGroup" in x, kvs)[0]
+            disk_group = [x for x in kvs if "DiskGroup" in x][0]
             disk_group = disk_group.split(" ")[-1]
         elif "Drive Temperature" in info:
             temp = info.split(":")[1].split("C")[0]
@@ -834,7 +837,7 @@ def collect_mini_raid_state():
             state = info.strip().split(":")[-1]
             metrics['physical_disk_state'].add_metric([slot_number, disk_group], convert_disk_state_to_int(state))
 
-    return metrics.values()
+    return list(metrics.values())
 
 
 def collect_ssd_state():
@@ -846,7 +849,7 @@ def collect_ssd_state():
     nvme_serial_numbers = set()
     r, o = bash_ro("lsblk -d -o name,type,rota | grep -w disk | awk '$3 == 0 {print $1}'")  # type: (int, str)
     if r != 0 or o.strip() == "":
-        return metrics.values()
+        return list(metrics.values())
 
     for line in o.splitlines():
         disk_name = line.strip()
@@ -880,7 +883,7 @@ def collect_ssd_state():
                 elif "Temperature_Celsius" in info and info.split()[9].strip().isdigit():
                     metrics['ssd_temperature'].add_metric([disk_name, serial_number], float(info.split()[9].strip()))
     check_nvme_disk_insert_and_remove(nvme_serial_numbers)
-    return metrics.values()
+    return list(metrics.values())
 
 
 def check_nvme_disk_insert_and_remove(nvme_serial_numbers):
@@ -1048,7 +1051,7 @@ def collect_ipmi_state():
                 if "pout" in info and ps_id in power_list:
                     continue
                 ps_out_power = info.split("|")[4].strip().lower()
-                ps_out_power = float(filter(str.isdigit, ps_out_power)) if bool(
+                ps_out_power = float(''.join(re.findall(r'\d+', ps_out_power))) if bool(
                     re.search(r'\d', ps_out_power)) else float(0)
                 metrics['power_supply_current_output_power'].add_metric([ps_id], ps_out_power)
                 power_list.append(ps_id)
@@ -1062,7 +1065,7 @@ def collect_ipmi_state():
                     continue
                 fan_name = info.split("|")[0].strip()
                 fan_state = 0 if info.split("|")[2].strip() == "ok" else 10
-                fan_rpm = float(filter(str.isdigit, fan_rpm)) if bool(re.search(r'\d', fan_rpm)) else float(0)
+                fan_rpm = float(''.join(re.findall(r'\d+', fan_rpm))) if bool(re.search(r'\d', fan_rpm)) else float(0)
                 metrics['fan_speed_state'].add_metric([fan_name], fan_state)
                 metrics['fan_speed_rpm'].add_metric([fan_name], fan_rpm)
                 if fan_state == 0 and is_fan_status_abnormal(fan_name):
@@ -1080,7 +1083,7 @@ def collect_ipmi_state():
                 temp = float(match.group(2).strip())
                 metrics['cpu_temperature'].add_metric([cpu_id], temp)
 
-    collect_equipment_state_last_result = metrics.values()
+    collect_equipment_state_last_result = list(metrics.values())
     return collect_equipment_state_last_result
 
 
@@ -1126,7 +1129,7 @@ def collect_equipment_state_from_ipmi():
 
     r, cpu_info = bash_ro("ipmitool sdr elist | grep -i cpu")  # type: (int, str)
     if r != 0:
-        return metrics.values()
+        return list(metrics.values())
 
     check_equipment_state_from_ipmitool(metrics)
 
@@ -1171,7 +1174,7 @@ def collect_equipment_state_from_ipmi():
             else:
                 remove_cpu_status_abnormal(cpu_id)
 
-    return metrics.values()
+    return list(metrics.values())
 
 
 def collect_equipment_state():
@@ -1190,7 +1193,7 @@ def collect_equipment_state():
             metrics['power_supply'].add_metric([ps_id], health)
 
     metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
-    return metrics.values()
+    return list(metrics.values())
 
 
 def fetch_vm_qemu_processes():
@@ -1201,8 +1204,6 @@ def fetch_vm_qemu_processes():
                 processes.append(process)
         except psutil.NoSuchProcess:
             pass
-        if process.name() == QEMU_CMD:  # /usr/libexec/qemu-kvm
-            processes.append(process)
     return processes
 
 
@@ -1217,11 +1218,6 @@ def find_vm_uuid_from_vm_qemu_process(process):
         return None
     except psutil.NoSuchProcess:
         return None
-    for word in process.cmdline():
-        # word like 'guest=707e9d31751e499eb6110cce557b4168,debug-threads=on'
-        if word.startswith(prefix) and word.endswith(suffix):
-            return word[len(prefix): len(word) - len(suffix)]
-    return None
 
 
 def collect_vm_statistics():
@@ -1232,7 +1228,7 @@ def collect_vm_statistics():
 
     processes = fetch_vm_qemu_processes()
     if len(processes) == 0:
-        return metrics.values()
+        return list(metrics.values())
 
     pid_vm_map = {}
     for process in processes:
@@ -1255,10 +1251,10 @@ def collect_vm_statistics():
             metrics['cpu_occupied_by_vm'].add_metric([vm_uuid], float(cpu_usage))
 
     n = 16  # procps/top has '#define MONPIDMAX  20'
-    for i in range(0, len(pid_vm_map.keys()), n):
-        collect(pid_vm_map.keys()[i:i + n])
+    for i in range(0, len(list(pid_vm_map.keys())), n):
+        collect(list(pid_vm_map.keys())[i:i + n])
 
-    return metrics.values()
+    return list(metrics.values())
 
 
 # since Cloud 4.5.0, Because GetVmGuestToolsAction calls are too frequent,
@@ -1274,7 +1270,7 @@ def collect_vm_pvpanic_enable_in_domain_xml():
 
     processes = fetch_vm_qemu_processes()
     if len(processes) == 0:
-        return metrics.values()
+        return list(metrics.values())
 
     # if pvpanic enable in domain xml (qemu process cmdline has 'pvpanic,ioport'), collect '1'
     # if not, collect '0'
@@ -1282,14 +1278,14 @@ def collect_vm_pvpanic_enable_in_domain_xml():
         vm_uuid = find_vm_uuid_from_vm_qemu_process(process)
         r = ""
         try:
-            r = filter(lambda word: word == 'pvpanic,ioport=1285', process.cmdline())
+            r = [word for word in process.cmdline() if word == 'pvpanic,ioport=1285']
         except psutil.NoSuchProcess:
             pass
 
         enable = 1 if len(r) > 0 else 0
         metrics[KEY].add_metric([vm_uuid], enable)
 
-    return metrics.values()
+    return list(metrics.values())
 
 
 collect_node_disk_wwid_last_time = None
@@ -1335,7 +1331,7 @@ def collect_node_disk_wwid():
                                             'node disk wwid', None, ["disk", "wwid"])
     }
 
-    collect_node_disk_wwid_last_result = metrics.values()
+    collect_node_disk_wwid_last_result = list(metrics.values())
 
     o = bash_o("pvs --nolocking -t --noheading -o pv_name,vg_name").strip().splitlines()
     context = pyudev.Context()
@@ -1358,7 +1354,7 @@ def collect_node_disk_wwid():
 
             sblk_pv_vg[disk_name] = vg
 
-    collect_node_disk_wwid_last_result = metrics.values()
+    collect_node_disk_wwid_last_result = list(metrics.values())
     return collect_node_disk_wwid_last_result
 
 
@@ -1381,7 +1377,7 @@ def collect_memory_overcommit_statistics():
     }
 
     if PAGE_SIZE is None:
-        return metrics.values()
+        return list(metrics.values())
 
     # read metric from /sys/kernel/mm/ksm
     value = linux.read_file("/sys/kernel/mm/ksm/pages_shared")
@@ -1405,11 +1401,11 @@ def collect_memory_overcommit_statistics():
         metrics['host_ksm_full_scans'].add_metric([], float(value.strip()))
 
     with asyncDataCollectorLock:
-        for domain_name, maximum_memory in domain_max_memory.items():
+        for domain_name, maximum_memory in list(domain_max_memory.items()):
             metrics['collectd_virt_memory'].add_metric([domain_name, "max_balloon", domain_name],
                                                        1024 * float(maximum_memory.strip()))
 
-    return metrics.values()
+    return list(metrics.values())
 
 
 def collect_physical_network_interface_state():
@@ -1431,7 +1427,7 @@ def collect_physical_network_interface_state():
             speed = str(get_nic_supported_max_speed(nic))
             metrics['physical_network_interface'].add_metric([nic, speed], status)
 
-    return metrics.values()
+    return list(metrics.values())
 
 
 def collect_host_conntrack_statistics():
@@ -1449,7 +1445,7 @@ def collect_host_conntrack_statistics():
     conntrack_percent = 1.0 if percent <= 1.0 else percent
     metrics['zstack_conntrack_in_percent'].add_metric([], conntrack_percent)
 
-    return metrics.values()
+    return list(metrics.values())
 
 
 def parse_nvidia_smi_output_to_list(data):
@@ -1464,7 +1460,7 @@ def parse_nvidia_smi_output_to_list(data):
                 vgpu_list.append(current_vgpu)
             current_vgpu = {}
         if ':' in line and current_vgpu is not None:
-            key, value = map(str.strip, line.split(':', 1))
+            key, value = list(map(str.strip, line.split(':', 1)))
             if value.isdigit():
                 value = int(value)
             elif value.replace('.', '', 1).isdigit() and '%' in value:
@@ -1534,7 +1530,7 @@ def collect_tianshu_gpu_status():
     metrics = get_gpu_metrics()
 
     if has_ix_smi() is False:
-        return metrics.values()
+        return list(metrics.values())
     if shell.run(gpu.is_tianshu_v1()) == 0:
         cmd = gpu.get_tianshu_gpu_metric_info_cmd_v1()
     else:
@@ -1543,7 +1539,7 @@ def collect_tianshu_gpu_status():
     r, gpu_info = bash_ro(cmd)
     if r != 0:
         check_gpu_status_and_save_gpu_status("TIANSHU", metrics)
-        return metrics.values()
+        return list(metrics.values())
 
     for info in gpu_info.splitlines():
         info = info.strip().split(',')
@@ -1561,21 +1557,21 @@ def collect_tianshu_gpu_status():
         if len(info) == 8:
             add_metrics('host_gpu_fan_speed', info[7].strip(), [pci_device_address, gpu_serial], metrics)
         check_gpu_status_and_save_gpu_status("TIANSHU", metrics)
-    return metrics.values()
+    return list(metrics.values())
 
 
 def collect_nvidia_gpu_status():
     metrics = get_gpu_metrics()
 
     if has_nvidia_smi() is False:
-        return metrics.values()
+        return list(metrics.values())
 
     r, gpu_info = bash_ro(
         "nvidia-smi --query-gpu=power.draw,temperature.gpu,fan.speed,utilization.gpu,utilization.memory,index,"
         "gpu_bus_id,gpu_serial,memory.used,memory.total --format=csv,noheader")
     if r != 0:
         check_gpu_status_and_save_gpu_status("NVIDIA", metrics)
-        return metrics.values()
+        return list(metrics.values())
 
     for info in gpu_info.splitlines():
         info = info.strip().split(',')
@@ -1609,14 +1605,14 @@ def collect_nvidia_gpu_status():
 
     r, vgpu_info = bash_ro("nvidia-smi vgpu -q")
     if r != 0 or "VM Name" not in vgpu_info:
-        return metrics.values()
+        return list(metrics.values())
 
     for vgpu in parse_nvidia_smi_output_to_list(vgpu_info):
         vm_uuid = vgpu["VM Name"]
         mdev_uuid = vgpu["MDEV UUID"].replace('-', '')
         add_metrics('vgpu_utilization', vgpu['Gpu'].replace('%', '').strip(), [vm_uuid, mdev_uuid], metrics)
         add_metrics('vgpu_memory_utilization', vgpu['Memory'].replace('%', '').strip(), [vm_uuid, mdev_uuid], metrics)
-    return metrics.values()
+    return list(metrics.values())
 
 
 def collect_huawei_gpu_status():
@@ -1631,12 +1627,12 @@ def collect_huawei_gpu_status():
                                                          ['pci_device_address', 'gpu_serial'])
 
     if has_npu_smi() is False:
-        return metrics.values()
+        return list(metrics.values())
 
     r, gpu_info_out = bash_ro("stdbuf -oL timeout 2 npu-smi info watch -d 2 -s ptam")
     if r != 0 and r != 124:
         check_gpu_status_and_save_gpu_status("HUAWEI", metrics)
-        return metrics.values()
+        return list(metrics.values())
     npu_ids = set()
     for info in gpu_info_out.splitlines():
         if 'NpuID' in info:
@@ -1701,21 +1697,21 @@ def collect_huawei_gpu_status():
         add_metrics('host_gpu_hbm_rate', gpu_hbm_rate, [pci_device_address, gpu_serial], metrics)
 
     check_gpu_status_and_save_gpu_status("HUAWEI", metrics)
-    return metrics.values()
+    return list(metrics.values())
 
 def collect_hy_gpu_status():
     metrics = get_gpu_metrics()
 
     if has_hy_smi() is False:
-        return metrics.values()
+        return list(metrics.values())
 
     r, gpu_info = bash_ro('hy-smi --showuse --showmemuse  --showpower --showtemp --showserial --showbus --json')
     if r != 0:
         check_gpu_status_and_save_gpu_status("HY", metrics)
-        return metrics.values()
+        return list(metrics.values())
 
     gpu_info_json = json.loads(gpu_info)
-    for card_name, card_data in gpu_info_json.items():
+    for card_name, card_data in list(gpu_info_json.items()):
         gpu_serial = card_data['Serial Number']
         pci_device_address = card_data["PCI Bus"].lower()
         add_gpu_pci_device_address("HY", pci_device_address, gpu_serial)
@@ -1728,23 +1724,23 @@ def collect_hy_gpu_status():
         add_metrics('host_gpu_memory_utilization', card_data.get("DCU memory use (%)"), [pci_device_address, gpu_serial],
                     metrics)
     check_gpu_status_and_save_gpu_status("HY", metrics)
-    return metrics.values()
+    return list(metrics.values())
 
 
 def collect_amd_gpu_status():
     metrics = get_gpu_metrics()
 
     if has_rocm_smi() is False:
-        return metrics.values()
+        return list(metrics.values())
 
     r, gpu_info = bash_ro(
         'rocm-smi --showpower --showtemp  --showmemuse --showuse --showfan --showbus  --showserial --json')
     if r != 0:
         check_gpu_status_and_save_gpu_status("AMD", metrics)
-        return metrics.values()
+        return list(metrics.values())
 
     gpu_info_json = json.loads(gpu_info.strip())
-    for card_name, card_data in gpu_info_json.items():
+    for card_name, card_data in list(gpu_info_json.items()):
         gpu_serial = card_data['Serial Number']
         pci_device_address = card_data['PCI Bus'].lower()
         add_gpu_pci_device_address("AMD", pci_device_address, gpu_serial)
@@ -1757,7 +1753,7 @@ def collect_amd_gpu_status():
         add_metrics('host_gpu_memory_utilization', card_data.get('GPU Memory Allocated (VRAM%)'),
                     [pci_device_address, gpu_serial], metrics)
     check_gpu_status_and_save_gpu_status("AMD", metrics)
-    return metrics.values()
+    return list(metrics.values())
 
 
 def collect_disk_stat():
@@ -1854,8 +1850,8 @@ def collect_disk_stat():
     def collect_nvme_disk_stat():
         if not os.path.exists("/sys/class/nvme"):
             return
-        for controller in filter(lambda c: os.path.isdir(os.path.join("/sys/class/nvme", c)), os.listdir("/sys/class/nvme")):
-            for device in filter(lambda d: d.startswith("nvme"), os.listdir("/sys/class/nvme/%s" % controller)):
+        for controller in [c for c in os.listdir("/sys/class/nvme") if os.path.isdir(os.path.join("/sys/class/nvme", c))]:
+            for device in [d for d in os.listdir("/sys/class/nvme/%s" % controller) if d.startswith("nvme")]:
                 wwid_path = os.path.join("/sys/class/nvme", controller, device, "wwid")
                 if not os.path.exists(wwid_path):
                     continue
@@ -1867,7 +1863,7 @@ def collect_disk_stat():
     generator = BlockInfoGenerator()
     collect_scsi_disk_stat()
     collect_nvme_disk_stat()
-    return metrics.values()
+    return list(metrics.values())
 
 
 def add_metrics(metric_name, value, labels, metrics):
@@ -1878,7 +1874,7 @@ def add_metrics(metric_name, value, labels, metrics):
         metrics[metric_name].add_metric(labels, float(value))
         return
 
-    if isinstance(value, (str, unicode)) and value.replace('.', '', 1).isdigit():
+    if isinstance(value, str) and value.replace('.', '', 1).isdigit():
         metrics[metric_name].add_metric(labels, float(value))
         return
 
@@ -1902,7 +1898,7 @@ def collect_hba_port_device_state():
 
     r, o = bash_ro("systool -c fc_host -v")
     if r != 0:
-        return metrics.values()
+        return list(metrics.values())
     port_name = None
     port_state = None
     name = None
@@ -1920,7 +1916,7 @@ def collect_hba_port_device_state():
         if k == "port_state":
             port_state = v
         if k == "device path":
-            if port_name not in hba_port_state_list_record_map.keys():
+            if port_name not in list(hba_port_state_list_record_map.keys()):
                 hba_port_state_list_record_map[port_name] = port_state
 
             if hba_port_state_list_record_map[port_name] != port_state:
@@ -1930,7 +1926,7 @@ def collect_hba_port_device_state():
             port_name = None
             port_state = None
             name = None
-    return metrics.values()
+    return list(metrics.values())
 
 
 def has_hy_smi():
@@ -1988,7 +1984,7 @@ def report_self_abnormal_memory_usage_if_need(usage):
     if kvmagent_physical_memory_usage_alarm_time and linux.get_current_timestamp() - kvmagent_physical_memory_usage_alarm_time <= 1800:
         return
 
-    ProcessPhysicalMemoryUsageAlarm(os.getpid(), "zstack-kvmagent", long(usage)).send_alarm_to_mn()
+    ProcessPhysicalMemoryUsageAlarm(os.getpid(), "zstack-kvmagent", int(usage)).send_alarm_to_mn()
     kvmagent_physical_memory_usage_alarm_time = linux.get_current_timestamp()
 
 
@@ -2019,7 +2015,7 @@ def collect_kvmagent_memory_statistics():
     if used_physical_memory <= 4 * 1024**3:  # 4GB
         dump_debug_info_if_need()
 
-    return metrics.values()
+    return list(metrics.values())
 
 
 kvmagent.register_prometheus_collector(collect_host_network_statistics)
@@ -2083,23 +2079,23 @@ LoadPlugin network
 LoadPlugin virt
 
 <Plugin aggregation>
-	<Aggregation>
-		#Host "unspecified"
-		Plugin "cpu"
-		#PluginInstance "unspecified"
-		Type "cpu"
-		#TypeInstance "unspecified"
+    <Aggregation>
+        #Host "unspecified"
+        Plugin "cpu"
+        #PluginInstance "unspecified"
+        Type "cpu"
+        #TypeInstance "unspecified"
 
-		GroupBy "Host"
-		GroupBy "TypeInstance"
+        GroupBy "Host"
+        GroupBy "TypeInstance"
 
-		CalculateNum false
-		CalculateSum false
-		CalculateAverage true
-		CalculateMinimum false
-		CalculateMaximum false
-		CalculateStddev false
-	</Aggregation>
+        CalculateNum false
+        CalculateSum false
+        CalculateAverage true
+        CalculateMinimum false
+        CalculateMaximum false
+        CalculateStddev false
+    </Aggregation>
 </Plugin>
 
 <Plugin cpu>
@@ -2124,14 +2120,14 @@ LoadPlugin virt
 </Plugin>
 
 <Plugin memory>
-	ValuesAbsolute true
-	ValuesPercentage false
+    ValuesAbsolute true
+    ValuesPercentage false
 </Plugin>
 
 <Plugin virt>
-	Connection "qemu:///system"
-	RefreshInterval {{INTERVAL}}
-	HostnameFormat name
+    Connection "qemu:///system"
+    RefreshInterval {{INTERVAL}}
+    HostnameFormat name
     PluginInstanceFormat name
     BlockDevice "/:hd[c-e]/"
     BlockDevice "{{IGNORE}}"
@@ -2140,7 +2136,7 @@ LoadPlugin virt
 </Plugin>
 
 <Plugin network>
-	Server "localhost" "25826"
+    Server "localhost" "25826"
 </Plugin>
 
 '''
@@ -2381,7 +2377,7 @@ modules:
             @classmethod
             def __get_cache__(cls):
                 # type: () -> list
-                keys = cls.__collector_cache.keys()
+                keys = list(cls.__collector_cache.keys())
                 if keys is None or len(keys) == 0:
                     return None
                 if (time.time() - keys[0]) < 9:
@@ -2390,7 +2386,7 @@ modules:
 
             @classmethod
             def __store_cache__(cls, collectStartTime, ret):
-                # type: (list) -> None
+                # type: (float, list) -> None
                 cls.__collector_cache.clear()
                 cls.__collector_cache.update({collectStartTime: ret})
 
@@ -2406,7 +2402,7 @@ modules:
                             if Collector.check(vl) is False:
                                 return False
                     if isinstance(v, dict):
-                        for vk in v.iterkeys():
+                        for vk in v.keys():
                             if vk == "timestamp" or vk == "exemplar":
                                 continue
                             if Collector.check(v[vk]) is False:
@@ -2445,17 +2441,17 @@ modules:
                     collector_dict[name] = thread.ThreadFacade.run_in_thread(get_result_run, (c, name,))
 
                 for i in range(7):
-                    for t in collector_dict.values():
+                    for t in list(collector_dict.values()):
                         if t.is_alive():
                             time.sleep(0.5)
                             break
 
-                for k in collector_dict.iterkeys():
+                for k in collector_dict.keys():
                     if collector_dict[k].is_alive():
                         logger.warn("It seems that the collector [%s] has not been completed yet,"
                                     " temporarily use the last calculation result." % k)
 
-                for v in latest_collect_result.itervalues():
+                for v in latest_collect_result.values():
                     ret.extend(v)
                 Collector.__store_cache__(collectStartTime, ret)
                 return ret
@@ -2548,7 +2544,7 @@ modules:
     def stop(self):
         pass
 
-    def configure(self, config):
+    def configure(self, config=None):
         global ALARM_CONFIG
         ALARM_CONFIG = config
         debug.CONFIG = config
