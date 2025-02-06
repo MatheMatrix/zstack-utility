@@ -20,7 +20,7 @@ class Test(unittest.TestCase):
         iptc.nat_table_prerouting_chain_add_rule(rule)
         iptc.nat_table_prerouting_chain_add_rule(rule)
         iptc.nat_table_prerouting_chain_add_rule(rule)
-        print str(iptc)
+        print(str(iptc))
 
 
 if __name__ == "__main__":

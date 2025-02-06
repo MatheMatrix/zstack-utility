@@ -2,17 +2,8 @@
 
 @author: haibiao.xiao
 '''
-import os
-import shutil
-import time
-import yaml
-import glob
-import uuid
-import re
-from enum import Enum, unique
 
 from zstacklib.utils import log
-from zstacklib.utils import shell
 from zstacklib.utils import bash
 from zstacklib.utils import iproute
 from zstacklib.utils import linux

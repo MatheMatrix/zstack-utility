@@ -10,8 +10,9 @@ import sys
 import threading
 import operator
 import gc
-import objgraph
-import lock
+from . import objgraph
+from . import lock
+from . import http
 import inspect
 import datetime
 import os
@@ -49,10 +50,9 @@ class DumpReporter(object):
         if not CONFIG or not SEND_COMMAND_URL or not CONFIG.get(SEND_COMMAND_URL):
             logger.warn("Cannot find SEND_COMMAND_URL, unable to send '/host/kvmagent/status' to management node ")
             return
-        import http
         data = {"status": "busy" if self.dump_thread_count > 0 else "available",
                 "hostUuid": CONFIG.get(HOST_UUID),
-                "memoryUsage": long(psutil.Process().memory_info().rss)}
+                "memoryUsage": int(psutil.Process().memory_info().rss)}
         http.json_dump_post(CONFIG.get(SEND_COMMAND_URL), data, {'commandpath': '/host/kvmagent/status'})
 
     def start_dump(self):
@@ -94,7 +94,7 @@ def dump_track(func):
 def dump(sig, frame):
     message = "Signal received : dump Traceback:\n"
     message += ''.join(traceback.format_stack(frame))
-    print message
+    print(message)
 
 
 def install_runtime_tracedumper():
@@ -112,7 +112,7 @@ def dump_debug_info(signum, fram, *argv):
         thread.ThreadFacade.run_in_thread(dump_threads)
         thread.ThreadFacade.run_in_thread(dump_objects)
     except Exception as e:
-        logger.warn("get error when dump debug info %s" % e.message)
+        logger.warn("get error when dump debug info %s" % str(e))
 
 
 def track_memory_growth():
@@ -120,7 +120,7 @@ def track_memory_growth():
         thread.ThreadFacade.run_in_thread(dump_threads)
         thread.ThreadFacade.run_in_thread(track_objects)
     except Exception as e:
-        logger.warn("get error when track memory info %s" % e.message)
+        logger.warn("get error when track memory info %s" % str(e))
 
 
 @dump_track
@@ -141,7 +141,7 @@ def dump_threads():
                 thread_info.append("".join(stack))
 
                 thread_locals = current_frames[th.ident].f_locals
-                simplified_locals = {k: repr(v)[:100] for k, v in thread_locals.items()}
+                simplified_locals = {k: repr(v)[:100] for k, v in list(thread_locals.items())}
                 thread_info.append("Locals: {}".format(simplified_locals))
             except Exception as e:
                 logger.debug("Error dumping thread {}: {}".format(th.name, str(e)))
@@ -209,7 +209,7 @@ def show_backrefs(obj_types):
         return not inspect.isfunction(target)
 
     obj_dict = by_types(obj_types, obj_num=3)
-    for t, objs in obj_dict.items()[:50]:
+    for t, objs in list(obj_dict.items())[:50]:
         try:
             f = "%s/%s-%s.dot" % (ref_dir, now, t)
             with open(f, 'wb') as fd:
@@ -223,7 +223,7 @@ def show_backrefs(obj_types):
 
 def log_objs_statistics(total_num_stats, total_size_stats, num_deltas, size_deltas, all_total_size, all_total_num):
     res = []
-    total_size_list = sorted(total_size_stats.items(), key=operator.itemgetter(1), reverse=True)
+    total_size_list = sorted(list(total_size_stats.items()), key=operator.itemgetter(1), reverse=True)
     width = max(len(name) for name, size in total_size_list)
     res.append("Total size = %s bytes. Total objects num = %s." % (all_total_size, all_total_num))
     res.append('%5s %-*s %12s %5s %12s %5s %12s %5s %12s %5s' % ("Index", width, "Kind", "Size", "%", "Growth", "%", "Count", "%", "Growth", "%"))

@@ -162,7 +162,7 @@ class SharedBlockCandidateStruct:
         self.serial = None  # type: str
         self.hctl = None  # type: str
         self.type = None  # type: str
-        self.size = None  # type: long
+        self.size = None  # type: int
         self.path = None  # type: str
         self.source = None  # type: str
         self.transport = None  # type: str
@@ -288,7 +288,7 @@ def get_mpath_block_devices(scsi_info):
     if cmd.return_code == 0 and cmd.stdout.strip() != "":
         mpath_devices = cmd.stdout.strip().splitlines()
 
-    block_devices_list = [None] * len(mpath_devices)
+    block_devices_list = [None] * len(mpath_devices) # type: list
 
     def get_slave_block_devices(slave, dm, i):
         try:
@@ -326,14 +326,14 @@ def get_mpath_block_devices(scsi_info):
     for t in threads:
         t.join()
 
-    return filter(None, block_devices_list), slave_devices
+    return [_f for _f in block_devices_list if _f], slave_devices
 
 def get_disk_block_devices(slave_devices, scsi_info):
     disks = shell.call("lsblk -e 43 -p -o NAME,TYPE | awk '/disk/{print $1}'").strip().split()
-    block_devices_list = [None] * len(disks)
+    block_devices_list = [None] * len(disks)  # type: list
 
     slave_multipaths = shell.call("multipath -l | grep -A 1 policy | grep -v policy |awk -F - '{print $2}'| awk '{print $2}'").strip().splitlines()
-    slave_multipaths = filter(None, slave_multipaths)
+    slave_multipaths = [_f for _f in slave_multipaths if _f]
     is_multipath_running_sign = is_multipath_running()
 
     def get_block_device_info(disk, i):
@@ -362,11 +362,11 @@ def get_disk_block_devices(slave_devices, scsi_info):
     for t in threads:
         t.join()
 
-    return filter(None, block_devices_list)
+    return [_f for _f in block_devices_list if _f]
 
 def get_lsscsi_info():
     scsi_info = {}
-    o = filter(lambda s: "/dev/" in s, run_lsscsi_i())
+    o = [s for s in run_lsscsi_i() if "/dev/" in s]
     for info in o:
         dev_and_wwid = info.split("/dev/")[1].split(" ")
         dev_name = dev_and_wwid[0]
@@ -495,7 +495,7 @@ def get_device_info(dev_name, scsi_info):
 
     def get_wwid(dev):
         try:
-            if dev in scsi_info.keys():
+            if dev in list(scsi_info.keys()):
                 return scsi_info[dev]
             elif dev.startswith("dm-"):
                 return get_dm_wwid(dev)
@@ -560,12 +560,12 @@ def calcLvReservedSize(size):
     # NOTE(weiw): Add additional 12M for every lv
     size = int(size) + 3 * LV_RESERVED_SIZE
     # NOTE(weiw): Add additional 4M per 4GB for qcow2 potential use
-    size = int(size) + (size/1024/1024/1024/4) * LV_RESERVED_SIZE
+    size = int(size) + (size//1024//1024//1024//4) * LV_RESERVED_SIZE
     return size
 
 
 def getOriginalSize(size):
-    size = int(size) - (int(size) / 1024 / 1024 / 1024 / 4) * LV_RESERVED_SIZE
+    size = int(size) - (int(size) // 1024 // 1024 // 1024 // 4) * LV_RESERVED_SIZE
     size = int(size) - 3 * LV_RESERVED_SIZE
     return size
 
@@ -678,8 +678,8 @@ def config_lvm_filter(files, no_drbd=False, preserve_disks=None):
 
 
 def modify_sanlock_config(key, value):
+    global SANLOCK_CONFIG_FILE_PATH
     if not os.path.exists(SANLOCK_CONFIG_FILE_PATH) and os.path.exists(DEB_SANLOCK_CONFIG_FILE_PATH):
-        global SANLOCK_CONFIG_FILE_PATH
         SANLOCK_CONFIG_FILE_PATH = DEB_SANLOCK_CONFIG_FILE_PATH
     if not os.path.exists(os.path.dirname(SANLOCK_CONFIG_FILE_PATH)):
         linux.mkdir(os.path.dirname(SANLOCK_CONFIG_FILE_PATH))
@@ -1463,7 +1463,7 @@ def extend_lv(path, extend_size, skip_if_sufficient=False):
 
 @bash.in_bash
 def extend_lv_from_cmd(path, size, cmd, extend_thin_by_specified_size=False, skip_if_sufficient=False):
-    # type: (str, long, object, bool) -> None
+    # type: (str, int, object, bool, bool) -> None
     if cmd.provisioning is None or \
             cmd.addons is None or \
             cmd.provisioning != VolumeProvisioningStrategy.ThinProvisioning:
@@ -1824,7 +1824,7 @@ def get_new_snapshot_name(absolutePath, remove_oldest=True):
         all_snaps = bash.bash_o("%s -oname -Sorigin=%s --noheadings | grep _snap_" % (subcmd("lvs"), name)).strip().splitlines()
         if len(all_snaps) == 0:
             return name + "_snap_1"
-        numbers = map(lambda x: int(x.strip().split("_")[-1]), all_snaps)
+        numbers = [int(x.strip().split("_")[-1]) for x in all_snaps]
         if len(all_snaps) >= 3 and remove_oldest:
             oldest = name + "_snap_" + str(min(numbers))
             delete_lv("/".join(absolutePath.split("/")[:-1]) + "/" + oldest)
@@ -1919,7 +1919,7 @@ class LvLockOperator(object):
 
     def force_lock(self, target_lock):
         with self.op_lock:
-            self.exists_locks = filter(lambda exist_lock: exist_lock <= target_lock, self.exists_locks)
+            self.exists_locks = [exist_lock for exist_lock in self.exists_locks if exist_lock <= target_lock]
             _active_lv(self.abs_path, target_lock == LvmlockdLockType.SHARE)
             self.exists_locks.append(target_lock)
             logger.debug("lv [path:%s] force lock to %d, existing locks: %s" % (self.abs_path, target_lock, self.exists_locks))
@@ -2074,7 +2074,7 @@ def check_stuck_vglk_and_gllk():
                 stucked_vglks.update({vglk: line})
             logger.debug("found sanlock vglk stuck: %s" % simplejson.dumps(stucked_vglks))
             raise RetryException()
-        for vglk in stucked_vglks.keys():
+        for vglk in list(stucked_vglks.keys()):
             if bash.bash_r("sanlock client status | grep '%s'" % stucked_vglks.get(vglk)) != 0 or vglk_in_use(vglk):
                 stucked_vglks.pop(vglk)
         if len(stucked_vglks) != 0:
@@ -2083,7 +2083,7 @@ def check_stuck_vglk_and_gllk():
     try:
         check_stuck_vglk()
     except Exception as e:
-        for stucked in stucked_vglks.values():  # type: str
+        for stucked in list(stucked_vglks.values()):  # type: str
             if "ADD" in stucked or "REM" in stucked:
                 continue
             # r lvm_aaf953ae7a984e529cdf53953f236fee:VGLK:/dev/mapper/aaf953ae7a984e529cdf53953f236fee-lvmlock:69206016:2031 C 3
@@ -2136,7 +2136,7 @@ def list_pvs(vgUuid, timeout=10):
         return None
 
     paths = [s.strip() for s in o.splitlines()]
-    return filter(bool, paths)
+    return list(filter(bool, paths))
 
 def check_pv_status(vgUuid, timeout):
     r, o, e = bash.bash_roe("timeout -s SIGKILL %s %s --noheading -Svg_name=%s -oname,missing" % (timeout, subcmd("pvs"), vgUuid))
@@ -2233,7 +2233,7 @@ def lvm_check_operation(vgUuid):
         create_lv_from_absolute_path(test_lv, 1024*1024*4)
         delete_lv(test_lv, True)
     except Exception as e:
-        if "already exists" in e.message:
+        if "already exists" in str(e):
             return True
         return False
     finally:
@@ -2419,7 +2419,7 @@ def is_volume_on_pvs(volume_path, pvUuids, includingMissing=True):
         o = bash.bash_o(
             "timeout -s SIGKILL 10 %s --noheading %s -odevices" % (subcmd("lvs"), f)).strip().lower()  # type: str
         logger.debug("volume %s is on pv %s" % (volume_path, o))
-        if len(filter(lambda n: o.find(n.lower()) > 0, pv_names)) > 0:
+        if len([n for n in pv_names if o.find(n.lower()) > 0]) > 0:
             logger.debug("lv %s on pv %s(%s), return true" % (volume_path, pvUuids, pv_names))
             return True
         if o == "" and includingMissing:
@@ -2585,7 +2585,7 @@ def get_lv_affinity_sorted_pvs(lv_path, cmd=None):
         return None
 
     locations = get_lv_location(os.path.join("/dev", vg_name, lv_name))
-    rest_pvs = filter(lambda p: p not in locations, total_pvs)
+    rest_pvs = [p for p in total_pvs if p not in locations]
     return locations + rest_pvs
 
 
@@ -2598,12 +2598,12 @@ def get_volume_lv_sorted_pvs(vg_name):
 
     r, o = bash.bash_ro(cmd)
     all_pvs = list_pvs(vg_name)
-    lv_counts = dict(zip(all_pvs, [0] * len(all_pvs)))
+    lv_counts = dict(list(zip(all_pvs, [0] * len(all_pvs))))
     for l in o.strip().splitlines():
         pv_name, lv_count = l.split()
         lv_counts[pv_name] = int(lv_count)
 
-    return sorted(lv_counts.keys(), key=lambda lv: lv_counts[lv] + random.random())
+    return sorted(list(lv_counts.keys()), key=lambda lv: lv_counts[lv] + random.random())
 
 
 @bash.in_bash
@@ -2711,7 +2711,7 @@ class LvmlockdStatus(object):
             r, status_line, e = bash.bash_roe("timeout 10 lvmlockctl -i -d")
             if r != 0:
                 raise Exception("dump lvmlockd info failed: retcode %s, error %s" % (r, e))
-            for line in filter(lambda l: 'ls_name=lvm_' in l, status_line.splitlines()):
+            for line in [l for l in status_line.splitlines() if 'ls_name=lvm_' in l]:
                 ls = self.LockspaceStatus(line)
                 self.ls_status.update({ls.vg_name: ls})
 
