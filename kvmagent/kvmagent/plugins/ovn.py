@@ -259,6 +259,20 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         logger.debug("cmd: %s: %s" % (cmd, cmd.__dict__))
         logger.debug("cmd nicMap: %s: %s" % (cmd.nicMap, cmd.nicMap.__dict__))
         vsctl = ovn.VsCtl()
+        
+        if cmd.sync:
+            oldNics = vsctl.getVnics()
+            
+            for oldNic in oldNics:
+                found = False
+                for nicName, nicUuid in cmd.nicMap.__dict__.items():
+                    if oldNic == nicName:
+                        found = True
+                        break
+                        
+                if not found:
+                    vsctl.delVnic(oldNic)
+                
         for nicName, nicUuid in cmd.nicMap.__dict__.items():
             vsctl.addVnic(nicName, nicUuid)
         rsp = OvnAddPortResponse()

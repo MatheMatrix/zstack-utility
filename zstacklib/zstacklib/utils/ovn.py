@@ -167,17 +167,39 @@ class VsCtl(object):
         pass
 
     @bash.in_bash
+    def getVnics(self, brName="br-int"):
+        try:
+            vnics = []
+            cmd = CtlBin + 'list-ports {brName}'.format(brName=brName)
+            _, o, _ = bash.bash_roe(cmd)
+            o = o.strip()
+            if o == "":
+                return vnics
+
+            lines = o.split("\n")
+            for line in lines:
+                line = line.strip()
+                if line == "":
+                    continue
+
+                if line.startswith("vnic"):
+                    vnics.append(line)
+
+            return vnics
+        except Exception as err:
+            logger.error(
+                "Add port for brdige {} failed. {}".format(brName, err))
+            return []
+
+    @bash.in_bash
     def addVnic(self, nicName, nicUuid, brName="br-int", nicType="dpdkvhostuserclient"):
-        """
-        TODO: replace external-ids with vmnic uuid
-        """
         try:
             srcPath = OVS_DPDK_SRC_PATH + nicName
-            cmd = CtlBin + 'add-port {brName} {nicName} ' \
+            cmd = CtlBin + '--may-exist add-port {brName} {nicName} ' \
                            '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
                            '-- set interface {nicName} external-ids:iface-id={nicUuid}'.format(
-                            brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid)
-            shell.call(cmd)
+                brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid)
+            bash.bash_r(cmd)
         except Exception as err:
             logger.error(
                 "Add port for brdige {} failed. {}".format(brName, err))
@@ -185,7 +207,7 @@ class VsCtl(object):
     @bash.in_bash
     def delVnic(self, nicName, brName="br-int"):
         try:
-            shell.call(CtlBin + 'del-port {} {}'.format(brName, nicName))
+            bash.bash_r(CtlBin + 'del-port {} {}'.format(brName, nicName))
         except Exception as err:
             logger.error(
                 "Delete port of bridge {} failed. {}".format(brName, err))
@@ -225,14 +247,14 @@ class VsCtl(object):
 
         if len(portPciMap.__dict__) == 1:
             for nicName, pciAddress in portPciMap.__dict__.items():
-                r, _, e = bash.bash_roe(CtlBin + " add-port {brName} {nic} "
+                r, _, e = bash.bash_roe(CtlBin + " --may-exist add-port {brName} {nic} "
                                                  "-- set Interface {nic} type=dpdk options:dpdk-devargs={pci};"
                                         .format(brName=brName, nic=nicName, pci=pciAddress))
                 if r != 0:
                     logger.debug(CtlBin + " add-port {} {} failed: {}".format(brName, nicName, e))
                     return r, e
         else:
-            cmd = CtlBin + "add-bond {} {} ".format(brName, bondName)
+            cmd = CtlBin + "--may-exist add-bond {} {} ".format(brName, bondName)
             for nicName, pciAddress in portPciMap.__dict__.items():
                 cmd = cmd + " {} ".format(nicName)
             r, _, e = bash.bash_roe(cmd)
