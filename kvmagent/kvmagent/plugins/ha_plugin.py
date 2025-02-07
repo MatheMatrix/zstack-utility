@@ -30,7 +30,7 @@ from zstacklib.utils import iproute
 import zstacklib.utils.ip as ipUtils
 
 logger = log.get_logger(__name__)
-KEY_REPORT_URL = 'report_url'
+KEY_REPORT_URL = 'key_report_url'
 EOF = "this_is_end"
 
 class UmountException(Exception):
@@ -157,7 +157,7 @@ class AbstractHaFencer(object):
         threads = []
         for fencer_name in self.run_fencer_list:
             if fencer_name in self.ha_fencer:
-                fencer = self.ha_fencer[fencer_name]
+                fencer = self.ha_fencer[fencer_name] # type: AbstractHaFencer
                 fencer.report_url = fencer_init[KEY_REPORT_URL]
                 fencer.host_uuid = fencer_init[kvmagent.HOST_UUID]
                 
@@ -1739,7 +1739,10 @@ class HaPlugin(kvmagent.KvmAgent):
             self.setup_fencer(ps_uuid, created_time)
             update_fencer = True
             try:
-                fencer_init = {iscsi_controller.get_ha_fencer_name(): iscsi_controller}
+                fencer_init = {}
+                fencer_init[iscsi_controller.get_ha_fencer_name()] = iscsi_controller
+                fencer_init[KEY_REPORT_URL] = self.config.get(kvmagent.SEND_COMMAND_URL)
+                fencer_init[kvmagent.HOST_UUID] = cmd.hostUuid
                 logger.debug("iscsi start run fencer list :%s" % ",".join(fencer_list))
                 while self.run_fencer(ps_uuid, created_time):
                     time.sleep(cmd.interval)
