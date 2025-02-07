@@ -591,6 +591,8 @@ class SanlockHealthChecker(AbstractStorageFencer):
             with open(volume_abs_path, "r+") as f:
                 content = f.read().strip().replace(b'\u0000', b'').replace(b'\x00', b'')
                 content = content.split(EOF)[0]
+                logger.debug("read shareblock content:%s, from path:%s" % (content, volume_abs_path))
+
                 if len(content) == 0:
                     return None, None
 
