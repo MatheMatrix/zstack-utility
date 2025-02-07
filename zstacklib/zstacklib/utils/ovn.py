@@ -21,6 +21,7 @@ logger = log.get_logger(__name__)
 
 CtlBin = "/usr/bin/ovs-vsctl "
 DevBindBin = "/usr/bin/dpdk-devbind.py "
+OVS_DPDK_SRC_PATH = "/var/run/openvswitch/"
 
 BONDING_MODE_AB = "active-backup"
 BONDING_MODE_SLB = "balance-slb"
@@ -29,6 +30,7 @@ BONDING_MODE_TCP = "balance-tcp"
 LACP_MODE_OFF = "off"
 LACP_MODE_ACTIVE = "active"
 LACP_MODE_PASSIVE = "passive"
+
 
 class OvsError(Exception):
     '''ovs error'''
@@ -118,6 +120,7 @@ def changeNicToDpdkDriver(nicNamePciAddressMap):
 
     return 0, ""
 
+
 @bash.in_bash
 def restoreNicDriver(nicNamePciAddressMap, nicNameDriverMap):
     dpdkNics = getAllDpdkNic()
@@ -158,20 +161,22 @@ def restoreNicDriver(nicNamePciAddressMap, nicNameDriverMap):
 
     return 0, ""
 
+
 class VsCtl(object):
     def __init__(self):
         pass
 
     @bash.in_bash
-    def addVnic(self, nicName, srcPath, brName="br-int", nicType="dpdkvhostuserclient"):
+    def addVnic(self, nicName, nicUuid, brName="br-int", nicType="dpdkvhostuserclient"):
         """
         TODO: replace external-ids with vmnic uuid
         """
         try:
-            cmd = CtlBin + \
-                  'add-port {} {} -- set Interface {} type={} options:vhost-server-path={} ' \
-                  ' -- set interface {} external-ids:iface-id={}'.format(
-                      brName, nicName, nicName, nicType, srcPath, nicName, nicName)
+            srcPath = OVS_DPDK_SRC_PATH + nicName
+            cmd = CtlBin + 'add-port {brName} {nicName} ' \
+                           '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
+                           '-- set interface {nicName} external-ids:iface-id={nicUuid}'.format(
+                            brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid)
             shell.call(cmd)
         except Exception as err:
             logger.error(
@@ -249,9 +254,8 @@ class VsCtl(object):
                 bash.bash_roe(CtlBin + " set port dpdkbond lacp={mode} ".format(mode=lacpmode))
 
         # TODO configure ip when we need overlay nrtwork
-        #if ip is not None:
+        # if ip is not None:
         #    iproute.flush_address_no_error(brName)
         #    iproute.add_address_no_error(ip, linux.netmask_to_cidr(netmask), 4, brName)
-
 
         return 0, ""
