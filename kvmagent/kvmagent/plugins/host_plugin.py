@@ -2621,10 +2621,15 @@ done
         if shell.run("which ixsmi") != 0:
             logger.debug("no ixsmi")
             return
-        r, o, e = bash_roe(gpu.get_tianshu_gpu_basic_info_cmd())
+        if shell.run(gpu.is_tianshu_v1()) == 0:
+            cmd = gpu.get_tianshu_gpu_basic_info_cmd_v1()
+        else:
+            cmd = gpu.get_tianshu_gpu_basic_info_cmd_v2()
+        r, o, e = bash_roe(cmd)
         if r != 0:
             logger.error("ixsmi query gpu is error, %s " % e)
             return
+
         self._update_to_addon_info_from_gpu_infos(gpu.parse_tianshu_gpu_output(o), to)
 
         # support product name(^_^)

@@ -135,6 +135,7 @@ class GetGuestToolsStateResponse(kvmagent.AgentResponse):
         super(GetGuestToolsStateResponse, self).__init__()
         self.states = None
 
+
 class GetVmGpuInfoResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(GetVmGpuInfoResponse, self).__init__()
@@ -326,7 +327,11 @@ class VmConfigPlugin(kvmagent.KvmAgent):
 
     def get_vm_tianshu_gpu_info_by_guesttool(self, qga):
         gpuinfos = []
-        cmd = gpu.get_tianshu_gpu_basic_info_cmd("mswindows" in qga.os)
+        version = qga.guest_exec_cmd_no_exitcode(gpu.is_tianshu_v1("mswindows" in qga.os))
+        if version is None:
+            cmd = gpu.get_tianshu_gpu_basic_info_cmd_v2("mswindows" in qga.os)
+        else:
+            cmd = gpu.get_tianshu_gpu_basic_info_cmd_v1("mswindows" in qga.os)
         gpu_info_output = qga.guest_exec_cmd_no_exitcode(cmd)
         if gpu_info_output is None:
             return gpuinfos

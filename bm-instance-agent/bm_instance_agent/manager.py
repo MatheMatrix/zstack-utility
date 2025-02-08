@@ -497,7 +497,12 @@ class AgentManager(object):
             LOG.warning("no ixsmi")
             return
 
-        r, o, e = bm_utils.shell_cmd(gpu.get_tianshu_gpu_basic_info_cmd(), False)
+        r, o, e = bm_utils.shell_cmd(gpu.is_tianshu_v1(), False)
+        if r == 0:
+            cmd = gpu.get_tianshu_gpu_basic_info_cmd_v1()
+        else:
+            cmd = gpu.get_tianshu_gpu_basic_info_cmd_v2()
+        r, o, e = bm_utils.shell_cmd(cmd, False)
         if r != 0:
             LOG.error("ixsmi query gpu is error, %s" % e)
             return
