@@ -24,8 +24,8 @@ class MySqlCommandLineQuery(object):
 
         sql = "%s\G" % self.sql
         if self.password:
-            cmd = ('''MYSQL_PWD="%s" mysql -u %s --host %s --port %s -t %s -e "%s"'''
-                   % (self.password, self.user, self.host, self.port, self.table, sql))
+            cmd = '''mysql -u %s -p%s --host %s --port %s -t %s -e "%s"''' % (self.user, self.password, self.host,
+                                                                               self.port, self.table, sql)
         else:
             cmd = '''mysql -u %s --host %s --port %s -t %s -e "%s"''' % (self.user, self.host, self.port, self.table, sql)
 

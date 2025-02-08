@@ -5582,14 +5582,13 @@ class MysqlRestrictConnection(Command):
 
     def check_root_password(self, root_password, remote_ip=None):
         if remote_ip is not None:
-            status, output = commands.getstatusoutput(
-                "mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
+            cmd = shell.ShellCmd("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
         else:
-            status, output = commands.getstatusoutput(
-                "mysql -u root -p%s -e 'show databases;'" % root_password)
+            cmd = shell.ShellCmd("mysql -u root -p%s -e 'show databases;'" % root_password)
 
-        if status != 0:
-            error(output)
+        cmd(False)
+        if cmd.return_code != 0:
+            error(cmd.stderr)
 
 
     def get_db_portal(self):
@@ -5782,11 +5781,13 @@ class ChangeMysqlPasswordCmd(Command):
 
     def check_username_password(self, root_password, remote_ip):
         if remote_ip is not None:
-            status, output = commands.getstatusoutput("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
+            cmd = shell.ShellCmd("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
         else:
-            status, output = commands.getstatusoutput("mysql -u root -p%s -e 'show databases;'" % root_password)
-        if status != 0:
-            error(output)
+            cmd = shell.ShellCmd("mysql -u root -p%s -e 'show databases;'" % root_password)
+
+        cmd(False)
+        if cmd.return_code != 0:
+            error(cmd.stderr)
 
     def get_mysql_user_hosts(self, user, root_password, remote_ip):
         if remote_ip is None:
@@ -7345,9 +7346,11 @@ class ChangeIpCmd(Command):
         return shell("ip a | grep -w %s" % ip, False).strip().endswith("zs")
 
     def check_mysql_password(self, user, password):
-        status, output = commands.getstatusoutput("mysql -u%s -p%s -e 'show databases;'" % (user, password))
-        if status != 0:
-            error(output)
+        cmd = shell.ShellCmd("mysql -u%s -p%s -e 'show databases;'" % (user, password))
+        cmd(False)
+        if cmd.return_code != 0:
+            error(cmd.stderr)
+
 
     def restoreMysqlConnection(self, root_password):
         _, db_user, db_password = ctl.get_database_portal()
