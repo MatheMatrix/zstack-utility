@@ -192,13 +192,20 @@ class VsCtl(object):
             return []
 
     @bash.in_bash
-    def addVnic(self, nicName, nicUuid, brName="br-int", nicType="dpdkvhostuserclient"):
+    def addVnic(self, nicName, nicUuid, reinstall=False, brName="br-int", nicType="dpdkvhostuserclient"):
         try:
             srcPath = OVS_DPDK_SRC_PATH + nicName
-            cmd = CtlBin + '--may-exist add-port {brName} {nicName} ' \
-                           '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
-                           '-- set interface {nicName} external-ids:iface-id={nicUuid}'.format(
-                brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid)
+            if reinstall:
+                cmd = '{cmd} del-port {brName} {nicName}; ' \
+                      '{cmd} add-port {brName} {nicName} ' \
+                      '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
+                      '-- set interface {nicName} external-ids:iface-id={nicUuid}'.format(
+                          cmd=CtlBin, brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid)
+            else:
+                cmd = CtlBin + '--may-exist addp-port {brName} {nicName} ' \
+                               '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
+                               '-- set interface {nicName} external-ids:iface-id={nicUuid}'.format(
+                    brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid)
             bash.bash_r(cmd)
         except Exception as err:
             logger.error(

@@ -272,9 +272,13 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                         
                 if not found:
                     vsctl.delVnic(oldNic)
-                
+
+        reinstall = False
+        if cmd.reInstall is not None:
+            reinstall = cmd.reInstall
+
         for nicName, nicUuid in cmd.nicMap.__dict__.items():
-            vsctl.addVnic(nicName, nicUuid)
+            vsctl.addVnic(nicName, nicUuid, reinstall)
         rsp = OvnAddPortResponse()
 
         return jsonobject.dumps(rsp)
