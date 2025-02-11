@@ -4,6 +4,7 @@ import os
 import log
 import jsonobject
 import shell
+import string
 import json
 import re
 from linux import get_vm_pid, get_process_start_time, HOST_ARCH
@@ -156,7 +157,8 @@ def read_image_content(image_path, offset, length, format):
 
     content = ""
     for line in o.splitlines():
-        if line.split(":", 1)[0].strip().isdigit():
+        h = line.split(":", 1)[0].strip()
+        if set(h).issubset(string.hexdigits):
             # encode hex str to ascii
             content += "".join(chr(int(x, 16)) for x in line.split()[1:17])
 
