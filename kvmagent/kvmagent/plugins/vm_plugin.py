@@ -9121,8 +9121,8 @@ host side snapshot files chian:
 
     @kvmagent.replyerror
     def export_nbd_volumes(self, req):
-        def _export_nbd(nbd_port, volume_path, volume_uuid):
-            process = qemu_nbd.export(nbd_port, "-b", "0.0.0.0", volume_path, "-x", volume_uuid)
+        def _export_nbd(nbd_port, format, volume_path, volume_uuid):
+            process = qemu_nbd.export(nbd_port, "-b", "0.0.0.0", "-f", format, volume_path, "-x", volume_uuid)
             if not linux.check_socket_available('0.0.0.0', int(nbd_port)):
                 process.terminate()
                 _, stderr = process.communicate()
@@ -9135,8 +9135,13 @@ host side snapshot files chian:
         start_port, end_port = linux.parse_port_range(cmd.portRange)
         try:
             for volumeInfo in cmd.volumeInfos:
+                format, realPath = volumeInfo.volume.format, volumeInfo.volume.installPath
                 port, l = linux.find_free_port_with_locking(start_port, end_port)
-                _export_nbd(port, volumeInfo.volume.installPath, volumeInfo.volume.volumeUuid)
+                if volumeInfo.volume.primaryStorageType == 'Ceph':
+                    realPath = volumeInfo.volume.installPath.replace('ceph://', 'rbd:')
+                elif volumeInfo.volume.primaryStorageType == 'SharedBlock':
+                    realPath = volumeInfo.volume.installPath.replace('sharedblock:/', '/dev')
+                _export_nbd(port, format, realPath, volumeInfo.volume.volumeUuid)
                 volumeInfo.scratchNodeName = volumeInfo.volume.volumeUuid
                 volumeInfo.nbdPort = port
                 infos.append(volumeInfo)
@@ -9156,7 +9161,12 @@ host side snapshot files chian:
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = kvmagent.AgentResponse()
         for volume in cmd.volumes:
-            qemu_nbd.kill_nbd_process_by_flag(volume.installPath)
+            realPath = volume.installPath
+            if volume.primaryStorageType == 'Ceph':
+                realPath = volume.installPath.replace('ceph://', 'rbd:')
+            elif volume.primaryStorageType == 'SharedBlock':
+                realPath = volume.installPath.replace('sharedblock:/', '/dev')
+            qemu_nbd.kill_nbd_process_by_flag(realPath)
 
         rsp.success = True
         return jsonobject.dumps(rsp)
@@ -9245,6 +9255,8 @@ host side snapshot files chian:
                 rbd_end = rbd_start + rbd_length
                 result[rbd_start] = rbd_length
 
+                if not qcow2_list:
+                    continue
                 for qcow2_start, qcow2_length in qcow2_list.items():
                     qcow2_end = qcow2_start + qcow2_length
 
