@@ -5582,9 +5582,9 @@ class MysqlRestrictConnection(Command):
 
     def check_root_password(self, root_password, remote_ip=None):
         if remote_ip is not None:
-            cmd = shell.ShellCmd("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
+            cmd = ShellCmd("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
         else:
-            cmd = shell.ShellCmd("mysql -u root -p%s -e 'show databases;'" % root_password)
+            cmd = ShellCmd("mysql -u root -p%s -e 'show databases;'" % root_password)
 
         cmd(False)
         if cmd.return_code != 0:
@@ -5643,9 +5643,10 @@ class MysqlRestrictConnection(Command):
     def grant_restore_privilege(self, db_password, ui_db_password, root_password_):
         if self.check_greatsql_existence():
             grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
-               " CREATE USER IF NOT EXISTS 'zstack'@'%%' IDENTIFIED BY '%s';" \
-               " CREATE USER IF NOT EXISTS 'zstack_ui'@'%%' IDENTIFIED BY '%s';" \
-               " CREATE USER IF NOT EXISTS 'root'@'%%' IDENTIFIED BY '%s';" \
+               " FLUSH PRIVILEGES;" \
+               " DROP USER IF EXISTS 'zstack'@'%%';CREATE USER IF NOT EXISTS 'zstack'@'%%' IDENTIFIED BY '%s';" \
+               " DROP USER IF EXISTS 'zstack_ui'@'%%';CREATE USER IF NOT EXISTS 'zstack_ui'@'%%' IDENTIFIED BY '%s';" \
+               " DROP USER IF EXISTS 'root'@'%%';CREATE USER IF NOT EXISTS 'root'@'%%' IDENTIFIED BY '%s';" \
                " GRANT USAGE ON *.* TO 'zstack'@'%%' WITH GRANT OPTION;" \
                " GRANT USAGE ON *.* TO 'zstack_ui'@'%%' WITH GRANT OPTION;" \
                " GRANT USAGE ON *.* TO 'root'@'%%' WITH GRANT OPTION;" % (db_password, ui_db_password, root_password_)
@@ -5742,7 +5743,8 @@ class MysqlRestrictConnection(Command):
             grant_access_cmd = "USE mysql;"
             grant_access_cmd = grant_access_cmd + self.grant_restore_privilege(db_password, ui_db_password, root_password_) + " FLUSH PRIVILEGES;"
 
-            shell('''mysql -u root -p%s -e "%s"''' % (root_password_, grant_access_cmd))
+            cmd = ShellCmd('''mysql -u root -p%s -e "%s"''' % (root_password_, grant_access_cmd))
+            cmd(False)
             linux.rm_file_force(self.file)
 
             if is_ha:
@@ -5781,9 +5783,9 @@ class ChangeMysqlPasswordCmd(Command):
 
     def check_username_password(self, root_password, remote_ip):
         if remote_ip is not None:
-            cmd = shell.ShellCmd("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
+            cmd = ShellCmd("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
         else:
-            cmd = shell.ShellCmd("mysql -u root -p%s -e 'show databases;'" % root_password)
+            cmd = ShellCmd("mysql -u root -p%s -e 'show databases;'" % root_password)
 
         cmd(False)
         if cmd.return_code != 0:
@@ -7346,7 +7348,7 @@ class ChangeIpCmd(Command):
         return shell("ip a | grep -w %s" % ip, False).strip().endswith("zs")
 
     def check_mysql_password(self, user, password):
-        cmd = shell.ShellCmd("mysql -u%s -p%s -e 'show databases;'" % (user, password))
+        cmd = ShellCmd("mysql -u%s -p%s -e 'show databases;'" % (user, password))
         cmd(False)
         if cmd.return_code != 0:
             error(cmd.stderr)
