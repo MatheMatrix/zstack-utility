@@ -121,12 +121,12 @@ def _parse_version2(version_output):
     return version_output.splitlines()[0].strip().split(" ")[3]
 
 
-def get_device_map(path, option=None):
+def get_device_map(path, option=""):
     out = shell.call("%s --output=json %s %s" % (qemu_img.subcmd('map'), option, path))
     return out.strip()
 
 
-def get_data_bitmap(path, max_length, zero, data, qemu_img_command_option=None):
+def get_data_bitmap(path, max_length, zero, data, qemu_img_command_option=""):
     map = get_device_map(path, qemu_img_command_option)
     json_map = jsonobject.loads(map)
     result = {}
@@ -148,7 +148,7 @@ def get_rbd_data_bitmap(path, max_length):
             if item['length'] > max_length:
                 result.update(split_large_blocks(item, max_length))
             else:
-                result[item['start']] = item['length']
+                result[item['offset']] = item['length']
     return result
 
 
