@@ -49,36 +49,13 @@ def get_version():
 
     return version
 
+def get_exact_version():
+    return get_version_from_exe_file(get_path())
+
 def get_install_date():
     r, o, e = bash.bash_roe("rpm -q --queryformat '%{INSTALLTIME}' qemu-kvm")
     if r == 0:
         return int(o.strip())
-
-QEMU_INSTALL_DATE = get_install_date()
-QEMU_VERSION = get_version()
-
-
-def get_running_version(vm_uuid):
-    pid = get_vm_pid(vm_uuid)
-    if pid:
-        if get_process_start_time(pid) > QEMU_INSTALL_DATE:
-            return QEMU_VERSION
-        exe = "/proc/%s/exe" % pid
-        r = get_version_from_exe_file(exe)
-        if r:
-            return r
-
-    r, o, e = bash.bash_roe("""virsh qemu-monitor-command %s '{"execute":"query-version"}'""" % vm_uuid)
-    if r == 0:
-        ret = jsonobject.loads(o.strip())
-        if ret["return"].package:
-            return _parse_version(ret["return"].package)
-        else:
-            qv = ret["return"].qemu
-            return "%d.%d.%d" % (qv.major, qv.minor, qv.micro)
-
-    logger.debug("cannot get vm[uuid:%s] version from qmp: %s" % (vm_uuid, e))
-    return get_version_from_exe_file(get_path())
 
 # QEMU emulator version 2.12.0 (qemu-kvm-ev-2.12.0-44.1.el7_9.1)
 # return qemu-kvm-ev-2.12.0-44.1.el7_9.1
@@ -132,6 +109,32 @@ def _parse_version(version_output):
 # return 2.12.0
 def _parse_version2(version_output):
     return version_output.splitlines()[0].strip().split(" ")[3].split("(")[0]
+
+QEMU_INSTALL_DATE = get_install_date()
+QEMU_VERSION = get_version()                     # e.g. 6.2.0
+QEMU_EXACT_VERSION = get_exact_version()         # e.g. 6.2.0-232.g09252161d1.ky10
+
+def get_running_version(vm_uuid):
+    pid = get_vm_pid(vm_uuid)
+    if pid:
+        if get_process_start_time(pid) > QEMU_INSTALL_DATE:
+            return QEMU_EXACT_VERSION
+        exe = "/proc/%s/exe" % pid
+        r = get_version_from_exe_file(exe)
+        if r:
+            return r
+
+    r, o, e = bash.bash_roe("""virsh qemu-monitor-command %s '{"execute":"query-version"}'""" % vm_uuid)
+    if r == 0:
+        ret = jsonobject.loads(o.strip())
+        if ret["return"].package:
+            return _parse_version(ret["return"].package)
+        else:
+            qv = ret["return"].qemu
+            return "%d.%d.%d" % (qv.major, qv.minor, qv.micro)
+
+    logger.debug("cannot get vm[uuid:%s] version from qmp: %s" % (vm_uuid, e))
+    return QEMU_EXACT_VERSION
 
 """
 read image content with qemu-io read command, which only support -v option.
