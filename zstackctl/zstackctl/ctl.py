@@ -5642,14 +5642,19 @@ class MysqlRestrictConnection(Command):
 
     def grant_restore_privilege(self, db_password, ui_db_password, root_password_):
         if self.check_greatsql_existence():
-            grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
+            grant_access_cmd = (" DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
                " FLUSH PRIVILEGES;" \
                " DROP USER IF EXISTS 'zstack'@'%%';CREATE USER IF NOT EXISTS 'zstack'@'%%' IDENTIFIED BY '%s';" \
                " DROP USER IF EXISTS 'zstack_ui'@'%%';CREATE USER IF NOT EXISTS 'zstack_ui'@'%%' IDENTIFIED BY '%s';" \
                " DROP USER IF EXISTS 'root'@'%%';CREATE USER IF NOT EXISTS 'root'@'%%' IDENTIFIED BY '%s';" \
-               " GRANT USAGE ON *.* TO 'zstack'@'%%' WITH GRANT OPTION;" \
-               " GRANT USAGE ON *.* TO 'zstack_ui'@'%%' WITH GRANT OPTION;" \
-               " GRANT USAGE ON *.* TO 'root'@'%%' WITH GRANT OPTION;" % (db_password, ui_db_password, root_password_)
+               " GRANT USAGE ON *.* TO zstack@'%%' WITH GRANT OPTION;" \
+               " GRANT SYSTEM_USER ON *.* TO zstack@'%%';" \
+               " GRANT ALL PRIVILEGES ON zstack.* TO zstack@'%%';" \
+               " GRANT ALL PRIVILEGES ON zstack_rest.* TO zstack@'%%';" \
+               " GRANT USAGE ON *.* TO zstack_ui@'%%' WITH GRANT OPTION;" \
+               " GRANT ALL PRIVILEGES ON zstack_ui.* TO zstack_ui@'%%';" \
+               " GRANT USAGE ON *.* TO root@'%%' WITH GRANT OPTION;" \
+               " GRANT ALL PRIVILEGES ON *.* TO root@'%%';" % (db_password, ui_db_password, root_password_))
         else:
             grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
                    " GRANT USAGE ON *.* TO 'zstack'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
@@ -5675,7 +5680,6 @@ class MysqlRestrictConnection(Command):
         if status != 0:
             error("failed to get mysql views definer: %s" % output)
 
-        info("mysql views definer: %s" % output)
         filtered_output = [line for line in output.splitlines() if not line.startswith("mysql:")]
 
         if filtered_output:
@@ -5745,6 +5749,8 @@ class MysqlRestrictConnection(Command):
 
             cmd = ShellCmd('''mysql -u root -p%s -e "%s"''' % (root_password_, grant_access_cmd))
             cmd(False)
+            if cmd.return_code != 0:
+                error("grant error grant_access_cmd=%s\nstderr=%s" % (grant_access_cmd, cmd.stderr))
             linux.rm_file_force(self.file)
 
             if is_ha:
