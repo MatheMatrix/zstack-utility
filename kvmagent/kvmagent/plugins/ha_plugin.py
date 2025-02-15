@@ -2050,9 +2050,10 @@ class HaPlugin(kvmagent.KvmAgent):
 
             while True:
                 time.sleep(self.sblk_health_checker.health_check_interval)
-                ha_fencer.exec_fencer_list(fencer_init, update_fencer)
-                update_fencer = False
-                self.abstract_ha_fencer_checker[fencer_name] = ha_fencer
+                if len(self.sblk_health_checker.all_vgs) > 0:
+                    ha_fencer.exec_fencer_list(fencer_init, update_fencer)
+                    update_fencer = False
+                    self.abstract_ha_fencer_checker[fencer_name] = ha_fencer
 
         created_time = time.time()
         self.setup_fencer(cmd.vgUuid, created_time)
