@@ -128,7 +128,7 @@ class DomainVolume(object):
         self.source = ''
         self.source_type =''
         self.driver_type = ''
-        self.dvbs = None
+        self.backing_store = None # type:DomainVolumeBackingStore 
         self.deviceType = ''
 
         self._origin_xml_obj = None
@@ -140,7 +140,7 @@ class DomainVolume(object):
         ret.type = xml_obj.attrib['type']
         ret.deviceType = ret.type
         ret.disk_device = xml_obj.attrib['device']
-        ret.dvbs = DomainVolumeBackingStore.from_xmlobject(xml_obj)
+        ret.backing_store = DomainVolumeBackingStore.from_xmlobject(xml_obj)
 
         source = xml_obj.find('source')
         if source is None:
@@ -172,10 +172,10 @@ class DomainVolume(object):
     def over_incorrect_driver(self):
         return block_device_use_block_type() \
             and (block_volume_over_incorrect_driver(self) \
-                or self._dvbs_over_incorrect_driver())
+                or self._backing_store_over_incorrect_driver())
 
-    def _dvbs_over_incorrect_driver(self):
-        return False if not self.dvbs else self.dvbs.over_incorrect_driver()
+    def _backing_store_over_incorrect_driver(self):
+        return False if not self.backing_store else self.backing_store.over_incorrect_driver()
 
 
 class DomainVolumeBackingStore(object):
@@ -184,7 +184,7 @@ class DomainVolumeBackingStore(object):
         self.format_type = ''
         self.source = ''
         self.source_type = ''
-        self.backing_store = None
+        self.backing_store = None # type:DomainVolumeBackingStore 
 
         self._origin_xml_obj = None
 
@@ -7931,8 +7931,8 @@ class VmPlugin(kvmagent.KvmAgent):
             volume = DomainVolume.from_xmlobject(old_disk)
             if not volume.over_incorrect_driver():
                 return old_disk  # no change
-            volume.dvbs.update_backing_store_type_to_block()
-            block_backing_store = volume.dvbs._origin_xml_obj
+            volume.backing_store.update_backing_store_type_to_block()
+            block_backing_store = volume.backing_store._origin_xml_obj
 
         driver_type = volume.format if volume.format else 'qcow2'
         volume = file_volume_check(volume)
