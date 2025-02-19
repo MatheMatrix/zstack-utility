@@ -4,9 +4,13 @@
 import contextlib
 import difflib
 import os.path
+import string
+import glob
+import zlib
 import tempfile
 import time
 import datetime
+import subprocess
 import traceback
 import xml.etree.ElementTree as etree
 import re
@@ -29,6 +33,7 @@ import xml.dom.minidom as minidom
 #from typing import List, Any, Union
 from distutils.version import LooseVersion
 from collections import Counter
+from collections import deque
 
 import zstacklib.utils.ip as ip
 import zstacklib.utils.ebtables as ebtables
@@ -49,7 +54,7 @@ from zstacklib.utils import uuidhelper
 from zstacklib.utils import xmlobject
 from zstacklib.utils import xmlhook
 from zstacklib.utils import misc
-from zstacklib.utils import qemu_img, qemu
+from zstacklib.utils import qemu_img, qemu, qmp
 from zstacklib.utils import ebtables
 from zstacklib.utils import vm_operator
 from zstacklib.utils import pci
@@ -91,6 +96,7 @@ MAX_MEMORY = 34359738368 if (HOST_ARCH != "aarch64") else linux.get_max_vm_ipa_s
 MIPS64EL_CPU_MODEL = "Loongson-3A4000-COMP"
 LOONGARCH64_CPU_MODEL = "Loongson-3A5000"
 MAX_PERIOD = "1000000"
+MAX_NBD_READ_SIZE = 32768000
 
 class RetryException(Exception):
     pass
@@ -532,6 +538,34 @@ class TakeVolumeBackupCommand(kvmagent.AgentCommand):
         self.maxIncremental = 0
         self.mode = None
         self.storageInfo = None
+
+
+class CancelVolumeCbtBackupResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(CancelVolumeCbtBackupResponse, self).__init__()
+
+
+class ExportNbdVolumesResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(ExportNbdVolumesResponse, self).__init__()
+        self.volumeInfos = None
+
+class ListExportedVolumesResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(ListExportedVolumesResponse, self).__init__()
+        self.volumeExportInfos = {}
+
+
+class TakeVolumeCbtBackupResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(TakeVolumeCbtBackupResponse, self).__init__()
+        self.volumeInfos = None
+
+
+class GetVolumesBitmapResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(GetVolumesBitmapResponse, self).__init__()
+        self.volumeInfos = None
 
 
 class TakeVolumeMirrorResponse(kvmagent.AgentResponse):
@@ -1252,7 +1286,7 @@ def is_qemu_support_migrate_with_bitmap(version):
     return LooseVersion(version) >= LooseVersion("4.2.0-640")
 
 def is_libvirt_support_migrate_with_bitmap(version):
-    return LooseVersion(version) < LooseVersion('6.0.0')
+    return LooseVersion(version) < LooseVersion('6.0.0') or LooseVersion(version) >= LooseVersion('8.0.0')
 
 def block_device_use_block_type():
     return user_specify_driver() or not file_type_support_block_device()
@@ -3770,9 +3804,11 @@ class Vm(object):
         stage = get_task_stage(cmd)
         timeout = get_timeout(cmd)
         class MigrateDaemon(plugin.TaskDaemon):
-            def __init__(self, domain):
+            def __init__(self, domain, uuid):
                 super(MigrateDaemon, self).__init__(cmd, 'MigrateVm')
                 self.domain = domain
+                self.uuid = uuid
+                self.progress_status =deque(maxlen=60)
 
             def _get_percent(self):
                 try:
@@ -3806,6 +3842,15 @@ class Vm(object):
 
                         if remain == 0:
                             return result
+
+                        self.progress_status.append(remain)
+                        average = sum(self.progress_status) / len(self.progress_status)
+                        jobBlocked = len(self.progress_status) >= 60 and self.progress_status[0] == average
+                        jobRunning = self.progress_status[0] != 0
+                        if jobBlocked and jobRunning:
+                            raise kvmagent.BlockJobError(
+                                "the block job status is abnormal, details is ioHung. Please check backup storage and backup network.")
+
                         if self.progress_reporter.report.detail and self.progress_reporter.report.detail.hasattr('remain'):
                             speed = self.progress_reporter.report.detail.__getitem__('remain') - remain
                             remaining_migration_time = (remain / speed) if speed != 0 else self.progress_reporter.report.detail.__getitem__('remaining_migration_time')
@@ -3814,12 +3859,15 @@ class Vm(object):
                         return result
                 except libvirt.libvirtError:
                     pass
+                except kvmagent.BlockJobError as e:
+                    logger.error(e)
+                    self._cancel()
                 except:
                     logger.debug(linux.get_exception_stacktrace())
 
             def _cancel(self):
                 logger.debug('cancelling vm[uuid:%s] migration' % cmd.vmUuid)
-                self.domain.abortJob()
+                vm_block_job_cancel(self.uuid)
 
             def __exit__(self, exc_type, exc_val, exc_tb):
                 super(MigrateDaemon, self).__exit__(exc_type, exc_val, exc_tb)
@@ -3835,7 +3883,7 @@ class Vm(object):
         is_migrate_without_bitmaps = self._is_vm_migrate_without_dirty_bitmap()
         check_mirror_jobs(cmd.vmUuid, is_migrate_without_bitmaps)
 
-        with MigrateDaemon(self.domain):
+        with MigrateDaemon(self.domain, self.uuid):
             logger.debug('migrating vm[uuid:{0}] to dest url[{1}]'.format(self.uuid, destUrl))
 
             if storage_migration_required:
@@ -6220,17 +6268,6 @@ def _stop_world():
     http.AsyncUirHandler.STOP_WORLD = True
     VmPlugin.queue_singleton.queue.put("exit")
 
-def qmp_subcmd(s_cmd):
-    # object-add option props (removed in 6.0).
-    # Specify the properties for the object as top-level arguments instead.
-    if LooseVersion(QEMU_VERSION) >= LooseVersion("6.0.0") and re.match(r'.*object-add.*arguments.*props.*', s_cmd):
-            j_cmd = json.loads(s_cmd)
-            props = j_cmd.get("arguments").get("props")
-            j_cmd.get("arguments").pop("props")
-            j_cmd.get("arguments").update(props)
-            s_cmd = json.dumps(j_cmd)
-    return s_cmd
-
 def block_volume_over_incorrect_driver(volume):
     return volume.deviceType == "file" and volume.installPath.startswith("/dev/")
 
@@ -6254,9 +6291,8 @@ def iso_check(iso):
 
     return iso
 
-@in_bash
 def execute_qmp_command(domain_id, command):
-    return bash.bash_roe("virsh qemu-monitor-command %s '%s' --pretty" % (domain_id, qmp_subcmd(command)))
+    return qmp.execute_qmp_command(domain_id, command)
 
 def get_vm_blocks(domain_id):
     r, o, e = execute_qmp_command(domain_id, '{ "execute": "query-block" }')
@@ -6293,12 +6329,10 @@ def get_vm_migration_caps(domain_id, cap_key):
 
 
 def check_mirror_jobs(domain_id, migrate_without_bitmaps):
-    isc = ImageStoreClient()
-    volumes = isc.query_mirror_volumes(domain_id)
-    if volumes:
-        for v in volumes.keys():
-            logger.info("stop mirror for %s:%s" % (domain_id, v))
-            isc.stop_mirror(domain_id, False, v)
+    try:
+        ImageStoreClient().stop_backup_jobs(domain_id)
+    except Exception as e:
+        raise kvmagent.KvmError('clear backup jobs error %s' % str(e))
 
     if not get_vm_migration_caps(domain_id, "dirty-bitmaps"):
         return
@@ -6335,6 +6369,41 @@ def check_install_path_by_qmp(domain_id, disk_name, path):
     return False
 
 
+def vm_block_job_cancel(vm):
+    retry_times = 30
+    interval = 2
+    for times in range(retry_times):
+        try:
+            job_ids = qmp.get_block_job_ids(vm)
+            if not job_ids:
+                logger.debug('Block job successfully cancelled.')
+                return
+            for job_id in job_ids:
+                qmp.block_job_cancel(vm, job_id)
+        except libvirt.libvirtError as e:
+            logger.debug('failed to cancel vm[uuid:%s] block copy, details is %s' % (vm, e))
+            return
+        time.sleep(interval)
+    vm_block_job_yank(vm)
+
+
+def vm_block_job_yank(vm):
+    if not qmp.do_yank(vm):
+        return
+
+    retry_times = 20
+    interval = 3
+    for times in range(retry_times):
+        try:
+            if not qmp.get_block_job_ids(vm):
+                logger.debug("Block job successfully cancelled.")
+                return
+        except libvirt.libvirtError as e:
+            logger.debug('failed to force cancel vm[uuid:%s] block copy, details is %s' % (vm, e))
+            return
+        time.sleep(interval)
+
+
 class VmPlugin(kvmagent.KvmAgent):
     KVM_START_VM_PATH = "/vm/start"
     KVM_STOP_VM_PATH = "/vm/stop"
@@ -6357,6 +6426,12 @@ class VmPlugin(kvmagent.KvmAgent):
     KVM_TAKE_VOLUME_SNAPSHOT_PATH = "/vm/volume/takesnapshot"
     KVM_CHECK_VOLUME_SNAPSHOT_PATH = "/vm/volume/checksnapshot"
     KVM_TAKE_VOLUME_BACKUP_PATH = "/vm/volume/takebackup"
+    KVM_TAKE_VOLUME_CBT_BACKUP_PATH = "/vm/volume/takecbtbackup"
+    KVM_EXPORT_NBD_VOLUMES_PATH = "/vm/volume/exportnbdvolumes"
+    KVM_LIST_EXPORTED_VOLUMES_PATH = "/vm/volume/listexportedvolumes"
+    KVM_UNEXPORT_NBD_VOLUMES_PATH = "/vm/volume/unexportnbdvolumes"
+    KVM_CANCEL_VOLUME_CBT_BACKUP_PATH = "/vm/volume/cancelcbtbackup"
+    KVM_GET_VOLUMES_BITMAPS_PATH = "/vm/volume/getvolumebitmaps"
     KVM_TAKE_VOLUME_MIRROR_PATH = "/vm/volume/takemirror"
     KVM_CANCEL_VOLUME_MIRROR_PATH = "/vm/volume/cancelmirror"
     KVM_QUERY_VOLUME_MIRROR_PATH = "/vm/volume/querymirror"
@@ -7769,7 +7844,7 @@ class VmPlugin(kvmagent.KvmAgent):
             def _cancel(self):
                 logger.debug('cancelling vm[uuid:%s] blockCopy disk[%s]' % (vmUuid, self.disk_name))
                 # cancel block job async
-                self.domain.blockJobAbort(self.disk_name)
+                self.domain.blockJobAbort(self.disk_name, libvirt.VIR_DOMAIN_BLOCK_JOB_ABORT_ASYNC)
 
             def _get_percent(self):
                 # type: () -> int
@@ -8215,11 +8290,11 @@ host side snapshot files chian:
 
     def do_cancel_vm_backup_jobs(self, cmd):
         isc = ImageStoreClient()
-        isc.stop_vm_backup_jobs(cmd.vmUuid)
+        isc.stop_vm_backup_jobs(cmd.vmUuid, cmd.force)
 
     def do_cancel_volume_backup_job(self, cmd, drive):
         isc = ImageStoreClient()
-        isc.stop_volume_backup_job(cmd.vmUuid, drive)
+        isc.stop_volume_backup_job(cmd.vmUuid, drive, cmd.force)
 
     # returns list[VolumeBackupInfo]
     def do_take_volumes_backup(self, cmd, target_disks, bitmaps, dstdir):
@@ -8424,6 +8499,187 @@ host side snapshot files chian:
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    def export_nbd_volumes(self, req):
+        def _export_nbd(nbd_port, volume_path, volume_uuid):
+            process = qemu_nbd.export(nbd_port, "-b", "0.0.0.0", volume_path, "-x", volume_uuid)
+            if not linux.check_socket_available('0.0.0.0', int(nbd_port)):
+                process.terminate()
+                _, stderr = process.communicate()
+                raise Exception('export nbd volumes failed: %s' % stderr.decode())
+            return
+
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ExportNbdVolumesResponse()
+        infos = []
+        start_port, end_port = linux.parse_port_range(cmd.portRange)
+        try:
+            for volumeInfo in cmd.volumeInfos:
+                port, l = linux.find_free_port_with_locking(start_port, end_port)
+                _export_nbd(port, volumeInfo.volume.installPath, volumeInfo.volume.volumeUuid)
+                volumeInfo.scratchNodeName = volumeInfo.volume.volumeUuid
+                volumeInfo.nbdPort = port
+                infos.append(volumeInfo)
+                if l:
+                    l.release()
+        except Exception as e:
+            content = traceback.format_exc()
+            logger.warn("export nbd volumes failed: " + str(e) + '\n' + content)
+            rsp.error = str(e)
+            rsp.success = False
+
+        rsp.volumeInfos = infos
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def unexport_nbd_volumes(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+        for volume in cmd.volumes:
+            qemu_nbd.kill_nbd_process_by_flag(volume.installPath)
+
+        rsp.success = True
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def list_exported_volumes(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ListExportedVolumesResponse()
+        volume_export_info = {}
+        for volume in cmd.volumes:
+            volume_export_info[volume.volumeUuid] = False
+            if qemu_nbd.find_qemu_nbd_process(volume.installPath) == 0:
+                volume_export_info[volume.volumeUuid] = True
+
+        rsp.volumeExportInfos = volume_export_info
+        rsp.success = True
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def take_volume_cbt_backup(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = TakeVolumeCbtBackupResponse()
+        isc = ImageStoreClient()
+        infos = None
+
+        vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
+        if not vm:
+            raise kvmagent.KvmError("vm[uuid: %s] not found by libvirt" % cmd.vmUuid)
+
+        try:
+            vm = get_vm_by_uuid(cmd.vmUuid)
+            states = vm.domain.jobStats()
+            if libvirt.VIR_DOMAIN_JOB_DATA_REMAINING in states and libvirt.VIR_DOMAIN_JOB_DATA_TOTAL in states:
+                rsp.error = "domain already has migrate job, cannot do cbt backup right now."
+                rsp.success = False
+                return jsonobject.dumps(rsp)
+        except libvirt.libvirtError:
+            pass
+
+        try:
+            volumes = isc.query_mirror_volumes(cmd.vmUuid)
+            if volumes is not None:
+                isc.stop_backup_jobs(cmd.vmUuid)
+
+            if cmd.portRange:
+                cmd.portRange = cmd.portRange.replace(":", "-")
+            infos = isc.cbt_backup_volume(vm, cmd.volumeInfos, cmd.bitmapTimestamp, cmd.portRange)
+            execute_qmp_command(cmd.vmUuid, '{"execute": "migrate-set-capabilities","arguments":'
+                                            '{"capabilities":[ {"capability": "dirty-bitmaps", "state":true}]}}')
+            logger.info('finished create cbt backup on vm[%s]' % cmd.vmUuid)
+
+        except Exception as e:
+            content = traceback.format_exc()
+            logger.warn("take vm cbt backup failed: " + str(e) + '\n' + content)
+            rsp.error = str(e)
+            rsp.success = False
+        rsp.volumeInfos = infos
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def cancel_volume_cbt_backup(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CancelVolumeCbtBackupResponse()
+
+        vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
+        if not vm:
+            raise kvmagent.KvmError("vm[uuid: %s] not found by libvirt" % cmd.vmUuid)
+
+        try:
+            isc = ImageStoreClient()
+            isc.stop_vm_cbt_backup_jobs(cmd.vmUuid)
+        except Exception as e:
+            content = traceback.format_exc()
+            logger.warn("stop vm cbt task failed: " + str(e) + '\n' + content)
+            rsp.error = str(e)
+            rsp.success = False
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def get_volumes_cbt_bitmaps(self, req):
+        def _merge_json_data(rbd_list, qcow2_list):
+            result = {}
+            qcow2_result = {}
+            for rbd_start, rbd_length in rbd_list.items():
+                rbd_end = rbd_start + rbd_length
+                result[rbd_start] = rbd_length
+
+                for qcow2_start, qcow2_length in qcow2_list.items():
+                    qcow2_end = qcow2_start + qcow2_length
+
+                    if (qcow2_start >= rbd_start and rbd_start <= qcow2_end) or (rbd_start >= qcow2_start >= rbd_end):
+                        start = min(rbd_start, qcow2_start)
+                        end = max(rbd_end, qcow2_end)
+                        length = end - start
+                        result[start] = length
+                        result.pop(rbd_start, None)
+                    else:
+                        qcow2_result[qcow2_start] = qcow2_length
+
+            result.update(qcow2_result)
+            return result
+
+        def _get_volume_bitmap(volume_info):
+            bitmap_map = {}
+            if volume_info.mode == "full":
+                if volume_info.volume.primaryStorageType == 'Ceph':
+                    qcow2_path = "rbd:%s" % (volume_info.target.replace('ceph://', ''))
+                    qcow2_result = qemu.get_data_bitmap(qcow2_path, False, True, MAX_NBD_READ_SIZE)
+
+                    raw_path = volume_info.volume.installPath.replace('ceph://', '')
+                    raw_result = qemu.get_rbd_data_bitmap(raw_path, MAX_NBD_READ_SIZE)
+                    bitmap_map = _merge_json_data(raw_result, qcow2_result)
+                else:
+                    path = "nbd://%s:%s/%s" % (
+                        volume_info.nbdServer, volume_info.nbdPort, volume_info.scratchNodeName)
+                    bitmap_map = qemu.get_data_bitmap(path, MAX_NBD_READ_SIZE, False, True, "-f raw")
+            else:
+                path = "driver=nbd,export=%s,server.type=inet,server.host=%s,server.port=%s,x-dirty-bitmap=qemu:dirty-bitmap:%s" % (
+                    volume_info.scratchNodeName, volume_info.nbdServer, volume_info.nbdPort, cmd.bitmapTimestamp)
+                bitmap_map = qemu.get_data_bitmap(path, False, False, MAX_NBD_READ_SIZE, "--image-opts")
+
+            return bitmap_map
+
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetVolumesBitmapResponse()
+        infos = []
+        try:
+            volume_infos = cmd.volumeInfos
+            for volume_info in volume_infos:
+                bitmap_map = _get_volume_bitmap(volume_info)
+                volume_info.bitmapBase64 = qemu.compress_and_encode_bitmap(bitmap_map)
+                infos.append(volume_info)
+
+        except Exception as e:
+            content = traceback.format_exc()
+            logger.warn("get volume bitmap failed: " + str(e) + '\n' + content)
+            rsp.error = str(e)
+            rsp.success = False
+
+        rsp.volumeInfos = infos
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
     def cancel_volume_mirror(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = CancelVolumeMirrorResponse()
@@ -8436,7 +8692,7 @@ host side snapshot files chian:
             target_disk, _ = vm._get_target_disk(cmd.volume)
             node_name = self.get_disk_device_name(target_disk)
             isc = ImageStoreClient()
-            isc.stop_mirror(cmd.vmUuid, cmd.complete, node_name)
+            isc.stop_mirror(cmd.vmUuid, cmd.complete, node_name, cmd.force)
         except Exception as e:
             content = traceback.format_exc()
             logger.warn("stop volume mirror failed: " + str(e) + '\n' + content)
@@ -10484,6 +10740,12 @@ host side snapshot files chian:
         http_server.register_async_uri(self.KVM_TAKE_VOLUME_SNAPSHOT_PATH, self.take_volume_snapshot)
         http_server.register_async_uri(self.KVM_CHECK_VOLUME_SNAPSHOT_PATH, self.check_volume_snapshot)
         http_server.register_async_uri(self.KVM_TAKE_VOLUME_BACKUP_PATH, self.take_volume_backup, cmd=TakeVolumeBackupCommand())
+        http_server.register_async_uri(self.KVM_EXPORT_NBD_VOLUMES_PATH, self.export_nbd_volumes)
+        http_server.register_async_uri(self.KVM_UNEXPORT_NBD_VOLUMES_PATH, self.unexport_nbd_volumes)
+        http_server.register_async_uri(self.KVM_LIST_EXPORTED_VOLUMES_PATH, self.list_exported_volumes)
+        http_server.register_async_uri(self.KVM_TAKE_VOLUME_CBT_BACKUP_PATH, self.take_volume_cbt_backup)
+        http_server.register_async_uri(self.KVM_CANCEL_VOLUME_CBT_BACKUP_PATH, self.cancel_volume_cbt_backup)
+        http_server.register_async_uri(self.KVM_GET_VOLUMES_BITMAPS_PATH, self.get_volumes_cbt_bitmaps)
         http_server.register_async_uri(self.KVM_TAKE_VOLUME_MIRROR_PATH, self.take_volume_mirror)
         http_server.register_async_uri(self.KVM_CANCEL_VOLUME_MIRROR_PATH, self.cancel_volume_mirror)
         http_server.register_async_uri(self.KVM_QUERY_VOLUME_MIRROR_PATH, self.query_volume_mirror)

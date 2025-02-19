@@ -75,14 +75,14 @@ class ImageStoreClient(object):
             cmdstr = '%s stopbak -domain %s' % (self.ZSTORE_CLI_PATH, vm)
             return shell.call(cmdstr).strip()
 
-    def stop_vm_backup_jobs(self, vm):
+    def stop_vm_backup_jobs(self, vm, force=False):
         with linux.ShowLibvirtErrorOnException(vm):
-            cmdstr = '%s stopbak -domain %s -batbak' % (self.ZSTORE_CLI_PATH, vm)
+            cmdstr = '%s stopbak -force=%s -domain %s -batbak' % (self.ZSTORE_CLI_PATH, force, vm)
             return shell.call(cmdstr).strip()
 
-    def stop_volume_backup_job(self, vm, drive):
+    def stop_volume_backup_job(self, vm, drive, force=False):
         with linux.ShowLibvirtErrorOnException(vm):
-            cmdstr = '%s stopbak -domain %s -drive %s' % (self.ZSTORE_CLI_PATH, vm, drive)
+            cmdstr = '%s stopbak -force=%s -domain %s -drive %s' % (self.ZSTORE_CLI_PATH, force, vm, drive)
             return shell.call(cmdstr).strip()
 
     @staticmethod
@@ -96,10 +96,10 @@ class ImageStoreClient(object):
                 'storage free size is less than reserved capacity: %d' % ImageStoreClient.RESERVE_CAPACITY)
 
 
-    def stop_mirror(self, vm, complete, node):
+    def stop_mirror(self, vm, complete, node, force=False):
         with linux.ShowLibvirtErrorOnException(vm):
-            cmdstr = '%s stopmirr -domain %s -delbitmap=%s -drive "%s"' % \
-                     (self.ZSTORE_CLI_PATH, vm, complete, node)
+            cmdstr = '%s stopmirr -force=%s -domain %s -delbitmap=%s -drive "%s"' % \
+                     (self.ZSTORE_CLI_PATH, force, vm, complete, node)
             shell.check_run(cmdstr)
 
     def query_mirror_volumes(self, vm):
@@ -129,6 +129,48 @@ class ImageStoreClient(object):
             linux.rm_file_force(PFILE)
             if err:
                 raise Exception('fail to mirror volume %s, because %s' % (vm, str(err)))
+
+    def cbt_backup_volume(self, vm, volume_infos, bitmapTimestamp, portRange):
+        def _parse_json_and_update_mode(volume_infos, json_data):
+            json_list = json.loads(json_data)
+            infos = []
+
+            for info in volume_infos:
+                target_disk, _ = vm._get_target_disk(info.volume)
+                node_name = self.get_disk_device_name(target_disk)
+                for item in json_list:
+                    if item['device'] == node_name:
+                        info.mode = item['mode']
+                        info.scratchNodeName = item['scratchNodeName']
+                        info.nbdPort = item['nbdPort']
+                        info.bitmapName = item['bitmap']
+                        infos.append(info)
+                        continue
+            return infos
+
+
+        volumes = ""
+        for volume_info in volume_infos:
+            target_disk, _ = vm._get_target_disk(volume_info.volume)
+            node_name = self.get_disk_device_name(target_disk)
+
+            target_install_path = volume_info.target
+            volumes += ",".join([node_name, target_install_path]) + ";"
+
+        PFILE = linux.create_temp_file()
+        with linux.ShowLibvirtErrorOnException(vm):
+            cmdstr = '%s cbtbak -domain %s -volumes "%s" -bitmap "%s" -portrange "%s" > %s' % \
+                     (self.ZSTORE_CLI_PATH, vm.uuid, volumes, bitmapTimestamp, portRange, PFILE)
+            shell.call(cmdstr)
+            with open(PFILE) as fd:
+                linux.rm_file_force(PFILE)
+                json_data = fd.read()
+                return  _parse_json_and_update_mode(volume_infos, json_data)
+
+    def stop_vm_cbt_backup_jobs(self, vm, force=False):
+        with linux.ShowLibvirtErrorOnException(vm):
+            cmdstr = '%s stopcbtbak -force=%s -domain %s' % (self.ZSTORE_CLI_PATH, force, vm)
+            return shell.call(cmdstr).strip()
 
     def query_vm_mirror_latencies_boundary(self, vm, times):
         with linux.ShowLibvirtErrorOnException(vm):
@@ -351,3 +393,7 @@ class ImageStoreClient(object):
         rsp = kvmagent.AgentResponse()
         rsp.destPath = destPath
         return jsonobject.dumps(rsp)
+
+    def get_disk_device_name(self, disk):
+        # The disk type on FT-backup_vm is quorom
+        return ('' if disk.type_ == 'quorum' else 'drive-') + disk.alias.name_
