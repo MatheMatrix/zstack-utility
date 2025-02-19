@@ -413,7 +413,7 @@ class AbstractStorageFencer(AbstractHaFencer):
                 time.sleep(interval + remain_timeout)
             remain_timeout = storage_check_timeout
 
-            current_heartbeat_count, current_vm_uuids = self.read_fencer_hearbeat(host_uuid, ps_uuid)
+            current_heartbeat_count, current_vm_uuids = self.read_fencer_heartbeat(host_uuid, ps_uuid)
             logger.debug("host last heartbeat is %s, host current heartbeat count is %s, vm running : %s" %
                          (lastest_heartbeat_count, current_heartbeat_count, current_vm_uuids))
 
