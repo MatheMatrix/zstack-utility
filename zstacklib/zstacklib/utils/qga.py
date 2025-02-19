@@ -275,14 +275,8 @@ class VmQga(object):
         return exit_code, ret_data
 
     def guest_exec_zs_tools(self, operate, config, output=True, wait=qga_exec_wait_interval, retry=zs_tools_wait_retry):
-        if operate == 'net':
-            ret = self.guest_exec(
-                {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--config", config], "capture-output": output})
-        elif operate == 'host':
-            ret = self.guest_exec(
-                {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--name", config], "capture-output": output})
-        else:
-            raise Exception('qga exec zs-tools unknow operate {} for vm {}'.format(operate, self.vm_uuid))
+        ret = self.guest_exec(
+            {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--config", config], "capture-output": output})
 
         if ret and "pid" in ret:
             pid = ret["pid"]
