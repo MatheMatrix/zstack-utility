@@ -249,6 +249,7 @@ def stop_connection(sock, transport_handle, sid, cid, conn_handle):
     # uint32_t Cid
     # uint64_t ConnHandle
     # uint32_t Flag
+    padding = b'\x00' * 36  # 2 uint32_t padding
     payload = struct.pack('=IIQIIQI',
                           IscsiEvent.ISCSI_UEVENT_STOP_CONN,
                           0,  # IfError
@@ -256,7 +257,7 @@ def stop_connection(sock, transport_handle, sid, cid, conn_handle):
                           sid,
                           cid,
                           conn_handle,
-                          STOP_CONN_RECOVER)
+                          STOP_CONN_RECOVER) + padding + struct.pack('=I', IscsiErr.ISCSI_OK)
     # Send the message
     response = send_netlink_message(sock, IscsiEvent.ISCSI_UEVENT_STOP_CONN, payload)
 
@@ -303,7 +304,7 @@ def destroy_connection(sock, transport_handle, sid, cid):
     # uint32_t Cid
     # uint8_t Padding (16 bytes)
     # uint32_t Ret (should be ISCSI_OK)
-    padding = b'\x00' * 16
+    padding = b'\x00' * 28
     payload = struct.pack('=IIQII',
                           IscsiEvent.ISCSI_UEVENT_DESTROY_CONN,
                           0,  # IfError
@@ -348,7 +349,7 @@ def destroy_session(sock, transport_handle, sid):
     Destroys an iSCSI session by sending ISCSI_UEVENT_DESTROY_SESSION.
     """
     # Construct payload
-    padding = b'\x00' * (4 * 5)  # 5 uint32_t padding
+    padding = b'\x00' * 32  # 5 uint32_t padding
     payload = struct.pack('=IIQ',
                           IscsiEvent.ISCSI_UEVENT_DESTROY_SESSION,
                           0,  # IfError
@@ -409,18 +410,16 @@ def clean_session(sid, cid=0, conn_handle=0):
 
     errors = False
 
-    if cid != 0 or conn_handle != 0:
-        # Stop Connection
-        ret = stop_connection(sock, transport_handle, sid, cid, conn_handle)
-        if ret:
-            print("Error stopping connection: {}".format(ret))
-            errors = True
+    ret = stop_connection(sock, transport_handle, sid, cid, conn_handle)
+    if ret:
+        print("Error stopping connection: {}".format(ret))
+        errors = True
 
-        # Destroy Connection
-        ret = destroy_connection(sock, transport_handle, sid, cid)
-        if ret:
-            print("Error destroying connection: {}".format(ret))
-            errors = True
+    # Destroy Connection
+    ret = destroy_connection(sock, transport_handle, sid, cid)
+    if ret:
+        print("Error destroying connection: {}".format(ret))
+        errors = True
 
     # Destroy Session
     ret = destroy_session(sock, transport_handle, sid)
