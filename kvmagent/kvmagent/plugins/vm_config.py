@@ -22,6 +22,12 @@ class VmQgaStatus:
         self.osType = ""
 
 
+class HostnameConfig:
+    def __init__(self):
+        self.hostname = ""
+        self.defaultIp = ""
+
+
 def get_virt_domain(vmUuid):
     try:
         @vm_plugin.LibvirtAutoReconnect
@@ -201,13 +207,14 @@ class VmConfigPlugin(kvmagent.KvmAgent):
         if qga.state != VmQga.QGA_STATE_RUNNING:
             return 1, "qga is not running for vm {}".format(vm_uuid)
 
-        if default_ip is None:
-            default_ip = ""
+        config = HostnameConfig()
+        config.hostname = hostname if hostname else ""
+        config.defaultIp = default_ip if default_ip else ""
 
         if qga.os == VmQga.VM_OS_WINDOWS:
-            ret, msg = qga.guest_exec_zs_tools(operate='host', config=hostname)
+            ret, msg = qga.guest_exec_zs_tools(operate='host', config=jsonobject.dumps(config))
             if ret != 0:
-                logger.debug("set vm {} hostname {} by zs-tools failed, detail info {}".format(vm_uuid, hostname, msg))
+                logger.debug("set vm[uuid:{}, hostname:{}] by zs-tools failed, detail info {}".format(vm_uuid, config.hostname, msg))
             return ret, msg
 
         # exec qga command
@@ -218,7 +225,7 @@ class VmConfigPlugin(kvmagent.KvmAgent):
             cmd_file = self.VM_QGA_SET_HOSTNAME_EL6
         else:
             cmd_file = self.VM_QGA_SET_HOSTNAME
-        ret, msg = qga.guest_exec_python(cmd_file, [hostname, default_ip])
+        ret, msg = qga.guest_exec_python(cmd_file, [config.hostname, config.defaultIp])
         if ret != 0:
             logger.debug("set vm hostname {} by qga failed: {}".format(vm_uuid, msg))
             return 1, "set vm hostname {} by qga failed: {}".format(vm_uuid, msg)
@@ -242,13 +249,12 @@ class VmConfigPlugin(kvmagent.KvmAgent):
             rsp.error = msg
         else:
             logger.debug("config vm {} by qga successfully, detail info {}".format(cmd.vmUuid, msg))
-            if cmd.hostname:
-                ret, msg = self.set_vm_hostname_by_qga(domain, cmd.hostname, cmd.defaultIP)
-                if ret != 0:
-                    rsp.success = False
-                    rsp.error = msg
-                else:
-                    logger.debug("config vm {} hostname {} by qga successfully, detail info {}".format(cmd.vmUuid, cmd.hostname, msg))
+            ret, msg = self.set_vm_hostname_by_qga(domain, cmd.hostname, cmd.defaultIP)
+            if ret != 0:
+                rsp.success = False
+                rsp.error = msg
+            else:
+                logger.debug("config vm {} hostname {} by qga successfully, detail info {}".format(cmd.vmUuid, cmd.hostname, msg))
 
         return jsonobject.dumps(rsp)
 
