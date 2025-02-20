@@ -460,10 +460,6 @@ class AgentManager(object):
             LOG.error("nvidia query gpu is error, %s" % e)
             return
 
-        r, o, e = bm_utils.shell_cmd("pidof nvidia-persistenced", False)
-        if r != 0:
-            LOG.info("nvidia-persistenced is not running, starting it")
-            bm_utils.shell_cmd("nvidia-persistenced", False)
         return self._update_to_addon_info_from_gpu_infos(gpu.parse_nvidia_gpu_output(o),
                                                          pci_device_address, addon_info)
 
