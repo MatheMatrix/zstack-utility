@@ -2722,10 +2722,6 @@ done
             return
         self._update_to_addon_info_from_gpu_infos(gpu.parse_nvidia_gpu_output(o), to)
 
-        r, o, e = bash_roe("pidof nvidia-persistenced")
-        if r != 0:
-            logger.info("nvidia-persistenced is not running, starting it")
-            bash_roe("nvidia-persistenced")
 
     def _update_to_addon_info_from_gpu_infos(self, gpu_infos, to):
         for gpuinfo in gpu_infos:
