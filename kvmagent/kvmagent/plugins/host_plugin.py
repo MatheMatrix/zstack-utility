@@ -1261,12 +1261,37 @@ class HostPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = UpdateHostIscsiInitiatorNameResponse()
 
-        if os.path.exists(ISCSI_INITIATOR_NAME_PATH):
+        old_initiator_name = self._get_iscsi_initiator_name()
+        if old_initiator_name != cmd.iscsiInitiatorName:
+            try:
+                with open(ISCSI_INITIATOR_NAME_PATH, 'w') as f:
+                    f.write("InitiatorName=%s" % cmd.iscsiInitiatorName)
+            except Exception as e:
+                logger.error("failed to write iscsi initiator name %s to %s, because %s",
+                             cmd.iscsiInitiatorName, ISCSI_INITIATOR_NAME_PATH, str(e))
+                rsp.success = False
+                rsp.error = str(e)
+                return jsonobject.dumps(rsp)
+
+        logger.info("iscsi initiator name changed from %s to %s, restart iscsid",
+                    old_initiator_name, cmd.iscsiInitiatorName)
+
+        ret, out, err = bash_roe("systemctl restart iscsid")
+        if ret == 0:
+            logger.info("iscsid restarted successfully")
+            return jsonobject.dumps(rsp)
+
+        err_message = "failed to restart iscsid, and start rollback, return code: %s, stdout: %s, stderr: %s" % (ret, out, err)
+        logger.error(err_message)
+        rsp.success = False
+        rsp.error = err_message
+
+        try:
             with open(ISCSI_INITIATOR_NAME_PATH, 'w') as f:
-                f.write("InitiatorName=%s\n" % (cmd.iscsiInitiatorName))
-        else:
-            rsp.success = False
-            rsp.error = 'cannot find file %s' % ISCSI_INITIATOR_NAME_PATH
+                f.write("InitiatorName=%s" % old_initiator_name)
+        except Exception as e:
+            logger.error("failed to write iscsi initiator name %s to %s, because %s",
+                    old_initiator_name, ISCSI_INITIATOR_NAME_PATH, str(e))
                 
         return jsonobject.dumps(rsp)
 
