@@ -2,7 +2,9 @@ from oslo_concurrency import processutils
 from oslo_log import log as logging
 
 from bm_instance_agent.common import utils as agent_utils
+from bm_instance_agent.common import utils as bm_utils
 from bm_instance_agent import exception
+from bm_instance_agent import objects
 
 from centos_network_config import CentOSNetworkConfig as config
 from centos import CentOSDriver
@@ -28,7 +30,45 @@ class KylinDriver(CentOSDriver):
             if port.type == port.PORT_TYPE_BOND:
                 raise exception.NewtorkInterfaceConfigParasInvalid(
                     exception_msg="port type {} is not support".format(port.type))
-            self._detach_port(port)
+            LOG.info("start to detach_port :%s" % port)
+            self. _detach_port_kylin(instance_obj, network_obj, port)
+            '''
+                    if instance_obj.provision_mac == network_obj.ports[0].mac:
+            port = network_obj.ports[0]
+            port.type = PortObj.PORT_TYPE_PHY
+            port.iface_name = bm_utils.get_interface_by_mac(instance_obj.provision_mac)
+            self.driver.attach_port(instance_obj, network_obj)'''
+
+    def _detach_port_kylin(self, instance_obj, network_obj, port):
+        # Ensure that the conf file exist because command ifdown
+        # requires it.
+        config.persist_network_config(port)
+        if port.type == port.PORT_TYPE_BOND:
+            self._detach_bond_kylin_port(instance_obj, network_obj, port)
+        else:
+            self._detach_phy_port(port)
+        config.remove_network_config(port)
+        if port.vlan_if_name:
+            agent_utils.ip_link_del(port.vlan_if_name)
+
+        if port.type != port.PORT_TYPE_PHY:
+            agent_utils.ip_link_del(port.iface_name)
+        else:
+            cmd = ['ip', 'address', 'flush', 'dev', port.iface_name]
+            processutils.execute(*cmd)
+
+    def _detach_bond_kylin_port(self, instance_obj, network_obj, port):
+        bond_port = objects.BondPortParasObj.from_json(port.paras)
+        for slave in bond_port.slave_list:
+            config.if_down_up(slave["iface_name"], config.PORT_OPT_DOWN)
+            if instance_obj.provision_mac == network_obj.ports[0].mac:
+                port = network_obj.ports[0]
+                port.type = 'physical'
+                port.iface_name = bm_utils.get_interface_by_mac(instance_obj.provision_mac)
+                self.attach_port(instance_obj, network_obj)
+        if port.vlan_if_name:
+            config.if_down_up(port.vlan_if_name, config.PORT_OPT_DOWN)
+        config.if_down_up(port.iface_name, config.PORT_OPT_DOWN)
 
     def update_default_route(
             self, instance_obj, old_network_obj, new_network_obj):

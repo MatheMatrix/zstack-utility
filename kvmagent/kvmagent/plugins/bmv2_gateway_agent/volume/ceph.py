@@ -1,3 +1,4 @@
+import logging
 import os
 
 from zstacklib.utils import lvm

@@ -352,7 +352,7 @@ class CephAgent(plugin.TaskManager):
 
     mapping = {
         'ceph': CephDriver,
-        'thirdpartyCeph': ThirdpartyCephDriver
+         'thirdpartyCeph': ThirdpartyCephDriver
     }
 
     def get_driver(self, cmd):
@@ -566,7 +566,8 @@ class CephAgent(plugin.TaskManager):
         pool, image_name = self._parse_install_path(cmd.installPath)
         path = self._normalize_install_path(cmd.installPath)
 
-        linux.qemu_img_resize('rbd:%s/%s' % (pool, image_name), cmd.size, 'raw', cmd.force)
+        driver = self.get_driver(cmd)
+        rsp = driver.resize_volume(cmd, rsp)
         rsp.size = self._get_file_size(path)
         self._set_capacity_to_response(rsp)
         return jsonobject.dumps(rsp)
@@ -976,7 +977,10 @@ class CephAgent(plugin.TaskManager):
         src_pool = src_path.split('/')[0]
         dst_pool = dst_path.split('/')[0]
 
+        cmd.token = "5acf75e9e2dc4be5ac40cd81ef9f2029"
+        cmd.tpTimeout = 1000
         driver = self.get_driver(cmd)
+        logger.info()
         rsp = driver.clone_volume(cmd, rsp)
 
         rsp.size = self._get_file_size(src_path)

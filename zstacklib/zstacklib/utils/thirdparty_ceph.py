@@ -68,12 +68,14 @@ class RbdDeviceOperator(object):
             created_client_group_id = None
 
             gateway_host = self.hosts_api.list_hosts(q=self.monIp).hosts[0]
+            logger.info("the gateway_host is :%s" % gateway_host)
             if not gateway_host:
                 raise Exception("host %s cannot be find " % self.monIp)
             gateway_host_id = gateway_host.id
 
             try:
                 created_client_group_id = _create_client_group()
+                logger.info("the create_client_group_id %s" % created_client_group_id)
 
                 if instance_obj.customIqn:
                     created_target_iqn = instance_obj.customIqn
@@ -91,9 +93,12 @@ class RbdDeviceOperator(object):
 
                 mapping_groups = self.mapping_groups_api.list_mapping_groups(access_path_id=created_access_path_id,
                                                                              client_group_id=created_client_group_id).mapping_groups
+                logger.info("get mapping_groups %s" % mapping_groups)
                 if len(mapping_groups) == 0:
+                    logger.info("start to create mapping groups")
                     _create_mapping_group(created_client_group_id, created_access_path_id)
 
+                logger.info("finally iqn is :%s" % created_target_id)
                 return created_target_iqn
 
             except ApiException as e:
@@ -1012,8 +1017,7 @@ class RbdDeviceOperator(object):
             return
 
         api_body = {"block_volume_ids": [block_volume.id]}
-        created_mapping_group_data_id = self.mapping_groups_api.remove_volumes(mapping_group_id,
-                                                                               api_body, force=True).mapping_group.id
+        created_mapping_group_data_id = self.mapping_groups_api.remove_volumes(api_body, mapping_group_id, force=True).mapping_group.id
         self._retry_until(self.is_created_mapping_group_status_active, created_mapping_group_data_id)
         logger.debug("Successfully delete block volume[name : %s] from mapping group[id : %s]" % (
             block_volume.name, mapping_group_id))
