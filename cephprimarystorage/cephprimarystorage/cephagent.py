@@ -1437,21 +1437,27 @@ class CephAgent(plugin.TaskManager):
     def delete_volume_backing_chain(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
+        rsp.undeletedInstallPaths = cmd.installPaths[:]
 
-        driver = self.get_driver(cmd)
-        for path in cmd.installPaths:
-            path = self._normalize_install_path(path)
-            if "@" in path:
-                vol_path = path.split("@")[0]
-                shell.run('rbd snap unprotect %s' % path)
-                shell.call('rbd snap rm %s' % path)
-            else:
-                vol_path = path
-            self._ensure_existing_volume_has_no_snapshot(vol_path)
-            watchers = self._get_watcher(vol_path)
-            if watchers:
-                raise Exception('volume %s has watchers %s, can not delete it' % (vol_path, watchers))
-            driver.do_deletion(cmd, vol_path)
+        try:
+            driver = self.get_driver(cmd)
+            for installPath in cmd.installPaths:
+                path = self._normalize_install_path(installPath)
+                if "@" in path:
+                    vol_path = path.split("@")[0]
+                    shell.run('rbd snap unprotect %s' % path)
+                    shell.call('rbd snap rm %s' % path)
+                    rsp.undeletedInstallPaths[rsp.undeletedInstallPaths.index(installPath)] = installPath.split("@")[0]
+                else:
+                    vol_path = path
+                self._ensure_existing_volume_has_no_snapshot(vol_path)
+                watchers = self._get_watcher(vol_path)
+                if watchers:
+                    raise Exception('volume %s has watchers %s, can not delete it' % (vol_path, watchers))
+                driver.do_deletion(cmd, vol_path)
+                rsp.undeletedInstallPaths.remove(installPath.split("@")[0])
+        except Exception:
+            logger.warn(traceback.format_exc())
 
         return jsonobject.dumps(rsp)
 
