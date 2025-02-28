@@ -1,9 +1,14 @@
+import logging
+
 from zstacklib.utils import shell
 from zstacklib.utils import linux
+from zstacklib.utils import log
 
 from kvmagent.plugins.bmv2_gateway_agent.volume import base
 from kvmagent.plugins.bmv2_gateway_agent.volume import helper
 from zstacklib.utils.thirdparty_ceph import RbdDeviceOperator
+
+logger = log.get_logger(__name__)
 
 
 class ThirdPartyCephVolume(base.BaseVolume):
@@ -37,9 +42,12 @@ class ThirdPartyCephVolume(base.BaseVolume):
         return self.volume_obj.path.replace('ceph://', '')
 
     def attach(self):
-        path = self.volume_obj.iscsiPath.replace('iscsi://', '')
-        array = path.split("/")
-        iqn = array[1]
+        if self.volume_obj.type == 'Root':
+            iqn = self.instance_obj.customIqn
+        else:
+            path = self.volume_obj.iscsiPath.replace('iscsi://', '')
+            array = path.split("/")
+            iqn = array[1]
         return RbdDeviceOperator(self.volume_obj.monIp, self.volume_obj.token,
                                  self.volume_obj.tpTimeout).establish_link_for_volume(self.instance_obj,
                                                                                       self.volume_obj, iqn)
@@ -52,6 +60,7 @@ class ThirdPartyCephVolume(base.BaseVolume):
                                  self.volume_obj.tpTimeout).rollback_establish_link(self.instance_obj, self.volume_obj, iqn)
 
     def detach(self):
+        logger.info("start tp detach xsky volume")
         RbdDeviceOperator(self.volume_obj.monIp, self.volume_obj.token, self.volume_obj.tpTimeout).disconnect(
             self.instance_obj, self.volume_obj)
 
@@ -63,13 +72,17 @@ class ThirdPartyCephVolume(base.BaseVolume):
             self.instance_obj, self.volume_obj, iqn)
 
     def prepare_instance_resource(self):
+        logger.info("start to prepare instance resource")
         instance_gateway_ip = self.instance_obj.gateway_ip
-        mon_ip = self.volume_obj.monIp
+        mon_ip = self.instance_obj.volume_obj.monIp
         dev_name = linux.find_route_interface_by_destination_ip(mon_ip)
         snat_ip = linux.find_route_interface_ip_by_destination_ip(mon_ip)
-
-        created_iqn = RbdDeviceOperator(mon_ip, self.volume_obj.token, self.volume_obj.tpTimeout).prepare(
+        logger.info("mon ip is %s" % mon_ip)
+        logger.info("token is %s" % self.instance_obj.volume_obj.token)
+        logger.info("start to create iqn")
+        created_iqn = RbdDeviceOperator(mon_ip, self.instance_obj.volume_obj.token, self.instance_obj.volume_obj.tpTimeout).prepare(
             self.instance_obj, self.volume_obj, snat_ip)
+        logger.info("create iqn success")
 
         if self.instance_obj.customIqn and self.instance_obj.customIqn == created_iqn:
             return
@@ -83,6 +96,7 @@ class ThirdPartyCephVolume(base.BaseVolume):
 
 
     def destroy_instance_resource(self):
+        logger.info("start to destroy xsky volume")
         instance_gateway_ip = self.instance_obj.gateway_ip
         mon_ip = self.volume_obj.monIp
         snat_ip = linux.find_route_interface_ip_by_destination_ip(mon_ip)

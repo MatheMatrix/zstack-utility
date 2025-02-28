@@ -2,6 +2,7 @@ from oslo_concurrency import processutils
 from oslo_log import log as logging
 
 from bm_instance_agent.common import utils as agent_utils
+from bm_instance_agent.common import utils as bm_utils
 from bm_instance_agent import exception
 
 from centos_network_config import CentOSNetworkConfig as config
@@ -28,7 +29,13 @@ class KylinDriver(CentOSDriver):
             if port.type == port.PORT_TYPE_BOND:
                 raise exception.NewtorkInterfaceConfigParasInvalid(
                     exception_msg="port type {} is not support".format(port.type))
+            LOG.info("start to detach_port :%s" % port)
             self._detach_port(port)
+            if instance_obj.provision_mac == network_obj.ports[0].mac:
+                port = network_obj.ports[0]
+                port.type = 'physical'
+                port.iface_name = bm_utils.get_interface_by_mac(instance_obj.provision_mac)
+                self.attach_port(instance_obj, network_obj)
 
     def update_default_route(
             self, instance_obj, old_network_obj, new_network_obj):

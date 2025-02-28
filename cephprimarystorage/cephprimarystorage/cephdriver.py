@@ -33,6 +33,10 @@ class CephDriver(object):
         rsp.installPath = dst_path
         return rsp
 
+    def resize_volume(self, cmd, rsp):
+        linux.qemu_img_resize('rbd:%s/%s' % (pool, image_name), cmd.size, 'raw', cmd.force)
+        return rsp
+
     def create_volume(self, cmd, rsp, agent=None):
         path = self._normalize_install_path(cmd.installPath)
         rsp.size = cmd.size

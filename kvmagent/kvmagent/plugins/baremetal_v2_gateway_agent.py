@@ -1,5 +1,6 @@
 import ast
 import json
+import logging
 import os
 import shutil
 import commands
@@ -1336,25 +1337,37 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         }
         """
         instance_obj = BmInstanceObj.from_json(req)
+        logger.info("test instance %s" % instance_obj)
         volume_objs = VolumeObj.from_json_list(req)
         volume_drivers = []
+        logger.info("test test ..... %s" % volume_objs)
 
         with bm_utils.rollback(self._destroy_instance, req):
             # Full prepare the instance which assign on the gateway,
             # otherwise delete the dnsmasq conf only.
+            logger.info("instance_obj.gateway_ip is :%s" % instance_obj.gateway_ip)
+            logger.info("self.provision_network_conf.provision_nic_ip is :%s" % self.provision_network_conf.provision_nic_ip)
             if instance_obj.gateway_ip == \
                     self.provision_network_conf.provision_nic_ip:
                 pre_volume_objs = list(o for o in volume_objs)
                 for volume_obj in pre_volume_objs:
                     if volume_obj.type == 'Root' and instance_obj.provisionType != 'Remote':
                         continue
+                    volume_obj.monIp = "10.99.2.92"
+                    volume_obj.token = "5acf75e9e2dc4be5ac40cd81ef9f2029"
+                    volume_obj.tpTimeout = 1000
                     pre_volume_driver = volume.get_driver(instance_obj, volume_obj)
+                    logger.info("the pre volume driver is:%s" % pre_volume_driver)
                     pre_volume_driver.prepare_instance_resource()
 
                 for volume_obj in pre_volume_objs:
                     if instance_obj.provisionType != 'Remote' and volume_obj.type == 'Root':
                         continue
+                    volume_obj.monIp = "10.99.2.92"
+                    volume_obj.token = "5acf75e9e2dc4be5ac40cd81ef9f2029"
+                    volume_obj.tpTimeout = 1000
                     volume_driver = volume.get_driver(instance_obj, volume_obj)
+                    logger.info("the volume driver is:%s" % volume_driver)
                     volume_driver.attach()
                     volume_drivers.append(volume_driver)
 
@@ -1380,11 +1393,19 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             for volume_obj in del_volume_obj:
                 if volume_obj.type == 'Root' and instance_obj.provisionType != 'Remote':
                     continue
+                volume_obj.monIp = "10.99.2.92"
+                volume_obj.monIp = "10.99.2.92"
+                volume_obj.token = "5acf75e9e2dc4be5ac40cd81ef9f2029"
                 volume_driver = volume.get_driver(instance_obj, volume_obj)
+                logger.info("the delete volume driver is:%s" % volume_driver)
                 volume_driver.detach()
 
             if instance_obj.provisionType == 'Remote':
+                del_volume_obj[0].monIp = "10.99.2.92"
+                del_volume_obj[0].token = "5acf75e9e2dc4be5ac40cd81ef9f2029"
+                del_volume_obj[0].tpTimeout = 1000
                 del_volume_driver = volume.get_driver(instance_obj, del_volume_obj[0])
+                logger.info("the delete instance resource driver is:%s" % del_volume_driver)
                 del_volume_driver.destroy_instance_resource()
 
             if instance_obj.architecture == 'aarch64':
