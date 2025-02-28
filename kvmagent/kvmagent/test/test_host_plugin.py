@@ -6,6 +6,7 @@ import unittest
 import time
 from kvmagent import kvmagent
 from kvmagent.plugins import host_plugin
+from kvmagent.test.utils import vm_utils, pytest_utils
 from zstacklib.utils import http
 from zstacklib.utils import uuidhelper
 from zstacklib.utils import jsonobject
@@ -20,9 +21,12 @@ class ConnectCmd(kvmagent.AgentCommand):
         
 class HostFactCmd(kvmagent.AgentCommand): pass
 
-
+__ENV_SETUP__ = {
+    'self': {
+    }
+}
         
-class TestHostPlugin(unittest.TestCase):
+class TestHostPlugin(unittest.TestCase, vm_utils.HostPluginTestStub):
     @classmethod
     def setUpClass(self):
         self.service = kvmagent.new_rest_service()
@@ -33,8 +37,8 @@ class TestHostPlugin(unittest.TestCase):
     def tearDownClass(self):
         self.service.stop()
 
-
-    def test_connect(self):
+    @pytest_utils.ztest_decorater
+    def test_fake_command(self):
         url = kvmagent._build_url_for_test([host_plugin.CONNECT_PATH])
         logger.debug('calling %s' % url)
         ret = http.json_dump_post(url, body=ConnectCmd())

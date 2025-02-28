@@ -655,3 +655,6 @@ class VmPluginTestStub(pytest_utils.PytestExtension):
         pid = linux.find_vm_pid_by_uuid(vm_uuid)
         assert pid, 'cannot find pid of vm[%s]' % vm_uuid
         return vm_uuid, vm
+
+class HostPluginTestStub(pytest_utils.PytestExtension):
+    pass
