@@ -546,8 +546,12 @@ class CephAgent(plugin.TaskManager):
     #TODO: check that ceph supports json versions
     @in_bash
     def _get_snapshot_actual_size(self, path):
-        # if no fast-diff supported and not xsky ceph skip actual size check
-        if not self._fast_diff_enabled(path) and not ceph.is_xsky():
+        if ceph.is_xsky():
+            # xsky can not separate snapshot size, return a minimum value
+            return 1
+
+        # if no fast-diff supported skip actual size check
+        if not self._fast_diff_enabled(path):
             return None
 
         r, jstr = bash.bash_ro("rbd du %s --format json" % path)
@@ -558,19 +562,10 @@ class CephAgent(plugin.TaskManager):
         if result.images is None:
             return None
 
-        snapshot_size = None
         snapshot = path.split('@')[-1]
-
-        if ceph.is_xsky():
-            for item in result.images:
-                if item.name is not None and snapshot in item.name:
-                    snapshot_size = int(item.used_size)
-            return snapshot_size
-
         for item in result.images:
             if item.snapshot == snapshot:
-                snapshot_size = int(item.used_size)
-        return snapshot_size
+                return int(item.used_size)
 
     def _get_file_size(self, path):
         o = shell.call('rbd --format json info %s' % path)
