@@ -19,7 +19,7 @@ DEFAULT_STRIPE_VOLUME_UINT = "64KiB"
 
 
 def deploy_client(client_ip, client_password):
-    return shell.call("%s client deploy --host %s -p %s --silent" % (DEFAULT_ZBSADM_BIN_PATH, client_ip, client_password))
+    return shell.call("%s client deploy --host %s -p %s --silent" % (DEFAULT_ZBSADM_BIN_PATH, client_ip, linux.shellquote(client_password)))
 
 
 def query_mds_status_info():
