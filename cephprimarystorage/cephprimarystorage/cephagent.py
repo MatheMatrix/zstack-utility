@@ -126,6 +126,8 @@ class CloneRsp(AgentResponse):
         self.size = None
         self.actualSize = None
         self.installPath = None
+        self.volumeId = None
+        self.volumeStatus = None
 
 
 class CpRsp(AgentResponse):

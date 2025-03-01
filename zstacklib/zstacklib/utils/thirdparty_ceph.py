@@ -196,7 +196,7 @@ class RbdDeviceOperator(object):
         return created_iqn
 
     def establish_link_for_volume(self, instance_obj, volume_obj, iqn):
-        if volume_obj.type == 'Root':
+        if volume_obj.type == 'Root' and instance_obj.provisionType != 'Remote':
             return "End establish link because the volume is root."
 
         path = self._normalize_install_path(volume_obj.path)
@@ -258,7 +258,7 @@ class RbdDeviceOperator(object):
             logger.debug("Successfully attach_volume_to_mapping_group %s for establish link " % client_group_id)
 
     def break_link(self, instance_obj, volume_obj, iqn):
-        if volume_obj.type == 'Root':
+        if volume_obj.type == 'Root' and instance_obj.provisionType != 'Remote':
             return "End establish link because the volume is root."
 
         path = self._normalize_install_path(volume_obj.path)
@@ -1012,8 +1012,8 @@ class RbdDeviceOperator(object):
             return
 
         api_body = {"block_volume_ids": [block_volume.id]}
-        created_mapping_group_data_id = self.mapping_groups_api.remove_volumes(mapping_group_id,
-                                                                               api_body, force=True).mapping_group.id
+        created_mapping_group_data_id = self.mapping_groups_api.remove_volumes(api_body,
+                                                                               mapping_group_id, force=True).mapping_group.id
         self._retry_until(self.is_created_mapping_group_status_active, created_mapping_group_data_id)
         logger.debug("Successfully delete block volume[name : %s] from mapping group[id : %s]" % (
             block_volume.name, mapping_group_id))
