@@ -111,6 +111,11 @@ class VmStruct(object):
                                 load_source(e3)
                         return
 
+class LvDiscardStrategy(object):
+    NEVER = "never"
+    ALWAYS = "always"
+    AUTO = "auto"
+
 class LvmlockdLockType(object):
     NULL = 0
     SHARE = 1
@@ -1580,9 +1585,12 @@ def _deactive_lv(path, raise_exception=True):
             logger.warn("find lv used by other process:\n%s" % str(o))
         raise
 
+def get_lv_discard_options(path, discard):
+    discard = discard == LvDiscardStrategy.ALWAYS or (discard == LvDiscardStrategy.AUTO and not is_slow_discard_lv(path))
+    return " --config 'devices {issue_discards=%s}' " % ("1" if discard else "0")
 
 @bash.in_bash
-def delete_lv(path, raise_exception=True, deactive=True):
+def delete_lv(path, raise_exception=True, deactive=True, discard=LvDiscardStrategy.NEVER):
     logger.debug("deleting lv %s" % path)
     if deactive:
         _deactive_lv(path, False)
@@ -1592,9 +1600,9 @@ def delete_lv(path, raise_exception=True, deactive=True):
     if not lv_exists(path):
         return
     if raise_exception:
-        o = bash.bash_errorout("%s -y %s" % (subcmd("lvremove"), path))
+        o = bash.bash_errorout("%s -y %s %s" % (subcmd("lvremove"), path, get_lv_discard_options(path, discard)))
     else:
-        o = bash.bash_o("%s -y %s" % (subcmd("lvremove"), path))
+        o = bash.bash_o("%s -y %s %s " % (subcmd("lvremove"), path, get_lv_discard_options(path, discard)))
     return o
 
 
