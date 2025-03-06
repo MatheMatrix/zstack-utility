@@ -102,12 +102,14 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             4 bundle of packages need to be installed: ofed, dpdk, ovs, ovn
         '''
         packages = ["dpdk", "ovs", "ovn"]
+        '''
         dpdkNics = ovn.getAllDpdkNic()
         for nic in dpdkNics:
             if nic.driver == "mlx5_core":
                 # packages = ["ofed", "dpdk", "ovs", "ovn"]
                 packages = ["dpdk", "ovs", "ovn"]
                 break
+        '''
 
         temp_dir = tempfile.mkdtemp()
         for pack in packages:
@@ -198,7 +200,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
 
         logger.debug("create br-phy")
 
-        r, _, e = bash.bash_roe("ovs-vsctl set Open_vSwitch . external-ids:ovn-remote={ovn_remote} "
+        r, _, e = bash.bash_roe("ovs-vsctl set Open_vSwitch . other_config:userspace-tso-enable=true "
+                                "external-ids:ovn-remote={ovn_remote} "
                                 "external-ids:ovn-encap-ip={ovn_encap_ip} "
                                 "external-ids:ovn-encap-type={ovn_encap_type} "
                                 "external-ids:ovn-bridge-mappings=flat:{br_ex} "
