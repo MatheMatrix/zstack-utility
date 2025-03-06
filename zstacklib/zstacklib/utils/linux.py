@@ -3061,7 +3061,7 @@ def recover_fake_dead(name):
         os.remove(fakedead_file)
 
 def get_agent_pid_by_name(name):
-    cmd = shell.ShellCmd('ps -aux | grep \'%s\' | grep -E \'start|restart\' | grep -v grep | awk \'{print $2}\'' % name)
+    cmd = shell.ShellCmd('ps -auxww | grep \'%s\' | grep -E \'start|restart\' | grep -v grep | awk \'{print $2}\'' % name)
     output = cmd(False)
     print output
     if cmd.return_code != 0:
