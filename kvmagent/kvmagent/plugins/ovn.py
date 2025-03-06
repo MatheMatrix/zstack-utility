@@ -198,7 +198,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
 
         logger.debug("create br-phy")
 
-        r, _, e = bash.bash_roe("ovs-vsctl set Open_vSwitch . external-ids:ovn-remote={ovn_remote} "
+        r, _, e = bash.bash_roe("ovs-vsctl set Open_vSwitch . other_config:userspace-tso-enable=true "
+                                "external-ids:ovn-remote={ovn_remote} "
                                 "external-ids:ovn-encap-ip={ovn_encap_ip} "
                                 "external-ids:ovn-encap-type={ovn_encap_type} "
                                 "external-ids:ovn-bridge-mappings=flat:{br_ex} "

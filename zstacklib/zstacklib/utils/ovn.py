@@ -209,12 +209,12 @@ class VsCtl(object):
                 cmd = '{cmd} del-port {brName} {nicName}; ' \
                       '{cmd} add-port {brName} {nicName} ' \
                       '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
-                      '-- set interface {nicName} external-ids:iface-id={nicUuid}'.format(
+                      '-- set interface {nicName} external-ids:iface-id={nicName}_{nicUuid}'.format(
                     cmd=CtlBin, brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid)
             else:
                 cmd = CtlBin + '--may-exist add-port {brName} {nicName} ' \
                                '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
-                               '-- set interface {nicName} external-ids:iface-id={nicUuid}'.format(
+                               '-- set interface {nicName} external-ids:iface-id={nicName}_{nicUuid}'.format(
                     brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid)
             bash.bash_r(cmd)
         except Exception as err:
