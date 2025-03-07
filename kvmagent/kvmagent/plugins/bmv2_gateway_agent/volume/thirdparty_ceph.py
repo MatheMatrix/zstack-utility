@@ -14,6 +14,9 @@ class ThirdPartyCephVolume(base.BaseVolume):
     def check_exist(self):
         """ Check whether the volume exist
         """
+        if self.volume_obj.type == 'Root' and hasattr(self.instance_obj, "provisionType") \
+                and self.instance_obj.provisionType == 'Remote':
+            return
         helper.RbdImageOperator._check_rbd_image(self.real_path)
 
     @property
@@ -52,8 +55,11 @@ class ThirdPartyCephVolume(base.BaseVolume):
                                  self.volume_obj.tpTimeout).rollback_establish_link(self.instance_obj, self.volume_obj, iqn)
 
     def detach(self):
-        RbdDeviceOperator(self.volume_obj.monIp, self.volume_obj.token, self.volume_obj.tpTimeout).disconnect(
-            self.instance_obj, self.volume_obj)
+        if hasattr(self.volume_obj, "iscsiPath") and self.volume_obj.iscsiPath:
+            self.detach_volume()
+        else:
+            RbdDeviceOperator(self.volume_obj.monIp, self.volume_obj.token, self.volume_obj.tpTimeout).disconnect(
+                self.instance_obj, self.volume_obj)
 
     def detach_volume(self):
         path = self.volume_obj.iscsiPath.replace('iscsi://', '')
@@ -63,6 +69,8 @@ class ThirdPartyCephVolume(base.BaseVolume):
             self.instance_obj, self.volume_obj, iqn)
 
     def prepare_instance_resource(self):
+        if hasattr(self.volume_obj, "iscsiPath") and self.volume_obj.iscsiPath:
+            return
         instance_gateway_ip = self.instance_obj.gateway_ip
         mon_ip = self.volume_obj.monIp
         dev_name = linux.find_route_interface_by_destination_ip(mon_ip)
@@ -83,6 +91,8 @@ class ThirdPartyCephVolume(base.BaseVolume):
 
 
     def destroy_instance_resource(self):
+        if hasattr(self.volume_obj, "iscsiPath") and self.volume_obj.iscsiPath:
+            return
         instance_gateway_ip = self.instance_obj.gateway_ip
         mon_ip = self.volume_obj.monIp
         snat_ip = linux.find_route_interface_ip_by_destination_ip(mon_ip)
