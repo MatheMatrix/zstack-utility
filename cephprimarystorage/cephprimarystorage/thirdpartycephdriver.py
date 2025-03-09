@@ -43,6 +43,9 @@ class ThirdpartyCephDriver(cephdriver.CephDriver):
         # todo support thirdpartyceph defer deleting
         RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).delete_empty_volume(path)
 
+    def find_install_path(self, cmd, path):
+        return RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).find_volume_install_path(path)
+
     def create_snapshot(self, cmd, rsp):
         spath = self._normalize_install_path(cmd.snapshotPath)
         path_name = spath.split("/")[1]

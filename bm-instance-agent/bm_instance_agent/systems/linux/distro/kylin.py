@@ -26,7 +26,7 @@ class KylinDriver(CentOSDriver):
                 self._write_bond_to_dracut_config(port)
                 try:
                     subprocess.check_call(['dracut', '-f'])
-                except subprocess.SubprocessError as e:
+                except Exception as e:
                     LOG.error("Failed to update dracut configuration: %s" % e)
 
 
