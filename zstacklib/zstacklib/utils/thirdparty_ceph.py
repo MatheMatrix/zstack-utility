@@ -940,6 +940,23 @@ class RbdDeviceOperator(object):
             block_volume_id = block_volume[0].id
             self.delete_block_volume(block_volume_id)
 
+    def find_volume_install_path(self, path):
+        global TIME_OUT
+        TIME_OUT = self.timeout
+
+        path = self._normalize_install_path(path)
+        array = path.split("/")
+        volume_name = array[1]
+
+        logger.debug("find install path for volume_uuid: %s" % volume_name)
+        block_volume = self.block_volumes_api.list_block_volumes(q=volume_name).block_volumes
+
+        if len(block_volume) > 0:
+            logger.info("the block_volume volume_name is :%s" % block_volume[0].volume_name)
+            install_path = "%s/%s" % (array[0], block_volume[0].volume_name)
+            return install_path
+        return None
+
     def create_snapshot(self, image_uuid, snap_name):
         global TIME_OUT
         TIME_OUT = self.timeout

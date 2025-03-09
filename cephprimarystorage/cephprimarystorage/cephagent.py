@@ -38,6 +38,7 @@ from cephdriver import CephDriver
 from thirdpartycephdriver import ThirdpartyCephDriver
 from zstacklib.utils.misc import IgnoreError
 from distutils.version import LooseVersion
+from zstacklib.utils import thirdparty_ceph
 
 log.configure_log('/var/log/zstack/ceph-primarystorage.log')
 logger = log.get_logger(__name__)
@@ -1198,6 +1199,8 @@ class CephAgent(plugin.TaskManager):
         path = self._normalize_install_path(cmd.installPath)
 
         rsp = AgentResponse()
+        if self.is_third_party_ceph(cmd):
+            path = self._find_third_party_path(cmd, path) or path
         if not self._ensure_existing_volume_has_no_snapshot(path):
             return jsonobject.dumps(rsp)
 
@@ -1213,6 +1216,10 @@ class CephAgent(plugin.TaskManager):
 
         self._set_capacity_to_response(rsp)
         return jsonobject.dumps(rsp)
+
+    def _find_third_party_path(self, cmd, path):
+        driver = self.get_driver(cmd)
+        return driver.find_install_path(cmd, path)
 
     def _ensure_existing_volume_has_no_snapshot(self, path):
         try:
