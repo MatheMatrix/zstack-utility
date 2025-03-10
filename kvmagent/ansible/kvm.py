@@ -50,6 +50,8 @@ unittest_flag = 'false'
 mn_ip = None
 isInstallHostShutdownHook = 'false'
 isEnableKsm = 'none'
+restart_libvirtd = 'false'
+enable_spice_tls = None
 
 
 # get parameter from shell
@@ -491,6 +493,17 @@ def copy_kvm_files():
     qemu_conf_dst = "/etc/libvirt/qemu.conf"
     qemu_conf_status = copy_to_remote(qemu_conf_src, qemu_conf_dst, None, host_post_info)
 
+    if enable_spice_tls == 'true':
+        # unnote following lines in qemu.conf
+        #spice_tls_x509_cert_dir = "/var/lib/zstack/kvm/package/spice-certs/"
+        #spice_tls = 1
+        replace_content(qemu_conf_dst, "regexp='^#spice_tls_x509_cert_dir.*' replace='spice_tls_x509_cert_dir = \"/var/lib/zstack/kvm/package/spice-certs/\"'", host_post_info)
+        replace_content(qemu_conf_dst, "regexp='^#spice_tls.*' replace='spice_tls = 1'", host_post_info)
+    elif enable_spice_tls == 'false':
+        # disable spice_tls
+        replace_content(qemu_conf_dst, "regexp='^spice_tls_x509_cert_dir = \"/var/lib/zstack/kvm/package/spice-certs/\"' replace='#spice_tls_x509_cert_dir ='", host_post_info)
+        replace_content(qemu_conf_dst, "regexp='^spice_tls = 1' replace='#spice_tls = 1'", host_post_info)
+
     # copy zstacklib pkg
     zslib_src = os.path.join("files/zstacklib", pkg_zstacklib)
     zslib_dst = os.path.join(kvm_root, pkg_zstacklib)
@@ -801,9 +814,12 @@ def start_kvmagent():
     if chroot_env != 'false':
         return
 
-    if any(status != "changed:False" for status in [libvirtd_status, libvirtd_conf_status, qemu_conf_status, copy_smart_nics_status]):
-        # name: restart libvirtd if status is stop or cfg changed
+    if init == 'true' or restart_libvirtd == 'true':
+        # name: restart libvirtd when init installation to make sure qemu.conf changes
+        # or restart libvirtd when restart_libvirtd is true (from control plane settings)
+        # take effects
         service_status("libvirtd", "state=restarted enabled=yes", host_post_info)
+
     # name: restart kvmagent, do not use ansible systemctl due to kvmagent can start by itself, so systemctl will not know
     # the kvm agent status when we want to restart it to use the latest kvm agent code
     if host_info.distro in RPM_BASED_OS and host_info.major_version >= 7:
