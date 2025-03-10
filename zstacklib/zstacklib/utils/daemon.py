@@ -166,16 +166,17 @@ class Daemon(object):
             message = "pidfile %s does not exist. Daemon not running?\n" % self.pidfile
             Daemon._log_and_dump_message(message)
 
-            pids = linux.get_agent_pid_by_name(self.py_process_name)
-
+            pids = linux.find_process_list_by_command("python2", self.py_process_name)
+            logger.debug("xxx pids %s" % pids)
             if not pids:
                 Daemon._log_and_dump_message("Daemon not running?\n", sys.stderr)
                 return # not an error in a restart
 
             # exclude self pid
-            for pid in pids.split('\n'):
+            for pid in pids:
                 if pid and int(pid) != os.getpid():
                     pid = int(pid)
+                    logger.debug("xxx Stop pid %s" % pid)
                     self.stop_agent_by_pid(pid, wait_stop)
 
     def restart(self):
@@ -193,9 +194,10 @@ class Daemon(object):
         """
 
     def get_start_agent_by_name(self):
-        pids = linux.get_agent_pid_by_name(self.py_process_name)
+        pids =  linux.find_process_list_by_command("python2", self.py_process_name)
+        logger.debug("xxx 111 pids %s" % pids)
 
-        for pid in pids.split('\n'):
+        for pid in pids:
             if pid and int(pid) != os.getpid():
                 pid = int(pid)
                 if linux.process_exists(pid):
@@ -210,8 +212,10 @@ class Daemon(object):
             if linux.process_exists(pid):
                 curr_time = time.time()
                 if (curr_time - start_time) > wait_stop:
+                    logger.debug("xxx Stop Daemon 111 %s" % pid)
                     os.kill(pid, SIGKILL)
                 else:
+                    logger.debug("xxx Stop Daemon 222 %s" % pid)
                     os.kill(pid, SIGTERM)
                 time.sleep(0.3)
             else:
