@@ -578,7 +578,7 @@ class SblkHealthChecker(AbstractStorageFencer):
             heartbeat_success, vm_uuid_list = AbstractStorageFencer.check_fencer_heartbeat(self, host_uuid, storage_check_timeout, interval, max_attempts, ps_uuid)
             if heartbeat_success:
                 heartbeat_suc_count.inc()
-            vm_uuids.append(vm_uuid_list)
+            vm_uuids.extend(vm_uuid_list)
 
         def run_sanlock_checker():
             if self.check_sanlock_heartbeat(ps_uuid, host_uuid, hostId):
