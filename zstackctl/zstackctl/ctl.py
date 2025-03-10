@@ -5630,7 +5630,9 @@ class MysqlRestrictConnection(Command):
             grant_access_cmd += "GRANT USAGE ON *.* TO 'zstack_ui'@'%s' WITH GRANT OPTION;" % (host)
 
             if include_root:
+                grant_access_cmd += "CREATE USER IF NOT EXISTS 'root'@'%s' IDENTIFIED BY '%s';" % (host, root_password_)
                 grant_access_cmd += " GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' WITH GRANT OPTION;" % (host)
+                grant_access_cmd += " FLUSH PRIVILEGES;"
         else:
             grant_access_cmd = " GRANT USAGE ON *.* TO 'zstack'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, db_password)
             grant_access_cmd = grant_access_cmd + (" GRANT USAGE ON *.* TO 'zstack_ui'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, ui_db_password))
@@ -5730,7 +5732,10 @@ class MysqlRestrictConnection(Command):
             grant_access_cmd = grant_access_cmd + " FLUSH PRIVILEGES;"
             grant_views_access_cmd = self.grant_views_definer_privilege(root_password_)
 
-            shell('''mysql -u root -p%s -e "%s %s"''' % (root_password_, grant_views_access_cmd, grant_access_cmd))
+            cmd = ShellCmd('''mysql -u root -p%s -e "%s %s"''' % (root_password_, grant_views_access_cmd, grant_access_cmd))
+            cmd(False)
+            if cmd.return_code != 0:
+                error("grant error grant_access_cmd=%s\nstderr=%s" % (grant_access_cmd, cmd.stderr))
 
             restrict_flags = "root" if args.include_root else "non-root"
             shell("echo %s > %s" % (restrict_flags, self.file))
