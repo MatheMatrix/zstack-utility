@@ -21,14 +21,20 @@ class KylinDriver(CentOSDriver):
 
     def attach_port(self, instance_obj, network_obj):
         for port in network_obj.ports:
-            self._attach_port(port)
+            LOG.info("start to attach port")
+            self.ensure_network_manager_running()
+            try:
+                self._attach_port(port)
+            except Exception as e:
+                LOG.error("Failed to attach port: %s" % e)
+                config.remove_network_config(port)
+                raise
             if port.type == port.PORT_TYPE_BOND:
                 self._write_bond_to_dracut_config(port)
                 try:
                     subprocess.check_call(['dracut', '-f'])
-                except subprocess.SubprocessError as e:
+                except Exception as e:
                     LOG.error("Failed to update dracut configuration: %s" % e)
-
 
 
     def detach_port(self, instance_obj, network_obj):
@@ -39,6 +45,21 @@ class KylinDriver(CentOSDriver):
                 raise exception.NewtorkInterfaceConfigParasInvalid(
                     exception_msg="port type {} is not support".format(port.type))
             self._detach_port(port)
+
+    def ensure_network_manager_running(self):
+        try:
+            output = subprocess.check_output(["systemctl", "is-active", "NetworkManager"])
+            if output.strip() == "active":
+                return
+        except subprocess.CalledProcessError:
+            pass
+
+        try:
+            subprocess.check_call(["systemctl", "enable", "NetworkManager"])
+            subprocess.check_call(["systemctl", "start", "NetworkManager"])
+            LOG.info("NetworkManager started successfully.")
+        except subprocess.CalledProcessError as e:
+            LOG.error("Failed to enable or start NetworkManager: %s" % e)
 
     def _write_bond_to_dracut_config(self, port):
         output_file = "/etc/dracut.conf.d/bonding.conf"

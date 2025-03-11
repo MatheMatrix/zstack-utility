@@ -73,6 +73,9 @@ class CephDriver(object):
 
         shell.call('rbd rm %s' % path)
 
+    def find_install_path(self, cmd, path):
+        return path
+
     def create_snapshot(self, cmd, rsp):
         spath = self._normalize_install_path(cmd.snapshotPath)
 

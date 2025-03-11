@@ -1,9 +1,11 @@
-from zstacklib.utils import shell
+from zstacklib.utils import shell, log
 from zstacklib.utils import linux
 
 from kvmagent.plugins.bmv2_gateway_agent.volume import base
 from kvmagent.plugins.bmv2_gateway_agent.volume import helper
 from zstacklib.utils.thirdparty_ceph import RbdDeviceOperator
+
+logger = log.get_logger(__name__)
 
 
 class ThirdPartyCephVolume(base.BaseVolume):
