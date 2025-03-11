@@ -5624,15 +5624,19 @@ class MysqlRestrictConnection(Command):
 
     def grant_restrict_privilege(self, db_password, ui_db_password, root_password_, host, include_root):
         if self.check_greatsql_existence():
-            grant_access_cmd = "CREATE USER IF NOT EXISTS 'zstack'@'%s' IDENTIFIED BY '%s';" % (host, db_password)
-            grant_access_cmd += "CREATE USER IF NOT EXISTS 'zstack_ui'@'%s' IDENTIFIED BY '%s';" % (host, ui_db_password)
-            grant_access_cmd += "GRANT USAGE ON *.* TO 'zstack'@'%s' WITH GRANT OPTION;" % (host)
-            grant_access_cmd += "GRANT USAGE ON *.* TO 'zstack_ui'@'%s' WITH GRANT OPTION;" % (host)
+            grant_access_cmd = " DROP USER IF EXISTS 'zstack'@'%s';" % host
+            grant_access_cmd += " DROP USER IF EXISTS 'zstack_ui'@'%s';" % host
+            grant_access_cmd += " CREATE USER 'zstack'@'%s' IDENTIFIED BY '%s';" % (host, db_password)
+            grant_access_cmd += " CREATE USER 'zstack_ui'@'%s' IDENTIFIED BY '%s';" % (host, ui_db_password)
+            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack_rest.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack_ui.* TO 'zstack_ui'@'%s' WITH GRANT OPTION;" % host
 
             if include_root:
-                grant_access_cmd += "CREATE USER IF NOT EXISTS 'root'@'%s' IDENTIFIED BY '%s';" % (host, root_password_)
-                grant_access_cmd += " GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' WITH GRANT OPTION;" % (host)
-                grant_access_cmd += " FLUSH PRIVILEGES;"
+                grant_access_cmd += " DROP USER IF EXISTS 'root'@'%s';" % host
+                grant_access_cmd += " CREATE USER 'root'@'%s' IDENTIFIED BY '%s';" % (host, root_password_)
+                grant_access_cmd += " GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' WITH GRANT OPTION;" % host
+                grant_access_cmd += " GRANT SYSTEM_USER ON *.* TO 'root'@'%s' WITH GRANT OPTION;" % host
         else:
             grant_access_cmd = " GRANT USAGE ON *.* TO 'zstack'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, db_password)
             grant_access_cmd = grant_access_cmd + (" GRANT USAGE ON *.* TO 'zstack_ui'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, ui_db_password))
@@ -5645,18 +5649,14 @@ class MysqlRestrictConnection(Command):
     def grant_restore_privilege(self, db_password, ui_db_password, root_password_):
         if self.check_greatsql_existence():
             grant_access_cmd = (" DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
-               " FLUSH PRIVILEGES;" \
-               " DROP USER IF EXISTS 'zstack'@'%%';CREATE USER IF NOT EXISTS 'zstack'@'%%' IDENTIFIED BY '%s';" \
-               " DROP USER IF EXISTS 'zstack_ui'@'%%';CREATE USER IF NOT EXISTS 'zstack_ui'@'%%' IDENTIFIED BY '%s';" \
-               " DROP USER IF EXISTS 'root'@'%%';CREATE USER IF NOT EXISTS 'root'@'%%' IDENTIFIED BY '%s';" \
-               " GRANT USAGE ON *.* TO zstack@'%%' WITH GRANT OPTION;" \
-               " GRANT SYSTEM_USER ON *.* TO zstack@'%%';" \
-               " GRANT ALL PRIVILEGES ON zstack.* TO zstack@'%%';" \
-               " GRANT ALL PRIVILEGES ON zstack_rest.* TO zstack@'%%';" \
-               " GRANT USAGE ON *.* TO zstack_ui@'%%' WITH GRANT OPTION;" \
-               " GRANT ALL PRIVILEGES ON zstack_ui.* TO zstack_ui@'%%';" \
-               " GRANT USAGE ON *.* TO root@'%%' WITH GRANT OPTION;" \
-               " GRANT ALL PRIVILEGES ON *.* TO root@'%%';" % (db_password, ui_db_password, root_password_))
+               " DROP USER IF EXISTS 'zstack'@'%%'; CREATE USER 'zstack'@'%%' IDENTIFIED BY '%s';" \
+               " DROP USER IF EXISTS 'zstack_ui'@'%%'; CREATE USER 'zstack_ui'@'%%' IDENTIFIED BY '%s';" \
+               " DROP USER IF EXISTS 'root'@'%%'; CREATE USER 'root'@'%%' IDENTIFIED BY '%s';" \
+               " GRANT ALL PRIVILEGES ON zstack.* TO 'zstack'@'%%' WITH GRANT OPTION;" \
+               " GRANT ALL PRIVILEGES ON zstack_rest.* TO 'zstack'@'%%' WITH GRANT OPTION;" \
+               " GRANT ALL PRIVILEGES ON zstack_ui.* TO 'zstack_ui'@'%%' WITH GRANT OPTION;" \
+               " GRANT ALL PRIVILEGES ON *.* TO 'root'@'%%' WITH GRANT OPTION;" \
+               " GRANT SYSTEM_USER ON *.* TO 'root'@'%%' WITH GRANT OPTION;" % (db_password, ui_db_password, root_password_))
         else:
             grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
                    " GRANT USAGE ON *.* TO 'zstack'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
@@ -5689,7 +5689,7 @@ class MysqlRestrictConnection(Command):
             user, host = result.split("@")
             if self.check_greatsql_existence():
                 grant_access_sql = "USE mysql; CREATE USER IF NOT EXISTS '%s'@'%s' IDENTIFIED BY '%s';" % (user, host, root_password)
-                grant_access_sql += " GRANT USAGE ON *.* TO '%s'@%s WITH GRANT OPTION;" % (user, host)
+                grant_access_sql += " GRANT ALL PRIVILEGES ON *.* TO '%s'@%s WITH GRANT OPTION;" % (user, host)
                 return grant_access_sql
             else:
                 return "USE mysql;  GRANT USAGE ON *.* TO '%s'@%s IDENTIFIED BY '%s' WITH GRANT OPTION;" % (user, host, root_password)
