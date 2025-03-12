@@ -7364,8 +7364,14 @@ class ChangeIpCmd(Command):
         if cmd.return_code != 0:
             error(cmd.stderr)
 
+    def check_greatsql_existence(self):
+        try:
+            result = subprocess.call(['which', "greatdb"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return result == 0
+        except Exception as e:
+            return False
 
-    def restoreMysqlConnection(self, root_password):
+    def restoreMysqlConnection(self, host, root_password):
         _, db_user, db_password = ctl.get_database_portal()
         _, ui_db_user, ui_db_password = ctl.get_ui_database_portal()
 
@@ -7377,7 +7383,17 @@ class ChangeIpCmd(Command):
         self.check_mysql_password(db_user, db_password)
         self.check_mysql_password(ui_db_user, ui_db_password)
 
-        grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
+        if self.check_greatsql_existence():
+            grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';"
+            grant_access_cmd += " DROP USER IF EXISTS 'zstack'@'%s';" % host
+            grant_access_cmd += " DROP USER IF EXISTS 'zstack_ui'@'%s';" % host
+            grant_access_cmd += " CREATE USER 'zstack'@'%s' IDENTIFIED BY '%s';" % (host, db_password)
+            grant_access_cmd += " CREATE USER 'zstack_ui'@'%s' IDENTIFIED BY '%s';" % (host, ui_db_password)
+            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack_rest.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack_ui.* TO 'zstack_ui'@'%s' WITH GRANT OPTION;" % host
+        else:
+            grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
                            " GRANT USAGE ON *.* TO 'zstack'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
                            " GRANT USAGE ON *.* TO 'zstack_ui'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
                            " GRANT USAGE ON *.* TO 'root'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (
@@ -7397,7 +7413,7 @@ class ChangeIpCmd(Command):
         if root_password is None:
             error("--root-password needs to be set")
 
-        self.restoreMysqlConnection(root_password)
+        self.restoreMysqlConnection(mysql_ip, root_password)
         if output == "non-root":
             shell("zstack-ctl mysql_restrict_connection --root-password %s --restrict" % root_password)
         elif output == "root":
