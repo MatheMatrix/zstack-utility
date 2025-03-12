@@ -396,6 +396,16 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             if host not in f.read():
                 f.write(host)
 
+        if len(instance_obj.extra_provision_nic_infos) > 0:
+            for info in instance_obj.extra_provision_nic_infos:
+                host = '{mac_addr},{ip_addr},set:instance,set:{uuid}\n'.format(
+                    mac_addr=info.provision_mac,
+                    ip_addr=info.provision_ip,
+                    uuid=instance_obj.uuid)
+                with open(self.DNSMASQ_HOSTS_PATH, 'a+r') as f:
+                    if host not in f.read():
+                        f.write(host)
+
         opts_template = self._load_template('dnsmasq.opts')
         opts = opts_template.render(
             uuid=instance_obj.uuid,

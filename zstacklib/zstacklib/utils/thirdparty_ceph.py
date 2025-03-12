@@ -198,39 +198,43 @@ class RbdDeviceOperator(object):
     def establish_link_for_volume(self, instance_obj, volume_obj, iqn):
         if volume_obj.type == 'Root' and instance_obj.provisionType != 'Remote':
             return "End establish link because the volume is root."
+        provision_ips = [instance_obj.provision_ip]
+        if len(instance_obj.extra_provision_nic_infos) > 0:
+            for info in instance_obj.extra_provision_nic_infos:
+                provision_ips.append(info.provision_ip)
 
         path = self._normalize_install_path(volume_obj.path)
         array = path.split("/")
         volume_name = array[1]
+        for provision_ip in provision_ips:
+            client_group_id = self.check_client_ip_exist_client_group(provision_ip)
+            if not client_group_id:
+                client_group_id = self.create_client_group(provision_ip)
+                logger.debug("Successfully create_client_group %s for establish link " % client_group_id)
 
-        client_group_id = self.check_client_ip_exist_client_group(instance_obj.provision_ip)
-        if not client_group_id:
-            client_group_id = self.create_client_group(instance_obj.provision_ip)
-            logger.debug("Successfully create_client_group %s for establish link " % client_group_id)
+            block_volume = self.get_volume_by_name(volume_name)
 
-        block_volume = self.get_volume_by_name(volume_name)
+            access_paths = self.get_all_access_path()
+            for access_path in access_paths:
+                if access_path.iqn == iqn:
+                    access_path_id = access_path.id
+                    break
 
-        access_paths = self.get_all_access_path()
-        for access_path in access_paths:
-            if access_path.iqn == iqn:
-                access_path_id = access_path.id
-                break
+            if not access_path_id:
+                return "the access path corresponding to iqn %s does not exist" % iqn
 
-        if not access_path_id:
-            return "the access path corresponding to iqn %s does not exist" % iqn
-
-        mapping_groups = self.mapping_groups_api.list_mapping_groups(access_path_id=access_path_id,
-                                                                     client_group_id=client_group_id).mapping_groups
-        if len(mapping_groups) == 0:
-            logger.debug("start create_mapping_group [access_path_id: %s, client_group_id: %s]for volume_name %s" % (
-                access_path_id, client_group_id, volume_name))
-            mapping_group_id = self.create_mapping_group(client_group_id, access_path_id, volume_name)
-            logger.debug("Successfully create_mapping_group %s for establish link " % mapping_group_id)
-        else:
-            logger.debug("start attach volume %s to mapping_group %s" % (
-                mapping_groups[0].id, block_volume.name))
-            self.attach_volume_to_mapping_group(mapping_groups[0].id, block_volume.id)
-            logger.debug("Successfully attach_volume_to_mapping_group %s for establish link " % client_group_id)
+            mapping_groups = self.mapping_groups_api.list_mapping_groups(access_path_id=access_path_id,
+                                                                         client_group_id=client_group_id).mapping_groups
+            if len(mapping_groups) == 0:
+                logger.debug("start create_mapping_group [access_path_id: %s, client_group_id: %s]for volume_name %s" % (
+                    access_path_id, client_group_id, volume_name))
+                mapping_group_id = self.create_mapping_group(client_group_id, access_path_id, volume_name)
+                logger.debug("Successfully create_mapping_group %s for establish link " % mapping_group_id)
+            else:
+                logger.debug("start attach volume %s to mapping_group %s" % (
+                    mapping_groups[0].id, block_volume.name))
+                self.attach_volume_to_mapping_group(mapping_groups[0].id, block_volume.id)
+                logger.debug("Successfully attach_volume_to_mapping_group %s for establish link " % client_group_id)
 
         return None
 
@@ -246,16 +250,21 @@ class RbdDeviceOperator(object):
 
         if not access_path_id:
             return
+        provision_ips = [instance_obj.provision_ip]
+        if len(instance_obj.extra_provision_nic_infos) > 0:
+            for info in instance_obj.extra_provision_nic_infos:
+                provision_ips.append(info.provision_ip)
 
-        client_group_id = self.check_client_ip_exist_client_group(instance_obj.provision_ip)
-        if not client_group_id:
-            return
+        for provision_ip in provision_ips:
+            client_group_id = self.check_client_ip_exist_client_group(provision_ip)
+            if not client_group_id:
+                continue
 
-        mapping_groups = self.mapping_groups_api.list_mapping_groups(access_path_id=access_path_id,
-                                                                     client_group_id=client_group_id).mapping_groups
-        if len(mapping_groups) != 0:
-            self.remove_volumes_from_mapping_group(mapping_groups[0].id, self.get_volume_by_name(volume_name).id)
-            logger.debug("Successfully attach_volume_to_mapping_group %s for establish link " % client_group_id)
+            mapping_groups = self.mapping_groups_api.list_mapping_groups(access_path_id=access_path_id,
+                                                                         client_group_id=client_group_id).mapping_groups
+            if len(mapping_groups) != 0:
+                self.remove_volumes_from_mapping_group(mapping_groups[0].id, self.get_volume_by_name(volume_name).id)
+                logger.debug("Successfully attach_volume_to_mapping_group %s for establish link " % client_group_id)
 
     def break_link(self, instance_obj, volume_obj, iqn):
         if volume_obj.type == 'Root' and instance_obj.provisionType != 'Remote':
@@ -273,17 +282,22 @@ class RbdDeviceOperator(object):
         if not access_path_id:
             return "the access path corresponding to iqn %s does not exist" % iqn
 
-        client_group_id = self.check_client_ip_exist_client_group(instance_obj.provision_ip)
-        if not client_group_id:
-            return None
+        provision_ips = [instance_obj.provision_ip]
+        if len(instance_obj.extra_provision_nic_infos) > 0:
+            for info in instance_obj.extra_provision_nic_infos:
+                provision_ips.append(info.provision_ip)
 
-        mapping_groups = self.mapping_groups_api.list_mapping_groups(access_path_id=access_path_id,
-                                                                     client_group_id=client_group_id).mapping_groups
-        if len(mapping_groups) != 0:
-            self.remove_volumes_from_mapping_group(mapping_groups[0].id, self.get_volume_by_name(volume_name).id)
-            logger.debug("Successfully attach_volume_to_mapping_group %s for establish link " % client_group_id)
+        for provision_ip in provision_ips:
+            client_group_id = self.check_client_ip_exist_client_group(provision_ip)
+            if not client_group_id:
+                continue
 
-        return None
+            mapping_groups = self.mapping_groups_api.list_mapping_groups(access_path_id=access_path_id,
+                                                                         client_group_id=client_group_id).mapping_groups
+            if len(mapping_groups) != 0:
+                self.remove_volumes_from_mapping_group(mapping_groups[0].id, self.get_volume_by_name(volume_name).id)
+                logger.debug("Successfully attach_volume_to_mapping_group %s for establish link " % client_group_id)
+
 
     def update_block_volume_snapshot(self, snapshot_name, update_name, update_description):
         block_snapshots = self.block_snapshots_api.list_block_snapshots(q=snapshot_name).block_snapshots
