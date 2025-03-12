@@ -4,6 +4,7 @@ import tempfile
 
 from zstacklib.utils import shell
 
+
 # from kvmagent.plugins.bmv2_gateway_agent import exception
 
 
@@ -45,6 +46,19 @@ class Base(object):
             {k: getattr(self, k) for k in self.k_v_mapping.values()})
 
 
+class ProvisionNicInfoObj(Base):
+    k_v_mapping = {
+        'provisionMac': 'provision_mac',
+        'provisionIp': 'provision_ip',
+    }
+
+    @classmethod
+    def from_json(cls, info):
+        obj = cls()
+        obj.construct(info)
+        return obj
+
+
 class BmInstanceObj(Base):
     """ Construct a bm instance obj from req body
 
@@ -73,7 +87,14 @@ class BmInstanceObj(Base):
     @classmethod
     def from_json(cls, req):
         obj = cls()
-        obj.construct(obj.body(req).get('bmInstance', {}))
+        instance = obj.body(req).get('bmInstance', {})
+        obj.construct(instance)
+
+        setattr(obj, 'extra_provision_nic_infos', [])
+        if 'extraProvisionNicInfos' in instance.keys():
+            for info in instance['extraProvisionNicInfos']:
+                info_obj = ProvisionNicInfoObj.from_json(info)
+                obj.extra_provision_nic_infos.append(info_obj)
 
         return obj
 
