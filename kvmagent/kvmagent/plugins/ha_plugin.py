@@ -549,6 +549,7 @@ class SblkHealthChecker(AbstractStorageFencer):
         max_check_count = (sanlock.calc_host_dead_seconds(dst_host_io_timeout) + 2 * our_host_io_timeout) / check_interval + 1
         logger.debug("dst host %s sanlock io timeout is %s, current host: %s" % (dst_host_uuid, dst_host_io_timeout, our_host_io_timeout))
         latest_timestamp = None
+        timestamp_change_count = 0
         while count < max_check_count:
             if latest_timestamp is not None:
                 time.sleep(check_interval)
@@ -561,12 +562,15 @@ class SblkHealthChecker(AbstractStorageFencer):
             elif latest_timestamp is None:
                 latest_timestamp = current_timestamp
             elif latest_timestamp != current_timestamp:
-                logger.debug("host %s still alive judge by sanlock" % dst_host_uuid)
-                return True
+                timestamp_change_count += 1
+                latest_timestamp = current_timestamp
+                if timestamp_change_count > 1:
+                    break
             else:
                 # timestamp not updated
                 count += 1
 
+        logger.debug("host %s still alive judge by sanlock" % dst_host_uuid)
         return True
 
 
