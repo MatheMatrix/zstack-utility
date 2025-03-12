@@ -5628,9 +5628,11 @@ class MysqlRestrictConnection(Command):
             grant_access_cmd += " DROP USER IF EXISTS 'zstack_ui'@'%s';" % host
             grant_access_cmd += " CREATE USER 'zstack'@'%s' IDENTIFIED BY '%s';" % (host, db_password)
             grant_access_cmd += " CREATE USER 'zstack_ui'@'%s' IDENTIFIED BY '%s';" % (host, ui_db_password)
-            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
-            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack_rest.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
-            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack_ui.* TO 'zstack_ui'@'%s' WITH GRANT OPTION;" % host
+            # ZSTAC-73639 When upgrading MN, flyway is called using the zstack@mn_ip and zstack_ui@_ip accounts to execute sql,
+            # which contains some statements that must be SYSTEM_USER
+            grant_access_cmd += " GRANT SYSTEM_USER ON zstack.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT SYSTEM_USER ON zstack_rest.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT SYSTEM_USER ON zstack_ui.* TO 'zstack_ui'@'%s' WITH GRANT OPTION;" % host
 
             if include_root:
                 grant_access_cmd += " DROP USER IF EXISTS 'root'@'%s';" % host
@@ -7389,9 +7391,11 @@ class ChangeIpCmd(Command):
             grant_access_cmd += " DROP USER IF EXISTS 'zstack_ui'@'%s';" % host
             grant_access_cmd += " CREATE USER 'zstack'@'%s' IDENTIFIED BY '%s';" % (host, db_password)
             grant_access_cmd += " CREATE USER 'zstack_ui'@'%s' IDENTIFIED BY '%s';" % (host, ui_db_password)
-            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
-            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack_rest.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
-            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack_ui.* TO 'zstack_ui'@'%s' WITH GRANT OPTION;" % host
+            # ZSTAC-73639 When upgrading MN, flyway is called using the zstack@mn_ip and zstack_ui@_ip accounts to execute sql,
+            # which contains some statements that must be SYSTEM_USER
+            grant_access_cmd += " GRANT SYSTEM_USER ON zstack.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT SYSTEM_USER ON zstack_rest.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT SYSTEM_USER ON zstack_ui.* TO 'zstack_ui'@'%s' WITH GRANT OPTION;" % host
         else:
             grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
                            " GRANT USAGE ON *.* TO 'zstack'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
