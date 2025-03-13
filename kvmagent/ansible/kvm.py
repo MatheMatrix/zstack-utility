@@ -50,7 +50,9 @@ unittest_flag = 'false'
 mn_ip = None
 isInstallHostShutdownHook = 'false'
 isEnableKsm = 'none'
-
+restart_libvirtd = 'false'
+enable_spice_tls = None
+enable_cgroup_device_acl = None
 
 # get parameter from shell
 parser = argparse.ArgumentParser(description='Deploy kvm to host')
@@ -242,7 +244,7 @@ def install_kvm_pkg():
             # common kvmagent deps of x86 and arm that need to update
             common_update_list = ("sanlock sysfsutils hwdata sg3_utils lvm2"
                                   " lvm2-libs lvm2-lockd systemd openssh"
-                                  " glusterfs")
+                                  " glusterfs libcbd")
             common_no_update_list = "librbd1"
             # common kvmagent deps of x86 and arm that no need to update
             common_dep_list = "%s %s" % (common_dep_list, common_update_list)
@@ -490,6 +492,27 @@ def copy_kvm_files():
     qemu_conf_src = os.path.join(file_root, "qemu.conf")
     qemu_conf_dst = "/etc/libvirt/qemu.conf"
     qemu_conf_status = copy_to_remote(qemu_conf_src, qemu_conf_dst, None, host_post_info)
+
+    if enable_spice_tls == 'true':
+        # unnote following lines in qemu.conf
+        #spice_tls_x509_cert_dir = "/var/lib/zstack/kvm/package/spice-certs/"
+        #spice_tls = 1
+        replace_content(qemu_conf_dst, "regexp='^#spice_tls_x509_cert_dir.*' replace='spice_tls_x509_cert_dir = \"/var/lib/zstack/kvm/package/spice-certs/\"'", host_post_info)
+        replace_content(qemu_conf_dst, "regexp='^#spice_tls.*' replace='spice_tls = 1'", host_post_info)
+    elif enable_spice_tls == 'false':
+        # disable spice_tls
+        replace_content(qemu_conf_dst, "regexp='^spice_tls_x509_cert_dir = \"/var/lib/zstack/kvm/package/spice-certs/\"' replace='#spice_tls_x509_cert_dir ='", host_post_info)
+        replace_content(qemu_conf_dst, "regexp='^spice_tls = 1' replace='#spice_tls = 1'", host_post_info)
+
+    if enable_cgroup_device_acl == 'true':
+        replace_content(qemu_conf_dst, "regexp='^#(cgroup_device_acl = \[|\s*\"/dev/.*\",|\s*\])' replace='\\1'", host_post_info)
+
+        (status, stdout) = run_remote_command("ls /dev/infiniband/", host_post_info, return_status=True, return_output=True)
+        if status is True:
+            infiniband_devices = ['/dev/infiniband/' + item for item in stdout.split('\n')]
+            formatted_devices = ',\\n    '.join('\\"%s\\"' % device for device in infiniband_devices)
+            add_infiniband_devices_args = "regexp='(cgroup_device_acl\s*=\s*\[[^\]]*?,\s*)' replace='\\1" + formatted_devices + ",\\n    '"
+            replace_content(qemu_conf_dst, add_infiniband_devices_args, host_post_info)
 
     # copy zstacklib pkg
     zslib_src = os.path.join("files/zstacklib", pkg_zstacklib)
@@ -801,9 +824,12 @@ def start_kvmagent():
     if chroot_env != 'false':
         return
 
-    if any(status != "changed:False" for status in [libvirtd_status, libvirtd_conf_status, qemu_conf_status, copy_smart_nics_status]):
-        # name: restart libvirtd if status is stop or cfg changed
+    if init == 'true' or restart_libvirtd == 'true':
+        # name: restart libvirtd when init installation to make sure qemu.conf changes
+        # or restart libvirtd when restart_libvirtd is true (from control plane settings)
+        # take effects
         service_status("libvirtd", "state=restarted enabled=yes", host_post_info)
+
     # name: restart kvmagent, do not use ansible systemctl due to kvmagent can start by itself, so systemctl will not know
     # the kvm agent status when we want to restart it to use the latest kvm agent code
     if host_info.distro in RPM_BASED_OS and host_info.major_version >= 7:
