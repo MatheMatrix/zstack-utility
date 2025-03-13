@@ -132,6 +132,7 @@ def get_nic_info():
                 pxe_iface_mac = param.split('=')[-1].replace('-', ':')
 
     net_devs = []
+    is_set_primary = False
     for net_dev in os.listdir('/sys/class/net'):
         abspath = os.path.join('/sys/class/net', net_dev)
 
@@ -150,17 +151,23 @@ def get_nic_info():
         if len(mac_address) > 32:
             continue
         rc, _, _ = shell_cmd("""arping -c 5 -I {} {}""".format(net_dev, PROVISION_NET), False)
-        if rc == 0 and not pxe_iface_mac:
+        is_provision_nic = False
+        is_primary_provision_nic = False
+        if pxe_iface_mac and mac_address == pxe_iface_mac:
             is_provision_nic = True
-            pxe_iface_mac = mac_address
+        elif rc == 0:
+            is_provision_nic = True
 
-        is_provision_nic = True if mac_address in pxe_iface_mac else False
+        if is_provision_nic and not is_set_primary:
+            is_primary_provision_nic = True
+            is_set_primary = True
 
         net_devs.append({
             'nicName': net_dev,
             'nicMac': mac_address,
             'nicSpeed': speed,
-            'isProvisionNic': is_provision_nic
+            'isProvisionNic': is_provision_nic,
+            'isPrimaryProvisionNic': is_primary_provision_nic
         })
     return net_devs
 
