@@ -105,6 +105,7 @@ MYSQL_PORT='3306'
 MYSQL_NEW_ROOT_PASSWORD='zstack.mysql.password'
 MYSQL_USER_PASSWORD='zstack.password'
 MYSQL_UI_USER_PASSWORD='zstack.ui.password'
+CHOSE_DATABASE='MariaDB'
 
 YUM_ONLINE_REPO='y'
 INSTALL_MONITOR=''
@@ -2746,15 +2747,15 @@ cs_install_mysql(){
     rsa_key_file=$1/id_rsa
     if [ -z $ZSTACK_YUM_REPOS ];then
         if [ -z $MYSQL_ROOT_PASSWORD ]; then
-            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --root-password="$MYSQL_NEW_ROOT_PASSWORD" --debug >>$ZSTACK_INSTALL_LOG 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --root-password="$MYSQL_NEW_ROOT_PASSWORD" --chose-database="$CHOSE_DATABASE" --debug >>$ZSTACK_INSTALL_LOG 2>&1
         else
-            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --debug >>$ZSTACK_INSTALL_LOG 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --chose-database="$CHOSE_DATABASE" --debug >>$ZSTACK_INSTALL_LOG 2>&1
         fi
     else
         if [ -z $MYSQL_ROOT_PASSWORD ]; then
-            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS --root-password="$MYSQL_NEW_ROOT_PASSWORD" >>$ZSTACK_INSTALL_LOG --debug 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS,zstack-local-greatdb --root-password="$MYSQL_NEW_ROOT_PASSWORD" >>$ZSTACK_INSTALL_LOG --chose-database="$CHOSE_DATABASE" --debug 2>&1
         else
-            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS --debug >>$ZSTACK_INSTALL_LOG 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS,zstack-local-greatdb --debug --chose-database="$CHOSE_DATABASE" >>$ZSTACK_INSTALL_LOG 2>&1
         fi
     fi
     if [ $? -ne 0 ];then
@@ -3491,6 +3492,17 @@ create_local_repo_files() {
 trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
 mkdir -p /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/Extra/{qemu-kvm-ev,ceph,galera,virtio-win}
 
+repo_file=/etc/yum.repos.d/zstack-local-greatdb.repo
+echo "create $repo_file" >> $ZSTACK_INSTALL_LOG
+cat > $repo_file << EOF
+[zstack-local-greatdb]
+name=zstack-local-greatdb
+baseurl=file:///opt/zstack-dvd/\$basearch/\$YUM0/Extra/zstack-experimental/
+gpgcheck=0
+enabled=1
+module_hotfixes=true
+EOF
+
 repo_file=/etc/yum.repos.d/zstack-local.repo
 echo "create $repo_file" >> $ZSTACK_INSTALL_LOG
 cat > $repo_file << EOF
@@ -3803,6 +3815,9 @@ Options:
   -z    Only install ${PRODUCT_NAME}, without start ${PRODUCT_NAME} management node.
 
   --skip-pjnum    Ignore customized version checking.
+
+  --chose-database CHOSE_DATABASE
+        Choose database to install. Default is MariaDB.
 ------------
 Example:
 
@@ -3851,6 +3866,14 @@ Following command installs ${PRODUCT_NAME} management node and monitor. It will 
 
 # ${PROGNAME} -m -R aliyun -q
 
+--
+
+Chose database
+
+# ${PROGNAME} --chose-database MariaDB
+
+# ${PROGNAME} --chose-database GreatDB
+
 ------------
 "
     exit 1
@@ -3874,7 +3897,7 @@ load_install_conf() {
 
 load_install_conf
 OPTIND=1
-TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDEFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum -- "$@"`
+TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDEFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum,chose-database: -- "$@"`
 if [ $? != 0 ]; then
     usage
 fi
@@ -3938,6 +3961,14 @@ do
         --sds) SDS_INSTALL='y';shift;;
         --no-zops) SKIP_ZOPS_INSTALL='y';shift;;
         --skip-pjnum) SKIP_PJNUM_CHECK='y';shift;;
+        --chose-database )
+            check_myarg $1 $2;
+            if [[ "$2" != "MariaDB" && "$2" != "GreatDB" ]]; then
+                echo "Error: Invalid value for --chose-database. Valid options are 'MariaDB' or 'GreatDB'."
+                exit 1
+            fi
+            CHOSE_DATABASE=$2;
+            shift 2;;
         --) shift;;
         * ) usage;;
     esac
