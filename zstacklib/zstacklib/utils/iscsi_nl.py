@@ -249,7 +249,11 @@ def stop_connection(sock, transport_handle, sid, cid, conn_handle):
     # uint32_t Cid
     # uint64_t ConnHandle
     # uint32_t Flag
-    padding = b'\x00' * 36  # 2 uint32_t padding
+    # uint8_t Padding (4 bytes)
+    # uint32_t Ret
+    # uint8_t Padding (12 bytes)
+    padding1 = b'\x00' * 4
+    padding2 = b'\x00' * 12
     payload = struct.pack('=IIQIIQI',
                           IscsiEvent.ISCSI_UEVENT_STOP_CONN,
                           0,  # IfError
@@ -257,7 +261,7 @@ def stop_connection(sock, transport_handle, sid, cid, conn_handle):
                           sid,
                           cid,
                           conn_handle,
-                          STOP_CONN_RECOVER) + padding + struct.pack('=I', IscsiErr.ISCSI_OK)
+                          STOP_CONN_RECOVER) + padding1 + struct.pack('=I', IscsiErr.ISCSI_OK) + padding2
     # Send the message
     response = send_netlink_message(sock, IscsiEvent.ISCSI_UEVENT_STOP_CONN, payload)
 
@@ -304,13 +308,15 @@ def destroy_connection(sock, transport_handle, sid, cid):
     # uint32_t Cid
     # uint8_t Padding (16 bytes)
     # uint32_t Ret (should be ISCSI_OK)
-    padding = b'\x00' * 28
+    # uint8_t Padding (12 bytes)
+    padding1 = b'\x00' * 16
+    padding2 = b'\x00' * 12
     payload = struct.pack('=IIQII',
                           IscsiEvent.ISCSI_UEVENT_DESTROY_CONN,
                           0,  # IfError
                           transport_handle,
                           sid,
-                          cid) + padding + struct.pack('=I', IscsiErr.ISCSI_OK)
+                          cid) + padding1 + struct.pack('=I', IscsiErr.ISCSI_OK) + padding2
     # Send the message
     response = send_netlink_message(sock, IscsiEvent.ISCSI_UEVENT_DESTROY_CONN, payload)
 
@@ -349,11 +355,21 @@ def destroy_session(sock, transport_handle, sid):
     Destroys an iSCSI session by sending ISCSI_UEVENT_DESTROY_SESSION.
     """
     # Construct payload
-    padding = b'\x00' * 32  # 5 uint32_t padding
-    payload = struct.pack('=IIQ',
+    # struct:
+    # uint32_t Type
+    # uint32_t IfError
+    # uint64_t TransportHandle
+    # uint32_t Sid
+    # uint8_t Padding (20 bytes)
+    # uint32_t Ret (should be ISCSI_OK)
+    # uint8_t Padding (12 bytes)
+    padding1 = b'\x00' * 20
+    padding2 = b'\x00' * 12
+    payload = struct.pack('=IIQI',
                           IscsiEvent.ISCSI_UEVENT_DESTROY_SESSION,
                           0,  # IfError
-                          transport_handle) + struct.pack('=I', sid) + padding + struct.pack('=I', IscsiErr.ISCSI_OK)
+                          transport_handle,
+                          sid) + padding1 + struct.pack('=I', IscsiErr.ISCSI_OK) + padding2
     # Send the message
     response = send_netlink_message(sock, IscsiEvent.ISCSI_UEVENT_DESTROY_SESSION, payload)
 
