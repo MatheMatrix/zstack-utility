@@ -1,5 +1,7 @@
+from func_timeout import func_set_timeout
+
 from zstacklib.utils.bash import *
-from zstacklib.utils.thirdparty_ceph import RbdDeviceOperator
+from zstacklib.utils.thirdparty_ceph import RbdDeviceOperator, TIME_OUT
 import cephdriver
 
 logger = log.get_logger(__name__)
@@ -12,10 +14,23 @@ class ThirdpartyCephDriver(cephdriver.CephDriver):
     def clone_volume(self, cmd, rsp):
         volume_name = RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).copy_volume(cmd.srcPath, cmd.dstPath)
         block_volume = RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).get_volume_by_name(volume_name)
+        self._retry_until(RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).is_block_volume_status_active,
+                          block_volume.id)
         rsp.installPath = volume_name
         rsp.volumeId = block_volume.id
         rsp.volumeStatus = block_volume.status
         return rsp
+
+    @func_set_timeout(timeout=TIME_OUT, allowOverride=True)
+    def _retry_until(self, func, *args, **kwargs):
+        """
+        NOTE:
+        check api status
+        """
+        while True:
+            time.sleep(1)
+            if func(*args, **kwargs):
+                break
 
     def create_volume(self, cmd, rsp, agent=None):
         path = self._normalize_install_path(cmd.installPath)
