@@ -1570,6 +1570,8 @@ class CephAgent(plugin.TaskManager):
     def delete_block_volume(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         path = self._normalize_install_path(cmd.installPath)
+        driver = self.get_third_party_driver(cmd)
+        driver.delete_rollback_backup_snapshot(cmd)
 
         rsp = AgentResponse()
         if not self._ensure_existing_volume_has_no_snapshot(path):
@@ -1582,7 +1584,6 @@ class CephAgent(plugin.TaskManager):
             logger.debug("the block volume[%s] still has watchers, unable to delete" % cmd.installPath)
             return jsonobject.dumps(rsp)
 
-        driver = self.get_third_party_driver(cmd)
         driver.do_deletion(cmd, path)
         return jsonobject.dumps(rsp)
 
