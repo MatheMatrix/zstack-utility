@@ -64,6 +64,20 @@ class ThirdpartyCephDriver(cephdriver.CephDriver):
         snap_name = spath.split("@")[1]
         RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).delete_snapshot(snap_name)
 
+    def delete_rollback_backup_snapshot(self, cmd):
+        path = self._normalize_install_path(cmd.installPath)
+        array = path.split("/")
+        volume_name = array[1]
+        block_volume = RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).block_volumes_api.list_block_volumes(
+            q=volume_name).block_volumes
+        if len(block_volume) > 0:
+            volume_id = block_volume[0].id
+            snapshots = RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).block_snapshots_api.list_block_snapshots(
+                block_volume_id=volume_id).block_snapshots
+            for snap in snapshots:
+                if '-backup-' in snap.name:
+                    RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).delete_block_snapshot(snap.id)
+
     def validate_token(self, cmd):
         RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).validate_token()
 
