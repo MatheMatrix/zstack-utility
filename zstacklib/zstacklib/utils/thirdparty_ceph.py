@@ -899,7 +899,6 @@ class RbdDeviceOperator(object):
 
                 if created_block_volume:
                     created_block_volume_id = created_block_volume.id
-                    created_volume_name = created_block_volume.volume_name
 
             except ApiException as e:
                 logger.debug("Start rollback copy volume")
@@ -910,7 +909,10 @@ class RbdDeviceOperator(object):
                 logger.error(e)
                 raise e
 
-            return created_volume_name
+            block_volume = self.get_volume_by_id(created_block_volume_id)
+            logger.debug("Successfully copy volume[name : %s] from snapshot, "
+                         "volume: %s" % (volume_name, block_volume))
+            return block_volume
 
         def _create_block_volume(block_snapshot_id, pool_id, volume_name):
             if len(self.block_volumes_api.list_block_volumes(name=volume_name).block_volumes) != 0:
