@@ -10,9 +10,8 @@ class ThirdpartyCephDriver(cephdriver.CephDriver):
         super(ThirdpartyCephDriver, self).__init__()
 
     def clone_volume(self, cmd, rsp):
-        volume_name = RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).copy_volume(cmd.srcPath, cmd.dstPath)
-        block_volume = RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).get_volume_by_name(volume_name)
-        rsp.installPath = volume_name
+        block_volume = RbdDeviceOperator(cmd.monIp, cmd.token, cmd.tpTimeout).copy_volume(cmd.srcPath, cmd.dstPath)
+        rsp.installPath = block_volume.volume_name
         rsp.volumeId = block_volume.id
         rsp.volumeStatus = block_volume.status
         return rsp
