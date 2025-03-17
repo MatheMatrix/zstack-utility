@@ -346,6 +346,8 @@ Parse command parameters error:
 
                 if (apiname == 'APIUpdateGuestVmScriptMsg' or apiname == 'APICreateGuestVmScriptMsg') and params[0] == 'scriptContent':
                     all_params[params[0]] = params[1].replace(r"\n", "\n")
+                elif apiname == 'APIGetObservabilityServerServiceDataMsg' and params[0] in ['labelFilters']:
+                    all_params[params[0]] = eval_string(params[0], params[1])
                 elif apiname == 'APICreateSNSUniversalSmsEndpointMsg' and params[0] in ['additionParam']:
                     all_params[params[0]] = eval_string(params[0], params[1])
                 elif apiname == 'APIAddSecurityGroupRuleMsg' and params[0] in ['rules', 'remoteSecurityGroupUuids']:
