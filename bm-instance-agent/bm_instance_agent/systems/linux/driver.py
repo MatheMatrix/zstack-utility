@@ -153,9 +153,9 @@ class LinuxDriver(base.SystemDriverBase):
             return
 
         discovery_cmd = 'iscsiadm -m discovery -t sendtargets -p {address}:{port}'.format(
-                                    address=instance_obj.gateway_ip,
-                                    port=3260,
-                                    target_name=target_name)
+            address=instance_obj.gateway_ip,
+            port=3260,
+            target_name=target_name)
         LOG.info(discovery_cmd)
         try:
             stdout, stderr = processutils.execute(discovery_cmd, shell=True)
