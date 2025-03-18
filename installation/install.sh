@@ -225,6 +225,7 @@ declare -a upgrade_params_array=(
     '4.7.21,-DupgradeSecurityGroup=true'
     '4.7.21,-DupgradeSshKeyPairFromSystemTag=true'
     '5.1.8,-DupgradeFlatDhcpServerIp=true'
+    '5.3.28,-DupgradeLogLabelToLogServer=true'
 )
 #other than the upon params_array, this one could be persisted in zstack.properties
 declare -a upgrade_persist_params_array=(
@@ -2524,6 +2525,15 @@ install_marketplace_server(){
     show_spinner is_install_marketplace_server
 }
 
+install_fluentbit_server(){
+    fluentbit_installer_tools=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "fluent-bit.tar.gz" | head -n 1`
+    [[ x"$fluentbit_installer_tools" = x ]] && return
+    echo_title "Install or upgrade fluentbit server"
+    echo ""
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    show_spinner is_install_fluentbit_server
+}
+
 setup_install_param(){
     echo_title "Setup Install Parameters"
     echo ""
@@ -3250,6 +3260,45 @@ is_upgrade_zops(){
 is_install_marketplace_server(){
     echo_subtitle "Install marketplace server"
     bash /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/marketplace-server.bin >>$ZSTACK_INSTALL_LOG 2>&1
+    [ $? -eq 0 ] && pass
+}
+
+is_install_fluentbit_server(){
+    echo_subtitle "Install fluentbit server"
+    if [ "$BASEARCH" = "x86_64" ]; then
+        if [ "$ZSTACK_RELEASE" = "h84r" ]; then
+            echo "Installing libpq for fluent-bit..." >> $ZSTACK_INSTALL_LOG
+            yum install libpq --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y >> $ZSTACK_INSTALL_LOG 2>&1
+            if [ $? -ne 0 ]; then
+                fail "install libpq for fluent-bit failed."
+            fi
+        else
+            echo "Installing postgresql-libs for fluent-bit..." >> $ZSTACK_INSTALL_LOG
+            yum install postgresql-libs --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y >> $ZSTACK_INSTALL_LOG 2>&1
+            if [ $? -ne 0 ]; then
+                fail "install postgresql-libs for fluent-bit failed."
+            fi
+        fi
+    fi
+
+    if [ "$BASEARCH" = "aarch64" ]; then
+        echo "Installing compat-openssl10 for fluent-bit..." >> $ZSTACK_INSTALL_LOG
+        yum install compat-openssl10 --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y >> $ZSTACK_INSTALL_LOG 2>&1
+        if [ $? -ne 0 ]; then
+            fail "install compat-openssl10 for fluent-bit failed."
+        fi
+    fi
+
+    if [ ! -d "/var/lib/zstack" ]; then
+        mkdir -p /var/lib/zstack
+    fi
+
+    cp /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/fluent-bit.tar.gz /var/lib/zstack/
+    tar -zxvf /var/lib/zstack/fluent-bit.tar.gz -C /var/lib/zstack/ > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        fail "Extracting the fluent-bit.tar.gz package failed."
+    fi
+    rm -f /var/lib/zstack/fluent-bit.tar.gz
     [ $? -eq 0 ] && pass
 }
 
@@ -4340,6 +4389,9 @@ if [ x"$UPGRADE" = x'y' ]; then
     #Install marketplace server
     install_marketplace_server
 
+    #Install marketplace server
+    install_fluentbit_server
+
     #only upgrade zstack
     upgrade_zstack
 
@@ -4515,6 +4567,9 @@ install_license
 
 #Install marketplace server
 install_marketplace_server
+
+#Install fluentbit server
+install_fluentbit_server
 
 #Start ${PRODUCT_NAME} 
 if [ -z $NOT_START_ZSTACK ]; then
