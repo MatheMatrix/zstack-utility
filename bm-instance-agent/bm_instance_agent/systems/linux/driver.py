@@ -236,8 +236,30 @@ class LinuxDriver(base.SystemDriverBase):
                 scsi11 Channel 00 Id 0 Lun: 1
                         Attached scsi disk sdb          State: running
         """
+        if not volume_access_path_gateway_ips:
+            self.remove_volume_without_gateway_ip(instance_obj, volume_obj)
         for volume_access_path_gateway_ip in volume_access_path_gateway_ips:
             self.detach_volume_for_target_ip(instance_obj, volume_obj, volume_access_path_gateway_ip)
+
+    def remove_volume_without_gateway_ip(self, instance_obj, volume_obj):
+        # Get the session id
+        sid = None
+        cmd = ['iscsiadm', '-m', 'session']
+        stdout, _ = processutils.execute(*cmd)
+        iqn = None
+        if instance_obj.custom_iqn:
+            iqn = instance_obj.custom_iqn
+        else:
+            iqn = instance_obj.uuid
+
+        for line in stdout.split('\n'):
+            if iqn in line:
+                sid = line.split()[1][1]
+        if not sid:
+            raise exception.IscsiSessionIdNotFound(
+                volume_uuid=volume_obj.uuid, output=stdout)
+
+        self.detach_iscsi_lun(sid, volume_obj)
 
     def detach_volume_for_target_ip(self, instance_obj, volume_obj, target_ip):
         # Get the session id
@@ -265,6 +287,11 @@ class LinuxDriver(base.SystemDriverBase):
             raise exception.IscsiSessionIdNotFound(
                 volume_uuid=volume_obj.uuid, output=stdout)
 
+        self.detach_iscsi_lun(sid, volume_obj)
+
+    def detach_iscsi_lun(self, sid, volume_obj):
+        """ Detach a iscsi lun
+        """
         # Get lun info
         host_num = ''
         device_scsi = ''
