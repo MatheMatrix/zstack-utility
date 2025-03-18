@@ -3950,16 +3950,19 @@ class Vm(object):
                         result.put("remain", remain)
                         result.put("total", total)
 
-                        if remain == 0:
-                            return result
-
-                        self.progress_status.append(remain)
-                        average = sum(self.progress_status) / len(self.progress_status)
-                        jobBlocked = len(self.progress_status) >= 60 and self.progress_status[0] == average
-                        jobRunning = self.progress_status[0] != 0
+                        self.progress_status.append((remain, total))
+                        remain_list = [key for key, value in self.progress_status]
+                        total_list = [value for key, value in self.progress_status]
+                        remainNoChange = all(remain_list[0] == i for i in remain_list)
+                        totalNoChange = all(total_list[0] == i for i in total_list)
+                        jobBlocked = len(remain_list) >= 60 and remainNoChange and totalNoChange
+                        jobRunning = remain_list[0] != 0 and total_list[0] != 0
                         if jobBlocked and jobRunning:
                             raise kvmagent.BlockJobError(
                                 "the block job status is abnormal, details is ioHung. Please check backup storage and backup network.")
+
+                        if remain == 0:
+                            return result
 
                         if self.progress_reporter.report.detail and self.progress_reporter.report.detail.hasattr('remain'):
                             speed = self.progress_reporter.report.detail.__getitem__('remain') - remain
