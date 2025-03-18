@@ -1498,13 +1498,12 @@ class LibvirtGuestCapabilities(object):
         return self.guest.getElementsByTagName('os_type')[0].firstChild.nodeValue
 
 class LibvirtAutoReconnect(object):
+    evtMgr = LibvirtEventManagerSingleton()
     libvirt_singleton = LibvirtSingleton()
     conn = libvirt_singleton.conn
 
     if not conn:
         raise Exception('unable to get libvirt connection')
-
-    evtMgr = LibvirtEventManagerSingleton()
 
     libvirt_event_callbacks = libvirt_singleton.libvirt_event_callbacks
     capabilities = LibvirtCapabilities(conn.getCapabilities())
@@ -11375,6 +11374,42 @@ host side snapshot files chian:
             content = traceback.format_exc()
             logger.warn("traceback: %s" % content)
 
+    def _vm_resume_event(self, conn, dom, event, detail, opaque):
+        try:
+            event = LibvirtEventManager.event_to_string(event)
+            if event not in (LibvirtEventManager.EVENT_RESUMED,):
+                return
+            vm_uuid = dom.name()
+            # get all vnic name of the vm
+            vnic_names = []
+            domain_xml = dom.XMLDesc(0)
+            domain_xmlobject = xmlobject.loads(domain_xml)
+            for interface in domain_xmlobject.devices.get_child_node_as_list('interface'):
+                if interface.type_ == 'vhostuser':
+                    vnic_names.append(interface.target.dev_)
+
+            @thread.AsyncThread
+            def change_chassis_to_dst_host():
+                # get system-id by ovs-vsctl cmd
+                system_id = bash.bash_o('ovs-vsctl get Open_vSwitch . external_ids:system-id').strip().strip('"')
+                # get ovn-remote by ovs-vsctl cmd
+                ovn_remote = bash.bash_o('ovs-vsctl get Open_vSwitch . external_ids:ovn-remote').strip().strip('"')
+                ovn_remote = ovn_remote.replace('6642', '6641')
+                # get all iface-id by ovs-vsctl cmd using vnic name
+                iface_ids = []
+                for vnic_name in vnic_names:
+                    iface_id = bash.bash_o('ovs-vsctl get Interface %s external_ids:iface-id' % vnic_name).strip().strip('"')
+                    iface_ids.append(iface_id)
+
+                # call ovn-nbctl lsp-set-options {iface_id} requested-chassis={system_id}
+                for iface_id in iface_ids:
+                    bash.bash_o('ovn-nbctl --db=tcp:%s lsp-set-options %s requested-chassis=%s' % (ovn_remote, iface_id, system_id))
+
+            change_chassis_to_dst_host()
+        except:
+            content = traceback.format_exc()
+            logger.warn("traceback: %s" % content)
+
     def _vm_crashed_event(self, conn, dom, event, detail, opaque):
         try:
             event = LibvirtEventManager.event_to_string(event)
@@ -11492,6 +11527,7 @@ host side snapshot files chian:
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_REBOOT, self._vm_reboot_event)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_shutdown_event)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_start_event)
+        LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_resume_event)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_crashed_event)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._release_sharedblocks)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._deactivate_drbd)
