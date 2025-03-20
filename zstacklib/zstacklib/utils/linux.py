@@ -64,6 +64,7 @@ KVM_CHECK_EXTENSION = 44547
 DEFAULT_VM_IPA_SIZE = 40
 LIVE_LIBVIRT_XML_DIR = "/var/run/libvirt/qemu"
 MAX_NBD_READ_SIZE = 32768000
+BLKSSZGET = 0x1268  # get dev sector size
 
 def ignoreerror(func):
     @functools.wraps(func)
@@ -3354,3 +3355,11 @@ def is_rpm_installed(rpm_name):
 def get_rpm_version(rpm_name):
     return shell.call(
         'rpm -q --queryformat "%%{VERSION}-%%{RELEASE}" %s' % rpm_name)
+
+
+def get_dev_sector_size(dev_path):
+    with open(dev_path, 'rb') as f:
+        fd = f.fileno()
+        buf = fcntl.ioctl(fd, BLKSSZGET, "    ")
+        sector_size = struct.unpack('I', buf)[0]
+        return sector_size

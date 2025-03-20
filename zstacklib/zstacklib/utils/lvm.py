@@ -49,7 +49,6 @@ SUPER_BLOCK_BACKUP = "superblock.bak"
 COMMON_TAG = "zs::sharedblock"
 VOLUME_TAG = COMMON_TAG + "::volume"
 IMAGE_TAG = COMMON_TAG + "::image"
-ENABLE_DUP_GLOBAL_CHECK = False
 LVMLOCKD_VERSION = None
 thinProvisioningInitializeSize = "thinProvisioningInitializeSize"
 PV_DISCARD_MIN_SIZE_IN_BYTES = 1*1024**3
@@ -950,16 +949,17 @@ def start_vg_lock(vgUuid, hostId, retry_times_for_checking_vg_lockspace):
             continue_lockspace_track.update({vgUuid: True})
             return True
 
-    def check_lockspace():
-        r = sanlock.dd_check_lockspace("/dev/mapper/%s-lvmlock" % vgUuid)
+    def check_lockspace(err):
+        r = sanlock.test_direct_read("/dev/mapper/%s-lvmlock" % vgUuid)
         if r != 0:
             bash.bash_roe("dmsetup remove %s-lvmlock" % vgUuid)
             return
         elif continue_lockspace_track.get(vgUuid) is False:
             logger.debug("direct init lockspace[%s] has already been executed but the lockspace has not been restored, skip it" % vgUuid)
             return
-        sanlock.check_delta_lease(vgUuid, hostId)
-        continue_lockspace_track.update({vgUuid: False})
+        elif "sanlock lease needs repair" in err:
+            sanlock.handle_lease_corrupted_for_adding_lockspace(vgUuid, hostId)
+            continue_lockspace_track.update({vgUuid: False})
 
     @linux.retry(times=5, sleep_time=random.uniform(0.1, 10))
     def start_lock(vgUuid):
@@ -973,9 +973,8 @@ def start_vg_lock(vgUuid, hostId, retry_times_for_checking_vg_lockspace):
             if r != 0:
                 raise Exception("vgchange --lock-start failed: return code: %s, stdout: %s, stderr: %s" % (r, o, e))
             vg_lock_exists(vgUuid)
-        except Exception:
-            check_lockspace()
-            sanlock.init_gllk_if_need(vgUuid)
+        except Exception as e:
+            check_lockspace(str(e))
             raise
     try:
         vg_lock_exists(vgUuid)
@@ -993,12 +992,12 @@ def check_missing_pv(vgUuid):
 
     @linux.retry(times=3, sleep_time=random.uniform(0.1, 1))
     def restore_missing_pv(pv_name):
-        r, o, e = bash.bash_roe("vgextend --restoremissing %s %s" % (vgUuid, pv_name))
+        r, o, e = run_cmd_roe("vgextend --restoremissing %s %s" % (vgUuid, pv_name))
         if r != 0:
             raise Exception("unable to restore missing pv %s for vg %s, stdout:%s, stderr:%s" % (pv_name, vgUuid, str(o), str(e)))
         logger.debug("restore missing pv[name:%s, uuid:%s] for vg %s successfully" % (pv_name, pv_uuid, vgUuid))
 
-    check_gl_lock()
+    fix_global_lock()
     for pvs_out in pvs_outs:
         pv_uuid = pvs_out.strip().split(" ")[0]
         pv_name = pvs_out.strip().split(" ")[1]
@@ -1179,7 +1178,7 @@ def get_disk_holders(disk_names):
 @bash.in_bash
 @linux.retry(times=5, sleep_time=random.uniform(0.1, 3))
 def add_pv(vg_uuid, disk_path, metadata_size):
-    bash.bash_errorout("vgextend --metadatasize %s %s %s" % (metadata_size, vg_uuid, disk_path))
+    run_cmd_errorout("vgextend --metadatasize %s %s %s" % (metadata_size, vg_uuid, disk_path))
     if bash.bash_r("%s --readonly %s | grep %s" % (subcmd("pvs"), disk_path, vg_uuid)):
         raise Exception("disk %s not added to vg %s after vgextend" % (disk_path, vg_uuid))
 
@@ -1277,7 +1276,7 @@ def delete_image(path, tag, deactive=True):
         if deactive:
             _active_lv(f, shared=False)
         backing = linux.qcow2_get_backing_file(f)
-        shell.check_run("%s -y -Stags={%s} %s" % (subcmd("lvremove"), tag, f))
+        run_cmd_errorout("%s -y -Stags={%s} %s" % (subcmd("lvremove"), tag, f))
         return backing
 
     fpath = path
@@ -1318,7 +1317,7 @@ def create_lv_from_absolute_path(path, size, tag="zs::sharedblock::volume", lock
 
     exact_size |= tag == IMAGE_TAG
     size = round_to(int(size), 512) if exact_size else round_to(calcLvReservedSize(size), 512)
-    r, o, e = bash.bash_roe("%s -ay --wipesignatures y -y --addtag %s --size %sb --name %s %s %s" %
+    r, o, e = run_cmd_roe("%s -ay --wipesignatures y -y --addtag %s --size %sb --name %s %s %s" %
                          (subcmd("lvcreate"), tag, size, lvName, vgName, pe_range))
 
     if not lv_exists(path):
@@ -1365,7 +1364,7 @@ def create_thin_lv_from_absolute_path(path, size, tag, lock=False):
     thin_pool = get_thin_pool_from_vg(vgName)
     assert thin_pool != ""
 
-    r, o, e = bash.bash_roe("%s --wipesignatures y -y --addtag %s -n %s -V %sb --thinpool %s %s" %
+    r, o, e = run_cmd_roe("%s --wipesignatures y -y --addtag %s -n %s -V %sb --thinpool %s %s" %
                   (subcmd("lvcreate"), tag, lvName, round_to(calcLvReservedSize(size), 512), thin_pool, vgName))
     if not lv_exists(path):
         raise Exception("can not find lv %s after create, lvcreate return : %s, %s, %s" %
@@ -1437,7 +1436,7 @@ def is_thin_lv(path):
 @bash.in_bash
 def resize_lv(path, size, force=False):
     _force = "" if force is False else " --force "
-    r, o, e = bash.bash_roe("%s %s --size %sb %s" % (subcmd("lvresize"), _force, calcLvReservedSize(size), path))
+    r, o, e = run_cmd_roe("%s %s --size %sb %s" % (subcmd("lvresize"), _force, calcLvReservedSize(size), path))
     if r == 0:
         logger.debug("successfully resize lv %s size to %s" % (path, size))
         return
@@ -1456,7 +1455,7 @@ def extend_lv(path, extend_size, skip_if_sufficient=False):
     if skip_if_sufficient and int(get_lv_size(path)) >= final_size:
         return
 
-    r, o, e = bash.bash_roe("%s --size %sb %s" % (subcmd("lvextend"), final_size, path))
+    r, o, e = run_cmd_roe("%s --size %sb %s" % (subcmd("lvextend"), final_size, path))
     if r == 0:
         logger.debug("successfully extend lv %s size to %s" % (path, extend_size))
         return
@@ -1569,7 +1568,7 @@ def deactive_lv(path, raise_exception=True):
 def _active_lv(path, shared=False):
     @linux.retry(times=10, sleep_time=random.uniform(0.1, 3))
     def active():
-        bash.bash_errorout("%s %s %s" % (subcmd("lvchange"), flag, path))
+        run_cmd_errorout("%s %s %s" % (subcmd("lvchange"), flag, path))
         if lv_is_active(path) is False:
             raise Exception("active lv %s with %s failed" % (path, flag))
 
@@ -1582,7 +1581,7 @@ def _active_lv(path, shared=False):
 
     # if lv does not have a lock, we will try to reactivate it
     if os.path.exists(path) and lv_lock_not_exists():
-        bash.bash_r("%s -an %s" % (subcmd("lvchange"), path))
+        run_cmd_r("%s -an %s" % (subcmd("lvchange"), path))
 
     active()
 
@@ -1599,9 +1598,9 @@ def _deactive_lv(path, raise_exception=True):
         r = 0
         e = None
         if raise_exception:
-            o = bash.bash_errorout("%s -an %s" % (subcmd("lvchange"), path))
+            o = run_cmd_errorout("%s -an %s" % (subcmd("lvchange"), path))
         else:
-            r, o, e = bash.bash_roe("%s -an %s" % (subcmd("lvchange"), path))
+            r, o, e = run_cmd_roe("%s -an %s" % (subcmd("lvchange"), path))
         if lv_is_active(path):
             raise RetryException("lv %s is still active after lvchange -an, returns code: %s, stdout: %s, stderr: %s"
                                  % (path, r, o, e))
@@ -1631,9 +1630,9 @@ def delete_lv(path, raise_exception=True, deactive=True, discard=LvDiscardStrate
     if not lv_exists(path):
         return
     if raise_exception:
-        o = bash.bash_errorout("%s -y %s %s" % (subcmd("lvremove"), path, get_lv_discard_options(path, discard)))
+        o = run_cmd_errorout("%s -y %s %s" % (subcmd("lvremove"), path, get_lv_discard_options(path, discard)))
     else:
-        o = bash.bash_o("%s -y %s %s " % (subcmd("lvremove"), path, get_lv_discard_options(path, discard)))
+        o = run_cmd_o("%s -y %s %s " % (subcmd("lvremove"), path, get_lv_discard_options(path, discard)))
 
     return o
 
@@ -1645,9 +1644,9 @@ def delete_lv_meta(path, raise_exception=True):
     if not lv_exists(meta_path):
         return
     if raise_exception:
-        o = bash.bash_errorout("%s -y %s" % (subcmd("lvremove"), meta_path))
+        o = run_cmd_errorout("%s -y %s" % (subcmd("lvremove"), meta_path))
     else:
-        o = bash.bash_o("%s -y %s" % (subcmd("lvremove"), meta_path))
+        o = run_cmd_o("%s -y %s" % (subcmd("lvremove"), meta_path))
     return o
 
 
@@ -1719,7 +1718,7 @@ def get_lv_attr(lv_path, *attr):
 @bash.in_bash
 def lv_rename(old_abs_path, new_abs_path, overwrite=False):
     if not lv_exists(new_abs_path):
-        return bash.bash_roe("%s %s %s" % (subcmd("lvrename"), old_abs_path, new_abs_path))
+        return run_cmd_roe("%s %s %s" % (subcmd("lvrename"), old_abs_path, new_abs_path))
 
     if overwrite is False:
         raise Exception("lv with name %s is already exists, can not rename lv %s to it" %
@@ -1733,7 +1732,7 @@ def lv_rename(old_abs_path, new_abs_path, overwrite=False):
 
     r, o, e = lv_rename(old_abs_path, new_abs_path)
     if r != 0:
-        bash.bash_errorout("%s %s %s" % (subcmd("lvrename"), tmp_path, new_abs_path))
+        run_cmd_errorout("%s %s %s" % (subcmd("lvrename"), tmp_path, new_abs_path))
         raise Exception("rename lv %s to tmp name %s failed: stdout: %s, stderr: %s" %
                         (old_abs_path, new_abs_path, o, e))
 
@@ -1748,25 +1747,6 @@ def list_local_active_lvs(vgUuid):
         if i.strip() != "":
             result.append(i.strip())
     return result
-
-
-@bash.in_bash
-def check_gl_lock():
-    r, o = bash.bash_ro("lvmlockctl -i | grep 'LK GL' -B 5")
-    if r == 0:
-        return
-
-    # NOTE(weiw): if lockspace exists, choose one as gl lock
-    r, o = bash.bash_ro("lvmlockctl -i | grep 'lock_type=sanlock' | awk '{print $2}'")
-    if r == 0:
-        o = o.strip()
-        if len(o.splitlines()) != 0:
-            for i in o.splitlines():
-                i = i.strip()
-                if i == "":
-                    continue
-                bash.bash_roe("lvmlockctl --gl-enable %s" % i)
-                return
 
 
 def do_active_lv(absolutePath, lockType, recursive):
@@ -2117,15 +2097,19 @@ def check_stuck_vglk_and_gllk():
 
 @bash.in_bash
 def fix_global_lock():
-    if not ENABLE_DUP_GLOBAL_CHECK:
+    # disable current gllk if exists and enable gllk on an available VG
+    lockspaces = LvmlockdStatus().ls_status
+    if not lockspaces:
         return
-    vg_names = bash.bash_o("lvmlockctl -i | awk '/lock_type=sanlock/{print $2}'").strip().splitlines()  # type: list
-    vg_names.sort()
-    if len(vg_names) < 2:
-        return
-    for vg_name in vg_names[1:]:
-        bash.bash_roe("lvmlockctl --gl-disable %s" % vg_name)
-    bash.bash_roe("lvmlockctl --gl-enable %s" % vg_names[0])
+
+    for vg_name, lockspace in lockspaces.items():
+        if lockspace.gl_enabled:
+            bash.bash_r("lvmlockctl --gl-disable %s" % vg_name)
+
+    avail_vgs = {vg_name for vg_name, ls in lockspaces.items() if not ls.killed and not ls.dropped}
+    if avail_vgs:
+        avail_vgs = sorted(list(avail_vgs))
+        bash.bash_r("lvmlockctl --gl-enable %s" % avail_vgs[0])
 
 def fix_vglk(vg_uuid):
     vglk = sanlock.get_vglk(vg_uuid)
@@ -2710,6 +2694,7 @@ class LvmlockdStatus(object):
             self.killed = bool(int(ls.get("kill_vg")))
             self.dropped = bool(int(ls.get("drop_vg")))
             self.vg_name = ls.get("vg_name")
+            self.gl_enabled = bool(int(ls.get("sanlock_gl_enabled")))
 
     def _init(self):
         @linux.retry(3, 1)
@@ -2746,10 +2731,55 @@ class LvmlockdStatus(object):
 def report_config_changed():
     shell.run("touch %s" % LVM_CONFIG_CHANGED_FILE)
 
+need_locking_cmds = ["lvchange", "lvcreate", "lvrename", "lvresize", "lvextend", "lvremove"]
+nolocking_cmds = ["lvs", "pvs", "vgs"]
 
 def subcmd(cmd, timeout=lvm_cmd_timeout_with_locking):
-    if cmd in ["lvs", "pvs", "vgs"]:
+    if cmd in nolocking_cmds:
         return "%s --nolocking -t" % cmd
-    elif cmd in ["lvchange", "lvcreate", "lvrename", "lvresize", "lvextend", "lvremove"]:
+    elif cmd in need_locking_cmds:
         return "timeout -s SIGKILL %s %s"% (timeout, cmd)
     return cmd
+
+
+def run_cmd_r(cmd, pipe_fail=False):
+    r, _, _ = run_cmd_roe(cmd, pipe_fail=pipe_fail)
+    return r
+
+
+def run_cmd_o(cmd, pipe_fail=False):
+    _, o, _ = run_cmd_roe(cmd, pipe_fail=pipe_fail)
+    return o
+
+
+def run_cmd_ro(cmd, pipe_fail=False):
+    r, o, _ = run_cmd_roe(cmd, pipe_fail=pipe_fail)
+    return r, o
+
+
+def run_cmd_errorout(cmd, pipe_fail=False):
+    _, o, _ = run_cmd_roe(cmd, errorout=True, pipe_fail=pipe_fail)
+    return o
+
+
+def run_cmd_roe(cmd, errorout=False, pipe_fail=False):
+    r, o, e = bash.bash_roe(cmd, pipe_fail=pipe_fail)
+    if r == 0:
+        return r, o, e
+
+    output = o+e
+    if "sanlock lease needs repair" in output:
+        try:
+            sanlock.handle_paxos_lease_corrupted(output)
+            # retry once
+            r, o, e = bash.bash_roe(cmd, pipe_fail=pipe_fail)
+            if r == 0:
+                return r, o, e
+        except Exception as e:
+            logger.debug("caught an exception on handle_paxos_lease_corrupted %s" % str(e))
+            logger.debug(linux.get_exception_stacktrace())
+
+    if errorout:
+        raise bash.BashError('failed to execute bash[%s], return code: %s, stdout: %s, stderr: %s' % (cmd, r, o, e))
+
+    return r, o, e
