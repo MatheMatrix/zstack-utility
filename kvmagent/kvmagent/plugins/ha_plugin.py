@@ -646,7 +646,7 @@ class SblkHealthChecker(AbstractStorageFencer):
         if os.path.exists(volume_abs_path):
             return read_content_from_lv()
 
-        r, o, e = bash.bash_roe("timeout -s SIGKILL %s lvchange -asy %s" % (self.storage_timeout, volume_abs_path))
+        r, o, e = lvm.run_cmd_roe("timeout -s SIGKILL %s lvchange -asy %s" % (self.storage_timeout, volume_abs_path))
         if r == 0:
             return read_content_from_lv()
 
