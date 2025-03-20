@@ -459,18 +459,6 @@ def get_lvmlockd_version():
         LVMLOCKD_VERSION = shell.call("""lvmlockd --version | awk '{print $3}' | awk -F'.' '{print $1"."$2}'""").strip()
     return LVMLOCKD_VERSION
 
-def get_sanlock_patch_version():
-    return bash.bash_o("sanlock get_patch_version").strip()
-
-def get_sanlock_pid():
-    return linux.find_process_by_command('sanlock')
-
-def get_running_sanlock_patch_version():
-    pid = get_sanlock_pid()
-    if pid:
-        exe = "/proc/%s/exe" % pid
-        return bash.bash_o("%s get_patch_version" % exe).strip()
-
 def get_running_lvmlockd_version():
     pid = get_lvmlockd_pid()
     if pid:
@@ -809,8 +797,8 @@ def start_lock_service(io_timeout=40):
         return running_lockd_version is not None and LooseVersion(running_lockd_version) < LooseVersion(get_lvmlockd_version())
 
     def need_restart_sanlock():
-        running_patch_version = get_running_sanlock_patch_version()
-        local_patch_version = get_sanlock_patch_version()
+        running_patch_version = sanlock.get_running_patch_version()
+        local_patch_version = sanlock.get_patch_version()
         if not running_patch_version:
             # sanlock not running
             return False
@@ -918,7 +906,7 @@ def stop_lvmlockd():
 
 @bash.in_bash
 def stop_sanlock():
-    pid = get_sanlock_pid()
+    pid = sanlock.get_pid()
     if pid:
         linux.kill_process(pid)
         bash.bash_r("timeout 30 systemctl stop sanlock.service")
@@ -945,14 +933,14 @@ def start_vg_lock(vgUuid, hostId, retry_times_for_checking_vg_lockspace):
             return True
 
     def check_lockspace():
-        r = sanlock.dd_check_lockspace("/dev/mapper/%s-lvmlock" % vgUuid)
+        r = sanlock.test_direct_read("/dev/mapper/%s-lvmlock" % vgUuid)
         if r != 0:
             bash.bash_roe("dmsetup remove %s-lvmlock" % vgUuid)
             return
         elif continue_lockspace_track.get(vgUuid) is False:
             logger.debug("direct init lockspace[%s] has already been executed but the lockspace has not been restored, skip it" % vgUuid)
             return
-        sanlock.check_delta_lease(vgUuid, hostId)
+        sanlock.repair_lockspace_if_corrupted(vgUuid, hostId)
         continue_lockspace_track.update({vgUuid: False})
 
     @linux.retry(times=5, sleep_time=random.uniform(0.1, 10))
@@ -969,7 +957,7 @@ def start_vg_lock(vgUuid, hostId, retry_times_for_checking_vg_lockspace):
             vg_lock_exists(vgUuid)
         except Exception:
             check_lockspace()
-            sanlock.init_gllk_if_need(vgUuid)
+            sanlock.repair_gllk_if_corrupted(vgUuid)
             raise
     try:
         vg_lock_exists(vgUuid)

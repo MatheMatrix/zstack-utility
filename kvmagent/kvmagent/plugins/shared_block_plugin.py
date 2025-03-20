@@ -20,6 +20,7 @@ from zstacklib.utils.plugin import completetask
 import zstacklib.utils.uuidhelper as uuidhelper
 from zstacklib.utils import secret
 from zstacklib.utils.misc import IgnoreError
+from zstacklib.utils.sanlock import SanlockEvent
 
 logger = log.get_logger(__name__)
 LOCK_FILE = "/var/run/zstack/sharedblock.lock"
@@ -40,6 +41,10 @@ class AgentRsp(object):
         self.totalCapacity = None
         self.availableCapacity = None
         self.lunCapacities = None
+
+    def set_error(self, err):
+        self.success = False
+        self.error = err
 
 
 class ConnectRsp(AgentRsp):
@@ -358,6 +363,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     SHRINK_SNAPSHOT_PATH = "/sharedblock/snapshot/shrink"
     GET_QCOW2_HASH_VALUE_PATH = "/sharedblock/getqcow2hash"
     CHECK_STATE_PATH = "/sharedblock/vgstate/check"
+    REPAIR_SANLOCK_METADATA_PATH = "/sharedblock/sanlock/metadata/repair"
 
     vgs_in_progress = set()
     vg_size = {}
@@ -409,11 +415,19 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.SHRINK_SNAPSHOT_PATH, self.shrink_snapshot)
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
         http_server.register_async_uri(self.CHECK_STATE_PATH, self.check_vg_state)
+        http_server.register_async_uri(self.REPAIR_SANLOCK_METADATA_PATH, self.repair_sanlock_metadata)
+
+        self.register_sanlock_event()
 
         self.imagestore_client = ImageStoreClient()
 
     def stop(self):
         pass
+
+    def register_sanlock_event(self):
+        SanlockEvent.add_callback(sanlock.SANLK_LEASE_CORRUPTED)
+        SanlockEvent.register_callbacks()
+        SanlockEvent.register_listener()
 
     @kvmagent.replyerror
     def check_disks(self, req):
@@ -714,6 +728,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         # lvm.add_vg_tag(cmd.vgUuid, "%s::%s::%s::%s" % (HEARTBEAT_TAG, cmd.hostUuid, time.time(), linux.get_hostname()))
         self.clear_stalled_qmp_socket()
         lvm.check_missing_pv(cmd.vgUuid)
+        sanlock.backup_lockspace_metadata(cmd.vgUuid, cmd.hostId)
 
         rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
         rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
@@ -1753,5 +1768,24 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             error = _check(vg_uuid)
             if error:
                 rsp.failedVgs.update({vg_uuid: error})
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    @lock.file_lock("repair-sanlock-metadata")
+    def repair_sanlock_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentRsp()
+        offset = cmd.offset
+        hostId = cmd.hostId
+        isLockspace = cmd.isLockspace
+        resourceUuid = cmd.resourceUuid
+        vgUuid = cmd.vgUuid
+        if isLockspace:
+            r, o, e = sanlock.direct_init_host(vgUuid, hostId)
+        else:
+            r, o, e = sanlock.direct_init_resource(vgUuid, resourceUuid, offset)
+        if r != 0:
+            rsp.set_error("failed to repair sanlock metadata, return code: %s, stdout: %s, stderr: %s" % (r, o, e))
 
         return jsonobject.dumps(rsp)
