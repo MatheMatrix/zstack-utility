@@ -1,6 +1,7 @@
 import os
+import platform
 
-from zstacklib.utils import log, linux
+from zstacklib.utils import log, linux, sizeunit
 import xml.etree.ElementTree as ET
 
 logger = log.get_logger(__name__)
@@ -27,6 +28,7 @@ PCI_DEVICES_ROOT = "/sys/bus/pci/devices"
 
 DEFAULT_PCDPCIMMIO64SIZE_ON_32BIT = 0x100000000
 DEFAULT_PCDPCIMMIO64SIZE_MIN_SIZE = 0x800000000
+DEFAULT_ARM_PCI_MMIO64_SIZE = 0x8000000000
 max_addressable_memory_32bit = 2 * 1024 * 1024
 max_addressable_memory_64bit = 2 * 1024 * 1024
 
@@ -64,10 +66,16 @@ def calc_next_power_of_2(n):
 
 
 def need_config_pcimmio():
-    if max_addressable_memory_64bit <= DEFAULT_PCDPCIMMIO64SIZE_ON_32BIT:
-        logger.info("max_addressable_memory %s is less than DEFAULT_PCDPCIMMIO64SIZE_ON_32BIT %s" %
-                    (max_addressable_memory_64bit, DEFAULT_PCDPCIMMIO64SIZE_ON_32BIT))
-        return False
+    if platform.machine() == 'aarch64':
+        if max_addressable_memory_64bit <= DEFAULT_ARM_PCI_MMIO64_SIZE:
+            logger.info("max_addressable_memory %s is less than DEFAULT_ARM_PCI_MMIO64_SIZE %s" %
+                        (max_addressable_memory_64bit, DEFAULT_ARM_PCI_MMIO64_SIZE))
+            return False
+    else:
+        if max_addressable_memory_64bit <= DEFAULT_PCDPCIMMIO64SIZE_ON_32BIT:
+            logger.info("max_addressable_memory %s is less than DEFAULT_PCDPCIMMIO64SIZE_ON_32BIT %s" %
+                        (max_addressable_memory_64bit, DEFAULT_PCDPCIMMIO64SIZE_ON_32BIT))
+            return False
 
     return True
 
@@ -75,6 +83,9 @@ def need_config_pcimmio():
 def get_bars_max_addressable_memory():
     if max_addressable_memory_64bit is None:
         logger.warn("max_addressable_memory is None, please reconnect host and try again")
+
+    if platform.machine() == 'aarch64':
+        return "%sG" % sizeunit.Byte.toGigaByte(max_addressable_memory_64bit)
 
     if max_addressable_memory_64bit < DEFAULT_PCDPCIMMIO64SIZE_MIN_SIZE:
         return DEFAULT_PCDPCIMMIO64SIZE_MIN_SIZE / 1024 / 1024

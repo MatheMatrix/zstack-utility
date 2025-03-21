@@ -1372,11 +1372,18 @@ QEMU_VERSION = qemu.get_version()
 def is_namespace_used():
     return compare_version(LIBVIRT_VERSION, '1.3.3') >= 0
 
+
 def is_hv_freq_supported():
     return compare_version(QEMU_VERSION, '2.12.0') >= 0 and LooseVersion(KERNEL_VERSION) >= LooseVersion('3.10.0-957')
 
+
 def is_hv_synic_supported():
     return compare_version(QEMU_VERSION, '2.12.0') >= 0 and LooseVersion(KERNEL_VERSION) > LooseVersion('3.10.0-1160')
+
+
+def is_high_mmio_size_supported():
+    return LooseVersion(qemu_img.get_release_version()) >= LooseVersion("6.2.0-902")
+
 
 @linux.with_arch(todo_list=['x86_64'])
 def is_ioapic_supported():
@@ -5335,9 +5342,14 @@ class Vm(object):
 
             if cmd.qemu64BitPciMmioSetup:
                 if pci.need_config_pcimmio():
-                    e(qcmd, "qemu:arg", attrib={"value": '-fw_cfg'})
-                    e(qcmd, "qemu:arg", attrib={"value": 'opt/ovmf/X-PciMmio64Mb,string=%s'
-                                                         % pci.get_bars_max_addressable_memory()})
+                    if HOST_ARCH == "aarch64" and is_high_mmio_size_supported():
+                        e(qcmd, "qemu:arg", attrib={"value": '-machine'})
+                        e(qcmd, "qemu:arg", attrib={"value": 'highmem-mmio-size=%s'
+                                                             % pci.get_bars_max_addressable_memory()})
+                    else:
+                        e(qcmd, "qemu:arg", attrib={"value": '-fw_cfg'})
+                        e(qcmd, "qemu:arg", attrib={"value": 'opt/ovmf/X-PciMmio64Mb,string=%s'
+                                                             % pci.get_bars_max_addressable_memory()})
 
             if cmd.coloPrimary:
                 e(qcmd, "qemu:arg", attrib={"value": '-L'})
