@@ -35,6 +35,7 @@ class HeartbeatIOResult(object):
             self.data = base64.b64encode(self.data)
             return json.dumps(self.__dict__).replace('\n', '\\n')
 
+
 def get_cluster(conf_pth):
     global cluster
     if not cluster:
@@ -165,6 +166,7 @@ def listen_pipe():
         sys.stdout.write(str(result) + '\n')
         sys.stdout.flush()
 
+
 def exit(sig, stack):
     global cluster
     global ioctx
@@ -190,15 +192,18 @@ def dump_thread(sig, stack):
 
     _log("")
 
+
 def listen_signal():
     import signal
     signal.signal(signal.SIGTERM, exit)
     signal.signal(signal.SIGINT, exit)
     signal.signal(signal.SIGUSR2, dump_thread)
 
+
 def _log(content):
     sys.stderr.write(content + "\n")
     sys.stderr.flush()
+
 
 listen_signal()
 if __name__ == '__main__':
@@ -206,7 +211,7 @@ if __name__ == '__main__':
         listen_pipe()
         sys.exit(0)
 
-    if len(sys.argv) != 5 and len(sys.argv) != 3:
+    if len(sys.argv) != 6 and len(sys.argv) != 4:
         print >> sys.stderr, "Usage: {} <operation> <pool_name>/<image_name> [offset] [size/content]".format(sys.argv[0])
         print >> sys.stderr, "system arguments: {}".format(sys.argv)
         print >> sys.stderr, "args length: {}".format(len(sys.argv))

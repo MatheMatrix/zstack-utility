@@ -14,13 +14,14 @@ from zstacklib.utils import sanlock
 from zstacklib.utils import xmlobject
 from zstacklib.utils import jsonobject
 from zstacklib.utils import iscsi
+from zstacklib.utils import rbd
+
 import os.path
 import errno
 import time
 import traceback
 import threading
 import rados
-import rbd
 import json
 import subprocess
 from datetime import datetime, timedelta
@@ -836,42 +837,8 @@ class RbdHeartbeatController(AbstractStorageFencer):
         self.interval = 0
         self.fs_id = None
         self.report_storage_status_callback = None
-        self.rbd_rw_path = "/var/lib/zstack/virtualenv/kvm/lib/python2.7/site-packages/zstacklib/scripts/rbd_rw.py"
         self.hb_chunk_size = 1024 * 1024
-        self.rbd_rw_process = None
-
-    def init(self):
-        """
-        1. check if the rbd_rw.py is running, if yes, kill it
-        2. running our own rbd_rw.py to read/write heartbeat to rbd storage
-        3. through pipe to communicate with rbd_rw.py
-        """
-        pids = linux.find_all_process_by_cmdline([self.rbd_rw_path])
-        if pids:
-            logger.debug("find last rbd_rw.py process %s" % pids)
-            for pid in pids:
-                linux.kill_process(pid, is_exception=False)
-
-        self.rbd_rw_process = subprocess.Popen(["python2", self.rbd_rw_path],
-                                               stdout=subprocess.PIPE,
-                                               stdin=subprocess.PIPE,
-                                               stderr=subprocess.PIPE)
-        @thread.AsyncThread
-        def dump_stderr():
-            """debug all stderr from rbd_rw_process"""
-            try:
-                while True:
-                    line = self.rbd_rw_process.stderr.readline()
-                    if line == "":  # EOF
-                        logger.debug("rbd_rw_process stderr pipe is closed")
-                        break
-                    logger.warn("rbd_rw_process: %s" % line)
-            except Exception as e:
-                logger.warn("failed to read rbd_rw_process stderr: %s" % e)
-                content = traceback.format_exc()
-                logger.warn(content)
-
-        dump_stderr()
+        self.rbd_rw_handler = rbd.get_rbd_rw_handler()
 
     def handle_heartbeat_failure(self):
         self.failure += 1
@@ -914,55 +881,17 @@ class RbdHeartbeatController(AbstractStorageFencer):
         return "rbdFencer"
 
     def write_fencer_heartbeat(self):
-        return self._update_heartbeat_timestamp()
-
-    def _update_heartbeat_timestamp(self):
         vm_in_ps_uuid_list = find_ps_running_vm(self.pool_name + "/")
         hb_content = HeartbeatStruct(vm_in_ps_uuid_list)
-        offset = self.host_id * self.hb_chunk_size
-
         logger.debug("use rbd_rw.py to update heartbeat [path:%s, hostId:%d] timestamp with content: %s"
                      % (self.heartbeat_path, self.host_id, hb_content))
-        cmd = "writehb %s %d %d %s\n" % (self.heartbeat_path, self.fs_id, offset, str(hb_content) + EOF)
-        logger.info(cmd)
-        ret_str = "{}"
-        try:
-            self.rbd_rw_process.stdin.write(cmd)
-            self.rbd_rw_process.stdin.flush()
-            ret_str = self.rbd_rw_process.stdout.readline().strip()
-        except KeyboardInterrupt:
-            pass
-        except IOError as e:
-            if e.errno == errno.EPIPE:
-                logger.warn("rbd_rw.py has been killed, restart it")
-                self.init()
-                return False
+        return self.rbd_rw_handler.write(self.heartbeat_path, self.fs_id, self.host_id, self.hb_chunk_size, hb_content)
 
-            logger.warn("failed to use rbd_rw.py update heartbeat [path:%s, hostId:%d] timestamp. \n"
-                        " IOError: %s" % (self.heartbeat_path, self.host_id, str(e)))
-            return False
-        ret = jsonobject.loads(ret_str)
-        if not ret.success:
-            logger.warn("failed to use rbd_pw.py update heartbeat [path:%s, hostId:%d] timestamp. \n"
-                        " reason: %s" % (self.heartbeat_path, self.host_id, ret.reason))
-            return False
-
-        return True
-
-    def read_fencer_hearbeat(self, host_id, ps_uuid):
-        offset = host_id * self.hb_chunk_size
-
+    def read_fencer_heartbeat(self, host_id, ps_uuid):
         logger.debug("use rbd_rw.py to read heartbeat [path:%s, hostId:%d] timestamp" % (self.heartbeat_path, host_id))
-        cmd = "source /var/lib/zstack/virtualenv/kvm/bin/activate && timeout 20 python %s read %s %d %d %d" % (
-            self.rbd_rw_path, self.heartbeat_path, self.fs_id, offset, self.hb_chunk_size)
-        r, o, e = bash.bash_roe(cmd)
-        if r != 0:
-            logger.warn("failed to use rbd_rw.py read heartbeat [path:%s, hostId:%d] timestamp\n"
-                        " return code:%s\n stdout:%s\n stderr: %s\n" %
-                        (self.heartbeat_path, host_id, r, o[0:min(128, len(o))], e))
+        hb_content = self.rbd_rw_handler.read(self.heartbeat_path, self.fs_id, host_id, self.hb_chunk_size)
+        if not hb_content:
             return None, None
-
-        hb_content = o.split(EOF)[0]
         hb = jsonobject.loads(hb_content)
         return hb.heartbeat_time, hb.vm_uuids
 
@@ -1853,7 +1782,6 @@ class HaPlugin(kvmagent.KvmAgent):
     def cancel_block_self_fencer(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         self.cancel_fencer(cmd.uuid)
-        bash.bash_roe("pkill -15 -f rbd_rw.py")
         return jsonobject.dumps(AgentRsp())
 
     @kvmagent.replyerror
@@ -1957,7 +1885,6 @@ class HaPlugin(kvmagent.KvmAgent):
                 fencer_init = {}
 
                 fencer_init[rbd_controller.get_ha_fencer_name()] = rbd_controller
-                rbd_controller.init()
                 logger.debug("rbd start run fencer list :%s" % ",".join(fencer_list))
                 while self.run_fencer(ps_uuid, created_time):
                     ha_fencer.exec_fencer_list(fencer_init, update_fencer)
