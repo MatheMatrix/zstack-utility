@@ -4,7 +4,7 @@ from zstacklib.utils.singleflight import Group
 
 logger = log.get_logger(__name__)
 
-sft = Group()
+sft = Group(cache_ttl=60)
 
 
 def get_sensor_info_from_ipmi():

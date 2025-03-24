@@ -10,11 +10,13 @@ import os.path
 import platform
 import re
 import tempfile
+import threading
 import time
 import uuid
 import string
 import socket
 import sys
+import Queue
 import yaml
 import subprocess
 
@@ -74,8 +76,7 @@ BOND_MODE_ACTIVE_6 = "balance-alb"
 DISTRO_USING_DNF = ['rl84', 'h84r', 'ky10sp1', 'ky10sp2', 'ky10sp3',
                     'oe2203sp1', 'h2203sp1o']
 
-sensor_type_by_name = {}  # type: dict[str, str]
-
+sensor_type_and_classification_by_name = {}  # type: dict[str, list]
 
 class ConnectResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -1292,7 +1293,7 @@ class HostPlugin(kvmagent.KvmAgent):
         except Exception as e:
             logger.error("failed to write iscsi initiator name %s to %s, because %s",
                     old_initiator_name, ISCSI_INITIATOR_NAME_PATH, str(e))
-                
+
         return jsonobject.dumps(rsp)
 
 
@@ -3721,6 +3722,10 @@ done
 
             if status_info['smart_status'] is not None:
                 smartPassed = status_info['smart_status']['passed']
+
+            if smartPassed is None or smartPassed == "":
+                smartPassed = "true"
+
             return smartPassed, smartMessage
 
         def get_partition_table(name):
@@ -3735,7 +3740,7 @@ done
                 return transport.strip() == "pcie"
             return False
 
-        def process_device(dev):
+        def process_device(dev, result_queue, lock, is_child=False):
             name = dev['name']
             block_dev = BlockDevice(dev['name'], dev['type'], dev['size'], dev['model'], dev['serial'], dev['fstype'],
                                     dev['mountpoint'])
@@ -3748,14 +3753,18 @@ done
 
             if dev['children'] is not None:
                 for child in dev['children']:
-                    child_dev = process_device(child)
+                    child_dev = process_device(child, result_queue, lock, True)
                     block_dev.children.append(child_dev)
 
             block_dev.partitionTable = get_partition_table(name)
             block_dev.used, block_dev.available, block_dev.usedRatio = get_size_info(name)
             block_dev.smartPassed, block_dev.smartMessage = get_smart_passed_and_message(name)
 
-            return block_dev
+            if is_child:
+                return block_dev
+
+            with lock:
+                result_queue.put((name, block_dev))
 
         r, o, e = bash_roe('lsblk -p -b -o NAME,TYPE,ROTA,SIZE,MOUNTPOINT,FSTYPE,SERIAL,MODEL -J')
         if r != 0:
@@ -3763,10 +3772,19 @@ done
             rsp.error = e
             return jsonobject.dumps(rsp)
 
+        result_queue = Queue.Queue()
+        lock = threading.Lock()
+        threads = []
         for device in jsonobject.loads(o)['blockdevices']:
-            blockDevice = process_device(device)
-            if blockDevice:
-                rsp.blockDevices.append(blockDevice)
+            t = threading.Thread(target=process_device, args=(device, result_queue, lock))
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+        while not result_queue.empty():
+            _, result = result_queue.get()
+            rsp.blockDevices.append(result)
 
         return jsonobject.dumps(rsp)
 
@@ -3774,10 +3792,10 @@ done
     @in_bash
     def get_sensors(self, req):
         rsp = GetSensorsResponse()
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        start_time = linux.get_current_timestamp()
-        time_out = get_timeout(cmd) - 10
+        rsp.sensors = self.do_get_sensors()
+        return jsonobject.dumps(rsp)
 
+    def do_get_sensors(self):
         class Sensor:
             def __init__(self, info):
                 self.name = info['name'].strip() or ""
@@ -3788,15 +3806,17 @@ done
                 self.set_type_and_classification()
 
             def set_type_and_classification(self):
-                if linux.get_current_timestamp() - start_time > time_out:
-                    return
-
                 if self.name is "":
                     return
 
-                if self.name in sensor_type_by_name:
-                    self.type = sensor_type_by_name[self.name]
-                    return
+                if self.name in sensor_type_and_classification_by_name:
+                    type_and_classification = sensor_type_and_classification_by_name[self.name]
+                    type_idx = 0
+                    classification_idx = 1
+                    self.type = type_and_classification[type_idx]
+                    if self.type != "":
+                        self.classification = type_and_classification[classification_idx]
+                        return
 
                 type_r, type_o = bash_ro('ipmitool sdr get "%s"' % self.name)
                 if type_r != 0 or type_o is None:
@@ -3807,22 +3827,49 @@ done
                     sensor_type = filter_lines_by_str_list(type_o.splitlines(), ["Sensor Type"])
                     self.type = sensor_type[0].split(':')[1].split('(')[0].strip()
                     self.classification = "Discrete" if "Discrete" in sensor_type else "Threshold"
-                    sensor_type_by_name[self.name] = self.type
+
+        def process_sensors(info, result_queue, lock):
+            sensor = Sensor(info)
+            with lock:
+                if sensor.name is None or sensor.name == "":
+                    return
+                result_queue.put((sensor.name, sensor))
 
         def update_sensor_type_by_name():
             sensor_names = {sensor.name for sensor in sensors}
-            keys_to_remove = [key for key in sensor_type_by_name.keys() if key not in sensor_names]
+            keys_to_remove = [key for key in sensor_type_and_classification_by_name.keys() if key not in sensor_names]
             for key in keys_to_remove:
-                del sensor_type_by_name[key]
+                del sensor_type_and_classification_by_name[key]
 
         sensors = []
+        result_queue = Queue.Queue()
+        lock = threading.Lock()
+
+        infos = []
         for info in form.load('name|sensorId|status|entityId|value\n' + get_sensor_info_from_ipmi(), sep='|'):
-            sensors.append(Sensor(info))
+            if info['name'] and info['name'] not in sensor_type_and_classification_by_name.keys():
+                infos.append(info)
+
+        for batch in [infos[i:i + 15] for i in range(0, len(infos), 15)]:
+            batch_threads = []
+            for info in batch:
+                t = threading.Thread(target=process_sensors, args=(info, result_queue, lock))
+                t.start()
+                batch_threads.append(t)
+            for t in batch_threads:
+                t.join()
+
+        while not result_queue.empty():
+            name, result = result_queue.get()
+            sensors.append(result)
+            sensor_type_and_classification_by_name[name] = [result.type, result.classification]
 
         update_sensor_type_by_name()
+        return sensors
 
-        rsp.sensors = sensors
-        return jsonobject.dumps(rsp)
+    @thread.AsyncThread
+    def async_get_sensors(self):
+        self.do_get_sensors()
 
     def start(self):
         self.host_uuid = None
@@ -3897,6 +3944,8 @@ done
         filepath = r'/etc/libvirt/qemu/networks/autostart/default.xml'
         if os.path.exists(filepath):
             os.unlink(filepath)
+
+        self.async_get_sensors()
 
     def stop(self):
         if self.host_socket is not None:
