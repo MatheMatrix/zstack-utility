@@ -2599,6 +2599,10 @@ done
                 elif ("Processing accelerators" in to.type or (
                         pci_device_mapper.get('Processing accelerators') is not None)) and 'Device' in to.device:
                     to.type = "GPU_Processing_Accelerators"
+                elif any(vendor in to.description for vendor in gpu_vendors) \
+                        and ('Co-processor' in to.type or (pci_device_mapper.get('Co-processor') is not None
+                                                           and pci_device_mapper.get('Co-processor') in to.type)):
+                    to.type = "GPU_Co_Processor"
                 else:
                     to.type = "Generic"
 
@@ -2629,8 +2633,9 @@ done
 
     @in_bash
     def _collect_tianshu_gpu_info(self, to):
-        if shell.run("which ixsmi") != 0:
-            logger.debug("no ixsmi")
+        r, o, e = bash_roe("which ixsmi")
+        if r != 0:
+            logger.debug("no ixsmi, detail: %s " % o)
             return
         if shell.run(gpu.is_tianshu_v1()) == 0:
             cmd = gpu.get_tianshu_gpu_basic_info_cmd_v1()
@@ -2656,8 +2661,9 @@ done
 
     @in_bash
     def _collect_huawei_gpu_info(self, to):
-        if shell.run("which npu-smi") != 0:
-            logger.debug("no npu-smi")
+        r, o, e = bash_roe("which npu-smi")
+        if r != 0:
+            logger.debug("no npu-smi, detail: %s " % o)
             return
 
         r, npu_ids_out = bash_ro(gpu.get_huawei_gpu_npu_id_cmd())
@@ -2699,8 +2705,9 @@ done
 
     @in_bash
     def _collect_haiguang_gpu_info(self, to):
-        if shell.run("which hy-smi") != 0:
-            logger.debug("no hy-smi")
+        r, o, e = bash_roe("which hy-smi")
+        if r != 0:
+            logger.debug("no hy-smi, detail: %s " % o)
             return
 
         r, o, e = bash_roe(gpu.get_hy_gpu_basic_info_cmd())
@@ -2712,8 +2719,9 @@ done
 
     @in_bash
     def _collect_nvidia_gpu_info(self, to):
-        if shell.run("which nvidia-smi") != 0:
-            logger.debug("no nvidia-smi")
+        r, o, e = bash_roe("which nvidia-smi")
+        if r != 0:
+            logger.debug("no nvidia-smi, detail: %s " % o)
             return
 
         r, o, e = bash_roe(gpu.get_nvidia_gpu_basic_info_cmd())
@@ -2735,8 +2743,9 @@ done
     @in_bash
     def _collect_amd_gpu_info(self, to):
         #todo collect amd gpu info
-        if shell.run("which rocm-smi") != 0:
-            logger.debug("no rocm-smi")
+        r, o, e = bash_roe("which rocm-smi")
+        if r != 0:
+            logger.debug("no rocm-smi, detail: %s " % o)
             return
 
         r, o, e = bash_roe(gpu.get_amd_gpu_basic_info_cmd())
