@@ -80,6 +80,7 @@ class VendorEnum:
     HAIGUANG = "Haiguang"
     HUAWEI = "Huawei"
     TIANSHU = "TianShu"
+    VASTAI = "Vastai"
 
 class ConnectResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -2493,6 +2494,8 @@ done
             return VendorEnum.HUAWEI
         elif '1e3e' in name:
             return VendorEnum.TIANSHU
+        elif 'Vastai' in name:
+            return VendorEnum.VASTAI
         else:
             return name.replace('Co., Ltd ', '')
 
@@ -2621,7 +2624,8 @@ done
                 VendorEnum.AMD: self._collect_amd_gpu_info,
                 VendorEnum.HAIGUANG: self._collect_haiguang_gpu_info,
                 VendorEnum.HUAWEI: self._collect_huawei_gpu_info,
-                VendorEnum.TIANSHU: self._collect_tianshu_gpu_info
+                VendorEnum.TIANSHU: self._collect_tianshu_gpu_info,
+                VendorEnum.VASTAI: self._collect_vastai_gpu_info,
             }
             handler = collect_vendor_nvidia_gpu_infos.get(vendor_name)
             if handler:
@@ -2653,6 +2657,60 @@ done
         if product_name:
             to.device = product_name.split(" ")[1]
             to.name = product_name
+
+    @in_bash
+    def _collect_vastai_gpu_info(self, to):
+        r, o, e = bash_roe("which vasmi")
+        if r != 0:
+            logger.debug("no vasmi, detail: %s " % o)
+        output = self._collect_vastai_gpu_basic_info(gpu.get_vastai_type())
+        if output is not None and len(output) > 0:
+            self._update_to_addon_info_from_gpu_infos(output, to)
+        else:
+            logger.error("vasmi query gpu is error, %s " % e)
+            return
+
+    @in_bash
+    def _collect_vastai_gpu_basic_info(self, gpu_type):
+        gpuinfos = []
+        r, output, e = bash_roe("vasmi getmem --display-format=json")
+        if r != 0 or output is None:
+            return gpuinfos
+
+        gpuinfo = {}
+        json_start = output.find('{')
+        if json_start == -1:
+            logger.error("No JSON data found in command vasmi getmem output")
+            return gpuinfos
+        json_str = output[json_start:]
+        data = json.loads(json_str)
+        for elem in data["elem"]:
+            gpuinfo["pciAddress"] = elem.get("pci_bus", "N/A")
+            gpuinfo["serialNumber"] = elem.get("sn", "N/A")
+            if gpu_type == "AI":
+                gpuinfo["memory"] = elem.get("vals", {}).get("Physical", {}).get("value", "N/A")
+            else:
+                gpuinfo["memory"] = elem.get("vals", {}).get("Physical memory", {}).get("value", "N/A")
+            gpuinfos.append(gpuinfo)
+
+        r, o, e = bash_roe("vasmi summary --display-format=json")
+        if r != 0 or o is None:
+            return gpuinfos
+        json_start = output.find('{')
+        if json_start == -1:
+            logger.error("No JSON data found in command vasmi summary output")
+            return gpuinfos
+        json_str = o[json_start:]
+        summary_data = json.loads(json_str)
+        for elem in summary_data["elem"]:
+            dev_bus_id = elem.get("vals", {}).get("devBusId", {}).get("value", "N/A")
+            max_power = elem.get("vals", {}).get("P_Cap", {}).get("value", "N/A")
+            for gpuinfo in gpuinfos:
+                if gpuinfo["pciAddress"] == dev_bus_id:
+                    gpuinfo["power"] = max_power
+                    break
+
+        return gpuinfos
 
     @in_bash
     def _collect_huawei_gpu_info(self, to):
