@@ -40,7 +40,7 @@ REDHAT_WITHOUT_CENTOS6=`echo $REDHAT_OS |sed s/CENTOS6//`
 
 UPGRADE='n'
 FORCE='n'
-ZSV_INSTALL='n'
+ZSV_INSTALL='y'
 SDS_INSTALL='n'
 SKIP_PJNUM_CHECK='n'
 MANAGEMENT_INTERFACE=`ip route | grep default | head -n 1 | cut -d ' ' -f 5`
