@@ -41,8 +41,6 @@ REDHAT_WITHOUT_CENTOS6=`echo $REDHAT_OS |sed s/CENTOS6//`
 UPGRADE='n'
 FORCE='n'
 ZSV_INSTALL='n'
-CUBE_INSTALL='n'
-SANYUAN_INSTALL='n'
 SDS_INSTALL='n'
 SKIP_PJNUM_CHECK='n'
 MANAGEMENT_INTERFACE=`ip route | grep default | head -n 1 | cut -d ' ' -f 5`
@@ -2461,11 +2459,6 @@ sp_setup_install_param(){
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     zstack-ctl configure ui_mode=zstack
 
-    if [ x"$SANYUAN_INSTALL" = x"y" ];then
-        zstack-ctl configure identity.init.type="PRIVILEGE_ADMIN"
-        zstack-ctl configure sanyuan.installed=true
-    fi
-
     # Port 9090 is already used by system service on KylinOS(ft2000)
     if [ $OS == "KYLIN4.0.2" ];then
         zstack-ctl configure Prometheus.port=9080
@@ -3794,7 +3787,7 @@ load_install_conf() {
 
 load_install_conf
 OPTIND=1
-TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,zsv,cube,SY,sds,no-zops,skip-pjnum -- "$@"`
+TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,zsv,sds,no-zops,skip-pjnum -- "$@"`
 if [ $? != 0 ]; then
     usage
 fi
@@ -3851,8 +3844,6 @@ do
         --chrony-server-ip ) check_myarg $1 $2;CHRONY_SERVER_IP=$2;shift 2;;
         --grayscale ) check_myarg $1 $2;GRAYSCALE_UPGRADE=$2;shift 2;;
         --zsv) ZSV_INSTALL='y';shift;;
-        --cube) CUBE_INSTALL='y';shift;;
-        --SY) SANYUAN_INSTALL='y';shift;;
         --sds) SDS_INSTALL='y';shift;;
         --no-zops) SKIP_ZOPS_INSTALL='y';shift;;
         --skip-pjnum) SKIP_PJNUM_CHECK='y';shift;;
@@ -3894,10 +3885,6 @@ fi
 ZSV_SOURCE_FILE=/opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/zsphere_config/version
 if [ -s "$ZSV_SOURCE_FILE" ]; then
     ZSV_INSTALL='y'
-fi
-
-if [ x"$ZSV_INSTALL" = x"y" ] && [ x"$CUBE_INSTALL" = x"y" ];then
-    fail2 "\n\tYou can not install use both cube and zsv mode.\n\n"
 fi
 
 if [ ! -z $ZSTACK_PKG_MIRROR ]; then
@@ -4432,11 +4419,6 @@ if [ -n "$CHRONY_SERVER_IP" ]; then
 else
     zstack-ctl show_configuration | grep '^[[:space:]]*chrony.serverIp.' >/dev/null 2>&1
     [ $? -ne 0 ] && zstack-ctl configure chrony.serverIp.0="${MANAGEMENT_IP}"
-fi
-
-# deploy by cube mode
-if [ x"$CUBE_INSTALL" = x"y" ];then
-    zstack-ctl configure deploy_mode="cube"
 fi
 
 if [ x"$ZSV_INSTALL" = x"y" ];then
