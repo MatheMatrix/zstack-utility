@@ -74,6 +74,8 @@ if [ -z $mysql_conf ]; then
     exit 1
 fi
 
+DB_VERSION=$(mysql --version)
+
 sed -i 's/^bind-address/#bind-address/' $mysql_conf
 sed -i 's/^skip-networking/#skip-networking/' $mysql_conf
 sed -i 's/^bind-address/#bind-address/' $mysql_conf
@@ -90,10 +92,12 @@ if [ $? -ne 0 ]; then
     sed -i '/\[mysqld\]/a log_bin_trust_function_creators=1\' $mysql_conf
 fi
 
-grep 'expire_logs=' $mysql_conf >/dev/null 2>&1
-if [ $? -ne 0 ]; then
-    echo "expire_logs=30"
-    sed -i '/\[mysqld\]/a expire_logs=30\' $mysql_conf
+if [[ $DB_VERSION == *"MariaDB"* ]]; then
+    grep 'expire_logs=' $mysql_conf >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "expire_logs=30"
+        sed -i '/\[mysqld\]/a expire_logs=30\' $mysql_conf
+    fi
 fi
 
 grep 'max_binlog_size=' $mysql_conf >/dev/null 2>&1
@@ -162,6 +166,7 @@ if [ $? -ne 0 ]; then
     echo "binlog_format=mixed"
     sed -i '/\[mysqld\]/a character-set-server=utf8\' $mysql_conf
 fi
+
 grep '^skip-name-resolve' $mysql_conf >/dev/null 2>&1
 if [ $? -ne 0 ]; then
     sed -i '/\[mysqld\]/a skip-name-resolve\' $mysql_conf
@@ -177,6 +182,57 @@ if [ $? -ne 0 ]; then
     fi
     echo "tmpdir=$mysql_tmp_path"
     sed -i "/\[mysqld\]/a tmpdir=$mysql_tmp_path" $mysql_conf
+fi
+
+if [[ $DB_VERSION == *"GreatSQL"* ]]; then    
+    grep 'explicit_defaults_for_timestamp=' $mysql_conf >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "explicit_defaults_for_timestamp=OFF"
+        sed -i '/\[mysqld\]/a explicit_defaults_for_timestamp=OFF\' $mysql_conf
+    fi
+    
+    grep 'sql_generate_invisible_primary_key=' $mysql_conf >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "sql_generate_invisible_primary_key=OFF"
+        sed -i '/\[mysqld\]/a sql_generate_invisible_primary_key=OFF\' $mysql_conf
+    fi
+    
+    grep 'default_authentication_plugin=' $mysql_conf >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "default_authentication_plugin=mysql_native_password"
+        sed -i '/\[mysqld\]/a default_authentication_plugin=mysql_native_password\' $mysql_conf
+    fi
+    
+    sql_mode="IGNORE_SPACE,STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
+    grep 'sql_mode' "$mysql_conf" >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "add sql_mode"
+        sed -i "/\[mysqld\]/a sql_mode = $sql_mode" "$mysql_conf"
+    else
+        echo "replace sql_mode"
+        sed -i "s/sql_mode.*/sql_mode = $sql_mode/" "$mysql_conf"
+    fi
+    
+    echo "init greatdb"
+    mysqld --initialize-insecure --user=mysql --datadir=/var/lib/mysql
+    echo "soft link greatdb"
+    sudo ln -sf /usr/bin/mysql /usr/bin/greatdb
+    sudo ln -sf /etc/systemd/system/mysql.service /etc/systemd/system/mariadb.service
+    sudo ln -sf /etc/systemd/system/mysql.service /usr/lib/systemd/system/mariadb.service
+    sudo ln -sf /usr/bin/mysql /usr/bin/mariadb
+    sudo systemctl daemon-reload
+    
+    if [ ! -d /var/log/mysql ]; then
+        echo "init mysql dir"
+        # init mysqmysl dir
+        # mv /var/lib/mysql /var/lib/mysql_backup_$(date +%F_%T)
+        mkdir /var/lib/mysql
+        chown mysql:mysql /var/lib/mysql
+        chmod 750 /var/lib/mysql
+        mysqld --initialize-insecure --user=mysql --datadir=/var/lib/mysql
+    else
+        echo "mysql dir exist skip init"
+    fi
 fi
 
 ([ x`systemctl is-enabled zstack-ha 2>/dev/null` == x"enabled" ] && { systemctl stop keepalived.service || true; }) || true
@@ -3289,6 +3345,7 @@ class InstallDbCmd(Command):
         parser.add_argument('--yum', help="Use ZStack predefined yum repositories. The valid options include: alibase,aliepel,163base,ustcepel,zstack-local. NOTE: only use it when you know exactly what it does.", default=None)
         parser.add_argument('--no-backup', help='do NOT backup the database. If the database is very large and you have manually backup it, using this option will fast the upgrade process. [DEFAULT] false', default=False)
         parser.add_argument('--ssh-key', help="the path of private key for SSH login $host; if provided, Ansible will use the specified key as private key to SSH login the $host", default=None)
+        parser.add_argument('--choose-database', help="Choose database to install. Default is MariaDB.", default=None)
 
     def run(self, args):
         current_host_ips = get_all_ips()
@@ -3432,6 +3489,73 @@ class InstallDbCmd(Command):
       when: change_root_result.rc != 0 and install_result.changed == False
 '''
 
+        logger.info('GreatDB is chose %s' % args.choose_database)
+        if args.choose_database == 'GreatDB':
+            logger.info('replace database ansible script')
+            yaml = '''---
+- hosts: $host
+  remote_user: root
+
+  vars:
+      root_password: $root_password
+      login_password: $login_password
+      yum_repo: "$yum_repo"
+      ansible_python_interpreter: /usr/bin/python2
+
+  tasks:
+    - name: ansible_distribution_major_version
+      set_fact:
+        ansible_distribution_major_version: "{{ ansible_distribution_major_version | int }}"
+
+    - name: pre install script
+      script: $pre_install_script
+      
+    - name: install readline needed by greatdb-client, greatdb-server
+      when: ansible_os_family == 'Kylin' and ansible_distribution_version == '10'
+      shell: yum clean all; yum --disablerepo="*" --enablerepo=zstack-local-greatdb install -y readline-8.0-3.ky10.x86_64
+
+    - name: install GreatDB
+      when: >
+        (ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8)
+        or 
+        (ansible_os_family == 'Kylin' and ansible_distribution_version == '10') 
+        and yum_repo != 'false'
+      shell: yum clean all; yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
+      register: install_result
+
+    - name: open 3306 port
+      when: ansible_os_family == 'RedHat'
+      shell: iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport 3306 -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport 3306 -j ACCEPT && service iptables save)
+
+    - name: post install script
+      script: $post_install_script
+
+    - name: start GreatDB service
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8
+      service: name=mysql state=restarted enabled=yes
+
+    - name: update root password
+      shell: $change_password_cmd
+      register: change_root_result
+      ignore_errors: yes
+
+    - name: grant access
+      when: change_root_result.rc == 0
+      shell: $grant_access_cmd
+
+    - name: rollback GreatDB
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8 and change_root_result.rc != 0 and install_result.changed == True
+      shell: yum remove -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
+
+    - name: failure
+      fail: >
+        msg="failed to change root password of MySQL, see prior error in task 'change root password'; the possible cause
+        is the machine used to have MySQL installed and removed, the previous password of root user is remaining on the
+        machine; try using --login-password. We have rolled back the MySQL installation so you can safely run install_db
+        again with --login-password set."
+      when: change_root_result.rc != 0 and install_result.changed == False
+'''
+
         if not args.root_password and not args.login_password:
             args.root_password = '''"''"'''
             more_cmd = ' '
@@ -3443,6 +3567,22 @@ class InstallDbCmd(Command):
                                '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{}' IDENTIFIED BY '' WITH GRANT OPTION; '''\
                                '''{} FLUSH PRIVILEGES;"'''.format(args.host, more_cmd)
+            if args.choose_database == 'GreatDB':
+                more_cmd = ' '
+                grant_access_cmd = ' '
+                for ip in current_host_ips:
+                    if not ip:
+                        continue
+                    if args.choose_database == 'GreatDB':
+                        more_cmd += "CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '' WITH GRANT OPTION;".format(host=ip)
+                        more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}';".format(host=ip)
+                grant_access_cmd = '''/usr/bin/mysql -u root -e ''' \
+                                   '''"CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED BY '';''' \
+                                   '''CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '';''' \
+                                   '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;''' \
+                                   '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;''' \
+                                   '''{more_cmd} FLUSH PRIVILEGES;"'''.format(host=host, more_cmd=more_cmd)
+
         else:
             if not args.root_password:
                 args.root_password = args.login_password
@@ -3455,6 +3595,21 @@ class InstallDbCmd(Command):
                                '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''{more_cmd} FLUSH PRIVILEGES;"'''.format(root_pass=args.root_password, host=args.host, more_cmd=more_cmd)
+            if args.choose_database == 'GreatDB':
+                more_cmd = ' '
+                grant_access_cmd = ' '
+                for ip in current_host_ips:
+                    if not ip:
+                        continue
+                    more_cmd += "CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '{root_pass}';".format(host=ip, root_pass=args.root_password)
+                    more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;".format(host=ip)
+                grant_access_cmd = '''/usr/bin/mysql -u root -p{root_pass} -e ''' \
+                                   '''"CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED BY '{root_pass}';''' \
+                                   '''CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '{root_pass}';''' \
+                                   '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;''' \
+                                   '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;''' \
+                                   '''{more_cmd} FLUSH PRIVILEGES;"'''.format(root_pass=args.root_password, host=args.host, more_cmd=more_cmd)
+
 
         if args.login_password is not None:
             change_root_password_cmd = '/usr/bin/mysqladmin -u root -p{{login_password}} password {{root_password}}'
@@ -5427,14 +5582,13 @@ class MysqlRestrictConnection(Command):
 
     def check_root_password(self, root_password, remote_ip=None):
         if remote_ip is not None:
-            status, output = commands.getstatusoutput(
-                "mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
+            cmd = ShellCmd("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
         else:
-            status, output = commands.getstatusoutput(
-                "mysql -u root -p%s -e 'show databases;'" % root_password)
+            cmd = ShellCmd("mysql -u root -p%s -e 'show databases;'" % root_password)
 
-        if status != 0:
-            error(output)
+        cmd(False)
+        if cmd.return_code != 0:
+            error(cmd.stderr)
 
 
     def get_db_portal(self):
@@ -5461,20 +5615,56 @@ class MysqlRestrictConnection(Command):
 
         return mn_ip
 
-    def grant_restrict_privilege(self, db_password, ui_db_password, root_password_, host, include_root):
-        grant_access_cmd = " GRANT USAGE ON *.* TO 'zstack'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, db_password)
-        grant_access_cmd = grant_access_cmd + (" GRANT USAGE ON *.* TO 'zstack_ui'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, ui_db_password))
+    def check_greatsql_existence(self):
+        try:
+            result = subprocess.call(['which', "greatdb"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return result == 0
+        except Exception as e:
+            return False
 
-        if include_root:
-            grant_access_cmd = grant_access_cmd + (" GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, root_password_))
+    def grant_restrict_privilege(self, db_password, ui_db_password, root_password_, host, include_root):
+        if self.check_greatsql_existence():
+            grant_access_cmd = " DROP USER IF EXISTS 'zstack'@'%s';" % host
+            grant_access_cmd += " DROP USER IF EXISTS 'zstack_ui'@'%s';" % host
+            grant_access_cmd += " CREATE USER 'zstack'@'%s' IDENTIFIED BY '%s';" % (host, db_password)
+            grant_access_cmd += " CREATE USER 'zstack_ui'@'%s' IDENTIFIED BY '%s';" % (host, ui_db_password)
+            # ZSTAC-73639 When upgrading MN, flyway is called using the zstack@mn_ip and zstack_ui@_ip accounts to execute sql,
+            # which contains some statements that must be SYSTEM_USER
+            grant_access_cmd += " GRANT SYSTEM_USER ON *.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack_rest.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack_ui.* TO 'zstack_ui'@'%s' WITH GRANT OPTION;" % host
+
+            if include_root:
+                grant_access_cmd += " DROP USER IF EXISTS 'root'@'%s';" % host
+                grant_access_cmd += " CREATE USER 'root'@'%s' IDENTIFIED BY '%s';" % (host, root_password_)
+                grant_access_cmd += " GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' WITH GRANT OPTION;" % host
+                grant_access_cmd += " GRANT SYSTEM_USER ON *.* TO 'root'@'%s' WITH GRANT OPTION;" % host
+        else:
+            grant_access_cmd = " GRANT USAGE ON *.* TO 'zstack'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, db_password)
+            grant_access_cmd = grant_access_cmd + (" GRANT USAGE ON *.* TO 'zstack_ui'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, ui_db_password))
+
+            if include_root:
+                grant_access_cmd = grant_access_cmd + (" GRANT ALL PRIVILEGES ON *.* TO 'root'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (host, root_password_))
 
         return grant_access_cmd
 
     def grant_restore_privilege(self, db_password, ui_db_password, root_password_):
-        grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
-               " GRANT USAGE ON *.* TO 'zstack'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
-               " GRANT USAGE ON *.* TO 'zstack_ui'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
-               " GRANT USAGE ON *.* TO 'root'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (db_password, ui_db_password, root_password_)
+        if self.check_greatsql_existence():
+            grant_access_cmd = (" DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
+               " DROP USER IF EXISTS 'zstack'@'%%'; CREATE USER 'zstack'@'%%' IDENTIFIED BY '%s';" \
+               " DROP USER IF EXISTS 'zstack_ui'@'%%'; CREATE USER 'zstack_ui'@'%%' IDENTIFIED BY '%s';" \
+               " DROP USER IF EXISTS 'root'@'%%'; CREATE USER 'root'@'%%' IDENTIFIED BY '%s';" \
+               " GRANT ALL PRIVILEGES ON zstack.* TO 'zstack'@'%%' WITH GRANT OPTION;" \
+               " GRANT ALL PRIVILEGES ON zstack_rest.* TO 'zstack'@'%%' WITH GRANT OPTION;" \
+               " GRANT ALL PRIVILEGES ON zstack_ui.* TO 'zstack_ui'@'%%' WITH GRANT OPTION;" \
+               " GRANT ALL PRIVILEGES ON *.* TO 'root'@'%%' WITH GRANT OPTION;" \
+               " GRANT SYSTEM_USER ON *.* TO 'root'@'%%' WITH GRANT OPTION;" % (db_password, ui_db_password, root_password_))
+        else:
+            grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
+                   " GRANT USAGE ON *.* TO 'zstack'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
+                   " GRANT USAGE ON *.* TO 'zstack_ui'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
+                   " GRANT USAGE ON *.* TO 'root'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (db_password, ui_db_password, root_password_)
         return grant_access_cmd
 
     def delete_privilege(self, host, include_root):
@@ -5487,21 +5677,29 @@ class MysqlRestrictConnection(Command):
     def grant_views_definer_privilege(self, root_password, remote_ip=None):
         if remote_ip is not None:
             status, output = commands.getstatusoutput(
-                "mysql -N -u root -p%s -h '%s' -e 'select definer from information_schema.VIEWS limit 1;'" % (root_password, remote_ip))
+                "mysql -N -u root -p%s -h '%s' -e 'select definer from information_schema.VIEWS where table_name like \"%s\" limit 1;'" % (root_password, remote_ip, "%VO"))
         else:
             status, output = commands.getstatusoutput(
-                "mysql -N -u root -p%s -e 'select definer from information_schema.VIEWS limit 1;'" % root_password)
+                "mysql -N -u root -p%s -e 'select definer from information_schema.VIEWS where table_name like \"%s\" limit 1;'" % (root_password, "%VO"))
 
         if status != 0:
             error("failed to get mysql views definer: %s" % output)
 
-        if output is not None and output.strip() != "":
-            user, host = output.split("@")
-            return  "USE mysql;  GRANT USAGE ON *.* TO '%s'@%s IDENTIFIED BY '%s' WITH GRANT OPTION;" % (user, host, root_password)
+        filtered_output = [line for line in output.splitlines() if not line.startswith("mysql:")]
 
+        if filtered_output:
+            result = filtered_output[-1]
+            user, host = result.split("@")
+            if self.check_greatsql_existence():
+                grant_access_sql = "USE mysql; CREATE USER IF NOT EXISTS '%s'@'%s' IDENTIFIED BY '%s';" % (user, host, root_password)
+                grant_access_sql += " GRANT ALL PRIVILEGES ON *.* TO '%s'@%s WITH GRANT OPTION;" % (user, host)
+                return grant_access_sql
+            else:
+                return "USE mysql;  GRANT USAGE ON *.* TO '%s'@%s IDENTIFIED BY '%s' WITH GRANT OPTION;" % (user, host, root_password)
         return ""
 
     def run(self, args):
+        info('Check greatsql existence: {}'.format(self.check_greatsql_existence()))
         if args.restrict and args.restore:
             error("argument: '--restrict' or '--restore' can only choose one")
         if args.restrict == False and args.restore == False:
@@ -5537,7 +5735,10 @@ class MysqlRestrictConnection(Command):
             grant_access_cmd = grant_access_cmd + " FLUSH PRIVILEGES;"
             grant_views_access_cmd = self.grant_views_definer_privilege(root_password_)
 
-            shell('''mysql -u root -p%s -e "%s %s"''' % (root_password_, grant_views_access_cmd, grant_access_cmd))
+            cmd = ShellCmd('''mysql -u root -p%s -e "%s %s"''' % (root_password_, grant_views_access_cmd, grant_access_cmd))
+            cmd(False)
+            if cmd.return_code != 0:
+                error("grant error grant_access_cmd=%s\nstderr=%s" % (grant_access_cmd, cmd.stderr))
 
             restrict_flags = "root" if args.include_root else "non-root"
             shell("echo %s > %s" % (restrict_flags, self.file))
@@ -5554,7 +5755,10 @@ class MysqlRestrictConnection(Command):
             grant_access_cmd = "USE mysql;"
             grant_access_cmd = grant_access_cmd + self.grant_restore_privilege(db_password, ui_db_password, root_password_) + " FLUSH PRIVILEGES;"
 
-            shell('''mysql -u root -p%s -e "%s"''' % (root_password_, grant_access_cmd))
+            cmd = ShellCmd('''mysql -u root -p%s -e "%s"''' % (root_password_, grant_access_cmd))
+            cmd(False)
+            if cmd.return_code != 0:
+                error("grant error grant_access_cmd=%s\nstderr=%s" % (grant_access_cmd, cmd.stderr))
             linux.rm_file_force(self.file)
 
             if is_ha:
@@ -5593,11 +5797,13 @@ class ChangeMysqlPasswordCmd(Command):
 
     def check_username_password(self, root_password, remote_ip):
         if remote_ip is not None:
-            status, output = commands.getstatusoutput("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
+            cmd = ShellCmd("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
         else:
-            status, output = commands.getstatusoutput("mysql -u root -p%s -e 'show databases;'" % root_password)
-        if status != 0:
-            error(output)
+            cmd = ShellCmd("mysql -u root -p%s -e 'show databases;'" % root_password)
+
+        cmd(False)
+        if cmd.return_code != 0:
+            error(cmd.stderr)
 
     def get_mysql_user_hosts(self, user, root_password, remote_ip):
         if remote_ip is None:
@@ -5619,8 +5825,16 @@ class ChangeMysqlPasswordCmd(Command):
                 hosts.append(host)
         return hosts
 
+    def check_greatsql_existence(self):
+        try:
+            result = subprocess.call(['which', "greatdb"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return result == 0
+        except Exception as e:
+            return False
+
 
     def run(self, args):
+        info('Check greatsql existence: {}'.format(self.check_greatsql_existence()))
         root_password_ = ''.join(map(check_special_root, args.root_password))
         new_password_ = ''.join(map(check_special_new, args.new_password))
         self.check_username_password(root_password_, args.remote_ip)
@@ -5629,7 +5843,10 @@ class ChangeMysqlPasswordCmd(Command):
         if (args.user_name in self.normal_users) or (args.user_name == 'root'):
             set_password_sql = ""
             for host in self.get_mysql_user_hosts(args.user_name, root_password_, args.remote_ip):
-                set_password_sql += "SET PASSWORD FOR '{user}'@'{host}' = PASSWORD('{new_pass}');".format(user=args.user_name, host=host, new_pass=new_password_)
+                if self.check_greatsql_existence():
+                    set_password_sql += "ALTER USER '{user}'@'{host}' IDENTIFIED BY '{new_pass}';".format(user=args.user_name, host=host, new_pass=new_password_)
+                else:
+                    set_password_sql += "SET PASSWORD FOR '{user}'@'{host}' = PASSWORD('{new_pass}');".format(user=args.user_name, host=host, new_pass=new_password_)
             set_password_sql += "FLUSH PRIVILEGES;"
             if args.remote_ip is not None:
                 sql = '''mysql -u root -p{root_pass} -h '{ip}' -e "{sql}" '''.format(root_pass=root_password_, ip=args.remote_ip, sql=set_password_sql)
@@ -5924,7 +6141,7 @@ class RestoreMysqlPreCheckCmd(Command):
 
         # tag::check_restore_mysql[]
         create_tmp_table = "drop table if exists `TempVolumeEO`; " \
-                           "create table `TempVolumeEO` like .`VolumeEO`;"
+                           "create table `TempVolumeEO` like `zstack`.`VolumeEO`;"
 
         check_sql = "select tv.uuid,`name`,installPath from `TempVolumeEO` tv where tv.uuid in " \
         "(select uuid from `VolumeEO`)" \
@@ -7145,11 +7362,19 @@ class ChangeIpCmd(Command):
         return shell("ip a | grep -w %s" % ip, False).strip().endswith("zs")
 
     def check_mysql_password(self, user, password):
-        status, output = commands.getstatusoutput("mysql -u%s -p%s -e 'show databases;'" % (user, password))
-        if status != 0:
-            error(output)
+        cmd = ShellCmd("mysql -u%s -p%s -e 'show databases;'" % (user, password))
+        cmd(False)
+        if cmd.return_code != 0:
+            error(cmd.stderr)
 
-    def restoreMysqlConnection(self, root_password):
+    def check_greatsql_existence(self):
+        try:
+            result = subprocess.call(['which', "greatdb"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return result == 0
+        except Exception as e:
+            return False
+
+    def restoreMysqlConnection(self, host, root_password):
         _, db_user, db_password = ctl.get_database_portal()
         _, ui_db_user, ui_db_password = ctl.get_ui_database_portal()
 
@@ -7161,7 +7386,20 @@ class ChangeIpCmd(Command):
         self.check_mysql_password(db_user, db_password)
         self.check_mysql_password(ui_db_user, ui_db_password)
 
-        grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
+        if self.check_greatsql_existence():
+            grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%';"
+            grant_access_cmd += " DROP USER IF EXISTS 'zstack'@'%s';" % host
+            grant_access_cmd += " DROP USER IF EXISTS 'zstack_ui'@'%s';" % host
+            grant_access_cmd += " CREATE USER 'zstack'@'%s' IDENTIFIED BY '%s';" % (host, db_password)
+            grant_access_cmd += " CREATE USER 'zstack_ui'@'%s' IDENTIFIED BY '%s';" % (host, ui_db_password)
+            # ZSTAC-73639 When upgrading MN, flyway is called using the zstack@mn_ip and zstack_ui@_ip accounts to execute sql,
+            # which contains some statements that must be SYSTEM_USER
+            grant_access_cmd += " GRANT SYSTEM_USER ON *.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack_rest.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
+            grant_access_cmd += " GRANT ALL PRIVILEGES ON zstack_ui.* TO 'zstack_ui'@'%s' WITH GRANT OPTION;" % host
+        else:
+            grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
                            " GRANT USAGE ON *.* TO 'zstack'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
                            " GRANT USAGE ON *.* TO 'zstack_ui'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
                            " GRANT USAGE ON *.* TO 'root'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (
@@ -7181,7 +7419,7 @@ class ChangeIpCmd(Command):
         if root_password is None:
             error("--root-password needs to be set")
 
-        self.restoreMysqlConnection(root_password)
+        self.restoreMysqlConnection(mysql_ip, root_password)
         if output == "non-root":
             shell("zstack-ctl mysql_restrict_connection --root-password %s --restrict" % root_password)
         elif output == "root":
