@@ -17,6 +17,7 @@ from zstacklib.utils import linux
 from zstacklib.utils import thread
 
 logger = log.get_logger(__name__)
+ISCSI_LOGIN_DEFAULT_TIMEOUT = 180
 
 
 class RetryException(Exception):
@@ -246,6 +247,19 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         vm.detach_data_volume(cmd.volume)
         return jsonobject.dumps(rsp)
 
+    def get_iqn_login_timeout(self, iqn, server_ip, server_port):
+        r, o = bash.bash_ro('iscsiadm --mode node --targetname "%s" -p %s:%s --op=show' % (iqn, server_ip, server_port))
+        if r != 0:
+            return ISCSI_LOGIN_DEFAULT_TIMEOUT
+        login_timeout = None
+        login_retry = None
+        for line in o.strip().splitlines():
+            if "node.conn[0].timeo.login_timeout" in line:
+                login_timeout = int(line.split("=")[-1])
+            elif "node.session.initial_login_retry_max" in line:
+                login_retry = int(line.split("=")[-1])
+        return login_timeout * login_retry + 60 if login_timeout and login_retry else ISCSI_LOGIN_DEFAULT_TIMEOUT
+
     @lock.lock('iscsiadm')
     @kvmagent.replyerror
     @bash.in_bash
@@ -335,9 +349,10 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
                             iqn, cmd.iscsiServerIp, cmd.iscsiServerPort, cmd.iscsiChapUserName))
                     bash.bash_o(
                         'iscsiadm --mode node --targetname "%s" -p %s:%s --op=update --name node.session.auth.password --value=%s' % (
-                            iqn, cmd.iscsiServerIp, cmd.iscsiServerPort, linux.shellquote(cmd.iscsiChapUserPassword)))                
-                r, o, e = bash.bash_roe('iscsiadm --mode node --targetname "%s" -p %s:%s --login' %
-                            (iqn, cmd.iscsiServerIp, cmd.iscsiServerPort))
+                            iqn, cmd.iscsiServerIp, cmd.iscsiServerPort, linux.shellquote(cmd.iscsiChapUserPassword)))
+                timeout = self.get_iqn_login_timeout(iqn, cmd.iscsiServerIp, cmd.iscsiServerPort)
+                r, o, e = bash.bash_roe('timeout -s SIGKILL %s iscsiadm --mode node --targetname "%s" -p %s:%s --login' %
+                            (timeout, iqn, cmd.iscsiServerIp, cmd.iscsiServerPort))
                 wait_iscsi_mknode(cmd.iscsiServerIp, cmd.iscsiServerPort, iqn, e)
             finally:
                 disks = list_iscsi_disks(cmd.iscsiServerIp, cmd.iscsiServerPort, iqn)
