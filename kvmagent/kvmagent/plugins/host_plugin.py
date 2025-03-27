@@ -3721,6 +3721,10 @@ done
 
             if status_info['smart_status'] is not None:
                 smartPassed = status_info['smart_status']['passed']
+
+            if smartPassed is None or smartPassed == "":
+                smartPassed = "true"
+
             return smartPassed, smartMessage
 
         def get_partition_table(name):
