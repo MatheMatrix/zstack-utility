@@ -2190,8 +2190,7 @@ class HaPlugin(kvmagent.KvmAgent):
             if host_storage_name in fencer_list:
                 fencer_list.append(ceph_controller.get_ha_fencer_name())
 
-            self.setup_fencer(get_fencer_key(ps_uuid, pool_name),
-                              created_time, origin_uuid=ps_uuid)
+            self.setup_fencer(get_fencer_key(ps_uuid, pool_name), created_time)
 
             ha_fencer = AbstractHaFencer(cmd.interval, cmd.maxAttempts, cmd.vgUuid, fencer_list)
             update_fencer = True
@@ -2212,7 +2211,8 @@ class HaPlugin(kvmagent.KvmAgent):
                         ceph_controller.ioctx = ioctx
                         fencer_init[ceph_controller.get_ha_fencer_name()] = ceph_controller
                         logger.debug("ceph start run fencer list :%s" % ",".join(fencer_list))
-                        while self.run_fencer(get_fencer_key(ps_uuid, pool_name), created_time):
+                        while self.run_fencer(get_fencer_key(ps_uuid, pool_name), created_time,
+                                              origin_uuid=ps_uuid):
                             if write_heartbeat_used_time:
                                 # wait an interval before next heartbeat
                                 time.sleep(cmd.interval)
