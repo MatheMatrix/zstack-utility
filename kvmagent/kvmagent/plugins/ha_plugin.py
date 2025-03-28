@@ -1576,6 +1576,7 @@ class HaPlugin(kvmagent.KvmAgent):
     CANCEL_NAS_SELF_FENCER = "/ha/aliyun/nas/cancelselffencer"
     ISCSI_SELF_FENCER = "/ha/iscsi/setupselffencer"
     CANCEL_ISCSI_SELF_FENCER = "/ha/iscsi/cancelselffencer"
+    CANCEL_CBD_SELF_FENCER = "/ha/cbd/cancelselffencer"
     BLOCK_SELF_FENCER = "/ha/block/setupselffencer"
     CANCEL_BLOCK_SELF_FENCER = "/ha/block/cancelselffencer"
     FILESYSTEM_CHECK_VMSTATE_PATH = "/filesystem/check/vmstate"
@@ -1634,6 +1635,12 @@ class HaPlugin(kvmagent.KvmAgent):
 
     @kvmagent.replyerror
     def cancel_iscsi_self_fencer(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        self.cancel_fencer(cmd.uuid)
+        return jsonobject.dumps(AgentRsp())
+
+    @kvmagent.replyerror
+    def cancel_cbd_self_fencer(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         self.cancel_fencer(cmd.uuid)
         return jsonobject.dumps(AgentRsp())
@@ -2484,6 +2491,7 @@ class HaPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.CANCEL_BLOCK_SELF_FENCER, self.cancel_block_self_fencer)
         http_server.register_async_uri(self.ISCSI_SELF_FENCER, self.setup_iscsi_self_fencer)
         http_server.register_async_uri(self.CANCEL_ISCSI_SELF_FENCER, self.cancel_iscsi_self_fencer)
+        http_server.register_async_uri(self.CANCEL_CBD_SELF_FENCER, self.cancel_cbd_self_fencer)
         http_server.register_async_uri(self.CEPH_HOST_HEARTBEAT_CHECK_PATH, self.ceph_host_heartbeat_check)
         http_server.register_async_uri(self.FILESYSTEM_CHECK_VMSTATE_PATH, self.file_system_check_vmstate)
         http_server.register_async_uri(self.SHAREDBLOCK_CHECK_VMSTATE_PATH, self.sharedblock_check_vmstate)
