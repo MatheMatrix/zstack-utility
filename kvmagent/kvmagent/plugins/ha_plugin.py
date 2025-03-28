@@ -1581,11 +1581,12 @@ class HaPlugin(kvmagent.KvmAgent):
     FILESYSTEM_CHECK_VMSTATE_PATH = "/filesystem/check/vmstate"
     SHAREDBLOCK_CHECK_VMSTATE_PATH = "/sharedblock/check/vmstate"
     ISCSI_CHECK_VMSTATE_PATH = "/iscsi/check/vmstate"
-    CBD_CHECK_VMSTATE_PATH = "/cbd/check/vmstate"
     ADD_VM_FENCER_RULE_TO_HOST = "/add/vm/fencer/rule/to/host"
     REMOVE_VM_FENCER_RULE_FROM_HOST = "/remove/vm/fencer/rule/from/host"
     GET_VM_FENCER_RULE = "/get/vm/fencer/rule/"
-    CBD_SETUP_SELF_FENCER_PATH = "/ha/cbd/setupselffencer"
+    SETUP_CBD_SELF_FENCER_PATH = "/ha/cbd/setupselffencer"
+    CANCEL_CBD_SELF_FENCER_PATH = "/ha/cbd/cancelselffencer"
+    CBD_CHECK_VMSTATE_PATH = "/cbd/check/vmstate"
 
     RET_SUCCESS = "success"
     RET_FAILURE = "failure"
@@ -1634,6 +1635,12 @@ class HaPlugin(kvmagent.KvmAgent):
 
     @kvmagent.replyerror
     def cancel_iscsi_self_fencer(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        self.cancel_fencer(cmd.uuid)
+        return jsonobject.dumps(AgentRsp())
+
+    @kvmagent.replyerror
+    def cancel_cbd_self_fencer(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         self.cancel_fencer(cmd.uuid)
         return jsonobject.dumps(AgentRsp())
@@ -2488,11 +2495,12 @@ class HaPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.FILESYSTEM_CHECK_VMSTATE_PATH, self.file_system_check_vmstate)
         http_server.register_async_uri(self.SHAREDBLOCK_CHECK_VMSTATE_PATH, self.sharedblock_check_vmstate)
         http_server.register_async_uri(self.ISCSI_CHECK_VMSTATE_PATH, self.iscsi_check_vmstate)
-        http_server.register_async_uri(self.CBD_CHECK_VMSTATE_PATH, self.cbd_check_vmstate)
         http_server.register_async_uri(self.ADD_VM_FENCER_RULE_TO_HOST, self.add_vm_fencer_rule_to_host)
         http_server.register_async_uri(self.REMOVE_VM_FENCER_RULE_FROM_HOST, self.remove_vm_fencer_rule_from_host)
         http_server.register_async_uri(self.GET_VM_FENCER_RULE, self.get_vm_fencer_rule)
-        http_server.register_async_uri(self.CBD_SETUP_SELF_FENCER_PATH, self.setup_cbd_self_fencer)
+        http_server.register_async_uri(self.SETUP_CBD_SELF_FENCER_PATH, self.setup_cbd_self_fencer)
+        http_server.register_async_uri(self.CANCEL_CBD_SELF_FENCER_PATH, self.cancel_cbd_self_fencer)
+        http_server.register_async_uri(self.CBD_CHECK_VMSTATE_PATH, self.cbd_check_vmstate)
 
 
 
