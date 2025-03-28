@@ -2190,7 +2190,8 @@ class HaPlugin(kvmagent.KvmAgent):
             if host_storage_name in fencer_list:
                 fencer_list.append(ceph_controller.get_ha_fencer_name())
 
-            self.setup_fencer(get_fencer_key(ps_uuid, pool_name), created_time)
+            self.setup_fencer(get_fencer_key(ps_uuid, pool_name),
+                              created_time, origin_uuid=ps_uuid)
 
             ha_fencer = AbstractHaFencer(cmd.interval, cmd.maxAttempts, cmd.vgUuid, fencer_list)
             update_fencer = True
@@ -2211,8 +2212,7 @@ class HaPlugin(kvmagent.KvmAgent):
                         ceph_controller.ioctx = ioctx
                         fencer_init[ceph_controller.get_ha_fencer_name()] = ceph_controller
                         logger.debug("ceph start run fencer list :%s" % ",".join(fencer_list))
-                        while self.run_fencer(get_fencer_key(ps_uuid, pool_name), created_time,
-                                              origin_uuid=ps_uuid):
+                        while self.run_fencer(get_fencer_key(ps_uuid, pool_name), created_time):
                             if write_heartbeat_used_time:
                                 # wait an interval before next heartbeat
                                 time.sleep(cmd.interval)
@@ -2644,7 +2644,7 @@ class HaPlugin(kvmagent.KvmAgent):
 
         report_to_management_node()
 
-    def run_fencer(self, ps_uuid, created_time, origin_uuid=None):
+    def run_fencer(self, ps_uuid, created_time):
         with self.fencer_lock:
             if ps_uuid not in self.run_fencer_timestamp:
                 logger.debug('ps not in run fencer dict')
@@ -2657,15 +2657,17 @@ class HaPlugin(kvmagent.KvmAgent):
             self.run_fencer_timestamp[ps_uuid] = created_time
             return True
 
+
+    def setup_fencer(self, ps_uuid, created_time, origin_uuid=None):
+        with self.fencer_lock:
+            logger.debug('setup fencer for ps: %s, create time: %d' % (ps_uuid, created_time))
+            self.run_fencer_timestamp[ps_uuid] = created_time
+
         if origin_uuid is not None:
             self.fencer_name_mapping[ps_uuid] = origin_uuid
         else:
             self.fencer_name_mapping[ps_uuid] = ps_uuid
 
-    def setup_fencer(self, ps_uuid, created_time):
-        with self.fencer_lock:
-            logger.debug('setup fencer for ps: %s, create time: %d' % (ps_uuid, created_time))
-            self.run_fencer_timestamp[ps_uuid] = created_time
 
     def cancel_fencer(self, ps_uuid):
         with self.fencer_lock:
