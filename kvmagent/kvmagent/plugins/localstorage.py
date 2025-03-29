@@ -818,6 +818,17 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = OfflineCommitSnapshotRsp()
 
+        if cmd.top in  cmd.aliveChainInstallPathInDb and cmd.base in cmd.aliveChainInstallPathInDb:
+            linux.qcow2_commit(cmd.top, cmd.base)
+            rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.storagePath)
+            return jsonobject.dumps(rsp)
+
+        # 检测当前物理机上有没有正在执行的commit
+        # 检测是否符合预期
+
+
+        # 检查链是否符合预期
+
         if linux.qcow2_get_backing_file(cmd.top) != linux.qcow2_get_backing_file(cmd.base):
             linux.qcow2_commit(cmd.top, cmd.base)
 
