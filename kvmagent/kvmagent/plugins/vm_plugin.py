@@ -1889,6 +1889,7 @@ class BlockCommitDaemon(plugin.TaskDaemon):
         self.base = base
         self.disk_name = disk_name
         self.active_commit = active_commit
+        self.chainInstallPathInDb = task_spec.chainInstallPathInDb
 
     def _cancel(self):
         # if canceled with task success, need pivot abort
@@ -1900,6 +1901,41 @@ class BlockCommitDaemon(plugin.TaskDaemon):
             percent = min(99, cur * 100.0 / end)
             return get_exact_percent(percent, self.stage)
 
+    def check_vm_xml_backing_file_consistency(self, top_child_new_backing):
+        expected = False
+        for disk_backing_file_chain in self.vm.get_all_disk_backing_chain():
+            logger.debug("disk_backing_file_chain %s" % disk_backing_file_chain)
+            if self.base in disk_backing_file_chain:
+                expected = self.top not in disk_backing_file_chain and top_child_new_backing == self.base
+                break
+        return expected
+
+    def __exit__(self, exc_type, ex, exc_tb):
+        super(BlockCommitDaemon, self).__exit__(exc_type, ex, exc_tb)
+        if exc_type is None:
+            return
+
+        if self.active_commit:
+            return
+
+        top_child_path = self.chainInstallPathInDb[self.chainInstallPathInDb.index(self.top) - 1]
+        top_child_new_backing = linux.qcow2_get_backing_file(top_child_path)
+        consistent_backing_store_by_libvirt = False
+        for i in xrange(5):
+            self.vm.refresh()
+            consistent_backing_store_by_libvirt = self.check_vm_xml_backing_file_consistency(top_child_new_backing)
+            if consistent_backing_store_by_libvirt:
+                break
+            time.sleep(1)
+
+        if consistent_backing_store_by_libvirt:
+            logger.debug("libvirt return live commit snapshot failure, but it succeed actually! "
+                         "expected volume[install path: %s] backing file is %s. "
+                         "check the vm xml meets expectations" % (top_child_path, self.base))
+        else:
+            logger.debug("live commit snapshot failed. expected backing %s, actually backing %s. "
+                         "check the vm xml does not meet expectations" % (self.base, top_child_new_backing))
+            raise ex
 
 class MergeSnapshotDaemon(plugin.TaskDaemon):
     def __init__(self, task_spec, vm, disk_name, top, base=None):
@@ -1932,7 +1968,7 @@ class MergeSnapshotDaemon(plugin.TaskDaemon):
                     expected = dest_disk_install_path_depth == chain_depth - 1
                 # for not fullRebase, check the current_install_path depth increased 1
                 if base_disk_install_path is not None:
-                    expected = disk_backing_file_chain[base_disk_install_path] == dest_disk_install_path_depth + 1
+                    expected = disk_backing_file_chain.index(base_disk_install_path) == dest_disk_install_path_depth + 1
                 break
         return expected
 
@@ -2294,6 +2330,14 @@ def get_volume_actual_installpath(install_path):
     elif install_path.startswith('block'):
         return install_path.replace("block://", "/dev/disk/by-id/wwn-0x")
     return install_path
+
+
+def get_volume_actual_installpaths(install_paths):
+    if install_paths:
+        new_install_paths = []
+        for install_path in install_paths:
+            new_install_paths.append(get_volume_actual_installpath(install_path))
+        return new_install_paths
 
 class VmOperationJudger(object):
     def __init__(self, op):
@@ -7888,8 +7932,24 @@ class VmPlugin(kvmagent.KvmAgent):
         rsp = kvmagent.AgentResponse()
 
         vm = get_vm_by_uuid(cmd.uuid)
-        for volume in cmd.volumes:
-            vm._get_target_disk(volume)
+        for volume_uuid in cmd.volumes:
+            vm._get_target_disk(volume_uuid)
+
+        if not cmd.volumesSnapshotChainMap:
+            return jsonobject.dumps(rsp)
+
+        errs = []
+        for chain_in_xml in vm.get_all_disk_backing_chain():
+            for volume_uuid, chain_in_db in cmd.volumesSnapshotChainMap.__dict__.items():
+                if chain_in_db[0] not in chain_in_xml:
+                    continue
+                for i in range(0, len(chain_in_db)):
+                    if chain_in_db[i] not in chain_in_xml:
+                        errs.append(("the volume[%s] snapshot chain in database is %s, but the actual chain is %s"
+                                     % (volume_uuid, chain_in_db, chain_in_xml)))
+        if errs:
+            rsp.success = False
+            rsp.error = " ;".join(errs)
 
         return jsonobject.dumps(rsp)
 
@@ -9149,6 +9209,31 @@ host side snapshot files chian:
         if vm.state != Vm.VM_STATE_RUNNING and vm.state != Vm.VM_STATE_PAUSED:
             raise kvmagent.KvmError('unable to commit volume snapshot, vm must be running or paused')
 
+        if cmd.chainInstallPathInDb:
+            chainInDb = get_volume_actual_installpaths(cmd.chainInstallPathInDb)
+            cmd.chainInstallPathInDb = chainInDb
+            cmd.top = get_volume_actual_installpath(cmd.top)
+            cmd.base = get_volume_actual_installpath(cmd.base)
+
+            for chainInXml in vm.get_all_disk_backing_chain():
+                if cmd.top in chainInXml or cmd.base in chainInXml:
+                    chain_is_consistent = True
+                    for i in range(len(chainInDb)):
+                        if chainInDb[i] not in chainInXml:
+                            chain_is_consistent = False
+
+                    if not chain_is_consistent:
+                        # duplicate deletion of the same node
+                        expected = cmd.top not in chainInXml and cmd.base in chainInXml
+                        if not expected:
+                            raise kvmagent.KvmError(
+                                "the volume alive snapshot chain in database is %s, but the actual chain is %s" % (
+                                    chainInDb, chainInXml))
+                        else:
+                            logger.debug("current node has already executed commit, return directly")
+                            rsp.size = VmPlugin._get_snapshot_size(cmd.base)
+                            return jsonobject.dumps(rsp)
+
         try:
             vm.do_block_commit(cmd, cmd.volume)
             if cmd.topChildrenInstallPathInDb:
@@ -9174,6 +9259,21 @@ host side snapshot files chian:
             raise kvmagent.KvmError("vm[uuid: %s] not found by libvirt" % cmd.vmUuid)
         if vm.state != Vm.VM_STATE_RUNNING and vm.state != Vm.VM_STATE_PAUSED:
             raise kvmagent.KvmError('unable to commit volume snapshot, vm must be running or paused')
+
+        if cmd.chainInstallPathInDb:
+            chain_in_db = get_volume_actual_installpaths(cmd.chainInstallPathInDb)
+            volume_path = get_volume_actual_installpath(cmd.volume.installPath)
+            for chainInXml in vm.get_all_disk_backing_chain():
+                if volume_path in chainInXml:
+                    chain_is_consistent = True
+                    for i in range(len(chain_in_db)):
+                        if chain_in_db[i] not in chainInXml:
+                            chain_is_consistent = False
+                            break
+
+                    if not chain_is_consistent:
+                        raise kvmagent.KvmError("the volume alive snapshot chain in database is %s, "
+                                                "but the actual chain is %s" % (chain_in_db, chainInXml))
 
         try:
             vm.block_stream_disk(cmd, cmd.volume, cmd.base)
