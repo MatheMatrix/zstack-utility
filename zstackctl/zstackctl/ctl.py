@@ -8865,8 +8865,8 @@ class UpgradeDbCmd(Command):
             db_backup_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'db_backup', time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime()), 'backup.sql')
             shell('mkdir -p %s' % os.path.dirname(db_backup_path))
             if db_password:
-                shell('mysqldump -u %s -p%s --host %s --port %s -d zstack > %s' % (db_user, db_password, db_hostname, db_port, db_backup_path))
-                shell('mysqldump -u %s -p%s --host %s --port %s zstack %s >> %s' % (db_user, db_password, db_hostname, db_port, mysqldump_skip_tables, db_backup_path))
+                shell('mysqldump -u %s -p\'%s\' --host %s --port %s -d zstack > %s' % (db_user, db_password, db_hostname, db_port, db_backup_path))
+                shell('mysqldump -u %s -p\'%s\' --host %s --port %s zstack %s >> %s' % (db_user, db_password, db_hostname, db_port, mysqldump_skip_tables, db_backup_path))
             else:
                 shell('mysqldump -u %s --host %s --port %s -d zstack > %s' % (db_user, db_hostname, db_port, db_backup_path))
                 shell('mysqldump -u %s --host %s --port %s zstack %s >> %s' % (db_user, db_hostname, db_port, mysqldump_skip_tables, db_backup_path))
