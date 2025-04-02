@@ -3149,6 +3149,8 @@ class Vm(object):
             e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
             e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(volume.installPath)})
             e(disk, 'target', None, {'dev': 'vd%s' % self.DEVICE_LETTERS[volume.deviceId], 'bus': 'virtio'})
+            if volume.physicalBlockSize:
+                e(disk, 'blockio', None, {'physical_block_size': str(volume.physicalBlockSize)})
             return disk
 
         dev_letter = self._get_device_letter(volume, addons)
@@ -5860,6 +5862,8 @@ class Vm(object):
                 e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
                 e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(_v.installPath)})
                 e(disk, 'target', None, {'dev': 'vd%s' % _dev_letter, 'bus': 'virtio'})
+                if _v.physicalBlockSize:
+                    e(disk, 'blockio', None, {'physical_block_size': str(_v.physicalBlockSize)})
                 return disk
 
             def volume_qos(volume_xml_obj):
@@ -8351,6 +8355,8 @@ class VmPlugin(kvmagent.KvmAgent):
             e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
             e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(_v.installPath)})
             e(disk, 'target', None, {'dev': 'vd%s' % _v.dev_letter, 'bus': 'virtio'})
+            if _v.physicalBlockSize:
+                e(disk, 'blockio', None, {'physical_block_size': str(_v.physicalBlockSize)})
             return disk
 
         def block_volume(_v):
