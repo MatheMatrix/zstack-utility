@@ -632,6 +632,8 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
                 raise Exception('fail to migrate vm to host, because %s' % str(err))
 
             written += os.path.getsize(path)
+            if cmd.storagePath != cmd.dstStoragePath:
+                PATH = cmd.dstStoragePath + path.replace(cmd.storagePath, "", 1)
             bash_errorout('/usr/bin/sshpass -f{{PASSWORD_FILE}} ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {{PORT}} {{USER}}@{{IP}} "/bin/sync {{PATH}}"')
             percent = int(round(float(written) / float(total) * (end - start) + start))
             report.progress_report(percent, "report")
