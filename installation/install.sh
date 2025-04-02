@@ -24,12 +24,8 @@ SS100_STORAGE='SS100-Storage'
 VERSION=${PRODUCT_VERSION:-""}
 VERSION_RELEASE_NR=`echo $PRODUCT_VERSION | awk -F '.' '{print $1"."$2"."$3}'`
 ZSTACK_INSTALL_ROOT=${ZSTACK_INSTALL_ROOT:-"/usr/local/zstack"}
-MINI_INSTALL_ROOT=${ZSTACK_INSTALL_ROOT}/zstack-mini/
 CURRENT_PROJECT_NUM=${ZSTACK_INSTALL_ROOT}/PJNUM
 UPGRADE_PROJECT_NUM=${PROJECT_NUM:-"001"}
-
-# zstack mini server before 1.1.0 is installed in /usr/local/zstack-mini
-LEGACY_MINI_INSTALL_ROOT="/usr/local/zstack-mini/"
 
 export TERM=xterm
 
@@ -44,10 +40,7 @@ REDHAT_WITHOUT_CENTOS6=`echo $REDHAT_OS |sed s/CENTOS6//`
 
 UPGRADE='n'
 FORCE='n'
-ZSV_INSTALL='n'
-MINI_INSTALL='n'
-CUBE_INSTALL='n'
-SANYUAN_INSTALL='n'
+ZSV_INSTALL='y'
 SDS_INSTALL='n'
 SKIP_PJNUM_CHECK='n'
 MANAGEMENT_INTERFACE=`ip route | grep default | head -n 1 | cut -d ' ' -f 5`
@@ -230,30 +223,6 @@ declare -a upgrade_params_array=(
 declare -a upgrade_persist_params_array=(
     '3.9.0,InfluxDB.enable.message.retention=false'
 )
-
-#persist more when install/upgrade mini
-upgrade_mini_persist_params(){
-  ui_mode=`zstack-ctl show_configuration |awk '/ui_mode/{print $3}'` >/dev/null 2>&1
-  if [ x"$MINI_INSTALL" = x"y" ] | [ x"$ui_mode" = x"mini" ];then
-    upgrade_persist_params_array+=('4.0.0,Search.autoRegister=false')
-  fi
-}
-
-#upgrade mini zwatch webhook
-upgrade_mini_zwatch_webhook(){
-  ui_mode=$(zstack-ctl get_configuration ui_mode)
-  if [ x"$MINI_INSTALL" != x"y" ] & [ x"$ui_mode" != x"mini" ]; then
-      return
-  fi
-  webhook=$(zstack-ctl get_configuration sns.systemTopic.endpoints.http.url | grep '/zwatch/webhook')
-  
-  if [ "$webhook" = "" ]; then
-      return
-  fi
-
-  webhook=$(echo "$webhook" | sed 's/zwatch\/webhook/webhook\/zwatch/g')
-  zstack-ctl configure sns.systemTopic.endpoints.http.url="$webhook" > /dev/null 2>&1
-}
 
 # configure deploy_mode if it is cube
 do_config_deploy_mode(){
@@ -793,24 +762,6 @@ You can also add '-q' to installer, then Installer will help you to set one.
     grep -q "$HOSTS_ITEM" /etc/hosts || echo "$HOSTS_ITEM" >> /etc/hosts
 }
 
-cs_check_hostname_mini () {
-    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    which hostname &>/dev/null
-    [ $? -ne 0 ] && return
-
-    CURRENT_HOSTNAME=`hostname`
-    CHANGE_HOSTNAME="zstack-mini-`dmidecode -s system-serial-number | tr -d '-' | awk '{print substr($0, length($0)-6)}' | tr 'A-Z' 'a-z'`"
-    [ x"$CURRENT_HOSTNAME" = x"$CHANGE_HOSTNAME" ] && return
-    
-    which hostnamectl >>/dev/null 2>&1
-    if [ $? -ne 0 ]; then
-        hostname $CHANGE_HOSTNAME >>$ZSTACK_INSTALL_LOG 2>&1
-    else
-        hostnamectl set-hostname $CHANGE_HOSTNAME >>$ZSTACK_INSTALL_LOG 2>&1
-        hostname $CHANGE_HOSTNAME >>$ZSTACK_INSTALL_LOG 2>&1
-    fi
-}
-
 cs_check_mysql_password () {
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     #If user didn't assign mysql root password, then check original zstack mysql password status
@@ -946,15 +897,10 @@ check_system(){
     fi
     show_spinner cs_pre_check
     cs_check_epel
-    if [ x"$MINI_INSTALL" = x"y" ];then
-        cs_check_hostname_mini
-    elif [ x"$UPGRADE" = x"y" ];then
+    if [ x"$UPGRADE" = x"y" ];then
         ui_mode=`zstack-ctl show_configuration |awk '/ui_mode/{print $3}'` >/dev/null 2>&1
         if [ x"$ui_mode" = x"" ];then
             echo 'ui_mode is not configured, it will be set based on your environment.' >>$ZSTACK_INSTALL_LOG 2>&1
-            [ -d ${LEGACY_MINI_INSTALL_ROOT} -o -d $MINI_INSTALL_ROOT ] && zstack-ctl configure ui_mode=mini || zstack-ctl configure ui_mode=zstack
-            [ -d ${LEGACY_MINI_INSTALL_ROOT} -o -d $MINI_INSTALL_ROOT ] && zstack-ctl configure log.management.server.retentionSizeGB=200
-            [ -d ${LEGACY_MINI_INSTALL_ROOT} -o -d $MINI_INSTALL_ROOT ] && zstack-ctl configure AppCenter.server.mode=on
             ui_mode=`zstack-ctl show_configuration |awk '/ui_mode/{print $3}'`
         fi
         cs_check_hostname_zstack
@@ -1469,8 +1415,6 @@ upgrade_zstack(){
         fi
     fi
 
-    upgrade_mini_persist_params
-
     #set zstack upgrade params 
     upgrade_params=''
     post_upgrade_version=`zstack-ctl get_version`
@@ -1511,9 +1455,6 @@ upgrade_zstack(){
     # set sns.systemTopic.endpoints.http.url if not exists
     zstack-ctl show_configuration | grep 'sns.systemTopic.endpoints.http.url' >/dev/null 2>&1
     [ $? -ne 0 ] && zstack-ctl configure sns.systemTopic.endpoints.http.url=$SNS_SCHEMA://localhost:$SNS_PORT/zwatch/webhook
-
-    # upgrade legacy mini zwatch webhook
-    upgrade_mini_zwatch_webhook
 
     # configure deploy_mode if it is cube
     do_config_deploy_mode
@@ -2004,13 +1945,6 @@ uz_stop_zstack_ui(){
         if [ -n "$PID" ]
         then
             echo `kill -9 $PID`
-        fi
-    fi 
-    if [ -d ${LEGACY_MINI_INSTALL_ROOT} -o -d ${MINI_INSTALL_ROOT} ]; then
-        systemctl stop zstack-mini
-        ps -ef | grep -w mini-server | grep -w java | grep -v 'grep' >>$ZSTACK_INSTALL_LOG 2>&1
-        if [ $? -eq 0 ]; then
-            fail "Failed to stop ${PRODUCT_NAME} MINI UI!"
         fi
     fi
     pass
@@ -2523,20 +2457,7 @@ setup_install_param(){
 sp_setup_install_param(){
     echo_subtitle "Setup Install Parameters"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    if [ x"$MINI_INSTALL" = x"y" ];then
-        show_spinner sd_install_zstack_mini_ui
-        UI_SERVER_PORT=8200
-        zstack-ctl configure ui_mode=mini
-        zstack-ctl configure AppCenter.server.mode=on
-        zstack-ctl configure log.management.server.retentionSizeGB=200
-    else
-        zstack-ctl configure ui_mode=zstack
-    fi
-
-    if [ x"$SANYUAN_INSTALL" = x"y" ];then
-        zstack-ctl configure identity.init.type="PRIVILEGE_ADMIN"
-        zstack-ctl configure sanyuan.installed=true
-    fi
+    zstack-ctl configure ui_mode=zstack
 
     # Port 9090 is already used by system service on KylinOS(ft2000)
     if [ $OS == "KYLIN4.0.2" ];then
@@ -3181,17 +3102,6 @@ sd_install_zstack_ui(){
     pass
 }
 
-# For MINI UI Server
-sd_install_zstack_mini_ui(){
-    echo_subtitle "Install ${PRODUCT_NAME} MINI-UI (takes a couple of minutes)"
-    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    bash /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/zstack_mini_server.bin -a >>$ZSTACK_INSTALL_LOG 2>&1
-    if [ $? -ne 0 ];then
-        fail "failed to install ${PRODUCT_NAME} MINI-UI in $MINI_INSTALL_ROOT"
-    fi
-    pass
-}
-
 # For UI 1.x
 sd_start_dashboard(){
     echo_subtitle "Start ${PRODUCT_NAME} Dashboard"
@@ -3213,8 +3123,6 @@ sd_start_zstack_ui(){
     ui_mode=`zstack-ctl get_configuration ui_mode`
     if [ x"$ui_mode" = x"zstack" ];then
         zstack-ctl start_ui >>$ZSTACK_INSTALL_LOG 2>&1
-    elif [ x"$ui_mode" = x"mini" ];then
-        systemctl start zstack-mini >>$ZSTACK_INSTALL_LOG 2>&1
     else
         fail "Unknown ui_mode, please make sure your configuration is correct."
     fi
@@ -3879,7 +3787,7 @@ load_install_conf() {
 
 load_install_conf
 OPTIND=1
-TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum -- "$@"`
+TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,zsv,sds,no-zops,skip-pjnum -- "$@"`
 if [ $? != 0 ]; then
     usage
 fi
@@ -3935,10 +3843,7 @@ do
         -z ) NOT_START_ZSTACK='y';shift;;
         --chrony-server-ip ) check_myarg $1 $2;CHRONY_SERVER_IP=$2;shift 2;;
         --grayscale ) check_myarg $1 $2;GRAYSCALE_UPGRADE=$2;shift 2;;
-        --mini) MINI_INSTALL='y';shift;;
         --zsv) ZSV_INSTALL='y';shift;;
-        --cube) CUBE_INSTALL='y';shift;;
-        --SY) SANYUAN_INSTALL='y';shift;;
         --sds) SDS_INSTALL='y';shift;;
         --no-zops) SKIP_ZOPS_INSTALL='y';shift;;
         --skip-pjnum) SKIP_PJNUM_CHECK='y';shift;;
@@ -3980,10 +3885,6 @@ fi
 ZSV_SOURCE_FILE=/opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/zsphere_config/version
 if [ -s "$ZSV_SOURCE_FILE" ]; then
     ZSV_INSTALL='y'
-fi
-
-if [ x"$ZSV_INSTALL" = x"y" ] && [ x"$CUBE_INSTALL" = x"y" ];then
-    fail2 "\n\tYou can not install use both cube and zsv mode.\n\n"
 fi
 
 if [ ! -z $ZSTACK_PKG_MIRROR ]; then
@@ -4272,9 +4173,6 @@ if [ x"$UPGRADE" = x'y' ]; then
     ZSTACK_INSTALL_ROOT=`eval echo "~zstack"`
     ZSTACK_VERSION=$ZSTACK_INSTALL_ROOT/VERSION
 
-    MINI_INSTALL_ROOT=${ZSTACK_INSTALL_ROOT}/zstack-mini/
-    MINI_VERSION=${MINI_INSTALL_ROOT}/VERSION
-
     check_version
     touch $UPGRADE_LOCK
     upgrade_folder=`mktemp`
@@ -4297,8 +4195,6 @@ if [ x"$UPGRADE" = x'y' ]; then
         fi
     fi
     UI_CURRENT_STATUS='n'
-    # for zstack-mini-1.0.0, 'zstack-ctl stop' cannot stop mini-server
-    [ -d /usr/local/zstack-mini ] && systemctl stop zstack-mini
     UI_INSTALLATION_STATUS='y'
     zstack-ctl status 2>/dev/null|grep -q 'UI status' >/dev/null 2>&1
     if [ $? -eq 0 ]; then
@@ -4525,11 +4421,6 @@ else
     [ $? -ne 0 ] && zstack-ctl configure chrony.serverIp.0="${MANAGEMENT_IP}"
 fi
 
-# deploy by cube mode
-if [ x"$CUBE_INSTALL" = x"y" ];then
-    zstack-ctl configure deploy_mode="cube"
-fi
-
 if [ x"$ZSV_INSTALL" = x"y" ];then
     zstack-ctl configure deploy_mode="zsv"
 fi
@@ -4561,17 +4452,6 @@ fi
 
 if [ -f /bin/systemctl ]; then
     systemctl start zstack.service >/dev/null 2>&1
-fi
-
-#Start bootstrap service for mini
-if [ x"$MINI_INSTALL" = x"y" ];then
-    install_zstack_network
-    cp /opt/zstack-dvd/${BASEARCH}/${ZSTACK_RELEASE}/mini_auto_check /etc/init.d/
-    chmod +x /etc/init.d/mini_auto_check
-    echo "systemctl start zstack-network-agent" >> /etc/rc.local
-    echo "[ -f /etc/init.d/mini_auto_check ] && bash /etc/init.d/mini_auto_check" >> /etc/rc.local
-    echo "[ -f /etc/issue.bak ] && mv /etc/issue.bak /etc/issue" >> /etc/profile
-    cp /etc/issue /etc/issue.bak
 fi
 
 config_journal(){
