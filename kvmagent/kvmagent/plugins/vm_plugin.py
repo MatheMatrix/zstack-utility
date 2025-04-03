@@ -2032,6 +2032,13 @@ class VmVolumesRecoveryTask(plugin.TaskDaemon):
         except (AttributeError, KeyError):
             return None
 
+    def get_protocol(self, d):
+        # d->type: etree.Element
+        try:
+            return d.find('source').attrib["protocol"]
+        except (AttributeError, KeyError):
+            return None
+
     def add_backing_chain_to_disk(self, disk_ele):
         fpath = self.get_source_file(disk_ele)
         # no need to add backing chain on rbd img
@@ -2040,6 +2047,10 @@ class VmVolumesRecoveryTask(plugin.TaskDaemon):
         # zsblk-agent might auto-deactivate idle LV
         if fpath.startswith('/dev/') and not os.path.exists(fpath):
             lvm.active_lv(fpath, False)
+
+        protocol = self.get_protocol(disk_ele)
+        if protocol:
+            fpath = "%s:%s" % (protocol, fpath)
 
         backing_chain = Vm._get_backfile_chain(fpath)
         disk_type = disk_ele.attrib['type']
