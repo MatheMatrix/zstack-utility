@@ -60,14 +60,14 @@ class SecurityGroup(object):
     def add_rule(self, rule):
         rto = RuleTO(rule)
         if rto.version == 4:
-            if rto.type == RULE_TYPE_INGRESS:
+            if rto.ruleType == RULE_TYPE_INGRESS:
                 self.ingress_rules.append(rto)
-            elif rto.type == RULE_TYPE_EGRESS:
+            elif rto.ruleType == RULE_TYPE_EGRESS:
                 self.egress_rules.append(rto)
         if rto.version == 6:
-            if rto.type == RULE_TYPE_INGRESS:
+            if rto.ruleType == RULE_TYPE_INGRESS:
                 self.ip6_ingress_rules.append(rto)
-            elif rto.type == RULE_TYPE_EGRESS:
+            elif rto.ruleType == RULE_TYPE_EGRESS:
                 self.ip6_egress_rules.append(rto)
 
     def set_uuid(self, uuid):
@@ -98,7 +98,7 @@ class SecurityGroup(object):
 class RuleTO(object):
     def __init__(self, ruleTO):
         self.priority = ruleTO.priority
-        self.type = ruleTO.type
+        self.ruleType = ruleTO.ruleType
         self.state = ruleTO.state
         self.version = ruleTO.ipVersion
         self.protocol = ruleTO.protocol
@@ -426,7 +426,7 @@ class SecurityGroupPlugin(kvmagent.KvmAgent):
                 else:
                     rule_str.extend(['-s', rto.src_ips])
             else:
-                ipset_name = self._make_sg_rule_ipset_name(sg_uuid, rto.type, rto.priority)
+                ipset_name = self._make_sg_rule_ipset_name(sg_uuid, rto.ruleType, rto.priority)
                 ipset_mn.create_set(name=ipset_name, match_ips=rto.src_ips.split(self.IP_SPLIT), ip_version=self.ZSTACK_IPSET_FAMILYS[ip_version])
                 rule_str.extend(['-m set --match-set', ipset_name, 'src'])
         if rto.dst_ips:
@@ -436,13 +436,13 @@ class SecurityGroupPlugin(kvmagent.KvmAgent):
                 else:
                     rule_str.extend(['-d', rto.dst_ips])
             else:
-                ipset_name = self._make_sg_rule_ipset_name(sg_uuid, rto.type, rto.priority)
+                ipset_name = self._make_sg_rule_ipset_name(sg_uuid, rto.ruleType, rto.priority)
                 ipset_mn.create_set(name=ipset_name, match_ips=rto.dst_ips.split(self.IP_SPLIT), ip_version=self.ZSTACK_IPSET_FAMILYS[ip_version])
                 rule_str.extend(['-m set --match-set', ipset_name, 'dst'])
         if rto.remote_group_uuid:
             zstack_ipset_name = self._make_security_group_ipset_name(rto.remote_group_uuid, ip_version)
             ipset_mn.create_set(name=zstack_ipset_name, match_ips=rto.remote_group_vm_ips, ip_version=self.ZSTACK_IPSET_FAMILYS[ip_version])
-            if rto.type == RULE_TYPE_INGRESS:
+            if rto.ruleType == RULE_TYPE_INGRESS:
                 rule_str.extend(['-m state --state NEW', '-m set --match-set', zstack_ipset_name, 'src'])
             else:
                 rule_str.extend(['-m state --state NEW', '-m set --match-set', zstack_ipset_name, 'dst'])
@@ -459,7 +459,7 @@ class SecurityGroupPlugin(kvmagent.KvmAgent):
         if rto.dst_ports:
             rule_str.append(rto.dst_ports.replace(self.RANGE_SPLIT, self.PORT_SPLIT))
 
-        rule_comment = self._make_sg_rule_comment(rto.type, rto.priority)
+        rule_comment = self._make_sg_rule_comment(rto.ruleType, rto.priority)
         rule_str.extend(['-m comment --comment', rule_comment])
 
         if rto.action:
