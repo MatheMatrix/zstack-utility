@@ -110,7 +110,7 @@ def changeNicToDpdkDriver(nicNamePciAddressMap):
                 break
 
         if not found:
-            return 1, "nic [pci address: %s] is not found by dpdk-devbind.py".format(pciAddress)
+            return 1, "nic [pci address: {}] is not found by dpdk-devbind.py".format(pciAddress)
 
         if driver == "mlx5_core":
             # mellanox nic(like cx-5) does not need vfio driver

@@ -102,12 +102,14 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             4 bundle of packages need to be installed: ofed, dpdk, ovs, ovn
         '''
         packages = ["dpdk", "ovs", "ovn"]
+        '''
         dpdkNics = ovn.getAllDpdkNic()
         for nic in dpdkNics:
             if nic.driver == "mlx5_core":
                 # packages = ["ofed", "dpdk", "ovs", "ovn"]
                 packages = ["dpdk", "ovs", "ovn"]
                 break
+        '''
 
         temp_dir = tempfile.mkdtemp()
         for pack in packages:
