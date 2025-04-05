@@ -945,14 +945,14 @@ def start_vg_lock(vgUuid, hostId, retry_times_for_checking_vg_lockspace):
             return True
 
     def check_lockspace():
-        r = sanlock.dd_check_lockspace("/dev/mapper/%s-lvmlock" % vgUuid)
+        r = sanlock.test_direct_read("/dev/mapper/%s-lvmlock" % vgUuid)
         if r != 0:
             bash.bash_roe("dmsetup remove %s-lvmlock" % vgUuid)
             return
         elif continue_lockspace_track.get(vgUuid) is False:
             logger.debug("direct init lockspace[%s] has already been executed but the lockspace has not been restored, skip it" % vgUuid)
             return
-        sanlock.check_delta_lease(vgUuid, hostId)
+        sanlock.repair_lockspace_if_corrupted(vgUuid, hostId)
         continue_lockspace_track.update({vgUuid: False})
 
     @linux.retry(times=5, sleep_time=random.uniform(0.1, 10))
@@ -969,7 +969,7 @@ def start_vg_lock(vgUuid, hostId, retry_times_for_checking_vg_lockspace):
             vg_lock_exists(vgUuid)
         except Exception:
             check_lockspace()
-            sanlock.init_gllk_if_need(vgUuid)
+            sanlock.repair_gllk_if_corrupted(vgUuid)
             raise
     try:
         vg_lock_exists(vgUuid)
