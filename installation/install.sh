@@ -3552,7 +3552,7 @@ cat > $repo_file << EOF
 name=zstack-local-greatdb
 baseurl=file:///opt/zstack-dvd/\$basearch/\$YUM0/Extra/zstack-experimental/
 gpgcheck=0
-enabled=1
+enabled=0
 module_hotfixes=true
 EOF
 
