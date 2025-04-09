@@ -320,6 +320,7 @@ class HostsState(object):
     def __init__(self, lines, lockspace_name):
         self.lockspace_name = lockspace_name
         self.hosts = {}
+        self.host_timestamp = {}
         self._update(lines)
 
     def _update(self, lines):
@@ -330,8 +331,10 @@ class HostsState(object):
                 find_lockspace = True
             elif line.strip().startswith('h ') and find_lockspace:
                 host_id = line.split()[1]
-                host_state = line.split()[6]
+                host_state = line.split()[-1]
+                timestamp = line.split()[-2]
                 self.hosts.update({host_id: host_state})
+                self.host_timestamp.update({host_id: timestamp})
             elif find_lockspace and line.strip().startswith('s lvm_'):
                 break
         logger.debug("get hosts state[%s] on lockspace %s" % (self.hosts, self.lockspace_name))
@@ -341,6 +344,9 @@ class HostsState(object):
 
     def is_host_dead(self, host_id):
         return self.hosts.get(str(host_id)) == "DEAD"
+
+    def get_timestamp(self, host_id):
+        return self.host_timestamp.get(str(host_id))
     
     def get_live_min_hostid(self):
         ids = [int(id) for id in self.hosts.keys() if self.is_host_live(id)]
@@ -498,3 +504,14 @@ class RetryException(Exception):
 
 def calc_id_renewal_fail_seconds(io_timeout):
     return 8 * int(io_timeout)
+
+
+def calc_host_dead_seconds(io_timeout):
+    return 8 * int(io_timeout) + get_watchdog_fire_timeout()
+
+@bash.in_bash
+def get_watchdog_fire_timeout():
+    r, o = bash.bash_ro("sanlock client status -D | grep watchdog_fire_timeout")
+    if r == 0:
+        return int(o.strip().split("=")[1])
+    return 60
