@@ -1,7 +1,8 @@
 from zstacklib.utils import linux
 from zstacklib.utils import shell
 import subprocess
-
+from zstacklib.utils import log
+logger = log.get_logger(__name__)
 
 def export(port, *args):
     command = 'qemu-nbd -p %s' % port
@@ -19,11 +20,3 @@ def kill_nbd_process_by_flag(flag):
 def find_qemu_nbd_process(pattern):
     command = "pgrep -a qemu-nbd | grep %s" % pattern
     return shell.run(command)
-
-
-def get_volume_actual_install_path(path):
-    if path.startswith('sharedblock'):
-        return path.replace("sharedblock:/", "/dev")
-    elif path.startswith('ceph'):
-        return path.replace("ceph://", "rbd:")
-    return path

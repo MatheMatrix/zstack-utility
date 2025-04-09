@@ -9225,7 +9225,9 @@ host side snapshot files chian:
             for volumeInfo in cmd.volumeInfos:
                 format, install_path = volumeInfo.volume.format, volumeInfo.volume.installPath
                 port, locked = linux.find_free_port_with_locking(start_port, end_port)
-                real_path = qemu_nbd.get_volume_actual_install_path(install_path)
+                real_path = self.get_cbt_volume_actual_install_path(install_path)
+                if volumeInfo.volume.primaryStorageType == "SharedBlock":
+                    lvm.active_lv(real_path, True)
                 _export_nbd(port, format, real_path, volumeInfo.volume.volumeUuid)
                 volumeInfo.scratchNodeName = volumeInfo.volume.volumeUuid
                 volumeInfo.nbdPort = port
@@ -9248,11 +9250,20 @@ host side snapshot files chian:
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = kvmagent.AgentResponse()
         for volume in cmd.volumes:
-            real_path = qemu_nbd.get_volume_actual_install_path(volume.installPath)
+            real_path = self.get_cbt_volume_actual_install_path(volume.installPath)
             qemu_nbd.kill_nbd_process_by_flag(real_path)
+            if volume.primaryStorageType == 'SharedBlock':
+                lvm.deactive_lv(real_path, False)
 
         rsp.success = True
         return jsonobject.dumps(rsp)
+
+    def get_cbt_volume_actual_install_path(self, path):
+        if path.startswith('sharedblock'):
+            return path.replace("sharedblock:/", "/dev")
+        elif path.startswith('ceph'):
+            return path.replace("ceph://", "rbd:")
+        return path
 
     @kvmagent.replyerror
     def list_exported_volumes(self, req):
@@ -9320,7 +9331,7 @@ host side snapshot files chian:
 
         try:
             isc = ImageStoreClient()
-            isc.stop_vm_cbt_backup_jobs(cmd.vmUuid)
+            isc.stop_vm_cbt_backup_jobs(cmd.vmUuid, cmd.records)
         except Exception as e:
             content = traceback.format_exc()
             logger.warn("stop vm cbt task failed: " + str(e) + '\n' + content)
