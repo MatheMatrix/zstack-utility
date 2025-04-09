@@ -1936,9 +1936,25 @@ mimetype.assign = (
         for pid in pids:
             linux.kill_process(pid)
 
+        pids = linux.find_all_process_by_cmdline([conf_path])
+        if pids:
+            logger.warn('lighttpd process is still running, pid: %s' % pids)
+
         linux.mkdir('/var/log/lighttpd', 0o750)
         #restart lighttpd to load new configration
-        shell.call('ip netns exec %s lighttpd -f %s' % (to.namespaceName, conf_path))
+        try:
+            shell.call('ip netns exec %s lighttpd -f %s' % (to.namespaceName, conf_path))
+        except Exception as e:
+            if "Address already in use" in str(e):
+                logger.warn('lighttpd process is already running')
+                try:
+                    netstat = shell.call('ip netns exec %s netstat -anp | grep lighttpd' % to.namespaceName, exception=False)
+                    logger.debug('lighttpd process is already running, netstat: %s' % netstat)
+                except Exception as e:
+                    logger.warn('failed to check lighttpd process: %s' % str(e))
+            else:
+                logger.warn('failed to start lighttpd: %s' % str(e))
+
         if not linux.wait_callback_success(check, None, 5):
             raise Exception('lighttpd[conf-file:%s] is not running after being started %s seconds' % (conf_path, 5))
 
