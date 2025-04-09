@@ -375,11 +375,11 @@ def direct_dump_resource(path, offset, size=SMALL_ALIGN_SIZE):
 
 @bash.in_bash
 def vertify_delta_lease(vg_uuid, host_id):
-    return bash.bash_r("sanlock client read -s lvm_%s:%s:/dev/mapper/%s-lvmlock:0" % (vg_uuid, host_id, vg_uuid))
+    return bash.bash_r("sanlock direct read_leader -s lvm_%s:%s:/dev/mapper/%s-lvmlock:0" % (vg_uuid, host_id, vg_uuid))
 
 @bash.in_bash
 def vertify_paxos_lease(vg_uuid, resource_name, offset):
-    return bash.bash_r("sanlock client read -r lvm_%s:%s:/dev/mapper/%s-lvmlock:%s" % (vg_uuid, resource_name, vg_uuid, offset))
+    return bash.bash_r("sanlock direct read_leader -r lvm_%s:%s:/dev/mapper/%s-lvmlock:%s" % (vg_uuid, resource_name, vg_uuid, offset))
 
 def get_vglks():
     result = []
