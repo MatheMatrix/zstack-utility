@@ -43,8 +43,12 @@ class Api(object):
         self.api_result_url = http.build_url(('http', host, port, result_path))
         self.curl = curl
 
-    def _get_response(self, ret_uuid):
+    def _get_async_result_url(self, ret_uuid):
         url = '%s%s' % (self.api_result_url, ret_uuid)
+        return url
+
+    def _get_response(self, ret_uuid):
+        url = self._get_async_result_url(ret_uuid)
         jstr = http.json_dump_get(url, print_curl=self.curl)
         rsp = jsonobject.loads(jstr)
         return rsp
@@ -155,7 +159,8 @@ class Api(object):
             curr += interval
 
         if curr >= timeout:
-            raise ApiError('API call[%s] timeout after %dms' % (apicmd.FULL_NAME, curr))
+            raise ApiError('API call[%s] timeout after %dms, state[%s]. Request result url for details: %s' % (
+                apicmd.FULL_NAME, timeout, rsp.state, self._get_async_result_url(ret_uuid)))
 
         logger.debug("async call[url: %s, response: %s] after %dms" % (self.api_url, mask_result(apievent, rsp.result), curr))
         reply = jsonobject.loads(rsp.result)
