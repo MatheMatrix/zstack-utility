@@ -4294,8 +4294,8 @@ class Vm(object):
             interface = Vm._build_interface_xml(cmd.nic, None, vhostSrcPath, action, brMode)
 
         def addon():
-            if cmd.addons and cmd.addons['NicQos']:
-                qos = cmd.addons['NicQos']
+            if cmd.nic.addons and cmd.nic.addons['NicQos'] and cmd.nic.addons['NicQos'][cmd.nic.uuid]:
+                qos = cmd.nic.addons['NicQos'][cmd.nic.uuid]
                 Vm._add_qos_to_interface(interface, qos)
 
         addon()
