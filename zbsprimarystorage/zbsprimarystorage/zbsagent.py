@@ -433,9 +433,12 @@ class ZbsAgent(plugin.TaskManager):
         else:
             install_path = cmd.installPath
 
-        port = linux.get_free_port_in_range(10600, 10800)
+        start_port, end_port = linux.parse_port_range(cmd.portRange)
+        port, l = linux.find_free_port_with_locking(start_port, end_port)
         desc = "cbd2nbd.%d" % port
         zbsutils.cbd_to_nbd(desc, port, install_path)
+        if l:
+            l.release()
         rsp.ip = cmd.mdsAddr
         rsp.port = port
         return jsonobject.dumps(rsp)

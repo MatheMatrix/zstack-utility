@@ -136,6 +136,48 @@ class ImageStoreClient(object):
             if err:
                 raise Exception('fail to mirror volume %s, because %s' % (vm, str(err)))
 
+    def cbt_backup_volume(self, vm, volume_infos, bitmapTimestamp, portRange):
+        def _parse_json_and_update_mode(volume_infos, json_data):
+            json_list = json.loads(json_data)
+            infos = []
+
+            for info in volume_infos:
+                target_disk, _ = vm._get_target_disk(info.volume)
+                node_name = self.get_disk_device_name(target_disk)
+                for item in json_list:
+                    if item['device'] == node_name:
+                        info.mode = item['mode']
+                        info.scratchNodeName = item['scratchNodeName']
+                        info.nbdPort = item['nbdPort']
+                        info.bitmapName = item['bitmap']
+                        infos.append(info)
+                        continue
+            return infos
+
+
+        volumes = ""
+        for volume_info in volume_infos:
+            target_disk, _ = vm._get_target_disk(volume_info.volume)
+            node_name = self.get_disk_device_name(target_disk)
+
+            target_install_path = volume_info.target
+            volumes += ",".join([node_name, target_install_path]) + ";"
+
+        PFILE = linux.create_temp_file()
+        with linux.ShowLibvirtErrorOnException(vm):
+            cmdstr = '%s cbtbak -domain %s -volumes "%s" -bitmap "%s" -portrange "%s" > %s' % \
+                     (self.ZSTORE_CLI_PATH, vm.uuid, volumes, bitmapTimestamp, portRange, PFILE)
+            shell.call(cmdstr)
+            with open(PFILE) as fd:
+                linux.rm_file_force(PFILE)
+                json_data = fd.read()
+                return  _parse_json_and_update_mode(volume_infos, json_data)
+
+    def stop_vm_cbt_backup_jobs(self, vm, force=False):
+        with linux.ShowLibvirtErrorOnException(vm):
+            cmdstr = '%s stopcbtbak -force=%s -domain %s' % (self.ZSTORE_CLI_PATH, force, vm)
+            return shell.call(cmdstr).strip()
+
     def query_vm_mirror_latencies_boundary(self, vm, times):
         with linux.ShowLibvirtErrorOnException(vm):
             infosMaps = []
@@ -355,3 +397,7 @@ class ImageStoreClient(object):
         rsp = kvmagent.AgentResponse()
         rsp.destPath = destPath
         return jsonobject.dumps(rsp)
+
+    def get_disk_device_name(self, disk):
+        # The disk type on FT-backup_vm is quorom
+        return ('' if disk.type_ == 'quorum' else 'drive-') + disk.alias.name_
