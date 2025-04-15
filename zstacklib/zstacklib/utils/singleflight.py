@@ -1,4 +1,5 @@
 import threading
+import time
 
 
 class Result:
@@ -29,27 +30,47 @@ class Call:
 
 
 class Group:
-    def __init__(self):
+    def __init__(self, cache_ttl=60):
         self.mu = threading.Lock()
         self.m = {}
+        self.cache = {}
+        self.cache_ttl = cache_ttl
 
     def do(self, key, fn):
-        self.mu.acquire()
-        if key in self.m:
-            c = self.m[key]
-            self.mu.release()
-            result = c.wait()
-            result.shared = True
-            return result
+        now = time.time()
+        with self.mu:
+            if key in self.cache:
+                cached = self.cache[key]
+                if now < cached["expiry"]:
+                    result = cached["result"]
+                    result.shared = True
+                    return result
+                else:
+                    del self.cache[key]
 
-        c = Call(fn)
-        self.m[key] = c
-        self.mu.release()
+            if key in self.m:
+                call = self.m[key]
+                result = call.wait()
+                if key in self.cache and self.cache[key]["expiry"] > now:
+                    result = self.cache[key]["result"]
+                    result.shared = True
+                else:
+                    self._update_cache(key, result, now)
+                return result
 
-        result = c.wait()
+            call = Call(fn)
+            self.m[key] = call
 
-        self.mu.acquire()
-        del self.m[key]
-        self.mu.release()
+        result = call.wait()
+
+        with self.mu:
+            self._update_cache(key, result, now)
+            del self.m[key]
 
         return result
+
+    def _update_cache(self, key, result, timestamp):
+        self.cache[key] = {
+            "result": result,
+            "expiry": timestamp + self.cache_ttl
+        }
