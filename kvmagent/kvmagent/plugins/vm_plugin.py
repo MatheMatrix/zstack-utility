@@ -9302,25 +9302,26 @@ host side snapshot files chian:
     def get_volumes_cbt_bitmaps(self, req):
         def _merge_json_data(rbd_list, qcow2_list):
             result = {}
-            qcow2_result = {}
+            merge_result = {}
+            qcow2_result = qcow2_list
             for rbd_start, rbd_length in rbd_list.items():
                 rbd_end = rbd_start + rbd_length
                 result[rbd_start] = rbd_length
 
                 if not qcow2_list:
                     continue
-                for qcow2_start, qcow2_length in qcow2_list.items():
+                for qcow2_start, qcow2_length in qcow2_result.items():
                     qcow2_end = qcow2_start + qcow2_length
-
-                    if (qcow2_start >= rbd_start and rbd_start <= qcow2_end) or (rbd_start >= qcow2_start >= rbd_end):
+                    if (qcow2_start <= rbd_start <= qcow2_end) or (rbd_start >= qcow2_start >= rbd_end) or (
+                            qcow2_start <= rbd_end <= qcow2_end) or (rbd_start >= qcow2_end >= rbd_end):
                         start = min(rbd_start, qcow2_start)
                         end = max(rbd_end, qcow2_end)
                         length = end - start
-                        result[start] = length
                         result.pop(rbd_start, None)
-                    else:
-                        qcow2_result[qcow2_start] = qcow2_length
+                        qcow2_result.pop(qcow2_start, None)
+                        merge_result[start] = length
 
+            result.update(merge_result)
             result.update(qcow2_result)
             return result
 
