@@ -42,6 +42,7 @@ from zstacklib.utils.report import Report
 from zstacklib.utils import ovn
 import zstacklib.utils.ip as ip
 import zstacklib.utils.plugin as plugin
+from zstacklib.utils.sizeunit import get_size
 
 host_arch = platform.machine()
 IS_AARCH64 = host_arch == 'aarch64'
@@ -2567,7 +2568,7 @@ done
             to.name = "%s_%s" % (subvendor_name if subvendor_name else vendor_name, device_name)
 
             def _set_pci_to_type():
-                gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel"]
+                gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel", "Vastai"]
                 custom_gpu_vendors = "Display controller"
 
                 if any(vendor in to.description for vendor in gpu_vendors) \
@@ -2612,8 +2613,8 @@ done
                 elif 'PCI bridge' in to.type or (pci_device_mapper.get('PCI bridge') is not None
                                                  and pci_device_mapper.get('PCI bridge') in to.type):
                     to.type = "PCI_Bridge"
-                elif ("Processing accelerators" in to.type or (
-                        pci_device_mapper.get('Processing accelerators') is not None)) and 'Device' in to.device:
+                elif (("Processing accelerators" in to.type or pci_device_mapper.get('Processing accelerators') is not None)
+                      and any(keyword in to.device for keyword in ('Device', 'SV100'))):
                     to.type = "GPU_Processing_Accelerators"
                 elif (any(vendor in to.description for vendor in gpu_vendors) or '1d94' in to.vendorId ) \
                         and ('Co-processor' in to.type or (pci_device_mapper.get('Co-processor') is not None
@@ -2630,6 +2631,7 @@ done
             if not self._get_vfio_mdev_info(to) and not self._get_sriov_info(to):
                 to.virtStatus = "UNVIRTUALIZABLE"
             if to.vendorId != '' and to.deviceId != '':
+                logger.debug("_collect_format_pci_device_info to is %s", to)
                 rsp.pciDevicesInfo.append(to)
 
         pci.calculate_max_addressable_memory(rsp.pciDevicesInfo)
@@ -2681,6 +2683,7 @@ done
         r, o, e = bash_roe("which vasmi")
         if r != 0:
             logger.debug("no vasmi, detail: %s " % o)
+            return
         output = self._collect_vastai_gpu_basic_info(gpu.get_vastai_type())
         if output is not None and len(output) > 0:
             self._update_to_addon_info_from_gpu_infos(output, to)
@@ -2691,43 +2694,28 @@ done
     @in_bash
     def _collect_vastai_gpu_basic_info(self, gpu_type):
         gpuinfos = []
-        r, output, e = bash_roe("vasmi getmem --display-format=json")
-        if r != 0 or output is None:
+        data = gpu.run_json_command("vasmi getmem --display-format=json")
+        if data is None :
             return gpuinfos
-
-        gpuinfo = {}
-        json_start = output.find('{')
-        if json_start == -1:
-            logger.error("No JSON data found in command vasmi getmem output")
-            return gpuinfos
-        json_str = output[json_start:]
-        data = json.loads(json_str)
         for elem in data["elem"]:
+            gpuinfo = {}
             gpuinfo["pciAddress"] = elem.get("pci_bus", "N/A")
             gpuinfo["serialNumber"] = elem.get("sn", "N/A")
-            if gpu_type == "AI":
-                gpuinfo["memory"] = elem.get("vals", {}).get("Physical", {}).get("value", "N/A")
-            else:
-                gpuinfo["memory"] = elem.get("vals", {}).get("Physical memory", {}).get("value", "N/A")
+            key = "Physical" if gpu_type == "AI" else "Physical memory"
+            row_memory = elem.get("vals", {}).get(key, {}).get("value", "N/A")
+            gpuinfo["memory"] = row_memory if row_memory == "N/A" else str(get_size(row_memory)) + "B"
             gpuinfos.append(gpuinfo)
 
-        r, o, e = bash_roe("vasmi summary --display-format=json")
-        if r != 0 or o is None:
+        summary_data = gpu.run_json_command("vasmi summary --display-format=json")
+        if summary_data is None:
             return gpuinfos
-        json_start = output.find('{')
-        if json_start == -1:
-            logger.error("No JSON data found in command vasmi summary output")
-            return gpuinfos
-        json_str = o[json_start:]
-        summary_data = json.loads(json_str)
         for elem in summary_data["elem"]:
             dev_bus_id = elem.get("vals", {}).get("devBusId", {}).get("value", "N/A")
             max_power = elem.get("vals", {}).get("P_Cap", {}).get("value", "N/A")
             for gpuinfo in gpuinfos:
                 if gpuinfo["pciAddress"] == dev_bus_id:
                     gpuinfo["power"] = max_power
-                    break
-
+                    continue #two same records using the last one
         return gpuinfos
 
     @in_bash
@@ -3009,7 +2997,10 @@ done
             return jsonobject.dumps(rsp)
 
         if pci.is_gpu(cmd.pciDeviceType):
-            self._generate_sriov_gpu_devices(cmd, rsp)
+            if cmd.vendor == "Vastai":
+                self._generate_sriov_net_devices(cmd, rsp)
+            else:
+                self._generate_sriov_gpu_devices(cmd, rsp)
         elif cmd.pciDeviceType == 'Ethernet_Controller':
             self._generate_sriov_net_devices(cmd, rsp)
         else:
@@ -3083,7 +3074,10 @@ done
         addr = cmd.pciDeviceAddress
 
         if pci.is_gpu(cmd.pciDeviceType):
-            self._ungenerate_sriov_gpu_devices(cmd, rsp)
+            if cmd.vendor == "Vastai":
+                self._ungenerate_sriov_net_devices(cmd, rsp)
+            else:
+                self._ungenerate_sriov_gpu_devices(cmd, rsp)
         elif cmd.pciDeviceType == 'Ethernet_Controller':
             self._ungenerate_sriov_net_devices(cmd, rsp)
         else:
