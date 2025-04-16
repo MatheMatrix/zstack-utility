@@ -234,3 +234,18 @@ def get_vastai_type():
     elif "SV100" in first_line:
         return "AI"
     return None
+
+def run_json_command(cmd):
+    r, output, e = bash_roe(cmd)
+    if r != 0 or output is None:
+        return None
+    json_start = output.find('{')
+    if json_start == -1:
+        logger.error("No JSON data found in command %s output, output: %s", cmd, output)
+        return None
+    json_str = output[json_start:]
+    try:
+        return json.loads(json_str)
+    except ValueError as ve:
+        logger.error("JSON decode failed for command: %s, error: %s", cmd, ve)
+        return None
