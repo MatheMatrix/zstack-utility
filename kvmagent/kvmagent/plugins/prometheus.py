@@ -1201,8 +1201,6 @@ def fetch_vm_qemu_processes():
                 processes.append(process)
         except psutil.NoSuchProcess:
             pass
-        if process.name() == QEMU_CMD:  # /usr/libexec/qemu-kvm
-            processes.append(process)
     return processes
 
 
@@ -1217,11 +1215,6 @@ def find_vm_uuid_from_vm_qemu_process(process):
         return None
     except psutil.NoSuchProcess:
         return None
-    for word in process.cmdline():
-        # word like 'guest=707e9d31751e499eb6110cce557b4168,debug-threads=on'
-        if word.startswith(prefix) and word.endswith(suffix):
-            return word[len(prefix): len(word) - len(suffix)]
-    return None
 
 
 def collect_vm_statistics():
