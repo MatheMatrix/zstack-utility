@@ -1559,48 +1559,45 @@ def collect_tianshu_gpu_status():
 
 
 def collect_vastai_ai_gpu_metric_info():
+    def _run_with_realtime_output(command):
+        """Run a command and yield its output line by line."""
+        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        while True:
+            output = process.stdout.readline()
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                yield output.strip()
+
     gpuinfos = []
-    r, output, e = bash_roe("vasmi bw pcie --display-format=json")
-    if r != 0 or output is None:
+    data = shell.run_with_json_result("vasmi bw pcie -d all --display-format=json")
+    if data is None:
         return gpuinfos
-    gpuinfo = {}
-    json_start = output.find('{')
-    if json_start == -1:
-        logger.error("No JSON data found in command vasmi bw pcie output")
-        return gpuinfos
-    json_str = output[json_start:]
-    data = json.loads(json_str)
     for elem in data["elem"]:
-        gpuinfo["pciAddress"] = elem.get("pci_bus", "N/A")
-        gpuinfo["devId"] = elem.get("dev_id", "N/A")
-        gpuinfo["rxPciInBytes"] = elem.get("vals", {}).get("Upstream (read from DDR)  bandwidth:", {}).get("value", "N/A")
-        gpuinfo["txPciInBytes"] = elem.get("vals", {}).get("Downstream (write to DDR) bandwidth:", {}).get("value", "N/A")
+        gpuinfo = {}
+        gpuinfo["serialNumber"] = elem.get("sn", None)
+        gpuinfo["pciAddress"] = elem.get("pci_bus", None)
+        gpuinfo["devId"] = elem.get("dev_id", "")
+        gpuinfo["rxPciInBytes"] = elem.get("vals", {}).get("Upstream (read from DDR)  bandwidth:", {}).get("value", None)
+        gpuinfo["txPciInBytes"] = elem.get("vals", {}).get("Downstream (write to DDR) bandwidth:", {}).get("value", None)
         gpuinfos.append(gpuinfo)
 
     for gpuinfo in gpuinfos:
         cmd = "vasmi dmon -d %s -i 0" % gpuinfo["devId"]
-        for output_line in run_command_with_realtime_output(cmd):
+        for output_line in _run_with_realtime_output(cmd):
+            if isinstance(output_line, bytes):
+                output_line = output_line.decode('ascii', 'ignore')
             if "Device Monitor of AIC" in output_line or output_line.startswith("----"):
                 continue
             gpu_info = parse_aic_output(output_line)
             if gpu_info:
-                gpuinfo["power"] = gpu_info.get("power")
+                gpuinfo["powerDraw"] = gpu_info.get("power")
                 gpuinfo["temperature"] = gpu_info.get("temperature")
                 gpuinfo["utilization"] = gpu_info.get("ai_percent")
                 gpuinfo["memoryUtilization"] = gpu_info.get("mem_percent")
                 break
 
     return gpuinfos
-
-def run_command_with_realtime_output(command, timeout=30):
-    """Run a command and yield its output line by line."""
-    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    while True:
-        output = process.stdout.readline()
-        if output == '' and process.poll() is not None:
-            break
-        if output:
-            yield output.strip()
 
 def parse_aic_output(output_line):
     pattern = re.compile(r"""
@@ -1649,54 +1646,37 @@ def parse_aic_output(output_line):
 
 def collect_vastai_3d_gpu_metric_info():
     gpuinfos = []
-    r, output, e = bash_roe("vasmi getpfstats --display-format=json")
-    if r != 0 or output is None:
+    data = shell.run_with_json_result("vasmi getpfstats --display-format=json")
+    if data is None:
         return gpuinfos
-
-    gpuinfo = {}
-    json_start = output.find('{')
-    if json_start == -1:
-        logger.error("No JSON data found in command vasmi getpfstats output")
-        return gpuinfos
-    json_str = output[json_start:]
-    data = json.loads(json_str)
     for elem in data["elem"]:
-        gpuinfo["pciAddress"] = elem.get("vals", {}).get("GPU", {}).get("value", "N/A")
-        gpuinfo["temperature"] = elem.get("vals", {}).get("Temperature", {}).get("value", "N/A")
-        gpuinfo["utilization"] = elem.get("vals", {}).get("Utilization Gpu", {}).get("value", "N/A")
-        gpuinfo["memoryUtilization"] = elem.get("vals", {}).get("Utilization Memory", {}).get("value", "N/A")
+        gpuinfo = {}
+        gpuinfo["pciAddress"] = elem.get("vals", {}).get("GPU", {}).get("value", None)
+        gpuinfo["temperature"] = elem.get("vals", {}).get("Temperature", {}).get("value", None)
+        gpuinfo["utilization"] = elem.get("vals", {}).get("Utilization Gpu", {}).get("value", None)
+        gpuinfo["memoryUtilization"] = elem.get("vals", {}).get("Utilization Memory", {}).get("value", None)
         gpuinfos.append(gpuinfo)
 
-    r, o, e = bash_roe("vasmi getpwr --display-format=json")
-    if r != 0 or o is None:
+    summary_data = shell.run_with_json_result("vasmi summary --display-format=json")
+    if summary_data is None:
         return gpuinfos
-    json_start = output.find('{')
-    if json_start == -1:
-        logger.error("No JSON data found in command vasmi getpwr output")
-        return gpuinfos
-    json_str = o[json_start:]
-    summary_data = json.loads(json_str)
     for elem in summary_data["elem"]:
-        dev_bus_id = elem.get("pci_bus", "N/A")
-        current_power = elem.get("vals", {}).get("TOTAL", {}).get("value", "N/A")
+        dev_bus_id = elem.get("vals", {}).get("devBusId", {}).get("value", None)
+        current_power = elem.get("vals", {}).get("Pwr_TOTAL", {}).get("value", None)
+        sn = elem.get("vals", {}).get("MB_SN", {}).get("value", "")
         for gpuinfo in gpuinfos:
             if gpuinfo["pciAddress"] == dev_bus_id:
-                gpuinfo["power"] = current_power
+                gpuinfo["serialNumber"] = sn
+                gpuinfo["powerDraw"] = current_power
                 break
 
-    r, o, e = bash_roe("vasmi bw pcie --display-format=json")
-    if r != 0 or o is None:
+    summary_data = shell.run_with_json_result("vasmi bw pcie -d all --display-format=json")
+    if summary_data is None:
         return gpuinfos
-    json_start = output.find('{')
-    if json_start == -1:
-        logger.error("No JSON data found in command vasmi bw pcie output")
-        return gpuinfos
-    json_str = o[json_start:]
-    summary_data = json.loads(json_str)
     for elem in summary_data["elem"]:
-        dev_bus_id = elem.get("pci_bus", "N/A")
-        rx = elem.get("vals", {}).get("Upstream (read from DDR) bandwidth", {}).get("value", "N/A")
-        tx = elem.get("vals", {}).get("Downstream (write to DDR) bandwidth", {}).get("value", "N/A")
+        dev_bus_id = elem.get("pci_bus", "")
+        rx = elem.get("vals", {}).get("Upstream (read from DDR)  bandwidth", {}).get("value", None)
+        tx = elem.get("vals", {}).get("Downstream (write to DDR) bandwidth", {}).get("value", None)
         for gpuinfo in gpuinfos:
             if gpuinfo["pciAddress"] == dev_bus_id:
                 gpuinfo["rxPciInBytes"] = rx
@@ -1707,6 +1687,20 @@ def collect_vastai_3d_gpu_metric_info():
 
 
 def collect_vastai_gpu_status():
+    def _extract_number(s):
+        if s is None or s == "":
+            return None
+
+        if isinstance(s, (int, float)):
+            return float(s)
+
+        match = re.search(r'(\d+(?:\.\d+)?)\s*MB/S', s, flags=re.IGNORECASE)
+        if match:
+            return float(match.group(1)) * 1024 * 1024  # change to byte
+
+        match = re.search(r'\d+(\.\d+)?', s)
+        return float(match.group(0)) if match else None
+
     metrics = get_gpu_metrics()
 
     if has_vastai_smi() is False:
@@ -1727,12 +1721,12 @@ def collect_vastai_gpu_status():
 
         add_gpu_pci_device_address("VASTAI", pci_device_address, gpu_serial)
 
-        add_metrics('host_gpu_power_draw', info["powerDraw"], [pci_device_address, gpu_serial], metrics)
-        add_metrics('host_gpu_temperature', info["temperature"], [pci_device_address, gpu_serial], metrics)
-        add_metrics('host_gpu_utilization', info["utilization"], [pci_device_address, gpu_serial], metrics)
-        add_metrics('host_gpu_memory_utilization', info["memoryUtilization"], [pci_device_address, gpu_serial], metrics)
-        add_metrics('host_gpu_txpci_in_bytes', info["txPciInBytes"], [pci_device_address, gpu_serial], metrics)
-        add_metrics('host_gpu_rxpci_in_bytes', info["rxPciInBytes"], [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_power_draw', _extract_number(info.get("powerDraw")), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_temperature', _extract_number(info.get("temperature")), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_utilization', _extract_number(info.get("utilization")), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_memory_utilization', _extract_number(info.get("memoryUtilization")), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_txpci_in_bytes', _extract_number(info.get("txPciInBytes")), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_rxpci_in_bytes', _extract_number(info.get("rxPciInBytes")), [pci_device_address, gpu_serial], metrics)
         check_gpu_status_and_save_gpu_status("VASTAI", metrics)
     return metrics.values()
 

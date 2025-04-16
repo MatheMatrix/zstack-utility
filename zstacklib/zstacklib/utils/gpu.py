@@ -235,6 +235,7 @@ def reload_hygon_gpu_driver_cmd():
     cmd = "hy-smi --unloaddriver && hy-smi --loaddriver"
     return cmd
 
+
 def get_vastai_type():
     r, o, e = bash_roe("lspci | grep Vastai")
     first_line = o.split('\n')[0]
@@ -243,3 +244,8 @@ def get_vastai_type():
     elif "SV100" in first_line:
         return "AI"
     return None
+
+
+def is_valid_processing_accelerator(device):
+    valid_keywords = {"Device", "SV100"}
+    return any(keyword in device for keyword in valid_keywords)
