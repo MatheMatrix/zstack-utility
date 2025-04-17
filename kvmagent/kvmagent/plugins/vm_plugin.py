@@ -7500,28 +7500,28 @@ class VmPlugin(kvmagent.KvmAgent):
         stderr = ""
         if cmd.scriptType == "Python":
             qga.guest_exec_bash("chmod 777 {}".format(dst), retry=cmd.scriptTimeout)
-            qga.guest_exec_bash("{} > {} 2> {}".format(dst, stdout_dst, stderr_dst), retry=cmd.scriptTimeout)
-            exitCode, stdout, stderr = qga.guest_exec_bash("tail -n 1000 {}".format(stdout_dst), retry=cmd.scriptTimeout)
+            exitCode, _, _ = qga.guest_exec_bash("{} > {} 2> {}".format(dst, stdout_dst, stderr_dst), retry=cmd.scriptTimeout)
+            _, stdout, stderr = qga.guest_exec_bash("tail -n 1000 {}".format(stdout_dst), retry=cmd.scriptTimeout)
             if qga.guest_file_is_exist(stderr_dst):
-                exitCode, err_std_out, err_std_err = qga.guest_exec_bash("tail -n 1000 {}".format(stderr_dst), retry=cmd.scriptTimeout)
+                _, err_std_out, err_std_err = qga.guest_exec_bash("tail -n 1000 {}".format(stderr_dst), retry=cmd.scriptTimeout)
                 stderr = "" if stderr is None else stderr
                 stderr += err_std_out if err_std_out is not None else ""
                 stderr += err_std_err if err_std_err is not None else ""
         if cmd.scriptType == "Perl":
             qga.guest_exec_bash("chmod 777 {}".format(dst), retry=cmd.scriptTimeout)
-            qga.guest_exec_bash("perl {} > {} 2> {}".format(dst, stdout_dst, stderr_dst), retry=cmd.scriptTimeout)
-            exitCode, stdout, stderr = qga.guest_exec_bash("tail -n 1000 {}".format(stdout_dst),  retry=cmd.scriptTimeout)
+            exitCode, _, _ = qga.guest_exec_bash("perl {} > {} 2> {}".format(dst, stdout_dst, stderr_dst), retry=cmd.scriptTimeout)
+            _, stdout, stderr = qga.guest_exec_bash("tail -n 1000 {}".format(stdout_dst),  retry=cmd.scriptTimeout)
             if qga.guest_file_is_exist(stderr_dst):
-                exitCode, err_std_out, err_std_err = qga.guest_exec_bash("tail -n 1000 {}".format(stderr_dst), retry=cmd.scriptTimeout)
+                _, err_std_out, err_std_err = qga.guest_exec_bash("tail -n 1000 {}".format(stderr_dst), retry=cmd.scriptTimeout)
                 stderr = "" if stderr is None else stderr
                 stderr += err_std_out if err_std_out is not None else ""
                 stderr += err_std_err if err_std_err is not None else ""
         if cmd.scriptType == "Shell":
             qga.guest_exec_bash("chmod 777 {}".format(dst), retry=cmd.scriptTimeout)
-            qga.guest_exec_bash("{} > {} 2> {}".format(dst, stdout_dst, stderr_dst), retry=cmd.scriptTimeout)
-            exitCode, stdout, stderr = qga.guest_exec_bash("tail -n 1000 {}".format(stdout_dst), retry=cmd.scriptTimeout)
+            exitCode, _, _ = qga.guest_exec_bash("{} > {} 2> {}".format(dst, stdout_dst, stderr_dst), retry=cmd.scriptTimeout)
+            _, stdout, stderr = qga.guest_exec_bash("tail -n 1000 {}".format(stdout_dst), retry=cmd.scriptTimeout)
             if qga.guest_file_is_exist(stderr_dst):
-                exitCode, err_std_out, err_std_err = qga.guest_exec_bash("tail -n 1000 {}".format(stderr_dst), retry=cmd.scriptTimeout)
+                _, err_std_out, err_std_err = qga.guest_exec_bash("tail -n 1000 {}".format(stderr_dst), retry=cmd.scriptTimeout)
                 stderr = "" if stderr is None else stderr
                 stderr += err_std_out if err_std_out is not None else ""
                 stderr += err_std_err if err_std_err is not None else ""
@@ -7536,7 +7536,7 @@ class VmPlugin(kvmagent.KvmAgent):
 
         logger.info("exitCode=%s stdout=%s stderr=%s" % (exitCode, stdout, stderr))
         rsp.exitCode = exitCode
-        if exitCode != 0 or (stderr is not None and stderr != ""):
+        if exitCode != 0:
             rsp.success = False
         if stdout is not None:
             rsp.stdout = streamSplit(stdout, 1000)
