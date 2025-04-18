@@ -8745,19 +8745,22 @@ host side snapshot files chian:
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = ExportNbdVolumesResponse()
         infos = []
+        locked = None
         start_port, end_port = linux.parse_port_range(cmd.portRange)
         try:
             for volumeInfo in cmd.volumeInfos:
                 format, install_path = volumeInfo.volume.format, volumeInfo.volume.installPath
-                port, l = linux.find_free_port_with_locking(start_port, end_port)
+                port, locked = linux.find_free_port_with_locking(start_port, end_port)
                 real_path = qemu_nbd.get_volume_actual_install_path(install_path)
                 _export_nbd(port, format, real_path, volumeInfo.volume.volumeUuid)
                 volumeInfo.scratchNodeName = volumeInfo.volume.volumeUuid
                 volumeInfo.nbdPort = port
                 infos.append(volumeInfo)
-                if l:
-                    l.release()
+                if locked:
+                    locked.release()
         except Exception as e:
+            if locked:
+                locked.release()
             content = traceback.format_exc()
             logger.warn("export nbd volumes failed: " + str(e) + '\n' + content)
             rsp.error = str(e)
