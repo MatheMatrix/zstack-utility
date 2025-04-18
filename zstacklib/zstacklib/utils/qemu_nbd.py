@@ -7,7 +7,7 @@ def export(port, *args):
     command = 'qemu-nbd -p %s' % port
     if args:
         command += ' ' + ' '.join(str(arg) for arg in args)
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return process
 
 
