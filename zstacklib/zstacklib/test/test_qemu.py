@@ -31,7 +31,7 @@ Copyright (c) 2003-2019 Fabrice Bellard and the QEMU Project developers
 class Test(unittest.TestCase):
 
     def testVersion(self):
-        for k, v in excepts.items():
+        for k, v in list(excepts.items()):
             ret = qemu._parse_version(k)
             assert ret == v, "unexcepts result: %s : %s" % (k, ret)
 

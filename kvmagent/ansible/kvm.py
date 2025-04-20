@@ -197,7 +197,7 @@ run_remote_command("rm -rf {}/*; mkdir -p /usr/local/zstack/ || true".format(kvm
 def install_kvm_pkg():
     def rpm_based_install():
         os_base_dep = "bridge-utils chrony conntrack-tools cyrus-sasl-md5 device-mapper-multipath expect ipmitool iproute ipset \
-                        usbredir-server iputils libvirt libvirt-client libvirt-python lighttpd lsof net-tools nfs-utils nmap openssh-clients \
+                        usbredir-server iputils libvirt libvirt-client lighttpd lsof net-tools nfs-utils nmap openssh-clients \
                         smartmontools sshpass usbutils wget audit collectd-virt storcli nvme-cli pv rsync sed pciutils tar"
 
         distro_mapping = {
@@ -220,7 +220,7 @@ def install_kvm_pkg():
             'h79c': ('%s qemu-kvm libvirt-admin seabios-bin nping freeipmi '
                      'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
             'h84r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm freeipmi '
-                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump') % helix_rhel_rpms,
+                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump python3.11 python3.11-devel python3.11-pip libvirt-devel') % helix_rhel_rpms,
             'rl84': 'qemu-kvm libvirt-daemon libvirt-daemon-kvm seabios-bin elfutils-libelf-devel lldpd',
             'euler20': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
             'oe2203sp1': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk edac-utils lldpd tcpdump',
@@ -273,15 +273,18 @@ def install_kvm_pkg():
             host_post_info.post_label_param = "libvirt"
             (status, output) = run_remote_command(command, host_post_info, True, True)
             if output:
-            	# libvirt-python installation does not affect the libvirt installation
-            	command = ("yum --disablerepo=* --enablerepo={0} --assumeno install libvirt-python |awk '{{print $1}}' | grep -Ew '^\s*libvirt\s*$'").format(zstack_repo)
-            	host_post_info.post_label = "ansible.shell.install.pkg"
-            	host_post_info.post_label_param = "libvirt-python"
-            	(status, output) = run_remote_command(command, host_post_info, True, True)
-            	if status is True:
-                    dep_list = ' '.join([pkg for pkg in dep_list.split() if not pkg.startswith("libvirt")])
+                # python3-libvirt installation does not affect the libvirt installation
+                command = (
+                    "yum --disablerepo=* --enablerepo={0} --assumeno install python3-libvirt |awk '{{print $1}}' | grep -Ew '^\s*libvirt\s*$'").format(
+                    zstack_repo)
+                host_post_info.post_label = "ansible.shell.install.pkg"
+                host_post_info.post_label_param = "python3-libvirt"
+                (status, output) = run_remote_command(command, host_post_info, True, True)
+                is_libvirt = lambda x: x.startswith("libvirt") and not x.startswith("libvirt-devel")
+                if status is True:
+                    dep_list = ' '.join([pkg for pkg in dep_list.split() if not is_libvirt(pkg)])
                 else:
-                    dep_list = ' '.join([pkg for pkg in dep_list.split() if pkg == 'libvirt-python' or not pkg.startswith("libvirt")])
+                    dep_list = ' '.join([pkg for pkg in dep_list.split() if pkg == 'python3-libvirt' or not is_libvirt(pkg)])
 
             # add extra package
             if extra_packages != '':
@@ -309,7 +312,7 @@ def install_kvm_pkg():
                 run_remote_command(command, host_post_info)
         else:
             # name: install kvm related packages on RedHat based OS from online
-            for pkg in ['zstack-release', 'openssh-clients', 'bridge-utils', 'wget', 'chrony', 'sed', 'libvirt-python', 'libvirt', 'nfs-utils', 'vconfig',
+            for pkg in ['zstack-release', 'openssh-clients', 'bridge-utils', 'wget', 'chrony', 'sed', 'libvirt', 'libvirt-devel', 'nfs-utils', 'vconfig',
                         'libvirt-client', 'net-tools', 'iscsi-initiator-utils', 'lighttpd', 'iproute', 'sshpass',
                         'libguestfs-winsupport', 'libguestfs-tools', 'pv', 'rsync', 'nmap', 'ipset', 'usbutils', 'pciutils', 'expect',
                         'lvm2', 'lvm2-lockd', 'sanlock', 'sysfsutils', 'smartmontools', 'device-mapper-multipath', 'hwdata', 'sg3_utils']:
@@ -421,7 +424,7 @@ def install_kvm_pkg():
 
     def deb_based_install():
         # name: install kvm related packages on Debian based OS
-        install_pkg_list = ['curl', 'qemu', 'qemu-system', 'bridge-utils', 'wget', 'qemu-utils', 'python-libvirt',
+        install_pkg_list = ['curl', 'qemu', 'qemu-system', 'bridge-utils', 'wget', 'qemu-utils', 'python3-libvirt',
                             'libvirt-daemon-system', 'libfdt-dev', 'libvirt-dev', 'libvirt-clients', 'chrony','vlan',
                             'libguestfs-tools', 'sed', 'nfs-common', 'open-iscsi','ebtables', 'pv', 'usbutils',
                             'pciutils', 'expect', 'lighttpd', 'sshpass', 'rsync', 'iputils-arping', 'nmap', 'collectd',
@@ -441,7 +444,7 @@ def install_kvm_pkg():
         host_post_info.post_label = "ansible.shell.enable.module"
         host_post_info.post_label_param = "br_netfilter"
         run_remote_command(command, host_post_info)
-        update_pkg_list = ['ebtables', 'python-libvirt', 'qemu-system-arm']
+        update_pkg_list = ['ebtables', 'python3-libvirt', 'qemu-system-arm']
         apt_update_packages(update_pkg_list, host_post_info)
         libvirtd_conf_status = update_libvirtd_config(host_post_info)
         if chroot_env == 'false':
@@ -749,7 +752,7 @@ def install_virtualenv():
     # name: make sure virtualenv has been setup
     virtenv_flag = "--system-site-packages"
     # virtenv_flag = "" if unittest_flag == 'true' else "--system-site-packages"
-    command = "[ -f %s/bin/python ] || virtualenv-2.7 %s %s " % (virtenv_path, virtenv_flag, virtenv_path)
+    command = "[ -f %s/bin/python ] || python3.11 -m venv %s %s " % (virtenv_path, virtenv_path, virtenv_flag)
     host_post_info.post_label = "ansible.shell.check.virtualenv"
     host_post_info.post_label_param = None
     run_remote_command(command, host_post_info)

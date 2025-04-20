@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # encoding: utf-8
-import commands
+import subprocess
 import datetime
 import functools
 import logging
@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+import traceback
 
 from ansible import constants as ansible_constants
 from ansible import context as ansible_context
@@ -22,9 +23,10 @@ from ansible.plugins import cache
 from ansible.plugins.cache import memory
 from ansible.plugins import callback as ansible_callback
 from ansible.vars import manager as ansible_vm
+from ansible.plugins.loader import init_plugin_loader
 import jinja2
 import time
-import urllib2
+import urllib.request, urllib.error, urllib.parse
 import yaml
 
 
@@ -76,6 +78,7 @@ ansible_constants.set_constant('CACHE_PLUGIN', 'memory')
 ansible_constants.set_constant('DEFAULT_GATHERING', 'smart')
 
 _ansible_cache = {}
+init_plugin_loader()
 
 
 class MemCache(cache.BaseCacheModule):
@@ -90,7 +93,7 @@ class MemCache(cache.BaseCacheModule):
         self._cache[key] = value
 
     def keys(self):
-        return self._cache.keys()
+        return list(self._cache.keys())
 
     def contains(self, key):
         return key in self._cache
@@ -448,15 +451,17 @@ def retry(times=3, sleep_time=3):
     def wrap(f):
         @functools.wraps(f)
         def inner(*args, **kwargs):
+            ex = None
             for i in range(0, times):
                 try:
                     return f(*args, **kwargs)
                 except Exception as e:
+                    ex = traceback.format_exc()
                     logger.error(e)
                     time.sleep(sleep_time)
             error(("The task failed, please make sure the host can be "
                    "connected and no error happened, then try again. "
-                   "Below is detail:\n %s") % e)
+                   "Below is detail:\n %s") % ex)
         return inner
     return wrap
 
@@ -517,7 +522,7 @@ def on_debian_based(distro=None, exclude=[]):
 def get_mn_release():
     # file /etc/zstack-release from zstack-release.rpm
     # file content like: ZStack release c76
-    return commands.getoutput("awk '{print $3}' /etc/zstack-release").strip()
+    return subprocess.getoutput("awk '{print $3}' /etc/zstack-release").strip()
 
 
 def get_host_releasever(host_info):
@@ -564,10 +569,10 @@ def post_msg(msg, post_url):
         if msg.label is not None:
             try:
                 headers = {"content-type": "application/json"}
-                req = urllib2.Request(post_url, data, headers)
-                response = urllib2.urlopen(req)
+                req = urllib.request.Request(post_url, data.encode(), headers)
+                response = urllib.request.urlopen(req)
                 response.close()
-            except urllib2.URLError as e:
+            except urllib.error.URLError as e:
                 logger.debug(e.reason)
                 logger.warning(("Post msg failed! Please check the "
                                 "post_url: %s and check the server "
@@ -1066,8 +1071,8 @@ def pip_install_package(pip_install_arg, host_post_info):
     host_post_info.post_label_param = name
     handle_ansible_info("INFO: pip installing package %s ..." %
                         name, host_post_info, "INFO")
-    if host not in IS_REMOTE_PIP_READY.keys() or not IS_REMOTE_PIP_READY[host]:
-        command = "which pip || ln -s /usr/bin/pip2 /usr/bin/pip"
+    if host not in list(IS_REMOTE_PIP_READY.keys()) or not IS_REMOTE_PIP_READY[host]:
+        command = "which pip || ln -s /usr/bin/pip3.11 /usr/bin/pip"
         run_remote_command(command, host_post_info)
         IS_REMOTE_PIP_READY[host] = True
     param_dict = {}
@@ -1079,7 +1084,7 @@ def pip_install_package(pip_install_arg, host_post_info):
         if param_dict_raw[item] is not None:
             param_dict[item] = param_dict_raw[item]
     option = 'name=' + name + ' ' + \
-        ' '.join(['{0}={1}'.format(k, v) for k, v in param_dict.iteritems()])
+        ' '.join(['{0}={1}'.format(k, v) for k, v in param_dict.items()])
     runner_args = ZstackRunnerArg()
     runner_args.host_post_info = host_post_info
     runner_args.module_name = 'pip'
@@ -1097,8 +1102,11 @@ def pip_install_package(pip_install_arg, host_post_info):
     else:
         ret = result['contacted'][host]
         if ret.get('failed', True):
-            command = "pip2 uninstall -y %s" % name
-            run_remote_command(command, host_post_info)
+            command = "pip3.11 uninstall -y %s" % name
+            try:
+                run_remote_command(command, host_post_info)
+            except Exception as ignore:
+                pass
             description = "ERROR: pip install package %s failed" % name
             host_post_info.post_label = "ansible.pip.install.pkg.fail"
             handle_ansible_failed(description, result, host_post_info)
@@ -2035,7 +2043,7 @@ def do_enable_ntp(trusted_host, host_post_info, distro):
 
     def sync_date(distro):
         if trusted_host != host_post_info.host:
-            if host_post_info.host not in commands.getoutput(
+            if host_post_info.host not in subprocess.getoutput(
                     "ip a  | grep 'inet ' | awk '{print $2}'"):
                 if host_post_info.host not in get_ha_mn_list(
                         "/var/lib/zstack/ha/ha.yaml"):
@@ -2055,7 +2063,7 @@ def do_enable_ntp(trusted_host, host_post_info, distro):
                 "ntp", "state=restarted enabled=yes", host_post_info)
 
     if trusted_host != host_post_info.host:
-        if host_post_info.host not in commands.getoutput(
+        if host_post_info.host not in subprocess.getoutput(
                 "ip a  | grep 'inet ' | awk '{print $2}'"):
             if host_post_info.host not in get_ha_mn_list(
                     "/var/lib/zstack/ha/ha.yaml"):
@@ -2329,19 +2337,14 @@ class ZstackLib(object):
 
     def _python_rpm_set(self):
         python_requirement_set = {
-            "python2-devel",
-            "python2-setuptools",
+            "python3-devel",
+            "python3-setuptools",
         }
 
         if self.distro == 'nfs' or self.distro_version >= 7:
-            python_requirement_set.add("python2-pip")
+            python_requirement_set.add("python3-pip")
         else:
             python_requirement_set.add("python-pip")
-
-        if self.distro_version >= 7:
-            # to avoid install some pkgs on virtual router which release is
-            # Centos 6.x
-            python_requirement_set.add("python2-backports-ssl_match_hostname")
 
         return python_requirement_set
 
@@ -2355,7 +2358,7 @@ class ZstackLib(object):
         if self.distro in KYLIN_DISTRO:
             basic.add("chrony")
             basic.add("iptables")
-            basic.add("python2-libselinux")
+            basic.add("python3-libselinux")
             return basic
 
         basic.add("libselinux-python")

@@ -10,9 +10,9 @@ class Test(unittest.TestCase):
 
     def testName(self):
         iptc = iptables.from_iptables_xml()
-        print iptc.get_nat_table()
-        print iptc.get_mangle_table()
-        print iptc.get_nat_table()
+        print(iptc.get_nat_table())
+        print(iptc.get_mangle_table())
+        print(iptc.get_nat_table())
 
 
 if __name__ == "__main__":

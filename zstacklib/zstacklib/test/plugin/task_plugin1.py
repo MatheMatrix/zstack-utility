@@ -32,7 +32,7 @@ class TaskPlugin1(plugin.Plugin):
 
             def _cancel(self):
                 canceld.add(self.task_name)
-                print self.task_name + ' canceled'
+                print(self.task_name + ' canceled')
                 # no need to call close() in real env. cancel func need to focus only on its own task,
                 # and canceled task is supposed to end immediately,
                 # then close() will be called automatically in __exit__.

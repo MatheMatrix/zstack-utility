@@ -1,4 +1,3 @@
-import json
 import random
 import re
 import time
@@ -40,7 +39,7 @@ class AgentRsp(object):
 
 class RaidPhysicalDriveStruct(object):
     rotationRate = None  # type: int
-    size = None  # type: long
+    size = None  # type: int
     diskGroup = None  # type: int
     deviceId = None  # type: int
     slotNumber = None  # type: int
@@ -67,7 +66,7 @@ class RaidPhysicalDriveStruct(object):
 
 
 class SmartDataStruct(object):
-    rawValue = None  # type: long
+    rawValue = None  # type: int
     thresh = None  # type: int
     worst = None  # type: int
     value = None  # type: int
@@ -367,10 +366,10 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
     def get_slave_path(self, multipath_path):
         def get_wwids(dev_name):
             symlinks = shell.call("udevadm info -q symlink -n %s" % dev_name).strip().split()
-            wwids = map(lambda p: os.path.basename(p), filter(lambda s: 'by-id' in s, symlinks))
+            wwids = [os.path.basename(p) for p in [s for s in symlinks if 'by-id' in s]]
             wwids.sort()
 
-            stable_wwids = filter(lambda w: "lvm-pv" not in w, wwids)
+            stable_wwids = [w for w in wwids if "lvm-pv" not in w]
             return stable_wwids if stable_wwids else wwids
 
         dm = os.path.basename(os.path.realpath(multipath_path))
@@ -509,7 +508,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
             except Exception as e:
                 current_hostname = linux.get_hostname()
                 rsp.error = "login iscsi server %s:%s on host %s failed, because %s" % \
-                            (cmd.iscsiServerIp, cmd.iscsiServerPort, current_hostname, e.message)
+                            (cmd.iscsiServerIp, cmd.iscsiServerPort, current_hostname, str(e))
                 rsp.success = False
                 return jsonobject.dumps(rsp)
 
@@ -933,7 +932,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         if r != 0:
             return result
         in_entry = False
-        allocated_slots = map(lambda x: x.slotNumber, normal_devices)
+        allocated_slots = [x.slotNumber for x in normal_devices]
         for line in o.splitlines():
             if in_entry is True and "mb" not in line.lower():
                 in_entry = False
@@ -963,7 +962,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
 
     @staticmethod
     def get_info_from_size(size, unit, d, allocated_slots):
-        # type: (str, str, RaidPhysicalDriveStruct) -> RaidPhysicalDriveStruct
+        # type: (str, str, RaidPhysicalDriveStruct, list[int]) -> RaidPhysicalDriveStruct
         #TODO(weiw): warning: very hard code
         if "mb" not in unit.lower():
             logger.warn("unexpected unit on missing drive 'Size Expected': %s" % unit)
@@ -976,7 +975,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         else:
             d.diskGroup = 1
             d.raidLevel = "raid5"
-            unallocated = set(filter(lambda x: x > 1, allocated_slots)).symmetric_difference({2, 3, 4, 5})
+            unallocated = set([x for x in allocated_slots if x > 1]).symmetric_difference({2, 3, 4, 5})
             d.slotNumber = unallocated.pop() if len(unallocated) > 0 else None
         return d
 
@@ -1049,7 +1048,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
 
     @bash.in_bash
     def get_megaraid_device_disk_info_smartctl(self, line):
-        # type: (str, str) -> RaidPhysicalDriveStruct
+        # type: (str) -> RaidPhysicalDriveStruct
         line = line.split(" #")[0]
         d = RaidPhysicalDriveStruct()
         r, o = bash.bash_ro("smartctl -i %s " % line)
@@ -1129,7 +1128,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
             return []
 
         fc_targets.sort()
-        scsi_infos = filter(lambda s: "/dev/" in s, lvm.run_lsscsi_i())
+        scsi_infos = [s for s in lvm.run_lsscsi_i() if "/dev/" in s]
         if not scsi_infos:
             logger.debug("not find any usable fc disks")
             return []
@@ -1137,7 +1136,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         luns = [[] for _ in enumerate(fc_targets)]
 
         def fill_lun_info(fc_target, i):
-            for target_scsi_info in filter(lambda x: '[' + fc_target in x, scsi_infos):
+            for target_scsi_info in [x for x in scsi_infos if '[' + fc_target in x]:
                 device_info = self.get_fc_device_info(target_scsi_info, rescan)
                 if device_info:
                     luns[i].append(device_info)
@@ -1148,7 +1147,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         for t in threads:
             t.join()
 
-        return sum(filter(None, luns), [])
+        return sum([_f for _f in luns if _f], [])
 
     def multipath_conf_cannot_change(self):
         r, o, e = bash.bash_roe('''grep -rF "<disk type='block' device='lun'" /var/run/libvirt/qemu/* ''')
@@ -1385,7 +1384,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         if not any_nqn_connected:
             raise Exception("unable connect any nqn on server[%s:%s, transport:%s], error: %s" % (cmd.ip, cmd.port, cmd.transport, str(error)))
 
-        return filter(lambda l: l.nqn in discovered_nqns and set(l.wwids).intersection(wwids), self.get_nvme_luns(rescan=True))
+        return [l for l in self.get_nvme_luns(rescan=True) if l.nqn in discovered_nqns and set(l.wwids).intersection(wwids)]
 
     @bash.in_bash
     def disconnect_nvme_controller(self, cmd):

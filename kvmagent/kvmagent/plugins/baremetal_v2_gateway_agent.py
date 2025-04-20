@@ -2,7 +2,7 @@ import ast
 import json
 import os
 import shutil
-import commands
+import subprocess
 import tempfile
 
 from jinja2 import Template
@@ -288,6 +288,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             return Template(f.read())
 
     def _prepare_provision_network(self, network_obj):
+        # type: (NetworkObj) -> None
         """ Prepare provision network
 
         :param network_obj: The network obj
@@ -824,16 +825,16 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
                     nbd_id = volume_driver.nbd_id
                     break
 
-            status,output = commands.getstatusoutput('guestmount --ro -a /dev/nbd%s -m /dev/sda2 %s' % (nbd_id, tempdir))
+            status,output = subprocess.getstatusoutput('guestmount --ro -a /dev/nbd%s -m /dev/sda2 %s' % (nbd_id, tempdir))
             if not os.path.exists(os.path.join(tempdir, 'baremetal2/vmlinuz')) or \
                     not os.path.exists(os.path.join(tempdir, 'baremetal2/initrd.img')) or \
                     not os.path.exists(os.path.join(tempdir, 'baremetal2/root_uuid')):
-                commands.getoutput('umount %s; rm -rf %s' % (tempdir, tempdir))
+                subprocess.getoutput('umount %s; rm -rf %s' % (tempdir, tempdir))
 
             shutil.copy(os.path.join(tempdir, 'baremetal2/vmlinuz'), image_dir)
             shutil.copy(os.path.join(tempdir, 'baremetal2/initrd.img'), image_dir)
             shutil.copy(os.path.join(tempdir, 'baremetal2/root_uuid'), image_dir)
-            commands.getoutput('chmod 0777 %s/*; umount %s; rm -rf %s' % (image_dir, tempdir, tempdir))
+            subprocess.getoutput('chmod 0777 %s/*; umount %s; rm -rf %s' % (image_dir, tempdir, tempdir))
 
         root_uuid = ''
         if os.path.exists(os.path.join(image_dir, 'root_uuid')):
@@ -1676,5 +1677,5 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
     def stop(self):
         pass
 
-    def configure(self, config):
+    def configure(self, config=None):
         self.config = config

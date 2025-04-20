@@ -7,7 +7,7 @@ from oslo_concurrency import processutils
 from oslo_log import log as logging
 from stevedore import driver
 
-from __init__ import __version__
+from .__init__ import __version__
 from bm_instance_agent.common import utils as bm_utils
 from bm_instance_agent.common import gpu
 from bm_instance_agent import exception
@@ -93,7 +93,7 @@ class AgentManager(object):
         self.driver.ping(instance_obj)
         self.driver.discovery_target(instance_obj)
         if iqn_target_ip_map:
-            for key, values in iqn_target_ip_map.items():
+            for key, values in list(iqn_target_ip_map.items()):
                 self.driver.discovery_target_through_access_path_gateway_ips(key, values)
         self._check_gateway_ip(instance_obj)
         return {'version': __version__, 'ping': {'bmInstanceUuid': BM_INSTANCE_UUID}}

@@ -364,7 +364,7 @@ class VmConfigPlugin(kvmagent.KvmAgent):
         if qga.state != VmQga.QGA_STATE_RUNNING:
             return 1, "qga is not running for vm {}".format(vm_uuid)
 
-        if qga.os not in VmConfigPlugin.VM_CONFIG_SYNC_OS_VERSION_SUPPORT.keys() or \
+        if qga.os not in list(VmConfigPlugin.VM_CONFIG_SYNC_OS_VERSION_SUPPORT.keys()) or \
                 qga.os_version not in VmConfigPlugin.VM_CONFIG_SYNC_OS_VERSION_SUPPORT[qga.os]:
             return 1, "not support for os {} version {}".format(qga.os, qga.os_version)
         gpuinfos = []
@@ -475,6 +475,6 @@ if __name__ == "__main__":
         print("ports_config start.")
         config_driver.config_ports(cmd.portsConfig)
     except QgaException as e:
-        print("result error: code=%s, message=%s." % (e.error_code, e.message))
+        print("result error: code=%s, message=%s." % (e.error_code, str(e)))
     """
     print('config success')

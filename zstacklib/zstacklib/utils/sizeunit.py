@@ -147,4 +147,4 @@ def get_size(size):
     try:
         return do_get_size(num, unit)
     except KeyError:
-	raise Exception('unknown size unit[%s]' % size)
+        raise Exception('unknown size unit[%s]' % size)

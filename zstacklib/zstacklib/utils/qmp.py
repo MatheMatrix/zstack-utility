@@ -6,7 +6,6 @@ import logging
 import re
 from distutils.version import LooseVersion
 
-from zstacklib.utils.misc import ignore_exception
 
 logger = log.get_logger(__name__)
 QEMU_VERSION = qemu.QEMU_VERSION
@@ -102,7 +101,7 @@ def execute_qmp_command(domain, name, raise_exception=True, **kwargs):
     """
 
     qmp_cmd = {'execute': name}
-    for k, v in kwargs.items():
+    for k, v in list(kwargs.items()):
         if "_" in k:
             kwargs[k.replace("_", "-")] = v
             del kwargs[k]
@@ -244,7 +243,7 @@ class QEMUMonitorProtocol:
         @return QMP response as a Python dict or None if the connection has
                 been closed
         """
-        self.logger.debug(">>> %s", qmp_cmd)
+        logger.debug(">>> %s", qmp_cmd)
         try:
             self.__sock.sendall(json.dumps(qmp_cmd).encode('utf-8'))
         except OSError as err:
@@ -252,7 +251,7 @@ class QEMUMonitorProtocol:
                 return None
             raise err
         resp = self.__json_read()
-        self.logger.debug("<<< %s", resp)
+        logger.debug("<<< %s", resp)
         return resp
 
     def _cmd(self, name, args=None, cmd_id=None):
@@ -275,7 +274,7 @@ class QEMUMonitorProtocol:
         Build and send a QMP command to the monitor, report errors if any
         """
         if kwds:
-            for k, v in kwds.items():
+            for k, v in list(kwds.items()):
                 if "_" in k:
                     kwds[k.replace("_", "-")] = v
                     del kwds[k]

@@ -34,7 +34,7 @@ def replyerror(func):
     return wrap
 
 def checkParam(**kwargs):
-    for k,v in kwargs.items():
+    for k,v in list(kwargs.items()):
         if v is None:
             raise Exception("%s cannot be None" % k)
 

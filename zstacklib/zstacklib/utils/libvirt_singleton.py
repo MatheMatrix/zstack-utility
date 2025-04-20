@@ -1,6 +1,8 @@
-import singleton
+import traceback
+
+from . import singleton
 import libvirt
-import thread
+from . import thread
 from zstacklib.utils import log
 from zstacklib.utils import singleton
 
@@ -26,8 +28,6 @@ class LibvirtEventManagerSingleton(object):
                 except:
                     content = traceback.format_exc()
                     logger.warn(content)
-
-            logger.debug("virEventRunDefaultImpl stopped")
 
         run()
 

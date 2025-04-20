@@ -1,5 +1,3 @@
-import os
-from zstacklib.utils import shell
 
 
 class RemoteStorage(object):
