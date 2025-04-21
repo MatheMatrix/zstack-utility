@@ -209,9 +209,10 @@ class GetMultipathTopologyRsp(AgentRsp):
         self.devices = {} # type: dict[str, Device]
 
 class Device(object):
-    def __init__(self, disk, status):
+    def __init__(self, disk, status, state):
         self.disk = disk
         self.status = status
+        self.state = state
 
 class NvmeSanScanRsp(AgentRsp):
     def __init__(self):
@@ -1207,6 +1208,9 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GetMultipathTopologyRsp()
 
+        def convert_state(s):
+            return "running" if s in ["running", "active", "live"] else "failed"
+
         def parse_multipath_topology():
             # multipathd process needs to be running
             r, multipaths = bash.bash_ro("multipathd show multipaths json")
@@ -1223,7 +1227,8 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
                 wwid = mpath.uuid
                 results.update({wwid: []})
                 for path_group in mpath.path_groups:
-                    results.get(wwid).append(Device("/dev/"+path_group.paths[0].dev, path_group.dm_st))
+                    for path in path_group.paths:
+                        results.get(wwid).append(Device("/dev/"+path.dev, path_group.dm_st, convert_state(path.dm_st)))
             return results
 
         def get_disk_by_wwid(wwid):
