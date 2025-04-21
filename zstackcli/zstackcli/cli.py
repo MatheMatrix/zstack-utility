@@ -65,6 +65,8 @@ NOT_QUERY_MYSQL_APIS = [
 ]
 
 def escape_split(str, deli=','):
+    if str is None or not str.strip():
+        return []
     return csv.reader(c.StringIO(str), delimiter=deli, escapechar='\\').next()
 
 def clean_password_in_cli_history():
@@ -381,7 +383,7 @@ Parse command parameters error:
                     all_params[params[0]] = eval_string(params[0], params[1])
                 elif apiname == 'APIAddBackendServerToServerGroupMsg' and params[0] in ['vmNics','servers']:
                     all_params[params[0]] = eval_string(params[0], params[1])
-	        elif apiname == 'APIChangeLoadBalancerBackendServerMsg' and params[0] in ['vmNics','servers']:
+                elif apiname == 'APIChangeLoadBalancerBackendServerMsg' and params[0] in ['vmNics','servers']:
                     all_params[params[0]] = eval(params[1])
                 elif apiname == 'APIUpdateSchedulerJobMsg' and params[0] == 'parameters':
                     all_params[params[0]] = eval_string(params[0], params[1])

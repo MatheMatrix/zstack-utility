@@ -128,10 +128,43 @@ def get_guest_tools_states(vmUuids):
     return tools_states
 
 
-class VmConfigSyncResponse(kvmagent.AgentResponse):
+class SyncVmPortsCommand(kvmagent.AgentCommand):
     def __init__(self):
-        super(VmConfigSyncResponse, self).__init__()
-        self.errorCode = None
+        super(SyncVmPortsCommand, self).__init__()
+        self.vmUuid = None
+        self.ports = None
+        self.hostname = None
+        self.defaultIP = None
+
+
+class SyncVmPortsResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(SyncVmPortsResponse, self).__init__()
+
+
+class SetVmHostnameCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(SetVmHostnameCmd, self).__init__()
+        self.vmUuid = None
+        self.hostname = None
+        self.defaultIP = None
+
+
+class SetVmHostnameResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(SetVmHostnameResponse, self).__init__()
+
+
+class SetVmDnsCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(SetVmDnsCmd, self).__init__()
+        self.vmUuid = None
+        self.dns = None
+
+
+class SetVmDnsResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(SetVmDnsResponse, self).__init__()
 
 
 class GetGuestToolsStateResponse(kvmagent.AgentResponse):
@@ -141,14 +174,16 @@ class GetGuestToolsStateResponse(kvmagent.AgentResponse):
 
 
 class VmConfigPlugin(kvmagent.KvmAgent):
-    VM_CONFIG_PORTS = "/vm/configsync/ports"
+    VM_SYNC_PORTS = "/vm/configsync/ports"
     VM_GUEST_TOOLS_STATE = "/vm/guesttools/state"
     VM_SET_HOSTNAME = "/vm/set/hostname"
+    VM_SET_DNS = "/vm/set/dns"
 
     VM_QGA_PARAM_FILE = "/usr/local/zstack/zs-nics.json"
     VM_QGA_CONFIG_LINUX_CMD = "/usr/local/zstack/zs-tools/config_linux.py"
     VM_QGA_SET_HOSTNAME = "/usr/local/zstack/zs-tools/set_hostname_linux.py"
     VM_QGA_SET_HOSTNAME_EL6 = "/usr/local/zstack/zs-tools/set_hostname_linux_el6.py"
+    VM_QGA_SET_DNS = "/usr/local/zstack/zs-tools/set_dns_linux.py"
     VM_CONFIG_SYNC_OS_VERSION_SUPPORT = {
         VmQga.VM_OS_LINUX_CENTOS: ("6", "7", "8", "9"),
         VmQga.VM_OS_LINUX_NEO_KYLIN: ("v7", "v7update6",),
@@ -227,15 +262,37 @@ class VmConfigPlugin(kvmagent.KvmAgent):
             cmd_file = self.VM_QGA_SET_HOSTNAME
         ret, msg = qga.guest_exec_python(cmd_file, [config.hostname, config.defaultIp])
         if ret != 0:
-            logger.debug("set vm hostname {} by qga failed: {}".format(vm_uuid, msg))
-            return 1, "set vm hostname {} by qga failed: {}".format(vm_uuid, msg)
+            logger.debug("set vm {} hostname by qga failed: {}".format(vm_uuid, msg))
+            return 1, "set vm {} hostname by qga failed: {}".format(vm_uuid, msg)
+
+        return 0, msg
+
+    @lock.lock('config_vm_by_qga')
+    def set_vm_dns_by_qga(self, domain, dns):
+
+        vm_uuid = domain.name()
+        qga = VmQga(domain)
+        if qga.state != VmQga.QGA_STATE_RUNNING:
+            return 1, "qga is not running for vm {}".format(vm_uuid)
+
+        if qga.os == VmQga.VM_OS_WINDOWS:
+            msg = "windows vm[uuid: {}] does not support to set dns by qga".format(vm_uuid)
+            logger.debug(msg)
+            return 1, msg
+
+        # exec qga command
+        cmd_file = self.VM_QGA_SET_DNS
+        ret, msg = qga.guest_exec_python(cmd_file, dns)
+        if ret != 0:
+            logger.debug("set vm {} dns by qga failed: {}".format(vm_uuid, msg))
+            return 1, "set vm {} dns by qga failed: {}".format(vm_uuid, msg)
 
         return 0, msg
 
     @kvmagent.replyerror
-    def vm_config_ports(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = VmConfigSyncResponse()
+    def vm_sync_ports(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])  # type: SyncVmPortsCommand
+        rsp = SyncVmPortsResponse()
 
         domain = get_virt_domain(cmd.vmUuid)
         if not domain or not domain.isActive():
@@ -243,7 +300,7 @@ class VmConfigPlugin(kvmagent.KvmAgent):
             rsp.error = 'vm {} not running'.format(cmd.vmUuid)
             return jsonobject.dumps(rsp)
 
-        ret, msg = self.config_vm_by_qga(domain, cmd.portsConfig)
+        ret, msg = self.config_vm_by_qga(domain, {'ports': cmd.ports})
         if ret != 0:
             rsp.success = False
             rsp.error = msg
@@ -267,8 +324,8 @@ class VmConfigPlugin(kvmagent.KvmAgent):
 
     @kvmagent.replyerror
     def vm_set_hostname(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = kvmagent.AgentResponse()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])  # type: SetVmHostnameCmd
+        rsp = SetVmHostnameResponse()
 
         domain = get_virt_domain(cmd.vmUuid)
         if not domain or not domain.isActive():
@@ -276,20 +333,41 @@ class VmConfigPlugin(kvmagent.KvmAgent):
             rsp.error = 'vm {} not running'.format(cmd.vmUuid)
             return jsonobject.dumps(rsp)
 
-        ret, msg = self.set_vm_hostname_by_qga(domain, cmd.hostName, cmd.defaultIP)
+        ret, msg = self.set_vm_hostname_by_qga(domain, cmd.hostname, cmd.defaultIP)
         if ret != 0:
             rsp.success = False
             rsp.error = msg
         else:
-            logger.debug("config vm {} by qga successfully, detail info {}".format(cmd.vmUuid, msg))
+            logger.debug("set vm {} hostname by qga successfully, detail info {}".format(cmd.vmUuid, msg))
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def vm_set_dns(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])  # type: SetVmDnsCmd
+        rsp = SetVmDnsResponse()
+
+        domain = get_virt_domain(cmd.vmUuid)
+        if not domain or not domain.isActive():
+            rsp.success = False
+            rsp.error = 'vm {} not running'.format(cmd.vmUuid)
+            return jsonobject.dumps(rsp)
+
+        ret, msg = self.set_vm_dns_by_qga(domain, cmd.dns)
+        if ret != 0:
+            rsp.success = False
+            rsp.error = msg
+        else:
+            logger.debug("set vm {} dns by qga successfully, detail info {}".format(cmd.vmUuid, msg))
 
         return jsonobject.dumps(rsp)
 
     def start(self):
         http_server = kvmagent.get_http_server()
-        http_server.register_async_uri(self.VM_CONFIG_PORTS, self.vm_config_ports)
+        http_server.register_async_uri(self.VM_SYNC_PORTS, self.vm_sync_ports)
         http_server.register_async_uri(self.VM_GUEST_TOOLS_STATE, self.vm_guest_tools_state)
         http_server.register_async_uri(self.VM_SET_HOSTNAME, self.vm_set_hostname)
+        http_server.register_async_uri(self.VM_SET_DNS, self.vm_set_dns)
 
     def stop(self):
         pass
@@ -338,7 +416,7 @@ if __name__ == "__main__":
 }'''
 
     cmd = jsonobject.loads(str_config)
-    rsp = VmConfigSyncResponse()
+    rsp = SyncVmPortsResponse()
 
     domain = get_virt_domain(cmd.vmUuid)
     if not domain:
