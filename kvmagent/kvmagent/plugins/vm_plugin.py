@@ -5131,6 +5131,7 @@ class Vm(object):
                     e(cpu, 'model', str(MIPS64EL_CPU_MODEL), attrib={'fallback': 'allow'})
                     sockets = cmd.socketNum if cmd.socketNum else 2
                     mem = cmd.memory / 1024 / sockets
+                    total_mem = cmd.memory / 1024
                     cores = max_vcpu / sockets
                     e(cpu, 'topology', attrib={'sockets': str(sockets), 'cores': str(cores), 'threads': '1'})
                     numa = e(cpu, 'numa')
