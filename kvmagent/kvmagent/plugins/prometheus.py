@@ -53,6 +53,8 @@ hw_status_abnormal_list_record = {
     'raid': set()
 }
 
+ipmitoolExporterCmd = None
+
 # collect domain max memory
 domain_max_memory = {}
 
@@ -1034,7 +1036,20 @@ def collect_equipment_state_from_ipmi():
         "cpu_status": GaugeMetricFamily('cpu_status', 'cpu status', None, ['cpu']),
         "ipmi_memory_status": GaugeMetricFamily('ipmi_memory_status', 'ipmi memory status', None, ['name', 'type']),
     }
-    metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
+
+    def stop_ipmi_exporter():
+        bash_errorout("systemctl daemon-reload && systemctl stop ipmi_exporter.service")
+        os.remove('/etc/systemd/system/ipmi_exporter.service')
+
+    ret = bash_r("timeout 5 bmc_info")
+    if ret != 0:
+        logger.warn("failed to get bmc info, stop ipmi_exporter")
+        stop_ipmi_exporter()
+    else:
+        PrometheusPlugin.start_ipmi_exporter()
+
+
+    metrics['ipmi_status'].add_metric([], "ipmitool mc info")
 
     info = get_sensor_info_from_ipmi()
     if info is None:
@@ -1664,7 +1679,6 @@ def check_block_devices_insert_and_remove(block_devices):
 
     block_devices_record = block_devices
 
-
 kvmagent.register_prometheus_collector(collect_host_network_statistics)
 kvmagent.register_prometheus_collector(collect_host_capacity_statistics)
 kvmagent.register_prometheus_collector(collect_vm_statistics)
@@ -1892,6 +1906,12 @@ WantedBy=multi-user.target
 
         @in_bash
         def start_ipmi_exporter(cmd):
+            ipmitoolExporterCmd = cmd
+            ret = bash_r("timeout 5 bmc_info")
+            if ret != 0:
+                logger.warn("failed to get bmc info, skip ipmi_exporter startup")
+                return
+
             bash_errorout("modprobe ipmi_msghandler; modprobe ipmi_devintf; modprobe ipmi_poweroff; modprobe ipmi_si; modprobe ipmi_watchdog")
             EXPORTER_PATH = cmd.binaryPath
             LOG_FILE = os.path.join(os.path.dirname(EXPORTER_PATH), cmd.binaryPath + '.log')
