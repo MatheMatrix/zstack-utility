@@ -3818,6 +3818,7 @@ done
                         return
 
                 type_r, type_o = bash_ro('ipmitool sdr get "%s"' % self.name)
+                logger.debug("-------------------------------------------->>>>type_o %s" % type_o)
                 if type_r != 0 or type_o is None:
                     logger.warning("failed to get sensor type for %s" % self.name)
                     return
@@ -3834,15 +3835,6 @@ done
                     return
                 result_queue.put((sensor.name, sensor))
 
-        def worker(task_queue, result_queue, lock):
-            while True:
-                try:
-                    info = task_queue.get_nowait()
-                except Queue.Empty:
-                    break
-                process_sensors(info, result_queue, lock)
-                task_queue.task_done()
-
         def delete_residual_sensor_from_cache():
             for key in sensor_type_and_classification_by_name.keys():
                 if key not in [info['name'].strip() for info in infos]:
@@ -3850,32 +3842,47 @@ done
 
         logger.debug("start to get sensors")
 
+        logger.debug("111===========================")
+        logger.debug(len(sensor_type_and_classification_by_name))
+        logger.debug(sensor_type_and_classification_by_name.keys())
+        logger.debug(sensor_type_and_classification_by_name.values())
+
         sensors = []
         result_queue = Queue.Queue()
         lock = threading.Lock()
-        task_queue = Queue.Queue()
-        infos = form.load('name|sensorId|status|entityId|value\n' + get_sensor_info_from_ipmi(), sep='|')
+        infos = form.load('name|sensorId|status|entityId|value\n' + get_sensor_info_from_ipmi(), sep='|')[:20]
 
-        for info in infos:
-            if info['name'] and info['name'] not in sensor_type_and_classification_by_name.keys():
-                task_queue.put(info)
+        logger.debug("222===========================")
+        logger.debug(len(infos))
 
-        threads = []
-        for _ in range(min(10, task_queue.qsize())):
-            t = threading.Thread(target=worker, args=(task_queue, result_queue, lock))
-            t.start()
-            threads.append(t)
-
-        task_queue.join()
+        for batch in [infos[i:i + 5] for i in range(0, len(infos), 5)]:
+            batch_threads = []
+            for info in batch:
+                t = threading.Thread(target=process_sensors, args=(info, result_queue, lock))
+                t.start()
+                batch_threads.append(t)
+            for t in batch_threads:
+                t.join()
 
         while not result_queue.empty():
-            name, result = result_queue.get()
+            _, result = result_queue.get()
             sensors.append(result)
-            sensor_type_and_classification_by_name[name] = [result.type, result.classification]
+            sensor_type_and_classification_by_name[result.name] = [result.type, result.classification]
+
+        logger.debug("333===========================")
+        logger.debug(len(sensor_type_and_classification_by_name))
+        logger.debug(sensor_type_and_classification_by_name.keys())
+        logger.debug(sensor_type_and_classification_by_name.values())
 
         delete_residual_sensor_from_cache()
 
-        logger.debug("finsh to get sensors")
+        logger.debug("444===========================")
+        logger.debug(len(sensor_type_and_classification_by_name))
+        logger.debug(sensor_type_and_classification_by_name.keys())
+        logger.debug(sensor_type_and_classification_by_name.values())
+
+        logger.debug("finished to get sensors")
+
         return sensors
 
     @thread.AsyncThread

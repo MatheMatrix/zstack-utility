@@ -8,7 +8,6 @@ logger = log.get_logger(__name__)
 
 sft = Group()
 
-_cache_lock = threading.Lock()
 ipmi_cache = {
     "data": None,
     "timestamp": 0,
@@ -35,7 +34,6 @@ def get_sensor_info_from_ipmi(force_refresh=False):
         logger.warn("failed to get ipmi sensor info: %s" % result.error)
         return ''
 
-    with _cache_lock:
-        ipmi_cache["data"] = result.value[0]
-        ipmi_cache["timestamp"] = int(time.time())
+    ipmi_cache["data"] = result.value[0]
+    ipmi_cache["timestamp"] = int(time.time())
     return ipmi_cache["data"]
