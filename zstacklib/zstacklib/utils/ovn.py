@@ -41,6 +41,7 @@ class OvsDpdkNic:
         self.name = ""
         self.pciAddress = ""
         self.driver = ""
+        self.oldDriver = ""
 
 
 @bash.in_bash
@@ -63,10 +64,14 @@ def getAllDpdkNic():
         for item in items:
             if item.startswith("if="):
                 nic.name = item.split("=")[1]
-            if item.startswith("drv="):
+            elif item.startswith("drv="):
                 nic.driver = item.split("=")[1]
+            elif item.startswith("unused="):
+                oldDrivers = item.split("=")[1]
+                nic.oldDriver = oldDrivers.split(",")[0]
 
-        logger.debug("dpdk nic[%s] name: %s, driver: %s" % (nic.pciAddress, nic.name, nic.driver))
+        logger.debug("dpdk nic{} name: {}, driver: {}, unused:{}"
+                     .format(nic.pciAddress, nic.name, nic.driver, nic.oldDriver))
         ret.append(nic)
 
     return ret
@@ -132,42 +137,56 @@ def changeNicToDpdkDriver(nicNamePciAddressMap):
 
 
 @bash.in_bash
-def restoreNicDriver(nicNamePciAddressMap, nicNameDriverMap):
+def restoreNicDriver(pciAddressList):
+    logger.debug("starting restore nic driver {}".format(pciAddressList))
+    if not restoreNicDriver:
+        return
+
     dpdkNics = getAllDpdkNic()
-    targetDpdkNic = []
 
-    logger.debug("starting change nic driver")
-
-    for nicName, pciAddress in nicNamePciAddressMap.__dict__.items():
+    for pciAddress in pciAddressList:
         found = False
-        driver = ""
+        targetNic = OvsDpdkNic()
         for dpdkNic in dpdkNics:
             if dpdkNic.pciAddress == pciAddress:
                 found = True
-                driver = dpdkNic.driver
-                targetDpdkNic.append(dpdkNic)
+                targetNic = dpdkNic
                 break
 
         if not found:
             continue
 
-        targetDriver = nicNameDriverMap.__dict__[nicName]
-        if driver == "mlx5_core" or driver == targetDriver:
-            # mellanox nic(like cx-5) does not need vfio driver
+        # if nis is not use vfio, nothing to to
+        if targetNic.driver != "vfio-pci" and targetNic.driver != "uio_pci_generic":
             continue
 
-        # for nested vm, the driver is should be uio_pci_generic
         r, _, e = bash.bash_roe(DevBindBin + " -b {driver} {pciAddress}"
-                                .format(driver=targetDriver, pciAddress=pciAddress))
+                                .format(driver=targetNic.oldDriver, pciAddress=pciAddress))
         if r != 0:
             logger.debug(
                 "change change nic [pci address: {}] driver to {} failed: {}"
-                .format(pciAddress, targetDriver, e))
+                .format(pciAddress, targetNic.oldDriver, e))
         else:
             logger.debug(
-                "successfully change change nic [pci address: {}] driver to {}".format(pciAddress, targetDriver))
+                "successfully change change nic [pci address: {}] driver to {}"
+                .format(pciAddress, targetNic.oldDriver))
 
-        bash.bash_r("ip link set up dev {}".format(nicName))
+    # getAllDpdkNic does not return the nic name, so call it again
+    dpdkNics = getAllDpdkNic()
+    for pciAddress in pciAddressList:
+        found = False
+        targetNic = OvsDpdkNic()
+        for dpdkNic in dpdkNics:
+            if dpdkNic.pciAddress == pciAddress:
+                found = True
+                targetNic = dpdkNic
+                break
+
+        if not found:
+            continue
+
+        bash.bash_r("ip link set up dev {}".format(targetNic.name))
+
 
     return 0, ""
 
@@ -293,7 +312,7 @@ class VsCtl(object):
             if lacpmode is not None:
                 bash.bash_roe(CtlBin + " set port dpdkbond lacp={mode} ".format(mode=lacpmode))
 
-        # TODO configure ip when we need overlay nrtwork
+        # TODO configure ip when we need overlay network
         # if ip is not None:
         #    iproute.flush_address_no_error(brName)
         #    iproute.add_address_no_error(ip, linux.netmask_to_cidr(netmask), 4, brName)

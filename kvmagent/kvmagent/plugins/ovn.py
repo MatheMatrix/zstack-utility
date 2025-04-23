@@ -181,7 +181,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                                 "ovs-vsctl set bridge br-int datapath_type=netdev;"
                                 "ovs-vsctl --no-wait set Open_vSwitch . other_config:dpdk-init=true")
         if r != 0:
-            ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
+            pciAddressList = list(cmd.nicNamePciAddressMap.__dict__.items().value())
+            ovn.restoreNicDriver(pciAddressList)
             rsp.success = False
             rsp.error = "init ovs config, failed: {err}".format(err=e)
             return jsonobject.dumps(rsp)
@@ -193,7 +194,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         r, e = vsctl.addUplink(cmd.nicNamePciAddressMap, cmd.bondingMode, cmd.lacpMode,
                                cmd.ovnEncapIP, cmd.ovnEncapNetmask)
         if r != 0:
-            ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
+            pciAddressList = list(cmd.nicNamePciAddressMap.__dict__.items().value())
+            ovn.restoreNicDriver(pciAddressList)
             rsp.success = False
             rsp.error = "init ovs config, failed: %s" % e
             return jsonobject.dumps(rsp)
@@ -212,7 +214,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                                         br_ex=cmd.brExName,
                                         hostIp=cmd.hostIp))
         if r != 0:
-            ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
+            pciAddressList = list(cmd.nicNamePciAddressMap.__dict__.items().value())
+            ovn.restoreNicDriver(pciAddressList)
             rsp.success = False
             rsp.error = "init ovs config, failed: %s" % e
             return jsonobject.dumps(rsp)
@@ -222,12 +225,19 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         r, _, e = bash.bash_roe("systemctl restart ovsdb-server;systemctl start openvswitch;systemctl start "
                                 "ovn-controller")
         if r != 0:
-            ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
+            pciAddressList = list(cmd.nicNamePciAddressMap.__dict__.items().value())
+            ovn.restoreNicDriver(pciAddressList)
             rsp.success = False
             rsp.error = "start ovn service, fail {err}".format(err=e)
             return jsonobject.dumps(rsp)
 
         logger.debug("restart ovs services")
+
+        # restore dpdk driver
+        if cmd.restoreNicPciAddressList:
+            _, _, _ = bash.bash_roe("systemctl stop openvswitch")
+            ovn.restoreNicDriver(cmd.restoreNicPciAddressList)
+            _, _, _ = bash.bash_roe("systemctl start openvswitch")
 
         return jsonobject.dumps(rsp)
 
@@ -245,7 +255,7 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             rsp.error = "stop ovn service, fail {err}".format(err=e)
 
         logger.debug("starting change nic driver")
-        r, e = ovn.restoreNicDriver(cmd.nicNamePciAddressMap, cmd.nicNameDriverMap)
+        r, e = ovn.restoreNicDriver(cmd.restoreNicPciAddressList)
         if r != 0:
             rsp.success = False
             rsp.error = e
