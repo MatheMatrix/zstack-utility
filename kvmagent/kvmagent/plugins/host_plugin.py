@@ -17,6 +17,7 @@ import socket
 import sys
 import yaml
 import subprocess
+import threading
 
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
@@ -36,6 +37,7 @@ from zstacklib.utils import xmlobject
 from zstacklib.utils import ovs
 from zstacklib.utils import shell
 from zstacklib.utils.bash import *
+from zstacklib.utils.future import ThreadPoolExecutor
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.ip import get_nic_driver_type
 from zstacklib.utils.ipmitool import get_sensor_info_from_ipmi
@@ -73,8 +75,6 @@ BOND_MODE_ACTIVE_6 = "balance-alb"
 
 DISTRO_USING_DNF = ['rl84', 'h84r', 'ky10sp1', 'ky10sp2', 'ky10sp3',
                     'oe2203sp1', 'h2203sp1o']
-
-sensor_type_by_name = {}  # type: dict[str, str]
 
 
 class ConnectResponse(kvmagent.AgentResponse):
@@ -3740,26 +3740,30 @@ done
             return False
 
         def process_device(dev):
-            name = dev['name']
-            block_dev = BlockDevice(dev['name'], dev['type'], dev['size'], dev['model'], dev['serial'], dev['fstype'],
-                                    dev['mountpoint'])
-            if 'nvme' in name:
-                block_dev.mediaType = 'SSD'
-                if not is_pcie_nvme(name):
-                    return None
-            else:
-                block_dev.mediaType = 'SSD' if (dev['rota'] == '0' or dev['rota'] == False) else 'HDD'
+            try:
+                name = dev['name']
+                block_dev = BlockDevice(dev['name'], dev['type'], dev['size'], dev['model'], dev['serial'],
+                                        dev['fstype'],dev['mountpoint'])
+                if 'nvme' in name:
+                    block_dev.mediaType = 'SSD'
+                    if not is_pcie_nvme(name):
+                        return None
+                else:
+                    block_dev.mediaType = 'SSD' if (dev['rota'] == '0' or dev['rota'] == False) else 'HDD'
 
-            if dev['children'] is not None:
-                for child in dev['children']:
-                    child_dev = process_device(child)
-                    block_dev.children.append(child_dev)
+                if dev['children'] is not None:
+                    for child in dev['children']:
+                        child_dev = process_device(child)
+                        if child_dev is not None:
+                            block_dev.children.append(child_dev)
 
-            block_dev.partitionTable = get_partition_table(name)
-            block_dev.used, block_dev.available, block_dev.usedRatio = get_size_info(name)
-            block_dev.smartPassed, block_dev.smartMessage = get_smart_passed_and_message(name)
+                block_dev.partitionTable = get_partition_table(name)
+                block_dev.used, block_dev.available, block_dev.usedRatio = get_size_info(name)
+                block_dev.smartPassed, block_dev.smartMessage = get_smart_passed_and_message(name)
 
-            return block_dev
+                return block_dev
+            except Exception as err:
+                logger.debug("failed to process device %s: %s" % (dev['name'], str(err)))
 
         r, o, e = bash_roe('lsblk -p -b -o NAME,TYPE,ROTA,SIZE,MOUNTPOINT,FSTYPE,SERIAL,MODEL -J')
         if r != 0:
@@ -3767,11 +3771,17 @@ done
             rsp.error = e
             return jsonobject.dumps(rsp)
 
-        for device in jsonobject.loads(o)['blockdevices']:
-            blockDevice = process_device(device)
-            if blockDevice:
-                rsp.blockDevices.append(blockDevice)
+        all_block_devices = []
+        lock = threading.Lock()
+        with ThreadPoolExecutor(max_workers=15) as executor:
+            futures = {executor.submit(process_device, dev) for dev in jsonobject.loads(o)['blockdevices']}
+            for future in futures:
+                result = future.result()
+                if result:
+                    with lock:
+                        all_block_devices.append(result)
 
+        rsp.blockDevices = all_block_devices
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -3779,51 +3789,17 @@ done
     def get_sensors(self, req):
         rsp = GetSensorsResponse()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        start_time = linux.get_current_timestamp()
-        time_out = get_timeout(cmd) - 10
 
         class Sensor:
             def __init__(self, info):
                 self.name = info['name'].strip() or ""
                 self.value = info['value'].strip() or ""
-                self.status = info['status'].strip() or ""
-                self.type = ""
-                self.classification = ""
-                self.set_type_and_classification()
-
-            def set_type_and_classification(self):
-                if linux.get_current_timestamp() - start_time > time_out:
-                    return
-
-                if self.name is "":
-                    return
-
-                if self.name in sensor_type_by_name:
-                    self.type = sensor_type_by_name[self.name]
-                    return
-
-                type_r, type_o = bash_ro('ipmitool sdr get "%s"' % self.name)
-                if type_r != 0 or type_o is None:
-                    logger.warning("failed to get sensor type for %s" % self.name)
-                    return
-
-                if "Sensor Type" in type_o:
-                    sensor_type = filter_lines_by_str_list(type_o.splitlines(), ["Sensor Type"])
-                    self.type = sensor_type[0].split(':')[1].split('(')[0].strip()
-                    self.classification = "Discrete" if "Discrete" in sensor_type else "Threshold"
-                    sensor_type_by_name[self.name] = self.type
-
-        def update_sensor_type_by_name():
-            sensor_names = {sensor.name for sensor in sensors}
-            keys_to_remove = [key for key in sensor_type_by_name.keys() if key not in sensor_names]
-            for key in keys_to_remove:
-                del sensor_type_by_name[key]
+                self.status = info['event'].strip().strip("'").lower()  or ""
+                self.type = info['type'].strip() or ""
 
         sensors = []
-        for info in form.load('name|sensorId|status|entityId|value\n' + get_sensor_info_from_ipmi(), sep='|'):
+        for info in form.load('id|name|type|value|units|event\n' + get_sensor_info_from_ipmi(), sep='|'):
             sensors.append(Sensor(info))
-
-        update_sensor_type_by_name()
 
         rsp.sensors = sensors
         return jsonobject.dumps(rsp)
