@@ -21,7 +21,8 @@ ZStack KVM agent REST service""",
             # -*- Extra requirements: -*-
             "prometheus_client",
             "typing",
-            "future"
+            "future",
+            "futures==3.4.0"
       ],
       entry_points="""
       # -*- Entry points: -*-
