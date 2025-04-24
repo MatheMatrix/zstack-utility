@@ -1835,6 +1835,8 @@ LoadPlugin virt
             def reload_and_restart_service(service_name):
                 bash_errorout("systemctl daemon-reload && systemctl restart %s.service" % service_name)
 
+            restart = "always"
+
             service_name = get_systemd_name(binPath)
             if not service_name:
                 logger.warn("cannot get service name from binPath: %s" % binPath)
@@ -1844,6 +1846,7 @@ LoadPlugin virt
             memory_limit_config = ""
             if service_name == "ipmi_exporter":
                 memory_limit_config = "MemoryLimit=64M"
+                restart = "on-failure"
 
             service_conf = '''
 [Unit]
@@ -1855,11 +1858,11 @@ ExecStart=/bin/sh -c '%s %s > %s 2>&1'
 ExecStop=/bin/sh -c 'pkill -TERM -f %s'
 
 %s
-Restart=always
+Restart=%s
 RestartSec=30s
 [Install]
 WantedBy=multi-user.target
-''' % (service_name, binPath, args, '/dev/null' if log.endswith('/pushgateway.log') else log, binPath, memory_limit_config)
+''' % (service_name, binPath, args, '/dev/null' if log.endswith('/pushgateway.log') else log, binPath, memory_limit_config, restart)
 
             if not os.path.exists(service_path):
                 linux.write_file(service_path, service_conf, True)
@@ -2045,6 +2048,31 @@ modules:
             self.collect_domain_maximum_memory()
             time.sleep(300)
 
+    @thread.AsyncThread
+    def manage_ipmi_exporter_service(self):
+        operation_lock = threading.Lock()
+        while True:
+            try:
+                with operation_lock:
+                    def is_service_active():
+                        exit_code, output = bash_ro("systemctl is-active ipmi_exporter.service")
+                        return exit_code == 0 and output.strip() == "active"
+
+                    def check_bmc_health():
+                        return shell.run("timeout 30 bmc-info") == 0
+
+                    if check_bmc_health():
+                        if not is_service_active():
+                            logger.debug("bmc is healthy. ipmi_exporter service is not running, starting it")
+                            shell.run("systemctl start ipmi_exporter.service")
+                    else:
+                        if is_service_active():
+                            logger.debug("bmc is not healthy. ipmi_exporter service is running, stopping ipmi_exporter service")
+                            shell.run("systemctl stop ipmi_exporter.service")
+            except Exception as e:
+                logger.warn("error in manage_ipmi_exporter_service: %s" % e)
+
+            time.sleep(60)
 
     def collect_domain_maximum_memory(self):
         o = bash_o('virsh domstats --list-running --balloon')
@@ -2104,6 +2132,7 @@ modules:
         self.init_global_config()
         self.install_colletor()
         self.start_async_data_collectors()
+        self.manage_ipmi_exporter_service()
         start_http_server(7069)
 
     def stop(self):
