@@ -772,7 +772,7 @@ class CollectFromYml(object):
         host_list = list(set(host_list))
         for host_ip in host_list:
             if host_ip is None or host_ip == '':
-                return
+                continue
             if host_ip == 'localhost' or host_ip == get_default_ip():
                 self.add_collect_thread(self.local_type, [log_list, collect_dir, type])
             else:
