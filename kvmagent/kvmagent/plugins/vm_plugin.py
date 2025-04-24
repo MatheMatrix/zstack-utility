@@ -5371,15 +5371,12 @@ class Vm(object):
                         # Requires: hv-vpindex
                         e(hyperv, 'synic', attrib={'state': 'on'})
                         # Requires: hv-vpindex, hv-synic, hv-time
-                        e(hyperv, 'stimer', attrib={'state': 'on'})
+                        stimer = e(hyperv, 'stimer', attrib={'state': 'on'})
                         e(hyperv, 'runtime', attrib={'state': 'on'})
-                        if cmd.clock == 'localtime':
-                            stimer = e(hyperv, 'stimer',
-                                       attrib={'state': 'on'})
-                            # The configuration item 'direct' can only on when
-                            # libvirt version >= 6.0.0
-                            if LooseVersion(linux.get_libvirt_version()) >= LooseVersion('6.0.0'):
-                                e(stimer, 'direct', attrib={'state': 'on'})
+                        # The configuration item 'direct' can only on when
+                        # libvirt version >= 6.0.0
+                        if LooseVersion(linux.get_libvirt_version()) >= LooseVersion('6.0.0') and DIST_NAME != 'kylin':
+                            e(stimer, 'direct', attrib={'state': 'on'})
 
                 # refer to: https://access.redhat.com/articles/2470791
                 # increase spinlocks retries
