@@ -8,7 +8,7 @@ from collections import defaultdict
 
 import typing
 from prometheus_client import start_http_server
-from prometheus_client.core import GaugeMetricFamily, REGISTRY
+from prometheus_client.core import GaugeMetricFamily, Sample, REGISTRY
 import psutil
 
 from kvmagent import kvmagent
@@ -2392,23 +2392,25 @@ modules:
 
             @classmethod
             def check(cls, v):
+                if v is None:
+                    return False
+
                 try:
-                    if v is None:
-                        return False
                     if isinstance(v, GaugeMetricFamily):
                         return Collector.check(v.samples)
+                    if isinstance(v, Sample):
+                        return Collector.check(v.value) and Collector.check(v.labels)
+
                     if isinstance(v, list) or isinstance(v, tuple):
                         for vl in v:
                             if Collector.check(vl) is False:
                                 return False
-                    if isinstance(v, dict):
+                    elif isinstance(v, dict):
                         for vk in v.keys():
-                            if vk == "timestamp" or vk == "exemplar":
-                                continue
                             if Collector.check(v[vk]) is False:
                                 return False
                 except Exception as e:
-                    logger.warn("got exception in check value %s: %s" % (v, e))
+                    logger.warn("got exception in check value %s: %s" % (str(v), e))
                     return True
                 return True
 
