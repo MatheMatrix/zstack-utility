@@ -1033,10 +1033,10 @@ def get_img_fmt(src):
     return fmt
 
 
-def get_fmt_from_magic(magic):
-    if magic == 'QFI\xfb':
+def get_fmt_from_magic(magic: bytes):
+    if magic == b'QFI\xfb':
         return 'qcow2'
-    elif magic == 'KDMV':
+    elif magic == b'KDMV':
         return 'vmdk'
     else:
         return 'raw'

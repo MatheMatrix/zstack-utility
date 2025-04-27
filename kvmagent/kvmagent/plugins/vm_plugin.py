@@ -42,6 +42,7 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.imagestore import ImageStoreClient
+from kvmagent.plugins.shared_block_plugin import MAX_ACTUAL_SIZE_FACTOR
 from zstacklib.utils import bash, plugin, iscsi
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import lvm
@@ -11540,7 +11541,6 @@ host side snapshot files chian:
     @bash.in_bash
     @misc.ignoreerror
     def _extend_sharedblock(self, conn, dom, event, detail, opaque):
-        from .shared_block_plugin import MAX_ACTUAL_SIZE_FACTOR
         logger.debug("got event from libvirt, %s %s %s %s" %
                      (dom.name(), LibvirtEventManager.event_to_string(event), detail, opaque))
 

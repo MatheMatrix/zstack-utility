@@ -1658,6 +1658,40 @@ def set_ini_file(file, section, option, value, host_post_info):
     return True
 
 
+def get_virtualenv_python_version(venv, host_post_info):
+    start_time = datetime.datetime.now()
+    host_post_info.start_time = start_time
+    host = host_post_info.host
+    post_url = host_post_info.post_url
+    host_post_info.post_label = "ansible.check.virtualenv.python.version"
+    host_post_info.post_label_param = venv
+    handle_ansible_info("INFO: starting check virtualenv python version ... ",
+                        host_post_info, "INFO")
+    runner_args = ZstackRunnerArg()
+    runner_args.host_post_info = host_post_info
+    runner_args.module_name = 'shell'
+    runner_args.module_args = '%s/bin/python --version' % venv
+    zstack_runner = ZstackRunner(runner_args)
+    result = zstack_runner.run()
+    logger.debug(result)
+    if result['contacted'] == {}:
+        ansible_start = AnsibleStartResult()
+        ansible_start.host = host
+        ansible_start.post_url = post_url
+        ansible_start.result = result
+        handle_ansible_start(ansible_start)
+        raise Exception(result)
+    ret = result['contacted'][host]
+    if 'rc' not in ret:
+        logger.warning(("Network problem, try again now, ansible "
+                        "reply is below:\n %s") % result)
+        raise Exception(result)
+
+    return ret['stdout'].strip().split()[1] if ret['rc'] == 0 else None
+
+
+
+
 @retry(times=3, sleep_time=3)
 def check_and_install_virtual_env(version, trusted_host, pip_url,
                                   host_post_info):
