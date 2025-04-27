@@ -7,6 +7,17 @@ import xml.etree.ElementTree as ET
 logger = log.get_logger(__name__)
 
 
+class VendorEnum:
+    INTEL = "Intel"
+    AMD = "AMD"
+    NVIDIA = "NVIDIA"
+    HAIGUANG = "Haiguang"
+    HUAWEI = "Huawei"
+    TIANSHU = "TianShu"
+    VASTAI = "Vastai"
+    ENFLAME = "Enflame"
+
+
 def is_gpu(type):
     return type in ['GPU_3D_Controller', 'GPU_Video_Controller', 'GPU_Processing_Accelerators', 'GPU_Co_Processor']
 
