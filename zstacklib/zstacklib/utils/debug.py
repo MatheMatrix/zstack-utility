@@ -3,7 +3,7 @@ __author__ = 'frank'
 import random
 import time
 
-import linux
+from . import linux
 import traceback
 import signal
 import sys
