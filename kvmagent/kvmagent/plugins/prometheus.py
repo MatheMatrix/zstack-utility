@@ -45,7 +45,8 @@ gpu_devices = {
     'AMD': set(),
     'HY': set(),
     'HUAWEI': set(),
-    'TIANSHU': set()
+    'TIANSHU': set(),
+    'ENFLAME': set()
 }
 
 hw_status_abnormal_list_record = {
@@ -1753,6 +1754,47 @@ def collect_amd_gpu_status():
     return metrics.values()
 
 
+def collect_enflame_gpu_status():
+    metrics = get_gpu_metrics()
+
+    if not has_efsmi():
+        return metrics.values()
+
+    r, o = bash_ro(gpu.get_enflame_gpu_info_cmd())
+    if r != 0:
+        check_gpu_status_and_save_gpu_status("ENFLAME", metrics)
+        return metrics.values()
+
+    for info in gpu.parse_enflame_gpu_output(o):
+        pci_device_address = info.get("pciAddress", "").strip()
+        serial_number = info.get("serialNumber", "").strip()
+
+        memory_usage = info.get("memoryUsage", "0MiB").strip().rstrip("MiB")
+        memory_total = info.get("memory", "0MiB").strip().rstrip("MiB")
+        memory_utilization = calculate_percentage(memory_usage, memory_total)
+
+        power = info.get("power", "0W").strip().rstrip("W")
+        temperature = info.get("temperature", "0C").strip().rstrip("C")
+        gcu_usage = info.get("gcuUsage", "0%").strip().rstrip("%")
+
+        add_gpu_pci_device_address("ENFLAME", pci_device_address, serial_number)
+
+        if is_number(power):
+            add_metrics('host_gpu_power_draw', power, [pci_device_address, serial_number], metrics)
+
+        if is_number(temperature):
+            add_metrics('host_gpu_temperature', temperature, [pci_device_address, serial_number], metrics)
+
+        if is_number(gcu_usage):
+            add_metrics('host_gpu_utilization', gcu_usage, [pci_device_address, serial_number], metrics)
+
+        if is_number(memory_utilization):
+            add_metrics('host_gpu_memory_utilization', memory_utilization, [pci_device_address, serial_number], metrics)
+
+    check_gpu_status_and_save_gpu_status("ENFLAME", metrics)
+    return metrics.values()
+
+
 def collect_disk_stat():
     global sblk_pv_state_fail_last_report_time
     class BlockInfo(object):
@@ -1946,6 +1988,18 @@ def has_npu_smi():
     return shell.run_without_log("which npu-smi") == 0
 
 
+def has_efsmi():
+    return shell.run_without_log("which efsmi") == 0
+
+
+def is_number(s):
+    try:
+        float(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 class ProcessPhysicalMemoryUsageAlarm(object):
     def __init__(self, pid, process_name, mem_usage, **kwargs):
         self.pid = pid
@@ -2041,6 +2095,7 @@ kvmagent.register_prometheus_collector(collect_amd_gpu_status)
 kvmagent.register_prometheus_collector(collect_hy_gpu_status)
 kvmagent.register_prometheus_collector(collect_huawei_gpu_status)
 kvmagent.register_prometheus_collector(collect_tianshu_gpu_status)
+kvmagent.register_prometheus_collector(collect_enflame_gpu_status)
 kvmagent.register_prometheus_collector(collect_hba_port_device_state)
 kvmagent.register_prometheus_collector(collect_disk_stat)
 kvmagent.register_prometheus_collector(collect_kvmagent_memory_statistics)

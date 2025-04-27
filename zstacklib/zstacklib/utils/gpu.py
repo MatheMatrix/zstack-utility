@@ -1,7 +1,7 @@
-import os
 
-from zstacklib.utils import log, linux
 import json
+
+from zstacklib.utils import log
 
 logger = log.get_logger(__name__)
 
@@ -132,6 +132,114 @@ def parse_tianshu_gpu_output(output):
     return gpuinfos
 
 
+def parse_enflame_gpu_output(output):
+    """
+    ...
+    DEV ID 7
+        Driver Info
+            Ver                     : 1.2.4.12
+        Device Info
+            Dev Name                : S60
+            Dev UUID                : TR1V57100501
+            Dev SN                  : C0AAD40510049
+            Dev PN                  : EFB-0088000-00
+            Dev MFD                 : 2024-10-13
+            Health                  : True
+        PCIe Info
+            Vendor ID               : 1e36
+            Device ID               : c035
+            Domain                  : 0000
+            Bus                     : b1
+            Dev                     : 00
+            Func                    : 0
+            Link Info
+            Max Link Speed          : Gen5
+            Max Link Width          : X16
+            Cur Link Speed          : Gen5
+            Cur Link Width          : X16
+            Tx Throughput           : 0 MiB/s
+            Rx Throughput           : 0 MiB/s
+        Clock Info
+            Mem CLK                 : 7000 MHz
+        Power Info
+            Power Capa              : 300 W
+            Cur Power               : 102 W
+            Dpm Level               : Sleep
+        Device Mem Info
+            Mem Size                : 42976 MiB
+            Mem Usage               : 1129 MiB
+            Mem Ecc                 : enable
+        Temperature Info
+            GCU Temp                : 41 C
+        Voltage Info
+            VDD GCU                 : 0.702 V
+            VDD SOC                 : 0.743 V
+            VDD MEMQC               : 1.349 V
+        Device Usage Info
+            GCU Usage               : 0.0 %
+        ECC Mode
+            Current                 : Enable
+            Pending                 : Enable
+        RMA Info
+            Flags                   : False
+            DBE                     : 0
+        Power Cable
+            Status                  : Normal
+        VPU Info
+            Encoder Usage           : 0 %
+            Decoder Usage           : 0 %
+    ...
+
+    """
+    gpu_infos = []
+
+    for dev in output.split("DEV ID")[1:]:
+        gpuinfo = {}
+        domain = bus = dev_id = func = None
+
+        for line in dev.strip().splitlines():
+            line = line.strip()
+            if ':' in line:
+                key, _, value = line.partition(":")
+                key = key.strip()
+                value = value.strip()
+            else:
+                key = line
+                value = ''
+
+            if key == "Domain":
+                domain = value.zfill(4)
+            elif key == "Bus":
+                bus = value.zfill(2)
+            elif key == "Dev":
+                dev_id = value.zfill(2)
+            elif key == "Func":
+                func = value
+            elif key == "Mem Size":
+                gpuinfo["memory"] = value
+            elif key == "Mem Usage":
+                gpuinfo["memoryUsage"] = value
+            elif key == "Cur Power":
+                gpuinfo["power"] = value
+            elif key == "Power Capa":
+                gpuinfo["powerCap"] = value
+            elif key == "Dpm Level":
+                gpuinfo["dpmLevel"] = value
+            elif key == "GCU Temp":
+                gpuinfo["temperature"] = value
+            elif key == "GCU Usage":
+                gpuinfo["gcuUsage"] = value
+            elif key == "Dev SN":
+                gpuinfo["serialNumber"] = value
+
+        if domain and bus and dev_id and func:
+            gpuinfo["pciAddress"] = "{}:{}:{}.{}".format(domain, bus, dev_id, func)
+
+        gpu_infos.append(gpuinfo)
+
+    return gpu_infos
+
+
 def get_tianshu_product_name(output):
     for line in output.splitlines():
         line = line.strip()
@@ -233,3 +341,8 @@ def is_hygon_gpu_cmd(pci_addr):
 def reload_hygon_gpu_driver_cmd():
     cmd = "hy-smi --unloaddriver && hy-smi --loaddriver"
     return cmd
+
+
+def get_enflame_gpu_info_cmd():
+    return "efsmi -q"
+
