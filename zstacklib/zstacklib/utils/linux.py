@@ -16,7 +16,6 @@ import shutil
 import struct
 import netaddr
 import functools
-import threading
 import re
 import platform
 import pprint
@@ -26,12 +25,12 @@ import fcntl
 import simplejson
 import xxhash
 import glob
+import ConfigParser
 
 from inspect import stack
 import xml.etree.ElementTree as etree
 from zstacklib.utils import thread
 from zstacklib.utils import qemu_img
-from zstacklib.utils import lock
 from zstacklib.utils import xmlobject
 from zstacklib.utils import shell
 from zstacklib.utils import log
@@ -276,7 +275,6 @@ def on_debian_based(distro=None, exclude=[]):
                 return f(*args, **kwargs)
         return innner
     return wrap
-
 
 def get_current_timestamp():
     return time.mktime(datetime.datetime.now().timetuple())
@@ -1026,6 +1024,9 @@ def get_img_fmt(src):
         with open(src, 'rb') as f:
             return get_fmt_from_magic(f.read(4))
 
+    if src.startswith("nbd://"):
+        return "nbd"
+
     fmt = shell.call(
         "set -o pipefail; %s %s | grep -w '^file format' | awk '{print $3}'" % (qemu_img.subcmd('info'), src))
     fmt = fmt.strip(' \t\r\n')
@@ -1147,8 +1148,8 @@ def raw_create_template(src, dst, dst_format='qcow2', shell=shell, progress_outp
 
     shell.call('%s %s -f raw -O %s %s %s %s' % (qemu_img.subcmd('convert'), " ".join(ext_opts), dst_format, src, dst, redirect))
 
-def qcow2_convert_to_raw(src, dst):
-    shell.call('%s -f qcow2 -O raw %s %s' % (qemu_img.subcmd('convert'), src, dst))
+def qcow2_convert_to_raw(src, dst, *options):
+    shell.call('%s -f qcow2 -O raw %s %s %s' % (qemu_img.subcmd('convert'), " ".join(options), src, dst))
 
 def qcow2_commit(top, base):
     shell.call('%s -f qcow2 -b %s %s' % (qemu_img.subcmd('commit'), base, top))
@@ -2156,6 +2157,7 @@ def find_process_by_cmdline(cmdlines):
     return None
 
 def find_all_process_by_cmdline(cmdlines):
+    # type: (list[str]) -> list[str]
     ret = []
     pids = [pid for pid in os.listdir('/proc') if pid.isdigit()]
     for pid in pids:

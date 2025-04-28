@@ -1956,7 +1956,7 @@ iz_unpack_zstack(){
 }
 
 iz_check_space(){
-    echo_subtitle "Checking space"
+    echo_subtitle "Check Space"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
 
     # Check the /tmp directory have enough space to store unpackaged zstack.war and pip tmp files

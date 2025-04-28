@@ -609,7 +609,7 @@ class CephAgent(object):
         return ''
 
     def _normalize_install_path(self, path):
-        return path.lstrip('ceph:').lstrip('//')
+        return path.replace('ceph://', '')
 
     def _get_file_size(self, path):
         o = shell.call('rbd --format json info %s' % path)
@@ -794,7 +794,7 @@ class CephAgent(object):
         return jsonobject.dumps(rsp)
 
     def _parse_install_path(self, path):
-        return path.lstrip('ceph:').lstrip('//').split('/')
+        return path.replace('ceph://', '').split('/')
 
     def _fail_task(self, task, reason):
         task.fail(reason)
