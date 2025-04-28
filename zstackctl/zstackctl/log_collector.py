@@ -1132,6 +1132,7 @@ test "$(ls -A "%s" 2>/dev/null)" || echo The directory is empty
         error_verbose("make sure the date [%s] is correct and in \'yyyy-MM-dd\' "
                       "or \'yyyy-MM-dd_hh:mm:ss\' format" % str_date)
 
+
     def param_validate(self, args):
         if args.since is None:
             if args.from_date is None:
