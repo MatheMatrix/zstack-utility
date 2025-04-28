@@ -226,6 +226,12 @@ def install_kvm_pkg():
             'nfs4': 'vconfig iscsi-initiator-utils OpenIPMI nettle libselinux-devel iptables iptables-services qemu-kvm python2-pyudev collectd-disk'
         }
 
+        addition_rpms = {
+            'kylin': {
+                'x86_64': 'Arcconf'
+            }
+        }
+
         edk2_mapping = {
             'x86_64': 'edk2-ovmf edk2.git-ovmf-x64',
             'aarch64': 'edk2-aarch64'
@@ -234,10 +240,11 @@ def install_kvm_pkg():
         # handle zstack_repo
         if zstack_repo != 'false':
             distro_head = host_info.distro.split("_")[0] if releasever in kylin or releasever in uos else host_info.distro
-            common_dep_list = "%s %s %s %s" % (
+            common_dep_list = "%s %s %s %s %s" % (
                 os_base_dep,
                 distro_mapping.get(distro_head, ''),
                 releasever_mapping.get(releasever, ''),
+                addition_rpms.get(releasever, {}).get(host_info.host_arch, ''),
                 edk2_mapping.get(host_info.host_arch, ''))
             # common kvmagent deps of x86 and arm that need to update
             common_update_list = ("sanlock sysfsutils hwdata sg3_utils lvm2"
