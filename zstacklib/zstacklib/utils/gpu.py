@@ -1,6 +1,7 @@
 import os
 
 from zstacklib.utils import log, linux
+from zstacklib.utils.bash import *
 import json
 
 logger = log.get_logger(__name__)
@@ -233,3 +234,27 @@ def is_hygon_gpu_cmd(pci_addr):
 def reload_hygon_gpu_driver_cmd():
     cmd = "hy-smi --unloaddriver && hy-smi --loaddriver"
     return cmd
+
+def get_vastai_type():
+    r, o, e = bash_roe("lspci | grep Vastai")
+    first_line = o.split('\n')[0]
+    if "SG100" in first_line:
+        return "3D"
+    elif "SV100" in first_line:
+        return "AI"
+    return None
+
+def run_json_command(cmd):
+    r, output, e = bash_roe(cmd)
+    if r != 0 or output is None:
+        return None
+    json_start = output.find('{')
+    if json_start == -1:
+        logger.error("No JSON data found in command %s output, output: %s", cmd, output)
+        return None
+    json_str = output[json_start:]
+    try:
+        return json.loads(json_str)
+    except ValueError as ve:
+        logger.error("JSON decode failed for command: %s, error: %s", cmd, ve)
+        return None
