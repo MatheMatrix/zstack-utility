@@ -9988,7 +9988,23 @@ host side snapshot files chian:
                 rsp.success = False
                 rsp.error = "failed to /usr/lib/nvidia/sriov-manage -e %s: %s, %s" % (addr, o, e)
 
+        if self._is_hygon_gpu(addr):
+            self._reload_hygon_gpu_driver()
+
         return jsonobject.dumps(rsp)
+
+    def _is_hygon_gpu(self, pci_addr):
+        r, o = bash.bash_ro("hy-smi --showbus | grep %s" % pci_addr)
+        return r == 0 and o != ''
+
+    def _reload_hygon_gpu_driver(self):
+        logger.info("reload hygon gpu driver")
+        r, o = bash.bash_o("hy-smi --unloaddriver")
+        if r != 0:
+            logger.warn("failed to unload hygon gpu driver: %s" % o)
+        r1, o1 = bash.bash_o("hy-smi --loaddriver")
+        if r1 != 0:
+            logger.warn("failed to load hygon gpu driver: %s" % o1)
 
     @kvmagent.replyerror
     @in_bash
