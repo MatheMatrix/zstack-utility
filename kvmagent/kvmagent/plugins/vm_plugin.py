@@ -1366,7 +1366,7 @@ def compare_version(version1, version2):
 
 KERNEL_VERSION = platform.release()
 LIBVIRT_VERSION = linux.get_libvirt_version()
-LIBVIRT_MAJOR_VERSION = LIBVIRT_VERSION.split('.')[0]
+LIBVIRT_MAJOR_VERSION = int(LIBVIRT_VERSION.split('.')[0])
 
 QEMU_VERSION = qemu.get_version()
 
