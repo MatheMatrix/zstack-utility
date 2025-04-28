@@ -249,7 +249,7 @@ class Summary(object):
     def persist(self, collect_dir):
         summary_file = collect_dir + 'summary'
         lic_md5, username, cloud_title = self.get_identifier(collect_dir)
-        with io.open(summary_file, 'a+', encoding='utf-8') as f:
+        with open(summary_file, 'a+', encoding='utf-8') as f:
             f.write(json.dumps({"lic_md5": lic_md5,
                                 "username": username,
                                 "cloud_name": cloud_title,
@@ -259,7 +259,7 @@ class Summary(object):
                                 "success_count": self.success_count,
                                 "fail_list": self.fail_list,
                                 "collect_time_list": self.collect_time_list}, default=lambda o: o.__dict__,
-                                indent=4, ensure_ascii=False, encoding='utf-8'))
+                                indent=4, ensure_ascii=False))
 
 
 class db_info(object):
