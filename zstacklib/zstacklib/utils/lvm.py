@@ -1309,7 +1309,7 @@ def clean_vg_exists_host_tags(vgUuid, hostUuid, tag):
     cmd(is_exception=False)
 
 def round_to(n, r):
-    return (n + r - 1) / r * r
+    return int((n + r - 1) // r * r)
 
 
 
