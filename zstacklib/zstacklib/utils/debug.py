@@ -12,7 +12,6 @@ import operator
 import gc
 from . import objgraph
 from . import lock
-from . import http
 import inspect
 import datetime
 import os
@@ -47,6 +46,7 @@ class DumpReporter(object):
 
     @linux.retry(times=5, sleep_time=random.uniform(1, 2))
     def _send_to_mn(self):
+        from . import http
         if not CONFIG or not SEND_COMMAND_URL or not CONFIG.get(SEND_COMMAND_URL):
             logger.warn("Cannot find SEND_COMMAND_URL, unable to send '/host/kvmagent/status' to management node ")
             return
