@@ -947,7 +947,7 @@ class CephAgent(object):
             rsp.progress = 100
         else:
             logger.debug("image %s uploaded range : %s" % (cmd.imageUuid, task.slice_uploaded))
-            rsp.progress = len(task.slice_uploaded) * 90 / task.expectedSize
+            rsp.progress = len(task.slice_uploaded) * 90 // task.expectedSize
 
         if task.lastError is not None:
             rsp.success = False
