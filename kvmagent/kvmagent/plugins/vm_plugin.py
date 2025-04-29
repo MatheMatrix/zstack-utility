@@ -58,6 +58,7 @@ from zstacklib.utils import xmlhook
 from zstacklib.utils import misc
 from zstacklib.utils import qemu_img, qemu, qmp
 from zstacklib.utils import ebtables
+from zstacklib.utils import named_queue as nq
 from zstacklib.utils import vm_operator
 from zstacklib.utils import pci
 from zstacklib.utils import image
@@ -2911,7 +2912,7 @@ class Vm(object):
         if not linux.wait_callback_success(loop_suspend, None, timeout=10):
             raise kvmagent.KvmError('failed to suspend vm ,timeout after 10 secs')
 
-    def resume(self, timeout=5):
+    def resume(self, timeout=60):
         def loop_resume(_):
             try:
                 self.domain.resume()
@@ -2926,10 +2927,10 @@ class Vm(object):
                 else:
                     raise
 
-        if not linux.wait_callback_success(loop_resume, None, timeout=60):
+        if not linux.wait_callback_success(loop_resume, None, timeout=timeout):
             domblkerror = get_dom_error(self.uuid)
             if domblkerror is None:
-                raise kvmagent.KvmError('failed to resume vm ,timeout after 60 secs')
+                raise kvmagent.KvmError('failed to resume vm ,timeout after %s secs' % timeout)
             else:
                 raise kvmagent.KvmError('failed to resume vm , because  %s' % domblkerror)
 
@@ -11896,7 +11897,7 @@ host side snapshot files chian:
                 logger.debug("lv %s extend to %s sucess" % (path, extend_size))
 
         @thread.AsyncThread
-        @lock.lock("sharedblock-extend-vm-%s" % dom.name())
+        @nq.queue("sharedblock-extend-vm-%s" % dom.name(), maxsize=2, block=False, lock_enabled=True)
         def handle_event(dom, event_str):
             # type: (libvirt.virDomain, str) -> object
             vm_uuid = dom.name()
@@ -11904,6 +11905,9 @@ host side snapshot files chian:
                          (vm_uuid, event_str, LibvirtEventManager.suspend_event_to_string(detail)))
             disk_errors = dom.diskErrors()  # type: dict
             vm = get_vm_by_uuid_no_retry(vm_uuid, False)
+            if vm.state != Vm.VM_STATE_PAUSED:
+                logger.debug("vm %s state is %s, skip to extend volume" % (vm_uuid, vm.state))
+                return
 
             if len(disk_errors) == 0:
                 syslog.syslog("no error in vm %s. skip to check and extend volume" % vm_uuid)
@@ -11930,7 +11934,7 @@ host side snapshot files chian:
 
             if fixed:
                 syslog.syslog("resume vm %s" % vm_uuid)
-                vm.resume()
+                vm.resume(10)
                 touchQmpSocketWhenExists(vm_uuid)
 
         event_str = LibvirtEventManager.event_to_string(event)
