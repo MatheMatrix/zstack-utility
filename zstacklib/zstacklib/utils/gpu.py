@@ -1,6 +1,7 @@
 import os
 
 from zstacklib.utils import log, linux
+from zstacklib.utils.bash import *
 import json
 
 logger = log.get_logger(__name__)
@@ -228,3 +229,18 @@ def get_huawei_gpu_product_name_cmd(npu_id, iswindows=False):
 def reload_hygon_gpu_driver_cmd():
     cmd = "hy-smi --unloaddriver && hy-smi --loaddriver"
     return cmd
+
+
+def get_vastai_type():
+    r, o, e = bash_roe("lspci | grep Vastai")
+    first_line = o.split('\n')[0]
+    if "SG100" in first_line:
+        return "3D"
+    elif "SV100" in first_line:
+        return "AI"
+    return None
+
+
+def is_valid_processing_accelerator(device):
+    valid_keywords = {"Device", "SV100"}
+    return any(keyword in device for keyword in valid_keywords)
