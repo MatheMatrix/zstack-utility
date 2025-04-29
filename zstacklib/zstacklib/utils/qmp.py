@@ -107,7 +107,7 @@ def execute_qmp_command(domain, name, raise_exception=True, **kwargs):
             del kwargs[k]
 
     qmp_cmd['arguments'] = kwargs
-    return _execute_qmp_command(domain, json.dumps(qmp_cmd).encode('utf-8'), raise_exception)
+    return _execute_qmp_command(domain, json.dumps(qmp_cmd), raise_exception)
 
 
 def qmp_subcmd(qemu_version, s_cmd):
