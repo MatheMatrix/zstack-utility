@@ -691,11 +691,11 @@ def get_file_size_by_http_head(url):
             return int(filesize)
     return None
 
-def shellquote(s):
+def shellquote(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
 
-def remote_shell_quote(s):
-    return ("\\''" + s.replace("'", "'\\''") + "'\\'").encode('utf8')
+def remote_shell_quote(s: str) -> str:
+    return ("\\''" + s.replace("'", "'\\''") + "'\\'")
 
 def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callback_data=None, cert_check=False):
     def get_percentage(filesize, dst):
