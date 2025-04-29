@@ -5276,9 +5276,6 @@ class Vm(object):
                 if cmd.bootMode == 'UEFI_WITH_CSM':
                     loader_path = '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-with-csm.fd'
                     nvram_path = '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-with-csm.fd'
-                if is_new_ovmf_supported():
-                    loader_path = '/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd'
-                    nvram_path = '/usr/share/edk2/ovmf/OVMF_VARS.fd'
 
                 e(os, 'type', 'hvm', attrib={'machine': machine_type})
                 # if boot mode is UEFI
