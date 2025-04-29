@@ -483,9 +483,7 @@ http {
         rsp = AgentResponse()
 
         # check preconfiguration md5sum
-        # FIXME: py3 Strings must be encoded before hashing
-        # TODO(py3)
-        if hashlib.md5(cmd.preconfigurationContent).hexdigest() != cmd.preconfigurationMd5sum:
+        if hashlib.md5(cmd.preconfigurationContent.encode()).hexdigest() != cmd.preconfigurationMd5sum:
             raise PxeServerError("preconfiguration content not complete")
 
         self.uuid = cmd.uuid

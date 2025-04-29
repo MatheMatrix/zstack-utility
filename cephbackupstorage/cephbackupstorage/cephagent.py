@@ -873,7 +873,7 @@ class CephAgent(object):
         if param.slice_offset + param.slice_size == param.image_size:
             slice_count = param.slice_index + 1
         else:
-            slice_count = (param.image_size - 1) / param.slice_size + 1
+            slice_count = (param.image_size - 1) // param.slice_size + 1
 
         if not task.slice_count:
             task.slice_count = slice_count
@@ -954,7 +954,7 @@ class CephAgent(object):
             rsp.size = self._get_file_size(task.dstPath)
             rsp.progress = 100
         else:
-            rsp.progress = task.downloadSize * 90 / task.expectedSize
+            rsp.progress = task.downloadSize * 90 // task.expectedSize
 
         if task.lastError is not None:
             rsp.success = False
