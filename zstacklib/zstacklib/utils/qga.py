@@ -49,6 +49,8 @@ encodings = ['utf-8', 'GB2312', 'ISO-8859-1']
 
 
 def decode_with_fallback(encoded_bytes):
+    if not isinstance(encoded_bytes, bytes):
+        return encoded_bytes
     for encoding in encodings:
         try:
             return encoded_bytes.decode(encoding).encode('utf-8')

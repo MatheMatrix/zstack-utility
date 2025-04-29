@@ -1224,7 +1224,10 @@ class CephAgent(plugin.TaskManager):
 
         try:
             rbd_check_rm(pool, tmp_image_name)
-            shell.call(self._wrap_shareable_cmd(cmd, 'set -o pipefail; ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s cat %s | %s rbd import --image-format 2 - %s/%s' % (port, prikey_file, hostname, remote_shell_quote(cmd.backupStorageInstallPath), bandWidth, pool, tmp_image_name)))
+            shell.call(self._wrap_shareable_cmd(
+                cmd, 'set -o pipefail; ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '
+                     'cat %s | %s rbd import --image-format 2 - %s/%s' %
+                     (port, prikey_file, hostname, remote_shell_quote(cmd.backupStorageInstallPath), bandWidth, pool, tmp_image_name)))
         finally:
             os.remove(prikey_file)
 

@@ -799,23 +799,23 @@ def start_influxdb():
 
 def print_red(strs):
     logger.error(strs)
-    print(("\033[31;1m %s \033[0m" % strs))
+    print("\033[31;1m %s \033[0m" % strs)
 
 
 def print_green(strs):
     logger.info(strs)
-    print(("\033[32;1m %s \033[0m" % strs))
+    print("\033[32;1m %s \033[0m" % strs)
 
 
 def print_blue(strs):
     logger.info(strs)
-    print(("\033[34;1m %s \033[0m" % strs))
+    print("\033[34;1m %s \033[0m" % strs)
 
 
 class AESCipher:
 
     def __init__(self, key='ZStack open source'):
-        self.key = md5(key).hexdigest()
+        self.key = md5(key.encode()).hexdigest()
         self.cipher = AES.new(self.key, AES.MODE_ECB)
         self.prefix = "crypt_key_for_v1::"
         self.BLOCK_SIZE = 16
