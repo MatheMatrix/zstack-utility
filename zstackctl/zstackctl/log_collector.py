@@ -20,7 +20,7 @@ from .utils import shell
 from .utils.sql_query import MySqlCommandLineQuery
 from . import ctl
 from .zstacklib import *
-import subprocess as commands
+import subprocess
 
 
 def info_verbose(*msg):
@@ -29,10 +29,14 @@ def info_verbose(*msg):
     else:
         out = ''.join(msg)
     now = datetime.datetime.now()
-    out = "%s " % now.strftime('%Y-%m-%d %H:%M:%S') + out
+    out = "%s " % now.strftime('%Y-%m-%d %H:%M:%S') + "  thread:%s  " % threading.get_native_id() + out
     sys.stdout.write(out)
     logger.info(out)
 
+
+def getstatusoutput(cmd):
+    status, output = subprocess.getstatusoutput(cmd)
+    return status, output
 
 def collect_fail_verbose(*msg):
     if len(msg) == 1:
@@ -123,25 +127,25 @@ class Summary(object):
         time_list.append(collect_time)
 
     def check_connectivity(self):
-        status, _ = commands.getstatusoutput("ping 119.29.29.29 -c 1 -W 3")
+        status, _ = getstatusoutput("ping 119.29.29.29 -c 1 -W 3")
         return True if status == 0 else False
 
     def get_identifier(self, collect_dir):
-        _, lic_md5 = commands.getstatusoutput(
+        _, lic_md5 = getstatusoutput(
             'find %s -iname "lic-application-code.txt" | sort | head -n 1 | xargs md5sum | awk \'{print $1}\'' % collect_dir)
 
-        _, username = commands.getstatusoutput(
+        _, username = getstatusoutput(
             "find %s -iname \"customer-identifier\" -exec cat {} \; 2>/dev/null | grep 'INSERT INTO `LicenseHistoryVO' | grep -Eo '[a-zA-Z0-9_-.]+@[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)+' | tail -n1" % collect_dir)
 
         if username == "":
-            _, username = commands.getstatusoutput(
+            _, username = getstatusoutput(
                 '''timeout -s 9 3 zstack-cli GetLicenseInfo | grep '"user"' | awk '{print $2}' | tr -d ","''')
             username = username.strip('"')
 
-        _, o = commands.getstatusoutput(
+        _, o = getstatusoutput(
             "find %s -type f -iname \"customer-identifier\" | head -1 | xargs cat | sed -n '/<database/,/\/database/p'" % collect_dir)
 
-        _, ui3 = commands.getstatusoutput(
+        _, ui3 = getstatusoutput(
             "find %s/*/ui3-cfg/* -iname 'data.json' | head -1 | xargs cat" % collect_dir)
 
         cloud_title = self.get_cloud_title(o, ui3)
@@ -398,7 +402,7 @@ class CollectFromYml(object):
                 decode_error = 'do not find conf path %s' % yml_conf_dir
                 decode_result['decode_error'] = decode_error
                 return decode_result
-            
+
             f = open(yml_conf_dir)
             try:
                 conf_dict = yaml.load(f)
@@ -414,7 +418,7 @@ class CollectFromYml(object):
                 if list_value is None or logs is None:
                     decode_error = 'host or log can not be empty in %s' % base_conf_path
                     break
-    
+
                 if 'exec' not in list_value:
                     if '\n' in list_value:
                         temp_array = list_value.split('\n')
@@ -426,13 +430,13 @@ class CollectFromYml(object):
                         if ' ' in list_value:
                             temp_array = list_value.split()
                             conf_value['list'] = temp_array
-    
+
                 if collect_type == 'host' or collect_type == 'sharedblock':
                     if args.hosts is not None:
                         conf_value['list'] = args.hosts.split(',')
-    
+
                 history_configured = False
-    
+
                 for log in logs:
                     name_value = log.get('name')
                     dir_value = log.get('dir')
@@ -449,7 +453,7 @@ class CollectFromYml(object):
                             break
                         else:
                             name_array.append(name_value)
-    
+
                         if name_value == 'history':
                             history_configured = True
                     if dir_value is None:
@@ -472,11 +476,11 @@ class CollectFromYml(object):
                             break
                     if mode_value is None:
                         log['mode'] = "Normal"
-    
+
                 # collect `history` by default
                 if not history_configured:
                     logs.append({'name': 'history', 'mode': 'Normal', 'dir': '/var/log/history.d/', 'file': 'history'})
-    
+
                 decode_result[collect_type] = dict(
                     (key, value) for key, value in list(conf_value.items()) if key == 'list' or key == 'logs')
                 name_array = []
@@ -494,7 +498,7 @@ class CollectFromYml(object):
         yml_vrouter = 'collect_log_vrouter.yaml'
         yml_pxeserver = 'collect_log_pxeserver.yaml'
         yml_baremetalv2gateway = 'collect_log_baremetalv2gateway.yaml'
-    
+
         yml_conf_dirs = set()
         logs = combination.strip().split(",")
         for log in logs:
@@ -516,7 +520,7 @@ class CollectFromYml(object):
                 yml_conf_dirs.add(base_conf_path + yml_baremetalv2gateway)
 
         return yml_conf_dirs
-    
+
     def build_collect_cmd(self, log, collect_dir):
         dir_value = log['dir']
         file_value = log['file']
@@ -670,8 +674,8 @@ class CollectFromYml(object):
             run_command_dir, collect_file_name, collect_file_name)
         if self.delete_source_file is True:
             command = command + " --remove-files"
-            
-        (status, output) = commands.getstatusoutput(command)
+
+        (status, output) = getstatusoutput(command)
         if status != 0:
             error("Generate tarball failed: %s " % output)
 
@@ -686,12 +690,12 @@ class CollectFromYml(object):
         fetch(fetch_arg, host_post_info)
         command = "rm -rf %s../%s-collect-log.tar.gz %s" % (tmp_log_dir, type, tmp_log_dir)
         run_remote_command(command, host_post_info)
-        (status, output) = commands.getstatusoutput(
+        (status, output) = getstatusoutput(
             "cd %s && tar zxf %s-collect-log.tar.gz" % (local_collect_dir, type))
         if status != 0:
             warn("Uncompress %s%s-collect-log.tar.gz meet problem: %s" % (local_collect_dir, type, output))
 
-        commands.getstatusoutput("rm -f %s%s-collect-log.tar.gz" % (local_collect_dir, type))
+        getstatusoutput("rm -f %s%s-collect-log.tar.gz" % (local_collect_dir, type))
 
     def add_collect_thread(self, type, params):
         if "vrouter" in params:
@@ -761,7 +765,7 @@ class CollectFromYml(object):
                 else:
                     exec_cmd = self.get_host_sql(host_list['exec']) + ' | awk \'NR>1\''
                     try:
-                        (status, output) = commands.getstatusoutput(exec_cmd)
+                        (status, output) = getstatusoutput(exec_cmd)
                         if status == 0 and output.startswith('ERROR') is not True:
                             host_list = output.split('\n')
                         else:
@@ -788,7 +792,7 @@ class CollectFromYml(object):
                 else:
                     if os.path.exists(log['dir']):
                         command = self.build_collect_cmd(log, None)
-                        (status, output) = commands.getstatusoutput(command)
+                        (status, output) = getstatusoutput(command)
                         if status == 0:
                             key = "%s:%s:%s" % (type, 'localhost', log['name'])
                             self.check_result[key] = output
@@ -816,7 +820,7 @@ class CollectFromYml(object):
                             exec_cmd = '(%s) > %s' % (command, file_path)
                         if exec_type == 'CdAndRun':
                             exec_cmd = 'cd %s && %s' % (dest_log_dir, command)
-                        (status, output) = commands.getstatusoutput(exec_cmd)
+                        (status, output) = getstatusoutput(exec_cmd)
                         if status == 0:
                             self.add_success_count()
                             logger.info(
@@ -825,7 +829,7 @@ class CollectFromYml(object):
                             self.add_fail_count(1, type, get_default_ip(), log['name'], output)
                     else:
                         if log['name'] == "ui-logs":
-                            (status, output) = commands.getstatusoutput(
+                            (status, output) = getstatusoutput(
                                 '''zstack-ctl show_ui_config | awk -F= '/^log/{print $2}' | awk '$1=$1' ''')
                             if status == 0:
                                 warn("ui_logs dir path changes from %s to %s on %s localhost" % (
@@ -834,11 +838,11 @@ class CollectFromYml(object):
 
                         if os.path.exists(log['dir']):
                             command = self.build_collect_cmd(log, dest_log_dir)
-                            (status, output) = commands.getstatusoutput(command)
+                            (status, output) = getstatusoutput(command)
                             if status == 0:
                                 self.add_success_count()
                                 command = 'test "$(ls -A "%s" 2>/dev/null)" || echo The directory is empty' % dest_log_dir
-                                (status, output) = commands.getstatusoutput(command)
+                                (status, output) = getstatusoutput(command)
                                 if "The directory is empty" in output:
                                     warn("Didn't find log [%s] on %s localhost" % (log['name'], type))
                                     logger.warn("Didn't find log [%s] on %s" % (log['name'], type))
@@ -859,28 +863,24 @@ class CollectFromYml(object):
             total_collect_time = str(round((end - start).total_seconds(), 1)) + 's'
             self.summary.add_collect_time(type, get_default_ip(), CollectTime(start, end, total_collect_time))
             command = 'test "$(ls -A "%s" 2>/dev/null)" || echo The directory is empty' % local_collect_dir
-            (status, output) = commands.getstatusoutput(command)
+            (status, output) = getstatusoutput(command)
             if "The directory is empty" in output:
                 warn("Didn't find log on localhost")
                 linux.rm_dir_force(local_collect_dir)
                 return 0
+
             info_verbose("Successfully collect log from %s localhost !" % type)
 
     def add_success_count(self, *args):
-        self.suc_lock.acquire()
-        self.summary.success_count += 1
-        self.suc_lock.release()
+        with self.suc_lock:
+            self.summary.success_count += 1
 
     def add_fail_count(self, fail_log_number, log_type, ip, fail_log_name, fail_cause):
-        self.fail_lock.acquire()
-        fail_log_name = fail_log_name.decode('utf-8')
-        fail_cause = fail_cause.decode('utf-8')
-        try:
+        with self.fail_lock:
+            fail_log_name = fail_log_name
+            fail_cause = fail_cause
             self.summary.fail_count += fail_log_number
             self.summary.add_fail(log_type, ip, FailDetail(fail_log_name, fail_cause))
-        except Exception:
-            self.fail_lock.release()
-        self.fail_lock.release()
 
     @ignoreerror
     def get_sharedblock_log(self, host_post_info, tmp_log_dir):
@@ -923,10 +923,8 @@ class CollectFromYml(object):
         run_remote_command(command, host_post_info)
 
     def check_host_reachable_in_queen(self, host_post_info):
-        self.check_lock.acquire()
-        result = check_host_reachable(host_post_info)
-        self.check_lock.release()
-        return result
+        with self.check_lock:
+            return check_host_reachable(host_post_info)
 
     # @ignoreerror
     def get_host_log(self, host_post_info, log_list, collect_dir, type, tmp_path = "/tmp"):
@@ -1187,7 +1185,7 @@ test "$(ls -A "%s" 2>/dev/null)" || echo The directory is empty
         exec_cmd = self.get_host_sql(
             "select h.managementIp from HostVO h where h.hypervisorType = \"KVM\"") + ' | awk \'NR>1\''
         try:
-            (status, output) = commands.getstatusoutput(exec_cmd)
+            (status, output) = getstatusoutput(exec_cmd)
             if status == 0 and output.startswith('ERROR') is not True:
                 host_list = output.split('\n')
             else:
