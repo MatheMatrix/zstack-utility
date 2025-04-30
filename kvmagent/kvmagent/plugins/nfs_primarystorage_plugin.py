@@ -415,6 +415,23 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = NfsRebaseVolumeBackingFileRsp()
 
+        r = bash_r("find %s -type f -regex '.*\.qcow2$'" % cmd.dstVolumeFolderPath)
+        if r != 0:
+            logger.debug("failed to find qcow2 files in %s" % cmd.dstVolumeFolderPath)
+
+        # when data is synchronized to an NFS directory by other host using rsync,
+        # the current host may fail to immediately recognize newly added files,
+        # thus requiring a cache invalidation or directory refresh on the NFS client side
+        _, o = bash_ro("strace ls %s" % cmd.dstPsMountPath)
+        logger.debug("strace ls %s" % cmd.dstPsMountPath)
+        logger.debug(o)
+
+        r = bash_r("find %s -type f -regex '.*\.qcow2$'" % cmd.dstVolumeFolderPath)
+        if r != 0:
+            logger.debug("failed to find qcow2 files in %s" % cmd.dstVolumeFolderPath)
+        else:
+            logger.debug("found qcow2 files in %s" % cmd.dstVolumeFolderPath)
+
         if not cmd.dstImageCacheTemplateFolderPath:
             qcow2s = shell.call("find %s -type f -regex '.*\.qcow2$'" % cmd.dstVolumeFolderPath)
         else:
