@@ -326,7 +326,7 @@ def push_metrics_to_gateway(url, uuid, metrics):
 
 
 def is_windows_2008(qga):
-    return qga.os and 'mswindows' in qga.os and '2008r2' in qga.os_version
+    return qga.os and 'mswindows' in qga.os and '2008' in qga.os_version
 
 
 def subnet_mask_to_prefix_length(mask):
