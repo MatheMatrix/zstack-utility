@@ -8,7 +8,7 @@ sft = Group()
 
 
 def get_sensor_info_from_ipmi():
-    ipmi_sensor_cmd = "ipmitool sdr elist"
+    ipmi_sensor_cmd = "ipmi-sensors --no-header-output"
 
     def ipmi_sensor_call():
         try:
