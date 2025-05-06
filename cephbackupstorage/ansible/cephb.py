@@ -97,18 +97,6 @@ else:
     command = 'mkdir -p %s %s' % (cephb_root, virtenv_path)
     run_remote_command(command, host_post_info)
 
-# name: install virtualenv
-py_version = get_virtualenv_python_version(virtenv_path, host_post_info)
-if py_version and not py_version.startswith("3.11"):
-    command = "rm -rf %s" % virtenv_path
-    run_remote_command(command, host_post_info)
-    py_version = None
-
-if not py_version:
-    # name: make sure virtualenv has been setup
-    command = "python3.11 -m venv %s --system-site-packages" % virtenv_path
-    run_remote_command(command, host_post_info)
-
 # name: install python pkg and replace ceph python path
 replace_content(ceph_file_path, "regexp='/usr/bin/env python' replace='/usr/bin/python3.11'", host_post_info)
 # name: install python pkg
@@ -121,6 +109,7 @@ pip_install_package(pip_install_arg, host_post_info)
 
 if host_info.distro in RPM_BASED_OS:
     install_rpm_list = "wget nmap"
+    py3_rpms = ' python3.11 python3.11-devel python3.11-pip libffi-devel openssl-devel'
     if remote_bin_installed(host_post_info, "qemu-img", return_status=True):
         (status, qemu_img_version) = get_qemu_img_version(host_post_info)
         # When the qemu-img version is smaller than 4.0.0, rbd is already included
@@ -139,7 +128,7 @@ if host_info.distro in RPM_BASED_OS:
             install_rpm_list += " qemu-kvm"
 
     if get_mn_release() in ['h84r']:
-        install_rpm_list += " python3.11 python3.11-devel python3.11-pip"
+        install_rpm_list += py3_rpms
 
     if zstack_repo != 'false':
         command = """pkg_list=`rpm -q {} | grep "not installed" | awk '{{ print $2 }}'` && for pkg"""\
@@ -188,6 +177,20 @@ elif host_info.distro in DEB_BASED_OS:
     run_remote_command(command, host_post_info)
 else:
     error("unsupported OS!")
+
+
+# name: install virtualenv
+py_version = get_virtualenv_python_version(virtenv_path, host_post_info)
+if py_version and not py_version.startswith("3.11"):
+    command = "rm -rf %s" % virtenv_path
+    run_remote_command(command, host_post_info)
+    py_version = None
+
+if not py_version:
+    # name: make sure virtualenv has been setup
+    command = "python3.11 -m venv %s --system-site-packages" % virtenv_path
+    run_remote_command(command, host_post_info)
+
 
 # name: copy zstacklib
 copy_arg = CopyArg()
