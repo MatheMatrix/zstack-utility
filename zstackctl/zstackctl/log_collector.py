@@ -397,7 +397,7 @@ class CollectFromYml(object):
                 decode_error = 'do not find conf path %s' % yml_conf_dir
                 decode_result['decode_error'] = decode_error
                 return decode_result
-            
+
             f = open(yml_conf_dir)
             try:
                 conf_dict = yaml.load(f)
@@ -413,7 +413,7 @@ class CollectFromYml(object):
                 if list_value is None or logs is None:
                     decode_error = 'host or log can not be empty in %s' % log
                     break
-    
+
                 if 'exec' not in list_value:
                     if '\n' in list_value:
                         temp_array = list_value.split('\n')
@@ -425,13 +425,13 @@ class CollectFromYml(object):
                         if ' ' in list_value:
                             temp_array = list_value.split()
                             conf_value['list'] = temp_array
-    
+
                 if collect_type == 'host' or collect_type == 'sharedblock':
                     if args.hosts is not None:
                         conf_value['list'] = args.hosts.split(',')
-    
+
                 history_configured = False
-    
+
                 for log in logs:
                     name_value = log.get('name')
                     dir_value = log.get('dir')
@@ -448,7 +448,7 @@ class CollectFromYml(object):
                             break
                         else:
                             name_array.append(name_value)
-    
+
                         if name_value == 'history':
                             history_configured = True
                     if dir_value is None:
@@ -471,11 +471,11 @@ class CollectFromYml(object):
                             break
                     if mode_value is None:
                         log['mode'] = "Normal"
-    
+
                 # collect `history` by default
                 if not history_configured:
                     logs.append({'name': 'history', 'mode': 'Normal', 'dir': '/var/log/history.d/', 'file': 'history'})
-    
+
                 decode_result[collect_type] = dict(
                     (key, value) for key, value in conf_value.items() if key == 'list' or key == 'logs')
                 name_array = []
@@ -493,7 +493,7 @@ class CollectFromYml(object):
         yml_vrouter = 'collect_log_vrouter.yaml'
         yml_pxeserver = 'collect_log_pxeserver.yaml'
         yml_baremetalv2gateway = 'collect_log_baremetalv2gateway.yaml'
-    
+
         yml_conf_dirs = set()
         logs = combination.strip().split(",")
         for log in logs:
@@ -515,7 +515,7 @@ class CollectFromYml(object):
                 yml_conf_dirs.add(base_conf_path + yml_baremetalv2gateway)
 
         return yml_conf_dirs
-    
+
     def build_collect_cmd(self, log, collect_dir):
         dir_value = log['dir']
         file_value = log['file']
@@ -669,7 +669,7 @@ class CollectFromYml(object):
             run_command_dir, collect_file_name, collect_file_name)
         if self.delete_source_file is True:
             command = command + " --remove-files"
-            
+
         (status, output) = commands.getstatusoutput(command)
         if status != 0:
             error("Generate tarball failed: %s " % output)
@@ -867,20 +867,18 @@ class CollectFromYml(object):
             info_verbose("Successfully collect log from %s localhost !" % type)
 
     def add_success_count(self):
-        self.suc_lock.acquire()
-        self.summary.success_count += 1
-        self.suc_lock.release()
+        with self.suc_lock:
+            self.summary.success_count += 1
 
     def add_fail_count(self, fail_log_number, log_type, ip, fail_log_name, fail_cause):
-        self.fail_lock.acquire()
-        fail_log_name = fail_log_name.decode('utf-8')
-        fail_cause = fail_cause.decode('utf-8')
-        try:
-            self.summary.fail_count += fail_log_number
-            self.summary.add_fail(log_type, ip, FailDetail(fail_log_name, fail_cause))
-        except Exception:
-            self.fail_lock.release()
-        self.fail_lock.release()
+        with self.fail_lock:
+            fail_log_name = fail_log_name.decode('utf-8')
+            fail_cause = fail_cause.decode('utf-8')
+            try:
+                self.summary.fail_count += fail_log_number
+                self.summary.add_fail(log_type, ip, FailDetail(fail_log_name, fail_cause))
+            except Exception as e:
+                logger.warn("add fail log failed, %s" % str(e))
 
     @ignoreerror
     def get_sharedblock_log(self, host_post_info, tmp_log_dir):
@@ -923,10 +921,8 @@ class CollectFromYml(object):
         run_remote_command(command, host_post_info)
 
     def check_host_reachable_in_queen(self, host_post_info):
-        self.check_lock.acquire()
-        result = check_host_reachable(host_post_info)
-        self.check_lock.release()
-        return result
+        with self.check_lock:
+            return check_host_reachable(host_post_info)
 
     # @ignoreerror
     def get_host_log(self, host_post_info, log_list, collect_dir, type, tmp_path = "/tmp"):
@@ -1111,32 +1107,21 @@ test "$(ls -A "%s" 2>/dev/null)" || echo The directory is empty
         return cmd
 
     def format_date(self, str_date):
-        try:
-            d_arr = str_date.split('_')
-            if len(d_arr) == 1 or len(d_arr) == 2:
-                ymd_array = d_arr[0].split('-')
-                if len(ymd_array) == 3:
-                    year = ymd_array[0]
-                    month = ymd_array[1]
-                    day = ymd_array[2]
-                    if len(d_arr) == 1:
-                        return datetime.datetime(int(year), int(month), int(day)).strftime('%Y-%m-%d:%H:%M:%S')
-                    else:
-                        hms_array = d_arr[1].split(':')
-                        hour = hms_array[0] if len(hms_array) > 0 is not None else '00'
-                        minute = hms_array[1] if len(hms_array) > 1 is not None else '00'
-                        sec = hms_array[2] if len(hms_array) > 2 is not None else '00'
-                        return datetime.datetime(int(year), int(month), int(day), int(hour), int(minute), int(sec)) \
-                            .strftime('%Y-%m-%d:%H:%M:%S')
-                else:
-                    error_verbose(
-                        "make sure the date [%s] is correct and in \'yyyy-MM-dd\' or \'yyyy-MM-dd_hh:mm:ss\' format" % str_date)
-            else:
-                error_verbose(
-                    "make sure the date [%s] is correct and in \'yyyy-MM-dd\' or \'yyyy-MM-dd_hh:mm:ss\' format" % str_date)
-        except ValueError:
-            error_verbose(
-                "make sure the date [%s] is correct and in \'yyyy-MM-dd\' or \'yyyy-MM-dd_hh:mm:ss\' format" % str_date)
+        formats = [
+            '%Y-%m-%d',
+            '%Y-%m-%d_%H',
+            '%Y-%m-%d_%H:%M',
+            '%Y-%m-%d_%H:%M:%S',
+        ]
+        for fmt in formats:
+            try:
+                dt = datetime.datetime.strptime(str_date, fmt)
+                date = dt.strftime('%Y-%m-%d:%H:%M:%S')
+                return date
+            except ValueError:
+                continue
+        error_verbose("make sure the date [%s] is correct and in \'yyyy-MM-dd\' "
+                      "or \'yyyy-MM-dd_hh:mm:ss\' format" % str_date)
 
     def param_validate(self, args):
         if args.since is None:
