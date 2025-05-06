@@ -99,6 +99,7 @@ else:
 
 if host_info.distro in RPM_BASED_OS:
     install_rpm_list = "wget nmap"
+    py3_rpms = ' python3.11 python3.11-devel python3.11-pip libffi-devel openssl-devel'
 
     if remote_bin_installed(host_post_info, "qemu-img", return_status=True):
         (status, qemu_img_version) = get_qemu_img_version(host_post_info)
@@ -118,7 +119,7 @@ if host_info.distro in RPM_BASED_OS:
             install_rpm_list += " qemu-kvm"
 
     if get_mn_release() in ['h84r']:
-        install_rpm_list += " python3.11 python3.11-devel python3.11-pip"
+        install_rpm_list += py3_rpms
     if zstack_repo != 'false':
         command = """pkg_list=`rpm -q {} | grep "not installed" | awk '{{ print $2 }}'` && for pkg"""\
                 """ in $pkg_list; do yum --disablerepo=* --enablerepo={} install -y $pkg; done;"""\
