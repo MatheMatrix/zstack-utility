@@ -89,8 +89,11 @@ else:
 
 if host_info.distro in RPM_BASED_OS:
     install_pkgs = 'openssh-clients'
+    py3_rpms = ' python3.11 python3.11-devel python3.11-pip libffi-devel openssl-devel'
     if releasever in kylin:
         install_pkgs = "nmap {}".format(install_pkgs)
+    if releasever in ["h84r"]:
+        install_pkgs += py3_rpms
 
     if not remote_bin_installed(host_post_info, "qemu-img", return_status=True):
         install_pkgs += " qemu-img"
