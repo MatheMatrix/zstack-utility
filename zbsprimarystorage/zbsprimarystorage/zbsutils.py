@@ -34,6 +34,10 @@ def query_volume_info(logical_pool_name, lun_name):
     return shell.call("%s query file --path %s/%s --format json" % (DEFAULT_ZBS_BIN_PATH, logical_pool_name, lun_name))
 
 
+def query_volumes_in_logical_pool(logical_pool_name):
+    return shell.call("%s list file --pool %s --format json" % (DEFAULT_ZBS_BIN_PATH, logical_pool_name))
+
+
 def query_children_volume(logical_pool_name, lun_name, snapshot_name, is_snapshot=False):
     if is_snapshot:
         return shell.call("%s children --snappath %s/%s@%s --user %s --format json" % (DEFAULT_ZBS_BIN_PATH, logical_pool_name, lun_name, snapshot_name, DEFAULT_ZBS_USER_NAME))

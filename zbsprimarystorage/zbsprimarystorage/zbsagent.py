@@ -70,6 +70,12 @@ class QueryVolumeRsp(AgentResponse):
         self.actualSize = 0
 
 
+class BatchQueryVolumeRsp(AgentResponse):
+    def __init__(self):
+        super(BatchQueryVolumeRsp, self).__init__()
+        self.volumes = {}
+
+
 class CloneVolumeRsp(AgentResponse):
     def __init__(self):
         super(CloneVolumeRsp, self).__init__()
@@ -184,6 +190,7 @@ class ZbsAgent(plugin.TaskManager):
     CREATE_VOLUME_PATH = "/zbs/primarystorage/volume/create"
     DELETE_VOLUME_PATH = "/zbs/primarystorage/volume/delete"
     QUERY_VOLUME_PATH = "/zbs/primarystorage/volume/query"
+    BATCH_QUERY_VOLUME_PATH = "/zbs/primarystorage/volume/query/batch"
     CLONE_VOLUME_PATH = "/zbs/primarystorage/volume/clone"
     CBD_TO_NBD_PATH = "/zbs/primarystorage/volume/cbdtonbd"
     CLEAN_NBD_PATH = "/zbs/primarystorage/volume/cleannbd"
@@ -205,6 +212,7 @@ class ZbsAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.CREATE_VOLUME_PATH, self.create_volume)
         self.http_server.register_async_uri(self.DELETE_VOLUME_PATH, self.delete_volume)
         self.http_server.register_async_uri(self.QUERY_VOLUME_PATH, self.query_volume)
+        self.http_server.register_async_uri(self.BATCH_QUERY_VOLUME_PATH, self.batch_query_volume)
         self.http_server.register_async_uri(self.CLONE_VOLUME_PATH, self.clone_volume)
         self.http_server.register_async_uri(self.EXPAND_VOLUME_PATH, self.expand_volume)
         self.http_server.register_async_uri(self.CBD_TO_NBD_PATH, self.cbd_to_nbd)
@@ -336,6 +344,36 @@ class ZbsAgent(plugin.TaskManager):
             raise Exception('cannot found lun[%s/%s] info, error[%s]' % (cmd.logicalPoolName, cmd.lunName, ret.error.message))
         rsp.size = ret.result.info.fileInfo.length
         rsp.actualSize = ret.result.info.fileInfo.usedSize
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def batch_query_volume(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = BatchQueryVolumeRsp()
+
+        logical_pool_to_install_paths = {}
+        install_path_to_volume_name = {}
+
+        for install_path in cmd.installPaths:
+            logical_pool_name = get_logical_pool_name(install_path)
+            volume_name = get_lun_name(install_path)
+            if logical_pool_name not in logical_pool_to_install_paths:
+                logical_pool_to_install_paths[logical_pool_name] = []
+            logical_pool_to_install_paths[logical_pool_name].append(install_path)
+            install_path_to_volume_name[install_path] = volume_name
+
+        for logical_pool_name, install_paths in logical_pool_to_install_paths.items():
+            o = zbsutils.query_volumes_in_logical_pool(logical_pool_name)
+            r = jsonobject.loads(o)
+            if r.error.code != 0:
+                raise Exception('cannot found lun infos in logical pool[%s], error[%s]' % (logical_pool_name, r.error.message))
+            for install_path in install_paths:
+                for info in r.result.fileInfo:
+                    if info.fileName != install_path_to_volume_name.get(install_path):
+                        continue
+                    rsp.volumes[install_path] = {'length': info.length, 'usedSize': info.usedSize}
+                    break
 
         return jsonobject.dumps(rsp)
 
