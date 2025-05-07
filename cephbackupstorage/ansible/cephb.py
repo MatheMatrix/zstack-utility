@@ -97,15 +97,6 @@ else:
     command = 'mkdir -p %s %s' % (cephb_root, virtenv_path)
     run_remote_command(command, host_post_info)
 
-# name: install python pkg and replace ceph python path
-replace_content(ceph_file_path, "regexp='/usr/bin/env python' replace='/usr/bin/python3.11'", host_post_info)
-# name: install python pkg
-extra_args = "\"--trusted-host %s -i %s \"" % (trusted_host, pip_url)
-pip_install_arg = PipInstallArg()
-pip_install_arg.extra_args = extra_args
-pip_install_arg.name = "python-cephlibs"
-pip_install_arg.virtualenv = virtenv_path
-pip_install_package(pip_install_arg, host_post_info)
 
 if host_info.distro in RPM_BASED_OS:
     install_rpm_list = "wget nmap"
@@ -127,7 +118,7 @@ if host_info.distro in RPM_BASED_OS:
         if releasever == 'c74' and get_mn_release() in ['c76', 'c79', 'h76c', 'h79c']:
             install_rpm_list += " qemu-kvm"
 
-    if get_mn_release() in ['h84r']:
+    if releasever in ['h84r']:
         install_rpm_list += py3_rpms
 
     if zstack_repo != 'false':
@@ -191,6 +182,15 @@ if not py_version:
     command = "python3.11 -m venv %s --system-site-packages" % virtenv_path
     run_remote_command(command, host_post_info)
 
+# name: install python pkg and replace ceph python path
+replace_content(ceph_file_path, "regexp='/usr/bin/env python' replace='/usr/bin/python3.11'", host_post_info)
+# name: install python pkg
+extra_args = "\"--trusted-host %s -i %s \"" % (trusted_host, pip_url)
+pip_install_arg = PipInstallArg()
+pip_install_arg.extra_args = extra_args
+pip_install_arg.name = "python-cephlibs"
+pip_install_arg.virtualenv = virtenv_path
+pip_install_package(pip_install_arg, host_post_info)
 
 # name: copy zstacklib
 copy_arg = CopyArg()
