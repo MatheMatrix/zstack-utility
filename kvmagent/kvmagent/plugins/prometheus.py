@@ -45,7 +45,8 @@ gpu_devices = {
     'AMD': set(),
     'HY': set(),
     'HUAWEI': set(),
-    'TIANSHU': set()
+    'TIANSHU': set(),
+    'VASTAI': set()
 }
 
 hw_status_abnormal_list_record = {
@@ -1557,6 +1558,179 @@ def collect_tianshu_gpu_status():
     return metrics.values()
 
 
+def collect_vastai_ai_gpu_metric_info():
+    def _run_with_realtime_output(command):
+        """Run a command and yield its output line by line."""
+        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        while True:
+            output = process.stdout.readline()
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                yield output.strip()
+
+    gpuinfos = []
+    data = shell.run_with_json_result("vasmi bw pcie -d all --display-format=json")
+    if data is None:
+        return gpuinfos
+    for elem in data["elem"]:
+        gpuinfo = {}
+        gpuinfo["serialNumber"] = elem.get("sn", None)
+        gpuinfo["pciAddress"] = elem.get("pci_bus", None)
+        gpuinfo["devId"] = elem.get("dev_id", "")
+        gpuinfo["rxPciInBytes"] = elem.get("vals", {}).get("Upstream (read from DDR)  bandwidth:", {}).get("value", None)
+        gpuinfo["txPciInBytes"] = elem.get("vals", {}).get("Downstream (write to DDR) bandwidth:", {}).get("value", None)
+        gpuinfos.append(gpuinfo)
+
+    for gpuinfo in gpuinfos:
+        cmd = "vasmi dmon -d %s -i 0" % gpuinfo["devId"]
+        for output_line in _run_with_realtime_output(cmd):
+            if isinstance(output_line, bytes):
+                output_line = output_line.decode('ascii', 'ignore')
+            if "Device Monitor of AIC" in output_line or output_line.startswith("----"):
+                continue
+            gpu_info = parse_aic_output(output_line)
+            if gpu_info:
+                gpuinfo["powerDraw"] = gpu_info.get("power")
+                gpuinfo["temperature"] = gpu_info.get("temperature")
+                gpuinfo["utilization"] = gpu_info.get("ai_percent")
+                gpuinfo["memoryUtilization"] = gpu_info.get("mem_percent")
+                break
+
+    return gpuinfos
+
+def parse_aic_output(output_line):
+    pattern = re.compile(r"""
+        (\d+)\s+       # device_id
+        (\S+)\s+\|\s+  # power
+        (\d+)\s+       # die
+        (\S+)\s+       # temperature
+        (\S+)\s+       # oclk
+        (\S+)\s+       # dclk
+        (\S+)\s+       # eclk
+        (\S+)\s+       # mem_percent
+        (\S+)\s+       # dec_percent
+        (\S+)\s+       # enc_percent
+        (\S+)\s+       # ai_percent
+        (\S+)          # dsp_percent
+    """, re.VERBOSE)
+
+    def convert_value(value):
+        try:
+            if '.' in value:
+                return float(value)
+            else:
+                return int(value)
+        except ValueError:
+            return None
+
+    match = pattern.search(output_line.strip())
+    if match:
+        groups = match.groups()
+        device_info = {
+            'device_id': convert_value(groups[0]),
+            'power': convert_value(groups[1]),
+            'die': convert_value(groups[2]),
+            'temperature': convert_value(groups[3]),
+            'oclk': convert_value(groups[4]),
+            'dclk': convert_value(groups[5]),
+            'eclk': convert_value(groups[6]),
+            'mem_percent': convert_value(groups[7]),
+            'dec_percent': convert_value(groups[8]),
+            'enc_percent': convert_value(groups[9]),
+            'ai_percent': convert_value(groups[10]),
+            'dsp_percent': convert_value(groups[11])
+        }
+        return device_info
+    return None
+
+def collect_vastai_3d_gpu_metric_info():
+    gpuinfos = []
+    data = shell.run_with_json_result("vasmi getpfstats --display-format=json")
+    if data is None:
+        return gpuinfos
+    for elem in data["elem"]:
+        gpuinfo = {}
+        gpuinfo["pciAddress"] = elem.get("vals", {}).get("GPU", {}).get("value", None)
+        gpuinfo["temperature"] = elem.get("vals", {}).get("Temperature", {}).get("value", None)
+        gpuinfo["utilization"] = elem.get("vals", {}).get("Utilization Gpu", {}).get("value", None)
+        gpuinfo["memoryUtilization"] = elem.get("vals", {}).get("Utilization Memory", {}).get("value", None)
+        gpuinfos.append(gpuinfo)
+
+    summary_data = shell.run_with_json_result("vasmi summary --display-format=json")
+    if summary_data is None:
+        return gpuinfos
+    for elem in summary_data["elem"]:
+        dev_bus_id = elem.get("vals", {}).get("devBusId", {}).get("value", None)
+        current_power = elem.get("vals", {}).get("Pwr_TOTAL", {}).get("value", None)
+        sn = elem.get("vals", {}).get("MB_SN", {}).get("value", "")
+        for gpuinfo in gpuinfos:
+            if gpuinfo["pciAddress"] == dev_bus_id:
+                gpuinfo["serialNumber"] = sn
+                gpuinfo["powerDraw"] = current_power
+                break
+
+    summary_data = shell.run_with_json_result("vasmi bw pcie -d all --display-format=json")
+    if summary_data is None:
+        return gpuinfos
+    for elem in summary_data["elem"]:
+        dev_bus_id = elem.get("pci_bus", "")
+        rx = elem.get("vals", {}).get("Upstream (read from DDR)  bandwidth", {}).get("value", None)
+        tx = elem.get("vals", {}).get("Downstream (write to DDR) bandwidth", {}).get("value", None)
+        for gpuinfo in gpuinfos:
+            if gpuinfo["pciAddress"] == dev_bus_id:
+                gpuinfo["rxPciInBytes"] = rx
+                gpuinfo["txPciInBytes"] = tx
+                break
+
+    return gpuinfos
+
+
+def collect_vastai_gpu_status():
+    def _extract_number(s):
+        if s is None or s == "":
+            return None
+
+        if isinstance(s, (int, float)):
+            return float(s)
+
+        match = re.search(r'(\d+(?:\.\d+)?)\s*MB/S', s, flags=re.IGNORECASE)
+        if match:
+            return float(match.group(1)) * 1024 * 1024  # change to byte
+
+        match = re.search(r'\d+(\.\d+)?', s)
+        return float(match.group(0)) if match else None
+
+    metrics = get_gpu_metrics()
+
+    if has_vastai_smi() is False:
+        return metrics.values()
+    if gpu.get_vastai_type() == "AI":
+        gpu_infos = collect_vastai_ai_gpu_metric_info()
+    else:
+        gpu_infos = collect_vastai_3d_gpu_metric_info()
+    if gpu_infos is None:
+        check_gpu_status_and_save_gpu_status("VASTAI", metrics)
+        return metrics.values()
+
+    for info in gpu_infos:
+        pci_device_address = info["pciAddress"]
+        gpu_serial = info["serialNumber"]
+        if len(pci_device_address.split(':')[0]) == 8:
+            pci_device_address = pci_device_address[4:].lower()
+
+        add_gpu_pci_device_address("VASTAI", pci_device_address, gpu_serial)
+
+        add_metrics('host_gpu_power_draw', _extract_number(info.get("powerDraw")), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_temperature', _extract_number(info.get("temperature")), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_utilization', _extract_number(info.get("utilization")), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_memory_utilization', _extract_number(info.get("memoryUtilization")), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_txpci_in_bytes', _extract_number(info.get("txPciInBytes")), [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_rxpci_in_bytes', _extract_number(info.get("rxPciInBytes")), [pci_device_address, gpu_serial], metrics)
+        check_gpu_status_and_save_gpu_status("VASTAI", metrics)
+    return metrics.values()
+
+
 def collect_nvidia_gpu_status():
     metrics = get_gpu_metrics()
 
@@ -1947,6 +2121,9 @@ def has_rocm_smi():
 def has_npu_smi():
     return shell.run_without_log("which npu-smi") == 0
 
+def has_vastai_smi():
+    return shell.run_without_log("which vasmi") == 0
+
 
 class ProcessPhysicalMemoryUsageAlarm(object):
     def __init__(self, pid, process_name, mem_usage, **kwargs):
@@ -2043,6 +2220,7 @@ kvmagent.register_prometheus_collector(collect_amd_gpu_status)
 kvmagent.register_prometheus_collector(collect_hy_gpu_status)
 kvmagent.register_prometheus_collector(collect_huawei_gpu_status)
 kvmagent.register_prometheus_collector(collect_tianshu_gpu_status)
+kvmagent.register_prometheus_collector(collect_vastai_gpu_status)
 kvmagent.register_prometheus_collector(collect_hba_port_device_state)
 kvmagent.register_prometheus_collector(collect_disk_stat)
 kvmagent.register_prometheus_collector(collect_kvmagent_memory_statistics)
