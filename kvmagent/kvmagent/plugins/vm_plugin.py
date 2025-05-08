@@ -2871,7 +2871,7 @@ class Vm(object):
         self._wait_vm_run_until_seconds(10)
         self.timeout_object.wait_until_object_timeout('detach-volume-%s' % self.uuid)
         self._attach_data_volume(volume, addons)
-        self.timeout_object.put('attach-volume-%s' % self.uuid, timeout=10)
+        self.timeout_object.put('attach-volume-%s' % self.uuid, timeout=120)
 
     @staticmethod
     def set_volume_qos(addons, volume_uuid, volume_xml_obj):
@@ -3178,7 +3178,7 @@ class Vm(object):
 
     def detach_data_volume(self, volume):
         self._wait_vm_run_until_seconds(60)
-        self.timeout_object.wait_until_object_timeout('attach-volume-%s' % self.uuid)
+        self.timeout_object.wait_until_object_timeout('attach-volume-%s' % self.uuid, timeout=150)
         self._detach_data_volume(volume)
         self.timeout_object.put('detach-volume-%s' % self.uuid, timeout=10)
 
