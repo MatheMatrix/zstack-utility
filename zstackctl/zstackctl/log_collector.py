@@ -641,6 +641,14 @@ class CollectFromYml(object):
             query.sql = "select value from GlobalConfigVO where name='vrouter.password'"
             password = query.query()
             username = "vyos"
+            query.sql = "select vmInstanceUuid from VmNicVO where deviceId = 0 and ip='%s'" % host_ip
+            result = query.query()
+            if len(result) != 0:
+                vmInstanceUuid = result[0]['vmInstanceUuid']
+                query.sql = "select REPLACE(tag, 'loginUser::', '') as username from SystemTagVO where resourceUuid = '%s' and tag like 'loginUser::%%'" % vmInstanceUuid
+                result = query.query()
+                if len(result) != 0:
+                    username = result[0]['username']
             ssh_port = 22
             return (username, password, ssh_port)
         elif type == "pxeserver":
