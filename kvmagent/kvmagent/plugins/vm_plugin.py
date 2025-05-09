@@ -113,6 +113,7 @@ DEFAULT_ZBS_CONF_PATH = "/etc/zbs/client.conf"
 DEFAULT_ZBS_USER_NAME = "zbs"
 PROTOCOL_CBD_PREFIX = "cbd:"
 MAX_NBD_READ_SIZE = 32768000
+LIBVIRT_DEFINED_XML_DIR = "/etc/libvirt/qemu/"
 
 
 class RetryException(Exception):
@@ -7050,6 +7051,11 @@ class VmPlugin(kvmagent.KvmAgent):
 
     def _start_vm(self, cmd):
         try:
+            if os.path.exists(os.path.join(LIBVIRT_DEFINED_XML_DIR, cmd.vmInstanceUuid + ".xml")) \
+                    and not linux.get_vm_pid(cmd.vmInstanceUuid):
+                # undefine previous
+                shell.run("virsh undefine %s" % cmd.vmInstanceUuid)
+
             vm = get_vm_by_uuid_no_retry(cmd.vmInstanceUuid, False)
 
             if vm:
