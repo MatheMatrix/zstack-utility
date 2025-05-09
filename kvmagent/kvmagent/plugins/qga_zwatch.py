@@ -2,6 +2,7 @@ import time
 import libvirt
 import json
 import threading
+import traceback
 
 from kvmagent import kvmagent
 from zstacklib.utils import http
@@ -299,6 +300,7 @@ def get_guest_tools_states(domains):
                     return qga_status
             except Exception as e:
                 logger.debug("read /usr/local/zstack/guesttools failed {}".format(e))
+                logger.debug(traceback.format_exc())
                 return qga_status
 
         qga_status.zsToolsFound = True
