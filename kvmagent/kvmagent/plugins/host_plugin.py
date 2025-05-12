@@ -2761,15 +2761,16 @@ done
         for info in gpu.parse_enflame_gpu_output(o):
             if to.pciDeviceAddress not in info.get("pciAddress"):
                 continue
-            mem = info.get("memory")
-            power = info.get("powerCap")
-            serial = info.get("serialNumber")
 
-            if mem and re.match(r"^\d+$", mem.replace('MiB', '').strip()):
-                to.addonInfo["memory"] = mem
+            mem = info.get("memory", "")
+            power = info.get("powerCap", "")
+            serial = info.get("serialNumber", "")
 
-            if power and re.match(r"^\d+(\.\d+)?$", power.strip()):
-                to.addonInfo["power"] = power
+            if mem and re.match(r"^\s*\d+\s*MiB\s*$", mem, re.IGNORECASE):
+                to.addonInfo["memory"] = mem.strip()
+
+            if power and re.match(r"^\s*\d+(\.\d+)?\s*W\s*$", power, re.IGNORECASE):
+                to.addonInfo["power"] = power.strip()
 
             if serial and serial.strip():
                 to.addonInfo["serialNumber"] = serial

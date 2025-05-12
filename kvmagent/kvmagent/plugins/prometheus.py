@@ -1773,23 +1773,23 @@ def collect_enflame_gpu_status():
         memory_total = info.get("memory", "0MiB").strip().rstrip("MiB")
         memory_utilization = calculate_percentage(memory_usage, memory_total)
 
-        power = info.get("power", "0W").strip().rstrip("W")
-        temperature = info.get("temperature", "0C").strip().rstrip("C")
-        gcu_usage = info.get("gcuUsage", "0%").strip().rstrip("%")
+        power = info.get("power", "0W").replace(" ", "").strip().rstrip("W")
+        temperature = info.get("temperature", "0C").replace(" ", "").strip().rstrip("C")
+        gcu_usage = info.get("gcuUsage", "0%").replace(" ", "").strip().rstrip("%")
 
         add_gpu_pci_device_address("ENFLAME", pci_device_address, serial_number)
 
         if is_number(power):
-            add_metrics('host_gpu_power_draw', power, [pci_device_address, serial_number], metrics)
+            add_metrics('host_gpu_power_draw', float(power), [pci_device_address, serial_number], metrics)
 
         if is_number(temperature):
-            add_metrics('host_gpu_temperature', temperature, [pci_device_address, serial_number], metrics)
+            add_metrics('host_gpu_temperature', float(temperature), [pci_device_address, serial_number], metrics)
 
         if is_number(gcu_usage):
-            add_metrics('host_gpu_utilization', gcu_usage, [pci_device_address, serial_number], metrics)
+            add_metrics('host_gpu_utilization', float(gcu_usage), [pci_device_address, serial_number], metrics)
 
         if is_number(memory_utilization):
-            add_metrics('host_gpu_memory_utilization', memory_utilization, [pci_device_address, serial_number], metrics)
+            add_metrics('host_gpu_memory_utilization', float(memory_utilization), [pci_device_address, serial_number], metrics)
 
     check_gpu_status_and_save_gpu_status("ENFLAME", metrics)
     return metrics.values()
