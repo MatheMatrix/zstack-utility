@@ -18,6 +18,7 @@ import sys
 import yaml
 import subprocess
 
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
@@ -3748,7 +3749,8 @@ done
             if dev['children'] is not None:
                 for child in dev['children']:
                     child_dev = process_device(child)
-                    block_dev.children.append(child_dev)
+                    if child_dev is not None:
+                        block_dev.children.append(child_dev)
 
             block_dev.partitionTable = get_partition_table(name)
             block_dev.used, block_dev.available, block_dev.usedRatio = get_size_info(name)
@@ -3762,10 +3764,15 @@ done
             rsp.error = e
             return jsonobject.dumps(rsp)
 
-        for device in jsonobject.loads(o)['blockdevices']:
-            blockDevice = process_device(device)
-            if blockDevice:
-                rsp.blockDevices.append(blockDevice)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(process_device, device) for device in jsonobject.loads(o)['blockdevices']]
+            for future in as_completed(futures, timeout=30):
+                try:
+                    block_device = future.result()
+                    if block_device:
+                        rsp.blockDevices.append(block_device)
+                except TimeoutError:
+                    logger.warning("device processing timeout")
 
         return jsonobject.dumps(rsp)
 
