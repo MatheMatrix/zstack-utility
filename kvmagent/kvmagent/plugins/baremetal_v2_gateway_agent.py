@@ -401,6 +401,16 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             if host not in f.read():
                 f.write(host)
 
+        if len(instance_obj.extra_provision_nic_infos) > 0:
+            for info in instance_obj.extra_provision_nic_infos:
+                host = '{mac_addr},{ip_addr},set:instance,set:{uuid}\n'.format(
+                    mac_addr=info.provision_mac,
+                    ip_addr=info.provision_ip,
+                    uuid=instance_obj.uuid)
+                with open(self.DNSMASQ_HOSTS_PATH, 'a+r') as f:
+                    if host not in f.read():
+                        f.write(host)
+
         opts_template = self._load_template('dnsmasq.opts')
         opts = opts_template.render(
             uuid=instance_obj.uuid,
@@ -1008,12 +1018,36 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         volumes = {}
         for volume_driver in volume_drivers:
             if volume_driver.volume_obj.type == 'Root':
-                uri = 'iscsi:{gw_ip}:::{lun_id}:{target}'.format(
-                    gw_ip=self.provision_network_conf.provision_nic_ip,
-                    lun_id=volume_driver.iscsi_lun,
-                    target=volume_driver.iscsi_target)
-                drive_id = '0x%x' % (128 + volume_driver.iscsi_lun)
-                volumes[uri] = drive_id
+                if volume_driver.instance_obj.provisionType == 'Remote':
+                    path = volume_driver.volume_obj.iscsiPath.replace('iscsi://', '')
+                    array = path.split("/")
+                    iqn = array[1]
+                    access_paths = volume_driver.get_all_access_path()
+                    for access_path in access_paths:
+                        if iqn in access_path.iqn:
+                            targets = volume_driver.get_targets_by_access_path_id(access_path.id)
+                            gatewayIps = [target.gateway_ips if target.gateway_ips else target.host.admin_ip
+                                          for target in targets]
+                            break
+                    uris = []
+                    for gatewayIp in gatewayIps:
+                        uri = 'iscsi:{gw_ip}:::{lun_id}:{target}'.format(
+                            gw_ip=gatewayIp,
+                            lun_id=volume_driver.get_lun_id(),
+                            target=iqn
+                        )
+                        uris.append(uri)
+
+                    urls = ' \\\n '.join(uris) + ' '
+                    drive_id = '0x%x' % (128 + volume_driver.iscsi_lun)
+                    volumes[urls] = drive_id
+                else:
+                    uri = 'iscsi:{gw_ip}:::{lun_id}:{target}'.format(
+                        gw_ip=self.provision_network_conf.provision_nic_ip,
+                        lun_id=volume_driver.iscsi_lun,
+                        target=volume_driver.iscsi_target)
+                    drive_id = '0x%x' % (128 + volume_driver.iscsi_lun)
+                    volumes[uri] = drive_id
 
         template = self._load_template('config.ipxe')
         conf = template.render(
