@@ -346,3 +346,7 @@ def reload_hygon_gpu_driver_cmd():
 def get_enflame_gpu_info_cmd():
     return "efsmi -q"
 
+
+def post_process_enflame_gpu_device(to):
+    to.virtStatus = "UNVIRTUALIZABLE"
+

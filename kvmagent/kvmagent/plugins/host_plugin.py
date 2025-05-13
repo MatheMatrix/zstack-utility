@@ -2629,6 +2629,9 @@ done
             # if support both mdev and sriov, then set the pci device to VFIO_MDEV_VIRTUALIZABLE
             if not self._get_vfio_mdev_info(to) and not self._get_sriov_info(to):
                 to.virtStatus = "UNVIRTUALIZABLE"
+
+            self._post_process_pci_device_info(to)
+
             if to.vendorId != '' and to.deviceId != '':
                 rsp.pciDevicesInfo.append(to)
 
@@ -2645,6 +2648,15 @@ done
                 VendorEnum.ENFLAME: self._collect_enflame_gpu_info
             }
             handler = collect_vendor_nvidia_gpu_infos.get(vendor_name)
+            if handler:
+                handler(to)
+
+    def _post_process_pci_device_info(self, to):
+        if pci.is_gpu(to.type):
+            post_process_gpu_devices_handlers = {
+                VendorEnum.ENFLAME: gpu.post_process_enflame_gpu_device
+            }
+            handler = post_process_gpu_devices_handlers.get(to.vendor)
             if handler:
                 handler(to)
 
