@@ -1198,11 +1198,13 @@ def qcow2_virtualsize(file_path):
     return long(out)
 
 def qcow2_get_backing_file(path):
-    if not os.path.exists(path):
-        # for rbd image
-        out = shell.call("%s %s | grep 'backing file:' | cut -d ':' -f 2" %
-                (qemu_img.subcmd('info'), path))
-        return out.strip(' \t\r\n')
+    if not os.path.exists(path) and ":" in path:
+        # find through protocol
+        out = shell.call("%s %s" %(qemu_img.subcmd('info'), path))
+        for line in out.splitlines():
+            if "backing file:" in line:
+                return line.replace("backing file:", "", 1).strip()
+        return ""
 
     with open(path, 'r') as resp:
         magic = resp.read(4)
