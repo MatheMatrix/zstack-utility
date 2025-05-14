@@ -186,7 +186,7 @@ class NbdDeviceOperator(object):
             if dev.startswith('nbd'):
                 all_nbd_ids.append(int(dev.split('nbd')[-1]))
 
-        available_nbd_ids = sorted(set(all_nbd_ids) - set(self.used_nbd_ids))
+        available_nbd_ids = sorted(set(all_nbd_ids) - set(self.used_nbd_ids) - {0})
 
         if not available_nbd_ids:
             raise exception.NoAvailableNbdDevice(
