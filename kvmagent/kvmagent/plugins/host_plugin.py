@@ -3795,10 +3795,15 @@ done
                 self.status = (info['event'] or '').strip().strip("'").lower()
                 self.type = info['type'].strip() or ""
 
-        sensors = []
-        for info in form.load('id|name|type|value|units|event\n' + get_sensor_info_from_ipmi(), sep='|'):
-            sensors.append(Sensor(info))
+        sensor_info = get_sensor_info_from_ipmi()
+        if sensor_info is None:
+            rsp.success = False
+            rsp.error = "failed to get sensor info from ipmi"
+            return jsonobject.dumps(rsp)
 
+        sensors = []
+        for info in form.load('id|name|type|value|units|event\n' + sensor_info, sep='|'):
+            sensors.append(Sensor(info))
         rsp.sensors = sensors
         return jsonobject.dumps(rsp)
 
