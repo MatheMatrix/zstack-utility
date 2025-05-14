@@ -591,14 +591,12 @@ def sshfs_mount(username, hostname, port, password, url, mountpoint, writebandwi
     os.close(fd)
 
     allow = 'allow_root' if uid == 0 else 'allow_other'
+    direct_io_opt = 'direct_io,' if direct_io else ''
     try:
-        if direct_io:
-            ret = shell.check_run("/usr/bin/sshfs %s@%s:%s %s -o %s,direct_io,compression=no,ssh_command='%s'" % (username, hostname, url, mountpoint, allow, fname))
-        else:
-            ret = shell.check_run("/usr/bin/sshfs %s@%s:%s %s -o %s,compression=no,ssh_command='%s'" % (username, hostname, url, mountpoint, allow, fname))
+        return shell.check_run("/usr/bin/sshfs %s@%s:%s %s -o %s%s,compression=no,ConnectTimeout=30,ssh_command='%s'" % (
+            username, hostname, url, mountpoint, direct_io_opt, allow, fname))
     finally:
         os.remove(fname)
-    return ret
 
 def fumount(mountpoint, timeout = 10):
     return shell.run("timeout %s fusermount -u %s" % (timeout, mountpoint))
