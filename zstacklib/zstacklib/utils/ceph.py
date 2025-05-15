@@ -404,8 +404,13 @@ pool_capacity_getter_mapping = {
     "zstone":ZStoneCephPoolCapacityGetter()
 }
 
+ceph_version = ""
 def get_version():
-    return shell.call("ceph version").split(" ")[2]
+    global ceph_version
+    if ceph_version:
+        return ceph_version
+    ceph_version = shell.call("ceph version").split(" ")[2]
+    return ceph_version
 
 def rbd_create_support_byte():
     # ceph hammer not support in bytes
