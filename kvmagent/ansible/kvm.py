@@ -52,6 +52,7 @@ restart_libvirtd = 'false'
 enable_spice_tls = None
 enable_cgroup_device_acl = None
 isRemoteCube = False
+reserved_ports = "49152-49215"
 
 
 # get parameter from shell
@@ -562,6 +563,9 @@ def copy_kvm_files():
     args = "directory_mode=755"
     copy_to_remote(sysctl_src, sysctl_dst, args, host_post_info)
     command = 'sysctl -p /var/lib/zstack/kvm/sysctl/default.conf'
+    run_remote_command(command, host_post_info)
+
+    command = 'sysctl -w net.ipv4.ip_local_reserved_ports=%s,`cat /proc/sys/net/ipv4/ip_local_reserved_ports`' % reserved_ports
     run_remote_command(command, host_post_info)
 
 def copy_gpudriver():
