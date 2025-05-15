@@ -1861,7 +1861,10 @@ class HaPlugin(kvmagent.KvmAgent):
             self.setup_fencer(ps_uuid, created_time)
             update_fencer = True
             try:
-                fencer_init = {cbd_controller.get_ha_fencer_name(): cbd_controller}
+                fencer_init = {}
+                fencer_init[cbd_controller.get_ha_fencer_name()] = cbd_controller
+                fencer_init[KEY_REPORT_URL] = self.config.get(kvmagent.SEND_COMMAND_URL)
+                fencer_init[kvmagent.HOST_UUID] = cmd.hostUuid
                 logger.debug("cbd start run fencer list :%s" % ",".join(fencer_list))
                 while self.run_fencer(ps_uuid, created_time):
                     time.sleep(cmd.interval)
