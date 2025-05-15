@@ -31,74 +31,96 @@ def fmt_pci_address(pci_device):
 #   ]
 def lspci_s(option_slot):
     # type: (str) -> list[dict]
-    r, o = bash.bash_ro('lspci -Dmmnnv -s ' + option_slot)
-    if r != 0:
-        return None
-    return _parse_lspci(o)
+    value_r, value_o = bash.bash_ro('lspci -Dmmv -s ' + option_slot)
+    if value_r != 0:
+        return []
+
+    id_r, id_o = bash.bash_ro('lspci -Dmmnv -s ' + option_slot)
+    if id_r != 0:
+        return []
+
+    return _parse_lspci(value_o, id_o)
 
 def lspci():
     # type: () -> list[dict]
-    r, o = bash.bash_ro('lspci -Dmmnnv')
-    if r != 0:
-        return None
-    return _parse_lspci(o)
+    value_r, value_o = bash.bash_ro('lspci -Dmmv')
+    if value_r != 0:
+        return []
+
+    id_r, id_o = bash.bash_ro('lspci -Dmmnv')
+    if id_r != 0:
+        return []
+
+    return _parse_lspci(value_o, id_o)
 
 def lspci_s_or_throw(option_slot):
     # type: (str) -> list[dict]
-    r, o, e = bash.bash_roe('lspci -Dmmnnv -s ' + option_slot)
-    if r != 0:
-        raise Exception('failed to execute command lspci: %s' % e)
-    return _parse_lspci(o)
+    value_r, value_o, value_e = bash.bash_roe('lspci -Dmmv -s ' + option_slot)
+    if value_r != 0:
+        raise Exception('failed to execute command lspci: %s' % value_e)
+
+    id_r, id_o, id_e = bash.bash_roe('lspci -Dmmnv -s ' + option_slot)
+    if id_r != 0:
+        raise Exception('failed to execute command lspci: %s' % id_e)
+
+    return _parse_lspci(value_o, id_o)
 
 def lspci_or_throw():
     # type: () -> list[dict]
-    r, o, e = bash.bash_roe('lspci -Dmmnnv')
-    if r != 0:
-        raise Exception('failed to execute command lspci: %s' % e)
-    return _parse_lspci(o)
+    value_r, value_o, value_e = bash.bash_roe('lspci -Dmmv')
+    if value_r != 0:
+        raise Exception('failed to execute command lspci: %s' % value_e)
 
-def _parse_lspci(o):
-    # type: (str) -> list[dict]
+    id_r, id_o, id_e = bash.bash_roe('lspci -Dmmnv')
+    if id_r != 0:
+        raise Exception('failed to execute command lspci: %s' % id_e)
+
+    return _parse_lspci(value_o, id_o)
+
+def _parse_lspci(value_o, id_o):
+    # type: (str, str) -> list[dict]
     results = []
-    current = {}
-    lines = o.strip().split('\n') # type: list[str]
-    lines.extend([''])
 
-    for line in lines:
-        colon_index = line.find(':') # type: int
-        if colon_index < 0:
-            if len(current) > 0:
-                results.append(current)
+    def parse_lines(lines):
+        groups = {}
+        current = {}
+        for line in lines:
+            line = line.strip()
+            if not line:
+                if 'Slot' in current:
+                    groups[current['Slot']] = current
                 current = {}
                 continue
 
-        key = line[ : colon_index] # type: str
-        value = line[colon_index + 1 :].strip() # type: str
+            key_value = line.split(':', 1)
+            if len(key_value) < 2:
+                continue
 
-        if key == 'Slot':
-            current['Slot'] = value
-        elif key == "Class":
-            bracket_index = value.index('[')
-            current['Class'] = value[0 : bracket_index].strip()
-            current['ClassId'] = value[bracket_index + 1 : -1]
-        elif key == "Vendor":
-            bracket_index = value.index('[')
-            current['Vendor'] = value[0 : bracket_index].strip()
-            current['VendorId'] = value[bracket_index + 1 : -1]
-        elif key == "Device":
-            bracket_index = value.index('[')
-            current['Device'] = value[0 : bracket_index].strip()
-            current['DeviceId'] = value[bracket_index + 1 : -1]
-        elif key == "SVendor":
-            bracket_index = value.index('[')
-            current['SVendor'] = value[0 : bracket_index].strip()
-            current['SVendorId'] = value[bracket_index + 1 : -1]
-        elif key == "SDevice":
-            bracket_index = value.index('[')
-            current['SDevice'] = value[0 : bracket_index].strip()
-            current['SDeviceId'] = value[bracket_index + 1 : -1]
-        else:
+            key = key_value[0].strip()
+            value = key_value[1].strip()
             current[key] = value
+
+        if current and 'Slot' in current:
+            groups[current['Slot']] = current
+        return groups
+
+    group_value_by_slot = parse_lines(value_o.strip().splitlines())
+    group_id_by_slot = parse_lines(id_o.strip().splitlines())
+
+    for slot, pci in group_value_by_slot.items():
+        id_data = group_id_by_slot.get(slot, {})
+        if id_data.get('Class', ''):
+            pci['ClassId'] = id_data.get('Class', '')
+        if id_data.get('Vendor', ''):
+            pci['VendorId'] = id_data.get('Vendor', '')
+        if id_data.get('Device', ''):
+            pci['DeviceId'] = id_data.get('Device', '')
+        if id_data.get('SVendor', ''):
+            pci['SVendorId'] = id_data.get('SVendor', '')
+        if id_data.get('SDevice', ''):
+            pci['SDeviceId'] = id_data.get('SDevice', '')
+        results.append(pci)
+
     return results
 
 NAIDIA_SRIOV_MANAGE_PATH = '/usr/lib/nvidia/sriov-manage'
