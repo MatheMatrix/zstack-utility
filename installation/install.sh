@@ -1638,6 +1638,7 @@ is_install_general_libs_rh(){
     deps_list="libselinux-python \
             java-1.8.0-openjdk \
             java-1.8.0-openjdk-devel \
+            java-21-openjdk-devel \
             bridge-utils \
             wget \
             nfs-utils \
@@ -2515,6 +2516,26 @@ install_zops(){
     else
       show_spinner is_install_zops
     fi
+}
+
+extract_keycloak_server_package(){
+    keycloak_installer_tar=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "keycloak.tar.gz" | head -n 1`
+    [[ x"$keycloak_installer_tar" = x ]] && return
+    echo_title "Extract keycloak server package"
+    echo ""
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    show_spinner is_extract_keycloak_tar
+}
+
+is_extract_keycloak_tar(){
+    echo_subtitle "Extract keycloak tar"
+    cp /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/keycloak.tar.gz /var/lib/zstack/
+    tar -zxvf /var/lib/zstack/keycloak.tar.gz -C /var/lib/zstack/ > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        fail "Extracting the keycloak.tar.gz package failed."
+    fi
+    rm -f /var/lib/zstack/keycloak.tar.gz
+    [ $? -eq 0 ] && pass
 }
 
 install_marketplace_server(){
@@ -4427,6 +4448,8 @@ if [ x"$UPGRADE" = x'y' ]; then
     #Install marketplace server
     install_fluentbit_server
 
+    extract_keycloak_server_package
+
     #only upgrade zstack
     upgrade_zstack
 
@@ -4605,6 +4628,8 @@ install_marketplace_server
 
 #Install fluentbit server
 install_fluentbit_server
+
+extract_keycloak_server_package
 
 #Start ${PRODUCT_NAME} 
 if [ -z $NOT_START_ZSTACK ]; then
