@@ -38,6 +38,7 @@ from zstacklib.utils import misc
 from zstacklib.utils.bash import *
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.ip import get_nic_driver_type
+from zstacklib.utils.pci import VendorEnum
 from zstacklib.utils.report import Report
 from zstacklib.utils import ovn
 import zstacklib.utils.ip as ip
@@ -72,15 +73,6 @@ BOND_MODE_ACTIVE_6 = "balance-alb"
 
 DISTRO_USING_DNF = ['rl84', 'h84r', 'ky10sp1', 'ky10sp2', 'ky10sp3',
                     'oe2203sp1', 'h2203sp1o']
-
-class VendorEnum:
-    INTEL = "Intel"
-    AMD = "AMD"
-    NVIDIA = "NVIDIA"
-    HAIGUANG = "Haiguang"
-    HUAWEI = "Huawei"
-    TIANSHU = "TianShu"
-    ENFLAME = "Enflame"
 
 class ConnectResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -2612,8 +2604,9 @@ done
                 elif 'PCI bridge' in to.type or (pci_device_mapper.get('PCI bridge') is not None
                                                  and pci_device_mapper.get('PCI bridge') in to.type):
                     to.type = "PCI_Bridge"
-                elif ("Processing accelerators" in to.type or (
-                        pci_device_mapper.get('Processing accelerators') is not None)) and 'Device' in to.device:
+                elif "Processing accelerators" in to.type or (
+                        pci_device_mapper.get('Processing accelerators') is not None) and\
+                        gpu.is_valid_processing_accelerator(to):
                     to.type = "GPU_Processing_Accelerators"
                 elif (any(vendor in to.description for vendor in gpu_vendors) or '1d94' in to.vendorId ) \
                         and ('Co-processor' in to.type or (pci_device_mapper.get('Co-processor') is not None

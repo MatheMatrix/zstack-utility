@@ -2,6 +2,7 @@
 import json
 
 from zstacklib.utils import log
+from zstacklib.utils.pci import VendorEnum
 
 logger = log.get_logger(__name__)
 
@@ -348,4 +349,10 @@ def get_enflame_gpu_info_cmd():
 
 def post_process_enflame_gpu_device(to):
     to.virtStatus = "UNVIRTUALIZABLE"
+
+
+def is_valid_processing_accelerator(to):
+    if to.vendor == VendorEnum.HUAWEI and 'Device' not in to.device:
+        return False
+    return True
 
