@@ -1779,7 +1779,7 @@ def collect_enflame_gpu_status():
         rx_throughput_in_mb = info.get("rxThroughput", "").strip().rstrip("MiB/s")
         tx_throughput_in_mb = info.get("txThroughput", "").strip().rstrip("MiB/s")
 
-        # in latest version of enflame driver, GCU Temp is like: 40 ℃
+        # in latest version of enflame driver, GCU Temp is like: 40 'C (degree Celsius sign)
         power = info.get("power", "").replace(" ", "").strip().rstrip("W")
         temperature = extract_number(info.get("temperature", "").replace(" ", "").strip().rstrip("C"))
         gcu_usage = info.get("gcuUsage", "").replace(" ", "").strip().rstrip("%")

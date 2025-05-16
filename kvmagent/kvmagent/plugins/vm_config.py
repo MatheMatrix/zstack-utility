@@ -6,6 +6,7 @@ from zstacklib.utils import lock
 from zstacklib.utils import log
 from zstacklib.utils.qga import VmQga
 from zstacklib.utils import pci
+from zstacklib.utils.pci import VendorEnum
 from zstacklib.utils import gpu
 
 from kvmagent import kvmagent
@@ -338,6 +339,15 @@ class VmConfigPlugin(kvmagent.KvmAgent):
 
         return self.map_pci_addresses_in_gpu_info(gpu.parse_tianshu_gpu_output(gpu_info_output), qga)
 
+    def get_vm_enflame_gpu_info_by_guesttool(self, qga):
+        gpuinfos = []
+        cmd = gpu.get_enflame_gpu_info_cmd()
+        gpu_info_output = qga.guest_exec_cmd_no_exitcode(cmd)
+        if gpu_info_output is None:
+            return gpuinfos
+
+        return self.map_pci_addresses_in_gpu_info(gpu.parse_enflame_gpu_output(gpu_info_output), qga)
+
     def get_vm_hauwei_gpu_info_by_guesttool(self, qga):
         gpuinfos = []
         npu_id_output = qga.guest_exec_cmd_no_exitcode(gpu.get_huawei_gpu_npu_id_cmd())
@@ -369,11 +379,12 @@ class VmConfigPlugin(kvmagent.KvmAgent):
             return 1, "not support for os {} version {}".format(qga.os, qga.os_version)
         gpuinfos = []
         vendor_method_map = {
-            "NVIDIA": self.get_vm_nvidia_gpu_info_by_guesttool,
-            "AMD": self.get_vm_amd_gpu_info_by_guesttool,
-            "Haiguang": self.get_vm_hy_gpu_info_by_guesttool,
-            "Huawei": self.get_vm_hauwei_gpu_info_by_guesttool,
-            "TianShu": self.get_vm_tianshu_gpu_info_by_guesttool,
+            VendorEnum.NVIDIA: self.get_vm_nvidia_gpu_info_by_guesttool,
+            VendorEnum.AMD: self.get_vm_amd_gpu_info_by_guesttool,
+            VendorEnum.HAIGUANG: self.get_vm_hy_gpu_info_by_guesttool,
+            VendorEnum.HUAWEI: self.get_vm_hauwei_gpu_info_by_guesttool,
+            VendorEnum.TIANSHU: self.get_vm_tianshu_gpu_info_by_guesttool,
+            VendorEnum.ENFLAME: self.get_vm_enflame_gpu_info_by_guesttool,
         }
 
         for vendor in vendors:
