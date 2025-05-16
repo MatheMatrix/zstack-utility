@@ -1779,8 +1779,9 @@ def collect_enflame_gpu_status():
         rx_throughput_in_mb = info.get("rxThroughput", "").strip().rstrip("MiB/s")
         tx_throughput_in_mb = info.get("txThroughput", "").strip().rstrip("MiB/s")
 
+        # in latest version of enflame driver, GCU Temp is like: 40 ℃
         power = info.get("power", "").replace(" ", "").strip().rstrip("W")
-        temperature = info.get("temperature", "").replace(" ", "").strip().rstrip("C")
+        temperature = extract_number(info.get("temperature", "").replace(" ", "").strip().rstrip("C"))
         gcu_usage = info.get("gcuUsage", "").replace(" ", "").strip().rstrip("%")
 
         add_gpu_pci_device_address("ENFLAME", pci_device_address, serial_number)
@@ -2013,6 +2014,13 @@ def is_number(s):
         return True
     except (ValueError, TypeError):
         return False
+
+
+def extract_number(text):
+    match = re.search(r"[-+]?\d*\.?\d+", text)
+    if match:
+        return match.group(0)
+    return None
 
 
 class ProcessPhysicalMemoryUsageAlarm(object):
