@@ -182,7 +182,9 @@ class VmConfigPlugin(kvmagent.KvmAgent):
 
         # configure windows by zs-tools
         if qga.os == VmQga.VM_OS_WINDOWS:
-            ret, msg = qga.guest_exec_zs_tools(operate='net', config=jsonobject.dumps(nicParams))
+            skip_cleanup = getattr(nicParams, "optionalConfiguration", False) is True
+            ret, msg = qga.guest_exec_zs_tools(operate='net', config=jsonobject.dumps(nicParams)
+                                               , skip_cleanup=skip_cleanup)
             if ret != 0:
                 logger.debug("config vm {} by qga failed, detail info {}".format(vm_uuid, msg))
             return ret, msg

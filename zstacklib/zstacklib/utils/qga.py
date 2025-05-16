@@ -347,10 +347,14 @@ class VmQga(object):
 
         return exit_code, s_ret_data, e_ret_data
 
-    def guest_exec_zs_tools(self, operate, config, output=True, wait=qga_exec_wait_interval, retry=zs_tools_wait_retry):
+    def guest_exec_zs_tools(self, operate, config, output=True, wait=qga_exec_wait_interval, retry=zs_tools_wait_retry
+                            , skip_cleanup=False):
         if operate == 'net':
+            args = [operate, "--config", config]
+            if skip_cleanup:
+                args.append("--skip-cleanup")
             ret = self.guest_exec(
-                {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--config", config], "capture-output": output})
+                {"path": self.ZS_TOOLS_PATN_WIN, "arg": args, "capture-output": output})
         elif operate == 'host':
             ret = self.guest_exec(
                 {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--name", config], "capture-output": output})
