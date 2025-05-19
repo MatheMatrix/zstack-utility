@@ -135,7 +135,7 @@ class LogicalPoolInfo:
             return None
 
         try:
-            d = jsonobject.loads(base64.b64decode(redundance_and_placement_policy))
+            d = jsonobject.loads(base64.b64decode(redundance_and_placement_policy).decode())
             return self.RedundanceAndPlacementPolicy(
                 copyset_number=d.copysetNum,
                 replica_number=d.replicaNum,
