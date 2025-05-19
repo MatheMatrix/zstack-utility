@@ -202,8 +202,8 @@ class AppBuildSystemAgent(object):
             thumbs = []
             for f in files:
                 if re.match(regex, f):
-                    with open(srcDir+"/"+f, 'r') as thumb:
-                        thumbs.append(pic_prefix + base64.b64encode(thumb.read()))
+                    with open(srcDir+"/"+f, 'rb') as thumb:
+                        thumbs.append(pic_prefix + base64.b64encode(thumb.read()).decode())
             return thumbs
 
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -213,8 +213,8 @@ class AppBuildSystemAgent(object):
         rsp.imageInfos = _read_info(cmd.srcPath, "application-image-meta.json")
         rsp.dstInfo = _read_info(cmd.srcPath, "application-desc.json")
         rsp.template = _read_info(cmd.srcPath, "raw-cloudformation-template.json")
-        with open(cmd.srcPath+"/logo.jpg", 'r') as logo:
-            rsp.logo = pic_prefix + base64.b64encode(logo.read())
+        with open(cmd.srcPath+"/logo.jpg", 'rb') as logo:
+            rsp.logo = pic_prefix + base64.b64encode(logo.read()).decode()
         rsp.thumbs = _encode_thumbs(cmd.srcPath, "thumbs.*.jpg")
 
         target = _copy_app(cmd.srcPath, cmd.dstPath)
