@@ -151,7 +151,10 @@ class VmQga(object):
         cmd = {'execute': command}
         if args:
             if 'buf-b64' in args:
-                args['buf-b64'] = base64.b64encode(args['buf-b64'])
+                content = args['buf-b64']
+                if isinstance(content, str):
+                    content = content.encode()
+                args['buf-b64'] = base64.b64encode(content).decode()
             cmd['arguments'] = args
         cmd = json.dumps(cmd)
         try:

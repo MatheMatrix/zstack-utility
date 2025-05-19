@@ -6475,11 +6475,11 @@ class Vm(object):
         vm.uuid = cmd.vmInstanceUuid
 
         if cmd.addons["userDefinedXmlHookScript"] is not None:
-            xml_hook_script = base64.b64decode(cmd.addons["userDefinedXmlHookScript"])
+            xml_hook_script = base64.b64decode(cmd.addons["userDefinedXmlHookScript"]).decode()
             vm.set_user_defined_xml_hook(xml_hook_script)
 
         if cmd.addons["userDefinedXml"] is not None:
-            vm.domain_xml = base64.b64decode(cmd.addons["userDefinedXml"])
+            vm.domain_xml = base64.b64decode(cmd.addons["userDefinedXml"]).decode()
             vm.domain_xmlobject = xmlobject.loads(vm.domain_xml)
         else:
             vm.domain_xml = xml
@@ -7401,7 +7401,7 @@ class VmPlugin(kvmagent.KvmAgent):
             cmd.fileContent = conversion_template(cmd.fileContent, dict_param)
 
         try:
-            if cmd.fileContent != "":
+            if len(cmd.fileContent) > 0:
                 ret = qga.call_qga_command("guest-file-write", {"handle": fw, "buf-b64": cmd.fileContent})
                 fileSize = ret["count"]
                 rsp.fileSize = fileSize
@@ -10112,7 +10112,7 @@ host side snapshot files chian:
             rsp.error = "%s, %s" % (o, e)
             return
 
-        version = base64.b64decode(simplejson.loads(o)['return']['buf-b64']).strip()
+        version = base64.b64decode(simplejson.loads(o)['return']['buf-b64']).decode().strip()
         rsp.version = version
         rsp.status = VmPlugin.GUESTTOOLS_STATE_RUNNING
         _close_version_file()
