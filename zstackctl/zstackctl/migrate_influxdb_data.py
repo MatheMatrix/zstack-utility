@@ -813,18 +813,23 @@ def print_blue(strs):
 
 
 class AESCipher:
+    """
+    Usage:
+        c = AESCipher('password').encrypt('message')
+        m = AESCipher('password').decrypt(c)
+    """
 
     def __init__(self, key='ZStack open source'):
         self.key = md5(key.encode()).hexdigest()
-        self.cipher = AES.new(self.key, AES.MODE_ECB)
+        self.cipher = AES.new(self.key.encode(), AES.MODE_ECB)
         self.prefix = "crypt_key_for_v1::"
         self.BLOCK_SIZE = 16
 
     # PKCS#7
-    def _pad(self, data_to_pad, block_size):
+    def _pad(self, data_to_pad: str, block_size: int) -> bytes:
         padding_len = block_size - len(data_to_pad) % block_size
         padding = bchr(padding_len) * padding_len
-        return data_to_pad + padding
+        return data_to_pad.encode() + padding
 
     # PKCS#7
     def _unpad(self, padded_data, block_size):
@@ -838,11 +843,11 @@ class AESCipher:
             raise ValueError("PKCS#7 padding is incorrect.")
         return padded_data[:-padding_len]
 
-    def encrypt(self, raw):
+    def encrypt(self, raw:str) -> str:
         raw = self._pad(self.prefix + raw, self.BLOCK_SIZE)
-        return base64.b64encode(self.cipher.encrypt(raw))
+        return base64.b64encode(self.cipher.encrypt(raw)).decode()
 
-    def decrypt(self, enc):
+    def decrypt(self, enc:str) -> str:
         denc = base64.b64decode(enc)
         ret = self._unpad(self.cipher.decrypt(denc), self.BLOCK_SIZE).decode('utf8')
         return ret[len(self.prefix):] if ret.startswith(self.prefix) else enc
