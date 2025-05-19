@@ -696,12 +696,12 @@ def check_host_connection_with_key(ip, user="root", private_key="", remote_host_
         error("Connect to host: '%s' with private key: '%s' failed, please transfer your public key "
               "to remote host firstly then make sure the host address is valid" % (ip, private_key))
 
-def get_ip_by_interface(device_name):
+def get_ip_by_interface(device_name: str):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     return socket.inet_ntoa(fcntl.ioctl(
         s.fileno(),
         0x8915,
-        struct.pack('256s', device_name[:15])
+        struct.pack('256s', device_name[:15].encode())
     )[20:24])
 
 
@@ -4089,10 +4089,10 @@ class InstallHACmd(Command):
                             help="This mode will re-connect mysql faster")
 
 
-    def get_formatted_netmask(self, device_name):
+    def get_formatted_netmask(self, device_name: str):
         '''This function will return formatted netmask. eg. 172.20.12.16/24 will return 24'''
         netmask = socket.inet_ntoa(fcntl.ioctl(socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
-                                                    35099, struct.pack('256s', device_name))[20:24])
+                                                    35099, struct.pack('256s', device_name.encode()))[20:24])
         formatted_netmask = sum([bin(int(x)).count('1') for x in netmask.split('.')])
         return formatted_netmask
 
