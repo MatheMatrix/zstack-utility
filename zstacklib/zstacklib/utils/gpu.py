@@ -136,6 +136,8 @@ def parse_tianshu_gpu_output(output):
 def parse_enflame_gpu_output(output):
     """
     ...
+    old version driver:
+
     DEV ID 7
         Driver Info
             Ver                     : 1.2.4.12
@@ -189,8 +191,89 @@ def parse_enflame_gpu_output(output):
         VPU Info
             Encoder Usage           : 0 %
             Decoder Usage           : 0 %
-    ...
 
+    new version driver:
+        DEV ID 0
+        Driver Info
+            Ver                     : 1.4.3.4
+        Device Info
+            Dev Name                : S60
+            Dev UUID                : TPUH74190604
+            Dev SN                  : C0AA640520685
+            Dev PN                  : EFB-0088000-00
+            Dev MFD                 : 2024-10-6
+            Health                  : True
+        PCIe Info
+            Vendor ID               : 1e36
+            Device ID               : c035
+            Domain                  : 0000
+            Bus                     : 00
+            Dev                     : 0c
+            Func                    : 0
+            Link Info
+            Max Link Speed          : Gen5
+            Max Link Width          : X16
+            Cur Link Speed          : Gen5
+            Cur Link Width          : X16
+            Tx Throughput           : 0 MiB/s
+            Rx Throughput           : 0 MiB/s
+        Clock Info
+            Mem CLK                 : 7000 MHz
+        Power Info
+            Power Capa              : 300 W
+            Cur Power               : 104 W
+            Dpm Level               : Sleep
+        Device Mem Info
+            Total Size              : 42976 MiB
+            Reserved Size           : 1129 MiB
+            Used Size               : 0 MiB
+            Free Size               : 41846 MiB
+        Temperature Info
+            GCU Temp                : 45 ('C Celsius sign, utf-8 char, not log here)
+        Voltage Info
+            VDD GCU                 : 0.7 V
+            VDD SOC                 : 0.743 V
+            VDD MEMQC               : 1.347 V
+        Device Usage Info
+            GCU Usage               : 0.0 %
+        ECC Mode
+            Current                 : Enable
+            Pending                 : Enable
+        RMA Info
+            Flags                   : False
+            Total DBE               : 0
+                MC0 DBE             : 0
+                MC1 DBE             : 0
+                MC2 DBE             : 0
+                MC3 DBE             : 0
+                MC4 DBE             : 0
+                MC5 DBE             : 0
+                MC6 DBE             : 0
+                MC7 DBE             : 0
+                MC8 DBE             : 0
+                MC9 DBE             : 0
+                MC10 DBE            : 0
+                MC11 DBE            : 0
+        Power Cable
+            Status                  : Normal
+        VPU Info
+            Encoder Usage           : 0 %
+            Decoder Usage           : 0 %
+        Error Records
+            Total Error Count       : 0
+            Reset Count             : 0
+            Last Reset Date         : N/A
+        Error Details
+            User Triggered Reset    : 0
+            Internal Error          : 0
+            SIP Error               : 0
+            Bus Error               : 0
+            FW Error                : 0
+            DTE Error               : 0
+            DRAM HBM Error          : 0
+            PCIE Error              : 0
+            Unknown Error           : 0
+    ...
     """
     gpu_infos = []
 
@@ -216,9 +299,9 @@ def parse_enflame_gpu_output(output):
                 dev_id = value.zfill(2)
             elif key == "Func":
                 func = value
-            elif key == "Mem Size":
+            elif key == "Mem Size" or key == "Total Size":
                 gpuinfo["memory"] = value
-            elif key == "Mem Usage":
+            elif key == "Mem Usage" or key == "Used Size":
                 gpuinfo["memoryUsage"] = value
             elif key == "Cur Power":
                 gpuinfo["power"] = value
