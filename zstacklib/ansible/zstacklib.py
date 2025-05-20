@@ -2290,9 +2290,7 @@ class ZstackLib(object):
                 yum_install_package("libselinux-python", self.host_post_info)
                 # install epel-release
                 if self.distro in RPM_BASED_OS and self.zstack_releasever in centos:
-                    self.enable_epel_yum_repo()
-                    set_ini_file("/etc/yum.repos.d/epel.repo", 'epel',
-                                 "enabled", "1", self.host_post_info)
+                    self.copy_epel_yum_repo()
             else:
                 # user defined zstack_repo, will generate repo defined in
                 # zstack_repo
@@ -2532,7 +2530,7 @@ EOF
         copy_arg.dest = "/etc/yum.repos.d/"
         copy(copy_arg, self.host_post_info)
 
-    def enable_epel_yum_repo(self):
+    def copy_epel_yum_repo(self):
         epel_repo_exist = file_dir_exist(
             "path=/etc/yum.repos.d/epel.repo", self.host_post_info)
         if epel_repo_exist:
@@ -2541,9 +2539,6 @@ EOF
         # read eple release source from local
         repo_epel = "epel-release-source.repo"
         self.generate_yum_repo_config_from_zstack_lib(repo_epel)
-        # install epel-release
-        yum_enable_repo("epel-release", "*", "epel-release-source",
-                        self.host_post_info)
 
     def enable_debian_services(self, host_post_info, require_python_env, distro):
         # install dependency packages for Debian based OS
