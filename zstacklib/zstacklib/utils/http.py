@@ -388,7 +388,7 @@ def json_post(uri, body=None, headers={}, method='POST', fail_soon=False, print_
         if not linux.wait_callback_success(post, ignore_exception_in_callback=True):
             raise Exception('unable to post to %s, body: %s, see before error' % (uri, body))
 
-    return ret[0]
+    return ret[0].decode() if isinstance(ret[0], bytes) else ret[0]
 
 
 def json_dump_post(uri, body=None, headers=None, fail_soon=False, print_curl=False):
