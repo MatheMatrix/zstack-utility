@@ -1755,7 +1755,8 @@ if __name__ == "__main__":
         if self.IS_YUM:
             shell.run("yum --disablerepo=* --enablerepo=zstack-mn list >/dev/null 2>&1 || (rm -f /var/lib/rpm/_db.*; rpm --rebuilddb)")
             releasever = kvmagent.get_host_yum_release()
-            shell.run("yum remove -y qemu-kvm-tools-ev")
+            shell.run("yum remove -y qemu-kvm-tools-ev freeipmi-1.6.2-5.ky10.x86_64 --disablerepo=*")
+
             yum_cmd = "export YUM0={};yum --enablerepo=* clean all && yum --disablerepo=* --enablerepo={} install `cat /var/lib/zstack/dependencies` -y"\
                 .format(releasever, cmd.zstackRepo)
             if shell.run("export YUM0={};yum --disablerepo=* --enablerepo=zstack-mn repoinfo".format(releasever)) != 0:
