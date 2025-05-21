@@ -7176,6 +7176,7 @@ class VmPlugin(kvmagent.KvmAgent):
 
         vm = get_vm_by_uuid(cmd.vmUuid)
         vm.attach_nic(cmd)
+        self.setVfNicTrust(cmd.vmUuid, cmd.nic.mac)
 
         for iface in vm.domain_xmlobject.devices.get_child_node_as_list('interface'):
             if iface.mac.address_ != cmd.nic.mac:
@@ -7279,6 +7280,7 @@ class VmPlugin(kvmagent.KvmAgent):
             self._record_operation(cmd.vmInstanceUuid, self.VM_OP_START)
 
             self._start_vm(cmd)
+            self.setVfNicTrust(cmd.vmInstanceUuid)
             logger.debug('successfully started vm[uuid:%s, name:%s]' % (cmd.vmInstanceUuid, cmd.vmName))
         except kvmagent.KvmError as e:
             e_str = linux.get_exception_stacktrace()
@@ -11417,6 +11419,65 @@ host side snapshot files chian:
             rsp.error = str(err)
         finally:
             return jsonobject.dumps(rsp)
+
+    @bash.in_bash
+    def setVfNicTrust(self, vmUuid, nicMac=None):
+        """
+        # virsh domiflist a17c8c11682b4f1f8d441fe44bd1d5ec
+ Interface   Type      Source         Model    MAC
+------------------------------------------------------------------
+ vnic171.0   bridge    br_zsn1        virtio   fa:59:c9:34:cc:00
+ vnic171.1   bridge    br_zsn0_31     virtio   fa:9a:43:75:92:01
+ -           hostdev   -              -        fa:fa:de:4b:14:02
+ -           hostdev   -              -        fa:a8:c5:8b:02:03
+ vnic171.4   bridge    br_zsn0_1106   virtio   fa:24:3c:ec:c1:04
+ -           hostdev   -              -        fa:a2:a0:d3:61:05
+        """
+        out = bash.bash_o("virsh domiflist {vmUuid}".format(vmUuid=vmUuid))
+        lines = out.splitlines()
+        if len(lines) < 2:
+            return
+
+        vfMacs = []
+        lines = lines[2:]
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            items = line.split()
+            if len(items) < 2:
+                continue
+
+            if items[1] != "hostdev":
+                continue
+            vfMacs.append(items[4])
+
+        if len(vfMacs) == 0:
+            return
+
+        if nicMac is not None and nicMac not in vfMacs:
+            return
+
+        if nicMac is not None:
+            vfMacs = [nicMac]
+
+        nic_names = ip.get_host_physicl_nics()
+        for mac in vfMacs:
+            for nic in nic_names:
+                """
+                # ip link show enp23s0f0 | grep fa:fa:de:4b:14:02
+                vf 47     link/ether fa:fa:de:4b:14:02 brd ff:ff:ff:ff:ff:ff, vlan 2000, spoof checking off, link-state auto, trust on
+                """
+                r, o, e = bash.bash_roe("ip link show {nic} | grep {mac}".format(nic=nic, mac=mac))
+                if r != 0 or o == "":
+                    continue
+
+                o = o.strip()
+                items = o.split()
+                bash.bash_o("ip link set {nic} vf {vf} spoofchk on; ip link set {nic} vf {vf} spoofchk off; ".format(nic=nic, vf=items[1]) +
+                "ip link set {nic} vf {vf} trust off; ip link set {nic} vf {vf} trust on".format(nic=nic, vf=items[1]))
+                break
 
     def start(self):
         http_server = kvmagent.get_http_server()
