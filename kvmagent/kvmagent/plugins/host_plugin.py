@@ -42,6 +42,7 @@ from zstacklib.utils.report import Report
 from zstacklib.utils import ovn
 import zstacklib.utils.ip as ip
 import zstacklib.utils.plugin as plugin
+from zstacklib.utils.sizeunit import get_size
 
 host_arch = platform.machine()
 IS_AARCH64 = host_arch == 'aarch64'
@@ -80,6 +81,7 @@ class VendorEnum:
     HAIGUANG = "Haiguang"
     HUAWEI = "Huawei"
     TIANSHU = "TianShu"
+    VASTAI = "Vastai"
 
 class ConnectResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -2506,6 +2508,8 @@ done
             return VendorEnum.HUAWEI
         elif '1e3e' in name:
             return VendorEnum.TIANSHU
+        elif 'Vastai' in name:
+            return VendorEnum.VASTAI
         else:
             return name.replace('Co., Ltd ', '')
 
@@ -2564,7 +2568,7 @@ done
             to.name = "%s_%s" % (subvendor_name if subvendor_name else vendor_name, device_name)
 
             def _set_pci_to_type():
-                gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel"]
+                gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel", "Vastai"]
                 custom_gpu_vendors = "Display controller"
 
                 if any(vendor in to.description for vendor in gpu_vendors) \
@@ -2610,7 +2614,7 @@ done
                                                  and pci_device_mapper.get('PCI bridge') in to.type):
                     to.type = "PCI_Bridge"
                 elif ("Processing accelerators" in to.type or (
-                        pci_device_mapper.get('Processing accelerators') is not None)) and 'Device' in to.device:
+                        pci_device_mapper.get('Processing accelerators') is not None)) and gpu.is_valid_processing_accelerator(to.device):
                     to.type = "GPU_Processing_Accelerators"
                 elif (any(vendor in to.description for vendor in gpu_vendors) or '1d94' in to.vendorId ) \
                         and ('Co-processor' in to.type or (pci_device_mapper.get('Co-processor') is not None
@@ -2627,6 +2631,7 @@ done
             if not self._get_vfio_mdev_info(to) and not self._get_sriov_info(to):
                 to.virtStatus = "UNVIRTUALIZABLE"
             if to.vendorId != '' and to.deviceId != '':
+                logger.debug("get formated pci device info: %s", to)
                 rsp.pciDevicesInfo.append(to)
 
         pci.calculate_max_addressable_memory(rsp.pciDevicesInfo)
@@ -2638,7 +2643,8 @@ done
                 VendorEnum.AMD: self._collect_amd_gpu_info,
                 VendorEnum.HAIGUANG: self._collect_haiguang_gpu_info,
                 VendorEnum.HUAWEI: self._collect_huawei_gpu_info,
-                VendorEnum.TIANSHU: self._collect_tianshu_gpu_info
+                VendorEnum.TIANSHU: self._collect_tianshu_gpu_info,
+                VendorEnum.VASTAI: self._collect_vastai_gpu_info,
             }
             handler = collect_vendor_nvidia_gpu_infos.get(vendor_name)
             if handler:
@@ -2671,6 +2677,46 @@ done
         if product_name:
             to.device = product_name.split(" ")[1]
             to.name = product_name
+
+    @in_bash
+    def _collect_vastai_gpu_info(self, to):
+        r, o, e = bash_roe("which vasmi")
+        if r != 0:
+            logger.debug("no vasmi, detail: %s " % o)
+            return
+        output = self._collect_vastai_gpu_basic_info(gpu.get_vastai_type())
+        if output is not None and len(output) > 0:
+            self._update_to_addon_info_from_gpu_infos(output, to)
+        else:
+            logger.error("vasmi query gpu is error")
+            return
+
+    @in_bash
+    def _collect_vastai_gpu_basic_info(self, gpu_type):
+        gpuinfos = []
+        data = shell.run_with_json_result("vasmi getmem --display-format=json")
+        if data is None :
+            return gpuinfos
+        for elem in data["elem"]:
+            gpuinfo = {}
+            gpuinfo["pciAddress"] = elem.get("pci_bus", "N/A")
+            gpuinfo["serialNumber"] = elem.get("sn", "N/A")
+            key = "Physical" if gpu_type == "AI" else "Physical memory"
+            row_memory = elem.get("vals", {}).get(key, {}).get("value", "N/A")
+            gpuinfo["memory"] = row_memory if row_memory == "N/A" else str(get_size(row_memory)) + "B"
+            gpuinfos.append(gpuinfo)
+
+        summary_data = shell.run_with_json_result("vasmi summary --display-format=json")
+        if summary_data is None:
+            return gpuinfos
+        for elem in summary_data["elem"]:
+            dev_bus_id = elem.get("vals", {}).get("devBusId", {}).get("value", "N/A")
+            max_power = elem.get("vals", {}).get("P_Cap", {}).get("value", "N/A")
+            for gpuinfo in gpuinfos:
+                if gpuinfo["pciAddress"] == dev_bus_id:
+                    gpuinfo["power"] = max_power
+                    continue #two same records using the last one
+        return gpuinfos
 
     @in_bash
     def _collect_huawei_gpu_info(self, to):
@@ -2861,6 +2907,9 @@ done
 
     @in_bash
     def _generate_sriov_gpu_devices(self, cmd, rsp):
+        if cmd.vendor == "Vastai":
+            self._configure_sriov_vfs(cmd, rsp)
+            return
         # make install mxgpu driver if need to
         pci_device_mapper = {}
         mxgpu_driver_tar = "/var/lib/zstack/mxgpu_driver.tar.gz"
@@ -2914,16 +2963,22 @@ done
 
     @in_bash
     def _generate_sriov_net_devices(self, cmd, rsp):
+        self._configure_sriov_vfs(cmd, rsp)
+
+    @in_bash
+    def _configure_sriov_vfs(self, cmd, rsp):
         numvfs = os.path.join('/sys/bus/pci/devices/', cmd.pciDeviceAddress, 'sriov_numvfs')
         if not os.path.exists(numvfs):
             rsp.success = False
-            rsp.error = 'cannot find sriov_numvfs file for pci device[addr:%s, type:%s]' % (cmd.pciDeviceAddress, cmd.pciDeviceType)
+            rsp.error = 'cannot find sriov_numvfs file for gpu device[addr:%s, type:%s]' % (
+            cmd.pciDeviceAddress, cmd.pciDeviceType)
             return
 
         r, o, e = bash_roe("echo %s > %s" % (cmd.virtPartNum, numvfs))
         if r != 0:
             rsp.success = False
-            rsp.error = 'failed to generate virtual functions on pci device[addr:%s, type:%s]' % (cmd.pciDeviceAddress, cmd.pciDeviceType)
+            rsp.error = 'failed to generate virtual functions on gpu device[addr:%s, type:%s]' % (
+            cmd.pciDeviceAddress, cmd.pciDeviceType)
             return
 
 
@@ -2962,6 +3017,9 @@ done
 
     @in_bash
     def _ungenerate_sriov_gpu_devices(self, cmd, rsp):
+        if cmd.vendor == "Vastai":
+            self._reset_sriov_vfs(cmd, rsp)
+            return
         # remote gim.ko
         r, o, e = bash_roe("modprobe -r gim")
         if r != 0:
@@ -2972,10 +3030,15 @@ done
 
     @in_bash
     def _ungenerate_sriov_net_devices(self, cmd, rsp):
+        self._reset_sriov_vfs(cmd, rsp)
+
+    @in_bash
+    def _reset_sriov_vfs(self, cmd, rsp):
         numvfs = os.path.join('/sys/bus/pci/devices/', cmd.pciDeviceAddress, 'sriov_numvfs')
         if not os.path.exists(numvfs):
             rsp.success = False
-            rsp.error = 'cannot find sriov_numvfs file for pci device[addr:%s, type:%s]' % (cmd.pciDeviceAddress, cmd.pciDeviceType)
+            rsp.error = 'cannot find sriov_numvfs file for pci device[addr:%s, type:%s]' % (
+            cmd.pciDeviceAddress, cmd.pciDeviceType)
             return
 
         def _check_allocated_virtual_functions():
@@ -3008,7 +3071,8 @@ done
         r, o, e = bash_roe("lspci >/dev/null && echo 0 > %s" % numvfs)
         if r != 0:
             rsp.success = False
-            rsp.error = 'failed to ungenerate virtual functions on pci device[addr:%s, type:%s]' % (cmd.pciDeviceAddress, cmd.pciDeviceType)
+            rsp.error = 'failed to ungenerate virtual functions on pci device[addr:%s, type:%s]' % (
+            cmd.pciDeviceAddress, cmd.pciDeviceType)
             return
 
 
