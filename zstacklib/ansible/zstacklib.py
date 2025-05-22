@@ -1575,7 +1575,7 @@ def get_remote_host_info_obj(host_post_info):
     runner_args = ZstackRunnerArg()
     runner_args.host_post_info = host_post_info
     runner_args.module_name = 'setup'
-    runner_args.module_args = ('gather_subset=machine,processor '
+    runner_args.module_args = ('gather_subset=machine '
                                'filter=ansible_dist*,ansible_machine,'
                                'ansible_processor,ansible_kernel')
     zstack_runner = ZstackRunner(runner_args)
@@ -1591,14 +1591,19 @@ def get_remote_host_info_obj(host_post_info):
 
     ret = result['contacted'][host]
     if 'ansible_facts' in ret:
+        # trying get cpu info
+        command = 'cat /proc/cpuinfo | grep -i -E "model name|vendor"'
+        (status, cpu_info_output) = run_remote_command(command,
+                                                       host_post_info,
+                                                       return_status=True,
+                                                       return_output=True)
         facts = ret['ansible_facts']
         host_info.distro = facts['ansible_distribution'].split()[0].lower()
         host_info.major_version_str = \
             facts['ansible_distribution_major_version']
         host_info.distro_release = facts['ansible_distribution_release']
         host_info.distro_version = facts['ansible_distribution_version']
-        host_info.cpu_info = ' '.join(str(p) for p in
-                                      facts['ansible_processor']).lower()
+        host_info.cpu_info = cpu_info_output.lower()
         host_info.host_arch = facts['ansible_machine']
         host_info.kernel_version = facts['ansible_kernel']
 
