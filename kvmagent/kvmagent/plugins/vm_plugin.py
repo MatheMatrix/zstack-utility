@@ -475,6 +475,8 @@ class DeviceAddress():
         self.target = None
         self.unit = None
 
+        self.order = None
+
 class AttachNicResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(AttachNicResponse, self).__init__()
@@ -4829,6 +4831,7 @@ class Vm(object):
             raise kvmagent.KvmError("Image architecture[{}] not matched host architecture[{}].".format(cmd.architecture, HOST_ARCH))
         default_bus_type = ('ide', 'sata', 'scsi')[max(machine_type == 'q35', (HOST_ARCH in ['aarch64', 'mips64el', 'loongarch64']) * 2)]
         elements = {}
+        disk_order = []
 
         def make_root():
             root = etree.Element('domain')
@@ -5426,6 +5429,7 @@ class Vm(object):
                 VolumeIDEConfig('1', '1'),
                 VolumeIDEConfig('1', '0')
             ]
+            disk_order = [""] * len(volumes)
 
             def quorumbased_volume(_dev_letter, _v):
                 def make_backingstore(volume_path):
@@ -5768,6 +5772,7 @@ class Vm(object):
                     return vol
 
                 Vm.set_device_address(vol, v)
+                disk_order[v.deviceAddress.order] = dev_letter
                 if v.bootOrder is not None and v.bootOrder > 0 and v.deviceId == 0:
                     e(vol, 'boot', None, {'order': str(v.bootOrder)})
                 Vm.set_volume_qos(cmd.addons, v.volumeUuid, vol)
@@ -5790,8 +5795,14 @@ class Vm(object):
             # }
             rvols = {}
             for v in volumes:
-                dev_letter_index = v.deviceId if not need_reverse(v) else scsi_device_ids.pop()
-                dev_letter = DEVICE_LETTERS[dev_letter_index]
+                dev_letter=None
+                if v.deviceTarget:
+                    dev_letter = v.deviceTarget.dev
+                    disk_order[v.deviceTarget.order] = v.deviceTarget.dev
+
+                if not dev_letter:
+                    dev_letter_index = v.deviceId if not need_reverse(v) else scsi_device_ids.pop()
+                    dev_letter = DEVICE_LETTERS[dev_letter_index]
 
                 r = get_recover_path(v)
                 vol = make_volume(dev_letter, v, r)
@@ -6278,6 +6289,26 @@ class Vm(object):
                 e(qcmd, "qemu:arg", attrib={"value": "-cpu"})
                 e(qcmd, "qemu:arg", attrib={"value": "{},vendor={}".format(cpuFlags, cmd.vmCpuVendorId)})
 
+        def reorder_disks():
+            if not cmd.memorySnapshotPath:
+                return
+
+            devices = elements['devices']
+            dev_map = {}
+            for children in devices.getchildren():
+                if children.tag == "disk":
+                    dev = xmlobject.loads(etree.tostring(children)).get_child_node('target').dev_
+                    dev_map[dev] = children
+
+            for dev in disk_order:
+                disk_element = dev_map.get(dev)
+                devices.remove(disk_element)
+                devices.append(disk_element)
+
+            logger.debug(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+            logger.debug(etree.tostring(elements['devices']))
+            logger.debug(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+
         make_root()
         make_meta()
         make_cpu()
@@ -6305,6 +6336,7 @@ class Vm(object):
         if not cmd.isApplianceVm:
             make_cdrom()
             make_usb_redirect()
+            reorder_disks()
 
         if cmd.additionalQmp:
             make_qemu_commandline()
@@ -7083,8 +7115,10 @@ class VmPlugin(kvmagent.KvmAgent):
             vmNicInfo.macAddress = iface.mac.address_
             nicInfos.append(vmNicInfo)
 
+        order = 0
         for disk in vm.domain_xmlobject.devices.get_child_node_as_list('disk'):
-            virtualDeviceInfoList.append(self.get_device_address_info(disk))
+            virtualDeviceInfoList.append(self.get_device_address_info(disk, order))
+            order += 1
 
         memBalloonPci = vm.domain_xmlobject.devices.get_child_node('memballoon')
         if memBalloonPci is not None:
@@ -7706,7 +7740,7 @@ class VmPlugin(kvmagent.KvmAgent):
 
         return jsonobject.dumps(rsp)
 
-    def get_device_address_info(self, device, resource_uuid=None):
+    def get_device_address_info(self, device, order, resource_uuid=None):
         virtualDeviceInfo = VirtualDeviceInfo()
         virtualDeviceInfo.deviceAddress.bus = device.address.bus_ if device.address.bus__ else None
         virtualDeviceInfo.deviceAddress.domain = device.address.domain_ if device.address.domain__ else None
@@ -7716,6 +7750,7 @@ class VmPlugin(kvmagent.KvmAgent):
         virtualDeviceInfo.deviceAddress.function = device.address.function_ if device.address.function__ else None
         virtualDeviceInfo.deviceAddress.unit = device.address.unit_ if device.address.unit__ else None
         virtualDeviceInfo.deviceAddress.type = device.address.type_ if device.address.type__ else None
+        virtualDeviceInfo.deviceAddress.order = order
 
         if device.has_element('serial'):
             virtualDeviceInfo.resourceUuid = device.serial.text_
@@ -7753,7 +7788,14 @@ class VmPlugin(kvmagent.KvmAgent):
             vm.refresh()
 
             disk, _ = vm._get_target_disk(volume)
-            rsp.virtualDeviceInfoList.append(self.get_device_address_info(disk, volume.volumeUuid))
+            _, rsp.virtualDeviceInfoList, _ = self.get_vm_device_info(cmd.vmInstanceUuid)
+
+            order = 0
+            for disk in vm.domain_xmlobject.devices.get_child_node_as_list('disk'):
+                rsp.virtualDeviceInfoList.append(self.get_device_address_info(disk, order,volume.))
+                order += 1
+
+
         except kvmagent.KvmError as e:
             logger.warn(linux.get_exception_stacktrace())
             rsp.error = str(e)
