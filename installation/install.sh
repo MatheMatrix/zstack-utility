@@ -1406,6 +1406,7 @@ upgrade_zstack(){
     show_spinner is_enable_chronyd
     show_spinner uz_stop_zstack
     show_spinner prepare_zops_user_and_db
+    show_spinner prepare_keycloak_user_and_db
     show_spinner uz_upgrade_zstack
     show_spinner upgrade_tomcat_security
     if [[ $REDHAT_OS =~ $OS ]]; then
@@ -3688,6 +3689,24 @@ check_sync_local_repos() {
   fi
 }
 
+prepare_keycloak_user_and_db() {
+    echo_subtitle "Prepare keycloak db and user"
+    get_mysql_conf_file
+    db='keycloak'
+    user='keycloak'
+    keycloak_encrypt_password="password"
+
+    [ -f $MYSQL_DATA_DIR/$db/db.opt ] && return 0
+    mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e 'exit' >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+      mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e "CREATE USER IF NOT EXISTS 'keycloak'@'%' IDENTIFIED BY '$keycloak_encrypt_password';
+        CREATE DATABASE IF NOT EXISTS $db;
+        GRANT ALL PRIVILEGES ON $db.* TO 'keycloak'@'%';
+        FLUSH PRIVILEGES;"
+      return 0
+    fi
+    fail2 "\nCannot login mysql! It seems that the default root user password has been changed, If you have mysql root password, please add option '-P MYSQL_ROOT_PASSWORD'.\n"
+}
 
 prepare_zops_user_and_db() {
     echo_subtitle "Prepare zops db and user"
