@@ -439,6 +439,7 @@ class StartVmResponse(kvmagent.AgentResponse):
         self.virtualDeviceInfoList = []  # type:list[VirtualDeviceInfo]
         self.memBalloonInfo = None  # type:VirtualDeviceInfo
         self.virtualizerInfo = VirtualizerInfoTO()  # type:VirtualizerInfoTO
+        self.vmXml = None
 
 class SyncVmDeviceInfoCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -452,6 +453,7 @@ class SyncVmDeviceInfoResponse(kvmagent.AgentResponse):
         self.virtualDeviceInfoList = []  # type:list[VirtualDeviceInfo]
         self.memBalloonInfo = None  # type:VirtualDeviceInfo
         self.virtualizerInfo = VirtualizerInfoTO()  # type:VirtualizerInfoTO
+        self.vmXml = None
 
 
 class VirtualDeviceInfo():
@@ -6356,6 +6358,27 @@ class Vm(object):
                 e(qcmd, "qemu:arg", attrib={"value": "-cpu"})
                 e(qcmd, "qemu:arg", attrib={"value": "{},vendor={}".format(cpuFlags, cmd.vmCpuVendorId)})
 
+        def reorder_disks():
+            if cmd.memorySnapshotPath is not None and cmd.vmXml is not None:
+                devices = elements['devices']
+                disk_by_dev = {}
+                for children in devices.getchildren() and children.tag == "disk":
+                    dev = xmlobject.loads(etree.tostring(children)).get_child_node('target').dev_
+                    disk_by_dev[dev] = children
+
+                disks_in_xml = xmlobject.loads(cmd.vmXml).devices.disk
+                if len(disks_in_xml) != len(disk_by_dev):
+                    raise kvmagent.KvmError('disk count not match')
+
+                disk_in_xml = []
+                for disk in disks_in_xml:
+                    dev = disk.get_child_node('target').dev_
+                    disk_in_xml.append(disk_by_dev.get(dev))
+                    devices.remove(disk_by_dev.get(dev))
+
+                for disk in disk_in_xml:
+                    devices.append(disk)
+
         make_root()
         make_meta()
         make_cpu()
@@ -6383,6 +6406,7 @@ class Vm(object):
         if not cmd.isApplianceVm:
             make_cdrom()
             make_usb_redirect()
+        reorder_disks()
 
         if cmd.additionalQmp:
             make_qemu_commandline()
@@ -7142,7 +7166,7 @@ class VmPlugin(kvmagent.KvmAgent):
                 logger.warn("enable coredump for VM: %s: %s" % (cmd.vmInstanceUuid, str(e)))
 
         if rsp.success == True:
-            rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo = self.get_vm_device_info(cmd.vmInstanceUuid)
+            rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo, rsp.vmXml = self.get_vm_device_info(cmd.vmInstanceUuid)
             self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
 
         return jsonobject.dumps(rsp)
@@ -7169,13 +7193,13 @@ class VmPlugin(kvmagent.KvmAgent):
             memBalloonInfo = self.get_device_address_info(memBalloonPci)
             return nicInfos, virtualDeviceInfoList, memBalloonInfo
 
-        return nicInfos, virtualDeviceInfoList, None
+        return nicInfos, virtualDeviceInfoList, None, vm.domain_xml
 
     @kvmagent.replyerror
     def sync_vm_deviceinfo(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = SyncVmDeviceInfoResponse()
-        rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo = self.get_vm_device_info(cmd.vmInstanceUuid)
+        rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo, rsp.vmXml = self.get_vm_device_info(cmd.vmInstanceUuid)
         self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
         return jsonobject.dumps(rsp)
 
