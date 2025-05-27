@@ -12,6 +12,7 @@ from zstacklib.utils import qemu_img
 from zstacklib.utils import ceph
 from zstacklib.utils import sanlock
 from zstacklib.utils import xmlobject
+from zstacklib.utils import lock
 import os.path
 import time
 import traceback
@@ -28,6 +29,7 @@ import inspect
 import random
 from zstacklib.utils import iproute
 import zstacklib.utils.ip as ipUtils
+import psutil
 
 logger = log.get_logger(__name__)
 
@@ -1543,13 +1545,42 @@ class HaPlugin(kvmagent.KvmAgent):
             self.sblk_health_checker.inc_fencer_fire_cnt(vg)
 
             cmd = self.sblk_health_checker.get_vg_fencer_cmd(vg)
+            invalid_pv_uuids = []
+            vms_to_kill = []
+            pvs_hung = [True]
+
+            def _get_invalid_pv_uuids():
+                with lock.NamedLock("get-invalid-pv-%s" % vg):
+                    pv_uuids, _ = lvm.get_invalid_pv_uuids(vg, cmd.checkIo)
+                    invalid_pv_uuids.extend(pv_uuids)
+                    pvs_hung[0] = False
 
             # we will check one io to determine volumes on pv should be kill
-            invalid_pv_uuids, _ = lvm.get_invalid_pv_uuids(vg, cmd.checkIo)
+            with lock.NonBlockNamedLock("get-invalid-pv-%s" % vg) as lck:
+                if not lck.acquired:
+                    logger.debug("fencer vg %s is in progress, skip this." % vg)
+                    return False
+                # execute when there is no pvs command hung
+                t = thread.ThreadFacade.run_in_thread(_get_invalid_pv_uuids)
+
+            t.join(timeout=60)
             logger.debug("got invalid pv uuids: %s" % invalid_pv_uuids)
-            vms = lvm.get_running_vm_root_volume_on_pv(vg, invalid_pv_uuids, True)
+            if t.is_alive() and pvs_hung[0] is True:
+                used_physical_memory = float(psutil.Process().memory_info().rss)
+                if used_physical_memory <= 2*1024**3:
+                    logger.debug("storage maybe hung because pvs command takes more than 60 secs to execute and "
+                                 "the timeout we set is 10 seconds...")
+                    vms_to_kill = lvm.get_running_vm_root_volume_io_hung(vg)
+                else:
+                    logger.debug("there may be a memory leak here, skip io hung's detection, used_physical_memory %s" % used_physical_memory)
+
+            # 1.pvs is executing normally without hung
+            # 2.pvs hung but hung pv does not belong to the current vg
+            # 3.can not get running vm on hung pv
+            if not vms_to_kill:
+                vms_to_kill = lvm.get_running_vm_root_volume_on_pv(vg, invalid_pv_uuids, True)
             killed_vm_uuids = []
-            for vm in vms:
+            for vm in vms_to_kill:
                 try:
                     if not_exec_kill_vm(cmd.strategy, vm.uuid, host_storage_name):
                         continue
