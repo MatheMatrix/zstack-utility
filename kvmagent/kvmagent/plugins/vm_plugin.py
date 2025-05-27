@@ -3529,6 +3529,7 @@ class Vm(object):
                 raise kvmagent.KvmError("volume %s is not live or full snapshot specified, "
                                         "can not proceed")
 
+            VmPlugin.active_volume_if_need(vs_struct.installPath)
             if vs_struct.memory:
                 memory_snapshot_required = True
                 snapshot_dir = os.path.dirname(vs_struct.installPath)
@@ -3536,7 +3537,6 @@ class Vm(object):
 
                 memory_snapshot_path = None
                 if vs_struct.installPath.startswith("/dev/"):
-                    lvm.active_lv(vs_struct.installPath)
                     shell.call("mkfs.xfs -f %s" % vs_struct.installPath)
                     mount_path = vs_struct.installPath.replace("/dev/", "/tmp/")
                     if not os.path.exists(mount_path):
@@ -3757,6 +3757,7 @@ class Vm(object):
 
         def take_full_snapshot():
             self.block_stream_disk(task_spec, volume)
+            VmPlugin.active_volume_if_need(install_path)
             return take_delta_snapshot()
 
         if first_snapshot:
@@ -8438,6 +8439,16 @@ host side snapshot files chian:
 
         return jsonobject.dumps(rsp)
 
+    @staticmethod
+    def active_volume_if_need(volume_path):
+        if volume_path.startswith("/dev/") and not os.path.exists(volume_path):
+            lvm.active_lv(volume_path)
+
+    @staticmethod
+    def deactive_volume_if_need(volume_path, raise_exception=True):
+        if volume_path.startswith("/dev/") and os.path.exists(volume_path):
+            lvm.deactive_lv(volume_path, raise_exception)
+
     @kvmagent.replyerror
     def take_volume_snapshot(self, req):
         """ Take snapshot for a volume
@@ -8470,6 +8481,7 @@ host side snapshot files chian:
             linux.create_template(previous_install_path, install_path)
             new_volume_path = cmd.newVolumeInstallPath if cmd.newVolumeInstallPath is not None else os.path.join(os.path.dirname(install_path), '{0}.qcow2'.format(uuidhelper.uuid()))
             makedir_if_need(new_volume_path)
+            self.active_volume_if_need(new_volume_path)
             linux.qcow2_clone_with_cmd(install_path, new_volume_path, cmd)
             return install_path, new_volume_path
 
@@ -8779,7 +8791,8 @@ host side snapshot files chian:
             for volumeInfo in cmd.volumeInfos:
                 format, install_path = volumeInfo.volume.format, volumeInfo.volume.installPath
                 port, locked = linux.find_free_port_with_locking(start_port, end_port)
-                real_path = qemu_nbd.get_volume_actual_install_path(install_path)
+                real_path = self.get_cbt_volume_actual_install_path(install_path)
+                self.active_volume_if_need(real_path)
                 _export_nbd(port, format, real_path, volumeInfo.volume.volumeUuid)
                 volumeInfo.scratchNodeName = volumeInfo.volume.volumeUuid
                 volumeInfo.nbdPort = port
@@ -8802,11 +8815,19 @@ host side snapshot files chian:
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = kvmagent.AgentResponse()
         for volume in cmd.volumes:
-            real_path = qemu_nbd.get_volume_actual_install_path(volume.installPath)
+            real_path = self.get_cbt_volume_actual_install_path(volume.installPath)
             qemu_nbd.kill_nbd_process_by_flag(real_path)
+            self.deactive_volume_if_need(real_path, False)
 
         rsp.success = True
         return jsonobject.dumps(rsp)
+
+    def get_cbt_volume_actual_install_path(self, path):
+        if path.startswith('sharedblock'):
+            return path.replace("sharedblock:/", "/dev")
+        elif path.startswith('ceph'):
+            return path.replace("ceph://", "rbd:")
+        return path
 
     @kvmagent.replyerror
     def list_exported_volumes(self, req):
@@ -8848,9 +8869,12 @@ host side snapshot files chian:
             if volumes is not None:
                 isc.stop_backup_jobs(cmd.vmUuid)
 
+            bitmapTimestamp = ''
+            if cmd.bitmapTimestamp:
+                bitmapTimestamp = cmd.bitmapTimestamp
             if cmd.portRange:
                 cmd.portRange = cmd.portRange.replace(":", "-")
-            infos = isc.cbt_backup_volume(vm, cmd.volumeInfos, cmd.bitmapTimestamp, cmd.portRange)
+            infos = isc.cbt_backup_volume(vm, cmd.volumeInfos, bitmapTimestamp, cmd.portRange)
             execute_qmp_command(cmd.vmUuid, '{"execute": "migrate-set-capabilities","arguments":'
                                             '{"capabilities":[ {"capability": "dirty-bitmaps", "state":true}]}}')
             logger.info('finished create cbt backup on vm[%s]' % cmd.vmUuid)
@@ -8874,7 +8898,7 @@ host side snapshot files chian:
 
         try:
             isc = ImageStoreClient()
-            isc.stop_vm_cbt_backup_jobs(cmd.vmUuid)
+            isc.stop_vm_cbt_backup_jobs(cmd.vmUuid, cmd.records)
         except Exception as e:
             content = traceback.format_exc()
             logger.warn("stop vm cbt task failed: " + str(e) + '\n' + content)
