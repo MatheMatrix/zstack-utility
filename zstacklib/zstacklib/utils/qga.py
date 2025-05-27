@@ -48,15 +48,21 @@ qga_channel_state_disconnected = 'disconnected'
 encodings = ['utf-8', 'GB2312', 'ISO-8859-1']
 
 
-def decode_with_fallback(encoded_bytes):
+def decode_with_fallback(encoded_bytes) -> str:
     if not isinstance(encoded_bytes, bytes):
         return encoded_bytes
+
+    errs = []
     for encoding in encodings:
         try:
-            return encoded_bytes.decode(encoding).encode('utf-8')
-        except UnicodeDecodeError:
+            return encoded_bytes.decode(encoding)
+        except UnicodeDecodeError as e:
+            errs.append((encoding, str(e)))
             continue
-    raise UnicodeDecodeError("Unable to decode bytes using provided encodings")
+
+    error_details = "\n".join([f"{enc}: {err}" for enc, err in errs])
+    raise Exception(
+        f"Unable to decode bytes using provided encodings. Attempted encodings and errors:\n{error_details}")
 
 def merge_cmd(cmd_str, args):
     for sub_key in args:
