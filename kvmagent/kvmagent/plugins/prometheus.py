@@ -1559,16 +1559,6 @@ def collect_tianshu_gpu_status():
 
 
 def collect_vastai_ai_gpu_metric_info():
-    def _run_with_realtime_output(command):
-        """Run a command and yield its output line by line."""
-        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        while True:
-            output = process.stdout.readline()
-            if output == '' and process.poll() is not None:
-                break
-            if output:
-                yield output.strip()
-
     gpuinfos = []
     data = shell.run_with_json_result("vasmi bw pcie -d all --display-format=json")
     if data is None:
@@ -1583,13 +1573,14 @@ def collect_vastai_ai_gpu_metric_info():
         gpuinfos.append(gpuinfo)
 
     for gpuinfo in gpuinfos:
-        cmd = "vasmi dmon -d %s -i 0" % gpuinfo["devId"]
-        for output_line in _run_with_realtime_output(cmd):
-            if isinstance(output_line, bytes):
-                output_line = output_line.decode('ascii', 'ignore')
-            if "Device Monitor of AIC" in output_line or output_line.startswith("----"):
+        cmd = "vasmi dmon -d %s -i 0 --loop 1" % gpuinfo["devId"]
+        r, gpu_info_out = bash_ro(cmd)
+        if r != 0:
+            continue
+        for info in gpu_info_out.splitlines():
+            if "Device Monitor of AIC" in info or info.startswith("----") or info.startswith("AIC"):
                 continue
-            gpu_info = parse_aic_output(output_line)
+            gpu_info = parse_aic_output(info)
             if gpu_info:
                 gpuinfo["powerDraw"] = gpu_info.get("power")
                 gpuinfo["temperature"] = gpu_info.get("temperature")
