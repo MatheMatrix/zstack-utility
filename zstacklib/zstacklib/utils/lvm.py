@@ -9,6 +9,8 @@ import weakref
 import re
 import warnings
 import datetime
+from threading import Thread
+
 import xml.etree.ElementTree as etree
 
 import simplejson
@@ -25,7 +27,7 @@ from zstacklib.utils import remoteStorage
 from cachetools import TTLCache
 from distutils.version import LooseVersion
 
-from zstacklib.utils.linux import get_fs_type
+from zstacklib.utils.linux import get_fs_type, ignoreerror
 
 logger = log.get_logger(__name__)
 LV_RESERVED_SIZE = 1024*1024*4
@@ -2471,6 +2473,111 @@ def get_running_vm_root_volume_on_pv(vgUuid, pvUuids, checkIo=True):
             vms.append(vm)
 
     return vms
+
+def get_pvs_for_lv(lv_path):
+    lv_basename = os.path.basename(os.path.realpath(lv_path))
+    slaves_path = "/sys/class/block/{}/slaves".format(lv_basename)
+
+    if not os.path.exists(slaves_path):
+        raise Exception("path %s not exists" % slaves_path)
+
+    pv_list = []
+    for slave in os.listdir(slaves_path):
+        pv_dev = os.path.join("/dev", slave)
+        pv_list.append(pv_dev)
+
+    return pv_list
+
+hung_pvs_lock = threading.RLock()
+
+@bash.in_bash
+def check_pvs_io_hung(pvs, timeout=120):
+    pvs_to_check = set(pvs)
+    hung_pvs = set(pvs)
+    def direct_read(pv):
+        bash.bash_r("timeout -s SIGKILL %s dd if=%s of=/dev/null bs=1M count=1 iflag=direct" % (timeout, pv))
+        with hung_pvs_lock:
+            hung_pvs.discard(pv)
+
+    def wait_all_read_finish(_):
+        with hung_pvs_lock:
+            return len(hung_pvs) == 0
+
+    for pv in pvs_to_check:
+        thread.ThreadFacade.run_in_thread(direct_read, args=(pv, ))
+    linux.wait_callback_success(wait_all_read_finish, timeout=timeout)
+    return hung_pvs
+
+def get_running_vm_root_volume_on_vg(vgUuid):
+    # type: (str) -> list[VmStruct]
+    vms = []
+    for file_name in linux.listdir(LIVE_LIBVIRT_XML_DIR):
+        xs = file_name.split(".")
+        if len(xs) != 2 or xs[1] != "xml":
+            continue
+
+        xml = linux.read_file(os.path.join(LIVE_LIBVIRT_XML_DIR, file_name))
+        if not '/dev/' + vgUuid in xml:
+            continue
+
+        vm = VmStruct()
+        vm.uuid = xs[0]
+        vm.pid = linux.get_vm_pid(vm.uuid)
+        vm.load_from_xml(xml)
+        if not vm.root_volume:
+            logger.warn("found strange vm[pid: %s, uuid: %s], can not find boot volume" % (vm.pid, vm.uuid))
+            continue
+
+        if vm.root_volume.startswith("/dev/" + vgUuid):
+            vms.append(vm)
+    return vms
+
+@ignoreerror
+def get_running_vm_root_volume_io_hung(vgUuid):
+    # type: (str) -> list[VmStruct]
+    vms = {}
+    lv_pv_dict = {}
+    for file_name in linux.listdir(LIVE_LIBVIRT_XML_DIR):
+        xs = file_name.split(".")
+        if len(xs) != 2 or xs[1] != "xml":
+            continue
+
+        xml = linux.read_file(os.path.join(LIVE_LIBVIRT_XML_DIR, file_name))
+        if not '/dev/' + vgUuid in xml:
+            continue
+
+        vm = VmStruct()
+        vm.uuid = xs[0]
+        vm.pid = linux.get_vm_pid(vm.uuid)
+        vm.load_from_xml(xml)
+        if not vm.root_volume:
+            logger.warn("found strange vm[pid: %s, uuid: %s], can not find boot volume" % (vm.pid, vm.uuid))
+            continue
+
+        if not vm.root_volume.startswith("/dev/" + vgUuid):
+            continue
+
+        vms.update({vm.root_volume: vm})
+        lv_pv_dict.update({vm.root_volume: get_pvs_for_lv(vm.root_volume)})
+
+    if not vms:
+        return []
+
+    pvs_to_check = list(set(elem for sublist in lv_pv_dict.values() for elem in sublist))
+    hung_pvs = check_pvs_io_hung(pvs_to_check)
+    if not hung_pvs:
+        logger.debug("no hung pv found on vg %s" % vgUuid)
+        return []
+
+    logger.warn("detected pvs[%s] IO has already hung for over 2 minutes..." % hung_pvs)
+
+    result = []
+    for root_vol, pvs in lv_pv_dict.items():
+        if set(pvs).issubset(hung_pvs):
+            result.append(vms.get(root_vol))
+            logger.debug("pvs %s for root vol %s io hung, vm uuid %s" % (pvs, root_vol, vms.get(root_vol).uuid))
+
+    return result
 
 
 @bash.in_bash
