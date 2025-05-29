@@ -5662,7 +5662,6 @@ class Vm(object):
                 disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
                 e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
                 e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(_v.installPath)})
-                e(disk, 'target', None, {'dev': 'vd%s' % _dev_letter, 'bus': 'virtio'})
                 if _v.physicalBlockSize:
                     e(disk, 'blockio', None, {'physical_block_size': str(_v.physicalBlockSize)})
                 return disk
@@ -5729,6 +5728,12 @@ class Vm(object):
 
             def make_volume(dev_letter, v, r, dataSourceOnly=False):
                 v = file_volume_check(v)
+
+                logger.debug("-----------------------------------v.deviceType")
+                logger.debug("-----------------------------------v.deviceType")
+                logger.debug(v.deviceType)
+                logger.debug("-----------------------------------v.deviceType")
+
                 if r:
                     vol = nbd_volume(dev_letter, v, r)
                 elif v.deviceType == 'quorum':
