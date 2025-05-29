@@ -48,6 +48,7 @@ SUPPORTED_ARCH = ['x86_64', 'aarch64', 'mips64el', 'loongarch64']
 DIST_WITH_RPM_DEB = ['kylin']
 HOST_ARCH = platform.machine()
 
+tcp_port_lock = threading.Lock()
 
 '''
 [root@10-0-67-98 ~]# ip link set mtu 65522 dev vnic2.0
@@ -2498,19 +2499,53 @@ def get_free_port():
     s.close()
     return port
 
+@lock.lock('port_lock')
 def get_free_port_in_range(start_port, end_port):
     for port in range(start_port, end_port):
-        try:
-            s = socket.socket()
-            s.bind(('', port))
-            s.close()
+        if tcp_port_is_free(port):
             return port
-        except socket.error as e:
-            if e.errno == errno.EADDRINUSE:
-                continue
-            else:
-                raise
     raise Exception("no free port found in range[%d, %d]" % (start_port, end_port))
+
+def tcp_port_is_free(port):
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('', port))
+        sock.close()
+        return True
+    except socket.error:
+        return False
+
+def find_free_port_with_locking(start_port, end_port):
+    keep_lock = False
+    tcp_port_lock.acquire()
+    try:
+        for p in range(start_port, end_port + 1):
+            if tcp_port_is_free(p):
+                keep_lock = True
+                return p, tcp_port_lock
+        raise Exception("no free port found in range[%d, %d]" % (start_port, end_port))
+    finally:
+        if not keep_lock:
+            tcp_port_lock.release()
+
+def parse_port_range(port_range):
+    start_port, end_port = map(int, port_range.split(':'))
+    return start_port, end_port
+
+def check_socket_available(host, port, timeout=10):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            if result == 0:
+                return True
+        except:
+            pass
+        time.sleep(1)
+    return False
 
 def is_port_available(port):
     with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
