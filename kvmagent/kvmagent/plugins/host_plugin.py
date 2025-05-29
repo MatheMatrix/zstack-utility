@@ -2926,6 +2926,9 @@ done
             rsp.error = 'failed to generate virtual functions on pci device[addr:%s, type:%s]' % (cmd.pciDeviceAddress, cmd.pciDeviceType)
             return
 
+        for i in range(0, cmd.virtPartNum):
+            bash_r("ip link set {interfaceName} vf {vf} spoofchk off; ip link set {interfaceName} vf {vf} trust on"
+                     .format(interfaceName=cmd.interfaceName, vf=i))
 
     @kvmagent.replyerror
     def generate_sriov_pci_devices(self, req):
