@@ -1274,8 +1274,10 @@ class HostPlugin(kvmagent.KvmAgent):
             # The number of guest is one, and len will cause an error
             if not isinstance(xml_object.guest, list):
                 return xml_object.guest
-            if len(xml_object.guest) > 0:
+            if isinstance(xml_object.guest, list) and len(xml_object.guest) > 0:
                 return xml_object.guest[0].features
+            elif isinstance(xml_object.guest, xmlobject.XmlObject):
+                return xml_object.guest.features
             return None
         except (AttributeError, KeyError):
             return None
