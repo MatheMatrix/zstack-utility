@@ -13,92 +13,182 @@ __ENV_SETUP__ = {
 def error_message(message):
     return '%s, context: %s' % (message, context)
 
-output = '''
+value_output = '''
 Slot:   0000:00:00.0
-Class:  Host bridge [0600]
-Vendor: Intel Corporation [8086]
-Device: Sky Lake-E DMI3 Registers [2020]
-SVendor:        Super Micro Computer Inc [15d9]
-SDevice:        Device [096e]
+Class:  Host bridge
+Vendor: Intel Corporation
+Device: Sky Lake-E DMI3 Registers
+SVendor:        Super Micro Computer Inc
+SDevice:        Device
 Rev:    07
 NUMANode:       0
 IOMMUGroup:     0
 
 Slot:   0000:00:04.0
-Class:  System peripheral [0880]
-Vendor: Intel Corporation [8086]
-Device: Sky Lake-E CBDMA Registers [2021]
-SVendor:        Intel Corporation [8086]
-SDevice:        Device [0000]
+Class:  System peripheral
+Vendor: Intel Corporation
+Device: Sky Lake-E CBDMA Registers
+SVendor:        Intel Corporation
+SDevice:        Device
 Rev:    07
 NUMANode:       0
 IOMMUGroup:     1
 
 Slot:   0000:00:04.1
-Class:  System peripheral [0880]
-Vendor: Intel Corporation [8086]
-Device: Sky Lake-E CBDMA Registers [2021]
-SVendor:        Intel Corporation [8086]
-SDevice:        Device [0000]
+Class:  System peripheral
+Vendor: Intel Corporation
+Device: Sky Lake-E CBDMA Registers
+SVendor:        Intel Corporation
+SDevice:        Device
 Rev:    07
 NUMANode:       0
 IOMMUGroup:     2
 
 Slot:   0000:00:04.2
-Class:  System peripheral [0880]
-Vendor: Intel Corporation [8086]
-Device: Sky Lake-E CBDMA Registers [2021]
-SVendor:        Intel Corporation [8086]
-SDevice:        Device [0000]
+Class:  System peripheral
+Vendor: Intel Corporation
+Device: Sky Lake-E CBDMA Registers
+SVendor:        Intel Corporation
+SDevice:        Device
 Rev:    07
 NUMANode:       0
 IOMMUGroup:     3
 
 Slot:   0000:00:05.0
-Class:  System peripheral [0880]
-Vendor: Intel Corporation [8086]
-Device: Sky Lake-E MM/Vt-d Configuration Registers [2024]
-SVendor:        Intel Corporation [8086]
-SDevice:        Device [0000]
+Class:  System peripheral
+Vendor: Intel Corporation
+Device: Sky Lake-E MM/Vt-d Configuration Registers
+SVendor:        Intel Corporation
+SDevice:        Device
 Rev:    07
 NUMANode:       0
 IOMMUGroup:     9
 
 Slot:   0000:00:05.2
-Class:  System peripheral [0880]
-Vendor: Intel Corporation [8086]
-Device: Sky Lake-E RAS [2025]
+Class:  System peripheral
+Vendor: Intel Corporation
+Device: Sky Lake-E RAS
 Rev:    07
 NUMANode:       0
 IOMMUGroup:     10
 
 Slot:   0000:00:05.4
-Class:  PIC [0800]
-Vendor: Intel Corporation [8086]
-Device: Sky Lake-E IOAPIC [2026]
-SVendor:        Intel Corporation [8086]
-SDevice:        Sky Lake-E IOAPIC [2026]
+Class:  PIC
+Vendor: Intel Corporation
+Device: Sky Lake-E IOAPIC
+SVendor:        Intel Corporation
+SDevice:        Sky Lake-E IOAPIC
 Rev:    07
 ProgIf: 20
 NUMANode:       0
 IOMMUGroup:     11
 
 Slot:   0000:b2:16.0
-Class:  System peripheral [0880]
-Vendor: Intel Corporation [8086]
-Device: Sky Lake-E M2PCI Registers [2018]
-SVendor:        Intel Corporation [8086]
-SDevice:        Device [0000]
+Class:  System peripheral
+Vendor: Intel Corporation
+Device: Sky Lake-E M2PCI Registers
+SVendor:        Intel Corporation
+SDevice:        Device
 Rev:    07
 NUMANode:       0
 IOMMUGroup:     80
 
 Slot:   0000:b2:16.1
-Class:  Performance counters [1101]
-Vendor: Intel Corporation [8086]
-Device: Sky Lake-E DDRIO Registers [2088]
-SVendor:        Intel Corporation [8086]
-SDevice:        Device [0000]
+Class:  Performance counters
+Vendor: Intel Corporation
+Device: Sky Lake-E DDRIO Registers
+SVendor:        Intel Corporation
+SDevice:        Device
+Rev:    07
+NUMANode:       0
+IOMMUGroup:     80'''
+
+id_output = '''
+Slot:   0000:00:00.0
+Class:  0600
+Vendor: 8086
+Device: 2020
+SVendor: 15d9
+SDevice: 096e
+Rev:    07
+NUMANode:       0
+IOMMUGroup:     0
+
+Slot:   0000:00:04.0
+Class: 0880
+Vendor: 8086
+Device: 2021
+SVendor: 8086
+SDevice: 0000
+Rev:    07
+NUMANode:       0
+IOMMUGroup:     1
+
+Slot:   0000:00:04.1
+Class: 0880
+Vendor: 8086
+Device: 2021
+SVendor: 8086
+SDevice: 0000
+Rev:    07
+NUMANode:       0
+IOMMUGroup:     2
+
+Slot:   0000:00:04.2
+Class: 0880
+Vendor: 8086
+Device: 2021
+SVendor: 8086
+SDevice: 0000
+Rev:    07
+NUMANode:       0
+IOMMUGroup:     3
+
+Slot:   0000:00:05.0
+Class: 0880
+Vendor: 8086
+Device: 2024
+SVendor: 8086
+SDevice: 0000
+Rev:    07
+NUMANode:       0
+IOMMUGroup:     9
+
+Slot:   0000:00:05.2
+Class: 0880
+Vendor: 8086
+Device: 2025
+Rev:    07
+NUMANode:       0
+IOMMUGroup:     10
+
+Slot:   0000:00:05.4
+Class: 0800
+Vendor: 8086
+Device: 2026
+SVendor: 8086
+SDevice: 2026
+Rev:    07
+ProgIf: 20
+NUMANode:       0
+IOMMUGroup:     11
+
+Slot:   0000:b2:16.0
+Class: 0880
+Vendor: 8086
+Device: 2018
+SVendor: 8086
+SDevice: 0000
+Rev:    07
+NUMANode:       0
+IOMMUGroup:     80
+
+Slot:   0000:b2:16.1
+Class:  1101
+Vendor: 8086
+Device: 2088
+SVendor: 8086
+SDevice: 0000
 Rev:    07
 NUMANode:       0
 IOMMUGroup:     80'''
@@ -107,9 +197,27 @@ class TestParseLspci(unittest.TestCase, pytest_utils.PytestExtension):
     @pytest.mark.run(order=1)
     @pytest_utils.ztest_decorater
     def test_lspci(self):
-        results = pci._parse_lspci(output) # type: list[dict]
-        context['results'] = results
-        self.assertEqual(9, len(results), error_message("expect results.length = 9"))
+        out = pci._parse_lspci(value_output, id_output)  # type: list[dict]
+        context['results'] = out
+        self.assertEqual(9, len(out), error_message("expect results.length = 9"))
+
+        slot_to_index = {
+            "0000:00:00.0": 0,
+            "0000:00:04.0": 1,
+            "0000:00:04.1": 2,
+            "0000:00:04.2": 3,
+            "0000:00:05.0": 4,
+            "0000:00:05.2": 5,
+            "0000:00:05.4": 6,
+            "0000:b2:16.0": 7,
+            "0000:b2:16.1": 8
+        }
+
+        results = [""] * 9
+        for o in out:
+            slot = o['Slot']
+            if slot in slot_to_index:
+                results[slot_to_index[slot]] = o
 
         self.assertEqual('0000:00:00.0',      results[0]['Slot'],           error_message("failed to check results[0]"))
         self.assertEqual('Host bridge',       results[0]['Class'],          error_message("failed to check results[0]"))
