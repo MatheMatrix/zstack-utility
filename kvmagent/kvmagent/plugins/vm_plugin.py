@@ -3168,7 +3168,7 @@ class Vm(object):
 
         def cbd_volume():
             disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
-            e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
+            e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'})
             e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(volume.installPath)})
             if volume.useVirtioSCSI:
                 e(disk, 'target', None, {'dev': 'sd%s' % dev_letter, 'bus': 'scsi'})
@@ -5758,7 +5758,7 @@ class Vm(object):
 
             def cbd_volume(_dev_letter, _v):
                 disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
-                e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
+                e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'})
                 e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(_v.installPath)})
                 if _v.useVirtioSCSI:
                     e(disk, 'target', None, {'dev': 'sd%s' % _dev_letter, 'bus': 'scsi'})
@@ -8111,7 +8111,7 @@ class VmPlugin(kvmagent.KvmAgent):
 
         def cbd_volume(_v):
             disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
-            e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
+            e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'})
             e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(_v.installPath)})
             e(disk, 'target', None, {'dev': 'vd%s' % _v.dev_letter, 'bus': 'virtio'})
             if _v.physicalBlockSize:
