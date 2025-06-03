@@ -144,7 +144,7 @@ class LibvirtConn(object):
 
         return libvirt.open(uri)
 
-    def __init__(self, uri, sasluser=None, saslpass=None, keystr=None):
+    def __init__(self, uri: str, sasluser: str=None, saslpass: str=None, keystr: str=None):
         self.uri = uri
         self.sasluser = sasluser
         self.saslpass = saslpass
@@ -154,7 +154,7 @@ class LibvirtConn(object):
     def __enter__(self):
         tmpkeyfile = None
         if self.keystr:
-            with tempfile.NamedTemporaryFile(delete=False) as f:
+            with tempfile.NamedTemporaryFile(mode='w+', delete=False) as f:
                 f.write(self.keystr)
                 tmpkeyfile = f.name
             self.uri = uriAddQuery(self.uri, 'keyfile', tmpkeyfile)
@@ -177,7 +177,7 @@ class LibvirtConn(object):
 
 
 @in_bash
-def runSshCmd(libvirtURI, keystr, cmdstr):
+def runSshCmd(libvirtURI: str, keystr: str, cmdstr: str):
     target, port = getSshTargetAndPort(libvirtURI)
     ssh_opts = DEF_SSH_OPTS
     ssh_cmd = "ssh" if not os.path.exists(V2V_PRIV_KEY) else "ssh -i {}".format(V2V_PRIV_KEY)
@@ -191,7 +191,7 @@ def runSshCmd(libvirtURI, keystr, cmdstr):
             linux.shellquote(cmdstr)))
 
     tmpkeyfile = None
-    with tempfile.NamedTemporaryFile(delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode='w+', delete=False) as f:
         f.write(keystr)
         tmpkeyfile = f.name
     try:
