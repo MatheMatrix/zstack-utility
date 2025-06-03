@@ -6403,7 +6403,7 @@ class Vm(object):
         def add_cpu_vendor_id_to_cpu_flags():
 
             def get_cpu_flags_from_xml(libvirtXml):
-                with tempfile.NamedTemporaryFile(delete=False) as f:
+                with tempfile.NamedTemporaryFile(mode='w+', delete=False) as f:
                     f.write(libvirtXml)
                     tmpFile = f.name
 
