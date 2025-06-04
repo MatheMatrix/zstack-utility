@@ -3747,16 +3747,13 @@ done
                                     dev['mountpoint'])
             if 'nvme' in name:
                 block_dev.mediaType = 'SSD'
-                if not is_pcie_nvme(name):
-                    return None
             else:
                 block_dev.mediaType = 'SSD' if (dev['rota'] == '0' or dev['rota'] == False) else 'HDD'
 
             if dev['children'] is not None:
                 for child in dev['children']:
                     child_dev = process_device(child)
-                    if child_dev is not None:
-                        block_dev.children.append(child_dev)
+                    block_dev.children.append(child_dev)
 
             block_dev.partitionTable = get_partition_table(name)
             block_dev.used, block_dev.available, block_dev.usedRatio = get_size_info(name)
@@ -3771,7 +3768,9 @@ done
             return jsonobject.dumps(rsp)
 
         with ThreadPoolExecutor(max_workers=15) as executor:
-            futures = [executor.submit(process_device, device) for device in jsonobject.loads(o)['blockdevices']]
+            futures = [executor.submit(process_device, device)
+                       for device in jsonobject.loads(o)['blockdevices']
+                       if 'nvme' not in device['name'] or is_pcie_nvme(device['name'])]
             for future in as_completed(futures, timeout=60):
                 try:
                     block_device = future.result()
