@@ -10,6 +10,7 @@ from prometheus_client.core import GaugeMetricFamily, REGISTRY
 import psutil
 
 from kvmagent import kvmagent
+from zstacklib.utils import form
 from zstacklib.utils import http
 from zstacklib.utils import jsonobject
 from zstacklib.utils import linux
@@ -1036,52 +1037,52 @@ def collect_equipment_state_from_ipmi():
     }
     metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
 
-    info = get_sensor_info_from_ipmi()
-    if info is None:
+    sensor_info = get_sensor_info_from_ipmi()
+    if sensor_info is None:
         return metrics.values()
 
-    get_power_info_from_ipmi(info, metrics)
+    get_power_info_from_ipmi(sensor_info, metrics)
     check_equipment_state_from_ipmitool(metrics)
 
     '''
         ================
         CPU TEMPERATURE
         ================
-        CPU1_Temp        | 39h | ok  |  7.18 | 34 degrees C
-        CPU1_Core_Temp   | 39h | ok  |  7.18 | 34 degrees C
-        CPU_Temp_01      | 39h | ok  |  7.18 | 34 degrees C
-        CPU1 Temp        | 39h | ok  |  7.18 | 34 degrees C
-        CPU1 Core Rem    | 04h | ok  |  3.96 | 41 degrees C
+        ID  | Name             | Type                        | Reading    | Units       | Event
+        4   | CPU0_Temp        | Temperature                 | 38.00      | C           | 'OK'
+        5   | CPU1_Temp        | Temperature                 | 37.00      | C           | 'OK'
+        20  | GPU0_Temp        | Temperature                 | N/A        | C           | N/A
         
         ================
         CPU STATUS
         ================
-        CPU_STATUS_01    | 52h | ok  |  3.0 | Presence detected
-        CPU1 Status      | 3Ch | ok  |  3.96 | Presence detected
-        CPU1_Status      | 7Eh | ok  |  3.0 | Presence detected
+        ID  | Name             | Type                        | Reading    | Units       | Event
+        53  | CPU0_Status      | Processor                   | N/A        | N/A         | 'Processor Presence detected'
+        54  | CPU1_Status      | Processor                   | N/A        | N/A         | 'Processor Presence detected'
     '''
 
-    cpu_temperature_pattern = r'^(cpu\d+_temp|cpu\d+_core_temp|cpu_temp_\d+|cpu\d+ temp|cpu\d+ core rem)$'
+    cpu_temperature_pattern = r'^(cpu\d+_temp|cpu\d+_core_temp|cpu_temp_\d+|cpu\d+ temp|cpu\d+ core rem |cpu\d+ core temp)$'
     cpu_status_pattern = r'^(cpu_status_\d+|cpu\d+ status|cpu\d+_status)$'
 
-    for line in info.lower().splitlines():
-        if "cpu" not in line:
+    for info in form.load('id|name|type|value|units|event\n' + sensor_info, sep='|'):
+        sensor_name = info['name'].strip().lower()
+        sensor_value = info['value'].strip().lower()
+        sensor_event = (info['event'] or '').strip().strip("'").lower()
+
+        if "cpu" not in sensor_name:
             continue
-        sensor = line.split("|")
-        if len(sensor) != 5:
-            continue
-        sensor_id = sensor[0].strip()
-        sensor_value = sensor[4].strip()
-        if re.match(cpu_temperature_pattern, sensor_id):
-            cpu_id = int(re.sub(r'\D', '', sensor_id))
-            cpu_temperature = filter(str.isdigit, sensor_value) if bool(re.search(r'\d', sensor_value)) else 0
-            metrics['cpu_temperature'].add_metric(["CPU%d" % cpu_id], float(cpu_temperature))
-        if re.match(cpu_status_pattern, sensor_id):
-            cpu_id = int(re.sub(r'\D', '', sensor_id))
-            cpu_status = 0 if "presence detected" == sensor_value else 10
+
+        if re.match(cpu_temperature_pattern, sensor_name):
+            cpu_id = int(re.sub(r'\D', '', sensor_name))
+            if sensor_value == 'n/a':
+                sensor_value = 0
+            metrics['cpu_temperature'].add_metric(["CPU%d" % cpu_id], float(sensor_value))
+        if re.match(cpu_status_pattern, sensor_name):
+            cpu_id = int(re.sub(r'\D', '', sensor_name))
+            cpu_status = 0 if "presence detected" in sensor_event or "processor presence detected" in sensor_event else 10
             metrics['cpu_status'].add_metric(["CPU%d" % cpu_id], float(cpu_status))
             if cpu_status == 10:
-                send_cpu_status_alarm_to_mn(cpu_id, sensor_value)
+                send_cpu_status_alarm_to_mn(cpu_id, sensor_event)
             else:
                 remove_cpu_status_abnormal(cpu_id)
 

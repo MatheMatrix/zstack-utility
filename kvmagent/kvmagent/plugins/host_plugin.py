@@ -15,6 +15,8 @@ import uuid
 import string
 import socket
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+
 import yaml
 import subprocess
 
@@ -73,8 +75,6 @@ BOND_MODE_ACTIVE_6 = "balance-alb"
 
 DISTRO_USING_DNF = ['rl84', 'h84r', 'ky10sp1', 'ky10sp2', 'ky10sp3',
                     'oe2203sp1', 'h2203sp1o']
-
-sensor_type_by_name = {}  # type: dict[str, str]
 
 
 class ConnectResponse(kvmagent.AgentResponse):
@@ -3696,7 +3696,7 @@ done
                 self.smartMessage = None
 
         def get_size_info(name):
-            df_r, df_o = bash_ro('df %s' % name)
+            df_r, df_o = bash_ro('timeout 30 df %s' % name)
             if df_r != 0:
                 return None, None, None
             used, available, usedRatio = None, None, None
@@ -3712,7 +3712,9 @@ done
         def get_smart_passed_and_message(name):
             smartPassed = None
             smartMessage = None
-            _, status_o = bash_ro('smartctl -H %s -j' % name)
+            _, status_o = bash_ro('timeout 30 smartctl -H %s -j' % name)
+            if status_o is None or status_o == "":
+                return smartPassed, smartMessage
             status_info = jsonobject.loads(status_o)
             if status_info['smartctl'] is not None:
                 messages = status_info['smartctl']['messages']
@@ -3728,7 +3730,7 @@ done
             return smartPassed, smartMessage
 
         def get_partition_table(name):
-            partition_r, partition_o = bash_ro('parted -s %s print' % name)
+            partition_r, partition_o = bash_ro('timeout 30 parted -s %s print' % name)
             if partition_r != 0:
                 return None
             return filter_lines_by_str_list(partition_o.splitlines(), ["Partition Table"])[0].split(':')[1].strip()
@@ -3745,8 +3747,6 @@ done
                                     dev['mountpoint'])
             if 'nvme' in name:
                 block_dev.mediaType = 'SSD'
-                if not is_pcie_nvme(name):
-                    return None
             else:
                 block_dev.mediaType = 'SSD' if (dev['rota'] == '0' or dev['rota'] == False) else 'HDD'
 
@@ -3767,10 +3767,17 @@ done
             rsp.error = e
             return jsonobject.dumps(rsp)
 
-        for device in jsonobject.loads(o)['blockdevices']:
-            blockDevice = process_device(device)
-            if blockDevice:
-                rsp.blockDevices.append(blockDevice)
+        with ThreadPoolExecutor(max_workers=15) as executor:
+            futures = [executor.submit(process_device, device)
+                       for device in jsonobject.loads(o)['blockdevices']
+                       if 'nvme' not in device['name'] or is_pcie_nvme(device['name'])]
+            for future in as_completed(futures, timeout=60):
+                try:
+                    block_device = future.result()
+                    if block_device:
+                        rsp.blockDevices.append(block_device)
+                except TimeoutError:
+                    logger.warning("device processing timeout")
 
         return jsonobject.dumps(rsp)
 
@@ -3779,52 +3786,23 @@ done
     def get_sensors(self, req):
         rsp = GetSensorsResponse()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        start_time = linux.get_current_timestamp()
-        time_out = get_timeout(cmd) - 10
 
         class Sensor:
             def __init__(self, info):
                 self.name = info['name'].strip() or ""
                 self.value = info['value'].strip() or ""
-                self.status = info['status'].strip() or ""
-                self.type = ""
-                self.classification = ""
-                self.set_type_and_classification()
+                self.status = (info['event'] or '').strip().strip("'").lower()
+                self.type = info['type'].strip() or ""
 
-            def set_type_and_classification(self):
-                if linux.get_current_timestamp() - start_time > time_out:
-                    return
-
-                if self.name is "":
-                    return
-
-                if self.name in sensor_type_by_name:
-                    self.type = sensor_type_by_name[self.name]
-                    return
-
-                type_r, type_o = bash_ro('ipmitool sdr get "%s"' % self.name)
-                if type_r != 0 or type_o is None:
-                    logger.warning("failed to get sensor type for %s" % self.name)
-                    return
-
-                if "Sensor Type" in type_o:
-                    sensor_type = filter_lines_by_str_list(type_o.splitlines(), ["Sensor Type"])
-                    self.type = sensor_type[0].split(':')[1].split('(')[0].strip()
-                    self.classification = "Discrete" if "Discrete" in sensor_type else "Threshold"
-                    sensor_type_by_name[self.name] = self.type
-
-        def update_sensor_type_by_name():
-            sensor_names = {sensor.name for sensor in sensors}
-            keys_to_remove = [key for key in sensor_type_by_name.keys() if key not in sensor_names]
-            for key in keys_to_remove:
-                del sensor_type_by_name[key]
+        sensor_info = get_sensor_info_from_ipmi()
+        if sensor_info is None:
+            rsp.success = False
+            rsp.error = "failed to get sensor info from ipmi"
+            return jsonobject.dumps(rsp)
 
         sensors = []
-        for info in form.load('name|sensorId|status|entityId|value\n' + get_sensor_info_from_ipmi(), sep='|'):
+        for info in form.load('id|name|type|value|units|event\n' + sensor_info, sep='|'):
             sensors.append(Sensor(info))
-
-        update_sensor_type_by_name()
-
         rsp.sensors = sensors
         return jsonobject.dumps(rsp)
 
