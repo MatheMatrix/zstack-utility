@@ -41,6 +41,10 @@ class AgentRsp(object):
         self.availableCapacity = None
         self.lunCapacities = None
 
+    def set_error(self, err):
+        self.success = False
+        self.error = err
+
 
 class ConnectRsp(AgentRsp):
     def __init__(self):
@@ -286,11 +290,11 @@ class CheckDisk(object):
         command = "pvresize /dev/%s" % disk_name
         if multipath_dev is not None and multipath_dev != disk_name:
             command = "pvresize /dev/%s || pvresize /dev/%s" % (disk_name, multipath_dev)
-        r, o, e = bash.bash_roe(command, errorout=False)
+        r, o, e = lvm.run_cmd_roe(command, errorout=False)
 
         if r != 0 and e and re.search(r'VG(.*)lock failed', e):
             lvm.check_stuck_vglk_and_gllk()
-            r, o, e = bash.bash_roe(command, errorout=True)
+            r, o, e = lvm.run_cmd_roe(command, errorout=True)
         logger.debug("resized pv %s (wwid: %s), return code: %s, stdout %s, stderr: %s" %
                      (disk_name, self.identifier, r, o, e))
 
@@ -358,6 +362,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     SHRINK_SNAPSHOT_PATH = "/sharedblock/snapshot/shrink"
     GET_QCOW2_HASH_VALUE_PATH = "/sharedblock/getqcow2hash"
     CHECK_STATE_PATH = "/sharedblock/vgstate/check"
+    REPAIR_SANLOCK_METADATA_PATH = "/sharedblock/sanlock/metadata/repair"
 
     vgs_in_progress = set()
     vg_size = {}
@@ -409,6 +414,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.SHRINK_SNAPSHOT_PATH, self.shrink_snapshot)
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
         http_server.register_async_uri(self.CHECK_STATE_PATH, self.check_vg_state)
+        http_server.register_async_uri(self.REPAIR_SANLOCK_METADATA_PATH, self.repair_sanlock_metadata)
 
         self.imagestore_client = ImageStoreClient()
 
@@ -491,7 +497,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                 lvm.wipe_fs(diskPaths, vgUuid)
                 lvm.config_lvm_filter(["lvm.conf", "lvmlocal.conf"], preserve_disks=self.get_disk_paths(allDisks))
 
-            lvm.check_gl_lock()
+            lvm.fix_global_lock()
             try:
                 create_vg(hostUuid, vgUuid, self.get_disk_paths(disks))
                 find_vg(vgUuid)
@@ -715,6 +721,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         self.clear_stalled_qmp_socket()
         lvm.check_missing_pv(cmd.vgUuid)
         lvm.update_lockspace_io_timeout_if_need(cmd.vgUuid, cmd.ioTimeout)
+        sanlock.backup_lockspace_metadata(cmd.vgUuid, cmd.hostId)
 
         rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
         rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
@@ -866,7 +873,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         else:
             if cmd.forceWipe is True:
                 lvm.wipe_fs([disk.get_path()], cmd.vgUuid)
-            lvm.check_gl_lock()
+            lvm.fix_global_lock()
             lvm.add_pv(cmd.vgUuid, disk.get_path(), DEFAULT_VG_METADATA_SIZE)
 
         rsp = AgentRsp()
@@ -1755,5 +1762,15 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             error = _check(vg_uuid)
             if error:
                 rsp.failedVgs.update({vg_uuid: error})
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def repair_sanlock_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentRsp()
+        err = sanlock.repair_metadata(cmd.vgUuid, cmd.leaseStruct)
+        if err:
+            rsp.set_error(err)
 
         return jsonobject.dumps(rsp)
