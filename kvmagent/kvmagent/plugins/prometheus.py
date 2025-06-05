@@ -24,6 +24,8 @@ from zstacklib.utils.ip import get_host_physicl_nics
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.linux import is_virtual_machine
 
+from zstackctl.zstackctl.reset_mini import bash_o
+
 logger = log.get_logger(__name__)
 collector_dict = {}  # type: Dict[str, threading.Thread]
 collectd_dir = "/var/lib/zstack/collectd/"
@@ -2168,18 +2170,18 @@ LoadPlugin virt
 
             if need_restart_collectd:
                 for pid in mpidList:
-                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
+                    bash_r('kill -TERM %s' % pid)
                 for pid in cpidList:
-                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
+                    bash_r('kill -TERM %s' % pid)
                 bash_errorout('collectdmon -- -C %s' % conf_path)
             elif mpidList and len(mpidList) > 1:
                 for pid in mpidList[1:]:
-                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
+                    bash_r('kill -TERM %s' % pid)
                 for pid in cpidList:
-                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
+                    bash_ebash_rrrorout('kill -TERM %s' % pid)
             elif len(mpidList) == 0:
                 for pid in cpidList:
-                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
+                    bash_r('kill -TERM %s' % pid)
                 bash_errorout('collectdmon -- -C %s' % conf_path)
 
         def run_in_systemd(binPath, args, log):
