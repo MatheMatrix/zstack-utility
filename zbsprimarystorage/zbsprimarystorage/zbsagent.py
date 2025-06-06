@@ -37,7 +37,7 @@ class AgentResponse(object):
 
 class PingRsp(AgentResponse):
     def __init__(self):
-        super(CopyRsp, self).__init__()
+        super(PingRsp, self).__init__()
         self.mdsExternalAddr = None
 
 
@@ -236,6 +236,7 @@ class ZbsAgent(plugin.TaskManager):
             if m.status == "leader":
                 found = True
                 break
+
 
         if not found:
             rsp.success = False
