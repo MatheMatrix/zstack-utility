@@ -35,6 +35,12 @@ class AgentResponse(object):
         self.error = error
 
 
+class PingRsp(AgentResponse):
+    def __init__(self):
+        super(PingRsp, self).__init__()
+        self.mdsExternalAddr = None
+
+
 class CbdToNbdRsp(AgentResponse):
     def __init__(self):
         super(CbdToNbdRsp, self).__init__()
@@ -96,12 +102,6 @@ class GetCapacityRsp(AgentResponse):
     def __init__(self):
         super(GetCapacityRsp, self).__init__()
         self.logicalPoolInfos = []
-
-
-class GetFactsRsp(AgentResponse):
-    def __init__(self):
-        super(GetFactsRsp, self).__init__()
-        self.mdsExternalAddr = None
 
 
 class LogicalPoolInfo:
@@ -215,18 +215,28 @@ class ZbsAgent(plugin.TaskManager):
 
     @replyerror
     def ping(self, req):
-        rsp = AgentResponse()
+        rsp = PingRsp()
+
+        def get_mds_external_addr(mds_map):
+            for res in mds_map.result:
+                externalAddr = res.externalAddr.split(':')[0]
+                cmd = 'ip route | grep -w "proto kernel" | grep -w %s > /dev/null' % externalAddr
+                if bash_r(cmd) == 0:
+                    return res.externalAddr
 
         o = zbsutils.query_mds_status_info()
         r = jsonobject.loads(o)
         if not r.result:
             raise Exception('failed to query mds info, error[%s]' % r.error.message)
 
+        rsp.mdsExternalAddr = get_mds_external_addr(r)
+
         found = False
         for m in r.result:
             if m.status == "leader":
                 found = True
                 break
+
 
         if not found:
             rsp.success = False
