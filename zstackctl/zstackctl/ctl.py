@@ -513,6 +513,10 @@ def get_zstack_version(db_hostname, db_port, db_user, db_password):
     version = versions[0]
     return version
 
+def get_database_type():
+    return 'multiDatabase' if os.path.exists("/usr/local/bin/zsha2") else 'singleDatabase'
+
+
 def get_zstack_installed_on(db_hostname, db_port, db_user, db_password):
     query = MySqlCommandLineQuery()
     query.host = db_hostname
@@ -5606,7 +5610,9 @@ class DumpMysqlCmd(Command):
         if args.file_path:
             db_backupf_file_path = args.file_path
         else:
-            db_backupf_file_path = self.mysql_backup_dir + db_local_hostname + "-" + file_name + "-" + backup_timestamp + ".gz"
+            detail_version = get_zstack_version(db_hostname, db_port, db_user, db_password)
+            db_backupf_file_path = (self.mysql_backup_dir + db_local_hostname + "-" + get_database_type() + "-"
+                                    + detail_version + "-" + file_name + "-" + backup_timestamp + ".gz")
 
         zstone_backup_file_path = self.zstone_backup_dir + db_local_hostname + "-" + self.zstone_file_name + "-" + backup_timestamp + ".gz"
 
