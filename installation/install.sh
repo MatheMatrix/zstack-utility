@@ -1406,7 +1406,6 @@ upgrade_zstack(){
     show_spinner is_enable_chronyd
     show_spinner uz_stop_zstack
     show_spinner prepare_zops_user_and_db
-    show_spinner prepare_keycloak_user_and_db
     show_spinner uz_upgrade_zstack
     show_spinner upgrade_tomcat_security
     if [[ $REDHAT_OS =~ $OS ]]; then
@@ -2519,13 +2518,14 @@ install_zops(){
     fi
 }
 
-extract_keycloak_server_package(){
+install_keycloak_server(){
     keycloak_installer_tar=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "keycloak.tar.gz" | head -n 1`
     [[ x"$keycloak_installer_tar" = x ]] && return
-    echo_title "Extract keycloak server package"
+    echo_title "Install keycloak server"
     echo ""
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     show_spinner is_extract_keycloak_tar
+    show_spinner prepare_keycloak_user_and_db
 }
 
 is_extract_keycloak_tar(){
@@ -4467,7 +4467,7 @@ if [ x"$UPGRADE" = x'y' ]; then
     #Install marketplace server
     install_fluentbit_server
 
-    extract_keycloak_server_package
+    install_keycloak_server
 
     #only upgrade zstack
     upgrade_zstack
@@ -4648,7 +4648,7 @@ install_marketplace_server
 #Install fluentbit server
 install_fluentbit_server
 
-extract_keycloak_server_package
+install_keycloak_server
 
 #Start ${PRODUCT_NAME} 
 if [ -z $NOT_START_ZSTACK ]; then
