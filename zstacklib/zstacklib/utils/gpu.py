@@ -232,11 +232,14 @@ def reload_hygon_gpu_driver_cmd():
 
 
 def get_vastai_type():
-    r, o, e = bash_roe("lspci | grep Vastai")
+    r, o, e = bash_roe("lspci | grep -E 'Vastai|1ec6'")
+    if r != 0:
+        return None
+
     first_line = o.split('\n')[0]
-    if "SG100" in first_line:
+    if "3D controller" in first_line:
         return "3D"
-    elif "SV100" in first_line:
+    elif "Processing accelerators" in first_line:
         return "AI"
     return None
 
