@@ -1044,6 +1044,17 @@ def quitLockServices():
 
 @bash.in_bash
 def drop_vg_lock(vgUuid):
+    def clear_orphan_locks():
+        r, sanlock_locks = bash.bash_ro("sanlock client status | grep 'r lvm_{}'".format(vgUuid))
+        if r != 0:
+            return
+        lv_locks = bash.bash_o("lvmlockctl -i | grep -E 'LK LV (ex|sh)'")
+        for line in sanlock_locks.strip().splitlines():
+            lock_uuid = line.split()[1].split(":")[1]
+            if "VGLK" in lock_uuid or "GLLK" in lock_uuid or lock_uuid not in lv_locks:
+                bash.bash_r("sanlock client release -%s" % line.replace(" p ", " -p ").replace(" C ", " -C "))
+
+    clear_orphan_locks()
     bash.bash_roe("lvmlockctl --gl-disable %s" % vgUuid)
     bash.bash_roe("lvmlockctl --drop %s" % vgUuid)
 
@@ -2064,7 +2075,7 @@ def check_stuck_vglk_and_gllk():
         for stucked in stucked_vglks.values():  # type: str
             if "ADD" in stucked or "REM" in stucked:
                 continue
-            cmd = "sanlock client release -%s" % stucked.replace(" p ", " -p ")
+            cmd = "sanlock client release -%s" % stucked.replace(" p ", " -p ").replace(" C ", " -C ")
             r, o, e = bash.bash_roe(cmd)
             logger.warn("find stuck vglk and already released, detail: [return_code: %s, stdout: %s, stderr: %s]" %
                         (r, o, e))
