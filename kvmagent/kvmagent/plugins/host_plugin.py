@@ -21,7 +21,7 @@ import subprocess
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
-from zstacklib.utils import http, lvm, ceph
+from zstacklib.utils import http, lvm, ceph, pci
 from zstacklib.utils import qemu
 from zstacklib.utils import linux
 from zstacklib.utils import iptables
@@ -2416,6 +2416,8 @@ done
                 to.virtStatus = "UNVIRTUALIZABLE"
             if to.vendorId != '' and to.deviceId != '':
                 rsp.pciDevicesInfo.append(to)
+
+        pci.calculate_max_addressable_memory(rsp.pciDevicesInfo)
 
     # moved from vm_plugin to host_plugin
     @kvmagent.replyerror
