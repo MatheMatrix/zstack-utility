@@ -24,8 +24,6 @@ from zstacklib.utils.ip import get_host_physicl_nics
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.linux import is_virtual_machine
 
-from zstackctl.zstackctl.reset_mini import bash_o
-
 logger = log.get_logger(__name__)
 collector_dict = {}  # type: Dict[str, threading.Thread]
 collectd_dir = "/var/lib/zstack/collectd/"
@@ -2178,7 +2176,7 @@ LoadPlugin virt
                 for pid in mpidList[1:]:
                     bash_r('kill -TERM %s' % pid)
                 for pid in cpidList:
-                    bash_ebash_rrrorout('kill -TERM %s' % pid)
+                    bash_r('kill -TERM %s' % pid)
             elif len(mpidList) == 0:
                 for pid in cpidList:
                     bash_r('kill -TERM %s' % pid)
