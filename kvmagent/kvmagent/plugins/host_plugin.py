@@ -71,7 +71,7 @@ BOND_MODE_ACTIVE_5 = "balance-tlb"
 BOND_MODE_ACTIVE_6 = "balance-alb"
 
 DISTRO_USING_DNF = ['rl84', 'h84r', 'ky10sp1', 'ky10sp2', 'ky10sp3',
-                    'oe2203sp1', 'h2203sp1o']
+                    'ky10sp3.2403', 'oe2203sp1', 'h2203sp1o']
 
 class VendorEnum:
     INTEL = "Intel"

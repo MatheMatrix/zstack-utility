@@ -24,7 +24,6 @@ from zstacklib.utils.ip import get_host_physicl_nics
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.linux import is_virtual_machine
 
-from zstackctl.zstackctl.reset_mini import bash_o
 
 logger = log.get_logger(__name__)
 collector_dict = {}  # type: Dict[str, threading.Thread]
