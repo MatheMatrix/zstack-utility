@@ -3205,7 +3205,11 @@ class Vm(object):
             disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
             e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
             e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(volume.installPath)})
-            e(disk, 'target', None, {'dev': 'vd%s' % self.DEVICE_LETTERS[volume.deviceId], 'bus': 'virtio'})
+            if volume.useVirtioSCSI:
+                e(disk, 'target', None, {'dev': 'sd%s' % dev_letter, 'bus': 'scsi'})
+                e(disk, 'wwn', volume.wwn)
+            else:
+                e(disk, 'target', None, {'dev': 'vd%s' % self.DEVICE_LETTERS[volume.deviceId], 'bus': 'virtio'})
             if volume.physicalBlockSize:
                 e(disk, 'blockio', None, {'physical_block_size': str(volume.physicalBlockSize)})
             return disk
