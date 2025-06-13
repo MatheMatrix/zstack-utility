@@ -1871,6 +1871,7 @@ mimetype.assign = (
                 'netmask': 'netmask',
                 'ip': 'primary-ip-address',
                 'vpcCidrBlock': 'vpc-cidr-block',
+                'vSwitchCidrBlock': 'vswitch-cidr-block',
             })
 
         def write_network_interface_files(self):
@@ -1884,7 +1885,7 @@ mimetype.assign = (
                 for nic in self.network_interfaces:
                     fd.write(nic.macAddress + '\n')
 
-	    # write value to file for each nic 
+            # write value to file for each nic
             for nic in self.network_interfaces:
                 mac_dir = os.path.join(macs_root, nic.macAddress)
                 if not os.path.exists(mac_dir):
