@@ -794,6 +794,28 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = OfflineMergeSnapshotRsp()
 
+        if cmd.chainInstallPathInDb and not cmd.fullRebase:
+            duplicate_backing_file_paths = self.find_duplicate_backing_file_paths(cmd.chainInstallPathInDb)
+            if duplicate_backing_file_paths:
+                if len(duplicate_backing_file_paths) == 1 and cmd.destPath in duplicate_backing_file_paths[0]:
+                    pass
+                else:
+                    raise kvmagent.KvmError('multiple chain paths share the same backing file: path[%s]'
+                                            % duplicate_backing_file_paths)
+
+            chain_consistent, inconsistent_node_path, expected_backing, actual_backing = self.consistent_backing_chain(
+                cmd.chainInstallPathInDb)
+            if not chain_consistent:
+                # duplicate deletion of the same node
+                if inconsistent_node_path != cmd.destPath:
+                    raise Exception('invalid chain modification: node [%s] is inconsistent. '
+                                    'only modifications to source path [%s] are allowed.'
+                                    % (inconsistent_node_path, cmd.destPath))
+                if actual_backing != cmd.srcPath:
+                    raise Exception('invalid backing file modification: node [%s] '
+                                    'should point to [%s], but actually points to [%s].'
+                                    % (inconsistent_node_path, expected_backing, actual_backing))
+
         src_path = cmd.srcPath if not cmd.fullRebase else ""
         if linux.qcow2_get_backing_file(cmd.destPath) == src_path:
             _, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.destPath)
@@ -813,10 +835,60 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.storagePath)
         return jsonobject.dumps(rsp)
 
+    def consistent_backing_chain(self, chain_in_db):
+        chain_consistent = True
+        inconsistent_node_path = None
+        actual_backing_file = None
+        expected_backing = None
+        for i in range(len(chain_in_db) - 1):
+            current_path = chain_in_db[i]
+            expected_backing = chain_in_db[i + 1]
+            actual_backing = linux.qcow2_get_backing_file(current_path)
+            if actual_backing != expected_backing:
+                chain_consistent = False
+                inconsistent_node_path = current_path
+                actual_backing_file = actual_backing
+                break
+        return chain_consistent, inconsistent_node_path, expected_backing, actual_backing_file
+
+    def find_duplicate_backing_file_paths(self, chain_in_db):
+        pathBackingFileMap = {}
+        for i in range(len(chain_in_db) - 1):
+            pathBackingFileMap[chain_in_db[i]] = linux.qcow2_get_backing_file(chain_in_db[i])
+
+        value_map = {}
+        for key, value in pathBackingFileMap.items():
+            value_map.setdefault(value, []).append(key)
+        return [keys for keys in value_map.values() if len(keys) > 1]
+
     @kvmagent.replyerror
     def offline_commit_snapshot(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = OfflineCommitSnapshotRsp()
+
+        if cmd.chainInstallPathInDb:
+            chain_in_db = cmd.chainInstallPathInDb
+            duplicate_backing_file_paths = self.find_duplicate_backing_file_paths(chain_in_db)
+            if duplicate_backing_file_paths:
+                if len(duplicate_backing_file_paths) == 1 and cmd.top in duplicate_backing_file_paths[0]:
+                    pass
+                else:
+                    raise kvmagent.KvmError('multiple chain paths share the same backing file: path[%s]'
+                                            % duplicate_backing_file_paths)
+
+            chain_consistent, inconsistent_node_path, expected_backing, actual_backing_file = self.consistent_backing_chain(
+                chain_in_db)
+            if not chain_consistent:
+                # duplicate deletion of the same node
+                top_child_path = chain_in_db[chain_in_db.index(cmd.top) - 1]
+                if inconsistent_node_path != top_child_path:
+                    raise kvmagent.KvmError('invalid chain modification: node [%s] is inconsistent. '
+                                            'only modifications to source path [%s] are allowed.'
+                                            % (inconsistent_node_path, cmd.base))
+                if actual_backing_file != cmd.base:
+                    raise kvmagent.KvmError('invalid backing file modification: node [%s] '
+                                            'should point to [%s], but actually points to [%s].'
+                                            % (inconsistent_node_path, cmd.base, actual_backing_file))
 
         if linux.qcow2_get_backing_file(cmd.top) != linux.qcow2_get_backing_file(cmd.base):
             linux.qcow2_commit(cmd.top, cmd.base)
