@@ -3124,8 +3124,12 @@ class Vm(object):
             if volume.useVirtioSCSI:
                 e(disk, 'target', None, {'dev': 'sd%s' % dev_letter, 'bus': 'scsi'})
                 e(disk, 'wwn', volume.wwn)
-            else:
+            elif volume.useVirtio:
                 e(disk, 'target', None, {'dev': 'vd%s' % self.DEVICE_LETTERS[volume.deviceId], 'bus': 'virtio'})
+            else:
+                bus_type = self._get_controller_type()
+                dev_format = Vm._get_disk_target_dev_format(bus_type)
+                e(disk, 'target', None, {'dev': dev_format % dev_letter, 'bus': bus_type})
             if volume.physicalBlockSize:
                 e(disk, 'blockio', None, {'physical_block_size': str(volume.physicalBlockSize)})
             return disk
@@ -5666,7 +5670,16 @@ class Vm(object):
                 disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
                 e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
                 e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(_v.installPath)})
-                e(disk, 'target', None, {'dev': 'vd%s' % _dev_letter, 'bus': 'virtio'})
+                if _v.useVirtioSCSI:
+                    e(disk, 'target', None, {'dev': 'sd%s' % _dev_letter, 'bus': 'scsi'})
+                    e(disk, 'wwn', _v.wwn)
+                elif _v.useVirtio:
+                    e(disk, 'target', None, {'dev': 'vd%s' % _dev_letter, 'bus': 'virtio'})
+                else:
+                    dev_format = Vm._get_disk_target_dev_format(default_bus_type)
+                    e(disk, 'target', None, {'dev': dev_format % _dev_letter, 'bus': default_bus_type})
+                    if hd_device_address_deduplicate:
+                        preserve_hd_device_config(disk, _v)
                 if _v.physicalBlockSize:
                     e(disk, 'blockio', None, {'physical_block_size': str(_v.physicalBlockSize)})
                 return disk
