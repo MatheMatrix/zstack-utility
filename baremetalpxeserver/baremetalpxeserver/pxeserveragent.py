@@ -104,7 +104,8 @@ class PxeServerAgent(object):
     PXELINUX_CFG_PATH = TFTPBOOT_PATH + "pxelinux.cfg/"
     PXELINUX_DEFAULT_CFG = PXELINUX_CFG_PATH + "default"
     UEFI_GRUB_CFG_PATH = TFTPBOOT_PATH + "EFI/BOOT/"
-    UEFI_DEFAULT_GRUB_CFG = TFTPBOOT_PATH + "grub.cfg"
+    UEFI_DEFAULT_GRUB_CFG = UEFI_GRUB_CFG_PATH + "grub.cfg"
+    UEFI_BOOT_GRUB_CFG = TFTPBOOT_PATH + "grub.cfg"
     # we use `KS_CFG_PATH` to hold kickstart/preseed/autoyast preconfiguration files
     KS_CFG_PATH = VSFTPD_ROOT_PATH + "ks/"
     INSPECTOR_KS_CFG = KS_CFG_PATH + "inspector_ks_ARCH.cfg"
@@ -237,7 +238,6 @@ tftp-root={TFTPBOOT_PATH}
 log-facility={DNSMASQ_LOG_PATH}
 dhcp-range={DHCP_RANGE}
 dhcp-option=1,{DHCP_NETMASK}
-dhcp-option=6,223.5.5.5,8.8.8.8
 dhcp-hostsdir={DHCP_HOSTS_DIR}
 """.format(DHCP_INTERFACE=cmd.dhcpInterface,
            DHCP_RANGE="%s,%s,%s" % (cmd.dhcpRangeBegin, cmd.dhcpRangeEnd, cmd.dhcpRangeNetmask),
@@ -312,6 +312,14 @@ menuentry 'ZStack Get Bare Metal Chassis Hardware Info' --class fedora --class g
 """ % (pxeserver_dhcp_nic_ip, pxeserver_dhcp_nic_ip)
         with open(self.UEFI_DEFAULT_GRUB_CFG, 'w') as f:
             f.write(grub_cfg)
+
+        # remove symlink if exists
+        if os.path.lexists(self.UEFI_BOOT_GRUB_CFG):
+            os.remove(self.UEFI_BOOT_GRUB_CFG)
+
+        # create link for grub.cfg (for get baremetal hardinfo)
+        rel_path = os.path.relpath(self.UEFI_DEFAULT_GRUB_CFG, os.path.dirname(self.UEFI_BOOT_GRUB_CFG))
+        os.symlink(rel_path, self.UEFI_BOOT_GRUB_CFG)
 
         # init inspector_ks.cfg
         ks_tmpl_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'ks_tmpl')
@@ -519,6 +527,15 @@ menuentry 'Install OS on Bare Metal Instance' --class fedora --class gnu-linux -
                    KS_CFG_NAME=ks_cfg_name)
         with open(grub_cfg_file, 'w') as f:
             f.write(grub_cfg)
+        # create link for grub.cfg-01-MAC (for baremetal instance deploy)
+        grub_link_cfg_file = os.path.join(self.TFTPBOOT_PATH, "grub.cfg-01-" + ks_cfg_name)
+
+        # remove symlink if exists
+        if os.path.exists(grub_link_cfg_file):
+            os.remove(grub_link_cfg_file)
+
+        rel_path = os.path.relpath(grub_cfg_file, os.path.dirname(grub_link_cfg_file))
+        os.symlink(rel_path, grub_link_cfg_file)
 
     def _create_preconfiguration_file(self, cmd):
         # in case user didn't seleted a preconfiguration template etc.
@@ -1015,6 +1032,8 @@ echo "STARTMODE='auto'" >> $IFCFGFILE
                 bash_r("rm -f %s/*" % self.PXELINUX_CFG_PATH)
             if os.path.exists(self.UEFI_GRUB_CFG_PATH):
                 bash_r("rm -f %s/*" % self.UEFI_GRUB_CFG_PATH)
+                # remove all grub.cfg-01-MAC symlinks
+                bash_r("rm -f %s/grub.cfg-01-*" % self.TFTPBOOT_PATH)
             if os.path.exists(self.KS_CFG_PATH):
                 bash_r("rm -f %s/*" % self.KS_CFG_PATH)
             if os.path.exists(self.NGINX_MN_PROXY_CONF_PATH):
@@ -1032,6 +1051,10 @@ echo "STARTMODE='auto'" >> $IFCFGFILE
             uefi_grub_cfg_file = os.path.join(self.UEFI_GRUB_CFG_PATH, "grub.cfg-01-" + mac_as_name)
             if os.path.exists(uefi_grub_cfg_file):
                 os.remove(uefi_grub_cfg_file)
+
+            uefi_grub_cfg_symlink = os.path.join(self.TFTPBOOT_PATH, "grub.cfg-01-" + mac_as_name)
+            if os.path.lexists(uefi_grub_cfg_symlink):
+                os.remove(uefi_grub_cfg_symlink)
 
             ks_cfg_file = os.path.join(self.KS_CFG_PATH, mac_as_name)
             if os.path.exists(ks_cfg_file):
