@@ -19,6 +19,14 @@ class CpRsp(AgentResponse):
         super(CpRsp, self).__init__()
         self.installPath = None
 
+class StorageBackupRsp(AgentResponse):
+    def __init__(self):
+        super(StorageBackupRsp, self).__init__()
+        self.uploadPath = None
+        self.lastBackupUuid = None
+        self.mode = None
+        self.size = 0
+
 class ImageStoreClient(object):
     ZSTORE_CLI_BIN = "/usr/local/zstack/imagestore/bin/zstcli"
     ZSTORE_CLI_PATH = ZSTORE_CLI_BIN + " -rootca /var/lib/zstack/imagestorebackupstorage/package/certs/ca.pem"
@@ -62,6 +70,31 @@ class ImageStoreClient(object):
 
     def _build_install_path(self, name, imgid):
         return "{0}{1}/{2}".format(self.ZSTORE_PROTOSTR, name, imgid)
+
+    def storage_backup(self, cmd):
+        self._check_zstore_cli()
+        sshData = cmd.userName + '@' + cmd.host + ':' + cmd.uploadDir
+        cmdstr = '%s -rootca %s storagebackup -ssh %s -p %s -parent %s -volume %s -backupUuid %s' % (
+            self.ZSTORE_CLI_PATH, self.ZSTORE_CLI_PATH, sshData, cmd.password, cmd.lastBackupUuid, cmd.volumePath,
+            cmd.backupUuid)
+        output = shell.call(cmdstr.encode(encoding="utf-8"))
+        result = jsonobject.loads(output.splitlines()[-1])
+
+        _, image = self._get_id_name_from_install(cmd.volumePath)
+        rsp = StorageBackupRsp()
+        rsp.uploadPath = os.path.join(cmd.uploadDir, result.backupName)
+        rsp.mode = result.mode
+        rsp.size = int(result.size)
+        rsp.lastBackupUuid = result.lastBackupUuid
+        return jsonobject.dumps(rsp)
+
+    def cancel_storage_backup(self, cmd):
+        self._check_zstore_cli()
+        cmdstr = '%s -rootca %s cancelstoragebackup -volume %s ' % (
+        self.ZSTORE_CLI_PATH, self.ZSTORE_CLI_PATH, cmd.volumePath)
+        shell.call(cmdstr.encode(encoding="utf-8"))
+        rsp = AgentResponse()
+        return jsonobject.dumps(rsp)
 
     def upload_imagestore(self, cmd, req):
         self._check_zstore_cli()

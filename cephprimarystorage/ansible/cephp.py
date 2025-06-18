@@ -98,7 +98,7 @@ else:
     run_remote_command(command, host_post_info)
 
 if host_info.distro in RPM_BASED_OS:
-    install_rpm_list = "wget nmap"
+    install_rpm_list = "wget nmap fuse-sshfs"
 
     if remote_bin_installed(host_post_info, "qemu-img", return_status=True):
         (status, qemu_img_version) = get_qemu_img_version(host_post_info)
