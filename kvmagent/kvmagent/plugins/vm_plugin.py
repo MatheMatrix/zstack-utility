@@ -474,6 +474,8 @@ class DeviceAddress():
         self.controller = None
         self.target = None
         self.unit = None
+        # for disk order in xml
+        self.order = None
 
 class AttachNicResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -4821,6 +4823,16 @@ class Vm(object):
 
     @staticmethod
     def from_StartVmCmd(cmd):
+        def get_disk_count():
+            count = 0
+            if cmd.rootVolume:
+                count+=1
+            if cmd.dataVolumes:
+                count+=len(cmd.dataVolumes)
+            if cmd.cdRoms:
+                count+=len(cmd.cdRoms)
+            return count
+
         use_numa = cmd.useNuma
         numa_nodes = cmd.addons.numaNodes
         machine_type = get_machineType(cmd.machineType)
@@ -4830,6 +4842,11 @@ class Vm(object):
             raise kvmagent.KvmError("Image architecture[{}] not matched host architecture[{}].".format(cmd.architecture, HOST_ARCH))
         default_bus_type = ('ide', 'sata', 'scsi')[max(machine_type == 'q35', (HOST_ARCH in ['aarch64', 'mips64el', 'loongarch64']) * 2)]
         elements = {}
+        all_disk_serial = [""] * get_disk_count()
+
+        logger.debug('-------------all_disk_serial----------------------')
+        logger.debug(all_disk_serial)
+        logger.debug('-------------all_disk_serial----------------------')
 
         def make_root():
             root = etree.Element('domain')
@@ -5338,7 +5355,7 @@ class Vm(object):
             # legacy_cdrom_config used for cdrom without deivce address
             # cdrom given address record from management node side
             def make_empty_cdrom(iso, legacy_cdrom_config, bootOrder, resourceUuid):
-                cdrom = e(devices, 'disk', None, {'type': iso.type, 'device': 'cdrom'})
+                cdrom = disk = etree.Element('disk', {'type': iso.type, 'device': 'cdrom'})
                 e(cdrom, 'driver', None, {'name': 'qemu', 'type': 'raw'})
                 e(cdrom, 'target', None, {'dev': legacy_cdrom_config.targetDev, 'bus': default_bus_type})
 
@@ -5384,18 +5401,24 @@ class Vm(object):
             if not cmd.cdRoms:
                 return
 
+            def append_to_devices(iso, cdrom):
+                devices.append(cdrom)
+                if iso.deviceAddress and iso.deviceAddress.order is not None:
+                    all_disk_serial[iso.deviceAddress.order] = xmlobject.loads(etree.tostring(cdrom)).get('serial')
+
             for iso in cmd.cdRoms:
                 iso = iso_check(iso)
                 cdrom_config = empty_cdrom_configs[iso.deviceId]
 
                 if iso.isEmpty:
-                    make_empty_cdrom(iso, cdrom_config, iso.bootOrder, iso.resourceUuid)
+                    append_to_devices(iso, make_empty_cdrom(iso, cdrom_config, iso.bootOrder, iso.resourceUuid))
                     continue
 
+                cdrom = None
                 if iso.path.startswith('ceph'):
                     ic = IsoCeph()
                     ic.iso = iso
-                    devices.append(ic.to_xmlobject(cdrom_config.targetDev, default_bus_type, cdrom_config.bus, cdrom_config.unit, iso.bootOrder))
+                    cdrom = ic.to_xmlobject(cdrom_config.targetDev, default_bus_type, cdrom_config.bus, cdrom_config.unit, iso.bootOrder)
                 elif iso.type == "vhostuser":
                     cdrom = make_empty_cdrom(iso, cdrom_config, iso.bootOrder, iso.resourceUuid)
                     source = e(cdrom, 'source', None, {'type': 'unix', 'path': iso.path})
@@ -5407,6 +5430,8 @@ class Vm(object):
 
                     cdrom = make_empty_cdrom(iso, cdrom_config, iso.bootOrder, iso.resourceUuid)
                     e(cdrom, 'source', None, {Vm.disk_source_attrname.get(iso.type): iso.path})
+
+                append_to_devices(iso, cdrom)
 
         @linux.with_arch(todo_list=['x86_64'])
         def make_pm():
@@ -5496,18 +5521,42 @@ class Vm(object):
                 if _v.shareable:
                     e(disk, 'shareable')
 
+                logger.debug(">>>>>>>>>>>>>>>>>>>filebased_volume>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+                logger.debug(disk)
+                logger.debug(etree.tostring(disk))
+                logger.debug(">>>>>>>>>>>>>>>>>>>filebased_volume>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n")
+
                 if _v.useVirtioSCSI or _v.useSCSI:
+                    logger.debug("use useVirtioSCSI useSCSI---------------------------------------------\n")
                     e(disk, 'target', None, {'dev': 'sd%s' % _dev_letter, 'bus': 'scsi'})
                     e(disk, 'wwn', _v.wwn)
                     return disk
 
                 if _v.useVirtio:
+                    logger.debug("use virtio---------------------------------------------\n")
                     e(disk, 'target', None, {'dev': 'vd%s' % _dev_letter, 'bus': 'virtio'})
                 else:
+                    logger.debug("use ide---------------------------------------------\n")
                     dev_format = Vm._get_disk_target_dev_format(default_bus_type)
+
+                    logger.debug("default_bus_type %s-----------------\n" % default_bus_type)
+                    logger.debug("dev_format %s-----------------\n" % dev_format)
+                    logger.debug("_dev_letter %s-----------------\n" % _dev_letter)
+
                     e(disk, 'target', None, {'dev': dev_format % _dev_letter, 'bus': default_bus_type})
+
+                    logger.debug(">>>>>>>>>>>>>>>>>>>e(disk>>>>>123>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+                    logger.debug(disk)
+                    logger.debug(etree.tostring(disk))
+                    logger.debug(">>>>>>>>>>>>>>>>>>>e(disk>>>>>213>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n")
+
                     if default_bus_type == "ide" and cmd.imagePlatform.lower() == "other":
                         allocat_ide_config(disk, _v)
+
+                logger.debug(">>>>>>>>>>>>>>>>>>>filebased_volume11>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+                logger.debug(disk)
+                logger.debug(etree.tostring(disk))
+                logger.debug(">>>>>>>>>>>>>>>>>>>filebased_volume111>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n")
                 return disk
 
             def iscsibased_volume(_dev_letter, _v):
@@ -5733,8 +5782,23 @@ class Vm(object):
 
             def allocat_ide_config(_disk, _volume):
                 if _volume.deviceAddress:
+                    logger.debug(">>>>>>>>>>>>>>>>>>>allocat_ide_config111>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+                    logger.debug(_disk)
+                    logger.debug(etree.tostring(_disk))
+                    logger.debug(jsonobject.dumps(_disk))
+                    logger.debug(">>>>>>>>>>>>>>>>>>>allocat_ide_config111>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n")
+
+                    logger.debug(_volume.deviceAddress.bus)
+                    logger.debug(_volume.deviceAddress.unit)
+
                     e(_disk, 'address', None, {'type': 'drive', 'bus': _volume.deviceAddress.bus, 'unit': _volume.deviceAddress.unit})
                     volume_ide_configs.pop(0)
+
+                    logger.debug(">>>>>>>>>>>>>>>>>>>allocat_ide_config222>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+                    logger.debug(_disk)
+                    logger.debug(jsonobject.dumps(_disk))
+                    logger.debug(etree.tostring(_disk))
+                    logger.debug(">>>>>>>>>>>>>>>>>>>allocat_ide_config222>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n")
                 else:
                     if len(volume_ide_configs) == 0:
                         err = "insufficient IDE address."
@@ -5743,8 +5807,19 @@ class Vm(object):
                     volume_ide_config = volume_ide_configs.pop(0)
                     e(_disk, 'address', None, {'type': 'drive', 'bus': volume_ide_config.bus, 'unit': volume_ide_config.unit})
 
+                    logger.debug(">>>>>>>>>>>>>>>>>>>allocat_ide_config12321>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+                    logger.debug(_disk)
+                    logger.debug(etree.tostring(_disk))
+                    logger.debug(">>>>>>>>>>>>>>>>>>>allocat_ide_config213213>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n")
+
+
             def make_volume(dev_letter, v, r, dataSourceOnly=False):
                 v = file_volume_check(v)
+
+                logger.debug(">>>>>>>>>>>>>>>>>>>v = file_volume_check(v)>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+                logger.debug(v.deviceType)
+                logger.debug(">>>>>>>>>>>>>>>>>>>v = file_volume_check(v)>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n")
+
                 if r:
                     vol = nbd_volume(dev_letter, v, r)
                 elif v.deviceType == 'quorum':
@@ -5796,6 +5871,12 @@ class Vm(object):
 
                 r = get_recover_path(v)
                 vol = make_volume(dev_letter, v, r)
+
+                logger.debug(">>>>>>>>>>>>>>>>>>>make_volume>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+                logger.debug(vol)
+                logger.debug(etree.tostring(vol))
+                logger.debug(">>>>>>>>>>>>>>>>>>>make_volume>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n")
+
                 if r:
                     v.bootOrder = None
                     v.installPath = v.installPath.split('?', 1)[0]
@@ -5803,6 +5884,8 @@ class Vm(object):
                     rvols[target_dev] = make_volume(dev_letter, v, None, True)
 
                 devices.append(vol)
+                if v.deviceAddress and v.deviceAddress.order is not None:
+                    all_disk_serial[v.deviceAddress.order] = xmlobject.loads(etree.tostring(vol)).get('serial')
 
             if len(rvols) > 0:
                 logger.info("vm[%s] is recovering with disks: %s" % (cmd.vmInstanceUuid, rvols.keys()))
@@ -6279,6 +6362,26 @@ class Vm(object):
                 e(qcmd, "qemu:arg", attrib={"value": "-cpu"})
                 e(qcmd, "qemu:arg", attrib={"value": "{},vendor={}".format(cpuFlags, cmd.vmCpuVendorId)})
 
+        def reorder_disks():
+            if not cmd.memorySnapshotPath:
+                return
+
+            devices = elements['devices']
+            disk_by_disk = {}
+            for children in devices.getchildren():
+                if children.tag != "disk":
+                    continue
+                serial = xmlobject.loads(etree.tostring(children)).get('serial')
+                if serial:
+                    disk_by_disk[serial] = children
+
+            for serial in all_disk_serial:
+                if serial and serial in disk_by_disk:
+                    disk_element = disk_by_disk.get(serial)
+                    if disk_element is not None:
+                        devices.remove(disk_element)
+                        devices.append(disk_element)
+
         make_root()
         make_meta()
         make_cpu()
@@ -6306,6 +6409,7 @@ class Vm(object):
         if not cmd.isApplianceVm:
             make_cdrom()
             make_usb_redirect()
+        reorder_disks()
 
         if cmd.additionalQmp:
             make_qemu_commandline()
@@ -6318,6 +6422,15 @@ class Vm(object):
 
         root = elements['root']
         xml = etree.tostring(root)
+
+
+        logger.debug('-------------2all_disk_serial----------------------')
+        logger.debug(all_disk_serial)
+        logger.debug('-------------2all_disk_serial----------------------')
+
+        logger.debug(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+        logger.debug(etree.tostring(elements['devices']))
+        logger.debug(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
 
         vm = Vm()
         vm.uuid = cmd.vmInstanceUuid
@@ -6332,7 +6445,7 @@ class Vm(object):
         else:
             vm.domain_xml = xml
             vm.domain_xmlobject = xmlobject.loads(xml)
-        return vm
+        return vm, elements
 
     @staticmethod
     def _build_interface_xml(nic, devices=None, vhostSrcPath=None, action=None, brMode=None, index=0, cmd=None):
@@ -6815,7 +6928,7 @@ class VmPlugin(kvmagent.KvmAgent):
                 else:
                     vm.destroy()
 
-            vm = Vm.from_StartVmCmd(cmd)
+            vm,_ = Vm.from_StartVmCmd(cmd)
 
             if cmd.memorySnapshotPath:
                 snapshot_path = None
@@ -7084,8 +7197,12 @@ class VmPlugin(kvmagent.KvmAgent):
             vmNicInfo.macAddress = iface.mac.address_
             nicInfos.append(vmNicInfo)
 
+        order = 0
         for disk in vm.domain_xmlobject.devices.get_child_node_as_list('disk'):
-            virtualDeviceInfoList.append(self.get_device_address_info(disk))
+            virtualDeviceInfo = self.get_device_address_info(disk)
+            virtualDeviceInfo.deviceAddress.order = order
+            virtualDeviceInfoList.append(virtualDeviceInfo)
+            order += 1
 
         memBalloonPci = vm.domain_xmlobject.devices.get_child_node('memballoon')
         if memBalloonPci is not None:
