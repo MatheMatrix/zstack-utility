@@ -2570,7 +2570,8 @@ done
                 if any(vendor in to.description for vendor in gpu_vendors) \
                         and ('VGA compatible controller' in to.type or 'Display controller' in to.type
                              or (pci_device_mapper.get('VGA compatible controller') is not None
-                               and pci_device_mapper.get('VGA compatible controller') in to.type)):
+                               and pci_device_mapper.get('VGA compatible controller') in to.type)) \
+                        and gpu.is_valid_video_controller(to.device):
                     to.type = "GPU_Video_Controller"
                 elif any(vendor in to.description for vendor in gpu_vendors) \
                         and ('Audio device' in to.type or (pci_device_mapper.get('Audio device') is not None

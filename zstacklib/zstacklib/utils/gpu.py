@@ -228,3 +228,8 @@ def get_huawei_gpu_product_name_cmd(npu_id, iswindows=False):
 def reload_hygon_gpu_driver_cmd():
     cmd = "hy-smi --unloaddriver && hy-smi --loaddriver"
     return cmd
+
+
+def is_valid_video_controller(device):
+    invalid_keywords = {"iBMC"}
+    return all(keyword not in device for keyword in invalid_keywords)
