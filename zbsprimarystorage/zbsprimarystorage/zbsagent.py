@@ -1,0 +1,556 @@
+__author__ = 'Xingwei Yu'
+
+import traceback
+import pprint
+import os
+import base64
+
+import zbsutils
+import zstacklib.utils.jsonobject as jsonobject
+
+from zstacklib.utils import plugin
+from zstacklib.utils import daemon
+from zstacklib.utils import linux
+from zstacklib.utils import traceable_shell
+from zstacklib.utils.report import *
+from zstacklib.utils.bash import *
+
+
+log.configure_log('/var/log/zstack/zbs-primarystorage.log')
+logger = log.get_logger(__name__)
+
+
+class AgentResponse(object):
+    def __init__(self, success=True, error=None):
+        self.success = success
+        self.error = error if error else ''
+
+    def set_error(self, error):
+        self.success = False
+        self.error = error
+
+
+class CbdToNbdRsp(AgentResponse):
+    def __init__(self):
+        super(CbdToNbdRsp, self).__init__()
+        self.ip = None
+        self.port = 0
+
+
+class ExpandVolumeRsp(AgentResponse):
+    def __init__(self):
+        super(ExpandVolumeRsp, self).__init__()
+        self.size = 0
+
+
+class FlattenVolumeRsp(AgentResponse):
+    def __init__(self):
+        super(FlattenVolumeRsp, self).__init__()
+        self.size = 0
+        self.actualSize = 0
+
+
+class CopyRsp(AgentResponse):
+    def __init__(self):
+        super(CopyRsp, self).__init__()
+        self.installPath = None
+        self.size = 0
+
+
+class RollbackSnapshotRsp(AgentResponse):
+    def __init__(self):
+        super(RollbackSnapshotRsp, self).__init__()
+        self.installPath = None
+        self.size = 0
+        self.actualSize = 0
+
+
+class QueryVolumeRsp(AgentResponse):
+    def __init__(self):
+        super(QueryVolumeRsp, self).__init__()
+        self.size = 0
+        self.actualSize = 0
+        self.parentUri = None
+
+
+class CloneVolumeRsp(AgentResponse):
+    def __init__(self):
+        super(CloneVolumeRsp, self).__init__()
+        self.installPath = None
+        self.size = 0
+        self.actualSize = 0
+
+
+class CreateSnapshotRsp(AgentResponse):
+    def __init__(self):
+        super(CreateSnapshotRsp, self).__init__()
+        self.size = 0
+        self.actualSize = 0
+
+
+class CreateVolumeRsp(AgentResponse):
+    def __init__(self):
+        super(CreateVolumeRsp, self).__init__()
+        self.size = 0
+        self.actualSize = 0
+
+
+class GetCapacityRsp(AgentResponse):
+    def __init__(self):
+        super(GetCapacityRsp, self).__init__()
+        self.logicalPoolInfos = []
+
+
+class GetFactsRsp(AgentResponse):
+    def __init__(self):
+        super(GetFactsRsp, self).__init__()
+        self.mdsExternalAddr = None
+
+
+class LogicalPoolInfo:
+    class RedundanceAndPlacementPolicy:
+        def __init__(self, copyset_number=None, replica_number=None, zone_number=None):
+            self.copysetNum = copyset_number
+            self.replicaNum = replica_number
+            self.zoneNum = zone_number
+
+    def __init__(self, logical_pool_info):
+        self.logicalPoolID = logical_pool_info.logicalPoolID
+        self.logicalPoolName = logical_pool_info.logicalPoolName
+        self.physicalPoolID = logical_pool_info.physicalPoolID
+        self.physicalPoolName = logical_pool_info.physicalPoolName
+        self.type = logical_pool_info.type
+        self.createTime = logical_pool_info.createTime
+        self.redundanceAndPlaceMentPolicy = self.decode_redundance_and_placement_policy(
+            logical_pool_info.redundanceAndPlaceMentPolicy
+        )
+        self.userPolicy = logical_pool_info.userPolicy
+        self.allocateStatus = logical_pool_info.allocateStatus
+        self.capacity = logical_pool_info.capacity
+        self.usedSize = logical_pool_info.usedSize
+        self.allocatedSize = logical_pool_info.allocatedSize
+        self.rawUsedSize = logical_pool_info.rawUsedSize
+        self.rawWalUsedSize = logical_pool_info.rawWalUsedSize
+        self.quota = logical_pool_info.quota
+
+    def decode_redundance_and_placement_policy(self, redundance_and_placement_policy):
+        if not redundance_and_placement_policy:
+            return None
+
+        try:
+            d = jsonobject.loads(base64.b64decode(redundance_and_placement_policy))
+            return self.RedundanceAndPlacementPolicy(
+                copyset_number=d.copysetNum,
+                replica_number=d.replicaNum,
+                zone_number=d.zoneNum
+            )
+        except Exception as e:
+            logger.error('failed to decode redundance and placement policy[%s], error[%s]' % (
+                redundance_and_placement_policy, e.message
+            ))
+
+
+def replyerror(func):
+    @functools.wraps(func)
+    def wrap(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            content = traceback.format_exc()
+            err = '%s\n%s\nargs:%s' % (str(e), content, pprint.pformat([args, kwargs]))
+            rsp = AgentResponse()
+            rsp.success = False
+            rsp.error = str(e)
+            logger.warn(err)
+            return jsonobject.dumps(rsp)
+    return wrap
+
+
+class ZbsAgent(plugin.TaskManager):
+    ECHO_PATH = "/zbs/primarystorage/echo"
+    PING_PATH = "/zbs/primarystorage/ping"
+    DEPLOY_CLIENT_PATH = "/zbs/primarystorage/client/deploy"
+    GET_CAPACITY_PATH = "/zbs/primarystorage/capacity"
+    COPY_PATH = "/zbs/primarystorage/copy"
+    CREATE_VOLUME_PATH = "/zbs/primarystorage/volume/create"
+    DELETE_VOLUME_PATH = "/zbs/primarystorage/volume/delete"
+    QUERY_VOLUME_PATH = "/zbs/primarystorage/volume/query"
+    CLONE_VOLUME_PATH = "/zbs/primarystorage/volume/clone"
+    CBD_TO_NBD_PATH = "/zbs/primarystorage/volume/cbdtonbd"
+    CLEAN_NBD_PATH = "/zbs/primarystorage/volume/cleannbd"
+    CREATE_SNAPSHOT_PATH = "/zbs/primarystorage/snapshot/create"
+    DELETE_SNAPSHOT_PATH = "/zbs/primarystorage/snapshot/delete"
+    ROLLBACK_SNAPSHOT_PATH = "/zbs/primarystorage/snapshot/rollback"
+    EXPAND_VOLUME_PATH = "/zbs/primarystorage/volume/expand"
+    FLATTEN_VOLUME_PATH = "/zbs/primarystorage/volume/flatten"
+
+    http_server = http.HttpServer(port=7763)
+    http_server.logfile_path = log.get_logfile_path()
+
+    def __init__(self):
+        super(ZbsAgent, self).__init__()
+        self.http_server.register_sync_uri(self.ECHO_PATH, self.echo)
+        self.http_server.register_async_uri(self.PING_PATH, self.ping)
+        self.http_server.register_async_uri(self.DEPLOY_CLIENT_PATH, self.deploy_client)
+        self.http_server.register_async_uri(self.GET_CAPACITY_PATH, self.get_capacity)
+        self.http_server.register_async_uri(self.COPY_PATH, self.copy)
+        self.http_server.register_async_uri(self.CREATE_VOLUME_PATH, self.create_volume)
+        self.http_server.register_async_uri(self.DELETE_VOLUME_PATH, self.delete_volume)
+        self.http_server.register_async_uri(self.QUERY_VOLUME_PATH, self.query_volume)
+        self.http_server.register_async_uri(self.CLONE_VOLUME_PATH, self.clone_volume)
+        self.http_server.register_async_uri(self.EXPAND_VOLUME_PATH, self.expand_volume)
+        self.http_server.register_async_uri(self.FLATTEN_VOLUME_PATH, self.flatten_volume)
+        self.http_server.register_async_uri(self.CBD_TO_NBD_PATH, self.cbd_to_nbd)
+        self.http_server.register_async_uri(self.CLEAN_NBD_PATH, self.clean_nbd)
+        self.http_server.register_async_uri(self.CREATE_SNAPSHOT_PATH, self.create_snapshot)
+        self.http_server.register_async_uri(self.DELETE_SNAPSHOT_PATH, self.delete_snapshot)
+        self.http_server.register_async_uri(self.ROLLBACK_SNAPSHOT_PATH, self.rollback_snapshot)
+
+    @replyerror
+    def ping(self, req):
+        rsp = AgentResponse()
+
+        o = zbsutils.query_mds_status_info()
+        r = jsonobject.loads(o)
+        if not r.result:
+            raise Exception('failed to query mds info, error[%s]' % r.error.message)
+
+        found = False
+        for m in r.result:
+            if m.status == "leader":
+                found = True
+                break
+
+        if not found:
+            rsp.success = False
+            rsp.error = 'cannot found mds leader.'
+            return jsonobject.dumps(rsp)
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def expand_volume(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ExpandVolumeRsp()
+
+        o = zbsutils.expand_volume(cmd.logicalPoolName, cmd.lunName, cmd.size)
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception('failed to expand volume[%s], error[%s]' % (cmd.lunName, ret.error.message))
+
+        o = zbsutils.query_volume_info(cmd.logicalPoolName, cmd.lunName)
+        rsp.size = jsonobject.loads(o).result.info.fileInfo.length
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def flatten_volume(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = FlattenVolumeRsp()
+
+        _, logical_pool, volume, _ = zbsutils.parse_cbd_path(cmd.path)
+
+        o = zbsutils.query_volume_info(logical_pool, volume)
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception('cannot found volume[%s/%s] info, error[%s]' % (logical_pool, volume, ret.error.message))
+        need_flatten = ret.result.info.fileInfo.fileType == 5 # 1 means normal(non-clonal), and 5 means clone volume
+        if not need_flatten:
+            logger.debug("target volume[%s/%s] is a non-clonal, no flatten is required, skip" % (logical_pool, volume))
+            rsp.size = ret.result.info.fileInfo.length
+            rsp.actualSize = ret.result.info.fileInfo.usedSize
+            return jsonobject.dumps(rsp)
+
+        o = zbsutils.flatten_volume(logical_pool, volume)
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception('failed to flatten volume[%s/%s], error[%s]' % (logical_pool, volume, ret.error.message))
+
+        o = zbsutils.query_volume_info(logical_pool, volume)
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception('cannot found volume[%s/%s] info, error[%s]' % (logical_pool, volume, ret.error.message))
+        rsp.size = ret.result.info.fileInfo.length
+        rsp.actualSize = ret.result.info.fileInfo.usedSize
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def copy(self, req):
+        class CopyDaemon(plugin.TaskDaemon):
+            def __init__(self, task_spec):
+                super(CopyDaemon, self).__init__(task_spec, "copy")
+                self.task_spec = task_spec
+
+            def _cancel(self):
+                traceable_shell.cancel_job_by_api(self.api_id)
+                zbsutils.delete_volume_and_snapshots(self.task_spec.logicalPoolName, self.task_spec.dstLunName)
+
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CopyRsp()
+
+        snapshot_path = cmd.logicalPoolName + "/" + cmd.lunName + "@" + cmd.snapshotName
+        dst_lun_path = cmd.logicalPoolName + "/" + cmd.dstLunName
+
+        with CopyDaemon(task_spec=cmd):
+            o = zbsutils.query_snapshot_info(cmd.logicalPoolName, cmd.lunName)
+            ret = jsonobject.loads(o)
+            if ret.error.code != 0:
+                raise Exception('failed to query snapshot info for volume[%s], error[%s]' % (cmd.lunName, ret.error.message))
+
+            o = zbsutils.copy(snapshot_path, dst_lun_path, True)
+            ret = jsonobject.loads(o)
+            if ret.error.code != 0:
+                raise Exception('failed to copy snapshot[%s] to volume[%s], error[%s]' % (snapshot_path, dst_lun_path, ret.error.message))
+            elif ret.result.hasattr('fileStatus') and ret.result.fileStatus != 0:
+                zbsutils.delete_volume_and_snapshots(cmd.logicalPoolName, cmd.dstLunName)
+                raise Exception('target volume[%s] exception[fileStatus:%d], deleted' % (dst_lun_path, ret.result.fileStatus))
+            rsp.size = ret.result.fileLength
+            rsp.installPath = zbsutils.CBD_VOLUME_PATH.format(zbsutils.get_physical_pool_name(cmd.logicalPoolName), cmd.logicalPoolName, cmd.dstLunName)
+
+            return jsonobject.dumps(rsp)
+
+    @replyerror
+    def rollback_snapshot(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = RollbackSnapshotRsp()
+
+        o = zbsutils.rollback_snapshot(cmd.logicalPoolName, cmd.lunName, cmd.snapshotName)
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception('failed to rollback snapshot[%s@%s], error[%s]' % (cmd.lunName, cmd.snapshotName, ret.error.message))
+
+        o = zbsutils.query_volume_info(cmd.logicalPoolName, cmd.lunName)
+        rsp.size = jsonobject.loads(o).result.info.fileInfo.length
+        rsp.installPath = zbsutils.CBD_VOLUME_PATH.format(zbsutils.get_physical_pool_name(cmd.logicalPoolName), cmd.logicalPoolName, cmd.lunName)
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def delete_snapshot(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+
+        o = zbsutils.query_snapshot_info(cmd.logicalPoolName, cmd.lunName)
+        r = jsonobject.loads(o)
+        if r.error.code != 0:
+            raise Exception('cannot found snapshot for volume[%s/%s], error[%s]' % (cmd.logicalPoolName, cmd.lunName, r.error.message))
+        if not r.result.hasattr('fileInfo'):
+            return jsonobject.dumps(rsp)
+
+        file_infos = []
+        for file_info in r.result.fileInfo:
+            if file_info.fileName == cmd.snapshotName:
+                file_infos.append(file_info)
+                break
+        if not file_infos:
+            return jsonobject.dumps(rsp)
+
+        zbsutils.delete_snapshots(cmd.logicalPoolName, cmd.lunName, file_infos)
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def query_volume(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = QueryVolumeRsp()
+
+        physical_pool, logical_pool, volume, _ = zbsutils.parse_cbd_path(cmd.path)
+
+        o = zbsutils.query_volume_info(logical_pool, volume)
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception('cannot found volume[%s] info, error[%s]' % (cmd.path, ret.error.message))
+        rsp.size = ret.result.info.fileInfo.length
+        rsp.actualSize = ret.result.info.fileInfo.usedSize
+        if ret.result.info.fileInfo.hasattr('cloneSourceSnap'):
+            rsp.parentUri = "{}:{}/{}".format(
+                zbsutils.CBD_PREFIX,
+                physical_pool,
+                ret.result.info.fileInfo.cloneSourceSnap
+            )
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def clone_volume(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CloneVolumeRsp()
+
+        isProtected = False
+        o = zbsutils.query_snapshot_info(cmd.logicalPoolName, cmd.lunName)
+        ret = jsonobject.loads(o)
+        if not ret.result.hasattr('fileInfo'):
+            raise Exception('failed to found snapshot for volume[%s]' % cmd.lunName)
+        for info in ret.result.fileInfo:
+            if cmd.snapshotName in info.fileName:
+                isProtected = info.isProtected
+                break
+
+        if not isProtected:
+            zbsutils.protect_snapshot(cmd.logicalPoolName, cmd.lunName, cmd.snapshotName)
+
+        o = zbsutils.clone_volume(cmd.logicalPoolName, cmd.lunName, cmd.snapshotName, cmd.dstLunName)
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception('failed to clone volume[%s] to volume[%s], error[%s]' % (cmd.srcPath, cmd.destPath, ret.error.message))
+
+        rsp.installPath = zbsutils.CBD_VOLUME_PATH.format(zbsutils.get_physical_pool_name(cmd.logicalPoolName), cmd.logicalPoolName, cmd.dstLunName)
+        rsp.size = ret.result.fileInfo.length
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def create_snapshot(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CreateSnapshotRsp()
+
+        found = False
+        install_path = zbsutils.CBD_SNAPSHOT_PATH.format(zbsutils.get_physical_pool_name(cmd.logicalPoolName), cmd.logicalPoolName, cmd.lunName, cmd.snapshotName)
+
+        o = zbsutils.query_snapshot_info(cmd.logicalPoolName, cmd.lunName)
+        ret = jsonobject.loads(o)
+        if ret.result.hasattr('fileInfo'):
+            for info in ret.result.fileInfo:
+                if cmd.snapshotName in info.fileName:
+                    found = True
+                    rsp.size = info.length
+                    rsp.installPath = install_path
+                    break
+
+        if cmd.skipOnExisting and found:
+            return jsonobject.dumps(rsp)
+
+        o = zbsutils.create_snapshot(cmd.logicalPoolName, cmd.lunName, cmd.snapshotName)
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception('failed to create snapshot[%s@%s], error[%s]' % (cmd.lunName, cmd.snapshotName, ret.error.message))
+
+        rsp.size = ret.result.snapShotFileInfo.length
+        rsp.installPath = install_path
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def clean_nbd(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+
+        fullname = "qemu-nbd -D cbd2nbd.%d -f raw -p %d" % (cmd.port, cmd.port)
+        linux.kill_process_by_fullname(fullname, 9)
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def cbd_to_nbd(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CbdToNbdRsp()
+
+        physical_pool, logical_pool, volume, snapshot = zbsutils.parse_cbd_path(cmd.installPath)
+        if snapshot:
+            seq_num = ""
+            o = zbsutils.query_snapshot_info(logical_pool, volume)
+            ret = jsonobject.loads(o)
+            if not ret.result.hasattr('fileInfo'):
+                raise Exception('failed to found snapshot for volume[%s]' % volume)
+            for info in ret.result.fileInfo:
+                if snapshot in info.fileName:
+                    seq_num = info.seqNum
+                    break
+            install_path = zbsutils.CBD_SNAPSHOT_PATH.format(physical_pool, logical_pool, volume, str(seq_num))
+        else:
+            install_path = cmd.installPath
+
+        port = linux.get_free_port_in_range(10600, 10800)
+        desc = "cbd2nbd.%d" % port
+        zbsutils.cbd_to_nbd(desc, port, install_path)
+        rsp.ip = cmd.mdsAddr
+        rsp.port = port
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def delete_volume(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+
+        zbsutils.delete_volume_and_snapshots(cmd.logicalPoolName, cmd.lunName)
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def create_volume(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CreateVolumeRsp()
+
+        install_path = zbsutils.CBD_VOLUME_PATH.format(zbsutils.get_physical_pool_name(cmd.logicalPoolName), cmd.logicalPoolName, cmd.lunName)
+
+        o = zbsutils.query_volume_info(cmd.logicalPoolName, cmd.lunName)
+        ret = jsonobject.loads(o)
+        if ret.error.code == 0 and cmd.skipIfExisting:
+            rsp.size = ret.result.info.fileInfo.length
+            rsp.actualSize = ret.result.info.fileInfo.usedSize
+            rsp.installPath = install_path
+            return jsonobject.dumps(rsp)
+
+        o = zbsutils.create_volume(cmd.logicalPoolName, cmd.lunName, cmd.size)
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception('failed to create volume[%s], error[%s]' % (cmd.lunName, ret.error.message))
+
+        o = zbsutils.query_volume_info(cmd.logicalPoolName, cmd.lunName)
+        ret = jsonobject.loads(o)
+        if ret.error.code != 0:
+            raise Exception('cannot found volume[%s/%s] info, error[%s]' % (cmd.logicalPoolName, cmd.lunName, ret.error.message))
+        rsp.size = ret.result.info.fileInfo.length
+        rsp.installPath = install_path
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def get_capacity(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetCapacityRsp()
+
+        o = zbsutils.query_logical_pool_info()
+        r = jsonobject.loads(o)
+        if r.error.code != 0:
+            raise Exception('cannot found logical pool info, error[%s]' % r.error.message)
+
+        found = False
+        for physical_pool in r.result:
+            for logical_pool in physical_pool.logicalPoolInfos:
+                rsp.logicalPoolInfos.append(LogicalPoolInfo(logical_pool))
+                if cmd.logicalPoolName in logical_pool.logicalPoolName:
+                    found = True
+
+        if not found:
+            raise Exception('cannot found logical pool[%s], you must create it manually' % cmd.logicalPoolName)
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def deploy_client(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+
+        o = zbsutils.deploy_client(cmd.clientIp, cmd.clientPassword)
+        r = jsonobject.loads(o)
+        if r.error.code != 0:
+            rsp.success = False
+            rsp.error = 'failed to deploy client, error[%s].' % r.error.message
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def echo(self, req):
+        logger.debug('get echoed')
+        return ''
+
+
+class ZbsDaemon(daemon.Daemon):
+    def __init__(self, pidfile, py_process_name):
+        super(ZbsDaemon, self).__init__(pidfile, py_process_name)
+
+    def run(self):
+        self.agent = ZbsAgent()
+        self.agent.http_server.start()
