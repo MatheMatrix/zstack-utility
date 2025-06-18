@@ -22,6 +22,8 @@ class KylinDriver(CentOSDriver):
     def attach_port(self, instance_obj, network_obj):
         for port in network_obj.ports:
             self._attach_port(port)
+            if instance_obj.provision_type == 'Direct':
+                continue
             if port.type == port.PORT_TYPE_BOND \
                     and port.mac == instance_obj.provision_mac:
                 self._write_bond_to_dracut_config(port)
