@@ -247,3 +247,9 @@ def get_vastai_type():
 def is_valid_processing_accelerator(device):
     valid_keywords = {"Device", "SV100"}
     return any(keyword in device for keyword in valid_keywords)
+
+
+def is_valid_video_controller(device):
+    invalid_keywords = {"iBMC"}
+    return all(keyword not in device for keyword in invalid_keywords)
+
