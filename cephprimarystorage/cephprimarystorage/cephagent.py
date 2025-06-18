@@ -328,6 +328,8 @@ class CephAgent(plugin.TaskManager):
     GET_VOLUME_SNAPINFOS_PATH = "/ceph/primarystorage/volume/getsnapinfos"
     UPLOAD_IMAGESTORE_PATH = "/ceph/primarystorage/imagestore/backupstorage/commit"
     DOWNLOAD_IMAGESTORE_PATH = "/ceph/primarystorage/imagestore/backupstorage/download"
+    STORAGE_BACKUP_PATH = "/ceph/primarystorage/backupstorage/volume/takebackup"
+    CANCEL_STORAGE_BACKUP_PATH = "/ceph/primarystorage/backupstorage/volume/cancelbackup"
     DOWNLOAD_BITS_FROM_KVM_HOST_PATH = "/ceph/primarystorage/kvmhost/download"
     DOWNLOAD_BITS_FROM_NBD_EXPT_PATH = "/ceph/primarystorage/nbd/download"
     CLAEN_TRASH_PATH = "/ceph/primarystorage/trash/clean"
@@ -387,7 +389,8 @@ class CephAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.CP_PATH, self.cp)
         self.http_server.register_async_uri(self.UPLOAD_IMAGESTORE_PATH, self.upload_imagestore)
         self.http_server.register_async_uri(self.DOWNLOAD_IMAGESTORE_PATH, self.download_imagestore)
-        self.http_server.register_async_uri(self.DELETE_POOL_PATH, self.delete_pool)
+        self.http_server.register_async_uri(self.STORAGE_BACKUP_PATH, self.take_storage_backup)
+        self.http_server.register_async_uri(self.CANCEL_STORAGE_BACKUP_PATH, self.cancel_storage_backup)
         self.http_server.register_async_uri(self.GET_VOLUME_SIZE_PATH, self.get_volume_size)
         self.http_server.register_async_uri(self.BATCH_GET_VOLUME_SIZE_PATH, self.batch_get_volume_size)
         self.http_server.register_async_uri(self.GET_VOLUME_WATCHES_PATH, self.get_volume_watchers)
@@ -808,6 +811,16 @@ class CephAgent(plugin.TaskManager):
     def upload_imagestore(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         return self.imagestore_client.upload_imagestore(cmd, req)
+
+    @replyerror
+    def take_storage_backup(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        return self.imagestore_client.storage_backup(cmd)
+
+    @replyerror
+    def cancel_storage_backup(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        return self.imagestore_client.cancel_storage_backup(cmd)
 
     @replyerror
     def commit_image(self, req):
