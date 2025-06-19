@@ -1242,7 +1242,9 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
             if wwid not in multipath_topology:
                 disk = get_disk_by_wwid(wwid)
                 if disk is not None:
-                    rsp.devices.update({wwid: [Device(disk, "active")]})
+                    state_file_content = linux.read_file("/sys/block/%s/device/state" % os.path.basename(disk))
+                    device_state = convert_state(state_file_content.strip() if state_file_content else "unknown")
+                    rsp.devices.update({wwid: [Device(disk, "active", device_state)]})
             else:
                 rsp.devices.update({wwid: multipath_topology.get(wwid)})
 
