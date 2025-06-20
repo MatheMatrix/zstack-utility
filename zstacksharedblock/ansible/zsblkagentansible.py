@@ -78,6 +78,8 @@ host_post_info.releasever = releasever
 
 if host_info.host_arch == 'x86_64':
     src_pkg_zsblk = "zsblk-agent.bin"
+elif releasever == "oe2403sp1":
+    src_pkg_zsblk = "zsblk-agent.{}.abi2.bin".format(host_info.host_arch)
 else:
     src_pkg_zsblk = "zsblk-agent.{}.bin".format(host_info.host_arch)
 pkg_zsblk = "zsblk-agent.bin"
