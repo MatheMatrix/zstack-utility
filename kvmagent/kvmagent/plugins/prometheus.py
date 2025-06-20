@@ -1468,19 +1468,30 @@ LoadPlugin virt
 
             if need_restart_collectd:
                 for pid in mpidList:
-                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
+                    if bash_r('kill -TERM %s' % pid) != 0:
+                        logger.warn("Failed to terminate collectdmon process %s" % pid)
                 for pid in cpidList:
-                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
-                bash_errorout('collectdmon -- -C %s' % conf_path)
+                    if bash_r('kill -TERM %s' % pid) != 0:
+                        logger.warn("Failed to terminate collectd process %s" % pid)
+                # Give the process time to terminate completely
+                time.sleep(1)
+                if bash_r('collectdmon -- -C %s' % conf_path) != 0:
+                    logger.warn("Failed to start collectdmon %s" % pid)
             elif mpidList and len(mpidList) > 1:
                 for pid in mpidList[1:]:
-                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
+                    if bash_r('kill -TERM %s' % pid) != 0:
+                        logger.warn("Failed to terminate collectdmon process %s" % pid)
                 for pid in cpidList:
-                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
+                    if bash_r('kill -TERM %s' % pid) != 0:
+                        logger.warn("Failed to terminate collectd process %s" % pid)
             elif len(mpidList) == 0:
                 for pid in cpidList:
-                    bash_errorout('[ -e "/proc/%s" ] && kill -TERM %s' % (pid, pid))
-                bash_errorout('collectdmon -- -C %s' % conf_path)
+                    if bash_r('kill -TERM %s' % pid) != 0:
+                        logger.warn("Failed to terminate collectd process %s" % pid)
+                # Give the process time to terminate completely
+                time.sleep(1)
+                if bash_r('collectdmon -- -C %s' % conf_path) != 0:
+                    logger.warn("Failed to start collectdmon %s" % pid)
 
         def run_in_systemd(binPath, args, log):
             def get_systemd_name(path):
