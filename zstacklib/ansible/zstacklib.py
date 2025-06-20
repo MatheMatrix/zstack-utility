@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+import copy
 
 from ansible import constants as ansible_constants
 from ansible import context as ansible_context
@@ -289,6 +290,7 @@ class HostPostInfo(object):
 
 class PipInstallArg(object):
     def __init__(self):
+        self.environment = None
         self.name = None
         self.extra_args = None
         self.version = None
@@ -1054,6 +1056,11 @@ def pip_install_package(pip_install_arg, host_post_info):
     host = host_post_info.host
     post_url = host_post_info.post_url
     version = pip_install_arg.version
+
+    base_env = copy.deepcopy(getattr(host_post_info, "environment", {}))
+    if hasattr(pip_install_arg, "environment") and pip_install_arg.environment:
+        base_env.update(pip_install_arg.environment)
+
     if pip_install_arg.extra_args is not None:
         if 'pip' not in name:
             extra_args = '\"' + '--disable-pip-version-check ' + \
@@ -1084,6 +1091,7 @@ def pip_install_package(pip_install_arg, host_post_info):
         ' '.join(['{0}={1}'.format(k, v) for k, v in param_dict.iteritems()])
     runner_args = ZstackRunnerArg()
     runner_args.host_post_info = host_post_info
+    runner_args.host_post_info.environment = base_env
     runner_args.module_name = 'pip'
     runner_args.module_args = option
 

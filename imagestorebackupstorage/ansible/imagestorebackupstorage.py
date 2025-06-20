@@ -76,6 +76,9 @@ IS_LOONGARCH64 = host_info.host_arch == 'loongarch64'
 if host_info.host_arch == 'x86_64':
     src_pkg_imagestorebackupstorage = "zstack-store.bin"
     src_pkg_exporter = "collectd_exporter"
+elif releasever == "oe2403sp1":
+    src_pkg_imagestorebackupstorage = "zstack-store.{}.abi2.bin".format(host_info.host_arch)
+    src_pkg_exporter = "collectd_exporter_{}_abi2".format(host_info.host_arch)
 else:
     src_pkg_imagestorebackupstorage = "zstack-store.{}.bin".format(host_info.host_arch)
     src_pkg_exporter = "collectd_exporter_{}".format(host_info.host_arch)

@@ -1278,7 +1278,14 @@ class HostPlugin(kvmagent.KvmAgent):
 
         elif IS_MIPS64EL or IS_LOONGARCH64:
             rsp.hvmCpuFlag = 'vt'
-            rsp.cpuModelName = self._get_host_cpu_model()
+            cpu_model = None
+            try:
+                cpu_model = self._get_host_cpu_model()
+            except AttributeError:
+                logger.debug("maybe XmlObject has no attribute model, use uname -p to get one")
+                if cpu_model is None:
+                    cpu_model = os.uname()[-1]
+            rsp.cpuModelName = cpu_model
 
             host_cpu_info = shell.call("grep -m2 -P -o -i '(model name|cpu MHz)\s*:\s*\K.*' /proc/cpuinfo").splitlines()
             host_cpu_model_name = host_cpu_info[0]

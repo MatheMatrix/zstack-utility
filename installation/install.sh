@@ -4099,6 +4099,8 @@ unzip_el6_rpm="${ZSTACK_INSTALL_ROOT}/libs/unzip*el6*.rpm"
 
 if [ `uname -m` == "x86_64" ]; then
     zstore_bin="${ZSTACK_INSTALL_ROOT}/${CATALINA_ZSTACK_CLASSES}/ansible/imagestorebackupstorage/zstack-store.bin"
+elif [ x"${OS}" -eq x"OE2403" ]; then
+    zstore_bin="${ZSTACK_INSTALL_ROOT}/${CATALINA_ZSTACK_CLASSES}/ansible/imagestorebackupstorage/zstack-store.${uname -m}.abi2.bin"
 else
     zstore_bin="${ZSTACK_INSTALL_ROOT}/${CATALINA_ZSTACK_CLASSES}/ansible/imagestorebackupstorage/zstack-store.$(uname -m).bin"
 fi
