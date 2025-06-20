@@ -1488,6 +1488,12 @@ def is_kylin402():
         return False
     return "kylin402" in zstack_release.splitlines()[0]
 
+def is_loongarch64():
+    return HOST_ARCH == "loongarch64"
+
+def is_oe2403sp1():
+    return "oe2403sp1" in platform.release()
+
 def is_spiceport_driver_supported():
     # qemu-system-aarch64 not supported char driver: spiceport
     return shell.run("%s -h | grep 'chardev spiceport'" % kvmagent.get_qemu_path()) == 0
@@ -1606,6 +1612,11 @@ def get_interface_source_pci_address(iface_xml):
 def get_machineType(machine_type):
     if HOST_ARCH == "aarch64":
         return "virt"
+    elif is_loongarch64():
+        if is_oe2403sp1():
+            return "virt"
+        else:
+            return "loongson7a"
     return machine_type if machine_type else "pc"
 
 def get_sgio_value():
@@ -5631,8 +5642,13 @@ class Vm(object):
                 e(os, 'loader', '/usr/share/qemu/ls3a_bios.bin', attrib={'readonly': 'yes', 'type': 'rom'})
 
             def on_loongarch64():
-                e(os, 'type', 'hvm', attrib={'arch': 'loongarch64', 'machine': 'loongson7a'})
-                e(os, 'loader', '{}loongarch_bios.bin'.format(qemu.get_bin_dir()), attrib={'readonly': 'yes', 'type': 'rom'})
+                if is_oe2403sp1():
+                    loader_path = "/usr/share/edk2/loongarch64/QEMU_EFI-silent-pflash.raw"
+                else:
+                    loader_path = '{}loongarch_bios.bin'.format(qemu.get_bin_dir())
+
+                e(os, 'type', 'hvm', attrib={'arch': 'loongarch64', 'machine': machine_type})
+                e(os, 'loader', loader_path, attrib={'readonly': 'yes', 'type': 'rom'})
 
             VmPlugin.clean_vm_firmware_flash(cmd.vmInstanceUuid)
             eval("on_{}".format(host_arch))()
