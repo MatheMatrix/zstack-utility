@@ -1,5 +1,5 @@
 
-from zstacklib.utils import log
+from zstacklib.utils import log, linux
 
 
 logger = log.get_logger(__name__)
@@ -42,21 +42,32 @@ def sorted_conf(sections):
 
     return result
 
+class MultipathConfigUpdater:
+    def __init__(self, config_path):
+        self.config_path = config_path
+        self.modified = False
+        with open(config_path, 'r+') as fd:
+            self.config = parse_multipath_conf(fd)
 
-def write_multipath_conf(path, blacklist=None):
-    # type: (str, list[dict[str, object]]) -> bool
+    def set_default_config(self):
+        default_device = {'device': [{'features': '0'}, {'no_path_retry': 'fail'}, {'product': '.*'}, {'vendor': '.*'}]}
+        default_find_multipaths = {"find_multipaths": "yes"}
+        feature_to_remove = 'queue_if_no_path'
 
-    default_device = {'device': [{'features': '0'}, {'no_path_retry': 'fail'}, {'product': '.*'}, {'vendor': '.*'}]}
-    feature_to_remove = 'queue_if_no_path'
-    modified = False
-    with open(path, 'r+') as fd:
-        config = parse_multipath_conf(fd)
         has_devices_section = False
         has_default_device = False
-        blacklist_changed = False
-        for section in config:
-            if 'blacklist' in section:
-                blacklist_changed = cmp(sorted_conf(section['blacklist']), sorted_conf(blacklist)) != 0
+        has_defaults_section = False
+        for section in self.config:
+            if 'defaults' in section:
+                has_defaults_section = True
+                for attribute in section['defaults']:
+                    name, value = attribute.items()[0]
+                    if name == "find_multipaths":
+                        section["defaults"].remove(attribute)
+                        self.modified |= value.strip().strip('"') != 'yes'
+
+                section["defaults"].append(default_find_multipaths)
+
 
             if 'devices' in section:
                 has_devices_section = True
@@ -65,34 +76,50 @@ def write_multipath_conf(path, blacklist=None):
                         name, value = attribute.items()[0]
                         if value.strip().strip('"') == '*':
                             attribute[name] = '.*'
-                            modified = True
+                            self.modified = True
 
                         if name == 'features' and feature_to_remove in value:
                             subsection['device'].remove(attribute)
-                            modified = True
+                            self.modified = True
 
                         if cmp(sorted(default_device['device']), sorted(subsection['device'])) == 0:
                             has_default_device = True
 
                 if not has_default_device:
                     section['devices'].append(default_device)
-                    modified = True
+                    self.modified = True
 
-        if blacklist is not None and blacklist_changed:  # None blacklist means ignore
-            config = filter(lambda cfg : 'blacklist' not in cfg, config)
-            config.append({'blacklist' : blacklist})
-            modified = True
+        if not has_defaults_section:
+            self.config.append({'defaults': [default_find_multipaths]})
+            self.modified = True
 
         if not has_devices_section:
-            config.append({'devices': [default_device]})
-            modified = True
+            self.config.append({'devices': [default_device]})
+            self.modified = True
 
-        logger.info(config)
-        if modified:
+
+    def config_section(self, name, cfg):
+        for section in self.config:
+            if name not in section:
+                continue
+            elif cmp(sorted_conf(section[name]), sorted_conf(cfg)) == 0:
+                return
+            else:
+                self.config.remove(section)
+                self.config.append({name: cfg})
+                self.modified = True
+                break
+
+    def save(self):
+        logger.info(self.config)
+        if not self.modified:
+            return
+
+        with open(self.config_path, 'r+') as fd:
             fd.seek(0)
             fd.truncate()
 
-            for section in config:
+            for section in self.config:
                 section_name, section_value = section.items()[0]
                 fd.write("%s {\n" % section_name)
                 for child in sorted_conf(section_value):
@@ -109,5 +136,3 @@ def write_multipath_conf(path, blacklist=None):
                         fd.write('\t\t%s "%s"\n' % (attrib_name.strip('"'), attrib_value.strip('"')))
                     fd.write("\t}\n")
                 fd.write("}\n")
-
-    return modified

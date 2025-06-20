@@ -2519,7 +2519,7 @@ def unpriv_sgio():
 def enable_multipath():
     bash.bash_roe("modprobe dm-multipath")
     bash.bash_roe("modprobe dm-round-robin")
-    bash.bash_roe("mpathconf --enable --with_multipathd y")
+    bash.bash_roe("mpathconf --enable --with_multipathd y --find_multipaths y")
     bash.bash_roe("systemctl enable multipathd")
 
     if not is_multipath_running():
