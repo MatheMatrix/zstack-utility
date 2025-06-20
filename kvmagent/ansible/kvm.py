@@ -236,6 +236,10 @@ def install_kvm_pkg():
             'aarch64': 'edk2-aarch64'
         }
 
+        arch_release_mapping = {
+            'loongarch64_oe2403sp1': 'edk2-ovmf-loongarch64'
+        }
+
         cube_distro_mapping = {
             'x86_64_centos': "lm_sensors",
             'aarch64_kylin': "lm_sensors edac-utils",
@@ -249,11 +253,13 @@ def install_kvm_pkg():
         # handle zstack_repo
         if zstack_repo != 'false':
             distro_head = host_info.distro.split("_")[0] if releasever in kylin or releasever in uos else host_info.distro
-            common_dep_list = "%s %s %s %s" % (
+            arch_release = "%s_%s" % (host_info.host_arch, releasever)
+            common_dep_list = "%s %s %s %s %s" % (
                 os_base_dep,
                 distro_mapping.get(distro_head, ''),
                 releasever_mapping.get(releasever, ''),
-                edk2_mapping.get(host_info.host_arch, ''))
+                edk2_mapping.get(host_info.host_arch, ''),
+                arch_release_mapping.get(arch_release, ''))
             # common kvmagent deps of x86 and arm that need to update
             common_update_list = ("sanlock sysfsutils hwdata sg3_utils lvm2"
                                   " lvm2-libs lvm2-lockd systemd openssh"
@@ -484,11 +490,15 @@ def install_kvm_pkg():
 
 def copy_tools():
     """copy binary tools"""
-    tool_list = ['collectd_exporter', 'node_exporter', 'ipmi_exporter', 'dnsmasq', 'zwatch-vm-agent', 'zwatch-vm-agent_freebsd_amd64', 'pushgateway', 'sas3ircu', 'zs-raid-heartbeat']
+    tool_list = ['collectd_exporter', 'node_exporter', 'ipmi_exporter', 'dnsmasq', 'pushgateway', 'sas3ircu', 'zs-raid-heartbeat']
+
     for tool in tool_list:
         arch_lable = '' if host_info.host_arch == 'x86_64' else '_' + host_info.host_arch
         real_name = tool + arch_lable
+        if releasever == "oe2403sp1":
+            real_name = real_name + '_abi2'
         pkg_path = os.path.join(file_root, real_name)
+
         if tool == "dnsmasq":
             pkg_dest_path = "/usr/local/zstack/dnsmasq"
         elif tool == "sas3ircu":
@@ -764,6 +774,7 @@ def install_virtualenv():
 
 def install_python_pkg():
     extra_args = "\"--trusted-host %s -i %s \"" % (trusted_host, pip_url)
+    
     pip_install_arg = PipInstallArg()
     pip_install_arg.extra_args = extra_args
     pip_install_arg.name = "python-cephlibs"

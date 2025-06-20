@@ -1059,6 +1059,7 @@ def pip_install_package(pip_install_arg, host_post_info):
     host = host_post_info.host
     post_url = host_post_info.post_url
     version = pip_install_arg.version
+
     if pip_install_arg.extra_args is not None:
         if 'pip' not in name:
             extra_args = '\"' + '--disable-pip-version-check ' + \
