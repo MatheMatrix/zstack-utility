@@ -22,7 +22,7 @@ class CpRsp(AgentResponse):
 class StorageBackupRsp(AgentResponse):
     def __init__(self):
         super(StorageBackupRsp, self).__init__()
-        self.uploadPath = None
+        self.uploadFile = None
         self.lastBackupUuid = None
         self.mode = None
         self.size = 0
@@ -73,7 +73,7 @@ class ImageStoreClient(object):
 
     def storage_backup(self, cmd):
         self._check_zstore_cli()
-        sshData = cmd.userName + '@' + cmd.host + ':' + cmd.uploadDir
+        sshData = cmd.userName + '@' + cmd.hostname + ':' + cmd.uploadDir
         cmdstr = '%s -rootca %s storagebackup -ssh %s -p %s -parent %s -volume %s -backupUuid %s' % (
             self.ZSTORE_CLI_PATH, self.ZSTORE_CLI_PATH, sshData, cmd.password, cmd.lastBackupUuid, cmd.volumePath,
             cmd.backupUuid)
@@ -82,7 +82,7 @@ class ImageStoreClient(object):
 
         _, image = self._get_id_name_from_install(cmd.volumePath)
         rsp = StorageBackupRsp()
-        rsp.uploadPath = os.path.join(cmd.uploadDir, result.backupName)
+        rsp.uploadFile = os.path.join(cmd.uploadDir, result.backupName)
         rsp.mode = result.mode
         rsp.size = int(result.size)
         rsp.lastBackupUuid = result.lastBackupUuid
