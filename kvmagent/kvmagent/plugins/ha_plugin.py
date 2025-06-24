@@ -494,27 +494,46 @@ class SblkHealthChecker(AbstractStorageFencer):
     def get_created_time(self, vg_uuid):
         return self.fencer_created_time.get(vg_uuid)
 
-    def _do_health_check_vg(self, vg, lockspaces, r):
+    def _do_health_check_vg(self, vg, lockspaces, r, max_failure):
         if not r or r.get_lockspace() not in lockspaces:
-            failure = "lockspace for vg %s not found" % vg
+            failure_cnt = self.inc_vg_failure_cnt(vg)
+            failure = "vg %s heartbeat failed(count=%d), details: lockspace not found" % (vg, failure_cnt)
             logger.warn(failure)
-            return self.inc_vg_failure_cnt(vg), failure
+            return failure if failure_cnt >= max_failure else None
 
         if r.is_adding:
             logger.warn("lockspace for vg %s is adding, skip run fencer" % vg)
-            return 0, None
+            self.reset_vg_failure_cnt(vg)
+            return None
 
-        renewal_failure_seconds = sanlock.calc_id_renewal_fail_seconds(r.get_io_timeout())
-        if r.get_renewal_last_result() != 1:
-            if (r.get_renewal_last_attempt() > r.get_renewal_last_success() and \
-                    r.get_renewal_last_attempt() - r.get_renewal_last_success() > renewal_failure_seconds) or \
-                    (r.get_renewal_last_attempt() < r.get_renewal_last_success() - renewal_failure_seconds < r.get_renewal_last_success()):
-                failure = "sanlock last renewal failed with %s and last attempt is %s, last success is %s, renewal failed for more than %s second" % \
-                        (r.get_renewal_last_result(), r.get_renewal_last_attempt(), r.get_renewal_last_success(), renewal_failure_seconds)
-                logger.warn(failure)
-                return self.inc_vg_failure_cnt(vg), failure
+        if r.get_renewal_last_result() == 1:
+            self.reset_vg_failure_cnt(vg)
+            return None
 
-        return 0, None
+        def is_heartbeat_timeout(timeout):
+            return abs(last_check - last_success) > timeout
+
+        try:
+            last_check = int(linux.monotime())
+        except:
+            last_check = r.get_renewal_last_attempt()
+
+        last_success = r.get_renewal_last_success()
+        max_renewal_failure_seconds = sanlock.calc_id_renewal_fail_seconds(r.get_io_timeout()) - r.get_io_timeout()
+        max_renewal_warn_seconds = max_renewal_failure_seconds - 2 * r.get_io_timeout()
+
+        failure = ("vg %s heartbeat failed, details: sanlock last renewal failed with %s and last check is %s, "
+                   "last success is %s, max renewal failure is %s seconds" % (vg, r.get_renewal_last_result(),
+                                                                              last_check, last_success,
+                                                                              max_renewal_failure_seconds))
+        if is_heartbeat_timeout(max_renewal_failure_seconds):
+            logger.error(failure)
+            return failure
+        elif is_heartbeat_timeout(max_renewal_warn_seconds):
+            logger.warn(failure)
+
+        return None
+
 
     def _do_health_check(self, storage_timeout, max_failure):
         # sanlock client command may fail to execute and succeed after retry
@@ -530,13 +549,9 @@ class SblkHealthChecker(AbstractStorageFencer):
         for vg in self.all_vgs:
             r = p.get_lockspace_record(vg)
             try:
-                cnt, failure = self._do_health_check_vg(vg, lockspaces, r)
-                if cnt == 0:
-                    self.reset_vg_failure_cnt(vg)
-                else:
-                    logger.info("vg %s failure count: %d" % (vg, cnt))
-                    if cnt >= max_failure:
-                        victims[vg] = failure
+                failure = self._do_health_check_vg(vg, lockspaces, r, max_failure)
+                if failure:
+                    victims[vg] = failure
             except Exception as e:
                 logger.warn("_do_health_check_vg(%s) failed, %s" % (vg, e))
                 victims[vg] = "_do_health_check_vg(%s) failed"
