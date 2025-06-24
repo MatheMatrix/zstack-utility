@@ -26,6 +26,9 @@ import fcntl
 import simplejson
 import xxhash
 import glob
+import sys
+import ctypes
+import ctypes.util
 
 from inspect import stack
 import xml.etree.ElementTree as etree
@@ -3116,7 +3119,6 @@ def get_agent_pid_by_name(name):
     output = output.strip(" \t\r")
     return output
 
-import ctypes
 libc = ctypes.CDLL("libc.so.6")
 
 def sync_file(fpath):
@@ -3356,3 +3358,32 @@ def is_rpm_installed(rpm_name):
 def get_rpm_version(rpm_name):
     return shell.call(
         'rpm -q --queryformat "%%{VERSION}-%%{RELEASE}" %s' % rpm_name)
+
+class timespec(ctypes.Structure):
+    _fields_ = [
+        ('tv_sec', ctypes.c_long),
+        ('tv_nsec', ctypes.c_long)
+    ]
+
+CLOCK_MONOTONIC = 1
+librt = None
+try:
+    libname = ctypes.util.find_library('rt')
+    if not libname:
+        raise OSError("unable to find librt library")
+    librt = ctypes.CDLL(libname, use_errno=True)
+except Exception as e:
+    logger.debug("load librt library err: %s" % str(e))
+
+def monotime():
+    if sys.version_info[:2] >= (3, 3):
+        return time.monotonic()
+
+    if librt is None:
+        raise Exception("librt library is not found")
+
+    t = timespec()
+    if librt.clock_gettime(CLOCK_MONOTONIC, ctypes.byref(t)) != 0:
+        errno = ctypes.get_errno()
+        raise OSError(errno, os.strerror(errno))
+    return t.tv_sec + t.tv_nsec / 1e9
