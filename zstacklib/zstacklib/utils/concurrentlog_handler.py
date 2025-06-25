@@ -65,6 +65,7 @@ from .portalocker import lock, unlock, LOCK_EX, LOCK_NB, LockException
 
 
 # Workaround for handleError() in Python 2.7+ where record is written to stderr
+# FIXME(py3)
 class NullLogRecord(LogRecord):
 
     def __init__(self):

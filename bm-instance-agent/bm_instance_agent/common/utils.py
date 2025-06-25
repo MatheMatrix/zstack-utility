@@ -64,7 +64,7 @@ class IpLink:
         self.state = chunk.get_attr('IFLA_OPERSTATE')  # type: str
         self.qdisc = chunk.get_attr('IFLA_QDISC')  # type: tuple
         self.alias = chunk.get_attr('IFLA_IFALIAS')  # type: tuple. if no alias, self.alias = (None,)
-        self.allmulticast = bool(chunk['flags'] & pyroute2.netlink.rtnl.ifinfmsg.IFF_ALLMULTI)  # type: tuple
+        self.allmulticast = bool(chunk['flags'] & pyroute2.netlink.rtnl.ifinfmsg.IFF_ALLMULTI)  # type: bool
         self.device_type = chunk.get_nested('IFLA_LINKINFO', 'IFLA_INFO_KIND')
         self.broadcast = chunk.get_attr('IFLA_BROADCAST')  # type: str
         self.group = chunk.get_attr('IFLA_GROUP')  # type: int
