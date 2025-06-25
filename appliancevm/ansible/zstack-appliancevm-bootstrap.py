@@ -74,9 +74,13 @@ class ShellCmd(object):
         return self.stdout
 
 def shell(cmd, is_exception=True):
-    return ShellCmd(cmd)(is_exception)
+    out = ShellCmd(cmd)(is_exception)
+    if isinstance(out, bytes):
+        out = out.decode('utf-8')
+    return out
 
 def wait_callback_success(callback, callback_data=None, timeout=60, interval=1):
+    # type: (callable, object, int, float) -> bool
     count = 0
     while count <= timeout:
         if callback(callback_data):
@@ -108,10 +112,10 @@ class VRBootStrap(object):
         
     def get_nicname_by_mac(self, nicmac):
         info = shell('ip link')
-        infos = info.split('\n')
+        infos = info.splitlines()
         lines = []
         for i in infos:
-            i = i.strip().strip('\t').strip('\r').strip('\n')
+            i = i.strip()
             if i == '':
                 continue
             lines.append(i)
