@@ -375,6 +375,13 @@ http {
         listen 7772;
         include /etc/nginx/conf.d/terminal/*;
     }
+    
+    server {
+        listen 7773;
+        location / {
+            alias /var/lib/zstack/baremetal/ftp/;
+        }
+    }
 }
 """
         with open("/etc/nginx/nginx.conf", 'w') as fw:
@@ -490,6 +497,8 @@ http {
             append = 'interface=auto auto=true priority=critical url=ftp://{PXESERVER_DHCP_NIC_IP}/ks/{KS_CFG_NAME}'
         elif cmd.preconfigurationType == 'autoyast':
             append = 'install=ftp://{PXESERVER_DHCP_NIC_IP}/{IMAGEUUID}/ autoyast=ftp://{PXESERVER_DHCP_NIC_IP}/ks/{KS_CFG_NAME} vnc=1 vncpassword=password'
+        elif cmd.preconfigurationType == 'autoinstall':
+            append = 'ip=dhcp url=ftp://{PXESERVER_DHCP_NIC_IP}/{IMAGEUUID} autoinstall ds=nocloud-net\;s=https//{PXESERVER_DHCP_NIC_IP}/ks/{KS_CFG_NAME}/ ---'
         append = append.format(PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip,
                 IMAGEUUID=cmd.imageUuid,
                 KS_CFG_NAME=ks_cfg_name)
@@ -510,6 +519,17 @@ http {
 
         # create uefi grub.cfg-01-MAC for x86_64/aarch64 with rhel os
         grub_cfg_file = os.path.join(self.UEFI_GRUB_CFG_PATH, "grub.cfg-01-" + ks_cfg_name)
+        if cmd.preconfigurationType == 'autoinstall':
+            grub_append = ('ip=dhcp url=ftp://{PXESERVER_DHCP_NIC_IP}/{IMAGEUUID}.iso autoinstall ds=nocloud-net\;'
+                           's=http://{PXESERVER_DHCP_NIC_IP}:7773/ks/{KS_CFG_NAME}/ vnc ---').format(
+                PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip,
+                IMAGEUUID=cmd.imageUuid,
+                KS_CFG_NAME=ks_cfg_name)
+        else:
+            grub_append = ('devfs=nomount ksdevice=bootif inst.ks=ftp://{PXESERVER_DHCP_NIC_IP}/ks/{KS_CFG_NAME} vnc'.format(
+                PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip,
+                KS_CFG_NAME=ks_cfg_name
+            ))
         grub_cfg = """set timeout=1
 set linux='linuxefi'
 set initrd='initrdefi'
@@ -520,11 +540,10 @@ if [ "$grub_cpu" == "arm64" ]; then
 fi
 
 menuentry 'Install OS on Bare Metal Instance' --class fedora --class gnu-linux --class gnu --class os {{
-        $linux (tftp){IMAGEUUID}/vmlinuz devfs=nomount ksdevice=bootif inst.ks=ftp://{PXESERVER_DHCP_NIC_IP}/ks/{KS_CFG_NAME} vnc
+        $linux (tftp){IMAGEUUID}/vmlinuz {APPEND}
         $initrd (tftp){IMAGEUUID}/initrd.img
 }}""".format(IMAGEUUID=cmd.imageUuid,
-                   PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip,
-                   KS_CFG_NAME=ks_cfg_name)
+                   APPEND=grub_append)
         with open(grub_cfg_file, 'w') as f:
             f.write(grub_cfg)
         # create link for grub.cfg-01-MAC (for baremetal instance deploy)
@@ -557,11 +576,23 @@ menuentry 'Install OS on Bare Metal Instance' --class fedora --class gnu-linux -
             rendered_content = self._render_preseed_template(cmd, pxeserver_dhcp_nic_ip)
         elif cmd.preconfigurationType == 'autoyast':
             rendered_content = self._render_autoyast_template(cmd, pxeserver_dhcp_nic_ip)
+        elif cmd.preconfigurationType == 'autoinstall':
+            rendered_content = self._render_autoinstall_template(cmd, pxeserver_dhcp_nic_ip)
         else:
             raise PxeServerError("unkown preconfiguration type %s" % cmd.preconfigurationType)
 
         ks_cfg_name = cmd.pxeNicMac
         ks_cfg_file = os.path.join(self.KS_CFG_PATH, ks_cfg_name)
+        if cmd.preconfigurationType == 'autoinstall':
+            bash_r("mkdir -p %s" % ks_cfg_file)
+            with open(os.path.join(ks_cfg_file, 'user-data'), 'w') as f:
+                f.write(rendered_content)
+
+            with open(os.path.join(ks_cfg_file, 'meta-data'), 'w') as f:
+                f.write("instance-id: focal-autoinstall")
+        else:
+            with open(ks_cfg_file, 'w') as f:
+                f.write(rendered_content)
         with open(ks_cfg_file, 'w') as f:
             f.write(rendered_content)
 
@@ -693,7 +724,7 @@ network --bootproto=static --onboot=yes --noipv6 --activate --device {{ cfg.mac 
         nic_cfg_tmpl = Template(pxe_niccfg_content)
         context['NETWORK_CFGS'] = nic_cfg_tmpl.render(niccfgs=niccfgs)
 
-    # post script snippet for network configuration
+        # post script snippet for network configuration
         niccfg_post_script = """
 {% for cfg in niccfgs if not cfg.pxe %}
 
@@ -918,6 +949,134 @@ INTERFACES_FILE=/etc/network/interfaces
         tmpl = Template(cmd.preconfigurationContent)
         return tmpl.render(context)
 
+    def _render_autoinstall_template(self, cmd, pxeserver_dhcp_nic_ip):
+        context = dict()
+        context['USERNAME'] = "'" + cmd.username + "'"
+        context['PASSWORD'] = "'" + cmd.password + "'"
+        context['PRE_SCRIPTS'] = 'wget -O- ftp://%s/scripts/pre_%s.sh | /bin/bash -s' % (
+            pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
+        context['POST_SCRIPTS'] = 'wget -O- ftp://%s/scripts/post_%s.sh | chroot /target /bin/bash -s' % (
+            pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
+
+        niccfgs = json_object.loads(cmd.nicCfgs) if cmd.nicCfgs is not None else []
+        # post script snippet for network configuration
+        niccfg_post_script = """
+echo 'loop' >> /etc/modules
+echo 'lp' >> /etc/modules
+echo 'rtc' >> /etc/modules
+echo 'bonding' >> /etc/modules
+echo '8021q' >> /etc/modules
+
+netmask_to_cidr() {
+    local netmask=$1
+    local binary=""
+    
+    IFS='.' read -r -a bytes <<< "$netmask"
+    for byte in "${bytes[@]}"; do
+        binary+=$(printf "%08d" $(bc <<< "obase=2;$byte"))
+    done
+    CIDR=$(echo "$binary" | tr -cd '1' | wc -c)
+    echo "$CIDR"
+}
+
+declare -A bond_mode_transform=(
+    ["0"]="balance-rr"
+    ["1"]="active-backup"
+    ["2"]="balance-xor"
+    ["3"]="broadcast"
+    ["4"]="802.3ad"
+    ["5"]="balance-tlb"
+    ["6"]="balance-alb"
+)
+
+{% set count = 0 %}
+{% for cfg in niccfgs %}
+  {% if cfg.bondName %}
+    {% set count = count + 1 %}
+    echo "options bonding max_bonds={{ count }}" > /etc/modprobe.d/bonding.conf
+  {% endif %}
+{% endfor %}
+
+{% for cfg in niccfgs %}
+  ADDR={{ cfg.ip }}/$(netmask_to_cidr {{ cfg.netmask }})
+  {% if cfg.bondName %}
+    RAWDEVNAME="{{ cfg.bondName }}"
+    BONDMODE=${bond_mode_transform[{{ cfg.bondMode }}]}
+    {%- set slave_nics = [] -%}
+    {% for slave in cfg.bondSlaves %}
+      {%- set interface = '`ip -o link show | grep "' + slave + '" | cut -d: -f2 | tr -d " "`' -%}
+      {%- set _ = slave_nics.append(interface) -%}
+    {% endfor %}
+  {% else %}
+RAWDEVNAME=`ip -o link show | grep {{ cfg.mac }} | awk -F ': ' '{ print $2 }'`
+  {% endif %}
+  
+DEVNAME=${RAWDEVNAME}{%- if cfg.vlanid -%}.{{ cfg.vlanid }}{%- endif %}
+
+cat > /etc/netplan/${RAWDEVNAME}.yaml << EOF
+network:
+  version: 2
+  renderer: networkd
+  {% if cfg.bondName %}
+  ethernets:
+    {% for slave in slave_nics %}
+    {{ slave }}:
+      dhcp4: no
+    {% endfor %}
+  bonds:
+    ${DEVNAME}:
+      interfaces:
+        {% for slave in slave_nics %}
+        - {{ slave }}
+        {% endfor %}
+      parameters:
+        mode: ${BONDMODE}
+        {%- if cfg.bondOpts %}
+        {{ cfg.bondOpts }}
+        {%- else %}
+        mii-monitor-interval: 100
+        {% endif %}
+  {%- else -%}
+  ethernets:
+    ${RAWDEVNAME}:
+      set-name: ${RAWDEVNAME}
+      match:
+        macaddress: {{ cfg.mac }}
+  {%- endif %}
+      {%- if not cfg.vlanid %}
+      dhcp4: no
+      addresses: [${ADDR}]
+      {% if cfg.gateway -%}
+      gateway4: {{ cfg.gateway }}
+      {%- endif %}
+      {%- endif %}
+  {% if cfg.vlanid %}
+  vlans:
+    ${DEVNAME}:
+      id: {{ cfg.vlanid }}
+      link: ${RAWDEVNAME}
+      dhcp4: no
+      addresses: [${ADDR}]
+      {% if cfg.gateway %}
+      gateway4: {{ cfg.gateway }}
+      {% endif %}
+  {% endif %}
+EOF
+{% endfor %}
+"""
+        niccfg_post_tmpl = Template(niccfg_post_script)
+        for cfg in niccfgs:
+            if cfg.bondName:
+                cfg.bondSlaves = cfg.bondSlaves.split(',')
+        self._create_pre_scripts(cmd, pxeserver_dhcp_nic_ip)
+        self._create_post_scripts(cmd, pxeserver_dhcp_nic_ip, niccfg_post_tmpl.render(niccfgs=niccfgs))
+
+        custom = simplejson.loads(cmd.customPreconfigurations) if cmd.customPreconfigurations is not None else {}
+        context.update(custom)
+
+        tmpl = Template(cmd.preconfigurationContent)
+        return tmpl.render(context)
+
     def _render_autoyast_template(self, cmd, pxeserver_dhcp_nic_ip):
         context = dict()
         context['USERNAME'] = cmd.username
@@ -1058,7 +1217,10 @@ echo "STARTMODE='auto'" >> $IFCFGFILE
 
             ks_cfg_file = os.path.join(self.KS_CFG_PATH, mac_as_name)
             if os.path.exists(ks_cfg_file):
-                os.remove(ks_cfg_file)
+                if os.path.isdir(ks_cfg_file):
+                    shutil.rmtree(ks_cfg_file)
+                if os.path.isfile(ks_cfg_file):
+                    os.remove(ks_cfg_file)
 
             pre_script_file = os.path.join(self.ZSTACK_SCRIPTS_PATH, "pre_%s.sh" % mac_as_name)
             if os.path.exists(pre_script_file):
@@ -1181,11 +1343,19 @@ echo "STARTMODE='auto'" >> $IFCFGFILE
         # SUSE
         ret5 = bash_r("cp %s %s && chmod 777 %s" % (os.path.join(mount_path, "boot/*/loader/linux"), vmlinuz_file_path, vmlinuz_file_path))
         ret6 = bash_r("cp %s %s && chmod 777 %s" % (os.path.join(mount_path, "boot/*/loader/initrd"), initrd_file_path, initrd_file_path))
-        # ky10
+        # ns10
         ret7 = bash_r("cp %s %s && chmod 777 %s" % (os.path.join(mount_path, "images/pxeboot/vmlinuz"), vmlinuz_file_path, vmlinuz_file_path))
         ret8 = bash_r("cp %s %s && chmod 777 %s" % (os.path.join(mount_path, "images/pxeboot/initrd.img"), initrd_file_path, initrd_file_path))
-        if (ret1 != 0 or ret2 != 0) and (ret3 != 0 or ret4 != 0) and (ret5 != 0 or ret6 != 0) and (ret7 != 0 or ret8 != 0):
+        # ubuntu live-server
+        ret9 = bash_r("cp %s %s && chmod 777 %s" % (os.path.join(mount_path, "casper/vmlinuz"), vmlinuz_file_path, vmlinuz_file_path))
+        ret10 = bash_r("cp %s %s && chmod 777 %s" % (os.path.join(mount_path, "casper/initrd"), initrd_file_path, initrd_file_path))
+        if (ret1 != 0 or ret2 != 0) and (ret3 != 0 or ret4 != 0) and (ret5 != 0 or ret6 != 0) and (ret7 != 0 or ret8 != 0) and (ret9 != 0 or ret10 != 0):
             raise PxeServerError("failed to copy vmlinuz and initrd.img from image[uuid:%s] to baremetal tftp server" % cmd.imageUuid)
+
+        if ret9 == 0 or ret10 == 0:
+            # serve whole iso instead of mounting it on ubuntu live server
+            ftp_iso_path = mount_path + ".iso"
+            bash_r("cp %s %s" % (cache_path, ftp_iso_path))
 
         logger.info("successfully downloaded image[uuid:%s] and mounted it" % cmd.imageUuid)
         self._set_capacity_to_response(rsp)
@@ -1212,6 +1382,10 @@ echo "STARTMODE='auto'" >> $IFCFGFILE
         # umount
         mount_path = os.path.join(self.VSFTPD_ROOT_PATH, cmd.imageUuid)
         bash_r("umount {0}; rm -rf {0}".format(mount_path))
+
+        ftp_iso_path = mount_path + ".iso"
+        if os.path.exists(ftp_iso_path):
+            os.remove(ftp_iso_path)
 
         # rm image cache
         if os.path.exists(cmd.cacheInstallPath):
