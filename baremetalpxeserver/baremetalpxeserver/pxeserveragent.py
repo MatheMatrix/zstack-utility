@@ -593,8 +593,6 @@ menuentry 'Install OS on Bare Metal Instance' --class fedora --class gnu-linux -
         else:
             with open(ks_cfg_file, 'w') as f:
                 f.write(rendered_content)
-        with open(ks_cfg_file, 'w') as f:
-            f.write(rendered_content)
 
     def _create_pre_scripts(self, cmd, pxeserver_dhcp_nic_ip, more_script = ""):
         # poweroff and abort the provisioning process if failed to send `deploybegin` command
