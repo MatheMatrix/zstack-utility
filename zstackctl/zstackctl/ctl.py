@@ -1038,6 +1038,7 @@ class Ctl(object):
     # always install zstack-ui inside zstack_install_root
     ZSTACK_UI_HOME = os.path.join(USER_ZSTACK_HOME_DIR, 'zstack-ui/')
     ZSTACK_UI_DB = os.path.join(ZSTACK_UI_HOME, 'scripts/deployuidb.sh')
+    ZSTACK_UI_CONFIGS = os.path.join(ZSTACK_UI_HOME, 'configs')
     ZSTACK_UI_DB_MIGRATE = os.path.join(ZSTACK_UI_HOME, 'db')
     ZSTACK_UI_DB_MIGRATE_SH = os.path.join(ZSTACK_UI_HOME, 'scripts/migrateforupdate.sh')
     ZSTACK_UI_KEYSTORE = ZSTACK_UI_HOME + 'ui.keystore.p12'
@@ -11269,6 +11270,140 @@ class TimelineCmd(Command):
             timeline.generate_gantt(args.key)
 
 
+class ExtraService(object):
+    colors = ["green", "yellow", "red"]
+
+    def __init__(self):
+        self.collector = ManagementNodeStatusCollector()
+        self.zsha2_utils = Zsha2Utils() if check_ha() else None
+
+    def service_name(self):
+        raise NotImplementedError("Subclasses must implement service_name()")
+
+    def start(self, do_init=False):
+        raise NotImplementedError()
+
+    def init(self):
+        pass
+
+    def post_start_log(self):
+        pass
+
+    def status(self):
+        name = self.service_name()
+        server_status = self.collector.get_systemd_service_status(name)
+
+        if server_status in ["running", "enabled", "disabled"]:
+            status_color = self.colors[0]
+        elif server_status in ["stopped", "False"]:
+            status_color = self.colors[2]
+        else:
+            status_color = self.colors[1]
+
+        format_str = "{} : {}".format(
+            name.ljust(20),
+            colored(server_status, status_color)
+        )
+        info_and_debug(format_str)
+
+
+class IamService(ExtraService):
+    default_port = 18181
+    base_init_path = "/var/lib/zstack/keycloak/init.sh"
+
+    def service_name(self):
+        return "keycloak"
+
+    def init(self):
+        if not self.zsha2_utils:
+            return
+        template_path = "/var/lib/zstack/keycloak/conf/keycloak.upstream.nginx.conf"
+        conf_path = os.path.join(Ctl.ZSTACK_UI_CONFIGS, 'keycloak.upstream.nginx.conf')
+
+        with open(template_path, "r") as f:
+            content = f.read()
+        content = content.replace("{{MN1_IP}}", self.zsha2_utils.config['nodeip']).replace("{{MN2_IP}}", self.zsha2_utils.config['peerip'])
+
+        with open(conf_path, "w") as f:
+            f.write(content)
+        shell_no_pipe("systemctl restart zstack-ui-nginx")
+
+        self.zsha2_utils.scp_to_peer(conf_path, conf_path)
+        self.zsha2_utils.execute_on_peer("systemctl restart zstack-ui-nginx")
+        info_and_debug("Rendered keycloak.upstream.nginx.conf with MN1: %s, MN2: %s" % (self.zsha2_utils.config['nodeip'], self.zsha2_utils.config['peerip']))
+
+    def start(self, do_init=False):
+        shell_no_pipe("systemctl restart %s" % self.service_name())
+        if self.zsha2_utils:
+            self.zsha2_utils.execute_on_peer("systemctl restart %s" % self.service_name())
+        self._wait_for_keycloak("http://localhost:%d/realms/master/.well-known/openid-configuration" % self.default_port)
+        if do_init:
+            shell_no_pipe("bash %s" % self.base_init_path)
+
+    def post_start_log(self):
+        if self.zsha2_utils:
+            info("IAM service has been started in HA mode. Access it at: http://%s:%s" % (self.zsha2_utils.config['dbvip'], self.default_port))
+        else:
+            info("IAM service has been started. Access it at: http://%s:%s" % (get_default_ip(), self.default_port))
+
+    def _wait_for_keycloak(self, url, timeout=600):
+        info_and_debug("Waiting for %s to become available at: %s" % (self.service_name(), url))
+        begin = time.time()
+
+        while time.time() - begin < timeout:
+            try:
+                result = shell("curl -s -o /dev/null -w '%%{http_code}' %s" % url)
+                if result.strip() == "200":
+                    info_and_debug("%s is ready." % self.service_name())
+                    return True
+            except Exception:
+                pass
+            time.sleep(5)
+
+        error("%s did not become ready within %d seconds." % (self.service_name(), timeout))
+        return False
+
+
+class MorphService(ExtraService):
+    def service_name(self):
+        return "morph"
+
+    def start(self, do_init=False):
+        shell_no_pipe("systemctl start %s" % self.service_name())
+
+
+class StartExtraServicesCmd(Command):
+    EXTRA_SERVICE_REGISTRY = {
+        "iam": IamService,
+        "morph": MorphService,
+    }
+
+    def __init__(self):
+        super(StartExtraServicesCmd, self).__init__()
+        self.name = 'start-extra-service'
+        self.description = 'Start extra services like iam, morph, etc.'
+        ctl.register_command(self)
+
+    def install_argparse_arguments(self, parser):
+        parser.add_argument('--name', help='Specify a single service to start, e.g. --name iam')
+        parser.add_argument('--init', action='store_true', default=False, help='Initialize configuration before starting the service')
+
+    def run(self, args):
+        if args.name not in self.EXTRA_SERVICE_REGISTRY:
+            error("Unknown service '%s'. Available services: %s" % (args.name, ", ".join(self.EXTRA_SERVICE_REGISTRY)))
+            return
+
+        try:
+            service_class = self.EXTRA_SERVICE_REGISTRY[args.name]
+            service_instance = service_class()
+            if args.init:
+                service_instance.init()
+            service_instance.start(args.init)
+            service_instance.status()
+            service_instance.post_start_log()
+        except Exception as e:
+            error("Failed to start service '%s': %s" % (args.name, str(e)))
+
 class DiagnoseCmd(Command):
     ctl_timeline = "timeline"
     ctl_collect_log = "configured_collect_log"
@@ -11425,6 +11560,7 @@ def main():
     DumpMNTaskQueueCmd()
     TimelineCmd()
     DiagnoseCmd()
+    StartExtraServicesCmd()
 
     try:
         ctl.run()
