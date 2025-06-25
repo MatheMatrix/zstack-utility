@@ -33,7 +33,7 @@ class AsyncHttpServer(object):
         
         d = simplejson.loads(arg[http.REQUEST_BODY])
         if self.result[task_uuid] != d['value']:
-            raise Exception('expected: %s but got: %s, taskUuid:' % (self.result[task_uuid], d['value'], task_uuid))
+            raise Exception('expected: %s but got: %s, taskUuid: %s' % (self.result[task_uuid], d['value'], task_uuid))
     
     def return_same(self, arg):
         return arg[http.REQUEST_BODY]
