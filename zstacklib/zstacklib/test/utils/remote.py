@@ -74,7 +74,7 @@ from {{pkg}} import {{entry_point}}
             'entry_point': self.entrypoint_name
         })
 
-        fd, filename = tempfile.mkstemp()
+        fd, filename = tempfile.mkstemp(text=True)
         os.write(fd, script)
         os.close(fd)
 
