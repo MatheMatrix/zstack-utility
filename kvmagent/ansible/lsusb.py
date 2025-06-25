@@ -497,7 +497,7 @@ def main(argv):
     "main entry point"
     global showint, showhubint, noemptyhub, nohub, warnsort, cols, usbids
     try:
-        (optlist, args) = getopt.gnu_getopt(argv[1:], "hiIuUwcf:", ("help",))
+        (optlist, args) = getopt.gnu_getopt(argv[1:], "hiIuUwcf:", ["help"])
     except getopt.GetoptError as exc:
         print("Error:", exc)
         sys.exit(usage())
