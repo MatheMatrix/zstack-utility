@@ -233,6 +233,10 @@ def install_kvm_pkg():
             'x86_64': 'edk2-ovmf edk2.git-ovmf-x64',
             'aarch64': 'edk2-aarch64'
         }
+        
+        arch_exclude_mapping = {
+            'loongarch64': 'edac-utils freeipmi lldpd libcbd'
+        }
 
         cube_distro_mapping = {
             'x86_64_centos': "lm_sensors",
@@ -287,6 +291,10 @@ def install_kvm_pkg():
             # add extra package
             if extra_packages != '':
                 dep_list = dep_list + " " + extra_packages
+
+            exclude_pkgs = arch_exclude_mapping.get(host_info.host_arch, "")
+            if exclude_pkgs:
+                dep_list = ' '.join([pkg for pkg in dep_list.split() if pkg not in exclude_pkgs.split()])
 
             # skip these packages when connect host
             _skip_list = re.split(r'[|;,\s]\s*', skip_packages)
