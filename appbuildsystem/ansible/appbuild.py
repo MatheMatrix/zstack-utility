@@ -84,7 +84,7 @@ else:
 if host_info.distro in RPM_BASED_OS:
     dep_pkg = "wget qemu-img"
     py3_rpms = ' python3.11 python3.11-devel python3.11-pip libffi-devel openssl-devel'
-    if releasever in ['h84']:
+    if releasever in ['h84', 'oe2403sp1']:
         dep_pkg += py3_rpms
 
     if zstack_repo != 'false':

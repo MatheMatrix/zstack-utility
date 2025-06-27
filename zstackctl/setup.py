@@ -26,7 +26,7 @@ zstack management tool""",
           'ansible==9.13.0',
           'pyroute2>=0.5.14',
           'pycryptodome==3.19.1',
-          'pyOpenSSL', # TODO upgrade
+          'pyOpenSSL==23.3.0', # TODO upgrade
           # -*- Extra requirements: -*-
       ],
       entry_points="""
