@@ -318,7 +318,8 @@ class ZbsAgent(plugin.TaskManager):
 
             def _cancel(self):
                 traceable_shell.cancel_job_by_api(self.api_id)
-                zbsutils.delete_volume_and_snapshots(self.task_spec.logicalPoolName, self.task_spec.dstLunName)
+                _, logical_pool, _, _ = zbsutils.parse_cbd_path(self.task_spec.path)
+                zbsutils.delete_volume_and_snapshots(logical_pool, self.task_spec.dstVolume)
 
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = CopyRsp()
@@ -425,7 +426,7 @@ class ZbsAgent(plugin.TaskManager):
         if not ret.result.hasattr('fileInfo'):
             raise Exception('failed to found snapshot for volume[%s]' % volume)
         for info in ret.result.fileInfo:
-            if cmd.snapshotName in info.fileName:
+            if snapshot in info.fileName:
                 isProtected = info.isProtected
                 break
 
