@@ -11365,11 +11365,121 @@ class IamService(ExtraService):
 
 
 class MorphService(ExtraService):
+    default_morph_path = "/var/lib/zstack/morph/"
+    default_morph_config = default_morph_path + "application.yml"
+    default_morph_jar = default_morph_path + "morph.jar"
+    default_port = 4747
+    default_ip = get_default_ip()
+    default_morph_service_path = "/etc/systemd/system/morph.service"
+    default_morph_service_content = '''
+[Unit]
+Description=Morph Application Service
+After=network.target
+
+[Service]
+Type=simple
+
+ExecStart=/etc/alternatives/java_sdk_21/bin/java -jar {jar} --spring.config.location=file:{config}
+
+WorkingDirectory={path}
+
+User=zstack
+Group=zstack
+
+Restart=always
+RestartSec=5s
+
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=morph
+
+Environment="JAVA_OPTS=-Xms256m -Xmx256m -Dfile.encoding=UTF-8"
+
+[Install]
+WantedBy=multi-user.target
+    '''.format(jar=default_morph_jar, config=default_morph_config, path=default_morph_path)
+
     def service_name(self):
         return "morph"
 
+    def init(self):
+        data = {}
+        try:
+            with open(self.default_morph_config, 'r') as f:
+                data = yaml.safe_load(f)
+        except IOError as e:
+            error('Failed to load morph application.yml: %s' % str(e))
+        except yaml.YAMLError as exc:
+            error('Failed to parse morph application.yml')
+            if hasattr(exc, 'problem_mark'):
+                mark = exc.problem_mark
+                error("Error at line: %s column: %s" % (mark.line + 1, mark.column + 1))
+
+        if 'server' in data and 'port' in data['server']:
+            data['server']['port'] = self.default_port
+            info('morph application.yml update port %s' % self.default_port)
+        if 'server' in data and 'address' in data['server']:
+            data['server']['address'] = self.default_ip
+
+        try:
+            with open(self.default_morph_config, 'w') as f:
+                yaml.dump(data, f, default_flow_style=False)
+            info('morph application.yml write success')
+        except IOError:
+            error('morph application.yml write failed')
+
+        try:
+            with open(self.default_morph_service_path, 'w') as f:
+                f.write(self.default_morph_service_content)
+            info('morph morph.service write success')
+        except IOError:
+            error('morph morph.service write failed')
+
+        shell_no_pipe("systemctl daemon-reload")
+        shell_no_pipe("systemctl enable %s" % self.service_name())
+        shell_no_pipe("systemctl start %s" % self.service_name())
+
+        if self.zsha2_utils:
+            try:
+                self.zsha2_utils.scp_to_peer(self.default_morph_config, self.default_morph_config)
+                self.zsha2_utils.scp_to_peer(self.default_morph_jar, self.default_morph_jar)
+                self.zsha2_utils.scp_to_peer(self.default_morph_service_path, self.default_morph_service_path)
+                self.zsha2_utils.execute_on_peer("systemctl daemon-reload")
+                self.zsha2_utils.execute_on_peer("systemctl enable %s" % self.service_name())
+                self.zsha2_utils.execute_on_peer("systemctl start %s" % self.service_name())
+            except Exception as e:
+                error("Failed to sync morph service to peer node: %s" % str(e))
+
+
+
     def start(self, do_init=False):
         shell_no_pipe("systemctl start %s" % self.service_name())
+
+        if do_init:
+            self.init()
+
+        self._wait_for_morph("http://%s:%d/actuator/health" % (self.default_ip, self.default_port))
+        if self.zsha2_utils:
+            self.zsha2_utils.execute_on_peer("systemctl start %s" % self.service_name())
+
+    def _wait_for_morph(self, url, timeout=600):
+        info_and_debug("Waiting for %s to become available at: %s" % (self.service_name(), url))
+        begin = time.time()
+
+        while time.time() - begin < timeout:
+            try:
+                result = shell("curl -s -o /dev/null -w '%%{http_code}' %s" % url)
+                if result.strip() == "200":
+                    info_and_debug("%s is ready." % self.service_name())
+                    return True
+            except Exception:
+                pass
+            time.sleep(5)
+
+        error("%s did not become ready within %d seconds." % (self.service_name(), timeout))
+        return False
+
+
 
 
 class StartExtraServicesCmd(Command):

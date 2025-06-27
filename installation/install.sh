@@ -2539,6 +2539,27 @@ is_extract_keycloak_tar(){
     [ $? -eq 0 ] && pass
 }
 
+install_morph_server(){
+  morph_package_tar=$(find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "morph_all.tar.gz" | head -n 1)
+  [ -z "$morph_package_tar" ] && return
+    echo_title "Install morph server"
+    echo ""
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    show_spinner is_extract_morph_tar
+    show_spinner prepare_morph_user_and_db
+}
+
+is_extract_morph_tar(){
+  echo_subtitle "Extract morph tar"
+  cp /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/morph_all.tar.gz /var/lib/zstack/
+  tar -zxvf /var/lib/zstack/morph_all.tar.gz -C /var/lib/zstack/ > /dev/null 2>&1
+  if [ $? -ne 0 ]; then
+      fail "Extracting the morph_all.tar.gz package failed."
+  fi
+  rm -f /var/lib/zstack/morph_all.tar.gz
+  [ $? -eq 0 ] && pass
+}
+
 install_marketplace_server(){
     marketplace_installer_bin=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "marketplace-server.bin" | head -n 1`
     [[ x"$marketplace_installer_bin" = x ]] && return
@@ -3689,6 +3710,30 @@ check_sync_local_repos() {
   fi
 }
 
+prepare_morph_user_and_db(){
+  echo_subtitle "Prepare morph db and user"
+    get_mysql_conf_file
+    MYSQL_DATA_DIR=$(awk -F'=' '/datadir/ {print $2}' "$MYSQL_CONF_FILE")
+    [ -z "$MYSQL_DATA_DIR" ] && MYSQL_DATA_DIR="/var/lib/mysql"
+    db='morph'
+    user='morph'
+    morph_encrypt_password=${MORPH_DB_PASSWORD:-$(openssl rand -hex 16)}
+    echo "morph database password stored in /root/.morph_db_pass" > /root/.morph_db_pass
+    chmod 600 /root/.morph_db_pass
+
+    [ -f $MYSQL_DATA_DIR/$db/db.opt ] && return 0
+    mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e 'exit' >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+      mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e "CREATE USER IF NOT EXISTS 'morph'@'%' IDENTIFIED BY '$morph_encrypt_password';
+        CREATE DATABASE IF NOT EXISTS $db;
+        GRANT ALL PRIVILEGES ON $db.* TO 'morph'@'%';
+        FLUSH PRIVILEGES;"
+      return 0
+    fi
+    fail2 "\nCannot login mysql! It seems that the default root user password has been changed, If you have mysql root password, please add option '-P MYSQL_ROOT_PASSWORD'.\n"
+}
+
+
 prepare_keycloak_user_and_db() {
     echo_subtitle "Prepare keycloak db and user"
     get_mysql_conf_file
@@ -4469,6 +4514,8 @@ if [ x"$UPGRADE" = x'y' ]; then
 
     install_keycloak_server
 
+    install_morph_server
+
     #only upgrade zstack
     upgrade_zstack
 
@@ -4649,6 +4696,8 @@ install_marketplace_server
 install_fluentbit_server
 
 install_keycloak_server
+
+install_morph_server
 
 #Start ${PRODUCT_NAME} 
 if [ -z $NOT_START_ZSTACK ]; then
