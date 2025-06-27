@@ -335,6 +335,7 @@ class CephAgent(plugin.TaskManager):
     DOWNLOAD_IMAGESTORE_PATH = "/ceph/primarystorage/imagestore/backupstorage/download"
     STORAGE_BACKUP_PATH = "/ceph/primarystorage/volume/takebackup"
     CANCEL_STORAGE_BACKUP_PATH = "/ceph/primarystorage/volume/cancelbackup"
+    CLEAN_STORAGE_BACKUP_CACHE_PATH = "/ceph/primarystorage/volume/cleanbackupcache"
     DOWNLOAD_BITS_FROM_KVM_HOST_PATH = "/ceph/primarystorage/kvmhost/download"
     DOWNLOAD_BITS_FROM_NBD_EXPT_PATH = "/ceph/primarystorage/nbd/download"
     CLAEN_TRASH_PATH = "/ceph/primarystorage/trash/clean"
@@ -397,6 +398,7 @@ class CephAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.DOWNLOAD_IMAGESTORE_PATH, self.download_imagestore)
         self.http_server.register_async_uri(self.STORAGE_BACKUP_PATH, self.take_storage_backup)
         self.http_server.register_async_uri(self.CANCEL_STORAGE_BACKUP_PATH, self.cancel_storage_backup)
+        self.http_server.register_async_uri(self.CLEAN_STORAGE_BACKUP_CACHE_PATH, self.clean_storage_backup_cache)
         self.http_server.register_async_uri(self.GET_VOLUME_SIZE_PATH, self.get_volume_size)
         self.http_server.register_async_uri(self.BATCH_GET_VOLUME_SIZE_PATH, self.batch_get_volume_size)
         self.http_server.register_async_uri(self.GET_VOLUME_WATCHES_PATH, self.get_volume_watchers)
@@ -884,6 +886,29 @@ class CephAgent(plugin.TaskManager):
     def cancel_storage_backup(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         return self.imagestore_client.cancel_storage_backup(cmd)
+
+    @replyerror
+    def clean_storage_backup_cache(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+
+        vpath = self._normalize_install_path(cmd.volumePath)
+        backup_prefix = "rbd-storage-backup-"
+
+        snaps = self._get_snapshots(vpath)
+        if not snaps:
+            return jsonobject.dumps(rsp)
+
+        target_snaps = [s for s in snaps if s.name.startswith(backup_prefix)]
+
+        if not target_snaps:
+            return jsonobject.dumps(rsp)
+
+        for snap in target_snaps:
+            full_snap_name = vpath + '@' + snap.name
+            shell.call('rbd snap rm %s' % full_snap_name)
+
+        return jsonobject.dumps(rsp)
 
     @replyerror
     def commit_image(self, req):
