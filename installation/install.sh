@@ -1191,7 +1191,7 @@ ia_check_ip_hijack(){
 ia_install_python_gcc_rh(){
     echo_subtitle "Install Python and GCC"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    req_pkgs='alternatives python2 python3.11 python3.11-devel python3.11-pip gcc'
+    req_pkgs='python3.11 python3.11-devel python3.11-pip gcc'
     # TODO py3
     # [ ! -d /usr/lib64/python2.7/site-packages/pycrypto-2.6.1-py2.7.egg-info ] && req_pkgs=${req_pkgs}" python2-crypto"
     if [ ! -z $ZSTACK_YUM_REPOS ];then
@@ -1642,8 +1642,7 @@ is_install_general_libs_rh(){
     fi
 
     # Just install what is not installed
-    deps_list="libselinux-python \
-            python3-libselinux \
+    deps_list="python3-libselinux \
             java-1.8.0-openjdk \
             java-1.8.0-openjdk-devel \
             bridge-utils \
@@ -1651,7 +1650,6 @@ is_install_general_libs_rh(){
             nfs-utils \
             rpcbind \
             vim-minimal \
-            python2-devel \
             gcc \
             grafana \
             autoconf \
@@ -1678,7 +1676,6 @@ is_install_general_libs_rh(){
             nginx \
             nginx-all-modules \
             psmisc \
-            python2-setuptools \
             avahi \
             gnutls-utils \
             avahi-tools \
