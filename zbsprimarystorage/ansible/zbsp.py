@@ -93,9 +93,13 @@ else:
 
 # name: install dependencies
 install_rpm_list = "libcbd"
+py3_rpms = "python3.11 python3.11-devel python3.11-pip libffi-devel openssl-devel"
 qemu_installed = yum_check_package("qemu-kvm", host_post_info)
 if not qemu_installed:
     install_rpm_list += " %s" % qemu_alias.get(releasever, 'qemu-kvm')
+
+if releasever in ['h84r', 'oe2403sp1']:
+    install_rpm_list += py3_rpms
 
 if zstack_repo != 'false':
     command = "for pkg in %s; do yum --disablerepo=* --enablerepo=%s install -y $pkg; done;" % (

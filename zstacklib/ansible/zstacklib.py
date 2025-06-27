@@ -2398,7 +2398,6 @@ class ZstackLib(object):
             basic.add("python3-libselinux")
             return basic
 
-        basic.add("libselinux-python")
         if self.distro_version >= 7:
             # to avoid install some pkgs on virtual router which release is
             # Centos 6.x

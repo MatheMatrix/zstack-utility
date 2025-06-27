@@ -41,6 +41,8 @@ from Crypto.Util.py3compat import *
 from hashlib import md5
 from string import Template
 from .timeline import TaskTimeline, __doc__ as timeline_doc
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import pkcs12
 
 mysql_db_config_script='''
 #!/bin/bash
@@ -10152,13 +10154,17 @@ class StartUiCmd(Command):
         with open(ctl.ZSTACK_UI_KEYSTORE, 'wb') as f:
             f.write(p12.export(b'password'))
 
-    def _gen_ssl_keystore_pem_from_pkcs12(self, ssl_keystore, ssl_keystore_password):
+    def _gen_ssl_keystore_pem_from_pkcs12(self, ssl_keystore: str, ssl_keystore_password: str):
         try:
-            p12 = OpenSSL.crypto.load_pkcs12(open(ssl_keystore, 'rb').read(), ssl_keystore_password)
+            private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(open(ssl_keystore, 'rb').read(), ssl_keystore_password.encode())
         except Exception as e:
             raise CtlError('failed to convert %s to %s because %s' % (ssl_keystore, ctl.ZSTACK_UI_KEYSTORE_PEM, str(e)))
-        cert_pem = OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM, p12.get_certificate())
-        pkey_pem = OpenSSL.crypto.dump_privatekey(OpenSSL.crypto.FILETYPE_PEM, p12.get_privatekey())
+        cert_pem = certificate.public_bytes(serialization.Encoding.PEM)
+        pkey_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
         with open(ctl.ZSTACK_UI_KEYSTORE_PEM, 'wb') as f:
             f.write(cert_pem + pkey_pem)
 
