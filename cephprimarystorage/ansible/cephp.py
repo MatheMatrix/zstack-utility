@@ -118,7 +118,7 @@ if host_info.distro in RPM_BASED_OS:
         if releasever == 'c74' and get_mn_release() in ['c76', 'c79', 'h76c', 'h79c']:
             install_rpm_list += " qemu-kvm"
 
-    if releasever in ['h84r']:
+    if releasever in ['h84r', 'oe2403sp1']:
         install_rpm_list += py3_rpms
     if zstack_repo != 'false':
         command = """pkg_list=`rpm -q {} | grep "not installed" | awk '{{ print $2 }}'` && for pkg"""\
