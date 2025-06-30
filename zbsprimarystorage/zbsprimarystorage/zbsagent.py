@@ -8,6 +8,8 @@ import zbsutils
 from zstacklib.utils import daemon
 from zstacklib.utils import plugin
 from zstacklib.utils import traceable_shell
+from zstacklib.utils import iproute
+from zstacklib.utils.report import *
 from zstacklib.utils.bash import *
 from zstacklib.utils.report import *
 
@@ -227,12 +229,15 @@ class ZbsAgent(plugin.TaskManager):
         if not r.result:
             raise Exception('failed to query mds info, error[%s]' % r.error.message)
 
+        ipv4_addrs = [addr.address for addr in iproute.query_addresses(ip_version=4) if addr.address and not addr.address.startswith("127.")]
+
         found = False
         for m in r.result:
-            if cmd.addr in m.addr:
-                rsp.externalAddr = m.externalAddr
-                found = True
-                break
+            for ipv4_addr in ipv4_addrs:
+                if any(ipv4_addr in addr for addr in (m.addr, m.dummyAddr, m.externalAddr) if addr):
+                    rsp.externalAddr = m.externalAddr
+                    found = True
+                    break
 
         if not found:
             rsp.success = False
