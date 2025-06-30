@@ -56,6 +56,9 @@ PV_DISCARD_MIN_SIZE_IN_BYTES = 1*1024**3
 ONE_HOUR_IN_SEC = 60 * 60
 LV_UUID_REFRESH_INTERVAL_IN_SEC = 60 * 30
 LVM_CONFIG_CHANGED_FILE = "/var/run/zstack/lvmConfigChanged"
+LVM_LOCKSPACE_BACKUP_PATH = "/var/lib/lvm/"
+SUPPORT_REPAIR_OPT = None
+
 '''
 If the lvm command with locking is hung, it will always occupy the lock and cannot be released.
 And in scenarios where storage IO is slow and lock contention occurs, it may take longer to execute, 
@@ -64,7 +67,6 @@ so we need to set a timeout that can tolerate this scenario.
 lvm_cmd_timeout_with_locking = 210
 
 lv_offset = TTLCache(maxsize=100, ttl=ONE_HOUR_IN_SEC)
-continue_lockspace_track = {}  # type: dict[str, bool]
 lv_uuid_cache = {}  # type: dict[str, str]
 lv_uuid_cache_last_refresh_time = 0
 
@@ -947,25 +949,13 @@ def start_vg_lock(vgUuid, hostId, retry_times_for_checking_vg_lockspace):
         elif vg_lock_is_adding(vgUuid) is True:
             raise RetryException("lock space for vg %s is adding" % vgUuid)
         else:
-            continue_lockspace_track.update({vgUuid: True})
             return True
-
-    def check_lockspace():
-        r = sanlock.dd_check_lockspace("/dev/mapper/%s-lvmlock" % vgUuid)
-        if r != 0:
-            bash.bash_roe("dmsetup remove %s-lvmlock" % vgUuid)
-            return
-        elif continue_lockspace_track.get(vgUuid) is False:
-            logger.debug("direct init lockspace[%s] has already been executed but the lockspace has not been restored, skip it" % vgUuid)
-            return
-        sanlock.check_delta_lease(vgUuid, hostId)
-        continue_lockspace_track.update({vgUuid: False})
 
     @linux.retry(times=5, sleep_time=random.uniform(0.1, 10))
     def start_lock(vgUuid):
         modify_sanlock_config("use_zstack_vglock_timeout", 1)
         modify_sanlock_config("use_zstack_vglock_large_delay", 1)
-        r, o, e = bash.bash_roe("vgchange --lock-start %s" % vgUuid)
+        r, o, e = bash.bash_roe("{} --lock-start {}".format(subcmd("vgchange"), vgUuid))
         modify_sanlock_config("use_zstack_vglock_timeout", 0)
         modify_sanlock_config("use_zstack_vglock_large_delay", 0)
 
@@ -974,8 +964,8 @@ def start_vg_lock(vgUuid, hostId, retry_times_for_checking_vg_lockspace):
                 raise Exception("vgchange --lock-start failed: return code: %s, stdout: %s, stderr: %s" % (r, o, e))
             vg_lock_exists(vgUuid)
         except Exception:
-            check_lockspace()
-            sanlock.init_gllk_if_need(vgUuid)
+            if sanlock.check_lvmlock_io(vgUuid) != 0:
+                bash.bash_r("dmsetup remove %s-lvmlock" % vgUuid)
             raise
     try:
         vg_lock_exists(vgUuid)
@@ -998,7 +988,7 @@ def check_missing_pv(vgUuid):
             raise Exception("unable to restore missing pv %s for vg %s, stdout:%s, stderr:%s" % (pv_name, vgUuid, str(o), str(e)))
         logger.debug("restore missing pv[name:%s, uuid:%s] for vg %s successfully" % (pv_name, pv_uuid, vgUuid))
 
-    check_gl_lock()
+    fix_global_lock()
     for pvs_out in pvs_outs:
         pv_uuid = pvs_out.strip().split(" ")[0]
         pv_name = pvs_out.strip().split(" ")[1]
@@ -1750,25 +1740,6 @@ def list_local_active_lvs(vgUuid):
     return result
 
 
-@bash.in_bash
-def check_gl_lock():
-    r, o = bash.bash_ro("lvmlockctl -i | grep 'LK GL' -B 5")
-    if r == 0:
-        return
-
-    # NOTE(weiw): if lockspace exists, choose one as gl lock
-    r, o = bash.bash_ro("lvmlockctl -i | grep 'lock_type=sanlock' | awk '{print $2}'")
-    if r == 0:
-        o = o.strip()
-        if len(o.splitlines()) != 0:
-            for i in o.splitlines():
-                i = i.strip()
-                if i == "":
-                    continue
-                bash.bash_roe("lvmlockctl --gl-enable %s" % i)
-                return
-
-
 def do_active_lv(absolutePath, lockType, recursive):
     def handle_lv(lockType, fpath):
         if lockType > LvmlockdLockType.NULL:
@@ -2117,23 +2088,19 @@ def check_stuck_vglk_and_gllk():
 
 @bash.in_bash
 def fix_global_lock():
-    if not ENABLE_DUP_GLOBAL_CHECK:
+    # disable held gllk if exists and enable gllk on an available VG
+    lockspaces = LvmlockdStatus().ls_status
+    if not lockspaces:
         return
-    vg_names = bash.bash_o("lvmlockctl -i | awk '/lock_type=sanlock/{print $2}'").strip().splitlines()  # type: list
-    vg_names.sort()
-    if len(vg_names) < 2:
-        return
-    for vg_name in vg_names[1:]:
-        bash.bash_roe("lvmlockctl --gl-disable %s" % vg_name)
-    bash.bash_roe("lvmlockctl --gl-enable %s" % vg_names[0])
 
-def fix_vglk(vg_uuid):
-    vglk = sanlock.get_vglk(vg_uuid)
-    if not vglk:
-        return
-    hosts_state = sanlock.get_hosts_state("lvm_" + vg_uuid)
-    if hosts_state is not None and hosts_state.get_live_min_hostid() == int(get_running_host_id(vg_uuid)):
-        sanlock.direct_init_resource("{}:{}:/dev/mapper/{}-lvmlock:{}".format(vglk.lockspace_name, vglk.resource_name, vglk.vg_name, vglk.offset))
+    for vg_name, lockspace in lockspaces.items():
+        if lockspace.gl_enabled:
+            bash.bash_r("lvmlockctl --gl-disable %s" % vg_name)
+
+    avail_vgs = {vg_name for vg_name, ls in lockspaces.items() if not ls.killed and not ls.dropped}
+    if avail_vgs:
+        avail_vgs = sorted(list(avail_vgs))
+        bash.bash_r("lvmlockctl --gl-enable %s" % avail_vgs[0])
 
 
 def list_pvs(vgUuid, timeout=10):
@@ -2220,13 +2187,6 @@ def lvm_vgck(vgUuid, timeout):
                 continue
             if es.strip() == "":
                 continue
-            # fix ZSTAC-61116
-            if es.strip().endswith("lock skipped: error -22") and lvmlockd_log_search("S lvm_%s R VGLK res_lock invalid val_blk" % vgUuid,
-                                                                                      start_time, end_time):
-                fix_vglk(vgUuid)
-            elif es.strip().endswith("lock failed: removed"):
-            # fix ZSTAC-57545
-                fix_vglk(vgUuid)
             s = "vgck %s failed, details: [return_code: %s, stdout: %s, stderr: %s]" % (vgUuid, health, o, e)
             logger.warn(s)
             return False, s
@@ -2710,6 +2670,7 @@ class LvmlockdStatus(object):
             self.killed = bool(int(ls.get("kill_vg")))
             self.dropped = bool(int(ls.get("drop_vg")))
             self.vg_name = ls.get("vg_name")
+            self.gl_enabled = bool(int(ls.get("sanlock_gl_enabled")))
 
     def _init(self):
         @linux.retry(3, 1)
@@ -2747,9 +2708,26 @@ def report_config_changed():
     shell.run("touch %s" % LVM_CONFIG_CHANGED_FILE)
 
 
-def subcmd(cmd, timeout=lvm_cmd_timeout_with_locking):
+def support_repair_lockopt():
+    global SUPPORT_REPAIR_OPT
+    if SUPPORT_REPAIR_OPT is not None:
+        return SUPPORT_REPAIR_OPT
+
+    patch_version = get_sanlock_patch_version()
+    SUPPORT_REPAIR_OPT = patch_version and patch_version.isdigit() and int(patch_version) >= 6
+    return SUPPORT_REPAIR_OPT
+
+
+def subcmd(cmd, timeout=lvm_cmd_timeout_with_locking, auto_repair=True):
+    wrap_cmd = cmd
     if cmd in ["lvs", "pvs", "vgs"]:
-        return "%s --nolocking -t" % cmd
+        wrap_cmd = "{} --nolocking -t".format(cmd)
     elif cmd in ["lvchange", "lvcreate", "lvrename", "lvresize", "lvextend", "lvremove"]:
-        return "timeout -s SIGKILL %s %s"% (timeout, cmd)
-    return cmd
+        wrap_cmd = "timeout -s SIGKILL {0} {1}".format(timeout, cmd)
+        if auto_repair and support_repair_lockopt() and cmd != "lvcreate":
+            wrap_cmd = "{0} {1}".format(wrap_cmd, "--lockopt repairlv")
+    elif cmd == "vgchange":
+        if auto_repair and support_repair_lockopt():
+            wrap_cmd = "{0} {1}".format(wrap_cmd, "--lockopt repair")
+
+    return wrap_cmd
