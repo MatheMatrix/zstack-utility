@@ -2552,7 +2552,8 @@ install_morph_server(){
 is_extract_morph_tar(){
   echo_subtitle "Extract morph tar"
   cp /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/morph_all.tar.gz /var/lib/zstack/
-  tar -zxvf /var/lib/zstack/morph_all.tar.gz -C /var/lib/zstack/ > /dev/null 2>&1
+  mkdir -p /var/lib/zstack/morph
+  tar -zxvf /var/lib/zstack/morph_all.tar.gz -C /var/lib/zstack/morph/ > /dev/null 2>&1
   if [ $? -ne 0 ]; then
       fail "Extracting the morph_all.tar.gz package failed."
   fi
@@ -3718,7 +3719,7 @@ prepare_morph_user_and_db(){
   db='morph'
   user='morph'
   morph_encrypt_password=${MORPH_DB_PASSWORD:-$(openssl rand -hex 16)}
-  echo "morph database password stored in /root/.morph_db_pass" > /root/.morph_db_pass
+  echo "morph database password: $morph_encrypt_password" > /root/.morph_db_pass
   chmod 600 /root/.morph_db_pass
 
   [ -f $MYSQL_DATA_DIR/$db/db.opt ] && return 0
