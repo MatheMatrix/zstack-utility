@@ -11309,6 +11309,7 @@ class ExtraService(object):
 
 class IamService(ExtraService):
     default_port = 18181
+    default_nginx_port = 18182
     base_init_path = "/var/lib/zstack/keycloak/init.sh"
 
     def service_name(self):
@@ -11322,7 +11323,7 @@ class IamService(ExtraService):
 
         with open(template_path, "r") as f:
             content = f.read()
-        content = content.replace("{{MN1_IP}}", self.zsha2_utils.config['nodeip']).replace("{{MN2_IP}}", self.zsha2_utils.config['peerip'])
+        content = content.replace("{{MN1_IP}}", self.zsha2_utils.config['nodeip']).replace("{{MN2_IP}}", self.zsha2_utils.config['peerip']).replace("{{LISTEN_PORT}}", str(self.default_nginx_port))
 
         with open(conf_path, "w") as f:
             f.write(content)
@@ -11342,7 +11343,7 @@ class IamService(ExtraService):
 
     def post_start_log(self):
         if self.zsha2_utils:
-            info("IAM service has been started in HA mode. Access it at: http://%s:%s" % (self.zsha2_utils.config['dbvip'], self.default_port))
+            info("IAM service has been started in HA mode. Access it at: http://%s:%s" % (self.zsha2_utils.config['dbvip'], self.default_nginx_port))
         else:
             info("IAM service has been started. Access it at: http://%s:%s" % (get_default_ip(), self.default_port))
 
@@ -11385,7 +11386,7 @@ class StartExtraServicesCmd(Command):
         ctl.register_command(self)
 
     def install_argparse_arguments(self, parser):
-        parser.add_argument('--name', help='Specify a single service to start, e.g. --name iam')
+        parser.add_argument('--name', required=True, help='Specify a single service to start, e.g. --name iam')
         parser.add_argument('--init', action='store_true', default=False, help='Initialize configuration before starting the service')
 
     def run(self, args):
