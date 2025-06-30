@@ -3187,3 +3187,11 @@ class CrashSafeFileEditor(object):
                     os.remove(tmp_path)
                 except OSError:
                     pass
+
+BLKSSZGET = 0x1268  # get dev sector size
+def get_dev_sector_size(dev_path):
+    with open(dev_path, 'rb') as f:
+        fd = f.fileno()
+        buf = fcntl.ioctl(fd, BLKSSZGET, "    ")
+        sector_size = struct.unpack('I', buf)[0]
+        return sector_size
