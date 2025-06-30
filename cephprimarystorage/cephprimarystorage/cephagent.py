@@ -336,6 +336,7 @@ class CephAgent(plugin.TaskManager):
     DOWNLOAD_IMAGESTORE_PATH = "/ceph/primarystorage/imagestore/backupstorage/download"
     STORAGE_BACKUP_PATH = "/ceph/primarystorage/volume/takebackup"
     CANCEL_STORAGE_BACKUP_PATH = "/ceph/primarystorage/volume/cancelbackup"
+    GET_STORAGE_BACKUP_MODE_PATH = "/ceph/primarystorage/volume/getbackupmode"
     CLEAN_STORAGE_BACKUP_CACHE_PATH = "/ceph/primarystorage/volume/cleanbackupcache"
     DOWNLOAD_BITS_FROM_KVM_HOST_PATH = "/ceph/primarystorage/kvmhost/download"
     DOWNLOAD_BITS_FROM_NBD_EXPT_PATH = "/ceph/primarystorage/nbd/download"
@@ -400,6 +401,7 @@ class CephAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.DOWNLOAD_IMAGESTORE_PATH, self.download_imagestore)
         self.http_server.register_async_uri(self.STORAGE_BACKUP_PATH, self.take_storage_backup)
         self.http_server.register_async_uri(self.CANCEL_STORAGE_BACKUP_PATH, self.cancel_storage_backup)
+        self.http_server.register_async_uri(self.GET_STORAGE_BACKUP_MODE_PATH, self.get_storage_backup_mode)
         self.http_server.register_async_uri(self.CLEAN_STORAGE_BACKUP_CACHE_PATH, self.clean_storage_backup_cache)
         self.http_server.register_async_uri(self.GET_VOLUME_SIZE_PATH, self.get_volume_size)
         self.http_server.register_async_uri(self.BATCH_GET_VOLUME_SIZE_PATH, self.batch_get_volume_size)
@@ -900,6 +902,19 @@ class CephAgent(plugin.TaskManager):
     def cancel_storage_backup(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         return self.imagestore_client.cancel_storage_backup(cmd)
+
+    @replyerror
+    def get_storage_backup_mode(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+        mode = 'incremental'
+        if not cmd.lastBackupUuid:
+            mode = 'full'
+        if shell.run('rbd info %s@%s' % (cmd.volumePath.replace('ceph://', ''), cmd.lastBackupUuid)) != 0:
+            mode = 'full'
+
+        rsp.mode = mode
+        return jsonobject.dumps(rsp)
 
     @replyerror
     def clean_storage_backup_cache(self, req):
