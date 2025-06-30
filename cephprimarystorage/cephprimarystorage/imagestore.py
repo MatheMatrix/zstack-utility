@@ -74,9 +74,9 @@ class ImageStoreClient(object):
     def storage_backup(self, cmd):
         self._check_zstore_cli()
         sshData = cmd.userName + '@' + cmd.hostname + ':' + cmd.uploadDir
-        cmdstr = '%s -rootca %s storagebackup -ssh %s -p %s -parent %s -volume %s -backupUuid %s' % (
+        cmdstr = '%s -rootca %s storagebackup -ssh %s -p %s -parent %s -volume %s -backupUuid %s -mode %s' % (
             self.ZSTORE_CLI_PATH, self.ZSTORE_CLI_PATH, sshData, cmd.password, cmd.lastBackupUuid, cmd.volumePath,
-            cmd.backupUuid)
+            cmd.backupUuid, cmd.mode)
         output = shell.call(cmdstr.encode(encoding="utf-8"))
         result = jsonobject.loads(output.splitlines()[-1])
 
@@ -150,6 +150,9 @@ class ImageStoreClient(object):
 
         if cmd.concurrency and cmd.concurrency > 1:
             args += " -concurrency %d" % cmd.concurrency
+
+        if cmd.preCreated:
+            args += " -precreated"
 
         cmdstr = '%s -url %s:%s pull %s %s:%s' % (
         self.ZSTORE_CLI_PATH, cmd.hostname, self.ZSTORE_DEF_PORT, args, name, imageid)
