@@ -11371,6 +11371,7 @@ class MorphService(ExtraService):
     default_port = 4747
     default_ip = get_default_ip()
     default_morph_service_path = "/etc/systemd/system/morph.service"
+    default_morph_db_passwd_path = "/root/.morph_db_pass"
     default_morph_service_content = '''
 [Unit]
 Description=Morph Application Service
@@ -11383,8 +11384,8 @@ ExecStart=/etc/alternatives/java_sdk_21/bin/java -jar {jar} --spring.config.loca
 
 WorkingDirectory={path}
 
-User=zstack
-Group=zstack
+User=root
+Group=root
 
 Restart=always
 RestartSec=5s
@@ -11415,11 +11416,25 @@ WantedBy=multi-user.target
                 error("Error at line: %s column: %s" % (mark.line + 1, mark.column + 1))
             error('Failed to parse morph application.yml')
 
-        if 'server' in data and 'port' in data['server']:
-            data['server']['port'] = self.default_port
-            info('morph application.yml update port %s' % self.default_port)
-        if 'server' in data and 'address' in data['server']:
-            data['server']['address'] = self.default_ip
+        if 'server' in data:
+            if 'port' in data['server']:
+                data['server']['port'] = self.default_port
+                info('morph application.yml update port %s' % self.default_port)
+            if 'address' in data['server']:
+                data['server']['address'] = self.default_ip
+                info('morph application.yml update address %s' % self.default_ip)
+
+        if 'spring' in data and 'datasource' in data['spring']:
+            try:
+                with open(self.default_morph_db_passwd_path, 'r') as f:
+                    db_password = f.read().strip()
+                    if db_password:
+                        data['spring']['datasource']['password'] = db_password
+                        info('Updated database password from %s' % self.default_morph_db_passwd_path)
+                    else:
+                        error('Password file is empty: %s' % self.default_morph_db_passwd_path)
+            except IOError as e:
+                error('Failed to read password file %s: %s' % (self.default_morph_db_passwd_path, str(e)))
 
         try:
             with open(self.default_morph_config, 'w') as f:
@@ -11437,7 +11452,7 @@ WantedBy=multi-user.target
 
         shell_no_pipe("systemctl daemon-reload")
         shell_no_pipe("systemctl enable %s" % self.service_name())
-        shell_no_pipe("systemctl start %s" % self.service_name())
+        shell_no_pipe("systemctl restart %s" % self.service_name())
 
         if self.zsha2_utils:
             try:
@@ -11446,7 +11461,7 @@ WantedBy=multi-user.target
                 self.zsha2_utils.scp_to_peer(self.default_morph_service_path, self.default_morph_service_path)
                 self.zsha2_utils.execute_on_peer("systemctl daemon-reload")
                 self.zsha2_utils.execute_on_peer("systemctl enable %s" % self.service_name())
-                self.zsha2_utils.execute_on_peer("systemctl start %s" % self.service_name())
+                self.zsha2_utils.execute_on_peer("systemctl restart %s" % self.service_name())
             except Exception as e:
                 error("Failed to sync morph service to peer node: %s" % str(e))
 
@@ -11454,10 +11469,6 @@ WantedBy=multi-user.target
 
     def start(self, do_init=False):
         shell_no_pipe("systemctl start %s" % self.service_name())
-
-        if do_init:
-            self.init()
-
         self._wait_for_morph("http://%s:%d/actuator/health" % (self.default_ip, self.default_port))
         if self.zsha2_utils:
             self.zsha2_utils.execute_on_peer("systemctl start %s" % self.service_name())
