@@ -166,82 +166,149 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         # bond nics to dpdk driver
         r, e = ovn.changeNicToDpdkDriver(cmd.nicNamePciAddressMap)
         if r != 0:
-            rsp.success = False
-            rsp.error = "start ovn service, fail {err}".format(err=e)
-            return jsonobject.dumps(rsp)
+            msg = "start ovn service, fail {err}".format(err=e)
+            return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd, needRestore=False)
 
-        # start ovs to init config
-        r, _, e = bash.bash_roe("systemctl restart ovsdb-server;systemctl start openvswitch;systemctl start "
-                                "ovn-controller")
-        if r != 0:
-            rsp.success = False
-            rsp.error = "start ovn service, fail {err}".format(err=e)
-            return jsonobject.dumps(rsp)
+        vsctl = ovn.VsCtl()
+        dpdkEnv = ovn.OvsDpdkEnv(cmd.lcores, cmd.pmdcores,
+                                 int(cmd.hugePageNumber), int(cmd.hugePageSize), int(cmd.socketMem),
+                                 cmd.nicNamePciAddressMap, cmd.nicRxQueueNumber, cmd.nicRxQueueDescNumber)
 
-        logger.debug("success start ovn services")
+        if not vsctl.isOvsRunning():
+            r, o, e = bash.bash_roe("systemctl restart ovsdb-server;systemctl restart openvswitch;systemctl restart "
+                                    "ovn-controller")
+            if r != 0:
+                msg = "restart openvswitch service, failed: {err}".format(err=e)
+                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
+
+        err, socketMem = vsctl.getOvsOtherConfig("dpdk-socket-mem")
+        if err or len(socketMem.split(',')) > 0 and socketMem.split(',')[0] != cmd.socketMem:
+            r = dpdkEnv.checkHugePagesMem()
+            if r != 0:
+                msg = "check ovs dpdk huge page mem error!"
+                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
+
+        err, dpdkInit = vsctl.getOvsOtherConfig("dpdk-init")
+        if err or dpdkInit != 'true':
+            r = vsctl.setOvsOtherConfig("dpdk-init", 'true')
+            if r != 0:
+                msg = "set ovs dpdk init failed!"
+                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
+
         # TODO only dpdk is supported, ovs-kernel is not supported
         r, _, e = bash.bash_roe("ovs-vsctl --may-exist add-br br-int;"
-                                "ovs-vsctl set bridge br-int datapath_type=netdev;"
-                                "ovs-vsctl --no-wait set Open_vSwitch . other_config:dpdk-init=true")
+                                "ovs-vsctl set bridge br-int datapath_type=netdev;")
         if r != 0:
-            pciAddressList = list(cmd.nicNamePciAddressMap.__dict__.items().value())
-            ovn.restoreNicDriver(pciAddressList)
-            rsp.success = False
-            rsp.error = "init ovs config, failed: {err}".format(err=e)
-            return jsonobject.dumps(rsp)
+            msg = "add br-int failed: {err}".format(err=e)
+            return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
 
         logger.debug("set ovs-ctl parameters")
 
-        # create external bridge: br-phy
-        vsctl = ovn.VsCtl()
-        r, e = vsctl.addUplink(cmd.nicNamePciAddressMap, cmd.bondingMode, cmd.lacpMode,
-                               cmd.ovnEncapIP, cmd.ovnEncapNetmask)
-        if r != 0:
-            pciAddressList = list(cmd.nicNamePciAddressMap.__dict__.items().value())
-            ovn.restoreNicDriver(pciAddressList)
-            rsp.success = False
-            rsp.error = "init ovs config, failed: %s" % e
-            return jsonobject.dumps(rsp)
+        lMask, pmdMask = dpdkEnv.getCpuMask()
+        err1, curLcoreMask = vsctl.getOvsOtherConfig("dpdk-lcore-mask")
+        err2, curPmdMask = vsctl.getOvsOtherConfig("pmd-cpu-mask")
+        if err1 or err2 or pmdMask != curPmdMask or curLcoreMask != lMask:
+            r = vsctl.bindCpuCores(lMask, pmdMask)
+            if r != 0:
+                msg = "set ovs dpdk lcore mask failed!"
+                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
 
-        logger.debug("create br-phy")
+        # get interface of Port dpdkbond
+        # check bond name and mode
+        # check pci address
+        # check queue num and queue desc num
+        needAddUplink = True
+        err, bondName = vsctl.getTableAttr("Port", "dpdkbond", "name")
+        if not err and bondName == 'dpdkbond':
+            err, bondMode = vsctl.getTableAttr("Port", "dpdkbond", "bond_mode")
+            if not err and bondMode == 'balance-tcp':
+                err, interfaces = vsctl.getTableAttr("Port", "dpdkbond", "interfaces")
+                interfaces = [item.strip() for item in interfaces.strip("[]").split(",")]
+                interfaces_names = []
+                for interface in interfaces:
+                    _, name = vsctl.getTableAttr("Interface", interface, "name")
+                    interfaces_names.append(name)
+                if set(interfaces_names) == set(cmd.nicNamePciAddressMap.__dict__.keys()):
+                    for nicName, pciAddress in cmd.nicNamePciAddressMap.__dict__.items():
+                        err, pci = vsctl.getTableAttr("Interface", nicName, "options:dpdk-devargs")
+                        if err or pci != pciAddress:
+                            needAddUplink = True
+                            break
+                        err1, nicRxQueueNum = vsctl.getNicRxQueueNumConfig(nicName)
+                        err2, nicRxQueueDescNum = vsctl.getNicRxQueueDescNumConfig(nicName)
+                        if err1 or err2 or nicRxQueueNum != cmd.nicRxQueueNumber or nicRxQueueDescNum != cmd.nicRxQueueDescNumber:
+                            r = vsctl.setNicRxQueueConfig(nicName, cmd.nicRxQueueNumber, cmd.nicRxQueueDescNumber)
+                            if r != 0:
+                                msg = "set ovs dpdk rx queue config failed!"
+                                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
+                        needAddUplink = False
+        if needAddUplink:
+            # create external bridge: br-phy
+            logger.debug("began to create br-phy")
+            r, e = vsctl.addUplink(cmd.nicNamePciAddressMap, cmd.bondingMode, cmd.lacpMode,
+                                   cmd.ovnEncapIP, cmd.ovnEncapNetmask)
+            if r != 0:
+                msg = "add up link failed: %s!" % e
+                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
+            else:
+                for nicName, pciAddress in cmd.nicNamePciAddressMap.__dict__.items():
+                    err1, nicRxQueueNum = vsctl.getNicRxQueueNumConfig(nicName)
+                    err2, nicRxQueueDescNum = vsctl.getNicRxQueueDescNumConfig(nicName)
+                    if err1 or err2 or nicRxQueueNum != cmd.nicRxQueueNumber or nicRxQueueDescNum != cmd.nicRxQueueDescNumber:
+                        r = vsctl.setNicRxQueueConfig(nicName, cmd.nicRxQueueNumber, cmd.nicRxQueueDescNumber)
+                        if r != 0:
+                            msg = "set ovs dpdk rx queue config failed!"
+                            return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
 
-        r, _, e = bash.bash_roe("ovs-vsctl set Open_vSwitch . other_config:userspace-tso-enable=true "
-                                "external-ids:ovn-remote={ovn_remote} "
-                                "external-ids:ovn-encap-ip={ovn_encap_ip} "
-                                "external-ids:ovn-encap-type={ovn_encap_type} "
-                                "external-ids:ovn-bridge-mappings=flat:{br_ex} "
-                                "external-ids:hostname={hostIp} "
-                                .format(ovn_remote=cmd.ovnRemoteConnection,
-                                        ovn_encap_ip=cmd.ovnEncapIP,
-                                        ovn_encap_type=cmd.ovnEncapType,
-                                        br_ex=cmd.brExName,
-                                        hostIp=cmd.hostIp))
-        if r != 0:
-            pciAddressList = list(cmd.nicNamePciAddressMap.__dict__.items().value())
-            ovn.restoreNicDriver(pciAddressList)
-            rsp.success = False
-            rsp.error = "init ovs config, failed: %s" % e
-            return jsonobject.dumps(rsp)
+        err1, ovn_remote = vsctl.getOvsExternalIdsConfig("ovn-remote")
+        err2, ovn_encap_ip = vsctl.getOvsExternalIdsConfig("ovn-encap-ip")
+        err3, ovn_encap_type = vsctl.getOvsExternalIdsConfig("ovn-encap-type")
+        err4, ovn_bridge_mappings = vsctl.getOvsExternalIdsConfig("ovn-bridge-mappings")
+        err5, hostname = vsctl.getOvsExternalIdsConfig("hostname")
 
-        logger.debug("set ovs external-ids")
+        if err1 or err2 or err3 or err4 or err5 or \
+                ovn_remote != cmd.ovnRemoteConnection or \
+                ovn_encap_ip != cmd.ovnEncapIP or \
+                ovn_encap_type != cmd.ovnEncapType or \
+                ovn_bridge_mappings != 'flat:{}'.format(cmd.brExName) or \
+                hostname != cmd.hostIp:
+            logger.debug("began to set ovs external-ids")
+            r, _, e = bash.bash_roe("ovs-vsctl set Open_vSwitch . "
+                                    "external-ids:ovn-remote={ovn_remote} "
+                                    "external-ids:ovn-encap-ip={ovn_encap_ip} "
+                                    "external-ids:ovn-encap-type={ovn_encap_type} "
+                                    "external-ids:ovn-bridge-mappings=flat:{br_ex} "
+                                    "external-ids:hostname={hostIp} "
+                                    .format(ovn_remote=cmd.ovnRemoteConnection,
+                                            ovn_encap_ip=cmd.ovnEncapIP,
+                                            ovn_encap_type=cmd.ovnEncapType,
+                                            br_ex=cmd.brExName,
+                                            hostIp=cmd.hostIp))
+            if r != 0:
+                msg = "init ovs config failed: %s!" % e
+                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
 
-        r, _, e = bash.bash_roe("systemctl restart ovsdb-server;systemctl start openvswitch;systemctl start "
-                                "ovn-controller")
-        if r != 0:
-            pciAddressList = list(cmd.nicNamePciAddressMap.__dict__.items().value())
-            ovn.restoreNicDriver(pciAddressList)
-            rsp.success = False
-            rsp.error = "start ovn service, fail {err}".format(err=e)
-            return jsonobject.dumps(rsp)
+        err, userspace_tso_enable = vsctl.getOvsOtherConfig('userspace-tso-enable')
+        if err or userspace_tso_enable != 'true':
+            r, _, e = bash.bash_roe("ovs-vsctl set Open_vSwitch . other_config:userspace-tso-enable=true")
+            if r != 0:
+                msg = "set ovs config userspace-tso-enable failed: {err}".format(err=e)
+                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
 
-        logger.debug("restart ovs services")
-
-        # restore dpdk driver
         if cmd.restoreNicPciAddressList:
             _, _, _ = bash.bash_roe("systemctl stop openvswitch")
             ovn.restoreNicDriver(cmd.restoreNicPciAddressList)
             _, _, _ = bash.bash_roe("systemctl start openvswitch")
 
+        return jsonobject.dumps(rsp)
+
+    def _logRestoreNicDriverMakeRsp(self, rsp, msg, cmd, needRestore=True):
+        if needRestore:
+            pciAddressList = list(cmd.nicNamePciAddressMap.__dict__.items().values())
+            ovn.restoreNicDriver(pciAddressList)
+        logger.error(msg)
+        rsp.success = False
+        rsp.error = msg
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
