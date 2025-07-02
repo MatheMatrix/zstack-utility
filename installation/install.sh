@@ -3714,12 +3714,12 @@ check_sync_local_repos() {
 prepare_morph_user_and_db(){
   echo_subtitle "Prepare morph db and user"
   get_mysql_conf_file
-  MYSQL_DATA_DIR=$(awk -F'=' '/datadir/ {print $2}' "$MYSQL_CONF_FILE")
+  MYSQL_DATA_DIR=`cat $MYSQL_CONF_FILE | grep datadir | cut -d '=' -f 2`
   [ -z "$MYSQL_DATA_DIR" ] && MYSQL_DATA_DIR="/var/lib/mysql"
   db='morph'
   user='morph'
   morph_encrypt_password=${MORPH_DB_PASSWORD:-$(openssl rand -hex 16)}
-  echo "morph database password: $morph_encrypt_password" > /root/.morph_db_pass
+  echo "$morph_encrypt_password" > /root/.morph_db_pass
   chmod 600 /root/.morph_db_pass
 
   [ -f $MYSQL_DATA_DIR/$db/db.opt ] && return 0
