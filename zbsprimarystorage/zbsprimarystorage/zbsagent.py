@@ -292,8 +292,7 @@ class ZbsAgent(plugin.TaskManager):
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
             raise Exception('cannot found volume[%s/%s] info, error[%s]' % (logical_pool, volume, ret.error.message))
-        need_flatten = ret.result.info.fileInfo.fileType == 5 # 1 means normal(non-clonal), and 5 means clone volume
-        if not need_flatten:
+        if not zbsutils.is_clonal_type(ret.result.info.fileInfo.fileType):
             logger.debug("target volume[%s/%s] is a non-clonal, no flatten is required, skip" % (logical_pool, volume))
             rsp.size = ret.result.info.fileInfo.length
             rsp.actualSize = ret.result.info.fileInfo.usedSize
@@ -408,7 +407,7 @@ class ZbsAgent(plugin.TaskManager):
             raise Exception('cannot found volume[%s] info, error[%s]' % (cmd.path, ret.error.message))
         rsp.size = ret.result.info.fileInfo.length
         rsp.actualSize = ret.result.info.fileInfo.usedSize
-        if ret.result.info.fileInfo.hasattr('cloneSourceSnap'):
+        if zbsutils.is_clonal_type(ret.result.info.fileInfo.fileType) and ret.result.info.fileInfo.hasattr('cloneSourceSnap'):
             rsp.parentUri = "{}:{}/{}".format(
                 zbsutils.CBD_PREFIX,
                 physical_pool,
@@ -424,17 +423,17 @@ class ZbsAgent(plugin.TaskManager):
 
         physical_pool, logical_pool, volume, snapshot = zbsutils.parse_cbd_path(cmd.path)
 
-        isProtected = False
+        is_protected = False
         o = zbsutils.query_snapshot_info(logical_pool, volume)
         ret = jsonobject.loads(o)
         if not ret.result.hasattr('fileInfo'):
             raise Exception('failed to found snapshot for volume[%s]' % volume)
         for info in ret.result.fileInfo:
             if snapshot in info.fileName:
-                isProtected = info.isProtected
+                is_protected = info.isProtected
                 break
 
-        if not isProtected:
+        if not is_protected:
             zbsutils.protect_snapshot(logical_pool, volume, snapshot)
 
         o = zbsutils.clone_volume(logical_pool, volume, snapshot, cmd.dstVolume)
