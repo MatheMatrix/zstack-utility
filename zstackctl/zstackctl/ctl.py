@@ -11345,6 +11345,150 @@ class DiagnoseCmd(Command):
         diagnose(log_dir, diagnose_log_file, args)
 
 
+class AIOSSetUpSystemServicesCmd(Command):
+    def __init__(self):
+        super(AIOSSetUpSystemServicesCmd, self).__init__()
+        self.name = "aios_setup_system_services"
+        self.description = "set up system services for AIOS"
+        ctl.register_command(self)
+
+    def install_argparse_arguments(self, parser):
+        parser.add_argument(
+            '--framework',
+            help='framework to set up, options: vLLM, Diffusers, llama.cpp, MindIE, Ollama, Other, sentence_transformers, SGLang, Transformers, or all',
+            choices=[
+                "vLLM",
+                "Diffusers",
+                "llama.cpp",
+                "MindIE",
+                "Ollama",
+                "Other",
+                "sentence_transformers",
+                "SGLang",
+                "Transformers",
+                "all"
+            ],
+            default="all"
+        )
+        parser.add_argument('--architecture', help='architecture to set up, options: x86_64, aarch64', choices=["x86_64", "aarch64"], default="x86_64")
+        parser.add_argument('--type', help='Service type to set up, options: FineTune,Endpoint,App,ModelEval,ModelPerf (default: Endpoint, can specify multiple, comma separated)', default="Endpoint")
+        parser.add_argument('--vm-image-uuid', help='UUID of the VM image to use for AIOS setup')
+        parser.add_argument('--docker-image-name', help='Name of the Docker image to use for AIOS setup')
+
+    def _escape_sql(self, value):
+        # Simple SQL escape for single quotes
+        if value is None:
+            return ''
+        return str(value).replace("'", "''")
+
+    def run(self, args):
+        if args.vm_image_uuid is None and args.docker_image_name is None:
+            error("Either --vm-image-uuid or --docker-image-name must be provided.")
+
+        # Escape all user inputs before using in SQL
+        framework = self._escape_sql(args.framework)
+        type_ = self._escape_sql(args.type)
+        architecture = self._escape_sql(args.architecture)
+        vm_image_uuid = self._escape_sql(args.vm_image_uuid)
+        docker_image_name = self._escape_sql(args.docker_image_name)
+
+        db_hostname, db_port, db_user, db_password = ctl.get_live_mysql_portal()
+        query = MySqlCommandLineQuery()
+        query.host = db_hostname
+        query.port = db_port
+        query.user = db_user
+        query.table = 'zstack'
+        query.password = db_password
+
+        if framework == "all":
+            query.sql = "SELECT uuid,name FROM ModelServiceVO WHERE system=1 AND type='%s'" % type_
+        else:
+            query.sql = "SELECT uuid,name FROM ModelServiceVO WHERE framework='%s' AND system=1 AND type='%s'" % (framework, type_)
+
+        service_result = query.query()
+        # if over 2 records list options and ask user to choose
+        if len(service_result) == 0:
+            error("No ModelServiceVO found for framework '%s' and type '%s'" % (framework, type_))
+        elif len(service_result) > 1:
+            warn("Found multiple ModelServiceVO records for framework '%s' and type '%s'. Please specify the correct one." % (framework, type_))
+            for i, record in enumerate(service_result):
+                info("%d: %s (UUID: %s)" % (i + 1, record['name'], record['uuid']))
+            info("%d: All above" % (len(service_result) + 1))
+
+            uuid_list = []
+            while True:
+                choice = input("Please enter the number of the ModelServiceVO you want to use: ")
+                try:
+                    choice = int(choice) - 1
+                    if choice < 0 or choice > len(service_result):
+                        info("Invalid choice. Please enter a valid number.")
+                        continue
+                    if choice == len(service_result):
+                        uuid_list = [r['uuid'] for r in service_result]
+                    else:
+                        uuid_list = [service_result[choice]['uuid']]
+                    break
+                except ValueError:
+                    info("Invalid input. Please enter a number corresponding to the ModelServiceVO you want to use.")
+        else:
+            uuid_list = [service_result[0]['uuid']]
+
+        # Escape uuid_list for SQL
+        uuid_list_escaped = ["'%s'" % self._escape_sql(uuid) for uuid in uuid_list]
+
+        # Check if record exists with uuid from user choice
+        query.sql = "SELECT COUNT(*) FROM ModelServiceImageVO WHERE cpuArchitecture='%s' AND modelServiceUuid IN (%s)" % (
+            architecture, ",".join(uuid_list_escaped))
+        count = query.query()
+
+        info("Found %s record(s) for framework '%s' and architecture '%s' and type '%s' and uuid(s) '%s'" % (
+            count[0]["COUNT(*)"], framework, architecture, type_, ",".join(uuid_list)))
+
+        if count[0]["COUNT(*)"] == '0':
+            # Insert only if at least one of the fields is provided
+            fields = []
+            values = []
+            fields.append("uuid")
+            values.append("REPLACE(UUID(),'-','')")
+            if vm_image_uuid:
+                fields.append("vmImageUuid")
+                values.append("'%s'" % vm_image_uuid)
+            if docker_image_name:
+                fields.append("dockerImage")
+                values.append("'%s'" % docker_image_name)
+            fields.append("cpuArchitecture")
+            values.append("'%s'" % architecture)
+            fields.append("modelServiceUuid")
+            values.append("uuid")
+            for uuid in uuid_list:
+                field_list = fields.copy()
+                value_list = values.copy()
+                idx = field_list.index("modelServiceUuid")
+                field_list[idx] = "modelServiceUuid"
+                value_list[idx] = "'%s'" % self._escape_sql(uuid)
+                query.sql = "INSERT INTO ModelServiceImageVO (%s) VALUES (%s)" % (
+                    ",".join(field_list), ",".join(value_list))
+                query.query()
+
+            info("Inserted new ModelServiceImageVO record for framework '%s', architecture '%s', type '%s' with uuid(s) '%s'" % (
+                framework, architecture, type_, ",".join(uuid_list)))
+        else:
+            # Update only the provided fields
+            set_clauses = []
+            if vm_image_uuid:
+                set_clauses.append("vmImageUuid='%s'" % vm_image_uuid)
+            if docker_image_name:
+                set_clauses.append("dockerImage='%s'" % docker_image_name)
+            if set_clauses:
+                query.sql = "UPDATE ModelServiceImageVO SET %s WHERE cpuArchitecture='%s' AND modelServiceUuid IN (%s)" % (
+                    ", ".join(set_clauses), architecture, ",".join(uuid_list_escaped))
+                query.query()
+                info("Updated ModelServiceImageVO record(s) for framework '%s', architecture '%s', type '%s' with uuid(s) '%s'" % (
+                    framework, architecture, type_, ",".join(uuid_list)))
+            else:
+                info("No fields to update. Skipping update for ModelServiceImageVO.")
+
+
 def main():
     AddManagementNodeCmd()
     BootstrapCmd()
@@ -11425,6 +11569,9 @@ def main():
     DumpMNTaskQueueCmd()
     TimelineCmd()
     DiagnoseCmd()
+
+    # aios commands
+    AIOSSetUpSystemServicesCmd()
 
     try:
         ctl.run()
