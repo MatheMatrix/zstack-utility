@@ -16,10 +16,14 @@ ZBS_CLIENT_CONF_PATH = "/etc/zbs/client.conf"
 ZBS_USER_NAME = "zbs"
 STRIPE_VOLUME_COUNT = 64
 STRIPE_VOLUME_UINT = "64KiB"
-
+CLONAL_FLAG = 5
 CBD_PREFIX = "cbd"
 CBD_VOLUME_PATH = CBD_PREFIX + ":{}/{}/{}"
 CBD_SNAPSHOT_PATH = CBD_VOLUME_PATH + "@{}"
+
+
+def is_clonal_type(file_type):
+    return file_type == CLONAL_FLAG
 
 
 def parse_cbd_path(path):
