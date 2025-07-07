@@ -11371,7 +11371,6 @@ class MorphService(ExtraService):
     default_port = 4747
     default_ip = get_default_ip()
     default_morph_service_path = "/etc/systemd/system/morph.service"
-    default_morph_db_passwd_path = "/root/.morph_db_pass"
     default_morph_service_content = '''
 [Unit]
 Description=Morph Application Service
@@ -11428,18 +11427,6 @@ WantedBy=multi-user.target
             if 'defaultMorphPath' in data['extension']:
                 data['extension']['defaultMorphPath'] = self.default_morph_path
                 info('morph application.yml update defaultMorphPath %s' %  self.default_morph_path)
-
-        if 'spring' in data and 'datasource' in data['spring']:
-            try:
-                with open(self.default_morph_db_passwd_path, 'r') as f:
-                    db_password = f.read().strip()
-                    if db_password:
-                        data['spring']['datasource']['password'] = db_password
-                        info('Updated database password from %s' % self.default_morph_db_passwd_path)
-                    else:
-                        warn('Password file is empty: %s' % self.default_morph_db_passwd_path)
-            except IOError as e:
-                warn('Failed to read password file %s: %s' % (self.default_morph_db_passwd_path, str(e)))
 
         try:
             with open(self.default_morph_config, 'w') as f:
