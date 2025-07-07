@@ -11371,7 +11371,8 @@ class AIOSSetUpSystemServicesCmd(Command):
             default="all"
         )
         parser.add_argument('--architecture', help='architecture to set up, options: x86_64, aarch64', choices=["x86_64", "aarch64"], default="x86_64")
-        parser.add_argument('--type', help='Service type to set up, options: FineTune,Endpoint,App,ModelEval,ModelPerf (default: Endpoint, can specify multiple, comma separated)', default="Endpoint")
+        parser.add_argument('--type', help='Service type to set up, options: all,FineTune,Endpoint,App,ModelEval,ModelPerf (default: all)',
+                             default="all", choices=["all", "FineTune", "Endpoint", "App", "ModelEval", "ModelPerf"])
         parser.add_argument('--vm-image-uuid', help='UUID of the VM image to use for AIOS setup')
         parser.add_argument('--docker-image-name', help='Name of the Docker image to use for AIOS setup')
 
@@ -11400,10 +11401,13 @@ class AIOSSetUpSystemServicesCmd(Command):
         query.table = 'zstack'
         query.password = db_password
 
-        if framework == "all":
-            query.sql = "SELECT uuid,name FROM ModelServiceVO WHERE system=1 AND type='%s'" % type_
+        framework_condition = "framework='%s'" % self._escape_sql(framework) if framework != "all" else "1=1"
+        type_condition = "type='%s'" % self._escape_sql(type_) if type_ != "all" else "1=1"
+
+        if type_ == "all":
+            query.sql = "SELECT uuid,name,type FROM ModelServiceVO WHERE system=1 AND %s" % framework_condition
         else:
-            query.sql = "SELECT uuid,name FROM ModelServiceVO WHERE framework='%s' AND system=1 AND type='%s'" % (framework, type_)
+            query.sql = "SELECT uuid,name FROM ModelServiceVO WHERE system=1 AND %s AND %s" % (framework_condition, type_condition)
 
         service_result = query.query()
         # if over 2 records list options and ask user to choose
@@ -11412,7 +11416,10 @@ class AIOSSetUpSystemServicesCmd(Command):
         elif len(service_result) > 1:
             warn("Found multiple ModelServiceVO records for framework '%s' and type '%s'. Please specify the correct one." % (framework, type_))
             for i, record in enumerate(service_result):
-                info("%d: %s (UUID: %s)" % (i + 1, record['name'], record['uuid']))
+                if type_ == "all":
+                    info("%d: %s (UUID: %s, Type: %s)" % (i + 1, record['name'], record['uuid'], record['type']))
+                else:
+                    info("%d: %s (UUID: %s)" % (i + 1, record['name'], record['uuid']))
             info("%d: All above" % (len(service_result) + 1))
 
             uuid_list = []
@@ -11435,58 +11442,47 @@ class AIOSSetUpSystemServicesCmd(Command):
 
         # Escape uuid_list for SQL
         uuid_list_escaped = ["'%s'" % self._escape_sql(uuid) for uuid in uuid_list]
+        uuid_in_clause = ",".join(uuid_list_escaped)
+        query.sql = "SELECT modelServiceUuid FROM ModelServiceImageVO WHERE cpuArchitecture='%s' AND modelServiceUuid IN (%s)" % (
+            architecture, uuid_in_clause)
+        existing_records_result = query.query()
+        existing_uuids = {record['modelServiceUuid'] for record in existing_records_result}
 
-        # Check if record exists with uuid from user choice
-        query.sql = "SELECT COUNT(*) FROM ModelServiceImageVO WHERE cpuArchitecture='%s' AND modelServiceUuid IN (%s)" % (
-            architecture, ",".join(uuid_list_escaped))
-        count = query.query()
+        for uuid in uuid_list:
+            escaped_uuid = self._escape_sql(uuid)
+            record_exists = uuid in existing_uuids
 
-        info("Found %s record(s) for framework '%s' and architecture '%s' and type '%s' and uuid(s) '%s'" % (
-            count[0]["COUNT(*)"], framework, architecture, type_, ",".join(uuid_list)))
+            if not record_exists:
+                # Insert a new record
+                fields = ["uuid", "cpuArchitecture", "modelServiceUuid"]
+                values = ["REPLACE(UUID(),'-','')", "'%s'" % architecture, "'%s'" % escaped_uuid]
 
-        if count[0]["COUNT(*)"] == '0':
-            # Insert only if at least one of the fields is provided
-            fields = []
-            values = []
-            fields.append("uuid")
-            values.append("REPLACE(UUID(),'-','')")
-            if vm_image_uuid:
-                fields.append("vmImageUuid")
-                values.append("'%s'" % vm_image_uuid)
-            if docker_image_name:
-                fields.append("dockerImage")
-                values.append("'%s'" % docker_image_name)
-            fields.append("cpuArchitecture")
-            values.append("'%s'" % architecture)
-            fields.append("modelServiceUuid")
-            values.append("uuid")
-            for uuid in uuid_list:
-                field_list = fields.copy()
-                value_list = values.copy()
-                idx = field_list.index("modelServiceUuid")
-                field_list[idx] = "modelServiceUuid"
-                value_list[idx] = "'%s'" % self._escape_sql(uuid)
+                if vm_image_uuid:
+                    fields.append("vmImageUuid")
+                    values.append("'%s'" % vm_image_uuid)
+                if docker_image_name:
+                    fields.append("dockerImage")
+                    values.append("'%s'" % docker_image_name)
+
                 query.sql = "INSERT INTO ModelServiceImageVO (%s) VALUES (%s)" % (
-                    ",".join(field_list), ",".join(value_list))
+                    ",".join(fields), ",".join(values))
                 query.query()
-
-            info("Inserted new ModelServiceImageVO record for framework '%s', architecture '%s', type '%s' with uuid(s) '%s'" % (
-                framework, architecture, type_, ",".join(uuid_list)))
-        else:
-            # Update only the provided fields
-            set_clauses = []
-            if vm_image_uuid:
-                set_clauses.append("vmImageUuid='%s'" % vm_image_uuid)
-            if docker_image_name:
-                set_clauses.append("dockerImage='%s'" % docker_image_name)
-            if set_clauses:
-                query.sql = "UPDATE ModelServiceImageVO SET %s WHERE cpuArchitecture='%s' AND modelServiceUuid IN (%s)" % (
-                    ", ".join(set_clauses), architecture, ",".join(uuid_list_escaped))
-                query.query()
-                info("Updated ModelServiceImageVO record(s) for framework '%s', architecture '%s', type '%s' with uuid(s) '%s'" % (
-                    framework, architecture, type_, ",".join(uuid_list)))
+                info("Inserted new ModelServiceImageVO record for modelServiceUuid '%s'" % uuid)
             else:
-                info("No fields to update. Skipping update for ModelServiceImageVO.")
+                # Update the existing record
+                set_clauses = []
+                if vm_image_uuid:
+                    set_clauses.append("vmImageUuid='%s'" % vm_image_uuid)
+                if docker_image_name:
+                    set_clauses.append("dockerImage='%s'" % docker_image_name)
+
+                if set_clauses:
+                    query.sql = "UPDATE ModelServiceImageVO SET %s WHERE cpuArchitecture='%s' AND modelServiceUuid='%s'" % (
+                    ", ".join(set_clauses), architecture, escaped_uuid)
+                    query.query()
+                    info("Updated ModelServiceImageVO record for modelServiceUuid '%s'" % uuid)
+                else:
+                    info("No fields to update. Skipping update for modelServiceUuid '%s'." % uuid)
 
 
 def main():
