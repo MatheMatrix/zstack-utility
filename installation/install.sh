@@ -3718,9 +3718,7 @@ prepare_morph_user_and_db(){
   [ -z "$MYSQL_DATA_DIR" ] && MYSQL_DATA_DIR="/var/lib/mysql"
   db='morph'
   user='morph'
-  morph_encrypt_password=${MORPH_DB_PASSWORD:-$(openssl rand -hex 16)}
-  echo "$morph_encrypt_password" > /root/.morph_db_pass
-  chmod 600 /root/.morph_db_pass
+  morph_encrypt_password="morph123"
 
   [ -f $MYSQL_DATA_DIR/$db/db.opt ] && return 0
   mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e 'exit' >/dev/null 2>&1
