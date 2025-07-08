@@ -248,6 +248,15 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             if r != 0:
                 msg = "add up link failed: %s!" % e
                 return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
+            else:
+                for nicName, pciAddress in cmd.nicNamePciAddressMap.__dict__.items():
+                    err1, nicRxQueueNum = vsctl.getNicRxQueueNumConfig(nicName)
+                    err2, nicRxQueueDescNum = vsctl.getNicRxQueueDescNumConfig(nicName)
+                    if err1 or err2 or nicRxQueueNum != cmd.nicRxQueueNumber or nicRxQueueDescNum != cmd.nicRxQueueDescNumber:
+                        r = vsctl.setNicRxQueueConfig(nicName, cmd.nicRxQueueNumber, cmd.nicRxQueueDescNumber)
+                        if r != 0:
+                            msg = "set ovs dpdk rx queue config failed!"
+                            return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
 
         err1, ovn_remote = vsctl.getOvsExternalIdsConfig("ovn-remote")
         err2, ovn_encap_ip = vsctl.getOvsExternalIdsConfig("ovn-encap-ip")
