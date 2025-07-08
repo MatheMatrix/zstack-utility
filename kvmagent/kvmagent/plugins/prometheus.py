@@ -1680,10 +1680,11 @@ if misc.isMiniHost():
     kvmagent.register_prometheus_collector(collect_mini_raid_state)
     kvmagent.register_prometheus_collector(collect_equipment_state)
     
-if misc.isHyperConvergedHost():
-    kvmagent.register_prometheus_collector(collect_ipmi_state)
-else:
-    kvmagent.register_prometheus_collector(collect_equipment_state_from_ipmi)
+if not is_virtual_machine():
+    if misc.isHyperConvergedHost():
+        kvmagent.register_prometheus_collector(collect_ipmi_state)
+    else:
+        kvmagent.register_prometheus_collector(collect_equipment_state_from_ipmi)
 
 kvmagent.register_prometheus_collector(collect_raid_state)
 kvmagent.register_prometheus_collector(collect_ssd_state)
