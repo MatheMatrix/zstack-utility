@@ -12,7 +12,7 @@ def get_sensor_info_from_ipmi():
 
     def ipmi_sensor_call():
         try:
-            return shell.call(ipmi_sensor_cmd), None
+            return shell.run_without_log(ipmi_sensor_cmd), None
         except Exception as e:
             return None, str(e)
 
