@@ -10,7 +10,6 @@ from prometheus_client.core import GaugeMetricFamily, REGISTRY
 import psutil
 
 from kvmagent import kvmagent
-from zstacklib.utils import form
 from zstacklib.utils import http
 from zstacklib.utils import jsonobject
 from zstacklib.utils import linux
@@ -270,20 +269,20 @@ def check_disk_insert_and_remove(disk_list):
     if disk_list_record is None:
         disk_list_record = disk_list
         return
-    
+
     if cmp(disk_list_record, disk_list) == 0:
         return
-    
+
     # check disk insert
     for sn in disk_list.keys():
         if sn not in disk_list_record.keys():
             send_physical_disk_insert_alarm_to_mn(sn, disk_list[sn])
-    
+
     # check disk remove
     for sn in disk_list_record.keys():
         if sn not in disk_list.keys():
             send_physical_disk_remove_alarm_to_mn(sn, disk_list_record[sn])
-            
+
     disk_list_record = disk_list
 
 # use lazy loading to avoid re-registering global configuration when other modules are initialized
@@ -475,11 +474,11 @@ def collect_host_capacity_statistics():
         df_size = long(df.split()[0].strip()) * 1024
         df_name = df.split()[-1].strip()
         df_map[df_name] = df_size
-    
+
     for lbk in lbkInfo.splitlines():
         lbk_name = lbk.split()[0].strip()
         lbk_size = long(lbk.split()[-1].strip())
-        
+
         lbk_used_size = 0L
         ds = bash_o("lsblk -lb /dev/%s -omountpoint |awk '{if(length($1)>0) print $1}' | tail -n +2" % lbk_name)
         for d in ds.splitlines():
@@ -488,7 +487,7 @@ def collect_host_capacity_statistics():
 
         metrics['block_device_used_capacity_in_bytes'].add_metric([lbk_name], float(lbk_used_size))
         metrics['block_device_used_capacity_in_percent'].add_metric([lbk_name], float(lbk_used_size * 100) / lbk_size)
-        
+
     collect_node_disk_capacity_last_result = metrics.values()
     return collect_node_disk_capacity_last_result
 
@@ -557,7 +556,7 @@ def collect_raid_state():
                                                  'physical disk state', None,
                                                  ['slot_number', 'disk_group']),
     }
-    
+
     r, o = bash_ro("sas3ircu list | grep -A 8 'Index' | awk '{print $1}'")
     if r == 0 and o.strip() != "":
         return collect_sas_raid_state(metrics, o)
@@ -569,7 +568,7 @@ def collect_raid_state():
     r, o = bash_ro("arcconf list | grep -A 8 'Controller ID' | awk '{print $2}'")
     if r == 0 and o.strip() != "":
         return collect_arcconf_raid_state(metrics, o)
-    
+
     return metrics.values()
 
 
@@ -587,16 +586,16 @@ def collect_arcconf_raid_state(metrics, infos):
         adapter = line.split(":")[0].strip()
         if not adapter.isdigit():
             continue
-        
+
         r, device_info = bash_ro("arcconf getconfig %s AL" % adapter)
         if r != 0 or device_info.strip() == "":
             continue
-        
+
         # Contain at least raid controller into and a hardDisk info
         device_arr = device_info.split("Device #")
         if len(device_arr) < 3:
             continue
-        
+
         target_id = "unknown"
         for l in device_arr[0].splitlines():
             if l.strip() == "":
@@ -659,7 +658,7 @@ def collect_sas_raid_state(metrics, infos):
                 state_int = convert_raid_state_to_int(state)
                 metrics['raid_state'].add_metric([target_id], state_int)
                 handle_raid_state(target_id, state_int)
-        
+
         disk_info = bash_o("sas3ircu %s display | grep -E 'Enclosure #|Slot #|State|Serial No|Drive Type'" % line.strip())
         enclosure_device_id = slot_number = state = serial_number = "unknown"
         for info in disk_info.splitlines():
@@ -746,7 +745,7 @@ def collect_mini_raid_state():
     }
     if bash_r("/opt/MegaRAID/MegaCli/MegaCli64 -LDInfo -LALL -aAll") != 0:
         return metrics.values()
-    
+
     raid_info = bash_o(
         "/opt/MegaRAID/MegaCli/MegaCli64 -LDInfo -LALL -aAll | grep -E 'Target Id|State'").strip().splitlines()
     target_id = state = "unknown"
@@ -785,18 +784,18 @@ def collect_ssd_state():
         'ssd_life_left': GaugeMetricFamily('ssd_life_left', 'ssd life left', None, ['disk', 'serial_number']),
         'ssd_temperature': GaugeMetricFamily('ssd_temperature', 'ssd temperature', None, ['disk', 'serial_number']),
     }
-    
+
     r, o = bash_ro("lsblk -d -o name,type,rota | grep -w disk | awk '$3 == 0 {print $1}'")  # type: (int, str)
     if r != 0 or o.strip() == "":
         return metrics.values()
-    
+
     for line in o.splitlines():
         disk_name = line.strip()
         r, o = bash_ro("smartctl -i /dev/%s | grep 'Serial Number' | awk '{print $3}'" % disk_name)
         if r != 0 or o.strip() == "":
             continue
         serial_number = o.strip()
-        
+
         if disk_name.startswith('nvme'):
             r, o = bash_ro("smartctl -A /dev/%s | grep -E '^Percentage Used:|^Temperature:'" % disk_name)
             if r != 0 or o.strip() == "":
@@ -818,7 +817,7 @@ def collect_ssd_state():
                     metrics['ssd_life_left'].add_metric([disk_name, serial_number], float(info.split()[4].strip()))
                 elif "Temperature_Celsius" in info and info.split()[9].strip().isdigit():
                     metrics['ssd_temperature'].add_metric([disk_name, serial_number], float(info.split()[9].strip()))
-        
+
     return metrics.values()
 
 
@@ -886,7 +885,7 @@ def collect_ipmi_state():
             else:
                 metrics['cpu_status'].add_metric([cpu_id], 10)
                 send_cpu_status_alarm_to_mn(cpu_id, info.Status)
-                
+
     # get physical memory info
     r, memory_infos = bash_ro("hd_ctl -c memory")
     if r == 0:
@@ -907,7 +906,7 @@ def collect_ipmi_state():
             else:
                 metrics['physical_memory_status'].add_metric([slot_number], 10)
                 send_physical_memory_status_alarm_to_mn(slot_number, info.State)
-        
+
         if len(memory_locator_list) != 0:
             for locator in memory_locator_list:
                 metrics['physical_memory_status'].add_metric([locator], 10)
@@ -926,10 +925,10 @@ def collect_ipmi_state():
             if info.Status == "":
                 origin_fan_flag = True
                 break
-            
+
             fan_rpm = "0" if info.SpeedRPM == "" else info.SpeedRPM
             metrics['fan_speed_rpm'].add_metric([fan_name], float(fan_rpm))
-            
+
             if "ok" == info.Status.lower():
                 metrics['fan_speed_state'].add_metric([fan_name], 0)
                 if is_fan_status_abnormal(fan_name):
@@ -943,7 +942,7 @@ def collect_ipmi_state():
                 send_physical_fan_status_alarm_to_mn(fan_name, info.Status)
     else:
         origin_fan_flag = True
-    
+
     # get power info
     r, sdr_data = bash_ro("ipmitool sdr elist")
     if r == 0:
@@ -1037,52 +1036,52 @@ def collect_equipment_state_from_ipmi():
     }
     metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
 
-    sensor_info = get_sensor_info_from_ipmi()
-    if sensor_info is None:
+    info = get_sensor_info_from_ipmi()
+    if info is None:
         return metrics.values()
 
-    get_power_info_from_ipmi(sensor_info, metrics)
+    get_power_info_from_ipmi(info, metrics)
     check_equipment_state_from_ipmitool(metrics)
 
     '''
         ================
         CPU TEMPERATURE
         ================
-        ID  | Name             | Type                        | Reading    | Units       | Event
-        4   | CPU0_Temp        | Temperature                 | 38.00      | C           | 'OK'
-        5   | CPU1_Temp        | Temperature                 | 37.00      | C           | 'OK'
-        20  | GPU0_Temp        | Temperature                 | N/A        | C           | N/A
+        CPU1_Temp        | 39h | ok  |  7.18 | 34 degrees C
+        CPU1_Core_Temp   | 39h | ok  |  7.18 | 34 degrees C
+        CPU_Temp_01      | 39h | ok  |  7.18 | 34 degrees C
+        CPU1 Temp        | 39h | ok  |  7.18 | 34 degrees C
+        CPU1 Core Rem    | 04h | ok  |  3.96 | 41 degrees C
         
         ================
         CPU STATUS
         ================
-        ID  | Name             | Type                        | Reading    | Units       | Event
-        53  | CPU0_Status      | Processor                   | N/A        | N/A         | 'Processor Presence detected'
-        54  | CPU1_Status      | Processor                   | N/A        | N/A         | 'Processor Presence detected'
+        CPU_STATUS_01    | 52h | ok  |  3.0 | Presence detected
+        CPU1 Status      | 3Ch | ok  |  3.96 | Presence detected
+        CPU1_Status      | 7Eh | ok  |  3.0 | Presence detected
     '''
 
-    cpu_temperature_pattern = r'^(cpu\d+_temp|cpu\d+_core_temp|cpu_temp_\d+|cpu\d+ temp|cpu\d+ core rem |cpu\d+ core temp)$'
+    cpu_temperature_pattern = r'^(cpu\d+_temp|cpu\d+_core_temp|cpu_temp_\d+|cpu\d+ temp|cpu\d+ core rem)$'
     cpu_status_pattern = r'^(cpu_status_\d+|cpu\d+ status|cpu\d+_status)$'
 
-    for info in form.load('id|name|type|value|units|event\n' + sensor_info, sep='|'):
-        sensor_name = info['name'].strip().lower()
-        sensor_value = info['value'].strip().lower()
-        sensor_event = (info['event'] or '').strip().strip("'").lower()
-
-        if "cpu" not in sensor_name:
+    for line in info.lower().splitlines():
+        if "cpu" not in line:
             continue
-
-        if re.match(cpu_temperature_pattern, sensor_name):
-            cpu_id = int(re.sub(r'\D', '', sensor_name))
-            if sensor_value == 'n/a':
-                sensor_value = 0
-            metrics['cpu_temperature'].add_metric(["CPU%d" % cpu_id], float(sensor_value))
-        if re.match(cpu_status_pattern, sensor_name):
-            cpu_id = int(re.sub(r'\D', '', sensor_name))
-            cpu_status = 0 if "presence detected" in sensor_event or "processor presence detected" in sensor_event else 10
+        sensor = line.split("|")
+        if len(sensor) != 5:
+            continue
+        sensor_id = sensor[0].strip()
+        sensor_value = sensor[4].strip()
+        if re.match(cpu_temperature_pattern, sensor_id):
+            cpu_id = int(re.sub(r'\D', '', sensor_id))
+            cpu_temperature = filter(str.isdigit, sensor_value) if bool(re.search(r'\d', sensor_value)) else 0
+            metrics['cpu_temperature'].add_metric(["CPU%d" % cpu_id], float(cpu_temperature))
+        if re.match(cpu_status_pattern, sensor_id):
+            cpu_id = int(re.sub(r'\D', '', sensor_id))
+            cpu_status = 0 if "presence detected" == sensor_value else 10
             metrics['cpu_status'].add_metric(["CPU%d" % cpu_id], float(cpu_status))
             if cpu_status == 10:
-                send_cpu_status_alarm_to_mn(cpu_id, sensor_event)
+                send_cpu_status_alarm_to_mn(cpu_id, sensor_value)
             else:
                 remove_cpu_status_abnormal(cpu_id)
 
@@ -1679,11 +1678,12 @@ if misc.isMiniHost():
     kvmagent.register_prometheus_collector(collect_lvm_capacity_statistics)
     kvmagent.register_prometheus_collector(collect_mini_raid_state)
     kvmagent.register_prometheus_collector(collect_equipment_state)
-    
-if misc.isHyperConvergedHost():
-    kvmagent.register_prometheus_collector(collect_ipmi_state)
-else:
-    kvmagent.register_prometheus_collector(collect_equipment_state_from_ipmi)
+
+if not is_virtual_machine():
+    if misc.isHyperConvergedHost():
+        kvmagent.register_prometheus_collector(collect_ipmi_state)
+    else:
+        kvmagent.register_prometheus_collector(collect_equipment_state_from_ipmi)
 
 kvmagent.register_prometheus_collector(collect_raid_state)
 kvmagent.register_prometheus_collector(collect_ssd_state)
