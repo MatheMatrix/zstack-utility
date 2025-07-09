@@ -1722,16 +1722,16 @@ def collect_hba_port_device_state():
 
 
 def has_hy_smi():
-    return shell.run("which hy-smi") == 0
+    return shell.run_without_log("which hy-smi") == 0
 
 def has_nvidia_smi():
-    return shell.run("which nvidia-smi") == 0
+    return shell.run_without_log("which nvidia-smi") == 0
 
 def has_rocm_smi():
     if bash_r("lsmod | grep -q amdgpu") != 0:
         if bash_r("modprobe amdgpu") != 0:
             return False
-    return shell.run("which rocm-smi") == 0
+    return shell.run_without_log("which rocm-smi") == 0
 
 
 class BlockDevice:
