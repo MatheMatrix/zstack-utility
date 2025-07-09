@@ -11464,6 +11464,9 @@ class AIOSSetUpSystemServicesCmd(Command):
                     fields.append("dockerImage")
                     values.append("'%s'" % docker_image_name)
 
+                fields.append("createDate")
+                values.append("NOW()")
+
                 query.sql = "INSERT INTO ModelServiceImageVO (%s) VALUES (%s)" % (
                     ",".join(fields), ",".join(values))
                 query.query()
