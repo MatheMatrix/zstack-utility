@@ -953,31 +953,35 @@ def collect_ipmi_state():
     else:
         origin_fan_flag = True
 
-    sensor_info = get_sensor_info_from_ipmi()
-    if sensor_info is not None:
-        # get power info
-        get_power_info_from_ipmi(sensor_info, metrics)
+    if not is_virtual_machine():
+        sensor_info = get_sensor_info_from_ipmi()
+        if sensor_info:
+            # get power info
+            get_power_info_from_ipmi(sensor_info, metrics)
 
-        # get fan info
-        for info in form.load('id|name|type|value|units|event\n' + sensor_info, sep='|'):
-            name = info['name'].strip().lower() or ""
-            value = info['value'].strip().lower() or ""
-            event = info['event'].strip().strip("'").lower() or ""
+            # get fan info
+            for info in form.load('id|name|type|value|units|event\n' + sensor_info, sep='|'):
+                name = info['name'].strip().lower() or ""
+                value = info['value'].strip().lower() or ""
+                event = info['event'].strip().strip("'").lower() or ""
 
-            if re.match(r"\w*fan(\w*(_|\ )speed|[a-z0-9]\ *\|)\w*", name):
-                if not origin_fan_flag:
-                    continue
-                if "m2" in name:
-                    continue
-                if value == "" or value == "no reading" or value == "disabled":
-                    continue
-                fan_state = 0 if event == "ok" else 10
-                metrics['fan_speed_state'].add_metric([name], fan_state)
-                metrics['fan_speed_rpm'].add_metric([name], float(value))
-                if fan_state == 0 and is_fan_status_abnormal(name):
-                    remove_fan_status_abnormal(name)
-                elif fan_state == 10:
-                    send_physical_fan_status_alarm_to_mn(name, event)
+                if re.match(r"\w*fan(\w*(_|\ )speed|[a-z0-9]\ *\|)\w*", name):
+                    if not origin_fan_flag:
+                        continue
+                    if "m2" in name:
+                        continue
+                    if value == "" or value == "no reading" or value == "disabled":
+                        continue
+                    fan_state = 0 if event == "ok" else 10
+                    metrics['fan_speed_state'].add_metric([name], fan_state)
+                    try:
+                        metrics['fan_speed_rpm'].add_metric([name], float(value))
+                    except ValueError:
+                        logger.warning("failed to convert fan speed value '%s' to float for fan '%s'", value, name)
+                    if fan_state == 0 and is_fan_status_abnormal(name):
+                        remove_fan_status_abnormal(name)
+                    elif fan_state == 10:
+                        send_physical_fan_status_alarm_to_mn(name, event)
 
     collect_equipment_state_last_result = metrics.values()
     return collect_equipment_state_last_result
@@ -1044,6 +1048,12 @@ def collect_equipment_state_from_ipmi():
         "cpu_status": GaugeMetricFamily('cpu_status', 'cpu status', None, ['cpu']),
         "ipmi_memory_status": GaugeMetricFamily('ipmi_memory_status', 'ipmi memory status', None, ['name', 'type']),
     }
+
+    # the current collector gathers sensor information via ipmi-sensors. in virtual environments, the ipmi-sensors command is not supported.
+    # when the current environment is detected as a virtual machine environment, it skips executing ipmi-sensors and returns null.
+    if is_virtual_machine():
+        return metrics.values()
+
     metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
 
     '''
@@ -1806,7 +1816,7 @@ if misc.isMiniHost():
     kvmagent.register_prometheus_collector(collect_lvm_capacity_statistics)
     kvmagent.register_prometheus_collector(collect_mini_raid_state)
     kvmagent.register_prometheus_collector(collect_equipment_state)
-    
+
 if misc.isHyperConvergedHost():
     kvmagent.register_prometheus_collector(collect_ipmi_state)
 else:
