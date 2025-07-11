@@ -3328,7 +3328,7 @@ class InstallDbCmd(Command):
       root_password: $root_password
       login_password: $login_password
       yum_repo: "$yum_repo"
-      ansible_python_interpreter: /usr/bin/python2
+      ansible_python_interpreter: /usr/bin/python3
 
   tasks:
     - name: set ansible_distribution_major_version

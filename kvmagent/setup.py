@@ -20,7 +20,7 @@ ZStack KVM agent REST service""",
       install_requires=[
             # -*- Extra requirements: -*-
             "prometheus_client==0.17.1",
-            "libvirt-python==8.0.0"
+            "libvirt-python==9.10.0",
       ],
       entry_points="""
       # -*- Entry points: -*-

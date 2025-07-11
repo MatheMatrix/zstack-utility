@@ -1646,7 +1646,6 @@ is_install_general_libs_rh(){
             rpcbind \
             vim-minimal \
             gcc \
-            grafana \
             autoconf \
             chrony \
             iptables \
@@ -1676,8 +1675,7 @@ is_install_general_libs_rh(){
             avahi-tools \
             audit \
             redis \
-            nodejs \
-            zs-forecast-capacity"
+            nodejs"
     if [ "$BASEARCH" == "x86_64" ]; then
       deps_list="${deps_list} mcelog"
     fi
@@ -1802,8 +1800,6 @@ is_install_general_libs_deb(){
         [ ! -f /etc/init.d/iptables ] && [ -f /etc/init.d/netfilter-persistent ] \
             && ln -s /etc/init.d/netfilter-persistent /etc/init.d/iptables
         sudo /bin/systemctl daemon-reload >>$ZSTACK_INSTALL_LOG 2>&1
-        sudo /bin/systemctl enable grafana-server >>$ZSTACK_INSTALL_LOG 2>&1
-        sudo /bin/systemctl start grafana-server >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     pass
 }
@@ -2760,9 +2756,9 @@ cs_install_mysql(){
         fi
     else
         if [ -z $MYSQL_ROOT_PASSWORD ]; then
-            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS,zstack-local-greatdb --root-password="$MYSQL_NEW_ROOT_PASSWORD" >>$ZSTACK_INSTALL_LOG --choose-database="$CHOOSE_DATABASE" --debug 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS --root-password="$MYSQL_NEW_ROOT_PASSWORD" >>$ZSTACK_INSTALL_LOG --choose-database="$CHOOSE_DATABASE" --debug 2>&1
         else
-            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS,zstack-local-greatdb --debug --choose-database="$CHOOSE_DATABASE" >>$ZSTACK_INSTALL_LOG 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS --debug --choose-database="$CHOOSE_DATABASE" >>$ZSTACK_INSTALL_LOG 2>&1
         fi
     fi
     if [ $? -ne 0 ];then
