@@ -3,6 +3,7 @@
 import argparse
 import datetime
 from distutils.version import LooseVersion
+import json
 import os
 import re
 from uuid import uuid4
@@ -60,6 +61,15 @@ parser.add_argument('--private-key', type=str, help='use this file to authentica
 parser.add_argument('-e', type=str, help='set additional variables as key=value or YAML/JSON')
 args = parser.parse_args()
 argument_dict = eval(args.e)
+
+# NOTE:
+# In Python 2, strings do not automatically interpret Unicode escape sequences like \uXXXX.
+# A string such as "\u0026" is treated literally as 6 characters, not as the Unicode character '&'.
+# To correctly parse such sequences into their corresponding Unicode characters (e.g., &),
+# special handling is required, such as using json.loads() or manual replacement with regex.
+if argument_dict.has_key('remote_pass') and argument_dict['remote_pass'] is not None and '\\u' in argument_dict['remote_pass']:
+    s_escaped = argument_dict['remote_pass'].replace('"', '\\"')
+    argument_dict['remote_pass'] = str(json.loads('"%s"' % s_escaped))
 
 # update the variable from shell arguments
 locals().update(argument_dict)
