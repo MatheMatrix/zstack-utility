@@ -32,5 +32,6 @@ zstack management tool""",
       entry_points="""
       # -*- Entry points: -*-
       """,
+      scripts=['zstack-ctl'],
       data_files=[('/usr/bin', ['zstack-ctl'])]
       )

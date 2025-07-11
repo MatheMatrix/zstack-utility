@@ -105,7 +105,8 @@ PCI_ROM_PATH = "/var/lib/zstack/pcirom"
 MAX_MEMORY = 34359738368 if (HOST_ARCH != "aarch64") else linux.get_max_vm_ipa_size() // 1024 // 16
 
 MIPS64EL_CPU_MODEL = "Loongson-3A4000-COMP"
-LOONGARCH64_CPU_MODEL = "Loongson-3A5000"
+# TODO: only for oe2403, move to config
+LOONGARCH64_CPU_MODEL = "la464"
 
 LINUX_SCRIPT_LIB_PATH = "/var/lib/zstack/script/"
 WINDOWS_SCRIPT_LIB_PATH = "C:/Program Files/Qemu-ga/script/"
