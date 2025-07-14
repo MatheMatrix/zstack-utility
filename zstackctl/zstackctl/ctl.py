@@ -11484,6 +11484,16 @@ class AIOSSetUpSystemServicesCmd(Command):
                 else:
                     info("No fields to update. Skipping update for modelServiceUuid '%s'." % uuid)
 
+            query.sql = "SELECT * FROM ModelServiceCpuArchitectureVO WHERE architecture='%s' AND modelServiceUuid='%s'" % (
+                architecture, escaped_uuid)
+            existing_architecture_result = query.query()
+            if not existing_architecture_result:
+                # Insert a new ModelServiceCpuArchitectureVO record
+                query.sql = "INSERT INTO ModelServiceCpuArchitectureVO (architecture, modelServiceUuid) " \
+                            "VALUES ('%s', '%s')" % (architecture, escaped_uuid)
+                query.query()
+                info("Inserted new ModelServiceCpuArchitectureVO record for modelServiceUuid '%s'" % uuid)
+
 
 def main():
     AddManagementNodeCmd()
