@@ -11404,6 +11404,15 @@ WantedBy=multi-user.target
         return "morph"
 
     def init(self):
+        if self.zsha2_utils:
+            try:
+                vip_address = self.zsha2_utils.config.get('dbvip')
+                if vip_address and vip_address != self.default_ip:
+                    info('[zsha2] VIP address %s detected, consider updating default_ip if needed' % vip_address)
+                    self.default_ip = vip_address
+            except Exception as e:
+                warn('[zsha2] Failed to get VIP configuration: %s' % str(e))
+
         data = {}
         try:
             with open(self.default_morph_config, 'r') as f:
@@ -11442,6 +11451,8 @@ WantedBy=multi-user.target
             info('morph morph.service write success')
         except IOError:
             error('morph morph.service write failed')
+
+        warn('**** IMPORTANT: Please verify application.yml configuration after morph service initialization. Check database connection, IP settings, and service dependencies. ***')
 
         shell_no_pipe("systemctl daemon-reload")
         shell_no_pipe("systemctl enable %s" % self.service_name())
