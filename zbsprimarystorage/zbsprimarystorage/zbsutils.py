@@ -28,11 +28,11 @@ def is_clonal_type(file_type):
 
 def parse_cbd_path(path):
     parts = path.split(":")[1].split("/")
-    physical_pool = parts[0]
-    logical_pool = parts[1]
-    volume_part = parts[2]
-    if "@" in volume_part:
-        volume, snapshot = volume_part.split("@")
+    if len(parts) < 3:
+        raise ValueError("Invalid CBD path: %s" % path)
+    physical_pool, logical_pool, volume_part = parts
+    if '@' in volume_part:
+        volume, snapshot = volume_part.split('@', 1)
     else:
         volume = volume_part
         snapshot = None
@@ -154,8 +154,9 @@ def rollback_snapshot(logical_pool, volume, snapshot):
 
 
 def cbd_to_nbd(desc, port, install_path):
-    logger.debug("qemu-nbd -D %s -f raw -p %d --fork %s_%s_:%s" % (desc, port, install_path, ZBS_USER_NAME, ZBS_CLIENT_CONF_PATH))
-    os.system("qemu-nbd -D %s -f raw -p %d --fork %s_%s_:%s" % (desc, port, install_path, ZBS_USER_NAME, ZBS_CLIENT_CONF_PATH))
+    cmd = "qemu-nbd -D %s -f raw -p %d --fork %s_%s_:%s" % (desc, port, install_path, ZBS_USER_NAME, ZBS_CLIENT_CONF_PATH)
+    logger.debug(cmd)
+    os.system(cmd)
 
 
 def copy(src_path, dst_path, is_snapshot=False):

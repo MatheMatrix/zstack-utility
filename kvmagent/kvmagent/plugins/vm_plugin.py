@@ -5805,7 +5805,7 @@ class Vm(object):
                     driver_elements["queues"] = _v.multiQueues
                 e(disk, 'driver', None, driver_elements)
 
-                u = urlparse.urlparse(r)
+                u = parse_url(r)
                 src = e(disk, 'source', None, {'protocol': 'nbd', 'name': os.path.basename(u.path)})
                 e(src, 'host', None, {'name':u.hostname, 'port': str(u.port)})
 
@@ -5989,7 +5989,7 @@ class Vm(object):
                 drivers[0].set("io", "native")
 
             def get_recover_path(v):
-                u = urlparse.urlparse(v.installPath)
+                u = parse_url(v.installPath)
                 qs = dict(urlparse.parse_qsl(u.query))
                 return qs.get("r")
 
@@ -8371,7 +8371,7 @@ class VmPlugin(kvmagent.KvmAgent):
         def check_volume_recover_results():
             for volume in cmd.volumes:
                 xml_path = volume.installPath.split('?', 1)[0]
-                u = urlparse.urlparse(xml_path)
+                u = parse_url(xml_path)
                 if u.scheme:
                     xml_path = xml_path.replace(u.scheme + '://', '')
                 if not linux.wait_callback_success(check_device_in_xml, xml_path, interval=2, timeout=10):
@@ -12751,3 +12751,7 @@ def touchQmpSocketWhenExists(vmUuid):
     if os.path.exists(path):
         bash.bash_roe("touch %s" % path)
 
+
+def parse_url(uri):
+    normalized_uri = re.sub(r'^([a-zA-Z]+:)(?!/{2})', r'\1//', uri, count=1)
+    return urlparse.urlparse(normalized_uri)
