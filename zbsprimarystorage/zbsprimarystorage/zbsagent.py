@@ -1,21 +1,16 @@
 __author__ = 'Xingwei Yu'
 
-import traceback
-import pprint
-import os
 import base64
+import pprint
+import traceback
 
 import zbsutils
-import zstacklib.utils.jsonobject as jsonobject
-
-from zstacklib.utils import plugin
 from zstacklib.utils import daemon
-from zstacklib.utils import linux
-from zstacklib.utils import traceable_shell
 from zstacklib.utils import iproute
-from zstacklib.utils.report import *
+from zstacklib.utils import plugin
+from zstacklib.utils import traceable_shell
 from zstacklib.utils.bash import *
-
+from zstacklib.utils.report import *
 
 log.configure_log('/var/log/zstack/zbs-primarystorage.log')
 logger = log.get_logger(__name__)
