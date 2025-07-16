@@ -1012,7 +1012,9 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         volumes = {}
         for volume_driver in volume_drivers:
             if volume_driver.volume_obj.type == 'Root':
-                if volume_driver.instance_obj.provisionType == 'Remote':
+                if volume_driver.instance_obj.provisionType == 'Remote' \
+                        and hasattr(volume_driver.volume_obj, "token") \
+                        and volume_driver.volume_obj.token:
                     path = volume_driver.volume_obj.iscsiPath.replace('iscsi://', '')
                     array = path.split("/")
                     iqn = array[1]
