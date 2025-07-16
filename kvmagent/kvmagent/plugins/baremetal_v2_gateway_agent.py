@@ -23,6 +23,7 @@ from kvmagent.plugins.bmv2_gateway_agent.object import NetworkObj
 from kvmagent.plugins.bmv2_gateway_agent.object import VolumeObj
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.bmv2_gateway_agent import volume
+from kvmagent.plugins.bmv2_gateway_agent.volume import thirdparty_ceph
 
 
 logger = log.get_logger(__name__)
@@ -1013,8 +1014,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         for volume_driver in volume_drivers:
             if volume_driver.volume_obj.type == 'Root':
                 if volume_driver.instance_obj.provisionType == 'Remote' \
-                        and hasattr(volume_driver.volume_obj, "token") \
-                        and volume_driver.volume_obj.token:
+                        and volume_driver == thirdparty_ceph.ThirdPartyCephVolume:
                     path = volume_driver.volume_obj.iscsiPath.replace('iscsi://', '')
                     array = path.split("/")
                     iqn = array[1]
