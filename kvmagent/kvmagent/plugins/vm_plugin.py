@@ -6130,6 +6130,7 @@ class Vm(object):
                     if usb.split(":")[5] == "Redirect":
                         redirdev = e(devices, "redirdev", None, {'bus': 'usb', 'type': 'tcp'})
                         source = e(redirdev, "source", None, {'mode': 'connect', 'host': usb.split(":")[7], 'service': usb.split(":")[6]})
+                        e(source, "reconnect", None, {'enabled': 'yes', 'timeout': '5'})
 
                         # get controller index from usbVersion
                         # eg. 1.1 -> 0
@@ -9640,7 +9641,8 @@ host side snapshot files chian:
 
         if cmd.attachType == "Redirect":
             root = etree.Element('redirdev', {'bus': 'usb', 'type': 'tcp'})
-            e(root, 'source', None, {'mode': 'connect', 'host': cmd.ip, 'service': str(cmd.port)})
+            d = e(root, 'source', None, {'mode': 'connect', 'host': cmd.ip, 'service': str(cmd.port)})
+            e(d, "reconnect", None, {'enabled': 'yes', 'timeout': '5'})
 
         xml = etree.tostring(root)
         logger.info(xml)
@@ -9671,7 +9673,8 @@ host side snapshot files chian:
 
         if cmd.attachType == "Redirect":
             root = etree.Element('redirdev', {'bus': 'usb', 'type': 'tcp'})
-            e(root, 'source', None, {'mode': 'connect', 'host': cmd.ip, 'service': str(cmd.port)})
+            d = e(root, 'source', None, {'mode': 'connect', 'host': cmd.ip, 'service': str(cmd.port)})
+            e(d, "reconnect", None, {'enabled': 'yes', 'timeout': '5'})
             e(root, 'address', None, {'type': 'usb', 'bus': str(bus), 'port': str(self._get_next_usb_port(vm.domain, bus))})
 
         xml = etree.tostring(root)
