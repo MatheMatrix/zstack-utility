@@ -11335,11 +11335,12 @@ class IamService(ExtraService):
 
     def start(self, do_init=False):
         shell_no_pipe("systemctl restart %s" % self.service_name())
-        if self.zsha2_utils:
-            self.zsha2_utils.execute_on_peer("systemctl restart %s" % self.service_name())
-        self._wait_for_keycloak("http://localhost:%d/realms/master/.well-known/openid-configuration" % self.default_port)
+        self._wait_for_keycloak(
+            "http://localhost:%d/realms/master/.well-known/openid-configuration" % self.default_port)
         if do_init:
             shell_no_pipe("bash %s" % self.base_init_path)
+        if self.zsha2_utils:
+            self.zsha2_utils.execute_on_peer("systemctl restart %s" % self.service_name())
 
     def post_start_log(self):
         if self.zsha2_utils:
