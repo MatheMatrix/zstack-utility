@@ -9513,6 +9513,19 @@ class ClearLicenseCmd(Command):
 
         info("Successfully clear and backup zstack license files to " + license_bck)
 
+class GetLicenseCmd(Command):
+    def __init__(self):
+        super(GetLicenseCmd, self).__init__()
+        self.name = "get_license"
+        self.description = "scan zstack license files"
+        ctl.register_command(self)
+    
+    def run(self, args):
+        output1 = shell('find "%s" -name keypicker.jar' % (ctl.zstack_home))
+        jar_path = output1.strip().split('\n')[0]
+        output2 = shell('java -jar "%s"' % (jar_path))
+        info(output2)
+
 # For UI 1.x
 class StartDashboardCmd(Command):
     PID_FILE = '/var/run/zstack/zstack-dashboard.pid'
@@ -10886,6 +10899,7 @@ def main():
     InstallManagementNodeCmd()
     InstallLicenseCmd()
     ClearLicenseCmd()
+    GetLicenseCmd()
     ShowConfiguration()
     GetConfiguration()
     MNServerPortChange()
