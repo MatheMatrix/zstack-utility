@@ -142,3 +142,10 @@ class BaseVolume(object):
 
     def roll_back_attach_volume(self):
         pass
+
+    def build_iscsi_uri(self, gateway_ip):
+        uri = 'iscsi:{gw_ip}:::{lun_id}:{target}'.format(
+            gw_ip=gateway_ip,
+            lun_id=self.iscsi_lun,
+            target=self.iscsi_target)
+        return uri
