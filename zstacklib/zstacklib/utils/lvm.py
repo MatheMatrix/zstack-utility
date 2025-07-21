@@ -1463,29 +1463,21 @@ def extend_lv(path, extend_size, skip_if_sufficient=False):
 
 @bash.in_bash
 def extend_lv_from_cmd(path, size, cmd, extend_thin_by_specified_size=False, skip_if_sufficient=False):
-    # type: (str, long, object, bool) -> None
     if cmd.provisioning is None or \
             cmd.addons is None or \
             cmd.provisioning != VolumeProvisioningStrategy.ThinProvisioning:
         extend_lv(path, size, skip_if_sufficient)
         return
 
-    current_size = int(get_lv_size(path))
-
     if extend_thin_by_specified_size:
         v_size = linux.qcow2_virtualsize(path)
-        if size + cmd.addons[thinProvisioningInitializeSize] > v_size:
+        thin_init_size = cmd.addons[thinProvisioningInitializeSize]
+        if size + thin_init_size > v_size:
             size = v_size
         else:
-            size = size + cmd.addons[thinProvisioningInitializeSize]
+            size = size + thin_init_size
         extend_lv(path, size, skip_if_sufficient)
         return
-
-    if int(size) - current_size > cmd.addons[thinProvisioningInitializeSize]:
-        extend_lv(path, current_size + cmd.addons[thinProvisioningInitializeSize], skip_if_sufficient)
-    else:
-        extend_lv(path, size, True)
-
 
 def active_lv(path, shared=False):
     op = LvLockOperator.get_lock_cnt_or_else_none(path)
