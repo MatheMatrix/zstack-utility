@@ -138,3 +138,25 @@ class ThirdPartyCephVolume(base.BaseVolume):
     def get_targets_by_access_path_id(self, access_path_id):
         return RbdDeviceOperator(self.volume_obj.monIp, self.volume_obj.token,
                                  self.volume_obj.tpTimeout).get_targets_by_access_path_id(access_path_id)
+
+    def build_iscsi_uri(self, gateway_ip):
+        path = self.volume_obj.iscsiPath.replace('iscsi://', '')
+        array = path.split("/")
+        iqn = array[1]
+        access_paths = self.get_all_access_path()
+        gatewayIps = []
+        for access_path in access_paths:
+            if iqn in access_path.iqn:
+                targets = self.get_targets_by_access_path_id(access_path.id)
+                gatewayIps = [target.gateway_ips if target.gateway_ips else target.host.admin_ip
+                              for target in targets]
+        uris = []
+        for ip in gatewayIps:
+            uri = 'iscsi:{gw_ip}:::{lun_id}:{target}'.format(
+                gw_ip=ip,
+                lun_id=self.get_lun_id(),
+                target=iqn
+            )
+            uris.append(uri)
+        urls = ' \\\n '.join(uris) + ' '
+        return urls
