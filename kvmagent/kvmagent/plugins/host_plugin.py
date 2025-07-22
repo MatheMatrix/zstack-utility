@@ -543,28 +543,44 @@ class HostNetworkInterfaceInventory(object):
     @in_bash
     def _init_interfacemodel(self):
         # todo: read file
-        r, o, e = bash_roe("lspci -Dmmnnv -s %s" % self.pciDeviceAddress)
-        if r == 0:
+        # Get IDs using -Dmmnv (without second 'n' to avoid truncation)
+        r_id, o_id, e_id = bash_roe("lspci -Dmmnv -s %s" % self.pciDeviceAddress)
+        # Get names using -Dmmv (without 'nn' to get full names)
+        r_name, o_name, e_name = bash_roe("lspci -Dmmv -s %s" % self.pciDeviceAddress)
+
+        if r_id == 0 and r_name == 0:
             vendor_name = ""
             device_name = ""
             subvendor_name = ""
-            for line in o.split('\n'):
+
+            # Parse IDs from -Dmmnv output
+            ids = {}
+            for line in o_id.split('\n'):
+                if len(line.split(':')) < 2: continue
+                title = line.split(':')[0].strip()
+                content = line.split(':')[1].strip()
+                if title in ['Vendor', 'Device', 'SVendor', 'SDevice', 'Rev']:
+                    if '[' in content and ']' in content:
+                        ids[title] = content.split('[')[-1].strip(']')
+
+            # Parse names from -Dmmv output
+            for line in o_name.split('\n'):
                 if len(line.split(':')) < 2: continue
                 title = line.split(':')[0].strip()
                 content = line.split(':')[1].strip()
                 if title == 'Vendor':
-                    vendor_name = self._simplify_device_name('['.join(content.split('[')[:-1]).strip())
-                    self.vendorId = content.split('[')[-1].strip(']')
+                    vendor_name = self._simplify_device_name(content.strip())
+                    self.vendorId = ids.get('Vendor', '')
                 elif title == "Device":
-                    device_name = self._simplify_device_name('['.join(content.split('[')[:-1]).strip())
-                    self.deviceId = content.split('[')[-1].strip(']')
+                    device_name = self._simplify_device_name(content.strip())
+                    self.deviceId = ids.get('Device', '')
                 elif title == "SVendor":
-                    subvendor_name = self._simplify_device_name('['.join(content.split('[')[:-1]).strip())
-                    self.subvendorId = content.split('[')[-1].strip(']')
+                    subvendor_name = self._simplify_device_name(content.strip())
+                    self.subvendorId = ids.get('SVendor', '')
                 elif title == "SDevice":
-                    self.subdeviceId = content.split('[')[-1].strip(']')
+                    self.subdeviceId = ids.get('SDevice', '')
                 elif title == "Rev":
-                    self.rev = content.split('[')[-1].strip(']')
+                    self.rev = ids.get('Rev', '')
             self.interfaceModel = "%s_%s" % (subvendor_name if subvendor_name and "Unknown" not in subvendor_name else vendor_name, device_name)
 
     def _simplify_device_name(self, name):
@@ -2514,10 +2530,14 @@ done
             return name.replace('Co., Ltd ', '')
 
     def _collect_format_pci_device_info(self, rsp):
-        r, o, e = bash_roe("lspci -Dmmnnv")
-        if r != 0:
+        # Get IDs using -Dmmnv (without second 'n' to avoid truncation)
+        r_id, o_id, e_id = bash_roe("lspci -Dmmnv")
+        # Get names using -Dmmv (without 'nn' to get full names)
+        r_name, o_name, e_name = bash_roe("lspci -Dmmv")
+
+        if r_id != 0 or r_name != 0:
             rsp.success = False
-            rsp.error = "%s, %s" % (e, o)
+            rsp.error = "%s, %s" % (e_id if r_id != 0 else e_name, o_id if r_id != 0 else o_name)
             return
         pci_device_mapper = {}
 
@@ -2528,42 +2548,90 @@ done
                 value = parts[1].strip()
                 pci_device_mapper[key] = value
 
-        # parse lspci output
-        for part in o.split('\n\n'):
-            vendor_name = ""
-            device_name = ""
-            subvendor_name = ""
-            to = PciDeviceTO()
+        # Build device info maps from both outputs
+        device_ids = {}  # slot -> {field: id}
+        device_names = {}  # slot -> {field: name}
+
+        # Parse IDs from -Dmmnv output
+        for part in o_id.split('\n\n'):
+            slot = None
+            ids = {}
             for line in part.split('\n'):
                 if len(line.split(':')) < 2: continue
                 title = line.split(':')[0].strip()
                 content = line.split(':')[1].strip()
                 if title == 'Slot':
-                    content = line[5:].strip()
-                    to.pciDeviceAddress = content
-                    group_path = os.path.join('/sys/bus/pci/devices/', to.pciDeviceAddress, 'iommu_group')
-                    to.iommuGroup = os.path.realpath(group_path)
-                elif title == 'Class':
-                    _class = content.split('[')[0].strip()
-                    to.type = _class
-                    to.description = _class + ": "
-                elif title == 'Vendor':
-                    vendor_name = self._simplify_pci_device_name(content.strip())
-                    to.vendor = vendor_name
-                    to.vendorId = content.split('[')[-1].strip(']')
-                    to.description += vendor_name + " "
-                elif title == "Device":
-                    to.device = content
-                    device_name = self._simplify_pci_device_name('['.join(content.split('[')[:-1]).strip())
-                    to.deviceId = content.split('[')[-1].strip(']')
-                    to.description += device_name
-                elif title == "SVendor":
-                    subvendor_name = self._simplify_pci_device_name('['.join(content.split('[')[:-1]).strip())
-                    to.subvendorId = content.split('[')[-1].strip(']')
-                elif title == "SDevice":
-                    to.subdeviceId = content.split('[')[-1].strip(']')
-                elif title == "Rev":
-                    to.rev = content.split('[')[-1].strip(']')
+                    slot = line[5:].strip()
+                elif title in ['Class', 'Vendor', 'Device', 'SVendor', 'SDevice', 'Rev']:
+                    if '[' in content and ']' in content:
+                        ids[title] = content.split('[')[-1].strip(']')
+            if slot:
+                device_ids[slot] = ids
+
+        # Parse names from -Dmmv output
+        for part in o_name.split('\n\n'):
+            slot = None
+            names = {}
+            for line in part.split('\n'):
+                if len(line.split(':')) < 2: continue
+                title = line.split(':')[0].strip()
+                content = line.split(':')[1].strip()
+                if title == 'Slot':
+                    slot = line[5:].strip()
+                elif title in ['Class', 'Vendor', 'Device', 'SVendor', 'SDevice', 'Rev']:
+                    names[title] = content.strip()
+            if slot:
+                device_names[slot] = names
+
+        # Create PciDeviceTO objects
+        for slot in device_ids.keys():
+            if slot not in device_names:
+                continue
+
+            vendor_name = ""
+            device_name = ""
+            subvendor_name = ""
+            to = PciDeviceTO()
+
+            ids = device_ids[slot]
+            names = device_names[slot]
+
+            # Set basic info
+            to.pciDeviceAddress = slot
+            group_path = os.path.join('/sys/bus/pci/devices/', to.pciDeviceAddress, 'iommu_group')
+            to.iommuGroup = os.path.realpath(group_path)
+
+            # Set class info
+            if 'Class' in names:
+                to.type = names['Class']
+                to.description = names['Class'] + ": "
+
+            # Set vendor info
+            if 'Vendor' in names:
+                vendor_name = self._simplify_pci_device_name(names['Vendor'])
+                to.vendor = vendor_name
+                to.vendorId = ids.get('Vendor', '')
+                to.description += vendor_name + " "
+
+            # Set device info
+            if 'Device' in names:
+                to.device = names['Device']
+                device_name = self._simplify_pci_device_name(names['Device'])
+                to.deviceId = ids.get('Device', '')
+                to.description += device_name
+
+            # Set subvendor info
+            if 'SVendor' in names:
+                subvendor_name = self._simplify_pci_device_name(names['SVendor'])
+                to.subvendorId = ids.get('SVendor', '')
+
+            # Set subdevice info
+            if 'SDevice' in names:
+                to.subdeviceId = ids.get('SDevice', '')
+
+            # Set revision info
+            if 'Rev' in names:
+                to.rev = ids.get('Rev', '')
 
             to.name = "%s_%s" % (subvendor_name if subvendor_name else vendor_name, device_name)
 
