@@ -11328,9 +11328,11 @@ class IamService(ExtraService):
         with open(conf_path, "w") as f:
             f.write(content)
         shell_no_pipe("systemctl restart zstack-ui-nginx")
+        shell_no_pipe("systemctl enable %s" % self.service_name())
 
         self.zsha2_utils.scp_to_peer(conf_path, conf_path)
         self.zsha2_utils.execute_on_peer("systemctl restart zstack-ui-nginx")
+        self.zsha2_utils.execute_on_peer("systemctl enable %s" % self.service_name())
         info_and_debug("Rendered keycloak.upstream.nginx.conf with MN1: %s, MN2: %s" % (self.zsha2_utils.config['nodeip'], self.zsha2_utils.config['peerip']))
 
     def start(self, do_init=False):
