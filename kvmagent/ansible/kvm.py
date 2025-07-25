@@ -611,7 +611,7 @@ def copy_zs_scripts():
 def copy_grubaa64_efi():
     """copy grubaa64.efi from mn_node to bm2 gateway"""
     _src = os.path.join(file_root, "grubaa64.efi")
-    _dst = "/tmp/"
+    _dst = "/var/lib/zstack/baremetalv2/tftpboot/"
     copy_to_remote(_src, _dst, "mode=755", host_post_info)
 
 
