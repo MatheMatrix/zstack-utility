@@ -3308,7 +3308,7 @@ def check_unixsock_connection(socket_path, timeout=10):
 
 def is_virtual_machine():
     product_name = shell.call("dmidecode -s system-product-name").strip()
-    return product_name == "KVM Virtual Machine" or product_name == "KVM"
+    return product_name == "KVM Virtual Machine" or product_name == "KVM" or "vmware" in product_name.lower()
 
 class VmUsbManager(object):
     def __init__(self):
