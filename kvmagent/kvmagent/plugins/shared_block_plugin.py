@@ -7,6 +7,7 @@ import difflib
 
 from kvmagent import kvmagent
 from kvmagent.plugins.imagestore import ImageStoreClient
+from kvmagent.plugins.ha_plugin import stop_vg_heartbeat
 from zstacklib.utils import jsonobject
 from zstacklib.utils import shell
 from zstacklib.utils import lock
@@ -815,6 +816,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                     _do_detach_disks([bname])
 
 
+        stop_vg_heartbeat(cmd.vgUuid)
         deactive_lvs_on_vg(cmd.vgUuid)
         lvm.clean_vg_exists_host_tags(cmd.vgUuid, cmd.hostUuid, HEARTBEAT_TAG)
         lvm.stop_vg_lock(cmd.vgUuid)
