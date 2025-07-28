@@ -5985,6 +5985,12 @@ class DumpMysqlCmd(Command):
     def get_zstone_db_user_info(self):
         return "zstndump", "zstndump.db.password"
 
+    def get_keycloak_db_user_info(self):
+        return "keycloak", "password"
+
+    def get_morph_db_user_info(self):
+        return "morph", "morph123"
+
     def run(self, args):
         (db_hostname, db_port, db_user, db_password) = ctl.get_live_mysql_portal()
         (ui_db_hostname, ui_db_port, ui_db_user, ui_db_password) = ctl.get_live_mysql_portal(ui=True)
@@ -6030,12 +6036,24 @@ class DumpMysqlCmd(Command):
             command_3 = "mysqldump --databases -u %s --password='%s' --host %s -P %s %s -f zstack_ui zstack_mini" \
                         % (ui_db_user, ui_db_password, ui_db_hostname, ui_db_port, mysqldump_options)
 
+        def build_mysqldump_cmd(user, pwd, host, port, dbname):
+            if host == "localhost" or host == "127.0.0.1":
+                return "mysqldump --databases -u %s --password='%s' -P %s %s -f %s" % (
+                    user, pwd, port, mysqldump_options, dbname)
+            else:
+                return "mysqldump --databases -u %s --password='%s' --host %s -P %s %s -f %s" % (
+                    user, pwd, host, port, mysqldump_options, dbname)
+        keycloak_db_user, keycloak_db_pwd = self.get_keycloak_db_user_info()
+        morph_db_user, morph_db_pwd = self.get_morph_db_user_info()
+        keycloak_cmd = build_mysqldump_cmd(keycloak_db_user, keycloak_db_pwd, db_hostname, db_port, "keycloak")
+        morph_cmd = build_mysqldump_cmd(morph_db_user, morph_db_pwd, db_hostname, db_port, "morph")
+
         if args.append_sql_file:
             append_sql_command = "echo 'USE `zstack`;\n'; cat %s;" % args.append_sql_file
         else:
             append_sql_command = ""
 
-        cmd = ShellCmd("(%s; %s; %s %s) | gzip > %s" % (command_1, command_2, append_sql_command, command_3, db_backupf_file_path))
+        cmd = ShellCmd("(%s; %s; %s %s %s %s) | gzip > %s" % (command_1, command_2, append_sql_command, command_3, keycloak_cmd, morph_cmd, db_backupf_file_path))
         cmd(True)
         info("Successfully backed up database. You can check the file at %s" % db_backupf_file_path)
 
@@ -6307,6 +6325,21 @@ class RestoreMysqlCmd(Command):
                       % (db_backup_name, ui_db_hostname_origin_cp, shell_quote(ui_db_password), ui_db_hostname, ui_db_port, database)
             shell_no_pipe(command)
 
+        other_db_names = ['keycloak','morph']
+        for database in other_db_names:
+            restorer.stop_extra_services(args, database)
+            info("Restoring %s database ..." % database)
+            command = "mysql -uroot --password=%s -P %s  %s" \
+                      " -e 'drop database if exists %s; create database %s' >> /dev/null 2>&1" \
+                      % (shell_quote(db_password), db_port, db_hostname, database, database)
+            shell_no_pipe(command)
+            command = "gunzip < %s | sed -e '/DROP DATABASE IF EXISTS/d' -e '/CREATE DATABASE .* IF NOT EXISTS/d' " \
+                      "| sed 's/DEFINER=`[^\*\/]*`@`[^\*\/]*`/DEFINER=`root`@`%s`/' " \
+                      "| mysql -uroot --password=%s %s -P %s --one-database %s" \
+                      % (db_backup_name, db_hostname_origin_cp, shell_quote(db_password), db_hostname, db_port, database)
+            shell_no_pipe(command)
+            restorer.start_extra_services(args, database)
+
         info("Successfully restored database. You can start node by running zstack-ctl start.")
         warn('The VM HA in the global setting (config) is disabled while restore database, '
              'enable it after management node is running if needed.')
@@ -6331,6 +6364,14 @@ class MysqlRestorer(object):
 
     def is_local_ip(self, db_hostname):
         raise Exception('function all_local_ip not be implemented')
+ 
+    def start_extra_services(self, args, service_name):
+        info("starting %s service..." % service_name)
+        shell("systemctl start %s" % service_name)
+
+    def stop_extra_services(self, args, service_name):
+        info("stopping %s service..." % service_name)
+        shell("systemctl stop %s" % service_name)
 
 
 class MultiMysqlRestorer(MysqlRestorer):
@@ -6371,6 +6412,18 @@ class MultiMysqlRestorer(MysqlRestorer):
 
     def is_local_ip(self, db_hostname):
         return db_hostname in self.all_local_ip or db_hostname == self.utils.config['dbvip']
+
+    def start_extra_services(self, args, service_name):
+        super(MultiMysqlRestorer, self).start_extra_services(args, service_name)
+        if not args.only_restore_self:
+            info("starting peer %s service..." % service_name)
+            self.utils.execute_on_peer("systemctl start %s" % service_name)
+
+    def stop_extra_services(self, args, service_name):
+        super(MultiMysqlRestorer, self).stop_extra_services(args, service_name)
+        if not args.only_restore_self:
+            info("stopping peer %s service..." % service_name)
+            self.utils.execute_on_peer("systemctl stop %s" % service_name)
 
 
 class SingleMysqlRestorer(MysqlRestorer):
