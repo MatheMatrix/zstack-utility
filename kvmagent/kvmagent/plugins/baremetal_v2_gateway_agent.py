@@ -196,8 +196,9 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         if kvmagent.host_arch == "x86_64":
             shutil.copy('/usr/share/syslinux/pxelinux.0', self.TFTPBOOT_DIR)
 
-        # Copy grubaa64.efi
-        shutil.copy('/tmp/grubaa64.efi', self.TFTPBOOT_DIR)
+        # Check grubaa64.efi
+        if not os.path.exists(os.path.join(self.TFTPBOOT_DIR, 'grubaa64.efi')):
+            raise Exception("grubaa64.efi not found in " + self.TFTPBOOT_DIR)
 
         # Prepare httpboot, copy kernel&initramfs
         if os.path.islink(self.BM_IMGS_DIR):
