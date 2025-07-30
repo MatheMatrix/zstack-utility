@@ -74,8 +74,8 @@ class ImageStoreClient(object):
     def storage_backup(self, cmd):
         self._check_zstore_cli()
         sshData = cmd.userName + '@' + cmd.hostname + ':' + cmd.uploadDir
-        cmdstr = '%s -rootca %s storagebackup -ssh %s -p %s -parent %s -volume %s -backupUuid %s -mode %s' % (
-            self.ZSTORE_CLI_PATH, self.ZSTORE_CLI_PATH, sshData, cmd.password, cmd.lastBackupUuid, cmd.volumePath,
+        cmdstr = '%s storagebackup -ssh %s -p %s -parent %s -volume %s -backupUuid %s -mode %s' % (
+            self.ZSTORE_CLI_PATH, sshData, cmd.password, cmd.lastBackupUuid, cmd.volumePath,
             cmd.backupUuid, cmd.mode)
         output = shell.call(cmdstr.encode(encoding="utf-8"))
         result = jsonobject.loads(output.splitlines()[-1])
@@ -90,8 +90,8 @@ class ImageStoreClient(object):
 
     def cancel_storage_backup(self, cmd):
         self._check_zstore_cli()
-        cmdstr = '%s -rootca %s cancelstoragebackup -volume %s ' % (
-        self.ZSTORE_CLI_PATH, self.ZSTORE_CLI_PATH, cmd.volumePath)
+        cmdstr = '%s cancelstoragebackup -volume %s ' % (
+            self.ZSTORE_CLI_PATH, cmd.volumePath)
         shell.call(cmdstr.encode(encoding="utf-8"))
         rsp = AgentResponse()
         return jsonobject.dumps(rsp)
