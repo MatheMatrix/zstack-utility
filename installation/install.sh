@@ -41,6 +41,7 @@ KYLIN_V10_OS="ky10sp1 ky10sp2 ky10sp3 ky10sp3.2403"
 XINCHUANG_OS="$KYLIN10_OS uos20"
 SUPPORTED_OS="$REDHAT_OS $DEBIAN_OS"
 REDHAT_WITHOUT_CENTOS6=`echo $REDHAT_OS |sed s/CENTOS6//`
+SUPPORTED_LOCALE=("en_US" "zh_CN")
 
 UPGRADE='n'
 FORCE='n'
@@ -2563,6 +2564,25 @@ sp_setup_install_param(){
     # Port 9090 is already used by system service on KylinOS(ft2000)
     if [ $OS == "KYLIN4.0.2" ];then
         zstack-ctl configure Prometheus.port=9080
+    fi
+
+    # config locale
+    LOCALE_FILE="${ZSTACK_DVD_DIR}/${BASEARCH}/${ZSTACK_RELEASE}/locale"
+    if [[ -r "${LOCALE_FILE}" ]]; then
+        LOCALE_VALUE="$(cat "${LOCALE_FILE}")"
+        IS_SUPPORTED=false
+        for SUPPORTED in "${SUPPORTED_LOCALES[@]}"; do
+            if [[ "${LOCALE_VALUE}" == "${SUPPORTED}" ]]; then
+                IS_SUPPORTED=true
+                break
+            fi
+        done
+
+        if [[ "${IS_SUPPORTED}" == false ]]; then
+            fail "The read locale '${LOCALE_VALUE}' is not supported. Supported locales are: ${SUPPORTED_LOCALES[*]}."
+        fi
+        zstack-ctl configure locale="${LOCALE_VALUE}"
+        # TODO config ui
     fi
 }
 
