@@ -6053,7 +6053,7 @@ class DumpMysqlCmd(Command):
         else:
             append_sql_command = ""
 
-        cmd = ShellCmd("(%s; %s; %s %s %s %s) | gzip > %s" % (command_1, command_2, append_sql_command, command_3, keycloak_cmd, morph_cmd, db_backupf_file_path))
+        cmd = ShellCmd("(%s; %s; %s %s; %s; %s) | gzip > %s" % (command_1, command_2, append_sql_command, command_3, keycloak_cmd, morph_cmd, db_backupf_file_path))
         cmd(True)
         info("Successfully backed up database. You can check the file at %s" % db_backupf_file_path)
 
