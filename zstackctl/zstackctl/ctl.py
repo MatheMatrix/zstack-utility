@@ -6327,6 +6327,15 @@ class RestoreMysqlCmd(Command):
 
         other_db_names = ['keycloak','morph']
         for database in other_db_names:
+            try:
+                with open(os.devnull, 'w') as devnull:
+                    subprocess.check_call(['systemctl', 'status', database],
+                                          stdout=devnull,
+                                          stderr=devnull)
+            except subprocess.CalledProcessError:
+                warn("Service {} is not installed, skipping...".format(database))
+                continue
+
             restorer.stop_extra_services(args, database)
             info("Restoring %s database ..." % database)
             command = "mysql -uroot --password=%s -P %s  %s" \
