@@ -39,8 +39,8 @@ def parse_cbd_path(path):
     return physical_pool, logical_pool, volume, snapshot
 
 
-def deploy_client(ip, password):
-    return shell.call("%s client deploy --host %s -p %s --silent" % (ZBSADM_BIN_PATH, ip, linux.shellquote(password)))
+def deploy_client(ip, port, password):
+    return shell.call("%s client deploy --host %s --port %s -p %s --silent" % (ZBSADM_BIN_PATH, ip, port, linux.shellquote(password)))
 
 
 def query_mds_status_info():
