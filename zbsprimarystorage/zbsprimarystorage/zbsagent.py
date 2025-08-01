@@ -510,11 +510,11 @@ class ZbsAgent(plugin.TaskManager):
             install_path = cmd.path
 
         start_port, end_port = linux.parse_port_range(cmd.portRange)
-        port, port_lock = linux.find_free_port_with_locking(start_port, end_port)
+        port, lock = linux.find_free_port_with_locking(start_port, end_port)
         desc = "cbd2nbd.%d" % port
         zbsutils.cbd_to_nbd(desc, port, install_path)
-        if port_lock:
-            port_lock.release()
+        if lock:
+            lock.release()
         rsp.ip = cmd.addr
         rsp.port = port
         return jsonobject.dumps(rsp)
@@ -590,7 +590,7 @@ class ZbsAgent(plugin.TaskManager):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
 
-        o = zbsutils.deploy_client(cmd.ip, cmd.password)
+        o = zbsutils.deploy_client(cmd.ip, cmd.port, cmd.password)
         r = jsonobject.loads(o)
         if r.error.code != 0:
             rsp.success = False
