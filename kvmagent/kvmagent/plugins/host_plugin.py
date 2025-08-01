@@ -41,7 +41,7 @@ from zstacklib.utils.bash import *
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.ip import get_nic_driver_type
 from zstacklib.utils.ipmitool import get_sensor_info_from_ipmi
-from zstacklib.utils.linux import filter_lines_by_str_list
+from zstacklib.utils.linux import filter_lines_by_str_list, is_virtual_machine
 from zstacklib.utils.report import Report, get_timeout
 import zstacklib.utils.ip as ip
 from zstacklib.utils import netconfig
@@ -3792,6 +3792,11 @@ done
                 self.value = info['value'].strip() or ""
                 self.status = (info['event'] or '').strip().strip("'").lower()
                 self.type = info['type'].strip() or ""
+
+        if is_virtual_machine():
+            rsp.success = False
+            rsp.error = "the current environment does not support obtaining sensor information"
+            return jsonobject.dumps(rsp)
 
         sensor_info = get_sensor_info_from_ipmi()
         if sensor_info is None:
