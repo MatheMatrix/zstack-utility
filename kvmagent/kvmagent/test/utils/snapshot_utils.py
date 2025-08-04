@@ -1,6 +1,7 @@
 import os
 
 from zstacklib.test.utils import env
+from zstacklib.utils import linux, uuidhelper
 
 if not os.path.isdir(env.SNAPSHOT_DIR):
     os.makedirs(env.SNAPSHOT_DIR)
@@ -59,3 +60,39 @@ merge_snapshot_cmd_body = {
         "qcow2Options": " -o cluster_size=2097152 "
     }
 }
+
+take_volumes_snapshots_default_cmd_body = {
+    "snapshotJobs": [],
+    "timeout": 10800,
+    "threadContext": {
+        "task-name": "org.zstack.header.volume.APICreateVolumeSnapshotGroupMsg",
+        "api": "4ac67d731c9f47cf9329d63b4f973e3a"
+    },
+    "threadContextStack": [],
+    "taskContext": {
+        "__messagetimeout__": str(10800 * 1000),
+        "__messagedeadline__": linux.get_current_timestamp() * 1000 + 10800 * 1000,
+    },
+    "kvmHostAddons": {
+        "qcow2Options": " -o cluster_size=2097152 "
+    }
+}
+
+
+def build_snapshot_job(vm_uuid, vol_uuid, previous_install_path, new_install_path, memory=False):
+    return {
+        "volumeUuid": vol_uuid,
+        "installPath": new_install_path,
+        "vmInstanceUuid": vm_uuid,
+        "previousInstallPath": previous_install_path,
+        "snapshotUuid": uuidhelper.uuid(),
+        "memory": memory,
+        "live": True,
+        "full": False,
+        "volume": {
+            "volumeUuid": vol_uuid,
+            "installPath": previous_install_path,
+            "deviceType": 'file',
+            "useVirtio": True
+        }
+    }
