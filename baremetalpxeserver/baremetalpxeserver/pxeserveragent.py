@@ -18,7 +18,7 @@ import zstacklib.utils.daemon as daemon
 import zstacklib.utils.http as http
 import zstacklib.utils.jsonobject as json_object
 from zstacklib.utils.bash import *
-from imagestore import ImageStoreClient
+from .imagestore import ImageStoreClient
 
 logger = log.get_logger(__name__)
 
@@ -186,18 +186,18 @@ class PxeServerAgent(object):
         bash_r("systemctl stop nginx")
 
     @staticmethod
-    def _get_mac_address(ifname):
+    def _get_mac_address(ifname: str) -> str:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        info = fcntl.ioctl(s.fileno(), 0x8927, struct.pack('256s', ifname[:15]))
-        return ':'.join(['%02x' % ord(char) for char in info[18:24]])
+        info = fcntl.ioctl(s.fileno(), 0x8927, struct.pack('256s', ifname[:15].encode()))
+        return ':'.join(['%02x' % char for char in info[18:24]])
 
     @staticmethod
-    def _get_ip_address(ifname):
+    def _get_ip_address(ifname: str) -> str:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         return socket.inet_ntoa(fcntl.ioctl(
             s.fileno(),
             0x8915,  # SIOCGIFADDR
-            struct.pack('256s', ifname[:15])
+            struct.pack('256s', ifname[:15].encode())
         )[20:24])
 
     @staticmethod
@@ -483,7 +483,7 @@ http {
         rsp = AgentResponse()
 
         # check preconfiguration md5sum
-        if hashlib.md5(cmd.preconfigurationContent).hexdigest() != cmd.preconfigurationMd5sum:
+        if hashlib.md5(cmd.preconfigurationContent.encode()).hexdigest() != cmd.preconfigurationMd5sum:
             raise PxeServerError("preconfiguration content not complete")
 
         self.uuid = cmd.uuid

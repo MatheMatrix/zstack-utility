@@ -5,7 +5,6 @@
 from zstacklib.utils import ipset
 
 from kvmagent import kvmagent
-from kvmagent.plugins import vm_plugin
 from zstacklib.utils import bash
 from zstacklib.utils import jsonobject
 from zstacklib.utils import http
@@ -16,8 +15,6 @@ from zstacklib.utils import linux
 from zstacklib.utils import iptables_v2 as iptables
 from zstacklib.utils import misc
 from zstacklib.utils import ip
-import os.path
-import re
 
 logger = log.get_logger(__name__)
 
@@ -43,7 +40,7 @@ class VmNicSecurityTO(object):
         ref_data = refs.to_dict()
         if not ref_data:
             return []
-        sorted_refs = sorted(ref_data.items(), key=lambda x: x[1])
+        sorted_refs = sorted(list(ref_data.items()), key=lambda x: x[1])
         return [item[0] for item in sorted_refs]
 
 
@@ -156,7 +153,7 @@ class ApplySecurityGroupRuleCmd(kvmagent.AgentCommand):
         rule_dict = cmd.ruleTOs.to_dict()
         rule6_dict = cmd.ip6RuleTOs.to_dict()
 
-        for uuid, rules in rule_dict.items():
+        for uuid, rules in list(rule_dict.items()):
             sg = self.get_security_group_by_uuid(uuid)
             if not sg:
                 sg = SecurityGroup(uuid)
@@ -167,7 +164,7 @@ class ApplySecurityGroupRuleCmd(kvmagent.AgentCommand):
             for rule in rules:
                 sg.add_rule(rule)
 
-        for uuid, ip6rules in rule6_dict.items():
+        for uuid, ip6rules in list(rule6_dict.items()):
             sg = self.get_security_group_by_uuid(uuid)
             if not sg:
                 sg = SecurityGroup(uuid)
@@ -648,8 +645,8 @@ class SecurityGroupPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     def _cleanup_stale_chains(self, ipt):
-        all_nics = linux.get_all_ethernet_device_names()
-        ipt.cleanup_unused_chain(self._cleanup_iptable_chains, data=all_nics)
+        # TODO implement this
+        pass
 
     @lock.file_lock('/run/xtables.lock')
     @kvmagent.replyerror

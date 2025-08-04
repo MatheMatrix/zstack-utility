@@ -27,7 +27,7 @@ def parse_amd_gpu_output(output):
     gpuinfos = []
     try:
         gpu_info_json = json.loads(output.strip())
-        for card_name, card_data in gpu_info_json.items():
+        for card_name, card_data in list(gpu_info_json.items()):
             gpuinfo = {}
             pci_device_address = card_data['PCI Bus'].lower()
             if len(pci_device_address.split(':')[0]) == 8:
@@ -48,7 +48,7 @@ def parse_hy_gpu_output(output):
     gpuinfos = []
     try:
         gpu_info_json = json.loads(output)
-        for card_name, card_data in gpu_info_json.items():
+        for card_name, card_data in list(gpu_info_json.items()):
             gpuinfo = {}
             pci_device_address = card_data['PCI Bus'].lower()
             if len(pci_device_address.split(':')[0]) == 8:

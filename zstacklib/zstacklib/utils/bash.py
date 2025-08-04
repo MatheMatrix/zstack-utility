@@ -8,7 +8,7 @@ import time
 
 from jinja2 import Template
 
-from progress_report import WatchThread_1
+from .progress_report import WatchThread_1
 from zstacklib.utils import linux
 from zstacklib.utils import log
 from zstacklib.utils import shell
@@ -59,9 +59,11 @@ def bash_roe(cmd, errorout=False, ret_code = 0, pipe_fail=False):
     p = shell.get_process("/bin/bash", pipe=True)
     if pipe_fail:
         cmd = 'set -o pipefail; %s' % cmd
-    o, e = p.communicate(cmd)
+    o, e = p.communicate(cmd.encode())
     r = p.returncode
 
+    o = o.decode() if o else ''
+    e = e.decode() if e else ''
     __BASH_DEBUG_INFO__ = ctx.get('__BASH_DEBUG_INFO__')
     if __BASH_DEBUG_INFO__ is not None:
         __BASH_DEBUG_INFO__.append({
@@ -135,9 +137,9 @@ def call_with_screen_output(cmd, ret_code=0, raise_error=True, work_dir=None):
     # type: (str, typing.Union[int, list], bool, str) -> None
 
     if work_dir is None:
-        print('[BASH]: %s' % cmd)
+        print(('[BASH]: %s' % cmd))
     else:
-        print('[BASH (%s) ]: %s' % (work_dir, cmd))
+        print(('[BASH (%s) ]: %s' % (work_dir, cmd)))
 
     p = subprocess.Popen(cmd, shell=True, stdout=sys.stdout,
                          stdin=subprocess.PIPE, stderr=sys.stderr,

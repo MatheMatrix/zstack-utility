@@ -3,7 +3,6 @@
 
 import struct
 import socket
-import subprocess
 import os
 import netaddr
 import time
