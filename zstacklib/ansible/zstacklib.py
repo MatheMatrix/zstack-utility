@@ -2263,7 +2263,8 @@ def install_release_on_host(is_rpm, host_info, host_post_info):
             'h76c': 'h7',
             'h79c': 'h7',
             'h84r': 'h8',
-            'h2203sp1o': 'h2203sp1'}
+            'h2203sp1o': 'h2203sp1',
+            'oe2403sp1': 'oe2403sp1'}
         release_name = release_name_mapping.get(releasever, 'el7')
         pkg_name = 'zstack-release-{0}-1.{1}.zstack.noarch.rpm'.format(releasever, release_name)
         src_pkg = '/opt/zstack-dvd/{0}/{1}/Packages/{2}'.format(host_info.host_arch, releasever, pkg_name)
