@@ -51,6 +51,7 @@ from Crypto.Util.py3compat import *
 from hashlib import md5
 from string import Template
 from timeline import TaskTimeline, __doc__ as timeline_doc
+from collections import OrderedDict
 
 mysql_db_config_script='''
 #!/bin/bash
@@ -11478,10 +11479,38 @@ WantedBy=multi-user.target
             except Exception as e:
                 warn('[zsha2] Failed to get VIP configuration: %s' % str(e))
 
-        data = {}
+        data = OrderedDict()
+
+        def ordered_load(stream, Loader=yaml.SafeLoader):
+            class OrderedLoader(Loader):
+                pass
+
+            def construct_mapping(loader, node):
+                loader.flatten_mapping(node)
+                return OrderedDict(loader.construct_pairs(node))
+
+            OrderedLoader.add_constructor(
+                yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+                construct_mapping)
+
+            return yaml.load(stream, OrderedLoader)
+
+        def ordered_dump(data, stream=None, Dumper=yaml.SafeDumper, **kwds):
+            class OrderedDumper(Dumper):
+                pass
+
+            def _dict_representer(dumper, data):
+                return dumper.represent_mapping(
+                    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+                    data.items())
+
+            OrderedDumper.add_representer(OrderedDict, _dict_representer)
+
+            return yaml.dump(data, stream, OrderedDumper, **kwds)
+
         try:
             with open(self.default_morph_config, 'r') as f:
-                data = yaml.safe_load(f)
+                data = ordered_load(f)
         except IOError as e:
             error('Failed to load morph application.yml: %s' % str(e))
         except yaml.YAMLError as exc:
@@ -11501,11 +11530,11 @@ WantedBy=multi-user.target
         if 'extension' in data:
             if 'defaultMorphPath' in data['extension']:
                 data['extension']['defaultMorphPath'] = self.default_morph_path
-                info('morph application.yml update defaultMorphPath %s' %  self.default_morph_path)
+                info('morph application.yml update defaultMorphPath %s' % self.default_morph_path)
 
         try:
             with open(self.default_morph_config, 'w') as f:
-                yaml.dump(data, f, default_flow_style=False)
+                ordered_dump(data, f, default_flow_style=False)
             info('morph application.yml write success')
         except IOError:
             error('morph application.yml write failed')
@@ -11517,7 +11546,8 @@ WantedBy=multi-user.target
         except IOError:
             error('morph morph.service write failed')
 
-        warn('**** IMPORTANT: Please verify application.yml configuration after morph service initialization. Check database connection, IP settings, and service dependencies. ***')
+        warn(
+            '**** IMPORTANT: Please verify application.yml configuration after morph service initialization. Check database connection, IP settings, and service dependencies. ***')
 
         shell_no_pipe("systemctl daemon-reload")
         shell_no_pipe("systemctl enable %s" % self.service_name())
