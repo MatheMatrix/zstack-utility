@@ -2547,7 +2547,7 @@ install_morph_server(){
   trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
   show_spinner is_extract_morph_tar
   show_spinner prepare_morph_user_and_db
-  
+
   systemctl is-enabled morph &>/dev/null && systemctl restart morph || true
 }
 
