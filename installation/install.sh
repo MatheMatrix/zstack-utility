@@ -2553,10 +2553,19 @@ is_extract_morph_tar(){
   echo_subtitle "Extract morph tar"
   cp /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/morph_all.tar.gz /var/lib/zstack/
   mkdir -p /var/lib/zstack/morph
+
+  \cp -f /var/lib/zstack/morph/morph.jar /var/lib/zstack/morph/morph.jar.back 2>/dev/null
+  \cp -f /var/lib/zstack/morph/application.yml /var/lib/zstack/morph/application.yml.back 2>/dev/null
+
   tar -zxvf /var/lib/zstack/morph_all.tar.gz -C /var/lib/zstack/morph/ > /dev/null 2>&1
   if [ $? -ne 0 ]; then
       fail "Extracting the morph_all.tar.gz package failed."
   fi
+
+  if [ -f /var/lib/zstack/morph/application.yml.back ]; then
+    \cp -f /var/lib/zstack/morph/application.yml.back /var/lib/zstack/morph/application.yml
+  fi
+
   rm -f /var/lib/zstack/morph_all.tar.gz
   [ $? -eq 0 ] && pass
 }
