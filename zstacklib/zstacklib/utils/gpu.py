@@ -253,3 +253,11 @@ def is_valid_video_controller(device):
     invalid_keywords = {"iBMC"}
     return all(keyword not in device for keyword in invalid_keywords)
 
+
+def is_valid_co_processor(description, vendor_id):
+    description_keywords = {"Haiguang"}
+    valid_vendor_ids = {"1d94"}
+
+    return (any(keyword in description for keyword in description_keywords) or
+            vendor_id in valid_vendor_ids)
+
