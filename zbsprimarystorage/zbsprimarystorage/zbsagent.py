@@ -106,7 +106,7 @@ class GetCapacityRsp(AgentResponse):
 class GetFactsRsp(AgentResponse):
     def __init__(self):
         super(GetFactsRsp, self).__init__()
-        self.mdsExternalAddr = None
+        self.version = None
 
 
 class LogicalPoolInfo:
@@ -171,6 +171,7 @@ def replyerror(func):
 class ZbsAgent(plugin.TaskManager):
     ECHO_PATH = "/zbs/primarystorage/echo"
     PING_PATH = "/zbs/primarystorage/ping"
+    GET_FACTS_PATH = "/zbs/primarystorage/facts"
     SYNC_METADATA_PATH = "/zbs/primarystorage/metadata/sync"
     DEPLOY_CLIENT_PATH = "/zbs/primarystorage/client/deploy"
     GET_CAPACITY_PATH = "/zbs/primarystorage/capacity"
@@ -194,6 +195,7 @@ class ZbsAgent(plugin.TaskManager):
         super(ZbsAgent, self).__init__()
         self.http_server.register_sync_uri(self.ECHO_PATH, self.echo)
         self.http_server.register_async_uri(self.PING_PATH, self.ping)
+        self.http_server.register_async_uri(self.GET_FACTS_PATH, self.get_facts)
         self.http_server.register_async_uri(self.SYNC_METADATA_PATH, self.sync_metadata)
         self.http_server.register_async_uri(self.DEPLOY_CLIENT_PATH, self.deploy_client)
         self.http_server.register_async_uri(self.GET_CAPACITY_PATH, self.get_capacity)
@@ -209,6 +211,17 @@ class ZbsAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.CREATE_SNAPSHOT_PATH, self.create_snapshot)
         self.http_server.register_async_uri(self.DELETE_SNAPSHOT_PATH, self.delete_snapshot)
         self.http_server.register_async_uri(self.ROLLBACK_SNAPSHOT_PATH, self.rollback_snapshot)
+
+    @replyerror
+    def get_facts(self, req):
+        rsp = GetFactsRsp()
+
+        try:
+            rsp.version = zbsutils.get_version()
+        except Exception as e:
+            raise Exception('failed to get version, error[%s]' % str(e))
+
+        return jsonobject.dumps(rsp)
 
     @replyerror
     def sync_metadata(self, req):
@@ -266,7 +279,7 @@ class ZbsAgent(plugin.TaskManager):
 
         _, logical_pool, volume, _ = zbsutils.parse_cbd_path(cmd.path)
 
-        o = zbsutils.expand_volume(logical_pool, volume, cmd.size)
+        o = zbsutils.expand_volume(logical_pool, volume, cmd.size, cmd.unit)
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
             raise Exception('failed to expand volume[%s], error[%s]' % (volume, ret.error.message))
@@ -544,7 +557,7 @@ class ZbsAgent(plugin.TaskManager):
             rsp.installPath = volume_path
             return jsonobject.dumps(rsp)
 
-        o = zbsutils.create_volume(cmd.logicalPool, cmd.volume, cmd.size)
+        o = zbsutils.create_volume(cmd.logicalPool, cmd.volume, cmd.size, cmd.unit)
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
             raise Exception('failed to create volume[%s], error[%s]' % (cmd.volume, ret.error.message))

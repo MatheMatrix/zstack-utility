@@ -39,6 +39,10 @@ def parse_cbd_path(path):
     return physical_pool, logical_pool, volume, snapshot
 
 
+def get_version():
+    return shell.call("%s --version | awk '{print $2}'" % ZBS_BIN_PATH).strip()
+
+
 def deploy_client(ip, port, password):
     return shell.call("%s client deploy --host %s --port %s -p %s --silent" % (ZBSADM_BIN_PATH, ip, port, linux.shellquote(password)))
 
@@ -85,8 +89,8 @@ def get_physical_pool_name(logical_pool):
     return physical_pool_name
 
 
-def create_volume(logical_pool, volume, size):
-    return shell.call("%s create file --path %s/%s --size %s --stripecount %d --stripeunit %s --user %s --format json" % (ZBS_BIN_PATH, logical_pool, volume, size, STRIPE_VOLUME_COUNT, STRIPE_VOLUME_UINT, ZBS_USER_NAME))
+def create_volume(logical_pool, volume, size, unit):
+    return shell.call("%s create file --path %s/%s --size %s%s --stripecount %d --stripeunit %s --user %s --format json" % (ZBS_BIN_PATH, logical_pool, volume, size, unit, STRIPE_VOLUME_COUNT, STRIPE_VOLUME_UINT, ZBS_USER_NAME))
 
 
 @linux.retry(times=30, sleep_time=5)
@@ -110,8 +114,8 @@ def clone_volume(logical_pool, volume, snapshot, dst_volume):
     return shell.call("%s clone --snappath %s/%s@%s --dstpath %s/%s --user %s --format json" % (ZBS_BIN_PATH, logical_pool, volume, snapshot, logical_pool, dst_volume, ZBS_USER_NAME))
 
 
-def expand_volume(logical_pool, volume, size):
-    return shell.call("%s update file --path %s/%s --size %s --user %s --format json" % (ZBS_BIN_PATH, logical_pool, volume, size, ZBS_USER_NAME))
+def expand_volume(logical_pool, volume, size, unit):
+    return shell.call("%s update file --path %s/%s --size %s%s --user %s --format json" % (ZBS_BIN_PATH, logical_pool, volume, size, unit, ZBS_USER_NAME))
 
 
 def flatten_volume(logical_pool, volume):
