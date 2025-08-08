@@ -233,3 +233,11 @@ def reload_hygon_gpu_driver_cmd():
 def is_valid_video_controller(device):
     invalid_keywords = {"iBMC"}
     return all(keyword not in device for keyword in invalid_keywords)
+
+
+def is_valid_co_processor(description, vendor_id):
+    description_keywords = {"Haiguang"}
+    valid_vendor_ids = {"1d94"}
+
+    return (any(keyword.lower() in description.lower() for keyword in description_keywords) or
+            vendor_id.lower() in valid_vendor_ids)
