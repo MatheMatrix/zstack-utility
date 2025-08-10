@@ -4909,7 +4909,6 @@ class Vm(object):
             e(tune, 'period', MAX_PERIOD)
             quota_value = str(cmd.vmCpuQuota) if cmd.vmCpuQuota else MAX_PERIOD
             e(tune, 'quota', quota_value)
-
             if use_numa:
                 if cmd.addons and cmd.addons.hasattr("ioThreadPins") and cmd.addons.ioThreadPins:
                     for pin in cmd.addons.ioThreadPins:
@@ -5057,14 +5056,11 @@ class Vm(object):
                         distances = e(cell, 'distances')
                         for node_index, distance in enumerate(numa_node.distance):
                             e(distances, 'sibling', attrib={'id': str(node_index), 'value': str(distance)})
-
             if cmd.addons.cpuPinning:
                 for rule in cmd.addons.cpuPinning:
                     e(tune, 'vcpupin', attrib={'vcpu': str(rule.vCpu), 'cpuset': rule.pCpuSet})
-
             if cmd.addons.emulatorPinning:
                 e(tune, 'emulatorpin', attrib={'cpuset': str(cmd.addons.emulatorPinning)})
-
             def make_cpu_features():
                 if cmd.nestedVirtualization == 'none':
                     return
@@ -5091,9 +5087,28 @@ class Vm(object):
                         else:
                             model = e(cpu, 'model', attrib={'vendor_id': cmd.vmCpuVendorId})
 
-            make_cpu_features()
+            def update_cpu_model_value():
+                if cmd.memorySnapshotPath is None or cmd.vmXml is None or cmd.nestedVirtualization != 'host-model':
+                    return
 
+                for children in elements['root'].getchildren():
+                    if children.tag == 'cpu':
+                        logger.debug('5------------------------------------------')
+                        logger.debug('5------------------------------------------')
+                        logger.debug('5------------------------------------------')
+                        logger.debug("before update cpu model value: {}".format(etree.tostring(children)))
+                        children.set('check', 'full')
+                        children.set('mode', 'custom')
+                        logger.debug("after update cpu model value: {}".format(etree.tostring(children)))
+
+            make_cpu_features()
             make_cpu_vendor()
+            update_cpu_model_value()
+
+            # for children in elements['root'].getchildren():
+            #     if children.tag == 'cpu':
+            #         logger.debug('cpu------------------------------------------')
+            #         logger.debug(etree.tostring(children))
 
         def make_memory():
             root = elements['root']
