@@ -5091,9 +5091,23 @@ class Vm(object):
                         else:
                             model = e(cpu, 'model', attrib={'vendor_id': cmd.vmCpuVendorId})
 
+            def update_cpu_model_value():
+                if cmd.memorySnapshotPath is None or cmd.vmXml is None or cmd.nestedVirtualization != 'host-model':
+                    return
+
+                for children in elements['root'].getchildren():
+                    if children.tag == 'cpu':
+                        logger.debug('5------------------------------------------')
+                        logger.debug(etree.tostring(children))
+                        children.set('mode', 'custom')
+                        children.set('check', 'full')
+                        logger.debug(etree.tostring(children))
+
             make_cpu_features()
 
             make_cpu_vendor()
+
+            update_cpu_model_value()
 
         def make_memory():
             root = elements['root']
