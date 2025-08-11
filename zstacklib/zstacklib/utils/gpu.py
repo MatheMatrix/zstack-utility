@@ -1,6 +1,7 @@
 import os
 
 from zstacklib.utils import log, linux
+from zstacklib.utils.bash import *
 import json
 
 logger = log.get_logger(__name__)
@@ -241,3 +242,18 @@ def is_valid_co_processor(description, vendor_id):
 
     return (any(keyword.lower() in description.lower() for keyword in description_keywords) or
             vendor_id.lower() in valid_vendor_ids)
+
+
+def get_vastai_type():
+    r, o, e = bash_roe("lspci | grep Vastai")
+    first_line = o.split('\n')[0]
+    if "SG100" in first_line:
+        return "3D"
+    elif "SV100" in first_line:
+        return "AI"
+    return None
+
+
+def is_valid_processing_accelerator(device):
+    valid_keywords = {"Device", "SV100"}
+    return any(keyword in device for keyword in valid_keywords)
