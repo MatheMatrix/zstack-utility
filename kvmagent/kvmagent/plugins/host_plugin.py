@@ -2565,6 +2565,8 @@ done
                 elif title in ['Class', 'Vendor', 'Device', 'SVendor', 'SDevice', 'Rev']:
                     if '[' in content and ']' in content:
                         ids[title] = content.split('[')[-1].strip(']')
+                    else:
+                        ids[title] = content.strip()
             if slot:
                 device_ids[slot] = ids
 
