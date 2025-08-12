@@ -133,8 +133,9 @@ def rollback_snapshot(logical_pool_name, lun_name, snapshot_name):
 
 
 def cbd_to_nbd(desc, port, install_path):
-    logger.debug("qemu-nbd -D %s -f raw -p %d --fork %s_%s_:%s" % (desc, port, install_path, DEFAULT_ZBS_USER_NAME, DEFAULT_ZBS_CONF_PATH))
-    os.system("qemu-nbd -D %s -f raw -p %d --fork %s_%s_:%s" % (desc, port, install_path, DEFAULT_ZBS_USER_NAME, DEFAULT_ZBS_CONF_PATH))
+    cmd = "qemu-nbd -D %s -f raw -p %d --fork %s_%s_:%s" % (desc, port, install_path, DEFAULT_ZBS_USER_NAME, DEFAULT_ZBS_CONF_PATH)
+    logger.debug(cmd)
+    os.system(cmd)
 
 
 def copy(src_path, dst_path, is_snapshot=False):
