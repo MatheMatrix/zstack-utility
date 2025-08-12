@@ -3580,8 +3580,8 @@ class Vm(object):
         if volume.deviceType == 'cbd':
             gb_in_bytes = 1024 * 1024 * 1024
             if size % gb_in_bytes != 0:
-                adjusted_size = math.ceil(float(size) / gb_in_bytes) * gb_in_bytes
-                return int(adjusted_size)
+                adjusted_size = math.ceil(size / gb_in_bytes) * gb_in_bytes
+                return adjusted_size
         return size
 
     def _is_ft_vm(self):
