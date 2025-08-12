@@ -28,7 +28,6 @@ from signal import SIGKILL
 import syslog
 import threading
 import warnings
-import math
 
 import libvirt
 import xml.dom.minidom as minidom
@@ -3618,14 +3617,6 @@ class Vm(object):
         logger.debug('%s is not found on the vm[uuid:%s], xml: %s' % (volume.installPath, self.uuid, self.domain_xml))
         raise kvmagent.KvmError('unable to find volume[installPath:%s] on vm[uuid:%s]' % (volume.installPath, self.uuid))
 
-    def _adjust_size_for_device_type(self, volume, size):
-        if volume.deviceType == 'cbd':
-            gb_in_bytes = 1024 * 1024 * 1024
-            if size % gb_in_bytes != 0:
-                adjusted_size = math.ceil(size / gb_in_bytes) * gb_in_bytes
-                return adjusted_size
-        return size
-
     def _is_ft_vm(self):
         return any(disk.type_ == "quorum" for disk in self.domain_xmlobject.devices.get_child_node_as_list('disk'))
 
@@ -3633,7 +3624,6 @@ class Vm(object):
     def resize_volume(self, volume, size):
         device_id = volume.deviceId
         target_disk, disk_name = self._get_target_disk(volume)
-        size = self._adjust_size_for_device_type(volume, size)
 
         r, o, e = bash.bash_roe("virsh blockresize {} {} --size {}B".format(self.uuid, disk_name, size))
 
