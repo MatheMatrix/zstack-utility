@@ -6757,6 +6757,15 @@ def get_block_file_content_by_disk_name(domain_id, disk_name):
     return block[0]['inserted']['file']
 
 
+def get_all_cdrom_qdev(domain_id):
+    all_blocks = get_vm_blocks(domain_id)
+    qdevs = []
+    for b in all_blocks:
+        if b.get('tray_open') is not None and b.get('qdev') is not None:
+            qdevs.append(b.get('qdev'))
+    return qdevs
+
+
 def check_install_path_by_qmp(domain_id, disk_name, path):
     file_content = get_block_file_content_by_disk_name(domain_id, disk_name)
     logger.info("get %s file content from qmp: %s" % (disk_name, file_content))
@@ -7026,6 +7035,13 @@ class VmPlugin(kvmagent.KvmAgent):
 
                 try:
                     vm.restore(snapshot_path)
+
+                    qdevs = get_all_cdrom_qdev(cmd.vmUuid)
+                    logger.info("open tray for cdrom qdevs: %s" % qdevs)
+                    for qdev in qdevs:
+                        _, _, err = execute_qmp_command(cmd.vmUuid, '{ "execute": "blockdev-open-tray", "arguments":{"id": "%s"}}' % qdev)
+                        if err:
+                            logger.warning("failed to open tray for cdrom %s, error: %s" % (qdev, err))
                 finally:
                     if mount_path:
                         self.umount_snapshot_path(mount_path)
