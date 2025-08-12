@@ -4222,6 +4222,38 @@ class Vm(object):
             raise Exception("vm[uuid:%s] seems hang, its process[pid:%s] up-time is not increasing after %s seconds" %
                             (self.uuid, vm_pid, 60))
 
+    '''
+    virsh qemu-monitor-command vmUuid --pretty '{"execute":"query-block"}'
+        {
+          "io-status": "ok",
+          "device": "",
+          "locked": false,
+          "removable": true,
+          "qdev": "ide0-0-1",
+          "tray_open": false,
+          "type": "unknown"
+        }
+    '''
+    def open_cdrom_tray(self, vm_uuid):
+        def get_all_cdrom_qdev(domain_id):
+            all_blocks = get_vm_blocks(domain_id)
+            qdevs = []
+            for b in all_blocks:
+                if b.get('tray_open') is not None and b.get('qdev') is not None:
+                    qdevs.append(b.get('qdev'))
+            return qdevs
+
+        try:
+            qdevs = get_all_cdrom_qdev(vm_uuid)
+        except Exception as e:
+            logger.warn("skip opening cdrom tray: query-block failed on vm %s, %s" % (vm_uuid, str(e)))
+            return
+        logger.info("open tray for cdrom devices: %s" % qdevs)
+        for qdev in qdevs:
+            r, _, err = execute_qmp_command(vm_uuid, '{ "execute": "blockdev-open-tray", "arguments":{"id": "%s"}}' % qdev)
+            if r != 0 or err:
+                logger.warning("failed to open tray for cdrom %s, error: %s" % (qdev, err))
+
     def attach_iso(self, cmd):
         iso = cmd.iso
 
@@ -4265,6 +4297,7 @@ class Vm(object):
 
         logger.debug('attaching ISO to the vm[uuid:%s]:\n%s' % (self.uuid, xml))
 
+        self.open_cdrom_tray(cmd.vmUuid)
         try:
             self.domain.updateDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
         except libvirt.libvirtError as ex:
@@ -4323,6 +4356,7 @@ class Vm(object):
 
         logger.debug('detaching ISO from the vm[uuid:%s]:\n%s' % (self.uuid, xml))
 
+        self.open_cdrom_tray(cmd.vmUuid)
         try:
             self.domain.updateDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE | libvirt.VIR_DOMAIN_DEVICE_MODIFY_FORCE)
         except libvirt.libvirtError as ex:
