@@ -1357,6 +1357,18 @@ def find_domain_cdrom_address(domain_xml, target_dev):
         return d.get_child_node('address')
     return None
 
+def find_domain_cdrom_alias_name(domain_xml, target_dev):
+    domain_xmlobject = xmlobject.loads(domain_xml)
+    disks = domain_xmlobject.devices.get_children_nodes().get('disk', None)
+    if disks:
+        for d in disks:
+            if d.device_ != 'cdrom':
+                continue
+            if d.get_child_node('target').dev_ != target_dev:
+                continue
+            return d.get_child_node('alias').name_
+    return None
+
 def find_domain_first_boot_device(domain_xml):
     domain_xmlobject = xmlobject.loads(domain_xml)
     disks = domain_xmlobject.devices.get_child_node_as_list('disk')
@@ -4222,6 +4234,44 @@ class Vm(object):
             raise Exception("vm[uuid:%s] seems hang, its process[pid:%s] up-time is not increasing after %s seconds" %
                             (self.uuid, vm_pid, 60))
 
+    '''
+    virsh qemu-monitor-command vmUuid --pretty '{"execute":"query-block"}'
+        {
+          "io-status": "ok",
+          "device": "",
+          "locked": false,
+          "removable": true,
+          "qdev": "ide0-0-1",
+          "tray_open": false,
+          "type": "unknown"
+        }
+    '''
+    def open_cdrom_tray(self, vm_uuid, alias_name):
+        def get_all_cdrom_qdev(domain_id):
+            all_blocks = get_vm_blocks(domain_id)
+            cdrom_qdevs = []
+            for b in all_blocks:
+                if b.get('tray_open') is not None and b.get('qdev') is not None:
+                    cdrom_qdevs.append(b.get('qdev'))
+            return cdrom_qdevs
+
+        if alias_name is None:
+            logger.warn("skip opening cdrom tray: qdev is None on vm %s" % vm_uuid)
+            return
+
+        try:
+            qdevs = get_all_cdrom_qdev(vm_uuid)
+        except Exception as e:
+            logger.warn("skip opening cdrom tray: query-block failed on vm %s, %s" % (vm_uuid, str(e)))
+            return
+
+        if alias_name not in qdevs:
+            logger.warn("skip opening cdrom tray: qdev %s not found on vm %s" % (alias_name, vm_uuid))
+
+        r, _, err = execute_qmp_command(vm_uuid, '{ "execute": "blockdev-open-tray", "arguments":{"id": "%s"}}' % alias_name)
+        if r != 0 or err:
+            logger.warning("failed to open tray for cdrom %s, error: %s" % (alias_name, err))
+
     def attach_iso(self, cmd):
         iso = cmd.iso
 
@@ -4265,6 +4315,7 @@ class Vm(object):
 
         logger.debug('attaching ISO to the vm[uuid:%s]:\n%s' % (self.uuid, xml))
 
+        self.open_cdrom_tray(cmd.vmUuid, find_domain_cdrom_alias_name(self.domain.XMLDesc(0), dev))
         try:
             self.domain.updateDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
         except libvirt.libvirtError as ex:
@@ -4323,6 +4374,7 @@ class Vm(object):
 
         logger.debug('detaching ISO from the vm[uuid:%s]:\n%s' % (self.uuid, xml))
 
+        self.open_cdrom_tray(cmd.vmUuid, find_domain_cdrom_alias_name(self.domain.XMLDesc(0), dev))
         try:
             self.domain.updateDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE | libvirt.VIR_DOMAIN_DEVICE_MODIFY_FORCE)
         except libvirt.libvirtError as ex:
