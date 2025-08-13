@@ -113,6 +113,7 @@ class GetCapacityRsp(AgentResponse):
 class GetFactsRsp(AgentResponse):
     def __init__(self):
         super(GetFactsRsp, self).__init__()
+        self.uuid = None
         self.version = None
 
 
@@ -230,6 +231,8 @@ class ZbsAgent(plugin.TaskManager):
         except Exception as e:
             raise Exception('failed to get version, error[%s]' % str(e))
 
+        rsp.uuid = zbsutils.get_cluster_uuid(rsp.version)
+
         return jsonobject.dumps(rsp)
 
     @replyerror
@@ -261,7 +264,12 @@ class ZbsAgent(plugin.TaskManager):
 
     @replyerror
     def ping(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
+
+        current_cluster_uuid = zbsutils.get_cluster_uuid(cmd.clusterInfo.version)
+        if current_cluster_uuid != cmd.clusterInfo.uuid:
+            raise Exception('cluster uuid does not match, current cluster uuid[%s], old cluster uuid[%s]' % (current_cluster_uuid, cmd.clusterInfo.uuid))
 
         o = zbsutils.query_mds_status_info()
         r = jsonobject.loads(o)
@@ -276,7 +284,7 @@ class ZbsAgent(plugin.TaskManager):
 
         if not found:
             rsp.success = False
-            rsp.error = 'cannot found mds leader.'
+            rsp.error = 'cannot found mds leader'
             return jsonobject.dumps(rsp)
 
         return jsonobject.dumps(rsp)
@@ -637,11 +645,11 @@ class ZbsAgent(plugin.TaskManager):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
 
-        o = zbsutils.deploy_client(cmd.ip, cmd.port, cmd.password)
+        o = zbsutils.deploy_client(cmd.ip, cmd.port, cmd.username, cmd.password)
         r = jsonobject.loads(o)
         if r.error.code != 0:
             rsp.success = False
-            rsp.error = 'failed to deploy client, error[%s].' % r.error.message
+            rsp.error = 'failed to deploy client, error[%s]' % r.error.message
 
         return jsonobject.dumps(rsp)
 
