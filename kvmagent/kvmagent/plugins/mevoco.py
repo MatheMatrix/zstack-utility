@@ -235,16 +235,19 @@ class DhcpEnv(object):
                 bash_errorout(
                     '%s -t mangle -A POSTROUTING -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill' % IPTABLES_CMD)
 
-        def _add_ebtables_rule6(rule):
+        def _add_ebtables_rule6(rule_search, rule_add=None):
             ret = bash_r(
-                EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '{{rule}}' > /dev/null")
+                EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '{{rule_search}}' > /dev/null")
             if ret != 0:
+                if rule_add is None:
+                    rule_add = rule_search
                 bash_errorout(
-                    EBTABLES_CMD + ' -I {{CHAIN_NAME}} {{rule}}')
+                    EBTABLES_CMD + ' -I {{CHAIN_NAME}} {{rule_add}}')
 
         def _prepare_dhcp6_iptables(dualStack=True):
             serverip = ip.Ipv6Address(DHCP6_IP)
-            ns_multicast_address = serverip.get_solicited_node_multicast_address() + "/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+            ns_multicast_address = serverip.get_solicited_node_multicast_address()
+            ns_multicast_address_mask = ns_multicast_address + "/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
 
             if not dualStack:
                 ret = bash_r(EBTABLES_CMD + ' -L {{CHAIN_NAME}} > /dev/null 2>&1')
@@ -258,16 +261,20 @@ class DhcpEnv(object):
                     bash_errorout(EBTABLES_CMD + ' -A FORWARD -j {{CHAIN_NAME}}')
 
             ns_rule_o = "-p IPv6 -o {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-solicitation -j DROP"
-            _add_ebtables_rule6(ns_rule_o)
+            ns_rule_add = "-p IPv6 -o {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address_mask}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-solicitation -j DROP"
+            _add_ebtables_rule6(ns_rule_o, ns_rule_add)
 
-            na_rule_o = "-p IPv6 -o {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-advertisement -j DROP"
-            _add_ebtables_rule6(na_rule_o)
+            ns_rule_o = "-p IPv6 -o {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-advertisement -j DROP"
+            ns_rule_add = "-p IPv6 -o {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address_mask}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-advertisement -j DROP"
+            _add_ebtables_rule6(ns_rule_o, ns_rule_add)
 
             ns_rule_i = "-p IPv6 -i {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-solicitation -j DROP"
-            _add_ebtables_rule6(ns_rule_i)
+            ns_rule_add = "-p IPv6 -i {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address_mask}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-solicitation -j DROP"
+            _add_ebtables_rule6(ns_rule_i, ns_rule_add)
 
-            na_rule_i = "-p IPv6 -i {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-advertisement -j DROP"
-            _add_ebtables_rule6(na_rule_i)
+            ns_rule_i = "-p IPv6 -i {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-advertisement -j DROP"
+            ns_rule_add = "-p IPv6 -i {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address_mask}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-advertisement -j DROP"
+            _add_ebtables_rule6(ns_rule_i, ns_rule_add)
 
             # prevent ns for dhcp server from upstream network
             dhcpv6_rule_o = "-p IPv6 -o {{BR_PHY_DEV}} --ip6-proto udp --ip6-sport 546:547 -j DROP"
