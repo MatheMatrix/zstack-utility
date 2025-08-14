@@ -243,6 +243,7 @@ tftp-root={TFTPBOOT_PATH}
 log-facility={DNSMASQ_LOG_PATH}
 dhcp-range={DHCP_RANGE}
 dhcp-option=1,{DHCP_NETMASK}
+dhcp-option=3
 dhcp-hostsdir={DHCP_HOSTS_DIR}
 """.format(DHCP_INTERFACE=cmd.dhcpInterface,
            DHCP_RANGE="%s,%s,%s" % (cmd.dhcpRangeBegin, cmd.dhcpRangeEnd, cmd.dhcpRangeNetmask),
@@ -509,7 +510,7 @@ http {
         elif cmd.preconfigurationType == 'autoyast':
             append = 'install=ftp://{PXESERVER_DHCP_NIC_IP}/{IMAGEUUID}/ autoyast=ftp://{PXESERVER_DHCP_NIC_IP}/ks/{KS_CFG_NAME} vnc=1 vncpassword=password'
         elif cmd.preconfigurationType == 'autoinstall':
-            append = 'ip=dhcp url=ftp://{PXESERVER_DHCP_NIC_IP}/{IMAGEUUID} autoinstall ds=nocloud-net\;s=https//{PXESERVER_DHCP_NIC_IP}/ks/{KS_CFG_NAME}/ ---'
+            append = 'ip=dhcp url=ftp://{PXESERVER_DHCP_NIC_IP}/{IMAGEUUID} autoinstall ds=nocloud-net\;s=https//{PXESERVER_DHCP_NIC_IP}:7773/ks/{KS_CFG_NAME}/ ---'
         append = append.format(PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip,
                                IMAGEUUID=cmd.imageUuid,
                                KS_CFG_NAME=ks_cfg_name)
