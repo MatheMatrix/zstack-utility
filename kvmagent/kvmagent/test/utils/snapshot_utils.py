@@ -66,12 +66,12 @@ take_volumes_snapshots_default_cmd_body = {
     "timeout": 10800,
     "threadContext": {
         "task-name": "org.zstack.header.volume.APICreateVolumeSnapshotGroupMsg",
-        "api": "4ac67d731c9f47cf9329d63b4f973e3a"
+        "api": uuidhelper.uuid()
     },
     "threadContextStack": [],
     "taskContext": {
         "__messagetimeout__": str(10800 * 1000),
-        "__messagedeadline__": linux.get_current_timestamp() * 1000 + 10800 * 1000,
+        "__messagedeadline__": str(linux.get_current_timestamp() * 1000 + 10800 * 1000),
     },
     "kvmHostAddons": {
         "qcow2Options": " -o cluster_size=2097152 "

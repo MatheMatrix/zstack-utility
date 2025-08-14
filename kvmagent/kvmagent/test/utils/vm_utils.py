@@ -567,7 +567,7 @@ def take_snapshot(vm_uuid, vol_uuid, vol_path, snapshot_path):
 
 @misc.return_jsonobject()
 def take_volumes_snapshots(snapshot_jobs):
-    body = snapshot_utils.take_volumes_snapshots_default_cmd_body
+    body = copy.deepcopy(snapshot_utils.take_volumes_snapshots_default_cmd_body)
     body["snapshotJobs"] = snapshot_jobs
     cmd = jsonobject.from_dict(body)
     return VM_PLUGIN.take_volumes_snapshots(misc.make_a_request(cmd.to_dict()))

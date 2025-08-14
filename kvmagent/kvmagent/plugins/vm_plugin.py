@@ -5967,15 +5967,15 @@ class Vm(object):
                 Vm.set_volume_serial_id(v.volumeUuid, vol)
                 volume_native_aio(v.volumeUuid, vol)
                 if cmd.memorySnapshotPath is not None and cmd.vmXml is not None:
-                    update_target_dev(vol)
+                    update_target_dev(vol, v)
                 return vol
 
-            def update_target_dev(vol):
+            def update_target_dev(vol, v):
                 '''
                 update the 'dev' attribute of a volume's target element
                 using disk information from the VM XML with matching serial (volumeUuid)
                 '''
-                disks_in_xml = xmlobject.loads(cmd.vmXml).devices.disk
+                disks_in_xml = xmlobject.loads(cmd.vmXml).devices.get_child_node_as_list('disk')
                 for disk in disks_in_xml:
                     if v.volumeUuid != disk.get('serial'):
                         continue
@@ -6540,7 +6540,7 @@ class Vm(object):
             }
             '''
 
-            xml_disks = xmlobject.loads(cmd.vmXml).devices.disk
+            xml_disks = xmlobject.loads(cmd.vmXml).devices.get_child_node_as_list('disk')
 
             # STEP 1: Collect disk information from the generated XML
             children = elements['devices'].getchildren()
@@ -6579,6 +6579,14 @@ class Vm(object):
             # Here we use the existing disk elements from dev_to_element
             ordered_disk_elements = [dev_to_element[dev] for dev in desired_dev_order]
 
+            # ElementTree.py
+            # def getchildren(self):
+            #     return self._children
+            # IMPORTANT: This modification DOES change the actual XML tree structure because:
+            # 1. The getchildren() method returns a direct reference to the internal _children list (not a snapshot)
+            # 2. Python lists are mutable objects - modifying them affects the original data structure
+            # 3. The Element class implementation stores children in a mutable _children list
+            # 4. Replacing elements by index (children[pos] = ...) directly modifies the XML tree
             # STEP 6: Replace the disk elements in their original positions with the ordered disk elements
             for i, pos in enumerate(disk_positions):
                 children[pos] = ordered_disk_elements[i]
