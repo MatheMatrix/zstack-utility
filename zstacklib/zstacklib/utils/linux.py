@@ -3386,3 +3386,10 @@ def monotime():
         errno = ctypes.get_errno()
         raise OSError(errno, os.strerror(errno))
     return t.tv_sec + t.tv_nsec / 1e9
+
+def catch_bad_alloc_exception(return_code, error_detail):
+    if return_code == 134 and 'std::bad_alloc' in error_detail:
+        logger.warn('insufficient allocatable physical memory, error[%s]' % error_detail)
+        return True
+    
+    return False
