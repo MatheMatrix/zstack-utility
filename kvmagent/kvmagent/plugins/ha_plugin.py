@@ -1203,7 +1203,14 @@ class CbdHeartbeatController(AbstractStorageFencer):
 
         r, o, e = bash.bash_roe("timeout 20 " + cmd)
         linux.rm_file_force(tmp_file)
-        return r == 0
+
+        if r != 0:
+            if linux.catch_bad_alloc_exception(r, e):
+                return True
+            logger.warn('failed to write heartbeat[%s], %s' % (self.heartbeat_path, e))
+            return False
+
+        return True
 
     def _read_heartbeat_file(self):
         # type: () -> CbdNodeStatus
@@ -1212,11 +1219,14 @@ class CbdHeartbeatController(AbstractStorageFencer):
         content = qemu.read_image_content("%s_zbs_:/etc/zbs/client.conf" % self.heartbeat_path, offset, 1024*1024, format="cbd")
         return jsonobject.loads(content.split(EOF)[0])
 
+    @bash.in_bash
     def _heartbeat_io_check(self):
-        heartbeat_check = shell.ShellCmd('qemu-io -c "read 0G 4k" -f cbd {}_zbs_:/etc/zbs/client.conf'.format(self.heartbeat_path))
-        heartbeat_check(False)
-        if heartbeat_check.return_code != 0:
-            logger.warn('failed to check heartbeat[%s], %s' % (self.heartbeat_path, heartbeat_check.stderr))
+        cmd = 'qemu-io -c "read 0G 4k" -f cbd {}_zbs_:/etc/zbs/client.conf'.format(self.heartbeat_path)
+        r, o, e = bash.bash_roe(cmd)
+        if r != 0:
+            if linux.catch_bad_alloc_exception(r, e):
+                return True
+            logger.warn('failed to check heartbeat[%s], %s' % (self.heartbeat_path, e))
             return False
 
         return True
