@@ -3662,7 +3662,7 @@ check_sync_local_repos() {
   if [ x"$REPO_MATCHED" = x"true" ]; then
       return 0
   else
-      echo " ... $(tput setaf 1)NOT MATCH$(tput sgr0)" | tee -a $ZSTAC_INSTALL_LOG
+      echo " ... $(tput setaf 1)NOT MATCH$(tput sgr0)" | tee -a $ZSTACK_INSTALL_LOG
       echo_hints_to_upgrade_iso
   fi
 }
