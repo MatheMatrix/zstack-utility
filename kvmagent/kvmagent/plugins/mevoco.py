@@ -113,11 +113,7 @@ class NamespaceInfraEnv(object):
 
         MAC = iproute.IpNetnsShell(NS_NAME).get_mac(DEV)
         CHAIN_NAME = "USERDATA-%s" % BR_NAME
-        # max length of ebtables chain name is 31
-        if (len(BR_NAME) <= 12):
-            EBCHAIN_NAME = "USERDATA-%s-%s" % (BR_NAME, l3_network_uuid[0:8])
-        else:
-            EBCHAIN_NAME = "USERDATA-%s-%s" % (BR_NAME[len(BR_NAME) - 12: len(BR_NAME)], l3_network_uuid[0:8])
+        EBCHAIN_NAME = get_ebtables_userdata_chain_name(BR_NAME, l3_network_uuid)
 
         ret = bash_r(EBTABLES_CMD + ' -t nat -L {{EBCHAIN_NAME}} >/dev/null 2>&1')
         if ret != 0:
@@ -169,11 +165,7 @@ class NamespaceInfraEnv(object):
     @in_bash
     def del_ip_eb_tables(self, l3_network_uuid):
         BR_NAME = self.vm_bridge_name
-        # max length of ebtables chain name is 31
-        if (len(BR_NAME) <= 12):
-            CHAIN_NAME = "USERDATA-%s-%s" % (BR_NAME, l3_network_uuid[0:8])
-        else:
-            CHAIN_NAME = "USERDATA-%s-%s" % (BR_NAME[len(BR_NAME) - 12: len(BR_NAME)], l3_network_uuid[0:8])
+        CHAIN_NAME = get_ebtables_userdata_chain_name(BR_NAME, l3_network_uuid)
 
         cmds = []
         o = bash_o("ebtables-save | grep {{CHAIN_NAME}} | grep -- -A")
@@ -774,6 +766,25 @@ def getDhcpEbtableChainName(dhcpIp):
         return "ZSTACK-DHCP-%s" % dhcpIp[0:9]
     else:
         return "ZSTACK-%s" % dhcpIp
+
+def get_ebtables_userdata_chain_name(br_name, l3_network_uuid):
+    # Note: In ebtables v1.8 and above, the maximum allowed length for certain string fields
+    # (e.g., --comment, --set-mark, custom chain names) is limited to 28 characters.
+    if is_ebtables_nf_tables():
+        max_chain_name_len = 28
+        prefix = "UD"
+        uuid_len = 8
+        separator_len = 2  # two '-' characters
+        max_br_len = max_chain_name_len - len(prefix) - separator_len - uuid_len
+        return "%s-%s-%s" % (prefix, br_name[-max_br_len:], l3_network_uuid[:uuid_len])
+    else:
+        return "USERDATA-%s-%s" % (br_name[-12:], l3_network_uuid[:8])
+
+def is_ebtables_nf_tables():
+    r, o, e = bash_roe(EBTABLES_CMD + ' --version')
+    if r != 0:
+        raise Exception('Failed to get ebtables version')
+    return "nf_tables" in o
 
 class UserDataEnv(object):
     def __init__(self, bridge_name, namespace_name, vlan_id):
@@ -1481,11 +1492,7 @@ tag:{{TAG}},option:dns-server,{{DNS}}
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
         BR_NAME = cmd.bridgeName
-        # max length of ebtables chain name is 31
-        if (len(BR_NAME) <= 12):
-            CHAIN_NAME = "USERDATA-%s-%s" % (BR_NAME, cmd.l3NetworkUuid[0:8])
-        else:
-            CHAIN_NAME = "USERDATA-%s-%s" % (BR_NAME[len(BR_NAME) - 12: len(BR_NAME)], cmd.l3NetworkUuid[0:8])
+        CHAIN_NAME = get_ebtables_userdata_chain_name(BR_NAME, cmd.l3NetworkUuid)
 
         cmds = []
         o = bash_o("ebtables-save | grep {{CHAIN_NAME}} | grep -- -A")
@@ -1661,12 +1668,8 @@ tag:{{TAG}},option:dns-server,{{DNS}}
         ETH_NAME = get_phy_dev_from_bridge_name(BR_NAME, VLAN_ID)
 
         MAC = iproute.IpNetnsShell(NS_NAME).get_mac(INNER_DEV)
-        CHAIN_NAME="USERDATA-%s" % BR_NAME
-        # max length of ebtables chain name is 31
-        if (len(BR_NAME) <= 12):
-            EBCHAIN_NAME = "USERDATA-%s-%s" % (BR_NAME, to.l3NetworkUuid[0:8])
-        else:
-            EBCHAIN_NAME = "USERDATA-%s-%s" % (BR_NAME[len(BR_NAME) - 12 : len(BR_NAME)], to.l3NetworkUuid[0:8])
+        CHAIN_NAME = "USERDATA-%s" % BR_NAME
+        EBCHAIN_NAME = get_ebtables_userdata_chain_name(BR_NAME, to.l3NetworkUuid)
 
         ret = bash_r(EBTABLES_CMD + ' -t nat -L {{EBCHAIN_NAME}} >/dev/null 2>&1')
         if ret != 0:
