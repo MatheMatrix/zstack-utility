@@ -1457,7 +1457,7 @@ upgrade_zstack(){
         fi
     elif [ -f /etc/init.d/zstack-ui ]; then
         # fill CATALINA_ZSTACK_TOOLS with old zstack_ui.bin if not exists
-        /bin/cp -n $ZSTACK_INSTALL_ROOT/zstack-ui/zstack_ui.bin $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS >/dev/null 2>&1
+        /usr/bin/rsync -a --ignore-existing $ZSTACK_INSTALL_ROOT/zstack-ui/zstack_ui.bin $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS >/dev/null 2>&1
     fi
 
     #check old license folder and copy old license files to new folder.
@@ -2429,7 +2429,7 @@ cp_third_party_tools(){
     echo_subtitle "Copy third-party tools to ${PRODUCT_NAME} install path"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     if [ -d "/opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/tools" ]; then
-        /bin/cp -rn /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/tools/* $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS >/dev/null 2>&1
+        /usr/bin/rsync -a --ignore-existing /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/tools/* $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS >/dev/null 2>&1
         chown -R zstack.zstack $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS/*
     fi
     cp_virtio_drivers
@@ -3602,7 +3602,7 @@ get_zstack_repo(){
 install_sync_repo_dependences() {
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     pkg_list="createrepo curl rsync"
-    if [ x"$OS" != x"KYLIN10" -a x"$OS" != x"EULER20" -a x"$OS" != x"OE2203" -a x"$OS" != x"H2203SP1O" -a x"$OS" != x"OE2403"]; then
+    if [ x"$OS" != x"KYLIN10" -a x"$OS" != x"EULER20" -a x"$OS" != x"OE2203" -a x"$OS" != x"H2203SP1O" -a x"$OS" != x"OE2403" ]; then
         pkg_list="$pkg_list yum-utils"
     fi
     missing_list=`LANG=en_US.UTF-8 && rpm -q $pkg_list | grep 'not installed' | awk 'BEGIN{ORS=" "}{ print $2 }'`
