@@ -12190,11 +12190,14 @@ host side snapshot files chian:
             content = traceback.format_exc()
             logger.warn("traceback: %s" % content)
 
-    def _vm_resume_event(self, conn, dom, event, detail, opaque):
+    def _set_vm_chassis(self, conn, dom, event, detail, opaque):
         try:
-            event = LibvirtEventManager.event_to_string(event)
-            if event not in (LibvirtEventManager.EVENT_RESUMED,):
+            evstr = LibvirtEventManager.event_to_string(event)
+            if evstr not in (LibvirtEventManager.EVENT_RESUMED, LibvirtEventManager.EVENT_STARTED):
                 return
+            if evstr == LibvirtEventManager.EVENT_STARTED and detail == libvirt.VIR_DOMAIN_EVENT_STARTED_MIGRATED:
+                return
+
             vm_uuid = dom.name()
             # get all vnic name of the vm
             vnic_names = []
@@ -12344,7 +12347,7 @@ host side snapshot files chian:
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_shutdown_event)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_shutdown_event_from_guest)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_start_event)
-        LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_resume_event)
+        LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._set_vm_chassis)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_crashed_event)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._release_sharedblocks)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._deactivate_drbd)
