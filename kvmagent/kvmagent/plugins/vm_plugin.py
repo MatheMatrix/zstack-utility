@@ -439,6 +439,7 @@ class StartVmResponse(kvmagent.AgentResponse):
         self.virtualDeviceInfoList = []  # type:list[VirtualDeviceInfo]
         self.memBalloonInfo = None  # type:VirtualDeviceInfo
         self.virtualizerInfo = VirtualizerInfoTO()  # type:VirtualizerInfoTO
+        self.vmXml = None
 
 class SyncVmDeviceInfoCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -452,6 +453,7 @@ class SyncVmDeviceInfoResponse(kvmagent.AgentResponse):
         self.virtualDeviceInfoList = []  # type:list[VirtualDeviceInfo]
         self.memBalloonInfo = None  # type:VirtualDeviceInfo
         self.virtualizerInfo = VirtualizerInfoTO()  # type:VirtualizerInfoTO
+        self.vmXml = None
 
 
 class VirtualDeviceInfo():
@@ -1353,6 +1355,38 @@ def find_domain_cdrom_address(domain_xml, target_dev):
         if d.get_child_node('target').dev_ != target_dev:
             continue
         return d.get_child_node('address')
+    return None
+
+def find_domain_cdrom_alias_name(domain_xml, target_dev):
+    domain_xmlobject = xmlobject.loads(domain_xml)
+    disks = domain_xmlobject.devices.get_children_nodes().get('disk')
+
+    if not disks:
+        logger.debug("find_domain_cdrom_alias_name: no disk nodes found "
+                     "when searching cdrom alias for target %s" % target_dev)
+        return None
+
+    for d in disks:
+        if d.device_ != 'cdrom':
+            continue
+
+        target = d.get_child_node('target')
+        if not target:
+            logger.warn("find_domain_cdrom_alias_name: cdrom disk has no target node")
+            continue
+        if target.dev_ != target_dev:
+            continue
+
+        alias = d.get_child_node('alias')
+        if alias is None:
+            logger.warn("find_domain_cdrom_alias_name: cdrom disk with target %s has no alias node" % target_dev)
+            return None
+        if alias.name_ is None:
+            logger.warn("find_domain_cdrom_alias_name: cdrom disk with target %s has no alias name" % target_dev)
+            return None
+        return alias.name_
+
+    logger.debug("find_domain_cdrom_alias_name: cdrom with target %s not found" % target_dev)
     return None
 
 def find_domain_first_boot_device(domain_xml):
@@ -2711,7 +2745,14 @@ class Vm(object):
         def restore_from_file(conn):
             return conn.restoreFlags(path, self.domain_xml)
 
+        # when restoring from a memory snapshot, we directly use the domain_xml built from cmd
+        # therefore, we only need to persist this domain_xml
+        @LibvirtAutoReconnect
+        def define_xml(conn):
+            return conn.defineXML(self.domain_xml)
+
         logger.debug('restoring vm:\n%s' % self.domain_xml)
+        define_xml()
         restore_from_file()
 
     def start(self, timeout=60, create_paused=False, wait_console=True):
@@ -4220,6 +4261,62 @@ class Vm(object):
             raise Exception("vm[uuid:%s] seems hang, its process[pid:%s] up-time is not increasing after %s seconds" %
                             (self.uuid, vm_pid, 60))
 
+    # http://jira.zstack.io/browse/ZSV-9608
+    # after restoring from a memory snapshot, the CD-ROM tray will automatically close
+    # interim solution: must manually open the tray before attaching or detaching iso
+    # fixed in upstream patch: http://jira.zstack.io/browse/ZSV-9648
+    def open_cdrom_tray(self, vm_uuid, alias_name):
+        if alias_name is None:
+            logger.warn("skip opening cdrom tray: qdev is None on vm %s" % vm_uuid)
+            return
+
+        '''
+        virsh qemu-monitor-command vmUuid --pretty '{"execute":"query-block"}'
+            {
+              "io-status": "ok",
+              "device": "",
+              "locked": false,
+              "removable": true,
+              "qdev": "ide0-0-1",
+              "tray_open": false,
+              "type": "unknown"
+            }
+        '''
+        def get_all_cdrom_qdevs_from_vm_blocks(domain_id):
+            '''
+            Returns a list of qdev identifiers for all block devices with 'tray_open' property (i.e., CD-ROM drives) in this VM.
+            Data is sourced from QMP 'query-block' command. These qdev identifiers correspond one-to-one with libvirt disk <alias name="..."> tags.
+            Example: ['ide0-0-1', 'sata0-0-1', 'scsi0-0-2'].
+            '''
+            all_blocks = get_vm_blocks(domain_id)
+            cdrom_qdevs = []
+            for b in all_blocks:
+                if b.get('tray_open') is None:
+                    logger.warn("skip opening cdrom tray: tray_open is None on vm %s, block: %s" % (vm_uuid, b))
+                    continue
+                if b.get('qdev') is None:
+                    logger.warn("skip opening cdrom tray: qdev is None on vm %s, block: %s" % (vm_uuid, b))
+                    continue
+                cdrom_qdevs.append(b.get('qdev'))
+            return cdrom_qdevs
+
+        try:
+            qdevs = get_all_cdrom_qdevs_from_vm_blocks(vm_uuid)
+        except Exception as e:
+            logger.warn("skip opening cdrom tray: query-block failed on vm %s, error: %s" % (vm_uuid, str(e)))
+            return
+
+        if alias_name not in qdevs:
+            logger.warn("skip opening cdrom tray: qdev %s not found on vm %s" % (alias_name, vm_uuid))
+            return
+
+        r, _, err = execute_qmp_command(vm_uuid,
+                                        '{ "execute": "blockdev-open-tray", "arguments":{"id": "%s"}}' % alias_name)
+        if r != 0 or err:
+            logger.warning("failed to open tray for cdrom %s, error: %s" % (alias_name, err))
+        else:
+            logger.debug("opened tray for cdrom %s on vm %s" % (alias_name, vm_uuid))
+
     def attach_iso(self, cmd):
         iso = cmd.iso
 
@@ -4263,6 +4360,7 @@ class Vm(object):
 
         logger.debug('attaching ISO to the vm[uuid:%s]:\n%s' % (self.uuid, xml))
 
+        self.open_cdrom_tray(cmd.vmUuid, find_domain_cdrom_alias_name(self.domain.XMLDesc(0), dev))
         try:
             self.domain.updateDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
         except libvirt.libvirtError as ex:
@@ -4321,6 +4419,7 @@ class Vm(object):
 
         logger.debug('detaching ISO from the vm[uuid:%s]:\n%s' % (self.uuid, xml))
 
+        self.open_cdrom_tray(cmd.vmUuid, find_domain_cdrom_alias_name(self.domain.XMLDesc(0), dev))
         try:
             self.domain.updateDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE | libvirt.VIR_DOMAIN_DEVICE_MODIFY_FORCE)
         except libvirt.libvirtError as ex:
@@ -5867,7 +5966,29 @@ class Vm(object):
                 Vm.set_volume_qos(cmd.addons, v.volumeUuid, vol)
                 Vm.set_volume_serial_id(v.volumeUuid, vol)
                 volume_native_aio(v.volumeUuid, vol)
+                if cmd.memorySnapshotPath is not None and cmd.vmXml is not None:
+                    update_target_dev(vol, v)
                 return vol
+
+            def update_target_dev(vol, v):
+                '''
+                update the 'dev' attribute of a volume's target element
+                using disk information from the VM XML with matching serial (volumeUuid)
+                '''
+                disks_in_xml = xmlobject.loads(cmd.vmXml).devices.get_child_node_as_list('disk')
+                for disk in disks_in_xml:
+                    if v.volumeUuid != disk.get('serial'):
+                        continue
+                    logger.debug("located matching disk in vmXml, "
+                                 "serial: %s, element volume details : %s" % (v.volumeUuid, etree.tostring(vol)))
+                    target = vol.find("./target")
+                    if target is None or target.get('dev') is None:
+                        logger.warning("target element or dev attribute for volume[uuid:%s] not found in cmd volume." % v.volumeUuid)
+                        return
+                    dev_in_xml = disk.get_child_node('target').dev_
+                    target.set('dev', dev_in_xml)
+                    logger.debug("updated target device to '%s' for volume uuid: %s. "
+                                   "disk in xml details: %s" % (dev_in_xml, v.volumeUuid, disk.dump()))
 
             all_ide = default_bus_type == "ide" and cmd.imagePlatform.lower() == "other"
             DEVICE_LETTERS = Vm.DEVICE_LETTERS if not all_ide else Vm.DEVICE_LETTERS.replace(Vm.ISO_DEVICE_LETTERS, "")
@@ -5875,8 +5996,21 @@ class Vm(object):
             volumes.sort(key=lambda d: d.deviceId)
             Vm.check_device_exceed_limit(volumes[-1].deviceId)
 
+            '''
+            fix the scsi device name order on guest vm.
+                the guest vm scsi device name order is associated with following libvirt xml config:
+                - address controller slot,
+                - address unit,
+                - target dev order.
+                see the rule details on jira. http://jira.zstack.io/browse/ZSTAC-9641
+
+                so when start/reboot vm:
+                - first set the index of controller to 0 for all scsi volumes.
+                - then make sure the volume whose unit is 0 is the first or non-exsitent.
+                - finally reverse scsi volume device names.
+            '''
             def need_reverse(v):
-                return v.useVirtioSCSI and v.deviceId != 0
+                return (v.useVirtioSCSI or v.useSCSI) and v.deviceId != 0
 
             scsi_device_ids = [v.deviceId for v in volumes if need_reverse(v)]
             # {
@@ -6373,6 +6507,90 @@ class Vm(object):
                 e(qcmd, "qemu:arg", attrib={"value": "-cpu"})
                 e(qcmd, "qemu:arg", attrib={"value": "{},vendor={}".format(cpuFlags, cmd.vmCpuVendorId)})
 
+        def reorder_disks():
+            if cmd.memorySnapshotPath is None or cmd.vmXml is None:
+                return
+
+            '''
+            "devices": {
+                "emulator": "/usr/libexec/qemu-kvm",
+                "disk": [
+                    {
+                        "target": {
+                            "@bus": "virtio",
+                            "@dev": "vda"
+                        },
+                        "@device": "disk",
+                    },
+                    {
+                        "target": {
+                            "@bus": "ide",
+                            "@dev": "hdc"
+                        },
+                        "@device": "cdrom",
+                    },
+                    {
+                        "target": {
+                            "@bus": "virtio-scsi",
+                            "@dev": "sdb"
+                        },
+                        "@device": "disk",
+                    }
+                ]
+            }
+            '''
+
+            xml_disks = xmlobject.loads(cmd.vmXml).devices.get_child_node_as_list('disk')
+
+            # STEP 1: Collect disk information from the generated XML
+            children = elements['devices'].getchildren()
+            disk_positions = []  # Stores indices of disk elements in children list
+            disk_devs = []  # Stores dev names of those disks
+            disk_elements = []  # Stores dev names of those disks
+
+            # Iterate through all children elements in 'devices'
+            for i, child in enumerate(children):
+                if child.tag == "disk":
+                    dev = xmlobject.loads(etree.tostring(child)).get_child_node('target').dev_
+                    disk_positions.append(i)
+                    disk_devs.append(dev)
+                    disk_elements.append(child)
+
+            # STEP 2: Validation check
+            # Extract dev names from original XML disks
+            xml_devs = [d.get_child_node('target').dev_ for d in xml_disks]
+
+            # Compare whether both lists contain the same devices (order-independent)
+            if sorted(xml_devs) != sorted(disk_devs):
+                err_msg = ("Disk mismatch during reordering. "
+                           "Original devices: %s. "
+                           "Generated devices: %s. "
+                           "Original disks count: %d. "
+                           "Generated disks count: %d.") % (xml_devs, disk_devs, len(xml_devs), len(disk_devs))
+                raise kvmagent.KvmError(err_msg)
+
+            # STEP 3: Create a dictionary mapping dev to actual disk element
+            dev_to_element = dict(zip(disk_devs, disk_elements))
+
+            # STEP 4: Get the desired order of devs (same as original XML)
+            desired_dev_order = [d.get_child_node('target').dev_ for d in xml_disks]
+
+            # STEP 5: Create ordered list of disk elements using the original XML order
+            # Here we use the existing disk elements from dev_to_element
+            ordered_disk_elements = [dev_to_element[dev] for dev in desired_dev_order]
+
+            # ElementTree.py
+            # def getchildren(self):
+            #     return self._children
+            # IMPORTANT: This modification DOES change the actual XML tree structure because:
+            # 1. The getchildren() method returns a direct reference to the internal _children list (not a snapshot)
+            # 2. Python lists are mutable objects - modifying them affects the original data structure
+            # 3. The Element class implementation stores children in a mutable _children list
+            # 4. Replacing elements by index (children[pos] = ...) directly modifies the XML tree
+            # STEP 6: Replace the disk elements in their original positions with the ordered disk elements
+            for i, pos in enumerate(disk_positions):
+                children[pos] = ordered_disk_elements[i]
+
         make_root()
         make_meta()
         make_cpu()
@@ -6408,7 +6626,9 @@ class Vm(object):
             make_memory_backing()
 
         if HOST_ARCH == "x86_64" and cmd.vmCpuVendorId and cmd.vmCpuVendorId != "None":
-            add_cpu_vendor_id_to_cpu_flags()    
+            add_cpu_vendor_id_to_cpu_flags()
+
+        reorder_disks()
 
         root = elements['root']
         xml = etree.tostring(root)
@@ -7159,7 +7379,7 @@ class VmPlugin(kvmagent.KvmAgent):
                 logger.warn("enable coredump for VM: %s: %s" % (cmd.vmInstanceUuid, str(e)))
 
         if rsp.success == True:
-            rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo = self.get_vm_device_info(cmd.vmInstanceUuid)
+            rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo, rsp.vmXml = self.get_vm_device_info(cmd.vmInstanceUuid)
             self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
 
         return jsonobject.dumps(rsp)
@@ -7184,15 +7404,15 @@ class VmPlugin(kvmagent.KvmAgent):
         memBalloonPci = vm.domain_xmlobject.devices.get_child_node('memballoon')
         if memBalloonPci is not None:
             memBalloonInfo = self.get_device_address_info(memBalloonPci)
-            return nicInfos, virtualDeviceInfoList, memBalloonInfo
+            return nicInfos, virtualDeviceInfoList, memBalloonInfo, vm.domain_xml
 
-        return nicInfos, virtualDeviceInfoList, None
+        return nicInfos, virtualDeviceInfoList, None, vm.domain_xml
 
     @kvmagent.replyerror
     def sync_vm_deviceinfo(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = SyncVmDeviceInfoResponse()
-        rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo = self.get_vm_device_info(cmd.vmInstanceUuid)
+        rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo, rsp.vmXml = self.get_vm_device_info(cmd.vmInstanceUuid)
         self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
         return jsonobject.dumps(rsp)
 
@@ -7706,15 +7926,16 @@ class VmPlugin(kvmagent.KvmAgent):
         try:
             self._record_operation(cmd.uuid, self.VM_OP_STOP)
             self._stop_vm(cmd)
-            # notify vrouter agent nic removed from source host
-            for nic in cmd.vmNics:
-                if nic.type == 'TFVNIC':
-                    vrouter_cmd = [
-                        'vrouter-port-control',
-                        '--oper=delete',
-                        '--uuid=%s' % transform_to_tf_uuid(nic.uuid)
-                    ]
-                    notify_vrouter(vrouter_cmd)
+            if cmd.vmNics:
+                # notify vrouter agent nic removed from source host
+                for nic in cmd.vmNics:
+                    if nic.type == 'TFVNIC':
+                        vrouter_cmd = [
+                            'vrouter-port-control',
+                            '--oper=delete',
+                            '--uuid=%s' % transform_to_tf_uuid(nic.uuid)
+                        ]
+                        notify_vrouter(vrouter_cmd)
             logger.debug("successfully stopped vm[uuid:%s]" % cmd.uuid)
         except kvmagent.KvmError as e:
             logger.warn(linux.get_exception_stacktrace())

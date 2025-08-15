@@ -25,8 +25,10 @@ def get_bootMode():
         return "UEFI"
     else:
         return "Legacy"
-    
-    
+
+ROOT_VOLUME_UUID = "d387b4534faf4553a50a8a632cf12e35"
+CDROM_UUID = "01f1479b680745c18ea7cd3ef6ee25de"
+
 startVmCmdBody = {
     "vmInstanceUuid": "0b42630f37d8417480eced62ad89719f",
     "vmInternalId": 1,
@@ -48,7 +50,7 @@ startVmCmdBody = {
         "installPath": env.VM_IMAGE_PATH,
         "deviceId": 0,
         "deviceType": "file",
-        "volumeUuid": "d387b4534faf4553a50a8a632cf12e35",
+        "volumeUuid": ROOT_VOLUME_UUID,
         "useVirtio": True,
         "useVirtioSCSI": False,
         "shareable": False,
@@ -430,6 +432,19 @@ def attach_volume_to_vm(vm_uuid, vol_uuid, vol_path):
 
 
 @misc.return_jsonobject()
+def build_attach_volume_to_vm_body(vm_uuid, vol_uuid, vol_path, device_id, use_virtio_scsi=False):
+    # type: (str, str, str, int, bool) -> (jsonobject, jsonobject)
+    body = copy.deepcopy(volume_utils.attach_volume_body)
+    body = jsonobject.loads(jsonobject.dumps(body))
+    body.vmInstanceUuid = vm_uuid
+    body.volume.installPath = vol_path
+    body.volume.volumeUuid = vol_uuid
+    body.volume.deviceId = device_id
+    body.volume.useVirtioSCSI = use_virtio_scsi
+    return VM_PLUGIN.attach_data_volume(misc.make_a_request(body.to_dict())), body.volume
+
+
+@misc.return_jsonobject()
 def attach_multi_queues_volume_to_vm(vm_uuid, vol_uuid, vol_path):
     # type: (str, str, str) -> (jsonobject, jsonobject)
     body = copy.deepcopy(volume_utils.attach_volume_body)
@@ -551,6 +566,14 @@ def take_snapshot(vm_uuid, vol_uuid, vol_path, snapshot_path):
 
 
 @misc.return_jsonobject()
+def take_volumes_snapshots(snapshot_jobs):
+    body = copy.deepcopy(snapshot_utils.take_volumes_snapshots_default_cmd_body)
+    body["snapshotJobs"] = snapshot_jobs
+    cmd = jsonobject.from_dict(body)
+    return VM_PLUGIN.take_volumes_snapshots(misc.make_a_request(cmd.to_dict()))
+
+
+@misc.return_jsonobject()
 def merge_snapshots(vm_uuid, vol_path, snapshot_path):
     # type: (str, str, str) -> jsonobject.JsonObject
 
@@ -640,6 +663,12 @@ def del_vm_scsi_controller(vm_uuid, iothread):
     body["ioThreadId"] = iothread
     cmd = jsonobject.from_dict(body)
     return VM_PLUGIN.del_scsi_controller(misc.make_a_request(cmd.to_dict()))
+
+
+@misc.return_jsonobject()
+def sync_vm_deviceinfo(vm_uuid):
+    # type: (str) -> jsonobject.JsonObject
+    return VM_PLUGIN.sync_vm_deviceinfo(misc.make_a_request({"vmInstanceUuid": vm_uuid}))
 
 
 class VmPluginTestStub(pytest_utils.PytestExtension):
