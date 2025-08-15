@@ -3432,7 +3432,7 @@ DirectMap1G:    13631488 kB
                 elif line.startswith('Cached:'):
                     cached = int(line.split()[1]) * 1024
 
-        # if MemAvailable is not existed，return MemFree + Buffers + Cached
+        # if MemAvailable is not existed, return MemFree + Buffers + Cached
         if mem_available is not None:
             return mem_available
         return memfree + buffers + cached
