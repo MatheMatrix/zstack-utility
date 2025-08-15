@@ -1882,9 +1882,6 @@ grubRockyEnvs="%s"
 # config nr_hugepages
 sysctl -w vm.nr_hugepages=0
 
-# enable nr_hugepages
-sysctl vm.nr_hugepages=0
-
 # config default grub
 sed -i '/GRUB_CMDLINE_LINUX=/s/[[:blank:]]*default_[[:graph:]]*//g' /etc/default/grub
 sed -i '/GRUB_CMDLINE_LINUX=/s/[[:blank:]]*hugepagesz[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' /etc/default/grub
@@ -1934,13 +1931,6 @@ done
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = EnableHugePageRsp()
 
-        # clean old hugepage config
-        return_code, stdout = self._close_hugepage()
-        if return_code != 0 or "Error" in stdout:
-            rsp.success = False
-            rsp.error = stdout
-            return jsonobject.dumps(rsp)
-
         pageSize = cmd.pageSize
         reserveSize = cmd.reserveSize
         enable_hugepage_script = '''#!/bin/sh
@@ -1980,7 +1970,8 @@ do
    if [ -f $env ]; then
        sed -i '/^[[:space:]]*kernelopts/s/$/ transparent_hugepage=always default_hugepagesz=\'\"$pageSize\"\'M hugepagesz=\'\"$pageSize\"\'M hugepages=\'\"$pageNum\"\'/g' $env
    fi
-done   
+done
+sysctl -w vm.nr_hugepages=$pageNum
 ''' % (' '.join(GRUB_FILES), reserveSize, pageSize, ' '.join(GRUB_ROCKY_ENVS))
 
 
