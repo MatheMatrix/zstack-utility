@@ -9,6 +9,7 @@ from zstacklib.utils import log
 from zstacklib.utils import http
 from zstacklib.utils import ovn
 from zstacklib.utils import bash
+from zstacklib.utils import thread
 
 OVN_INSTALL_PACKAGE = '/network/ovn/install'
 OVN_UNINSTALL_PACKAGE = '/network/ovn/uninstall'
@@ -19,6 +20,8 @@ OVN_DEL_PORT = '/network/ovn/delport'
 
 logger = log.get_logger(__name__)
 
+OVN_ROTATE_FILE = "/etc/logrotate.d/ovn"
+OVS_ROTATE_FILE = "/etc/logrotate.d/openvswitch"
 
 class OvnInstallPackageCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -388,5 +391,69 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(
             OVN_DEL_PORT, self.ovn_del_port)
 
+        self.register_ovn_logRotate()
+
     def stop(self):
         http.AsyncUirHandler.STOP_WORLD = True
+
+    def _create_ovn_rotate_file(self):
+        content = """/var/log/ovn/*.log {
+#    su openvswitch openvswitch
+    daily
+    size 50M
+    rotate 30
+    compress
+    sharedscripts
+    missingok
+    postrotate
+        # Tell OVN daemons to reopen their log files
+        if [ -d /var/run/ovn ]; then
+            for ctl in /var/run/ovn/*.ctl; do
+                ovs-appctl -t "$ctl" vlog/reopen 2>/dev/null || :
+            done
+        fi
+    endscript
+}
+"""
+
+        with open(OVN_ROTATE_FILE, 'w') as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(OVN_ROTATE_FILE, 0o644)
+
+        content = """/var/log/openvswitch/*.log {
+#    su openvswitch hugetlbfs
+    daily
+    size 50M
+    rotate 30
+    compress
+    sharedscripts
+    missingok
+    postrotate
+        # Tell Open vSwitch daemons to reopen their log files
+        if [ -d /run/openvswitch ]; then
+            for ctl in /run/openvswitch/*.ctl; do
+                ovs-appctl -t "$ctl" vlog/reopen 2>/dev/null || :
+            done
+        fi
+    endscript
+}
+
+        """
+
+        with open(OVS_ROTATE_FILE, 'w') as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(OVS_ROTATE_FILE, 0o644)
+
+    def register_ovn_logRotate(self):
+        def ovn_logRotate():
+            bash.bash_r("logrotate -f " + OVS_ROTATE_FILE)
+            bash.bash_r("logrotate -f " + OVN_ROTATE_FILE)
+
+            thread.timer(24*3600, ovn_logRotate).start()
+
+        self._create_ovn_rotate_file()
+        thread.timer(60, ovn_logRotate).start()
