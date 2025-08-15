@@ -232,20 +232,24 @@ class VsCtl(object):
             return []
 
     @bash.in_bash
-    def addVnic(self, nicName, nicUuid, reinstall=False, brName="br-int", nicType="dpdkvhostuserclient"):
+    def addVnic(self, nicName, nicUuid, vmUuid, reinstall=False, brName="br-int", nicType="dpdkvhostuserclient"):
         try:
             srcPath = OVS_DPDK_SRC_PATH + nicName
             if reinstall:
                 cmd = '{cmd} del-port {brName} {nicName}; ' \
                       '{cmd} add-port {brName} {nicName} ' \
                       '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
-                      '-- set interface {nicName} external-ids:iface-id={nicName}_{nicUuid}'.format(
-                    cmd=CtlBin, brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid)
+                      '-- set interface {nicName} external-ids:iface-id={nicName}_{nicUuid} ' \
+                      '-- set interface {nicName} external-ids:vm-uuid={vmUuid}'.format(
+                    cmd=CtlBin, brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid,
+                    vmUuid=vmUuid)
             else:
                 cmd = CtlBin + '--may-exist add-port {brName} {nicName} ' \
                                '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
-                               '-- set interface {nicName} external-ids:iface-id={nicName}_{nicUuid}'.format(
-                    brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid)
+                               '-- set interface {nicName} external-ids:iface-id={nicName}_{nicUuid} ' \
+                               '-- set interface {nicName} external-ids:vm-uuid={vmUuid}'.format(
+                    brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid,
+                    vmUuid=vmUuid)
             bash.bash_r(cmd)
         except Exception as err:
             logger.error(
@@ -376,6 +380,11 @@ class VsCtl(object):
     def setOvsOtherConfig(self, key, value):
         queueCmd = CtlBin + " --no-wait set Open_vSwitch . other_config:{}={}".format(key, value)
         return bash.bash_r(queueCmd)
+
+    @bash.in_bash
+    def setOvsExternalIdsConfig(self, key, value):
+        cmd = CtlBin + "--no-wait set Open_vSwitch . external-ids:{}={}".format(key, value)
+        return bash.bash_r(cmd)
 
     @bash.in_bash
     def getNicRxQueueNumConfig(self, nicName):

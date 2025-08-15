@@ -177,8 +177,24 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                                  cmd.nicNamePciAddressMap, cmd.nicRxQueueNumber, cmd.nicRxQueueDescNumber)
 
         if not vsctl.isOvsRunning():
-            r, o, e = bash.bash_roe("systemctl restart ovsdb-server;systemctl restart openvswitch;systemctl restart "
-                                    "ovn-controller")
+            r, o, e = bash.bash_roe("systemctl restart ovsdb-server")
+            if r != 0:
+                msg = "restart ovsdb-server service, failed: {err}".format(err=e)
+                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
+            # clean vnic
+            r, o, e = bash.bash_roe("ovs-vsctl --bare --columns=name list Port")
+            if r != 0:
+                msg = "get ovs port failed: {err}".format(err=e)
+                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
+            vnics = [vnic.strip() for vnic in o.split('\n') if vnic.strip()]
+            for vnic in vnics:
+                if vnic.startswith("vnic"):
+                    # delete vnic from ovs
+                    r,o = bash.bash_ro("ovs-vsctl --if-exists del-port br-int {vnic}".format(vnic=vnic))
+                    if r != 0:
+                        logger.warning("delete vnic:{vnic} failed: {err}".format(vnic=vnic, err=o))
+
+            r, o, e = bash.bash_roe("systemctl restart openvswitch;systemctl restart ovn-controller")
             if r != 0:
                 msg = "restart openvswitch service, failed: {err}".format(err=e)
                 return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
@@ -213,6 +229,22 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             r = vsctl.bindCpuCores(lMask, pmdMask)
             if r != 0:
                 msg = "set ovs dpdk lcore mask failed!"
+                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
+
+        # ovn-monitor-all = "true"
+        # ovn-remote-probe-interval="100000"
+        err1, ovn_monitor_all = vsctl.getOvsExternalIdsConfig("ovn-monitor-all")
+        if err1 or ovn_monitor_all == 'false':
+            r = vsctl.setOvsExternalIdsConfig("ovn-monitor-all", 'true')
+            if r != 0:
+                msg = "set ovs ovn-monitor-all failed!"
+                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
+
+        err1, ovn_remote_probe_interval = vsctl.getOvsExternalIdsConfig("ovn-remote-probe-interval")
+        if err1 or ovn_remote_probe_interval != '100000':
+            r = vsctl.setOvsExternalIdsConfig("ovn-remote-probe-interval", '100000')
+            if r != 0:
+                msg = "set ovs ovn-remote-probe-interval failed!"
                 return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
 
         # get interface of Port dpdkbond
@@ -364,7 +396,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             reinstall = cmd.reInstall
 
         for nicName, nicUuid in cmd.nicMap.__dict__.items():
-            vsctl.addVnic(nicName, nicUuid, reinstall)
+            vm_uuid = cmd.nicVmInstanceUuidMap.__dict__.get(nicName, None)
+            vsctl.addVnic(nicName, nicUuid, vm_uuid, reinstall)
         rsp = OvnAddPortResponse()
 
         return jsonobject.dumps(rsp)
