@@ -209,6 +209,25 @@ class VsCtl(object):
             return []
 
     @bash.in_bash
+    def addVnicKernel(self, nicName, nicUuid, reinstall=False, brName="br-int"):
+        try:
+            if reinstall:
+                cmd = 'ip tuntap add mode tap name {nicName}; ' \
+                      '{cmd} del-port {brName} {nicName}; ' \
+                      '{cmd} add-port {brName} {nicName} ' \
+                      '-- set interface {nicName} external-ids:iface-id={nicName}_{nicUuid}'.format(
+                    cmd=CtlBin, brName=brName, nicName=nicName, nicUuid=nicUuid)
+            else:
+                cmd = 'ip tuntap add mode tap name {nicName}; ' \
+                      '{cmd} --may-exist add-port {brName} {nicName} ' \
+                      '-- set interface {nicName} external-ids:iface-id={nicName}_{nicUuid}'.format(
+                    cmd=CtlBin, brName=brName, nicName=nicName, nicUuid=nicUuid)
+            bash.bash_r(cmd)
+        except Exception as err:
+            logger.error(
+                "Add port for brdige {} failed. {}".format(brName, err))
+
+    @bash.in_bash
     def addVnic(self, nicName, nicUuid, reinstall=False, brName="br-int", nicType="dpdkvhostuserclient"):
         try:
             srcPath = OVS_DPDK_SRC_PATH + nicName
@@ -258,6 +277,38 @@ class VsCtl(object):
             ret.append(l)
 
         return ret
+
+    @bash.in_bash
+    def addUplink_kenrel(self, portPciMap, bondMode, lacpmode, ip, netmask, brName="br-phy", bondName="dpdkbond"):
+        bash.bash_roe("{binPath} --may-exist add-br {brName};"
+                      "{binPath} set bridge br-phy fail-mode=standalone"
+                      .format(binPath=CtlBin, brName=brName))
+
+        uplinks = self.getUplink(brName)
+        for link in uplinks:
+            bash.bash_roe(CtlBin + " del-port {} {}".format(brName, link))
+
+        if len(portPciMap.__dict__) == 1:
+            for nicName, pciAddress in portPciMap.__dict__.items():
+                r, _, e = bash.bash_roe(CtlBin + " --may-exist add-port {brName} {nic} "
+                                        .format(brName=brName, nic=nicName, pci=pciAddress))
+                if r != 0:
+                    logger.debug(CtlBin + " add-port {} {} failed: {}".format(brName, nicName, e))
+                    return r, e
+        else:
+            cmd = CtlBin + "--may-exist add-bond {} {} ".format(brName, bondName)
+            for nicName, pciAddress in portPciMap.__dict__.items():
+                cmd = cmd + " {} ".format(nicName)
+            r, _, e = bash.bash_roe(cmd)
+            if r != 0:
+                logger.debug("{} faild {}".format(cmd, e))
+                return r, e
+
+            if bondMode is not None:
+                bash.bash_roe(CtlBin + " set port dpdkbond bond_mode={mode} ".format(mode=bondMode))
+
+            if lacpmode is not None:
+                bash.bash_roe(CtlBin + " set port dpdkbond lacp={mode} ".format(mode=lacpmode))
 
     @bash.in_bash
     def addUplink(self, portPciMap, bondMode, lacpmode, ip, netmask, brName="br-phy", bondName="dpdkbond"):

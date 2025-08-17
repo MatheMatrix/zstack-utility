@@ -102,6 +102,9 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             4 bundle of packages need to be installed: ofed, dpdk, ovs, ovn
         '''
         packages = ["dpdk", "ovs", "ovn"]
+        if cmd.vSwitchType == "OvnKernel":
+            packages = ["ovs", "ovn"]
+
         '''
         dpdkNics = ovn.getAllDpdkNic()
         for nic in dpdkNics:
@@ -133,10 +136,11 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         shutil.rmtree(temp_dir)
 
         # change ovs-switchd and ovn-controller user to root
-        bash.bash_roe("sed -i 's/^OVS_USER_ID=\"openvswitch:hugetlbfs\"/OVS_USER_ID=\"root:root\"/' "
-                      "/etc/sysconfig/openvswitch")
-        bash.bash_roe("sed -i 's/^OVN_USER_ID=\"openvswitch:openvswitch\"/OVN_USER_ID=\"root:root\"/' "
-                      "/etc/sysconfig/ovn")
+        if cmd.vSwitchType == "OvnDpdk":
+            bash.bash_roe("sed -i 's/^OVS_USER_ID=\"openvswitch:hugetlbfs\"/OVS_USER_ID=\"root:root\"/' "
+                          "/etc/sysconfig/openvswitch")
+            bash.bash_roe("sed -i 's/^OVN_USER_ID=\"openvswitch:openvswitch\"/OVN_USER_ID=\"root:root\"/' "
+                          "/etc/sysconfig/ovn")
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -147,6 +151,36 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
 
         # we will not uninstall ovn package
         return jsonobject.dumps(rsp)
+
+    def __start_ovs_kernel(self, cmd, rsp):
+        vsctl = ovn.VsCtl()
+        if not vsctl.isOvsRunning():
+            r, o, e = bash.bash_roe("systemctl restart ovsdb-server;systemctl restart openvswitch;systemctl restart "
+                                    "ovn-controller")
+            if r != 0:
+                msg = "restart openvswitch service, failed: {err}".format(err=e)
+                return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
+
+        r, _, e = bash.bash_roe("ovs-vsctl --may-exist add-br br-int;")
+        if r != 0:
+            msg = "add br-int failed: {err}".format(err=e)
+            return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
+
+        vsctl.addUplink_kenrel(cmd.nicNamePciAddressMap, cmd.bondingMode, cmd.lacpMode,
+                                   cmd.ovnEncapIP, cmd.ovnEncapNetmask)
+
+        logger.debug("began to set ovs external-ids")
+        r, _, e = bash.bash_roe("ovs-vsctl set Open_vSwitch . "
+                                "external-ids:ovn-remote={ovn_remote} "
+                                "external-ids:ovn-encap-ip={ovn_encap_ip} "
+                                "external-ids:ovn-encap-type={ovn_encap_type} "
+                                "external-ids:ovn-bridge-mappings=flat:{br_ex} "
+                                "external-ids:hostname={hostIp} "
+                                .format(ovn_remote=cmd.ovnRemoteConnection,
+                                        ovn_encap_ip=cmd.ovnEncapIP,
+                                        ovn_encap_type=cmd.ovnEncapType,
+                                        br_ex=cmd.brExName,
+                                        hostIp=cmd.hostIp))
 
     """
     this api will be called on multiple scenarios:
@@ -159,6 +193,10 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
     def start_ovn_service(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = OvnStartServiceResponse()
+
+        if cmd.vSwitchType == "OvnKernel":
+            self.__start_ovs_kernel(cmd, rsp)
+            return jsonobject.dumps(rsp)
 
         # bond nics to dpdk driver
         r, e = ovn.changeNicToDpdkDriver(cmd.nicNamePciAddressMap)
@@ -353,7 +391,10 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             reinstall = cmd.reInstall
 
         for nicName, nicUuid in cmd.nicMap.__dict__.items():
-            vsctl.addVnic(nicName, nicUuid, reinstall)
+            if cmd.vSwitchType == "OvsKernel":
+                vsctl.addVnicKernel(nicName, nicUuid, reinstall)
+            else:
+                vsctl.addVnic(nicName, nicUuid, reinstall)
         rsp = OvnAddPortResponse()
 
         return jsonobject.dumps(rsp)
