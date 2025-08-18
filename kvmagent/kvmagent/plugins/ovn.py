@@ -112,7 +112,6 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                 # packages = ["ofed", "dpdk", "ovs", "ovn"]
                 packages = ["dpdk", "ovs", "ovn"]
                 break
-        '''
 
         temp_dir = tempfile.mkdtemp()
         for pack in packages:
@@ -134,6 +133,9 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                 logger.debug("successfully install package {} from ovn controller".format(pack))
 
         shutil.rmtree(temp_dir)
+        '''
+        packages = "dpdk openvswitch ovn ovn-host"
+        bash.bash_roe("yum --disablerepo=* --enablerepo=zstack-local --nogpgcheck install -y {}".format(packages))
 
         # change ovs-switchd and ovn-controller user to root
         bash.bash_roe("sed -i 's/^OVS_USER_ID=\"openvswitch:hugetlbfs\"/OVS_USER_ID=\"root:root\"/' "
