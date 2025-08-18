@@ -9,6 +9,7 @@ import weakref
 import re
 import warnings
 import datetime
+import sys
 import xml.etree.ElementTree as etree
 
 import simplejson
@@ -53,6 +54,7 @@ ENABLE_DUP_GLOBAL_CHECK = False
 LVMLOCKD_VERSION = None
 thinProvisioningInitializeSize = "thinProvisioningInitializeSize"
 PV_DISCARD_MIN_SIZE_IN_BYTES = 1*1024**3
+PV_DISCARD_MAX_SIZE_IN_BYTES = 100*1024**3
 ONE_HOUR_IN_SEC = 60 * 60
 LV_UUID_REFRESH_INTERVAL_IN_SEC = 60 * 30
 LVM_CONFIG_CHANGED_FILE = "/var/run/zstack/lvmConfigChanged"
@@ -1309,12 +1311,24 @@ def clean_vg_exists_host_tags(vgUuid, hostUuid, tag):
 def round_to(n, r):
     return (n + r - 1) / r * r
 
-def is_slow_discard_lv(path):
+
+
+def get_lv_discard_max_bytes(path):
     pvs = [os.path.realpath(pv) for pv in get_lv_location(path) if os.path.exists(pv)]
-    pv_discard_max_bytes = sorted([linux.get_block_discard_max_bytes(pv) for pv in pvs if linux.support_blkdiscard(pv)])
-    support_discard = len(pv_discard_max_bytes) != 0
-    disc_bytes_too_small = support_discard and pv_discard_max_bytes[0] < PV_DISCARD_MIN_SIZE_IN_BYTES
-    return support_discard and disc_bytes_too_small
+    if len(pvs) == 0:
+        raise Exception("cannot get pvs for lv %s" % path)
+
+    pv_discard_max_bytes = sorted([linux.get_block_discard_max_bytes(pv) for pv in pvs])
+    return pv_discard_max_bytes[0]
+
+
+def get_lv_discard_granularity(path):
+    pvs = [os.path.realpath(pv) for pv in get_lv_location(path) if os.path.exists(pv)]
+    if len(pvs) == 0:
+        raise Exception("cannot get pvs for lv %s" % path)
+
+    pv_discard_granularity = sorted([linux.get_block_discard_granularity(pv) for pv in pvs])
+    return pv_discard_granularity[0]
 
 @bash.in_bash
 @linux.retry(times=15, sleep_time=random.uniform(0.1, 3))
@@ -1627,12 +1641,57 @@ def _deactive_lv(path, raise_exception=True):
             logger.warn("find lv used by other process:\n%s" % str(o))
         raise
 
-def get_lv_discard_options(path, discard):
-    discard = discard == LvDiscardStrategy.ALWAYS or (discard == LvDiscardStrategy.AUTO and not is_slow_discard_lv(path))
-    return " --config 'devices {issue_discards=%s}' " % ("1" if discard else "0")
+@bash.in_bash
+def lv_in_use(path):
+    if not os.path.exists(path):
+        return False
+
+    o = bash.bash_errorout("%s --noheadings %s -olv_device_open" % (subcmd("lvs"), path))
+    return any(re.search(r'\bopen\b', line) for line in o.splitlines())
+
+
+def do_lv_discard(path, cmd):
+    if not cmd or not cmd.issueDiscards or cmd.issueDiscards == LvDiscardStrategy.NEVER:
+        return False
+
+    discard = cmd.issueDiscards
+    if discard != LvDiscardStrategy.ALWAYS and discard != LvDiscardStrategy.AUTO:
+        logger.debug("unknown discard strategy %s" % discard)
+        return False
+
+    discard_max_bytes = get_lv_discard_max_bytes(path)
+    if discard_max_bytes == 0:
+        # not support block discard
+        return False
+
+    slow_discard = discard_max_bytes < PV_DISCARD_MIN_SIZE_IN_BYTES
+    if discard == LvDiscardStrategy.AUTO and slow_discard:
+        return False
+
+    return True
+
+
+def discard_lv(path, cmd=None):
+    with OperateLv(path):
+        if lv_in_use(path):
+            logger.warn("lv discard failed because %s in use" % path)
+            return False
+
+        try:
+            timeout = report.get_timeout(cmd, reserved_time=180)
+            timeout = "" if timeout <= 0 else "timeout -s SIGKILL %s" % timeout
+            step = min(max(get_lv_discard_max_bytes(path), PV_DISCARD_MIN_SIZE_IN_BYTES), PV_DISCARD_MAX_SIZE_IN_BYTES)
+            discard_granularity = get_lv_discard_granularity(path)
+            step = round_to(step, discard_granularity)
+            shell.call("%s blkdiscard %s --step %s" % (timeout, path, step))
+        except Exception as e:
+            logger.warn("discard lv %s exception: %s" % (path, str(e)))
+            return False
+
+    return True
 
 @bash.in_bash
-def delete_lv(path, raise_exception=True, deactive=True, discard=LvDiscardStrategy.NEVER):
+def delete_lv(path, raise_exception=True, deactive=True, cmd=None):
     logger.debug("deleting lv %s" % path)
     if deactive:
         _deactive_lv(path, False)
@@ -1641,12 +1700,14 @@ def delete_lv(path, raise_exception=True, deactive=True, discard=LvDiscardStrate
         shell.run("%s -y %s" % (subcmd("lvremove"), get_meta_lv_path(path)))
     if not lv_exists(path):
         return
-    if raise_exception:
-        o = bash.bash_errorout("%s -y %s %s" % (subcmd("lvremove"), path, get_lv_discard_options(path, discard)))
-    else:
-        o = bash.bash_o("%s -y %s %s " % (subcmd("lvremove"), path, get_lv_discard_options(path, discard)))
 
-    return o
+    if do_lv_discard(path, cmd):
+        discard_lv(path, cmd=cmd)
+
+    if raise_exception:
+        return bash.bash_errorout("%s -y %s" % (subcmd("lvremove"), path))
+    else:
+        return bash.bash_o("%s -y %s" % (subcmd("lvremove"), path))
 
 
 @bash.in_bash
