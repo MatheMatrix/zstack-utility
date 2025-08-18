@@ -58,6 +58,11 @@ def get_install_date():
     if r == 0:
         return int(o.strip())
 
+    # openEuler 2403sp1 only has qemu package
+    r, o, e = bash.bash_roe("rpm -q --queryformat '%{INSTALLTIME}' qemu")
+    if r == 0:
+        return int(o.strip())
+
 # QEMU emulator version 2.12.0 (qemu-kvm-ev-2.12.0-44.1.el7_9.1)
 # return qemu-kvm-ev-2.12.0-44.1.el7_9.1
 def get_version_from_exe_file(path, error_out=False):
@@ -118,7 +123,7 @@ QEMU_EXACT_VERSION = get_exact_version()         # e.g. 6.2.0-232.g09252161d1.ky
 def get_running_version(vm_uuid):
     pid = get_vm_pid(vm_uuid)
     if pid:
-        if get_process_start_time(pid) > QEMU_INSTALL_DATE:
+        if QEMU_INSTALL_DATE is not None and get_process_start_time(pid) > QEMU_INSTALL_DATE:
             return QEMU_EXACT_VERSION
         exe = "/proc/%s/exe" % pid
         r = get_version_from_exe_file(exe)
