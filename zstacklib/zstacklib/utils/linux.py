@@ -1005,10 +1005,11 @@ def qcow2_create(dst, size):
     shell.check_run('/usr/bin/qemu-img create -f qcow2 %s %s' % (dst, size))
     os.chmod(dst, 0o660)
 
-def qemu_img_resize(target, size, fmt='qcow2', force=False, cmd=None):
+def qemu_img_resize(target, size, fmt='qcow2', cmd=None):
     fmt_option = '-f %s' % fmt
-    force_option = '--shrink' if force else ''
-    if cmd.kvmHostAddons.encryptKey:
+    force_option = '--shrink' if cmd.force else ''
+    if (hasattr(cmd, 'kvmHostAddons') and cmd.kvmHostAddons and
+            hasattr(cmd.kvmHostAddons, 'encryptKey') and cmd.kvmHostAddons.encryptKey):
         encrypt_opt = secret.get_qemu_resize_encrypt_options(cmd, target)
         shell.check_run('/usr/bin/qemu-img resize %s %s' % (encrypt_opt, size))
     else:
