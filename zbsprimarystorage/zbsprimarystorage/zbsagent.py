@@ -287,7 +287,7 @@ class ZbsAgent(plugin.TaskManager):
 
         _, logical_pool, volume, _ = zbsutils.parse_cbd_path(cmd.path)
 
-        o = zbsutils.expand_volume(logical_pool, volume, cmd.size, cmd.unit)
+        o = zbsutils.expand_volume(logical_pool, volume, cmd.size, cmd.unit if cmd.unit else '')
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
             raise Exception('failed to expand volume[%s], error[%s]' % (volume, ret.error.message))
@@ -565,7 +565,7 @@ class ZbsAgent(plugin.TaskManager):
             rsp.installPath = volume_path
             return jsonobject.dumps(rsp)
 
-        o = zbsutils.create_volume(cmd.logicalPool, cmd.volume, cmd.size, cmd.unit)
+        o = zbsutils.create_volume(cmd.logicalPool, cmd.volume, cmd.size, cmd.unit if cmd.unit else "")
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
             raise Exception('failed to create volume[%s], error[%s]' % (cmd.volume, ret.error.message))
