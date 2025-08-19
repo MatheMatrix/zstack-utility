@@ -115,8 +115,8 @@ set_selinux("state=disabled", host_post_info)
 
 
 # name: make sure MDS has access to storage resources
-command = ("[ -f /usr/local/bin/zbsadm ] && /usr/local/bin/zbsadm client deploy --host %s --port %s -p %s"
-           % (host_post_info.host, host_post_info.remote_port, host_post_info.remote_pass))
+command = ("[ -f /usr/local/bin/zbsadm ] && /usr/local/bin/zbsadm client deploy --host %s --port %s -u %s -p %s"
+           % (host_post_info.host, host_post_info.remote_port, host_post_info.remote_user, host_post_info.remote_pass))
 run_remote_command(command, host_post_info)
 
 
