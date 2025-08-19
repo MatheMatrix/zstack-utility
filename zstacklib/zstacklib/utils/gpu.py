@@ -31,14 +31,15 @@ def parse_amd_gpu_output(output):
         gpu_info_json = json.loads(output.strip())
         for card_name, card_data in gpu_info_json.items():
             gpuinfo = {}
-            pci_device_address = card_data['PCI Bus'].lower()
+            pci_device_address = card_data.get('PCI Bus').lower()
             if len(pci_device_address.split(':')[0]) == 8:
                 pci_device_address = pci_device_address[4:].lower()
 
             gpuinfo["pciAddress"] = pci_device_address
-            gpuinfo["memory"] = card_data['VRAM Total Memory (B)']
-            gpuinfo["power"] = card_data['Average Graphics Package Power (W)']
-            gpuinfo["serialNumber"] = card_data['Serial Number']
+            gpuinfo["memory"] = card_data.get('VRAM Total Memory (B)')
+            gpuinfo["power"] = card_data.get('Average Graphics Package Power (W)',
+                                             card_data.get('Current Socket Graphics Package Power (W)', None))
+            gpuinfo["serialNumber"] = card_data.get('Serial Number')
             gpuinfos.append(gpuinfo)
     except Exception as e:
         logger.error("amd query gpu is error, %s " % e)
@@ -255,5 +256,5 @@ def get_vastai_type():
 
 
 def is_valid_processing_accelerator(device):
-    valid_keywords = {"Device", "SV100"}
+    valid_keywords = {"Device", "SV100", "MI308X"}
     return any(keyword in device for keyword in valid_keywords)
