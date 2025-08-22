@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # encoding=utf-8
 import argparse
+import commands
 import datetime
 from distutils.version import LooseVersion
 import os
@@ -647,6 +648,22 @@ def do_libvirt_qemu_config():
     host_post_info.post_label_param = "/etc/libvirt/hooks/qemu"
     run_remote_command(command, host_post_info)
 
+@skip_on_zyj(isZYJ)
+def do_block_usb_storage():
+    # name: report usb storage device attached
+    status, mn_ip = commands.getstatusoutput('zstack-ctl get_configuration management.server.ip')
+    if status:
+        mn_ip = "127.0.0.1"
+    status, mn_port = commands.getstatusoutput('zstack-ctl get_configuration RESTFacade.port')
+    if status:
+        mn_port = 8080
+
+    command = '''echo install usb_storage curl -X POST -H "Content-Type:application/json" -H "commandpath:/host/usb_storage/detected" -d "{'hostUuid':'%s'}" --retry 5 http://%s:%s/zstack/asyncrest/sendcommand > /etc/modprobe.d/block_usb_storage.conf''' % (
+    host_uuid, mn_ip, mn_port)
+    host_post_info.post_label = "ansible.shell.report.usb.storage"
+    host_post_info.post_label_param = "report usb storage device attached"
+    run_remote_command(command, host_post_info)
+
 
 @skip_on_zyj(isZYJ)
 def do_network_config():
@@ -942,6 +959,7 @@ copy_kvmagshutdown()
 create_virtio_driver_directory()
 set_max_performance()
 do_libvirt_qemu_config()
+do_block_usb_storage()
 do_network_config()
 copy_spice_certificates_to_host()
 install_virtualenv()
