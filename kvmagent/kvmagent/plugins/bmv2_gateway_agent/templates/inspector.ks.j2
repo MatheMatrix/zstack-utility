@@ -302,7 +302,7 @@ def collect_nvidia_gpu_info(pci_device_address, addon_info):
         if len(part.strip()) == 0:
             continue
         gpuinfo = part.split(',')
-        if pci_device_address in gpuinfo[0].strip():
+        if pci_device_address.lower() in gpuinfo[0].strip().lower():
             addon_info["memory"] = gpuinfo[1].strip()
             addon_info["power"] = gpuinfo[2].strip()
             addon_info["serialNumber"] = gpuinfo[3].strip()
