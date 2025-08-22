@@ -3356,3 +3356,11 @@ def is_rpm_installed(rpm_name):
 def get_rpm_version(rpm_name):
     return shell.call(
         'rpm -q --queryformat "%%{VERSION}-%%{RELEASE}" %s' % rpm_name)
+
+
+def catch_bad_alloc_exception(return_code, error_detail):
+    if return_code == 134 and 'std::bad_alloc' in error_detail:
+        logger.warn('insufficient allocatable physical memory, error[%s]' % error_detail)
+        return True
+    
+    return False
