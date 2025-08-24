@@ -498,7 +498,7 @@ class SharedMountPointPrimaryStoragePlugin(kvmagent.KvmAgent):
             shell.call("mv %s %s" % (tmp, cmd.destPath))
         self.imagestore_client.clean_meta(cmd.destPath)
 
-        _, rsp.size = linux.qcow2_size_and_actual_size(cmd.destPath)
+        _, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.destPath)
         rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.mountPoint)
         return jsonobject.dumps(rsp)
 

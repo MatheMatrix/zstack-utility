@@ -1293,13 +1293,14 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
         with lvm.RecursiveOperateLv(top, shared=True):
             if linux.qcow2_get_backing_file(cmd.top) != linux.qcow2_get_backing_file(cmd.base):
-                linux.qcow2_commit(cmd.top, cmd.base)
+                linux.qcow2_commit(top, base)
 
             if cmd.topChildrenInstallPathInDb:
                 for childrenInstallPath in cmd.topChildrenInstallPathInDb:
-                    with lvm.RecursiveOperateLv(childrenInstallPath, shared=True):
-                        if linux.qcow2_get_backing_file(childrenInstallPath) != base:
-                            linux.qcow2_rebase_no_check(base, childrenInstallPath)
+                    child_abs = translate_absolute_path_from_install_path(childrenInstallPath)
+                    with lvm.RecursiveOperateLv(child_abs, shared=True):
+                        if linux.qcow2_get_backing_file(child_abs) != base:
+                            linux.qcow2_rebase_no_check(base, child_abs)
 
             lvm.delete_lv_meta(base)
 

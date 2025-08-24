@@ -1985,7 +1985,8 @@ class MergeSnapshotDaemon(plugin.TaskDaemon):
                     expected = dest_disk_install_path_depth == chain_depth - 1
                 # for not fullRebase, check the current_install_path depth increased 1
                 if base_disk_install_path is not None:
-                    expected = disk_backing_file_chain.index(base_disk_install_path) == dest_disk_install_path_depth + 1
+                    expected = ((base_disk_install_path in disk_backing_file_chain) and
+                                disk_backing_file_chain.index(base_disk_install_path) == dest_disk_install_path_depth + 1)
                 break
         return expected
 
@@ -9693,9 +9694,11 @@ host side snapshot files chian:
         try:
             vm.do_block_commit(cmd, cmd.volume)
             if cmd.topChildrenInstallPathInDb:
+                base_actual = get_volume_actual_installpath(cmd.base)
                 for children in cmd.topChildrenInstallPathInDb:
-                    if linux.qcow2_get_backing_file(children) != cmd.base:
-                        linux.qcow2_rebase_no_check(cmd.base, children)
+                    child_actual = get_volume_actual_installpath(children)
+                    if linux.qcow2_get_backing_file(child_actual) != base_actual:
+                        linux.qcow2_rebase_no_check(base_actual, child_actual)
         except kvmagent.KvmError as err:
             logger.warn(linux.get_exception_stacktrace())
             rsp.error = str(err)
