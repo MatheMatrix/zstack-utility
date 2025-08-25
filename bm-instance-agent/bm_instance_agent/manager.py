@@ -381,7 +381,7 @@ class AgentManager(object):
             else:
                 gpu_type = "Generic"
 
-            addonInfo = self._collect_gpu_addoninfo(gpu_type, pci_device_address, vendor_name)
+            addonInfo = self._collect_gpu_addoninfo(gpu_type, pci_device_address.lower(), vendor_name)
 
             if addonInfo.get("device"):
                 device = addonInfo["device"]
