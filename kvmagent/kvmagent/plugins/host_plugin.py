@@ -445,7 +445,7 @@ class HostNetworkInterfaceInventory(object):
         self.rev = None
         self.driverType = driverType
 
-        if driverType == "vfio-pci":
+        if driverType == "vfio-pci" or driverType == "uio_pci_generic":
             return
 
         bonds = ovs.getAllBondFromFile()
@@ -511,6 +511,7 @@ class HostNetworkInterfaceInventory(object):
             # readlink -f /sys/class/net/ens3/device
             # /sys/devices/pci0000:00/0000:00:03.0/virtio1
             self.pciDeviceAddress = bash_o("readlink -f /sys/class/net/%s/device | awk -F '/' '{print $5}'" % self.interfaceName)
+            self.pciDeviceAddress = self.pciDeviceAddress.strip("\n")
 
         self.driverType = get_nic_driver_type(self.interfaceName)
         self.offloadStatus = ovs.getOffloadStatus(self.interfaceName)
