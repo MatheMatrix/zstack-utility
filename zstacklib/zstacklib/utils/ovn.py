@@ -9,6 +9,7 @@ import yaml
 import glob
 import uuid
 import re
+import simplejson
 from enum import Enum, unique
 
 from zstacklib.utils import log
@@ -81,7 +82,7 @@ def getAllVfioPciNic():
     ret = []
     dpdkNics = getAllDpdkNic()
     for nic in dpdkNics:
-        if nic.driver == "vfio-pci":
+        if nic.driver == "vfio-pci" or nic.driver == "uio_pci_generic":
             ret.append(nic)
 
     return ret
@@ -138,8 +139,8 @@ def changeNicToDpdkDriver(nicNamePciAddressMap):
 
 @bash.in_bash
 def restoreNicDriver(pciAddressList):
-    logger.debug("starting restore nic driver {}".format(pciAddressList))
-    if not restoreNicDriver:
+    logger.debug("starting restore nic driver {}".format(simplejson.dumps(pciAddressList)))
+    if not pciAddressList:
         return
 
     dpdkNics = getAllDpdkNic()
@@ -160,8 +161,11 @@ def restoreNicDriver(pciAddressList):
         if targetNic.driver != "vfio-pci" and targetNic.driver != "uio_pci_generic":
             continue
 
-        r, _, e = bash.bash_roe(DevBindBin + " -b {driver} {pciAddress}"
-                                .format(driver=targetNic.oldDriver, pciAddress=pciAddress))
+        driverType = "virtio-pci" if targetNic.driver == "uio_pci_generic" else targetNic.oldDriver
+        cmd = DevBindBin + " -u {pciAddress};".format(pciAddress=pciAddress)
+        cmd = cmd + DevBindBin + " -b {driver} {pciAddress}".format(driver=driverType, pciAddress=pciAddress)
+        logger.debug("cmd: {}".format(cmd))
+        r, _, e = bash.bash_roe(cmd)
         if r != 0:
             logger.debug(
                 "change change nic [pci address: {}] driver to {} failed: {}"
