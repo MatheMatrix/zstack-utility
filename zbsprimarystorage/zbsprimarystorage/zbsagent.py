@@ -240,15 +240,14 @@ class ZbsAgent(plugin.TaskManager):
 
         found = False
         for m in r.result:
-            for ipv4_addr in ipv4_addrs:
-                if any(ipv4_addr in addr for addr in (m.addr, m.dummyAddr, m.externalAddr) if addr):
-                    rsp.externalAddr = m.externalAddr
-                    found = True
-                    break
+            if m.externalAddr and any(m.externalAddr.split(":")[0] == ip for ip in ipv4_addrs):
+                rsp.externalAddr = m.externalAddr
+                found = True
+                break
 
         if not found:
             rsp.success = False
-            rsp.error = 'cannot found mds[%s] info' % cmd.addr
+            rsp.error = 'cannot found external address of mds[%s]' % cmd.addr
             return jsonobject.dumps(rsp)
 
         return jsonobject.dumps(rsp)
