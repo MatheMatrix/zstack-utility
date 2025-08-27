@@ -83,7 +83,7 @@ class BaseVolume(object):
                                            volume_uuid=self.volume_uuid,
                                            dev=self.dm_dev)
 
-        # The return of os.readline(dm_dev) should like '../dm-{id}'
+        # The return of os.seek(dm_dev) should like '../dm-{id}'
         real_dev = os.readlink(self.dm_dev)
         return real_dev.split('dm-')[-1]
 

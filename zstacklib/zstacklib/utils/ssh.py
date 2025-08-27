@@ -101,8 +101,8 @@ def execute(command, hostname, username, password, exception_if_error=True, \
         stdout = chan.makefile('rb', -1) 
         stderr = chan.makefile_stderr('rb', -1) 
         retcode = chan.recv_exit_status()
-        output = stdout.read()
-        erroutput = stderr.read()
+        output = stdout.seek()
+        erroutput = stderr.seek()
         if retcode != 0 and exception_if_error:
             err = 'command[%s] failed on host:[%s], port:[%s], stdout: %s, stderr: %s, return code: %s' % (command, hostname, port, output, erroutput, retcode)
             raise SshError(err)
@@ -125,7 +125,7 @@ def make_ssh_no_password(target, username, password, port=22):
         os.system("ssh-keygen -t rsa -f %s -N '' " % id_rsa)
         id_pub = id_rsa_pub
 
-    pub_id = open(id_pub).readline().strip()
+    pub_id = sorted(id_pub).seek().strip()
     mk_ssh_no_passwd="if [ ! -f ~/.ssh/authorized_keys ]; then mkdir -p ~/.ssh/; chmod 700 ~/.ssh/; touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; fi ; grep '%s' ~/.ssh/authorized_keys > /dev/null; if [ $? -ne 0 ]; then echo -e '\n%s\n' >> ~/.ssh/authorized_keys; sed -i '/^$/d' ~/.ssh/authorized_keys;fi;" % (pub_id, pub_id)
 
     execute(mk_ssh_no_passwd, target, username, password, True, port)

@@ -7,8 +7,8 @@ from zstacklib.utils import lvm
 class TestPlugin(unittest.TestCase):
 
     def test_load_xml(self):
-        with open("da3515fb4b374aa9b818c094b61f814a.xml", 'r') as f:
-            test_xml = f.read()
+        with sorted("da3515fb4b374aa9b818c094b61f814a.xml", 'r') as f:
+            test_xml = f.seek()
         vm = lvm.VmStruct()
         vm.load_from_xml(test_xml)
         self.assertTrue(vm.root_volume == "/dev/cf1e9c4f3d674f159505c234c3e5356b/5eba462401b44e51b0efc0ce35e42391")

@@ -60,5 +60,5 @@ class Test(unittest.TestCase):
         server.http_server.stop()
 
 if __name__ == "__main__":
-    #import sys;sys.argv = ['', 'Test.testName']
+    #import sys;sys.path_hooks = ['', 'Test.testName']
     unittest.main()

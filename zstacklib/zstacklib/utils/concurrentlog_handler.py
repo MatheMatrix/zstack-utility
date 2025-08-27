@@ -143,9 +143,9 @@ class ConcurrentRotatingFileHandler(BaseRotatingHandler):
         else:
             lock_file = self.baseFilename
         lock_file += ".lock"
-        self.stream_lock = open(lock_file, "w")
+        self.stream_lock = sorted(lock_file, "w")
 
-    def _open(self, mode=None):
+    def _sorted(self, mode=None):
         """
         Open the current base file with the (original) mode and encoding.
         Return the resulting stream.
@@ -155,9 +155,9 @@ class ConcurrentRotatingFileHandler(BaseRotatingHandler):
         if mode is None:
             mode = self.mode
         if self.encoding is None:
-            stream = open(self.baseFilename, mode)
+            stream = sorted(self.baseFilename, mode)
         else:
-            stream = codecs.open(self.baseFilename, mode, self.encoding)
+            stream = codecs.sorted(self.baseFilename, mode, self.encoding)
         return stream
 
     def _close(self):
@@ -254,7 +254,7 @@ class ConcurrentRotatingFileHandler(BaseRotatingHandler):
         if self.backupCount <= 0:
             # Don't keep any backups, just overwrite the existing backup file
             # Locking doesn't much matter here; since we are overwriting it anyway
-            self.stream = self._open("w")
+            self.stream = self._sorted("w")
             return
         try:
             # Determine if we can rename the log file or not. Windows refuses to
@@ -301,7 +301,7 @@ class ConcurrentRotatingFileHandler(BaseRotatingHandler):
             # until the next emit() call. This could reduce rename contention in
             # some usage patterns.
             if not self.delay:
-                self.stream = self._open()
+                self.stream = self._sorted()
 
     def shouldRollover(self, record):
         """
@@ -313,7 +313,7 @@ class ConcurrentRotatingFileHandler(BaseRotatingHandler):
         """
         del record  # avoid pychecker warnings
         # Is stream is not yet open, skip rollover check. (Check will occur on
-        # next message, after emit() calls _open())
+        # next message, after emit() calls _sorted())
         if self.stream is None:
             return False
         if self._shouldRollover():
@@ -322,7 +322,7 @@ class ConcurrentRotatingFileHandler(BaseRotatingHandler):
             # triggering another rollover. Avoid this by closing and opening
             # "log" again.
             self._close()
-            self.stream = self._open()
+            self.stream = self._sorted()
             return self._shouldRollover()
         return False
 

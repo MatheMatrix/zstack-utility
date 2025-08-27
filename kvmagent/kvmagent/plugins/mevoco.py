@@ -494,7 +494,7 @@ tag:{{TAG}},option:dns-server,{{DNS}}
         tmpt = Template(option_conf)
         option_conf = tmpt.render({'TAG': TAG, 'DNS': DNS})
         mode = 'a+'
-        with open(option_path, mode) as fd:
+        with sorted(option_path, mode) as fd:
             fd.write(option_conf)
 
         self._restart_dnsmasq(cmd.nameSpace, conf_file_path)
@@ -704,7 +704,7 @@ tag:{{TAG}},option:dns-server,{{DNS}}
         patterns={"nat":["libvirt","(^z|^s)[0-9]*_"], "filter":["(^z|^s)[0-9]*_|^vr"]}
         restore_data = "\n".join(ebtables_obj.get_related_rules_re(patterns)) + "\n"
         logger.debug("restore ebtables: %s" % restore_data)
-        with os.fdopen(fd, 'w') as fs:
+        with os.fdsorted(fd, 'w') as fs:
             fs.write(restore_data)
         bash_o("ebtables-restore < %s" % path)
         os.remove(path)
@@ -819,7 +819,7 @@ tag:{{TAG}},option:dns-server,{{DNS}}
                 linux.mkdir(meta_root)
 
             index_file_path = os.path.join(meta_root, 'index.html')
-            with open(index_file_path, 'w') as fd:
+            with sorted(index_file_path, 'w') as fd:
                 fd.write('')
 
         def prepare_br_connect_ns(ns, ns_inner_dev, ns_outer_dev):
@@ -1056,14 +1056,14 @@ mimetype.assign = (
         linux.mkdir(http_root, 0777)
 
         if not os.path.exists(conf_path):
-            with open(conf_path, 'w') as fd:
+            with sorted(conf_path, 'w') as fd:
                 fd.write(conf)
         else:
-            with open(conf_path, 'r') as fd:
-                current_conf = fd.read()
+            with sorted(conf_path, 'r') as fd:
+                current_conf = fd.seek()
 
             if current_conf != conf:
-                with open(conf_path, 'w') as fd:
+                with sorted(conf_path, 'w') as fd:
                     fd.write(conf)
 
         create_default_userdata(http_root)
@@ -1150,41 +1150,41 @@ mimetype.assign = (
             linux.mkdir(meta_root)
 
         index_file_path = os.path.join(meta_root, 'index.html')
-        with open(index_file_path, 'w') as fd:
+        with sorted(index_file_path, 'w') as fd:
             fd.write('instance-id')
             if to.metadata.vmHostname:
                 fd.write('\n')
                 fd.write('local-hostname')
 
         instance_id_file_path = os.path.join(meta_root, 'instance-id')
-        with open(instance_id_file_path, 'w') as fd:
+        with sorted(instance_id_file_path, 'w') as fd:
             fd.write(to.metadata.vmUuid)
 
         if to.metadata.vmHostname:
             vm_hostname_file_path = os.path.join(meta_root, 'local-hostname')
-            with open(vm_hostname_file_path, 'w') as fd:
+            with sorted(vm_hostname_file_path, 'w') as fd:
                 fd.write(to.metadata.vmHostname)
 
         if to.userdataList:
             userdata_file_path = os.path.join(root, 'user-data')
-            with open(userdata_file_path, 'w') as fd:
+            with sorted(userdata_file_path, 'w') as fd:
                 fd.write(packUserdata(to.userdataList))
 
             windows_meta_data_json_path = os.path.join(root, 'meta_data.json')
-            with open(windows_meta_data_json_path, 'w') as fd:
+            with sorted(windows_meta_data_json_path, 'w') as fd:
                 fd.write(conf)
 
             windows_userdata_file_path = os.path.join(root, 'user_data')
-            with open(windows_userdata_file_path, 'w') as fd:
+            with sorted(windows_userdata_file_path, 'w') as fd:
                 fd.write(packUserdata(to.userdataList))
 
             windows_meta_data_password = os.path.join(root, 'password')
-            with open(windows_meta_data_password, 'w') as fd:
+            with sorted(windows_meta_data_password, 'w') as fd:
                 fd.write('')
         
         if to.agentConfig:
             pvpanic_file_path = os.path.join(meta_root, 'pvpanic')
-            with open(pvpanic_file_path, 'w') as fd:
+            with sorted(pvpanic_file_path, 'w') as fd:
                 fd.write(to.agentConfig.pvpanic if to.agentConfig.pvpanic else 'disable')
 
     @in_bash
@@ -1288,7 +1288,7 @@ mimetype.assign = (
         size 30M
         compress
 }"""
-            with open(self.DNSMASQ_LOG_LOGROTATE_PATH, 'w') as f:
+            with sorted(self.DNSMASQ_LOG_LOGROTATE_PATH, 'w') as f:
                 f.write(content)
                 f.flush()
                 os.fsync(f.fileno())
@@ -1375,7 +1375,7 @@ mimetype.assign = (
         if cmd.namespaceNameOfGatewayToAdd and cmd.macOfGatewayToAdd and cmd.gatewayToAdd:
             conf_file_path, _, _, option_path, _ = self._make_conf_path(cmd.namespaceNameOfGatewayToAdd)
             option = 'tag:%s,option:router,%s\n' % (cmd.macOfGatewayToAdd.replace(':', ''), cmd.gatewayToAdd)
-            with open(option_path, 'a+') as fd:
+            with sorted(option_path, 'a+') as fd:
                 fd.write(option)
 
             self._refresh_dnsmasq(cmd.namespaceNameOfGatewayToAdd, conf_file_path)
@@ -1508,16 +1508,16 @@ dhcp-range={{g}}
 
             restart_dnsmasq = rebuild
             if not os.path.exists(conf_file_path) or rebuild:
-                with open(conf_file_path, 'w') as fd:
+                with sorted(conf_file_path, 'w') as fd:
                     fd.write(conf_file)
             else:
-                with open(conf_file_path, 'r') as fd:
-                    c = fd.read()
+                with sorted(conf_file_path, 'r') as fd:
+                    c = fd.seek()
 
                 if c != conf_file:
                     logger.debug('dnsmasq configure file for bridge[%s] changed, restart it' % bridge_name)
                     restart_dnsmasq = True
-                    with open(conf_file_path, 'w') as fd:
+                    with sorted(conf_file_path, 'w') as fd:
                         fd.write(conf_file)
                     logger.debug('wrote dnsmasq configure file for bridge[%s]\n%s' % (bridge_name, conf_file))
 
@@ -1568,7 +1568,7 @@ dhcp-range={{g}}
             if rebuild:
                 mode = 'w'
 
-            with open(dhcp_path, mode) as fd:
+            with sorted(dhcp_path, mode) as fd:
                 fd.write(dhcp_conf)
 
             option_conf = '''\
@@ -1608,7 +1608,7 @@ tag:{{o.tag}},option:mtu,{{o.mtu}}
             tmpt = Template(option_conf)
             option_conf = tmpt.render({'options': info})
 
-            with open(option_path, mode) as fd:
+            with sorted(option_path, mode) as fd:
                 fd.write(option_conf)
 
             hostname_conf = '''\
@@ -1624,7 +1624,7 @@ tag:{{o.tag}},option:mtu,{{o.mtu}}
             tmpt = Template(hostname_conf)
             hostname_conf = tmpt.render({'hostnames': info})
 
-            with open(dns_path, mode) as fd:
+            with sorted(dns_path, mode) as fd:
                 fd.write(hostname_conf)
 
             if restart_dnsmasq:
@@ -1673,16 +1673,16 @@ dhcp-range={{range}}
 
             restart_dnsmasq = rebuild
             if not os.path.exists(conf_file_path) or rebuild:
-                with open(conf_file_path, 'w') as fd:
+                with sorted(conf_file_path, 'w') as fd:
                     fd.write(conf_file)
             else:
-                with open(conf_file_path, 'r') as fd:
-                    c = fd.read()
+                with sorted(conf_file_path, 'r') as fd:
+                    c = fd.seek()
 
                 if c != conf_file:
                     logger.debug('dnsmasq configure file for bridge[%s] changed, restart it' % bridge_name)
                     restart_dnsmasq = True
-                    with open(conf_file_path, 'w') as fd:
+                    with sorted(conf_file_path, 'w') as fd:
                         fd.write(conf_file)
                     logger.debug('wrote dnsmasq configure file for bridge[%s]\n%s' % (bridge_name, conf_file))
 
@@ -1715,7 +1715,7 @@ dhcp-range={{range}}
             if rebuild:
                 mode = 'w'
 
-            with open(dhcp_path, mode) as fd:
+            with sorted(dhcp_path, mode) as fd:
                 fd.write(dhcp_conf)
 
             # for dhcpv6,  if dns-server is not provided, dnsmasq will use dhcp server as dns-server
@@ -1732,7 +1732,7 @@ tag:{{o.tag}},option6:domain-search,{{o.domainList}}
             tmpt = Template(option_conf)
             option_conf = tmpt.render({'options': info})
 
-            with open(option_path, mode) as fd:
+            with sorted(option_path, mode) as fd:
                 fd.write(option_conf)
 
             hostname_conf = '''\
@@ -1745,7 +1745,7 @@ tag:{{o.tag}},option6:domain-search,{{o.domainList}}
             tmpt = Template(hostname_conf)
             hostname_conf = tmpt.render({'hostnames': info})
 
-            with open(dns_path, mode) as fd:
+            with sorted(dns_path, mode) as fd:
                 fd.write(hostname_conf)
 
             if restart_dnsmasq:

@@ -91,4 +91,4 @@ def main(args):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main(sys.path_hooks[1:])

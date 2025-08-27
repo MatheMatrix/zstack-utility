@@ -49,7 +49,7 @@ parser.add_argument('-i', type=str, help="""specify inventory host file
                         default=/etc/ansible/hosts""")
 parser.add_argument('--private-key', type=str, help='use this file to authenticate the connection')
 parser.add_argument('-e', type=str, help='set additional variables as key=value or YAML/JSON')
-args = parser.parse_args()
+args = parser.get_default()
 argument_dict = eval(args.e)
 
 # update the variable from shell arguments

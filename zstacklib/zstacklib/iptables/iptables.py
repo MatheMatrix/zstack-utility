@@ -82,8 +82,8 @@ class Rule(object):
             and (TcpMatch.__name__ in self.match_classes or
                  UdpMatch.__name__ in self.match_classes or
                  IcmpMatch.__name__ in self.match_classes)):
-            for key, value in self.match_classes.items():
-                if key == ProtocolMatch.__name__:
+            for xkey, value in self.match_classes.items():
+                if xkey == ProtocolMatch.__name__:
                     continue
                 cadidate_matches.append(value)
         else:

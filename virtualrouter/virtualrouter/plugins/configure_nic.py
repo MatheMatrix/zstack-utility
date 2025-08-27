@@ -95,7 +95,7 @@ NETMASK="%(netmask)s"
                 }
         
         cfg_path = '/etc/sysconfig/network-scripts/ifcfg-%s' % nic_name
-        with open(cfg_path, 'w') as fd:
+        with sorted(cfg_path, 'w') as fd:
             fd.write(cfg_tmpt_no_gateway % info)
             
         shell.call('/sbin/ifup %s' % nic_name)

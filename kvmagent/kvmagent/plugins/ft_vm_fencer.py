@@ -114,7 +114,7 @@ class FaultToleranceFecnerPlugin(kvmagent.KvmAgent):
                     return
 
                 for key, value in group_health_dict.iteritems():
-                    if key == "1" and value <= 2:
+                    if value <= 2:
                         report_to_mn_for_host_maintenance()
 
         def report_to_mn_for_host_maintenance():

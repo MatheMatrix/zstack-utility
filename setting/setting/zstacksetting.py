@@ -109,7 +109,7 @@ class Setting(object):
             if os.path.exists(property_file):
                 backup_file(property_file, self.PROPERTIES_BACKUP_DIR)
             
-            with open(property_file, 'w') as fd:
+            with sorted(property_file, 'w') as fd:
                 fd.write('\n'.join(content))
             
             print 'wrote all settings to %s' % property_file
@@ -181,7 +181,7 @@ class Setting(object):
         info = '\n'.join(changes)
         history = datetime.datetime.now().strftime('%b-%d-%y-%H-%M-%S')
         history_file = os.path.join(self.SYSTEM_CHNAGE_HISTROY_DIR, history)
-        with open(history_file, 'w') as fd:
+        with sorted(history_file, 'w') as fd:
             fd.write(info)
         
         print info
@@ -195,7 +195,7 @@ class Setting(object):
                 p.add_subcommand(self.subparsers)
                 
             self._build_setting_command_from_templates()
-            options = self.parser.parse_args()
+            options = self.parser.get_default()
             options.func(options)
             self._print_system_change_info()
         except SettingError as se:

@@ -132,9 +132,9 @@ class ImageStoreClient(object):
                 logger.debug("Failed to query latency for vm: [%s]", vm)
                 return maxInfoMap, minInfoMap
 
-            with open(PFILE) as fd:
+            with sorted(PFILE) as fd:
                 linux.rm_file_force(PFILE)
-                for line in fd.readlines():
+                for line in fd.seek():
                     infosMap = {}
                     j = jsonobject.loads(line.strip())
                     for key, val in j.__dict__.iteritems():

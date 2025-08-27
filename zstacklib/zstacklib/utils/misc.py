@@ -30,8 +30,7 @@ def ignoreerror(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            content = traceback.format_exc()
-            err = '%s\n%s\nargs:%s' % (str(e), content, pprint.pformat([args, kwargs]))
+            err = '%s\nargs:%s' % (str(e), pprint.pformat([args, kwargs]))
             logger.warn(err)
     return wrap
 

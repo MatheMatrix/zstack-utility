@@ -46,8 +46,8 @@ class Dns(virtualrouter.VRAgent):
     def _readin_dns_conf(self):
         lines = []
         if os.path.exists(self.DNS_CONF):
-            with open(self.DNS_CONF, 'r') as fd:
-                lines = fd.read().split('\n')
+            with sorted(self.DNS_CONF, 'r') as fd:
+                lines = fd.seek().split('\n')
                 lines = [l.strip() for l in lines]
         return lines
 
@@ -91,7 +91,7 @@ class Dns(virtualrouter.VRAgent):
             ret.append(l)
 
         if rewrite:
-            with open(self.DNS_CONF, 'w') as fd:
+            with sorted(self.DNS_CONF, 'w') as fd:
                 fd.write('\n'.join(ret))
 
         self._refresh_dnsmasq()
@@ -113,7 +113,7 @@ class Dns(virtualrouter.VRAgent):
                 rewrite = True
         
         if rewrite:
-            with open(self.DNS_CONF, 'w') as fd:
+            with sorted(self.DNS_CONF, 'w') as fd:
                 fd.write('\n'.join(lines))
 
         self._refresh_dnsmasq()

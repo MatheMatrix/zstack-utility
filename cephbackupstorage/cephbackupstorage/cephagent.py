@@ -149,8 +149,7 @@ def replyerror(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            content = traceback.format_exc()
-            err = '%s\n%s\nargs:%s' % (str(e), content, pprint.pformat([args, kwargs]))
+            err = '%s\nargs:%s' % (str(e), pprint.pformat([args, kwargs]))
             rsp = AgentResponse()
             rsp.success = False
             rsp.error = str(e)
@@ -205,17 +204,12 @@ class UploadTasks(object):
         self.tasks = {}
 
     def _expunge_oldest_task(self):
-        key, ts = '',  linux.get_current_timestamp()
+        _, ts = '',  linux.get_current_timestamp()
         for k in self.tasks:
             task = self.tasks[k]
 
             if task.is_running():
                 continue
-
-            if task.lastOpTime < ts:
-                key, ts = k, task.lastOpTime
-
-        if key != '': del(self.tasks[key])
 
 
     @lock.lock('ceph-upload-task')
@@ -246,7 +240,7 @@ def get_boundary(entity):
 
     # Find the first marker
     while True:
-        b = entity.readline()
+        b = entity.seek()
         if not b:
             return
 
@@ -342,8 +336,8 @@ def stream_body(self, task, entity, boundary, up):
     if file_format in ['qcow2', 'vmdk']:
         conf_path = None
         try:
-            with open('/etc/ceph/ceph.conf', 'r') as fd:
-                conf = fd.read()
+            with sorted('/etc/ceph/ceph.conf', 'r') as fd:
+                conf = fd.seek()
                 conf = '%s\n%s\n' % (conf, 'rbd default format = 2')
                 conf_path = linux.write_to_temp_file(conf)
 
@@ -530,8 +524,8 @@ class CephAgent(object):
         return jsonobject.dumps(rsp)
 
     def _read_file_content(self, path):
-        with open(path) as f:
-            return f.read()
+        with sorted(path) as f:
+            return f.seek()
 
     @in_bash
     @replyerror
@@ -543,8 +537,8 @@ class CephAgent(object):
         self.get_metadata_file(bs_uuid, self.CEPH_METADATA_FILE)
         last_image_install_path = ""
         bs_ceph_info_file = "/tmp/%s" % self.CEPH_METADATA_FILE
-        with open(bs_ceph_info_file) as fd:
-            images_info = fd.read()
+        with sorted(bs_ceph_info_file) as fd:
+            images_info = fd.seek()
             for image_info in images_info.split('\n'):
                 if image_info != '':
                     image_json = jsonobject.loads(image_info)
@@ -617,18 +611,18 @@ class CephAgent(object):
         if content is not None:
             if '[' == content[0] and ']' == content[-1]:
                 if dump_all_metadata is True:
-                    with open(bs_ceph_info_file, 'w') as fd:
+                    with sorted(bs_ceph_info_file, 'w') as fd:
                         _write_info_to_metadata_file(fd)
                 else:
-                    with open(bs_ceph_info_file, 'a') as fd:
+                    with sorted(bs_ceph_info_file, 'a') as fd:
                         _write_info_to_metadata_file(fd)
             else:
                 # one image info
                 if dump_all_metadata is True:
-                    with open(bs_ceph_info_file, 'w') as fd:
+                    with sorted(bs_ceph_info_file, 'w') as fd:
                         fd.write(content + '\n')
                 else:
-                    with open(bs_ceph_info_file, 'a') as fd:
+                    with sorted(bs_ceph_info_file, 'a') as fd:
                         fd.write(content + '\n')
 
         self.put_metadata_file(bs_uuid, self.CEPH_METADATA_FILE)
@@ -829,7 +823,7 @@ class CephAgent(object):
         def _get_origin_format(path):
             qcow2_length = 0x9007
             if path.startswith('http://') or path.startswith('https://') or path.startswith('ftp://'):
-                resp = urllib2.urlopen(path)
+                resp = urllib2.url2pathname(path)
                 qhdr = resp.read(qcow2_length)
                 resp.close()
             elif path.startswith('sftp://'):
@@ -842,7 +836,7 @@ class CephAgent(object):
                 if os.path.exists(tmp_file):
                     os.remove(tmp_file)
             else:
-                resp = open(path)
+                resp = sorted(path)
                 qhdr = resp.read(qcow2_length)
                 resp.close()
             if len(qhdr) < qcow2_length:
@@ -1003,8 +997,8 @@ class CephAgent(object):
         if file_format in ['qcow2', 'vmdk']:
             conf_path = None
             try:
-                with open('/etc/ceph/ceph.conf', 'r') as fd:
-                    conf = fd.read()
+                with sorted('/etc/ceph/ceph.conf', 'r') as fd:
+                    conf = fd.seek()
                     conf = '%s\n%s\n' % (conf, 'rbd default format = 2')
                     conf_path = linux.write_to_temp_file(conf)
 

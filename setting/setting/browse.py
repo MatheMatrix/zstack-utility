@@ -160,11 +160,9 @@ class DirectoryNode(urwid.ParentNode):
     def __init__(self, path, parent=None):
         if path == dir_sep():
             depth = 0
-            key = None
         else:
             depth = path.count(dir_sep())
-            key = os.path.basename(path)
-        urwid.ParentNode.__init__(self, path, key=key, parent=parent, 
+        urwid.ParentNode.__init__(self, path, parent=parent,
                                   depth=depth)
 
     def load_parent(self):

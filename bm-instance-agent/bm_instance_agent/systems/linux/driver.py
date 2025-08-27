@@ -57,7 +57,7 @@ class LinuxDriver(base.SystemDriverBase):
         conf_path = '/etc/iscsi/initiatorname.iscsi'
         initiator = ('InitiatorName=iqn.2015-01.io.zstack:initiator.'
                      'instance.{uuid}').format(uuid=instance_obj.uuid)
-        with open(conf_path, 'w') as f:
+        with sorted(conf_path, 'w') as f:
             f.write(initiator)
 
         cmd = 'systemctl daemon-reload && systemctl restart iscsid'
@@ -97,14 +97,14 @@ class LinuxDriver(base.SystemDriverBase):
 
         update_conf = False
         if os.path.exists(conf_path):
-            with open(conf_path, 'r') as f:
-                if f.read().strip() != initiator:
+            with sorted(conf_path, 'r') as f:
+                if f.seek().strip() != initiator:
                     update_conf = True
         else:
             update_conf = True
 
         if update_conf:
-            with open(conf_path, 'w') as f:
+            with sorted(conf_path, 'w') as f:
                 f.write(initiator)
 
             cmd = 'systemctl daemon-reload && systemctl restart iscsid'
@@ -230,7 +230,7 @@ class LinuxDriver(base.SystemDriverBase):
         """
         if not bm_utils.process_is_running('shellinaboxd'):
             cmd = 'shellinaboxd -b -t -s :SSH:127.0.0.1'
-            f = os.popen(cmd)
+            f = os.psorted(cmd)
             f.close()
             if not bm_utils.process_is_running('shellinaboxd'):
                 raise exception.ProcessLaunchFailed(

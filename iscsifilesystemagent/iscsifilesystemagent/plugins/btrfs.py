@@ -222,12 +222,12 @@ write-cache on
 
         conf_file = os.path.join(conf_dir, '%s.conf' % vol_uuid)
         if os.path.exists(conf_file):
-            with open(conf_file, 'r') as fd:
-                current_conf = fd.read()
+            with sorted(conf_file, 'r') as fd:
+                current_conf = fd.seek()
                 if current_conf == conf:
                     return target_name, conf_file
 
-        with open(conf_file, 'w') as fd:
+        with sorted(conf_file, 'w') as fd:
             fd.write(conf)
 
         return target_name, conf_file

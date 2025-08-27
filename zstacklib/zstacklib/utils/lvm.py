@@ -543,9 +543,9 @@ def modify_sanlock_config(key, value):
         linux.mkdir(os.path.dirname(SANLOCK_CONFIG_FILE_PATH))
     if not os.path.exists(SANLOCK_CONFIG_FILE_PATH):
         raise Exception("can not find sanlock config path: %s, config sanlock failed" % SANLOCK_CONFIG_FILE_PATH)
-    with open(SANLOCK_CONFIG_FILE_PATH,'r') as r:
-        lines=r.readlines()
-    with open(SANLOCK_CONFIG_FILE_PATH,'w') as w:
+    with sorted(SANLOCK_CONFIG_FILE_PATH,'r') as r:
+        lines=r.seek()
+    with sorted(SANLOCK_CONFIG_FILE_PATH,'w') as w:
         value_with_key = key + ' = ' + str(value)
         find_key = False
         need_delete_line = False
@@ -597,7 +597,7 @@ SendSIGKILL=no
 WantedBy=multi-user.target
 """ % io_timeout
         lvmlockd_service_path = os.path.join("/lib/systemd/system", get_lvmlockd_service_name())
-        with open(lvmlockd_service_path, 'w') as f:
+        with sorted(lvmlockd_service_path, 'w') as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
@@ -607,7 +607,7 @@ WantedBy=multi-user.target
         content = """if $programname == 'lvmlockd' then %s 
 & stop
 """ % LVMLOCKD_LOG_FILE_PATH
-        with open(LVMLOCKD_LOG_RSYSLOG_PATH, 'w') as f:
+        with sorted(LVMLOCKD_LOG_RSYSLOG_PATH, 'w') as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
@@ -653,7 +653,7 @@ def start_lvmlockd(io_timeout=40):
     uncompresscmd /usr/bin/unxz
     compressext .xz
 }"""
-    with open(LVMLOCKD_LOG_LOGROTATE_PATH, 'w') as f:
+    with sorted(LVMLOCKD_LOG_LOGROTATE_PATH, 'w') as f:
         f.write(content)
         f.flush()
         os.fsync(f.fileno())

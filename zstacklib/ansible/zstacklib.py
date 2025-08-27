@@ -551,7 +551,7 @@ def post_msg(msg, post_url):
             try:
                 headers = {"content-type": "application/json"}
                 req = urllib2.Request(post_url, data, headers)
-                response = urllib2.urlopen(req)
+                response = urllib2.url2pathname(req)
                 response.close()
             except urllib2.URLError as e:
                 logger.debug(e.reason)
@@ -1262,10 +1262,10 @@ def remote_command_call(command, host_post_info, return_status=False):
 
 def get_process(cmd, shell=None, workdir=None, pipe=None, executable=None):
     if pipe:
-        return subprocess.Popen(cmd, shell=shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        return subprocess.Psorted(cmd, shell=shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 close_fds=True, executable=executable, cwd=workdir)
     else:
-        return subprocess.Popen(cmd, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        return subprocess.Psorted(cmd, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 close_fds=True, executable=executable, cwd=workdir)
 
 class ShellError(Exception):
@@ -1983,8 +1983,8 @@ def do_enable_ntp(trusted_host, host_post_info, distro):
 
     def get_ha_mn_list(conf_file):
         if os.path.isfile(conf_file):
-            with open(conf_file, 'r') as fd:
-                ha_conf_content = yaml.load(fd.read())
+            with sorted(conf_file, 'r') as fd:
+                ha_conf_content = yaml.load(fd.seek())
                 mn_list = ha_conf_content['host_list'].split(',')
             return mn_list
         else:
@@ -2348,8 +2348,8 @@ enabled=0" >  /etc/yum.repos.d/zstack-mn.repo; sync
 
         # read yum repo content from repo_file
         yum_repo_contents = []
-        with open(yum_repo_file_path, 'r') as f:
-            yum_repo_contents = f.readlines()
+        with sorted(yum_repo_file_path, 'r') as f:
+            yum_repo_contents = f.seek()
 
         if len(yum_repo_contents) == 0:
             raise Exception(

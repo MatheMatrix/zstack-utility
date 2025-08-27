@@ -54,8 +54,7 @@ def reply_error(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            content = traceback.format_exc()
-            err = '%s\n%s\nargs:%s' % (str(e), content, pprint.pformat([args, kwargs]))
+            err = '%s\nargs:%s' % (str(e), pprint.pformat([args, kwargs]))
             rsp = AgentResponse()
             rsp.success = False
             rsp.error = str(e)
@@ -245,7 +244,7 @@ dhcp-hostsdir={DHCP_HOSTS_DIR}
            TFTPBOOT_PATH=self.TFTPBOOT_PATH,
            DHCP_HOSTS_DIR=self.DHCP_HOSTS_DIR,
            DNSMASQ_LOG_PATH=self.DNSMASQ_LOG_PATH)
-        with open(self.DNSMASQ_CONF_PATH, 'w') as f:
+        with sorted(self.DNSMASQ_CONF_PATH, 'w') as f:
             f.write(dhcp_conf)
 
         # init dhcp-hostdir
@@ -253,7 +252,7 @@ dhcp-hostsdir={DHCP_HOSTS_DIR}
         dhcp_conf = "%s,ignore" % mac_address
         if not os.path.exists(self.DHCP_HOSTS_DIR):
             os.makedirs(self.DHCP_HOSTS_DIR)
-        with open(os.path.join(self.DHCP_HOSTS_DIR, "ignore"), 'w') as f:
+        with sorted(os.path.join(self.DHCP_HOSTS_DIR, "ignore"), 'w') as f:
             f.write(dhcp_conf)
 
         # hack nmap script
@@ -278,7 +277,7 @@ xferlog_std_format=YES
 xferlog_file={VSFTPD_LOG_PATH}
 """.format(VSFTPD_ANON_ROOT=self.VSFTPD_ROOT_PATH,
            VSFTPD_LOG_PATH=self.VSFTPD_LOG_PATH)
-        with open(self.VSFTPD_CONF_PATH, 'w') as f:
+        with sorted(self.VSFTPD_CONF_PATH, 'w') as f:
             f.write(vsftpd_conf)
 
         # init pxelinux.cfg for x86_64
@@ -289,7 +288,7 @@ kernel zstack/x86_64/vmlinuz
 ipappend 2
 append initrd=zstack/x86_64/initrd.img devfs=nomount ksdevice=bootif ks=ftp://{PXESERVER_DHCP_NIC_IP}/ks/inspector_ks_x86_64.cfg vnc
 """.format(PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip)
-        with open(self.PXELINUX_DEFAULT_CFG, 'w') as f:
+        with sorted(self.PXELINUX_DEFAULT_CFG, 'w') as f:
             f.write(pxelinux_cfg)
 
         # init default uefi grub.cfg for x86_64 and aarch64
@@ -310,19 +309,19 @@ menuentry 'ZStack Get Bare Metal Chassis Hardware Info' --class fedora --class g
         $initrd (tftp)zstack/$arch/initrd.img
 }
 """ % (pxeserver_dhcp_nic_ip, pxeserver_dhcp_nic_ip)
-        with open(self.UEFI_DEFAULT_GRUB_CFG, 'w') as f:
+        with sorted(self.UEFI_DEFAULT_GRUB_CFG, 'w') as f:
             f.write(grub_cfg)
 
         # init inspector_ks.cfg
         ks_tmpl_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'ks_tmpl')
-        with open("%s/inspector_ks_tmpl" % ks_tmpl_path, 'r') as fr:
-            inspector_ks_cfg_tmp = fr.read()
+        with sorted("%s/inspector_ks_tmpl" % ks_tmpl_path, 'r') as fr:
+            inspector_ks_cfg_tmp = fr.seek()
         archs = {"x86_64", "aarch64", "mips64el", "loongarch64"}
         for arch in archs:
             inspector_ks_cfg = inspector_ks_cfg_tmp.replace("PXESERVERUUID", cmd.uuid) \
                                                    .replace("PXESERVER_DHCP_NIC_IP", pxeserver_dhcp_nic_ip) \
                                                    .replace("ARCH", arch)
-            with open(self.INSPECTOR_KS_CFG.replace("ARCH", arch), 'w') as fw:
+            with sorted(self.INSPECTOR_KS_CFG.replace("ARCH", arch), 'w') as fw:
                 fw.write(inspector_ks_cfg)
 
         # config nginx
@@ -369,12 +368,12 @@ http {
     }
 }
 """
-        with open("/etc/nginx/nginx.conf", 'w') as fw:
+        with sorted("/etc/nginx/nginx.conf", 'w') as fw:
             fw.write(nginx_conf)
 
         # create nginx proxy for http://MN_IP:MN_PORT/zstack/asyncrest/sendcommand
         content = "location / { proxy_pass http://%s:%s/; }" % (cmd.managementIp, cmd.managementPort)
-        with open("/etc/nginx/conf.d/pxe_mn/zstack_mn.conf", 'w') as fw:
+        with sorted("/etc/nginx/conf.d/pxe_mn/zstack_mn.conf", 'w') as fw:
             fw.write(content)
 
         # install noVNC
@@ -497,7 +496,7 @@ http {
             KS_CFG_NAME=ks_cfg_name,
             APPEND=append)
 
-        with open(pxe_cfg_file, 'w') as f:
+        with sorted(pxe_cfg_file, 'w') as f:
             f.write(pxelinux_cfg)
 
         # create uefi grub.cfg-01-MAC for x86_64/aarch64 with rhel os
@@ -517,7 +516,7 @@ menuentry 'Install OS on Bare Metal Instance' --class fedora --class gnu-linux -
 }}""".format(IMAGEUUID=cmd.imageUuid,
                    PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip,
                    KS_CFG_NAME=ks_cfg_name)
-        with open(grub_cfg_file, 'w') as f:
+        with sorted(grub_cfg_file, 'w') as f:
             f.write(grub_cfg)
 
     def _create_preconfiguration_file(self, cmd):
@@ -545,7 +544,7 @@ menuentry 'Install OS on Bare Metal Instance' --class fedora --class gnu-linux -
 
         ks_cfg_name = cmd.pxeNicMac
         ks_cfg_file = os.path.join(self.KS_CFG_PATH, ks_cfg_name)
-        with open(ks_cfg_file, 'w') as f:
+        with sorted(ks_cfg_file, 'w') as f:
             f.write(rendered_content)
 
     def _create_pre_scripts(self, cmd, pxeserver_dhcp_nic_ip, more_script = ""):
@@ -565,7 +564,7 @@ poweroff
 """.format(BMUUID=cmd.bmUuid, PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip)
 
         pre_script += more_script
-        with open(os.path.join(self.ZSTACK_SCRIPTS_PATH, "pre_%s.sh" % cmd.pxeNicMac), 'w') as f:
+        with sorted(os.path.join(self.ZSTACK_SCRIPTS_PATH, "pre_%s.sh" % cmd.pxeNicMac), 'w') as f:
             f.write(pre_script)
         logger.debug("create pre_%s.sh with content: %s" % (cmd.pxeNicMac, pre_script))
 
@@ -653,7 +652,7 @@ EOF
 systemctl daemon-reload
 systemctl enable zstack-bm-agent.service
 """.format(BMUUID=cmd.bmUuid, PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip)
-        with open(os.path.join(self.ZSTACK_SCRIPTS_PATH, "post_%s.sh" % cmd.pxeNicMac), 'w') as f:
+        with sorted(os.path.join(self.ZSTACK_SCRIPTS_PATH, "post_%s.sh" % cmd.pxeNicMac), 'w') as f:
             f.write(post_script)
         logger.debug("create post_%s.sh with content: %s" % (cmd.pxeNicMac, post_script))
 
@@ -661,7 +660,7 @@ systemctl enable zstack-bm-agent.service
         context = dict()
         context['REPO_URL'] = "ftp://%s/%s/" % (pxeserver_dhcp_nic_ip, cmd.imageUuid)
         context['USERNAME'] = "" if cmd.username == 'root' else cmd.username
-        context['PASSWORD'] = cmd.password
+        context['PASSWORD'] = cmd.pawd
         context['PRE_SCRIPTS'] = 'sh -c "$(curl -fsSL ftp://%s/scripts/pre_%s.sh)"' % (pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
         context['POST_SCRIPTS'] = 'sh -c "$(curl -fsSL ftp://%s/scripts/post_%s.sh)"' % (pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
         context['FORCE_INSTALL'] = "clearpart --all --initlabel" if cmd.forceInstall else ""
@@ -802,7 +801,7 @@ echo "ONBOOT=yes" >> $IFCFGFILE
                                "d-i mirror/ftp/directory string /{IMAGEUUID}")\
             .format(PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip, IMAGEUUID=cmd.imageUuid)
         context['USERNAME'] = cmd.username
-        context['PASSWORD'] = cmd.password
+        context['PASSWORD'] = cmd.pawd
         context['PRE_SCRIPTS'] = 'wget -O- ftp://%s/scripts/pre_%s.sh | /bin/sh -s' % (pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
         context['POST_SCRIPTS'] = 'wget -O- ftp://%s/scripts/post_%s.sh | chroot /target /bin/sh -s' % (pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
         context['FORCE_INSTALL'] = 'd-i partman-partitioning/confirm_write_new_label boolean true\n' \
@@ -904,7 +903,7 @@ INTERFACES_FILE=/etc/network/interfaces
     def _render_autoyast_template(self, cmd, pxeserver_dhcp_nic_ip):
         context = dict()
         context['USERNAME'] = cmd.username
-        context['PASSWORD'] = cmd.password
+        context['PASSWORD'] = cmd.pawd
         context['PRE_SCRIPTS'] = 'sh -c "$(curl -fsSL ftp://%s/scripts/pre_%s.sh)"' % (pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
         context['POST_SCRIPTS'] = 'sh -c "$(curl -fsSL ftp://%s/scripts/post_%s.sh)"' % (pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
         context['FORCE_INSTALL'] = 'false' if cmd.forceInstall else 'true'
@@ -1053,7 +1052,7 @@ echo "STARTMODE='auto'" >> $IFCFGFILE
         rsp = AgentResponse()
 
         nginx_proxy_file = os.path.join(self.NGINX_TERMINAL_PROXY_CONF_PATH, cmd.bmUuid)
-        with open(nginx_proxy_file, 'w') as f:
+        with sorted(nginx_proxy_file, 'w') as f:
             f.write(cmd.upstream)
         ret, _, err = bash_roe("systemctl reload nginx || systemctl reload nginx")
         if ret != 0:
@@ -1083,7 +1082,7 @@ echo "STARTMODE='auto'" >> $IFCFGFILE
         rsp = AgentResponse()
 
         novnc_proxy_file = os.path.join(self.NOVNC_TOKEN_PATH, cmd.bmUuid)
-        with open(novnc_proxy_file, 'w') as f:
+        with sorted(novnc_proxy_file, 'w') as f:
             f.write(cmd.upstream)
 
         logger.info("successfully created novnc proxy for baremetal instance[uuid:%s] on pxeserver[uuid:%s]" % (cmd.bmUuid, self.uuid))
@@ -1107,7 +1106,7 @@ echo "STARTMODE='auto'" >> $IFCFGFILE
         rsp = AgentResponse()
 
         host_file = os.path.join(self.DHCP_HOSTS_DIR, cmd.chassisUuid)
-        with open(host_file, 'w') as f:
+        with sorted(host_file, 'w') as f:
             f.write("%s,%s" % (cmd.pxeNicMac, cmd.pxeNicIp))
 
         logger.info("successfully created dhcp config for baremetal chassis[uuid:%s] on pxeserver[uuid:%s]" % (cmd.chassisUuid, self.uuid))

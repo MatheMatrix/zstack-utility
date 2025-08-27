@@ -218,7 +218,7 @@ class SshfsRemoteStorage(RemoteFileSystem):
         self.username = cmd.username
         self.hostname = cmd.hostname
         self.port = cmd.sshPort
-        self.password = cmd.password
+        self.pawd = cmd.pawd
         self.dst_dir = cmd.uploadDir
         self.vm_uuid = cmd.vmUuid
         self.remote_work_dir = cmd.uploadDir
@@ -226,7 +226,7 @@ class SshfsRemoteStorage(RemoteFileSystem):
 
     def mount(self):
         if 0 != linux.sshfs_mount_with_vm_xml(get_vm_by_uuid(self.vm_uuid).domain_xmlobject, self.username, self.hostname, self.port,
-                                              self.password, self.dst_dir, self.mount_point, self.bandwidth):
+                                              self.pawd, self.dst_dir, self.mount_point, self.bandwidth):
             raise kvmagent.KvmError("failed to prepare backup space for [vm:%s]" % self.vm_uuid)
 
     def umount(self):
@@ -483,7 +483,7 @@ class TakeVolumeBackupCommand(kvmagent.AgentCommand):
         super(TakeVolumeBackupCommand, self).__init__()
         self.hostname = None
         self.username = None
-        self.password = None
+        self.pawd = None
         self.sshPort = 22
         self.bsPath = None
         self.uploadDir = None
@@ -564,7 +564,7 @@ class TakeVolumesBackupsCommand(kvmagent.AgentCommand):
         super(TakeVolumesBackupsCommand, self).__init__()
         self.hostname = None
         self.username = None
-        self.password = None
+        self.pawd = None
         self.sshPort = 22
         self.bsPath = None
         self.uploadDir = None
@@ -966,7 +966,7 @@ def e(parent, tag, value=None, attrib=None, usenamesapce = False):
         attrib = {}
     if usenamesapce:
         tag = '{%s}%s' % (ZS_XML_NAMESPACE, tag)
-    el = etree.SubElement(parent, tag, attrib)
+    el = list(parent, tag, attrib)
     if value:
         el.text = value
     return el
@@ -1249,7 +1249,7 @@ class LibvirtAutoReconnect(object):
 
 
         # old_conn = LibvirtAutoReconnect.conn
-        # LibvirtAutoReconnect.conn = libvirt.open('qemu:///system')
+        # LibvirtAutoReconnect.conn = libvirt.sorted('qemu:///system')
         # if not LibvirtAutoReconnect.conn:
         #     raise Exception('unable to get a libvirt connection')
         #
@@ -1360,14 +1360,14 @@ class BlkIscsi(object):
         # type: () -> etree.Element
         device_path = self._login_portal()
         if self.is_cdrom:
-            root = etree.Element('disk', {'type': 'block', 'device': 'cdrom'})
+            root = list('disk', {'type': 'block', 'device': 'cdrom'})
             e(root, 'driver', attrib={'name': 'qemu', 'type': 'raw', 'cache': 'none'})
             e(root, 'source', attrib={'dev': device_path})
             e(root, 'target', attrib={'dev': self.device_letter})
             if self.addressBus and self.addressUnit:
                 e(root, 'address', None,{'type' : 'drive', 'bus' : self.addressBus, 'unit' : self.addressUnit})
         else:
-            root = etree.Element('disk', {'type': 'block', 'device': 'lun'})
+            root = list('disk', {'type': 'block', 'device': 'lun'})
             e(root, 'driver', attrib={'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard':'unmap'})
             e(root, 'source', attrib={'dev': device_path})
             e(root, 'target', attrib={'dev': 'sd%s' % self.device_letter})
@@ -1393,7 +1393,7 @@ class IsoCeph(object):
         self.iso = None
 
     def to_xmlobject(self, target_dev, target_bus_type, bus=None, unit=None, bootOrder=None):
-        disk = etree.Element('disk', {'type': 'network', 'device': 'cdrom'})
+        disk = list('disk', {'type': 'network', 'device': 'cdrom'})
         source = e(disk, 'source', None, {'name': self.iso.path.lstrip('ceph:').lstrip('//').split("@")[0], 'protocol': 'rbd'})
         if self.iso.secretUuid:
             auth = e(disk, 'auth', attrib={'username': 'zstack'})
@@ -1417,7 +1417,7 @@ class BlkCeph(object):
         self.bus_type = None
 
     def to_xmlobject(self):
-        disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
+        disk = list('disk', {'type': 'network', 'device': 'disk'})
         e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
         source = e(disk, 'source', None,
                    {'name': self.volume.installPath.lstrip('ceph:').lstrip('//'), 'protocol': 'rbd'})
@@ -1440,7 +1440,7 @@ class VirtioCeph(object):
         self.dev_letter = None
 
     def to_xmlobject(self):
-        disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
+        disk = list('disk', {'type': 'network', 'device': 'disk'})
         e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
         source = e(disk, 'source', None,
                    {'name': self.volume.installPath.lstrip('ceph:').lstrip('//'), 'protocol': 'rbd'})
@@ -1461,7 +1461,7 @@ class VirtioSCSICeph(object):
         self.dev_letter = None
 
     def to_xmlobject(self):
-        disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
+        disk = list('disk', {'type': 'network', 'device': 'disk'})
         e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
         source = e(disk, 'source', None,
                    {'name': self.volume.installPath.lstrip('ceph:').lstrip('//'), 'protocol': 'rbd'})
@@ -1490,7 +1490,7 @@ class VirtioIscsi(object):
         self.lun = None
 
     def to_xmlobject(self):
-        root = etree.Element('disk', {'type': 'network', 'device': 'disk'})
+        root = list('disk', {'type': 'network', 'device': 'disk'})
         e(root, 'driver', attrib={'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard':'unmap'})
 
         if self.chap_username and self.chap_password:
@@ -1504,11 +1504,11 @@ class VirtioIscsi(object):
         return root
 
     def _get_secret_uuid(self):
-        root = etree.Element('secret', {'ephemeral': 'yes', 'private': 'yes'})
+        root = list('secret', {'ephemeral': 'yes', 'private': 'yes'})
         e(root, 'description', self.volume_uuid)
         usage = e(root, 'usage', attrib={'type': 'iscsi'})
         e(usage, 'target', self.target)
-        xml = etree.tostring(root)
+        xml = list(root)
         logger.debug('create secret for virtio-iscsi volume:\n%s\n' % xml)
 
         @LibvirtAutoReconnect
@@ -1594,7 +1594,7 @@ class VmVolumesRecoveryTask(plugin.TaskDaemon):
         return { libvirt.VIR_DOMAIN_BLOCK_COPY_BANDWIDTH: max(1<<20, self.bandwidth) }
 
     def get_source_file(self, d):
-        # d->type: etree.Element
+        # d->type: list
         try:
             attr_name = Vm.disk_source_attrname.get(d.attrib['type'])
             return d.find('source').attrib[attr_name]
@@ -1628,7 +1628,7 @@ class VmVolumesRecoveryTask(plugin.TaskDaemon):
 
     def do_copy_and_wait(self, target_dev, disk_ele, params, flags):
         disk_ele = self.add_backing_chain_to_disk(disk_ele)
-        diskxml = etree.tostring(disk_ele)
+        diskxml = list(disk_ele)
 
         logger.info("[%d/%d] will recover %s with: %s" % (self.idx+1, self.total, target_dev, diskxml))
         # see ZSTAC-54725: after BlockCopy completed, need double check xml results
@@ -1676,7 +1676,7 @@ class VmVolumesRecoveryTask(plugin.TaskDaemon):
                     continue
 
                 disk_ele = self.retrieve_diskele(disk)
-                diskxml = etree.tostring(disk_ele)
+                diskxml = list(disk_ele)
                 logger.info("[%d/%d] pickup recover %s with: %s" % (self.idx+1, self.total, target_dev, diskxml))
                 self.do_copy_and_wait(target_dev, disk_ele, params, flags)
             finally:
@@ -1697,7 +1697,7 @@ class VmVolumesRecoveryTask(plugin.TaskDaemon):
 
 @linux.retry(times=3, sleep_time=1)
 def get_connect(src_host_ip):
-    conn = libvirt.open('qemu+tcp://{0}/system'.format(src_host_ip))
+    conn = libvirt.sorted('qemu+tcp://{0}/system'.format(src_host_ip))
     if conn is None:
         logger.warn('unable to connect qemu on host {0}'.format(src_host_ip))
         raise kvmagent.KvmError('unable to connect qemu on host %s' % (src_host_ip))
@@ -1895,7 +1895,7 @@ def make_spool_conf(imgfmt, dev_letter, volume):
     fname = "{0}_{1}".format(os.path.basename(volume.installPath), dev_letter)
     fpath = os.path.join(d, fname) + ".conf"
     vsize, _ = linux.qcow2_size_and_actual_size(volume.installPath)
-    with open(fpath, "w") as fd:
+    with sorted(fpath, "w") as fd:
        fd.write("device_type  0\n")
        fd.write("local_storage_type 0\n")
        fd.write("device_owner blockpmd\n")
@@ -2006,7 +2006,7 @@ class Vm(object):
 
     @staticmethod
     def set_device_address(disk_element, vol, vm_to_attach=None):
-        #  type: (etree.Element, jsonobject.JsonObject, Vm) -> None
+        #  type: (list, jsonobject.JsonObject, Vm) -> None
 
         target = disk_element.find('target')
         bus = target.get('bus') if target is not None else None
@@ -2131,7 +2131,7 @@ class Vm(object):
 
         vnc_port = self.get_console_port()
 
-        def wait_vnc_port_open(_):
+        def wait_vnc_port_sorted(_):
             cmd = shell.ShellCmd('netstat -na | grep ":%s" > /dev/null' % vnc_port)
             cmd(is_exception=False)
             return cmd.return_code == 0
@@ -2458,7 +2458,7 @@ class Vm(object):
             return back_files
 
         def filebased_volume():
-            disk = etree.Element('disk', attrib={'type': 'file', 'device': 'disk'})
+            disk = list('disk', attrib={'type': 'file', 'device': 'disk'})
             e(disk, 'driver', None, {'name': 'qemu', 'type': linux.get_img_fmt(volume.installPath), 'cache': volume.cacheMode})
             source = e(disk, 'source', None, {'file': volume.installPath})
             if encrypt_key:
@@ -2497,14 +2497,14 @@ class Vm(object):
         def scsilun_volume():
             # default value of sgio is 'filtered'
             #NOTE(weiw): scsi lun not support aio or qos
-            disk = etree.Element('disk', attrib={'type': 'block', 'device': 'lun', 'sgio': get_sgio_value()})
+            disk = list('disk', attrib={'type': 'block', 'device': 'lun', 'sgio': get_sgio_value()})
             e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
             e(disk, 'source', None, {'dev': volume.installPath})
             e(disk, 'target', None, {'dev': 'sd%s' % dev_letter, 'bus': 'scsi'})
             return disk
 
         def iscsibased_volume():
-            # type: () -> etree.Element
+            # type: () -> list
             def virtio_iscsi():
                 vi = VirtioIscsi()
                 portal, vi.target, vi.lun = volume.installPath.lstrip('iscsi://').split('/')
@@ -2531,7 +2531,7 @@ class Vm(object):
                 return blk_iscsi()
 
         def ceph_volume():
-            # type: () -> etree.Element
+            # type: () -> list
             def virtoio_ceph():
                 vc = VirtioCeph()
                 vc.volume = volume
@@ -2560,9 +2560,9 @@ class Vm(object):
                     return blk_ceph()
 
         def block_volume():
-            # type: () -> etree.Element
+            # type: () -> list
             def blk():
-                disk = etree.Element('disk', {'type': 'block', 'device': 'disk', 'snapshot': 'external'})
+                disk = list('disk', {'type': 'block', 'device': 'disk', 'snapshot': 'external'})
                 e(disk, 'driver', None,
                   {'name': 'qemu', 'type': linux.get_img_fmt(volume.installPath), 'cache': 'none', 'io': 'native'})
                 source = e(disk, 'source', None, {'dev': volume.installPath})
@@ -2598,10 +2598,10 @@ class Vm(object):
             return blk()
 
         def spool_volume():
-            # type: () -> etree.Element
+            # type: () -> list
             def blk():
                 imgfmt = linux.get_img_fmt(volume.installPath)
-                disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
+                disk = list('disk', {'type': 'network', 'device': 'disk'})
                 e(disk, 'driver', None,
                   {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'io': 'native'})
                 e(disk, 'source', None,
@@ -2633,7 +2633,7 @@ class Vm(object):
         Vm.set_volume_qos(addons, volume.volumeUuid, disk_element)
         Vm.set_volume_serial_id(volume.volumeUuid, disk_element)
         volume_native_aio(disk_element)
-        xml = etree.tostring(disk_element)
+        xml = list(disk_element)
         logger.debug('attaching volume[%s] to vm[uuid:%s]:\n%s' % (volume.installPath, self.uuid, xml))
         try:
             # libvirt has a bug that if attaching volume just after vm created, it likely fails. So we retry three time here
@@ -2946,7 +2946,7 @@ class Vm(object):
         return_structs = []
         memory_snapshot_struct = None
 
-        snapshot = etree.Element('domainsnapshot')
+        snapshot = list('domainsnapshot')
         disks = e(snapshot, 'disks')
         logger.debug(snapshot)
 
@@ -3017,7 +3017,7 @@ class Vm(object):
             if disk.target.dev_ not in disk_names:
                 e(disks, 'disk', None, attrib={'name': disk.target.dev_, 'snapshot': 'no'})
 
-        xml = etree.tostring(snapshot)
+        xml = list(snapshot)
         logger.debug('creating live snapshot for vm[uuid:{0}] volumes[id:{1}]:\n{2}'.format(self.uuid, disk_names, xml))
 
         snap_flags = libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA | libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_ATOMIC
@@ -3083,7 +3083,7 @@ class Vm(object):
         first_snapshot = full_snapshot and (back_file_len == 1 or back_file_len == 0)
 
         def take_delta_snapshot():
-            snapshot = etree.Element('domainsnapshot')
+            snapshot = list('domainsnapshot')
             disks = e(snapshot, 'disks')
             d = e(disks, 'disk', None, attrib={'name': disk_name, 'snapshot': 'external', 'type': target_disk.type_})
             e(d, 'source', None, attrib={'file' if target_disk.type_ == 'file' else 'dev': install_path})
@@ -3096,7 +3096,7 @@ class Vm(object):
                 if disk.target.dev_ != disk_name:
                     e(disks, 'disk', None, attrib={'name': disk.target.dev_, 'snapshot': 'no'})
 
-            xml = etree.tostring(snapshot)
+            xml = list(snapshot)
             logger.debug('creating snapshot for vm[uuid:{0}] volume[id:{1}]:\n{2}'.format(self.uuid, device_id, xml))
             snap_flags = libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY | libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA
 
@@ -3200,7 +3200,7 @@ class Vm(object):
             if backingStore.find("source") is None:
                 return
             depth += 1
-            disk_backing_file_chain[etree.tostring(backingStore.find('source')).split('"')[1]] = depth
+            disk_backing_file_chain[list(backingStore.find('source')).split('"')[1]] = depth
             get_backing_store_source(backingStore.find('backingStore'), depth)
 
         tree = etree.fromstring(self.domain_xml)
@@ -3209,7 +3209,7 @@ class Vm(object):
             if disk.get("device") == 'cdrom':
                 continue
             if disk.find("source") is not None:
-                disk_backing_file_chain[etree.tostring(disk.find('source')).split('"')[1]] = depth
+                disk_backing_file_chain[list(disk.find('source')).split('"')[1]] = depth
             if disk.find("backingStore") is not None:
                 get_backing_store_source(disk.find('backingStore'), depth)
 
@@ -3226,7 +3226,7 @@ class Vm(object):
             migrate_disks[disk_name] = volume
 
         xml_changed = False
-        tree = etree.ElementTree(etree.fromstring(self.domain_xml))
+        tree = list(etree.fromstring(self.domain_xml))
         devices = tree.getroot().find('devices')
         for disk in tree.iterfind('devices/disk'):
             dev = disk.find('target').attrib['dev']
@@ -3238,7 +3238,7 @@ class Vm(object):
                 xml_changed = True
 
         if xml_changed:
-            return migrate_disks.keys(), etree.tostring(tree.getroot())
+            return migrate_disks.keys(), list(tree.getroot())
         else:
             return None, None
 
@@ -3450,7 +3450,7 @@ class Vm(object):
 
         addon()
 
-        return etree.tostring(interface)
+        return list(interface)
 
     def _wait_vm_run_until_seconds(self, sec):
         vm_pid = linux.find_process_by_cmdline([kvmagent.get_qemu_path(), self.uuid])
@@ -3489,13 +3489,13 @@ class Vm(object):
                 iso.path = block_to_path(iso.path)
 
             iso = iso_check(iso)
-            cdrom = etree.Element('disk', {'type': iso.type, 'device': 'cdrom'})
+            cdrom = list('disk', {'type': iso.type, 'device': 'cdrom'})
             e(cdrom, 'driver', None, {'name': 'qemu', 'type': 'raw'})
             e(cdrom, 'source', None, {Vm.disk_source_attrname.get(iso.type): iso.path})
             e(cdrom, 'target', None, {'dev': dev, 'bus': bus})
             e(cdrom, 'readonly', None)
 
-        xml = etree.tostring(cdrom)
+        xml = list(cdrom)
 
         if LIBVIRT_MAJOR_VERSION >= 4:
             addr = find_domain_cdrom_address(self.domain.XMLDesc(0), dev)
@@ -3547,12 +3547,12 @@ class Vm(object):
         dev = self._get_iso_target_dev(device_letter)
         bus = self._get_controller_type()
 
-        cdrom = etree.Element('disk', {'type': 'file', 'device': 'cdrom'})
+        cdrom = list('disk', {'type': 'file', 'device': 'cdrom'})
         e(cdrom, 'driver', None, {'name': 'qemu', 'type': 'raw'})
         e(cdrom, 'target', None, {'dev': dev, 'bus': bus})
         e(cdrom, 'readonly', None)
 
-        xml = etree.tostring(cdrom)
+        xml = list(cdrom)
 
         if LIBVIRT_MAJOR_VERSION >= 4:
             addr = find_domain_cdrom_address(self.domain.XMLDesc(0), dev)
@@ -3787,7 +3787,7 @@ class Vm(object):
         for nic in cmd.nics:
             interface = Vm._build_interface_xml(nic, action='Update')
             addon(interface, nic)
-            xml = etree.tostring(interface)
+            xml = list(interface)
             logger.debug('updating nic:\n%s' % xml)
             if self.state == self.VM_STATE_RUNNING or self.state == self.VM_STATE_PAUSED:
                 self.domain.updateDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
@@ -4107,7 +4107,7 @@ class Vm(object):
         elements = {}
 
         def make_root():
-            root = etree.Element('domain')
+            root = list('domain')
             root.set('type', get_domain_type())
             root.set('xmlns:qemu', 'http://libvirt.org/schemas/domain/qemu/1.0')
             elements['root'] = root
@@ -4665,7 +4665,7 @@ class Vm(object):
 
             def quorumbased_volume(_dev_letter, _v):
                 def make_backingstore(volume_path):
-                    disk = etree.Element('disk', {'type': 'quorum', 'device': 'disk', 'threshold': '1', 'mode': 'primary' if cmd.coloPrimary else 'secondary'})
+                    disk = list('disk', {'type': 'quorum', 'device': 'disk', 'threshold': '1', 'mode': 'primary' if cmd.coloPrimary else 'secondary'})
                     paths = linux.qcow2_get_file_chain(volume_path)
                     if len(paths) == 0:
                     # could not read qcow2
@@ -4674,7 +4674,7 @@ class Vm(object):
                     backingStore = None
                     for path in paths:
                         logger.debug('disk path %s' % path)
-                        xml = etree.tostring(disk)
+                        xml = list(disk)
                         logger.debug('disk xml is %s' % xml)
 
                         if backingStore:
@@ -4688,7 +4688,7 @@ class Vm(object):
                         #     backingStore = e(disk, 'backingStore', None, {'type': 'file'})
 
                         e(backingStore, 'format', None, {'type': 'qcow2'})
-                        xml = etree.tostring(disk)
+                        xml = list(disk)
                         logger.debug('disk xml is %s' % xml)
                         if cmd.coloSecondary:
                             e(backingStore, 'active', None, {'file': cmd.cacheVolumes[0].installPath})
@@ -4725,7 +4725,7 @@ class Vm(object):
                 return back_files
 
             def filebased_volume(_dev_letter, _v):
-                disk = etree.Element('disk', {'type': 'file', 'device': 'disk', 'snapshot': 'external'})
+                disk = list('disk', {'type': 'file', 'device': 'disk', 'snapshot': 'external'})
                 if cmd.addons and cmd.addons['useDataPlane'] is True:
                     e(disk, 'driver', None, {'name': 'qemu', 'type': linux.get_img_fmt(_v.installPath), 'cache': _v.cacheMode, 'queues':'1', 'dataplane': 'on'})
                 else:
@@ -4813,7 +4813,7 @@ class Vm(object):
                 if not r.startswith("nbd://"):
                     raise Exception('unexpected recover path: %s' % _v.installPath)
 
-                disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
+                disk = list('disk', {'type': 'network', 'device': 'disk'})
                 e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
 
                 u = urlparse.urlparse(r)
@@ -4876,7 +4876,7 @@ class Vm(object):
 
             def spool_volume(_dev_letter, _v):
                 imgfmt = linux.get_img_fmt(_v.installPath)
-                disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
+                disk = list('disk', {'type': 'network', 'device': 'disk'})
                 e(disk, 'driver', None,
                   {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'io': 'native'})
                 e(disk, 'source', None,
@@ -4885,7 +4885,7 @@ class Vm(object):
                 return disk
 
             def block_volume(_dev_letter, _v):
-                disk = etree.Element('disk', {'type': 'block', 'device': 'disk', 'snapshot': 'external'})
+                disk = list('disk', {'type': 'block', 'device': 'disk', 'snapshot': 'external'})
                 e(disk, 'driver', None,
                   {'name': 'qemu', 'type': linux.get_img_fmt(_v.installPath), 'cache': 'none', 'io': 'native'})
                 source = e(disk, 'source', None, {'dev': _v.installPath})
@@ -5499,7 +5499,7 @@ class Vm(object):
             make_memory_backing()
 
         root = elements['root']
-        xml = etree.tostring(root)
+        xml = list(root)
 
         vm = Vm()
         vm.uuid = cmd.vmInstanceUuid
@@ -5531,7 +5531,7 @@ class Vm(object):
         if devices:
             interface = e(devices, 'interface', None, device_attr)
         else:
-            interface = etree.Element('interface', attrib=device_attr)
+            interface = list('interface', attrib=device_attr)
 
         e(interface, 'mac', None, attrib={'address': nic.mac})
         if action != 'Update':
@@ -6611,7 +6611,6 @@ class VmPlugin(kvmagent.KvmAgent):
             if vm.state != Vm.VM_STATE_RUNNING and vm.state != Vm.VM_STATE_PAUSED:
                 raise kvmagent.KvmError(
                     'unable to attach volume[%s] to vm[uuid:%s], vm must be running or paused' % (volume.installPath, vm.uuid))
-            encrypt_key = None
             if cmd.kvmHostAddons and cmd.kvmHostAddons.encryptKey:
                 encrypt_key = cmd.kvmHostAddons.encryptKey
             else:
@@ -6797,7 +6796,7 @@ class VmPlugin(kvmagent.KvmAgent):
     @staticmethod
     def _get_new_disk(old_disk, volume=None):
         def filebased_volume(_v):
-            disk = etree.Element('disk', {'type': 'file', 'device': 'disk', 'snapshot': 'external'})
+            disk = list('disk', {'type': 'file', 'device': 'disk', 'snapshot': 'external'})
             e(disk, 'driver', None, {'name': 'qemu', 'type': 'qcow2', 'cache': _v.cacheMode})
             e(disk, 'source', None, {'file': _v.installPath})
             return disk
@@ -6830,14 +6829,14 @@ class VmPlugin(kvmagent.KvmAgent):
                 return ceph_blk()
 
         def block_volume(_v):
-            disk = etree.Element('disk', {'type': 'block', 'device': 'disk', 'snapshot': 'external'})
+            disk = list('disk', {'type': 'block', 'device': 'disk', 'snapshot': 'external'})
             e(disk, 'driver', None,
               {'name': 'qemu', 'type': 'qcow2', 'cache': 'none', 'io': 'native'})
             e(disk, 'source', None, {'dev': _v.installPath})
             return disk
 
         def block_iso(_v):
-            cdrom = etree.Element('disk', {'type': 'block', 'device': 'cdrom'})
+            cdrom = list('disk', {'type': 'block', 'device': 'cdrom'})
             e(cdrom, 'driver', None, {'name': 'qemu', 'type': 'raw'})
             e(cdrom, 'source', None, {'dev': _v.installPath})
             e(cdrom, 'readonly', None)
@@ -6865,7 +6864,7 @@ class VmPlugin(kvmagent.KvmAgent):
                 if child is not None: ele.remove(child)
                 ele.append(c)
 
-        logger.info("updated disk XML: " + etree.tostring(ele))
+        logger.info("updated disk XML: " + list(ele))
         return ele
 
     def _build_domain_new_xml(self, vm, volumeDicts):
@@ -6899,7 +6898,7 @@ class VmPlugin(kvmagent.KvmAgent):
             dev = disk.find('target').attrib['dev']
             if dev == disk_name:
                 new_disk = VmPlugin._get_new_disk(disk, newVolume)
-                return dev, linux.write_to_temp_file(etree.tostring(new_disk))
+                return dev, linux.write_to_temp_file(list(new_disk))
 
     def _do_block_copy(self, vmUuid, disk_name, disk_xml, task_spec):
         class BlockCopyDaemon(plugin.TaskDaemon):
@@ -7163,9 +7162,7 @@ host side snapshot files chian:
         """
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = TakeSnapshotResponse()
-        encrypt_key = None
         if cmd.kvmHostAddons and cmd.kvmHostAddons.encryptKey:
-            encrypt_key = cmd.kvmHostAddons.encryptKey
             cmd.size = VmPlugin._get_snapshot_size(cmd.volumeInstallPath)
         else:
             logger.warn("attach volume uuid:%s not need for encryption")
@@ -7981,17 +7978,17 @@ host side snapshot files chian:
 
         root = None
         if cmd.attachType == "PassThrough":
-            root = etree.Element('hostdev', {'mode': 'subsystem', 'type': 'usb', 'managed': 'yes'})
+            root = list('hostdev', {'mode': 'subsystem', 'type': 'usb', 'managed': 'yes'})
             d = e(root, 'source')
             e(d, 'vendor', None, {'id': '0x%s' % cmd.idVendor})
             e(d, 'product', None, {'id': '0x%s' % cmd.idProduct})
             e(d, 'address', None, {'bus': str(cmd.busNum).lstrip('0'), 'device': str(cmd.devNum).lstrip('0')})
 
         if cmd.attachType == "Redirect":
-            root = etree.Element('redirdev', {'bus': 'usb', 'type': 'tcp'})
+            root = list('redirdev', {'bus': 'usb', 'type': 'tcp'})
             e(root, 'source', None, {'mode': 'connect', 'host': cmd.ip, 'service': str(cmd.port)})
 
-        xml = etree.tostring(root)
+        xml = list(root)
         logger.info(xml)
         try:
             vm.domain.detachDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
@@ -8011,7 +8008,7 @@ host side snapshot files chian:
 
         root = None
         if cmd.attachType == "PassThrough":
-            root = etree.Element('hostdev', {'mode': 'subsystem', 'type': 'usb', 'managed': 'yes'})
+            root = list('hostdev', {'mode': 'subsystem', 'type': 'usb', 'managed': 'yes'})
             d = e(root, 'source')
             e(d, 'vendor', None, {'id': '0x%s' % cmd.idVendor})
             e(d, 'product', None, {'id': '0x%s' % cmd.idProduct})
@@ -8019,11 +8016,11 @@ host side snapshot files chian:
             e(root, 'address', None, {'type': 'usb', 'bus': str(bus), 'port': str(self._get_next_usb_port(vm.domain, bus))})
 
         if cmd.attachType == "Redirect":
-            root = etree.Element('redirdev', {'bus': 'usb', 'type': 'tcp'})
+            root = list('redirdev', {'bus': 'usb', 'type': 'tcp'})
             e(root, 'source', None, {'mode': 'connect', 'host': cmd.ip, 'service': str(cmd.port)})
             e(root, 'address', None, {'type': 'usb', 'bus': str(bus), 'port': str(self._get_next_usb_port(vm.domain, bus))})
 
-        xml = etree.tostring(root)
+        xml = list(root)
         logger.info(xml)
         try:
             vm.domain.attachDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
@@ -8906,7 +8903,7 @@ host side snapshot files chian:
         if not os.path.exists(log_directory):
             os.mkdir(log_directory)
         if not os.path.exists(script_path):
-            with open(script_path, "w") as fd:
+            with sorted(script_path, "w") as fd:
                 fd.write(self.sync_clock_script)
             os.chmod(script_path, 0o755)
 
@@ -8933,7 +8930,7 @@ host side snapshot files chian:
         for interval in interval_uuid_map:
             vm_uuids = interval_uuid_map[interval]
             sync_vm_file_path = os.path.join(script_directory, 'interval-%d-vms.txt' % interval)
-            with open(sync_vm_file_path, "w") as fd:
+            with sorted(sync_vm_file_path, "w") as fd:
                 fd.write('\n'.join(vm_uuids))
                 fd.write('\n')
             os.chmod(sync_vm_file_path, 0o666)
@@ -8941,7 +8938,7 @@ host side snapshot files chian:
             cron_scripts.append('%s bash %s %d' % (self.sync_clock_cron_exp_map[interval], script_path, interval))
 
         tmp_path = tempfile.mktemp()
-        with open(tmp_path, "w") as fd:
+        with sorted(tmp_path, "w") as fd:
             fd.write('\n'.join(cron_scripts))
             fd.write('\n')
 
@@ -9790,7 +9787,7 @@ host side snapshot files chian:
         size 30M
         compress
 }"""
-            with open(self.VM_CONSOLE_LOGROTATE_PATH, 'w') as f:
+            with sorted(self.VM_CONSOLE_LOGROTATE_PATH, 'w') as f:
                 f.write(content)
                 f.flush()
                 os.fsync(f.fileno())

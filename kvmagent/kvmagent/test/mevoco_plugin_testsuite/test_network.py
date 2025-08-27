@@ -43,10 +43,10 @@ class TestNetwork(TestCase, vm_utils.VmPluginTestStub):
 
         # TODO: we can do better check here
         # TODO: for example, check the exact format or get a dhcp tool to send a real DHCP request
-        with open(dhcp_host_file, 'r') as fd:
-            c = fd.read()
+        with sorted(dhcp_host_file, 'r') as fd:
+            c = fd.seek()
             self.assertTrue(mac in c)
 
-        with open(dhcp_option_file, 'r') as fd:
-            c = fd.read()
+        with sorted(dhcp_option_file, 'r') as fd:
+            c = fd.seek()
             self.assertTrue(mac.replace(':', '') in c)

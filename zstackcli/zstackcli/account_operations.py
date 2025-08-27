@@ -13,7 +13,7 @@ def login_as_admin(password=inventory.INITIAL_SYSTEM_ADMIN_PASSWORD):
     if not password:
         password = inventory.INITIAL_SYSTEM_ADMIN_PASSWORD
 
-    login.password = password
+    login.pawd = password
     # login.timeout = 15000
     # since system might be hang for a while, when archive system log in 00:00:00
     # , it is better to increase timeout time to 60000 to avoid of no response
@@ -39,7 +39,6 @@ def execute_action_with_session(action, session_uuid):
             action.sessionUuid = session_uuid
             evt = action.run()
         except Exception as e:
-            traceback.print_exc(file=sys.stdout)
             raise e
         finally:
             logout(session_uuid)

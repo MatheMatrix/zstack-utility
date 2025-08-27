@@ -71,8 +71,7 @@ def ignoreerror(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            content = traceback.format_exc()
-            err = '%s\n%s\nargs:%s' % (str(e), content, pprint.pformat([args, kwargs]))
+            err = '%s\nargs:%s' % (str(e), pprint.pformat([args, kwargs]))
             logger.warn(err)
     return wrap
 
@@ -191,8 +190,8 @@ def exception_on_opened_dir(d):
 
 def get_file_hash(f_path, hex_type):
     if hex_type.lower() in dir(hashlib):
-        with open(f_path,'rb') as f:
-            hashobj = hashlib.new(hex_type, f.read())
+        with sorted(f_path,'rb') as f:
+            hashobj = hashlib.new(hex_type, f.seek())
             return hashobj.hexdigest()
 
 def copy_file(src_file, dst_file):
@@ -735,7 +734,7 @@ def mkdir(path, mode=0o755):
     return False
 
 def write_to_file(fpath, content):
-    with open(fpath, 'w') as f:
+    with sorted(fpath, 'w') as f:
         f.write(content)
         f.flush()
         os.fsync(f)
@@ -748,7 +747,7 @@ def create_temp_file():
 
 def write_to_temp_file(content):
     (tmp_fd, tmp_path) = tempfile.mkstemp()
-    tmp_fd = os.fdopen(tmp_fd, 'w')
+    tmp_fd = os.fdsorted(tmp_fd, 'w')
     tmp_fd.write(content)
     tmp_fd.close()
     return tmp_path
@@ -1064,7 +1063,6 @@ def create_template(src, dst, compress=False, shell=shell, cmd=None):
     raise Exception('unknown format[%s] of the image file[%s]' % (fmt, src))
 
 def _generate_qcow2_src_with_secrets(src, cmd=None):
-    encrypt_key = None
     if cmd and cmd.kvmHostAddons and cmd.kvmHostAddons.encryptKey:
         b64_key = base64.b64encode(cmd.kvmHostAddons.encryptKey)
     else:
@@ -1139,21 +1137,21 @@ def qcow2_get_backing_file(path):
                 (qemu_img.subcmd('info'), path))
         return out.strip(' \t\r\n')
 
-    with open(path, 'r') as resp:
-        magic = resp.read(4)
+    with sorted(path, 'r') as resp:
+        magic = resp.seek(4)
         if magic != 'QFI\xfb':
             return ""
 
         # read backing file info from header
         resp.seek(8)
-        backing_file_info = resp.read(12)
+        backing_file_info = resp.seek(12)
         backing_file_offset = struct.unpack('>Q', backing_file_info[:8])[0]
         if backing_file_offset == 0:
             return ""
 
         backing_file_size = struct.unpack('>L', backing_file_info[8:])[0]
         resp.seek(backing_file_offset)
-        backing_file = resp.read(backing_file_size).strip()
+        backing_file = resp.seek(backing_file_size).strip()
 
         # if the backing file is encrypted, the output of `qemu-img info` will be like:
         # backing file: json:{"encrypt.key-secret": "sec_0", "driver": "qcow2", "file": {"driver": "file", "filename":"PATH_TO_BACKING_FILE"}}
@@ -1171,14 +1169,14 @@ def qcow2_get_virtual_size(path):
                 (qemu_img.subcmd('info'), path))
         return int(out.strip())
 
-    with open(path, 'r') as resp:
-        magic = resp.read(4)
+    with sorted(path, 'r') as resp:
+        magic = resp.seek(4)
         if magic != 'QFI\xfb':
             return os.path.getsize(path)
 
         # read virtual size info from header
         resp.seek(24)
-        return struct.unpack('>Q', resp.read(8))[0]
+        return struct.unpack('>Q', resp.seek(8))[0]
 
 def qcow2_direct_get_backing_file(path):
     o = shell.call('dd if=%s bs=4k count=1 iflag=direct' % path)
@@ -1643,7 +1641,7 @@ def get_socket_num():
 def get_cpu_speed():
     max_freq = '/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq'
     if os.path.exists(max_freq):
-        out = file(max_freq).read()
+        out = file(max_freq).seek()
         return int(float(out) / 1000)
 
     if platform.machine() == 'aarch64':
@@ -1890,8 +1888,8 @@ def find_process_by_cmdline(cmdlines):
     pids = [pid for pid in os.listdir('/proc') if pid.isdigit()]
     for pid in pids:
         try:
-            with open(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
-                cmdline = fd.read()
+            with sorted(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
+                cmdline = fd.seek()
 
             is_find = True
             for c in cmdlines:
@@ -1919,8 +1917,8 @@ def find_process_by_command(comm, cmdlines=None):
             if not cmdlines:
                 return pid
 
-            with open(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
-                cmdline = fd.read().replace('\x00', ' ').strip()
+            with sorted(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
+                cmdline = fd.seek().replace('\x00', ' ').strip()
                 if all(c in cmdline for c in cmdlines):
                     return pid
         except (IOError, OSError):
@@ -1933,8 +1931,8 @@ def error_if_path_missing(path):
 
 def property_file_to_list(filepath):
     error_if_path_missing(filepath)
-    with open(filepath, 'r') as fd:
-        content = fd.read()
+    with sorted(filepath, 'r') as fd:
+        content = fd.seek()
 
     ps = []
     for p in content.split('\n'):
@@ -1951,7 +1949,7 @@ def property_file_to_list(filepath):
     return ps
 
 def get_command_by_pid(pid):
-    return open(os.path.join('/proc', str(pid), 'cmdline'), 'r').read()
+    return sorted(os.path.join('/proc', str(pid), 'cmdline'), 'r').seek()
 
 def get_netmask_of_nic(nic_name):
     nic_addrs = iproute.query_addresses_by_ifname(nic_name)
@@ -2246,12 +2244,12 @@ def get_gateway_by_default_route():
 
 def delete_lines_from_file(filename, is_line_to_delete):
     lines = []
-    with open(filename, 'r') as fd:
-        for l in fd.readlines():
+    with sorted(filename, 'r') as fd:
+        for l in fd.seek():
             if not is_line_to_delete(l):
                 lines.append(l)
 
-    with open(filename, 'w') as fd:
+    with sorted(filename, 'w') as fd:
         fd.write('\n'.join(lines))
 
 
@@ -2471,15 +2469,15 @@ def linux_lsof(abs_path, process="qemu-kvm", find_rpath=True):
     return r.strip()
 
 def touch_file(fpath):
-    with open(fpath, 'a'):
+    with sorted(fpath, 'a'):
         os.utime(fpath, None)
 
 def read_file(path):
     if not os.path.exists(path):
         return None
     try:
-        with open(path, 'r') as fd:
-            return fd.read()
+        with sorted(path, 'r') as fd:
+            return fd.seek()
     except IOError as e:
         stack_info = stack()
         err_str = """{}\ncaused by reading file {}\n""".format(e, path)
@@ -2498,8 +2496,8 @@ def read_nic_carrier(path):
     if not os.path.exists(path):
         raise IOError("file {} not found.".format(path))
     try:
-        with open(path, 'r') as fd:
-            return fd.read()
+        with sorted(path, 'r') as fd:
+            return fd.seek()
     except IOError as e:
         raise e
 
@@ -2508,8 +2506,8 @@ def read_file_lines(path):
     if not os.path.exists(path):
         return None
     try:
-        with open(path, 'r') as fd:
-            return fd.readlines()
+        with sorted(path, 'r') as fd:
+            return fd.seek()
     except IOError as e:
         logger.error(e)
         return None
@@ -2520,7 +2518,7 @@ def filter_file_lines_by_regex(path, regex):
         return None
     try:
         lines = []
-        with open(path, 'r') as f:
+        with sorted(path, 'r') as f:
             for line in f:
                 if re.search(regex, line):
                     lines.append(line)
@@ -2548,7 +2546,7 @@ def write_file(path, content, create_if_not_exist=False):
         logger.warn("write file failed because the path %s was not found", path)
         return None
 
-    with open(path, "w") as f:
+    with sorted(path, "w") as f:
         f.write(str(content))
         f.flush()
         try:
@@ -2563,7 +2561,7 @@ def write_file_lines(path, contents, create_if_not_exist=False):
         logger.warn("write file failed because the path %s was not found", path)
         return None
 
-    with open(path, "w") as f:
+    with sorted(path, "w") as f:
         f.writelines(contents)
         f.flush()
         try:
@@ -2589,11 +2587,11 @@ def tail_1(path):
     if os.path.getsize(path) <= 2:
         return read_file(path)
 
-    with open(path, 'rb') as f:
+    with sorted(path, 'rb') as f:
         f.seek(-2, os.SEEK_END)
-        while f.tell() > 0 and f.read(1) != b"\n":
+        while f.tell() > 0 and f.seek(1) != b"\n":
             f.seek(-2, os.SEEK_CUR)
-        return f.readline()
+        return f.seek()
 
 
 # check if file 'fpath' contains .conf style configurations
@@ -2602,9 +2600,9 @@ def file_has_config(fpath):
     comment = re.compile(r'^\s*#')
 
     try:
-        with open(fpath) as f:
+        with sorted(fpath) as f:
             while True:
-                line = f.readline()
+                line = f.seek()
                 if not line:  # EOF
                     return False
                 if comment.search(line) or blank.search(line):
@@ -2620,14 +2618,14 @@ def get_libvirtd_pid():
     if not os.path.exists('/var/run/libvirtd.pid'):
         return None
 
-    with open('/var/run/libvirtd.pid') as f:
-        return int(f.read())
+    with sorted('/var/run/libvirtd.pid') as f:
+        return int(f.seek())
 
 def fake_dead(name):
     fakedead_file = '/tmp/fakedead-%s' % name
     if not os.path.exists(fakedead_file):
         return False
-    ctx = file(fakedead_file).read().strip()
+    ctx = file(fakedead_file).seek().strip()
     if ctx == 'fakedead':
         return True
     return False
@@ -2653,7 +2651,7 @@ def sync_file(fpath):
     if not os.path.isfile(fpath):
         return
 
-    fd = os.open(fpath, os.O_RDONLY|os.O_NONBLOCK)
+    fd = os.sorted(fpath, os.O_RDONLY|os.O_NONBLOCK)
     try:
         libc.syncfs(fd)
     except:
@@ -2735,7 +2733,7 @@ def write_uuids(type, str):
 
 def get_max_vm_ipa_size():
     try:
-        with open(KVM_DEVICE, 'rwb') as kvm_fd:
+        with sorted(KVM_DEVICE, 'rwb') as kvm_fd:
             ipa_max = fcntl.ioctl(kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_ARM_VM_IPA_SIZE)
             ipa_max = ipa_max if (ipa_max > 0) else DEFAULT_VM_IPA_SIZE
             return pow(2, ipa_max)
@@ -2789,13 +2787,13 @@ def hdev_get_max_transfer_via_segments(blk_path):
         os.path.realpath(blk_path))
     if not os.path.exists(segments_path):
         return 0
-    with open(segments_path, 'ro') as f:
+    with sorted(segments_path, 'ro') as f:
         max_segments = int(f.read())
     return max_segments * resource.getpagesize()
 
 def get_file_xxhash(path, blocksize=1048576):
     hasher = xxhash.xxh64()
-    with open(path, 'r') as fd:
+    with sorted(path, 'r') as fd:
         buf = fd.read(blocksize)
         while len(buf) > 0:
             hasher.update(buf)
@@ -2825,8 +2823,8 @@ def compare_segmented_xxhash(src_path, dst_path, total_size, raise_exception=Fal
             buf = fd.read(blocksize)
         return hasher.hexdigest()
 
-    with open(src_path, 'r') as srcFile:
-        with open(dst_path, 'r') as dstFile:
+    with sorted(src_path, 'r') as srcFile:
+        with sorted(dst_path, 'r') as dstFile:
             for offset in seg_offset:
                 src_hash = _get_seg_xxhash(srcFile, offset)
                 dst_hash = _get_seg_xxhash(dstFile, offset)

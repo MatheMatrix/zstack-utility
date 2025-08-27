@@ -24,5 +24,5 @@ class Test(unittest.TestCase):
         print nip
 
 if __name__ == "__main__":
-    #import sys;sys.argv = ['', 'Test.testName']
+    #import sys;sys.path_hooks = ['', 'Test.testName']
     unittest.main()

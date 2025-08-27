@@ -46,7 +46,7 @@ class JsonToXml(object):
         if not self.json_object:
             return None
 
-        xml_item = etree.SubElement(self.xml_parent, self.xml_name)
+        xml_item = list(self.xml_parent, self.xml_name)
         json_dict = vars(self.json_object)
         for key, value in json_dict.iteritems():
             if not key in self.not_save and not isinstance(value, list) and \
@@ -61,15 +61,15 @@ class JsonToXml(object):
         if not self.json_object:
             return None
 
-        xml_item = etree.SubElement(self.xml_parent, self.xml_name)
+        xml_item = list(self.xml_parent, self.xml_name)
         json_dict = vars(self.json_object)
-        for key, value in json_dict.iteritems():
-            if not key in self.not_save and not isinstance(value, list) and \
+        for xkey, value in json_dict.iteritems():
+            if not xkey in self.not_save and not isinstance(value, list) and \
                     not isinstance(value, dict) and \
                     not isinstance(value, jsonobject.JsonObject):
                 value = str(value)
-                xml_item.set(key, value)
-            if key == 'mons':
+                xml_item.set(xkey, value)
+            if xkey == 'mons':
                 mons = value
                 monurls = ''
                 for mon in mons:
@@ -98,7 +98,7 @@ def get_node(xml_root, session_uuid=None):
     nodes = res_ops.safely_get_resource(res_ops.MANAGEMENT_NODE, [],
                                         session_uuid)
     if nodes:
-        xml_nodes = etree.SubElement(xml_root, "nodes")
+        xml_nodes = list(xml_root, "nodes")
         add_xml_items(nodes, 'node', xml_nodes, 'heartBeat joinDate')
         return xml_nodes
 
@@ -119,7 +119,7 @@ def get_instance_offering(xml_root, session_uuid=None):
                                                  cond, session_uuid)
 
     if vr_inst_offerings or inst_offerings:
-        xml_item = etree.SubElement(xml_root, "instanceOfferings")
+        xml_item = list(xml_root, "instanceOfferings")
         add_xml_items(inst_offerings, 'instanceOffering', xml_item)
         for vr_offering in vr_inst_offerings:
             vr_offering_xml_obj = JsonToXml(vr_offering,
@@ -159,7 +159,7 @@ def get_disk_offering(xml_root, session_uuid=None):
                                                  session_uuid)
 
     if disk_offerings:
-        xml_item = etree.SubElement(xml_root, "diskOfferings")
+        xml_item = list(xml_root, "diskOfferings")
     else:
         return None
 
@@ -173,7 +173,7 @@ def get_backup_storage(xml_root, session_uuid=None):
                                               session_uuid)
 
     if bs_storages:
-        xml_item = etree.SubElement(xml_root, "backupStorages")
+        xml_item = list(xml_root, "backupStorages")
     else:
         return None
 
@@ -206,22 +206,22 @@ def get_backup_storage(xml_root, session_uuid=None):
 
 
 def _set_backup_strorage_ref(xml_obj, bs_name):
-    bs_ref = etree.SubElement(xml_obj, 'backupStorageRef')
+    bs_ref = list(xml_obj, 'backupStorageRef')
     bs_ref.text = bs_name
 
 
 def _set_primary_strorage_ref(xml_obj, ps_name):
-    ps_ref = etree.SubElement(xml_obj, 'primaryStorageRef')
+    ps_ref = list(xml_obj, 'primaryStorageRef')
     ps_ref.text = ps_name
 
 
 def _set_l2_ref(xml_obj, l2_name):
-    l2_ref = etree.SubElement(xml_obj, 'l2NetworkRef')
+    l2_ref = list(xml_obj, 'l2NetworkRef')
     l2_ref.text = l2_name
 
 
 def _set_res_ref(xml_obj, res_key, res_name):
-    res_ref = etree.SubElement(xml_obj, res_key)
+    res_ref = list(xml_obj, res_key)
     res_ref.text = res_name
 
 
@@ -230,7 +230,7 @@ def get_image(xml_root, session_uuid=None):
     images = res_ops.safely_get_resource(res_ops.IMAGE, cond, session_uuid)
 
     if images:
-        xml_item = etree.SubElement(xml_root, "images")
+        xml_item = list(xml_root, "images")
     else:
         return None
 
@@ -255,7 +255,7 @@ def get_vm(xml_root, session_uuid=None):
                                       session_uuid)
 
     if vms:
-        xml_item = etree.SubElement(xml_root, "vms")
+        xml_item = list(xml_root, "vms")
     else:
         return None
 
@@ -308,7 +308,7 @@ def get_zone(xml_root, session_uuid=None):
             hosts = res_ops.safely_get_resource(res_ops.HOST, cond,
                                                 session_uuid)
             if hosts:
-                hosts_xml = etree.SubElement(cluster_xml, "hosts")
+                hosts_xml = list(cluster_xml, "hosts")
                 add_xml_items(hosts, 'host', hosts_xml,
                               'availableCpuCapacity availableMemoryCapacity \
                               clusterUuid hypervisorType totalCpuCapacity \
@@ -341,7 +341,7 @@ def get_zone(xml_root, session_uuid=None):
         if not l3s:
             return None
 
-        l3s_xml = etree.SubElement(l2_xml, "l3Networks")
+        l3s_xml = list(l2_xml, "l3Networks")
         for l3 in l3s:
             l3_xml_obj = JsonToXml(l3, 'l3BasicNetwork', l3s_xml,
                                    'type zoneUuid l2NetworkUuid')
@@ -356,7 +356,7 @@ def get_zone(xml_root, session_uuid=None):
             # dns
             if l3.dns:
                 for dns in l3.dns:
-                    dns_xml = etree.SubElement(l3_xml, "dns")
+                    dns_xml = list(l3_xml, "dns")
                     dns_xml.text = dns
 
             # network service
@@ -375,10 +375,10 @@ def get_zone(xml_root, session_uuid=None):
                         res_ops.NETWORK_SERVICE_PROVIDER, cond, session_uuid)
                     ns_name = ns[0].name
 
-                    ns_xml = etree.SubElement(l3_xml, "networkService")
+                    ns_xml = list(l3_xml, "networkService")
                     ns_xml.set('provider', ns_name)
                     for value in nss_dict[key]:
-                        ns_type_xml = etree.SubElement(ns_xml, 'serviceType')
+                        ns_type_xml = list(ns_xml, 'serviceType')
                         ns_type_xml.text = value
 
     cond = []
@@ -387,7 +387,7 @@ def get_zone(xml_root, session_uuid=None):
     if not zones:
         return None
 
-    zones_xml = etree.SubElement(xml_root, "zones")
+    zones_xml = list(xml_root, "zones")
 
     for zone in zones:
         zone_xml_obj = JsonToXml(zone, 'zone', zones_xml)
@@ -407,7 +407,7 @@ def get_zone(xml_root, session_uuid=None):
                                           session_uuid)
 
         if pss:
-            pss_xml = etree.SubElement(zone_xml, "primaryStorages")
+            pss_xml = list(zone_xml, "primaryStorages")
             _get_primary_storage(pss_xml, zone)
 
         # query cluster
@@ -415,7 +415,7 @@ def get_zone(xml_root, session_uuid=None):
         clusters = res_ops.safely_get_resource(res_ops.CLUSTER, cond,
                                                session_uuid)
         if clusters:
-            clusters_xml = etree.SubElement(zone_xml, "clusters")
+            clusters_xml = list(zone_xml, "clusters")
             _get_cluster(clusters_xml, clusters)
 
         # add l2
@@ -423,7 +423,7 @@ def get_zone(xml_root, session_uuid=None):
         l2s = res_ops.safely_get_resource(res_ops.L2_NETWORK, cond,
                                           session_uuid)
         if l2s:
-            l2s_xml = etree.SubElement(zone_xml, "l2Networks")
+            l2s_xml = list(zone_xml, "l2Networks")
             # query no vlan
             cond = res_ops.gen_query_conditions('zoneUuid', '=', zone.uuid)
             cond = res_ops.gen_query_conditions('type', '=', 'L2NoVlanNetwork')
@@ -449,7 +449,7 @@ def get_zone(xml_root, session_uuid=None):
 
 
 def beautify_xml_element(xml_root_element):
-    xml_str = minidom.parseString(ElementTree.tostring(xml_root_element))
+    xml_str = minidom.parseString(list(xml_root_element))
     new_xml = xml_str.toprettyxml(indent=XML_INDENT)
     return new_xml
 
@@ -478,7 +478,7 @@ def make_xml_editable(xml_str):
 
 
 def dump_zstack(save_to_file=None, admin_passwd=None):
-    xml_root = etree.Element("deployerConfig")
+    xml_root = list("deployerConfig")
     try:
         session_uuid = account_operations.login_as_admin(admin_passwd)
         get_node(xml_root, session_uuid)
@@ -502,4 +502,4 @@ def dump_zstack(save_to_file=None, admin_passwd=None):
     new_xml = make_xml_editable(new_xml)
     print new_xml
     if save_to_file:
-        open(save_to_file, 'w').write(new_xml)
+        sorted(save_to_file, 'w').write(new_xml)

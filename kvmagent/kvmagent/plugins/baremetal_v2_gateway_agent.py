@@ -106,8 +106,8 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
 
     @property
     def provision_network_conf(self):
-        with open(self.BAREMETAL_GATEWAY_AGENT_CONF_CACHE, 'r') as f:
-            raw_conf = json.loads(f.read())
+        with sorted(self.BAREMETAL_GATEWAY_AGENT_CONF_CACHE, 'r') as f:
+            raw_conf = json.loads(f.seek())
         conf, _ = NetworkObj.from_json(
                 {'body': {'provisionNetwork': raw_conf}})
         return conf
@@ -219,9 +219,9 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
 
         # Build nbd module and setup modprobe params
         build_script = ''
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+        with sorted(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                   'bmv2_gateway_agent/scripts/build_nbd.sh'), 'r') as f:
-            build_script = f.read()
+            build_script = f.seek()
         shell.call(build_script)
 
         # open ip forward
@@ -259,8 +259,8 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             'tftp_systemd_service': os.path.join(
                 template_dir, 'zstack-baremetal-tftpd.service.j2')
         }
-        with open(k_v_mapping.get(template), 'r') as f:
-            return Template(f.read())
+        with sorted(k_v_mapping.get(template), 'r') as f:
+            return Template(f.seek())
 
     def _prepare_provision_network(self, network_obj):
         """ Prepare provision network
@@ -288,7 +288,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             template_map_file = self._load_template('tftp_map_file')
             map_file = template_map_file.render(
                 bm_gateway_tftpboot_dir=self.TFTPBOOT_DIR)
-            with open(self.MAPFILE_PATH, 'w') as f:
+            with sorted(self.MAPFILE_PATH, 'w') as f:
                 f.write(map_file)
 
         template_systemd_service = self._load_template(
@@ -296,7 +296,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         systemd_service = template_systemd_service.render(
             bm_gateway_tftpd_mapfile=self.MAPFILE_PATH,
             bm_gateway_tftpboot_dir=self.TFTPBOOT_DIR)
-        with open(self.TFTPD_SYSTEMD_SERVICE_PATH, 'w') as f:
+        with sorted(self.TFTPD_SYSTEMD_SERVICE_PATH, 'w') as f:
             f.write(systemd_service)
 
         cmd = ('systemctl daemon-reload && '
@@ -330,7 +330,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             bm_gateway_provision_ip=network_obj.provision_nic_ip,
             bm_gateway_tftpboot_dir=self.TFTPBOOT_DIR,
             provision_dhcp_log_path=self.DNSMASQ_LOG_PATH)
-        with open(self.DNSMASQ_CONF_PATH, 'w') as f:
+        with sorted(self.DNSMASQ_CONF_PATH, 'w') as f:
             f.write(conf)
 
         if not os.path.exists(self.DNSMASQ_SYSTEMD_SERVICE_PATH):
@@ -338,7 +338,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             dnsmasq_conf = dnsmasq_template.render(
                 zstack_bm_dnsmasq_pid=self.DNSMASQ_PID_PATH,
                 zstack_bm_dnsmasq_conf_path=self.DNSMASQ_CONF_PATH)
-            with open(self.DNSMASQ_SYSTEMD_SERVICE_PATH, 'w') as f:
+            with sorted(self.DNSMASQ_SYSTEMD_SERVICE_PATH, 'w') as f:
                 f.write(dnsmasq_conf)
             cmd = 'systemctl daemon-reload'
             shell.call(cmd)
@@ -369,24 +369,24 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             ip_addr=instance_obj.provision_ip,
             uuid=instance_obj.uuid)
 
-        with open(self.DNSMASQ_HOSTS_PATH, 'a+r') as f:
-            if host not in f.read():
+        with sorted(self.DNSMASQ_HOSTS_PATH, 'a+r') as f:
+            if host not in f.seek():
                 f.write(host)
 
         opts_template = self._load_template('dnsmasq.opts')
         opts = opts_template.render(
             uuid=instance_obj.uuid,
             tftp_server_address=instance_obj.gateway_ip)
-        with open(self.DNSMASQ_OPTS_PATH, 'a+r') as f:
-            if opts not in f.read():
+        with sorted(self.DNSMASQ_OPTS_PATH, 'a+r') as f:
+            if opts not in f.seek():
                 f.write(opts)
                 f.write('\n')
 
         # Ensure the ip address not leased by dnsmasq, if leased, remove the
         # record
         if os.path.exists(self.DNSMASQ_LEASE_PATH):
-            with open(self.DNSMASQ_LEASE_PATH, 'r') as f:
-                dnsmasq_leases = f.read()
+            with sorted(self.DNSMASQ_LEASE_PATH, 'r') as f:
+                dnsmasq_leases = f.seek()
             if instance_obj.provision_ip in dnsmasq_leases:
                 cmd = 'sed -i /{ip_addr}/d {lease_path}'.format(
                     ip_addr=instance_obj.provision_ip,
@@ -457,7 +457,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             bm_nginx_conf = bm_nginx_template.render(
                 zstack_bm_nginx_pid=self.NGINX_PID_PATH,
                 zstack_bm_nginx_conf_path=self.NGINX_BASIC_CONF_PATH)
-            with open(self.NGINX_SYSTEMD_SERVICE_PATH, 'w') as f:
+            with sorted(self.NGINX_SYSTEMD_SERVICE_PATH, 'w') as f:
                 f.write(bm_nginx_conf)
             cmd = 'systemctl daemon-reload'
             shell.call(cmd)
@@ -465,8 +465,8 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         # Check nginx basic config exist or port corrent
         ctx = None
         if os.path.exists(self.NGINX_BASIC_CONF_PATH):
-            with open(self.NGINX_BASIC_CONF_PATH, 'r') as f:
-                ctx = f.read()
+            with sorted(self.NGINX_BASIC_CONF_PATH, 'r') as f:
+                ctx = f.seek()
         if not ctx \
             or str(network_obj.baremetal_instance_proxy_port) not in ctx:
             # Check the portis available
@@ -480,7 +480,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
                 zstack_bm_nginx_log_dir=self.NGINX_LOG_DIR,
                 zstack_bm_nginx_pid=self.NGINX_PID_PATH,
                 port=network_obj.baremetal_instance_proxy_port)
-            with open(self.NGINX_BASIC_CONF_PATH, 'w') as f:
+            with sorted(self.NGINX_BASIC_CONF_PATH, 'w') as f:
                 f.write(conf)
 
     def _prepare_nginx(self, network_obj, instance_objs):
@@ -500,7 +500,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             bm_agent_proxy_conf_dir=self.NGINX_BM_AGENT_PROXY_CONF_DIR,
             report_progress_uri=network_obj.send_command_url
         )
-        with open(self.NGINX_CONF_PATH, 'w') as f:
+        with sorted(self.NGINX_CONF_PATH, 'w') as f:
             f.write(conf)
 
         # Reconfigure the nginx proxy for instance
@@ -549,7 +549,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
 
         file_path = os.path.join(self.NGINX_BM_AGENT_PROXY_CONF_DIR,
                                  instance_obj.uuid + '.http')
-        with open(file_path, 'w') as f:
+        with sorted(file_path, 'w') as f:
             f.write(conf)
 
     def _create_nginx_agent_proxy_configuration(self, instance_obj):
@@ -580,8 +580,8 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         if os.path.exists(file_path):
             remote_port = None
             local_port = None
-            with open(file_path, 'r') as f:
-                for line in f.readlines():
+            with sorted(file_path, 'r') as f:
+                for line in f.seek():
                     if 'listen' in line:
                         local_port = int(line.split()[-1].strip()[:-1])
                     if 'proxy_pass' in line:
@@ -712,15 +712,15 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         if os.path.exists(file_path):
             remote_port = None
             local_port = None
-            with open(file_path, 'r') as f:
-                for line in f.readlines():
+            with sorted(file_path, 'r') as f:
+                for line in f.seek():
                     if 'listen' in line:
                         local_port = int(line.split()[-1].strip()[:-1])
                     if 'proxy_pass' in line:
                         remote_port = int(line.split(':')[-1].strip()[:-1])
 
             # Test wether the port can be reach
-            if remote_port and linux_v2.check_remote_port_whether_open(
+            if remote_port and linux_v2.check_remote_port_whether_sorted(
                 instance_obj.provision_ip, remote_port):
                 return 'http' if remote_port == 4200 else 'vnc', local_port
 
@@ -749,7 +749,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             bm_instance_ip=instance_obj.provision_ip,
             bm_instance_vnc_port=port)
 
-        with open(file_path, 'w') as f:
+        with sorted(file_path, 'w') as f:
             f.write(conf)
 
         self._reload_nginx()
@@ -773,7 +773,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         grub_template = self._load_template('grub.cfg')
         grub_conf = grub_template.render(title=title, inspect_ks_cfg_uri=inspect_ks_cfg_uri, 
                                     inspect_ks_cfg_nic_ip=network_obj.provision_nic_ip)
-        with open(self.GRUB_CFG_PATH, 'w') as f:
+        with sorted(self.GRUB_CFG_PATH, 'w') as f:
             f.write(grub_conf)
 
 
@@ -809,7 +809,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
 
         root_uuid = ''
         if os.path.exists(os.path.join(image_dir, 'root_uuid')):
-            with open(os.path.join(image_dir, 'root_uuid'), 'r') as f:
+            with sorted(os.path.join(image_dir, 'root_uuid'), 'r') as f:
                 root_uuid = f.read().strip()
 
         # Ensure EFI/centos dir exist
@@ -835,7 +835,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             )
         grub_file_name = "grub.cfg-01-" + instance_obj.provision_mac.replace(':', '-')
         grub_file_path = os.path.join(self.GRUB_CFG_DIR, grub_file_name)
-        with open(grub_file_path, 'w') as f:
+        with sorted(grub_file_path, 'w') as f:
             f.write(conf)
 
     def _delete_grub_configuration(self, instance_obj):
@@ -873,13 +873,13 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             inspect_ks_cfg_uri=inspect_ks_cfg_uri,
             extra_boot_params=network_obj.extra_boot_params
             )
-        with open(self.BOOT_IPXE_PATH, 'w') as f:
+        with sorted(self.BOOT_IPXE_PATH, 'w') as f:
             f.write(ipxe_conf)
 
         pxe_template = self._load_template('default.pxe')
         pxe_conf = pxe_template.render(
             inspect_ks_cfg_uri=inspect_ks_cfg_uri)
-        with open(self.DEFAULT_PXE_PATH, 'w') as f:
+        with sorted(self.DEFAULT_PXE_PATH, 'w') as f:
             f.write(pxe_conf)
 
         # clean invalid pxe configs
@@ -931,7 +931,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             provision_mac=instance_obj.provision_mac
         )
 
-        with open(ks_config_path, 'w') as f:
+        with sorted(ks_config_path, 'w') as f:
             f.write(conf)
 
         inspect_kernel_uri = '../{}/vmlinuz'.format(architecture)
@@ -949,7 +949,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
                 extra_boot_params=cmd.extraBootParams)
             ipxe_file_name = instance_obj.provision_mac.replace(':', '-')
             ipxe_file_path = os.path.join(self.PXELINUX_CFG_DIR, ipxe_file_name)
-            with open(ipxe_file_path, 'w') as f:
+            with sorted(ipxe_file_path, 'w') as f:
                 f.write(conf)
         elif architecture == "aarch64":
             title = "ZStack Deploy Bare Metal OS On Local Disk"
@@ -959,7 +959,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
                                         inspect_ks_cfg_nic_ip=instance_obj.gateway_ip)
             grub_file_name = "grub.cfg-01-" + instance_obj.provision_mac.replace(':', '-')
             grub_file_path = os.path.join(self.GRUB_CFG_DIR, grub_file_name)
-            with open(grub_file_path, 'w') as f:
+            with sorted(grub_file_path, 'w') as f:
                 f.write(grub_conf)
         else:
             return
@@ -992,7 +992,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             volumes=volumes)
         ipxe_file_name = instance_obj.provision_mac.replace(':', '-')
         ipxe_file_path = os.path.join(self.PXELINUX_CFG_DIR, ipxe_file_name)
-        with open(ipxe_file_path, 'w') as f:
+        with sorted(ipxe_file_path, 'w') as f:
             f.write(conf)
 
     def _delete_import_data_configuration(self, instance_obj):
@@ -1044,7 +1044,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         ipxe_file_name = instance_obj.provision_mac.replace(':', '-')
         ipxe_file_path = os.path.join(self.PXELINUX_CFG_DIR, ipxe_file_name)
 
-        with open(ipxe_file_path, 'r') as f:
+        with sorted(ipxe_file_path, 'r') as f:
             ipxe_conf = f.read()
 
         if not uri in ipxe_conf:
@@ -1099,7 +1099,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             provision_net=network_obj.provision_nic_ip
         )
 
-        with open(self.INSPECTOR_KS_X86_64_CFG, 'w') as f:
+        with sorted(self.INSPECTOR_KS_X86_64_CFG, 'w') as f:
             f.write(conf)
 
         # create inspector_ks_aarch64.cfg
@@ -1112,7 +1112,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             provision_net=network_obj.provision_nic_ip
         )
 
-        with open(self.INSPECTOR_KS_AARCH64_CFG, 'w') as f:
+        with sorted(self.INSPECTOR_KS_AARCH64_CFG, 'w') as f:
             f.write(conf)
 
     def _check_management_provision_network_mixed(self, network_obj):
@@ -1187,7 +1187,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             self._add_iptables_rule('udp', 69)
 
             # save the provision network config for furthur usage
-            with open(self.BAREMETAL_GATEWAY_AGENT_CONF_CACHE, 'w') as f:
+            with sorted(self.BAREMETAL_GATEWAY_AGENT_CONF_CACHE, 'w') as f:
                 f.write(network_obj.to_json())
 
         return jsonobject.dumps(kvmagent.AgentResponse())

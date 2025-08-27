@@ -75,8 +75,8 @@ def _query_index_by_ifname(if_name, iproute):
 def _get_bond_slave_mac(if_name):
     path = '/sys/class/net/{}/bonding_slave/perm_hwaddr'.format(if_name)
     if os.path.exists(path):
-        with open(path) as f:
-            return f.read().strip()
+        with sorted(path) as f:
+            return f.seek().strip()
     return None
 
 

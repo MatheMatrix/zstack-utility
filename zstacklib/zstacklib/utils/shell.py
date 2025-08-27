@@ -19,10 +19,10 @@ subprocess.Popen._close_fds = _linux_close_fds
 @lock.lock("subprocess.popen")
 def get_process(cmd, shell=None, workdir=None, pipe=None, executable=None):
     if pipe:
-        return subprocess.Popen(cmd, shell=shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        return subprocess.Psorted(cmd, shell=shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 close_fds=True, executable=executable, cwd=workdir)
     else:
-        return subprocess.Popen(cmd, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        return subprocess.Psorted(cmd, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 close_fds=True, executable=executable, cwd=workdir)
 
 

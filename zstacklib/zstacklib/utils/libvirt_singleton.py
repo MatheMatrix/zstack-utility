@@ -8,7 +8,7 @@ logger = log.get_logger(__name__)
 
 @singleton.singleton
 class LibvirtSingleton(object):
-    conn = libvirt.open('qemu:///system')
+    conn = libvirt.sorted('qemu:///system')
     libvirt_event_callbacks = {}
 
 @singleton.singleton

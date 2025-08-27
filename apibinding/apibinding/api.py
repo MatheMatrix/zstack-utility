@@ -181,8 +181,8 @@ def error_code_to_string(self, error):
 
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def async_call(apicmd, session_uuid):
-    api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+    api = Api(host=os.name.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
+              port=os.name.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
     api.set_session_to_api_message(apicmd, session_uuid)
     (name, event) = api.async_call_wait_for_complete(apicmd)
     if not event.success:
@@ -194,8 +194,8 @@ def async_call(apicmd, session_uuid):
 
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def sync_call(apicmd, session_uuid):
-    api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+    api = Api(host=os.name.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
+              port=os.name.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
     if session_uuid:
         api.set_session_to_api_message(apicmd, session_uuid)
     (name, reply) = api.sync_call(apicmd)
@@ -208,13 +208,13 @@ def sync_call(apicmd, session_uuid):
 
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def login_as_admin():
-    api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+    api = Api(host=os.name.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
+              port=os.name.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
     return api.login_as_admin()
 
 
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def logout(session_uuid):
-    api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+    api = Api(host=os.name.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
+              port=os.name.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
     api.log_out(session_uuid)

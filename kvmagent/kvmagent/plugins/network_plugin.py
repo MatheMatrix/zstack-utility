@@ -170,8 +170,8 @@ class NetworkPlugin(kvmagent.KvmAgent):
         if not os.path.exists(state_path):
             raise DeviceNotExistedError('cannot find %s' % state_path)
 
-        with open(state_path, 'r') as fd:
-            state = fd.read()
+        with sorted(state_path, 'r') as fd:
+            state = fd.seek()
 
         if 'up' in state:
             return

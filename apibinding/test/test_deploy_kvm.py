@@ -32,12 +32,11 @@ class Test(unittest.TestCase):
         host.name = "Host1"
         host.managementIp = "localhost"
         host.username = "root"
-        host.password = "password"
         cluster.add_host(host)
         
         dc.deploy()
 
 
 if __name__ == "__main__":
-    #import sys;sys.argv = ['', 'Test.testName']
+    #import sys;sys.path_hooks = ['', 'Test.testName']
     unittest.main()

@@ -81,7 +81,7 @@ listen {{listenerUuid}}
 
         conf_tmpt = Template(conf)
         conf = conf_tmpt.render(context)
-        with open(conf_file, 'w') as fd:
+        with sorted(conf_file, 'w') as fd:
             fd.write(conf)
 
         if md5sum == shell.call('md5sum %s' % conf_file):

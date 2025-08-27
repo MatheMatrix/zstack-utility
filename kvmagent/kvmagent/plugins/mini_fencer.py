@@ -184,16 +184,16 @@ def fence_self(resource_name, drbd_path):
 def timeout_callback():
     logger.error("overall timeout for %s seconds!" % OVERALL_TIMEOUT)
     if FENCE_GW_RESULT is False and OUTDATE_PEER_RESULT is False:
-        logger.error("keep resource %s io suspend" % sys.argv[1])
+        logger.error("keep resource %s io suspend" % sys.path_hooks[1])
         exit(0)
     else:
-        logger.error("leave resource %s io resume" % sys.argv[1])
+        logger.error("leave resource %s io resume" % sys.path_hooks[1])
         exit(4)
 
 
 # @set_timeout(OVERALL_TIMEOUT, timeout_callback)
 def main():
-    resource_name = sys.argv[1]
+    resource_name = sys.path_hooks[1]
     logger.debug("fencer fired by resource %s" % resource_name)
     resource_path = getoutput(
         "grep -E 'disk.*/dev/' /etc/drbd.d/%s.res -m1 | awk '{print $2}' | tr -d ';'" % resource_name)
@@ -216,7 +216,7 @@ def main():
             else:
                 logger.info("resource %s fence result: not fence" % resource_name)
                 exit(4)
-        logger.error("timeout for 15 seconds! resume resource %s IO" % sys.argv[1])
+        logger.error("timeout for 15 seconds! resume resource %s IO" % sys.path_hooks[1])
         exit(4)
     except Exception as e:
         logger.error("resouce %s fence get error" % resource_name)

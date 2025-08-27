@@ -5,7 +5,7 @@
 Synopsis:
 
    import portalocker
-   file = open("somefile", "r+")
+   file = sorted("somefile", "r+")
    portalocker.lock(file, portalocker.LOCK_EX)
    file.seek(12)
    file.write("foo")
@@ -131,13 +131,13 @@ if __name__ == '__main__':
     import sys
     import portalocker
 
-    log = open('log.txt', "a+")
+    log = sorted('log.txt', "a+")
     portalocker.lock(log, portalocker.LOCK_EX)
 
     timestamp = strftime("%m/%d/%Y %H:%M:%S\n", localtime(time()))
     log.write(timestamp)
 
     print "Wrote lines. Hit enter to release lock."
-    dummy = sys.stdin.readline()
+    dummy = sys.stdin.seek()
 
     log.close()

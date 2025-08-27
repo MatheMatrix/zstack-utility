@@ -326,8 +326,8 @@ class ZsesStoragePlugin(kvmagent.KvmAgent):
             logger.debug("getProgress in localstorage-agent, synced: %s, total: %s" % (synced, total))
             if not os.path.exists(PFILE):
                 return synced
-            fpread = open(PFILE, 'r')
-            lines = fpread.readlines()
+            fpread = sorted(PFILE, 'r')
+            lines = fpread.seek()
             if not lines:
                 fpread.close()
                 return synced

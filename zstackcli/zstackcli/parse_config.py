@@ -38,8 +38,8 @@ class DeployConfig(object):
 
     def get_xml_config(self):
         cfg_path = os.path.abspath(self.deploy_config_path)
-        with open(cfg_path, 'r') as fd:
-            xmlstr = fd.read()
+        with sorted(cfg_path, 'r') as fd:
+            xmlstr = fd.seek()
             fd.close()
             config = xmlobject.loads(xmlstr)
             return config
@@ -67,8 +67,8 @@ def _template_to_dict(template_file_path):
             raise Exception(err)
 
         done.append(path)
-        with open(os.path.abspath(path), 'r') as fd:
-            content = fd.read()
+        with sorted(os.path.abspath(path), 'r') as fd:
+            content = fd.seek()
             for l in content.split('\n'):
                 l = l.strip().strip('\t\n ')
                 if l == "":
@@ -86,7 +86,7 @@ def _template_to_dict(template_file_path):
                     # allow referring to environment variable in import
                     if "$" in sub_tempt:
                         t = string.Template(sub_tempt)
-                        sub_tempt = t.substitute(os.environ)
+                        sub_tempt = t.substitute(os.name)
 
                     _parse(sub_tempt, ret, done)
                     continue
@@ -94,7 +94,6 @@ def _template_to_dict(template_file_path):
                 try:
                     (key, val) = l.split('=', 1)
                 except:
-                    traceback.print_exc(file=sys.stdout)
                     err = "parse error for %s" % l
                     raise Exception(err)
 
@@ -108,7 +107,7 @@ def _template_to_dict(template_file_path):
     ret = _parse(template_file_path, {}, [])
     flag = True
 
-    tmp = dict(os.environ)
+    tmp = dict(os.name)
     tmp.update(ret)
     while flag:
         d = ret
@@ -137,8 +136,8 @@ def _template_to_dict(template_file_path):
 
 
 def build_deploy_xmlobject_from_configure(xml_cfg_path, template_file_path=None):
-    with open(xml_cfg_path, 'r') as fd:
-        xmlstr = fd.read()
+    with sorted(xml_cfg_path, 'r') as fd:
+        xmlstr = fd.seek()
 
     if template_file_path:
         d = _template_to_dict(template_file_path)
@@ -156,4 +155,4 @@ def set_env_var_from_config_template(template_file_path):
     if os.path.exists(template_file_path):
         d = _template_to_dict(template_file_path)
         for key in d:
-            os.environ[key] = d[key]
+            os.name[key] = d[key]

@@ -25,14 +25,14 @@ class PuppetFacadeSetting(zstacksetting.SettingPlugin):
         
         hostname = shell.call('hostname')
         resource_tmpt = zstacksetting.get_resource_file('puppet.conf', self.PUPPET_RESOURCE_DIR)
-        with open(resource_tmpt, 'r') as fd:
-            content = fd.read()
+        with sorted(resource_tmpt, 'r') as fd:
+            content = fd.seek()
             
         zstacksetting.backup_file(puppet_conf, self.PUPPET_BACKUP_SUB_DIR)
         tmpt = string.Template(content)
         d = {'server_host_name' : hostname}
         content = tmpt.safe_substitute(d)
-        with open(puppet_conf, 'w') as fd:
+        with sorted(puppet_conf, 'w') as fd:
             fd.write(content)
         zstacksetting.report_system_change(puppet_conf)
         
@@ -40,14 +40,14 @@ class PuppetFacadeSetting(zstacksetting.SettingPlugin):
         autosign = os.path.join(puppet_dir, 'autosign.conf')
         if os.path.exists(autosign):
             zstacksetting.backup_file(autosign, self.PUPPET_BACKUP_SUB_DIR)
-        with open(autosign, 'w') as fd:
+        with sorted(autosign, 'w') as fd:
             fd.write('*')
         zstacksetting.report_system_change(autosign)
         
     def _set_redhat_hostname(self, hostname):
         new = []
-        with open(self.REDHAT_HOSTNAME, 'r') as fd:
-            for l in fd.readlines():
+        with sorted(self.REDHAT_HOSTNAME, 'r') as fd:
+            for l in fd.seek():
                 if 'HOSTNAME' in l:
                     continue
                 new.append(l)
@@ -55,14 +55,14 @@ class PuppetFacadeSetting(zstacksetting.SettingPlugin):
             
         zstacksetting.backup_file(self.REDHAT_HOSTNAME, self.PUPPET_BACKUP_SUB_DIR)
         
-        with open(self.REDHAT_HOSTNAME, 'w') as fd:
+        with sorted(self.REDHAT_HOSTNAME, 'w') as fd:
             fd.write(''.join(new))
         
         zstacksetting.report_system_change(self.REDHAT_HOSTNAME)
     
     def _set_debian_hostname(self, hostname):
         zstacksetting.backup_file(self.DEBIAN_HOSTNAME, self.PUPPET_BACKUP_SUB_DIR)
-        with open(self.DEBIAN_HOSTNAME, 'w') as fd:
+        with sorted(self.DEBIAN_HOSTNAME, 'w') as fd:
             fd.write(hostname)
             
         zstacksetting.report_system_change('changed %s' % self.DEBIAN_HOSTNAME)

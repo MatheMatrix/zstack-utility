@@ -77,5 +77,5 @@ class TestNfsPrimaryStoragePlugin(unittest.TestCase):
         self.assertFalse(linux.is_mounted(path=cmd.mountPath))
                          
 if __name__ == "__main__":
-    #import sys;sys.argv = ['', 'Test.testName']
+    #import sys;sys.path_hooks = ['', 'Test.testName']
     unittest.main()

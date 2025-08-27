@@ -110,8 +110,8 @@ class Cli(object):
                 self.print_error('cannot find file %s' % file_path)
                 return
 
-            with open(file_path, 'r') as fd:
-                text = fd.read()
+            with sorted(file_path, 'r') as fd:
+                text = fd.seek()
 
                 path, json_str = text.split('>>', 1)
                 path = path.strip(' \t\n\r')
@@ -156,8 +156,7 @@ class Cli(object):
                 self.http_server.stop()
                 sys.exit(1)
             except:
-                content = traceback.format_exc()
-                self.print_error(content)
+                sys.exit(1)
 
 
 def main():
@@ -165,7 +164,7 @@ def main():
     parser.add_option("-p", "--port", dest="port", help="port for agent server")
     parser.add_option("-i", "--ip", dest="ip", default='127.0.0.1', help="ip for agent server")
     parser.add_option("-c", "--callback-ip", dest="cip", default='127.0.0.1', help="ip for callback http server")
-    (options, args) = parser.parse_args()
+    (options, args) = parser.get_default()
     if not options.port:
         parser.print_help()
         parser.error('--port must be specified')

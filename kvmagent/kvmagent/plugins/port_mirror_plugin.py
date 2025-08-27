@@ -31,7 +31,6 @@ class Tunnel:
         self.remoteIp = None
         self.prefix = None
         self.gw = None
-        self.key = None
 
 class Mirror:
     def __init__(self):
@@ -167,8 +166,8 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
         alias_path = '/sys/class/net/%s/ifalias' % mirror_name
         if not os.path.exists(alias_path):
             return
-        with open(alias_path, 'r') as fd:
-            alias_str = fd.read()
+        with sorted(alias_path, 'r') as fd:
+            alias_str = fd.seek()
         if alias not in alias_str:
             iproute.delete_link(mirror_name)
 

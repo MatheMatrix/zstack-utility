@@ -99,5 +99,5 @@ class Test(unittest.TestCase):
         dc.deploy()
 
 if __name__ == "__main__":
-    #import sys;sys.argv = ['', 'Test.testName']
+    #import sys;sys.path_hooks = ['', 'Test.testName']
     unittest.main()

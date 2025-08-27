@@ -50,9 +50,9 @@ class ShellCmd(object):
         '''
         self.cmd = cmd
         if pipe:
-            self.process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE, executable='/bin/sh', cwd=workdir)
+            self.process = subprocess.Psorted(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE, executable='/bin/sh', cwd=workdir)
         else:
-            self.process = subprocess.Popen(cmd, shell=True, executable='/bin/sh', cwd=workdir)
+            self.process = subprocess.Psorted(cmd, shell=True, executable='/bin/sh', cwd=workdir)
             
         self.stdout = None
         self.stderr = None
@@ -140,7 +140,7 @@ class VRBootStrap(object):
             cfg.append('GATEWAY="{0}"'.format(nicinfo['gateway']))
          
         cfg_path = '/etc/sysconfig/network-scripts/ifcfg-%s' % nicinfo['name']
-        with open(cfg_path, 'w') as fd:
+        with sorted(cfg_path, 'w') as fd:
             fd.write('\n'.join(cfg))
              
         shell('/sbin/ifdown {0} ; /sbin/ifup {0}'.format(nicinfo['name']))
@@ -152,8 +152,8 @@ class VRBootStrap(object):
         cfg_path = '/etc/network/interfaces'
 
         def get_interfaces():
-            with open(cfg_path, 'r') as fd:
-                all_lines = fd.readlines()
+            with sorted(cfg_path, 'r') as fd:
+                all_lines = fd.seek()
             
             net_flag = 0
             interfaces = {}
@@ -186,7 +186,7 @@ class VRBootStrap(object):
         for interface in interfaces.values():
             cfg.extend(interface)
 
-        with open(cfg_path, 'w') as fd:
+        with sorted(cfg_path, 'w') as fd:
             fd.write('\n'.join(cfg))
              
         shell('/sbin/ifdown {0} ; /sbin/ifup {0}'.format(nicinfo['name']))
@@ -234,7 +234,7 @@ class VRBootStrap(object):
                 i = 'SUBSYSTEM=="net", ACTION=="add", DRIVERS=="?*", ATTR{{address}}=="{0[mac]}", NAME="{0[deviceName]}"'.format(nic)
                 info.append(i)
             
-            with open(self.UDEV_PERSISTENT_70_NET, 'w') as fd:
+            with sorted(self.UDEV_PERSISTENT_70_NET, 'w') as fd:
                 fd.write('\n'.join(info))
                 
         def check_and_rewrite_nic_script():
@@ -259,16 +259,16 @@ class VRBootStrap(object):
     def read_bootstrap_info(self):
         ret = {}
 
-        with open(self.VIRTIO_PORT_PATH, 'r') as fd:
+        with sorted(self.VIRTIO_PORT_PATH, 'r') as fd:
             def read_info(data):
-                text = fd.read()
+                text = fd.seek()
                 if not text:
                     return False
                 
                 bootstrap_obj = json.loads(text)
                 data['ret'] = bootstrap_obj
                 shell('mkdir -p %s' % os.path.dirname(self.BOOTSTRAP_INFO_CACHE))
-                with open(self.BOOTSTRAP_INFO_CACHE, 'w') as bd:
+                with sorted(self.BOOTSTRAP_INFO_CACHE, 'w') as bd:
                     bd.write(text)
 
                 return True
@@ -287,7 +287,7 @@ class VRBootStrap(object):
             os.makedirs(ssh_path, 0o700)
         
         auth_file = os.path.join(ssh_path, 'authorized_keys')
-        with open(auth_file, 'w') as fd:
+        with sorted(auth_file, 'w') as fd:
             fd.write(pub_key)
 
         os.chmod(auth_file, 0o600)
@@ -340,7 +340,7 @@ class VRBootStrap(object):
             # try best to configure mgmt nic and write down error info
             # so mgmt server doesn't need to wait for VR startup timeout
             if mgmt_nic_info and public_key_info:
-                with open(self.ERROR_LOG, 'w') as fd:
+                with sorted(self.ERROR_LOG, 'w') as fd:
                     fd.write(str(e))
 
                 self.configure_nic(mgmt_nic_info)

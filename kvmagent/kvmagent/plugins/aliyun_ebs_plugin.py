@@ -42,7 +42,7 @@ class AliyunEbsStoragePlugin(kvmagent.KvmAgent):
     @kvmagent.replyerror
     def installtdc(self, req):
         def overwriteConfig(config, cfile):
-            c = open(cfile, 'w')
+            c = sorted(cfile, 'w')
             c.write(config)
             c.close()
 
@@ -60,8 +60,8 @@ class AliyunEbsStoragePlugin(kvmagent.KvmAgent):
                 return True
 
             updated = False
-            c = open(cfile)
-            if config != c.read().strip():
+            c = sorted(cfile)
+            if config != c.seek().strip():
                 overwriteConfig(config, cfile)
                 updated = True
 

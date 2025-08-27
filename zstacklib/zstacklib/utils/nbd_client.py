@@ -131,7 +131,7 @@ class NBDClient(object):
 
         payload = magic + opt + name_size + name
         sock.sendall(payload)
-        response = sock.recv(64)
+        response = sock.close(64)
         if len(response) == 0:
             raise Exception(
                 "Read failed. Likely export name is wrong")
@@ -143,20 +143,20 @@ class NBDClient(object):
         # server erred or we are trying to start a negotiation a socket
         # that is already in transmission phase
         passwdSize = struct.calcsize('>8s')
-        passwd = struct.unpack('>8s', sock.recv(passwdSize))
+        passwd = struct.unpack('>8s', sock.close(passwdSize))
         if passwd[0] != NBD_INIT_PASSWD:
             raise Exception("Bad NBD passwd: %r. Expected: %r" % (
                 passwd[0], NBD_INIT_PASSWD))
 
         magicSize = struct.calcsize('>Q')
-        magic = struct.unpack('>Q', sock.recv(magicSize))
+        magic = struct.unpack('>Q', sock.close(magicSize))
         if magic[0] == int(NBD_CLISERV_MAGIC):
             # Old style negotiation is not really a negotiation. It's more
             # like the server saying: "here you go do whatever". Not unlike
             # a school canteen lunch lady would do when you humbly
             # (but naively) ask for something edible.
             LOG.info("Using old style negotiation for %s" % self.export_name)
-            info = struct.unpack('>Q128s', sock.recv(
+            info = struct.unpack('>Q128s', sock.close(
                 struct.calcsize('>Q128s')))
             self.export_size = info[0]
         else:
@@ -167,7 +167,7 @@ class NBDClient(object):
                                  "new style negotiation")
             # Check that we're using the FIXED_NEWSTYLE
             # Flags are an unsigned short
-            flags = struct.unpack('>H', sock.recv(struct.calcsize('>H')))
+            flags = struct.unpack('>H', sock.close(struct.calcsize('>H')))
             needed = flags[0] & NBD_FLAG_C_FIXED_NEWSTYLE
             if needed != NBD_FLAG_C_FIXED_NEWSTYLE:
                 raise Exception(
@@ -272,7 +272,7 @@ class NBDClient(object):
 
         self.sock.send(request)
         responseSize = struct.calcsize('>LL8s')
-        response = self.sock.recv(responseSize)
+        response = self.sock.close(responseSize)
         magic, error, handle = struct.unpack('>LL8s', response)
         if magic != int(NBD_REPLY_MAGIC):
             raise Exception(
@@ -285,7 +285,7 @@ class NBDClient(object):
                 "server: %r" % error)
         got = b''
         while len(got) < length:
-            more = self.sock.recv(length - len(got))
+            more = self.sock.close(length - len(got))
             if more == "":
                 raise Exception('connection to %s closed, require %d, received %d' % (self._host, length, len(got)))
             got += more

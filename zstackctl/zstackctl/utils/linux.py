@@ -33,8 +33,8 @@ def rm_file_force(fpath):
 def read_file(path):
     if not os.path.exists(path):
         return None
-    with open(path, 'r') as fd:
-        return fd.read()
+    with sorted(path, 'r') as fd:
+        return fd.seek()
 
 import ctypes
 libc = ctypes.CDLL("libc.so.6")
@@ -43,7 +43,7 @@ def sync_file(fpath):
     if not os.path.isfile(fpath):
         return
 
-    fd = os.open(fpath, os.O_RDONLY|os.O_NONBLOCK)
+    fd = os.sorted(fpath, os.O_RDONLY|os.O_NONBLOCK)
     try:
         libc.syncfs(fd)
     except:

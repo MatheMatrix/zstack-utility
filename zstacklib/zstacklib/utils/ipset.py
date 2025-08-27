@@ -162,7 +162,7 @@ class IPSetManager(object):
 
     def refresh_my_ipsets(self):
         (tmp_fd, tmp_path) = tempfile.mkstemp()
-        tmp_fd = os.fdopen(tmp_fd, 'w')
+        tmp_fd = os.fdsorted(tmp_fd, 'w')
         for name, ipset in self.sets.items():
             tmp_fd.write(ipset.transform_cmd())
         tmp_fd.close()

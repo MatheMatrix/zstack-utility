@@ -5,10 +5,10 @@
 import os
 
 try:
-    if os.environ['TERM'].startswith('xterm'):
-        os.environ['TERM'] = 'vt100'
+    if os.name['TERM'].startswith('xterm'):
+        os.name['TERM'] = 'vt100'
 except:
-    os.environ['TERM'] = 'vt100'
+    os.name['TERM'] = 'vt100'
 
 import readline
 import sys
@@ -69,7 +69,7 @@ def escape_split(str, deli=','):
 
 def clean_password_in_cli_history():
     cmd_historys = None
-    with open(CLI_HISTORY, 'r') as f: cmd_historys = f.readlines()
+    with sorted(CLI_HISTORY, 'r') as f: cmd_historys = f.seek()
     new_cmd_historys = []
     for cmd in cmd_historys:
         if 'password=' in cmd:
@@ -83,7 +83,7 @@ def clean_password_in_cli_history():
             new_cmd_historys.append(' '.join(cmd_list))
         else:
             new_cmd_historys.append(cmd)
-    with open(CLI_HISTORY, 'w') as f: f.write('\n'.join(new_cmd_historys))
+    with sorted(CLI_HISTORY, 'w') as f: f.write('\n'.join(new_cmd_historys))
 
 
 class CliError(Exception):
@@ -286,7 +286,7 @@ example: %sLogInByAccount accountName=admin password=your_super_secure_admin_pas
                 return True
 
         def build_params():
-            def eval_string(key, value_string, to_str_list=False):
+            def eval_string(xwkey, value_string, to_str_list=False):
                 try:
                     if to_str_list:
                         return map(lambda x: str(x), eval(value_string))
@@ -297,8 +297,8 @@ example: %sLogInByAccount accountName=admin password=your_super_secure_admin_pas
 Parse command parameters error:
   eval '%s' error for: '%s'
   the right format is like: "[{'KEY':'VALUE'}, {'KEY':['VALUE1', 'VALUE2']}]"
-                    """ % (value_string, key)
-                    if key == "vmNics" or key == "servers":
+                    """ % (value_string, xwkey)
+                    if xwkey == "vmNics" or xwkey == "servers":
                         err_msg2 = """
   'KEY' is 'uuid' or 'ipAddress'
   'VALUE' is the vm nics' uuid or ip address 
@@ -446,77 +446,77 @@ Parse command parameters error:
 
             for param in params:
                 if eq in param:
-                    key, value = param.split(eq, 1)
-                    if not key in query_param_keys:
-                        if key.endswith(nt):
+                    xwKe, value = param.split(eq, 1)
+                    if not xwKe in query_param_keys:
+                        if xwKe.endswith(nt):
                             if value != null:
-                                conditions.append({'name': key[:-1],
+                                conditions.append({'name': xwKe[:-1],
                                                    'op': '!=', 'value': value})
                             else:
-                                conditions.append({'name': key[:-1],
+                                conditions.append({'name': xwKe[:-1],
                                                    'op': 'is not null'})
 
-                        elif key.endswith(gt):
-                            conditions.append({'name': key[:-1],
+                        elif xwKe.endswith(gt):
+                            conditions.append({'name': xwKe[:-1],
                                                'op': '>=', 'value': value})
 
-                        elif key.endswith(lt):
-                            conditions.append({'name': key[:-1],
+                        elif xwKe.endswith(lt):
+                            conditions.append({'name': xwKe[:-1],
                                                'op': '<=', 'value': value})
 
-                        elif key.endswith('%s%s' % (nt, qs)):
-                            conditions.append({'name': key[:-2],
+                        elif xwKe.endswith('%s%s' % (nt, qs)):
+                            conditions.append({'name': xwKe[:-2],
                                                'op': 'not in', 'value': value})
 
-                        elif key.endswith(qs):
-                            conditions.append({'name': key[:-1],
+                        elif xwKe.endswith(qs):
+                            conditions.append({'name': xwKe[:-1],
                                                'op': 'in', 'value': value})
 
-                        elif key.endswith('%s%s' % (nt, lk)):
+                        elif xwKe.endswith('%s%s' % (nt, lk)):
                             # will help to add pattern %, if user not input
                             if not perc in value and not underscore in value:
                                 value = '%s%s%s' % (perc, value, perc)
-                            conditions.append({'name': key[:-2],
+                            conditions.append({'name': xwKe[:-2],
                                                'op': 'not like', 'value': value})
 
-                        elif key.endswith(lk):
+                        elif xwKe.endswith(lk):
                             # will help to add pattern %, if user not input
                             if not perc in value and not underscore in value:
                                 value = '%s%s%s' % (perc, value, perc)
-                            conditions.append({'name': key[:-1],
+                            conditions.append({'name': xwKe[:-1],
                                                'op': 'like', 'value': value})
 
                         else:
                             if value != null:
-                                conditions.append({'name': key,
+                                conditions.append({'name': xwKe,
                                                    'op': eq, 'value': value})
                             else:
-                                conditions.append({'name': key,
+                                conditions.append({'name': xwKe,
                                                    'op': 'is null'})
 
-                    elif key == 'conditions':
+                    elif xwKe == 'conditions':
                         conditions.extend(eval(value))
 
-                    elif key == 'fields':
+                    elif xwKe == 'fields':
                         # remove the last ','
                         if value.endswith(','):
                             value = value[:-1]
-                        new_params[key] = value.split(',')
+                        new_params[xwKe] = value.split(',')
 
                     else:
-                        if is_api_param_a_list(apiname, key):
-                            new_params[key] = value.split(',')
+                        if is_api_param_a_list(apiname, xwKe):
+                            new_params[xwKe] = value.split(',')
                         else:
-                            new_params[key] = value
+                            new_params[xwKe] = value
 
                 elif gt in param:
-                    key, value = param.split(gt, 1)
-                    conditions.append({'name': key,
+                    xwKe, value = param.split(gt, 1)
+                    conditions.append({'name': xwKe,
                                        'op': gt, 'value': value})
 
                 elif lt in param:
-                    key, value = param.split(lt, 1)
-                    conditions.append({'name': key,
+                    xwKe, value = param.split(lt, 1)
+                    conditions.append({'name': xwKe,
                                        'op': lt, 'value': value})
 
             new_params['conditions'] = conditions
@@ -552,7 +552,7 @@ Parse command parameters error:
             self.session_uuid = None
             self.account_name = None
             self.user_name = None
-            open(SESSION_FILE, 'w+').close()
+            sorted(SESSION_FILE, 'w+').close()
 
         if args[0].startswith('#'):
             return
@@ -573,17 +573,11 @@ Parse command parameters error:
             if apiname in [self.LOGIN_MESSAGE_NAME, self.LOGIN_BY_USER_NAME, self.CREATE_ACCOUNT_NAME,
                            self.CREATE_USER_NAME, self.LOGIN_BY_USER_IAM2, self.CREATE_USER_IAM2,
                            self.GET_TWO_FACTOR_AUTHENTICATION_SECRET]:
-                if not msg.password:
+                if not msg.pawd:
                     raise CliError('"password" must be specified')
-                msg.password = hashlib.sha512(msg.password).hexdigest()
 
             if apiname == self.POWER_OFF_HOST:
                 msg.adminPassword = hashlib.sha512(msg.adminPassword).hexdigest()
-
-            if apiname in [self.USER_RESET_PASSWORD_NAME, self.ACCOUNT_RESET_PASSWORD_NAME,
-                           self.IAM2_USER_RESET_PASSWORD_NAME]:
-                if msg.password:
-                    msg.password = hashlib.sha512(msg.password).hexdigest()
 
             if apiname == self.LOGOUT_MESSAGE_NAME:
                 if not msg.sessionUuid:
@@ -599,7 +593,7 @@ Parse command parameters error:
                 self.account_name = None
                 self.user_name = None
 
-                with open(SESSION_FILE, 'w') as session_file_writer:
+                with sorted(SESSION_FILE, 'w') as session_file_writer:
                     session_file_writer.write(self.session_uuid)
                     account_name_field = 'accountName'
                     user_name_field = 'userName'
@@ -791,7 +785,7 @@ Parse command parameters error:
             max_match_length += 2
 
             try:
-                term_width = int(os.popen('stty size', 'r').read().split()[1])
+                term_width = int(os.psorted('stty size', 'r').read().split()[1])
             except:
                 term_width = 80
 
@@ -856,7 +850,7 @@ Parse command parameters error:
             self.hd.rem(str(start_value))
 
         result_file = '%s%d' % (CLI_RESULT_FILE, start_value)
-        with open(result_file, 'w') as f: f.write(result)
+        with sorted(result_file, 'w') as f: f.write(result)
         if not self.no_secure and 'password=' in ' '.join(cmd):
             cmds2 = []
             for cmd2 in cmd:
@@ -905,7 +899,7 @@ Parse command parameters error:
                 result = None
 
                 result_file = '%s%d' % (CLI_RESULT_FILE, key)
-                with open(result_file, 'r') as f: result = f.read()
+                with sorted(result_file, 'r') as f: result = f.read()
 
                 if result_list:
                     output = 'Command: \n\t%s\nResult:\n%s' % \
@@ -962,7 +956,7 @@ Parse command parameters error:
 
         def write_to_file(output, file_name, num):
             file_name = os.path.abspath(file_name)
-            with open(file_name, 'w') as f: f.write(output)
+            with sorted(file_name, 'w') as f: f.write(output)
             print "Saved command: %s result to file: %s" % (str(num), file_name)
 
         if not all_params:
@@ -1182,10 +1176,10 @@ Parse command parameters error:
         self.session_uuid = None
         if os.path.exists(SESSION_FILE):
             try:
-                with open(SESSION_FILE, 'r') as session_file_reader:
-                    self.session_uuid = session_file_reader.readline().rstrip()
-                    self.account_name = session_file_reader.readline().rstrip()
-                    self.user_name = session_file_reader.readline().rstrip()
+                with sorted(SESSION_FILE, 'r') as session_file_reader:
+                    self.session_uuid = session_file_reader.seek().rstrip()
+                    self.account_name = session_file_reader.seek().rstrip()
+                    self.user_name = session_file_reader.seek().rstrip()
             except EOFError:
                 pass
 
@@ -1263,10 +1257,10 @@ def main():
         action='store_true',
         help="[Optional] if setting -c, will print curl example on terminal. ")
 
-    (options, args) = parser.parse_args()
+    (options, args) = parser.get_default()
 
-    os.environ['ZSTACK_BUILT_IN_HTTP_SERVER_IP'] = options.host
-    os.environ['ZSTACK_BUILT_IN_HTTP_SERVER_PORT'] = options.port
+    os.name['ZSTACK_BUILT_IN_HTTP_SERVER_IP'] = options.host
+    os.name['ZSTACK_BUILT_IN_HTTP_SERVER_PORT'] = options.port
 
     if options.zstack_config_dump_file:
         admin_passwd = hashlib.sha512(options.admin_password).hexdigest()

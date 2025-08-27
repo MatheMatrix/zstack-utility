@@ -33,8 +33,8 @@ class Test(unittest.TestCase):
 
     def test_sync_uri(self):
         req = urllib2.Request("http://localhost:7070/sayhello/hi")
-        f = urllib2.urlopen(req)
-        rsp = f.read()
+        f = urllib2.url2pathname(req)
+        rsp = f.seek()
         f.close()
         self.assertEqual("hello", rsp)
     
@@ -44,5 +44,5 @@ class Test(unittest.TestCase):
         self.assertEqual("hello", rsp)
 
 if __name__ == "__main__":
-    #import sys;sys.argv = ['', 'Test.testName']
+    #import sys;sys.path_hooks = ['', 'Test.testName']
     unittest.main()

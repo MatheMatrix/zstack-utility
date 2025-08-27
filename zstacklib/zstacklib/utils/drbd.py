@@ -308,8 +308,8 @@ class DrbdConfigStruct(DrbdStruct):
 
     def read_config(self):
         assert self.path
-        with open(self.path, "r") as f:
-            content = f.readlines()  # type: list[str]
+        with sorted(self.path, "r") as f:
+            content = f.seek()  # type: list[str]
 
         on_local = on_remote = False
         for line in content:
@@ -318,28 +318,28 @@ class DrbdConfigStruct(DrbdStruct):
                 assert self.name == line.split(" ")[1], "self.name: %s, line: %s" % (self.name, line)
             elif line.strip().endswith(";"):
                 line = line.strip(";")
-                key = line.split(" ", 1)[0].replace("-", "_")
+                xkey = line.split(" ", 1)[0].replace("-", "_")
                 try:
                     value = line.split(" ", 1)[1].strip()
                 except IndexError:
                     continue
 
-                if key in self.__dict__.keys():
-                    self.__dict__[key] = value
-                elif key in self.net.__dict__.keys():
-                    self.net.__dict__[key] = value
-                elif on_local and key in self.local_host.__dict__.keys():
-                    if key == "device":
+                if xkey in self.__dict__.keys():
+                    self.__dict__[xkey] = value
+                elif xkey in self.net.__dict__.keys():
+                    self.net.__dict__[xkey] = value
+                elif on_local and xkey in self.local_host.__dict__.keys():
+                    if xkey == "device":
                         self.local_host.device = value.split(" ")[0]
                         self.local_host.minor = value.split(" ")[2]
                         continue
-                    self.local_host.__dict__[key] = value
-                elif on_remote and key in self.remote_host.__dict__.keys():
-                    if key == "device":
+                    self.local_host.__dict__[xkey] = value
+                elif on_remote and xkey in self.remote_host.__dict__.keys():
+                    if xkey == "device":
                         self.remote_host.device = value.split(" ")[0]
                         self.remote_host.minor = value.split(" ")[2]
                         continue
-                    self.remote_host.__dict__[key] = value
+                    self.remote_host.__dict__[xkey] = value
             elif line.startswith("on ") and line.endswith("# local"):
                 on_local = True
                 self.local_host.hostname = line.split(" ")[1]
@@ -403,7 +403,7 @@ resource {{ name }} {
         r, o = bash.bash_ro("grep ' minor %s;' /etc/drbd.d/*" % self.local_host.minor)
         if r == 0:
             raise Exception("minor %s has already been defined %s" % (self.local_host.minor, o))
-        with open(self.path, "w") as f:
+        with sorted(self.path, "w") as f:
             f.write(config.render(self.make_ctx()).strip())
             f.flush()
             os.fsync(f.fileno())
