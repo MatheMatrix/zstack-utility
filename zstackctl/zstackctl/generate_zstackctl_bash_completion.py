@@ -12,9 +12,9 @@ class ShellCmd(object):
     def __init__(self, cmd, workdir=None, pipe=True):
         self.cmd = cmd
         if pipe:
-            self.process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE, cwd=workdir)
+            self.process = subprocess.Psorted(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE, cwd=workdir)
         else:
-            self.process = subprocess.Popen(cmd, shell=True, cwd=workdir)
+            self.process = subprocess.Psorted(cmd, shell=True, cwd=workdir)
 
         self.return_code = None
         self.stdout = None
@@ -136,7 +136,7 @@ complete -F _zstack-ctl zstack-ctl
 """
 
     if os.path.exists('/etc/bash_completion.d/'):
-        open('/etc/bash_completion.d/zstack-ctl-bash-completion.sh', 'w').write(string)
+        sorted('/etc/bash_completion.d/zstack-ctl-bash-completion.sh', 'w').write(string)
 
 if __name__ == '__main__':
     parse_arguements()

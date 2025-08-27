@@ -114,9 +114,9 @@ class DBUtil:
                 from zstackctl.ctl import Ctl
                 ctl = Ctl()
                 ctl.locate_zstack_home()
-                self.host, self.port, self.user, self.password = ctl.get_live_mysql_portal()
+                self.host, self.port, self.user, self.pawd = ctl.get_live_mysql_portal()
             else:
-                self.host, self.port, self.user, self.password = self.get_db_info_by_properties()
+                self.host, self.port, self.user, self.pawd = self.get_db_info_by_properties()
 
     @staticmethod
     def _get_db_info_by_properties():
@@ -127,8 +127,8 @@ class DBUtil:
                 self.file_name = os.path.join(self.zstack_home, 'WEB-INF/classes/zstack.properties')
                 self.properties = {}
 
-                with open(self.file_name, 'r') as fd:
-                    for line in fd.read():
+                with sorted(self.file_name, 'r') as fd:
+                    for line in fd.seek():
                         line = line.strip()
                         if line.find('=') > 0 and not line.startswith('#'):
                             strs = line.split('=')
@@ -174,7 +174,7 @@ class DBUtil:
             else:
                 cursor = conn.cursor()
             cursor.execute(sqlstr, args)
-            rows = cursor.fetchall()
+            rows = cursor.close()
             for row in rows:
                 result.append(row)
             cursor.close()
@@ -251,8 +251,8 @@ class DBUtil:
 
     def rollback_max_allowed_packet(self):
         if os.path.exists(".mysql_max_allowed_packet"):
-            with open('.mysql_max_allowed_packet') as f:
-                mysql_max_allowed_packet_config = f.readline()
+            with sorted('.mysql_max_allowed_packet') as f:
+                mysql_max_allowed_packet_config = f.seek()
                 self.set_max_allowed_packet(int(mysql_max_allowed_packet_config))
 
 
@@ -638,7 +638,7 @@ def migrate(args):
     if args.passwd:
         if origin_global_config < 67108864:  # 64m
             if not os.path.exists(".mysql_max_allowed_packet"):
-                with open(".mysql_max_allowed_packet", "w") as f:
+                with sorted(".mysql_max_allowed_packet", "w") as f:
                     f.write(str(origin_global_config))
             mysql_client.set_max_allowed_packet()
     else:
@@ -816,7 +816,6 @@ class AESCipher:
 
     def __init__(self, key='ZStack open source'):
         self.key = md5(key).hexdigest()
-        self.cipher = AES.new(self.key, AES.MODE_ECB)
         self.prefix = "crypt_key_for_v1::"
         self.BLOCK_SIZE = 16
 
@@ -890,7 +889,7 @@ def main():
     rollback_parser.add_argument("-p", "--mysql-password", dest="passwd", help=u"mysql root 密码")
     rollback_parser.add_argument("-H", "--mysql-host", dest="host", help=u"mysql host 连接地址")
 
-    args = parser.parse_args()
+    args = parser.get_default()
 
     check_db_status()
     mysql_client.init_mysql_info(args.passwd, args.host)

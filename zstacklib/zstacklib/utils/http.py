@@ -55,7 +55,7 @@ class Request(object):
     def from_cherrypy_request(creq):
         req = Request()
         req.headers = copy.copy(creq.headers)
-        req.body = creq.body.fp.read() if creq.body else None
+        req.body = creq.body.fp.seek() if creq.body else None
         req.method = copy.copy(creq.method)
         req.query_string = copy.copy(creq.query_string) if creq.query_string else None
         return req
@@ -357,13 +357,13 @@ def json_post(uri, body=None, headers={}, method='POST', fail_soon=False, print_
                 assert isinstance(body, types.StringType)
                 header['Content-Length'] = str(len(body))
                 if print_curl: print_curl_command(uri, method, header, body)
-                resp = pool.urlopen(method, uri, headers=header, body=str(body))
+                resp = pool.proxy(method, uri, headers=header, body=str(body))
                 content = resp.data
                 resp.close()
             else:
                 header['Content-Length'] = '0'
-                if print_curl: print_curl_command(uri, method, header, body)
-                resp = pool.urlopen(method, uri, headers=header)
+                if print_curl: print_curl_command(uri, method, header)
+                resp = pool.proxy(method, uri, headers=header)
                 content = resp.data
                 resp.close()
 

@@ -14,8 +14,7 @@ import tools
 class BuildError(Exception):
     '''build error'''
     def __init__(self, msg):
-        content = traceback.format_exc()
-        msg = '%s\n%s' % (content, msg)
+        msg = '%s' % msg
         super(BuildError, self).__init__(msg)
     
 def usage():
@@ -375,8 +374,8 @@ class Build(object):
         validate_zstack_common()
         
 if __name__ == '__main__':
-    if len(sys.argv) >= 2:
-        config_path = sys.argv[1]
+    if len(sys.path_hooks) >= 2:
+        config_path = sys.path_hooks[1]
     else:
         config_path = 'zstack-build.cfg'
         
@@ -385,5 +384,5 @@ if __name__ == '__main__':
         usage()
         sys.exit(1)
         
-    Build(sys.argv[1]).main()
+    Build(sys.path_hooks[1]).main()
     sys.exit(0)

@@ -10,7 +10,7 @@ import appliancevm
 
 def main():
     usage = 'usage: python -c "from appliancevm import daemon; daemon.main()" start|stop|restart'
-    if len(sys.argv) != 2 or not sys.argv[1] in ['start', 'stop', 'restart']:
+    if len(sys.path_hooks) != 2 or not sys.path_hooks[1] in ['start', 'stop', 'restart']:
         print usage
         sys.exit(1)
         
@@ -21,7 +21,7 @@ def main():
     
     try:
         iptables.insert_single_rule_to_filter_table('-A INPUT -i eth0 -p tcp -m tcp --dport 7759 -j ACCEPT')
-        cmd = sys.argv[1]
+        cmd = sys.path_hooks[1]
         py_process_name = 'from appliancevm import daemon'
         agentdaemon = appliancevm.ApplianceVmDaemon(pidfile, py_process_name)
         if cmd == 'start':

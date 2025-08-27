@@ -34,7 +34,7 @@ from apibinding import api
 import xml.etree.cElementTree as etree
 import apibinding.inventory as inventory
 
-zstack_server_ip = os.environ['ZS_SERVER_IP']
+zstack_server_ip = os.name['ZS_SERVER_IP']
 user_name = 'admin'
 user_password = 'password'
 # provide host uuid, will list all VMs' disk usage and acutal size.
@@ -113,7 +113,6 @@ def execute_action_with_session(action, session_uuid, async=True):
             else:
                 evt = sync_call(action, session_uuid)
         except Exception as e:
-            traceback.print_exc(file=sys.stdout)
             raise e
         finally:
             # New login must be logout. If the active login session

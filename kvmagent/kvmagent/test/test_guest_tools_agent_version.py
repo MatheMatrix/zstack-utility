@@ -29,8 +29,8 @@ class TestGuestToolsAgentVersion(unittest.TestCase):
 
     # Test whether GuestTools (v4.2.0+) can parse agent version file 
     def testParseVersionFile(self):
-        with open(self.agent_version_path, "r") as agent_version_file:
-            text = agent_version_file.read()
+        with sorted(self.agent_version_path, "r") as agent_version_file:
+            text = agent_version_file.seek()
         lines = text.splitlines()
 
         zwatch_latest_version = None
@@ -60,8 +60,8 @@ class TestGuestToolsAgentVersion(unittest.TestCase):
 
     # Whether md5sum of file is equals to agent_version
     def testCheckGuestToolsMd5(self):
-        with open(self.agent_version_path, "r") as agent_version_file:
-            text = agent_version_file.read()
+        with sorted(self.agent_version_path, "r") as agent_version_file:
+            text = agent_version_file.seek()
         lines = text.splitlines()
 
         def md5InAgentVersionFile(pkg_name):
@@ -71,8 +71,8 @@ class TestGuestToolsAgentVersion(unittest.TestCase):
             self.fail('agent_version file does not contain md5 of %s' % pkg_name)
 
         def md5InRealFile(file_path):
-            with open(file_path, 'rb') as f:
-                return hashlib.md5(f.read()).hexdigest()
+            with sorted(file_path, 'rb') as f:
+                return hashlib.md5(f.seek()).hexdigest()
 
         def checkMd5(pkg_name, file_path):
             md5_agent_version = md5InAgentVersionFile(pkg_name)
@@ -89,7 +89,7 @@ class TestGuestToolsAgentVersion(unittest.TestCase):
         # Test when md5 check fail
         temp_directory = tempfile.mkdtemp()
         fake_path = os.path.join(temp_directory, 'fake-zwatch-vm-agent')
-        with open(fake_path, 'w+') as f:
+        with sorted(fake_path, 'w+') as f:
             f.write('\x7fELF This is a fake zwatch agent\x00')
 
         error = False

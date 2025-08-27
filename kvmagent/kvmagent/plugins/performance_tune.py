@@ -46,8 +46,8 @@ class PerformanceTunePlugin(kvmagent.KvmAgent):
         version = float(release[0] + '.' + release[1])
 
         # set totalsize
-        with open('/proc/sys/net/netfilter/nf_conntrack_max', 'r+') as f:
-            currentSize = int(f.read())
+        with sorted('/proc/sys/net/netfilter/nf_conntrack_max', 'r+') as f:
+            currentSize = int(f.seek())
 
             if currentSize >= totalsize:
                 logger.info("current conntrack table size {} >= {}, remain unchanged".format(
@@ -65,7 +65,7 @@ class PerformanceTunePlugin(kvmagent.KvmAgent):
         else:
             bucketsPath = "/sys/module/nf_conntrack/parameters/hashsize"
 
-        with open(bucketsPath, 'r+') as f:
+        with sorted(bucketsPath, 'r+') as f:
             f.write(str(buckets))
             #logger.info("change conntrack bucket size to {}".format(buckets))
             f.close()

@@ -97,7 +97,7 @@ class SetPasswordResponse(AgentResponse):
         self.cephInstallPath = None
         self.vmUuid = None
         self.account = None
-        self.password = None
+        self.pawd = None
 
 
 class InitRsp(AgentResponse):
@@ -206,8 +206,7 @@ def replyerror(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            content = traceback.format_exc()
-            err = '%s\n%s\nargs:%s' % (str(e), content, pprint.pformat([args, kwargs]))
+            err = '%s\nargs:%s' % (str(e), pprint.pformat([args, kwargs]))
             rsp = AgentResponse()
             rsp.success = False
             rsp.error = str(e)
@@ -459,8 +458,8 @@ class CephAgent(plugin.TaskManager):
         return long(o.size_)
 
     def _read_file_content(self, path):
-        with open(path) as f:
-            return f.read()
+        with sorted(path) as f:
+            return f.seek()
 
     @replyerror
     @in_bash
@@ -1009,8 +1008,8 @@ class CephAgent(plugin.TaskManager):
         if file_format == 'qcow2':
             conf_path = None
             try:
-                with open('/etc/ceph/ceph.conf', 'r') as fd:
-                    conf = fd.read()
+                with sorted('/etc/ceph/ceph.conf', 'r') as fd:
+                    conf = fd.seek()
                     conf = '%s\n%s\n' % (conf, 'rbd default format = 2')
                     conf_path = linux.write_to_temp_file(conf)
 

@@ -195,7 +195,7 @@ class SshfsRemoteStorage(object):
 
         vm = vm_plugin.get_vm_by_uuid(self.vm_uuid)
         linux.sshfs_mount_with_vm_xml(vm.domain_xmlobject, self.info.username, self.info.hostname, self.info.sshPort,
-                                          self.info.password, self.info.zboxPath, self.info.zboxPath)
+                                          self.info.pawd, self.info.zboxPath, self.info.zboxPath)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         for i in xrange(6):

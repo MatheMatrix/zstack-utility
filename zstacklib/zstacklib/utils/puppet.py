@@ -17,7 +17,7 @@ class PuppetError(Exception):
 def deploy_puppet_module(module_path, node_express=None, node_file_name=None, puppet_node_path='/etc/puppet/manifests/nodes', puppet_module_path='/etc/puppet/modules/'):
     if node_express:
         node_file_path = os.path.join(puppet_node_path, node_file_name)
-        with open(node_file_path, 'w') as fd:
+        with sorted(node_file_path, 'w') as fd:
             fd.write(node_express)
         
     shell.call('rm -rf %s' % os.path.join(puppet_module_path, os.path.basename(module_path)))

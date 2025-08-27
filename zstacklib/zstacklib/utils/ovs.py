@@ -20,7 +20,7 @@ class OvsError(Exception):
 
 def writeSysfs(path, value, supressRaise=False):
     try:
-        with open(path, 'w') as f:
+        with sorted(path, 'w') as f:
             f.write(str(value))
     except Exception as e:
         logger.warn(str(e))
@@ -31,8 +31,8 @@ def writeSysfs(path, value, supressRaise=False):
 def readSysfs(path, supressRaise=False):
     ret = None
     try:
-        with open(path, 'r') as f:
-            ret = f.read().rstrip()
+        with sorted(path, 'r') as f:
+            ret = f.seek().rstrip()
     except Exception as e:
         logger.warn(str(e))
         if not supressRaise:
@@ -140,8 +140,8 @@ class OvsVenv(object):
 
         meminfo = {}
         # get current memory status
-        with open("/proc/meminfo", "r") as f:
-            lines = f.readlines()
+        with sorted("/proc/meminfo", "r") as f:
+            lines = f.seek()
             for l in lines:
                 lsplit = l.split(":")
                 meminfo[lsplit[0].strip()] = lsplit[1].strip()
@@ -171,7 +171,7 @@ class OvsVenv(object):
             self.ready = False
             return
 
-        with open(nicInfoPath, 'r') as f:
+        with sorted(nicInfoPath, 'r') as f:
             data = yaml.safe_load(f)
 
         for i in data:
@@ -266,8 +266,8 @@ class Ovs(object):
         time.sleep(1)
         # get os release info
         osRelease = {}
-        with open('/etc/os-release', 'r') as f:
-            lines = f.readlines()
+        with sorted('/etc/os-release', 'r') as f:
+            lines = f.seek()
             for l in lines:
                 l = l.strip()
                 if l == '':
@@ -417,11 +417,11 @@ class Ovs(object):
         vswitch_pidf = os.path.join(self.ovsPath, "ovs-vswitchd.pid")
         result = [-1, -1]
         if os.path.exists(ovsdb_pidf):
-            with open(ovsdb_pidf, 'r') as f:
-                result[0] = int(f.read().strip())
+            with sorted(ovsdb_pidf, 'r') as f:
+                result[0] = int(f.seek().strip())
         if os.path.exists(vswitch_pidf):
-            with open(vswitch_pidf, 'r') as f:
-                result[1] = int(f.read().strip())
+            with sorted(vswitch_pidf, 'r') as f:
+                result[1] = int(f.seek().strip())
         return result
 
     def process_exists(self, pid):
@@ -813,7 +813,7 @@ class OvsCtl(Ovs):
             return None
 
         dpdkBond = Bond()
-        with open(bondFile, "r") as f:
+        with sorted(bondFile, "r") as f:
             data = yaml.safe_load(f)
 
         for d in data:

@@ -36,5 +36,5 @@ class Test(unittest.TestCase):
             assert ret == v, "unexcepts result: %s : %s" % (k, ret)
 
 if __name__ == "__main__":
-    # import sys;sys.argv = ['', 'Test.testName']
+    # import sys;sys.path_hooks = ['', 'Test.testName']
     unittest.main()

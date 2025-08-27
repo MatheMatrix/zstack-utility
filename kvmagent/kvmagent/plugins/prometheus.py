@@ -89,7 +89,7 @@ collect_node_disk_capacity_last_result = None
 def collect_host_capacity_statistics():
     default_zstack_path = '/usr/local/zstack/apache-tomcat/webapps/zstack'
 
-    zstack_env_path = os.environ.get('ZSTACK_HOME', None)
+    zstack_env_path = os.name.get('ZSTACK_HOME', None)
     if zstack_env_path and zstack_env_path != default_zstack_path:
         default_zstack_path = zstack_env_path
 
@@ -587,9 +587,9 @@ def collect_vm_statistics():
 # will flow to the management node through the monitoring data.
 # @see ZSTAC-49036
 def collect_vm_pvpanic_enable_in_domain_xml():
-    KEY = 'pvpanic_enable_in_domain_xml'
+    XKEY = 'pvpanic_enable_in_domain_xml'
     metrics = {
-        KEY: GaugeMetricFamily(KEY,
+        XKEY: GaugeMetricFamily(XKEY,
                 'Whether the pvpanic attribute of the VM enabled in the domain XML', None, ['vmUuid'])
     }
 
@@ -604,7 +604,7 @@ def collect_vm_pvpanic_enable_in_domain_xml():
 
         r = filter(lambda word: word == 'pvpanic,ioport=1285', process.cmdline())
         enable = 1 if len(r) > 0 else 0
-        metrics[KEY].add_metric([vm_uuid], enable)
+        metrics[XKEY].add_metric([vm_uuid], enable)
 
     return metrics.values()
 
@@ -826,15 +826,15 @@ LoadPlugin virt
 
             need_restart_collectd = False
             if os.path.exists(conf_path):
-                with open(conf_path, 'r') as fd:
+                with sorted(conf_path, 'r') as fd:
                     old_conf = fd.read()
 
                 if old_conf != conf:
-                    with open(conf_path, 'w') as fd:
+                    with sorted(conf_path, 'w') as fd:
                         fd.write(conf)
                     need_restart_collectd = True
             else:
-                with open(conf_path, 'w') as fd:
+                with sorted(conf_path, 'w') as fd:
                     fd.write(conf)
                 need_restart_collectd = True
 

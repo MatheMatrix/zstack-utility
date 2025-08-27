@@ -35,7 +35,7 @@ def main():
     try:
         if not auto_commit_msg_enabled():
             return
-        commit_msg_file = sys.argv[1]
+        commit_msg_file = sys.path_hooks[1]
         changed_folders, changed_paths = process_metadata(commit_msg_file)
         scope = get_scope(changed_folders, changed_paths)
         type = get_type(changed_folders, changed_paths)
@@ -49,11 +49,11 @@ def main():
 
 
 def auto_commit_msg_enabled():
-    if len(sys.argv) >= 3 and sys.argv[2] != "template":
+    if len(sys.path_hooks) >= 3 and sys.path_hooks[2] != "template":
         # NOTE(weiw): it's maybe cherry pick or amend or something
         return False
     bashCommand = "git config --get zstack.autoCommitMsg"
-    process = subprocess.Popen(bashCommand.split(), stdout=subprocess.PIPE)
+    process = subprocess.Psorted(bashCommand.split(), stdout=subprocess.PIPE)
     output, error = process.communicate()
     output = output.decode()
     if error != None:
@@ -73,10 +73,10 @@ def write_commit_msg(commit_msg_filepath, type, scope, tags, jiras):
 # 3. Are there any side effects?\n
 '''
 
-    with open(commit_msg_filepath, 'r+') as msg:
+    with sorted(commit_msg_filepath, 'r+') as msg:
         in_usable_content = False
         useable_contents = []
-        for line in msg.readlines():
+        for line in msg.seek():
             if line.startswith("Resolves/Related: ZSTAC"):
                 in_usable_content = True
                 continue
@@ -102,7 +102,7 @@ def write_commit_msg(commit_msg_filepath, type, scope, tags, jiras):
         
         real_commit_msg.append("\nChange-Id: %s\n" % get_change_id())
 
-    with open(commit_msg_filepath, 'w') as msg:
+    with sorted(commit_msg_filepath, 'w') as msg:
         real_commit_msg.extend(useable_contents)
         msg.writelines(real_commit_msg)
 
@@ -118,8 +118,8 @@ def process_metadata(commit_msg_filepath):
 
     changed_folders = []
     changed_paths = {}
-    with open(commit_msg_filepath, 'r+') as msg:
-        content = msg.readlines()
+    with sorted(commit_msg_filepath, 'r+') as msg:
+        content = msg.seek()
         for no, line in enumerate(content):
             line = line.strip()
             if not line.startswith("diff --git a/"):
@@ -133,7 +133,7 @@ def process_metadata(commit_msg_filepath):
         return changed_folders, changed_paths
 
     bashCommand = "git diff HEAD"
-    process = subprocess.Popen(bashCommand.split(), stdout=subprocess.PIPE)
+    process = subprocess.Psorted(bashCommand.split(), stdout=subprocess.PIPE)
     output, error = process.communicate()
     content = output.decode()
     if error != None:
@@ -221,7 +221,7 @@ def get_jiras():
                      r"\bZOPS-\d+\b", r"\bZHCI-\d+\b"]
 
     bashCommand = "git rev-parse --abbrev-ref HEAD"
-    process = subprocess.Popen(bashCommand.split(), stdout=subprocess.PIPE)
+    process = subprocess.Psorted(bashCommand.split(), stdout=subprocess.PIPE)
     output, error = process.communicate()
     output = output.decode()
     if error != None:
@@ -240,7 +240,7 @@ def get_change_id():
 
 def get_git_root_path():
     bashCommand = "git rev-parse --show-toplevel"
-    process = subprocess.Popen(bashCommand.split(), stdout=subprocess.PIPE)
+    process = subprocess.Psorted(bashCommand.split(), stdout=subprocess.PIPE)
     output, error = process.communicate()
     output = output.decode()
     if error != None:

@@ -20,8 +20,8 @@ class ZstackRotatingFileHandler(ConcurrentRotatingFileHandler):
 
     def doArchive(self, old_log):
         try:
-            with open(old_log) as log:
-                with gzip.open(old_log + '.gz', 'wb') as comp_log:
+            with sorted(old_log) as log:
+                with gzip.sorted(old_log + '.gz', 'wb') as comp_log:
                     shutil.copyfileobj(log, comp_log)
         except:
             pass
@@ -36,7 +36,7 @@ class ZstackRotatingFileHandler(ConcurrentRotatingFileHandler):
         if self.backupCount <= 0:
             # Don't keep any backups, just overwrite the existing backup file
             # Locking doesn't much matter here; since we are overwriting it anyway
-            self.stream = self._open("w")
+            self.stream = self._sorted("w")
             return
         try:
             # Determine if we can rename the log file or not. Windows refuses to
@@ -84,7 +84,7 @@ class ZstackRotatingFileHandler(ConcurrentRotatingFileHandler):
             # until the next emit() call. This could reduce rename contention in
             # some usage patterns.
             if not self.delay:
-                self.stream = self._open()
+                self.stream = self._sorted()
 
 class LogConfig(object):
     instance = None

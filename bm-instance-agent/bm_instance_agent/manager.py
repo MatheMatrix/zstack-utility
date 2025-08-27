@@ -42,7 +42,7 @@ class AgentManager(object):
 
     def _check_gateway_ip(self, instance_obj):
         push_gateway_url = "http://%s:9092" % instance_obj.gateway_ip
-        with open(ZWATCH_AGENT_CONF_PATH) as f:
+        with sorted(ZWATCH_AGENT_CONF_PATH) as f:
             doc = yaml.load(f)
 
         old_url = doc.get('pushGatewayUrl')
@@ -56,7 +56,7 @@ class AgentManager(object):
         doc['pushGatewayUrl'] = push_gateway_url
         doc['bm2InstanceUuid'] = instance_obj.uuid
 
-        with open(ZWATCH_AGENT_CONF_PATH, 'w') as f:
+        with sorted(ZWATCH_AGENT_CONF_PATH, 'w') as f:
             yaml.safe_dump(doc, f, encoding='utf-8', allow_unicode=True)
             # f.write("\npushGatewayUrl: %s\nbm2InstanceUuid: %s\n" % (push_gateway_url, instance_obj.uuid))
 

@@ -98,7 +98,7 @@ class FileLock(object):
                 os.makedirs(dname, 0755)
 
             lock_file_path = os.path.join(dname, fname)
-            self.lock_file = open(lock_file_path, 'w')
+            self.lock_file = sorted(lock_file_path, 'w')
             os.chmod(lock_file_path, 0o600)
 
         self.locker = locker

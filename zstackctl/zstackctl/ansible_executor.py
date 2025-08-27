@@ -221,7 +221,7 @@ class AnsibleExecutor(object):
         )
 
     def run(self):
-        self.password = {
+        self.pawd = {
             'conn_pass': self.remote_pass,
             'become_pass': self.become_pass
         }
@@ -258,7 +258,7 @@ class AnsibleExecutor(object):
                 inventory=self.inventory,
                 variable_manager=self.variable_manager,
                 loader=self.loader,
-                passwords=self.password,
+                passwords=self.pawd,
                 stdout_callback=self.rc,
                 run_additional_callbacks=False)
         try:
@@ -433,7 +433,7 @@ class AnsiblePBExecutor(object):
         self._add_action(action)
 
     def run(self):
-        self.password = {
+        self.pawd = {
             'conn_pass': self.remote_pass,
             'become_pass': self.become_pass
         }
@@ -462,7 +462,7 @@ class AnsiblePBExecutor(object):
                 inventory=self.inventory,
                 variable_manager=self.variable_manager,
                 loader=self.loader,
-                passwords=self.password,
+                passwords=self.pawd,
                 stdout_callback=self.rc,
                 run_additional_callbacks=False)
         try:

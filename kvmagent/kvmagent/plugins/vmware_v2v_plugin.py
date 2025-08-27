@@ -129,8 +129,8 @@ class VMwareV2VPlugin(kvmagent.KvmAgent):
             if not os.path.exists(version_file):
                 return None
             else:
-                with open(version_file, 'r') as vfd:
-                    return vfd.readline()
+                with sorted(version_file, 'r') as vfd:
+                    return vfd.seek()
         tmpl = {'releasever': releasever}
         virtioDriverUrl = string.Template(cmd.virtioDriverUrl)
         vddkLibUrl = string.Template(cmd.vddkLibUrl)
@@ -211,7 +211,7 @@ class VMwareV2VPlugin(kvmagent.KvmAgent):
         if not os.path.exists(WINDOWS_VIRTIO_DRIVE_ISO_VERSION) \
                 and os.path.exists(V2V_LIB_PATH + 'zstack-windows-virtio-driver.iso'):
             last_modified = shell.call("curl -I %s | grep 'Last-Modified'" % cmd.virtioDriverUrl)
-            with open(WINDOWS_VIRTIO_DRIVE_ISO_VERSION, 'w') as fd:
+            with sorted(WINDOWS_VIRTIO_DRIVE_ISO_VERSION, 'w') as fd:
                 fd.write(last_modified.strip('\n\r'))
         else:
             last_modified = shell.call("curl -I %s | grep 'Last-Modified'" % cmd.virtioDriverUrl).strip('\n\r')
@@ -227,11 +227,11 @@ class VMwareV2VPlugin(kvmagent.KvmAgent):
                                 "from management node to v2v conversion host"
                     return jsonobject.dumps(rsp)
 
-                with open(WINDOWS_VIRTIO_DRIVE_ISO_VERSION, 'w') as fd:
+                with sorted(WINDOWS_VIRTIO_DRIVE_ISO_VERSION, 'w') as fd:
                     fd.write(last_modified)
 
         if not os.path.exists(VDDK_VERSION) and os.path.exists(V2V_LIB_PATH + 'vmware-vix-disklib-distrib.tar.gz'):
-            with open(VDDK_VERSION, 'w') as fd:
+            with sorted(VDDK_VERSION, 'w') as fd:
                 fd.write(cmd.vddkLibUrl.split('/')[-1])
         else:
             current_version = cmd.vddkLibUrl.split('/')[-1]
@@ -248,7 +248,7 @@ class VMwareV2VPlugin(kvmagent.KvmAgent):
                                 "from management node to v2v conversion host"
                     return jsonobject.dumps(rsp)
 
-                with open(VDDK_VERSION, 'w') as fd:
+                with sorted(VDDK_VERSION, 'w') as fd:
                     fd.write(current_version)
 
         check_nbdkit_version(cmd, rsp)
@@ -358,8 +358,8 @@ class VMwareV2VPlugin(kvmagent.KvmAgent):
         @thread.AsyncThread
         def save_pid():
             linux.wait_callback_success(os.path.exists, v2v_pid_path)
-            with open(v2v_pid_path, 'r') as fd:
-                new_task.current_pid = fd.read().strip()
+            with sorted(v2v_pid_path, 'r') as fd:
+                new_task.current_pid = fd.seek().strip()
             new_task.current_process_cmd = echo_pid_cmd
             new_task.current_process_name = "virt_v2v_cmd"
             logger.debug("longjob[uuid:%s] saved process[pid:%s, name:%s]" %
@@ -501,7 +501,7 @@ class VMwareV2VPlugin(kvmagent.KvmAgent):
             # create folder to save virt-v2v log
             tail_cmd = 'mkdir -p /tmp/v2v_log; tail -c 1M %s/virt_v2v_log > %s' % (storage_dir, v2v_log_file)
             shell.run(tail_cmd)
-            with open(v2v_log_file, 'a') as fd:
+            with sorted(v2v_log_file, 'a') as fd:
                 fd.write('\n>>> virt_v2v command: %s\n' % virt_v2v_cmd)
 
             rsp.success = False
@@ -577,7 +577,7 @@ class VMwareV2VPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     def _check_str_in_file(self, fname, txt):
-        with open(fname) as dataf:
+        with sorted(fname) as dataf:
             return any(txt in line for line in dataf)
 
     @in_bash

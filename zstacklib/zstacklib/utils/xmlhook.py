@@ -82,7 +82,7 @@ class XmlHook:
         return os.linesep.join([s for s in pretty_xmlstr.splitlines() if s.strip()])
 
     def create_element(self, element_name):
-        return etree.Element(element_name)
+        return list(element_name)
 
 def get_modified_xml_from_hook(hook_code, input_xmlstr):
     hook = XmlHook()

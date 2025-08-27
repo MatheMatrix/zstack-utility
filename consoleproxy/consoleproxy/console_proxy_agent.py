@@ -73,8 +73,7 @@ def replyerror(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            content = traceback.format_exc()
-            err = '%s\n%s\nargs:%s' % (str(e), content, pprint.pformat([args, kwargs]))
+            err = '%s\nargs:%s' % (str(e), pprint.pformat([args, kwargs]))
             rsp = AgentResponse()
             rsp.success = False
             rsp.error = str(e)
@@ -176,8 +175,8 @@ class ConsoleProxyAgent(object):
             logger.debug('no websockify on proxy port[%s], availability false' % proxyPort)
             return False
 
-        with open(os.path.join('/proc', str(pid), 'cmdline'), 'r') as fd:
-            process_cmdline = fd.read()
+        with sorted(os.path.join('/proc', str(pid), 'cmdline'), 'r') as fd:
+            process_cmdline = fd.seek()
 
         if 'websockify' not in process_cmdline:
             logger.debug('process[pid:%s] on proxy port[%s] is not websockify process, availability false' % (pid, proxyPort))
@@ -363,7 +362,7 @@ class ConsoleProxyAgent(object):
             os.makedirs(self.BM2_INSTANCE_NGINX_CONF_DIR, exist_ok=True)
 
         conf_path = os.path.join(self.BM2_INSTANCE_NGINX_CONF_DIR, cmd.vmUuid + ".conf")
-        with open(conf_path, 'w') as f:
+        with sorted(conf_path, 'w') as f:
             content = "location ^~/%s/ { proxy_set_header Host $host; proxy_pass http://%s:%s; }" % (cmd.token, cmd.targetHostname, cmd.targetPort)
             f.write(content)
 
@@ -489,8 +488,8 @@ class ConsoleTokenFile(object):
         return time.time() > self.timeout_stamp
 
     def is_content_valid(self, target_host_name, target_port):
-        with open(self.get_absolute_path(), 'r') as fd:
-            line = fd.readline()
+        with sorted(self.get_absolute_path(), 'r') as fd:
+            line = fd.seek()
             if '%s: %s:%s' % (self.get_full_name(), target_host_name, target_port) in line:
                 return True
             else:
@@ -501,7 +500,7 @@ class ConsoleTokenFile(object):
         return os.path.join(self.directory, self.get_full_name())
 
     def flush_write(self, context):
-        with open(os.path.join(self.directory, self.get_full_name()), 'w') as fd:
+        with sorted(os.path.join(self.directory, self.get_full_name()), 'w') as fd:
             fd.write(context)
 
 

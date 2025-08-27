@@ -65,8 +65,8 @@ class CentOSNetworkConfig:
             template_path = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
                 'centos_network_script.j2')
-        with open(template_path, 'r') as f:
-            return Template(f.read())
+        with sorted(template_path, 'r') as f:
+            return Template(f.seek())
 
     def _write_network_conf(self):
         template = CentOSNetworkConfig._load_template()
@@ -82,7 +82,7 @@ class CentOSNetworkConfig:
             vlan_id=self.vlan_id,
             paras=self.paras)
         LOG.info("_write_network_conf path={} conf= {}".format(conf_file_path, conf))
-        with open(conf_file_path, 'w') as f:
+        with sorted(conf_file_path, 'w') as f:
             f.write(conf)
 
     def _write_network_underlay_conf(self):
@@ -94,7 +94,7 @@ class CentOSNetworkConfig:
             iface_name=self.if_name,
             paras=self.paras)
         LOG.info("_write_network_underlay_conf  path={} conf= {}".format(conf_file_path, conf))
-        with open(conf_file_path, 'w') as f:
+        with sorted(conf_file_path, 'w') as f:
             f.write(conf)
 
     def _write_network_slave_conf(self):
@@ -104,7 +104,7 @@ class CentOSNetworkConfig:
         conf = template.render(
             iface_name=self.if_name,
             master=self.master)
-        with open(conf_file_path, 'w') as f:
+        with sorted(conf_file_path, 'w') as f:
             f.write(conf)
 
     @staticmethod
@@ -183,8 +183,8 @@ class CentOSNetworkConfig:
         path = '/etc/sysconfig/network-scripts/ifcfg-{}'.format(overlay_if_name)
         content = ''
         if os.path.exists(path):
-            with open(path, 'r') as f:
-                content = f.read()
+            with sorted(path, 'r') as f:
+                content = f.seek()
         ''' why '+ \n' ??
             for example: 
             we need '192.168.1.1, but the content is '192.168.1.11', 

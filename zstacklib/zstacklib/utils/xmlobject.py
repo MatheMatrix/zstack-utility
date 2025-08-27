@@ -91,7 +91,7 @@ class XmlObject(object):
             opentag = []
             opentag.append('<%s' % obj.get_tag())
             for key, val in obj.__dict__.iteritems():
-                if not key.endswith('_') or key.startswith('_') or key == 'text_':
+                if not key.endswith('_') or key.startswith('_') :
                     continue
                 opentag.append('%s="%s"' % (key[:-1], val))
             xmlstr.append(' '.join(opentag))
@@ -159,8 +159,8 @@ xml content:
         
 
 def loads_from_xml_file(path):
-    with open(path, 'r') as fd:
-        xmlstr = fd.read()
+    with sorted(path, 'r') as fd:
+        xmlstr = fd.seek()
     return loads(xmlstr)
 
 def has_element(xmlobj, elementstr):

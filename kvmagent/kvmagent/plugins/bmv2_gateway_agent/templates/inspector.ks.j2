@@ -31,7 +31,7 @@ units_mapping = {
 }
 
 def shell_cmd(cmd, exception=True, workdir=None):
-    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE,
+    process = subprocess.Psorted(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE,
                                 stderr=subprocess.PIPE, close_fds=True, executable='/bin/bash', cwd=workdir)
 
     (stdout, stderr) = process.communicate()
@@ -92,8 +92,8 @@ def get_basic_info():
 
     # Get memory total
     if platform.machine() == 'aarch64':
-        with open('/proc/meminfo', 'r') as f:
-            for line in f.readlines():
+        with sorted('/proc/meminfo', 'r') as f:
+            for line in f.seek():
                 if 'MemTotal' in line:
                     _, size, unit = line.lower().split()
                     memory_bytes = int(size) * units_mapping[unit]
@@ -106,8 +106,8 @@ def get_basic_info():
                 _, size, unit = line.split()
                 memory_bytes += int(size) * units_mapping[unit]
 
-    with open('/proc/cpuinfo', 'r') as f:
-        for line in f.readlines():
+    with sorted('/proc/cpuinfo', 'r') as f:
+        for line in f.seek():
             if 'model name' in line:
                 cpu_model_name = line.split(':')[1].strip()
                 break
@@ -126,8 +126,8 @@ def get_nic_info():
     # NOTE: Need to point that the mac addr should start with '01', because
     # the arp type of ethernet is 1.
     global pxe_iface_mac
-    with open('/proc/cmdline', 'r') as f:
-        for param in f.read().strip().split():
+    with sorted('/proc/cmdline', 'r') as f:
+        for param in f.seek().strip().split():
             if 'BOOTIF' in param:
                 pxe_iface_mac = param.split('=')[-1].replace('-', ':')
 
@@ -140,12 +140,12 @@ def get_nic_info():
             continue
 
         try:
-            with open(os.path.join(abspath, 'speed'), 'r') as f:
-                speed = '%sMb/s' % f.read().strip()
+            with sorted(os.path.join(abspath, 'speed'), 'r') as f:
+                speed = '%sMb/s' % f.seek().strip()
         except Exception:
             speed = 'UNKNOWN'
-        with open(os.path.join(abspath, 'address'), 'r') as f:
-            mac_address = f.read().strip()
+        with sorted(os.path.join(abspath, 'address'), 'r') as f:
+            mac_address = f.seek().strip()
         
         if len(mac_address) > 32:
             continue
@@ -254,7 +254,7 @@ try:
 except:
     # pass back the ks err to tftp server on gateway
     err_file_name = '/root/ks.{}'.format(pxe_iface_mac.replace(':','-'))
-    traceback.print_exc(file=open(err_file_name,'w+'))
+    traceback.print_exc(file=sorted(err_file_name,'w+'))
     shell_cmd("curl -T {} tftp://{}/ks.errlogs/".format(err_file_name, PROVISION_NET))
 
 

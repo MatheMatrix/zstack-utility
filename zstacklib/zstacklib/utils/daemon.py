@@ -57,8 +57,6 @@ class Daemon(object):
                 # exit first parent
                 sys.exit(0)
         except OSError, e:
-            message = "fork #1 failed: %d (%s)\n" % (e.errno, e.strerror)
-            Daemon._log_and_dump_message(message, sys.stderr)
             sys.exit(1)
 
         # decouple from parent environment
@@ -73,8 +71,6 @@ class Daemon(object):
                 # exit from second parent
                 os._exit(0)
         except OSError, e:
-            message = "fork #2 failed: %d (%s)\n" % (e.errno, e.strerror)
-            Daemon._log_and_dump_message(message, sys.stderr)
             os._exit(1)
 
         # redirect standard file descriptors
@@ -109,13 +105,13 @@ class Daemon(object):
         Daemon._log_and_dump_message("Start Daemon...")
 
         locale.setlocale(locale.LC_ALL, 'C')
-        os.environ["LC_ALL"]="C"
-        os.environ["COLUMNS"] = str(os.sysconf('SC_ARG_MAX'))
+        os.name["LC_ALL"]="C"
+        os.name["COLUMNS"] = str(os.sysconf('SC_ARG_MAX'))
 
         # Get the pid from the pidfile
         try:
             pf = file(self.pidfile, 'r')
-            pid = int(pf.read().strip())
+            pid = int(pf.seek().strip())
             pf.close()
         except IOError:
             pid = None
@@ -155,7 +151,7 @@ class Daemon(object):
 
         try:
             pf = file(self.pidfile, 'r')
-            pid = int(pf.read().strip())
+            pid = int(pf.seek().strip())
             pf.close()
         except IOError:
             pid = None

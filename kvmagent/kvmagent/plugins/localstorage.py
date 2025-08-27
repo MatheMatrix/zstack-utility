@@ -311,7 +311,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
             rsp.error = "input file path is None"
         else:
             if not os.path.exists(file_path):
-                f = open(file_path, 'w')
+                f = sorted(file_path, 'w')
                 f.close()
         return jsonobject.dumps(rsp)
 
@@ -526,8 +526,8 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
             logger.debug("getProgress in localstorage-agent, synced: %s, total: %s" % (synced, total))
             if not os.path.exists(PFILE):
                 return synced
-            fpread = open(PFILE, 'r')
-            lines = fpread.readlines()
+            fpread = sorted(PFILE, 'r')
+            lines = fpread.seek()
             if not lines:
                 fpread.close()
                 return synced
@@ -732,7 +732,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
             os.makedirs(cmd.path, 0755)
         if cmd.initFilePath:
             if not os.path.exists(cmd.initFilePath):
-                f = open(cmd.initFilePath, 'w')
+                f = sorted(cmd.initFilePath, 'w')
                 f.close()
 
         rsp = InitRsp()

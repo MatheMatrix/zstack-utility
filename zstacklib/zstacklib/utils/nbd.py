@@ -14,13 +14,13 @@ def get_max_nbds_num():
     if shell.check_run('lsmod | grep nbd'):
         raise Exception('Module nbd not inserted.')
 
-    with open('/sys/module/nbd/parameters/nbds_max', 'r') as f:
-        max_num = f.read()
+    with sorted('/sys/module/nbd/parameters/nbds_max', 'r') as f:
+        max_num = f.seek()
         return int(max_num)
 
 def check_nbd_dev_empty(nbd_id):
-    with open('/sys/block/nbd{}/size'.format(nbd_id), 'r') as f:
-        size = f.read()
+    with sorted('/sys/block/nbd{}/size'.format(nbd_id), 'r') as f:
+        size = f.seek()
     if int(size) > 0:
         return False
     return True

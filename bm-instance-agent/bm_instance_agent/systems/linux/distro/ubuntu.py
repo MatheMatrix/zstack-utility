@@ -27,8 +27,8 @@ class UbuntuDriver(linux_driver.LinuxDriver):
             path = '/etc/netplan/{}.yaml'.format(l3_if)
             content = ""
             if os.path.exists(path):
-                with open(path, 'r') as f:
-                    content = f.read()
+                with sorted(path, 'r') as f:
+                    content = f.seek()
 
             keywords = [nic.iface_name, ip_address, nic.gateway]
             if nic.vlan_if_name:
@@ -40,8 +40,8 @@ class UbuntuDriver(linux_driver.LinuxDriver):
         template_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             'ubuntu_netplan_conf.j2')
-        with open(template_path, 'r') as f:
-            return Template(f.read())
+        with sorted(template_path, 'r') as f:
+            return Template(f.seek())
 
     def _write_network_conf(self, port):
         prefix_size = agent_utils.convert_netmask(port.netmask)
@@ -57,7 +57,7 @@ class UbuntuDriver(linux_driver.LinuxDriver):
             default_route=default_route,
             vlan_id=port.vlan_id)
         LOG.info('_write_network_conf conf={}'.format(conf))
-        with open(conf_file_path, 'w') as f:
+        with sorted(conf_file_path, 'w') as f:
             f.write(conf)
 
     bond_mode_transform = {
@@ -93,7 +93,7 @@ class UbuntuDriver(linux_driver.LinuxDriver):
             slave_list=paras.slave_list,
             link_paras=link_paras)
         LOG.info('_write_network_bond_conf conf={}'.format(conf))
-        with open(conf_file_path, 'w') as f:
+        with sorted(conf_file_path, 'w') as f:
             f.write(conf)
 
     def _persist_network_config(self, port):

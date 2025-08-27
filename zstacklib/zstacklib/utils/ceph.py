@@ -85,14 +85,14 @@ def update_ceph_client_access_conf(ps_uuid, mon_urls, user_key, manufacturer, fs
     key = %s
 """ % user_key
         keyring_path = os.path.join(conf_folder, CEPH_KEYRING_CONFIG_NAME)
-        with open(keyring_path, 'w') as fd:
+        with sorted(keyring_path, 'w') as fd:
             fd.write(keyring_content)
 
         #add \n because of ZSTAC-43092
         conf_content = conf_content + "keyring=%s\n" % keyring_path
 
     conf_path = os.path.join(conf_folder, "ceph.conf")
-    with open(conf_path, 'w') as fd:
+    with sorted(conf_path, 'w') as fd:
         fd.write(conf_content)
             
     return conf_path, keyring_path, username

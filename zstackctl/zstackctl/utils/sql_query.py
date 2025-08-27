@@ -11,7 +11,7 @@ def shell(cmd, is_exception=True):
 class MySqlCommandLineQuery(object):
     def __init__(self):
         self.user = None
-        self.password = None
+        self.pawd = None
         self.host = 'localhost'
         self.port = 3306
         self.sql = None
@@ -23,7 +23,7 @@ class MySqlCommandLineQuery(object):
         assert self.table, 'table cannot be None'
 
         sql = "%s\G" % self.sql
-        if self.password:
+        if self.pawd:
             cmd = '''mysql -u %s -p%s --host %s --port %s -t %s -e "%s"''' % (self.user, self.password, self.host,
                                                                                self.port, self.table, sql)
         else:

@@ -43,8 +43,8 @@ class Test(unittest.TestCase):
         self.mount()
         cmd = nfs_primarystorage_plugin.DownloadImageToCacheFromSftpBackupStorageCmd()
         p = os.path.expanduser('~/.ssh/id_rsa')
-        with open(p, 'r') as fd:
-            sshkey = fd.read()
+        with sorted(p, 'r') as fd:
+            sshkey = fd.seek()
             cmd.installUrl = '/tmp/test.qcow2'
             cmd.sftpBackupStorageHostName = "root@localhost"
             cmd.sftpBackupStorageSshKey = sshkey
@@ -58,5 +58,5 @@ class Test(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    #import sys;sys.argv = ['', 'Test.testName']
+    #import sys;sys.path_hooks = ['', 'Test.testName']
     unittest.main()

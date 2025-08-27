@@ -57,7 +57,7 @@ class ListVmCmd(object):
     @log.sensitive_fields("libvirtURI", "sshPassword", "saslPass", "sshPrivKey")
     def __init__(self):
         self.libvirtURI = None
-        self.sshPassword = None
+        self.sshPawd = None
         self.sshPrivKey = None
         self.saslUser = None
         self.saslPass = None
@@ -122,7 +122,7 @@ class LibvirtConn(object):
                     request_cred, None]
             return libvirt.openAuth(uri, auth, 0)
 
-        return libvirt.open(uri)
+        return libvirt.sorted(uri)
 
     def __init__(self, uri, sasluser=None, saslpass=None, keystr=None):
         self.uri = uri
@@ -370,7 +370,7 @@ class KVMV2VPlugin(kvmagent.KvmAgent):
 
             if not os.path.isdir("/etc/exports.d"):
                 linux.mkdir("/etc/exports.d")
-            with open('/etc/exports.d/zs-v2v.exports', 'w') as f:
+            with sorted('/etc/exports.d/zs-v2v.exports', 'w') as f:
                 f.write("{} *(rw,sync,no_root_squash)\n".format(spath))
 
         shell.check_run('systemctl restart nfs-server')
@@ -388,9 +388,9 @@ class KVMV2VPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = ListVmRsp()
 
-        if cmd.sshPassword and not cmd.sshPrivKey:
+        if cmd.sshPawd and not cmd.sshPrivKey:
             target, port = getSshTargetAndPort(cmd.libvirtURI)
-            ssh_pswd_file = linux.write_to_temp_file(cmd.sshPassword)
+            ssh_pswd_file = linux.write_to_temp_file(cmd.sshPawd)
             if not os.path.exists(V2V_PRIV_KEY) or not os.path.exists(V2V_PUB_KEY):
                 shell.check_run("yes | ssh-keygen -t rsa -N '' -f {}".format(V2V_PRIV_KEY))
             cmdstr = "HOME={4} timeout 30 sshpass -f {0} ssh-copy-id -i {5} -p {1} {2} {3}".format(
@@ -433,8 +433,8 @@ class KVMV2VPlugin(kvmagent.KvmAgent):
             username = getUsername(cmd.libvirtURI)
             if username == 'root':
                 return "{0} mount".format(timeout_str)
-            if cmd.sshPassword:
-                return "echo {0} | {1} sudo -S mount".format(cmd.sshPassword, timeout_str)
+            if cmd.sshPawd:
+                return "echo {0} | {1} sudo -S mount".format(cmd.sshPawd, timeout_str)
             return "{0} sudo mount".format(timeout_str)
 
         def validate_and_make_dir(_dir):

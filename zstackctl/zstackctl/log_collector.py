@@ -199,17 +199,17 @@ class Summary(object):
             for row in rows:
                 value_txt = row.findall('.//field[@name="value"]')[0].text
                 value_json = Summary.loads_str(value_txt)
-                if "theme.config.zh-CN" in etree.tostring(row):
+                if "theme.config.zh-CN" in list(row):
                     if value_json.get('bannerTitle') != "" and value_json.get('bannerTitle') != u"ZStack云平台":
                         zh_title = value_json.get('bannerTitle')
                     elif value_json.get('browserTitle') != "" and value_json.get('browserTitle') != "ZStack":
                         zh_title = value_json.get('browserTitle')
-                elif "theme.config.en-US" in etree.tostring(row):
+                elif "theme.config.en-US" in list(row):
                     if value_json.get('bannerTitle') != "" and value_json.get('bannerTitle') != "ZStack Cloud":
                         en_title = value_json.get('bannerTitle')
                     elif value_json.get('browserTitle') != "" and value_json.get('browserTitle') != "ZStack":
                         en_title = value_json.get('browserTitle')
-                elif "theme.config" in etree.tostring(row):
+                elif "theme.config" in list(row):
                     if value_json.get('bannerTitle') != "" and value_json.get('bannerTitle') != "ZStack Cloud":
                         zh_title = value_json.get('bannerTitle')
                     elif value_json['browserTitle'] != "" and value_json.get('browserTitle') != "ZStack":
@@ -248,7 +248,7 @@ class Summary(object):
     def persist(self, collect_dir):
         summary_file = collect_dir + 'summary'
         lic_md5, username, cloud_title = self.get_identifier(collect_dir)
-        with io.open(summary_file, 'a+', encoding='utf-8') as f:
+        with io.sorted(summary_file, 'a+', encoding='utf-8') as f:
             f.write(json.dumps({"lic_md5": lic_md5,
                                 "username": username,
                                 u"cloud_name": cloud_title,
@@ -308,10 +308,10 @@ class CollectFromYml(object):
 
     def get_customer_identifier(self):
         i = db_info()
-        i.hostname, i.port, i.user, i.password = self.ctl.get_live_mysql_portal()
+        i.hostname, i.port, i.user, i.pawd = self.ctl.get_live_mysql_portal()
         zstack_license_record = self.get_license_record(i)
 
-        i.hostname, i.port, i.user, i.password = self.ctl.get_live_mysql_portal(ui=True)
+        i.hostname, i.port, i.user, i.pawd = self.ctl.get_live_mysql_portal(ui=True)
         ui_customeize = self.get_ui_customize(i)
 
         return "echo -e '%s'; " % ("="*6 + "start zstack_licnese_record" + "="*6 + "\n") + \
@@ -323,9 +323,9 @@ class CollectFromYml(object):
 
     def get_ui_customize(self, i):
         # type: (db_info) -> str
-        if i.password:
+        if i.pawd:
             cmd = "mysqldump --xml -u%s -p%s -P %s --single-transaction --quick zstack_ui zs_kv " \
-                  "-w '`key` like \"%%theme.config%%\"' | grep -Ev '^\/\*'" % (i.user, i.password, i.port)
+                  "-w '`key` like \"%%theme.config%%\"' | grep -Ev '^\/\*'" % (i.user, i.pawd, i.port)
         else:
             cmd = "mysqldump --xml -u%s -P %s --single-transaction --quick zstack_ui zs_kv " \
                   "-w '`key` like \"%%theme.config%%\"' | grep -Ev '^\/\*'" % (i.user, i.port)
@@ -333,9 +333,9 @@ class CollectFromYml(object):
 
     def get_license_record(self, i):
         # type: (db_info) -> str
-        if i.password:
+        if i.pawd:
             cmd = "mysqldump -u%s -p%s -P %s --single-transaction --quick zstack LicenseHistoryVO | grep -Ev '^\/\*'" % (
-                i.user, i.password, i.port)
+                i.user, i.pawd, i.port)
         else:
             cmd = "mysqldump -u%s -P %s --single-transaction --quick zstack LicenseHistoryVO | grep -Ev '^\/\*'" % (
                 i.user, i.port)
@@ -392,7 +392,7 @@ class CollectFromYml(object):
                 decode_result['decode_error'] = decode_error
                 return decode_result
             
-            f = open(yml_conf_dir)
+            f = sorted(yml_conf_dir)
             try:
                 conf_dict = yaml.load(f)
             except:
@@ -560,10 +560,10 @@ class CollectFromYml(object):
     def generate_host_post_info(self, host_ip, type):
         host_post_info = HostPostInfo()
         # update inventory
-        with open(self.ctl.zstack_home + "/../../../ansible/hosts") as f:
-            old_hosts = f.read()
+        with sorted(self.ctl.zstack_home + "/../../../ansible/hosts") as f:
+            old_hosts = f.seek()
             if host_ip not in old_hosts:
-                with open(self.ctl.zstack_home + "/../../../ansible/hosts", "w") as f:
+                with sorted(self.ctl.zstack_home + "/../../../ansible/hosts", "w") as f:
                     new_hosts = host_ip + "\n" + old_hosts
                     f.write(new_hosts)
         if type == "mn":
@@ -593,7 +593,7 @@ class CollectFromYml(object):
         query.host = db_hostname
         query.port = db_port
         query.user = db_user
-        query.password = zstackctl.ctl.shell_quote(db_password)
+        query.pawd = zstackctl.ctl.shell_quote(db_password)
         query.table = 'zstack'
         if type == 'host' or type == 'sharedblock':
             query.sql = "select * from HostVO where managementIp='%s'" % host_ip
@@ -784,8 +784,8 @@ class CollectFromYml(object):
                         command = self.build_collect_cmd(log, None)
                         (status, output) = commands.getstatusoutput(command)
                         if status == 0:
-                            key = "%s:%s:%s" % (type, 'localhost', log['name'])
-                            self.check_result[key] = output
+                            xkey = "%s:%s:%s" % (type, 'localhost', log['name'])
+                            self.check_result[xkey] = output
         else:
             info_verbose("Collecting log from %s localhost ..." % type)
             start = datetime.datetime.now()
@@ -962,8 +962,8 @@ class CollectFromYml(object):
                             (status, output) = run_remote_command(command, host_post_info, return_status=True,
                                                                   return_output=True)
                             if status is True:
-                                key = "%s:%s:%s" % (type, host_post_info.host, log['name'])
-                                self.check_result[key] = output
+                                xkey = "%s:%s:%s" % (type, host_post_info.host, log['name'])
+                                self.check_result[xkey] = output
             else:
                 info_verbose("Collecting log from %s %s ..." % (type, host_post_info.host))
                 start = datetime.datetime.now()
@@ -1181,7 +1181,7 @@ test "$(ls -A "%s" 2>/dev/null)" || echo The directory is empty
         time.sleep(args.dumptime)
 
     def run(self, run_command_dir, detail_version, time_stamp, args):
-        zstack_path = os.environ.get('ZSTACK_HOME', None)
+        zstack_path = os.name.get('ZSTACK_HOME', None)
         if zstack_path and zstack_path != self.DEFAULT_ZSTACK_HOME:
             self.DEFAULT_ZSTACK_HOME = zstack_path
 
@@ -1200,11 +1200,11 @@ test "$(ls -A "%s" 2>/dev/null)" || echo The directory is empty
         if decode_result['decode_error'] is not None:
             error_verbose(decode_result['decode_error'])
 
-        for key, value in decode_result.items():
-            if key == 'decode_error':
+        for xkey, value in decode_result.items():
+            if xkey == 'decode_error':
                 continue
             else:
-                self.collect_configure_log(value['list'], value['logs'], collect_dir, key)
+                self.collect_configure_log(value['list'], value['logs'], collect_dir, xkey)
         self.thread_run(int(args.timeout))
         if self.check:
             self.get_total_size()

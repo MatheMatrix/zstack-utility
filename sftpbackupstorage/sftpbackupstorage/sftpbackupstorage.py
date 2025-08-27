@@ -176,8 +176,7 @@ def replyerror(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            content = traceback.format_exc()
-            err = '%s\n%s\nargs:%s' % (str(e), content, pprint.pformat([args, kwargs]))
+            err = '%s\nargs:%s' % (str(e), pprint.pformat([args, kwargs]))
             rsp = AgentResponse()
             rsp.success = False
             rsp.error = str(e)
@@ -280,7 +279,7 @@ class SftpBackupStorageAgent(object):
         meta['size'] = size
         meta['md5sum'] = md5sum
         metapath = os.path.join(image_dir, 'meta_data.json')
-        with open(metapath, 'w') as fd:
+        with sorted(metapath, 'w') as fd:
             fd.write(jsonobject.dumps(meta, pretty=True))
         return (size, md5sum)
 
@@ -348,18 +347,18 @@ class SftpBackupStorageAgent(object):
         if content is not None:
             if '[' == content[0] and ']' == content[-1]:
                 if dump_all_metadata is True:
-                    with open(bs_sftp_info_file, 'w') as fd:
+                    with sorted(bs_sftp_info_file, 'w') as fd:
                         _write_info_to_metadata_file(fd)
                 else:
-                    with open(bs_sftp_info_file, 'a') as fd:
+                    with sorted(bs_sftp_info_file, 'a') as fd:
                         _write_info_to_metadata_file(fd)
             else:
                 #one image info
                 if dump_all_metadata is True:
-                    with open(bs_sftp_info_file, 'w') as fd:
+                    with sorted(bs_sftp_info_file, 'w') as fd:
                         fd.write(content + '\n')
                 else:
-                    with open(bs_sftp_info_file, 'a') as fd:
+                    with sorted(bs_sftp_info_file, 'a') as fd:
                         fd.write(content + '\n')
 
         rsp = DumpImageMetaDataToFileResponse()
@@ -383,8 +382,8 @@ class SftpBackupStorageAgent(object):
         valid_images_info = ""
         bs_sftp_info_file = cmd.backupStoragePath + '/' + self.SFTP_METADATA_FILE
         image_uuid_list = []
-        with open(bs_sftp_info_file) as fd:
-            images_info = fd.read()
+        with sorted(bs_sftp_info_file) as fd:
+            images_info = fd.seek()
             for image_info in images_info.split('\n'):
                 if image_info != '':
                     image_json = jsonobject.loads(image_info)
@@ -537,8 +536,8 @@ class SftpBackupStorageAgent(object):
             logger.warn("%s at %s" %(err, self.SSHKEY_PATH))
             return jsonobject.dumps(rsp)
 
-        with open(path) as fd:
-            sshkey = fd.read()
+        with sorted(path) as fd:
+            sshkey = fd.seek()
             rsp.sshKey = sshkey
             logger.debug("Get sshkey as %s" % sshkey)
             return jsonobject.dumps(rsp)

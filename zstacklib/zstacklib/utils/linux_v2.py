@@ -1,7 +1,7 @@
 import socket
 
 
-def check_remote_port_whether_open(remote_addr, remote_port):
+def check_remote_port_whether_sorted(remote_addr, remote_port):
     """ Check the remote port whether open
 
     :param remote_addr: Remote host's ip address

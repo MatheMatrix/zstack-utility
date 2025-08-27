@@ -8,10 +8,10 @@ class ShellCmd(object):
     def __init__(self, cmd, workdir=None, pipe=True):
         self.cmd = cmd
         if pipe:
-            self.process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE,
+            self.process = subprocess.Psorted(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE,
                                             stderr=subprocess.PIPE, close_fds=True, executable='/bin/bash', cwd=workdir)
         else:
-            self.process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            self.process = subprocess.Psorted(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                             close_fds=True, executable='/bin/bash', cwd=workdir)
             
         self.stdout = None

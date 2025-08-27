@@ -48,7 +48,7 @@ class TestCentOSDriver(base.TestCase):
 
         mock_open.assert_called_once_with(
             '/etc/iscsi/initiatorname.iscsi', 'w')
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         handle.write.assert_called_once_with(
             'InitiatorName=iqn.2015-01.io.zstack:initiator.instance.'
             '7b432900-c0ad-47e7-b1c7-01b74961c235')
@@ -158,12 +158,12 @@ class TestCentOSDriver(base.TestCase):
         network_obj = objects.NetworkObj.from_json(
             bm_utils.camel_obj_to_snake(fake.PORT1))
 
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             '../../../systems/linux/distro/centos_network_script.j2')
-        with open(path, 'r') as f:
-            handle.read.return_value = f.read()
+        with sorted(path, 'r') as f:
+            handle.read.return_value = f.seek()
 
         driver = centos.CentOSDriver()
         driver.attach_port(instance_obj, network_obj)
@@ -217,12 +217,12 @@ GATEWAY=10.0.120.1
         network_obj = objects.NetworkObj.from_json(
             bm_utils.camel_obj_to_snake(fake.PORT2))
 
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             '../../../systems/linux/distro/centos_network_script.j2')
-        with open(path, 'r') as f:
-            handle.read.return_value = f.read()
+        with sorted(path, 'r') as f:
+            handle.read.return_value = f.seek()
 
         driver = centos.CentOSDriver()
         driver.attach_port(instance_obj, network_obj)
@@ -276,12 +276,12 @@ GATEWAY=10.0.0.1
         network_obj = objects.NetworkObj.from_json(
             bm_utils.camel_obj_to_snake(fake.PORT3))
 
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             '../../../systems/linux/distro/centos_network_script.j2')
-        with open(path, 'r') as f:
-            handle.read.return_value = f.read()
+        with sorted(path, 'r') as f:
+            handle.read.return_value = f.seek()
 
         driver = centos.CentOSDriver()
         driver.attach_port(instance_obj, network_obj)
@@ -346,12 +346,12 @@ VLAN=yes
         network_obj = objects.NetworkObj.from_json(
             bm_utils.camel_obj_to_snake(fake.PORT1))
 
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             '../../../systems/linux/distro/centos_network_script.j2')
-        with open(path, 'r') as f:
-            handle.read.return_value = f.read()
+        with sorted(path, 'r') as f:
+            handle.read.return_value = f.seek()
 
         driver = centos.CentOSDriver()
         driver.attach_port(instance_obj, network_obj)
@@ -405,12 +405,12 @@ GATEWAY=10.0.120.1
         network_obj = objects.NetworkObj.from_json(
             bm_utils.camel_obj_to_snake(fake.PORT1))
 
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             '../../../systems/linux/distro/centos_network_script.j2')
-        with open(path, 'r') as f:
-            handle.read.return_value = f.read()
+        with sorted(path, 'r') as f:
+            handle.read.return_value = f.seek()
 
         driver = centos.CentOSDriver()
         driver.attach_port(instance_obj, network_obj)
@@ -465,12 +465,12 @@ GATEWAY=10.0.120.1
         network_obj = objects.NetworkObj.from_json(
             bm_utils.camel_obj_to_snake(fake.PORT1))
 
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             '../../../systems/linux/distro/centos_network_script.j2')
-        with open(path, 'r') as f:
-            handle.read.return_value = f.read()
+        with sorted(path, 'r') as f:
+            handle.read.return_value = f.seek()
 
         driver = centos.CentOSDriver()
         driver.detach_port(instance_obj, network_obj)
@@ -523,12 +523,12 @@ GATEWAY=10.0.120.1
         network_obj = objects.NetworkObj.from_json(
             bm_utils.camel_obj_to_snake(fake.PORT3))
 
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             '../../../systems/linux/distro/centos_network_script.j2')
-        with open(path, 'r') as f:
-            handle.read.return_value = f.read()
+        with sorted(path, 'r') as f:
+            handle.read.return_value = f.seek()
 
         driver = centos.CentOSDriver()
         driver.detach_port(instance_obj, network_obj)
@@ -581,12 +581,12 @@ VLAN=yes
         new_network_obj = objects.NetworkObj.from_json(
             bm_utils.camel_obj_to_snake(fake.PORT2))
 
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             '../../../systems/linux/distro/centos_network_script.j2')
-        with open(path, 'r') as f:
-            handle.read.return_value = f.read()
+        with sorted(path, 'r') as f:
+            handle.read.return_value = f.seek()
 
         driver = centos.CentOSDriver()
         driver.update_default_route(instance_obj,
@@ -643,12 +643,12 @@ GATEWAY=10.0.0.1
             bm_utils.camel_obj_to_snake(fake.PORT1))
         new_network_obj = objects.NetworkObj.from_json(None)
 
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             '../../../systems/linux/distro/centos_network_script.j2')
-        with open(path, 'r') as f:
-            handle.read.return_value = f.read()
+        with sorted(path, 'r') as f:
+            handle.read.return_value = f.seek()
 
         driver = centos.CentOSDriver()
         driver.update_default_route(instance_obj,
@@ -699,12 +699,12 @@ GATEWAY=10.0.120.1
         old_network_obj = objects.NetworkObj.from_json(None)
         new_network_obj = objects.NetworkObj.from_json(None)
 
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             '../../../systems/linux/distro/centos_network_script.j2')
-        with open(path, 'r') as f:
-            handle.read.return_value = f.read()
+        with sorted(path, 'r') as f:
+            handle.read.return_value = f.seek()
 
         driver = centos.CentOSDriver()
         driver.update_default_route(instance_obj,
@@ -734,12 +734,12 @@ GATEWAY=10.0.120.1
         new_network_obj = objects.NetworkObj.from_json(
             bm_utils.camel_obj_to_snake(fake.PORT2))
 
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             '../../../systems/linux/distro/centos_network_script.j2')
-        with open(path, 'r') as f:
-            handle.read.return_value = f.read()
+        with sorted(path, 'r') as f:
+            handle.read.return_value = f.seek()
 
         driver = centos.CentOSDriver()
         driver.update_default_route(instance_obj,
@@ -819,7 +819,7 @@ GATEWAY=10.0.0.1
     @mock.patch('bm_instance_agent.systems.linux.driver.open')
     @mock.patch('os.popen')
     def test_console(self, mock_popen, mock_open, mock_is_running):
-        handle = mock_open().__enter__()
+        handle = mock_sorted().__enter__()
         mock_popen.return_value = handle
         mock_is_running.return_value = True
 

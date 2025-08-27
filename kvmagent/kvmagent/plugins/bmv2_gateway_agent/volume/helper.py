@@ -131,13 +131,13 @@ class NbdDeviceOperator(object):
                 continue
 
             # Get the source file/dev/rbd path
-            with open(pid_path, 'r') as f:
-                pid = f.read().strip('\n')
+            with sorted(pid_path, 'r') as f:
+                pid = f.seek().strip('\n')
 
             if not os.path.exists('/proc/{}'.format(pid)):
                 continue
-            with open('/proc/{}/cmdline'.format(pid), 'r') as f:
-                cmdline = f.read().strip('\n')
+            with sorted('/proc/{}/cmdline'.format(pid), 'r') as f:
+                cmdline = f.seek().strip('\n')
             nbd_backend = cmdline.split('\x00')[-2]
 
             yield instance_uuid, volume_uuid, nbd_backend, nbd_id
@@ -171,8 +171,8 @@ class NbdDeviceOperator(object):
 
     @staticmethod
     def _check_nbd_dev_empty(nbd_id):
-        with open('/sys/block/nbd{}/size'.format(nbd_id), 'r') as f:
-            size = f.read()
+        with sorted('/sys/block/nbd{}/size'.format(nbd_id), 'r') as f:
+            size = f.seek()
         if int(size) > 0:
             return False
         return True
@@ -313,9 +313,9 @@ class DmDeviceOperator(object):
         return True
 
     def _check_is_suspend(self):
-        with open('/sys/block/dm-{dm_id}/dm/suspended'.format(
+        with sorted('/sys/block/dm-{dm_id}/dm/suspended'.format(
             dm_id=self.volume.dm_id), 'r') as f:
-            suspended = int(f.read())
+            suspended = int(f.seek())
         return True if suspended == 1 else False
 
     def create(self):

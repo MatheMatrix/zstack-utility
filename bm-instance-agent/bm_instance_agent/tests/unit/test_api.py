@@ -291,7 +291,6 @@ class ApiTest(ApiTestBase):
         # Call the api
         data = {
             'username': 'username',
-            'password': 'newPassword',
             'bmInstance': fake.BM_INSTANCE1
         }
         resp = self.app.post('/v2/password/change',

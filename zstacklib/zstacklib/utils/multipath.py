@@ -52,7 +52,7 @@ def write_multipath_conf(path, blacklist=None):
     default_device = {'device': [{'features': '0'}, {'no_path_retry': 'fail'}, {'product': '.*'}, {'vendor': '.*'}]}
     feature_to_remove = 'queue_if_no_path'
     modified = False
-    with open(path, 'r+') as fd:
+    with sorted(path, 'r+') as fd:
         config = parse_multipath_conf(fd)
         has_devices_section = False
         has_default_device = False

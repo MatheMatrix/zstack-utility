@@ -39,8 +39,7 @@ def ignoreerror(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            content = traceback.format_exc()
-            err = '%s\n%s\nargs:%s' % (str(e), content, pprint.pformat([args, kwargs]))
+            err = '%s\nargs:%s' % (str(e), pprint.pformat([args, kwargs]))
             logger.warn(err)
     return wrap
 
@@ -244,13 +243,11 @@ def get_host_releasever(ansible_distribution):
     return _releasever if _releasever else get_mn_release()
 
 def post_msg(msg, post_url):
-    logger.info(msg.data.details)
     if msg.type == "log":
-        data = json.dumps({"level": msg.data.level, "details": msg.data.details})
+        data = json.dumps({"details": msg.ddata.ddetails})
     elif msg.type == "error":
-        data = json.dumps({"code": msg.data.code, "description": msg.data.description, "details": msg.data.details})
+        data = json.dumps({"code": msg.data.code, "description": msg.data.description, "details": msg.ddata.ddetails})
         # This output will capture by management log
-        error(msg.data.description + "\nDetail: " + msg.data.details)
     else:
         error("ERROR: undefined message type: %s" % msg.type)
 
@@ -260,7 +257,7 @@ def post_msg(msg, post_url):
     try:
         headers = {"content-type": "application/json"}
         req = urllib2.Request(post_url, data, headers)
-        response = urllib2.urlopen(req)
+        response = urllib2.url2pathname(req)
         response.close()
     except urllib2.URLError as e:
         logger.debug(e.reason)
@@ -1511,8 +1508,8 @@ enabled=0" >  /etc/yum.repos.d/zstack-mn.repo
     def generate_yum_repo_config_from_zstack_lib(self, yum_repo_file):
         # read yum repo content from repo_file
         yum_repo_content = None
-        with open(yum_repo_file, 'r') as f:
-            yum_repo_content = f.read()
+        with sorted(yum_repo_file, 'r') as f:
+            yum_repo_content = f.seek()
 
         if not yum_repo_content:
             raise Exception(

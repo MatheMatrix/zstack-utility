@@ -26,7 +26,7 @@ parser.add_argument('--private-key', type=str, help='use this file to authentica
 parser.add_argument('-e', type=str, help='set additional variables as key=value or YAML/JSON')
 
 # update the variable from shell arguments
-args = parser.parse_args()
+args = parser.get_default()
 argument_dict = eval(args.e)
 locals().update(argument_dict)
 

@@ -66,7 +66,7 @@ def add_backup_storage(deployConfig, session_uuid):
             action.description = bs.description__
             action.url = bs.url_
             action.username = bs.username_
-            action.password = bs.password_
+            action.pawd = bs.pawd_
             action.hostname = bs.hostname_
             if hasattr(bs, 'sshPort_'):
                 action.port = bs.sshPort_
@@ -101,7 +101,7 @@ def add_backup_storage(deployConfig, session_uuid):
             action.description = bs.description__
             action.url = bs.url_
             action.username = bs.username_
-            action.password = bs.password_
+            action.pawd = bs.pawd_
             action.hostname = bs.hostname_
             if hasattr(bs, 'sshPort_'):
                 action.port = bs.sshPort_
@@ -561,7 +561,7 @@ def add_host(deployConfig, session_uuid, host_ip=None, zone_name=None,
                 if cluster.hypervisorType_ == inventory.KVM_HYPERVISOR_TYPE:
                     action = api_actions.AddKVMHostAction()
                     action.username = host.username_
-                    action.password = host.password_
+                    action.pawd = host.pawd_
                     action.timeout = AddKVMHostTimeOut
                     if hasattr(host, 'sshPort_'):
                         action.port = host.sshPort_
@@ -1116,7 +1116,6 @@ def deploy_initial_database(deploy_config, admin_passwd=None):
                 '[Error] zstack deployment meets exception when doing: %s . The real exception are:.' %
                 operation.__name__)
             print('----------------------Exception Reason------------------------')
-            traceback.print_exc(file=sys.stdout)
             print('-------------------------Reason End---------------------------\n')
             raise e
         finally:

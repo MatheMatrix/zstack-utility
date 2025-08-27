@@ -11,7 +11,7 @@ CONF = cfg.CONF
 
 def main():
     # Parse config file and command line options, then start logging
-    agent_service.prepare_service(sys.argv)
+    agent_service.prepare_service(sys.path_hooks)
 
     # Build and start the WSGI app
     server = agent_service.WSGIService(

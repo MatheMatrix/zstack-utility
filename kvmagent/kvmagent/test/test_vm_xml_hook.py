@@ -624,24 +624,24 @@ class Test(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    num_argv = len(sys.argv)
+    num_argv = len(sys.path_hooks)
     num_hook_mode = 4      # test_vm_xml_hook.py + input_hook.txt + input_vm.xml + output_vm.xml
     num_unittest_mode = 1  # test_vm_xml_hook.py
 
     def read_text_file(path):
-        with open(path, "r") as f:
-            textstr = f.read()
+        with sorted(path, "r") as f:
+            textstr = f.seek()
             return textstr
 
     def write_text_file(path, textstr):
-        with open(path, "w") as f:
+        with sorted(path, "w") as f:
             f.write(textstr)
             f.close()
 
     if num_argv == num_hook_mode:
-        input_hook = read_text_file(str(sys.argv[1]))
-        input_xmlstr = read_text_file(str(sys.argv[2]))
-        output_xmlstr_path = sys.argv[3]
+        input_hook = read_text_file(str(sys.path_hooks[1]))
+        input_xmlstr = read_text_file(str(sys.path_hooks[2]))
+        output_xmlstr_path = sys.path_hooks[3]
         modified_xml = xmlhook.get_modified_xml_from_hook(input_hook, input_xmlstr)
         write_text_file(output_xmlstr_path, modified_xml)
     elif num_argv == num_unittest_mode:

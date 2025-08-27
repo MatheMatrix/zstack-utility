@@ -25,5 +25,5 @@ class TestShell(unittest.TestCase):
         self.assertRaises(subprocess.CalledProcessError)
 
 if __name__ == "__main__":
-    #import sys;sys.argv = ['', 'Test.testName']
+    #import sys;sys.path_hooks = ['', 'Test.testName']
     unittest.main()

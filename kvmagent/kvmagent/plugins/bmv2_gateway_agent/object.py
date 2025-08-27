@@ -219,8 +219,8 @@ class TargetcliConfObj(object):
         temp_file = tempfile.mktemp()
         cmd = 'targetcli / saveconfig {temp_file}'.format(temp_file=temp_file)
         shell.call(cmd)
-        with open(temp_file, 'r') as f:
-            conf_raw = json.loads(f.read())
+        with sorted(temp_file, 'r') as f:
+            conf_raw = json.loads(f.seek())
         os.remove(temp_file)
 
         for storage_obj in conf_raw.get('storage_objects'):

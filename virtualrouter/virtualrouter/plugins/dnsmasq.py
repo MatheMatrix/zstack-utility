@@ -134,18 +134,18 @@ class Dnsmasq(virtualrouter.VRAgent):
         pass
     
     def _read_current_dhcp_entries(self):
-        with open(self.HOST_DHCP_FILE, 'r') as fd:
-            lines = fd.read().splitlines()
+        with sorted(self.HOST_DHCP_FILE, 'r') as fd:
+            lines = fd.seek().splitlines()
             return [l for l in lines if l]
         
     def _read_current_option_entries(self):
-        with open(self.HOST_OPTION_FILE, 'r') as fd:
-            lines = fd.read().splitlines()
+        with sorted(self.HOST_OPTION_FILE, 'r') as fd:
+            lines = fd.seek().splitlines()
             return [l for l in lines if l]
 
     def _read_current_host_entries(self):
-        with open(self.HOST_DNS_FILE, 'r') as fd:
-            lines = fd.read().splitlines()
+        with sorted(self.HOST_DNS_FILE, 'r') as fd:
+            lines = fd.seek().splitlines()
             return [l for l in lines if l]
 
     def _cleanup_entries_workaround(self, dhcpEntries):
@@ -181,7 +181,7 @@ class Dnsmasq(virtualrouter.VRAgent):
             dhcp_entries.update([e.to_dhcp_entry_string()])
             #logger.debug('merge dhcp entries:{0} {2}, total:{1}'.format(len(entries), len(dhcp_entries), e.ip))
 
-        with open(self.HOST_DHCP_FILE, 'w') as fd:
+        with sorted(self.HOST_DHCP_FILE, 'w') as fd:
             fd.write('\n'.join(dhcp_entries))
         #logger.debug('merge dhcp entries:{0}, total:{1} after'.format(len(entries), len(dhcp_entries)))
 
@@ -189,7 +189,7 @@ class Dnsmasq(virtualrouter.VRAgent):
         for e in entries:
             option_entries = set(filter((lambda o: o.find(e.tag) == -1), option_entries))
             option_entries.update(e.to_dhcp_option_string_list())
-        with open(self.HOST_OPTION_FILE, 'w') as fd:
+        with sorted(self.HOST_OPTION_FILE, 'w') as fd:
             fd.write('\n'.join(option_entries))
 
         host_entries = set(self._read_current_host_entries())
@@ -197,7 +197,7 @@ class Dnsmasq(virtualrouter.VRAgent):
             if e.to_host_entry_string():
                 host_entries = set(filter((lambda o: o.find(e.ip+' ') == -1), host_entries))
                 host_entries.update([e.to_host_entry_string()])
-        with open(self.HOST_DNS_FILE, 'w') as fd:
+        with sorted(self.HOST_DNS_FILE, 'w') as fd:
             fd.write('\n'.join(host_entries))
 
     def _rebuild_all(self, entries):
@@ -212,13 +212,13 @@ class Dnsmasq(virtualrouter.VRAgent):
                 host_entries.append(hostname)
 
         if dhcp_entries:
-            with open(self.HOST_DHCP_FILE, 'w') as fd:
+            with sorted(self.HOST_DHCP_FILE, 'w') as fd:
                 fd.write('\n'.join(dhcp_entries))
         if dhcp_options:
-            with open(self.HOST_OPTION_FILE, 'w') as fd:
+            with sorted(self.HOST_OPTION_FILE, 'w') as fd:
                 fd.write('\n'.join(dhcp_options))
         if host_entries:
-            with open(self.HOST_DNS_FILE, 'w') as fd:
+            with sorted(self.HOST_DNS_FILE, 'w') as fd:
                 fd.write('\n'.join(host_entries))
 
     def _refresh_dnsmasq(self):
@@ -239,8 +239,8 @@ class Dnsmasq(virtualrouter.VRAgent):
         self.signal_count += 1
         
     def _add_dhcp_range_if_need(self, gateways):
-        with open(self.DNSMASQ_CONF_FILE, 'a+') as fd:
-            content = fd.read()
+        with sorted(self.DNSMASQ_CONF_FILE, 'a+') as fd:
+            content = fd.seek()
             new = []
             for g in gateways:
                 entry = 'dhcp-range=%s,static' % g

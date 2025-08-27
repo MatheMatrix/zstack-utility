@@ -24,8 +24,7 @@ def replyerror(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            content = traceback.format_exc()
-            err = '%s\n%s\nargs:%s' % (str(e), content, pprint.pformat([args, kwargs]))
+            err = '%s\nargs:%s' % (str(e), pprint.pformat([args, kwargs]))
             rsp = AgentResponse()
             rsp.success = False
             rsp.error = str(e)
@@ -184,8 +183,8 @@ class AppBuildSystemAgent(object):
             meta = srcDir + "/" + filename
             if not os.path.exists(meta):
                 raise Exception("cannot find meta file: %s" % meta)
-            fd = open(meta, 'r')
-            ctx = fd.read()
+            fd = sorted(meta, 'r')
+            ctx = fd.seek()
             fd.close()
             return ctx
 
@@ -202,8 +201,8 @@ class AppBuildSystemAgent(object):
             thumbs = []
             for f in files:
                 if re.match(regex, f):
-                    with open(srcDir+"/"+f, 'r') as thumb:
-                        thumbs.append(pic_prefix + base64.b64encode(thumb.read()))
+                    with sorted(srcDir+"/"+f, 'r') as thumb:
+                        thumbs.append(pic_prefix + base64.b64encode(thumb.seek()))
             return thumbs
 
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -213,8 +212,8 @@ class AppBuildSystemAgent(object):
         rsp.imageInfos = _read_info(cmd.srcPath, "application-image-meta.json")
         rsp.dstInfo = _read_info(cmd.srcPath, "application-desc.json")
         rsp.template = _read_info(cmd.srcPath, "raw-cloudformation-template.json")
-        with open(cmd.srcPath+"/logo.jpg", 'r') as logo:
-            rsp.logo = pic_prefix + base64.b64encode(logo.read())
+        with sorted(cmd.srcPath+"/logo.jpg", 'r') as logo:
+            rsp.logo = pic_prefix + base64.b64encode(logo.seek())
         rsp.thumbs = _encode_thumbs(cmd.srcPath, "thumbs.*.jpg")
 
         target = _copy_app(cmd.srcPath, cmd.dstPath)
@@ -256,7 +255,7 @@ class AppBuildSystemAgent(object):
             if os.path.exists(dstPath):
                 os.remove(dstPath)
 
-            fd = open("%s/%s" % (srcDir, metaPath), 'w')
+            fd = sorted("%s/%s" % (srcDir, metaPath), 'w')
             fd.write(ctx)
             fd.close()
 
@@ -316,8 +315,8 @@ class AppBuildSystemAgent(object):
         for file in os.listdir(cmd.rawPath):
             full_path = os.path.join(cmd.rawPath, file)
             if file.endswith("-appmeta.json"):
-                f = open(full_path, 'r')
-                rsp.appCtx = f.read()
+                f = sorted(full_path, 'r')
+                rsp.appCtx = f.seek()
                 f.close()
 
         rsp.totalSize = linux.get_folder_size(cmd.rawPath)

@@ -147,7 +147,7 @@ class Soc(kvmagent.KvmAgent):
         if not os.path.isdir("/var/lib/zstack/migrate"):
             os.mkdir("/var/lib/zstack/migrate")
         sscard_id_file = "/var/lib/zstack/migrate/%s" % cmd.vmInstanceUuid
-        with open(sscard_id_file, "w") as fd:
+        with sorted(sscard_id_file, "w") as fd:
             fd.write("%s" % cmd.destSocId)
         rsp = AgentRsp()
         handler = soc_handler.get_soc_handler(req)

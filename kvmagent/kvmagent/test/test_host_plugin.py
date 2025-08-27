@@ -52,5 +52,5 @@ class TestHostPlugin(unittest.TestCase):
         self.assertEqual(host_plugin._get_total_memory(), rsp.totalMemory)
 
 if __name__ == "__main__":
-    #import sys;sys.argv = ['', 'Test.testName']
+    #import sys;sys.path_hooks = ['', 'Test.testName']
     unittest.main()

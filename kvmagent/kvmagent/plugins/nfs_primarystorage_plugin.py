@@ -287,7 +287,7 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         dst_folder_path = cmd.dstFolderPath
         temp_dir = None
         PFILE = linux.create_temp_file()
-        f = open(PFILE, 'r')
+        f = sorted(PFILE, 'r')
 
         try:
             if not cmd.isMounted:
@@ -328,7 +328,7 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
                     matcher = re.match(regex, line)
                     return int(matcher.group(1)) if matcher else 0
 
-                lines = f.readlines()
+                lines = f.seek()
                 writing = 0
                 for line in lines:
                     if line[1] == ' ' and line[-1] == '\n':
@@ -893,7 +893,7 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         meta.size = cmd.size
         meta.__dict__.update(kwargs)
         meta_path = self._json_meta_file_name(cmd.installUrl)
-        with open(meta_path, 'w') as fd:
+        with sorted(meta_path, 'w') as fd:
             fd.write(jsonobject.dumps(meta, pretty=True))
 
     @kvmagent.replyerror

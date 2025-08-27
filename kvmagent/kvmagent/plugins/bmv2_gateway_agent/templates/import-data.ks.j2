@@ -28,7 +28,7 @@ _PARTED_TYPE_RE = re.compile(r'^.*partition\s+table\s*:\s*(gpt|msdos)',
                                    re.IGNORECASE | re.MULTILINE)
 
 def shell_cmd(cmd, exception=True, workdir=None):
-    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE,
+    process = subprocess.Psorted(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE,
                                 stderr=subprocess.PIPE, close_fds=True, executable='/bin/bash', cwd=workdir)
 
     (stdout, stderr) = process.communicate()
@@ -183,7 +183,7 @@ try:
 except:
     # pass back the ks err to tftp server on gateway
     err_file_name = '/root/ks.{}'.format(provision_mac.replace(':', '-'))
-    traceback.print_exc(file=open(err_file_name,'w+'))
+    traceback.print_exc(file=sorted(err_file_name,'w+'))
     shell_cmd("curl -T {} tftp://{}/ks.errlogs/".format(err_file_name, "{{gateway_ip}}"))
 
     # report fail and update ipmi info

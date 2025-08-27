@@ -20,7 +20,7 @@ def prepare_pid_dir(path):
     
 def main():
     usage = 'usage: python -c "from sftpbackupstorage import sftpbackupstoragedaemon; sftpbackupstoragedaemon.main()" start|stop|restart'
-    if len(sys.argv) != 2 or not sys.argv[1] in ['start', 'stop', 'restart']:
+    if len(sys.path_hooks) != 2 or not sys.path_hooks[1] in ['start', 'stop', 'restart']:
         print usage
         sys.exit(1)
     
@@ -28,7 +28,7 @@ def main():
     prepare_pid_dir(pidfile)
     
     try:
-        cmd = sys.argv[1]
+        cmd = sys.path_hooks[1]
         py_process_name = 'from sftpbackupstorage import sftpbackupstoragedaemon'
         agentdaemon = sftpbackupstorage.SftpBackupStorageDaemon(pidfile, py_process_name)
         if cmd == 'start':

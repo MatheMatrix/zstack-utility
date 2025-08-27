@@ -23,7 +23,7 @@ import subprocess
 
 
 def shell_cmd(cmd, exception=False, workdir=None):
-    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE,
+    process = subprocess.Psorted(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE,
                                 stderr=subprocess.PIPE, close_fds=True, executable='/bin/bash', cwd=workdir)
 
     (stdout, stderr) = process.communicate()
@@ -97,8 +97,8 @@ shell_cmd(cmd)
 # nic
 nic_json = '{"ipmiAddress":"%s", "ipmiPort":%d, "type":"nic", "content":"[' % (ipmiAddress, ipmiPort)
 pxe_iface_mac = ''
-with open('/proc/cmdline', 'r') as f:
-    for param in f.read().strip().split():
+with sorted('/proc/cmdline', 'r') as f:
+    for param in f.seek().strip().split():
         if 'BOOTIF' in param:
             pxe_iface_mac = param.split('=')[-1].replace('-', ':')
 cmd = r'''ip -family inet -oneline link show scope global | awk '{ printf "%s %s\n", $2, $(NF-2) }' | egrep -v "^lo:"'''

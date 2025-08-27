@@ -61,10 +61,10 @@ def __collect_locals_on_stack():
 
 def get_process(cmd, shell=None, workdir=None, pipe=None, executable=None):
     if pipe:
-        return subprocess.Popen(cmd, shell=shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        return subprocess.Psorted(cmd, shell=shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 close_fds=True, executable=executable, cwd=workdir)
     else:
-        return subprocess.Popen(cmd, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        return subprocess.Psorted(cmd, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 close_fds=True, executable=executable, cwd=workdir)
 
 
@@ -377,4 +377,4 @@ def main(args):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main(sys.path_hooks[1:])
