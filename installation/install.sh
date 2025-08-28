@@ -1638,6 +1638,7 @@ is_install_general_libs_rh(){
     deps_list="libselinux-python \
             java-1.8.0-openjdk \
             java-1.8.0-openjdk-devel \
+            java-21-openjdk-devel \
             bridge-utils \
             wget \
             nfs-utils \
@@ -2515,6 +2516,60 @@ install_zops(){
     else
       show_spinner is_install_zops
     fi
+}
+
+install_keycloak_server(){
+    keycloak_installer_tar=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "keycloak.tar.gz" | head -n 1`
+    [[ x"$keycloak_installer_tar" = x ]] && return
+    echo_title "Install keycloak server"
+    echo ""
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    show_spinner is_extract_keycloak_tar
+    show_spinner prepare_keycloak_user_and_db
+}
+
+is_extract_keycloak_tar(){
+    echo_subtitle "Extract keycloak tar"
+    cp /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/keycloak.tar.gz /var/lib/zstack/
+    tar -zxvf /var/lib/zstack/keycloak.tar.gz -C /var/lib/zstack/ > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        fail "Extracting the keycloak.tar.gz package failed."
+    fi
+    rm -f /var/lib/zstack/keycloak.tar.gz
+    [ $? -eq 0 ] && pass
+}
+
+install_morph_server(){
+  morph_package_tar=$(find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "morph_all.tar.gz" | head -n 1)
+  [ -z "$morph_package_tar" ] && return
+  echo_title "Install morph server"
+  echo ""
+  trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+  show_spinner is_extract_morph_tar
+  show_spinner prepare_morph_user_and_db
+  
+  systemctl is-enabled morph &>/dev/null && systemctl restart morph || true
+}
+
+is_extract_morph_tar(){
+  echo_subtitle "Extract morph tar"
+  cp /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/morph_all.tar.gz /var/lib/zstack/
+  mkdir -p /var/lib/zstack/morph
+
+  [ -f /var/lib/zstack/morph/region_config.yml ] && \
+    \cp -a /var/lib/zstack/morph/region_config.yml /var/lib/zstack/morph/region_config.yml.back
+
+  tar -zxvf /var/lib/zstack/morph_all.tar.gz -C /var/lib/zstack/morph/ > /dev/null 2>&1
+  if [ $? -ne 0 ]; then
+      fail "Extracting the morph_all.tar.gz package failed."
+  fi
+
+  if [ -f /var/lib/zstack/morph/region_config.yml.back ]; then
+    \mv -f /var/lib/zstack/morph/region_config.yml.back /var/lib/zstack/morph/region_config.yml
+  fi
+
+  rm -f /var/lib/zstack/morph_all.tar.gz
+  [ $? -eq 0 ] && pass
 }
 
 install_marketplace_server(){
@@ -3667,6 +3722,46 @@ check_sync_local_repos() {
   fi
 }
 
+prepare_morph_user_and_db(){
+  echo_subtitle "Prepare morph db and user"
+  get_mysql_conf_file
+  MYSQL_DATA_DIR=`cat $MYSQL_CONF_FILE | grep datadir | cut -d '=' -f 2`
+  [ -z "$MYSQL_DATA_DIR" ] && MYSQL_DATA_DIR="/var/lib/mysql"
+  db='morph'
+  user='morph'
+  morph_encrypt_password="morph123"
+
+  [ -f $MYSQL_DATA_DIR/$db/db.opt ] && return 0
+  mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e 'exit' >/dev/null 2>&1
+  if [ $? -eq 0 ]; then
+    mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e "CREATE USER IF NOT EXISTS 'morph'@'%' IDENTIFIED BY '$morph_encrypt_password';
+      CREATE DATABASE IF NOT EXISTS $db;
+      GRANT ALL PRIVILEGES ON $db.* TO 'morph'@'%';
+      FLUSH PRIVILEGES;"
+    return 0
+  fi
+  fail2 "\nCannot login mysql! It seems that the default root user password has been changed, If you have mysql root password, please add option '-P MYSQL_ROOT_PASSWORD'.\n"
+}
+
+
+prepare_keycloak_user_and_db() {
+    echo_subtitle "Prepare keycloak db and user"
+    get_mysql_conf_file
+    db='keycloak'
+    user='keycloak'
+    keycloak_encrypt_password="password"
+
+    [ -f $MYSQL_DATA_DIR/$db/db.opt ] && return 0
+    mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e 'exit' >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+      mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e "CREATE USER IF NOT EXISTS 'keycloak'@'%' IDENTIFIED BY '$keycloak_encrypt_password';
+        CREATE DATABASE IF NOT EXISTS $db;
+        GRANT ALL PRIVILEGES ON $db.* TO 'keycloak'@'%';
+        FLUSH PRIVILEGES;"
+      return 0
+    fi
+    fail2 "\nCannot login mysql! It seems that the default root user password has been changed, If you have mysql root password, please add option '-P MYSQL_ROOT_PASSWORD'.\n"
+}
 
 prepare_zops_user_and_db() {
     echo_subtitle "Prepare zops db and user"
@@ -4427,6 +4522,10 @@ if [ x"$UPGRADE" = x'y' ]; then
     #Install marketplace server
     install_fluentbit_server
 
+    install_keycloak_server
+
+    install_morph_server
+
     #only upgrade zstack
     upgrade_zstack
 
@@ -4605,6 +4704,10 @@ install_marketplace_server
 
 #Install fluentbit server
 install_fluentbit_server
+
+install_keycloak_server
+
+install_morph_server
 
 #Start ${PRODUCT_NAME} 
 if [ -z $NOT_START_ZSTACK ]; then

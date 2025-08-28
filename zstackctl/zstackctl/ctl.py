@@ -51,6 +51,7 @@ from Crypto.Util.py3compat import *
 from hashlib import md5
 from string import Template
 from timeline import TaskTimeline, __doc__ as timeline_doc
+from collections import OrderedDict
 
 mysql_db_config_script='''
 #!/bin/bash
@@ -1038,6 +1039,7 @@ class Ctl(object):
     # always install zstack-ui inside zstack_install_root
     ZSTACK_UI_HOME = os.path.join(USER_ZSTACK_HOME_DIR, 'zstack-ui/')
     ZSTACK_UI_DB = os.path.join(ZSTACK_UI_HOME, 'scripts/deployuidb.sh')
+    ZSTACK_UI_CONFIGS = os.path.join(ZSTACK_UI_HOME, 'configs')
     ZSTACK_UI_DB_MIGRATE = os.path.join(ZSTACK_UI_HOME, 'db')
     ZSTACK_UI_DB_MIGRATE_SH = os.path.join(ZSTACK_UI_HOME, 'scripts/migrateforupdate.sh')
     ZSTACK_UI_KEYSTORE = ZSTACK_UI_HOME + 'ui.keystore.p12'
@@ -5984,6 +5986,12 @@ class DumpMysqlCmd(Command):
     def get_zstone_db_user_info(self):
         return "zstndump", "zstndump.db.password"
 
+    def get_keycloak_db_user_info(self):
+        return "keycloak", "password"
+
+    def get_morph_db_user_info(self):
+        return "morph", "morph123"
+
     def run(self, args):
         (db_hostname, db_port, db_user, db_password) = ctl.get_live_mysql_portal()
         (ui_db_hostname, ui_db_port, ui_db_user, ui_db_password) = ctl.get_live_mysql_portal(ui=True)
@@ -6029,12 +6037,24 @@ class DumpMysqlCmd(Command):
             command_3 = "mysqldump --databases -u %s --password='%s' --host %s -P %s %s -f zstack_ui zstack_mini" \
                         % (ui_db_user, ui_db_password, ui_db_hostname, ui_db_port, mysqldump_options)
 
+        def build_mysqldump_cmd(user, pwd, host, port, dbname):
+            if host == "localhost" or host == "127.0.0.1":
+                return "mysqldump --databases -u %s --password='%s' -P %s %s -f %s" % (
+                    user, pwd, port, mysqldump_options, dbname)
+            else:
+                return "mysqldump --databases -u %s --password='%s' --host %s -P %s %s -f %s" % (
+                    user, pwd, host, port, mysqldump_options, dbname)
+        keycloak_db_user, keycloak_db_pwd = self.get_keycloak_db_user_info()
+        morph_db_user, morph_db_pwd = self.get_morph_db_user_info()
+        keycloak_cmd = build_mysqldump_cmd(keycloak_db_user, keycloak_db_pwd, db_hostname, db_port, "keycloak")
+        morph_cmd = build_mysqldump_cmd(morph_db_user, morph_db_pwd, db_hostname, db_port, "morph")
+
         if args.append_sql_file:
             append_sql_command = "echo 'USE `zstack`;\n'; cat %s;" % args.append_sql_file
         else:
             append_sql_command = ""
 
-        cmd = ShellCmd("(%s; %s; %s %s) | gzip > %s" % (command_1, command_2, append_sql_command, command_3, db_backupf_file_path))
+        cmd = ShellCmd("(%s; %s; %s %s; %s; %s) | gzip > %s" % (command_1, command_2, append_sql_command, command_3, keycloak_cmd, morph_cmd, db_backupf_file_path))
         cmd(True)
         info("Successfully backed up database. You can check the file at %s" % db_backupf_file_path)
 
@@ -6306,6 +6326,30 @@ class RestoreMysqlCmd(Command):
                       % (db_backup_name, ui_db_hostname_origin_cp, shell_quote(ui_db_password), ui_db_hostname, ui_db_port, database)
             shell_no_pipe(command)
 
+        other_db_names = ['keycloak','morph']
+        for database in other_db_names:
+            try:
+                with open(os.devnull, 'w') as devnull:
+                    subprocess.check_call(['systemctl', 'status', database],
+                                          stdout=devnull,
+                                          stderr=devnull)
+            except subprocess.CalledProcessError:
+                warn("Service {} is not installed, skipping...".format(database))
+                continue
+
+            restorer.stop_extra_services(args, database)
+            info("Restoring %s database ..." % database)
+            command = "mysql -uroot --password=%s -P %s  %s" \
+                      " -e 'drop database if exists %s; create database %s' >> /dev/null 2>&1" \
+                      % (shell_quote(db_password), db_port, db_hostname, database, database)
+            shell_no_pipe(command)
+            command = "gunzip < %s | sed -e '/DROP DATABASE IF EXISTS/d' -e '/CREATE DATABASE .* IF NOT EXISTS/d' " \
+                      "| sed 's/DEFINER=`[^\*\/]*`@`[^\*\/]*`/DEFINER=`root`@`%s`/' " \
+                      "| mysql -uroot --password=%s %s -P %s --one-database %s" \
+                      % (db_backup_name, db_hostname_origin_cp, shell_quote(db_password), db_hostname, db_port, database)
+            shell_no_pipe(command)
+            restorer.start_extra_services(args, database)
+
         info("Successfully restored database. You can start node by running zstack-ctl start.")
         warn('The VM HA in the global setting (config) is disabled while restore database, '
              'enable it after management node is running if needed.')
@@ -6330,6 +6374,14 @@ class MysqlRestorer(object):
 
     def is_local_ip(self, db_hostname):
         raise Exception('function all_local_ip not be implemented')
+ 
+    def start_extra_services(self, args, service_name):
+        info("starting %s service..." % service_name)
+        shell("systemctl start %s" % service_name)
+
+    def stop_extra_services(self, args, service_name):
+        info("stopping %s service..." % service_name)
+        shell("systemctl stop %s" % service_name)
 
 
 class MultiMysqlRestorer(MysqlRestorer):
@@ -6370,6 +6422,18 @@ class MultiMysqlRestorer(MysqlRestorer):
 
     def is_local_ip(self, db_hostname):
         return db_hostname in self.all_local_ip or db_hostname == self.utils.config['dbvip']
+
+    def start_extra_services(self, args, service_name):
+        super(MultiMysqlRestorer, self).start_extra_services(args, service_name)
+        if not args.only_restore_self:
+            info("starting peer %s service..." % service_name)
+            self.utils.execute_on_peer("systemctl start %s" % service_name)
+
+    def stop_extra_services(self, args, service_name):
+        super(MultiMysqlRestorer, self).stop_extra_services(args, service_name)
+        if not args.only_restore_self:
+            info("stopping peer %s service..." % service_name)
+            self.utils.execute_on_peer("systemctl stop %s" % service_name)
 
 
 class SingleMysqlRestorer(MysqlRestorer):
@@ -7427,6 +7491,71 @@ class ChangeIpCmd(Command):
 
         info("update mysql restrict connection successfully")
 
+    def update_morph_config(self, change_ip):
+        default_morph_path = "/var/lib/zstack/morph/"
+        default_morph_config = default_morph_path + "application.yml"
+
+        if os.path.exists(default_morph_config):
+            data = OrderedDict()
+
+            def ordered_load(stream, Loader=yaml.SafeLoader):
+                class OrderedLoader(Loader):
+                    pass
+
+                def construct_mapping(loader, node):
+                    loader.flatten_mapping(node)
+                    return OrderedDict(loader.construct_pairs(node))
+
+                OrderedLoader.add_constructor(
+                    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+                    construct_mapping)
+
+                return yaml.load(stream, OrderedLoader)
+
+            def ordered_dump(data, stream=None, Dumper=yaml.SafeDumper, **kwds):
+                class OrderedDumper(Dumper):
+                    pass
+
+                def _dict_representer(dumper, data):
+                    return dumper.represent_mapping(
+                        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+                        data.items())
+
+                OrderedDumper.add_representer(OrderedDict, _dict_representer)
+
+                return yaml.dump(data, stream, OrderedDumper, **kwds)
+
+            try:
+                with open(default_morph_config, 'r') as f:
+                    data = ordered_load(f)
+                    if not isinstance(data, dict):
+                        data = OrderedDict()
+            except IOError as e:
+                error('Failed to load morph application.yml: %s' % str(e))
+            except yaml.YAMLError as exc:
+                if hasattr(exc, 'problem_mark'):
+                    mark = exc.problem_mark
+                    error("Error at line: %s column: %s" % (mark.line + 1, mark.column + 1))
+                error('Failed to parse morph application.yml')
+
+            data.setdefault('extension', OrderedDict())
+            old_ip = data['extension'].get('morphAddress')
+            if old_ip != change_ip:
+                data['extension']['morphAddress'] = change_ip
+                info('morph application.yml update morphAddress %s' % change_ip)
+            else:
+                info('morph application.yml morphAddress unchanged, skip write')
+                return
+
+            try:
+                with open(default_morph_config, 'w') as f:
+                    ordered_dump(data, f, default_flow_style=False)
+                info('morph application.yml write success')
+            except IOError:
+                error('morph application.yml write failed: %s', str(e))
+        else:
+            info("morph cannot find skip")
+
     def run(self, args):
         if args.ip == '0.0.0.0':
             raise CtlError('for your data safety, please do NOT use 0.0.0.0 as the listen address')
@@ -7568,6 +7697,8 @@ class ChangeIpCmd(Command):
             shell('iptables -A INPUT -p tcp --dport %s -j REJECT' % port)
             shell('iptables -I INPUT -p tcp --dport %s -d %s -j ACCEPT' % (port, args.ip))
             shell('iptables -I INPUT -p tcp --dport %s -d 127.0.0.1 -j ACCEPT' % port)
+
+        self.update_morph_config(args.ip)
 
         info("update iptables rules successfully")
         info("Change ip successfully")
@@ -11269,6 +11400,306 @@ class TimelineCmd(Command):
             timeline.generate_gantt(args.key)
 
 
+class ExtraService(object):
+    colors = ["green", "yellow", "red"]
+
+    def __init__(self):
+        self.collector = ManagementNodeStatusCollector()
+        self.zsha2_utils = Zsha2Utils() if check_ha() else None
+
+    def service_name(self):
+        raise NotImplementedError("Subclasses must implement service_name()")
+
+    def start(self, do_init=False):
+        raise NotImplementedError()
+
+    def init(self):
+        pass
+
+    def post_start_log(self):
+        pass
+
+    def status(self):
+        name = self.service_name()
+        server_status = self.collector.get_systemd_service_status(name)
+
+        if server_status in ["running", "enabled", "disabled"]:
+            status_color = self.colors[0]
+        elif server_status in ["stopped", "False"]:
+            status_color = self.colors[2]
+        else:
+            status_color = self.colors[1]
+
+        format_str = "{} : {}".format(
+            name.ljust(20),
+            colored(server_status, status_color)
+        )
+        info_and_debug(format_str)
+
+
+class IamService(ExtraService):
+    default_port = 18181
+    default_nginx_port = 18182
+    base_init_path = "/var/lib/zstack/keycloak/init.sh"
+
+    def service_name(self):
+        return "keycloak"
+
+    def init(self):
+        if not self.zsha2_utils:
+            return
+        template_path = "/var/lib/zstack/keycloak/conf/keycloak.upstream.nginx.conf"
+        conf_path = os.path.join(Ctl.ZSTACK_UI_CONFIGS, 'keycloak.upstream.nginx.conf')
+
+        with open(template_path, "r") as f:
+            content = f.read()
+        content = content.replace("{{MN1_IP}}", self.zsha2_utils.config['nodeip']).replace("{{MN2_IP}}", self.zsha2_utils.config['peerip']).replace("{{LISTEN_PORT}}", str(self.default_nginx_port))
+
+        with open(conf_path, "w") as f:
+            f.write(content)
+        shell_no_pipe("systemctl restart zstack-ui-nginx")
+
+        self.zsha2_utils.scp_to_peer(conf_path, conf_path)
+        self.zsha2_utils.execute_on_peer("systemctl restart zstack-ui-nginx")
+        info_and_debug("Rendered keycloak.upstream.nginx.conf with MN1: %s, MN2: %s" % (self.zsha2_utils.config['nodeip'], self.zsha2_utils.config['peerip']))
+
+    def start(self, do_init=False):
+        shell_no_pipe("systemctl restart %s" % self.service_name())
+        shell_no_pipe("systemctl enable %s" % self.service_name())
+        self._wait_for_keycloak(
+            "http://localhost:%d/realms/master/.well-known/openid-configuration" % self.default_port)
+        if do_init:
+            shell_no_pipe("bash %s" % self.base_init_path)
+        if self.zsha2_utils:
+            self.zsha2_utils.execute_on_peer("systemctl enable %s" % self.service_name())
+            self.zsha2_utils.execute_on_peer("systemctl restart %s" % self.service_name())
+
+    def post_start_log(self):
+        if self.zsha2_utils:
+            info("IAM service has been started in HA mode. Access it at: http://%s:%s" % (self.zsha2_utils.config['dbvip'], self.default_nginx_port))
+        else:
+            info("IAM service has been started. Access it at: http://%s:%s" % (get_default_ip(), self.default_port))
+
+    def _wait_for_keycloak(self, url, timeout=600):
+        info_and_debug("Waiting for %s to become available at: %s" % (self.service_name(), url))
+        begin = time.time()
+
+        while time.time() - begin < timeout:
+            try:
+                result = shell("curl -s -o /dev/null -w '%%{http_code}' %s" % url)
+                if result.strip() == "200":
+                    info_and_debug("%s is ready." % self.service_name())
+                    return True
+            except Exception:
+                pass
+            time.sleep(5)
+
+        error("%s did not become ready within %d seconds." % (self.service_name(), timeout))
+        return False
+
+
+class MorphService(ExtraService):
+    default_morph_path = "/var/lib/zstack/morph/"
+    default_morph_config = default_morph_path + "application.yml"
+    default_morph_database_config = default_morph_path + "region_config.yml"
+    default_morph_jar = default_morph_path + "morph.jar"
+    default_port = 4747
+    default_ip = get_default_ip()
+    default_morph_service_path = "/etc/systemd/system/morph.service"
+    default_morph_service_content = '''
+[Unit]
+Description=Morph Application Service
+After=network.target
+
+[Service]
+Type=simple
+
+ExecStart={java} -jar {jar} --spring.config.location=file:{config} --spring.config.additional-location=file:{database_config}
+
+WorkingDirectory={path}
+
+User=root
+Group=root
+
+Restart=always
+RestartSec=5s
+
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=morph
+
+Environment="JAVA_OPTS=-Xms256m -Xmx256m -Dfile.encoding=UTF-8"
+
+[Install]
+WantedBy=multi-user.target
+    '''.format(
+        java="/etc/alternatives/java_sdk_21/bin/java",
+        jar=default_morph_jar,
+        config=default_morph_config,
+        path=default_morph_path,
+        database_config=default_morph_database_config
+    )
+
+    def service_name(self):
+        return "morph"
+
+    def init(self):
+        if self.zsha2_utils:
+            try:
+                vip_address = self.zsha2_utils.config.get('dbvip')
+                if vip_address and vip_address != self.default_ip:
+                    info('[zsha2] VIP address %s detected, consider updating default_ip if needed' % vip_address)
+                    self.default_ip = vip_address
+            except Exception as e:
+                warn('[zsha2] Failed to get VIP configuration: %s' % str(e))
+
+        data = OrderedDict()
+
+        def ordered_load(stream, Loader=yaml.SafeLoader):
+            class OrderedLoader(Loader):
+                pass
+
+            def construct_mapping(loader, node):
+                loader.flatten_mapping(node)
+                return OrderedDict(loader.construct_pairs(node))
+
+            OrderedLoader.add_constructor(
+                yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+                construct_mapping)
+
+            return yaml.load(stream, OrderedLoader)
+
+        def ordered_dump(data, stream=None, Dumper=yaml.SafeDumper, **kwds):
+            class OrderedDumper(Dumper):
+                pass
+
+            def _dict_representer(dumper, data):
+                return dumper.represent_mapping(
+                    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+                    data.items())
+
+            OrderedDumper.add_representer(OrderedDict, _dict_representer)
+
+            return yaml.dump(data, stream, OrderedDumper, **kwds)
+
+        try:
+            with open(self.default_morph_config, 'r') as f:
+                data = ordered_load(f)
+                if not isinstance(data, dict):
+                    data = OrderedDict()
+        except IOError as e:
+            error('Failed to load morph application.yml: %s' % str(e))
+        except yaml.YAMLError as exc:
+            if hasattr(exc, 'problem_mark'):
+                mark = exc.problem_mark
+                error("Error at line: %s column: %s" % (mark.line + 1, mark.column + 1))
+            error('Failed to parse morph application.yml')
+
+        if 'server' in data:
+            if 'port' in data['server']:
+                data['server']['port'] = self.default_port
+                info('morph application.yml update port %s' % self.default_port)
+
+        if 'extension' in data:
+            if 'defaultMorphPath' in data['extension']:
+                data['extension']['defaultMorphPath'] = self.default_morph_path
+                info('morph application.yml update defaultMorphPath %s' % self.default_morph_path)
+            if 'morphAddress' in data['extension']:
+                data['extension']['morphAddress'] = self.default_ip
+                info('morph application.yml update morphAddress %s' % self.default_ip)
+
+        try:
+            with open(self.default_morph_config, 'w') as f:
+                ordered_dump(data, f, default_flow_style=False)
+            info('morph application.yml write success')
+        except IOError:
+            error('morph application.yml write failed')
+
+        try:
+            with open(self.default_morph_service_path, 'w') as f:
+                f.write(self.default_morph_service_content)
+            info('morph morph.service write success')
+        except IOError:
+            error('morph morph.service write failed')
+
+        warn(
+            '**** IMPORTANT: Please verify application.yml configuration after morph service initialization. Check database connection, IP settings, and service dependencies. ***')
+
+        shell_no_pipe("systemctl daemon-reload")
+        shell_no_pipe("systemctl enable %s" % self.service_name())
+        shell_no_pipe("systemctl start %s" % self.service_name())
+
+        if self.zsha2_utils:
+            try:
+                self.zsha2_utils.scp_to_peer(self.default_morph_config, self.default_morph_config)
+                self.zsha2_utils.scp_to_peer(self.default_morph_jar, self.default_morph_jar)
+                self.zsha2_utils.scp_to_peer(self.default_morph_service_path, self.default_morph_service_path)
+                self.zsha2_utils.execute_on_peer("systemctl daemon-reload")
+                self.zsha2_utils.execute_on_peer("systemctl enable %s" % self.service_name())
+                self.zsha2_utils.execute_on_peer("systemctl start %s" % self.service_name())
+            except Exception as e:
+                error("Failed to sync morph service to peer node: %s" % str(e))
+
+
+
+    def start(self, do_init=False):
+        shell_no_pipe("systemctl start %s" % self.service_name())
+        self._wait_for_morph("http://%s:%d/actuator/health" % (self.default_ip, self.default_port))
+        if self.zsha2_utils:
+            self.zsha2_utils.execute_on_peer("systemctl start %s" % self.service_name())
+
+    def _wait_for_morph(self, url, timeout=600):
+        info_and_debug("Waiting for %s to become available at: %s" % (self.service_name(), url))
+        begin = time.time()
+
+        while time.time() - begin < timeout:
+            try:
+                result = shell("curl -s -o /dev/null -w '%%{http_code}' %s" % url)
+                if result.strip() == "200":
+                    info_and_debug("%s is ready." % self.service_name())
+                    return True
+            except Exception:
+                pass
+            time.sleep(5)
+
+        error("%s did not become ready within %d seconds." % (self.service_name(), timeout))
+        return False
+
+
+
+
+class StartExtraServicesCmd(Command):
+    EXTRA_SERVICE_REGISTRY = {
+        "iam": IamService,
+        "morph": MorphService,
+    }
+
+    def __init__(self):
+        super(StartExtraServicesCmd, self).__init__()
+        self.name = 'start-extra-service'
+        self.description = 'Start extra services like iam, morph, etc.'
+        ctl.register_command(self)
+
+    def install_argparse_arguments(self, parser):
+        parser.add_argument('--name', required=True, help='Specify a single service to start, e.g. --name iam')
+        parser.add_argument('--init', action='store_true', default=False, help='Initialize configuration before starting the service')
+
+    def run(self, args):
+        if args.name not in self.EXTRA_SERVICE_REGISTRY:
+            error("Unknown service '%s'. Available services: %s" % (args.name, ", ".join(self.EXTRA_SERVICE_REGISTRY)))
+            return
+
+        try:
+            service_class = self.EXTRA_SERVICE_REGISTRY[args.name]
+            service_instance = service_class()
+            if args.init:
+                service_instance.init()
+            service_instance.start(args.init)
+            service_instance.status()
+            service_instance.post_start_log()
+        except Exception as e:
+            error("Failed to start service '%s': %s" % (args.name, str(e)))
+
 class DiagnoseCmd(Command):
     ctl_timeline = "timeline"
     ctl_collect_log = "configured_collect_log"
@@ -11425,6 +11856,7 @@ def main():
     DumpMNTaskQueueCmd()
     TimelineCmd()
     DiagnoseCmd()
+    StartExtraServicesCmd()
 
     try:
         ctl.run()
