@@ -28,6 +28,22 @@ class HostnameConfig:
         self.defaultIp = ""
 
 
+class VmSpecificationConfig:
+    def __init__(self):
+        self.generateSID = None
+        self.hostname = None
+        self.domainMode = None
+        self.domain = None
+        self.user = VmUserConfig()  # type: VmUserConfig
+
+
+class VmUserConfig:
+    def __init__(self):
+        self.username = None
+        self.password = None
+        self.active = None
+
+
 def get_virt_domain(vmUuid):
     try:
         @vm_plugin.LibvirtAutoReconnect
@@ -142,6 +158,18 @@ class SyncVmPortsResponse(kvmagent.AgentResponse):
         super(SyncVmPortsResponse, self).__init__()
 
 
+class SyncVmSpecificationCommand(kvmagent.AgentCommand):
+    def __init__(self):
+        super(SyncVmSpecificationCommand, self).__init__()
+        self.vmUuid = None
+        self.spec = VmSpecificationConfig()  # type: VmSpecificationConfig
+
+
+class SyncVmSpecificationResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(SyncVmSpecificationResponse, self).__init__()
+
+
 class SetVmHostnameCmd(kvmagent.AgentCommand):
     def __init__(self):
         super(SetVmHostnameCmd, self).__init__()
@@ -175,6 +203,7 @@ class GetGuestToolsStateResponse(kvmagent.AgentResponse):
 
 class VmConfigPlugin(kvmagent.KvmAgent):
     VM_SYNC_PORTS = "/vm/configsync/ports"
+    VM_SYNC_SPECIFICATION = "/vm/configsync/specification"
     VM_GUEST_TOOLS_STATE = "/vm/guesttools/state"
     VM_SET_HOSTNAME = "/vm/set/hostname"
     VM_SET_DNS = "/vm/set/dns"
@@ -205,40 +234,83 @@ class VmConfigPlugin(kvmagent.KvmAgent):
     }
 
     @lock.lock('config_vm_by_qga')
-    def config_vm_by_qga(self, domain, nicParams):
-
-        vm_uuid = domain.name()
-        qga = VmQga(domain)
+    def config_vm_ports_by_qga(self, dom, nic_params):
+        vm_uuid = dom.name()
+        qga = VmQga(dom)
         if qga.state != VmQga.QGA_STATE_RUNNING:
             return 1, "qga is not running for vm {}".format(vm_uuid)
 
         # configure windows by zs-tools
         if qga.os == VmQga.VM_OS_WINDOWS:
-            ret, msg = qga.guest_exec_zs_tools(operate='net', config=jsonobject.dumps(nicParams))
+            ret, msg = qga.guest_exec_zs_tools(operate='net', config=jsonobject.dumps(nic_params))
             if ret != 0:
-                logger.debug("config vm {} by qga failed, detail info {}".format(vm_uuid, msg))
+                logger.debug("config vm {} ports by qga failed, detail info {}".format(vm_uuid, msg))
             return ret, msg
 
         # write command to a file
-        ret = qga.guest_file_write(self.VM_QGA_PARAM_FILE, jsonobject.dumps(nicParams))
+        ret = qga.guest_file_write(self.VM_QGA_PARAM_FILE, jsonobject.dumps(nic_params))
         if ret == 0:
-            logger.debug("config vm {}, write parameters file {} failed".format(vm_uuid, self.VM_QGA_PARAM_FILE))
-            return 1, "config vm {}, write parameters file {} failed".format(vm_uuid, self.VM_QGA_PARAM_FILE)
+            logger.debug("config vm {} ports, write parameters file {} failed".format(vm_uuid, self.VM_QGA_PARAM_FILE))
+            return 1, "config vm {} ports, write parameters file {} failed".format(vm_uuid, self.VM_QGA_PARAM_FILE)
 
         # exec qga command
         cmd_file = self.VM_QGA_CONFIG_LINUX_CMD
         ret, msg = qga.guest_exec_python(cmd_file)
         if ret != 0:
-            logger.debug("config vm {} by qga failed: {}".format(vm_uuid, msg))
-            return 1, "config vm {} by qga failed: {}".format(vm_uuid, msg)
+            logger.debug("config vm {} ports by qga failed: {}".format(vm_uuid, msg))
+            return 1, "config vm {} ports by qga failed: {}".format(vm_uuid, msg)
 
         return 0, msg
 
     @lock.lock('config_vm_by_qga')
-    def set_vm_hostname_by_qga(self, domain, hostname, default_ip):
+    def deploy_vm_by_qga(self, dom, spec):
+        vm_uuid = dom.name()
+        qga = VmQga(dom)
+        if qga.state != VmQga.QGA_STATE_RUNNING:
+            return 1, "qga is not running for vm {}".format(vm_uuid)
 
-        vm_uuid = domain.name()
-        qga = VmQga(domain)
+        # deploy Windows by zs-tools
+        if qga.os == VmQga.VM_OS_WINDOWS:
+            if spec.generateSID:
+                operate = 'sid'
+            else:
+                operate = 'deploy'
+            spec.generateSID = None
+            ret, msg = qga.guest_exec_zs_tools(operate=operate, config=jsonobject.dumps(spec))
+            if ret != 0:
+                logger.debug("deploy vm {} by qga failed, detail info {}".format(vm_uuid, msg))
+            return ret, msg
+
+        # Linux only set hostname and set vm password
+        hostname = spec.hostname
+        ret, msg = self.set_vm_hostname_by_qga(dom, hostname, "")
+        if ret != 0:
+            return ret, msg
+
+        logger.debug(
+                "config vm {} hostname {} by qga successfully, detail info {}".format(vm_uuid, hostname, msg))
+
+        user_config = spec.user  # type: VmUserConfig
+        if not user_config:
+            return 0, msg
+
+        change_cmd = vm_plugin.ChangeVmPasswordCmd()
+        change_cmd.accountPerference.userAccount = user_config.username
+        change_cmd.accountPerference.password = user_config.password
+
+        vm = vm_plugin.get_vm_by_uuid(vm_uuid, False)
+        try:
+            vm.change_vm_password(change_cmd)
+        except Exception as e:
+            return 1, "change vm {} password failed: {}".format(vm_uuid, str(e))
+
+        return 0, msg
+
+    @lock.lock('config_vm_by_qga')
+    def set_vm_hostname_by_qga(self, dom, hostname, default_ip):
+
+        vm_uuid = dom.name()
+        qga = VmQga(dom)
         if qga.state != VmQga.QGA_STATE_RUNNING:
             return 1, "qga is not running for vm {}".format(vm_uuid)
 
@@ -268,10 +340,10 @@ class VmConfigPlugin(kvmagent.KvmAgent):
         return 0, msg
 
     @lock.lock('config_vm_by_qga')
-    def set_vm_dns_by_qga(self, domain, dns):
+    def set_vm_dns_by_qga(self, dom, dns):
 
-        vm_uuid = domain.name()
-        qga = VmQga(domain)
+        vm_uuid = dom.name()
+        qga = VmQga(dom)
         if qga.state != VmQga.QGA_STATE_RUNNING:
             return 1, "qga is not running for vm {}".format(vm_uuid)
 
@@ -300,7 +372,7 @@ class VmConfigPlugin(kvmagent.KvmAgent):
             rsp.error = 'vm {} not running'.format(cmd.vmUuid)
             return jsonobject.dumps(rsp)
 
-        ret, msg = self.config_vm_by_qga(domain, {'ports': cmd.ports})
+        ret, msg = self.config_vm_ports_by_qga(domain, {'ports': cmd.ports})
         if ret != 0:
             rsp.success = False
             rsp.error = msg
@@ -312,6 +384,26 @@ class VmConfigPlugin(kvmagent.KvmAgent):
                 rsp.error = msg
             else:
                 logger.debug("config vm {} hostname {} by qga successfully, detail info {}".format(cmd.vmUuid, cmd.hostname, msg))
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def vm_sync_specification(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])  # type: SyncVmSpecificationCommand
+        rsp = SyncVmSpecificationResponse()
+
+        domain = get_virt_domain(cmd.vmUuid)
+        if not domain or not domain.isActive():
+            rsp.success = False
+            rsp.error = 'vm {} not running'.format(cmd.vmUuid)
+            return jsonobject.dumps(rsp)
+
+        ret, msg = self.deploy_vm_by_qga(domain, cmd.spec)
+        if ret != 0:
+            rsp.success = False
+            rsp.error = msg
+        else:
+            logger.debug("deploy vm {} by qga successfully, detail info {}".format(cmd.vmUuid, msg))
 
         return jsonobject.dumps(rsp)
 
@@ -365,6 +457,7 @@ class VmConfigPlugin(kvmagent.KvmAgent):
     def start(self):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.VM_SYNC_PORTS, self.vm_sync_ports)
+        http_server.register_async_uri(self.VM_SYNC_SPECIFICATION, self.vm_sync_specification)
         http_server.register_async_uri(self.VM_GUEST_TOOLS_STATE, self.vm_guest_tools_state)
         http_server.register_async_uri(self.VM_SET_HOSTNAME, self.vm_set_hostname)
         http_server.register_async_uri(self.VM_SET_DNS, self.vm_set_dns)

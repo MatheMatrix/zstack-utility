@@ -373,6 +373,9 @@ Parse command parameters error:
                     all_params[params[0]] = eval(params[1])
                 elif apiname == 'APICreateVmInstanceMsg' and params[0] == 'diskAOs':
                     all_params[params[0]] = eval(params[1])
+                elif apiname in ['APICreateVmInstanceFromTemplatedVmInstanceMsg',
+                                 'APICloneVmInstanceMsg'] and params[0] == 'vmCustomSpecification':
+                    all_params[params[0]] = eval_string(params[0], params[1])
                 elif apiname == 'APIAttachNetworkServiceToL3NetworkMsg' and params[0] == 'networkServices':
                     all_params[params[0]] = eval_string(params[0], params[1])
                 elif apiname == 'APIDetachNetworkServiceFromL3NetworkMsg' and params[0] == 'networkServices':
