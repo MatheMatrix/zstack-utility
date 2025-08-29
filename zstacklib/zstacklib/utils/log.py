@@ -180,9 +180,8 @@ def sensitive_fields(*paths, **typed_paths):
     def ret(old_init):
         def __init__(self, *args, **kwargs):
             if paths:
-                ps = ["obj['" + p.replace(".", "']['") + "']" for p in paths]
-                setattr(self, SENSITIVE_FIELD_NAME, ps)
-            old_init(self)
+                setattr(self, SENSITIVE_FIELD_NAME, list(paths))
+            old_init(self, *args, **kwargs)
         return __init__
     return ret
 
@@ -194,12 +193,21 @@ def mask_sensitive_field(cmd, cmd_str):
 
     field_paths = getattr(cmd, SENSITIVE_FIELD_NAME)
     obj = simplejson.loads(cmd_str)
+
+    def set_nested(o, keys):
+        if not keys or not isinstance(o, dict):
+            return
+        key = keys[0]
+        if key in o:
+            if len(keys) == 1:
+                o[key] = '*****'
+            else:
+                set_nested(o[key], keys[1:])
+
     if isinstance(obj, dict):
         for path in field_paths:
-            try:
-                exec ("if {0}: {0}='*****'".format(path)) in {'obj': obj}
-            except:
-                pass
+            key_list = path.split('.')
+            set_nested(obj, key_list)
         if SENSITIVE_FIELD_NAME in obj:
             del obj[SENSITIVE_FIELD_NAME]
 
