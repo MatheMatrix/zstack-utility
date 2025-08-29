@@ -3376,6 +3376,13 @@ def is_virtual_machine():
     product_name = shell.call("dmidecode -s system-product-name").strip()
     return product_name == "KVM Virtual Machine" or product_name == "KVM" or product_name == "VMware Virtual Platform"
 
+def is_support_bmc():
+    cmd = shell.ShellCmd("ipmitool mc info")
+    cmd(is_exception=False)
+    if cmd.return_code != 0:
+        return False
+    return True
+
 def catch_bad_alloc_exception(return_code, error_detail):
     if return_code == 134 and 'std::bad_alloc' in error_detail:
         logger.warn('insufficient allocatable physical memory, error[%s]' % error_detail)

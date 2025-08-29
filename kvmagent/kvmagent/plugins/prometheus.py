@@ -23,7 +23,7 @@ from zstacklib.utils.bash import *
 from zstacklib.utils.ip import get_host_physicl_nics
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.ipmitool import get_sensor_info_from_ipmi
-from zstacklib.utils.linux import is_virtual_machine
+from zstacklib.utils.linux import is_virtual_machine, is_support_bmc
 
 logger = log.get_logger(__name__)
 collector_dict = {}  # type: Dict[str, threading.Thread]
@@ -1819,7 +1819,7 @@ if misc.isMiniHost():
 
 if misc.isHyperConvergedHost():
     kvmagent.register_prometheus_collector(collect_ipmi_state)
-else:
+elif is_support_bmc():
     kvmagent.register_prometheus_collector(collect_equipment_state_from_ipmi)
 
 kvmagent.register_prometheus_collector(collect_raid_state)
@@ -2080,7 +2080,7 @@ modules:
             if "collectd_exporter" in cmd.binaryPath:
                 start_collectd_exporter(cmd)
             elif "ipmi_exporter" in cmd.binaryPath:
-                if not is_virtual_machine():
+                if not is_virtual_machine() and is_support_bmc():
                     start_ipmi_exporter(cmd)
                 else:
                     logger.info("Current environment is a virtualized environment, skipping ipmi_exporter startup")
