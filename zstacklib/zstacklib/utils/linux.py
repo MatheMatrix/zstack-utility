@@ -3322,6 +3322,13 @@ def is_virtual_machine():
     product_name = shell.call("dmidecode -s system-product-name").strip()
     return any(name.lower() in product_name.lower() for name in virtual_machine_names)
 
+def is_support_bmc():
+    cmd = shell.ShellCmd("ipmitool mc info")
+    cmd(is_exception=False)
+    if cmd.return_code != 0:
+        return False
+    return True
+
 class VmUsbManager(object):
     def __init__(self):
         self.usb_slots = {
