@@ -506,13 +506,18 @@ class DhcpNameSpaceEnv(object):
     @in_bash
     def _prepare_dhcp6_iptables(dhcp6_ip, is_dual_stack=True):
         def _add_ebtables_rule6(rule_search, rule_add=None):
-            ret = bash_r(
-                EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '{{rule_search}}' > /dev/null")
+            if rule_add is None:
+                rule_add = rule_search
+
+            search_cmd_no_mask = EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '{{rule_search}}' > /dev/null"
+            ret = bash_r(search_cmd_no_mask)
+
             if ret != 0:
-                if rule_add is None:
-                    rule_add = rule_search
-                bash_errorout(
-                    EBTABLES_CMD + ' -I {{CHAIN_NAME}} {{rule_add}}')
+                search_cmd_with_mask = EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '{{rule_add}}' > /dev/null"
+                ret = bash_r(search_cmd_with_mask)
+            if ret != 0:
+                add_cmd = EBTABLES_CMD + ' -I {{CHAIN_NAME}} {{rule_add}}'
+                bash_errorout(add_cmd)
 
         serverip = ip.Ipv6Address(dhcp6_ip)
         ns_multicast_address = serverip.get_solicited_node_multicast_address()
@@ -900,13 +905,18 @@ class DhcpEnv(object):
                     '%s -t mangle -A POSTROUTING -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill' % IPTABLES_CMD)
 
         def _add_ebtables_rule6(rule_search, rule_add=None):
-            ret = bash_r(
-                EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '{{rule_search}}' > /dev/null")
+            if rule_add is None:
+                rule_add = rule_search
+
+            search_cmd_no_mask = EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '{{rule_search}}' > /dev/null"
+            ret = bash_r(search_cmd_no_mask)
+
             if ret != 0:
-                if rule_add is None:
-                    rule_add = rule_search
-                bash_errorout(
-                    EBTABLES_CMD + ' -I {{CHAIN_NAME}} {{rule_add}}')
+                search_cmd_with_mask = EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '{{rule_add}}' > /dev/null"
+                ret = bash_r(search_cmd_with_mask)
+            if ret != 0:
+                add_cmd = EBTABLES_CMD + ' -I {{CHAIN_NAME}} {{rule_add}}'
+                bash_errorout(add_cmd)
 
         def _prepare_dhcp6_iptables(dualStack=True):
             serverip = ip.Ipv6Address(DHCP6_IP)
