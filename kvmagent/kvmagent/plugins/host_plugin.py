@@ -38,6 +38,7 @@ from zstacklib.utils import misc
 from zstacklib.utils.bash import *
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.ip import get_nic_driver_type
+from zstacklib.utils.pci import VendorEnum
 from zstacklib.utils.report import Report
 from zstacklib.utils import ovn
 import zstacklib.utils.ip as ip
@@ -73,15 +74,6 @@ BOND_MODE_ACTIVE_6 = "balance-alb"
 
 DISTRO_USING_DNF = ['rl84', 'h84r', 'ky10sp1', 'ky10sp2', 'ky10sp3',
                     'ky10sp3.2403', 'oe2203sp1', 'h2203sp1o']
-
-class VendorEnum:
-    INTEL = "Intel"
-    AMD = "AMD"
-    NVIDIA = "NVIDIA"
-    HAIGUANG = "Haiguang"
-    HUAWEI = "Huawei"
-    TIANSHU = "TianShu"
-    VASTAI = "Vastai"
 
 class ConnectResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -2518,6 +2510,8 @@ sysctl -w vm.nr_hugepages=$pageNum
             return VendorEnum.TIANSHU
         elif 'Vastai' in name:
             return VendorEnum.VASTAI
+        elif 'Enflame' in name:
+            return VendorEnum.ENFLAME
         else:
             return name.replace('Co., Ltd ', '')
 
@@ -2691,6 +2685,9 @@ sysctl -w vm.nr_hugepages=$pageNum
             # if support both mdev and sriov, then set the pci device to VFIO_MDEV_VIRTUALIZABLE
             if not self._get_vfio_mdev_info(to) and not self._get_sriov_info(to):
                 to.virtStatus = "UNVIRTUALIZABLE"
+
+            self._post_process_pci_device_info(to)
+
             if to.vendorId != '' and to.deviceId != '':
                 logger.debug("get formated pci device info: %s", to)
                 rsp.pciDevicesInfo.append(to)
@@ -2706,8 +2703,18 @@ sysctl -w vm.nr_hugepages=$pageNum
                 VendorEnum.HUAWEI: self._collect_huawei_gpu_info,
                 VendorEnum.TIANSHU: self._collect_tianshu_gpu_info,
                 VendorEnum.VASTAI: self._collect_vastai_gpu_info,
+                VendorEnum.ENFLAME: self._collect_enflame_gpu_info
             }
             handler = collect_vendor_nvidia_gpu_infos.get(vendor_name)
+            if handler:
+                handler(to)
+
+    def _post_process_pci_device_info(self, to):
+        if pci.is_gpu(to.type):
+            post_process_gpu_devices_handlers = {
+                VendorEnum.ENFLAME: gpu.post_process_enflame_gpu_device
+            }
+            handler = post_process_gpu_devices_handlers.get(to.vendor)
             if handler:
                 handler(to)
 
@@ -2836,7 +2843,6 @@ sysctl -w vm.nr_hugepages=$pageNum
             return
         self._update_to_addon_info_from_gpu_infos(gpu.parse_hy_gpu_output(o), to)
 
-
     @in_bash
     def _collect_nvidia_gpu_info(self, to):
         r, o, e = bash_roe("which nvidia-smi")
@@ -2850,6 +2856,38 @@ sysctl -w vm.nr_hugepages=$pageNum
             return
         self._update_to_addon_info_from_gpu_infos(gpu.parse_nvidia_gpu_output(o), to)
 
+    @in_bash
+    def _collect_enflame_gpu_info(self, to):
+        r, o, e = bash_roe("which efsmi")
+        if r != 0:
+            logger.debug("no efsmi, detail: %s " % o)
+            return
+
+        r, o, e = bash_roe(gpu.get_enflame_gpu_info_cmd())
+        if r != 0:
+            logger.error("enflame query gcu is error, %s " % e)
+            return
+
+        for info in gpu.parse_enflame_gpu_output(o):
+            if to.pciDeviceAddress not in info.get("pciAddress"):
+                continue
+
+            mem = info.get("memory", "")
+            power = info.get("powerCap", "")
+            serial = info.get("serialNumber", "")
+
+            if mem and re.match(r"^\s*\d+\s*MiB\s*$", mem, re.IGNORECASE):
+                to.addonInfo["memory"] = mem.strip()
+
+            if power and re.match(r"^\s*\d+(\.\d+)?\s*W\s*$", power, re.IGNORECASE):
+                to.addonInfo["power"] = power.strip()
+
+            if serial and serial.strip():
+                to.addonInfo["serialNumber"] = serial
+
+            to.addonInfo["isDriverLoaded"] = True
+            break
+        return
 
     def _update_to_addon_info_from_gpu_infos(self, gpu_infos, to):
         for gpuinfo in gpu_infos:

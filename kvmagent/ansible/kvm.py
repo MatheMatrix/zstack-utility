@@ -469,13 +469,14 @@ def install_kvm_pkg():
             "x86_64_c74": "",
         }
 
-        rpm_deprecated_list = rpm_deprecated.get(host_info.host_arch + releasever, "")
+        rpm_deprecated_list = rpm_deprecated.get(host_info.host_arch + "_" + releasever, "")
         # new-add host
         if releasever in ['c76', 'c79', 'h76c', 'h79c', 'c74'] and "qemu-kvm" not in skip_packages:
             rpm_deprecated_list += " qemu-img-ev qemu-kvm-ev qemu-kvm-common-ev"
 
-        for rpm in rpm_deprecated_list.split():
-            yum_remove_package(rpm, host_post_info)
+        if rpm_deprecated_list.strip():
+            command = "yum --disablerepo=* remove %s -y;" % rpm_deprecated_list
+            run_remote_command(command, host_post_info)
 
     if host_info.distro in RPM_BASED_OS:
         rpm_based_deprecated()
