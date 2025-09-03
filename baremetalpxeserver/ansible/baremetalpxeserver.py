@@ -145,6 +145,7 @@ for AR in $archRelease;do
       fi
     fi
     cp -f /opt/zstack-dvd/$AR/isolinux/pxelinux.0 /var/lib/zstack/baremetal/tftpboot/;
+    cp -f /opt/zstack-dvd/$AR/isolinux/ldlinux.c32 /var/lib/zstack/baremetal/tftpboot/;
     cp -f /opt/zstack-dvd/$AR/EFI/BOOT/grubx64.efi /var/lib/zstack/baremetal/tftpboot/EFI/BOOT/ && chmod 755 /var/lib/zstack/baremetal/tftpboot/EFI/BOOT/grubx64.efi;
     cp -f /opt/zstack-dvd/$AR/EFI/BOOT/grubaa64.efi /var/lib/zstack/baremetal/tftpboot/EFI/BOOT/ && chmod 755 /var/lib/zstack/baremetal/tftpboot/EFI/BOOT/grubaa64.efi;
     cp -f /opt/zstack-dvd/$AR/images/pxeboot/{vmlinuz,initrd.img} /var/lib/zstack/baremetal/tftpboot/zstack/$arch/;
