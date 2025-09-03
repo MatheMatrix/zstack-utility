@@ -4,6 +4,7 @@ from zstacklib.utils import http
 from zstacklib.utils import jsonobject
 from zstacklib.utils import lock
 from zstacklib.utils import log
+from zstacklib.utils.gpu import VmGpuStatus
 from zstacklib.utils.qga import VmQga
 from zstacklib.utils import pci
 from zstacklib.utils.pci import VendorEnum
@@ -299,8 +300,20 @@ class VmConfigPlugin(kvmagent.KvmAgent):
             if pci_device_address not in pci_mapping:
                 continue
             gpuinfo["pciAddress"] = pci_mapping[pci_device_address]
+            gpuinfo["gpuStatus"] = self.get_vm_gpu_status(pci_device_address, qga)
             gpus.append(gpuinfo)
         return gpus
+
+    def get_vm_gpu_status(self, pci_device_address, qga):
+        cmd = gpu.get_gpu_status_cmd(pci_device_address, "mswindows" in qga.os)
+        gpu_status_output = qga.guest_exec_cmd_no_exitcode(cmd)
+        if gpu_status_output is None:
+            return VmGpuStatus.NOT_EXIST.value
+
+        if 'rev ff' in gpu_status_output:
+            return VmGpuStatus.CRITICAL_FAULT.value
+
+        return VmGpuStatus.NOMINAL.value
 
     def get_vm_nvidia_gpu_info_by_guesttool(self, qga):
         cmd = gpu.get_nvidia_gpu_basic_info_cmd("mswindows" in qga.os)

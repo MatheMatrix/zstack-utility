@@ -21,6 +21,7 @@ from zstacklib.utils import misc
 from zstacklib.utils import thread
 from zstacklib.utils import gpu
 from zstacklib.utils.bash import *
+from zstacklib.utils.gpu import VmGpuStatus
 from zstacklib.utils.ip import get_host_physicl_nics
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.linux import is_virtual_machine, is_support_bmc
@@ -1472,8 +1473,8 @@ def parse_nvidia_smi_output_to_list(data):
 
 
 def handle_gpu_status(gpu_status, pci_device_address):
-    if gpu_status == 'critical':
-        send_physical_gpu_status_alarm_to_mn(gpu_status, pci_device_address)
+    if gpu_status == VmGpuStatus.CRITICAL_FAULT.value:
+        send_physical_gpu_status_alarm_to_mn(pci_device_address, gpu_status)
     else:
         remove_gpu_status_abnormal(pci_device_address)
 
@@ -2108,12 +2109,12 @@ def add_metrics(metric_name, value, labels, metrics):
 def convert_pci_status_to_int(pci_address):
     r, pci_status = bash_ro("lspci -s %s" % pci_address)
     if r != 0:
-        return "no_exist", 2
+        return VmGpuStatus.NOT_EXIST.value, 2
 
     if 'rev ff' in pci_status:
-        return "critical", 0
+        return VmGpuStatus.CRITICAL_FAULT.value, 0
 
-    return "nominal", 1
+    return VmGpuStatus.NOMINAL.value, 1
 
 
 def collect_hba_port_device_state():
