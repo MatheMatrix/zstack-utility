@@ -1,3 +1,4 @@
+import errno
 import functools
 import random
 import os
@@ -2802,6 +2803,18 @@ class LvmlockdStatus(object):
             r, status_line, e = bash.bash_roe("timeout 10 lvmlockctl -i -d")
             if r != 0:
                 raise Exception("dump lvmlockd info failed: retcode %s, error %s" % (r, e))
+
+            if status_line.strip() == "":
+                return
+
+            result_line = status_line.strip().splitlines()[0]
+            if result_line.startswith("result "):
+                rv = int(result_line.split()[-1])
+                if rv == -errno.ENOSPC:
+                    self.failed = True
+                    logger.warn("lvmlockctl dump buffer overflow")
+                    return
+
             for line in filter(lambda l: 'ls_name=lvm_' in l, status_line.splitlines()):
                 ls = self.LockspaceStatus(line)
                 self.ls_status.update({ls.vg_name: ls})
