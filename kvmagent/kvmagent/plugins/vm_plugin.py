@@ -4111,7 +4111,15 @@ class Vm(object):
 
             def _cancel(self):
                 logger.debug('cancelling vm[uuid:%s] migration' % cmd.vmUuid)
-                vm_block_job_cancel(self.uuid)
+                if storage_migration_required:
+                    try:
+                        vm_block_job_cancel(self.uuid)
+                    except Exception as e:
+                        logger.debug("cancel domain[uuid:%s] blockjob exception: %s" % (cmd.vmUuid, str(e)))
+                try:
+                    self.domain.abortJob()
+                except Exception as e:
+                    logger.debug("cancel domain[uuid:%s] migration exception: %s" % (cmd.vmUuid, str(e)))
 
             def __exit__(self, exc_type, exc_val, exc_tb):
                 super(MigrateDaemon, self).__exit__(exc_type, exc_val, exc_tb)
