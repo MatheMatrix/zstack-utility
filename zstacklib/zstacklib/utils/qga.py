@@ -275,6 +275,16 @@ class VmQga(object):
         return exit_code, ret_data
 
     def guest_exec_zs_tools(self, operate, config, output=True, wait=qga_exec_wait_interval, retry=zs_tools_wait_retry):
+        def get_return_data(result):
+            if not result:
+                return ""
+            ret_data = ""
+            if 'out-data' in result:
+                ret_data = decode_with_fallback(result['out-data'])
+            elif 'err-data' in result:
+                ret_data = decode_with_fallback(result['err-data'])
+            return ret_data.replace('\r\n', '')
+
         ret = self.guest_exec(
             {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--config", config], "capture-output": output})
 
@@ -282,7 +292,7 @@ class VmQga(object):
             pid = ret["pid"]
         else:
             raise Exception(
-                'qga exec zs-tools operate {} config {} failed for vm {}'.format(operate, config, self.vm_uuid))
+                'qga exec zs-tools operate {} failed for vm {}, ret: {}'.format(operate, self.vm_uuid, get_return_data(ret)))
 
         ret = None
         for i in range(retry):
@@ -293,16 +303,9 @@ class VmQga(object):
 
         if not ret or not ret.get('exited'):
             raise Exception(
-                'qga exec zs-tools operate {} config {} timeout for vm {}'.format(operate, config, self.vm_uuid))
+                'qga exec zs-tools operate {} timeout for vm {}, ret: {}'.format(operate, self.vm_uuid, get_return_data(ret)))
 
-        exit_code = ret.get('exitcode')
-        ret_data = None
-        if 'out-data' in ret:
-            ret_data = decode_with_fallback(ret['out-data'])
-        elif 'err-data' in ret:
-            ret_data = decode_with_fallback(ret['err-data'])
-
-        return exit_code, ret_data.replace('\r\n', '')
+        return ret.get('exitcode'), get_return_data()
 
     def guest_exec_wmic(self, cmd, output=True, wait=qga_exec_wait_interval, retry=qga_exec_wait_retry):
         cmd_parts = cmd.split('|')
