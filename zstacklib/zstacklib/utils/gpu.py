@@ -1,11 +1,17 @@
 from zstacklib.utils import log, linux
 from zstacklib.utils.bash import *
-
+from enum import Enum
 import json
 
 from zstacklib.utils.pci import VendorEnum
 
 logger = log.get_logger(__name__)
+
+
+class VmGpuStatus(Enum):
+    NOT_EXIST = "not_exist"
+    CRITICAL_FAULT = "critical"
+    NOMINAL = "nominal"
 
 
 def parse_nvidia_gpu_output(output):
@@ -462,3 +468,9 @@ def get_enflame_gpu_info_cmd():
 def post_process_enflame_gpu_device(to):
     to.virtStatus = "UNVIRTUALIZABLE"
 
+
+def get_gpu_status_cmd(pci_device_address, iswindows=False):
+    cmd = "lspci -s {}".format(pci_device_address)
+    if iswindows:
+        cmd = cmd.replace(" ", "|")
+    return cmd
