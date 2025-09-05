@@ -296,7 +296,7 @@ class VmConfigPlugin(kvmagent.KvmAgent):
 
         change_cmd = vm_plugin.ChangeVmPasswordCmd()
         change_cmd.accountPerference.userAccount = user_config.username
-        change_cmd.accountPerference.password = user_config.password
+        change_cmd.accountPerference.accountPassword = user_config.password
 
         vm = vm_plugin.get_vm_by_uuid(vm_uuid, False)
         try:
