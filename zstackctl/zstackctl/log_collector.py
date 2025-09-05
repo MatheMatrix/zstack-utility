@@ -771,7 +771,7 @@ class CollectFromYml(object):
                         cmd = shell.ShellCmd(exec_cmd)
                         cmd(False)
                         if cmd.return_code == 0:
-                            host_list = cmd.stdout.split('\n')
+                            host_list = cmd.stdout.strip().split('\n')
                         else:
                             error_verbose('fail to exec %s' % host_list['exec'])
                     except Exception:
