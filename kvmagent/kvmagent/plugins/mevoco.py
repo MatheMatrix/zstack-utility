@@ -1919,6 +1919,11 @@ mimetype.assign = (
                         file_path = os.path.join(mac_dir, file_name)
                         with open(file_path, 'w') as fd:
                             fd.write(getattr(nic, attr))
+                mac_index = os.path.join(mac_dir, 'index.html')
+                with open(mac_index, 'w') as fd:
+                    for attr, file_name in self.nic_field_mapper.field_map.items():
+                        if hasattr(nic, attr) and getattr(nic, attr):
+                            fd.write(file_name + '\n')
 
     def _write_metadata_files(self, meta_root, to):
         field_mapper = self.FieldMapper({
@@ -1965,6 +1970,22 @@ mimetype.assign = (
             nameservers_file_path = os.path.join(dns_conf_dir, 'nameservers')
             with open(nameservers_file_path, 'w') as fd:
                 fd.write(to.metadata.dnsServersIp)
+            dns_conf_index_path = os.path.join(dns_conf_dir, 'index.html')
+            with open(dns_conf_index_path, 'w') as fd:
+                fd.write('nameservers\n')
+        if to.networkInterfaces:
+            network_root = os.path.join(meta_root, 'network')
+            if not os.path.exists(network_root):
+                linux.mkdir(network_root)
+            network_index = os.path.join(network_root, 'index.html')
+            with open(network_index, 'w') as fd:
+                fd.write('interfaces/\n')
+            interfaces_root = os.path.join(network_root, 'interfaces')
+            if not os.path.exists(interfaces_root):
+                linux.mkdir(interfaces_root)
+            interfaces_index = os.path.join(interfaces_root, 'index.html')
+            with open(interfaces_index, 'w') as fd:
+                fd.write('macs/\n')
 
         # network/interfaces/macs
         if to.networkInterfaces:
