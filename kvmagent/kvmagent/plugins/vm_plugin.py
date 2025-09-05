@@ -27,6 +27,7 @@ import socket
 from signal import SIGKILL
 import syslog
 import threading
+import math
 
 import libvirt
 import xml.dom.minidom as minidom

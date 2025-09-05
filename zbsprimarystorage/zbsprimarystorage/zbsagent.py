@@ -111,7 +111,8 @@ class GetCapacityRsp(AgentResponse):
 class GetFactsRsp(AgentResponse):
     def __init__(self):
         super(GetFactsRsp, self).__init__()
-        self.mdsExternalAddr = None
+        self.uuid = None
+        self.version = None
 
 
 class LogicalPoolInfo:
@@ -176,6 +177,7 @@ def replyerror(func):
 class ZbsAgent(plugin.TaskManager):
     ECHO_PATH = "/zbs/primarystorage/echo"
     PING_PATH = "/zbs/primarystorage/ping"
+    GET_FACTS_PATH = "/zbs/primarystorage/facts"
     SYNC_METADATA_PATH = "/zbs/primarystorage/metadata/sync"
     DEPLOY_CLIENT_PATH = "/zbs/primarystorage/client/deploy"
     GET_CAPACITY_PATH = "/zbs/primarystorage/capacity"
@@ -199,6 +201,7 @@ class ZbsAgent(plugin.TaskManager):
         super(ZbsAgent, self).__init__()
         self.http_server.register_sync_uri(self.ECHO_PATH, self.echo)
         self.http_server.register_async_uri(self.PING_PATH, self.ping)
+        self.http_server.register_async_uri(self.GET_FACTS_PATH, self.get_facts)
         self.http_server.register_async_uri(self.SYNC_METADATA_PATH, self.sync_metadata)
         self.http_server.register_async_uri(self.DEPLOY_CLIENT_PATH, self.deploy_client)
         self.http_server.register_async_uri(self.GET_CAPACITY_PATH, self.get_capacity)
@@ -216,6 +219,19 @@ class ZbsAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.ROLLBACK_SNAPSHOT_PATH, self.rollback_snapshot)
 
     @replyerror
+    def get_facts(self, req):
+        rsp = GetFactsRsp()
+
+        try:
+            rsp.version = zbsutils.get_version()
+        except Exception as e:
+            raise Exception('failed to get version, error[%s]' % str(e))
+
+        rsp.uuid = zbsutils.get_cluster_uuid(rsp.version)
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
     def sync_metadata(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = SyncMetadataRsp()
@@ -229,22 +245,26 @@ class ZbsAgent(plugin.TaskManager):
 
         found = False
         for m in r.result:
-            for ipv4_addr in ipv4_addrs:
-                if any(ipv4_addr in addr for addr in (m.addr, m.dummyAddr, m.externalAddr) if addr):
-                    rsp.externalAddr = m.externalAddr
-                    found = True
-                    break
+            if m.externalAddr and any(m.externalAddr.split(":")[0] == ip for ip in ipv4_addrs):
+                rsp.externalAddr = m.externalAddr
+                found = True
+                break
 
         if not found:
             rsp.success = False
-            rsp.error = 'cannot found mds[%s] info' % cmd.addr
+            rsp.error = 'cannot found external address of mds[%s]' % cmd.addr
             return jsonobject.dumps(rsp)
 
         return jsonobject.dumps(rsp)
 
     @replyerror
     def ping(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
+
+        current_cluster_uuid = zbsutils.get_cluster_uuid(cmd.clusterInfo.version)
+        if current_cluster_uuid != cmd.clusterInfo.uuid:
+            raise Exception('cluster uuid does not match, current cluster uuid[%s], old cluster uuid[%s]' % (current_cluster_uuid, cmd.clusterInfo.uuid))
 
         o = zbsutils.query_mds_status_info()
         r = jsonobject.loads(o)
@@ -259,7 +279,7 @@ class ZbsAgent(plugin.TaskManager):
 
         if not found:
             rsp.success = False
-            rsp.error = 'cannot found mds leader.'
+            rsp.error = 'cannot found mds leader'
             return jsonobject.dumps(rsp)
 
         return jsonobject.dumps(rsp)
@@ -271,7 +291,7 @@ class ZbsAgent(plugin.TaskManager):
 
         _, logical_pool, volume, _ = zbsutils.parse_cbd_path(cmd.path)
 
-        o = zbsutils.expand_volume(logical_pool, volume, cmd.size)
+        o = zbsutils.expand_volume(logical_pool, volume, cmd.size, cmd.unit if cmd.unit else '')
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
             raise Exception('failed to expand volume[%s], error[%s]' % (volume, ret.error.message))
@@ -510,11 +530,11 @@ class ZbsAgent(plugin.TaskManager):
             install_path = cmd.path
 
         start_port, end_port = linux.parse_port_range(cmd.portRange)
-        port, port_lock = linux.find_free_port_with_locking(start_port, end_port)
+        port, lock = linux.find_free_port_with_locking(start_port, end_port)
         desc = "cbd2nbd.%d" % port
         zbsutils.cbd_to_nbd(desc, port, install_path)
-        if port_lock:
-            port_lock.release()
+        if lock:
+            lock.release()
         rsp.ip = cmd.addr
         rsp.port = port
         return jsonobject.dumps(rsp)
@@ -549,7 +569,7 @@ class ZbsAgent(plugin.TaskManager):
             rsp.installPath = volume_path
             return jsonobject.dumps(rsp)
 
-        o = zbsutils.create_volume(cmd.logicalPool, cmd.volume, cmd.size)
+        o = zbsutils.create_volume(cmd.logicalPool, cmd.volume, cmd.size, cmd.unit if cmd.unit else "")
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
             raise Exception('failed to create volume[%s], error[%s]' % (cmd.volume, ret.error.message))
@@ -590,11 +610,11 @@ class ZbsAgent(plugin.TaskManager):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
 
-        o = zbsutils.deploy_client(cmd.ip, cmd.password)
+        o = zbsutils.deploy_client(cmd.ip, cmd.port, cmd.username, cmd.password)
         r = jsonobject.loads(o)
         if r.error.code != 0:
             rsp.success = False
-            rsp.error = 'failed to deploy client, error[%s].' % r.error.message
+            rsp.error = 'failed to deploy client, error[%s]' % r.error.message
 
         return jsonobject.dumps(rsp)
 
