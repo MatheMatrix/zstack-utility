@@ -40,6 +40,7 @@ import zstacklib.utils.ip as ip
 import zstacklib.utils.ebtables as ebtables
 import zstacklib.utils.iptables as iptables
 import zstacklib.utils.lock as lock
+from zstacklib.utils import sizeunit
 
 from jinja2 import Template
 from kvmagent import kvmagent
@@ -7077,6 +7078,13 @@ class VmPlugin(kvmagent.KvmAgent):
                     vm.destroy()
 
             vm = Vm.from_StartVmCmd(cmd)
+            if getattr(cmd, 'HostMinimumFreeMemorySize', None):
+                memSize = linux.get_free_memory()
+                minSize = sizeunit.get_size(cmd.HostMinimumFreeMemorySize)
+                if memSize < minSize:
+                    raise kvmagent.KvmError(
+                        "unable to start vm[uuid:{}, name:{}], available memory [{}] is less than expected[{}]".format(
+                            cmd.vmInstanceUuid, cmd.vmName, memSize, minSize))
 
             if cmd.memorySnapshotPath:
                 snapshot_path = None
