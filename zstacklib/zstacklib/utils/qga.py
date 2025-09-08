@@ -305,7 +305,7 @@ class VmQga(object):
             raise Exception(
                 'qga exec zs-tools operate {} timeout for vm {}, ret: {}'.format(operate, self.vm_uuid, get_return_data(ret)))
 
-        return ret.get('exitcode'), get_return_data()
+        return ret.get('exitcode'), get_return_data(ret)
 
     def guest_exec_wmic(self, cmd, output=True, wait=qga_exec_wait_interval, retry=qga_exec_wait_retry):
         cmd_parts = cmd.split('|')

@@ -273,10 +273,12 @@ class VmConfigPlugin(kvmagent.KvmAgent):
         if qga.os == VmQga.VM_OS_WINDOWS:
             if spec.generateSID:
                 operate = 'sid'
+                retry = 60 * 10
             else:
                 operate = 'deploy'
+                retry = 60 * 5
             spec.generateSID = None
-            ret, msg = qga.guest_exec_zs_tools(operate=operate, config=jsonobject.dumps(spec))
+            ret, msg = qga.guest_exec_zs_tools(operate=operate, config=jsonobject.dumps(spec), retry=retry)
             if ret != 0:
                 logger.debug("deploy vm {} by qga failed, detail info {}".format(vm_uuid, msg))
             return ret, msg
