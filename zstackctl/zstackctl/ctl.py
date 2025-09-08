@@ -11439,6 +11439,22 @@ class ExtraService(object):
         )
         info_and_debug(format_str)
 
+    def open_iptables_port(self, protocol, port_list):
+        distro = platform.dist()[0]
+        if type(port_list) is not list:
+            error("port list should be list")
+        for port in port_list:
+            info("open iptables port: %s" % port)
+            if distro in RPM_BASED_OS:
+                shell('iptables-save | grep -- "-A INPUT -p %s -m %s --dport %s -j ACCEPT" > /dev/null || '
+                      '(iptables -I INPUT -p %s -m %s --dport %s -j ACCEPT && service iptables save)' % (protocol, protocol, port, protocol, protocol, port))
+            elif distro in DEB_BASED_OS:
+                shell('iptables-save | grep -- "-A INPUT -p %s -m %s --dport %s -j ACCEPT" > /dev/null || '
+                      '(iptables -I INPUT -p %s -m %s --dport %s -j ACCEPT && /etc/init.d/iptables-persistent save)' % (protocol, protocol, port, protocol, protocol, port))
+            else:
+                shell('iptables-save | grep -- "-A INPUT -p %s -m %s --dport %s -j ACCEPT" > /dev/null || '
+                      'iptables -I INPUT -p %s -m %s --dport %s -j ACCEPT ' % (protocol, protocol, port, protocol, protocol, port))
+
 
 class IamService(ExtraService):
     default_port = 18181
@@ -11469,6 +11485,9 @@ class IamService(ExtraService):
     def start(self, do_init=False):
         shell_no_pipe("systemctl restart %s" % self.service_name())
         shell_no_pipe("systemctl enable %s" % self.service_name())
+
+        self.open_iptables_port('tcp', [self.default_port, self.default_nginx_port])
+
         self._wait_for_keycloak(
             "http://localhost:%d/realms/master/.well-known/openid-configuration" % self.default_port)
         if do_init:
@@ -11507,6 +11526,7 @@ class MorphService(ExtraService):
     default_morph_database_config = default_morph_path + "region_config.yml"
     default_morph_jar = default_morph_path + "morph.jar"
     default_port = 4747
+    default_ui_proxy_port = 80
     default_ip = get_default_ip()
     default_morph_service_path = "/etc/systemd/system/morph.service"
     default_morph_service_content = '''
@@ -11647,6 +11667,9 @@ WantedBy=multi-user.target
 
     def start(self, do_init=False):
         shell_no_pipe("systemctl start %s" % self.service_name())
+
+        self.open_iptables_port('tcp', [self.default_port, self.default_ui_proxy_port])
+
         self._wait_for_morph("http://%s:%d/actuator/health" % (self.default_ip, self.default_port))
         if self.zsha2_utils:
             self.zsha2_utils.execute_on_peer("systemctl start %s" % self.service_name())
