@@ -29,12 +29,21 @@ class HostnameConfig:
 
 
 class VmSpecificationConfig:
+    @log.sensitive_fields("domain.password", "user.password")
     def __init__(self):
         self.generateSID = None
         self.hostname = None
         self.domainMode = None
-        self.domain = None
+        self.domain = VmDomainConfig()  # type: VmDomainConfig
         self.user = VmUserConfig()  # type: VmUserConfig
+
+
+class VmDomainConfig:
+    def __init__(self):
+        self.name = None
+        self.username = None
+        self.password = None
+        self.ou = None
 
 
 class VmUserConfig:
@@ -159,6 +168,7 @@ class SyncVmPortsResponse(kvmagent.AgentResponse):
 
 
 class SyncVmSpecificationCommand(kvmagent.AgentCommand):
+    @log.sensitive_fields("spec.domain.password", "spec.user.password")
     def __init__(self):
         super(SyncVmSpecificationCommand, self).__init__()
         self.vmUuid = None
@@ -273,10 +283,13 @@ class VmConfigPlugin(kvmagent.KvmAgent):
         if qga.os == VmQga.VM_OS_WINDOWS:
             if spec.generateSID:
                 operate = 'sid'
+                retry = 60 * 5
             else:
                 operate = 'deploy'
+                retry = 60 * 2
             spec.generateSID = None
-            ret, msg = qga.guest_exec_zs_tools(operate=operate, config=jsonobject.dumps(spec))
+            ret, msg = qga.guest_exec_zs_tools(operate=operate, config=jsonobject.dumps(spec),
+                                               config_obj=VmSpecificationConfig(), retry=retry)
             if ret != 0:
                 logger.debug("deploy vm {} by qga failed, detail info {}".format(vm_uuid, msg))
             return ret, msg
@@ -378,6 +391,9 @@ class VmConfigPlugin(kvmagent.KvmAgent):
             rsp.error = msg
         else:
             logger.debug("config vm {} by qga successfully, detail info {}".format(cmd.vmUuid, msg))
+            if not cmd.hostname and not cmd.defaultIP:
+                return jsonobject.dumps(rsp)
+
             ret, msg = self.set_vm_hostname_by_qga(domain, cmd.hostname, cmd.defaultIP)
             if ret != 0:
                 rsp.success = False
@@ -457,7 +473,7 @@ class VmConfigPlugin(kvmagent.KvmAgent):
     def start(self):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.VM_SYNC_PORTS, self.vm_sync_ports)
-        http_server.register_async_uri(self.VM_SYNC_SPECIFICATION, self.vm_sync_specification)
+        http_server.register_async_uri(self.VM_SYNC_SPECIFICATION, self.vm_sync_specification, cmd=SyncVmSpecificationCommand())
         http_server.register_async_uri(self.VM_GUEST_TOOLS_STATE, self.vm_guest_tools_state)
         http_server.register_async_uri(self.VM_SET_HOSTNAME, self.vm_set_hostname)
         http_server.register_async_uri(self.VM_SET_DNS, self.vm_set_dns)
