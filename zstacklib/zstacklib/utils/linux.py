@@ -1355,7 +1355,7 @@ def support_blkdiscard(path):
 
 
 def pkill_by_pattern(*args):
-    command = "pkill -9 -f '%s'" % "' '".join(str(arg) for arg in args)
+    command = "pkill -15 -f '%s'" % "' '".join(str(arg) for arg in args)
     return shell.run(command)
 
 
