@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 import time
 
 import libvirt
@@ -274,7 +275,7 @@ class VmQga(object):
 
         return exit_code, ret_data
 
-    def guest_exec_zs_tools(self, operate, config, output=True, wait=qga_exec_wait_interval, retry=zs_tools_wait_retry):
+    def guest_exec_zs_tools(self, operate, config, config_obj=None, output=True, wait=qga_exec_wait_interval, retry=zs_tools_wait_retry):
         def get_return_data(result):
             if not result:
                 return ""
@@ -291,8 +292,8 @@ class VmQga(object):
         if ret and "pid" in ret:
             pid = ret["pid"]
         else:
-            raise Exception(
-                'qga exec zs-tools operate {} failed for vm {}, ret: {}'.format(operate, self.vm_uuid, get_return_data(ret)))
+            return 1, 'qga exec zs-tools operate {} failed for vm {}, config: {}, ret: {}'.format(
+                operate, self.vm_uuid, log.mask_sensitive_field(config_obj, config), get_return_data(ret))
 
         ret = None
         for i in range(retry):
@@ -302,10 +303,10 @@ class VmQga(object):
                 break
 
         if not ret or not ret.get('exited'):
-            raise Exception(
-                'qga exec zs-tools operate {} timeout for vm {}, ret: {}'.format(operate, self.vm_uuid, get_return_data(ret)))
+            return 1, 'qga exec zs-tools operate {} timeout for vm {}, config: {}, ret: {}'.format(
+                    operate, self.vm_uuid, log.mask_sensitive_field(config_obj, config), get_return_data(ret))
 
-        return ret.get('exitcode'), get_return_data()
+        return ret.get('exitcode'), get_return_data(ret)
 
     def guest_exec_wmic(self, cmd, output=True, wait=qga_exec_wait_interval, retry=qga_exec_wait_retry):
         cmd_parts = cmd.split('|')
