@@ -16,7 +16,7 @@
         </exec>
 
         <exec executable="make" dir="${zstacknetwork.source}" failonerror="true">
-            <env key="GOROOT" value="${zstacknetwork.goroot}" />
+            <env key="GOROOT" value="/usr/lib/golang1.19" />
             <arg value="package" />
             <arg value="ARCH=amd64 arm64 loong64" />
         </exec>
