@@ -180,7 +180,7 @@ def sensitive_fields(*paths, **typed_paths):
     def ret(old_init):
         def __init__(self, *args, **kwargs):
             if paths:
-                setattr(self, SENSITIVE_FIELD_NAME, paths)
+                setattr(self, SENSITIVE_FIELD_NAME, list(paths))
             old_init(self, *args, **kwargs)
         return __init__
     return ret
