@@ -1638,7 +1638,6 @@ is_install_general_libs_rh(){
     deps_list="libselinux-python \
             java-1.8.0-openjdk \
             java-1.8.0-openjdk-devel \
-            java-21-openjdk-devel \
             bridge-utils \
             wget \
             nfs-utils \
@@ -1682,6 +1681,9 @@ is_install_general_libs_rh(){
             zs-forecast-capacity"
     if [ "$BASEARCH" == "x86_64" ]; then
       deps_list="${deps_list} mcelog"
+    fi
+    if [ "$ZSTACK_RELEASE" = "h84r" ] || [ "$ZSTACK_RELEASE" = "c76" ] || [ "$ZSTACK_RELEASE" = "ky10sp3" ]; then
+      deps_list="${deps_list} java-21-openjdk-devel"
     fi
     always_update_list="openssh"
     missing_list=`LANG=en_US.UTF-8 && rpm -q $deps_list | grep 'not installed' | awk 'BEGIN{ORS=" "}{ print $2 }'`
