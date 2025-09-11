@@ -2365,14 +2365,14 @@ cp_third_party_tools(){
 }
 
 iz_install_zsphere_tools(){
-    echo_subtitle "Install ZSphere Tools"
+    echo_subtitle "Install Additional Tools" # Install ZSphere Tools
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     inner_install_zsphere_tools
     pass
 }
 
 iz_upgrade_zsphere_tools(){
-    echo_subtitle "Upgrade ZSphere Tools"
+    echo_subtitle "Upgrade Additional Tools" # Install ZSphere Tools
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     inner_install_zsphere_tools
     pass
