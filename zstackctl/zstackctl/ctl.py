@@ -7493,7 +7493,7 @@ class ChangeIpCmd(Command):
 
     def update_morph_config(self, change_ip):
         default_morph_path = "/var/lib/zstack/morph/"
-        default_morph_config = default_morph_path + "application.yml"
+        default_morph_config = default_morph_path + "region_config.yml"
 
         if os.path.exists(default_morph_config):
             data = OrderedDict()
@@ -7531,20 +7531,20 @@ class ChangeIpCmd(Command):
                     if not isinstance(data, dict):
                         data = OrderedDict()
             except IOError as e:
-                error('Failed to load morph application.yml: %s' % str(e))
+                error('Failed to load morph region_config.yml: %s' % str(e))
             except yaml.YAMLError as exc:
                 if hasattr(exc, 'problem_mark'):
                     mark = exc.problem_mark
                     error("Error at line: %s column: %s" % (mark.line + 1, mark.column + 1))
-                error('Failed to parse morph application.yml')
+                error('Failed to parse morph region_config.yml')
 
             data.setdefault('extension', OrderedDict())
             old_ip = data['extension'].get('morphAddress')
             if old_ip != change_ip:
                 data['extension']['morphAddress'] = change_ip
-                info('morph application.yml update morphAddress %s' % change_ip)
+                info('morph region_config.yml update morphAddress %s' % change_ip)
             else:
-                info('morph application.yml morphAddress unchanged, skip write')
+                info('morph region_config.yml morphAddress unchanged, skip write')
                 return
 
             try:
@@ -7553,9 +7553,9 @@ class ChangeIpCmd(Command):
                     os.makedirs(parent_dir)
                 with open(default_morph_config, 'w') as f:
                     ordered_dump(data, f, default_flow_style=False)
-                info('morph application.yml write success')
+                info('morph region_config.yml write success')
             except IOError as e:
-                error('morph application.yml write failed: %s', str(e))
+                error('morph region_config.yml write failed: %s', str(e))
         else:
             info("morph cannot find skip")
 
@@ -11586,37 +11586,29 @@ WantedBy=multi-user.target
             return yaml.dump(data, stream, OrderedDumper, **kwds)
 
         try:
-            with open(self.default_morph_config, 'r') as f:
+            with open(self.default_morph_database_config, 'r') as f:
                 data = ordered_load(f)
                 if not isinstance(data, dict):
                     data = OrderedDict()
         except IOError as e:
-            error('Failed to load morph application.yml: %s' % str(e))
+            error('Failed to load morph region_config.yml: %s' % str(e))
         except yaml.YAMLError as exc:
             if hasattr(exc, 'problem_mark'):
                 mark = exc.problem_mark
                 error("Error at line: %s column: %s" % (mark.line + 1, mark.column + 1))
-            error('Failed to parse morph application.yml')
-
-        if 'server' in data:
-            if 'port' in data['server']:
-                data['server']['port'] = self.default_port
-                info('morph application.yml update port %s' % self.default_port)
+            error('Failed to parse morph region_config.yml')
 
         if 'extension' in data:
-            if 'defaultMorphPath' in data['extension']:
-                data['extension']['defaultMorphPath'] = self.default_morph_path
-                info('morph application.yml update defaultMorphPath %s' % self.default_morph_path)
             if 'morphAddress' in data['extension']:
                 data['extension']['morphAddress'] = self.default_ip
-                info('morph application.yml update morphAddress %s' % self.default_ip)
+                info('morph region_config.yml update morphAddress %s' % self.default_ip)
 
         try:
-            with open(self.default_morph_config, 'w') as f:
+            with open(self.default_morph_database_config, 'w') as f:
                 ordered_dump(data, f, default_flow_style=False)
-            info('morph application.yml write success')
+            info('morph region_config.yml write success')
         except IOError:
-            error('morph application.yml write failed')
+            error('morph region_config.yml write failed')
 
         try:
             with open(self.default_morph_service_path, 'w') as f:
@@ -11626,7 +11618,7 @@ WantedBy=multi-user.target
             error('morph morph.service write failed')
 
         warn(
-            '**** IMPORTANT: Please verify application.yml configuration after morph service initialization. Check database connection, IP settings, and service dependencies. ***')
+            '**** IMPORTANT: Please verify region_config.yml configuration after morph service initialization. Check database connection, IP settings, and service dependencies. ***')
 
         shell_no_pipe("systemctl daemon-reload")
         shell_no_pipe("systemctl enable %s" % self.service_name())
