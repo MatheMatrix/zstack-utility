@@ -11507,6 +11507,7 @@ class MorphService(ExtraService):
     default_morph_database_config = default_morph_path + "region_config.yml"
     default_morph_jar = default_morph_path + "morph.jar"
     default_port = 4747
+    default_ui_proxy_port = 80
     default_ip = get_default_ip()
     default_morph_service_path = "/etc/systemd/system/morph.service"
     default_morph_service_content = '''
@@ -11516,6 +11517,10 @@ After=network.target
 
 [Service]
 Type=simple
+
+Environment="PATH=/usr/sbin:/sbin:/usr/bin:/bin"
+ExecStartPre=/usr/bin/sh -c 'iptables -C INPUT -p tcp --dport {ui_port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport {ui_port} -j ACCEPT'
+ExecStartPre=/usr/bin/sh -c 'iptables -C INPUT -p tcp --dport {morph_port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport {morph_port} -j ACCEPT'
 
 ExecStart={java} -jar {jar} --spring.config.location=file:{config} --spring.config.additional-location=file:{database_config}
 
@@ -11536,6 +11541,8 @@ Environment="JAVA_OPTS=-Xms256m -Xmx256m -Dfile.encoding=UTF-8"
 [Install]
 WantedBy=multi-user.target
     '''.format(
+        ui_port=default_ui_proxy_port,
+        morph_port=default_port,
         java="/etc/alternatives/java_sdk_21/bin/java",
         jar=default_morph_jar,
         config=default_morph_config,
