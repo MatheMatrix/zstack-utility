@@ -986,7 +986,6 @@ def collect_ipmi_state():
     collect_equipment_state_last_result = metrics.values()
     return collect_equipment_state_last_result
 
-@thread.AsyncThread
 def check_equipment_state_from_ipmitool(metrics):
     sensor_handlers = {
         "Memory": send_physical_memory_status_alarm_to_mn,
@@ -994,7 +993,7 @@ def check_equipment_state_from_ipmitool(metrics):
         "Power Supply": send_physical_power_supply_status_alarm_to_mn
     }
 
-    r, sensor_infos = bash_ro("ipmi-sensors --sensor-types=Memory,fan,Power_Supply -Q --ignore-unrecognized-events --comma-separated-output "
+    r, sensor_infos = bash_ro("timeout 60 ipmi-sensors --sensor-types=Memory,fan,Power_Supply -Q --ignore-unrecognized-events --comma-separated-output "
                               "--no-header-output --sdr-cache-recreate --output-sensor-state")
     if r == 0:
         for sensor_info in sensor_infos.splitlines():
