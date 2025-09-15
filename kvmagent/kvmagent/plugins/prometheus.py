@@ -1168,7 +1168,7 @@ def collect_equipment_state_from_ipmi():
             metrics['cpu_temperature'].add_metric(["CPU%d" % cpu_id], float(cpu_temperature))
         if re.match(cpu_status_pattern, sensor_id):
             cpu_id = int(re.sub(r'\D', '', sensor_id))
-            cpu_status = 0 if "presence detected" == sensor_value else 10
+            cpu_status = 0 if "presence detected" == sensor_value or "present" == sensor_value else 10
             metrics['cpu_status'].add_metric(["CPU%d" % cpu_id], float(cpu_status))
             if cpu_status == 10:
                 send_cpu_status_alarm_to_mn(cpu_id, sensor_value)
