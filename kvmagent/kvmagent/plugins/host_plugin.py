@@ -553,8 +553,7 @@ class HostNetworkInterfaceInventory(object):
                 title = line.split(':')[0].strip()
                 content = line.split(':')[1].strip()
                 if title in ['Vendor', 'Device', 'SVendor', 'SDevice', 'Rev']:
-                    if '[' in content and ']' in content:
-                        ids[title] = content.split('[')[-1].strip(']')
+                    ids[title] = content.strip()
 
             # Parse names from -Dmmv output
             for line in o_name.split('\n'):
@@ -2549,8 +2548,8 @@ sysctl -w vm.nr_hugepages=$pageNum
                 if title == 'Slot':
                     slot = line[5:].strip()
                 elif title in ['Class', 'Vendor', 'Device', 'SVendor', 'SDevice', 'Rev']:
-                    if '[' in content and ']' in content:
-                        ids[title] = content.split('[')[-1].strip(']')
+                    ids[title] = content.strip()
+
             if slot:
                 device_ids[slot] = ids
 
