@@ -42,6 +42,7 @@ XINCHUANG_OS="$KYLIN10_OS uos20"
 SUPPORTED_OS="$REDHAT_OS $DEBIAN_OS"
 REDHAT_WITHOUT_CENTOS6=`echo $REDHAT_OS |sed s/CENTOS6//`
 REGION_MANAGER_OS="h84r ky10sp3"
+REGION_MANAGER_ARCH="x86_64 aarch64"
 
 UPGRADE='n'
 FORCE='n'
@@ -1684,8 +1685,9 @@ is_install_general_libs_rh(){
       deps_list="${deps_list} mcelog"
     fi
 
-    if [[ $REGION_MANAGER_OS =~ $ZSTACK_RELEASE ]]; then
-       deps_list="${deps_list} java-21-openjdk-devel"
+    if [[ $REGION_MANAGER_OS =~ $ZSTACK_RELEASE ]] &&
+       [[ $REGION_MANAGER_ARCH =~ $BASEARCH ]]; then
+        deps_list="${deps_list} java-21-openjdk-devel"
     fi
 
     always_update_list="openssh"
