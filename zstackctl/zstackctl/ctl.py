@@ -11634,6 +11634,7 @@ WantedBy=multi-user.target
         if self.zsha2_utils:
             try:
                 self.zsha2_utils.scp_to_peer(self.default_morph_config, self.default_morph_config)
+                self.zsha2_utils.scp_to_peer(self.default_morph_database_config, self.default_morph_database_config)
                 self.zsha2_utils.scp_to_peer(self.default_morph_jar, self.default_morph_jar)
                 self.zsha2_utils.scp_to_peer(self.default_morph_service_path, self.default_morph_service_path)
                 self.zsha2_utils.execute_on_peer("systemctl daemon-reload")
