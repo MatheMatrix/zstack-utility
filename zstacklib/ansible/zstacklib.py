@@ -328,6 +328,7 @@ class ZstackRunnerArg(object):
         self.host_post_info = None
         self.module_name = None
         self.module_args = None
+        self.ansible_vars = {}
 
 
 class ResultsCollectorJSONCallback(ansible_callback.CallbackBase):
@@ -381,6 +382,7 @@ class ZstackRunner(object):
         self.become_pass = runner_args.host_post_info.remote_pass
         self.transport = runner_args.host_post_info.transport
         self.environment = runner_args.host_post_info.environment
+        self.ansible_vars = runner_args.ansible_vars
 
         ansible_context.CLIARGS = ansible_collections.ImmutableDict(
             connection=self.transport,
@@ -398,15 +400,17 @@ class ZstackRunner(object):
             action['_raw_params'] = self.module_args
         else:
             action['args'] = self.module_args
+        ps_vars = {'ansible_user': self.remote_user,
+                  'ansible_port': self.remote_port,
+                  'ansible_pipelining': True}
+        ps_vars.update(self.ansible_vars)
         play_source = dict(
             hosts=self.host,
             tasks=[{'action': action,
                     'register': 'shell_out',
                     'environment': self.environment,
                     }],
-            vars={'ansible_user': self.remote_user,
-                  'ansible_port': self.remote_port,
-                  'ansible_pipelining': True}
+            vars= ps_vars
         )
         play = ansible_play.Play().load(
             play_source,
@@ -1084,6 +1088,7 @@ def pip_install_package(pip_install_arg, host_post_info):
     runner_args.host_post_info = host_post_info
     runner_args.module_name = 'pip'
     runner_args.module_args = option
+    runner_args.ansible_vars = {'ansible_python_interpreter': '/usr/bin/python2'}
 
     zstack_runner = ZstackRunner(runner_args)
     result = zstack_runner.run()
@@ -1094,20 +1099,22 @@ def pip_install_package(pip_install_arg, host_post_info):
         ansible_start.post_url = post_url
         ansible_start.result = result
         handle_ansible_start(ansible_start)
+        return False
+
+    ret = result['contacted'][host]
+    if ret.get('failed', True):
+        command = "pip2 uninstall -y %s || true" % name
+        run_remote_command(command, host_post_info)
+        description = "ERROR: pip install package %s failed" % name
+        host_post_info.post_label = "ansible.pip.install.pkg.fail"
+        handle_ansible_failed(description, result, host_post_info)
+        return False
     else:
-        ret = result['contacted'][host]
-        if ret.get('failed', True):
-            command = "pip2 uninstall -y %s" % name
-            run_remote_command(command, host_post_info)
-            description = "ERROR: pip install package %s failed" % name
-            host_post_info.post_label = "ansible.pip.install.pkg.fail"
-            handle_ansible_failed(description, result, host_post_info)
-            return False
-        else:
-            details = "SUCC: pip install package %s successfully " % name
-            host_post_info.post_label = "ansible.pip.install.pkg.succ"
-            handle_ansible_info(details, host_post_info, "INFO")
-            return True
+        details = "SUCC: pip install package %s successfully " % name
+        host_post_info.post_label = "ansible.pip.install.pkg.succ"
+        handle_ansible_info(details, host_post_info, "INFO")
+        return True
+
 
 
 def cron(name, arg, host_post_info):
@@ -1679,28 +1686,29 @@ def check_and_install_virtual_env(version, trusted_host, pip_url,
         ansible_start.post_url = post_url
         ansible_start.result = result
         handle_ansible_start(ansible_start)
-    else:
-        ret = result['contacted'][host]
-        if 'rc' not in ret:
-            logger.warning(("Network problem, try again now, ansible "
-                            "reply is below:\n %s") % result)
-            raise Exception(result)
-        else:
-            status = ret['rc']
-            if status == 0:
-                details = "SUCC: the virtualenv-%s exist in system" % version
-                host_post_info.post_label = \
-                    "ansible.check.install.virtualenv.succ"
-                handle_ansible_info(details, host_post_info, "INFO")
-                return True
-            else:
-                extra_args = "\"--trusted-host %s -i %s \"" % (
-                    trusted_host, pip_url)
-                pip_install_arg = PipInstallArg()
-                pip_install_arg.extra_args = extra_args
-                pip_install_arg.version = version
-                pip_install_arg.name = "virtualenv"
-                return pip_install_package(pip_install_arg, host_post_info)
+        return False
+
+    ret = result['contacted'][host]
+    if 'rc' not in ret:
+        logger.warning(("Network problem, try again now, ansible "
+                        "reply is below:\n %s") % result)
+        raise Exception(result)
+
+    status = ret['rc']
+    if status == 0:
+        details = "SUCC: the virtualenv-%s exist in system" % version
+        host_post_info.post_label = \
+            "ansible.check.install.virtualenv.succ"
+        handle_ansible_info(details, host_post_info, "INFO")
+        return True
+
+    extra_args = "\"--trusted-host %s -i %s \"" % (
+        trusted_host, pip_url)
+    pip_install_arg = PipInstallArg()
+    pip_install_arg.extra_args = extra_args
+    pip_install_arg.version = version
+    pip_install_arg.name = "virtualenv"
+    return pip_install_package(pip_install_arg, host_post_info)
 
 
 def service_status(name, args, host_post_info, ignore_error=False):
