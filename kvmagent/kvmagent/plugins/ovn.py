@@ -222,8 +222,9 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         needAddUplink = True
         err, bondName = vsctl.getTableAttr("Port", "dpdkbond", "name")
         if not err and bondName == 'dpdkbond':
-            err, bondMode = vsctl.getTableAttr("Port", "dpdkbond", "bond_mode")
-            if not err and bondMode == 'balance-tcp':
+            err1, bondMode = vsctl.getTableAttr("Port", "dpdkbond", "bond_mode")
+            err2, lacpMode = vsctl.getTableAttr("Port", "dpdkbond", "lacp")
+            if not err1 and not err2 and bondMode == cmd.bondingMode and lacpMode == cmd.lacpMode:
                 err, interfaces = vsctl.getTableAttr("Port", "dpdkbond", "interfaces")
                 interfaces = [item.strip() for item in interfaces.strip("[]").split(",")]
                 interfaces_names = []
