@@ -12,7 +12,6 @@ from zstacklib.utils import traceable_shell
 from zstacklib.utils.bash import *
 from zstacklib.utils.report import *
 
-log.configure_log('/var/log/zstack/zbs-primarystorage.log')
 logger = log.get_logger(__name__)
 
 
@@ -65,6 +64,12 @@ class RollbackSnapshotRsp(AgentResponse):
         self.installPath = None
         self.size = 0
         self.actualSize = 0
+
+
+class GetVolumeClientsRsp(AgentResponse):
+    def __init__(self):
+        super(GetVolumeClientsRsp, self).__init__()
+        self.clients = []
 
 
 class QueryVolumeRsp(AgentResponse):
@@ -166,6 +171,7 @@ def replyerror(func):
             rsp.error = str(e)
             logger.warn(err)
             return jsonobject.dumps(rsp)
+
     return wrap
 
 
@@ -188,9 +194,12 @@ class ZbsAgent(plugin.TaskManager):
     ROLLBACK_SNAPSHOT_PATH = "/zbs/primarystorage/snapshot/rollback"
     EXPAND_VOLUME_PATH = "/zbs/primarystorage/volume/expand"
     FLATTEN_VOLUME_PATH = "/zbs/primarystorage/volume/flatten"
+    GET_VOLUME_CLIENTS_PATH = "/zbs/primarystorage/volume/clients"
 
     http_server = http.HttpServer(port=7763)
     http_server.logfile_path = log.get_logfile_path()
+
+    SUPPORT_GET_VOLUME_CLIENTS = False
 
     def __init__(self):
         super(ZbsAgent, self).__init__()
@@ -212,6 +221,7 @@ class ZbsAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.CREATE_SNAPSHOT_PATH, self.create_snapshot)
         self.http_server.register_async_uri(self.DELETE_SNAPSHOT_PATH, self.delete_snapshot)
         self.http_server.register_async_uri(self.ROLLBACK_SNAPSHOT_PATH, self.rollback_snapshot)
+        self.http_server.register_sync_uri(self.GET_VOLUME_CLIENTS_PATH, self.get_volume_clients)
 
     @replyerror
     def get_facts(self, req):
@@ -236,7 +246,8 @@ class ZbsAgent(plugin.TaskManager):
         if not r.result:
             raise Exception('failed to query mds info, error[%s]' % r.error.message)
 
-        ipv4_addrs = [addr.address for addr in iproute.query_addresses(ip_version=4) if addr.address and not addr.address.startswith("127.")]
+        ipv4_addrs = [addr.address for addr in iproute.query_addresses(ip_version=4) if
+                      addr.address and not addr.address.startswith("127.")]
 
         found = False
         for m in r.result:
@@ -250,6 +261,8 @@ class ZbsAgent(plugin.TaskManager):
             rsp.error = 'cannot found external address of mds[%s]' % cmd.addr
             return jsonobject.dumps(rsp)
 
+        self.SUPPORT_GET_VOLUME_CLIENTS = zbsutils.is_support_get_volume_clients()
+
         return jsonobject.dumps(rsp)
 
     @replyerror
@@ -259,7 +272,8 @@ class ZbsAgent(plugin.TaskManager):
 
         current_cluster_uuid = zbsutils.get_cluster_uuid(cmd.clusterInfo.version)
         if current_cluster_uuid != cmd.clusterInfo.uuid:
-            raise Exception('cluster uuid does not match, current cluster uuid[%s], old cluster uuid[%s]' % (current_cluster_uuid, cmd.clusterInfo.uuid))
+            raise Exception('cluster uuid does not match, current cluster uuid[%s], old cluster uuid[%s]' % (
+            current_cluster_uuid, cmd.clusterInfo.uuid))
 
         o = zbsutils.query_mds_status_info()
         r = jsonobject.loads(o)
@@ -356,10 +370,12 @@ class ZbsAgent(plugin.TaskManager):
             o = zbsutils.copy(snapshot_path, dst_volume_path, True)
             ret = jsonobject.loads(o)
             if ret.error.code != 0:
-                raise Exception('failed to copy snapshot[%s] to volume[%s], error[%s]' % (snapshot_path, dst_volume_path, ret.error.message))
+                raise Exception('failed to copy snapshot[%s] to volume[%s], error[%s]' % (
+                snapshot_path, dst_volume_path, ret.error.message))
             elif ret.result.hasattr('fileStatus') and ret.result.fileStatus != 0:
                 zbsutils.delete_volume_and_snapshots(logical_pool, cmd.dstVolume)
-                raise Exception('target volume[%s] exception[fileStatus:%d], deleted' % (dst_volume_path, ret.result.fileStatus))
+                raise Exception(
+                    'target volume[%s] exception[fileStatus:%d], deleted' % (dst_volume_path, ret.result.fileStatus))
             rsp.size = ret.result.fileLength
             rsp.installPath = zbsutils.CBD_VOLUME_PATH.format(physical_pool, logical_pool, cmd.dstVolume)
 
@@ -384,6 +400,17 @@ class ZbsAgent(plugin.TaskManager):
         return jsonobject.dumps(rsp)
 
     @replyerror
+    def get_volume_clients(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetVolumeClientsRsp()
+        if not self.SUPPORT_GET_VOLUME_CLIENTS:
+            return jsonobject.dumps(rsp)
+
+        _, logical_pool, volume, _ = zbsutils.parse_cbd_path(cmd.path)
+        rsp.clients = zbsutils.get_volume_clients(logical_pool, volume)
+        return jsonobject.dumps(rsp)
+
+    @replyerror
     def delete_snapshot(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
@@ -393,7 +420,8 @@ class ZbsAgent(plugin.TaskManager):
         o = zbsutils.query_snapshot_info(logical_pool, volume)
         r = jsonobject.loads(o)
         if r.error.code != 0:
-            raise Exception('cannot found snapshot for volume[%s/%s], error[%s]' % (logical_pool, volume, r.error.message))
+            raise Exception(
+                'cannot found snapshot for volume[%s/%s], error[%s]' % (logical_pool, volume, r.error.message))
         if not r.result.hasattr('fileInfo'):
             return jsonobject.dumps(rsp)
 
@@ -422,7 +450,8 @@ class ZbsAgent(plugin.TaskManager):
             raise Exception('cannot found volume[%s] info, error[%s]' % (cmd.path, ret.error.message))
         rsp.size = ret.result.info.fileInfo.length
         rsp.actualSize = ret.result.info.fileInfo.usedSize
-        if zbsutils.is_clonal_type(ret.result.info.fileInfo.fileType) and ret.result.info.fileInfo.hasattr('cloneSourceSnap'):
+        if zbsutils.is_clonal_type(ret.result.info.fileInfo.fileType) and ret.result.info.fileInfo.hasattr(
+                'cloneSourceSnap'):
             rsp.parentUri = "{}:{}/{}".format(
                 zbsutils.CBD_PREFIX,
                 physical_pool,
@@ -454,7 +483,8 @@ class ZbsAgent(plugin.TaskManager):
         o = zbsutils.clone_volume(logical_pool, volume, snapshot, cmd.dstVolume)
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
-            raise Exception('failed to clone volume[%s] to volume[%s], error[%s]' % (volume, cmd.dstVolume, ret.error.message))
+            raise Exception(
+                'failed to clone volume[%s] to volume[%s], error[%s]' % (volume, cmd.dstVolume, ret.error.message))
 
         rsp.installPath = zbsutils.CBD_VOLUME_PATH.format(physical_pool, logical_pool, cmd.dstVolume)
         rsp.size = ret.result.fileInfo.length
@@ -572,7 +602,8 @@ class ZbsAgent(plugin.TaskManager):
         o = zbsutils.query_volume_info(cmd.logicalPool, cmd.volume)
         ret = jsonobject.loads(o)
         if ret.error.code != 0:
-            raise Exception('cannot found volume[%s/%s] info, error[%s]' % (cmd.logicalPool, cmd.volume, ret.error.message))
+            raise Exception(
+                'cannot found volume[%s/%s] info, error[%s]' % (cmd.logicalPool, cmd.volume, ret.error.message))
         rsp.size = ret.result.info.fileInfo.length
         rsp.installPath = volume_path
 
