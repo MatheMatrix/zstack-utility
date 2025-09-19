@@ -22,6 +22,10 @@ def is_gpu(type):
     return type in ['GPU_3D_Controller', 'GPU_Video_Controller', 'GPU_Processing_Accelerators', 'GPU_Co_Processor']
 
 
+def is_haiguang_pci_device(vendor_id):
+    return vendor_id in ['1d94']
+
+
 def fmt_pci_address(pci_device):
     # type: (dict) -> str
     domain = pci_device['domain'] if 'domain' in pci_device else 0
@@ -176,6 +180,7 @@ def parse_resources(device_path):
     logger.info("get pci device[path: %s],resources: %s" % (device_path, resources))
     return resources
 
+
 def get_pci_passthrough_mapping(vm_dom):
     pci_mapping = {}
     xml_tree = ET.fromstring(vm_dom.XMLDesc())
@@ -196,3 +201,15 @@ def get_pci_passthrough_mapping(vm_dom):
         pci_mapping[vm_pci_address] = host_pci_address
 
     return pci_mapping
+
+
+def get_pci_device_ids():
+    # Get IDs using -Dmmnv (without second 'n' to avoid truncation)
+    cmd = "lspci -Dmmnv"
+    return cmd
+
+
+def get_pci_device_names():
+    # Get names using -Dmmv (without 'nn' to get full names)
+    cmd = "lspci -Dmmv"
+    return cmd

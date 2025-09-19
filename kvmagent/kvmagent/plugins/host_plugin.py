@@ -2494,14 +2494,14 @@ sysctl -w vm.nr_hugepages=$pageNum
         elif virtualizable is False and mdev_devices_exists is True:
             to.virtStatus = "VFIO_MDEV_VIRTUALIZED"
 
-    def _simplify_pci_device_name(self, name):
+    def _simplify_pci_device_name(self, name, vendor_id):
         if 'Intel Corporation' in name:
             return VendorEnum.INTEL
         elif 'Advanced Micro Devices' in name:
             return VendorEnum.AMD
         elif 'NVIDIA Corporation' in name:
             return VendorEnum.NVIDIA
-        elif 'Haiguang' in name or '1d94' in name:
+        elif 'Haiguang' in name or pci.is_haiguang_pci_device(vendor_id):
             return VendorEnum.HAIGUANG
         elif 'Huawei' in name:
             return VendorEnum.HUAWEI
@@ -2515,10 +2515,8 @@ sysctl -w vm.nr_hugepages=$pageNum
             return name.replace('Co., Ltd ', '')
 
     def _collect_format_pci_device_info(self, rsp):
-        # Get IDs using -Dmmnv (without second 'n' to avoid truncation)
-        r_id, o_id, e_id = bash_roe("lspci -Dmmnv")
-        # Get names using -Dmmv (without 'nn' to get full names)
-        r_name, o_name, e_name = bash_roe("lspci -Dmmv")
+        r_id, o_id, e_id = bash_roe(pci.get_pci_device_ids())
+        r_name, o_name, e_name = bash_roe(pci.get_pci_device_names())
 
         if r_id != 0 or r_name != 0:
             rsp.success = False
@@ -2593,7 +2591,7 @@ sysctl -w vm.nr_hugepages=$pageNum
 
             # Set vendor info
             if 'Vendor' in names:
-                vendor_name = self._simplify_pci_device_name(names['Vendor'])
+                vendor_name = self._simplify_pci_device_name(names['Vendor'], ids.get('Vendor', ''))
                 to.vendor = vendor_name
                 to.vendorId = ids.get('Vendor', '')
                 to.description += vendor_name + " "
@@ -2601,13 +2599,13 @@ sysctl -w vm.nr_hugepages=$pageNum
             # Set device info
             if 'Device' in names:
                 to.device = names['Device']
-                device_name = self._simplify_pci_device_name(names['Device'])
+                device_name = self._simplify_pci_device_name(names['Device'], ids.get('Device', ''))
                 to.deviceId = ids.get('Device', '')
                 to.description += device_name
 
             # Set subvendor info
             if 'SVendor' in names:
-                subvendor_name = self._simplify_pci_device_name(names['SVendor'])
+                subvendor_name = self._simplify_pci_device_name(names['SVendor'], ids.get('SVendor', ''))
                 to.subvendorId = ids.get('SVendor', '')
 
             # Set subdevice info
@@ -2672,7 +2670,7 @@ sysctl -w vm.nr_hugepages=$pageNum
                     to.type = "GPU_Processing_Accelerators"
                 elif ('Co-processor' in to.type or (pci_device_mapper.get('Co-processor') is not None
                         and pci_device_mapper.get('Co-processor') in to.type)) \
-                        and gpu.is_valid_co_processor(to.description, to.vendorId):
+                        and gpu.is_valid_co_processor(to.vendor):
                     to.type = "GPU_Co_Processor"
                 else:
                     to.type = "Generic"
