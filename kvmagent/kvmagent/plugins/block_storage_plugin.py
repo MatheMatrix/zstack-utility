@@ -11,6 +11,7 @@ from zstacklib.utils import log
 from zstacklib.utils import shell
 from zstacklib.utils import bash
 from zstacklib.utils import lock
+from zstacklib.utils import rbd
 
 logger = log.get_logger(__name__)
 
@@ -53,21 +54,8 @@ class CreateHeartbeatCmd(AgentCmd):
         self.iscsiServerPort = None
         self.iscsiChapUserName = None
         self.iscsiChapUserPassword = None
+        self.heartbeatInstallPath = None
         self.target = None
-
-
-class MountImageCacheLunCmd(AgentCmd):
-    def __init__(self):
-        super(MountImageCacheLunCmd, self).__init__()
-        self.lunInstallPath = None
-        self.mountPath = None
-
-
-class ConvertImageToLunCmd(AgentCmd):
-    def __init__(self):
-        super(ConvertImageToLunCmd, self).__init__()
-        self.imagePath = None
-        self.lunInstallPath = None
 
 
 class DeleteHeartbeatCmd(AgentCmd):
@@ -108,10 +96,15 @@ class NoFailurePingRsp(AgentRsp):
         self.disconnectedPSInstallPath = []
 
 
-def translate_absolute_path_from_install_paht(path):
-    if path is None:
+def get_block_storage_properties(install_path, ps_uuid_and_sys_id_host_id_mapping):
+    if install_path is None:
         raise Exception("install path can not be null")
-    return path.replace("block://", "/dev/disk/by-id/wwn-0x")
+    ps_uuid = install_path.split("/")[-1].split("-")[-1]
+    sys_id = ps_uuid_and_sys_id_host_id_mapping[ps_uuid]["sysId"]
+    host_id = ps_uuid_and_sys_id_host_id_mapping[ps_uuid]["hostId"]
+    if sys_id is None or host_id is None:
+        raise Exception("ps uuid[%s] not found in sys id and host id mapping" % ps_uuid)
+    return install_path, sys_id, host_id
 
 
 def translate_absolute_path_from_wwn(wwn):
@@ -120,13 +113,25 @@ def translate_absolute_path_from_wwn(wwn):
     return "/dev/disk/by-id/wwn-0x" + wwn
 
 
-def heartbeat_io_check(path):
-    heartbeat_check = shell.ShellCmd('sg_inq %s' % path)
-    heartbeat_check(False)
-    if heartbeat_check.return_code != 0:
+def heartbeat_io_check(heartbeat_path, fs_id, host_id):
+    rbd_rw_handler = rbd.get_rbd_rw_handler()
+    hb_timestamp = time.time()
+    hb_content = {
+        "heartbeat_time": hb_timestamp
+    }
+    r = rbd_rw_handler.write(heartbeat_path, fs_id, host_id, 1024, jsonobject.dumps(hb_content))
+    if not r:
         return False
-
-    return True
+    hb_content = rbd_rw_handler.read(heartbeat_path, fs_id, host_id, 1024)
+    if hb_content is None:
+        return False
+    hb_content = jsonobject.loads(hb_content)
+    hb_content_timestamp = hb_content["heartbeat_time"]
+    if not hb_content_timestamp:
+        return False
+    if hb_content_timestamp == hb_timestamp:
+        return True
+    return False
 
 
 class BlockStoragePlugin(kvmagent.KvmAgent):
@@ -138,12 +143,7 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
     COMMIT_VOLUME_AS_IMAGE = "/block/imagestore/commit"
     DISCOVERY_LUN = "/block/primarystorage/discoverlun"
     LOGOUT_TARGET = "/block/primarystorage/logouttarget"
-    RESIZE_VOLUME_PATH = "/block/primarystorage/volume/resize"
-    RESCAN_LUN_PATH = "/block/primarystorage/lun/rescan"
     NO_FAILURE_PING_PATH = "/block/primarystorage/ping"
-    MOUNT_TEMP_IMAGE_CACHE_LUN = "/block/primarystorage/imagecache/lun/mount"
-    CONVERT_IMAGE_CACHE_TO_LUN = "/block/primarystorage/imagecache/convert"
-    UMOUNT_PATH = "/block/primarystorage/unmount"
 
     def start(self):
         http_server = kvmagent.get_http_server()
@@ -155,95 +155,9 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.LOGOUT_TARGET, self.logout_target, cmd=LogoutLunCmd())
         http_server.register_async_uri(self.UPLOAD_TO_IMAGESTORE, self.upload_to_imagestore)
         http_server.register_async_uri(self.COMMIT_VOLUME_AS_IMAGE, self.commit_to_imagestore)
-        http_server.register_async_uri(self.RESIZE_VOLUME_PATH, self.resize_volume)
-        http_server.register_async_uri(self.RESCAN_LUN_PATH, self.rescan_disk)
         http_server.register_async_uri(self.NO_FAILURE_PING_PATH, self.no_failure_ping)
-        http_server.register_async_uri(self.MOUNT_TEMP_IMAGE_CACHE_LUN, self.mount_temp_image_cache_lun,
-                                       cmd=MountImageCacheLunCmd())
-        http_server.register_async_uri(self.CONVERT_IMAGE_CACHE_TO_LUN, self.convert_image_cache_to_lun,
-                                       cmd=ConvertImageToLunCmd)
-        http_server.register_async_uri(self.UMOUNT_PATH, self.umount_path)
 
         self.imagestore_client = ImageStoreClient()
-
-    @bash.in_bash
-    def _rescan_disk(self, install_path):
-        disk_path = translate_absolute_path_from_install_paht(install_path)
-        device_letter = bash.bash_o("ls -al %s | awk -F '/' '{print $NF}'" % disk_path).strip();
-        linux.write_file("/sys/block/%s/device/rescan" % device_letter, "1")
-
-    @kvmagent.replyerror
-    def convert_image_cache_to_lun(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        image_path = cmd.imagePath
-        lun_install_path = translate_absolute_path_from_install_paht(cmd.lunInstallPath)
-        r, o, e = bash.bash_roe("qemu-img convert -f qcow2 -O qcow2 %s %s" % (image_path, lun_install_path))
-
-        tmp_dir_path = os.path.dirname(image_path)
-        if tmp_dir_path.find("/tmp/.imagecache/tmp") != -1:
-            linux.rm_dir_force(tmp_dir_path)
-
-        rsp = AgentRsp()
-        rsp.success = True
-        if r != 0:
-            rsp.success = False
-            rsp.error = "fail to convert image %s to %s" % (image_path, lun_install_path)
-
-        return jsonobject.dumps(rsp)
-
-    @kvmagent.replyerror
-    def umount_path(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        umounted = linux.umount(cmd.path)
-        rsp = AgentRsp()
-        rsp.success
-        if umounted is not True:
-            rsp.success = False
-            rsp.error = "fail to umount path: " + cmd.path
-        return jsonobject.dumps(rsp)
-
-    @kvmagent.replyerror
-    @bash.in_bash
-    def mount_temp_image_cache_lun(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        lun_install_path = translate_absolute_path_from_install_paht(cmd.lunInstallPath)
-        mount_path = cmd.mountPath
-        rsp = AgentRsp()
-        r, o, e = bash.bash_roe("file -Ls %s | grep -i ext4" % lun_install_path)
-        if r != 0:
-            shell.call("sleep 1; mkfs.ext4 -F %s" % lun_install_path)
-
-        linux.mount(lun_install_path, mount_path)
-        is_mount = linux.is_mounted(mount_path)
-        rsp.success = True
-        if is_mount is not True:
-            rsp.success = False
-            rsp.error = "fail to mount %s to %s" % (lun_install_path, mount_path)
-
-        return jsonobject.dumps(rsp)
-
-    @kvmagent.replyerror
-    def rescan_disk(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        self._rescan_disk(cmd.installPath)
-        rsp = AgentRsp()
-        rsp.success = True
-        return jsonobject.dumps(rsp)
-
-    @kvmagent.replyerror
-    def resize_volume(self, req):
-        rsp = ResizeVolumeRsp()
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-
-        self._rescan_disk(cmd.installPath)
-
-        disk_path = translate_absolute_path_from_install_paht(cmd.installPath)
-        shell.call("qemu-img resize %s %s" % (disk_path, cmd.size))
-        ret = linux.qcow2_virtualsize(disk_path)
-        rsp.size = ret
-        rsp.size = cmd.size
-
-        return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
     def get_initiator_name(self, req):
@@ -266,50 +180,17 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
     @lock.lock('iscsiadm')
     @bash.in_bash
     def create_heartbeat(self, req):
-        logger.debug("start to create heart beat")
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        logger.debug("starting to create heartbeat")
         rsp = CreateHeartbeatRsp()
+
+        link_cmd = "ln -sf /usr/lib64/librbd.so /usr/lib64/librbd.so.1 && ln -sf /usr/lib64/librados.so /usr/lib64/librados.so.2"
+        r, _, e = bash.bash_roe(link_cmd)
+        if r != 0:
+            rsp.success = False
+            rsp.error = "can not create symbolic link for librbd.so and librados.so, cause %s" % e
+            return jsonobject.dumps(rsp)
+
         rsp.success = True
-
-        # enable iscsid service
-        ret, out, err = bash.bash_roe("systemctl is-enabled iscsid || systemctl enable iscsid")
-        if ret != 0:
-            rsp.success = False
-            rsp.error = "fail to enable iscsid service, which is block storage required feature"
-            return jsonobject.dumps(rsp)
-
-        # start iscsid service
-        ret, out, err = bash.bash_roe("service iscsid status || service iscsid  start")
-        if ret != 0:
-            rsp.success = False
-            rsp.error = "fail to start iscsid service, which is block storage required feature"
-            return jsonobject.dumps(rsp)
-
-        logger.debug("start to discover target:" + cmd.target)
-        self.discovery_iscsi(cmd)
-        logger.debug("start to login")
-        self.iscsi_login(cmd)
-
-        heartbeat_lun_wwn = translate_absolute_path_from_wwn(cmd.wwn)
-        bash.bash_roe("timeout 120 /usr/bin/rescan-scsi-bus.sh -u >/dev/null")
-        lun_has_been_mapped = self.make_sure_lun_has_been_mapped(cmd)
-        if lun_has_been_mapped is not True:
-            err_msg = "fail to find heartbeat lun, please make sure host is connected with ps";
-            logger.debug(err_msg)
-            rsp.success = False
-            rsp.error = err_msg
-            return jsonobject.dumps(rsp)
-
-        successfully_create_heartbeat = heartbeat_io_check(heartbeat_lun_wwn)
-        if successfully_create_heartbeat is False:
-            bash.bash_roe("timeout 120 /usr/bin/rescan-scsi-bus.sh -u >/dev/null")
-            successfully_create_heartbeat = heartbeat_io_check(heartbeat_lun_wwn)
-            if successfully_create_heartbeat is False:
-                rsp.success = False
-                error_msg = "fail to write heartbeat please check host connection with ps, heartbeat path: " + heartbeat_lun_wwn
-                rsp.error = error_msg
-                logger.debug('heartbeat io check failed, cause: %s' % error_msg)
-
         return jsonobject.dumps(rsp)
 
     def make_sure_lun_has_been_mapped(self, cmd_info):
@@ -355,6 +236,8 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
     def discover_lun(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentRsp()
+
+        return jsonobject.dumps(rsp)
         logger.debug("start to discover target:" + cmd.target)
         self.discovery_iscsi(cmd)
         iscsi_already_login = self.find_iscsi_session(cmd)
@@ -466,16 +349,19 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
     def download_from_imagestore(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
-        self.imagestore_client.image_info(cmd.hostname, cmd.backupStorageInstallPath)
-        self.imagestore_client.download_from_imagestore(None, cmd.hostname, cmd.backupStorageInstallPath,
-                                                        cmd.primaryStorageInstallPath, cmd.concurrency)
-        bash.bash_o("sync")
+        fmt = linux.get_img_fmt(cmd.backupStorageInstallPath)
+        if not cmd.concurrency or cmd.concurrency <= 0:
+            cmd.concurrency = 4
+        primary_storage_install_path = "{0}:conf={1}".format(cmd.primaryStorageInstallPath, rbd.get_config_path_from_fs_id(cmd.primaryStorageSysId))
+        linux.qcow2_convert_to_raw(cmd.backupStorageInstallPath, primary_storage_install_path,
+                                   "-f", fmt, "-n", "-Wm", str(cmd.concurrency))
         rsp = AgentRsp()
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
     def upload_to_imagestore(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        cmd.primaryStorageInstallPath = "{0}:conf={1}".format(cmd.primaryStorageInstallPath, rbd.get_config_path_from_fs_id(cmd.primaryStorageSysId))
         return self.imagestore_client.upload_to_imagestore(cmd, req)
 
     @kvmagent.replyerror
@@ -491,19 +377,15 @@ class BlockStoragePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = NoFailurePingRsp()
         rsp.success = True
-
-        for heartbeat_install_path in cmd.psHeartbeatLunInstallPath:
-            heartbeat_lun_path = translate_absolute_path_from_install_paht(heartbeat_install_path)
-            successfully_create_heartbeat = heartbeat_io_check(heartbeat_lun_path)
+        for heartbeat_install_path in cmd.heartbeatInstallPath:
+            heartbeat_path, fs_id, host_id = get_block_storage_properties(
+                heartbeat_install_path,
+                cmd.psUuidAndSysIdHostIdMapping
+            )
+            successfully_create_heartbeat = heartbeat_io_check(heartbeat_path, fs_id, host_id)
             if successfully_create_heartbeat is False:
-                bash.bash_roe("timeout 120 /usr/bin/rescan-scsi-bus.sh -u >/dev/null")
-                successfully_create_heartbeat = heartbeat_io_check(heartbeat_lun_path)
-                if successfully_create_heartbeat is False:
-                    rsp.success = False
-                    rsp.disconnectedPSInstallPath.append(heartbeat_install_path)
-                    error_msg = "fail to write heartbeat for ping, please check host connection with ps, heartbeat " \
-                                "path: " + heartbeat_lun_path
-                    rsp.error = error_msg
-                    logger.debug('heartbeat io check failed, cause: %s' % error_msg)
-
+                rsp.disconnectedPSInstallPath.append(heartbeat_install_path)
+                error_msg = "fail to write heartbeat for ping, please check host connection with ps, heartbeat " \
+                            "path: " + heartbeat_path
+                logger.debug('heartbeat io check failed, cause: %s' % error_msg)
         return jsonobject.dumps(rsp)

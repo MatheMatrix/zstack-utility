@@ -66,6 +66,7 @@ from zstacklib.utils import drbd
 from zstacklib.utils.jsonobject import JsonObject
 from zstacklib.utils.linux import is_virtual_machine
 from zstacklib.utils.plugin import TaskManager, TaskResult
+from zstacklib.utils import rbd
 from zstacklib.utils.qga import *
 from zstacklib.utils import jsonobject
 from zstacklib.utils.qmp import get_block_node_name_and_file
@@ -1743,13 +1744,14 @@ class IsoCeph(object):
 
     def to_xmlobject(self, target_dev, target_bus_type, bus=None, unit=None, bootOrder=None):
         disk = etree.Element('disk', {'type': 'network', 'device': 'cdrom'})
-        source = e(disk, 'source', None, {'name': self.iso.path.lstrip('ceph:').lstrip('//').split("@")[0], 'protocol': 'rbd'})
+        source = e(disk, 'source', None, {'name': self.iso.path.replace('ceph://', '').split("@")[0], 'protocol': 'rbd'})
         if self.iso.secretUuid:
             auth = e(disk, 'auth', attrib={'username': 'zstack'})
             e(auth, 'secret', attrib={'type': 'ceph', 'uuid': self.iso.secretUuid})
         for minfo in self.iso.monInfo:
             e(source, 'host', None, {'name': minfo.hostname, 'port': str(minfo.port)})
-
+        if self.iso.fsId:
+            e(source, 'config', None, {'file': rbd.get_config_path_from_fs_id(self.iso.fsId)})
         e(disk, 'target', None, {'dev': target_dev, 'bus': target_bus_type})
         if bus and unit:
             e(disk, 'address', None, {'type': 'drive', 'bus': bus, 'unit': unit})
@@ -1769,7 +1771,7 @@ class BlkCeph(object):
         disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
         e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'})
         source = e(disk, 'source', None,
-                   {'name': self.volume.installPath.lstrip('ceph:').lstrip('//'), 'protocol': 'rbd'})
+                   {'name': self.volume.installPath.replace('ceph://', ''), 'protocol': 'rbd'})
         if self.volume.secretUuid:
             auth = e(disk, 'auth', attrib={'username': 'zstack'})
             e(auth, 'secret', attrib={'type': 'ceph', 'uuid': self.volume.secretUuid})
@@ -1798,12 +1800,14 @@ class VirtioCeph(object):
 
         e(disk, 'driver', None, driver_elements)
         source = e(disk, 'source', None,
-                   {'name': self.volume.installPath.lstrip('ceph:').lstrip('//'), 'protocol': 'rbd'})
+                   {'name': self.volume.installPath.replace('ceph://', ''), 'protocol': 'rbd'})
         if self.volume.secretUuid:
             auth = e(disk, 'auth', attrib={'username': 'zstack'})
             e(auth, 'secret', attrib={'type': 'ceph', 'uuid': self.volume.secretUuid})
         for minfo in self.volume.monInfo:
             e(source, 'host', None, {'name': minfo.hostname, 'port': str(minfo.port)})
+        if self.volume.fsId:
+            e(source, 'config', None, {'file': rbd.get_config_path_from_fs_id(self.volume.fsId)})
         e(disk, 'target', None, {'dev': 'vd%s' % self.dev_letter, 'bus': 'virtio'})
         if self.volume.physicalBlockSize:
             e(disk, 'blockio', None, {'physical_block_size': str(self.volume.physicalBlockSize)})
@@ -1819,7 +1823,7 @@ class VirtioSCSICeph(object):
         disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
         e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'})
         source = e(disk, 'source', None,
-                   {'name': self.volume.installPath.lstrip('ceph:').lstrip('//'), 'protocol': 'rbd'})
+                   {'name': self.volume.installPath.replace('ceph://', ''), 'protocol': 'rbd'})
         if self.volume.secretUuid:
             auth = e(disk, 'auth', attrib={'username': 'zstack'})
             e(auth, 'secret', attrib={'type': 'ceph', 'uuid': self.volume.secretUuid})
@@ -2248,7 +2252,6 @@ def get_all_vm_states_with_process():
         if guest.lower() == "ZStack Management Node VM".lower()\
                 or guest.startswith("guestfs-"):
             continue
-
         states[guest] = Vm.VM_STATE_RUNNING
 
     return states
@@ -7703,11 +7706,28 @@ class VmPlugin(kvmagent.KvmAgent):
         states_from_qemu_process = get_all_vm_states_with_process()
         for guest, state in states_from_qemu_process.items():
             if guest not in rsp.states:
+                logger.warn('guest [%s] not found in virsh list' % guest)
+                rsp.states[guest] = state
+
+        states_from_cache = get_vm_states_from_cache()
+        for guest, state in states_from_cache.items():
+            if guest not in rsp.states:
+                logger.warn('guest [%s] not found in virsh list and qemu process, load from cache' % guest)
                 rsp.states[guest] = state
 
         libvirt_running_vms = rsp.states.keys()
         no_qemu_process_running_vms = list(set(libvirt_running_vms).difference(set(states_from_qemu_process.keys())))
+        state_cached_vms = states_from_cache.keys()
+        # if vm cached means kvmagent manually control the sync result, should be used 
+        # as filter.
+        # if vm not have qemu process means libvirt and qemu is inconsistent use filter
+        # to make sure the vm state is correct.
+        # vm meet both the above conditions should be shutdown
         for vm in no_qemu_process_running_vms:
+            if vm in state_cached_vms:
+                logger.warn('guest [%s] not found in qemu process, but in cache, keep the state' % vm)
+                continue
+
             rsp.states[vm] = Vm.VM_STATE_SHUTDOWN
 
         states_from_qemu_process = get_all_vm_states_with_process()
