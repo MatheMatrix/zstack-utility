@@ -6,11 +6,12 @@ import os
 import sys
 
 from zstacklib.utils import log
-from zstacklib.utils import linux
 
 pidfile = '/var/run/zstack/zbs-primarystorage.pid'
 log.configure_log('/var/log/zstack/zbs-primarystorage.log')
 logger = log.get_logger(__name__)
+
+from zstacklib.utils import linux
 import zbsagent
 
 
