@@ -2515,8 +2515,8 @@ sysctl -w vm.nr_hugepages=$pageNum
             return name.replace('Co., Ltd ', '')
 
     def _collect_format_pci_device_info(self, rsp):
-        r_id, o_id, e_id = bash_roe(pci.get_pci_device_ids())
-        r_name, o_name, e_name = bash_roe(pci.get_pci_device_names())
+        r_id, o_id, e_id = pci.get_pci_device_ids()
+        r_name, o_name, e_name = pci.get_pci_device_names()
 
         if r_id != 0 or r_name != 0:
             rsp.success = False

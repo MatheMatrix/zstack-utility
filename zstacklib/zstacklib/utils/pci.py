@@ -4,6 +4,8 @@ import platform
 from zstacklib.utils import log, linux, sizeunit
 import xml.etree.ElementTree as ET
 
+from zstacklib.utils.bash import bash_roe
+
 logger = log.get_logger(__name__)
 
 
@@ -205,11 +207,9 @@ def get_pci_passthrough_mapping(vm_dom):
 
 def get_pci_device_ids():
     # Get IDs using -Dmmnv (without second 'n' to avoid truncation)
-    cmd = "lspci -Dmmnv"
-    return cmd
+    return bash_roe("lspci -Dmmnv")
 
 
 def get_pci_device_names():
     # Get names using -Dmmv (without 'nn' to get full names)
-    cmd = "lspci -Dmmv"
-    return cmd
+    return bash_roe("lspci -Dmmv")
