@@ -11,6 +11,8 @@ import platform
 import re
 import tempfile
 import time
+import traceback
+import urlparse
 import uuid
 import string
 import socket
@@ -23,7 +25,7 @@ import subprocess
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
-from zstacklib.utils import http, lvm, ceph, form, pci
+from zstacklib.utils import http, lvm, ceph, form, pci, upload_task, traceable_shell
 from zstacklib.utils import qemu
 from zstacklib.utils import linux
 from zstacklib.utils import iptables
@@ -38,6 +40,8 @@ from zstacklib.utils import xmlobject
 from zstacklib.utils import ovs
 from zstacklib.utils import shell
 from zstacklib.utils.bash import *
+from zstacklib.utils.fileDownloader import FileDownloader
+from zstacklib.utils.fileUploader import FileUploader
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.ip import get_nic_driver_type
 from zstacklib.utils.ipmitool import get_sensor_info_from_ipmi
@@ -47,6 +51,7 @@ import zstacklib.utils.ip as ip
 from zstacklib.utils import netconfig
 import zstacklib.utils.plugin as plugin
 from kvmagent.plugins.prometheus import get_service_type_map, register_service_type
+from zstacklib.utils.upload_task import UploadTask
 
 host_arch = platform.machine()
 IS_AARCH64 = host_arch == 'aarch64'
@@ -853,6 +858,10 @@ class AttachVolumeRsp(kvmagent.AgentResponse):
         super(AttachVolumeRsp, self).__init__()
         self.device = None
 
+class DownloadFileRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(DownloadFileRsp, self).__init__()
+
 class PciDeviceTO(object):
     def __init__(self):
         self.name = ""
@@ -1068,6 +1077,8 @@ class HostPlugin(kvmagent.KvmAgent):
     GET_SENSORS_PATH = "/host/sensors/get"
     UPDATE_NQN_PATH = "/host/nqn/update"
     UPDATE_ISCSI_INITIATOR_NAME_PATH = "/host/iscsiinitiatorname/update"
+
+    UPLOAD_PROTO = "upload://"
 
     def __init__(self):
         self.IS_YUM = False
@@ -3666,6 +3677,59 @@ done
 
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def download_file(self, req):
+        rsp = DownloadFileRsp()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+
+        def _prepare_upload(cmd):
+            class FileUploadDaemon(plugin.TaskDaemon):
+                def __init__(self, task):
+                    super(FileUploadDaemon, self).__init__(cmd, 'fileUpload')
+                    self.task = task
+                    self.task.close = self.close
+
+                def _cancel(self):
+                    if self.task.completed:
+                        return
+                    self.task.lastError = "file [uuid: %s] upload canceled" % cmd.imageUuid
+
+            dstPath = cmd.installPath
+            task = UploadTask("apiUuid", cmd.installPath, dstPath)
+            FileUploadDaemon(task).start()
+
+        def _get_upload_path(req):
+            host = req[http.REQUEST_HEADER]['Host']
+            UPLOAD_IMAGE_PATH = "/host/file/upload"
+            return 'http://' + host + UPLOAD_IMAGE_PATH
+
+        if cmd.url.startswith(self.UPLOAD_PROTO):
+            _prepare_upload(cmd)
+            rsp.size = 0
+            rsp.uploadPath = _get_upload_path(req)
+            return jsonobject.dumps(rsp)
+
+        fleDownloader = FileDownloader("reporter", cmd)
+        fleDownloader.download()
+
+        file_name = os.path.basename(cmd.installPath)
+        md5 = linux.calculate_md5(file_name)
+        if cmd.url.endswith('.tar.gz'):
+            shell.run('tar -xzf %s -C %s' % (cmd.installPath, md5 + time.time()))
+        elif cmd.url.endswith('.zip'):
+            shell.run('unzip %s -d %s' % (cmd.installPath, md5 + time.time()))
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def upload_file(self, req):
+        rsp = DownloadFileRsp()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        downloader = FileUploader(rsp, cmd)
+        downloader.uplaod()
+
+        return jsonobject.dumps(rsp)
+
     @property
     def libvirt_version(self):
         return linux.get_libvirt_version()
@@ -3881,6 +3945,11 @@ done
         http_server.register_async_uri(self.GET_SENSORS_PATH, self.get_sensors)
         http_server.register_async_uri(self.UPDATE_NQN_PATH, self.update_nqn)
         http_server.register_async_uri(self.UPDATE_ISCSI_INITIATOR_NAME_PATH, self.update_iscsi_initiator_name)
+
+        DOWNLOAD_IMAGE_PATH = "/host/file/download"
+        UPLOAD_IMAGE_PATH = "/host/file/upload"
+        http_server.register_async_uri(DOWNLOAD_IMAGE_PATH, self.download_file)
+        http_server.register_async_uri(UPLOAD_IMAGE_PATH, self.upload_file)
 
         self.heartbeat_timer = {}
         filepath = r'/etc/libvirt/qemu/networks/autostart/default.xml'
