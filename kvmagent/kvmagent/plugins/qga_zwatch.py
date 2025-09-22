@@ -1,18 +1,18 @@
-import os.path
-import time
-import libvirt
 import json
 import threading
+import time
+from enum import Enum
+
+import libvirt
 
 from kvmagent import kvmagent
+from kvmagent.plugins import vm_plugin
 from zstacklib.utils import http
 from zstacklib.utils import jsonobject
 from zstacklib.utils import lock
 from zstacklib.utils import log
-from zstacklib.utils import shell
 from zstacklib.utils import thread
 from zstacklib.utils.qga import VmQga
-from kvmagent.plugins import vm_plugin
 
 log.configure_log('/var/log/zstack/zstack-kvmagent.log')
 logger = log.get_logger(__name__)
@@ -49,9 +49,9 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
 
     def __init__(self):
         self.state = False
-        self.vm_list = {}
         self.vm_nic_info = {}
         self.running_vm_list = []
+        self.new_vm_zwatch_state = {}
         self.qga_state = {}
         self.tools_state = {}
         self.running_vm_lock = threading.Lock()
@@ -78,33 +78,60 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
                     try:
                         if not self.state or http.AsyncUirHandler.STOP_WORLD:
                             break
-                        logger.debug('update vm list')
                         domains = get_domains()
                         vm_states, vm_dict = get_guest_tools_states(domains)
-                        self.report_vm_qga_state({
-                            vmUuid: qgaStatus.qgaRunning for vmUuid, qgaStatus in vm_states.items()
-                        }, {
-                            vmUuid: qgaStatus.zsToolsFound for vmUuid, qgaStatus in vm_states.items()
-                        })
                         # remove stopped vm which in running_vm_list
-                        logger.debug('debug: vm list: %s' % self.running_vm_list)
+                        logger.debug('current QGA running vm list (count: %d): %s' %
+                                     (len(self.running_vm_list), self.running_vm_list))
                         last_monitor_vm_list = self.running_vm_list[:]
                         with self.running_vm_lock:
                             self.running_vm_list = [
                                 vmUuid for vmUuid, qgaStatus in vm_states.items() if qgaStatus.qgaRunning
                             ]
-                        new_vm_list = set(self.running_vm_list) - set(last_monitor_vm_list)
-                        logger.debug('debug: new vm list: %s' % new_vm_list)
+                            new_vm_list = set(self.running_vm_list) - set(last_monitor_vm_list)
+                            self.new_vm_zwatch_state = {}
+                            for vmUuid in new_vm_list:
+                                self.new_vm_zwatch_state[vmUuid] = ZwatchState.PENDING
                         for vmUuid in new_vm_list:
                             # new vm found
                             qga = vm_dict.get(vmUuid)
                             if qga:
                                 self.zwatch_qga_monitor_vm(vmUuid, qga)
-                        for vmUuid in self.running_vm_list:
+                        start = time.time()
+                        # wait for all new vm qga state
+                        deadline = start + self.push_interval_time * 1.25
+                        while time.time() < deadline:
+                            with self.running_vm_lock:
+                                if all(state != ZwatchState.PENDING for state in self.new_vm_zwatch_state.values()):
+                                    break
+                            time.sleep(0.25)
+
+                        if any(state == ZwatchState.FAIL for state in self.new_vm_zwatch_state.values()):
+                            with self.running_vm_lock:
+                                for vmUuid, state in self.new_vm_zwatch_state.items():
+                                    if state == ZwatchState.FAIL and vmUuid in vm_states:
+                                        vm_states[vmUuid].qgaRunning = False
+                                        new_vm_list.remove(vmUuid)
+
+                        logger.debug('recently detected vm list without QGA (count: %d): %s' %
+                                     (len(new_vm_list), new_vm_list))
+                        # report qga state after starting zwatch monitor for new vm
+                        self.report_vm_qga_state({
+                            vmUuid: qgaStatus.qgaRunning for vmUuid, qgaStatus in vm_states.items()
+                        }, {
+                            vmUuid: qgaStatus.zsToolsFound for vmUuid, qgaStatus in vm_states.items()
+                        })
+                        with self.running_vm_lock:
+                            get_nic_vm_list = self.running_vm_list[:]
+                        for vmUuid in get_nic_vm_list:
                             qga = vm_dict.get(vmUuid)
                             if qga:
                                 self.qga_get_vm_nic(vmUuid, qga)
-                        time.sleep(self.scan_interval_time)
+                        # try to keep the same intervals
+                        sleep_time = self.scan_interval_time - (time.time() - start)
+                        if sleep_time > 0:
+                            time.sleep(sleep_time)
+
                     except Exception as e:
                         logger.debug('qga zwatch monitor reboot, crash due to [%s]' % str(e))
                         time.sleep(self.scan_interval_time)
@@ -144,9 +171,10 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
     def zwatch_qga_monitor_vm(self, uuid, qga):
         while True:
             try:
-                if uuid not in self.running_vm_list:
-                    logger.debug('vm[%s] has been stop running' % uuid)
-                    break
+                with self.running_vm_lock:
+                    if uuid not in self.running_vm_list:
+                        logger.debug('vm[%s] has been stop running' % uuid)
+                        break
                 if qga.os and 'mswindows' in qga.os:
                     zwatch_vm_info_path = self.WIN_ZWATCH_VM_INFO_PATH
                     zwatch_vm_metric_path = self.WIN_ZWATCH_VM_METRIC_PATH
@@ -161,8 +189,7 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
                 dhcpStatus = not qga.guest_file_is_exist(zwatch_vm_info_path)
                 # skip when dhcp enable
                 if dhcpStatus:
-                    with self.running_vm_lock:
-                        self.running_vm_list.remove(uuid)
+                    self.set_running_vm_state(uuid, ZwatchState.SUCCESS)
                     break
                 _, qgaZWatch = qga.guest_file_read(zwatch_vm_info_path)
                 logger.debug('vm[%s] start monitor with qga' % uuid)
@@ -172,8 +199,7 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
                     ret = qga.guest_file_write(zwatch_vm_info_path, uuid)
                     if ret == 0:
                         logger.debug('config vm[%s], write qga zwatch qga vm.info failed' % uuid)
-                        with self.running_vm_lock:
-                            self.running_vm_list.remove(uuid)
+                        self.set_running_vm_state(uuid, ZwatchState.FAIL)
                         break
                     # switch zwatch mode to qga
                     qga.guest_exec_cmd_no_exitcode(zwatch_restart_cmd)
@@ -181,11 +207,11 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
                 _, vmMetrics = qga.guest_file_read(zwatch_vm_metric_path)
                 if vmMetrics:
                     push_metrics_to_gateway(self.PROMETHEUS_PUSHGATEWAY_URL, uuid, vmMetrics)
+                self.set_running_vm_state(uuid, ZwatchState.SUCCESS)
                 time.sleep(self.push_interval_time)
             except Exception as e:
-                logger.debug('vm[%s] end monitor with qga due to [%s]' % (uuid, str(e)))
-                with self.running_vm_lock:
-                    self.running_vm_list.remove(uuid)
+                logger.warn('vm[%s] end monitor with qga due to [%s]' % (uuid, str(e)))
+                self.set_running_vm_state(uuid, ZwatchState.FAIL)
                 break
 
     @kvmagent.replyerror
@@ -226,6 +252,13 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
             raise kvmagent.KvmError("cannot find SEND_COMMAND_URL, unable to transmit vm operation to management node")
         http.json_dump_post(url, VmQgaState(qga_state_json, tools_state_json), {'commandpath': '/vm/qgastate/report'})
 
+    def set_running_vm_state(self, uuid, state):
+        with self.running_vm_lock:
+            if state == ZwatchState.FAIL and uuid in self.running_vm_list:
+                self.running_vm_list.remove(uuid)
+            if uuid in self.new_vm_zwatch_state:
+                self.new_vm_zwatch_state[uuid] = state
+
 
 class VmQgaStatus:
     def __init__(self):
@@ -246,6 +279,12 @@ class VmQgaState:
     def __init__(self, qga_state, tools_state):
         self.qgaState = qga_state
         self.toolsState = tools_state
+
+
+class ZwatchState(Enum):
+    PENDING = 0
+    SUCCESS = 1
+    FAIL = 2
 
 
 @vm_plugin.LibvirtAutoReconnect
@@ -369,4 +408,3 @@ def get_nic_info_for_windows_2008(uuid, qga):
     mac_to_ip_json = json.dumps(mac_to_ip, indent=4)
     logger.debug('vm[%s] get nic info all: [%s]' % (uuid, mac_to_ip_json))
     return mac_to_ip_json
-
