@@ -23,7 +23,7 @@ import subprocess
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
-from zstacklib.utils import http, lvm, ceph, form, pci
+from zstacklib.utils import http, lvm, ceph, form, pci, report, upload_task
 from zstacklib.utils import qemu
 from zstacklib.utils import linux
 from zstacklib.utils import iptables
@@ -38,6 +38,7 @@ from zstacklib.utils import xmlobject
 from zstacklib.utils import ovs
 from zstacklib.utils import shell
 from zstacklib.utils.bash import *
+from zstacklib.utils.file_downloader import FileDownloader
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.ip import get_nic_driver_type
 from zstacklib.utils.ipmitool import get_sensor_info_from_ipmi
@@ -47,6 +48,7 @@ import zstacklib.utils.ip as ip
 from zstacklib.utils import netconfig
 import zstacklib.utils.plugin as plugin
 from kvmagent.plugins.prometheus import get_service_type_map, register_service_type
+from zstacklib.utils.upload_task import UploadTasks, UploadTask, StorageObject, UploadHandler
 
 host_arch = platform.machine()
 IS_AARCH64 = host_arch == 'aarch64'
@@ -853,6 +855,28 @@ class AttachVolumeRsp(kvmagent.AgentResponse):
         super(AttachVolumeRsp, self).__init__()
         self.device = None
 
+class DownloadFileRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(DownloadFileRsp, self).__init__()
+        self.md5sum = None
+
+class UploadFileRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(UploadFileRsp, self).__init__()
+
+class UploadProgressRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(UploadProgressRsp, self).__init__()
+        self.apiId = None
+        self.completed = False
+        self.progress = 0
+        self.size = 0
+        self.actualSize = 0
+        self.installPath = None
+        self.lastOpTime = 0
+        self.downloadSize = 0
+        self.md5sum = None
+
 class PciDeviceTO(object):
     def __init__(self):
         self.name = ""
@@ -971,6 +995,80 @@ class UpdateConfigration(object):
                 linux.write_file(grub_rocky_env, env)
         bash_o("modprobe vfio && modprobe vfio-pci")
 
+class FileObject(StorageObject):
+    def __init__(self, file_path):
+        super(FileObject, self).__init__()
+        self.file_path = file_path
+        self.offset = 0
+        try:
+            self.file_obj = open(file_path, 'r+b')
+            self.size = os.path.getsize(file_path)
+        except (IOError, OSError) as e:
+            raise IOError("Failed to open file %s: %s" % (file_path, str(e)))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.file_obj.close()
+
+    def seek(self, offset):
+        self.offset = min(offset, self.size)
+        self.file_obj.seek(self.offset)
+
+    def read(self, n):
+        self.file_obj.seek(self.offset)
+        length = min(self.size - self.offset, n)
+        content = self.file_obj.read(length)
+        self.offset += len(content)
+        return content
+
+    def write(self, content):
+        self.file_obj.seek(self.offset)
+        self.file_obj.write(content)
+        self.offset += len(content)
+        self.file_obj.flush()
+
+    def close(self):
+        self.file_obj.close()
+
+class FileSystemUploadTask(UploadTask):
+    def __init__(self, task_uuid, install_path):
+        super(FileSystemUploadTask, self).__init__(task_uuid, install_path)
+
+    def complete_upload(self):
+        self.success()
+
+    def create_object(self, slice_offset):
+        dir_path = os.path.dirname(self.installPath)
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path)
+
+        self.create_file_if_not_exists()
+        file_obj = FileObject(self.installPath)
+        file_obj.seek(slice_offset)
+        return file_obj
+
+    def create_file_if_not_exists(self):
+        if self.task_created:
+            return
+
+        with lock.NamedLock("upload-file-task-%s" % self.taskUuid):
+            if not self.task_created:
+                r, _, e = bash_roe("fallocate -l %s %s" % (self.expectedSize, self.installPath))
+                if r != 0:
+                    raise Exception("Failed to allocate file space for %s, because %s " % (self.installPath, str(e)))
+                self.task_created = True
+
+    def check_capacity(self, required_size):
+        dir_path = os.path.dirname(self.installPath)
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path)
+
+        _, avail = linux.get_disk_capacity_by_df(dir_path)
+        if avail <= required_size:
+            return "dstPath capacity not enough for size: %d, available: %d" % (required_size, avail)
+
 logger = log.get_logger(__name__)
 
 def _get_memory(word):
@@ -1068,6 +1166,10 @@ class HostPlugin(kvmagent.KvmAgent):
     GET_SENSORS_PATH = "/host/sensors/get"
     UPDATE_NQN_PATH = "/host/nqn/update"
     UPDATE_ISCSI_INITIATOR_NAME_PATH = "/host/iscsiinitiatorname/update"
+    KVM_HOST_FILE_DOWNLOAD_PATH = "/host/file/download"
+    FILE_UPLOAD_PATH = "/host/file/upload"
+    FILE_UPLOAD_PROGRESS_PATH = "/host/file/progress"
+    DELETE_BITS_PATH = "/host/bits/delete"
 
     def __init__(self):
         self.IS_YUM = False
@@ -3666,6 +3768,107 @@ done
 
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def download_file(self, req):
+        rsp = DownloadFileRsp()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        UPLOAD_PROTO = "upload://"
+
+        def _prepare_upload():
+            class FileUploadDaemon(plugin.TaskDaemon):
+                def __init__(self, task):
+                    super(FileUploadDaemon, self).__init__(cmd, 'fileUpload')
+                    self.task = task
+                    self.task.close = self.close
+
+                def _cancel(self):
+                    if self.task.completed:
+                        return
+                    self.task.lastError = "file[%s] upload canceled" % cmd.installPath
+                    linux.rm_file_force(cmd.installPath)
+
+            task = FileSystemUploadTask(cmd.threadContext.api, cmd.installPath)
+            self.upload_tasks.add_task(task)
+            FileUploadDaemon(task).start()
+
+        def _get_upload_path():
+            host = req[http.REQUEST_HEADER]['Host']
+            UPLOAD_IMAGE_PATH = "/host/file/upload"
+            return 'http://' + host + UPLOAD_IMAGE_PATH
+
+        if cmd.url.startswith(UPLOAD_PROTO):
+            _prepare_upload()
+            rsp.size = 0
+            rsp.uploadPath = _get_upload_path()
+            return jsonobject.dumps(rsp)
+
+        reporter = report.Report.from_spec(cmd, "DownloadFile")
+        fileDownloader = FileDownloader(reporter, cmd)
+        success, error = fileDownloader.download()
+        if not success:
+            rsp.success = False
+            rsp.error = error if error else 'download failed'
+            return jsonobject.dumps(rsp)
+
+        rsp.md5 = linux.calculate_md5(cmd.installPath)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def upload_file(self, req):
+        try:
+            UploadHandler(req, self.upload_tasks).handle_upload()
+        except Exception, e:
+            logger.exception("File upload failed: %s", str(e))
+
+    @kvmagent.replyerror
+    def get_upload_progress(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        task = self.upload_tasks.get_task(cmd.apiId)
+        if task is None:
+            raise Exception('file not found')
+
+        def _get_file_size(file_path):
+            return os.path.getsize(file_path) if os.path.exists(file_path) else 0
+
+        rsp = UploadProgressRsp()
+        rsp.apiId = cmd.apiId
+        rsp.completed = task.completed
+        rsp.installPath = task.installPath
+        rsp.size = task.expectedSize
+        rsp.actualSize = task.expectedSize
+        rsp.downloadSize = task.checked_download_size()
+        rsp.lastOpTime = long(task.lastOpTime) * 1000
+        if task.downloadSize == 0:
+            rsp.progress = 0
+        elif task.completed and not task.lastError:
+            rsp.size = _get_file_size(task.installPath)
+            rsp.md5sum = linux.calculate_md5(task.installPath)
+            rsp.progress = 100
+        else:
+            rsp.progress = task.downloadSize * 90 / task.expectedSize
+
+        if task.lastError is not None:
+            rsp.success = False
+            rsp.error = task.lastError
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def delete_bits(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+        try:
+            if cmd.folder:
+                linux.rm_dir_checked(cmd.path)
+            else:
+                linux.rm_file_checked(cmd.path)
+        except linux.VolumeInUseError:
+            rsp.success = False
+            rsp.error = "%s %s is still in use, unable to delete" % ("dir" if cmd.folder else "file", cmd.path)
+            rsp.inUse = True
+            return jsonobject.dumps(rsp)
+        rsp.success = True
+        return jsonobject.dumps(rsp)
+
     @property
     def libvirt_version(self):
         return linux.get_libvirt_version()
@@ -3881,11 +4084,17 @@ done
         http_server.register_async_uri(self.GET_SENSORS_PATH, self.get_sensors)
         http_server.register_async_uri(self.UPDATE_NQN_PATH, self.update_nqn)
         http_server.register_async_uri(self.UPDATE_ISCSI_INITIATOR_NAME_PATH, self.update_iscsi_initiator_name)
+        http_server.register_async_uri(self.KVM_HOST_FILE_DOWNLOAD_PATH, self.download_file)
+        http_server.register_raw_uri(self.FILE_UPLOAD_PATH, self.upload_file)
+        http_server.register_async_uri(self.FILE_UPLOAD_PROGRESS_PATH, self.get_upload_progress)
+        http_server.register_async_uri(self.DELETE_BITS_PATH, self.delete_bits)
 
         self.heartbeat_timer = {}
         filepath = r'/etc/libvirt/qemu/networks/autostart/default.xml'
         if os.path.exists(filepath):
             os.unlink(filepath)
+
+        self.upload_tasks = UploadTasks()
 
     def stop(self):
         if self.host_socket is not None:
