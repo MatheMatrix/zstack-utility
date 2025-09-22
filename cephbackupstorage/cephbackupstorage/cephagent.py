@@ -162,14 +162,14 @@ def replyerror(func):
             return jsonobject.dumps(rsp)
     return wrap
 
-class UploadParam(object):
-    def __init__(self):
-        self.image_uuid = None
-        self.image_size = 0
-        self.slice_index = 0
-        self.slice_offset = 0
-        self.slice_size = 0
-        self.slice_md5 = None
+# class UploadParam(object):
+#     def __init__(self):
+#         self.image_uuid = None
+#         self.image_size = 0
+#         self.slice_index = 0
+#         self.slice_offset = 0
+#         self.slice_size = 0
+#         self.slice_md5 = None
 
 
 class UploadTask(object):
@@ -252,37 +252,37 @@ class UploadTask(object):
             self.downloadSize += delta
 
 
-class UploadTasks(object):
-    MAX_RECORDS = 80
-
-    def __init__(self):
-        self.tasks = {}
-
-    def _expunge_oldest_task(self):
-        key, ts = '',  linux.get_current_timestamp()
-        for k in self.tasks:
-            task = self.tasks[k]
-
-            if task.is_running():
-                continue
-
-            if task.lastOpTime < ts:
-                key, ts = k, task.lastOpTime
-
-        if key != '': del(self.tasks[key])
-
-
-    @lock.lock('ceph-upload-task')
-    def add_task(self, t):
-        # type: (UploadTask) -> None
-        if len(self.tasks) > self.MAX_RECORDS:
-            self._expunge_oldest_task()
-        self.tasks[t.imageUuid] = t
-
-    @lock.lock('ceph-upload-task')
-    def get_task(self, image_uuid):
-        # type: (str) -> UploadTask
-        return self.tasks.get(image_uuid)
+# class UploadTasks(object):
+#     MAX_RECORDS = 80
+#
+#     def __init__(self):
+#         self.tasks = {}
+#
+#     def _expunge_oldest_task(self):
+#         key, ts = '',  linux.get_current_timestamp()
+#         for k in self.tasks:
+#             task = self.tasks[k]
+#
+#             if task.is_running():
+#                 continue
+#
+#             if task.lastOpTime < ts:
+#                 key, ts = k, task.lastOpTime
+#
+#         if key != '': del(self.tasks[key])
+#
+#
+#     @lock.lock('ceph-upload-task')
+#     def add_task(self, t):
+#         # type: (UploadTask) -> None
+#         if len(self.tasks) > self.MAX_RECORDS:
+#             self._expunge_oldest_task()
+#         self.tasks[t.imageUuid] = t
+#
+#     @lock.lock('ceph-upload-task')
+#     def get_task(self, image_uuid):
+#         # type: (str) -> UploadTask
+#         return self.tasks.get(image_uuid)
 
 # ------------------------------------------------------------------ #
 

@@ -130,6 +130,7 @@ def get_device_map(path, option=""):
 def get_data_bitmap(path, max_length, zero, data, qemu_img_command_option=""):
     map = get_device_map(path, qemu_img_command_option)
     json_map = jsonobject.loads(map)
+
     result = {}
     for item in json_map:
         if item['zero'] is zero and item['data'] is data:

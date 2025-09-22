@@ -9290,6 +9290,13 @@ host side snapshot files chian:
             for volume_info in volume_infos:
                 bitmap_map = _get_volume_bitmap(volume_info)
                 volume_info.bitmapBase64 = qemu.compress_and_encode_bitmap(bitmap_map)
+
+                logger.debug("-----------------------------------------------------------------")
+                logger.debug(volume_info)
+                logger.debug(bitmap_map)
+                logger.debug(volume_info.bitmapBase64)
+                logger.debug("-----------------------------------------------------------------")
+
                 infos.append(volume_info)
 
         except Exception as e:

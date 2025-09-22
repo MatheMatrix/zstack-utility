@@ -11,6 +11,8 @@ import platform
 import re
 import tempfile
 import time
+import traceback
+import urlparse
 import uuid
 import string
 import socket
@@ -23,7 +25,7 @@ import subprocess
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
-from zstacklib.utils import http, lvm, ceph, form, pci
+from zstacklib.utils import http, lvm, ceph, form, pci, upload_task, traceable_shell
 from zstacklib.utils import qemu
 from zstacklib.utils import linux
 from zstacklib.utils import iptables
@@ -3664,6 +3666,90 @@ done
         else:
             raise Exception("do not support volume type")
 
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def upload_file(self, req):
+        def percentage_callback(percent, url):
+            reporter.progress_report(int(percent))
+
+        def use_wget(url, name, workdir, timeout):
+            return linux.wget(url, workdir=workdir, rename=name, timeout=timeout, interval=2, callback=percentage_callback, callback_data=url)
+
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+
+        t_shell = traceable_shell.get_shell(cmd)
+        rsp = DownloadResponse()
+
+
+        # 检测物理机 指定目录的容量，如果容量不足 则报错返回。
+
+        URL_HTTP = 'http'
+        URL_HTTPS = 'https'
+        URL_SFTP = 'sftp'
+        URL_FTP = 'ftp'
+        URL_NFS = 'nfs'
+        supported_schemes = [URL_HTTP, URL_HTTPS, URL_FTP, URL_SFTP]
+        if cmd.urlScheme not in supported_schemes:
+            rsp.success = False
+            rsp.error = 'unsupported url scheme[%s], SimpleSftpBackupStorage only supports %s' % (cmd.urlScheme, supported_schemes)
+            return jsonobject.dumps(rsp)
+
+        path = os.path.dirname(cmd.installPath)
+        if not os.path.exists(path):
+            os.makedirs(path, 0777)
+        image_name = os.path.basename(cmd.installPath)
+        install_path = cmd.installPath
+
+        timeout = cmd.timeout if cmd.timeout else 7200
+        url = urlparse.urlparse(cmd.url)
+        if cmd.urlScheme in [URL_HTTP, URL_HTTPS, URL_FTP]:
+            try:
+                cmd.url = linux.shellquote(cmd.url)
+                ret = use_wget(cmd.url, image_name, path, timeout)
+                if ret != 0:
+                    linux.rm_file_force(install_path)
+                    rsp.success = False
+                    rsp.error = 'http/https/ftp download failed, [wget -O %s %s] returns value %s' % (image_name, cmd.url, ret)
+                    return jsonobject.dumps(rsp)
+            except linux.LinuxError as e:
+                linux.rm_file_force(install_path)
+                traceback.format_exc()
+                rsp.success = False
+                rsp.error = str(e)
+                return jsonobject.dumps(rsp)
+        elif cmd.urlScheme == URL_SFTP:
+            ssh_pass_file = None
+            port = (url.port, 22)[url.port is None]
+
+            class SftpDownloadDaemon(plugin.TaskDaemon):
+                def _cancel(self):
+                    pass
+
+                def _get_percent(self):
+                    return os.stat(install_path).st_size / (total_size / 100) if os.path.exists(install_path) else 0
+
+                def __exit__(self, exc_type, exc_val, exc_tb):
+                    super(SftpDownloadDaemon, self).__exit__(exc_type, exc_val, exc_tb)
+                    if ssh_pass_file:
+                        linux.rm_file_force(ssh_pass_file)
+                    if exc_val is not None:
+                        linux.rm_file_force(install_path)
+                        traceback.format_exc()
+
+            with SftpDownloadDaemon(cmd, "DownloadImage"):
+                sftp_cmd = "sftp -P %d -o BatchMode=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -b /dev/stdin %s@%s " \
+                           "<<EOF\n%%s\nEOF\n" % (port, url.username, url.hostname)
+                if url.password is not None:
+                    ssh_pass_file = linux.write_to_temp_file(url.password)
+                    sftp_cmd = 'sshpass -f %s %s' % (ssh_pass_file, sftp_cmd)
+
+                total_size = int(shell.call(sftp_cmd % ("ls -l " + url.path)).splitlines()[1].split()[4])
+                t_shell.call(sftp_cmd % ("reget %s %s" % (url.path, install_path)))
+        elif cmd.urlScheme == "upload://":
+            pass
+
+        rsp.md5Sum = 'md5sum'
         return jsonobject.dumps(rsp)
 
     @property
