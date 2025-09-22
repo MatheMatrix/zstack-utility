@@ -15,7 +15,7 @@ import json
 external_conf = {}
 external_conf['do_lunmap'] = 'false'
 
-cluster = None
+cluster = dict()
 ioctx = dict()
 images = dict()
 
@@ -38,14 +38,14 @@ class HeartbeatIOResult(object):
 
 def get_cluster(conf_pth):
     global cluster
-    if not cluster:
+    if conf_pth not in cluster:
         temp_cluster = rados.Rados(conffile=conf_pth, conf=external_conf)
         temp_cluster.connect()
         if temp_cluster.state == 'connected':
-            cluster = temp_cluster
+            cluster[conf_pth] = temp_cluster
         else:
             raise Exception("failed to connect cluster, please check your configuration.")
-    return cluster
+    return cluster[conf_pth]
 
 
 def get_ioctx(pool_name, conf_path):
@@ -176,8 +176,8 @@ def exit(sig, stack):
         image.close()
     for ctx in ioctx.values():
         ctx.close()
-    if cluster is not None:
-        cluster.shutdown()
+    for cl in cluster.values():
+        cl.shutdown()
     sys.exit(0)
 
 
