@@ -7,9 +7,7 @@ import zstacklib.utils.jsonobject as jsonobject
 
 from zstacklib.utils.bash import *
 
-
 logger = log.get_logger(__name__)
-
 
 ZBSADM_BIN_PATH = "/usr/local/bin/zbsadm"
 ZBS_BIN_PATH = "/usr/bin/zbs"
@@ -22,6 +20,12 @@ CBD_PREFIX = "cbd"
 CBD_VOLUME_PATH = CBD_PREFIX + ":{}/{}/{}"
 CBD_SNAPSHOT_PATH = CBD_VOLUME_PATH + "@{}"
 CLUSTER_UUID_SUPPORTED_VERSION = "1.5.1"
+
+
+class ClientInfo(object):
+    def __init__(self, ip, port):
+        self.ip = ip
+        self.port = port
 
 
 def is_clonal_type(file_type):
@@ -40,6 +44,7 @@ def parse_cbd_path(path):
         snapshot = None
     return physical_pool, logical_pool, volume, snapshot
 
+
 """
 ZBS Storage UUID Output Behavior:
 --------------------------------
@@ -48,6 +53,8 @@ v1.5.1 ~ v1.6.0 : UUID output enabled but returns status code 1 (ERROR)
 > v1.6.0        : Fixed to return status code 0 (SUCCESS)
 c.f. http://jira.zstack.io/browse/ZBS-327
 """
+
+
 @in_bash
 def get_cluster_uuid(cluster_version):
     if cluster_version and LooseVersion(cluster_version) < LooseVersion(CLUSTER_UUID_SUPPORTED_VERSION):
@@ -66,7 +73,8 @@ def get_version():
 
 
 def deploy_client(ip, port, username, password):
-    return shell.call("%s client deploy --host %s --port %s -u %s -p %s --silent" % (ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password)))
+    return shell.call("%s client deploy --host %s --port %s -u %s -p %s --silent" % (
+        ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password)))
 
 
 def query_mds_status_info():
@@ -83,9 +91,28 @@ def query_volume_info(logical_pool, volume):
 
 def query_children_volume(logical_pool, volume, snapshot, is_snapshot=False):
     if is_snapshot:
-        return shell.call("%s children --snappath %s/%s@%s --user %s --format json" % (ZBS_BIN_PATH, logical_pool, volume, snapshot, ZBS_USER_NAME))
+        return shell.call("%s children --snappath %s/%s@%s --user %s --format json" % (
+            ZBS_BIN_PATH, logical_pool, volume, snapshot, ZBS_USER_NAME))
     else:
-        return shell.call("%s children --path %s/%s --user %s --format json" % (ZBS_BIN_PATH, logical_pool, volume, ZBS_USER_NAME))
+        return shell.call(
+            "%s children --path %s/%s --user %s --format json" % (ZBS_BIN_PATH, logical_pool, volume, ZBS_USER_NAME))
+
+
+def is_support_get_volume_clients():
+    return shell.run("%s list client --help | grep -E '\--path'" % ZBS_BIN_PATH) == 0
+
+
+def get_volume_clients(logical_pool, volume):
+    o = shell.call("%s list client --path %s/%s --format json" % (ZBS_BIN_PATH, logical_pool, volume))
+    r = jsonobject.loads(o)
+    if r.error.code != 0:
+        raise Exception('failed to get volume[%s/%s] clients, error[%s]' % (logical_pool, volume, r.error.message))
+
+    clients = []
+    for ret in r.result:
+        clients.append(ClientInfo(ret.ip, ret.port))
+
+    return clients
 
 
 def query_snapshot_info(logical_pool, volume):
@@ -112,7 +139,9 @@ def get_physical_pool_name(logical_pool):
 
 
 def create_volume(logical_pool, volume, size, unit):
-    return shell.call("%s create file --path %s/%s --size %s%s --stripecount %d --stripeunit %s --user %s --format json" % (ZBS_BIN_PATH, logical_pool, volume, size, unit, STRIPE_VOLUME_COUNT, STRIPE_VOLUME_UINT, ZBS_USER_NAME))
+    return shell.call(
+        "%s create file --path %s/%s --size %s%s --stripecount %d --stripeunit %s --user %s --format json" % (
+            ZBS_BIN_PATH, logical_pool, volume, size, unit, STRIPE_VOLUME_COUNT, STRIPE_VOLUME_UINT, ZBS_USER_NAME))
 
 
 @linux.retry(times=30, sleep_time=5)
@@ -133,11 +162,13 @@ def delete_volume_and_snapshots(logical_pool, volume):
 
 
 def clone_volume(logical_pool, volume, snapshot, dst_volume):
-    return shell.call("%s clone --snappath %s/%s@%s --dstpath %s/%s --user %s --format json" % (ZBS_BIN_PATH, logical_pool, volume, snapshot, logical_pool, dst_volume, ZBS_USER_NAME))
+    return shell.call("%s clone --snappath %s/%s@%s --dstpath %s/%s --user %s --format json" % (
+        ZBS_BIN_PATH, logical_pool, volume, snapshot, logical_pool, dst_volume, ZBS_USER_NAME))
 
 
 def expand_volume(logical_pool, volume, size, unit):
-    return shell.call("%s update file --path %s/%s --size %s%s --user %s --format json" % (ZBS_BIN_PATH, logical_pool, volume, size, unit, ZBS_USER_NAME))
+    return shell.call("%s update file --path %s/%s --size %s%s --user %s --format json" % (
+        ZBS_BIN_PATH, logical_pool, volume, size, unit, ZBS_USER_NAME))
 
 
 def flatten_volume(logical_pool, volume):
@@ -145,7 +176,8 @@ def flatten_volume(logical_pool, volume):
 
 
 def create_snapshot(logical_pool, volume, snapshot):
-    return shell.call("%s create snapshot --snappath %s/%s@%s --user %s --format json" % (ZBS_BIN_PATH, logical_pool, volume, snapshot, ZBS_USER_NAME))
+    return shell.call("%s create snapshot --snappath %s/%s@%s --user %s --format json" % (
+        ZBS_BIN_PATH, logical_pool, volume, snapshot, ZBS_USER_NAME))
 
 
 def delete_snapshots(logical_pool, volume, file_infos):
@@ -153,7 +185,8 @@ def delete_snapshots(logical_pool, volume, file_infos):
         o = query_children_volume(logical_pool, volume, file_info.fileName, True)
         r = jsonobject.loads(o)
         if r.error.code != 0:
-            raise Exception('failed to list children of [%s/%s@%s], error[%s]' % (logical_pool, volume, file_info.fileName, r.error.message))
+            raise Exception('failed to list children of [%s/%s@%s], error[%s]' % (
+                logical_pool, volume, file_info.fileName, r.error.message))
         if r.result.hasattr('fileNames'):
             raise Exception('the snapshot[%s/%s@%s] is still in used' % (logical_pool, volume, file_info.fileName))
 
@@ -162,9 +195,11 @@ def delete_snapshots(logical_pool, volume, file_infos):
             o = unprotect_snapshot(logical_pool, volume, file_info.fileName)
             r = jsonobject.loads(o)
             if r.error.code != 0:
-                raise Exception('failed to unprotect snapshot[%s/%s@%s], error[%s]' % (logical_pool, volume, file_info.fileName, r.error.message))
+                raise Exception('failed to unprotect snapshot[%s/%s@%s], error[%s]' % (
+                    logical_pool, volume, file_info.fileName, r.error.message))
 
-        shell.call("%s delete snapshot --snappath %s/%s@%s --format json" % (ZBS_BIN_PATH, logical_pool, volume, file_info.fileName))
+        shell.call("%s delete snapshot --snappath %s/%s@%s --format json" % (
+            ZBS_BIN_PATH, logical_pool, volume, file_info.fileName))
 
 
 def protect_snapshot(logical_pool, volume, snapshot):
@@ -180,12 +215,15 @@ def rollback_snapshot(logical_pool, volume, snapshot):
 
 
 def cbd_to_nbd(desc, port, install_path):
-    cmd = "qemu-nbd -D %s -f raw -p %d --fork %s_%s_:%s" % (desc, port, install_path, ZBS_USER_NAME, ZBS_CLIENT_CONF_PATH)
+    cmd = "qemu-nbd -D %s -f raw -p %d --fork %s_%s_:%s" % (
+        desc, port, install_path, ZBS_USER_NAME, ZBS_CLIENT_CONF_PATH)
     logger.debug(cmd)
     os.system(cmd)
 
 
 def copy(src_path, dst_path, is_snapshot=False):
     if is_snapshot:
-        return shell.call("%s copy --snappath %s --dstpath %s --user %s --format json" % (ZBS_BIN_PATH, src_path, dst_path, ZBS_USER_NAME))
-    return shell.call("%s copy --path %s --dstpath %s --user %s --format json" % (ZBS_BIN_PATH, src_path, dst_path, ZBS_USER_NAME))
+        return shell.call("%s copy --snappath %s --dstpath %s --user %s --format json" % (
+            ZBS_BIN_PATH, src_path, dst_path, ZBS_USER_NAME))
+    return shell.call(
+        "%s copy --path %s --dstpath %s --user %s --format json" % (ZBS_BIN_PATH, src_path, dst_path, ZBS_USER_NAME))
