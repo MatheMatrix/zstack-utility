@@ -4,6 +4,7 @@
 '''
 import abc
 import contextlib
+import hashlib
 import os
 import os.path
 import resource
@@ -3364,3 +3365,13 @@ def check_unixsock_connection(socket_path, timeout=10):
 def is_virtual_machine():
     product_name = shell.call("dmidecode -s system-product-name").strip()
     return product_name == "KVM Virtual Machine" or product_name == "KVM" or product_name == "VMware Virtual Platform"
+
+def calculate_md5(file_path, buffer_size=65536):
+    md5_hash = hashlib.md5()
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(buffer_size)
+            if not chunk:
+                break
+            md5_hash.update(chunk)
+    return md5_hash.hexdigest()
