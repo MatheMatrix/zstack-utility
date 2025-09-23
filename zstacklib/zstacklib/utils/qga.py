@@ -1,6 +1,5 @@
 import base64
 import json
-import re
 import time
 
 import libvirt
@@ -43,6 +42,7 @@ VM_CONFIG_SYNC_OS_VERSION_SUPPORT = {
 # qga command wait 30 seconds
 qga_exec_wait_interval = 1
 qga_exec_wait_retry = 120
+qga_command_timeout = 3
 qga_channel_state_connected = 'connected'
 qga_channel_state_disconnected = 'disconnected'
 
@@ -129,7 +129,7 @@ class VmQga(object):
                      % (self.vm_uuid, self.state, self.version, self.os, self.os_version, self.supported_commands))
     '''
 
-    def call_qga_command(self, command, args=None, timeout=3):
+    def call_qga_command(self, command, args=None, timeout=qga_command_timeout):
         """
         Execute QEMU-GA command and return result as dict or None on error
 
@@ -179,7 +179,10 @@ class VmQga(object):
         return parsedRet
 
     def guest_exec_status(self, pid):
-        ret = self.call_qga_command("guest-exec-status", args={'pid': pid})
+        return self.guest_exec_status_with_timeout(pid, qga_command_timeout)
+
+    def guest_exec_status_with_timeout(self, pid, timeout):
+        ret = self.call_qga_command("guest-exec-status", args={'pid': pid}, timeout=timeout)
         if not ret or 'exited' not in ret:
             raise Exception('guest-exec-status exception')
         return ret
@@ -286,27 +289,29 @@ class VmQga(object):
                 ret_data = decode_with_fallback(result['err-data'])
             return ret_data.replace('\r\n', '')
 
-        ret = self.guest_exec(
-            {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--config", config], "capture-output": output})
+        try:
+            ret = self.guest_exec(
+                {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--config", config], "capture-output": output})
 
-        if ret and "pid" in ret:
-            pid = ret["pid"]
-        else:
-            return 1, 'qga exec zs-tools operate {} failed for vm {}, config: {}, ret: {}'.format(
-                operate, self.vm_uuid, log.mask_sensitive_field(config_obj, config), get_return_data(ret))
+            if ret and "pid" in ret:
+                pid = ret["pid"]
+            else:
+                raise Exception(get_return_data(ret))
 
-        ret = None
-        for i in range(retry):
-            time.sleep(wait)
-            ret = self.guest_exec_status(pid)
-            if ret['exited']:
-                break
+            ret = None
+            for i in range(retry):
+                time.sleep(wait)
+                ret = self.guest_exec_status_with_timeout(pid, 15)
+                if ret['exited']:
+                    break
 
-        if not ret or not ret.get('exited'):
-            return 1, 'qga exec zs-tools operate {} timeout for vm {}, config: {}, ret: {}'.format(
-                    operate, self.vm_uuid, log.mask_sensitive_field(config_obj, config), get_return_data(ret))
+            if not ret or not ret.get('exited'):
+                raise Exception(get_return_data(ret))
 
-        return ret.get('exitcode'), get_return_data(ret)
+            return ret.get('exitcode'), get_return_data(ret)
+        except Exception as e:
+            return 1, 'qga exec zs-tools operate {} failed for vm {}, config: {}, error: {}'.format(
+                    operate, self.vm_uuid, log.mask_sensitive_field(config_obj, config), e)
 
     def guest_exec_wmic(self, cmd, output=True, wait=qga_exec_wait_interval, retry=qga_exec_wait_retry):
         cmd_parts = cmd.split('|')
