@@ -1688,6 +1688,11 @@ def get_cpu_num():
     out = shell.call("grep -c processor /proc/cpuinfo")
     return int(out)
 
+def get_cpu_core_num():
+    sockets = get_socket_num()
+    cpu_cores_per_socket = shell.call("lscpu | awk -F':' '/per socket/{print $NF}'")
+    return int(cpu_cores_per_socket.strip()) * sockets
+
 def get_cpu_model():
     vendor_id = shell.call("lscpu |awk -F':' '{IGNORECASE=1}/^ *Vendor ID/{print $2}'").strip()
     model_name = shell.call("lscpu |awk -F':' '{IGNORECASE=1}/^ *Model name/{print $2}'").strip()
