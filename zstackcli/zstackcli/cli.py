@@ -1222,9 +1222,14 @@ Parse command parameters error:
         self.no_secure = options.no_secure
         self.curl = options.curl
         self.api = api.Api(host=self.hostname, port=self.port, curl=self.curl)
-        xxf = self.get_client_ip(hostname=self.hostname, port=int(self.port))
+        try:
+            client_ip = self.get_client_ip(hostname=self.hostname, port=int(self.port))
+        except Exception as e:
+            self.print_error('Failed to connect to ZStack service at %s:%s. Please verify the service is running and accessible.' % (self.hostname, self.port))
+            self.print_error('Error details: %s' % str(e))
+            sys.exit(1)
         self.headers = {
-            "X-Forwarded-For": xxf,
+            "X-Forwarded-For": client_ip,
             "User-Agent": "cli"
         }
 
