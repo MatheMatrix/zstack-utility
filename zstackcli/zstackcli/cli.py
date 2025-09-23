@@ -1222,7 +1222,11 @@ Parse command parameters error:
         self.no_secure = options.no_secure
         self.curl = options.curl
         self.api = api.Api(host=self.hostname, port=self.port, curl=self.curl)
-        xxf = self.get_client_ip(hostname=self.hostname, port=int(self.port))
+        try:
+            xxf = self.get_client_ip(hostname=self.hostname, port=int(self.port))
+        except Exception:
+            self.print_error('The target ZStack service port is abnormal. Please check whether the ZStack service is running properly.')
+            sys.exit(1)
         self.headers = {
             "X-Forwarded-For": xxf,
             "User-Agent": "cli"
