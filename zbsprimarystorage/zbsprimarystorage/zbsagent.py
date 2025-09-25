@@ -505,7 +505,7 @@ class ZbsAgent(plugin.TaskManager):
         rsp = AgentResponse()
 
         fullname = "qemu-nbd -D cbd2nbd.%d -f raw -p %d" % (cmd.port, cmd.port)
-        linux.kill_process_by_fullname(fullname, 9)
+        linux.kill_process_by_fullname(fullname, 15)
 
         return jsonobject.dumps(rsp)
 
