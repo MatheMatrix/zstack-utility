@@ -2449,6 +2449,13 @@ install_zops(){
     fi
 }
 
+install_or_upgrade_vops(){
+    echo_title "Install or upgrade VOps"
+    echo ""
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    show_spinner is_install_vops
+}
+
 setup_install_param(){
     echo_title "Setup Install Parameters"
     echo ""
@@ -3168,6 +3175,16 @@ is_upgrade_zops(){
     zops_installer_bin=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/zops -name "zops-installer*" | head -n 1`
     bash $zops_installer_bin upgrade >>$ZSTACK_INSTALL_LOG 2>&1
     [ $? -eq 0 ] && pass
+}
+
+is_install_vops(){
+    echo_subtitle "Install or Upgrade VOps"
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    vops_installer_bin="/opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/vops-installation/vops-install.sh"
+    [[ ! -f "$vops_installer_bin" ]] && fail2 "failed to find VOps installation file"
+    bash $vops_installer_bin >>$ZSTACK_INSTALL_LOG 2>&1
+    [ $? -ne 0 ] && fail2 "failed to install VOps"
+    pass
 }
 
 get_higher_version() {
@@ -4265,8 +4282,9 @@ if [ x"$UPGRADE" = x'y' ]; then
     #only upgrade zstack
     upgrade_zstack
 
-    #Upgrade or install zops
+    #Upgrade or install zops / vops
     install_zops
+    install_or_upgrade_vops
 
     #Setup audit.rules
     setup_audit_file
@@ -4489,8 +4507,9 @@ if [ -z $NOT_START_ZSTACK ]; then
     [ -z $VERSION ] && VERSION=`awk '{print $NF}' $ZSTACK_VERSION`
 fi
 
-#Install/Upgrade zops
+#Install/Upgrade zops / vops
 install_zops
+install_or_upgrade_vops
 
 echo ""
 echo_star_line
