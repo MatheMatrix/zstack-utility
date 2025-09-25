@@ -478,7 +478,7 @@ def get_huawei_gpu_aios_rank_table_dict(npu_ids, iswindows=False):
 
 
 def reload_hygon_gpu_driver_cmd():
-    cmd = "hy-smi --unloaddriver && hy-smi --loaddriver"
+    cmd = "hy-smi --loaddriver"
     return cmd
 
 

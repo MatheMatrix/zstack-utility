@@ -2982,9 +2982,7 @@ sysctl -w vm.nr_hugepages=$pageNum
         return jsonobject.dumps(rsp)
 
     def _reload_gpu_driver(self, addr, vendor_name, rsp):
-        vendor_handler_map = {
-            VendorEnum.HAIGUANG: self._reload_haiguang_gpu_driver,
-        }
+        vendor_handler_map = {}
         handler = vendor_handler_map.get(vendor_name)
         if handler:
             handler(addr, rsp)
