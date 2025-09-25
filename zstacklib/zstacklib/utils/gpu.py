@@ -1,4 +1,5 @@
 import os
+import threading
 
 from zstacklib.utils import log, linux
 from zstacklib.utils.bash import *
@@ -278,7 +279,7 @@ def get_huawei_gpu_aios_rank_table_dict(npu_ids, iswindows=False):
 
 
 def reload_hygon_gpu_driver_cmd():
-    cmd = "hy-smi --unloaddriver && hy-smi --loaddriver"
+    cmd = "hy-smi --loaddriver"
     return cmd
 
 
