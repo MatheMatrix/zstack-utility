@@ -415,6 +415,10 @@ class ZbsAgent(plugin.TaskManager):
             return jsonobject.dumps(rsp)
 
         _, logical_pool, volume, _ = zbsutils.parse_cbd_path(cmd.path)
+        if "?r=" in volume:
+            logger.info("volume[%s] is a remote volume, skip get clients" % volume)
+            return jsonobject.dumps(rsp)
+
         rsp.clients = zbsutils.get_volume_clients(logical_pool, volume)
         return jsonobject.dumps(rsp)
 
