@@ -1,5 +1,4 @@
 defaults {
-    find_multipaths yes
     user_friendly_names yes
 }
 blacklist_exceptions {
