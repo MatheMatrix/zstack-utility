@@ -40,6 +40,9 @@ class Mirror:
         self.dnic = None
         self.bridge = None
         self.mName = None
+        self.dstEndPointType = "VmNic"  # "VmNic" or "UpLinkPort"
+        self.interfaceName = None
+        self.vlanId = 0
 
 class ApplyMirrorSessionOnKVMCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -158,16 +161,40 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
         ip link set dev vnic25.0 master br_monitor
         ip link set dev rec_vnic25.0 master br_monitor
         '''
-    def _apply_mirror_session_local(self, src_device_name, dst_device_name, direction, bridge_name):
+    def _apply_mirror_session_local(self, src_device_name, dst_device_name, direction, bridge_name, dstEndPointType):
         self._set_mirror_src_config(src_device_name, dst_device_name, direction)
-        self._set_mirror_dst_config(bridge_name, dst_device_name)
+        # 只有当镜像目标是虚拟机网卡时才需要桥接操作
+        if dstEndPointType == "VmNic":
+            self._set_mirror_dst_config(bridge_name, dst_device_name)
 
-    def _release_mirror_session_local(self, src_device_name, dst_device_name, direction, bridge_name):
+    def _release_mirror_session_local(self, src_device_name, dst_device_name, direction, bridge_name, dstEndPointType):
         self._clear_mirror_src_config(src_device_name, dst_device_name, direction)
-        self._clear_mirror_dst_config(bridge_name, dst_device_name, dst_device_name)
+        # 只有当镜像目标是虚拟机网卡时才需要桥接恢复操作
+        if dstEndPointType == "VmNic":
+            self._clear_mirror_dst_config(bridge_name, dst_device_name, dst_device_name)
 
     def _get_mirror_device_name(self, tunnel, mirror):
         return "send" + mirror.mName, "recv" + mirror.mName
+
+
+
+    def _get_physical_target_device(self, mirror):
+        """获取物理机目标设备名称"""
+        if mirror.dstEndPointType == "UpLinkPort":
+            # 镜像到物理机网卡
+            if mirror.interfaceName:
+                if mirror.vlanId == 0:
+                    return mirror.interfaceName
+                else:
+                    return "%s.%d".format(mirror.interfaceName, mirror.vlanId)
+            else:
+                raise Exception("interfaceName must be specified when dstEndPointType is UpLinkPort")
+        else:
+            # 镜像到虚拟机网卡（原有逻辑）
+            if mirror.dnic:
+                return mirror.dnic
+            else:
+                raise Exception("dnic must be specified when dstEndPointType is VmNic")
 
     def _del_if(self, alias, mirror_name):
         alias_path = '/sys/class/net/%s/ifalias' % mirror_name
@@ -192,7 +219,8 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
         "mirror":{"type":"Ingress","snic":"vnic47.0","dnic":"vnic47.1"},
         '''
         if cmd.isLocal:
-            self._apply_mirror_session_local(cmd.mirror.snic, cmd.mirror.dnic, cmd.mirror.type, cmd.mirror.bridge)
+            target_device = self._get_physical_target_device(cmd.mirror)
+            self._apply_mirror_session_local(cmd.mirror.snic, target_device, cmd.mirror.type, cmd.mirror.bridge, cmd.mirror.dstEndPointType)
         else:
             src_name, dst_name = self._get_mirror_device_name(cmd.tunnel, cmd.mirror)
             self._del_if(cmd.tunnel.uuid, src_name)
@@ -209,7 +237,8 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
         rsp = ReleaseMirrorSessionOnKVMResponse()
 
         if cmd.isLocal:
-            self._release_mirror_session_local(cmd.mirror.snic, cmd.mirror.dnic, cmd.mirror.type, cmd.mirror.bridge)
+            target_device = self._get_physical_target_device(cmd.mirror)
+            self._release_mirror_session_local(cmd.mirror.snic, target_device, cmd.mirror.type, cmd.mirror.bridge, cmd.mirror.dstEndPointType)
         else:
             rec_name,_ = self._get_mirror_device_name(cmd.tunnel, cmd.mirror)
             self._clear_mirror_src_config(cmd.mirror.snic, rec_name, cmd.mirror.type)
@@ -222,6 +251,10 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
     def apply_mirror_session_dest(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = ApplyMirrorSessionOnKVMResponse()
+
+        if cmd.mirror.dstEndPointType == "UpLinkPort":
+            rsp.error = "not supported operation"
+            return jsonobject.dumps(rsp)
 
         '''
         check if the endpoints of session both are in this host
@@ -236,8 +269,9 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
             self._del_if(cmd.tunnel.uuid, src_name)
             self._del_if(cmd.tunnel.uuid, dst_name)
             self._create_gre_device(cmd.tunnel, dst_name)
-            self._set_mirror_dst_config(cmd.mirror.bridge, cmd.mirror.dnic, dst_name)
-            self._set_redirect_config(dst_name, cmd.mirror.dnic)
+            target_device = self._get_physical_target_device(cmd.mirror)
+            self._set_mirror_dst_config(cmd.mirror.bridge, target_device, dst_name)
+            self._set_redirect_config(dst_name, target_device)
 
         logger.debug('successfully apply mirror device [%s] to device[%s]' % (cmd.mirror.snic, cmd.mirror.dnic))
 
@@ -249,13 +283,18 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = ReleaseMirrorSessionOnKVMResponse()
 
+        if cmd.mirror.dstEndPointType == "UpLinkPort":
+            rsp.error = "not supported operation"
+            return jsonobject.dumps(rsp)
+
         if cmd.isLocal:
             rsp.error = 'unable to release mirror device [%s] to device[%s] in same hypervisor' % (cmd.mirror.snic, cmd.mirror.dnic)
             rsp.success = False
         else:
             _,rec_name = self._get_mirror_device_name(cmd.tunnel, cmd.mirror)
-            self._clear_redirect_config(rec_name, cmd.mirror.dnic)
-            self._clear_mirror_dst_config(cmd.mirror.bridge, cmd.mirror.dnic, rec_name)
+            target_device = self._get_physical_target_device(cmd.mirror)
+            self._clear_redirect_config(rec_name, target_device)
+            self._clear_mirror_dst_config(cmd.mirror.bridge, target_device, rec_name)
             self._delete_gre_device(cmd.tunnel, rec_name)
             logger.debug('successfully release mirror device [%s] to device[%s]' % (cmd.mirror.snic, cmd.mirror.dnic))
 
