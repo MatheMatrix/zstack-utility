@@ -5,7 +5,7 @@ location /baremetal_instance_agent/v2/callback {
 
 location /baremetal_instance_agent/v2/hardwareinfos {
     proxy_set_header Host $host;
-    proxy_pass {{ mn_callback_uri }}/zstack/v1/baremetal2/chassis/ipmi/hardwareinfos;
+    proxy_pass {{ mn_callback_uri }}/cloud/v1/baremetal2/chassis/ipmi/hardwareinfos;
 }
 
 location /baremetal_instance_agent/v2/reportProgress {
