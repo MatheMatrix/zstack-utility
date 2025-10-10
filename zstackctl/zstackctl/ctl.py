@@ -1029,9 +1029,9 @@ def check_ha():
 
 class Ctl(object):
     IS_AARCH64 = platform.machine() == 'aarch64'
-    DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/zstack/'
+    DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/cloud/'
     USER_ZSTACK_HOME_DIR = os.path.expanduser('~zstack')
-    ZSTACK_TOOLS_DIR = os.path.join(USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/zstack/WEB-INF/classes/tools/')
+    ZSTACK_TOOLS_DIR = os.path.join(USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/cloud/WEB-INF/classes/tools/')
     LAST_ALIVE_MYSQL_IP = "MYSQL_LATEST_IP"
     LAST_ALIVE_MYSQL_PORT = "MYSQL_LATEST_PORT"
     LOGGER_DIR = "/var/log/zstack/"
@@ -1075,7 +1075,7 @@ class Ctl(object):
         self.tomcat_xml_file_path = None
         self.verbose = False
         self.extra_arguments = None
-        self.http_call_cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:%s" -d \'%s\' --retry 5 http://%s:%s/zstack/asyncrest/sendcommand'
+        self.http_call_cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:%s" -d \'%s\' --retry 5 http://%s:%s/cloud/asyncrest/sendcommand'
 
     def register_command(self, cmd):
         assert cmd.name, "command name cannot be None"
@@ -1653,9 +1653,9 @@ def create_check_mgmt_node_command(timeout=10, mn_node='127.0.0.1'):
     mn_port = get_mn_port()
     # tag::get_zstack_status[]
     if what_tool == USE_CURL:
-        return ShellCmd('''curl --noproxy --connect-timeout=1 --retry %s --retry-delay 0 --retry-max-time %s --max-time %s -H "Content-Type: application/json" -d '{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' http://%s:%s/zstack/api''' % (timeout, timeout, timeout, mn_node, mn_port))
+        return ShellCmd('''curl --noproxy --connect-timeout=1 --retry %s --retry-delay 0 --retry-max-time %s --max-time %s -H "Content-Type: application/json" -d '{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' http://%s:%s/cloud/api''' % (timeout, timeout, timeout, mn_node, mn_port))
     elif what_tool == USE_WGET:
-        return ShellCmd('''wget --no-proxy -O- --tries=%s --timeout=1  --header=Content-Type:application/json --post-data='{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' http://%s:%s/zstack/api''' % (timeout, mn_node, mn_port))
+        return ShellCmd('''wget --no-proxy -O- --tries=%s --timeout=1  --header=Content-Type:application/json --post-data='{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' http://%s:%s/cloud/api''' % (timeout, mn_node, mn_port))
         # end::get_zstack_status[]
     else:
         return None
@@ -10331,7 +10331,7 @@ class StartUiCmd(Command):
         if not mn_port:
             mn_port = 8080
         content_json = simplejson.dumps(sns_cmd)
-        http_cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/sns/globalpropertyupdated" -d \'%s\' --retry 5 http://%s:%s/zstack/asyncrest/sendcommand' % (content_json, mn_ip, mn_port)
+        http_cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/sns/globalpropertyupdated" -d \'%s\' --retry 5 http://%s:%s/cloud/asyncrest/sendcommand' % (content_json, mn_ip, mn_port)
         logger.debug('report sns global property updated')
         ShellCmd(http_cmd)
 
