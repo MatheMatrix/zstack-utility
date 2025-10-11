@@ -131,7 +131,7 @@ copy_arg.dest = dest_pkg
 copy(copy_arg, host_post_info)
 
 
-command = "/bin/cp /usr/local/zstack/zsn-agent/bin/zsn-agent /usr/local/zstack/zsn-agent/bin/zsn-agent.bak || touch /usr/local/zstack/zsn-agent/bin/zsn-agent.bak"
+command = "/bin/cp /usr/local/cloud/zsn-agent/bin/zsn-agent /usr/local/cloud/zsn-agent/bin/zsn-agent.bak || touch /usr/local/cloud/zsn-agent/bin/zsn-agent.bak"
 run_remote_command(add_true_in_command(command), host_post_info)
 
 # name: install zstack-network
@@ -139,14 +139,14 @@ command = "bash %s %s " % (dest_pkg, fs_rootpath)
 run_remote_command(add_true_in_command(command), host_post_info)
 
 # integrate zstack-network with systemd
-run_remote_command(add_true_in_command("/bin/cp -f /usr/local/zstack/zsn-agent/bin/zstack-network-agent.service /usr/lib/systemd/system/"), host_post_info)
+run_remote_command(add_true_in_command("/bin/cp -f /usr/local/cloud/zsn-agent/bin/zstack-network-agent.service /usr/lib/systemd/system/"), host_post_info)
 
 if tmout is None:
     tmout = 960
 
 successTmout, stdoutTmout = run_remote_command("grep -- '-tmout %s' /usr/lib/systemd/system/zstack-network-agent.service" % int(tmout), host_post_info, True, True)
-successMd5, stdoutMd5 = run_remote_command(add_true_in_command("md5sum /usr/local/zstack/zsn-agent/bin/zsn-agent"), host_post_info, True, True)
-successOldMd5, oldMd5 = run_remote_command(add_true_in_command("md5sum /usr/local/zstack/zsn-agent/bin/zsn-agent.bak"), host_post_info, True, True)
+successMd5, stdoutMd5 = run_remote_command(add_true_in_command("md5sum /usr/local/cloud/zsn-agent/bin/zsn-agent"), host_post_info, True, True)
+successOldMd5, oldMd5 = run_remote_command(add_true_in_command("md5sum /usr/local/cloud/zsn-agent/bin/zsn-agent.bak"), host_post_info, True, True)
 
 msg = Msg()
 post_url = host_post_info.post_url
