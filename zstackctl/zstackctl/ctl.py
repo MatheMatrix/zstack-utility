@@ -8449,9 +8449,9 @@ class BootstrapCmd(Command):
         return False
 
     def run(self, args):
-        shell('id -u zstack 2>/dev/null || (useradd -d %s zstack -s /bin/false && mkdir -p %s && chown -R zstack.zstack %s)' % (ctl.USER_ZSTACK_HOME_DIR, ctl.USER_ZSTACK_HOME_DIR, ctl.USER_ZSTACK_HOME_DIR))
-        shell("grep 'zstack' /etc/sudoers || echo 'zstack        ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers")
-        shell('mkdir -p %s && chown zstack:zstack %s' % (ctl.USER_ZSTACK_HOME_DIR, ctl.USER_ZSTACK_HOME_DIR))
+        shell('id -u cloud 2>/dev/null || (useradd -d %s cloud -s /bin/false && mkdir -p %s && chown -R cloud.cloud %s)' % (ctl.USER_ZSTACK_HOME_DIR, ctl.USER_ZSTACK_HOME_DIR, ctl.USER_ZSTACK_HOME_DIR))
+        shell("grep 'cloud' /etc/sudoers || echo 'cloud        ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers")
+        shell('mkdir -p %s && chown cloud:cloud %s' % (ctl.USER_ZSTACK_HOME_DIR, ctl.USER_ZSTACK_HOME_DIR))
 
 
 class UpgradeManagementNodeCmd(Command):

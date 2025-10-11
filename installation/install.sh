@@ -1129,29 +1129,29 @@ You can also add '-q' to installer, then Installer will help you to remove it.
     ia_check_ip_hijack
 
     #add user: zstack and add sudo permission for it.
-    id -u zstack >/dev/null 2>&1
+    id -u cloud >/dev/null 2>&1
     if [ $? -ne 0 ]; then
-        useradd -d $ZSTACK_INSTALL_ROOT zstack >/dev/null >>$ZSTACK_INSTALL_LOG 2>&1
-    elif [ $(readlink -f $ZSTACK_INSTALL_ROOT) != $(echo ~zstack) ] ; then
+        useradd -d $ZSTACK_INSTALL_ROOT cloud >/dev/null >>$ZSTACK_INSTALL_LOG 2>&1
+    elif [ $(readlink -f $ZSTACK_INSTALL_ROOT) != $(echo ~cloud) ] ; then
         #stop zstack before change zstack home dir
         which zstack-ctl >/dev/null 2>&1
         if [ $? -eq 0 ] ;then
-            echo "\n${PRODUCT_NAME,,} host changed, before: $(echo ~zstack), now: $ZSTACK_INSTALL_ROOT, stopping ${PRODUCT_NAME,,}" >>$ZSTACK_INSTALL_LOG
+            echo "\n${PRODUCT_NAME,,} host changed, before: $(echo ~cloud), now: $ZSTACK_INSTALL_ROOT, stopping ${PRODUCT_NAME,,}" >>$ZSTACK_INSTALL_LOG
             zstack-ctl stop >/dev/null 2>&1
         fi
 
-        killall -u zstack >/dev/null 2>&1
+        killall -u cloud >/dev/null 2>&1
         i=5
-        while (ps -u zstack > /dev/null) && ((i-- > 0)); do
+        while (ps -u cloud > /dev/null) && ((i-- > 0)); do
             sleep 1
         done
-        killall -9 -u zstack >/dev/null 2>&1
+        killall -9 -u cloud >/dev/null 2>&1
         usermod -d $ZSTACK_INSTALL_ROOT zstack >/dev/null >>$ZSTACK_INSTALL_LOG 2>&1
     fi
-    zstack_home=`eval echo ~zstack`
+    zstack_home=`eval echo ~cloud`
     if [ ! -d $zstack_home ];then
         mkdir -p $zstack_home >>$ZSTACK_INSTALL_LOG 2>&1
-        chown -R zstack:zstack $zstack_home >>$ZSTACK_INSTALL_LOG 2>&1
+        chown -R cloud:cloud $zstack_home >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     do_enable_sudo
     do_config_limits

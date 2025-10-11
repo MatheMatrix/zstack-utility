@@ -289,13 +289,13 @@ do_check_system(){
     ia_check_ip_hijack
 
     #add user: zstack and add sudo permission for it.
-    id -u zstack >/dev/null 2>&1 || useradd -d $ZSTACK_INSTALL_ROOT zstack 
-    zstack_home=`eval echo ~zstack`
+    id -u cloud >/dev/null 2>&1 || useradd -d $ZSTACK_INSTALL_ROOT cloud
+    zstack_home=`eval echo ~cloud`
     if [ ! -d $zstack_home ];then
         mkdir -p $zstack_home >>$ZSTACK_INSTALL_LOG 2>&1
-        chown -R zstack.zstack $zstack_home >>$ZSTACK_INSTALL_LOG 2>&1
+        chown -R cloud.cloud $zstack_home >>$ZSTACK_INSTALL_LOG 2>&1
     fi
-    grep 'zstack' /etc/sudoers >/dev/null || echo 'zstack        ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers
+    grep 'cloud' /etc/sudoers >/dev/null || echo 'cloud        ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers
     grep '^root' /etc/sudoers >/dev/null || echo 'root ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers
     sed -i '/requiretty$/d' /etc/sudoers
 
@@ -828,15 +828,15 @@ cs_config_zstack_properties(){
     rsa_key_folder=${ZSTACK_INSTALL_ROOT}/${CATALINA_ZSTACK_CLASSES}/ansible/rsaKeys
     /bin/rm -f ${rsa_key_folder}/*
     ssh-keygen -f ${rsa_key_folder}/id_rsa -N '' -q
-    chown -R zstack.zstack ${rsa_key_folder}
+    chown -R cloud.cloud ${rsa_key_folder}
     pass
 }
 
 cs_chown_install_root(){
     echo_subtitle "Change Ownership of ZStack Install Root"
-    chown -R zstack.zstack $ZSTACK_INSTALL_ROOT >>$ZSTACK_INSTALL_LOG 2>&1
+    chown -R cloud.cloud $ZSTACK_INSTALL_ROOT >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -ne 0 ];then
-        fail "failed to chown for $ZSTACK_INSTALL_ROOT with zstack.zstack"
+        fail "failed to chown for $ZSTACK_INSTALL_ROOT with cloud.cloud"
     fi
     pass
 }
