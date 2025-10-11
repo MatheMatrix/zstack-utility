@@ -39,7 +39,7 @@ unzip_tomcat_deploy_war() {
 
     warfile=$ZS_HOME/lib/zstack.war
     check_file $warfile
-    wardir=$tcathome/webapps/zstack
+    wardir=$tcathome/webapps/cloud
 
     mkdir -p $wardir
     unzip $warfile -d $wardir &>/dev/null

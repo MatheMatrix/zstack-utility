@@ -20,7 +20,7 @@ class CpRsp(AgentResponse):
         self.installPath = None
 
 class ImageStoreClient(object):
-    ZSTORE_CLI_BIN = "/usr/local/zstack/imagestore/bin/zstcli"
+    ZSTORE_CLI_BIN = "/usr/local/cloud/imagestore/bin/zstcli"
     ZSTORE_CLI_PATH = ZSTORE_CLI_BIN + " -rootca /var/lib/zstack/imagestorebackupstorage/package/certs/ca.pem"
     ZSTORE_PROTOSTR = "zstore://"
     ZSTORE_DEF_PORT = 8000
