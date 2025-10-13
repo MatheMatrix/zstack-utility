@@ -1028,8 +1028,8 @@ def check_ha():
 
 class Ctl(object):
     IS_AARCH64 = platform.machine() == 'aarch64'
-    DEFAULT_ZSTACK_HOME = '/usr/local/cloud/apache-tomcat/webapps/cloud/'
-    USER_ZSTACK_HOME_DIR = os.path.expanduser('~cloud')
+    DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/cloud/'
+    USER_ZSTACK_HOME_DIR = os.path.expanduser('~zstack')
     ZSTACK_TOOLS_DIR = os.path.join(USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/cloud/WEB-INF/classes/tools/')
     LAST_ALIVE_MYSQL_IP = "MYSQL_LATEST_IP"
     LAST_ALIVE_MYSQL_PORT = "MYSQL_LATEST_PORT"
@@ -3955,9 +3955,9 @@ class AddManagementNodeCmd(Command):
         command = "ssh -q -i %s -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@%s zstack-ctl " \
                   "start_node " % (key, host_info.host)
         (status, output) = commands.getstatusoutput(command)
-        command = "mkdir -p /usr/local/cloud/apache-tomcat/webapps/cloud/static/zstack-repo" \
-                  "ln -s /opt/zstack-dvd/x86_64 /usr/local/cloud/apache-tomcat/webapps/cloud/static/zstack-repo/x86_64" \
-                  "ln -s /opt/zstack-dvd/aarch64 /usr/local/cloud/apache-tomcat/webapps/cloud/static/zstack-repo/aarch64"
+        command = "mkdir -p /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo" \
+                  "ln -s /opt/zstack-dvd/x86_64 /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo/x86_64" \
+                  "ln -s /opt/zstack-dvd/aarch64 /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo/aarch64"
         run_remote_command(command, host_info, True, True)
         if status != 0:
             error("start node on host %s failed:\n %s" % (host_info.host, output))
@@ -5457,37 +5457,37 @@ echo $TIMEST >> /var/log/check-network.log
 
         copy_arg = CopyArg()
         copy_arg.src = galera_check_network_host1_file
-        copy_arg.dest = "/usr/local/cloud/check-network.sh"
+        copy_arg.dest = "/usr/local/zstack/check-network.sh"
         copy_arg.args = "mode='u+x,g+x,o+x'"
         copy(copy_arg,self.host1_post_info)
 
         copy_arg = CopyArg()
         copy_arg.src = galera_check_network_host2_file
-        copy_arg.dest = "/usr/local/cloud/check-network.sh"
+        copy_arg.dest = "/usr/local/zstack/check-network.sh"
         copy_arg.args = "mode='u+x,g+x,o+x'"
         copy(copy_arg,self.host2_post_info)
 
         # set cron task for network status
-        cron("check_node_2_status1","job=\"/usr/local/cloud/check-network.sh %s %s\"" % (self.host2_post_info.host,
+        cron("check_node_2_status1","job=\"/usr/local/zstack/check-network.sh %s %s\"" % (self.host2_post_info.host,
                                                                                          self.host2_post_info.gateway_ip),
                                                                                          self.host1_post_info)
-        cron("check_node_2_status2","job=\"sleep 30;/usr/local/cloud/check-network.sh %s %s\"" % (self.host2_post_info.host,
+        cron("check_node_2_status2","job=\"sleep 30;/usr/local/zstack/check-network.sh %s %s\"" % (self.host2_post_info.host,
                                                                                          self.host2_post_info.gateway_ip),
                                                                                          self.host1_post_info)
-        cron("check_node_1_status1","job=\"/usr/local/cloud/check-network.sh %s %s\"" % (self.host1_post_info.host,
+        cron("check_node_1_status1","job=\"/usr/local/zstack/check-network.sh %s %s\"" % (self.host1_post_info.host,
                                                                                          self.host1_post_info.gateway_ip),
                                                                                          self.host2_post_info)
-        cron("check_node_1_status2","job=\"sleep 30;/usr/local/cloud/check-network.sh %s %s\"" % (self.host1_post_info.host,
+        cron("check_node_1_status2","job=\"sleep 30;/usr/local/zstack/check-network.sh %s %s\"" % (self.host1_post_info.host,
                                                                                                  self.host1_post_info.gateway_ip),
                                                                                                  self.host2_post_info)
         if len(self.host_post_info_list) == 3:
-            cron("check_node_1_status1","job=\"/usr/local/cloud/check-network.sh %s %s\" state=absent" %
+            cron("check_node_1_status1","job=\"/usr/local/zstack/check-network.sh %s %s\" state=absent" %
                  (self.host1_post_info.host, self.host1_post_info.gateway_ip), self.host2_post_info)
-            cron("check_node_1_status2","job=\"sleep 30;/usr/local/cloud/check-network.sh %s %s\" state=absent" %
+            cron("check_node_1_status2","job=\"sleep 30;/usr/local/zstack/check-network.sh %s %s\" state=absent" %
                  (self.host1_post_info.host, self.host1_post_info.gateway_ip), self.host2_post_info)
-            cron("check_node_2_status1","job=\"/usr/local/cloud/check-network.sh %s %s\" state=absent" %
+            cron("check_node_2_status1","job=\"/usr/local/zstack/check-network.sh %s %s\" state=absent" %
                  (self.host2_post_info.host, self.host2_post_info.gateway_ip), self.host1_post_info)
-            cron("check_node_2_status2","job=\"sleep 30;/usr/local/cloud/check-network.sh %s %s\" state=absent" %
+            cron("check_node_2_status2","job=\"sleep 30;/usr/local/zstack/check-network.sh %s %s\" state=absent" %
                  (self.host2_post_info.host, self.host2_post_info.gateway_ip), self.host1_post_info)
 
         #config xinetd for service check
@@ -6626,7 +6626,7 @@ class ScanDatabaseBackupCmd(Command):
 
 
 def runImageStoreCliCmd(raw_bs_url, registry_port, command, is_exception=True):
-    ZSTORE_CLI_PATH = "/usr/local/cloud/imagestore/bin/zstcli"
+    ZSTORE_CLI_PATH = "/usr/local/zstack/imagestore/bin/zstcli"
     ZSTORE_CLI_CA = "/var/lib/zstack/imagestorebackupstorage/package/certs/ca.pem"
     ZSTORE_DEF_PORT = 8000
 
@@ -6638,7 +6638,7 @@ def runImageStoreCliCmd(raw_bs_url, registry_port, command, is_exception=True):
         return os.path.join(temp_dir, 'ca.pem')
 
     def check_server():
-        start_cmd = "/usr/local/cloud/imagestore/bin/zstore -conf /usr/local/cloud/imagestore/bin/zstore.yaml -logfile /var/log/zstack/zstack-store/zstore.log"
+        start_cmd = "/usr/local/zstack/imagestore/bin/zstore -conf /usr/local/zstack/imagestore/bin/zstore.yaml -logfile /var/log/zstack/zstack-store/zstore.log"
         ssh_cmd = "sshpass -p %s ssh -p %s -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no %s@%s" % (
             shell_quote(password), port, username, hostname)
 
@@ -7585,7 +7585,7 @@ class InstallManagementNodeCmd(Command):
 
     def install_argparse_arguments(self, parser):
         parser.add_argument('--host', help='target host IP user and password, for example, root:password@192.168.0.212, to install ZStack management node to a remote machine', required=True)
-        parser.add_argument('--install-path', help='the path on remote machine where Apache Tomcat will be installed, which must be an absolute path; [DEFAULT]: /usr/local/cloud', default='/usr/local/cloud')
+        parser.add_argument('--install-path', help='the path on remote machine where Apache Tomcat will be installed, which must be an absolute path; [DEFAULT]: /usr/local/zstack', default='/usr/local/zstack')
         parser.add_argument('--source-dir', help='the source folder containing Apache Tomcat package and zstack.war, if omitted, it will default to a path related to $ZSTACK_HOME')
         parser.add_argument('--debug', help="open Ansible debug option", action="store_true", default=False)
         parser.add_argument('--force-reinstall', help="delete existing Apache Tomcat and resinstall ZStack", action="store_true", default=False)
@@ -7769,12 +7769,12 @@ class InstallManagementNodeCmd(Command):
       script: $post_script
 
     - name: copy zstack.properties
-      copy: src=$properties_file dest={{root}}/apache-tomcat/webapps/cloud/WEB-INF/classes/zstack.properties
+      copy: src=$properties_file dest={{root}}/apache-tomcat/webapps/zstack/WEB-INF/classes/zstack.properties
 
     - name: mount zstack-dvd
       file:
         src: /opt/zstack-dvd
-        dest: $install_path/apache-tomcat/webapps/cloud/static/zstack-dvd
+        dest: $install_path/apache-tomcat/webapps/zstack/static/zstack-dvd
         state: link
         force: yes
 
@@ -7834,7 +7834,7 @@ foldername="$${filename%.*}"
 apache_path=$install_path/apache-tomcat
 unzip $apache -d $install_path
 ln -s $install_path/$$foldername $$apache_path
-unzip $zstack -d $$apache_path/webapps/cloud
+unzip $zstack -d $$apache_path/webapps/zstack
 
 chmod a+x $$apache_path/bin/*
 
@@ -7842,7 +7842,7 @@ cat >> $$apache_path/bin/setenv.sh <<EOF
 export CATALINA_OPTS=" -Djava.net.preferIPv4Stack=true -Dcom.sun.management.jmxremote=true"
 EOF
 
-install_script="$$apache_path/webapps/cloud/WEB-INF/classes/tools/install.sh"
+install_script="$$apache_path/webapps/zstack/WEB-INF/classes/tools/install.sh"
 
 eval "bash $$install_script zstack-ctl"
 eval "bash $$install_script zstack-cli"
@@ -7850,9 +7850,9 @@ eval "bash $$install_script zstack-cli"
 set +e
 grep "ZSTACK_HOME" ~/.bashrc > /dev/null
 if [ $$? -eq 0 ]; then
-    sed -i "s#export ZSTACK_HOME=.*#export ZSTACK_HOME=$$apache_path/webapps/cloud#" ~/.bashrc
+    sed -i "s#export ZSTACK_HOME=.*#export ZSTACK_HOME=$$apache_path/webapps/zstack#" ~/.bashrc
 else
-    echo "export ZSTACK_HOME=$$apache_path/webapps/cloud" >> ~/.bashrc
+    echo "export ZSTACK_HOME=$$apache_path/webapps/zstack" >> ~/.bashrc
 fi
 
 which ansible-playbook &> /dev/null
@@ -7877,18 +7877,18 @@ fi
 
         self.install_cleanup_routine(cleanup_post_script)
 
-        setup_account = '''id -u cloud >/dev/null 2>&1
+        setup_account = '''id -u zstack >/dev/null 2>&1
 if [ $$? -eq 0 ]; then
-    usermod -d $install_path cloud
+    usermod -d $install_path zstack
 else
-    useradd -d $install_path cloud && mkdir -p $install_path && chown -R cloud.cloud $install_path
+    useradd -d $install_path zstack && mkdir -p $install_path && chown -R zstack.zstack $install_path
 fi
-grep 'cloud' /etc/sudoers >/dev/null || echo 'cloud        ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers
+grep 'zstack' /etc/sudoers >/dev/null || echo 'zstack        ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers
 grep '^root' /etc/sudoers >/dev/null || echo 'root        ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers
 sed -i '/requiretty$$/d' /etc/sudoers
-chown -R cloud.cloud $install_path
-mkdir /home/cloud && chown -R cloud.cloud /home/cloud
-zstack-ctl setenv ZSTACK_HOME=$install_path/apache-tomcat/webapps/cloud
+chown -R zstack.zstack $install_path
+mkdir /home/zstack && chown -R zstack.zstack /home/zstack
+zstack-ctl setenv ZSTACK_HOME=$install_path/apache-tomcat/webapps/zstack
 '''
         t = string.Template(setup_account)
         setup_account = t.substitute({
@@ -8462,7 +8462,7 @@ class UpgradeManagementNodeCmd(Command):
         ctl.register_command(self)
 
     def install_argparse_arguments(self, parser):
-        parser.add_argument('--host', help='IP or DNS name of the machine to upgrade the management node, for example, zstack-ctl upgrade_management_node --host=192.168.0.212 --war-file=/usr/local/cloud/zstack.war, to upgrade ZStack management node to a remote machine', default=None)
+        parser.add_argument('--host', help='IP or DNS name of the machine to upgrade the management node, for example, zstack-ctl upgrade_management_node --host=192.168.0.212 --war-file=/usr/local/zstack/zstack.war, to upgrade ZStack management node to a remote machine', default=None)
         parser.add_argument('--war-file', help='path to zstack.war. A HTTP/HTTPS url or a path to a local zstack.war', required=True)
         parser.add_argument('--debug', help="open Ansible debug option", action="store_true", default=False)
         parser.add_argument('--ssh-key', help="the path of private key for SSH login $host; if provided, Ansible will use the specified key as private key to SSH login the $host", default=None)
@@ -8525,7 +8525,7 @@ class UpgradeManagementNodeCmd(Command):
 
             def restore_custom_pcidevice_xml():
                 info('restoring the customPciDevices.xml ...')
-                custom_pcidevice_xml_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/cloud/WEB-INF/classes/mevoco/pciDevice/')
+                custom_pcidevice_xml_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/zstack/WEB-INF/classes/mevoco/pciDevice/')
                 custom_pcidevice_xml_backup_path = os.path.join(upgrade_tmp_dir, 'zstack/WEB-INF/classes/mevoco/pciDevice/customPciDevices.xml')
                 if not os.path.isfile(custom_pcidevice_xml_backup_path):
                     info('no backup customPciDevices.xml found')
@@ -8541,7 +8541,7 @@ class UpgradeManagementNodeCmd(Command):
             def update_gray_upgrade_json():
                 info('update the grayUpgrade.json ...')
                 gray_upgrade_json_backup_path = os.path.join(upgrade_tmp_dir, 'zstack/WEB-INF/classes/grayUpgrade/grayUpgrade.json')
-                gray_upgrade_json_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/cloud/WEB-INF/classes/grayUpgrade/')
+                gray_upgrade_json_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/zstack/WEB-INF/classes/grayUpgrade/')
                 if not os.path.exists(gray_upgrade_json_backup_path):
                     info('no backup grayUpgrade.json found')
                     return
@@ -10877,7 +10877,7 @@ class MiniResetHostCmd(Command):
         self.target = {"local", "peer", "both"}
         self.script_path = "/tmp/reset_mini.py"
         self.local_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reset_mini.py")
-        self.key = "/usr/local/cloud/mini_fencer.key"
+        self.key = "/usr/local/zstack/mini_fencer.key"
         _, self.sn, _ = shell_return_stdout_stderr("dmidecode -s system-serial-number")
         self.sn = self.sn.strip()
 
@@ -11002,7 +11002,7 @@ class SharedBlockQcow2SharedVolumeFixCmd(Command):
         ctl.register_command(self)
 
         self.support_operations = ["convert_volume", "delete_qcow2_volume", "commit_snapshot_to_image", "delete_shared_volume_snapshots"]
-        self.key = "/usr/local/cloud/apache-tomcat/webapps/cloud/WEB-INF/classes/ansible/rsaKeys/id_rsa"
+        self.key = "/usr/local/zstack/apache-tomcat/webapps/zstack/WEB-INF/classes/ansible/rsaKeys/id_rsa"
         self.script_path = "/tmp/zstack-convert-volume.py"
 
     def install_argparse_arguments(self, parser):
