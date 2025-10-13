@@ -123,7 +123,7 @@ class DBUtil:
         class Properties:
 
             def __init__(self):
-                self.zstack_home = '/usr/local/zstack/apache-tomcat/webapps/zstack/'
+                self.zstack_home = '/usr/local/zstack/apache-tomcat/webapps/cloud/'
                 self.file_name = os.path.join(self.zstack_home, 'WEB-INF/classes/zstack.properties')
                 self.properties = {}
 
