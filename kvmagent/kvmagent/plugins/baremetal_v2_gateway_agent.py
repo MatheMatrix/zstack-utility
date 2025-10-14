@@ -211,7 +211,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
 
         # download pxe images from management node
         # static repo url like: http://10.10.0.1:8080/zstack/static/zstack-repo/x86_64/c76
-        mn_repo_url = 'http://{ip}:{port}/zstack/static/zstack-repo'.format(
+        mn_repo_url = 'http://{ip}:{port}/cloud/static/zstack-repo'.format(
             ip=network_obj.callback_ip, port=network_obj.callback_port)
 
         bm_temp_dir = tempfile.mkdtemp()
