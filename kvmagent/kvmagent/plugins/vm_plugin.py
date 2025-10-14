@@ -2012,6 +2012,7 @@ class MergeSnapshotDaemon(plugin.TaskDaemon):
             logger.debug("libvirt return live merge snapshot failure, but it succeed actually! "
                          "expected volume[install path: %s] backing file is %s. "
                          "check the vm xml meets expectations" % (self.base, current_backing))
+            return True
         else:
             logger.debug("live merge snapshot failed. expected backing %s, actually backing %s. "
                          "check the vm xml does not meet expectations" % (self.base, current_backing))
