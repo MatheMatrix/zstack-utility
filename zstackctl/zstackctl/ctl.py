@@ -8146,7 +8146,7 @@ yum clean all >/dev/null 2>&1
         command = "yum --disablerepo=* --enablerepo=zstack-mn repoinfo | grep Repo-baseurl | awk -F ' : ' '{ print $NF }'"
         (status, baseurl, stderr) = shell_return_stdout_stderr(command)
         if status != 0:
-            baseurl = 'http://localhost:%s/zstack/static/zstack-dvd/' % ctl.get_mn_port()
+            baseurl = 'http://localhost:%s/cloud/static/zstack-dvd/' % ctl.get_mn_port()
 
         with open('/opt/zstack-dvd/{}/{}/.repo_version'.format(ctl.BASEARCH, ctl.ZS_RELEASE)) as f:
             repoversion = f.readline().strip()
@@ -8652,7 +8652,7 @@ class UpgradeManagementNodeCmd(Command):
                 shell('cp %s %s' % (new_war.path, webapp_dir))
                 ShellCmd('unzip %s -d zstack' % os.path.basename(new_war.path), workdir=webapp_dir)()
                 #create local repo folder for possible zstack local yum repo
-                zstack_dvd_repo = '{}/zstack/static/zstack-repo'.format(webapp_dir)
+                zstack_dvd_repo = '{}/cloud/static/zstack-repo'.format(webapp_dir)
                 shell('rm -f {0}; mkdir -p {0};ln -s /opt/zstack-dvd/x86_64 {0}/x86_64; ln -s /opt/zstack-dvd/aarch64 {0}/aarch64; ln -s /opt/zstack-dvd/mips64el {0}/mips64el; ln -s /opt/zstack-dvd/loongarch64 {0}/loongarch64; chown -R zstack:zstack {0}'.format(zstack_dvd_repo))
 
             def restore_config():
