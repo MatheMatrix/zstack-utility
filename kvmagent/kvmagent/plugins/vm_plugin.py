@@ -11977,7 +11977,7 @@ host side snapshot files chian:
                 logger.debug("lv %s extend to %s sucess" % (path, extend_size))
 
         @thread.AsyncThread
-        @lock.lock("sharedblock-extend-vm-%s" % dom.name())
+        @lock.lock("sharedblock-extend-vm-%s" % dom.name(), blocking=False)
         def handle_event(dom, event_str):
             # type: (libvirt.virDomain, str) -> object
             vm_uuid = dom.name()
@@ -11985,6 +11985,9 @@ host side snapshot files chian:
                          (vm_uuid, event_str, LibvirtEventManager.suspend_event_to_string(detail)))
             disk_errors = dom.diskErrors()  # type: dict
             vm = get_vm_by_uuid_no_retry(vm_uuid, False)
+            if vm and vm.state != Vm.VM_STATE_PAUSED:
+                logger.debug("vm %s state is %s, skip to extend volume" % (vm_uuid, vm.state))
+                return
 
             if len(disk_errors) == 0:
                 syslog.syslog("no error in vm %s. skip to check and extend volume" % vm_uuid)

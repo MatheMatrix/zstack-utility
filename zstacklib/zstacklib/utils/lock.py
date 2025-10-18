@@ -9,6 +9,7 @@ import functools
 import log
 import os
 import fcntl
+import time
 #import typing
 
 _internal_lock = threading.RLock()
@@ -18,31 +19,55 @@ logger = log.get_logger(__name__)
 
 def _get_lock(name):
     with _internal_lock:
-        lock = _locks.get(name, threading.RLock())
-        if not name in _locks:
+        lock = _locks.get(name)
+        if lock is None:
+            lock = threading.RLock()
             _locks[name] = lock
         return lock
 
 class NamedLock(object):
-    def __init__(self, name):
+    def __init__(self, name, blocking=True, lock_retry_count=3, lock_retry_interval=1):
         self.name = name
         self.lock = None
+        self.blocking = blocking
+        self.lock_retry_count = lock_retry_count
+        self.lock_retry_interval = lock_retry_interval
+        self.acquired = False
 
     def __enter__(self):
         self.lock = _get_lock(self.name)
-        self.lock.acquire()
-        #logger.debug('%s got lock %s' % (threading.current_thread().name, self.name))
+        if self.blocking:
+            self.acquired = self.lock.acquire(True)
+        else:
+            for _ in range(self.lock_retry_count):
+                self.acquired = self.lock.acquire(False)
+                if self.acquired:
+                    break
+                time.sleep(self.lock_retry_interval)
+        return self
 
     def __exit__(self, type, value, traceback):
-        self.lock.release()
-        #logger.debug('%s released lock %s' % (threading.current_thread().name, self.name))
+        if not self.acquired:
+            return
+        try:
+            self.lock.release()
+        except Exception as e:
+            logger.debug('%s released lock %s error: %s' % (threading.current_thread().name, self.name, str(e)))
+
+def fail_lock_default_handler(f, *args, **kwargs):
+    logger.debug("thread %s failed to acquire lock to execute %s" % (threading.currentThread().ident, f.__name__))
 
 
-def lock(name='defaultLock'):
+def lock(name='defaultLock', blocking=True, lock_retry_count=3, lock_retry_interval=1, fail_lock_handler=fail_lock_default_handler):
     def wrap(f):
         @functools.wraps(f)
         def inner(*args, **kwargs):
-            with NamedLock(name):
+            with NamedLock(name, blocking, lock_retry_count, lock_retry_interval) as named_lock:
+                if not named_lock.acquired and fail_lock_handler is not None:
+                    return fail_lock_handler(f, *args, **kwargs)
+                elif not named_lock.acquired:
+                    return
+
                 retval = f(*args, **kwargs)
             return retval
         return inner
