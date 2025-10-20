@@ -231,13 +231,15 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             if r != 0:
                 msg = "get ovs port failed: {err}".format(err=e)
                 return self._logRestoreNicDriverMakeRsp(rsp, msg, cmd)
-            vnics = [vnic.strip() for vnic in o.split('\n') if vnic.strip()]
-            for vnic in vnics:
-                if vnic.startswith("vnic"):
-                    # delete vnic from ovs
-                    r,o = bash.bash_ro("ovs-vsctl --if-exists del-port br-int {vnic}".format(vnic=vnic))
-                    if r != 0:
-                        logger.warning("delete vnic:{vnic} failed: {err}".format(vnic=vnic, err=o))
+            vms = get_running_vms()
+            if len(vms) == 0:
+                vnics = [vnic.strip() for vnic in o.split('\n') if vnic.strip()]
+                for vnic in vnics:
+                    if vnic.startswith("vnic"):
+                        # delete vnic from ovs
+                        r,o = bash.bash_ro("ovs-vsctl --if-exists del-port br-int {vnic}".format(vnic=vnic))
+                        if r != 0:
+                            logger.warning("delete vnic:{vnic} failed: {err}".format(vnic=vnic, err=o))
 
             r, o, e = bash.bash_roe("systemctl restart openvswitch;systemctl restart ovn-controller")
             if r != 0:
