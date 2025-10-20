@@ -460,6 +460,13 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         rsp = OvnCheckLocalPortResponse()
 
         vsctl = ovn.VsCtl()
+        if not vsctl.isOvsRunning():
+            r = bash.bash_r("systemctl restart openvswitch && systemctl restart ovn-controller")
+            if r != 0:
+                rsp.success = False
+                rsp.error = "restart openvswitch service failed"
+                return jsonobject.dumps(rsp)
+
         localPorts = vsctl.getVnicsAndVmUuid()
         rsp.vnicVmMap = localPorts
 
@@ -516,7 +523,7 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
     @bash.in_bash
     def ovn_set_requested_chassis(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = kvmagent.AgentResponse()
+        rsp = OvnSetRequestedChassisResponse()
 
         logger.debug("cmd: %s: %s" % (cmd, cmd.__dict__))
         logger.debug("cmd lspRequestedChassisMap: %s: %s" % (cmd.lspRequestedChassisMap, cmd.lspRequestedChassisMap.__dict__))
@@ -541,6 +548,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             if r != 0:
                 rsp.success = False
                 errStr.append("Failed to set requested_chassis:%s for lsp:%s" % (chassis_names, lsp))
+        if len(errStr) > 0:
+            rsp.error = ";".join(errStr)
         return jsonobject.dumps(rsp)
 
     def start(self):
