@@ -2345,6 +2345,11 @@ done
                     ifcfg.delete_ip_config(item.ip)
             else:
                 to_create_ips = [item for item in iface.ips if item.ip not in [obj.ip for obj in ip_list]]
+                # when there are ips to create, and the boot proto is dhcp, we need to change it to none
+                if to_create_ips and ifcfg.is_boot_proto_dhcp:
+                    to_create_ips.extend([item for item in ip_list if item.ip not in [obj.ip for obj in to_create_ips]])
+                    ifcfg.boot_proto = netconfig.NET_CONFIG_BOOTPROTO_NONE
+
                 for item in to_create_ips:
                     shell.call('ip addr add %s/%s dev %s' % (item.ip, item.netmask, target_dev))
                     ifcfg.add_ip_config(item.ip, item.netmask, item.gateway, item.version, item.is_default)
