@@ -113,7 +113,7 @@ zstacklib = ZstackLib(zstacklib_args)
 def install_packages():
     if host_info.distro in RPM_BASED_OS:
         qemu_pkg = "fuse-sshfs nmap collectd tar net-tools"
-        qemu_pkg = qemu_pkg + ' python2-pyparted nettle' if releasever in ['ns10'] else qemu_pkg + ' pyparted'
+        qemu_pkg = qemu_pkg + ' python2-pyparted nettle' if releasever in ['ns10', 'ky10sp3.2403'] else qemu_pkg + ' pyparted'
 
         if not remote_bin_installed(host_post_info, "qemu-img", return_status=True):
             qemu_pkg += ' qemu-img'
@@ -138,7 +138,7 @@ def install_packages():
                            "--disablerepo=* --enablerepo=%s install -y $pkg; done;") % (qemu_pkg, zstack_repo)
                 run_remote_command(command, host_post_info)
 
-                if releasever in ['ns10']:
+                if releasever in ['ns10', 'ky10sp3.2403']:
                     if IS_LOONGARCH64 and yum_check_package("qemu", host_post_info):
                         command = ("for pkg in %s; do yum --disablerepo=* --enablerepo=%s install -y $pkg; done;") % (
                             ns10_update_list_loongarch64, zstack_repo)
@@ -154,7 +154,7 @@ def install_packages():
                            "--disablerepo=* --enablerepo={1} install -y $pkg; done;").format(qemu_pkg, zstack_repo)
                 run_remote_command(command, host_post_info)
 
-                if releasever in ['ns10']:
+                if releasever in ['ns10', 'ky10sp3.2403']:
                     command = ("for pkg in %s; do yum --disablerepo=* --enablerepo=%s install -y $pkg || true; done;") % (
                     ns10_update_list, zstack_repo)
                     run_remote_command(command, host_post_info)

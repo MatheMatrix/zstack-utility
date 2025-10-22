@@ -123,7 +123,7 @@ if host_info.distro in RPM_BASED_OS:
                 .format(install_rpm_list, zstack_repo)
         run_remote_command(command, host_post_info)
 
-        if releasever in ['ns10']:
+        if releasever in ['ns10', 'ky10sp3.2403']:
             if IS_LOONGARCH64 and yum_check_package("qemu", host_post_info):
                 command = ("for pkg in %s; do yum --disablerepo=* --enablerepo=%s install -y $pkg; done;") % (
                     ns10_update_list_loongarch64, zstack_repo)

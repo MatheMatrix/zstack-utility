@@ -241,6 +241,12 @@ def install_kvm_pkg():
                         smartmontools sshpass usbutils vconfig wget audit dnsmasq tar \
                         qemu collectd-virt storcli edk2-aarch64 python2-pyudev collectd-disk"
 
+        aarch64_ky10sp3_2403 = "bridge-utils chrony conntrack-tools cyrus-sasl-md5 device-mapper-multipath expect ipmitool iproute ipset \
+                        usbredir-server iputils open-iscsi libvirt libvirt-client python2-libvirt lighttpd lsof \
+                        net-tools nfs-utils nmap openssh-clients OpenIPMI pciutils pv rsync sed nettle libselinux-devel \
+                        smartmontools sshpass usbutils vconfig wget audit dnsmasq tar \
+                        qemu collectd-virt storcli edk2-aarch64 python2-pyudev collectd-disk"
+
         aarch64_uos1021a = "bridge-utils chrony conntrack-tools cyrus-sasl-md5 device-mapper-multipath expect ipmitool iproute ipset \
                         usbredir-server iputils iscsi-initiator-utils libvirt libvirt-client libvirt-python lighttpd lsof \
                         net-tools nfs-utils nmap openssh-clients OpenIPMI pciutils pv rsync sed nettle \
@@ -275,9 +281,15 @@ def install_kvm_pkg():
                         smartmontools sshpass usbutils vconfig wget audit dnsmasq tar python2-psutil\
                         qemu-kvm collectd-virt storcli edk2.git-ovmf-x64 python2-pyudev collectd-disk libicu cryptsetup"
 
+        x86_64_ky10sp3_2403 = "bridge-utils chrony conntrack-tools cyrus-sasl-md5 device-mapper-multipath expect ipmitool iproute ipset \
+                        usbredir-server iputils open-iscsi libvirt libvirt-client python2-libvirt lighttpd lsof \
+                        net-tools nfs-utils nmap openssh-clients OpenIPMI pciutils pv rsync sed nettle libselinux-devel \
+                        smartmontools sshpass usbutils vconfig wget audit dnsmasq tar python2-psutil\
+                        qemu-kvm collectd-virt storcli edk2.git-ovmf-x64 python2-pyudev collectd-disk libicu cryptsetup"
+
         # handle zstack_repo
         if zstack_repo != 'false':
-            common_dep_list = eval("%s_%s" % (host_info.host_arch, releasever))
+            common_dep_list = eval("%s_%s" % (host_info.host_arch, releasever.replace('.', '_')))
             # common kvmagent deps of x86 and arm that need to update
             common_update_list = "sanlock sysfsutils hwdata sg3_utils lvm2 lvm2-libs lvm2-lockd systemd openssh glusterfs"
             common_no_update_list = "librbd1"
@@ -290,7 +302,7 @@ def install_kvm_pkg():
                 mini_dep_list = " drbd84-utils kmod-drbd84" if C76_KERNEL_OR_HIGHER and not IS_AARCH64 else ""
                 common_dep_list += mini_dep_list
 
-            if host_info.host_arch == "x86_64" and releasever == "ns10":
+            if host_info.host_arch == "x86_64" and releasever in ["ns10", "ky10sp3.2403"]:
                 common_no_update_list = common_no_update_list + " edk2-ovmf"
 
             dep_list = common_dep_list
@@ -307,7 +319,7 @@ def install_kvm_pkg():
                 dep_list = dep_list.replace('libvirt libvirt-client libvirt-python ', '')
 
             # x86_64 aqb temporarily use qemu of kylin
-            if host_info.host_arch == 'x86_64' and releasever == "ns10":
+            if host_info.host_arch == 'x86_64' and releasever in ["ns10", "ky10sp3.2403"]:
                 dep_list = dep_list.replace('qemu-kvm', 'qemu')
 
             # skip these packages when connect host
@@ -890,7 +902,7 @@ def modprobe_usb_module():
 @skip_on_zyj(isZYJ)
 @with_arch(todo_list=['aarch64'], host_arch=host_info.host_arch)
 def set_gpu_blacklist():
-    if releasever not in ['ns10']:
+    if releasever not in ['ns10', 'ky10sp3.2403']:
         return
 
     gpu_name_list = "snd_hda_intel nouveau amdgpu"

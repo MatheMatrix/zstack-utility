@@ -39,15 +39,16 @@ pkg_zstacklib = ""
 yum_server = ""
 apt_server = ""
 trusted_host = ""
-enable_networkmanager_list = ["ns10", "euler20", "uos1021a"]
+enable_networkmanager_list = ["ns10", "ky10sp3.2403", "euler20", "uos1021a"]
 supported_arch_list = ["x86_64", "aarch64", "mips64el", "loongarch64"]
 
-RPM_BASED_OS = ["kylin_zstack", "kylin_tercel", "kylin_sword", "kylin_lance", "alibaba", "centos", "openeuler", "uniontech_kongzi", "redhat", "kylin_zyj"]
+RPM_BASED_OS = ["kylin_zstack", "kylin_tercel", "kylin_sword", "kylin_lance", "alibaba", "centos", "openeuler", "uniontech_kongzi", "redhat", "kylin_zyj", "kylin_halberd"]
 DEB_BASED_OS = ["ubuntu", "uos", "kylin4.0.2", "debian", "uniontech_fou"]
 DISTRO_WITH_RPM_DEB = ["kylin", "uniontech"]
 
 qemu_alias = {
     "ns10": "qemu-kvm qemu-img",
+    "ky10sp3.2403": "qemu-kvm qemu-img",
     "uos20": "qemu-system",
     "c74": "qemu-kvm",
     "c76": "qemu-kvm",
@@ -517,18 +518,20 @@ def get_mn_release():
     # file content like: ZStack release c76
     return commands.getoutput("awk '{print $3}' /etc/zstack-release").strip()
 
+
 def get_host_releasever(host_info):
     supported_release_info = {
         "kylin_tercel tercel 10": "ns10",
         "kylin_sword sword 10": "ns10",
         "kylin_lance lance 10": "ns10",
         "kylin_zstack zstack 10": "ns10",
+        "kylin_halberd halberd 10": "ky10sp3.2403",
         "kylin_zyj 10 zyj": "ns10",
         "uniontech fou 20": "uos20",
-        "redhat maipo 7.4": "ns10", # old kylinV10, oem 7.4 incompletely
+        "redhat maipo 7.4": "ns10",  # old kylinV10, oem 7.4 incompletely
         "centos core 7.6.1810": "c76",
         "centos core 7.4.1708": "c74",
-        "centos core 7.2.1511": "c74", # c74 for old releases
+        "centos core 7.2.1511": "c74",  # c74 for old releases
         "centos core 7.1.1503": "c74",
         "openeuler lts-sp1 20.03": "euler20",
         "uos fou 20": "uos20",
@@ -2223,7 +2226,7 @@ class ZstackLib(object):
             "vim-minimal",
         }
 
-        if self.distro in ["kylin_zstack", "kylin_tercel", "kylin_sword"]:
+        if self.distro in ["kylin_zstack", "kylin_tercel", "kylin_sword", "kylin_halberd"]:
             basic.add("chrony")
             basic.add("iptables")
             basic.add("python2-libselinux")
