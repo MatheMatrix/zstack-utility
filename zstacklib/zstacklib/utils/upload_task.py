@@ -3,7 +3,10 @@
 import re
 import hashlib
 import logging
+import threading
+import xxhash
 from zstacklib.utils import linux, lock
+from zstacklib.utils.rangeset import RangeSet
 import cherrypy
 from cherrypy._cpreqbody import Entity, Part, SizedReader
 
@@ -11,15 +14,24 @@ logger = logging.getLogger(__name__)
 BUFFER_SIZE = 16 * 1024 ** 2  # 16MB
 
 
+def get_hasher(algorithm, default="md5"):
+    if algorithm == "xxh3":
+        return xxhash.xxh3_64()
+
+    if not algorithm or algorithm not in hashlib.algorithms_available:
+        algorithm = default
+    return getattr(hashlib, algorithm)()
+
+
 class UploadParam(object):
     def __init__(self):
         self.task_uuid = None
         self.total_size = 0
 
-        self.slice_index = 0
         self.slice_offset = 0
         self.slice_size = 0
-        self.slice_md5 = None
+        self.slice_hash = None
+        self.hash_algorithm = None
 
 
 class UploadTasks(object):
@@ -66,15 +78,12 @@ class UploadTask(object):
         self.taskUuid = task_uuid
         self.installPath = install_path
         self.expectedSize = 0
-        self.downloadSize = 0
-        self.progress = 0
         self.lastError = None
         self.lastOpTime = linux.get_current_timestamp()
         self.close = None
 
-        self.slice_uploaded = set()
-        self.slice_count = 0
-        self.slice_size = 0
+        self.upload_lock = threading.Lock()
+        self.slice_uploaded = RangeSet()
 
         self.task_created = False
         self.task_completing = False
@@ -89,13 +98,12 @@ class UploadTask(object):
 
     def success(self):
         self.completed = True
-        self.progress = 100
         self.lastOpTime = linux.get_current_timestamp()
         if self.close:
             self.close()
 
     def is_started(self):
-        return self.progress > 0
+        return len(self.slice_uploaded.iv) > 0
 
     def is_running(self):
         return not (self.completed or self.is_started())
@@ -104,26 +112,44 @@ class UploadTask(object):
         self.lastOpTime = linux.get_current_timestamp()
 
     def all_slice_uploaded(self):
-        return 0 < self.slice_count == len(self.slice_uploaded)
+        return self.task_completing
+
+    @property
+    def downloadSize(self):
+        # Back-compat: callers read this attribute directly to compute upload
+        # progress. With RangeSet-based tracking this is the total covered
+        # length (bytes confirmed uploaded so far).
+        return len(self.slice_uploaded)
+
+    @property
+    def progress(self):
+        if self.completed and not self.lastError:
+            return 100
+        if self.expectedSize <= 0:
+            return 0
+        return min(90, len(self.slice_uploaded) * 90 // self.expectedSize)
 
     def checked_download_size(self):
-        for i in range(self.slice_count):
-            if i not in self.slice_uploaded:
-                return i * self.slice_size
-
-        return self.expectedSize
+        with self.upload_lock:
+            if self.expectedSize <= 0:
+                return 0
+            missing = self.slice_uploaded.missing(self.expectedSize, 1)
+            if missing:
+                return missing[0][0]
+            return self.expectedSize
 
     def allow_task_completing(self):
-        if self.all_slice_uploaded():
-            with lock.NamedLock("upload-task-%s" % self.taskUuid):
-                if not self.task_completing:
-                    self.task_completing = True
-                    return True
+        with self.upload_lock:
+            if (self.expectedSize > 0
+                    and self.slice_uploaded.covered(0, self.expectedSize)
+                    and not self.task_completing):
+                self.task_completing = True
+                return True
         return False
 
-    def add_download_size(self, delta):
-        with lock.NamedLock("upload-task-%s" % self.taskUuid):
-            self.downloadSize += delta
+    def record_slice_uploaded(self, offset, length):
+        with self.upload_lock:
+            self.slice_uploaded.add(offset, offset + length)
 
     def complete_upload(self):
         raise NotImplementedError()
@@ -198,8 +224,8 @@ class UploadHandler(object):
 
         up.slice_offset = get_long_field('X-SLICE-OFFSET', default=0)
         up.slice_size = get_long_field('X-SLICE-SIZE', default=up.total_size)
-        up.slice_index = get_long_field('X-SLICE-INDEX', default=0)
-        up.slice_md5 = headers.get('X-SLICE-MD5', None)
+        up.slice_hash = headers.get('X-SLICE-HASH', None)
+        up.hash_algorithm = headers.get('X-HASH-ALGORITHM', None)
 
         if up.slice_offset >= up.total_size:
             raise Exception('invalid slice offset header: %s, total_size: %d' %
@@ -219,22 +245,10 @@ class UploadHandler(object):
 
         task.expectedSize = param.total_size
 
-        if param.slice_index == 0:
-            task.slice_size = param.slice_size
+        if param.slice_offset == 0:
             err = task.check_capacity(task.expectedSize)
             if err:
                 self._fail_task(task, err)
-
-        if param.slice_offset + param.slice_size == param.total_size:
-            slice_count = param.slice_index + 1
-        else:
-            slice_count = (param.total_size - 1) / param.slice_size + 1
-
-        if not task.slice_count:
-            task.slice_count = slice_count
-        elif task.slice_count != slice_count:
-            raise Exception(
-                "every upload request for image[uuid:%s] should has the same slice size and image size" % param.task_uuid)
 
         return task
 
@@ -250,6 +264,8 @@ class UploadHandler(object):
 
         try:
             self.stream_body(entity, boundary, param, task)
+        except cherrypy.HTTPError:
+            raise
         except Exception, e:
             self._fail_task(task, str(e))
 
@@ -258,21 +274,21 @@ class UploadHandler(object):
         # type: (Entity, str, UploadParam, UploadTask) -> None
 
         image_obj = task.create_object(param.slice_offset)
+        slice_downloaded_size = 0
+        hasher = get_hasher(param.hash_algorithm) if param.slice_hash else None
         while True:
             headers = Part.read_headers(entity.fp)
             p = Part(entity.fp, headers, boundary)
             if not p.filename:
                 continue
 
-            logger.debug("uploading image %s: %s slice, index: %d, offset: %d, content length: %d" %
-                         (param.task_uuid, p.filename, param.slice_index, param.slice_offset, param.slice_size))
+            logger.debug("uploading image %s: %s, offset: %d, content length: %d" %
+                         (param.task_uuid, p.filename, param.slice_offset, param.slice_size))
 
-            slice_downloaded_size = 0
             try:
-                reader = SizedReader(p.fp, None, param.slice_offset)
+                reader = SizedReader(p.fp, None, param.slice_size)
                 remaining = param.slice_size
                 bytes_read = 0
-                md5 = hashlib.md5()
                 chunks = []
                 chunk_size = 32 * 1024
                 while remaining > 0:
@@ -282,13 +298,13 @@ class UploadHandler(object):
                     datalen = len(tmp)
                     task.renew()
                     chunks.append(tmp)
-                    md5.update(tmp)
+                    if hasher:
+                        hasher.update(tmp)
 
                     remaining -= datalen
                     bytes_read += datalen
                     if bytes_read >= BUFFER_SIZE or remaining <= 0:
                         image_obj.write(b''.join(chunks))
-                        task.add_download_size(bytes_read)
                         slice_downloaded_size += bytes_read
                         chunks = []
                         bytes_read = 0
@@ -297,19 +313,17 @@ class UploadHandler(object):
             break
 
         if param.slice_size != slice_downloaded_size:
-            task.add_download_size(-slice_downloaded_size)
-            raise Exception("incomplete image %s slice index %d, offset %d, completed %d, expected %d" %
-                            (param.task_uuid, param.slice_index, param.slice_offset, slice_downloaded_size,
+            raise Exception("incomplete image %s slice offset %d, completed %d, expected %d" %
+                            (param.task_uuid, param.slice_offset, slice_downloaded_size,
                              param.slice_size))
 
-        if param.slice_md5 and param.slice_md5 != md5.hexdigest():
-            task.add_download_size(-slice_downloaded_size)
-            raise cherrypy.HTTPError(406, "content md5 not match, expected: %s, actual: %s" % (
-                param.slice_md5, md5.hexdigest()))
+        if param.slice_hash and hasher and param.slice_hash != hasher.hexdigest():
+            raise cherrypy.HTTPError(406, "content %s hash not match, expected: %s, actual: %s" % (
+                param.hash_algorithm, param.slice_hash, hasher.hexdigest()))
 
-        task.slice_uploaded.add(param.slice_index)
-        logger.debug("uploaded image %s slice, index: %d offset: %d, content length: %d" %
-                     (param.task_uuid, param.slice_index, param.slice_offset, param.slice_size))
+        task.record_slice_uploaded(param.slice_offset, param.slice_size)
+        logger.debug("uploaded image %s slice offset: %d, content length: %d" %
+                     (param.task_uuid, param.slice_offset, param.slice_size))
 
     def handle_upload(self):
         upload_param = self.get_upload_param(self.req.headers)
