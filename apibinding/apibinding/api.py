@@ -39,6 +39,12 @@ class Api(object):
         if not port:
             port = 8080
 
+        if not api_path:
+            api_path='/cloud/api'
+
+        if not result_path:
+            result_path='/cloud/api/result'
+
         self.api_url = http.build_url(('http', host, port, api_path))
         self.api_result_url = http.build_url(('http', host, port, result_path))
         self.curl = curl
@@ -191,7 +197,9 @@ def error_code_to_string(self, error):
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def async_call(apicmd, session_uuid):
     api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'),
+              api_path=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_API_PATH'),
+              result_path=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_RESULT_PATH'))
     api.set_session_to_api_message(apicmd, session_uuid)
     (name, event) = api.async_call_wait_for_complete(apicmd)
     if not event.success:
@@ -204,7 +212,9 @@ def async_call(apicmd, session_uuid):
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def sync_call(apicmd, session_uuid):
     api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'),
+              api_path=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_API_PATH'),
+              result_path=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_RESULT_PATH'))
     if session_uuid:
         api.set_session_to_api_message(apicmd, session_uuid)
     (name, reply) = api.sync_call(apicmd)
