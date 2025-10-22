@@ -13,6 +13,7 @@ import rados
 import rbd
 import cherrypy
 import hashlib
+import xxhash
 from cherrypy.lib.static import _serve_fileobj
 from cherrypy._cpreqbody import Entity, Part, SizedReader
 from cherrypy._cprequest import Request
@@ -26,6 +27,7 @@ from zstacklib.utils import linux
 from zstacklib.utils import thread
 from zstacklib.utils.bash import *
 from zstacklib.utils.ceph import get_mon_addr
+from zstacklib.utils.rangeset import RangeSet
 from zstacklib.utils.report import Report, get_exact_percent
 from zstacklib.utils import shell
 from zstacklib.utils import ceph
@@ -166,10 +168,10 @@ class UploadParam(object):
     def __init__(self):
         self.image_uuid = None
         self.image_size = 0
-        self.slice_index = 0
         self.slice_offset = 0
         self.slice_size = 0
-        self.slice_md5 = None
+        self.slice_hash = None
+        self.hash_algorithm = None
 
 
 class UploadTask(object):
@@ -180,16 +182,13 @@ class UploadTask(object):
         self.dstPath = dstPath # without 'ceph://'
         self.tmpPath = tmpPath # where image firstly imported to
         self.expectedSize = 0
-        self.downloadSize = 0
-        self.progress = 0
         self.lastError = None
         self.lastOpTime = linux.get_current_timestamp()
         self.image_format = "raw"
         self.close = None
 
-        self.slice_uploaded = set()
-        self.slice_count = 0
-        self.slice_size = 0
+        self.upload_lock = threading.Lock()
+        self.slice_uploaded = RangeSet()
 
         self.image_created = False
         self.image_completing = False
@@ -204,13 +203,12 @@ class UploadTask(object):
 
     def success(self):
         self.completed = True
-        self.progress = 100
         self.lastOpTime = linux.get_current_timestamp()
         if self.close:
             self.close()
 
     def is_started(self):
-        return self.progress > 0
+        return len(self.slice_uploaded.iv) > 0
 
     def is_running(self):
         return not(self.completed or self.is_started())
@@ -219,14 +217,15 @@ class UploadTask(object):
         self.lastOpTime = linux.get_current_timestamp()
 
     def all_slice_uploaded(self):
-        return 0 < self.slice_count == len(self.slice_uploaded)
+        return self.image_completing
 
     def checked_download_size(self):
-        for i in range(self.slice_count):
-            if i not in self.slice_uploaded:
-                return i * self.slice_size
+        with self.upload_lock:
+            missing = self.slice_uploaded.missing(self.expectedSize, 1)
+            if missing:
+                return missing[0][0]
 
-        return self.expectedSize
+            return self.expectedSize
 
     def create_image_if_not_exists(self, ioctx, image_name):
         # type: (rados.Ioctx, str) -> None
@@ -234,22 +233,17 @@ class UploadTask(object):
         if self.image_created:
             return
 
-        with lock.NamedLock("upload-image-%s" % self.imageUuid):
+        with self.upload_lock:
             if not self.image_created:
                 rbd.RBD().create(ioctx, image_name, self.expectedSize)
                 self.image_created = True
 
-    def allow_image_completing(self):
-        if self.all_slice_uploaded():
-            with lock.NamedLock("upload-image-%s" % self.imageUuid):
-                if not self.image_completing:
-                    self.image_completing = True
-                    return True
-        return False
-
-    def add_download_size(self, delta):
-        with lock.NamedLock("upload-image-%s" % self.imageUuid):
-            self.downloadSize += delta
+    def record_slice_uploaded(self, offset, length):
+        with self.upload_lock:
+            self.slice_uploaded.add(offset, offset + length)
+            # all slice uploaded
+            if self.expectedSize > 0 and self.slice_uploaded.covered(0, self.expectedSize):
+                self.image_completing = True
 
 
 class UploadTasks(object):
@@ -343,6 +337,14 @@ def get_image_format_from_buf(qhdr):
     return "raw"
 
 
+def get_hasher(algorithm, default="md5"):
+    if algorithm == "xxh3":
+        return xxhash.xxh3_64()
+
+    if algorithm not in hashlib.algorithms_available:
+        algorithm = default
+    return getattr(hashlib, algorithm)()
+
 def stream_body(entity, boundary, param, task, ioctx):
     # type: (Entity, str, UploadParam, UploadTask, rados.Ioctx) -> None
 
@@ -351,21 +353,21 @@ def stream_body(entity, boundary, param, task, ioctx):
     image_obj = ImageFileObject(rbd.Image(ioctx, image_name))
     image_obj.seek(param.slice_offset)
 
+    slice_downloaded_size = 0
+    hasher = get_hasher(param.hash_algorithm) if param.slice_hash else None
     while True:
         headers = Part.read_headers(entity.fp)
         p = Part(entity.fp, headers, boundary)
         if not p.filename:
             continue
 
-        logger.debug("uploading image %s: %s slice, index: %d, offset: %d, content length: %d" %
-                     (param.image_uuid, p.filename, param.slice_index, param.slice_offset, param.slice_size))
+        logger.debug("uploading image %s: offset: %d, content length: %d" %
+                     (param.image_uuid, param.slice_offset, param.slice_size))
 
-        slice_downloaded_size = 0
         try:
-            reader = SizedReader(p.fp, None, param.slice_offset)
+            reader = SizedReader(p.fp, None, param.slice_size)
             remaining = param.slice_size
             bytes_read = 0
-            md5 = hashlib.md5()
             chunks = []
             chunk_size = 32 * 1024
             while remaining > 0:
@@ -375,13 +377,13 @@ def stream_body(entity, boundary, param, task, ioctx):
                 datalen = len(tmp)
                 task.renew()
                 chunks.append(tmp)
-                md5.update(tmp)
+                if hasher:
+                    hasher.update(tmp)
 
                 remaining -= datalen
                 bytes_read += datalen
                 if bytes_read >= BUFFER_SIZE or remaining <= 0:
                     image_obj.write(b''.join(chunks))
-                    task.add_download_size(bytes_read)
                     slice_downloaded_size += bytes_read
                     chunks = []
                     bytes_read = 0
@@ -390,17 +392,15 @@ def stream_body(entity, boundary, param, task, ioctx):
         break
 
     if param.slice_size != slice_downloaded_size:
-        task.add_download_size(-slice_downloaded_size)
-        raise Exception("incomplete image %s slice index %d, offset %d, completed %d, expected %d" %
-                        (param.image_uuid, param.slice_index, param.slice_offset, slice_downloaded_size, param.slice_size))
+        raise Exception("incomplete image %s slice offset %d, completed %d, expected %d" %
+                        (param.image_uuid, param.slice_offset, slice_downloaded_size, param.slice_size))
 
-    if param.slice_md5 and param.slice_md5 != md5.hexdigest():
-        task.add_download_size(-slice_downloaded_size)
-        raise cherrypy.HTTPError(406, "content md5 not match, expected: %s, actual: %s" % (param.slice_md5, md5.hexdigest()))
+    if param.slice_hash and param.slice_hash != hasher.hexdigest():
+        raise cherrypy.HTTPError(406, "content %s hash not match, expected: %s, actual: %s" % (param.hash_algorithm, param.slice_hash, hasher.hexdigest()))
 
-    task.slice_uploaded.add(param.slice_index)
-    logger.debug("uploaded image %s slice, index: %d offset: %d, content length: %d" %
-                 (param.image_uuid, param.slice_index, param.slice_offset, param.slice_size))
+    task.record_slice_uploaded(param.slice_offset, param.slice_size)
+    logger.debug("uploaded image %s slice offset: %d, content length: %d" %
+                 (param.image_uuid, param.slice_offset, param.slice_size))
 
 
 def complete_upload(task, ioctx):
@@ -815,7 +815,7 @@ class CephAgent(object):
         task = self.get_upload_task(upload_param)
         self.upload_slice(req.body, upload_param, task)
 
-        if task.allow_image_completing():
+        if task.image_completing:
             pool, img_name = task.dstPath.split('/')
             ioctx = self.get_ioctx(pool)
             complete_upload(task, ioctx)
@@ -841,7 +841,8 @@ class CephAgent(object):
         up.slice_offset = get_long_field('X-SLICE-OFFSET', default=0)
         up.slice_size = get_long_field('X-SLICE-SIZE', default=up.image_size)
         up.slice_index = get_long_field('X-SLICE-INDEX', default=0)
-        up.expected_md5 = req_header.get('X-SLICE-MD5', None)
+        up.slice_hash = req_header.get('X-SLICE-HASH', None)
+        up.hash_algorithm = req_header.get('X-HASH-ALGORITHM', None)
 
         if up.slice_offset >= up.image_size:
             raise Exception('invalid slice offset header: %s, image_size: %d' % (up.slice_offset, up.image_size))
@@ -862,22 +863,10 @@ class CephAgent(object):
 
         task.expectedSize = param.image_size
 
-        if param.slice_index == 0:
-            task.slice_size = param.slice_size
-
+        if param.slice_offset == 0:
             _, avail, _ = self._get_capacity()
             if avail <= task.expectedSize:
                 self._fail_task(task, 'capacity not enough for size: %d' % param.image_size)
-
-        if param.slice_offset + param.slice_size == param.image_size:
-            slice_count = param.slice_index + 1
-        else:
-            slice_count = (param.image_size - 1) / param.slice_size + 1
-
-        if not task.slice_count:
-            task.slice_count = slice_count
-        elif task.slice_count != slice_count:
-            raise Exception("every upload request for image[uuid:%s] should has the same slice size and image size" % param.image_uuid)
 
         return task
 
@@ -893,8 +882,8 @@ class CephAgent(object):
 
         try:
             stream_body(entity, boundary, param, task, ioctx)
-        except cherrypy.HTTPError as e:
-            raise cherrypy.HTTPError(e.status, e._message)
+        except cherrypy.HTTPError:
+            raise
         except Exception as e:
             if str(e).lstrip() != 'timed out':
                 shell.run('rbd rm %s' % task.tmpPath)
@@ -953,7 +942,8 @@ class CephAgent(object):
             rsp.size = self._get_file_size(task.dstPath)
             rsp.progress = 100
         else:
-            rsp.progress = task.downloadSize * 90 / task.expectedSize
+            logger.debug("image %s uploaded range : %s" % (cmd.imageUuid, task.slice_uploaded))
+            rsp.progress = len(task.slice_uploaded) * 90 / task.expectedSize
 
         if task.lastError is not None:
             rsp.success = False
