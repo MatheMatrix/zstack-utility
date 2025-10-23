@@ -116,9 +116,9 @@ class ExtendMergeTargetRsp(AgentRsp):
         self.size = None
 
 
-class ExtendMigarteTargetRsp(AgentRsp):
+class ExtendLogicalVolumeRsp(AgentRsp):
     def __init__(self):
-        super(ExtendMigarteTargetRsp, self).__init__()
+        super(ExtendLogicalVolumeRsp, self).__init__()
 
 
 class OfflineMergeSnapshotRsp(AgentRsp):
@@ -345,7 +345,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     REVERT_VOLUME_FROM_SNAPSHOT_PATH = "/sharedblock/volume/revertfromsnapshot"
     MERGE_SNAPSHOT_PATH = "/sharedblock/snapshot/merge"
     EXTEND_MERGE_TARGET_PATH = "/sharedblock/snapshot/extendmergetarget"
-    EXTEND_MIGRATE_TARGET_PATH = "/sharedblock/volume/extendmigratetarget"
+    EXTEND_LOGICAL_VOLUME_PATH = "/sharedblock/logicalvolume/extend"
     OFFLINE_MERGE_SNAPSHOT_PATH = "/sharedblock/snapshot/offlinemerge"
     OFFLINE_COMMIT_SNAPSHOT_PATH = "/sharedblock/snapshot/offlinecommit"
     CREATE_EMPTY_VOLUME_PATH = "/sharedblock/volume/createempty"
@@ -398,7 +398,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.REVERT_VOLUME_FROM_SNAPSHOT_PATH, self.revert_volume_from_snapshot)
         http_server.register_async_uri(self.MERGE_SNAPSHOT_PATH, self.merge_snapshot)
         http_server.register_async_uri(self.EXTEND_MERGE_TARGET_PATH, self.extend_merge_target)
-        http_server.register_async_uri(self.EXTEND_MIGRATE_TARGET_PATH, self.extend_migrate_target)
+        http_server.register_async_uri(self.EXTEND_LOGICAL_VOLUME_PATH, self.extend_logical_volume)
         http_server.register_async_uri(self.OFFLINE_MERGE_SNAPSHOT_PATH, self.offline_merge_snapshots)
         http_server.register_async_uri(self.OFFLINE_COMMIT_SNAPSHOT_PATH, self.offline_commit_snapshots)
         http_server.register_async_uri(self.CREATE_EMPTY_VOLUME_PATH, self.create_empty_volume)
@@ -1245,9 +1245,9 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
-    def extend_migrate_target(self, req):
+    def extend_logical_volume(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = ExtendMigarteTargetRsp()
+        rsp = ExtendLogicalVolumeRsp()
         dst_abs_path = translate_absolute_path_from_install_path(cmd.destPath)
 
         with lvm.OperateLv(dst_abs_path, shared=False):
