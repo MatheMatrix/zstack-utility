@@ -307,13 +307,9 @@ class UpdateHostIscsiInitiatorNameResponse(kvmagent.AgentResponse):
 
 
 class SetHostKernelInterfaceCmd(kvmagent.AgentCommand):
-    interfaces = None   # type: list[HostKernelInterfaceTO]
-    actionCode = None
-
     def __init__(self):
         super(SetHostKernelInterfaceCmd, self).__init__()
-        self.interfaces = None
-        self.actionCode = None
+        self.interfaces = []  # type: list[HostKernelInterfaceTO]
 
 
 class SetHostKernelInterfaceResponse(kvmagent.AgentResponse):
@@ -349,12 +345,16 @@ class GetSensorsResponse(kvmagent.AgentResponse):
 
 
 class UsedIpTO(object):
+    ACTION_CODE_ADD = 'add'
+    ACTION_CODE_REMOVE = 'remove'
+
     def __init__(self, ipVersion=None, ip=None, netmask=None, gateway=None):
         super(UsedIpTO, self).__init__()
         self.ipVersion = ipVersion
         self.ip = ip
         self.netmask = netmask
         self.gateway = gateway
+        self.actionCode = None
 
 
 class HostKernelInterfaceTO(object):
@@ -2338,19 +2338,32 @@ done
             else:
                 ifcfg = linux.get_device_ifcfg(physical_dev)
 
-            ip_list = linux.get_ip_list_by_nic_name(target_dev)
-            if cmd.actionCode == 'deleteAction':
-                for item in iface.ips:
-                    shell.call('ip addr del %s/%s dev %s || true' % (item.ip, item.netmask, target_dev))
-                    ifcfg.delete_ip_config(item.ip)
-            else:
-                to_create_ips = [item for item in iface.ips if item.ip not in [obj.ip for obj in ip_list]]
-                # when there are ips to create, and the boot proto is dhcp, we need to change it to none
-                if to_create_ips and ifcfg.is_boot_proto_dhcp:
-                    to_create_ips.extend([item for item in ip_list if item.ip not in [obj.ip for obj in to_create_ips]])
-                    ifcfg.boot_proto = netconfig.NET_CONFIG_BOOTPROTO_NONE
+            exist_ips = linux.get_ip_list_by_nic_name(target_dev)
+            exist_ip_set = {obj.ip for obj in exist_ips}
 
-                for item in to_create_ips:
+            removed_ips = [item for item in iface.ips if item.actionCode == UsedIpTO.ACTION_CODE_REMOVE]
+            removed_ip_set = {item.ip for item in removed_ips}
+
+            for item in removed_ips:
+                shell.call('ip addr del %s/%s dev %s || true' % (item.ip, item.netmask, target_dev))
+                ifcfg.delete_ip_config(item.ip)
+
+            exist_ip_set -= removed_ip_set
+            added_ips = [item for item in iface.ips
+                         if item.actionCode == UsedIpTO.ACTION_CODE_ADD
+                         and item.ip not in exist_ip_set]
+
+            if added_ips:
+                added_ip_set = {item.ip for item in added_ips}
+                # when there are ips to create, and the boot proto is dhcp,
+                # we need to change it to none and keep the existing ips
+                if ifcfg.is_boot_proto_dhcp:
+                    ifcfg.boot_proto = netconfig.NET_CONFIG_BOOTPROTO_NONE
+                    for item in exist_ips:
+                        if item.ip in exist_ip_set and item.ip not in added_ip_set:
+                            ifcfg.add_ip_config(item.ip, item.netmask, item.gateway, item.version, item.is_default)
+
+                for item in added_ips:
                     shell.call('ip addr add %s/%s dev %s' % (item.ip, item.netmask, target_dev))
                     ifcfg.add_ip_config(item.ip, item.netmask, item.gateway, item.version, item.is_default)
 
