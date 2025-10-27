@@ -669,7 +669,7 @@ set_tomcat_config() {
 
       <Host name="localhost"  appBase="webapps"
             unpackWARs="true" autoDeploy="true">
-        <Context path="/zstack" reloadable="false" crossContext="true" allowLinking="true"/>
+        <Context path="/cloud" reloadable="false" crossContext="true" allowLinking="true"/>
 
         <Valve className="org.apache.catalina.valves.AccessLogValve" directory="logs"
                prefix="localhost_access_log" suffix=".txt"
