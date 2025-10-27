@@ -438,7 +438,7 @@ collect_node_disk_capacity_last_result = None
 
 
 def collect_host_capacity_statistics():
-    default_zstack_path = '/usr/local/zstack/apache-tomcat/webapps/zstack'
+    default_zstack_path = '/usr/local/zstack/apache-tomcat/webapps/cloud'
 
     zstack_env_path = os.environ.get('ZSTACK_HOME', None)
     if zstack_env_path and zstack_env_path != default_zstack_path:
