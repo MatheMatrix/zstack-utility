@@ -1,6 +1,6 @@
 ZSTACK_ROOT={{zstack_root}}
 TOMCAT_HOME={{tomcat_home}}
-ZSTACK_CONF_ROOT=$ZSTACK_ROOT/$TOMCAT_HOME/webapps/cloud/WEB-INF/classes/
+ZSTACK_CONF_ROOT=$ZSTACK_ROOT/$TOMCAT_HOME/webapps/zstack/WEB-INF/classes/
 DEPLOY_DB_SCRIPT=$ZSTACK_CONF_ROOT/deploydb.sh
 
 {% if mysql_install_result.changed == True %}

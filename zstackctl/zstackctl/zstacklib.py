@@ -1563,7 +1563,7 @@ class ZstackLib(object):
         generate_exp_repo_raw_command = """
 echo -e "[zstack-experimental-mn]
 name=zstack-experimental-mn
-baseurl=http://{{ yum_server }}/cloud/static/zstack-repo/\$basearch/\$YUM0/Extra/zstack-experimental/
+baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/Extra/zstack-experimental/
 gpgcheck=0
 enabled=0" >  /etc/yum.repos.d/zstack-experimental-mn.repo
                """
@@ -1580,7 +1580,7 @@ enabled=0" >  /etc/yum.repos.d/zstack-experimental-mn.repo
         generate_mlnx_repo_raw_command = """
 echo -e "[mlnx-ofed-mn]
 name=mlnx-ofed-mn
-baseurl=http://{{ yum_server }}/cloud/static/zstack-repo/\$basearch/\$YUM0/Extra/mlnx-ofed/
+baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/Extra/mlnx-ofed/
 gpgcheck=0
 enabled=0" >  /etc/yum.repos.d/mlnx-ofed-mn.repo
                """
@@ -1597,7 +1597,7 @@ enabled=0" >  /etc/yum.repos.d/mlnx-ofed-mn.repo
         generate_kvm_repo_raw_command = """
 echo -e "[qemu-kvm-ev-mn]
 name=qemu-kvm-ev-mn
-baseurl=http://{{ yum_server }}/cloud/static/zstack-repo/\$basearch/\$YUM0/Extra/qemu-kvm-ev/
+baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/Extra/qemu-kvm-ev/
 gpgcheck=0
 enabled=0" >  /etc/yum.repos.d/qemu-kvm-ev-mn.repo
                """
@@ -1614,7 +1614,7 @@ enabled=0" >  /etc/yum.repos.d/qemu-kvm-ev-mn.repo
         generate_mn_repo_raw_command = """
 echo -e "[zstack-mn]
 name=zstack-mn
-baseurl=http://{{ yum_server }}/cloud/static/zstack-repo/\$basearch/\$YUM0/
+baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/
 gpgcheck=0
 enabled=0" >  /etc/yum.repos.d/zstack-mn.repo
                """
