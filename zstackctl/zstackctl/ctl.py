@@ -3637,9 +3637,9 @@ class AddManagementNodeCmd(Command):
         command = "ssh -q -i %s -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@%s zstack-ctl " \
                   "start_node " % (key, host_info.host)
         (status, output) = commands.getstatusoutput(command)
-        command = "mkdir -p /usr/local/zstack/apache-tomcat/webapps/cloud/static/zstack-repo" \
-                  "ln -s /opt/zstack-dvd/x86_64 /usr/local/zstack/apache-tomcat/webapps/cloud/static/zstack-repo/x86_64" \
-                  "ln -s /opt/zstack-dvd/aarch64 /usr/local/zstack/apache-tomcat/webapps/cloud/static/zstack-repo/aarch64"
+        command = "mkdir -p /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo" \
+                  "ln -s /opt/zstack-dvd/x86_64 /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo/x86_64" \
+                  "ln -s /opt/zstack-dvd/aarch64 /usr/local/zstack/apache-tomcat/webapps/zstack/static/zstack-repo/aarch64"
         run_remote_command(command, host_info, True, True)
         if status != 0:
             error("start node on host %s failed:\n %s" % (host_info.host, output))
@@ -7344,12 +7344,12 @@ class InstallManagementNodeCmd(Command):
       script: $post_script
 
     - name: copy zstack.properties
-      copy: src=$properties_file dest={{root}}/apache-tomcat/webapps/cloud/WEB-INF/classes/zstack.properties
+      copy: src=$properties_file dest={{root}}/apache-tomcat/webapps/zstack/WEB-INF/classes/zstack.properties
 
     - name: mount zstack-dvd
       file:
         src: /opt/zstack-dvd
-        dest: $install_path/apache-tomcat/webapps/cloud/static/zstack-dvd
+        dest: $install_path/apache-tomcat/webapps/zstack/static/zstack-dvd
         state: link
         force: yes
 
@@ -7409,7 +7409,7 @@ foldername="$${filename%.*}"
 apache_path=$install_path/apache-tomcat
 unzip $apache -d $install_path
 ln -s $install_path/$$foldername $$apache_path
-unzip $zstack -d $$apache_path/webapps/cloud
+unzip $zstack -d $$apache_path/webapps/zstack
 
 chmod a+x $$apache_path/bin/*
 
@@ -7417,7 +7417,7 @@ cat >> $$apache_path/bin/setenv.sh <<EOF
 export CATALINA_OPTS=" -Djava.net.preferIPv4Stack=true -Dcom.sun.management.jmxremote=true"
 EOF
 
-install_script="$$apache_path/webapps/cloud/WEB-INF/classes/tools/install.sh"
+install_script="$$apache_path/webapps/zstack/WEB-INF/classes/tools/install.sh"
 
 eval "bash $$install_script zstack-ctl"
 eval "bash $$install_script zstack-cli"
@@ -7425,9 +7425,9 @@ eval "bash $$install_script zstack-cli"
 set +e
 grep "ZSTACK_HOME" ~/.bashrc > /dev/null
 if [ $$? -eq 0 ]; then
-    sed -i "s#export ZSTACK_HOME=.*#export ZSTACK_HOME=$$apache_path/webapps/cloud#" ~/.bashrc
+    sed -i "s#export ZSTACK_HOME=.*#export ZSTACK_HOME=$$apache_path/webapps/zstack#" ~/.bashrc
 else
-    echo "export ZSTACK_HOME=$$apache_path/webapps/cloud" >> ~/.bashrc
+    echo "export ZSTACK_HOME=$$apache_path/webapps/zstack" >> ~/.bashrc
 fi
 
 which ansible-playbook &> /dev/null
@@ -7463,7 +7463,7 @@ grep '^root' /etc/sudoers >/dev/null || echo 'root        ALL=(ALL)       NOPASS
 sed -i '/requiretty$$/d' /etc/sudoers
 chown -R zstack.zstack $install_path
 mkdir /home/zstack && chown -R zstack.zstack /home/zstack
-zstack-ctl setenv ZSTACK_HOME=$install_path/apache-tomcat/webapps/cloud
+zstack-ctl setenv ZSTACK_HOME=$install_path/apache-tomcat/webapps/zstack
 '''
         t = string.Template(setup_account)
         setup_account = t.substitute({
@@ -7585,7 +7585,7 @@ yum clean all >/dev/null 2>&1
         command = "yum --disablerepo=* --enablerepo=zstack-mn repoinfo | grep Repo-baseurl | awk -F ' : ' '{ print $NF }'"
         (status, baseurl, stderr) = shell_return_stdout_stderr(command)
         if status != 0:
-            baseurl = 'http://localhost:%s/cloud/static/zstack-dvd/' % ctl.get_mn_port()
+            baseurl = 'http://localhost:%s/zstack/static/zstack-dvd/' % ctl.get_mn_port()
 
         with open('/opt/zstack-dvd/{}/{}/.repo_version'.format(ctl.BASEARCH, ctl.ZS_RELEASE)) as f:
             repoversion = f.readline().strip()
@@ -8083,7 +8083,7 @@ class UpgradeManagementNodeCmd(Command):
                 shell('cp %s %s' % (new_war.path, webapp_dir))
                 ShellCmd('unzip %s -d zstack' % os.path.basename(new_war.path), workdir=webapp_dir)()
                 #create local repo folder for possible zstack local yum repo
-                zstack_dvd_repo = '{}/cloud/static/zstack-repo'.format(webapp_dir)
+                zstack_dvd_repo = '{}/zstack/static/zstack-repo'.format(webapp_dir)
                 shell('rm -f {0}; mkdir -p {0};ln -s /opt/zstack-dvd/x86_64 {0}/x86_64; ln -s /opt/zstack-dvd/aarch64 {0}/aarch64; ln -s /opt/zstack-dvd/mips64el {0}/mips64el; ln -s /opt/zstack-dvd/loongarch64 {0}/loongarch64; chown -R zstack:zstack {0}'.format(zstack_dvd_repo))
 
             def restore_config():
@@ -8092,7 +8092,7 @@ class UpgradeManagementNodeCmd(Command):
 
             def restore_custom_pcidevice_xml():
                 info('restoring the customPciDevices.xml ...')
-                custom_pcidevice_xml_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/cloud/WEB-INF/classes/mevoco/pciDevice/')
+                custom_pcidevice_xml_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/zstack/WEB-INF/classes/mevoco/pciDevice/')
                 custom_pcidevice_xml_backup_path = os.path.join(upgrade_tmp_dir, 'zstack/WEB-INF/classes/mevoco/pciDevice/customPciDevices.xml')
                 if not os.path.isfile(custom_pcidevice_xml_backup_path):
                     info('no backup customPciDevices.xml found')
@@ -10527,7 +10527,7 @@ class SharedBlockQcow2SharedVolumeFixCmd(Command):
         ctl.register_command(self)
 
         self.support_operations = ["convert_volume", "delete_qcow2_volume", "commit_snapshot_to_image", "delete_shared_volume_snapshots"]
-        self.key = "/usr/local/zstack/apache-tomcat/webapps/cloud/WEB-INF/classes/ansible/rsaKeys/id_rsa"
+        self.key = "/usr/local/zstack/apache-tomcat/webapps/zstack/WEB-INF/classes/ansible/rsaKeys/id_rsa"
         self.script_path = "/tmp/zstack-convert-volume.py"
 
     def install_argparse_arguments(self, parser):

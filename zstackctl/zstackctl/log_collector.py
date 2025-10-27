@@ -289,7 +289,7 @@ class CollectFromYml(object):
     check = False
     check_result = {}
     max_thread_num = 20
-    DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/cloud/'
+    DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/zstack/'
     HA_KEEPALIVED_CONF = "/etc/keepalived/keepalived.conf"
     summary = Summary()
 

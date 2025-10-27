@@ -24,7 +24,7 @@ mn:
        for file_path in $file_paths; do cat /sys/devices/system/node/$file_path/meminfo; done &&
        ps ax -eTo ppid,pid,pcpu,pmem,maj_flt,min_flt,tid,vsz,rss,pgid,sid,tty,tgid,stat,uid,lstart,etime,time,command --sort ppid'}
       - {name: pkg-list, exec: 'rpm -qa | sort'}
-      - {name: git-commit, dir: $ZSTACK_HOME/../../webapps/cloud/, file: '*git-commit', mode: "All"}
+      - {name: git-commit, dir: $ZSTACK_HOME/../../webapps/zstack/, file: '*git-commit', mode: "All"}
       - {name: zstack-logs, dir: /var/log/zstack/, file: zstack.log*}
       - {name: zstack-installation-logs, dir: /tmp/, file: zstack_installation.log*}
       - {name: audit-log, dir: /var/log/audit/, file: 'audit.log*'}
