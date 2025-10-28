@@ -3503,6 +3503,27 @@ class InstallDbCmd(Command):
       ansible_python_interpreter: /usr/bin/python2
 
   tasks:
+    - name: Set packages for x86_64 (with mysql-router)
+      set_fact:
+        greatdb_packages:
+          - greatsql-client
+          - greatsql-devel
+          - greatsql-icu-data-files
+          - greatsql-server
+          - greatsql-shared
+          - greatsql-mysql-router
+      when: ansible_architecture == 'x86_64'
+
+    - name: Set packages for aarch64 (without mysql-router)
+      set_fact:
+        greatdb_packages:
+          - greatdb-client
+          - greatdb-devel
+          - greatdb-icu-data-files
+          - greatdb-server
+          - greatdb-shared
+      when: ansible_architecture == 'aarch64'
+      
     - name: ansible_distribution_major_version
       set_fact:
         ansible_distribution_major_version: "{{ ansible_distribution_major_version | int }}"
@@ -3520,7 +3541,7 @@ class InstallDbCmd(Command):
         or 
         (ansible_os_family == 'Kylin' and ansible_distribution_version == '10') 
         and yum_repo != 'false'
-      shell: yum clean all; yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
+      shell: yum clean all; yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y {{ greatdb_packages | join(' ') }}
       register: install_result
 
     - name: open 3306 port
@@ -3545,7 +3566,7 @@ class InstallDbCmd(Command):
 
     - name: rollback GreatDB
       when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8 and change_root_result.rc != 0 and install_result.changed == True
-      shell: yum remove -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
+      shell: yum remove -y {{ greatdb_packages | join(' ') }}
 
     - name: failure
       fail: >
