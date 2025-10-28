@@ -110,6 +110,7 @@ class HostFactResponse(kvmagent.AgentResponse):
         self.virtualizerInfo = vm_plugin.VirtualizerInfoTO()
         self.iscsiInitiatorName = None
         self.nqn = None
+        self.hostname = None
         self.cpuProcessorNum = 0
         self.cpuSockets = 0
         self.cpuCoresPerSocket = 0
@@ -297,6 +298,9 @@ class UpdateHostNqnResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(UpdateHostNqnResponse, self).__init__()
 
+class UpdateHostnameResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(UpdateHostnameResponse, self).__init__()
 
 class UpdateHostIscsiInitiatorNameCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -1169,6 +1173,8 @@ class HostPlugin(kvmagent.KvmAgent):
     GET_BLOCK_DEVICES_PATH = "/host/blockdevices/get"
     GET_SENSORS_PATH = "/host/sensors/get"
     UPDATE_NQN_PATH = "/host/nqn/update"
+    UPDATE_HOSTNAME_PATH = "/host/hostname/update"
+
     UPDATE_ISCSI_INITIATOR_NAME_PATH = "/host/iscsiinitiatorname/update"
     KVM_HOST_FILE_DOWNLOAD_PATH = "/host/file/download"
     FILE_UPLOAD_PATH = "/host/file/upload"
@@ -1348,6 +1354,9 @@ class HostPlugin(kvmagent.KvmAgent):
         nqn = linux.read_file(HOST_NQN_PATH)
         return nqn.strip() if nqn else None
 
+    def _get_hostname(self):
+        return shell.call('hostname').strip()
+
     @kvmagent.replyerror
     def update_nqn(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -1362,6 +1371,68 @@ class HostPlugin(kvmagent.KvmAgent):
 
         return jsonobject.dumps(rsp)
 
+    def _update_hostname(self, new_hostname):
+        origin_hostname = self._get_hostname()
+
+        ret, out, err = bash_roe("hostnamectl set-hostname %s" % new_hostname)
+        if ret != 0:
+            raise Exception("failed to set hostname, because %s" % err)
+
+        hosts_file = "/etc/hosts"
+        updated = False
+
+        with tempfile.NamedTemporaryFile(mode='w+', delete=False) as tmp_file:
+            logger.debug("attempting to open system file: %s (requires root privileges)", hosts_file)
+            # TODO: Handle non-root scenarios - current implementation requires root Consider adding sudo support or graceful fallback
+            with open(hosts_file, 'r') as f:
+                for line in f:
+                    if line.strip().startswith('#') or not line.strip():
+                        tmp_file.write(line)
+                        continue
+
+                    parts = line.split()
+                    if len(parts) < 2:
+                        tmp_file.write(line)
+                        continue
+
+                    ip = parts[0]
+                    hostnames = parts[1:]
+
+                    if origin_hostname in hostnames:
+                        new_hostnames = [new_hostname if h == origin_hostname else h for h in hostnames]
+                        new_line = ip + "\t" + "\t".join(new_hostnames) + "\n"
+                        tmp_file.write(new_line)
+                        updated = True
+                        logger.debug("updated hosts entry: %s -> %s" % (line.strip(), new_line.strip()))
+                    else:
+                        tmp_file.write(line)
+
+        if updated:
+            shell.run("sudo chmod 644 %s && sudo chown root:root %s" % (tmp_file.name, tmp_file.name))
+            shell.run("sudo mv -f %s %s" % (tmp_file.name, hosts_file))
+            logger.debug("updated /etc/hosts file successfully.")
+        else:
+            os.unlink(tmp_file.name)
+            logger.debug("no entry for %s found in /etc/hosts. file not modified." % origin_hostname)
+
+    @kvmagent.replyerror
+    def update_hostname(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = UpdateHostnameResponse()
+
+        if not cmd.hostname:
+            rsp.success = False
+            rsp.error = "hostname parameter is required"
+            return jsonobject.dumps(rsp)
+
+        try:
+            self._update_hostname(cmd.hostname)
+        except Exception as e:
+            rsp.success = False
+            rsp.error = str(e)
+            return jsonobject.dumps(rsp)
+
+        return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
     def update_iscsi_initiator_name(self, req):
@@ -1464,6 +1535,11 @@ class HostPlugin(kvmagent.KvmAgent):
 
         rsp.iscsiInitiatorName = self._get_iscsi_initiator_name()
         rsp.nqn = self._get_host_nqn()
+        try:
+            rsp.hostname = self._get_hostname()
+        except Exception as e:
+            logger.warn("failed to get hostname: %s" % str(e))
+            rsp.hostname = None
 
         if not IS_LOONGARCH64:
             libvirtCapabilitiesList = []
@@ -4095,6 +4171,7 @@ done
         http_server.register_async_uri(self.GET_BLOCK_DEVICES_PATH, self.get_block_devices)
         http_server.register_async_uri(self.GET_SENSORS_PATH, self.get_sensors)
         http_server.register_async_uri(self.UPDATE_NQN_PATH, self.update_nqn)
+        http_server.register_async_uri(self.UPDATE_HOSTNAME_PATH, self.update_hostname)
         http_server.register_async_uri(self.UPDATE_ISCSI_INITIATOR_NAME_PATH, self.update_iscsi_initiator_name)
         http_server.register_async_uri(self.KVM_HOST_FILE_DOWNLOAD_PATH, self.download_file)
         http_server.register_async_uri(self.FILE_UPLOAD_PATH, self.upload_file)
