@@ -3938,6 +3938,7 @@ done
         rsp.supportSuspend = True
         if task.downloadSize == 0:
             rsp.progress = 0
+            rsp.installPath = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
         elif task.completed and not task.lastError:
             actual_size = _get_file_size(task.installPath)
             if actual_size == 0:
