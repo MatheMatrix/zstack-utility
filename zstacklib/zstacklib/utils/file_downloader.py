@@ -136,12 +136,9 @@ class FileDownloader:
         except ValueError:
             self.urlScheme = None
 
-    def percentage_callback(self, percent):
-        self.reporter.progress_report(int(percent))
-
     def use_wget(self, url, name, workdir, timeout):
         return linux.wget(url, workdir=workdir, rename=name, timeout=timeout, interval=2,
-                          callback=self.percentage_callback, callback_data=url)
+                          callback=self.reporter.progress_report, callback_data="report")
 
     def download(self):
         """Execute download using appropriate strategy"""
