@@ -391,7 +391,9 @@ Parse command parameters error:
                     all_params[params[0]] = eval_string(params[0], params[1])
                 elif apiname == 'APIAddBackendServerToServerGroupMsg' and params[0] in ['vmNics','servers']:
                     all_params[params[0]] = eval_string(params[0], params[1])
-	        elif apiname == 'APIChangeLoadBalancerBackendServerMsg' and params[0] in ['vmNics','servers']:
+                elif apiname == 'APIChangeLoadBalancerBackendServerMsg' and params[0] in ['vmNics','servers']:
+                    all_params[params[0]] = eval(params[1])
+                elif apiname == 'APICreateVmInstanceMsg' and params[0] == 'dataVolumeSystemTagsOnIndex':
                     all_params[params[0]] = eval(params[1])
                 elif apiname == 'APIUpdateSchedulerJobMsg' and params[0] == 'parameters':
                     all_params[params[0]] = eval_string(params[0], params[1])
