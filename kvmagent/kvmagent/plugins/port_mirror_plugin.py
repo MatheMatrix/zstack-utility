@@ -104,7 +104,7 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
         self._clear_mirror_src_config(device_name, mirror_device_name, "Egress")
 
     def _set_mirror_src_config(self, device_name, mirror_device_name, direction):
-        if (direction == "Egress" or direction == "Bidirection"):
+        if direction == "Egress" or direction == "Bidirection":
             shell_cmd = shell.ShellCmd("tc qdisc show dev %s |grep 'qdisc ingress'" % device_name)
             shell_cmd(False)
             if shell_cmd.return_code != 0:
@@ -114,9 +114,11 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
             if shell_cmd.return_code != 0:
                 shell.call('tc filter add dev %s parent ffff: protocol all u32 match u8 0 0 action mirred egress mirror dev %s' % (device_name, mirror_device_name))
             else:
-                shell.call('tc filter replace dev %s parent ffff: protocol all u32 match u8 0 0 action mirred egress mirror dev %s' % (device_name, mirror_device_name))
+                shell.call('tc filter delete dev {device_name} parent ffff:; tc filter add dev {device_name} parent '
+                           'ffff: protocol all u32 match u8 0 0 action mirred egress mirror dev {mirror_device_name}'
+                           .format(device_name=device_name, mirror_device_name=mirror_device_name))
 
-        if (direction == "Ingress" or direction == "Bidirection"):
+        if direction == "Ingress" or direction == "Bidirection":
             shell_cmd = shell.ShellCmd("tc qdisc show dev %s |grep 'qdisc prio 1:'" % device_name)
             shell_cmd(False)
             if shell_cmd.return_code != 0:
@@ -124,9 +126,12 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
             shell_cmd = shell.ShellCmd(" tc filter list dev %s parent 1: |grep '%s'" % (device_name, mirror_device_name))
             shell_cmd(False)
             if shell_cmd.return_code != 0:
-                shell.call('tc filter add dev %s parent 1: protocol all u32 match u8 0 0 action mirred egress mirror dev %s' % (device_name, mirror_device_name))
+                shell.call('tc filter add dev %s parent 1: protocol all u32 match u8 0 0 action mirred egress mirror '
+                           'dev %s' % (device_name, mirror_device_name))
             else:
-                shell.call('tc filter replace dev %s parent 1: protocol all u32 match u8 0 0 action mirred egress mirror dev %s' % (device_name, mirror_device_name))
+                shell.call('tc filter delete dev {device_name} parent 1:;tc filter add dev {device_name} parent 1: '
+                           'protocol all u32 match u8 0 0 action mirred egress mirror dev {mirror_device_name}'
+                           .format(device_name=device_name, mirror_device_name=mirror_device_name))
 
     def _clear_mirror_src_config(self, device_name, mirror_device_name, direction):
         shell_cmd = shell.ShellCmd("tc qdisc show dev %s |grep 'qdisc ingress'" % device_name)
