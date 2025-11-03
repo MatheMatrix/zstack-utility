@@ -100,7 +100,10 @@ prepare_mn_mock() {
     # prepare_zstacklib 
     cd /root/.zguest/zstack-utility/zstacklib/
     if [ "${os}" == "ky10sp3" ]; then
-        echo "cython<3" > /tmp/constraint.txt
+        echo "from ZSTAC-58233, ky10sp3 need Cython"
+        wget http://minio.zstack.io:9001/download/devops_dependencies/utility_ut/pypi_source/simple/cython/Cython-0.29.37.tar.gz -O Cython-0.29.37.tar.gz
+        pip install Cython-0.29.37.tar.gz
+        echo "" > /tmp/constraint.txt  # empty list
         PIP_CONSTRAINT=/tmp/constraint.txt bash install.sh -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple
     else
         bash install.sh -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple
