@@ -100,7 +100,24 @@ prepare_mn_mock() {
     # prepare_zstacklib 
     cd /root/.zguest/zstack-utility/zstacklib/
     if [ "${os}" == "ky10sp3" ]; then
-        echo "cython<3" > /tmp/constraint.txt
+        echo "from ZSTAC-58233, ky10sp3 need Cython (version < 3)"
+        PYPI_PATH="/root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi"
+
+        mkdir $PYPI_PATH/simple/cython/
+        wget http://minio.zstack.io:9001/download/devops_dependencies/utility_ut/pypi_source/simple/cython/Cython-0.29.37.tar.gz -O $PYPI_PATH/Cython-0.29.37.tar.gz
+        cp $PYPI_PATH/Cython-0.29.37.tar.gz $PYPI_PATH/simple/cython/Cython-0.29.37.tar.gz
+        echo '<a href='Cython-0.29.37.tar.gz'>Cython-0.29.37.tar.gz</a><br/>' > $PYPI_PATH/simple/cython/index.html
+
+        {
+            head -n -2 $PYPI_PATH/simple/index.html
+            echo "<a href='cython/'>cython</a><br/>"
+            tail -n 2 $PYPI_PATH/simple/index.html
+        } > $PYPI_PATH/simple/index.html.tmp && mv -f $PYPI_PATH/simple/index.html.tmp $PYPI_PATH/simple/index.html
+
+        cat $PYPI_PATH/simple/index.html
+        # pip install Cython-0.29.37.tar.gz
+
+        echo "cython==0.29.37" > /tmp/constraint.txt
         PIP_CONSTRAINT=/tmp/constraint.txt bash install.sh -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple
     else
         bash install.sh -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple
@@ -176,6 +193,8 @@ copy_kvm_virtualenv_to_venv3() {
     source /root/venv3/bin/activate
     cd /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/
     pip install -r requirements/requirements1.txt -i file://`pwd`/pypi/simple
-    pip install -r requirements/requirements3.txt -i file://`pwd`/pypi/simple --extra-index-url http://mirrors.aliyun.com/pypi/simple 
+    pip install -r requirements/requirements3.txt -i file://`pwd`/pypi/simple \
+            --extra-index-url file:///root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/pypi/simple \
+            --extra-index-url http://mirrors.aliyun.com/pypi/simple 
 }
 copy_kvm_virtualenv_to_venv3
