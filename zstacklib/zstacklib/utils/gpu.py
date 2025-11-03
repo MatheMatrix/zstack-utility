@@ -1,9 +1,12 @@
-from zstacklib.utils import log, linux
+import threading
+
+from zstacklib.utils import thread
 from zstacklib.utils.bash import *
 from enum import Enum
 import json
 
 from zstacklib.utils.pci import VendorEnum
+from zstacklib.utils.qga import VmQga
 
 logger = log.get_logger(__name__)
 
@@ -12,6 +15,62 @@ class VmGpuStatus(Enum):
     NOT_EXIST = "not_exist"
     CRITICAL_FAULT = "critical"
     NOMINAL = "nominal"
+
+
+def shut_persistenced_by_guesttool(domain):
+    vm_uuid = domain.name()
+    qga = VmQga(domain)
+    if qga.state != VmQga.QGA_STATE_RUNNING:
+        return 1, "cannot to shut nvidia-persistenced, qga is not running for vm {}".format(vm_uuid)
+
+    cmd = get_shut_nvidia_persistence_cmd("mswindows" in qga.os)
+    if qga.os == "mswindows":
+        exitcode, ret_data = qga.guest_exec_powershell(cmd)
+    else:
+        exitcode, ret_data, _ = qga.guest_exec_bash(cmd)
+    return exitcode, ret_data
+
+
+def nvidia_pre_detach_from_vm(domain, vm_uuid):
+    """NVIDIA specific pre-detach-from-VM hook"""
+    if not domain or not domain.isActive():
+        logger.info("no need to shutdown nvidia-persistenced for vm %s, it is not running" % vm_uuid)
+        return 0, None
+    else:
+        logger.info("start to shutdown nvidia-persistenced for vm %s" % vm_uuid)
+        return shut_persistenced_by_guesttool(domain)
+
+
+def nvidia_pre_detach_from_host():
+    """NVIDIA specific pre-detach-from-host hook"""
+    logger.info("start to shutdown nvidia-persistenced on host")
+    r, o, _ = bash_roe(get_shut_nvidia_persistence_cmd())
+    return r, o
+
+
+_pre_detach_from_vm_hooks = {
+    VendorEnum.NVIDIA: nvidia_pre_detach_from_vm
+}
+
+_pre_detach_from_host_hooks = {
+    VendorEnum.NVIDIA: nvidia_pre_detach_from_host
+}
+
+
+def pre_detach_from_vm(domain, vm_uuid, vendor):
+    """Execute pre-detach-from-VM hook for specific vendor"""
+    if vendor in _pre_detach_from_vm_hooks:
+        return _pre_detach_from_vm_hooks[vendor](domain, vm_uuid)
+    logger.warn("No hook registered for vendor: {0}, do nothing".format(vendor))
+    return 0, None
+
+
+def pre_detach_from_host(vendor):
+    """Execute pre-detach-from-host hook for specific vendor"""
+    if vendor in _pre_detach_from_host_hooks:
+        return _pre_detach_from_host_hooks[vendor]()
+    logger.warn("No hook registered for vendor: {0}, do nothing".format(vendor))
+    return 0, None
 
 
 def parse_nvidia_gpu_output(output):
@@ -539,3 +598,86 @@ def get_gpu_status_cmd(pci_device_address, iswindows=False):
     if iswindows:
         cmd = cmd.replace(" ", "|")
     return cmd
+
+
+def get_shut_nvidia_persistence_cmd(iswindows=False):
+    cmd = "ps -ef | grep nvidia-persistenced | grep -v grep | awk '{print $2}' | xargs -r kill -9"
+    if iswindows:
+        cmd = cmd.replace(" ", "|")
+    return cmd
+
+
+def has_nvidia_gpu():
+    r, _, _ = bash_roe("which nvidia-smi")
+    if r != 0:
+        return False
+    r, o, e = bash_roe("nvidia-smi -L")
+    return r == 0 and o and len(o.strip()) > 0
+
+
+_nvidia_persistenced_active = False
+_nvidia_persistenced_lock = threading.Lock()
+
+
+def ensure_nvidia_persistenced_once(timeout=5):
+    global _nvidia_persistenced_active
+
+    with _nvidia_persistenced_lock:
+        # If already running, nothing to do
+        r, o, e = bash_roe("pgrep -f nvidia-persistenced || true")
+        is_running = bool(o and o.strip())
+
+        if is_running:
+            _nvidia_persistenced_active = True
+            return True
+
+        if _nvidia_persistenced_active:
+            _nvidia_persistenced_active = False
+            logger.debug('nvidia-persistenced stopped, will retry in next cycle')
+            return True
+
+        start_cmd = "nohup nvidia-persistenced >/dev/null 2>&1 &"
+        logger.info('starting nvidia-persistenced with: %s' % start_cmd)
+        bash_roe(start_cmd)
+
+        # Wait for it to appear
+        time.sleep(timeout)
+        r, o, e = bash_roe("pgrep -f nvidia-persistenced || true")
+        if o and o.strip():
+            return True
+        else:
+            logger.warning('nvidia-persistenced did not appear after start attempt')
+            return False
+
+
+def start_nvidia_persistenced_monitor(poll_interval=60 * 2, stop_event=None):
+    """Monitor nvidia-persistenced and restart it if it dies while GPU exists."""
+    logger.info("start_nvidia_persistenced_monitor: starting monitor (interval=%s)" % poll_interval)
+    if stop_event is None:
+        stop_event = threading.Event()
+
+    while not stop_event.is_set():
+        if not has_nvidia_gpu():
+            stop_event.wait(poll_interval)
+            continue
+
+        r = ensure_nvidia_persistenced_once()
+        if not r:
+            logger.warning("nvidia-persistenced not running and could not be started")
+
+        stop_event.wait(poll_interval)
+
+
+def watch_and_ensure_nvidia_persistenced(poll_interval=30, stop_event=None):
+    """Watch for GPUs appearing later. Once detected, ensure persistenced and start monitor, then exit."""
+    logger.info("watch_and_ensure_nvidia_persistenced: watching for NVIDIA GPU (interval=%s)" % poll_interval)
+    if stop_event is None:
+        stop_event = threading.Event()
+
+    while not stop_event.is_set():
+        if has_nvidia_gpu():
+            ensure_nvidia_persistenced_once()
+            thread.ThreadFacade.run_in_thread(start_nvidia_persistenced_monitor, [poll_interval, stop_event])
+            return
+
+        stop_event.wait(poll_interval)
