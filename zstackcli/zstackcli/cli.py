@@ -68,6 +68,9 @@ NOT_QUERY_MYSQL_APIS = [
 def escape_split(str, deli=','):
     return csv.reader(c.StringIO(str), delimiter=deli, escapechar='\\').next()
 
+def escape_split(str, deli=','):
+    return csv.reader(c.StringIO(str), delimiter=deli, escapechar='\\').next()
+
 def clean_password_in_cli_history():
     cmd_historys = None
     with open(CLI_HISTORY, 'r') as f: cmd_historys = f.readlines()
