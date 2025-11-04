@@ -133,7 +133,7 @@ prepare_mn_mock() {
     # in venv2
     cd /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/
     pip install -r requirements/requirements1.txt -i file://`pwd`/pypi/simple
-    pip2 install ansible==4.10.0 -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple --extra-index-url http://mirrors.aliyun.com/pypi/simple/
+    pip2 install ansible==4.10.0 -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple
     deactivate
     echo "==>> pass prepare_mn_mock"
 }
@@ -176,6 +176,8 @@ copy_kvm_virtualenv_to_venv3() {
     source /root/venv3/bin/activate
     cd /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/
     pip install -r requirements/requirements1.txt -i file://`pwd`/pypi/simple
-    pip install -r requirements/requirements3.txt -i file://`pwd`/pypi/simple --extra-index-url http://mirrors.aliyun.com/pypi/simple 
+    pip install -r requirements/requirements3.txt -i file://`pwd`/pypi/simple \
+            --extra-index-url file:///root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/pypi/simple \
+            --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple
 }
 copy_kvm_virtualenv_to_venv3
