@@ -141,6 +141,7 @@ class NicTO(object):
         self.mac = None
         self.bridgeName = None
         self.deviceId = None
+        self.extraPciDeviceAddresses = []
 
 
 class DomainVolume(object):
@@ -1534,6 +1535,53 @@ def parse_pci_device_address(addr):
     slot = addr.split(":")[-1].split(".")[0]
     function = addr.split(".")[-1]
     return domain, bus, slot, function
+
+def _normalize_hex_component(value, width):
+    if value is None:
+        return None
+    value = value.lower()
+    if value.startswith('0x'):
+        value = value[2:]
+    try:
+        number = int(value, 16)
+    except ValueError:
+        return None
+    return format(number, 'x').zfill(width)
+
+def normalize_pci_address(addr):
+    if not addr:
+        return None
+    domain, bus, slot, function = parse_pci_device_address(addr)
+    domain = _normalize_hex_component(domain, 4)
+    bus = _normalize_hex_component(bus, 2)
+    slot = _normalize_hex_component(slot, 2)
+    function = _normalize_hex_component(function, 1)
+    if None in (domain, bus, slot, function):
+        return None
+    return "%s:%s:%s.%s" % (domain, bus, slot, function)
+
+def normalize_pci_attrs(attrs):
+    if attrs is None:
+        return None
+    domain = _normalize_hex_component(attrs.get('domain', '0x0000'), 4)
+    bus = _normalize_hex_component(attrs.get('bus', '0x00'), 2)
+    slot = _normalize_hex_component(attrs.get('slot', '0x00'), 2)
+    function = _normalize_hex_component(attrs.get('function', '0x0'), 1)
+    if None in (domain, bus, slot, function):
+        return None
+    return "%s:%s:%s.%s" % (domain, bus, slot, function)
+
+def get_interface_source_pci_address(iface_xml):
+    if not iface_xml:
+        return None
+    try:
+        iface_tree = etree.fromstring(iface_xml)
+    except Exception:
+        return None
+    source_addr = iface_tree.find('./source/address')
+    if source_addr is None:
+        return None
+    return normalize_pci_attrs(source_addr.attrib)
 
 def get_machineType(machine_type):
     if HOST_ARCH == "aarch64":
@@ -4599,6 +4647,34 @@ class Vm(object):
 
             return False
 
+        def _collect_extra_pci_addresses(extra):
+            if not extra:
+                return []
+            if isinstance(extra, (list, tuple)):
+                return [addr for addr in extra if addr]
+            if isinstance(extra, jsonobject.JsonObject):
+                return [val for val in extra.__dict__.values() if val]
+            return [extra]
+
+        def _clone_nic(nic_obj):
+            return jsonobject.loads(jsonobject.dumps(nic_obj))
+
+        def check_extra_device(pci_addr, _):
+            self.refresh()
+            for iface in self.domain_xmlobject.devices.get_child_node_as_list('interface'):
+                if iface.type_ == 'hostdev' and iface.mac.address_ == cmd.nic.mac:
+                    if hasattr(iface, 'source') and hasattr(iface.source, 'address'):
+                        addr = iface.source.address
+                        domain = addr.domain_.replace('0x', '')
+                        bus = addr.bus_.replace('0x', '')
+                        slot = addr.slot_.replace('0x', '')
+                        function = addr.function_.replace('0x', '')
+                        attached_addr = '%s:%s:%s.%s' % (domain, bus, slot, function)
+                        normalized_pci = pci_addr.replace('0000:', '')
+                        if attached_addr == normalized_pci or attached_addr == pci_addr:
+                            return True
+            return False
+
         try:
             if check_device(None):
                 return
@@ -4611,6 +4687,7 @@ class Vm(object):
             if cmd.nic.type == "TFVNIC":
                 cmd.put('vmInstanceUuid', cmd.vmUuid)
 
+            # Attach main nic
             xml = self._interface_cmd_to_xml(cmd, action='Attach')
             logger.debug('attaching nic:\n%s' % xml)
 
@@ -4624,6 +4701,46 @@ class Vm(object):
 
             if cmd.nic.isolated:
                 iproute.config_link_isolated(cmd.nic.nicInternalName)
+
+            # Attach extra PCI devices for bond mode (VF HA)
+            extra_pci_list = _collect_extra_pci_addresses(getattr(cmd.nic, 'extraPciDeviceAddresses', None))
+            if extra_pci_list and cmd.nic.type == 'VF' and cmd.nic.pciDeviceAddress is not None:
+                if getattr(cmd.nic, 'nicInternalName', None) and '.' in cmd.nic.nicInternalName:
+                    alias_base = 'net%s' % cmd.nic.nicInternalName.split('.', 1)[1]
+                else:
+                    alias_base = 'net0'
+
+                for extra_index, extra_addr in enumerate(extra_pci_list):
+                    if not extra_addr or extra_addr == cmd.nic.pciDeviceAddress:
+                        continue
+
+                    # Check if extra device is already attached
+                    if check_extra_device(extra_addr, None):
+                        logger.debug('extra PCI device %s is already attached, skip' % extra_addr)
+                        continue
+
+                    # Clone nic and set extra PCI address
+                    extra_nic = _clone_nic(cmd.nic)
+                    extra_nic.put('pciDeviceAddress', extra_addr)
+                    if hasattr(extra_nic, 'extraPciDeviceAddresses'):
+                        extra_nic.put('extraPciDeviceAddresses', [])
+
+                    # Create command for extra nic
+                    extra_cmd = _clone_nic(cmd)
+                    extra_cmd.put('nic', extra_nic)
+
+                    xml = self._interface_cmd_to_xml(extra_cmd, action='Attach')
+                    logger.debug('attaching extra nic (slave %d) with PCI %s:\n%s' % (extra_index + 1, extra_addr, xml))
+
+                    if self.state == self.VM_STATE_RUNNING or self.state == self.VM_STATE_PAUSED:
+                        self.domain.attachDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
+                    else:
+                        self.domain.attachDevice(xml)
+
+                    if not linux.wait_callback_success(lambda _: check_extra_device(extra_addr, _), interval=0.5, timeout=30):
+                        raise Exception('extra nic device %s does not show after 30 seconds' % extra_addr)
+
+                    logger.debug('successfully attached extra nic (slave %d) with PCI %s' % (extra_index + 1, extra_addr))
 
         except:
             if not check_device(None):
@@ -4669,14 +4786,75 @@ class Vm(object):
                 if iface.type_ == 'hostdev' and iface.mac.address_ == cmd.nic.mac:
                     return iface.dump()
 
+        def find_vf_device_xml_by_pci(pci_addr):
+            expected = normalize_pci_address(pci_addr)
+            if not expected:
+                return None
+            for iface in self.domain_xmlobject.devices.get_child_node_as_list('interface'):
+                if iface.type_ != 'hostdev' or iface.mac.address_ != cmd.nic.mac:
+                    continue
+                if not hasattr(iface, 'source') or not hasattr(iface.source, 'address'):
+                    continue
+                attached = normalize_pci_attrs(iface.source.address.attrib)
+                if attached and attached == expected:
+                    return iface.dump()
+            return None
+
+        def check_extra_device(pci_addr, _):
+            self.refresh()
+            xml = find_vf_device_xml_by_pci(pci_addr)
+            return xml is None
+
+        def _collect_extra_pci_addresses(extra):
+            if not extra:
+                return []
+            if isinstance(extra, (list, tuple)):
+                return [addr for addr in extra if addr]
+            if isinstance(extra, jsonobject.JsonObject):
+                return [val for val in extra.__dict__.values() if val]
+            return [extra]
+
+        def _clone_nic(nic_obj):
+            return jsonobject.loads(jsonobject.dumps(nic_obj))
+
         if check_device(None):
             return
 
         try:
+            # Detach extra PCI devices first for bond mode (VF HA)
+            extra_pci_list = _collect_extra_pci_addresses(getattr(cmd.nic, 'extraPciDeviceAddresses', None))
+            if extra_pci_list and cmd.nic.type == 'VF' and cmd.nic.pciDeviceAddress is not None:
+                for extra_index, extra_addr in enumerate(extra_pci_list):
+                    if not extra_addr or extra_addr == cmd.nic.pciDeviceAddress:
+                        continue
+
+                    # Check if extra device is attached
+                    extra_xml = find_vf_device_xml_by_pci(extra_addr)
+                    if extra_xml is None:
+                        logger.debug('extra PCI device %s is not attached, skip' % extra_addr)
+                        continue
+
+                    logger.debug('detaching extra nic (slave %d) with PCI %s:\n%s' % (extra_index + 1, extra_addr, extra_xml))
+
+                    try:
+                        if self.state == self.VM_STATE_RUNNING or self.state == self.VM_STATE_PAUSED:
+                            self.domain.detachDeviceFlags(extra_xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
+                        else:
+                            self.domain.detachDevice(extra_xml)
+
+                        if not linux.wait_callback_success(lambda _: check_extra_device(extra_addr, _), interval=0.5, timeout=10):
+                            logger.warn('extra nic device %s is still attached after 10 seconds' % extra_addr)
+                        else:
+                            logger.debug('successfully detached extra nic (slave %d) with PCI %s' % (extra_index + 1, extra_addr))
+                    except libvirt.libvirtError as e:
+                        logger.warn('failed to detach extra nic with PCI %s: %s' % (extra_addr, str(e)))
+                        # Continue to detach other devices even if one fails
+
             # if nic type is vDPA/dpdkvhostuser, release it before detach.
             if cmd.nic.type in ovs.OvsDpdkSupportVnic:
                 cmd.nic.srcPath = ovs.getOvsCtl(with_dpdk=True).destoryNicBackend(cmd.vmUuid, cmd.nic.nicInternalName)
 
+            # Detach main nic
             xml = None
             if cmd.nic.type == 'VF':
                 xml = find_vf_device_xml()
@@ -6102,13 +6280,25 @@ class Vm(object):
             if not cmd.nics:
                 return
 
-            def addon(nic_xml_object):
-                if cmd.addons and cmd.addons['NicQos'] and cmd.addons['NicQos'][nic.uuid]:
-                    qos = cmd.addons['NicQos'][nic.uuid]
+            def addon(nic_xml_object, nic_obj):
+                if cmd.addons and cmd.addons['NicQos'] and cmd.addons['NicQos'][nic_obj.uuid]:
+                    qos = cmd.addons['NicQos'][nic_obj.uuid]
                     Vm._add_qos_to_interface(nic_xml_object, qos)
 
                 if cmd.coloPrimary or cmd.coloSecondary:
                     Vm._ignore_colo_vm_nic_rom_file_on_interface(nic_xml_object)
+
+            def _collect_extra_pci_addresses(extra):
+                if not extra:
+                    return []
+                if isinstance(extra, (list, tuple)):
+                    return [addr for addr in extra if addr]
+                if isinstance(extra, jsonobject.JsonObject):
+                    return [val for val in extra.__dict__.values() if val]
+                return [extra]
+
+            def _clone_nic(nic_obj):
+                return jsonobject.loads(jsonobject.dumps(nic_obj))
 
             devices = elements['devices']
             vhostSrcPath = cmd.addons['vhostSrcPath'] if cmd.addons else None
@@ -6125,7 +6315,28 @@ class Vm(object):
                     interface = Vm._build_interface_xml(nic, devices, nic.srcPath, 'Attach', brMode, index)
                 else:
                     interface = Vm._build_interface_xml(nic, devices, vhostSrcPath, 'Attach', brMode, index)
-                addon(interface)
+                addon(interface, nic)
+
+                extra_pci_list = _collect_extra_pci_addresses(getattr(nic, 'extraPciDeviceAddresses', None))
+                if not extra_pci_list or nic.type != 'VF' or nic.pciDeviceAddress is None:
+                    continue
+
+                if getattr(nic, 'nicInternalName', None) and '.' in nic.nicInternalName:
+                    alias_base = 'net%s' % nic.nicInternalName.split('.', 1)[1]
+                else:
+                    alias_base = 'net0'
+
+                for extra_index, extra_addr in enumerate(extra_pci_list):
+                    if not extra_addr or extra_addr == nic.pciDeviceAddress:
+                        continue
+                    extra_nic = _clone_nic(nic)
+                    extra_nic.put('pciDeviceAddress', extra_addr)
+                    if hasattr(extra_nic, 'extraPciDeviceAddresses'):
+                        extra_nic.put('extraPciDeviceAddresses', [])
+                    alias_name = '%s-slave%d' % (alias_base, extra_index + 1)
+                    extra_interface = Vm._build_interface_xml(extra_nic, devices, vhostSrcPath, 'Attach', brMode, index, None, alias_name)
+                    addon(extra_interface, extra_nic)
+                    break
 
         def make_meta():
             root = elements['root']
@@ -6617,7 +6828,7 @@ class Vm(object):
         return vm
 
     @staticmethod
-    def _build_interface_xml(nic, devices=None, vhostSrcPath=None, action=None, brMode=None, index=0, cmd=None):
+    def _build_interface_xml(nic, devices=None, vhostSrcPath=None, action=None, brMode=None, index=0, cmd=None, alias_name=None):
         if nic.pciDeviceAddress is not None and nic.srcPath is None:
             iftype = 'hostdev'
             device_attr = {'type': iftype, 'managed': 'yes'}
@@ -6640,7 +6851,14 @@ class Vm(object):
 
         e(interface, 'mac', None, attrib={'address': nic.mac})
         if action != 'Update' and action != 'Detach':
-            e(interface, 'alias', None, {'name': 'net%s' % nic.nicInternalName.split('.')[1]})
+            if alias_name is None:
+                if getattr(nic, 'nicInternalName', None) and '.' in nic.nicInternalName:
+                    alias_value = 'net%s' % nic.nicInternalName.split('.', 1)[1]
+                else:
+                    alias_value = 'net0'
+            else:
+                alias_value = alias_name
+            e(interface, 'alias', None, {'name': alias_value})
 
         if iftype != 'hostdev' and iftype != "direct" and nic.type not in ovs.OvsDpdkSupportVnic and nic.type != "dpdkvhostuserclient":
             e(interface, 'mtu', None, attrib={'size': '%d' % nic.mtu})
@@ -11333,12 +11551,22 @@ host side snapshot files chian:
         def check_nic_is_attached(expect_result=True):
             vm = get_vm_by_uuid(vm_uuid)
             tree = etree.fromstring(device_xml)
+            iface_type = tree.attrib['type']
+            iface_mac = tree.find('mac').attrib['address']
+            expected_pci = None
+            if iface_type == 'hostdev':
+                source_addr = tree.find('./source/address')
+                if source_addr is not None:
+                    expected_pci = normalize_pci_attrs(source_addr.attrib)
             for iface in vm.domain_xmlobject.devices.get_child_node_as_list('interface'):
-                if iface.mac.address_ == tree.find('mac').attrib['address'] and iface.type_ == tree.attrib['type']:
-                    if expect_result:
-                        return True
-                    else:
-                        return False
+                if iface.mac.address_ != iface_mac or iface.type_ != iface_type:
+                    continue
+                if expected_pci:
+                    iface_xml = iface.dump()
+                    iface_pci = get_interface_source_pci_address(iface_xml)
+                    if iface_pci != expected_pci:
+                        continue
+                return True if expect_result else False
 
             if expect_result:
                 return False
@@ -11388,16 +11616,24 @@ host side snapshot files chian:
         DISCONNECTING = 'Disconnecting'
         RECONNECTING = 'Reconnecting'
 
-        def _check_nic_is_attached(vm, nic, interface_type=None):
+        def _check_nic_is_attached(vm, nic, interface_type=None, pci_address=None):
             if interface_type not in ['bridge', 'hostdev']:
                 raise Exception('invalid interface type: %s' % interface_type)
+            expected_pci = normalize_pci_address(pci_address) if pci_address else None
             for iface in vm.domain_xmlobject.devices.get_child_node_as_list('interface'):
                 if iface.mac.address_ != nic.mac:
                     continue
-                if iface.type_ == interface_type:
-                    if iface.hasattr('alias'):
-                        iface.del_node('alias')
-                    return iface.dump()
+                if iface.type_ != interface_type:
+                    continue
+                iface_xml = iface.dump()
+                if expected_pci and interface_type == 'hostdev':
+                    iface_pci = get_interface_source_pci_address(iface_xml)
+                    if iface_pci != expected_pci:
+                        continue
+                if iface.hasattr('alias'):
+                    iface.del_node('alias')
+                    iface_xml = iface.dump()
+                return iface_xml
 
             return None
 
@@ -11427,6 +11663,60 @@ host side snapshot files chian:
                 interface = Vm._build_interface_xml(nic, action='Update')
                 return etree.tostring(interface)
 
+        def _clone_nic(nic_obj):
+            return jsonobject.loads(jsonobject.dumps(nic_obj))
+
+        def _collect_extra_pci_addresses(extra):
+            if not extra:
+                return []
+            if isinstance(extra, (list, tuple)):
+                return [addr for addr in extra if addr]
+            if isinstance(extra, jsonobject.JsonObject):
+                return [val for val in extra.__dict__.values() if val]
+            return [extra]
+
+        def _get_all_vf_nics(nic):
+            vf_nics = []
+            seen = set()
+            base_addr = getattr(nic, 'pciDeviceAddress', None)
+            base_norm = normalize_pci_address(base_addr)
+            if base_addr and base_norm and base_norm not in seen:
+                base_clone = _clone_nic(nic)
+                if hasattr(base_clone, 'extraPciDeviceAddresses'):
+                    base_clone.put('extraPciDeviceAddresses', [])
+                base_clone.put('pciDeviceAddress', base_addr)
+                vf_nics.append(base_clone)
+                seen.add(base_norm)
+
+            for extra_addr in _collect_extra_pci_addresses(getattr(nic, 'extraPciDeviceAddresses', None)):
+                extra_norm = normalize_pci_address(extra_addr)
+                if not extra_addr or not extra_norm or extra_norm in seen:
+                    continue
+                extra_clone = _clone_nic(nic)
+                if hasattr(extra_clone, 'extraPciDeviceAddresses'):
+                    extra_clone.put('extraPciDeviceAddresses', [])
+                extra_clone.put('pciDeviceAddress', extra_addr)
+                vf_nics.append(extra_clone)
+                seen.add(extra_norm)
+            return vf_nics
+
+        def _attach_single_vf(vm, vf_nic):
+            pci_addr = getattr(vf_nic, 'pciDeviceAddress', None)
+            if not pci_addr:
+                return
+            vf_xml = _check_nic_is_attached(vm, vf_nic, interface_type='hostdev', pci_address=pci_addr)
+            if vf_xml is None:
+                vf_xml = _build_xml_from_vf(vm, vf_nic, nic_type='VF')
+                self.set_domain_network_device(vm.uuid, vf_xml, operate_type='attach')
+
+        def _detach_single_vf(vm, vf_nic):
+            pci_addr = getattr(vf_nic, 'pciDeviceAddress', None)
+            if not pci_addr:
+                return
+            vf_xml = _check_nic_is_attached(vm, vf_nic, interface_type='hostdev', pci_address=pci_addr)
+            if vf_xml is not None:
+                self.set_domain_network_device(vm.uuid, vf_xml, operate_type='detach')
+
         def _change_vf_ha_state_enable(vm, nic):
             # 1. attach temporary vnic to vm, and set link state to down
             vnic_xml = _check_nic_is_attached(vm, nic, interface_type='bridge')
@@ -11436,11 +11726,9 @@ host side snapshot files chian:
             else:
                 self.set_domain_iflink_state(vm.uuid, '%s.1' % nic.nicInternalName, 'down')
 
-            # 2. just check vf is attached to vm, if not, attach it
-            vf_xml = _check_nic_is_attached(vm, nic, interface_type='hostdev')
-            if vf_xml is None:
-                vf_xml = _build_xml_from_vf(vm, nic, nic_type='VF')
-                self.set_domain_network_device(vm.uuid, vf_xml, operate_type='attach')
+            # 2. ensure all vf devices are attached to vm
+            for vf_nic in _get_all_vf_nics(nic):
+                _attach_single_vf(vm, vf_nic)
 
         def _change_vf_ha_state_disconnect(vm, nic):
             # 1. set temporary vnic link state to up
@@ -11450,17 +11738,14 @@ host side snapshot files chian:
                 self.set_domain_network_device(vm.uuid, vnic_xml, operate_type='attach')
             self.set_domain_iflink_state(vm.uuid, '%s.1' % nic.nicInternalName, 'up')
 
-            # 2. detach vf from vm
-            vf_xml = _check_nic_is_attached(vm, nic, interface_type='hostdev')
-            if vf_xml is not None:
-                self.set_domain_network_device(vm.uuid, vf_xml, operate_type='detach')
+            # 2. detach all vf devices from vm
+            for vf_nic in _get_all_vf_nics(nic):
+                _detach_single_vf(vm, vf_nic)
 
         def _change_vf_ha_state_reconnect(vm, nic):
-            # 1. attach new vf to vm
-            vf_xml = _check_nic_is_attached(vm, nic, interface_type='hostdev')
-            if vf_xml is None:
-                vf_xml = _build_xml_from_vf(vm, nic, nic_type='VF')
-                self.set_domain_network_device(vm.uuid, vf_xml, operate_type='attach')
+            # 1. attach vf devices back to vm
+            for vf_nic in _get_all_vf_nics(nic):
+                _attach_single_vf(vm, vf_nic)
 
             # 2. detach temporary vnic from vm
             vnic_xml = _check_nic_is_attached(vm, nic, interface_type='bridge')
