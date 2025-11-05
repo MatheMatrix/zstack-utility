@@ -3535,14 +3535,63 @@ class InstallDbCmd(Command):
       when: ansible_os_family == 'Kylin' and ansible_distribution_version == '10'
       shell: yum clean all; yum --disablerepo="*" --enablerepo=zstack-local-greatdb install -y readline
 
-    - name: install GreatDB
+    - name: install GreatDB on x86_64
       when: >
-        (ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8)
-        or 
-        (ansible_os_family == 'Kylin' and ansible_distribution_version == '10') 
-        and yum_repo != 'false'
+        ansible_architecture == 'x86_64' and
+        ((ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8)
+         or 
+         (ansible_os_family == 'Kylin' and ansible_distribution_version == '10'))
+         and yum_repo != 'false'
       shell: yum clean all; yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y {{ greatdb_packages | join(' ') }}
       register: install_result
+
+    - name: prepare ARM installation
+      when: ansible_architecture == 'aarch64' and
+        ((ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8)
+         or 
+         (ansible_os_family == 'Kylin' and ansible_distribution_version == '10'))
+         and yum_repo != 'false'
+      block:
+        - name: create opt directory
+          file:
+            path: /opt
+            state: directory
+            mode: '0755'
+
+        - name: extract openEuler.tgz
+          unarchive:
+            src: /opt/zstack-dvd/aarch64/ky10sp3/tools/openEuler.tgz
+            dest: /opt
+            remote_src: yes
+
+        - name: install GreatDB dependency packages
+          yum:
+            name:
+              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-client-1.0.0.6118032-GA1.37c10216.1.el8.aarch64.rpm
+              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-devel-1.0.0.6118032-GA1.37c10216.1.el8.aarch64.rpm
+              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-icu-data-files-1.0.0.6118032-GA1.37c10216.1.el8.aarch64.rpm
+              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-shared-1.0.0.6118032-GA1.37c10216.1.el8.aarch64.rpm
+            disable_gpg_check: yes
+            state: present
+
+        - name: install GreatDB server with --nodeps
+          shell: rpm -ivh --nodeps /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-server-1.0.0.6118032-GA1.37c10216.1.el8.aarch64.rpm
+
+        - name: modify greatdbd.service for LD_LIBRARY_PATH
+          lineinfile:
+            path: /usr/lib/systemd/system/greatdbd.service
+            regexp: '^Environment=MYSQLD_PARENT_PID=1$'
+            line: 'Environment="MYSQLD_PARENT_PID=1" "LD_LIBRARY_PATH=/opt/openEuler/gcc-toolset-10/root/usr/lib64:$LD_LIBRARY_PATH"'
+            backup: yes
+
+        - name: reload systemd daemon
+          systemd:
+            daemon_reload: yes
+
+        - name: set install_result for ARM
+          set_fact:
+            install_result:
+              changed: true
 
     - name: open 3306 port
       when: ansible_os_family == 'RedHat'
@@ -3566,7 +3615,14 @@ class InstallDbCmd(Command):
 
     - name: rollback GreatDB
       when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8 and change_root_result.rc != 0 and install_result.changed == True
-      shell: yum remove -y {{ greatdb_packages | join(' ') }}
+      shell: |
+        if [ "{{ ansible_architecture }}" = "x86_64" ]; then
+          yum remove -y {{ greatdb_packages | join(' ') }}
+        else
+          # ARM rollback: remove RPMs and clean up
+          rpm -e --nodeps greatdb-server greatdb-client greatdb-devel greatdb-shared greatdb-icu-data-files 2>/dev/null || true
+          rm -rf /opt/openEuler 2>/dev/null || true
+        fi
 
     - name: failure
       fail: >
