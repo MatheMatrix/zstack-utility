@@ -209,7 +209,7 @@ def install_kvm_pkg():
         }
 
         helix_rhel_rpms = ('iscsi-initiator-utils OpenIPMI-modalias mcelog '
-                           'MegaCli Arcconf python-pyudev kernel-devel '
+                           'MegaCli Arcconf kernel-devel '
                            'edac-utils')
 
         py3_rpms = 'python3.11 python3.11-devel python3.11-pip libvirt-devel libffi-devel openssl-devel'
