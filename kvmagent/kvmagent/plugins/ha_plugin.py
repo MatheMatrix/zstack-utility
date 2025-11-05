@@ -14,8 +14,6 @@ from zstacklib.utils import sanlock
 from zstacklib.utils import xmlobject
 from zstacklib.utils import jsonobject
 from zstacklib.utils import iscsi
-from zstacklib.utils import lock
-from kvmagent.plugins.vm_plugin import get_vm_by_uuid
 from zstacklib.utils.ovn import delVnicFromOvsByVmUuidIfExist
 import os.path
 import time
@@ -2176,11 +2174,7 @@ class HaPlugin(kvmagent.KvmAgent):
 
         def _pause_vm_on_vg(vg):
             for vm in lvm.get_running_vm_root_volume_on_vg(vg):
-                try:
-                    vm = get_vm_by_uuid(vm.uuid)
-                    vm.pause()
-                except:
-                    pass
+                shell.run("virsh suspend %s" % vm.uuid)
 
         def _pause_vm_if_network_failure(vg):
             try:
