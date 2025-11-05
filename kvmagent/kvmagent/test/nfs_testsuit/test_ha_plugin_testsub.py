@@ -8,11 +8,21 @@ vm_utils.init_vm_plugin()
 nfs_plugin_utils.init_nfs_plugin()
 ha_utils.init_ha_plugin()
 
+
+def ensure_nfs_service_started():
+    # check if nfs-server (or nfs-kernel-server on debian/ubuntu) is active, start it if not
+    r, _ = bash.bash_ro("systemctl is-active nfs-server 2>/dev/null || systemctl is-active nfs-kernel-server 2>/dev/null")
+    if r != 0:
+        bash.bash_errorout("systemctl start nfs-server 2>/dev/null || systemctl start nfs-kernel-server")
+
+
 class NfsPluginTestStub(pytest_utils.PytestExtension):
     def __init__(self):
         pass
 
     def mount(self, primaryStorageUuid):
+        ensure_nfs_service_started()
+
         r, o = bash.bash_ro("ip -4 a| grep BROADCAST|grep -v virbr | awk -F ':' 'NR==1{print $2}' | sed 's/ //g'")
         interF = o.strip().replace(' ', '').replace('\n', '').replace('\r', '')
 

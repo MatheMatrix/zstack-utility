@@ -3,8 +3,7 @@ import os
 import re
 import urllib.parse
 
-import log
-
+from . import log
 logger = log.get_logger(__name__)
 from . import linux
 from . import lock

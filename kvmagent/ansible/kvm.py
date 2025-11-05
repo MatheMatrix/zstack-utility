@@ -98,7 +98,7 @@ IS_MIPS64EL = host_info.host_arch == 'mips64el'
 IS_LOONGARCH64 = host_info.host_arch == 'loongarch64'
 
 repo_dir = "/opt/zstack-dvd/{}".format(host_info.host_arch)
-if not os.path.isdir(repo_dir):
+if unittest_flag != 'true' and not os.path.isdir(repo_dir):
     error("Missing directory '{}', please try 'zstack-upgrade -a {}_iso'".format(repo_dir, host_info.host_arch))
 
 
@@ -209,7 +209,7 @@ def install_kvm_pkg():
         }
 
         helix_rhel_rpms = ('iscsi-initiator-utils OpenIPMI-modalias mcelog '
-                           'MegaCli Arcconf python-pyudev kernel-devel '
+                           'MegaCli Arcconf kernel-devel '
                            'edac-utils')
 
         py3_rpms = 'python3.11 python3.11-devel python3.11-pip libvirt-devel libffi-devel openssl-devel'
@@ -808,15 +808,6 @@ def install_virtualenv():
         host_post_info.post_label_param = None
         run_remote_command(command, host_post_info)
 
-def install_python_pkg():
-    extra_args = "\"--trusted-host %s -i %s \"" % (trusted_host, pip_url)
-    
-    pip_install_arg = PipInstallArg()
-    pip_install_arg.extra_args = extra_args
-    pip_install_arg.name = "python-cephlibs"
-    pip_install_arg.virtualenv = virtenv_path
-    pip_install_package(pip_install_arg, host_post_info)
-
 def install_agent_pkg():
     """install zstacklib and kvmagent on host"""
 
@@ -1006,7 +997,6 @@ do_libvirt_qemu_config()
 do_network_config()
 copy_spice_certificates_to_host()
 install_virtualenv()
-install_python_pkg()
 set_legacy_iptables_ebtables()
 install_agent_pkg()
 do_auditd_config()

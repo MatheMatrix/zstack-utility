@@ -1058,7 +1058,7 @@ configure lldp status rx-only \n
 
         oldMtu = self._get_interface_mtu(cmd.physicalInterfaceName)
         mtu = cmd.mtu
-        if oldMtu > cmd.mtu:
+        if mtu is None or oldMtu > mtu:
             mtu = oldMtu
 
         try:
@@ -1100,7 +1100,7 @@ configure lldp status rx-only \n
 
         oldMtu = self._get_interface_mtu(vlanInterfName)
         mtu = cmd.mtu
-        if oldMtu > cmd.mtu:
+        if mtu is None or oldMtu > mtu:
             mtu = oldMtu
         pvlan = getattr(cmd, 'pvlan', None)
         isolated = getattr(cmd, 'isolated', False)
@@ -1137,7 +1137,7 @@ configure lldp status rx-only \n
 
         oldMtu = self._get_interface_mtu(vlanInterfName)
         mtu = cmd.mtu
-        if oldMtu > cmd.mtu:
+        if mtu is None or oldMtu > mtu:
             mtu = oldMtu
         try:
             linux.create_vlan_eth(cmd.physicalInterfaceName, cmd.vlan)
@@ -1287,7 +1287,7 @@ configure lldp status rx-only \n
         interf = "vxlan" + str(cmd.vni)
         oldMtu = self._get_interface_mtu(interf)
         mtu = cmd.mtu
-        if oldMtu > cmd.mtu:
+        if mtu is None or oldMtu > mtu:
             mtu = oldMtu
 
         igmpVersion = getattr(cmd, 'igmpVersion', 0)
