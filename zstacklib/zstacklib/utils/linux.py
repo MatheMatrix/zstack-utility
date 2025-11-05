@@ -4,6 +4,7 @@
 '''
 import abc
 import contextlib
+import hashlib
 import os
 import os.path
 import resource
@@ -3322,6 +3323,16 @@ def get_file_xxhash(path, blocksize=1048576):
             hasher.update(buf)
             buf = fd.read(blocksize)
     return hasher.hexdigest()
+
+def get_file_md5sum_hashlib(file_path, buffer_size=65536):
+    md5_hash = hashlib.md5()
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(buffer_size)
+            if not chunk:
+                break
+            md5_hash.update(chunk)
+    return md5_hash.hexdigest()
 
 def compare_segmented_xxhash(src_path, dst_path, total_size, raise_exception=False, blocksize=1048576):
     ## size <= 10G, compute xxhash directly
