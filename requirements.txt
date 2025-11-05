@@ -25,3 +25,4 @@ pycryptodome==3.19.1
 pyOpenSSL==23.3.0
 python-cephlibs==0.94.5.post1
 configobj==5.0.9
+mock==5.0.2

@@ -27,24 +27,24 @@ class PhysicalMemoryECCErrorAlarm(object):
 class PhysicalMemoryMonitor(kvmagent.KvmAgent):
     PHYSICAL_MEMORY_MONITOR = "/host/physical/memory/monitor/start"
     interval = 60
-    
+
     def __init__(self):
         self.state = False
         self.trigger_flag = False
         self.monitor_thread = None
-    
+
     def configure(self, config=None):
         if config is None:
             config = {}
         self.config = config
-    
+
     def start(self):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.PHYSICAL_MEMORY_MONITOR, self.start_physical_memory_monitor)
-    
+
     def stop(self):
         pass
-    
+
     @kvmagent.replyerror
     def start_physical_memory_monitor(self, req):
         logger.debug("start monitor physical memory!")
@@ -82,16 +82,16 @@ class PhysicalMemoryMonitor(kvmagent.KvmAgent):
         self.state = True
         self.monitor_thread = thread.ThreadFacade.run_in_thread(target=_monitor_error)
 
-	def send_physical_memory_ecc_error_alarm_to_mn(self, detail):
-		physical_memory_ecc_error_alarm = PhysicalMemoryECCErrorAlarm()
-		physical_memory_ecc_error_alarm.host = self.config.get(kvmagent.HOST_UUID)
-		physical_memory_ecc_error_alarm.detail = detail
+    def send_physical_memory_ecc_error_alarm_to_mn(self, detail):
+        physical_memory_ecc_error_alarm = PhysicalMemoryECCErrorAlarm()
+        physical_memory_ecc_error_alarm.host = self.config.get(kvmagent.HOST_UUID)
+        physical_memory_ecc_error_alarm.detail = detail
 
-		url = self.config.get(kvmagent.SEND_COMMAND_URL)
-		if not url:
-			raise kvmagent.KvmError(
-				"cannot find SEND_COMMAND_URL, unable to transmit physical memory ecc error alarm info to management node")
+        url = self.config.get(kvmagent.SEND_COMMAND_URL)
+        if not url:
+            raise kvmagent.KvmError(
+                "cannot find SEND_COMMAND_URL, unable to transmit physical memory ecc error alarm info to management node")
 
-		logger.debug('transmitting physical memory ecc error alarm info [detail:%s] to management node' % detail)
-		http.json_dump_post(url, physical_memory_ecc_error_alarm,
-							{'commandpath': '/host/physical/memory/ecc/error/alarm'})
+        logger.debug('transmitting physical memory ecc error alarm info [detail:%s] to management node' % detail)
+        http.json_dump_post(url, physical_memory_ecc_error_alarm,
+                            {'commandpath': '/host/physical/memory/ecc/error/alarm'})

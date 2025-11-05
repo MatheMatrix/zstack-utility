@@ -59,7 +59,6 @@ class TestBridgeApi(TestCase):
         self.assertEqual(True, rspO.success, "Error happen when check physical network interface")
 
     @pytest_utils.ztest_decorater
-
     def test_create_vlan_bridge(self):
         r, o = bash.bash_ro("ip a| grep BROADCAST|grep -v virbr | awk -F ':' 'NR==1{print $2}' | sed 's/ //g'")
         interF = o.strip().replace(' ', '').replace('\n', '').replace('\r', '')

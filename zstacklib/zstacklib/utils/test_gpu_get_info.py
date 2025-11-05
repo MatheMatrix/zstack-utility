@@ -19,6 +19,7 @@ from zstacklib.utils import gpu
 import unittest
 import sys
 import os
+
 try:
     from unittest.mock import patch, MagicMock
 except ImportError:
@@ -44,7 +45,7 @@ class TestGetInfo(unittest.TestCase):
         """Test get_info via NVIDIA plugin"""
         # Mock the imports inside get_info function
         with patch('zstacklib.gpu.get_gpu_vendor') as mock_get_vendor, \
-             patch('zstacklib.gpu.get_vendor_enum_mapping') as mock_mapping:
+                patch('zstacklib.gpu.get_vendor_enum_mapping') as mock_mapping:
             from zstacklib.gpu.base import GPUInfo
 
             # Mock plugin
@@ -74,7 +75,7 @@ class TestGetInfo(unittest.TestCase):
         """Test get_info via Huawei plugin with special fields"""
         # Mock the imports inside get_info function
         with patch('zstacklib.gpu.get_gpu_vendor') as mock_get_vendor, \
-             patch('zstacklib.gpu.get_vendor_enum_mapping') as mock_mapping:
+                patch('zstacklib.gpu.get_vendor_enum_mapping') as mock_mapping:
             from zstacklib.gpu.base import GPUInfo
 
             # Mock Huawei plugin
@@ -216,7 +217,7 @@ class TestGetInfo(unittest.TestCase):
     def test_get_info_returns_none_when_plugin_finds_no_matching_gpu(self, mock_bash):
         """Test get_info returns None when plugin runs but no GPU matches the given PCI (ZSTAC-81489)"""
         with patch('zstacklib.gpu.get_gpu_vendor') as mock_get_vendor, \
-             patch('zstacklib.gpu.get_vendor_enum_mapping') as mock_mapping:
+                patch('zstacklib.gpu.get_vendor_enum_mapping') as mock_mapping:
             from zstacklib.gpu.base import GPUInfo
 
             # Plugin returns list that does NOT contain the requested PCI
@@ -309,7 +310,7 @@ class TestLegacyCollectors(unittest.TestCase):
             {"elem": [{"pci_bus": "00000000:65:00.0", "sn": "VASTAI001"}]},
             # summary
             {"elem": [{"vals": {"devBusId": {"value": "00000000:65:00.0"},
-                               "P_Cap": {"value": "300 W"}}}]},
+                                "P_Cap": {"value": "300 W"}}}]},
         ]
 
         result = gpu._collect_vastai_legacy("0000:65:00.0")
