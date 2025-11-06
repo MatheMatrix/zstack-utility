@@ -3501,6 +3501,17 @@ class InstallDbCmd(Command):
       login_password: $login_password
       yum_repo: "$yum_repo"
       ansible_python_interpreter: /usr/bin/python2
+      regex_replace_pattern: '\\1'
+      
+  handlers:
+    - name: reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: restart greatdbd
+      systemd:
+        name: greatdbd
+        state: restarted
 
   tasks:
     - name: Set packages for x86_64 (with mysql-router)
@@ -3547,9 +3558,7 @@ class InstallDbCmd(Command):
 
     - name: prepare ARM installation
       when: ansible_architecture == 'aarch64' and
-        ((ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8)
-         or 
-         (ansible_os_family == 'Kylin' and ansible_distribution_version == '10'))
+        ansible_os_family == 'Kylin' and ansible_distribution_version == '10'
          and yum_repo != 'false'
       block:
         - name: create opt directory
@@ -3560,9 +3569,10 @@ class InstallDbCmd(Command):
 
         - name: extract openEuler.tgz
           unarchive:
-            src: /opt/zstack-dvd/aarch64/ky10sp3/tools/openEuler.tgz
+            src: /opt/zstack-dvd/aarch64/ky10sp3/openEuler.tgz
             dest: /opt
             remote_src: yes
+            creates: /opt/openEuler
 
         - name: install GreatDB dependency packages
           yum:
@@ -3576,18 +3586,95 @@ class InstallDbCmd(Command):
 
         - name: install GreatDB server with --nodeps
           shell: rpm -ivh --nodeps /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-server-1.0.0.6118032-GA1.37c10216.1.el8.aarch64.rpm
+          args:
+            creates: /usr/sbin/greatdbd
+          register: install_server_result
 
         - name: modify greatdbd.service for LD_LIBRARY_PATH
           lineinfile:
             path: /usr/lib/systemd/system/greatdbd.service
-            regexp: '^Environment=MYSQLD_PARENT_PID=1$'
-            line: 'Environment="MYSQLD_PARENT_PID=1" "LD_LIBRARY_PATH=/opt/openEuler/gcc-toolset-10/root/usr/lib64:$LD_LIBRARY_PATH"'
+            regexp: '^Environment=MYSQLD_PARENT_PID=1$$'
+            line: 'Environment="MYSQLD_PARENT_PID=1" "LD_LIBRARY_PATH=/opt/openEuler/gcc-toolset-10/root/usr/lib64:$$LD_LIBRARY_PATH"'
             backup: yes
+          notify:
+            - reload systemd daemon
+            - restart greatdbd
+            
+        - name: Flush handlers to apply all pending service restarts NOW
+          meta: flush_handlers
+            
+        - name: Pause for 5 seconds to allow services to settle
+          pause:
+            seconds: 5
+            
+        - name: Add password validation settings to my.cnf
+          blockinfile:
+            path: /etc/my.cnf
+            marker: "# {mark} ANSIBLE MANAGED BLOCK FOR PASSWORD VALIDATION"
+            insertafter: "[mysqld]"
+            block: |
+              validate_password.policy=LOW
+              validate_password.length=6
+              validate_password.number_count=0
+              validate_password.special_char_count=0
+            backup: yes
+          notify:
+            - reload systemd daemon
+            - restart greatdbd
+            
+        - name: Flush handlers to apply all pending service restarts NOW
+          meta: flush_handlers
+            
+        - name: Pause for 5 seconds to allow services to settle
+          pause:
+            seconds: 5
+            
+        - name: Create compatibility symlink for mysqladmin
+          ansible.builtin.file:
+            src: /usr/bin/greatdbadmin
+            dest: /usr/bin/mysqladmin
+            state: link
+            force: yes
+        
+        - name: Create compatibility symlink for mysql
+          ansible.builtin.file:
+            src: /usr/bin/greatdb
+            dest: /usr/bin/mysql
+            state: link
+            force: yes
+        
+        - name: Create compatibility symlink for mysql service
+          ansible.builtin.file:
+            src: /usr/lib/systemd/system/greatdbd.service
+            dest: /etc/systemd/system/mysql.service
+            state: link
+            force: yes
+          notify: reload systemd daemon
+       
+        - name: Flush handlers to apply service changes immediately
+          meta: flush_handlers
+             
+        - name: Ensure greatdbd is started to generate initial password
+          service:
+            name: greatdbd
+            state: started
+          when: install_server_result.changed
 
-        - name: reload systemd daemon
-          systemd:
-            daemon_reload: yes
+        - name: Attempt to get initial root password from log
+          shell: "cat /var/log/greatdbd.log | grep 'root@localhost' "
+          register: initial_pass_grep
+          until: initial_pass_grep.stdout != ""
+          retries: 3
+          delay: 3
+          changed_when: false
+          failed_when: false
+          when: install_server_result.changed
 
+        - name: Set initial password fact
+          set_fact:
+            greatdb_initial_password: "{{ initial_pass_grep.stdout | regex_replace('^.*root@localhost: (.*)$$', regex_replace_pattern) | trim }}"
+          when: initial_pass_grep.stdout is defined and initial_pass_grep.stdout != ""
+        
         - name: set install_result for ARM
           set_fact:
             install_result:
@@ -3603,18 +3690,40 @@ class InstallDbCmd(Command):
     - name: start GreatDB service
       when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8
       service: name=mysql state=restarted enabled=yes
-
-    - name: update root password
+      
+    - name: start GreatDB service on arm 
+      when: ansible_architecture == 'aarch64' and
+        ansible_os_family == 'Kylin' and ansible_distribution_version == '10'
+      service: name=greatdbd state=restarted enabled=yes
+  
+    - name: update root password for ARM with initial password
+      shell: "/usr/bin/greatdbadmin -u root -p'{{ greatdb_initial_password }}' password '{{ root_password }}'"
+      register: change_root_result_arm
+      when: greatdb_initial_password is defined and greatdb_initial_password != ""
+    
+    - name: update root password (standard method)
       shell: $change_password_cmd
-      register: change_root_result
+      register: change_root_result_std
       ignore_errors: yes
+      when: greatdb_initial_password is not defined or greatdb_initial_password == ""
+      
+    - name: Set final password change result
+      set_fact:
+        change_root_result: "{{ change_root_result_arm if change_root_result_arm is not skipped else change_root_result_std }}"
 
     - name: grant access
-      when: change_root_result.rc == 0
+      when:
+        - change_root_result is defined
+        - not change_root_result.failed
+        - change_root_result.rc is defined and change_root_result.rc == 0
       shell: $grant_access_cmd
 
     - name: rollback GreatDB
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8 and change_root_result.rc != 0 and install_result.changed == True
+      when:
+        - ansible_os_family == 'RedHat'
+        - ansible_distribution_major_version >= 8
+        - install_result.changed == True
+        - change_root_result.failed is defined and change_root_result.failed
       shell: |
         if [ "{{ ansible_architecture }}" = "x86_64" ]; then
           yum remove -y {{ greatdb_packages | join(' ') }}
@@ -3623,14 +3732,16 @@ class InstallDbCmd(Command):
           rpm -e --nodeps greatdb-server greatdb-client greatdb-devel greatdb-shared greatdb-icu-data-files 2>/dev/null || true
           rm -rf /opt/openEuler 2>/dev/null || true
         fi
-
+        
     - name: failure
       fail: >
         msg="failed to change root password of MySQL, see prior error in task 'change root password'; the possible cause
         is the machine used to have MySQL installed and removed, the previous password of root user is remaining on the
         machine; try using --login-password. We have rolled back the MySQL installation so you can safely run install_db
         again with --login-password set."
-      when: change_root_result.rc != 0 and install_result.changed == False
+      when:
+        - install_result is defined and install_result.changed == False
+        - change_root_result.failed is defined and change_root_result.failed
 '''
 
         if not args.root_password and not args.login_password:
