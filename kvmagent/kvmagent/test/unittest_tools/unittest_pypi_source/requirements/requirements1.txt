@@ -1,3 +1,0 @@
-pip==20.3.4
-setuptools==44.1.1
-setuptools_scm==5.0.2

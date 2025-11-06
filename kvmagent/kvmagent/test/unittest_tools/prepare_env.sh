@@ -12,6 +12,7 @@ APT_BASED_OS=""
 
 # /root/.zguest/zstack-utility is zstack-utility home of ztest.
 SCRIPTS_HOME="/root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools"
+MY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 
 validate_necessary_parameters() {
@@ -72,22 +73,30 @@ prepare_internal_repo() {
 prepare_internal_repo
 
 
+PYPI_URL="file:///root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/pypi/simple"
 prepare_mn_mock() {
     cd /root/
     mkdir -p ~/.pip/
     mkdir -p ~/.config/pip/
     rm -rf ~/.config/pip/pip.conf
     rm -rf ~/.pip/pip.conf
-    wget -c http://minio.zstack.io:9001/download/devops_dependencies/utility_ut/pip.conf -O pip.conf || true
-    cp pip.conf ~/.config/pip/ || true
-    cp pip.conf ~/.pip/ || true
+    \cp /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/pip.conf ~/.config/pip/
+    \cp /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/pip.conf ~/.pip/
 
-
-    # wget -c http://minio.zstack.io:9001/download/prsystem/UtilityUT/get-pip.py -O get-pip.py
+    # build pypi source in /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/pypi
     cd /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/
-    pip install -r requirements/requirements1.txt -i file://`pwd`/pypi/simple
-    pip install -r requirements/requirements2.txt -i file://`pwd`/pypi/simple
-    virtualenv --version || pip install virtualenv==12.1.1
+    mkdir -p ./requirements
+    mkdir -p ./pypi
+    bash pypi_source_builder.sh build \
+        --package-list ./package_list_zstackbuild.txt --target-path ./pypi
+    bash pypi_source_builder.sh build \
+        --package-list ./package_list_base.txt --target-path ./pypi --requirement-output-path ./requirements/requirements1.txt
+    bash pypi_source_builder.sh build \
+        --package-list ./package_list_virtualenv.txt --target-path ./pypi --requirement-output-path ./requirements/requirements2.txt
+    pip install -r requirements/requirements1.txt -i "$PYPI_URL"
+    pip install -r requirements/requirements2.txt -i "$PYPI_URL"
+
+
     cd /root
     python2_path=$(which python)
     rm -rf venv1
@@ -95,23 +104,26 @@ prepare_mn_mock() {
     # in venv1
     source /root/venv1/bin/activate
     cd /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/
-    pip install pip==20.3.4 -i file://`pwd`/pypi/simple
-    pip install setuptools==44.1.1 -i file://`pwd`/pypi/simple
-    # prepare_zstacklib 
-    cd /root/.zguest/zstack-utility/zstacklib/
+    pip install pip==20.3.4 -i "$PYPI_URL"
+    pip install setuptools==44.1.1 -i "$PYPI_URL"
+
     if [ "${os}" == "ky10sp3" ]; then
-        echo "cython<3" > /tmp/constraint.txt
-        PIP_CONSTRAINT=/tmp/constraint.txt bash install.sh -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple
-    else
-        bash install.sh -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple
+        bash pypi_source_builder.sh build \
+            --package-list ./package_list_ky10sp3_addon.txt --target-path ./pypi \
+            --requirement-output-path ./requirements/requirements_ky10sp3.txt
+        pip install -r ./requirements/requirements_ky10sp3.txt -i "$PYPI_URL"
     fi
+
+    # prepare_zstacklib
+    cd /root/.zguest/zstack-utility/zstacklib/
+    bash install.sh
     ZSTACKLIB_TAR=$(basename dist/zstacklib-?*.tar.gz)
     \cp dist/zstacklib-?*.tar.gz ansible/
     mkdir -p /usr/local/zstack/ansible/files/zstacklib/
     \cp -r ansible/* /usr/local/zstack/ansible/files/zstacklib/
     # prepare_kvmagent
     cd /root/.zguest/zstack-utility/kvmagent/
-    bash install.sh -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple
+    bash install.sh
     KVMAGENT_TAR=$(basename dist/kvmagent-?*.tar.gz)
     \cp dist/kvmagent-?*.tar.gz ansible/
     \cp zstack-kvmagent ansible/
@@ -132,8 +144,8 @@ prepare_mn_mock() {
     source /root/venv2/bin/activate
     # in venv2
     cd /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/
-    pip install -r requirements/requirements1.txt -i file://`pwd`/pypi/simple
-    pip2 install ansible==4.10.0 -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple --extra-index-url http://mirrors.aliyun.com/pypi/simple/
+    pip install -r requirements/requirements1.txt -i "$PYPI_URL"
+    pip2 install ansible==4.10.0 -i "$PYPI_URL"
     deactivate
     echo "==>> pass prepare_mn_mock"
 }
@@ -174,8 +186,17 @@ copy_kvm_virtualenv_to_venv3() {
     pip install virtualenv-clone==0.5.7
     virtualenv-clone /var/lib/zstack/virtualenv/kvm/ /root/venv3/
     source /root/venv3/bin/activate
+
+    # build pypi source in /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/pypi
     cd /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/
-    pip install -r requirements/requirements1.txt -i file://`pwd`/pypi/simple
-    pip install -r requirements/requirements3.txt -i file://`pwd`/pypi/simple --extra-index-url http://mirrors.aliyun.com/pypi/simple 
+    mkdir -p ./requirements
+    mkdir -p ./pypi
+    bash pypi_source_builder.sh build \
+        --package-list ./package_list_base.txt --target-path ./pypi --requirement-output-path ./requirements/requirements1.txt
+    bash pypi_source_builder.sh build \
+        --package-list ./package_list_ut.txt --target-path ./pypi --requirement-output-path ./requirements/requirements3.txt
+
+    pip install -r requirements/requirements1.txt -i "$PYPI_URL"
+    pip install -r requirements/requirements3.txt -i "$PYPI_URL"
 }
 copy_kvm_virtualenv_to_venv3
