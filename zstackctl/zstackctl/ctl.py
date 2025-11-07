@@ -1982,14 +1982,16 @@ class ShowStatusCmd(Command):
             if not full_version:
                 return
             version = full_version.strip(' \t\n\r')
+            detailed_version = get_detail_version().split()[1]
+            new_version = detailed_version[:detailed_version.rfind('.')]
             if version is not None:
                 if version[0].isdigit():
-                    info('Cube version: %s (Cube %s)' % (version.split('-')[0], version))
+                    info('Cube version: 2.%s (Cube 2.%s)' % (new_version, new_version))
                 else:
                     list = version.split('-')
                     hci_version = list[-3]
                     hci_name = version.split("-%s-" % hci_version)
-                    info(hci_name[0] + ' version: %s (%s)' % (hci_version, version))
+                    info(hci_name[0] + ' version: 2.%s (%s-2.%s-%s)' % (new_version, hci_name[0], new_version, hci_name[1]))
 
         def show_zsv_version():
             zsv_version = get_zsv_version()
