@@ -58,6 +58,7 @@ PV_DISCARD_MAX_SIZE_IN_BYTES = 100*1024**3
 ONE_HOUR_IN_SEC = 60 * 60
 LV_UUID_REFRESH_INTERVAL_IN_SEC = 60 * 30
 LVM_CONFIG_CHANGED_FILE = "/var/run/zstack/lvmConfigChanged"
+SHARED_BLOCK_WWID = "sharedBlockWwid"
 '''
 If the lvm command with locking is hung, it will always occupy the lock and cannot be released.
 And in scenarios where storage IO is slow and lock contention occurs, it may take longer to execute, 
