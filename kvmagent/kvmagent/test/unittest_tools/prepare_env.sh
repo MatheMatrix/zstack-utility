@@ -7,7 +7,7 @@ set -ex
 # Param version : like 4.6.31
 
 
-YUM_BASED_OS="c76 ky10sp2 ky10sp3"
+YUM_BASED_OS="c76 ky10sp2 ky10sp3 ky10sp3.2403"
 APT_BASED_OS=""
 
 # /root/.zguest/zstack-utility is zstack-utility home of ztest.
@@ -36,6 +36,8 @@ prepare_external_repo() {
             echo later to add
         elif [ "$arch_os" == "aarch64:ky10sp3" ]; then
             echo later to add
+        elif [ "$arch_os" == "aarch64:ky10sp3.2403" ]; then
+            echo later to add # for aarch64:ky10sp3.2403
         fi
         if [ -f "/etc/yum.repos.d/CentOS-Base.repo" ]; then
             sed -i '/mirrors\.aliyuncs\.com/d' /etc/yum.repos.d/CentOS-Base.repo
