@@ -1326,9 +1326,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
         install_abs_path = translate_absolute_path_from_install_path(cmd.installPath)
 
-        pe_range = next((path for path, wwid in self.vgs_path_and_wwid.get(cmd.vgUuid, {}).items()
-                         if cmd.addons and cmd.addons.get(lvm.SHARED_BLOCK_WWID) == wwid),
-                        None) if cmd.addons else None
+        pe_ranges = [path for path, wwid in self.vgs_path_and_wwid.get(cmd.vgUuid, {}).items()
+                     if cmd.addons and cmd.addons[lvm.SHARED_BLOCK_WWID] == wwid] if cmd.addons else []
 
         if cmd.backingFile:
             qcow2_options = self.calc_qcow2_option(self, cmd.kvmHostAddons, True, cmd.provisioning)
@@ -1339,14 +1338,14 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                 if not lvm.lv_exists(install_abs_path):
                     lvm.create_lv_from_cmd(install_abs_path, virtual_size, cmd,
                                                      "%s::%s::%s" % (VOLUME_TAG, cmd.hostUuid, time.time()),
-                                                     pe_ranges=pe_range)
+                                                     pe_ranges=pe_ranges)
                 with lvm.OperateLv(install_abs_path, shared=False, delete_when_exception=True):
                     linux.qcow2_create_with_backing_file_and_option(backing_abs_path, install_abs_path, qcow2_options)
                     rsp.size = linux.qcow2_virtualsize(install_abs_path)
         elif not lvm.lv_exists(install_abs_path):
             lvm.create_lv_from_cmd(install_abs_path, cmd.size, cmd,
                                                  "%s::%s::%s" % (VOLUME_TAG, cmd.hostUuid, time.time()),
-                                                 pe_ranges=pe_range)
+                                                 pe_ranges=pe_ranges)
             if cmd.volumeFormat != 'raw':
                 qcow2_options = self.calc_qcow2_option(self, cmd.kvmHostAddons, False, cmd.provisioning)
                 with lvm.OperateLv(install_abs_path, shared=False, delete_when_exception=True):
