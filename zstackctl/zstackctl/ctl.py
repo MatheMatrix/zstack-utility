@@ -184,7 +184,7 @@ if [ $? -ne 0 ]; then
     sed -i "/\[mysqld\]/a tmpdir=$mysql_tmp_path" $mysql_conf
 fi
 
-if [[ $DB_VERSION == *"GreatSQL"* ]]; then    
+if [[ $DB_VERSION == *"Great"* ]]; then    
     grep 'explicit_defaults_for_timestamp=' $mysql_conf >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo "explicit_defaults_for_timestamp=OFF"
