@@ -87,4 +87,4 @@ def check_run(cmd, workdir=None):
 def run_without_log(cmd, workdir=None):
     s = ShellCmd(cmd, workdir, False)
     s(is_exception=False, logcmd=False)
-    return s.return_code
+    return s.return_code, s.stdout, s.stderr

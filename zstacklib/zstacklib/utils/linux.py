@@ -4,41 +4,42 @@
 '''
 import abc
 import contextlib
+import datetime
+import errno
+import fcntl
+import functools
+import glob
 import hashlib
+import json
 import os
 import os.path
-import resource
-import socket
-import datetime
-import time
-import tempfile
-import traceback
-import shutil
-import struct
-import netaddr
-import functools
-import threading
-import re
 import platform
 import pprint
-import errno
-import json
-import fcntl
-import simplejson
-import xxhash
-import glob
-
+import re
+import resource
+import shutil
+import socket
+import struct
+import tempfile
+import threading
+import time
+import traceback
 from inspect import stack
-import xml.etree.ElementTree as etree
-from zstacklib.utils import thread
-from zstacklib.utils import qemu_img
-from zstacklib.utils import lock
-from zstacklib.utils import xmlobject
-from zstacklib.utils import shell
-from zstacklib.utils import log
-from zstacklib.utils import iproute
-from zstacklib.utils import netconfig
 
+import netaddr
+import simplejson
+import xml.etree.ElementTree as etree
+import xxhash
+
+from zstacklib.utils import iproute
+from zstacklib.utils import lock
+from zstacklib.utils import log
+from zstacklib.utils import netconfig
+from zstacklib.utils import qemu_img
+from zstacklib.utils import shell
+from zstacklib.utils import thread
+from zstacklib.utils import xmlobject
+from zstacklib.utils.shell import run_without_log
 
 logger = log.get_logger(__name__)
 
@@ -3373,7 +3374,11 @@ def check_unixsock_connection(socket_path, timeout=10):
     return shell.run("nc -z -U %s -w %s" % (socket_path, timeout))
 
 def is_virtual_machine():
-    product_name = shell.call("dmidecode -s system-product-name").strip()
+    r, o, _ = run_without_log("dmidecode -s system-product-name")
+    if r != 0:
+        logger.debug("failed to get system-product-name, return code[%s], error detail[%s]", r, o)
+        return False
+    product_name = o.strip()
     return product_name == "KVM Virtual Machine" or product_name == "KVM" or product_name == "VMware Virtual Platform"
 
 def catch_bad_alloc_exception(return_code, error_detail):
