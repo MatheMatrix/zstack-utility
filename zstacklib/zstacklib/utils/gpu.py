@@ -1,4 +1,6 @@
-from zstacklib.utils import log, linux
+import threading
+
+from zstacklib.utils import thread
 from zstacklib.utils.bash import *
 from enum import Enum
 import json
@@ -539,3 +541,71 @@ def get_gpu_status_cmd(pci_device_address, iswindows=False):
     if iswindows:
         cmd = cmd.replace(" ", "|")
     return cmd
+
+
+def get_shut_nvidia_persistence_cmd(iswindows=False):
+    cmd = "ps -ef | grep nvidia-persistenced | grep -v grep | awk '{print $2}' | xargs -r kill -9"
+    if iswindows:
+        cmd = cmd.replace(" ", "|")
+    return cmd
+
+
+def has_nvidia_gpu():
+    r, _, _ = bash_roe("which nvidia-smi")
+    if r != 0:
+        return False
+    r, o, e = bash_roe("nvidia-smi -L")
+    return r == 0 and o and len(o.strip()) > 0
+
+
+def ensure_nvidia_persistenced_once(timeout=5):
+    # If already running, nothing to do
+    r, o, e = bash_roe("pgrep -f nvidia-persistenced || true")
+    if o and o.strip():
+        return True
+
+    start_cmd = "nohup nvidia-persistenced >/dev/null 2>&1 &"
+    logger.info('starting nvidia-persistenced with: %s' % start_cmd)
+    bash_roe(start_cmd)
+
+    # Wait for it to appear
+    time.sleep(timeout)
+    r, o, e = bash_roe("pgrep -f nvidia-persistenced || true")
+    if o and o.strip():
+        return True
+    else:
+        logger.warning('nvidia-persistenced did not appear after start attempt')
+        return False
+
+
+def start_nvidia_persistenced_monitor(poll_interval=60 * 2, stop_event=None):
+    """Monitor nvidia-persistenced and restart it if it dies while GPU exists."""
+    logger.info("start_nvidia_persistenced_monitor: starting monitor (interval=%s)" % poll_interval)
+    if stop_event is None:
+        stop_event = threading.Event()
+
+    while not stop_event.is_set():
+        if not has_nvidia_gpu():
+            stop_event.wait(poll_interval)
+            continue
+
+        r = ensure_nvidia_persistenced_once()
+        if not r:
+            logger.warning("nvidia-persistenced not running and could not be started")
+
+        stop_event.wait(poll_interval)
+
+
+def watch_and_ensure_nvidia_persistenced(poll_interval=30, stop_event=None):
+    """Watch for GPUs appearing later. Once detected, ensure persistenced and start monitor, then exit."""
+    logger.info("watch_and_ensure_nvidia_persistenced: watching for NVIDIA GPU (interval=%s)" % poll_interval)
+    if stop_event is None:
+        stop_event = threading.Event()
+
+    while not stop_event.is_set():
+        if has_nvidia_gpu():
+            ensure_nvidia_persistenced_once()
+            thread.ThreadFacade.run_in_thread(start_nvidia_persistenced_monitor, [poll_interval, stop_event])
+            return
+
+        stop_event.wait(poll_interval)
