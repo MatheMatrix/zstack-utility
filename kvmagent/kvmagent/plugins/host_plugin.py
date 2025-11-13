@@ -3965,6 +3965,11 @@ done
     def get_block_devices(self, req):
         rsp = GetBlockDevicesResponse()
 
+        def is_skip_get_smart_info(name):
+            if name.startswith('sr'):
+                return True
+            return False
+
         class BlockDevice:
             def __init__(self, name, type, size, model, serial_number, fs_type, mount_point):
                 self.name = name
@@ -4045,7 +4050,8 @@ done
 
             block_dev.partitionTable = get_partition_table(name)
             block_dev.used, block_dev.available, block_dev.usedRatio = get_size_info(name)
-            block_dev.smartPassed, block_dev.smartMessage = get_smart_passed_and_message(name)
+            if not is_skip_get_smart_info(name):
+                block_dev.smartPassed, block_dev.smartMessage = get_smart_passed_and_message(name)
 
             return block_dev
 
