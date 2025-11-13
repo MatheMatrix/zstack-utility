@@ -10071,20 +10071,27 @@ host side snapshot files chian:
     def attach_pci_device_to_host(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AttachPciDeviceToHostRsp()
-        addr = cmd.pciDeviceAddress
+        pcis = [cmd.pciDeviceAddress]
+        pcis.extend(pci.collect_pci_devices_with_dependencies(cmd.pciDeviceAddress))
 
-        r, o, e = bash.bash_roe("virsh nodedev-reattach pci_%s" % addr.replace(':', '_').replace('.', '_'))
-        logger.debug("nodedev-reattach %s: %s, %s" % (addr, o, e))
-        if r != 0:
-            rsp.success = False
-            rsp.error = "failed to nodedev-reattach %s: %s, %s" % (addr, o, e)
-            return jsonobject.dumps(rsp)
+        def _reattach_pci_device(addr):
+            r, o, e = bash.bash_roe("virsh nodedev-reattach pci_%s" % addr.replace(':', '_').replace('.', '_'))
+            logger.debug("nodedev-reattach %s: %s, %s" % (addr, o, e))
+            if r != 0:
+                return r, o, "failed to nodedev-reattach %s: %s, %s" % (addr, o, e)
 
-        if os.path.exists('/usr/lib/nvidia/sriov-manage'):
-            ret, out, err = self._exec_sriov_manage(addr, True)
-            if ret != 0:
+            if os.path.exists('/usr/lib/nvidia/sriov-manage'):
+                ret, out, err = self._exec_sriov_manage(addr, True)
+                if ret != 0:
+                    return ret, out, "failed to /usr/lib/nvidia/sriov-manage -e %s: %s, %s" % (addr, o, e)
+
+        for addr in pcis:
+            r, o, e = _reattach_pci_device(addr)
+            if r != 0:
                 rsp.success = False
-                rsp.error = "failed to /usr/lib/nvidia/sriov-manage -e %s: %s, %s" % (addr, o, e)
+                rsp.error = e
+                break
+            logger.info("reattach pci device %s to host successfully" % addr)
 
         return jsonobject.dumps(rsp)
 
@@ -10093,20 +10100,26 @@ host side snapshot files chian:
     def detach_pci_device_from_host(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = DetachPciDeviceFromHostRsp()
-        addr = cmd.pciDeviceAddress
+        pcis = [cmd.pciDeviceAddress]
+        pcis.extend(pci.collect_pci_devices_with_dependencies(cmd.pciDeviceAddress))
 
-        if os.path.exists('/usr/lib/nvidia/sriov-manage'):
-            ret, out, err = self._exec_sriov_manage(addr, False)
-            if ret != 0:
+        def _detach_pci_device(addr):
+            if os.path.exists('/usr/lib/nvidia/sriov-manage'):
+                ret, out, err = self._exec_sriov_manage(addr, False)
+                if ret != 0:
+                    return ret, out, "failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s" % (addr, out, err)
+
+            r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
+            logger.debug("nodedev-detach %s: %s, %s" % (addr, o, e))
+            return r, o, "failed to nodedev-detach %s: %s, %s" % (addr, o, e)
+
+        for addr in pcis:
+            r, o, e = _detach_pci_device(addr)
+            if r != 0:
                 rsp.success = False
-                rsp.error = "failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s" % (addr, out, err)
-                return jsonobject.dumps(rsp)
-
-        r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
-        logger.debug("nodedev-detach %s: %s, %s" % (addr, o, e))
-        if r != 0:
-            rsp.success = False
-            rsp.error = "failed to nodedev-detach %s: %s, %s" % (addr, o, e)
+                rsp.error = e
+                break
+            logger.info("detach pci device %s from host successfully" % addr)
 
         return jsonobject.dumps(rsp)
 
