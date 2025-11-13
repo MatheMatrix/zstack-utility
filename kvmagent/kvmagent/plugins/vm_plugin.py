@@ -47,7 +47,8 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.imagestore import ImageStoreClient
-from zstacklib.utils import bash, plugin, iscsi
+
+from zstacklib.utils import bash, plugin, iscsi, gpu
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import lvm
 from zstacklib.utils import ft
@@ -69,6 +70,7 @@ from zstacklib.utils import qemu_nbd
 from zstacklib.utils.jsonobject import JsonObject
 from zstacklib.utils import linux
 from zstacklib.utils.linux import is_virtual_machine
+from zstacklib.utils.pci import VendorEnum
 from zstacklib.utils.plugin import TaskManager, TaskResult
 from zstacklib.utils.qga import *
 from zstacklib.utils import jsonobject
@@ -938,6 +940,8 @@ class HotUnplugPciDeviceCommand(kvmagent.AgentCommand):
         super(HotUnplugPciDeviceCommand, self).__init__()
         self.pciDeviceAddress = None
         self.vmUuid = None
+        self.vendor = None
+        self.type = None
 
 class HotUnplugPciDeviceRsp(kvmagent.AgentResponse):
     def __init__(self):
@@ -976,6 +980,8 @@ class DetachPciDeviceFromHostCommand(kvmagent.AgentCommand):
     def __init__(self):
         super(DetachPciDeviceFromHostCommand, self).__init__()
         self.pciDeviceAddress = None
+        self.vendor = None
+        self.type = None
 
 class DetachPciDeviceFromHostRsp(kvmagent.AgentResponse):
     def __init__(self):
@@ -9921,6 +9927,13 @@ host side snapshot files chian:
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = HotUnplugPciDeviceRsp()
         addr = cmd.pciDeviceAddress
+        vm = get_vm_by_uuid(cmd.vmUuid)
+        if pci.is_gpu(cmd.type):
+            return_code, output = gpu.pre_detach_from_vm(vm.domain, cmd.vmUuid, cmd.vendor)
+            if return_code != 0:
+                rsp.success = False
+                rsp.error = output
+                return jsonobject.dumps(rsp)
 
         if not find_pci_device(cmd.vmUuid, addr):
             logger.debug("pci device %s not found" % addr)
@@ -10079,6 +10092,12 @@ host side snapshot files chian:
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = DetachPciDeviceFromHostRsp()
         addr = cmd.pciDeviceAddress
+        if pci.is_gpu(cmd.type):
+            return_code, output = gpu.pre_detach_from_host(cmd.vendor)
+            if return_code != 0:
+                rsp.success = False
+                rsp.error = output
+                return jsonobject.dumps(rsp)
 
         if os.path.exists('/usr/lib/nvidia/sriov-manage'):
             ret, out, err = self._exec_sriov_manage(addr, False)
