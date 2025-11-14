@@ -3223,7 +3223,7 @@ class Vm(object):
             disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
             e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'})
             e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(volume.installPath)})
-            if volume.useVirtioSCSI:
+            if volume.useVirtioSCSI or volume.useSCSI:
                 e(disk, 'target', None, {'dev': 'sd%s' % dev_letter, 'bus': 'scsi'})
                 e(disk, 'wwn', volume.wwn)
             elif volume.useVirtio:
@@ -5871,7 +5871,7 @@ class Vm(object):
                 disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
                 e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'})
                 e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(_v.installPath)})
-                if _v.useVirtioSCSI:
+                if _v.useVirtioSCSI or _v.useSCSI:
                     e(disk, 'target', None, {'dev': 'sd%s' % _dev_letter, 'bus': 'scsi'})
                     e(disk, 'wwn', _v.wwn)
                 elif _v.useVirtio:
