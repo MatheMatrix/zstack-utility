@@ -53,16 +53,101 @@ class Api(object):
         rsp = jsonobject.loads(jstr)
         return rsp
 
-    def _error_code_to_string(self, error):
+    # Constants for error formatting
+    _MAX_INDENT_LEVEL = 4
+    _INDENT_SPACES = "  "
+    _CIRCULAR_REF_MSG = '[circular reference detected]'
+    _MAX_DEPTH_MSG_PREFIX = '[error details too deep'
+
+    def _error_code_to_string(self, error, visited=None, max_depth=10, _depth=0):
+        """Convert error object to formatted string with cause chain support.
+
+        Args:
+            error: Error object to format
+            visited: Set of visited error IDs (for circular reference detection)
+            max_depth: Maximum recursion depth (default: 10)
+            _depth: Current recursion depth (internal use only)
+
+        Returns:
+            Formatted error string with cause chain, or empty string if error is None
+
+        Examples:
+            Simple error:
+                [code: ERR001, description: Test error, details: Some details]
+
+            Error with cause chain:
+                [code: ERR001, description: Top error, details: Details]
+                  caused by: [code: ERR002, description: Root cause, details: Root details]
+        """
+        if visited is None:
+            visited = set()
+
         if error is None:
             return ''
 
-        if error.elaboration is not None:
-            return "[code: %s, description: %s, details: %s, elaboration: \n%s" % \
-                   (error.code, error.description, error.details, error.elaboration)
-        else:
-            return "[code: %s, description: %s, details: %s]" % \
-                   (error.code, error.description, error.details)
+        # Check depth limit based on recursion level, not visited count
+        if _depth >= max_depth:
+            return '{0} - max depth {1} reached]'.format(self._MAX_DEPTH_MSG_PREFIX, max_depth)
+
+        error_id = id(error)
+        # Check for circular reference
+        if error_id in visited:
+            return self._CIRCULAR_REF_MSG
+
+        visited.add(error_id)
+
+        # Safely get error attributes with defaults
+        code = getattr(error, 'code', 'UNKNOWN')
+        description = getattr(error, 'description', 'No description')
+        details = getattr(error, 'details', 'No details')
+        elaboration = getattr(error, 'elaboration', None)
+
+        # Build error message parts efficiently
+        msg_parts = []
+
+        # Use safer string formatting to handle special characters
+        try:
+            msg_parts.append("[code: {0}, description: {1}, details: {2}".format(code, description, details))
+        except (TypeError, ValueError):
+            # Fallback if format fails
+            msg_parts.append("[code: <format error>, description: <format error>, details: <format error>]")
+
+        # Safely handle elaboration with proper error handling
+        if elaboration is not None:
+            try:
+                elaboration_str = str(elaboration).strip()
+                if elaboration_str:
+                    msg_parts.append(", elaboration: \n{0}".format(elaboration_str))
+            except Exception as e:
+                # If str() fails, skip elaboration rather than crashing
+                logger.warn("Failed to convert elaboration to string: %s", e)
+
+        msg_parts.append("]")
+
+        # Handle cause chain with limited indentation (max 4 levels = 8 spaces)
+        if hasattr(error, 'cause') and error.cause is not None:
+            indent = self._INDENT_SPACES * min(_depth + 1, self._MAX_INDENT_LEVEL)
+            try:
+                cause_str = self._error_code_to_string(error.cause, visited, max_depth, _depth + 1)
+                # Only append if we got meaningful content
+                if cause_str:
+                    # Check if it's a special message (circular reference or max depth)
+                    is_special_msg = (cause_str == self._CIRCULAR_REF_MSG or
+                                     cause_str.startswith(self._MAX_DEPTH_MSG_PREFIX))
+                    if not is_special_msg:
+                        msg_parts.append("\n{0}caused by: {1}".format(indent, cause_str))
+                    else:
+                        # For special messages, show them without "caused by:" prefix
+                        msg_parts.append("\n{0}{1}".format(indent, cause_str))
+            except Exception as e:
+                # Catch any unexpected errors in recursive call to prevent cascading failures
+                try:
+                    error_msg = str(e)
+                except:
+                    error_msg = repr(e) if hasattr(e, '__repr__') else 'unknown error'
+                msg_parts.append("\n{0}[error processing cause: {1}]".format(indent, error_msg))
+
+        return ''.join(msg_parts)
 
     def _check_not_none_field(self, apicmd):
         for k, v in apicmd.__dict__.items():
@@ -184,8 +269,19 @@ class Api(object):
         return name, r
 
 
-def error_code_to_string(self, error):
-    return "[code: %s, description: %s, details: %s]" % (error.code, error.description, error.details)
+def error_code_to_string(error):
+    """Module-level helper function for error formatting.
+
+    Note: This provides basic error formatting without cause chain handling.
+    For full error chain formatting, use Api._error_code_to_string() instead.
+    """
+    if error is None:
+        return ''
+
+    code = getattr(error, 'code', 'UNKNOWN')
+    description = getattr(error, 'description', 'No description')
+    details = getattr(error, 'details', 'No details')
+    return "[code: %s, description: %s, details: %s]" % (code, description, details)
 
 
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
