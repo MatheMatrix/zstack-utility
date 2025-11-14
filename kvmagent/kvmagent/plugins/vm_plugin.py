@@ -3425,7 +3425,7 @@ class Vm(object):
                 if volume.deviceType == 'ceph':
                     orphan_block_nodes = []
                     try:
-                        node_name_and_file = get_block_node_name_and_file(self.uuid)
+                        node_name_and_file = qmp.get_block_node_name_and_file(self.uuid)
                     except Exception as exception:
                         logger.debug(str(exception))
                         return
@@ -3435,6 +3435,8 @@ class Vm(object):
                     storage_nodes = []
                     other_nodes = []
                     for node_name, file in node_name_and_file.items():
+                        if not file:
+                            continue
                         if installPath[0] in file and '"' + installPath[1] + '"' in file:
                             if 'format' in node_name:
                                 format_nodes.append(node_name)
@@ -6921,22 +6923,6 @@ def get_block_node_name_by_disk_name(domain_id, disk_name):
         return block['device']
     return block["inserted"]['node-name']
 
-def get_vm_block_nodes(domain_uuid):
-    block_nodes, err = execute_qmp_command(domain_uuid, '{"execute":"query-named-block-nodes"}')
-    if err:
-        raise Exception(err)
-
-    if not block_nodes:
-        raise kvmagent.KvmError("no block nodes found on vm[uuid:{}]".format(domain_uuid))
-
-    return block_nodes
-
-def get_block_node_name_and_file(domain_id):
-    block_nodes = get_vm_block_nodes(domain_id)
-    node_name_and_files = {}
-    for block_node in block_nodes:
-        node_name_and_files[block_node['node-name']] = block_node["file"]
-    return node_name_and_files
 
 def get_vm_migration_caps(domain_id, cap_key):
     caps = qmp.execute_qmp_command(domain_id, "query-migrate-capabilities", raise_exception=False)
@@ -6960,7 +6946,7 @@ def check_mirror_jobs(domain_id, migrate_without_bitmaps):
 
     if migrate_without_bitmaps:
         qmp.execute_qmp_command(domain_id, "migrate-set-capabilities", raise_exception=False,
-                                capabilities=[{"capability": "dirty-bitmaps", "sta te":False}])
+                                capabilities=[{"capability": "dirty-bitmaps", "state":False}])
 
 
 def get_block_file_content_by_disk_name(domain_id, disk_name):
