@@ -1889,11 +1889,54 @@ def get_process_up_time_in_second(pid):
 
 def get_process_start_time(pid):
     if not os.path.exists('/proc/%s/stat' % pid):
-        return
+        return None
+
+    def _parse_starttime_from_stat(stat_content, pid):
+        """
+        Parse starttime field from /proc/[pid]/stat content
+
+        Args:
+            stat_content: Content of /proc/[pid]/stat file
+            pid: Process ID, used for logging
+
+        Returns:
+            Starttime in clock ticks, or None if parsing fails
+        """
+        if not stat_content:
+            logger.warn("Empty stat content for process %s", pid)
+            return None
+
+        # Find the end of process name
+        rparen = stat_content.rfind(')')
+        if rparen < 0:
+            logger.warn("Failed to find process name end in stat for process %s, stat: %s",
+                        pid, stat_content[:100] if len(stat_content) > 100 else stat_content)
+            return None
+
+        # Parse from the 3rd field (state)
+        # starttime is the 22nd field, so relative index is 22-3 = 19
+        fields = stat_content[rparen + 2:].split()
+
+        if len(fields) <= 19:
+            logger.warn("Not enough fields in stat for process %s, expected at least 20, got %d, stat excerpt: %s",
+                        pid, len(fields), stat_content[rparen:rparen + 100])
+            return None
+
+        try:
+            return int(fields[19])
+        except (ValueError, IndexError) as e:
+            logger.warn("Failed to parse starttime field for process %s: %s, field[19]=%s",
+                        pid, e, fields[19] if len(fields) > 19 else "N/A")
+            return None
 
     with open('/proc/%s/stat' % pid, 'r') as f:
-        stats = f.read().split()
-    start_time = float(stats[21]) / os.sysconf('SC_CLK_TCK')
+        stats = f.read()
+
+    start_ticks = _parse_starttime_from_stat(stats, pid)
+    if start_ticks is None:
+        return None
+
+    start_time = float(start_ticks) / os.sysconf('SC_CLK_TCK')
 
     with open('/proc/uptime', 'r') as f:
         uptime = float(f.read().split()[0])

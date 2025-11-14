@@ -23,7 +23,11 @@ def get_block_node_name_and_file(domain_id):
     block_nodes = get_vm_block_nodes(domain_id)
     node_name_and_files = {}
     for block_node in block_nodes:
-        node_name_and_files[block_node['node-name']] = block_node["file"]
+        f = block_node.get("file")
+        if f is None:
+            continue
+        node_name_and_files[block_node['node-name']] = f
+
     return node_name_and_files
 
 
@@ -51,6 +55,8 @@ def get_block_job_ids(vm):
 
 def query_block_jobs_by_device(vm):
     jobs = execute_qmp_command(vm, "query-block-jobs")
+    if not jobs:
+        return {}
     return {job['device']: job for job in jobs}
 
 def block_job_cancel(vm, device):
@@ -101,12 +107,14 @@ def execute_qmp_command(domain, name, raise_exception=True, **kwargs):
     """
 
     qmp_cmd = {'execute': name}
+    normalized_kwargs = {}
     for k, v in kwargs.items():
         if "_" in k:
-            kwargs[k.replace("_", "-")] = v
-            del kwargs[k]
+            normalized_kwargs[k.replace("_", "-")] = v
+        else:
+            normalized_kwargs[k] = v
 
-    qmp_cmd['arguments'] = kwargs
+    qmp_cmd['arguments'] = normalized_kwargs
     return _execute_qmp_command(domain, json.dumps(qmp_cmd).encode('utf-8'), raise_exception)
 
 
@@ -176,6 +184,7 @@ class QEMUMonitorProtocol:
         self.__address = address
         self.__sock = self.__get_sock()
         self.__sockfile = None
+        self.logger = logger
 
     def __get_sock(self):
         if isinstance(self.__address, tuple):
@@ -245,7 +254,7 @@ class QEMUMonitorProtocol:
         """
         self.logger.debug(">>> %s", qmp_cmd)
         try:
-            self.__sock.sendall(json.dumps(qmp_cmd).encode('utf-8'))
+            self.__sock.sendall((json.dumps(qmp_cmd) + "\r\n").encode('utf-8'))
         except OSError as err:
             if err.errno == errno.EPIPE:
                 return None
@@ -274,15 +283,17 @@ class QEMUMonitorProtocol:
         Build and send a QMP command to the monitor, report errors if any
         """
         if kwds:
-            for k, v in kwds.items():
-                if "_" in k:
-                    kwds[k.replace("_", "-")] = v
-                    del kwds[k]
+            keys_to_replace = [k for k in kwds if "_" in k]
+            for old_key in keys_to_replace:
+                new_key = old_key.replace("_", "-")
+                kwds[new_key] = kwds[old_key]
+                del kwds[old_key]
         ret = self._cmd(cmd, kwds)
+        if ret is None:
+            raise QMPConnectError("QMP connection closed")
         if "error" in ret:
             raise Exception(ret['error']['desc'])
         return ret['return']
-
 
     def close(self):
         """

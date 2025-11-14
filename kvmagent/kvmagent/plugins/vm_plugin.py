@@ -3425,16 +3425,21 @@ class Vm(object):
                 if volume.deviceType == 'ceph':
                     orphan_block_nodes = []
                     try:
-                        node_name_and_file = get_block_node_name_and_file(self.uuid)
+                        node_name_and_file = qmp.get_block_node_name_and_file(self.uuid)
                     except Exception as exception:
                         logger.debug(str(exception))
                         return
                     installPath = volume.installPath.replace('ceph://', '').split('/')
+                    if len(installPath) < 2:
+                        logger.debug("skip clean orphan block node: unexpected ceph installPath=%s" % volume.installPath)
+                        return
                     # ceph file example: "json:{"driver": "raw", "file": {"pool": "pool", "image": "ca46af50ab8742b68e464e9b23b05598"}"
                     format_nodes = []
                     storage_nodes = []
                     other_nodes = []
                     for node_name, file in node_name_and_file.items():
+                        if not file:
+                            continue
                         if installPath[0] in file and '"' + installPath[1] + '"' in file:
                             if 'format' in node_name:
                                 format_nodes.append(node_name)
@@ -4389,12 +4394,13 @@ class Vm(object):
             logger.warn("skip opening cdrom tray: qdev %s not found on vm %s" % (alias_name, vm_uuid))
             return
 
-        r, err = execute_qmp_command(vm_uuid,
-                                        '{ "execute": "blockdev-open-tray", "arguments":{"id": "%s"}}' % alias_name)
-        if r != 0 or err:
+        try:
+            qmp.execute_qmp_command(vm_uuid,
+                                    '{ "execute": "blockdev-open-tray", "arguments":{"id": "%s"}}' % alias_name)
+        except Exception as err:
             logger.warning("failed to open tray for cdrom %s, error: %s" % (alias_name, err))
-        else:
-            logger.debug("opened tray for cdrom %s on vm %s" % (alias_name, vm_uuid))
+            return
+        logger.debug("opened tray for cdrom %s on vm %s" % (alias_name, vm_uuid))
 
     def attach_iso(self, cmd):
         iso = cmd.iso
@@ -6921,22 +6927,6 @@ def get_block_node_name_by_disk_name(domain_id, disk_name):
         return block['device']
     return block["inserted"]['node-name']
 
-def get_vm_block_nodes(domain_uuid):
-    block_nodes, err = execute_qmp_command(domain_uuid, '{"execute":"query-named-block-nodes"}')
-    if err:
-        raise Exception(err)
-
-    if not block_nodes:
-        raise kvmagent.KvmError("no block nodes found on vm[uuid:{}]".format(domain_uuid))
-
-    return block_nodes
-
-def get_block_node_name_and_file(domain_id):
-    block_nodes = get_vm_block_nodes(domain_id)
-    node_name_and_files = {}
-    for block_node in block_nodes:
-        node_name_and_files[block_node['node-name']] = block_node["file"]
-    return node_name_and_files
 
 def get_vm_migration_caps(domain_id, cap_key):
     caps = qmp.execute_qmp_command(domain_id, "query-migrate-capabilities", raise_exception=False)
@@ -6960,7 +6950,7 @@ def check_mirror_jobs(domain_id, migrate_without_bitmaps):
 
     if migrate_without_bitmaps:
         qmp.execute_qmp_command(domain_id, "migrate-set-capabilities", raise_exception=False,
-                                capabilities=[{"capability": "dirty-bitmaps", "sta te":False}])
+                                capabilities=[{"capability": "dirty-bitmaps", "state":False}])
 
 
 def get_block_file_content_by_disk_name(domain_id, disk_name):
@@ -7024,16 +7014,6 @@ def vm_block_job_yank(vm):
             return
         time.sleep(interval)
 
-
-class LibvirtError(object):
-    def __init__(self, err):
-        self.id = err["id"]
-        self.error = err["error"]
-        self.error_class = None
-        self.error_desc = None
-        if self.error is not None:
-            self.error_class = self.error["class"]
-            self.error_desc = self.error["desc"]
 
 class VmPlugin(kvmagent.KvmAgent):
     KVM_START_VM_PATH = "/vm/start"
