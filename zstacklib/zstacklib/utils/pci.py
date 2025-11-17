@@ -213,3 +213,31 @@ def get_pci_device_ids():
 def get_pci_device_names():
     # Get names using -Dmmv (without 'nn' to get full names)
     return bash_roe("lspci -Dmmv")
+
+
+def collect_pci_devices_with_dependencies(pciDeviceAddress):
+    pcis = []
+    device_path = os.path.join("/sys/bus/pci/devices/", pciDeviceAddress)
+    for item in os.listdir(device_path):
+        if item.startswith("consumer:pci:"):
+            dependent_addr = item.replace("consumer:pci:", "")
+            pcis.append(dependent_addr)
+    return pcis
+
+
+@linux.retry(3, 3)
+def find_pci_device(vm_uuid, pci_addr):
+    domain, bus, slot, function = parse_pci_device_address(pci_addr)
+    cmd = """virsh dumpxml %s | grep -A3 -E '<hostdev.*pci' | grep -w "<address domain='0x%s' bus='0x%s' slot='0x%s' 
+    function='0x%s'/>" """ % \
+          (vm_uuid, domain, bus, slot, function)
+    r, o, e = bash_roe(cmd)
+    return o != ""
+
+
+def parse_pci_device_address(addr):
+    domain = '0000' if len(addr.split(":")) == 2 else addr.split(":")[0]
+    bus = addr.split(":")[-2]
+    slot = addr.split(":")[-1].split(".")[0]
+    function = addr.split(".")[-1]
+    return domain, bus, slot, function

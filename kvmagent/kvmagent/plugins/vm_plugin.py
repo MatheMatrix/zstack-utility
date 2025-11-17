@@ -1528,12 +1528,6 @@ def check_vdi_port(vncPort, spicePort, spiceTlsPort):
     return True
 
 # get domain/bus/slot/function from pci device address
-def parse_pci_device_address(addr):
-    domain = '0000' if len(addr.split(":")) == 2 else addr.split(":")[0]
-    bus  = addr.split(":")[-2]
-    slot = addr.split(":")[-1].split(".")[0]
-    function = addr.split(".")[-1]
-    return domain, bus, slot, function
 
 def get_machineType(machine_type):
     if HOST_ARCH == "aarch64":
@@ -9838,33 +9832,47 @@ host side snapshot files chian:
     def hot_plug_pci_device(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = HotPlugPciDeviceRsp()
-        addr = cmd.pciDeviceAddress
-        domain, bus, slot, function = parse_pci_device_address(addr)
+        pcis = [cmd.pciDeviceAddress]
+        pcis.extend(pci.collect_pci_devices_with_dependencies(cmd.pciDeviceAddress))
 
-        content = '''
-<hostdev mode='subsystem' type='pci'>
-     <driver name='vfio'/>
-     <source>
-       <address type='pci' domain='0x%s' bus='0x%s' slot='0x%s' function='0x%s'/>
-     </source>
-</hostdev>''' % (domain, bus, slot, function)
-        spath = linux.write_to_temp_file(content)
+        def _attach_pci_device_to_vm(address, vmUuid):
+            domain, bus, slot, function = pci.parse_pci_device_address(address)
+            content = '''
+        <hostdev mode='subsystem' type='pci'>
+             <driver name='vfio'/>
+             <source>
+               <address type='pci' domain='0x%s' bus='0x%s' slot='0x%s' function='0x%s'/>
+             </source>
+        </hostdev>''' % (domain, bus, slot, function)
+            spath = linux.write_to_temp_file(content)
+            # do not attach pci device immediately after detach pci device from same vm
+            vm = get_vm_by_uuid(vmUuid)
+            vm._wait_vm_run_until_seconds(60)
+            self.timeout_object.wait_until_object_timeout('hot-unplug-pci-device-from-vm-%s' % vmUuid)
+            r, o, e = bash.bash_roe("virsh attach-device %s %s" % (vmUuid, spath))
+            self.timeout_object.put('hot-plug-pci-device-to-vm-%s' % vmUuid, timeout=30)
+            if r != 0:
+                err = self.handle_vfio_irq_conflict_with_addr(vmUuid, address)
+                if err == "":
+                    return False, "failed to attach-device %s to %s: %s, %s" % (address, vmUuid, o, e)
+                else:
+                    return False, "failed to handle_vfio_irq_conflict_with_addr: %s, details: %s %s" % (err, o, e)
+            logger.debug("attach-device %s to %s: %s, %s" % (spath, vmUuid, o, e))
+            return True, None
 
-        # do not attach pci device immediately after detach pci device from same vm
-        vm = get_vm_by_uuid(cmd.vmUuid)
-        vm._wait_vm_run_until_seconds(60)
-        self.timeout_object.wait_until_object_timeout('hot-unplug-pci-device-from-vm-%s' % cmd.vmUuid)
-        r, o, e = bash.bash_roe("virsh attach-device %s %s" % (cmd.vmUuid, spath))
-        self.timeout_object.put('hot-plug-pci-device-to-vm-%s' % cmd.vmUuid, timeout=30)
-        if r != 0:
-            rsp.success = False
-            err = self.handle_vfio_irq_conflict_with_addr(cmd.vmUuid, addr)
-            if err == "":
-                rsp.error = "failed to attach-device %s to %s: %s, %s" % (addr, cmd.vmUuid, o, e)
-            else:
-                rsp.error = "failed to handle_vfio_irq_conflict_with_addr: %s, details: %s %s" % (err, o, e)
+        for addr in pcis:
+            logger.info("start attach-device %s to %s" % (addr, cmd.vmUuid))
+            if pci.find_pci_device(cmd.vmUuid, addr):
+                logger.info("pci device %s has been attached to %s" % (addr, cmd.vmUuid))
+                continue
+            success, error = _attach_pci_device_to_vm(addr, cmd.vmUuid)
+            if not success:
+                rsp.success = False
+                rsp.error = error
+                logger.info("failed to attach-device %s to %s: %s" % (addr, cmd.vmUuid, error))
+                break
+            logger.info("attach-device %s to %s successfully" % (addr, cmd.vmUuid))
 
-        logger.debug("attach-device %s to %s: %s, %s" % (spath, cmd.vmUuid, o, e))
         return jsonobject.dumps(rsp)
 
     @in_bash
@@ -9910,70 +9918,77 @@ host side snapshot files chian:
     @kvmagent.replyerror
     @in_bash
     def hot_unplug_pci_device(self, req):
-        @linux.retry(3, 3)
-        def find_pci_device(vm_uuid, pci_addr):
-            domain, bus, slot, function = parse_pci_device_address(pci_addr)
-            cmd = """virsh dumpxml %s | grep -A3 -E '<hostdev.*pci' | grep "<address domain='0x%s' bus='0x%s' slot='0x%s' function='0x%s'/>" """ % \
-                  (vm_uuid, domain, bus, slot, function)
-            r, o, e = bash.bash_roe(cmd)
-            return o != ""
-
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = HotUnplugPciDeviceRsp()
-        addr = cmd.pciDeviceAddress
+        pcis = [cmd.pciDeviceAddress]
+        pcis.extend(pci.collect_pci_devices_with_dependencies(cmd.pciDeviceAddress))
 
-        if not find_pci_device(cmd.vmUuid, addr):
-            logger.debug("pci device %s not found" % addr)
-            return jsonobject.dumps(rsp)
+        def _detach_pci_device_from_vm(address, vmUuid):
+            if not pci.find_pci_device(vmUuid, address):
+                logger.debug("pci device %s not found" % address)
+                return True, None
 
-        domain, bus, slot, function = parse_pci_device_address(addr)
-        content = '''
-<hostdev mode='subsystem' type='pci'>
-     <driver name='vfio'/>
-     <source>
-       <address type='pci' domain='0x%s' bus='0x%s' slot='0x%s' function='0x%s'/>
-     </source>
-</hostdev>''' % (domain, bus, slot, function)
-        spath = linux.write_to_temp_file(content)
+            domain, bus, slot, function = pci.parse_pci_device_address(address)
+            content = '''
+        <hostdev mode='subsystem' type='pci'>
+             <driver name='vfio'/>
+             <source>
+               <address type='pci' domain='0x%s' bus='0x%s' slot='0x%s' function='0x%s'/>
+             </source>
+        </hostdev>''' % (domain, bus, slot, function)
+            spath = linux.write_to_temp_file(content)
 
-        # no need to detach pci device if vm is shutdown
-        vm = get_vm_by_uuid_no_retry(cmd.vmUuid, exception_if_not_existing=False)
-        if not vm or vm.state == Vm.VM_STATE_SHUTDOWN:
-            logger.debug("vm[uuid:%s] is shutdown, no need to detach pci device" % cmd.vmUuid)
-            return jsonobject.dumps(rsp)
+            # no need to detach pci device if vm is shutdown
+            vm = get_vm_by_uuid_no_retry(vmUuid, exception_if_not_existing=False)
+            if not vm or vm.state == Vm.VM_STATE_SHUTDOWN:
+                logger.debug("vm[uuid:%s] is shutdown, no need to detach pci device" % vmUuid)
+                return True, None
 
-        # do not detach pci device immediately after starting vm instance
-        try:
-            vm._wait_vm_run_until_seconds(60)
-        except Exception:
-            logger.debug("cannot find pid of vm[uuid:%s, state:%s], no need to detach pci device" % (cmd.vmUuid, vm.state))
-            return jsonobject.dumps(rsp)
+            # do not detach pci device immediately after starting vm instance
+            try:
+                vm._wait_vm_run_until_seconds(60)
+            except Exception:
+                logger.debug(
+                    "cannot find pid of vm[uuid:%s, state:%s], no need to detach pci device" % (vmUuid, vm.state))
+                return True, None
 
-        # do not detach pci device immediately after attach pci device to same vm
-        self.timeout_object.wait_until_object_timeout('hot-plug-pci-device-to-vm-%s' % cmd.vmUuid)
-        self.timeout_object.put('hot-unplug-pci-device-from-vm-%s' % cmd.vmUuid, timeout=10)
+            # do not detach pci device immediately after attach pci device to same vm
+            self.timeout_object.wait_until_object_timeout('hot-plug-pci-device-to-vm-%s' % vmUuid)
+            self.timeout_object.put('hot-unplug-pci-device-from-vm-%s' % vmUuid, timeout=10)
 
-        retry_num = 4
-        retry_interval = 5
-        logger.debug("try to virsh detach xml for %d times: %s" % (retry_num, content))
-        for i in range(1, retry_num + 1):
-            r, o, e = bash.bash_roe("virsh detach-device %s %s" % (cmd.vmUuid, spath))
-            succ = linux.wait_callback_success(lambda args: not find_pci_device(args[0], args[1]), [cmd.vmUuid, addr], timeout=retry_interval)
-            if succ:
+            retry_num = 4
+            retry_interval = 5
+            logger.debug("try to virsh detach xml for %d times: %s" % (retry_num, content))
+            for i in range(1, retry_num + 1):
+                r, o, e = bash.bash_roe("virsh detach-device %s %s" % (vmUuid, spath))
+                succ = linux.wait_callback_success(lambda args: not pci.find_pci_device(args[0], args[1]),
+                                                   [vmUuid, address], timeout=retry_interval)
+                logger.info("times: %s, virsh detach-device %s %s, succ: %s, o: %s, e: %s" % (i, vmUuid, spath, succ, o, e))
+                if succ:
+                    break
+
+                if i < retry_num:
+                    continue
+
+                if r != 0:
+                    return False, "failed to detach-device %s from %s: %s, %s" % (address, vmUuid, o, e)
+
+                if not succ:
+                    return False, "pci device %s still exists on vm %s after %ds" % (
+                    address, vmUuid, retry_num * retry_interval)
+
+            return True, None
+
+        for addr in pcis:
+            logger.info("start to detach pci device %s from vm %s" % (addr, cmd.vmUuid))
+            success, error = _detach_pci_device_from_vm(addr, cmd.vmUuid)
+            if not success:
+                rsp.success = False
+                rsp.error = error
+                logger.info("fail to detach pci device %s from vm %s: %s" % (addr, cmd.vmUuid, error))
                 break
 
-            if i < retry_num:
-                continue
-
-            if r != 0:
-                rsp.success = False
-                rsp.error = "failed to detach-device %s from %s: %s, %s" % (addr, cmd.vmUuid, o, e)
-                return jsonobject.dumps(rsp)
-
-            if not succ:
-                rsp.success = False
-                rsp.error = "pci device %s still exists on vm %s after %ds" % (addr, cmd.vmUuid, retry_num * retry_interval)
-                return jsonobject.dumps(rsp)
+        logger.info("detach-device %s from %s successfully" % (addr, cmd.vmUuid))
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -10056,20 +10071,27 @@ host side snapshot files chian:
     def attach_pci_device_to_host(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AttachPciDeviceToHostRsp()
-        addr = cmd.pciDeviceAddress
+        pcis = [cmd.pciDeviceAddress]
+        pcis.extend(pci.collect_pci_devices_with_dependencies(cmd.pciDeviceAddress))
 
-        r, o, e = bash.bash_roe("virsh nodedev-reattach pci_%s" % addr.replace(':', '_').replace('.', '_'))
-        logger.debug("nodedev-reattach %s: %s, %s" % (addr, o, e))
-        if r != 0:
-            rsp.success = False
-            rsp.error = "failed to nodedev-reattach %s: %s, %s" % (addr, o, e)
-            return jsonobject.dumps(rsp)
+        def _reattach_pci_device(addr):
+            r, o, e = bash.bash_roe("virsh nodedev-reattach pci_%s" % addr.replace(':', '_').replace('.', '_'))
+            logger.debug("nodedev-reattach %s: %s, %s" % (addr, o, e))
+            if r != 0:
+                return r, o, "failed to nodedev-reattach %s: %s, %s" % (addr, o, e)
 
-        if os.path.exists('/usr/lib/nvidia/sriov-manage'):
-            ret, out, err = self._exec_sriov_manage(addr, True)
-            if ret != 0:
+            if os.path.exists('/usr/lib/nvidia/sriov-manage'):
+                ret, out, err = self._exec_sriov_manage(addr, True)
+                if ret != 0:
+                    return ret, out, "failed to /usr/lib/nvidia/sriov-manage -e %s: %s, %s" % (addr, o, e)
+
+        for addr in pcis:
+            r, o, e = _reattach_pci_device(addr)
+            if r != 0:
                 rsp.success = False
-                rsp.error = "failed to /usr/lib/nvidia/sriov-manage -e %s: %s, %s" % (addr, o, e)
+                rsp.error = e
+                break
+            logger.info("reattach pci device %s to host successfully" % addr)
 
         return jsonobject.dumps(rsp)
 
@@ -10078,20 +10100,26 @@ host side snapshot files chian:
     def detach_pci_device_from_host(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = DetachPciDeviceFromHostRsp()
-        addr = cmd.pciDeviceAddress
+        pcis = [cmd.pciDeviceAddress]
+        pcis.extend(pci.collect_pci_devices_with_dependencies(cmd.pciDeviceAddress))
 
-        if os.path.exists('/usr/lib/nvidia/sriov-manage'):
-            ret, out, err = self._exec_sriov_manage(addr, False)
-            if ret != 0:
+        def _detach_pci_device(addr):
+            if os.path.exists('/usr/lib/nvidia/sriov-manage'):
+                ret, out, err = self._exec_sriov_manage(addr, False)
+                if ret != 0:
+                    return ret, out, "failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s" % (addr, out, err)
+
+            r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
+            logger.debug("nodedev-detach %s: %s, %s" % (addr, o, e))
+            return r, o, "failed to nodedev-detach %s: %s, %s" % (addr, o, e)
+
+        for addr in pcis:
+            r, o, e = _detach_pci_device(addr)
+            if r != 0:
                 rsp.success = False
-                rsp.error = "failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s" % (addr, out, err)
-                return jsonobject.dumps(rsp)
-
-        r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
-        logger.debug("nodedev-detach %s: %s, %s" % (addr, o, e))
-        if r != 0:
-            rsp.success = False
-            rsp.error = "failed to nodedev-detach %s: %s, %s" % (addr, o, e)
+                rsp.error = e
+                break
+            logger.info("detach pci device %s from host successfully" % addr)
 
         return jsonobject.dumps(rsp)
 
