@@ -11840,10 +11840,17 @@ class AIOSSetUpSystemServicesCmd(Command):
         framework_condition = "framework='%s'" % self._escape_sql(framework) if framework != "all" else "1=1"
         type_condition = "type='%s'" % self._escape_sql(type_) if type_ != "all" else "1=1"
 
+        # Query ModelServiceVO and filter by architecture through ModelServiceTemplateVO
         if type_ == "all":
-            query.sql = "SELECT uuid,name,type FROM ModelServiceVO WHERE system=1 AND %s" % framework_condition
+            query.sql = """SELECT DISTINCT ms.uuid, ms.name, ms.type
+                          FROM ModelServiceVO ms
+                          INNER JOIN ModelServiceTemplateVO mst ON ms.uuid = mst.modelServiceUuid
+                          WHERE ms.system=1 AND %s AND mst.cpuArchitecture='%s'""" % (framework_condition, architecture)
         else:
-            query.sql = "SELECT uuid,name FROM ModelServiceVO WHERE system=1 AND %s AND %s" % (framework_condition, type_condition)
+            query.sql = """SELECT DISTINCT ms.uuid, ms.name
+                          FROM ModelServiceVO ms
+                          INNER JOIN ModelServiceTemplateVO mst ON ms.uuid = mst.modelServiceUuid
+                          WHERE ms.system=1 AND %s AND %s AND mst.cpuArchitecture='%s'""" % (framework_condition, type_condition, architecture)
 
         service_result = query.query()
         # if over 2 records list options and ask user to choose
