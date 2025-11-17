@@ -228,7 +228,7 @@ def collect_pci_devices_with_dependencies(pciDeviceAddress):
 @linux.retry(3, 3)
 def find_pci_device(vm_uuid, pci_addr):
     domain, bus, slot, function = parse_pci_device_address(pci_addr)
-    cmd = """virsh dumpxml %s | grep -A3 -E '<hostdev.*pci' | grep "<address domain='0x%s' bus='0x%s' slot='0x%s' 
+    cmd = """virsh dumpxml %s | grep -A3 -E '<hostdev.*pci' | grep -w "<address domain='0x%s' bus='0x%s' slot='0x%s' 
     function='0x%s'/>" """ % \
           (vm_uuid, domain, bus, slot, function)
     r, o, e = bash_roe(cmd)
