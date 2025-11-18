@@ -44,6 +44,7 @@ from zstacklib.utils import ovn
 import zstacklib.utils.ip as ip
 import zstacklib.utils.plugin as plugin
 from zstacklib.utils.sizeunit import get_size
+from kvmagent.plugins.virtual_pci_device.gpu.nvidia import TENSOR_FUSION_HANDLER
 
 host_arch = platform.machine()
 IS_AARCH64 = host_arch == 'aarch64'
@@ -2484,7 +2485,9 @@ done
     def _get_vfio_mdev_info(self, to):
         vendor_name = to.vendor
         if vendor_name == VendorEnum.NVIDIA:
-            return self._get_nvidia_vfio_mdev_info(to)
+            # TODO: HARDCODE
+            return TENSOR_FUSION_HANDLER.get_mdev_spec(to)
+            #return self._get_nvidia_vfio_mdev_info(to)
         elif vendor_name == VendorEnum.HUAWEI:
             return self._get_huawei_vfio_mdev_info(to)
         else:
@@ -3369,15 +3372,50 @@ done
     def generate_vfio_mdev_devices(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GenerateVfioMdevDevicesRsp()
-        logger.debug("generate_vfio_mdev_devices: mdevUuids[%s]" % cmd.mdevUuids)
-        if cmd.vendor == VendorEnum.NVIDIA:
-            return self._generate_nvidia_vfio_mdev_devices(cmd)
-        elif cmd.vendor == VendorEnum.HUAWEI:
-            return self._generate_huawei_vfio_mdev_devices(cmd)
+
+        MDEV_CONFIG = {
+            "24G1": (1, 24579),
+            "12G2": (2, 12288),
+            "8G3": (3, 8192),
+            "4G6": (6, 4096),
+        }
+
+        config = MDEV_CONFIG.get(cmd.mdevSpecTypeId)
+
+        if config:
+            count, mem_size = config
+            for i in range(1, count + 1):
+                uuid = '{}+{}+{}'.format(i, cmd.pciDeviceAddress, mem_size)
+                rsp.mdevUuids.append(uuid)
+
+            # Create marker file to indicate device has been virtualized
+            addr = cmd.pciDeviceAddress
+            no_domain_addr = addr if len(addr.split(':')) != 3 else ':'.join(addr.split(':')[1:])
+            marker_file = os.path.join('/var/run/zstack', 'tensor-fusion-mdev-' + no_domain_addr.replace(':', '_'))
+            try:
+                # Ensure directory exists
+                marker_dir = os.path.dirname(marker_file)
+                if not os.path.exists(marker_dir):
+                    os.makedirs(marker_dir, 0o755)
+                open(marker_file, 'a').close()
+                logger.debug("Created TensorFusion MDEV marker file: %s" % marker_file)
+            except Exception as e:
+                logger.warn("Failed to create TensorFusion MDEV marker file %s: %s" % (marker_file, str(e)))
         else:
             rsp.success = False
-            rsp.error = "%s device does not support being generated into mdev devices" % (cmd.vendor)
-            return jsonobject.dumps(rsp)
+            rsp.error = "SpecId {} is not supported".format(cmd.mdevSpecTypeId)
+
+        return jsonobject.dumps(rsp)
+
+        # logger.debug("generate_vfio_mdev_devices: mdevUuids[%s]" % cmd.mdevUuids)
+        # if cmd.vendor == VendorEnum.NVIDIA:
+        #     return self._generate_nvidia_vfio_mdev_devices(cmd)
+        # elif cmd.vendor == VendorEnum.HUAWEI:
+        #     return self._generate_huawei_vfio_mdev_devices(cmd)
+        # else:
+        #     rsp.success = False
+        #     rsp.error = "%s device does not support being generated into mdev devices" % (cmd.vendor)
+        #     return jsonobject.dumps(rsp)
 
     def _ungenerate_nvidia_vfio_mdev_devices(self, cmd):
         rsp = UngenerateVfioMdevDevicesRsp()
@@ -3447,14 +3485,30 @@ done
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = UngenerateVfioMdevDevicesRsp()
 
-        if cmd.vendor == VendorEnum.NVIDIA:
-            return self._ungenerate_nvidia_vfio_mdev_devices(cmd)
-        elif cmd.vendor == VendorEnum.HUAWEI:
-            return self._ungenerate_huawei_vfio_mdev_devices(cmd)
-        else:
-            rsp.success = False
-            rsp.error = "%s device does not support being ungenerate into mdev devices" % (cmd.vendor)
-            return jsonobject.dumps(rsp)
+        # Remove marker file to indicate device is no longer virtualized
+        addr = cmd.pciDeviceAddress
+        no_domain_addr = addr if len(addr.split(':')) != 3 else ':'.join(addr.split(':')[1:])
+        marker_file = os.path.join('/var/run/zstack', 'tensor-fusion-mdev-' + no_domain_addr.replace(':', '_'))
+
+        try:
+            if os.path.exists(marker_file):
+                os.remove(marker_file)
+                logger.debug("Removed TensorFusion MDEV marker file: %s" % marker_file)
+            else:
+                logger.debug("TensorFusion MDEV marker file not found: %s" % marker_file)
+        except Exception as e:
+            logger.warn("Failed to remove TensorFusion MDEV marker file %s: %s" % (marker_file, str(e)))
+
+        return jsonobject.dumps(rsp)
+
+        # if cmd.vendor == VendorEnum.NVIDIA:
+        #     return self._ungenerate_nvidia_vfio_mdev_devices(cmd)
+        # elif cmd.vendor == VendorEnum.HUAWEI:
+        #     return self._ungenerate_huawei_vfio_mdev_devices(cmd)
+        # else:
+        #     rsp.success = False
+        #     rsp.error = "%s device does not support being ungenerate into mdev devices" % (cmd.vendor)
+        #     return jsonobject.dumps(rsp)
 
     def _collect_format_mtty_device_info(self, rsp):
         r, o, e = bash_roe("ls /dev/wst-se")

@@ -78,6 +78,7 @@ from zstacklib.utils.vm_plugin_queue_singleton import VmPluginQueueSingleton
 from zstacklib.utils.libvirt_singleton import LibvirtEventManager
 from zstacklib.utils.libvirt_singleton import LibvirtEventManagerSingleton
 from zstacklib.utils.libvirt_singleton import LibvirtSingleton
+from kvmagent.plugins.virtual_pci_device.gpu.nvidia import TENSOR_FUSION_HANDLER
 
 logger = log.get_logger(__name__)
 
@@ -6374,12 +6375,39 @@ class Vm(object):
                         e(hostdev, "rom", None, {'bar': 'on', 'file': rom_file})
 
         def make_mdev_device(mdevUuids):
-            devices = elements['devices']
-            for mdevUuid in mdevUuids:
-                hostdev = e(devices, "hostdev", None, {'mode': 'subsystem', 'type': 'mdev', 'model': 'vfio-pci', 'managed': 'yes'})
-                source = e(hostdev, "source")
-                # convert mdevUuid to 8-4-4-4-12 format
-                e(source, "address", None, { "uuid": uuidhelper.to_full_uuid(mdevUuid) })
+            if len(mdevUuids) == 0:
+                return
+            
+            splits = mdevUuids[0].split('+')
+            if len(splits) < 3:
+                raise kvmagent.KvmError('invalid mdev device format for %s' % mdevUuids[0])
+            
+            pci_address = splits[1]
+            size = splits[2]
+            
+            request = {
+                "pciAddress": pci_address,
+                "vmUuid": cmd.vmInstanceUuid,
+                "memoryMb": size,
+            }
+            
+            tf_info = TENSOR_FUSION_HANDLER.slice_device(request)
+            shmn_path = tf_info.shared_memory_path
+            shared_memory_size = tf_info.shared_memory_size
+
+            root = elements['root']
+            qcmd = e(root, 'qemu:commandline')
+            e(qcmd, "qemu:arg", attrib={"value": "-object"})
+            e(qcmd, "qemu:arg", attrib={"value": "memory-backend-file,id=shm0,mem-path={},size={}M,share=on".format(shmn_path, shared_memory_size)})
+            e(qcmd, "qemu:arg", attrib={"value": "-device"})
+            e(qcmd, "qemu:arg", attrib={"value": "ivshmem-plain,memdev=shm0"})
+            
+            # devices = elements['devices']
+            # for mdevUuid in mdevUuids:
+            #     hostdev = e(devices, "hostdev", None, {'mode': 'subsystem', 'type': 'mdev', 'model': 'vfio-pci', 'managed': 'yes'})
+            #     source = e(hostdev, "source")
+            #     # convert mdevUuid to 8-4-4-4-12 format
+            #     e(source, "address", None, { "uuid": uuidhelper.to_full_uuid(mdevUuid) })
 
         def make_usb_device(usbDevices):
             def reserve_port(bus):
@@ -12387,6 +12415,41 @@ host side snapshot files chian:
         except Exception as e:
             logger.warn("delete pushgateway metric when vm stoped failed: %s" % e.message)
 
+    def _clean_tensor_fusion(self, conn, dom, event, detail, opaque):
+        try:
+            event_str = LibvirtEventManager.event_to_string(event)
+            if event_str not in (LibvirtEventManager.EVENT_SHUTDOWN, LibvirtEventManager.EVENT_STOPPED):
+                return
+            logger.warn("[tensorfusion] start clean")
+
+            domain_xml = dom.XMLDesc(0)
+            domain_xmlobject = xmlobject.loads(domain_xml)
+            commandline_xmlobject = domain_xmlobject.get_child_node(
+                '{http://libvirt.org/schemas/domain/qemu/1.0}commandline')
+            args_xmlobject = commandline_xmlobject.get_child_node_as_list(
+                '{http://libvirt.org/schemas/domain/qemu/1.0}arg')
+            shm_path = None
+            for qemu_arg in args_xmlobject:
+                logger.warn("[tensorfusion] %s", qemu_arg)
+
+                qemu_arg_value = qemu_arg.get('value_')
+                logger.warn("[tensorfusion] qemu_arg: %s", qemu_arg_value)
+                if qemu_arg_value and 'mem-path=' in qemu_arg_value:
+                    # Extract shm path from memory-backend-file argument
+                    # Format: memory-backend-file,id=shm0,mem-path=/dev/shm/xxx,size=1024M,share=on
+                    import re
+                    match = re.search(r'mem-path=([^,]+)', qemu_arg_value)
+                    if match:
+                        logger.warn("[tensorfusion] match!", shm_path)
+                        shm_path = match.group(1)
+                        break
+
+            if shm_path:
+                logger.warn("[tensorfusion] start clean %s", shm_path)
+                TENSOR_FUSION_HANDLER.reset_worker_by_shm_path(shm_path)
+        except Exception as e:
+            logger.warn("delete tensorfusion when vm stoped failed: %s" % e.message)
+
     def register_libvirt_event(self):
         #LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_lifecycle_event)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE,
@@ -12402,6 +12465,7 @@ host side snapshot files chian:
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._clean_colo_heartbeat)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._extend_sharedblock)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._delete_pushgateway_metric)
+        LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._clean_tensor_fusion)
         LibvirtAutoReconnect.register_libvirt_callbacks()
 
     def register_qemu_log_cleaner(self):
