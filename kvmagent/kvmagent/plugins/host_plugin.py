@@ -806,6 +806,8 @@ class PciDeviceTO(object):
         self.mdevSpecifications = []
         self.rev = ""
         self.addonInfo = {}
+        self.dependentDevices = []
+
 
 class MttyDeviceTO(object):
     def __init__(self):
@@ -2654,6 +2656,7 @@ done
                 to.rev = ids.get('Rev', '')
 
             to.name = "%s_%s" % (subvendor_name if subvendor_name else vendor_name, device_name)
+            to.dependentDevices = pci.collect_pci_devices_with_dependencies(to.pciDeviceAddress)
 
             def _set_pci_to_type():
                 gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel", "Vastai"]
