@@ -17,6 +17,7 @@ OVN_START_SERVICE = '/network/ovn/start'
 OVN_STOP_SERVICE = '/network/ovn/stop'
 OVN_ADD_PORT = '/network/ovn/addport'
 OVN_DEL_PORT = '/network/ovn/delport'
+OVN_CONTROLLER_PARAS = '/network/ovn/controller/setConnection'
 
 logger = log.get_logger(__name__)
 
@@ -90,6 +91,15 @@ class OvnDelPortCmd(kvmagent.AgentCommand):
 class OvnDelPortResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(OvnDelPortResponse, self).__init__()
+
+class OvnSetDbConnectionCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(OvnSetDbConnectionCmd, self).__init__()
+
+
+class OvnSetDbConnectionResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(OvnSetDbConnectionResponse, self).__init__()
 
 
 class OvnNetworkPlugin(kvmagent.KvmAgent):
@@ -382,6 +392,29 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
 
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def ovn_set_controller_connection(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = OvnSetDbConnectionResponse()
+        logger.debug("cmd: %s: %s" % (cmd, cmd.__dict__))
+
+        if  len(cmd["nodes"]) <= 0:
+            rsp.success = False
+            rsp.error = "db servers should not be empty"
+            return jsonobject.dumps(rsp)
+
+        # Build connection str
+        conn_str = ""
+        for index, server in enumerate(cmd["nodes"]):
+            if index == (len(cmd["nodes"]) - 1):
+                conn_str += "tcp:%s:%d" % (server, 6642)
+            else:
+                conn_str += "tcp:%s:%d," % (server, 6642)
+
+        vsctl = ovn.VsCtl()
+        vsctl.setOvsExternalIds("ovn-remote", conn_str)
+        return jsonobject.dumps(rsp)
+
     def start(self):
 
         http_server = kvmagent.get_http_server()
@@ -398,6 +431,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             OVN_ADD_PORT, self.ovn_add_port)
         http_server.register_async_uri(
             OVN_DEL_PORT, self.ovn_del_port)
+        http_server.register_async_uri(
+            OVN_CONTROLLER_PARAS, self.ovn_set_controller_connection)
 
         self.register_ovn_logRotate()
 

@@ -378,6 +378,11 @@ class VsCtl(object):
         return bash.bash_r(queueCmd)
 
     @bash.in_bash
+    def setOvsExternalIds(self, key, value):
+        queueCmd = CtlBin + " --no-wait set Open_vSwitch . external-ids:{}={}".format(key, value)
+        return bash.bash_r(queueCmd)
+
+    @bash.in_bash
     def getNicRxQueueNumConfig(self, nicName):
         try:
             r, o, e = bash.bash_roe(CtlBin + "get Interface {} options:n_rxq".format(nicName))
