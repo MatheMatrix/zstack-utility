@@ -2723,7 +2723,6 @@ done
             self._post_process_pci_device_info(to)
 
             if to.vendorId != '' and to.deviceId != '':
-                logger.debug("get formated pci device info: %s", to)
                 rsp.pciDevicesInfo.append(to)
 
         pci.calculate_max_addressable_memory(rsp.pciDevicesInfo)
