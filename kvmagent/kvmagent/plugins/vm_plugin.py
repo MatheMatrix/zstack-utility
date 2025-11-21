@@ -54,6 +54,7 @@ from zstacklib.utils import shell
 from zstacklib.utils import uuidhelper
 from zstacklib.utils import xmlobject
 from zstacklib.utils import xmlhook
+from zstacklib.utils import linux
 from zstacklib.utils import misc
 from zstacklib.utils import qemu_img, qemu, qmp
 from zstacklib.utils import ebtables
@@ -1434,10 +1435,12 @@ def is_namespace_used():
     return compare_version(LIBVIRT_VERSION, '1.3.3') >= 0
 
 def is_hv_freq_supported():
-    return compare_version(QEMU_VERSION, '2.12.0') >= 0 and LooseVersion(KERNEL_VERSION) >= LooseVersion('3.10.0-957')
+    return (LooseVersion(QEMU_VERSION) >= LooseVersion("2.12.0") and
+            LooseVersion(KERNEL_VERSION) >= LooseVersion('3.10.0-957'))
 
 def is_hv_synic_supported():
-    return compare_version(QEMU_VERSION, '2.12.0') >= 0 and LooseVersion(KERNEL_VERSION) > LooseVersion('3.10.0-1160')
+    return (LooseVersion(QEMU_VERSION) >= LooseVersion("4.2.0") and
+            LooseVersion(KERNEL_VERSION) >= LooseVersion("4.18.0"))
 
 @linux.with_arch(todo_list=['x86_64'])
 def is_ioapic_supported():
@@ -5329,7 +5332,13 @@ class Vm(object):
                     # Requires: hv-vpindex
                     e(hyperv, 'synic', attrib={'state': 'on'})
                     # Requires: hv-vpindex, hv-synic, hv-time
-                    e(hyperv, 'stimer', attrib={'state': 'on'})
+                    stimer = e(hyperv, 'stimer', attrib={'state': 'on'})
+                    e(hyperv, 'runtime', attrib={'state': 'on'})
+                    # The configuration item 'direct' can only on when
+                    # libvirt version >= 6.0.0
+                    if LooseVersion(linux.get_libvirt_version()) >= LooseVersion('6.0.0') and DIST_NAME != 'kylin':
+                        e(stimer, 'direct', attrib={'state': 'on'})
+
                 # refer to: https://access.redhat.com/articles/2470791
                 # increase spinlocks retries
                 e(hyperv, 'spinlocks', attrib={'state': 'on', 'retries': '8191'})
