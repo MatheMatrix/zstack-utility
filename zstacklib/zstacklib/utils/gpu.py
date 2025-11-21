@@ -149,6 +149,8 @@ def parse_huawei_gpu_output_by_npu_id(output):
     gpuinfos = []
     gpuinfo = {}
     total_memory = 0
+    total_ddr_memory = 0
+    found_total_memory = False
     for line in output.splitlines():
         line = line.strip()
         if not line:
@@ -157,11 +159,17 @@ def parse_huawei_gpu_output_by_npu_id(output):
             gpuinfo["serialNumber"] = line.split(":")[1].strip()
         elif "PCIe Bus Info" in line:
             gpuinfo["pciAddress"] = line.partition(": ")[-1].strip().lower()
-        elif "DDR Capacity(MB)" in line or "HBM Capacity" in line:
+        elif line.startswith("Total DDR Capacity(MB)"):
+            memory_value = int(line.split(":")[1].strip().split()[0])
+            total_ddr_memory += memory_value
+            found_total_memory = True
+        elif (line.startswith("DDR Capacity(MB)") or line.startswith("HBM Capacity")) and not found_total_memory:
             memory_value = int(line.split(":")[1].strip().split()[0])
             total_memory += memory_value
         elif "Power Dissipation" in line or "Real-time Power(W)" in line:
             gpuinfo["power"] = line.split(":")[1].strip()
+
+    total_memory = total_ddr_memory if found_total_memory else total_memory
 
     if total_memory > 0:
         gpuinfo["memory"] = "%s MB" % total_memory
