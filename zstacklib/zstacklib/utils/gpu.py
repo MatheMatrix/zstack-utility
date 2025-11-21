@@ -553,11 +553,6 @@ def get_huawei_gpu_aios_rank_table_dict(npu_ids, iswindows=False):
     return rank_table
 
 
-def reload_hygon_gpu_driver_cmd():
-    cmd = "hy-smi --loaddriver"
-    return cmd
-
-
 def is_valid_video_controller(device):
     invalid_keywords = {"iBMC"}
     return all(keyword not in device for keyword in invalid_keywords)
