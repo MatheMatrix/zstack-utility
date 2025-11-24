@@ -220,6 +220,8 @@ if [[ $DB_VERSION == *"Great"* ]]; then
     sudo ln -sf /etc/systemd/system/mysql.service /etc/systemd/system/mariadb.service
     sudo ln -sf /etc/systemd/system/mysql.service /usr/lib/systemd/system/mariadb.service
     sudo ln -sf /usr/bin/mysql /usr/bin/mariadb
+    sudo ln -sf /usr/bin/mysqldump /usr/bin/greatdbdump
+    sudo ln -sf /usr/bin/mysqlcheck /usr/bin/greatdbcheck
     sudo systemctl daemon-reload
     
     if [ ! -d /var/log/mysql ]; then
@@ -3577,15 +3579,15 @@ class InstallDbCmd(Command):
         - name: install GreatDB dependency packages
           yum:
             name:
-              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-client-1.0.0.6118032-GA1.37c10216.1.el8.aarch64.rpm
-              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-devel-1.0.0.6118032-GA1.37c10216.1.el8.aarch64.rpm
-              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-icu-data-files-1.0.0.6118032-GA1.37c10216.1.el8.aarch64.rpm
-              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-shared-1.0.0.6118032-GA1.37c10216.1.el8.aarch64.rpm
+              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-client-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
+              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-devel-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
+              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-icu-data-files-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
+              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-shared-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
             disable_gpg_check: yes
             state: present
 
         - name: install GreatDB server with --nodeps
-          shell: rpm -ivh --nodeps /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-server-1.0.0.6118032-GA1.37c10216.1.el8.aarch64.rpm
+          shell: rpm -ivh --nodeps /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-server-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
           args:
             creates: /usr/sbin/greatdbd
           register: install_server_result
