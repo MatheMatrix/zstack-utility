@@ -41,6 +41,7 @@ class Mirror:
         self.bridge = None
         self.mName = None
         self.dstEndPointType = "VmNic"  # "VmNic" or "UpLinkPort"
+        self.sourceVlanId = 0  # source nic belong to this vlan
         self.interfaceName = None
         self.vlanId = 0
 
@@ -98,12 +99,12 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
         if shell_cmd.return_code != 0:
             iproute.delete_address_no_error(tunnel.localIp, tunnel.prefix, 4, tunnel.dev)
 
-    def _set_redirect_config(self, device_name, mirror_device_name):
-        self._set_mirror_src_config(device_name, mirror_device_name, "Egress")
+    def _set_redirect_config(self, device_name, mirror_device_name, source_vlan_id=0):
+        self._set_mirror_src_config(device_name, mirror_device_name, "Egress", source_vlan_id)
     def _clear_redirect_config(self, device_name, mirror_device_name):
         self._clear_mirror_src_config(device_name, mirror_device_name, "Egress")
 
-    def _set_mirror_src_config(self, device_name, mirror_device_name, direction):
+    def _set_mirror_src_config(self, device_name, mirror_device_name, direction, source_vlan_id=0):
         if direction == "Egress" or direction == "Bidirection":
             shell_cmd = shell.ShellCmd("tc qdisc show dev %s |grep 'qdisc ingress'" % device_name)
             shell_cmd(False)
@@ -111,12 +112,19 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
                 shell.call("tc qdisc add dev %s ingress" % device_name)
             shell_cmd = shell.ShellCmd(" tc filter list dev %s parent ffff: |grep '%s'" % (device_name, mirror_device_name))
             shell_cmd(False)
+            
+            # 构建 tc filter 命令，如果 source_vlan_id 不为 0，则添加 vlan push action
+            if source_vlan_id != 0:
+                tc_action = 'action vlan push id %s action mirred egress mirror dev %s' % (source_vlan_id, mirror_device_name)
+            else:
+                tc_action = 'action mirred egress mirror dev %s' % mirror_device_name
+            
             if shell_cmd.return_code != 0:
-                shell.call('tc filter add dev %s parent ffff: protocol all u32 match u8 0 0 action mirred egress mirror dev %s' % (device_name, mirror_device_name))
+                shell.call('tc filter add dev %s parent ffff: protocol all u32 match u8 0 0 %s' % (device_name, tc_action))
             else:
                 shell.call('tc filter delete dev {device_name} parent ffff:; tc filter add dev {device_name} parent '
-                           'ffff: protocol all u32 match u8 0 0 action mirred egress mirror dev {mirror_device_name}'
-                           .format(device_name=device_name, mirror_device_name=mirror_device_name))
+                           'ffff: protocol all u32 match u8 0 0 {tc_action}'
+                           .format(device_name=device_name, tc_action=tc_action))
 
         if direction == "Ingress" or direction == "Bidirection":
             shell_cmd = shell.ShellCmd("tc qdisc show dev %s |grep 'qdisc prio 1:'" % device_name)
@@ -125,13 +133,19 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
                 shell.call("tc qdisc add dev %s handle 1: root prio" % device_name)
             shell_cmd = shell.ShellCmd(" tc filter list dev %s parent 1: |grep '%s'" % (device_name, mirror_device_name))
             shell_cmd(False)
+            
+            # 构建 tc filter 命令，如果 source_vlan_id 不为 0，则添加 vlan push action
+            if source_vlan_id != 0:
+                tc_action = 'action vlan push id %s action mirred egress mirror dev %s' % (source_vlan_id, mirror_device_name)
+            else:
+                tc_action = 'action mirred egress mirror dev %s' % mirror_device_name
+            
             if shell_cmd.return_code != 0:
-                shell.call('tc filter add dev %s parent 1: protocol all u32 match u8 0 0 action mirred egress mirror '
-                           'dev %s' % (device_name, mirror_device_name))
+                shell.call('tc filter add dev %s parent 1: protocol all u32 match u8 0 0 %s' % (device_name, tc_action))
             else:
                 shell.call('tc filter delete dev {device_name} parent 1:;tc filter add dev {device_name} parent 1: '
-                           'protocol all u32 match u8 0 0 action mirred egress mirror dev {mirror_device_name}'
-                           .format(device_name=device_name, mirror_device_name=mirror_device_name))
+                           'protocol all u32 match u8 0 0 {tc_action}'
+                           .format(device_name=device_name, tc_action=tc_action))
 
     def _clear_mirror_src_config(self, device_name, mirror_device_name, direction):
         shell_cmd = shell.ShellCmd("tc qdisc show dev %s |grep 'qdisc ingress'" % device_name)
@@ -160,8 +174,8 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
         ip link set dev vnic25.0 master br_monitor
         ip link set dev rec_vnic25.0 master br_monitor
         '''
-    def _apply_mirror_session_local(self, src_device_name, dst_device_name, direction, bridge_name, dstEndPointType):
-        self._set_mirror_src_config(src_device_name, dst_device_name, direction)
+    def _apply_mirror_session_local(self, src_device_name, dst_device_name, direction, bridge_name, dstEndPointType, source_vlan_id=0):
+        self._set_mirror_src_config(src_device_name, dst_device_name, direction, source_vlan_id)
         # 只有当镜像目标是虚拟机网卡时才需要桥接操作
         if dstEndPointType == "VmNic":
             self._set_mirror_dst_config(bridge_name, dst_device_name)
@@ -219,13 +233,13 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
         '''
         if cmd.isLocal:
             target_device = self._get_physical_target_device(cmd.mirror)
-            self._apply_mirror_session_local(cmd.mirror.snic, target_device, cmd.mirror.type, cmd.mirror.bridge, cmd.mirror.dstEndPointType)
+            self._apply_mirror_session_local(cmd.mirror.snic, target_device, cmd.mirror.type, cmd.mirror.bridge, cmd.mirror.dstEndPointType, cmd.mirror.sourceVlanId)
         else:
             src_name, dst_name = self._get_mirror_device_name(cmd.tunnel, cmd.mirror)
             self._del_if(cmd.tunnel.uuid, src_name)
             self._del_if(cmd.tunnel.uuid, dst_name)
             self._create_gre_device(cmd.tunnel, src_name)
-            self._set_mirror_src_config(cmd.mirror.snic, src_name, cmd.mirror.type)
+            self._set_mirror_src_config(cmd.mirror.snic, src_name, cmd.mirror.type, cmd.mirror.sourceVlanId)
         logger.debug('successfully apply mirror device [%s] to device[%s]' % (cmd.mirror.snic, cmd.mirror.dnic))
         return jsonobject.dumps(rsp)
 
@@ -270,7 +284,7 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
             self._create_gre_device(cmd.tunnel, dst_name)
             target_device = self._get_physical_target_device(cmd.mirror)
             self._set_mirror_dst_config(cmd.mirror.bridge, target_device, dst_name)
-            self._set_redirect_config(dst_name, target_device)
+            self._set_redirect_config(dst_name, target_device, cmd.mirror.sourceVlanId)
 
         logger.debug('successfully apply mirror device [%s] to device[%s]' % (cmd.mirror.snic, cmd.mirror.dnic))
 
