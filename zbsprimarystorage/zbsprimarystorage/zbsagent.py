@@ -663,13 +663,13 @@ class ZbsAgent(plugin.TaskManager):
 
         found = False
         for physical_pool in r.result:
-            for logical_pool in physical_pool.logicalPoolInfos:
+            for logical_pool in physical_pool.logicalPoolInfos: 
                 rsp.logicalPoolInfos.append(LogicalPoolInfo(logical_pool))
-                if cmd.logicalPool in logical_pool.logicalPoolName:
+                if not cmd.logicalPoolNames or logical_pool.logicalPoolName in cmd.logicalPoolNames:
                     found = True
 
         if not found:
-            raise Exception('cannot found logical pool[%s], you must create it manually' % cmd.logicalPool)
+            raise Exception('cannot found logical pool[%s], you must create it manually' % cmd.logicalPoolNames)
 
         return jsonobject.dumps(rsp)
 
