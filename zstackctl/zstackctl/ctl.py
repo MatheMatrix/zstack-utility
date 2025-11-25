@@ -3563,6 +3563,17 @@ class InstallDbCmd(Command):
         ansible_os_family == 'Kylin' and ansible_distribution_version == '10'
          and yum_repo != 'false'
       block:
+        - name: find the only version directory under aarch64
+          find:
+            paths: /opt/zstack-dvd/aarch64/
+            file_type: directory
+            depth: 1
+          register: found_version_dir
+
+        - name: set version variable
+          set_fact:
+            os_version: "{{ found_version_dir.files[0].path | basename }}"
+        
         - name: create opt directory
           file:
             path: /opt
@@ -3571,7 +3582,7 @@ class InstallDbCmd(Command):
 
         - name: extract openEuler.tgz
           unarchive:
-            src: /opt/zstack-dvd/aarch64/ky10sp3/openEuler.tgz
+            src: /opt/zstack-dvd/aarch64/{{ os_version }}/openEuler.tgz
             dest: /opt
             remote_src: yes
             creates: /opt/openEuler
@@ -3579,15 +3590,15 @@ class InstallDbCmd(Command):
         - name: install GreatDB dependency packages
           yum:
             name:
-              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-client-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
-              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-devel-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
-              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-icu-data-files-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
-              - /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-shared-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
+              - /opt/zstack-dvd/aarch64/{{ os_version }}/Extra/zstack-experimental/greatdb-client-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
+              - /opt/zstack-dvd/aarch64/{{ os_version }}/Extra/zstack-experimental/greatdb-devel-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
+              - /opt/zstack-dvd/aarch64/{{ os_version }}/Extra/zstack-experimental/greatdb-icu-data-files-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
+              - /opt/zstack-dvd/aarch64/{{ os_version }}/Extra/zstack-experimental/greatdb-shared-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
             disable_gpg_check: yes
             state: present
 
         - name: install GreatDB server with --nodeps
-          shell: rpm -ivh --nodeps /opt/zstack-dvd/aarch64/ky10sp3/Extra/zstack-experimental/greatdb-server-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
+          shell: rpm -ivh --nodeps /opt/zstack-dvd/aarch64/{{ os_version }}/Extra/zstack-experimental/greatdb-server-1.0.0.6118032-GA1.116bc251.1.el8.aarch64.rpm
           args:
             creates: /usr/sbin/greatdbd
           register: install_server_result
