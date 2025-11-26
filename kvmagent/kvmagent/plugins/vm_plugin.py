@@ -4795,7 +4795,14 @@ class Vm(object):
                     continue
                 if not hasattr(iface, 'source') or not hasattr(iface.source, 'address'):
                     continue
-                attached = normalize_pci_attrs(iface.source.address.attrib)
+                # Convert XmlObject attributes to dict for normalize_pci_attrs
+                addr_dict = {
+                    'domain': getattr(iface.source.address, 'domain_', '0x0000'),
+                    'bus': getattr(iface.source.address, 'bus_', '0x00'),
+                    'slot': getattr(iface.source.address, 'slot_', '0x00'),
+                    'function': getattr(iface.source.address, 'function_', '0x0')
+                }
+                attached = normalize_pci_attrs(addr_dict)
                 if attached and attached == expected:
                     return iface.dump()
             return None
