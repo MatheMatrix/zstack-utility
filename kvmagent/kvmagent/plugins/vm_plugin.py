@@ -65,6 +65,7 @@ from zstacklib.utils.vm_plugin_queue_singleton import VmPluginQueueSingleton
 from zstacklib.utils.libvirt_singleton import LibvirtEventManager
 from zstacklib.utils.libvirt_singleton import LibvirtEventManagerSingleton
 from zstacklib.utils.libvirt_singleton import LibvirtSingleton
+from jinja2 import Template
 
 logger = log.get_logger(__name__)
 
@@ -86,6 +87,7 @@ SYSTEM_VIRTIO_DRIVER_PATHS = {
 }
 QMP_SOCKET_PATH = "/var/lib/libvirt/qemu/zstack"
 PCI_ROM_PATH = "/var/lib/zstack/pcirom"
+QEMU_SCRIPT_DIR = "/etc/qemu/"
 MAX_MEMORY = 34359738368 if (HOST_ARCH != "aarch64") else linux.get_max_vm_ipa_size()/1024/16
 
 MIPS64EL_CPU_MODEL = "Loongson-3A4000-COMP"
@@ -417,6 +419,7 @@ class StartVmCmd(kvmagent.AgentCommand):
         self.memBalloon = None # type:VirtualDeviceInfo
         self.suspendToRam = None
         self.suspendToDisk = None
+        self.isLiveVm = False
 
 class StartVmResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -2199,12 +2202,66 @@ def get_active_vm_uuids_states():
         uuids_states[uuid] = state
     return uuids_states, uuids_vmInShutdown
 
+def get_dao_console_port(xml):
+    info = etree.fromstring(xml)
+    args = info.getchildren()[-1].getchildren().__iter__()
+    value = args.next().get("value")
+    if value == "-vnc":
+        return "59{}".format(args.next().get("value")[1:])
+    if value == "-serial":
+        return args.next().get("value").split("::")[1][0:4]
+
 
 def get_all_vm_states():
     return get_active_vm_uuids_states()[0]
 
 def get_all_vm_sync_states():
     return get_active_vm_uuids_states()
+
+def get_running_vm_vncports():
+    @LibvirtAutoReconnect
+    def call_libvirt(conn):
+        return conn.listDomainsID()
+
+    ids = call_libvirt()
+
+    @LibvirtAutoReconnect
+    def get_domain(conn):
+        # i is for..loop's control variable
+        # it's Python's local scope tricky
+        try:
+            return conn.lookupByID(i)
+        except libvirt.libvirtError as ex:
+            if ex.get_error_code() == libvirt.VIR_ERR_NO_DOMAIN:
+                return None
+            raise ex
+    ports = []
+    for i in ids:
+        domain = get_domain()
+        if domain == None:
+            continue
+        _xml = domain.XMLDesc()
+        info = etree.fromstring(_xml)
+        _graphics = info.find("./devices/graphics")
+        if _graphics:
+            ports.append(_graphics.get("port"))
+        else:
+            ports.append(get_dao_console_port(_xml))
+
+
+    return ports
+
+def get_vnc_or_telnet_port():
+    used_vnc_ports = get_running_vm_vncports()
+    port_generator = range(5900, 6900).__iter__()
+    while True:
+        try:
+            port = port_generator.next()
+            if str(port) not in used_vnc_ports:
+                return str(port)
+        except Exception:
+            break
+
 
 vm_state_cache = {}
 def get_vm_states_from_cache():
@@ -2231,6 +2288,23 @@ def get_all_vm_states_with_process():
         states[guest] = Vm.VM_STATE_RUNNING
 
     return states
+
+def generate_qemu_ifup_script(bridge_name):
+    ifup_conf = '''\
+#!/bin/sh
+brctl addif {{ bridge }} $1
+ip link set $1 up
+'''
+    tmpt = Template(ifup_conf)
+    ifup_conf = tmpt.render({'bridge': bridge_name})
+    ifup_path = os.path.join(QEMU_SCRIPT_DIR, "qemu-ifup." + bridge_name)
+    with open(ifup_path, "w") as fd:
+        fd.write(ifup_conf)
+
+    os.chmod(ifup_path, 0o755)
+
+    return ifup_path
+
 
 def get_running_vms():
     @LibvirtAutoReconnect
@@ -2853,25 +2927,35 @@ class Vm(object):
 
     def get_vdi_connect_port(self):
         rsp = GetVncPortResponse()
-        for g in self.domain_xmlobject.devices.get_child_node_as_list('graphics'):
-            if g.type_ == 'vnc':
-                rsp.vncPort = g.port_
-                rsp.protocol = "vnc"
-            elif g.type_ == 'spice':
-                if g.hasattr('port_'):
-                    rsp.spicePort = g.port_
-                if g.hasattr('tlsPort_'):
-                    rsp.spiceTlsPort = g.tlsPort_
-                rsp.protocol = "spice"
+        _graphics = self.domain_xmlobject.devices.get_child_node_as_list('graphics')
+        if _graphics:
+            for g in _graphics:
+                if g.type_ == 'vnc':
+                    rsp.vncPort = g.port_
+                    rsp.protocol = "vnc"
+                elif g.type_ == 'spice':
+                    if g.hasattr('port_'):
+                        rsp.spicePort = g.port_
+                    if g.hasattr('tlsPort_'):
+                        rsp.spiceTlsPort = g.tlsPort_
+                    rsp.protocol = "spice"
+        else:
+            #it's a hack on multicore-dao os, because vnc is not supported,
+            rsp.protocol = "vnc"
+            rsp.vncPort = get_dao_console_port(self.domain_xml)
 
         if rsp.vncPort is not None and rsp.spicePort is not None:
             rsp.protocol = "vncAndSpice"
         return rsp.protocol, rsp.vncPort, rsp.spicePort, rsp.spiceTlsPort
 
     def get_console_port(self):
-        for g in self.domain_xmlobject.devices.get_child_node_as_list('graphics'):
-            if g.type_ == 'vnc' or g.type_ == 'spice':
-                return g.port_
+        _graphics = self.domain_xmlobject.devices.get_child_node_as_list('graphics')
+        if _graphics:
+            for g in _graphics:
+                if g.type_ == 'vnc' or g.type_ == 'spice':
+                    return g.port_
+
+        return get_dao_console_port(self.domain_xml)
 
     def get_console_protocol(self):
         for g in self.domain_xmlobject.devices.get_child_node_as_list('graphics'):
@@ -5460,7 +5544,8 @@ class Vm(object):
                     return disk
 
                 if _v.useVirtio:
-                    e(disk, 'target', None, {'dev': 'vd%s' % _dev_letter, 'bus': 'virtio'})
+                    _bus = "usb" if cmd.guestOsType == "dao" else "virtio"
+                    e(disk, 'target', None, {'dev': 'vd%s' % _dev_letter, 'bus': _bus})
                 else:
                     dev_format = Vm._get_disk_target_dev_format(default_bus_type)
                     e(disk, 'target', None, {'dev': dev_format % _dev_letter, 'bus': default_bus_type})
@@ -5795,21 +5880,25 @@ class Vm(object):
                     e(clock, 'timer', None, {'name': 'hypervclock', 'present': 'yes'})
 
         def make_vnc():
+            # _port = get_vnc_or_telnet_port()
+            _port = "-1"
             devices = elements['devices']
             if cmd.consolePassword == None:
-                vnc = e(devices, 'graphics', None, {'type': 'vnc', 'port': '5900', 'autoport': 'yes'})
+                vnc = e(devices, 'graphics', None, {'type': 'vnc', 'port': _port, 'autoport': 'yes'})
             else:
                 vnc = e(devices, 'graphics', None,
-                        {'type': 'vnc', 'port': '5900', 'autoport': 'yes', 'passwd': str(cmd.consolePassword)})
+                        {'type': 'vnc', 'port': _port, 'autoport': 'yes', 'passwd': str(cmd.consolePassword)})
             e(vnc, "listen", None, {'type': 'address', 'address': '0.0.0.0'})
 
         def make_spice():
+            # _port = get_vnc_or_telnet_port()
+            _port = "-1"
             devices = elements['devices']
             if cmd.consolePassword == None:
-                spice = e(devices, 'graphics', None, {'type': 'spice', 'port': '5900', 'autoport': 'yes'})
+                spice = e(devices, 'graphics', None, {'type': 'spice', 'port': _port, 'autoport': 'yes'})
             else:
                 spice = e(devices, 'graphics', None,
-                          {'type': 'spice', 'port': '5900', 'autoport': 'yes', 'passwd': str(cmd.consolePassword)})
+                          {'type': 'spice', 'port': _port, 'autoport': 'yes', 'passwd': str(cmd.consolePassword)})
             e(spice, "listen", None, {'type': 'address', 'address': '0.0.0.0'})
 
             if is_spice_tls() == 0 and cmd.spiceChannels != None:
@@ -5892,6 +5981,10 @@ class Vm(object):
                     else:
                         e(video, 'model', None, {'type': str(cmd.videoType)})
 
+        def make_rng():
+            devices = elements['devices']
+            rng = e(devices, 'rng', None, {'model': 'virtio'})
+            e(rng, 'backend', '/dev/urandom', {'model':'random'})
 
         def make_sound():
             if cmd.consoleMode == 'spice' or cmd.consoleMode == 'vncAndSpice':
@@ -6159,40 +6252,140 @@ class Vm(object):
                 for i in xrange(cmd.predefinedPciBridgeNum):
                     e(devices, 'controller', None, {'type': 'pci', 'index': str(i + 1), 'model': 'pci-bridge'})
 
+        import os.path
+        if cmd.imagePlatform == "Embedded":
+            # make_root
+            root = etree.Element('domain')
+            root.set('type', 'kvm')
+            root.set('xmlns:qemu', 'http://libvirt.org/schemas/domain/qemu/1.0')
+            elements['root'] = root
 
-        make_root()
-        make_meta()
-        make_cpu()
-        make_memory()
-        make_os()
-        make_sysinfo()
-        make_features()
-        make_devices()
-        make_video()
-        make_sound()
-        make_nics()
-        make_volumes()
-        make_pm()
+            # make_meta
+            e(root, 'name', cmd.vmInstanceUuid)
+            e(root, 'uuid', uuidhelper.to_full_uuid(cmd.vmInstanceUuid))
+            e(root, 'description', cmd.vmName)
+            e(root, 'clock', None, {'offset': cmd.clock})
+            e(root, 'vcpu', str(cmd.cpuNum))
 
-        if not cmd.addons or cmd.addons['noConsole'] is not True:
-            make_graphic_console()
-        make_addons()
-        make_balloon_memory()
-        make_console()
-        make_sec_label()
-        make_controllers()
-        if is_spiceport_driver_supported() and cmd.consoleMode in ["spice", "vncAndSpice"] and not cmd.coloPrimary and not cmd.coloSecondary:
-            make_folder_sharing()
-        # appliance vm doesn't need any cdrom or usb controller
-        if not cmd.isApplianceVm:
-            make_cdrom()
-            make_usb_redirect()
+            # make_cpu
+            cpu = e(root, 'cpu', attrib={'mode': 'host-passthrough'})
+            e(cpu, 'topology', attrib={'sockets': str(cmd.socketNum), 'cores': str(cmd.cpuOnSocket), 'threads': '1'})
 
-        if cmd.additionalQmp:
-            make_qemu_commandline()
+            # make_memory
+            mem = cmd.memory / 1024
+            e(root, 'memory', str(mem), {'unit': 'k'})
+            e(root, 'currentMemory', str(mem), {'unit': 'k'})
 
-        if cmd.useHugePage or cmd.MemAccess in "shared":
-            make_memory_backing()
+            # make_os
+            kernelUrl = "/var/lib/zstack/Kernels/{uuid}".format(psUrl=cmd.psUrl, uuid=cmd.vmInstanceUuid)
+
+            if not os.path.exists(os.path.dirname(kernelUrl)):
+                os.mkdir(os.path.dirname(kernelUrl))
+            if cmd.psUrl.startswith('sharedblock'):
+                kernelCache = "{0}/{1}".format(get_volume_actual_installpath(cmd.psUrl), cmd.imageUuid)
+            else:
+                kernelCache = "{0}/imagecache/iso/{1}/{1}.iso".format(cmd.psUrl, cmd.imageUuid)
+            bash.bash_roe("cp {kernelCache} {kernelUrl}".format(kernelCache=kernelCache, kernelUrl=kernelUrl))
+            os = e(root, 'os')
+            e(os, 'type', 'hvm', attrib={'arch': 'aarch64', 'machine': "virt"})
+            e(os, 'kernel', kernelUrl)
+            e(os, 'boot', None, {'dev': 'hd'})
+            #e(os, 'dtb', '/opt/dao/zynq-zc706.dtb')
+
+            # make_features
+            features = e(root, "features")
+            e(features, 'gic', None, {'version': '3'})
+
+            # make_devices
+            devices = e(root, 'devices')
+            e(devices, 'emulator', kvmagent.get_qemu_path())
+
+            # make_addons
+            if not cmd.addons:
+                return
+
+            # disk = e(devices, 'disk', None, attrib={'type': 'file', 'device': 'disk'})
+            # e(disk, 'driver', None, {'name': 'qemu', 'type': 'qcow2'})
+            # e(disk, 'source', None, {'file': cmd.rootVolume.installPath})
+            # e(disk, 'target', None, {'dev': 'sda', 'bus': 'virtio'})
+
+            # interface = e(devices, 'interface', None, {'type': 'bridge'})
+            # e(interface, 'mac', None, attrib={'address': cmd.nics[0].mac})
+            # e(interface, 'source', None, attrib={'bridge': cmd.nics[0].bridgeName})
+            # e(interface, 'target', None, attrib={'dev': cmd.nics[0].nicInternalName})
+            # e(interface, 'model', None, attrib={'type': 'virtio'})
+            # e(interface, 'driver ', None, attrib={'name': 'vhost', 'txmode': 'iothread',
+            #                                       'ioeventfd': 'on', 'event_idx': 'off', 'queues': '2', 'rx_queue_size': '256', 'tx_queue_size': '256'})
+
+            #make_rng
+            rng = e(devices, 'rng', None, {'model': 'virtio'})
+            e(rng, 'backend', '/dev/urandom', {'model':'random'})
+
+            # make_console
+            serial = e(devices, 'serial', None, {'type': 'vc'})
+            e(serial, 'target', None, {'port': '0', 'type': 'system-serial'})
+            console = e(devices, 'console', None, {'type': 'vc'})
+            e(console, 'target', None, {'port': '0', 'type': 'serial'})
+
+            vnc = e(devices, 'graphics', None, {'type': 'vnc', 'port': "-1", 'autoport': 'yes', 'listen': '0.0.0.0'})
+            e(vnc, "listen", None, {'type': 'address', 'address': '0.0.0.0'})
+
+            # make video
+            video = e(devices, 'video')
+            e(video, "model", None, {'type': 'none'})
+            e(video, "alias", None, {'name': 'video0'})
+
+
+            # make_qemu_commandline
+            # _port = get_vnc_or_telnet_port(a)
+            # qcmd = e(root, 'qemu:commandline')
+            # e(qcmd, "qemu:arg", attrib={"value": "-serial"})
+            # e(qcmd, "qemu:arg", attrib={"value": "telnet::{},server,nowait".format(_port)})
+
+            qcmd = e(root, 'qemu:commandline')
+            e(qcmd, "qemu:arg", attrib={"value": "-drive"})
+            e(qcmd, "qemu:arg", attrib={"value": "if=none,file={},id=dosFS,format=qcow2".format(cmd.rootVolume.installPath)})
+            e(qcmd, "qemu:arg", attrib={"value": "-device"})
+            e(qcmd, "qemu:arg", attrib={"value": "virtio-blk-device,drive=dosFS"})
+            e(qcmd, "qemu:arg", attrib={"value": "-netdev"})
+            e(qcmd, "qemu:arg", attrib={"value": "tap,id=hostnet0,ifname={},script={},downscript=no,br={}".format(
+                cmd.nics[0].nicInternalName, generate_qemu_ifup_script(cmd.nics[0].bridgeName), cmd.nics[0].bridgeName)})
+            e(qcmd, "qemu:arg", attrib={"value": "-device"})
+            e(qcmd, "qemu:arg", attrib={"value": "virtio-net-device,netdev=hostnet0,mac={}".format(cmd.nics[0].mac)})
+        else:
+            make_root()
+            make_meta()
+            make_cpu()
+            make_memory()
+            make_os()
+            make_sysinfo()
+            make_features()
+            make_devices()
+            make_video()
+            make_sound()
+            make_nics()
+            make_volumes()
+            make_pm()
+
+            if not cmd.addons or cmd.addons['noConsole'] is not True:
+                make_graphic_console()
+            make_addons()
+            make_balloon_memory()
+            make_console()
+            make_sec_label()
+            make_controllers()
+            if is_spiceport_driver_supported() and cmd.consoleMode in ["spice", "vncAndSpice"] and not cmd.coloPrimary and not cmd.coloSecondary:
+                make_folder_sharing()
+            # appliance vm doesn't need any cdrom or usb controller
+            if not cmd.isApplianceVm:
+                make_cdrom()
+                make_usb_redirect()
+
+            if cmd.additionalQmp:
+                make_qemu_commandline()
+
+            if cmd.useHugePage or cmd.MemAccess in "shared":
+                make_memory_backing()
 
         root = elements['root']
         xml = etree.tostring(root)
