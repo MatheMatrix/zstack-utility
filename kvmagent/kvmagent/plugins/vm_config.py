@@ -1,3 +1,4 @@
+import base64
 import libvirt
 from kvmagent.plugins import vm_plugin
 from zstacklib.utils import http
@@ -149,6 +150,7 @@ class VmConfigPlugin(kvmagent.KvmAgent):
     VM_GUEST_TOOLS_STATE = "/vm/guesttools/state"
     VM_SET_HOSTNAME = "/vm/set/hostname"
     VM_GPU_INFO_SYNC = "/vm/gpuinfo/sync"
+    VM_WRITE_CONFIG_FILE = "/vm/write/config/file"
 
     VM_QGA_PARAM_FILE = "/usr/local/zstack/zs-nics.json"
     VM_QGA_CONFIG_LINUX_CMD = "/usr/local/zstack/zs-tools/config_linux.py"
@@ -430,12 +432,41 @@ class VmConfigPlugin(kvmagent.KvmAgent):
         rsp.gpuInfos = ret
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def vm_write_config_file(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+
+        domain = get_virt_domain(cmd.vmUuid)
+        if not domain or not domain.isActive():
+            rsp.success = False
+            rsp.error = 'vm {} not running'.format(cmd.vmUuid)
+            return jsonobject.dumps(rsp)
+
+        qga = VmQga(domain)
+        if qga.state != VmQga.QGA_STATE_RUNNING:
+            rsp.success = False
+            rsp.error = "qga is not running for vm {}".format(cmd.vmUuid)
+            return jsonobject.dumps(rsp)
+
+        base64content = cmd.base64Content
+        content = base64.b64decode(base64content)
+
+        ret = qga.guest_file_write(cmd.filePath, content)
+        if ret == 0:
+            rsp.success = False
+            rsp.error = "write file {} failed for vm {}".format(cmd.filePath, cmd.vmUuid)
+            return jsonobject.dumps(rsp)
+
+        return jsonobject.dumps(rsp)
+
     def start(self):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.VM_CONFIG_PORTS, self.vm_config_ports)
         http_server.register_async_uri(self.VM_GUEST_TOOLS_STATE, self.vm_guest_tools_state)
         http_server.register_async_uri(self.VM_SET_HOSTNAME, self.vm_set_hostname)
         http_server.register_async_uri(self.VM_GPU_INFO_SYNC, self.vm_gpu_info_sync)
+        http_server.register_async_uri(self.VM_WRITE_CONFIG_FILE, self.vm_write_config_file)
 
     def stop(self):
         pass
