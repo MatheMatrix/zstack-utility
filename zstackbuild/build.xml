@@ -430,6 +430,8 @@
             </sequential>
         </parallel>
 
+        <antcall target="append-oem-config" />
+
         <makeDir dir="${libs.dir}" />
         <exec executable="cp" dir="${libs.dir}" failonerror="true">
             <arg value="-f" />
@@ -503,6 +505,12 @@
         <echo message="--------------------------------------------------------------------" />
         <echo message="successfully build zstack centos6/centos7 offline package at ${allinone.bin.file} " />
         <echo message="--------------------------------------------------------------------" />
+    </target>
+
+    <target name="append-oem-config" if="OEM_NAME">
+        <echo message="Adding OEM configuration to zstack.properties: ${OEM_NAME} ..." />
+        <echo file="${war.classpath.dir}/zstack.properties" append="true">
+OEM_NAME=${OEM_NAME}</echo>
     </target>
 
 </project>
