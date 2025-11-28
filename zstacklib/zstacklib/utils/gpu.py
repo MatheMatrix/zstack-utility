@@ -73,6 +73,31 @@ def pre_detach_from_host(vendor):
     return 0, None
 
 
+def get_gpu_device_vendor(pci_device_address):
+    r, o, e = bash_roe("lspci -s %s" % pci_device_address)
+    if r != 0:
+        return None
+
+    if 'Intel Corporation' in o:
+        return VendorEnum.INTEL
+    elif 'Advanced Micro Devices' in o:
+        return VendorEnum.AMD
+    elif 'NVIDIA Corporation' in o:
+        return VendorEnum.NVIDIA
+    elif 'Haiguang' in o:
+        return VendorEnum.HAIGUANG
+    elif 'Huawei' in o:
+        return VendorEnum.HUAWEI
+    elif '1e3e' in o:
+        return VendorEnum.TIANSHU
+    elif 'Vastai' in o:
+        return VendorEnum.VASTAI
+    elif 'Enflame' in o:
+        return VendorEnum.ENFLAME
+    else:
+        return None
+
+
 def parse_nvidia_gpu_output(output):
     gpuinfos = []
     for part in output.split('\n'):
