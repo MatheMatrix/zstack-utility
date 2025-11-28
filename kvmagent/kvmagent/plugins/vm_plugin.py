@@ -6347,8 +6347,16 @@ class Vm(object):
 
         def make_pci_device(pciDevices):
             devices = elements['devices']
-            for pci in pciDevices:
-                addr, spec_uuid = pci.split(',')
+            for pciDevice in pciDevices:
+                addr, spec_uuid = pciDevice.split(',')
+                device = pci.get_cached_device(addr)
+                if device is None:
+                    raise kvmagent.KvmError('pci device %s not found in pci cache, can not run gpu detach pre-check' % addr)
+
+                if pci.is_gpu(device.type):
+                    return_code, output = gpu.pre_detach_from_host(device.vendor)
+                    if return_code != 0:
+                        raise kvmagent.KvmError('pci device %s detach pre-check failed on host, detail: %s' % (addr, output))
 
                 if os.path.exists('/usr/lib/nvidia/sriov-manage'):
                     r, o, stderr = bash.bash_roe("/usr/lib/nvidia/sriov-manage -d %s" % addr)
