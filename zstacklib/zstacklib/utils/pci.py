@@ -19,6 +19,7 @@ class VendorEnum:
     VASTAI = "Vastai"
     ENFLAME = "Enflame"
     ALIBABA = "Alibaba"
+    KUNLUNXIN = "Kunlunxin"
 
 
 _pci_device_cache = {}
@@ -38,7 +39,8 @@ def update_cache_devices(devices_dict):
 
 
 def is_gpu(type):
-    return type in ['GPU_3D_Controller', 'GPU_Video_Controller', 'GPU_Processing_Accelerators', 'GPU_Co_Processor']
+    return type in ['GPU_3D_Controller', 'GPU_Video_Controller', 'GPU_Processing_Accelerators', 'GPU_Co_Processor',
+                    'GPU_Communication_Controller']
 
 
 def is_haiguang_pci_device(vendor_id):
