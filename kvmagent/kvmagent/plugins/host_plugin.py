@@ -2521,25 +2521,6 @@ done
         elif virtualizable is False and mdev_devices_exists is True:
             to.virtStatus = "VFIO_MDEV_VIRTUALIZED"
 
-    def _simplify_pci_device_name(self, name, vendor_id):
-        if 'Intel Corporation' in name:
-            return VendorEnum.INTEL
-        elif 'Advanced Micro Devices' in name:
-            return VendorEnum.AMD
-        elif 'NVIDIA Corporation' in name:
-            return VendorEnum.NVIDIA
-        elif 'Haiguang' in name or pci.is_haiguang_pci_device(vendor_id):
-            return VendorEnum.HAIGUANG
-        elif 'Huawei' in name:
-            return VendorEnum.HUAWEI
-        elif '1e3e' in name:
-            return VendorEnum.TIANSHU
-        elif 'Vastai' in name:
-            return VendorEnum.VASTAI
-        elif 'Enflame' in name:
-            return VendorEnum.ENFLAME
-        else:
-            return name.replace('Co., Ltd ', '')
 
     def _collect_format_pci_device_info(self, rsp, opaque):
         r_id, o_id, e_id = pci.get_pci_device_ids()
@@ -2618,7 +2599,7 @@ done
 
             # Set vendor info
             if 'Vendor' in names:
-                vendor_name = self._simplify_pci_device_name(names['Vendor'], ids.get('Vendor', ''))
+                vendor_name = pci.simplify_pci_device_name(names['Vendor'], ids.get('Vendor', ''))
                 to.vendor = vendor_name
                 to.vendorId = ids.get('Vendor', '')
                 to.description += vendor_name + " "
@@ -2626,13 +2607,13 @@ done
             # Set device info
             if 'Device' in names:
                 to.device = names['Device']
-                device_name = self._simplify_pci_device_name(names['Device'], ids.get('Device', ''))
+                device_name = pci.simplify_pci_device_name(names['Device'], ids.get('Device', ''))
                 to.deviceId = ids.get('Device', '')
                 to.description += device_name
 
             # Set subvendor info
             if 'SVendor' in names:
-                subvendor_name = self._simplify_pci_device_name(names['SVendor'], ids.get('SVendor', ''))
+                subvendor_name = pci.simplify_pci_device_name(names['SVendor'], ids.get('SVendor', ''))
                 to.subvendorId = ids.get('SVendor', '')
 
             # Set subdevice info

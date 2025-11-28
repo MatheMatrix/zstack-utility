@@ -28,6 +28,46 @@ def is_haiguang_pci_device(vendor_id):
     return vendor_id in ['1d94']
 
 
+def get_pci_device_vendor(pci_device_address):
+    r, o, e = bash_roe("lspci -Dmmnnv | grep %s -A 2" % pci_device_address)
+    if r != 0:
+        return None
+    vendor_name = None
+    vendor_id = None
+    for line in o.split('\n'):
+        if line.startswith('Vendor:'):
+            vendor_part = line.split(':')[1].strip()
+            vendor_name = vendor_part.split('[')[0].strip()
+            vendor_id = vendor_part.split('[')[1].split(']')[0]
+            break
+
+    if not vendor_name or not vendor_id:
+        logger.error("Failed to parse vendor info for %s. Output: %s", pci_device_address, o)
+        return None
+    return simplify_pci_device_name(vendor_name, vendor_id)
+
+
+def simplify_pci_device_name(name, vendor_id):
+    if 'Intel Corporation' in name:
+        return VendorEnum.INTEL
+    elif 'Advanced Micro Devices' in name:
+        return VendorEnum.AMD
+    elif 'NVIDIA Corporation' in name:
+        return VendorEnum.NVIDIA
+    elif 'Haiguang' in name or is_haiguang_pci_device(vendor_id):
+        return VendorEnum.HAIGUANG
+    elif 'Huawei' in name:
+        return VendorEnum.HUAWEI
+    elif '1e3e' in name:
+        return VendorEnum.TIANSHU
+    elif 'Vastai' in name:
+        return VendorEnum.VASTAI
+    elif 'Enflame' in name:
+        return VendorEnum.ENFLAME
+    else:
+        return name.replace('Co., Ltd ', '')
+
+
 def fmt_pci_address(pci_device):
     # type: (dict) -> str
     domain = pci_device['domain'] if 'domain' in pci_device else 0
