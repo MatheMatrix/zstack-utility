@@ -2550,6 +2550,8 @@ done
             return VendorEnum.VASTAI
         elif 'Enflame' in name:
             return VendorEnum.ENFLAME
+        elif '2057' in name:
+            return VendorEnum.KUNLUNXIN
         else:
             return name.replace('Co., Ltd ', '')
 
@@ -2659,7 +2661,7 @@ done
             to.dependentDevices = pci.collect_pci_devices_with_dependencies(to.pciDeviceAddress)
 
             def _set_pci_to_type():
-                gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel", "Vastai"]
+                gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel", "Vastai", ""]
                 custom_gpu_vendors = "Display controller"
 
                 if any(vendor in to.description for vendor in gpu_vendors) \
@@ -2712,6 +2714,9 @@ done
                         and pci_device_mapper.get('Co-processor') in to.type)) \
                         and gpu.is_valid_co_processor(to.vendor):
                     to.type = "GPU_Co_Processor"
+                elif ('Communication controller' in to.type or (pci_device_mapper.get('Communication controller') is not None
+                        and pci_device_mapper.get('Communication controller') in to.type)):
+                    to.type = "GPU_Communication_Controller"
                 else:
                     to.type = "Generic"
 
@@ -2744,6 +2749,7 @@ done
             VendorEnum.TIANSHU: self._collect_tianshu_gpu_info,
             VendorEnum.VASTAI: self._collect_vastai_gpu_info,
             VendorEnum.ENFLAME: self._collect_enflame_gpu_info,
+            VendorEnum.KUNLUNXIN: self._collect_kunlunxin_gpu_info,
         }
         handler = collect_vendor_nvidia_gpu_infos.get(vendor_name)
         if not handler:
@@ -2920,6 +2926,39 @@ done
         r, o, e = bash_roe(gpu.get_enflame_gpu_info_cmd())
         if r != 0:
             logger.error("enflame query gcu is error, %s " % e)
+            return
+
+        for info in gpu.parse_enflame_gpu_output(o):
+            if to.pciDeviceAddress not in info.get("pciAddress"):
+                continue
+
+            mem = info.get("memory", "")
+            power = info.get("powerCap", "")
+            serial = info.get("serialNumber", "")
+
+            if mem and re.match(r"^\s*\d+\s*MiB\s*$", mem, re.IGNORECASE):
+                to.addonInfo["memory"] = mem.strip()
+
+            if power and re.match(r"^\s*\d+(\.\d+)?\s*W\s*$", power, re.IGNORECASE):
+                to.addonInfo["power"] = power.strip()
+
+            if serial and serial.strip():
+                to.addonInfo["serialNumber"] = serial
+
+            to.addonInfo["isDriverLoaded"] = True
+            break
+        return
+
+    @in_bash
+    def _collect_kunlunxin_gpu_info(self, to, opaque=None):
+        r, o, e = bash_roe("which xpu-smi")
+        if r != 0:
+            logger.debug("no xpu-smi, detail: %s " % o)
+            return
+
+        r, o, e = bash_roe(gpu.get_kunlunxin_gpu_info_cmd())
+        if r != 0:
+            logger.error("xpu-smi query gpu is error, %s " % e)
             return
 
         for info in gpu.parse_enflame_gpu_output(o):
