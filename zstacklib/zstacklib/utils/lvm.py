@@ -1594,8 +1594,14 @@ def get_lv_discard_options(path, discard):
     return " --config 'devices {issue_discards=%s}' " % ("1" if discard else "0")
 
 @bash.in_bash
-def delete_lv(path, raise_exception=True, deactive=True, discard=LvDiscardStrategy.NEVER):
+def delete_lv(path, raise_exception=True, deactive=True, discard=LvDiscardStrategy.NEVER, zeroed=False):
     logger.debug("deleting lv %s" % path)
+    if zeroed:
+        if not lv_is_active(path):
+            active_lv(path, shared=False)
+        linux.zeroed_file_dev(path)
+        deactive_lv(path, False)
+
     if deactive:
         _deactive_lv(path, False)
     # remove meta-lv if any

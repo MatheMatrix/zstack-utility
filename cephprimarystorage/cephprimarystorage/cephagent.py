@@ -32,6 +32,7 @@ from zstacklib.utils import qemu_img
 from zstacklib.utils import traceable_shell
 from zstacklib.utils import nbd_client
 from zstacklib.utils import thread
+from zstacklib.utils import nbd
 from imagestore import ImageStoreClient
 from zstacklib.utils.linux import remote_shell_quote
 from cephdriver import CephDriver
@@ -1271,6 +1272,14 @@ class CephAgent(plugin.TaskManager):
             rsp.error = "unable to delete %s, the volume is in use" % cmd.installPath
             logger.debug("the rbd image[%s] still has watchers, unable to delete" % cmd.installPath)
             return jsonobject.dumps(rsp)
+
+        def do_zeroed():
+            nbd_dev = nbd.connect(path)
+            linux.zeroed_file_dev(nbd_dev)
+            nbd.disconnect(nbd_dev)
+
+        if cmd.zeroed:
+            do_zeroed(path)
 
         driver = self.get_driver(cmd)
         driver.do_deletion(cmd, path, defer=True)
