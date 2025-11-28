@@ -20,6 +20,22 @@ class VendorEnum:
     ENFLAME = "Enflame"
 
 
+_pci_device_cache = {}
+
+
+def get_cached_device(pci_address):
+    return _pci_device_cache.get(pci_address)
+
+
+def clear_pci_cache():
+    _pci_device_cache.clear()
+
+
+def update_cache_devices(devices_dict):
+    _pci_device_cache.clear()
+    _pci_device_cache.update(devices_dict)
+
+
 def is_gpu(type):
     return type in ['GPU_3D_Controller', 'GPU_Video_Controller', 'GPU_Processing_Accelerators', 'GPU_Co_Processor']
 

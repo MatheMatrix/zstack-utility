@@ -2549,6 +2549,7 @@ done
             rsp.success = False
             rsp.error = "%s, %s" % (e_id if r_id != 0 else e_name, o_id if r_id != 0 else o_name)
             return
+        pci_devices_dict = {}
         pci_device_mapper = {}
 
         for line in linux.read_file_lines(PCI_CONFIG_PATH):
@@ -2714,7 +2715,9 @@ done
 
             if to.vendorId != '' and to.deviceId != '':
                 rsp.pciDevicesInfo.append(to)
+                pci_devices_dict[to.pciDeviceAddress] = to
 
+        pci.update_cache_devices(pci_devices_dict)
         pci.calculate_max_addressable_memory(rsp.pciDevicesInfo)
 
     def _collect_gpu_addoninfo(self, to, vendor_name, opaque=None):
