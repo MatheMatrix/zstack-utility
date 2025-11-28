@@ -1338,7 +1338,7 @@ class CbdHeartbeatController(AbstractStorageFencer):
 
     @bash.in_bash
     def _heartbeat_io_check(self):
-        cmd = 'qemu-io -c "read 0G 4k" -f cbd {}_zbs_:/etc/zbs/client.conf'.format(self.heartbeat_path)
+        cmd = 'timeout 20 qemu-io -c "read 0G 4k" -f cbd {}_zbs_:/etc/zbs/client.conf'.format(self.heartbeat_path)
         r, o, e = bash.bash_roe(cmd)
         if r != 0:
             if linux.catch_bad_alloc_exception(r, e):

@@ -31,7 +31,7 @@ class ZbsStoragePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = CheckHostStorageConnectionRsp()
 
-        c = 'qemu-io -c "read 0G 4k" -f cbd {}_zbs_:/etc/zbs/client.conf'.format(cmd.path)
+        c = 'timeout 20 qemu-io -c "read 0G 4k" -f cbd {}_zbs_:/etc/zbs/client.conf'.format(cmd.path)
         r, o, e = bash.bash_roe(c)
         if r != 0:
             if linux.catch_bad_alloc_exception(r, e):
