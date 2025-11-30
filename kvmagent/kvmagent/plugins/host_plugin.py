@@ -2661,7 +2661,7 @@ done
             to.dependentDevices = pci.collect_pci_devices_with_dependencies(to.pciDeviceAddress)
 
             def _set_pci_to_type():
-                gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel", "Vastai", ""]
+                gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel", "Vastai", "Kunlunxin"]
                 custom_gpu_vendors = "Display controller"
 
                 if any(vendor in to.description for vendor in gpu_vendors) \
@@ -2956,31 +2956,25 @@ done
             logger.debug("no xpu-smi, detail: %s " % o)
             return
 
-        r, o, e = bash_roe(gpu.get_kunlunxin_gpu_info_cmd())
+        r, xpu_ids_out = bash_ro(gpu.get_kunlunxin_gpu_xpu_id_cmd())
         if r != 0:
-            logger.error("xpu-smi query gpu is error, %s " % e)
+            logger.error("xpu query gpu is error, %s " % xpu_ids_out)
+            return
+        xpu_ids = gpu.get_kunlunxin_xpu_id(xpu_ids_out)
+        if len(xpu_ids) == 0:
+            logger.debug("no xpu id can be found from output: %s" % xpu_ids_out)
             return
 
-        for info in gpu.parse_enflame_gpu_output(o):
-            if to.pciDeviceAddress not in info.get("pciAddress"):
-                continue
+        xpu_infos = []
+        for xpu_id in xpu_ids:
+            r, o, e = bash_roe(gpu.get_kunlunxin_gpu_basic_info_cmd(xpu_id))
+            if r != 0:
+                logger.error("xpu query gpu is error, %s " % e)
+                break
 
-            mem = info.get("memory", "")
-            power = info.get("powerCap", "")
-            serial = info.get("serialNumber", "")
+            xpu_infos.extend(gpu.parse_kunlunxin_gpu_output_by_npu_id(o))
 
-            if mem and re.match(r"^\s*\d+\s*MiB\s*$", mem, re.IGNORECASE):
-                to.addonInfo["memory"] = mem.strip()
-
-            if power and re.match(r"^\s*\d+(\.\d+)?\s*W\s*$", power, re.IGNORECASE):
-                to.addonInfo["power"] = power.strip()
-
-            if serial and serial.strip():
-                to.addonInfo["serialNumber"] = serial
-
-            to.addonInfo["isDriverLoaded"] = True
-            break
-        return
+        self._update_to_addon_info_from_gpu_infos(xpu_infos, to)
 
     def _update_to_addon_info_from_gpu_infos(self, gpu_infos, to, opaque=None):
         for gpuinfo in gpu_infos:
