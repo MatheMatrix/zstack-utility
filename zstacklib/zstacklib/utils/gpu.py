@@ -709,6 +709,7 @@ def parse_kunlunxin_gpu_output_by_npu_id(output):
         elif "Enforced Power Limit" in line:
             gpuinfo["power"] = line.split(":")[1].strip()
 
+    logger.info("kunlunxin gpu info: %s" % gpuinfo)
     gpuinfos.append(gpuinfo)
     return gpuinfos
 
