@@ -2010,7 +2010,7 @@ def collect_kunlunxin_gpu_status():
             logger.error("xpu query gpu id:%d is error, %s " % (xpu_id, e))
             break
 
-        info = gpu.parse_kunlunxin_gpu_output_by_npu_id(o)
+        info = gpu.parse_kunlunxin_gpu_output_by_npu_id(o)[0]
         pci_device_address = info.get("pciAddress", "").strip()
         serial_number = info.get("serialNumber", "").strip()
 

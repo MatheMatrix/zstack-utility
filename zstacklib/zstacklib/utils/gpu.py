@@ -706,14 +706,14 @@ def parse_kunlunxin_gpu_output_by_npu_id(output):
             gpuinfo["pciAddress"] = pci_device_address
         elif current_section == "Memory Usage":
             if "Total" in line:
-                total_memory = int(line.split(":")[1].strip().split()[0])
+                total_memory = line.split(":")[1].strip()
                 gpuinfo["memory"] = total_memory
             elif "Used" in line:
-                used_memory = int(line.split(":")[1].strip().split()[0])
+                used_memory = line.split(":")[1].strip()
                 gpuinfo["memoryUsage"] = used_memory
         elif current_section == "Utilization":
             if "Xpu" in line and "%" in line:
-                xpu_utilization = float(line.split(":")[1].strip().split()[0])
+                xpu_utilization = line.split(":")[1].strip()
                 gpuinfo["xpuUtilization"] = xpu_utilization
         elif "Enforced Power Limit" in line:
             gpuinfo["power"] = line.split(":")[1].strip()
