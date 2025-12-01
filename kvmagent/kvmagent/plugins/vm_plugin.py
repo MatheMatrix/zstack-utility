@@ -5442,6 +5442,15 @@ class Vm(object):
                 for arg in args:
                     e(qcmd, "qemu:arg", attrib={"value": arg.strip('"')})
 
+            # Add Hygon HCT mdev devices
+            if cmd.addons:
+                hygonMdevDevices = cmd.addons['hygonMdevDevice']
+                if hygonMdevDevices:
+                    for mdevUuid in hygonMdevDevices:
+                        full_uuid = uuidhelper.to_full_uuid(mdevUuid)
+                        e(qcmd, "qemu:arg", attrib={"value": "-device"})
+                        e(qcmd, "qemu:arg", attrib={"value": "hct,sysfsdev=/sys/bus/mdev/devices/%s" % full_uuid})
+
             if cmd.useColoBinary:
                 e(qcmd, "qemu:arg", attrib={"value": '-L'})
                 e(qcmd, "qemu:arg", attrib={"value": '/usr/share/qemu-kvm/'})

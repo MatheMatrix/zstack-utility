@@ -543,6 +543,66 @@ def copy_kvm_files():
             add_infiniband_devices_args = "regexp='(cgroup_device_acl\s*=\s*\[[^\]]*?,\s*)' replace='\\1" + formatted_devices + ",\\n    '"
             replace_content(qemu_conf_dst, add_infiniband_devices_args, host_post_info)
 
+        # Collect Hygon mdev vfio devices and add to cgroup_device_acl
+        # This collects /dev/vfio/<iommu_group> devices from Hygon mdev devices created by hct_config
+        # Only processes mdev devices whose symlink path contains '/hct/' (Hygon specific)
+        collect_vfio_script = '''
+from __future__ import print_function
+import os
+import json
+
+mdev_devices_path = "/sys/bus/mdev/devices"
+vfio_devices = set()
+
+if os.path.exists(mdev_devices_path):
+    for mdev_uuid in os.listdir(mdev_devices_path):
+        mdev_link = os.path.join(mdev_devices_path, mdev_uuid)
+        # Only process Hygon hct mdev devices (symlink contains /hct/)
+        if os.path.islink(mdev_link):
+            link_target = os.readlink(mdev_link)
+            if "/hct/" not in link_target:
+                continue
+            iommu_group_link = os.path.join(mdev_link, "iommu_group")
+            if os.path.islink(iommu_group_link):
+                try:
+                    iommu_group = os.path.basename(os.readlink(iommu_group_link))
+                    vfio_devices.add("/dev/vfio/" + iommu_group)
+                except:
+                    pass
+
+# Always add /dev/vfio/vfio if there are any vfio devices
+if vfio_devices:
+    vfio_devices.add("/dev/vfio/vfio")
+
+# Add Hygon specific devices if they exist
+hygon_devices = ["/dev/hygon_psp_config", "/dev/hct_share"]
+for dev in hygon_devices:
+    if os.path.exists(dev):
+        vfio_devices.add(dev)
+
+print(json.dumps(list(vfio_devices)))
+'''
+        # Try python first (could be python2 or python3), fallback to python3
+        (status, stdout) = run_remote_command("python -c '%s'" % collect_vfio_script.replace("'", "'\"'\"'"), host_post_info, return_status=True, return_output=True)
+        if status is not True:
+            (status, stdout) = run_remote_command("python3 -c '%s'" % collect_vfio_script.replace("'", "'\"'\"'"), host_post_info, return_status=True, return_output=True)
+        if status is True and stdout.strip():
+            try:
+                import json
+                vfio_devices = json.loads(stdout.strip())
+                if vfio_devices:
+                    # Format devices with 15 per line for better readability
+                    sorted_devices = sorted(vfio_devices)
+                    lines = []
+                    for i in range(0, len(sorted_devices), 15):
+                        chunk = sorted_devices[i:i+15]
+                        lines.append(', '.join('\\"%s\\"' % d for d in chunk))
+                    formatted_devices = ',\\n    '.join(lines)
+                    add_vfio_devices_args = "regexp='(cgroup_device_acl\s*=\s*\[[^\]]*?,\s*)' replace='\\1" + formatted_devices + ",\\n    '"
+                    replace_content(qemu_conf_dst, add_vfio_devices_args, host_post_info)
+            except:
+                pass
+
     # copy zstacklib pkg
     zslib_src = os.path.join("files/zstacklib", pkg_zstacklib)
     zslib_dst = os.path.join(kvm_root, pkg_zstacklib)
