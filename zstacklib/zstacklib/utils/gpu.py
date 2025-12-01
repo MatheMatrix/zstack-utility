@@ -21,7 +21,7 @@ def shut_persistenced_by_guesttool(domain):
     vm_uuid = domain.name()
     qga = VmQga(domain)
     if qga.state != VmQga.QGA_STATE_RUNNING:
-        return 1, "cannot to shut nvidia-persistenced, qga is not running for vm {}".format(vm_uuid)
+        return 0, "skip shuting down nvidia-persistenced, qga is not running for vm {}".format(vm_uuid)
 
     cmd = get_shut_nvidia_persistence_cmd("mswindows" in qga.os)
     if qga.os == "mswindows":
