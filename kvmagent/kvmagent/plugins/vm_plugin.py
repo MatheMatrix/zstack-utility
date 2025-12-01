@@ -5436,6 +5436,11 @@ class Vm(object):
                 for arg in args:
                     e(qcmd, "qemu:arg", attrib={"value": arg.strip('"')})
 
+            # Add PSP device if Hygon security element is enabled
+            if hasattr(cmd, 'enableHygonSecurityElement') and cmd.enableHygonSecurityElement:
+                e(qcmd, "qemu:arg", attrib={"value": "-device"})
+                e(qcmd, "qemu:arg", attrib={"value": "psp,vid=1"})
+
             if cmd.useColoBinary:
                 e(qcmd, "qemu:arg", attrib={"value": '-L'})
                 e(qcmd, "qemu:arg", attrib={"value": '/usr/share/qemu-kvm/'})
@@ -6317,6 +6322,10 @@ class Vm(object):
             if mdevDevices:
                 make_mdev_device(mdevDevices)
 
+            hygonMdevDevices = cmd.addons.get('hygonMdevDevice')
+            if hygonMdevDevices:
+                make_hygon_mdev_device(hygonMdevDevices)
+
             storageDevices = cmd.addons['storageDevice']
             if storageDevices:
                 make_storage_device(storageDevices)
@@ -6374,6 +6383,14 @@ class Vm(object):
                         e(hostdev, "rom", None, {'bar': 'on', 'file': rom_file})
 
         def make_mdev_device(mdevUuids):
+            devices = elements['devices']
+            for mdevUuid in mdevUuids:
+                hostdev = e(devices, "hostdev", None, {'mode': 'subsystem', 'type': 'mdev', 'model': 'vfio-pci', 'managed': 'yes'})
+                source = e(hostdev, "source")
+                # convert mdevUuid to 8-4-4-4-12 format
+                e(source, "address", None, { "uuid": uuidhelper.to_full_uuid(mdevUuid) })
+
+        def make_hygon_mdev_device(mdevUuids):
             devices = elements['devices']
             for mdevUuid in mdevUuids:
                 hostdev = e(devices, "hostdev", None, {'mode': 'subsystem', 'type': 'mdev', 'model': 'vfio-pci', 'managed': 'yes'})

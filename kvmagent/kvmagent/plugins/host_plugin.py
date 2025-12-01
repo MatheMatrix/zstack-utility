@@ -720,6 +720,20 @@ class DeleteVfioMdevDeviceRsp(kvmagent.AgentCommand):
     def __init__(self):
         super(DeleteVfioMdevDeviceRsp, self).__init__()
 
+class GetHygonCcpDevicesResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(GetHygonCcpDevicesResponse, self).__init__()
+        self.devices = []
+
+class GenerateHygonMdevDevicesRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(GenerateHygonMdevDevicesRsp, self).__init__()
+        self.mdevBindings = []
+
+class UngenerateHygonMdevDevicesRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(UngenerateHygonMdevDevicesRsp, self).__init__()
+
 class UpdateSpiceChannelConfigResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(UpdateSpiceChannelConfigResponse, self).__init__()
@@ -973,6 +987,9 @@ class HostPlugin(kvmagent.KvmAgent):
     GENERATE_SE_VFIO_MDEV_DEVICES = "/semdevdevice/generate"
     UNGENERATE_SE_VFIO_MDEV_DEVICES = "/semdevdevice/ungenerate"
     DELETE_VFIO_MDEV_DEVICE = "/mdevdevice/delete"
+    GET_HYGON_CCP_DEVICES = "/hygonccpdevice/get"
+    GENERATE_HYGON_MDEV_DEVICES = "/hygonmdevdevice/generate"
+    UNGENERATE_HYGON_MDEV_DEVICES = "/hygonmdevdevice/ungenerate"
     HOST_UPDATE_SPICE_CHANNEL_CONFIG_PATH = "/host/updateSpiceChannelConfig";
     TRANSMIT_VM_OPERATION_TO_MN_PATH = "/host/transmitvmoperation"
     TRANSMIT_ZWATCH_INSTALL_RESULT_TO_MN_PATH = "/host/zwatchInstallResult"
@@ -3567,6 +3584,200 @@ done
 
     @kvmagent.replyerror
     @in_bash
+    def get_hygon_ccp_devices(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetHygonCcpDevicesResponse()
+
+        # Check if there are CCP devices via lspci
+        r, o, e = bash_roe("lspci | grep -i 'CCP'")
+        if r != 0 or not o.strip():
+            # No CCP devices found
+            rsp.devices = []
+            return jsonobject.dumps(rsp)
+
+        # Call hct_ccp_bind.py -s to get device list
+        hct_ccp_bind_script = "/opt/hygon/hct/hct/script/hct_ccp_bind.py"
+        if not os.path.exists(hct_ccp_bind_script):
+            rsp.success = False
+            rsp.error = "hct_ccp_bind.py not found at %s" % hct_ccp_bind_script
+            return jsonobject.dumps(rsp)
+
+        r, o, e = bash_roe("python3 %s -s" % hct_ccp_bind_script)
+        if r != 0:
+            rsp.success = False
+            rsp.error = "failed to get CCP devices: %s" % e
+            return jsonobject.dumps(rsp)
+
+        # Parse output and extract device information
+        devices = []
+        lines = o.strip().split('\n')
+        for line in lines:
+            if not line.strip():
+                continue
+            # Parse line format: pciBdf deviceType deviceId driverStatus
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            device = jsonobject.JSONObject()
+            device.pciBdf = parts[0]
+            device.deviceType = parts[1]
+            device.deviceId = parts[2]
+            device.driverStatus = parts[3]
+            device.isMasterPsp = False
+            device.vendorIdx = None
+            device.state = "Enabled"
+            devices.append(device)
+
+        # Get Master PSP via hct_ccp_bind.py --get_master_pspccp
+        r, o, e = bash_roe("python3 %s --get_master_pspccp" % hct_ccp_bind_script)
+        if r == 0 and o.strip():
+            master_psp = o.strip()
+            for device in devices:
+                if device.pciBdf == master_psp:
+                    device.isMasterPsp = True
+                    break
+
+        # Read vendor/idx from mdev devices
+        mdev_devices_path = "/sys/bus/mdev/devices"
+        if os.path.exists(mdev_devices_path):
+            for mdev_uuid in os.listdir(mdev_devices_path):
+                mdev_path = os.path.join(mdev_devices_path, mdev_uuid)
+                vendor_idx_path = os.path.join(mdev_path, "vendor", "idx")
+                if os.path.exists(vendor_idx_path):
+                    try:
+                        with open(vendor_idx_path, 'r') as f:
+                            vendor_idx = int(f.read().strip())
+                            # Find corresponding CCP device by matching PCI BDF
+                            # This requires additional logic to map mdev to CCP
+                            # For now, we'll set vendorIdx when we have the mapping
+                    except:
+                        pass
+
+        rsp.devices = devices
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    @in_bash
+    def generate_hygon_mdev_devices(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GenerateHygonMdevDevicesRsp()
+
+        max_progress = cmd.maxProgress if hasattr(cmd, 'maxProgress') else 0
+        max_qemu_num = cmd.maxQemuNum if hasattr(cmd, 'maxQemuNum') else 64
+
+        # Call hctconfig start -p {maxProgress} -q {maxQemuNum}
+        hctconfig_script = "/opt/hygon/hct/hct/script/hctconfig"
+        if not os.path.exists(hctconfig_script):
+            rsp.success = False
+            rsp.error = "hctconfig not found at %s" % hctconfig_script
+            return jsonobject.dumps(rsp)
+
+        r, o, e = bash_roe("bash %s start -p %d -q %d" % (hctconfig_script, max_progress, max_qemu_num))
+        if r != 0:
+            rsp.success = False
+            rsp.error = "failed to start hctconfig: %s" % e
+            return jsonobject.dumps(rsp)
+
+        # Get CCP devices via hct_ccp_bind.py -s
+        hct_ccp_bind_script = "/opt/hygon/hct/hct/script/hct_ccp_bind.py"
+        r, o, e = bash_roe("python3 %s -s" % hct_ccp_bind_script)
+        if r != 0:
+            rsp.success = False
+            rsp.error = "failed to get CCP devices: %s" % e
+            return jsonobject.dumps(rsp)
+
+        # Parse CCP devices and build mapping by vendor_idx
+        # vendor_idx corresponds to the index of CCP device (excluding Master PSP)
+        ccp_devices_by_idx = []
+        lines = o.strip().split('\n')
+        for line in lines:
+            if not line.strip():
+                continue
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            pci_bdf = parts[0]
+            device_info = {
+                'pciBdf': pci_bdf,
+                'deviceType': parts[1],
+                'deviceId': parts[2],
+                'driverStatus': parts[3]
+            }
+            ccp_devices_by_idx.append(device_info)
+
+        # Get Master PSP and exclude it from indexing
+        master_psp_bdf = None
+        r2, o2, e2 = bash_roe("python3 %s --get_master_pspccp" % hct_ccp_bind_script)
+        if r2 == 0 and o2.strip():
+            master_psp_bdf = o2.strip()
+
+        # Build vendor_idx to pciBdf mapping (excluding Master PSP)
+        vendor_idx_to_pci_bdf = {}
+        idx = 0
+        for device_info in ccp_devices_by_idx:
+            if device_info['pciBdf'] != master_psp_bdf:
+                vendor_idx_to_pci_bdf[idx] = device_info['pciBdf']
+                idx += 1
+
+        # Traverse /sys/bus/mdev/devices/ to find use=1 mdev devices
+        mdev_devices_path = "/sys/bus/mdev/devices"
+        mdev_bindings = []
+        if os.path.exists(mdev_devices_path):
+            for mdev_uuid in os.listdir(mdev_devices_path):
+                mdev_path = os.path.join(mdev_devices_path, mdev_uuid)
+                vendor_use_path = os.path.join(mdev_path, "vendor", "use")
+                vendor_idx_path = os.path.join(mdev_path, "vendor", "idx")
+                
+                if not os.path.exists(vendor_use_path) or not os.path.exists(vendor_idx_path):
+                    continue
+
+                try:
+                    with open(vendor_use_path, 'r') as f:
+                        use_flag = int(f.read().strip())
+                    if use_flag != 1:  # Only VM devices (use=1)
+                        continue
+
+                    with open(vendor_idx_path, 'r') as f:
+                        vendor_idx = int(f.read().strip())
+
+                    # Map vendor_idx to PCI BDF
+                    pci_bdf = vendor_idx_to_pci_bdf.get(vendor_idx)
+                    binding = jsonobject.JSONObject()
+                    binding.mdevUuid = mdev_uuid
+                    binding.ccpDeviceUuid = None  # Will be set by backend based on pciBdf
+                    binding.pciBdf = pci_bdf  # Add pciBdf for backend mapping
+                    binding.vendorIdx = vendor_idx
+                    binding.useFlag = use_flag
+                    mdev_bindings.append(binding)
+                except:
+                    continue
+
+        rsp.mdevBindings = mdev_bindings
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    @in_bash
+    def ungenerate_hygon_mdev_devices(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = UngenerateHygonMdevDevicesRsp()
+
+        # Call hctconfig stop
+        hctconfig_script = "/opt/hygon/hct/hct/script/hctconfig"
+        if not os.path.exists(hctconfig_script):
+            rsp.success = False
+            rsp.error = "hctconfig not found at %s" % hctconfig_script
+            return jsonobject.dumps(rsp)
+
+        r, o, e = bash_roe("bash %s stop" % hctconfig_script)
+        if r != 0:
+            rsp.success = False
+            rsp.error = "failed to stop hctconfig: %s" % e
+            return jsonobject.dumps(rsp)
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    @in_bash
     def update_spice_channel_config(self, req):
         # Note: /etc/libvirt/qemu.conf is overwritten when connect host
         rsp = UpdateSpiceChannelConfigResponse()
@@ -3961,6 +4172,9 @@ done
         http_server.register_async_uri(self.GENERATE_SE_VFIO_MDEV_DEVICES, self.generate_se_vfio_mdev_devices)
         http_server.register_async_uri(self.UNGENERATE_SE_VFIO_MDEV_DEVICES, self.ungenerate_se_vfio_mdev_devices)
         http_server.register_async_uri(self.DELETE_VFIO_MDEV_DEVICE, self.delete_vfio_mdev_device)
+        http_server.register_async_uri(self.GET_HYGON_CCP_DEVICES, self.get_hygon_ccp_devices)
+        http_server.register_async_uri(self.GENERATE_HYGON_MDEV_DEVICES, self.generate_hygon_mdev_devices)
+        http_server.register_async_uri(self.UNGENERATE_HYGON_MDEV_DEVICES, self.ungenerate_hygon_mdev_devices)
         http_server.register_async_uri(self.HOST_UPDATE_SPICE_CHANNEL_CONFIG_PATH, self.update_spice_channel_config)
         http_server.register_async_uri(self.CANCEL_JOB, self.cancel)
         http_server.register_sync_uri(self.TRANSMIT_VM_OPERATION_TO_MN_PATH, self.transmit_vm_operation_to_vm)
