@@ -1271,6 +1271,7 @@ def qcow2_direct_get_backing_file(path):
     return o[backing_file_offset:backing_file_offset+backing_file_size]
 
 # Get derived file and all its backing files
+# [top_layer,...,base_layer]
 def qcow2_get_file_chain(path):
     out = shell.call("%s --backing-chain %s | grep 'image:' | awk '{print $2}'" %
             (qemu_img.subcmd('info'), path))

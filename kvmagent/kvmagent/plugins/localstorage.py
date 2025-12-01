@@ -802,6 +802,10 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
 
         if not cmd.fullRebase:
             linux.qcow2_rebase(cmd.srcPath, cmd.destPath)
+            # 增强校验，rebase完成后，cmd.destPath 的 backing file 必须是 cmd.srcPath
+            if linux.qcow2_get_backing_file(cmd.destPath) != cmd.srcPath:
+                raise kvmagent.KvmError('rebase failed, destPath[%s] backing file is not srcPath[%s]'
+                                        % (cmd.destPath, cmd.srcPath))
         else:
             tmp = os.path.join(os.path.dirname(cmd.destPath), '%s.qcow2' % uuidhelper.uuid())
             qcow2.create_template_with_task_daemon(cmd.destPath, tmp, task_spec=cmd)
@@ -813,18 +817,45 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.storagePath)
         return jsonobject.dumps(rsp)
 
+    def consistent_backing_chain(self, chain_in_db):
+        chain_consistent = True
+        inconsistent_node_path = None
+        actual_backing_file = None
+        expected_backing = None
+        for i in range(len(chain_in_db) - 1):
+            current_path = chain_in_db[i]
+            expected_backing = chain_in_db[i + 1]
+            actual_backing = linux.qcow2_get_backing_file(current_path)
+            if actual_backing != expected_backing:
+                chain_consistent = False
+                inconsistent_node_path = current_path
+                actual_backing_file = actual_backing
+                break
+        return chain_consistent, inconsistent_node_path, expected_backing, actual_backing_file
+
+    def find_duplicate_backing_file_paths(self, chain_in_db):
+        pathBackingFileMap = {}
+        for i in range(len(chain_in_db) - 1):
+            pathBackingFileMap[chain_in_db[i]] = linux.qcow2_get_backing_file(chain_in_db[i])
+
+        value_map = {}
+        for key, value in pathBackingFileMap.items():
+            value_map.setdefault(value, []).append(key)
+        return [keys for keys in value_map.values() if len(keys) > 1]
+
     @kvmagent.replyerror
     def offline_commit_snapshot(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = OfflineCommitSnapshotRsp()
 
+        # s1        s2          s3          s4 vol
+        # s1.qcow2  s2.qcow2    s3.qcow2    s4.qcow2 vol.qcow2
+        # delete snapshot s3
+        # top = s4, base = s3
+        # delete s4.qcow2 , keep s3.qcow2
+        # 将数据从 top 合并到 base
         if linux.qcow2_get_backing_file(cmd.top) != linux.qcow2_get_backing_file(cmd.base):
             linux.qcow2_commit(cmd.top, cmd.base)
-
-        if cmd.topChildrenInstallPathInDb:
-            for children in cmd.topChildrenInstallPathInDb:
-                if linux.qcow2_get_backing_file(children) != cmd.base:
-                    linux.qcow2_rebase_no_check(cmd.base, children)
 
         self.imagestore_client.clean_meta(cmd.base)
 

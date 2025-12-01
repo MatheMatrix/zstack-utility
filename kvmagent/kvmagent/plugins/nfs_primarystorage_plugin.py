@@ -588,11 +588,6 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         if linux.qcow2_get_backing_file(cmd.top) != linux.qcow2_get_backing_file(cmd.base):
             linux.qcow2_commit(cmd.top, cmd.base)
 
-        if cmd.topChildrenInstallPathInDb:
-            for children in cmd.topChildrenInstallPathInDb:
-                if linux.qcow2_get_backing_file(children) != cmd.base:
-                    linux.qcow2_rebase_no_check(cmd.base, children)
-
         self.imagestore_client.clean_meta(cmd.base)
 
         _, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.base)

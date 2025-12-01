@@ -1287,14 +1287,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         with lvm.RecursiveOperateLv(top, shared=True):
             if linux.qcow2_get_backing_file(cmd.top) != linux.qcow2_get_backing_file(cmd.base):
                 linux.qcow2_commit(cmd.top, cmd.base)
-
-            if cmd.topChildrenInstallPathInDb:
-                for childrenInstallPath in cmd.topChildrenInstallPathInDb:
-                    with lvm.RecursiveOperateLv(childrenInstallPath, shared=True):
-                        if linux.qcow2_get_backing_file(childrenInstallPath) != base:
-                            linux.qcow2_rebase_no_check(base, childrenInstallPath)
-
-            lvm.delete_lv_meta(base)
+                lvm.delete_lv_meta(top)
 
         rsp.actualSize = lvm.get_lv_size(base)
         rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
