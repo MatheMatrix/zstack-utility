@@ -599,6 +599,7 @@ class SblkHealthChecker(AbstractStorageFencer):
         max_check_count = (sanlock.calc_host_dead_seconds(dst_host_io_timeout) + 2 * our_host_io_timeout) / check_interval + 1
         logger.debug("dst host %s sanlock io timeout is %s, current host: %s" % (dst_host_uuid, dst_host_io_timeout, our_host_io_timeout))
         latest_timestamp = None
+        timestamp_change_count = 0
         while count < max_check_count:
             if latest_timestamp is not None:
                 time.sleep(check_interval)
@@ -611,12 +612,15 @@ class SblkHealthChecker(AbstractStorageFencer):
             elif latest_timestamp is None:
                 latest_timestamp = current_timestamp
             elif latest_timestamp != current_timestamp:
-                logger.debug("host %s still alive judge by sanlock" % dst_host_uuid)
-                return True
+                timestamp_change_count += 1
+                latest_timestamp = current_timestamp
+                if timestamp_change_count > 1:
+                    break
             else:
                 # timestamp not updated
                 count += 1
 
+        logger.debug("host %s still alive judge by sanlock" % dst_host_uuid)
         return True
 
     def check_fencer_heartbeat(self, host_uuid, storage_check_timeout, interval, max_attempts, ps_uuid, hostId=None):
@@ -627,7 +631,7 @@ class SblkHealthChecker(AbstractStorageFencer):
             heartbeat_success, vm_uuid_list = AbstractStorageFencer.check_fencer_heartbeat(self, host_uuid, storage_check_timeout, interval, max_attempts, ps_uuid)
             if heartbeat_success:
                 heartbeat_suc_count.inc()
-            vm_uuids.append(vm_uuid_list)
+            vm_uuids.extend(vm_uuid_list)
 
         def run_sanlock_checker():
             if self.check_sanlock_heartbeat(ps_uuid, host_uuid, hostId):
