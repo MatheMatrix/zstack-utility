@@ -987,6 +987,9 @@ class CephAgent(plugin.TaskManager):
         rsp = driver.clone_volume(cmd, rsp)
 
         rsp.size = self._get_file_size(src_path)
+        if cmd.virtualSize and cmd.virtualSize != rsp.size:
+            rsp.size = max(cmd.virtualSize, rsp.size)
+
         ALIGNMENT_SIZE = 4096.0
         if ceph.is_xsky() and src_pool != dst_pool and rsp.size % ALIGNMENT_SIZE != 0:
             new_size = int(math.ceil(rsp.size / ALIGNMENT_SIZE) * ALIGNMENT_SIZE)

@@ -528,6 +528,12 @@ class ZbsAgent(plugin.TaskManager):
             raise Exception(
                 'failed to clone volume[%s] to volume[%s], error[%s]' % (volume, cmd.dstVolume, ret.error.message))
 
+        if cmd.virtualSize and cmd.virtualSize > rsp.size:
+            o = zbsutils.expand_volume(logical_pool, volume, cmd.virtualSize, cmd.unit if cmd.unit else '')
+            ret = jsonobject.loads(o)
+            if ret.error.code != 0:
+                raise Exception('failed to expand volume[%s], error[%s]' % (volume, ret.error.message))
+
         rsp.installPath = zbsutils.CBD_VOLUME_PATH.format(physical_pool, logical_pool, cmd.dstVolume)
         rsp.size = ret.result.fileInfo.length
 
