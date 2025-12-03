@@ -16,6 +16,7 @@ from zstacklib.utils import jsonobject
 from zstacklib.utils import iscsi
 from zstacklib.utils import lock
 from kvmagent.plugins.vm_plugin import get_vm_by_uuid
+from zstacklib.utils.ovn import delVnicFromOvsByVmUuidIfExist
 import os.path
 import time
 import traceback
@@ -1594,6 +1595,7 @@ def kill_vm(maxAttempts, strategy, mountPaths=None, isFileSystem=None):
 
 def kill_vm_use_pid(vm_pids_dict, reason):
     for vm_uuid, vm_pid in vm_pids_dict.items():
+        delVnicFromOvsByVmUuidIfExist(vm_uuid)
         kill = shell.ShellCmd('kill -9 %s' % vm_pid)
         kill(False)
         if kill.return_code == 0:
