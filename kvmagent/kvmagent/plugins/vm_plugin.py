@@ -7239,6 +7239,7 @@ class VmPlugin(kvmagent.KvmAgent):
     DETACH_VIRTIO_DRIVER_PATH = "/vm/virtio/detach"
 
     SET_VM_VF_NIC_STATE = "/vm/vfnic/state"
+    SET_VF_NIC_MAC_PATH = "/vm/setvfnicmac"
 
     VM_OP_START = "start"
     VM_OP_STOP = "stop"
@@ -11796,6 +11797,61 @@ host side snapshot files chian:
         finally:
             return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def set_vf_nic_mac(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+
+        if not cmd.nics:
+            return jsonobject.dumps(rsp)
+
+        def _collect_extra_pci_addresses(extra):
+            if not extra:
+                return []
+            if isinstance(extra, (list, tuple)):
+                return [addr for addr in extra if addr]
+            if isinstance(extra, jsonobject.JsonObject):
+                return [val for val in extra.__dict__.values() if val]
+            return [extra]
+
+        def _set_vf_mac(pci_addr, mac):
+            pf_name = linux.get_pf_name_by_vf_pci_address(pci_addr)
+            if not pf_name:
+                logger.debug('cannot find pf for vf pci address[%s], skip set mac' % pci_addr)
+                return
+
+            vf_index = linux.get_vf_index_by_pci_address(pci_addr)
+            if vf_index is None:
+                logger.debug('cannot find vf index for pci address[%s], skip set mac' % pci_addr)
+                return
+
+            rc, out, err = bash.bash_roe('ip link set %s vf %d mac %s' % (pf_name, vf_index, mac))
+            if rc != 0:
+                logger.warn('failed to set mac[%s] for vf[pf:%s, vf:%d, pci:%s]: %s %s' % (mac, pf_name, vf_index, pci_addr, out, err))
+            else:
+                logger.debug('successfully set mac[%s] for vf[pf:%s, vf:%d, pci:%s]' % (mac, pf_name, vf_index, pci_addr))
+
+        for nic in cmd.nics:
+            mac = getattr(nic, 'mac', None)
+            if not mac:
+                logger.debug('nic[uuid:%s] has no mac address, skip set mac' % getattr(nic, 'uuid', 'unknown'))
+                continue
+
+            # set mac for base pciDeviceAddress
+            base_addr = getattr(nic, 'pciDeviceAddress', None)
+            if base_addr:
+                base_norm = normalize_pci_address(base_addr)
+                if base_norm:
+                    _set_vf_mac(base_norm, mac)
+
+            # set mac for extraPciDeviceAddresses (bond scenario)
+            for extra_addr in _collect_extra_pci_addresses(getattr(nic, 'extraPciDeviceAddresses', None)):
+                extra_norm = normalize_pci_address(extra_addr)
+                if extra_norm:
+                    _set_vf_mac(extra_norm, mac)
+
+        return jsonobject.dumps(rsp)
+
     def start(self):
         http_server = kvmagent.get_http_server()
 
@@ -11908,6 +11964,7 @@ host side snapshot files chian:
         http_server.register_async_uri(self.FSTRIM_VM_PATH, self.fstrim_vm)
         http_server.register_async_uri(self.DETACH_VIRTIO_DRIVER_PATH, self.detach_virtio_driver)
         http_server.register_async_uri(self.SET_VM_VF_NIC_STATE, self.set_vf_nic_state)
+        http_server.register_async_uri(self.SET_VF_NIC_MAC_PATH, self.set_vf_nic_mac)
 
         self.clean_old_sshfs_mount_points()
         self.register_libvirt_event()
