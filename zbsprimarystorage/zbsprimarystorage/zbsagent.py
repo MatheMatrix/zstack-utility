@@ -4,7 +4,9 @@ import base64
 import pprint
 import traceback
 
-import zbsutils
+from . import zbsutils
+import zstacklib.utils.jsonobject as jsonobject
+
 from zstacklib.utils import daemon
 from zstacklib.utils import iproute
 from zstacklib.utils import plugin
@@ -152,7 +154,7 @@ class LogicalPoolInfo:
             return None
 
         try:
-            d = jsonobject.loads(base64.b64decode(redundance_and_placement_policy))
+            d = jsonobject.loads(base64.b64decode(redundance_and_placement_policy).decode())
             return self.RedundanceAndPlacementPolicy(
                 copyset_number=d.copysetNum,
                 replica_number=d.replicaNum,
@@ -160,7 +162,7 @@ class LogicalPoolInfo:
             )
         except Exception as e:
             logger.error('failed to decode redundance and placement policy[%s], error[%s]' % (
-                redundance_and_placement_policy, e.message
+                redundance_and_placement_policy, str(e)
             ))
 
 

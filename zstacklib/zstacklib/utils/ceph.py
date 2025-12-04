@@ -385,7 +385,7 @@ class DefaultCephPoolCapacityGetter:
         for pool_capacity in result:
             if not pool_capacity.related_osd_capacity:
                 continue
-            for osd_capacity in pool_capacity.related_osd_capacity.values():
+            for osd_capacity in list(pool_capacity.related_osd_capacity.values()):
                 pool_capacity.crush_item_osds_total_size = pool_capacity.crush_item_osds_total_size + osd_capacity.get_size()
                 pool_capacity.available_capacity = pool_capacity.available_capacity + osd_capacity.get_available_capacity()
                 pool_capacity.used_capacity = pool_capacity.used_capacity + osd_capacity.get_used_capacity()

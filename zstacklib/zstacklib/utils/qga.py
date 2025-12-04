@@ -6,7 +6,7 @@ import libvirt
 import libvirt_qemu
 import xml.etree.ElementTree as ET
 
-import log
+from . import log
 
 logger = log.get_logger(__name__)
 
@@ -48,13 +48,21 @@ qga_channel_state_disconnected = 'disconnected'
 encodings = ['utf-8', 'GB2312', 'ISO-8859-1']
 
 
-def decode_with_fallback(encoded_bytes):
+def decode_with_fallback(encoded_bytes) -> str:
+    if not isinstance(encoded_bytes, bytes):
+        return encoded_bytes
+
+    errs = []
     for encoding in encodings:
         try:
-            return encoded_bytes.decode(encoding).encode('utf-8')
-        except UnicodeDecodeError:
+            return encoded_bytes.decode(encoding)
+        except UnicodeDecodeError as e:
+            errs.append((encoding, str(e)))
             continue
-    raise UnicodeDecodeError("Unable to decode bytes using provided encodings")
+
+    error_details = "\n".join([f"{enc}: {err}" for enc, err in errs])
+    raise Exception(
+        f"Unable to decode bytes using provided encodings. Attempted encodings and errors:\n{error_details}")
 
 def merge_cmd(cmd_str, args):
     for sub_key in args:
@@ -149,14 +157,17 @@ class VmQga(object):
         cmd = {'execute': command}
         if args:
             if 'buf-b64' in args:
-                args['buf-b64'] = base64.b64encode(args['buf-b64'])
+                content = args['buf-b64']
+                if isinstance(content, str):
+                    content = content.encode()
+                args['buf-b64'] = base64.b64encode(content).decode()
             cmd['arguments'] = args
         cmd = json.dumps(cmd)
         try:
             ret = libvirt_qemu.qemuAgentCommand(self.domain, cmd,
                                                 timeout, 0)
         except libvirt.libvirtError as e:
-            message = 'exec qga command[{}] args[{}] error: {}'.format(cmd, args, e.message)
+            message = 'exec qga command[{}] args[{}] error: {}'.format(cmd, args, str(e))
             raise Exception(message)
 
         try:
@@ -173,11 +184,11 @@ class VmQga(object):
         parsedRet = parsed['return']
         if isinstance(parsedRet, dict):
             if 'out-data' in parsedRet:
-                parsedRet['out-data'] = base64.b64decode(parsedRet['out-data'])
+                parsedRet['out-data'] = base64.b64decode(parsedRet['out-data']).decode()
             if 'err-data' in parsedRet:
-                parsedRet['err-data'] = base64.b64decode(parsedRet['err-data'])
+                parsedRet['err-data'] = base64.b64decode(parsedRet['err-data']).decode()
             if 'buf-b64' in parsedRet:
-                parsedRet['buf-b64'] = base64.b64decode(parsedRet['buf-b64'])
+                parsedRet['buf-b64'] = base64.b64decode(parsedRet['buf-b64']).decode()
 
         return parsedRet
 
@@ -658,7 +669,7 @@ class VmQga(object):
         try:
             handle = self.call_qga_command("guest-file-open", args={"path": path, "mode": 'r'})
         except Exception as e:
-            if 'No such file' in e.message and not not_exist_exception:
+            if 'No such file' in str(e) and not not_exist_exception:
                 return 0, None
             raise e
 

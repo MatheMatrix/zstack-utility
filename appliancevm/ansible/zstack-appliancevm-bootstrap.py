@@ -74,9 +74,13 @@ class ShellCmd(object):
         return self.stdout
 
 def shell(cmd, is_exception=True):
-    return ShellCmd(cmd)(is_exception)
+    out = ShellCmd(cmd)(is_exception)
+    if isinstance(out, bytes):
+        out = out.decode('utf-8')
+    return out
 
 def wait_callback_success(callback, callback_data=None, timeout=60, interval=1):
+    # type: (callable, object, int, float) -> bool
     count = 0
     while count <= timeout:
         if callback(callback_data):
@@ -108,10 +112,10 @@ class VRBootStrap(object):
         
     def get_nicname_by_mac(self, nicmac):
         info = shell('ip link')
-        infos = info.split('\n')
+        infos = info.splitlines()
         lines = []
         for i in infos:
-            i = i.strip().strip('\t').strip('\r').strip('\n')
+            i = i.strip()
             if i == '':
                 continue
             lines.append(i)
@@ -138,7 +142,7 @@ class VRBootStrap(object):
         cfg.append('TYPE="Ethernet"')
         cfg.append('IPADDR="{0}"'.format(nicinfo['ip']))
         cfg.append('NETMASK="{0}"'.format(nicinfo['netmask']))
-        if nicinfo.has_key('gateway'):
+        if 'gateway' in nicinfo:
             cfg.append('GATEWAY="{0}"'.format(nicinfo['gateway']))
          
         cfg_path = '/etc/sysconfig/network-scripts/ifcfg-%s' % nicinfo['name']
@@ -147,7 +151,7 @@ class VRBootStrap(object):
              
         shell('/sbin/ifdown {0} ; /sbin/ifup {0}'.format(nicinfo['name']))
         #TODO: calculate gateway for each device and ping its gateway
-        if nicinfo.has_key('gateway'):
+        if 'gateway' in nicinfo:
             self.ping(nicinfo['gateway'])
     
     def do_debian_configure_nic(self, nicinfo):
@@ -178,14 +182,14 @@ class VRBootStrap(object):
         cfg.append('\thwaddress {0}'.format(nicinfo['mac']))
         cfg.append('\taddress {0}'.format(nicinfo['ip']))
         cfg.append('\tnetmask {0}'.format(nicinfo['netmask']))
-        if nicinfo.has_key('gateway'):
+        if 'gateway' in nicinfo:
             cfg.append('\tgateway {0}'.format(nicinfo['gateway']))
 
         interfaces = get_interfaces()
         interfaces[nicinfo['name']] = cfg
 
         cfg = []
-        for interface in interfaces.values():
+        for interface in list(interfaces.values()):
             cfg.extend(interface)
 
         with open(cfg_path, 'w') as fd:

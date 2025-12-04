@@ -9,12 +9,12 @@ class Test(unittest.TestCase):
 
 
     def callback(self, percentage, userdata):
-        print percentage
+        print(percentage)
         
 
     def testName(self):
         ret = linux.wget("http://192.168.200.100/mirror/diskimages/zstack_image_test3.qcow2", "/tmp", callback=self.callback)
-        print("ret: %s" % ret)
+        print(("ret: %s" % ret))
 
 
 if __name__ == "__main__":

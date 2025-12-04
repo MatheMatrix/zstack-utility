@@ -1,12 +1,12 @@
 __author__ = 'frank'
 
+import codecs
 import os
 import os.path
 import pprint
 import traceback
-import urllib
-import urllib2
-import urlparse
+import urllib.request, urllib.parse, urllib.error
+import urllib.parse
 import tempfile
 import threading
 import rados
@@ -24,7 +24,6 @@ import zstacklib.utils.http as http
 import zstacklib.utils.jsonobject as jsonobject
 from zstacklib.utils import lock
 from zstacklib.utils import linux
-from zstacklib.utils import thread
 from zstacklib.utils.bash import *
 from zstacklib.utils.ceph import get_mon_addr
 from zstacklib.utils.rangeset import RangeSet
@@ -83,13 +82,13 @@ class CephToCephMigrateImageCmd(AgentCommand):
     def __init__(self):
         super(CephToCephMigrateImageCmd, self).__init__()
         self.imageUuid = None
-        self.imageSize = None  # type:long
+        self.imageSize = None  # type: int
         self.srcInstallPath = None
         self.dstInstallPath = None
         self.dstMonHostname = None
         self.dstMonSshUsername = None
         self.dstMonSshPassword = None
-        self.dstMonSshPort = None  # type:int
+        self.dstMonSshPort = None  # type: int
 
 
 class UploadProgressRsp(AgentResponse):
@@ -305,8 +304,8 @@ def get_boundary(entity):
         b = b.strip()
         if b == ib:
             break
-
-    return ib
+    # TODO(py3)
+    return ib.decode('ascii')
 
 
 def get_image_format_from_header(ioctx, image_name):
@@ -352,6 +351,8 @@ def stream_body(entity, boundary, param, task, ioctx):
     task.create_image_if_not_exists(ioctx, image_name)
     image_obj = ImageFileObject(rbd.Image(ioctx, image_name))
     image_obj.seek(param.slice_offset)
+    slice_downloaded_size = 0
+    md5 = hashlib.md5()
 
     slice_downloaded_size = 0
     hasher = get_hasher(param.hash_algorithm) if param.slice_hash else None
@@ -404,7 +405,7 @@ def stream_body(entity, boundary, param, task, ioctx):
 
 
 def complete_upload(task, ioctx):
-    # type: (UploadTask) -> None
+    # type: (UploadTask, rados.Ioctx) -> None
     try:
         file_format = linux.get_img_fmt('rbd:' + task.tmpPath)
     except Exception as e:
@@ -564,16 +565,16 @@ class CephAgent(object):
         df = jsonobject.loads(o)
 
         if df.stats.total_bytes__ is not None :
-            total = long(df.stats.total_bytes_)
+            total = int(df.stats.total_bytes_)
         elif df.stats.total_space__ is not None:
-            total = long(df.stats.total_space__) * 1024
+            total = int(df.stats.total_space__) * 1024
         else:
             raise Exception('unknown ceph df output: %s' % o)
 
         if df.stats.total_avail_bytes__ is not None:
-            avail = long(df.stats.total_avail_bytes_)
+            avail = int(df.stats.total_avail_bytes_)
         elif df.stats.total_avail__ is not None:
-            avail = long(df.stats.total_avail_) * 1024
+            avail = int(df.stats.total_avail_) * 1024
         else:
             raise Exception('unknown ceph df output: %s' % o)
 
@@ -614,7 +615,7 @@ class CephAgent(object):
     def _get_file_size(self, path):
         o = shell.call('rbd --format json info %s' % path)
         o = jsonobject.loads(o)
-        return long(o.size_)
+        return int(o.size_)
 
     @replyerror
     def get_image_size(self, req):
@@ -787,6 +788,7 @@ class CephAgent(object):
 
         return jsonobject.dumps(rsp)
 
+    @replyerror
     def connect(self, req):
         rsp = AgentResponse()
         self.reconnect_cluster()
@@ -828,7 +830,7 @@ class CephAgent(object):
         def get_long_field(key, default=None):
             v = req_header.get(key, default)
             try:
-                lv = long(v)
+                lv = int(v)
                 if lv < 0:
                     raise ValueError
                 return lv
@@ -934,7 +936,7 @@ class CephAgent(object):
         rsp.size = task.expectedSize
         rsp.actualSize = task.expectedSize
         rsp.downloadSize = task.checked_download_size()
-        rsp.lastOpTime = long(task.lastOpTime) * 1000
+        rsp.lastOpTime = int(task.lastOpTime) * 1000
         rsp.format = task.image_format
         if task.expectedSize == 0:
             rsp.progress = 0
@@ -943,7 +945,7 @@ class CephAgent(object):
             rsp.progress = 100
         else:
             logger.debug("image %s uploaded range : %s" % (cmd.imageUuid, task.slice_uploaded))
-            rsp.progress = len(task.slice_uploaded) * 90 / task.expectedSize
+            rsp.progress = len(task.slice_uploaded) * 90 // task.expectedSize
 
         if task.lastError is not None:
             rsp.success = False
@@ -958,7 +960,7 @@ class CephAgent(object):
         def _get_origin_format(path):
             qcow2_length = 0x9007
             if path.startswith('http://') or path.startswith('https://') or path.startswith('ftp://'):
-                resp = urllib2.urlopen(path)
+                resp = urllib.request.urlopen(path)
                 qhdr = resp.read(qcow2_length)
                 resp.close()
             elif path.startswith('sftp://'):
@@ -1028,9 +1030,9 @@ class CephAgent(object):
         report.resourceUuid = cmd.imageUuid
         report.progress_report("0", "start")
 
-        cmd.url = urllib.quote(cmd.url.encode('utf-8'), safe=':/?=')
+        cmd.url = urllib.parse.quote(cmd.url, safe=':/?=')
 
-        url = urlparse.urlparse(cmd.url)
+        url = urllib.parse.urlparse(cmd.url)
         if url.scheme in ('http', 'https', 'ftp'):
             image_format = get_origin_format(cmd.url, True)
             cmd.url = linux.shellquote(cmd.url)
@@ -1167,7 +1169,7 @@ class CephAgent(object):
         o = shell.call('rbd --format json info %s/%s' % (pool, image_name))
         image_stats = jsonobject.loads(o)
 
-        rsp.size = long(image_stats.size_)
+        rsp.size = int(image_stats.size_)
         rsp.actualSize = actual_size
         if image_format in ['qcow2', 'vmdk']:
             rsp.format = "raw"
@@ -1184,10 +1186,10 @@ class CephAgent(object):
         pool_name = kwargs['pool']
         image_name = get_image_name(kwargs['image'])
 
-        if isinstance(pool_name, unicode):
-            pool_name = pool_name.encode('unicode-escape').decode('string_escape')
-        if isinstance(image_name, unicode):
-            image_name = image_name.encode('unicode-escape').decode('string_escape')
+        if isinstance(pool_name, str):
+            pool_name = codecs.decode(pool_name.encode('unicode_escape'), 'unicode_escape')
+        if isinstance(image_name, str):
+            image_name = codecs.decode(image_name.encode('unicode_escape'), 'unicode_escape')
 
         ioctx = self.get_ioctx(pool_name)
         try:

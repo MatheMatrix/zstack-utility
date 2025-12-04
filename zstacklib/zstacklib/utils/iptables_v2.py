@@ -2,7 +2,6 @@ import os
 from zstacklib.utils import shell
 from zstacklib.utils import linux
 from zstacklib.utils import log
-from zstacklib.utils import ordered_set
 from zstacklib.utils.bash import *
 from pyparsing import *
 
