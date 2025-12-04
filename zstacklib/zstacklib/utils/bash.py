@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 import time
 
 from jinja2 import Template
@@ -15,8 +16,10 @@ from zstacklib.utils import shell
 
 logger = log.get_logger(__name__)
 
+
 class BashError(Exception):
     '''bash error'''
+
 
 def __collect_locals_on_stack():
     frames = []
@@ -50,8 +53,9 @@ def bash_eval(raw_str, ctx=None):
 
     return raw_str
 
+
 # @return: return code, stdout, stderr
-def bash_roe(cmd, errorout=False, ret_code = 0, pipe_fail=False):
+def bash_roe(cmd, errorout=False, ret_code=0, pipe_fail=False):
     # type: (str, bool, int, bool) -> (int, str, str)
     ctx = __collect_locals_on_stack()
 
@@ -78,11 +82,13 @@ def bash_roe(cmd, errorout=False, ret_code = 0, pipe_fail=False):
 
     return r, o, e
 
+
 # @return: return code, stdout
 def bash_ro(cmd, pipe_fail=False):
     # type: (str, bool) -> (int, str)
     ret, o, _ = bash_roe(cmd, pipe_fail=pipe_fail)
     return ret, o
+
 
 # @return: stdout
 def bash_o(cmd, pipe_fail=False):
@@ -90,16 +96,19 @@ def bash_o(cmd, pipe_fail=False):
     _, o, _ = bash_roe(cmd, pipe_fail=pipe_fail)
     return o
 
+
 # @return: return code
 def bash_r(cmd, pipe_fail=False):
     ret, _, _ = bash_roe(cmd, pipe_fail=pipe_fail)
     return ret
+
 
 # @return: stdout
 def bash_errorout(cmd, code=0, pipe_fail=False):
     # type: (str, int, bool) -> str
     _, o, _ = bash_roe(cmd, errorout=True, ret_code=code, pipe_fail=pipe_fail)
     return o
+
 
 def bash_progress_1(cmd, func, errorout=True, pipe_fail=False):
     logger.debug(cmd)
@@ -125,7 +134,8 @@ def in_bash(func):
             return func(*args, **kwargs)
         finally:
             end_time = time.time()
-            logger.debug('BASH COMMAND DETAILS IN %s [cost %s ms]: %s' % (func.__name__, (end_time - start_time) * 1000, json.dumps(__BASH_DEBUG_INFO__)))
+            logger.debug('BASH COMMAND DETAILS IN %s [cost %s ms]: %s' % (
+            func.__name__, (end_time - start_time) * 1000, json.dumps(__BASH_DEBUG_INFO__)))
             del __BASH_DEBUG_INFO__
 
     return wrap
@@ -153,3 +163,47 @@ def call_with_screen_output(cmd, ret_code=0, raise_error=True, work_dir=None):
 
         if is_err:
             raise BashError('command[%s] failed, ret_code=%s' % (cmd, ret_code))
+
+
+def bash_roe_with_timeout(cmd, timeout=10, errorout=False, ret_code=0, pipe_fail=False):
+    # type: (str, int, bool, int, bool) -> (int, str, str)
+    ctx = __collect_locals_on_stack()
+    cmd = bash_eval(cmd, ctx)
+
+    if pipe_fail:
+        cmd = 'set -o pipefail; %s' % cmd
+
+    rc = None
+    out = None
+    err = None
+
+    def run_command():
+        nonlocal rc, out, err
+        p = shell.get_process("/bin/bash", pipe=True)
+        out, err = p.communicate(cmd)
+        rc = p.returncode
+
+    thread = threading.Thread(target=run_command)
+    thread.start()
+    thread.join(timeout)
+
+    if thread.is_alive():
+        if errorout:
+            raise BashError('command[%s] timed out after %s seconds' % (cmd, timeout))
+        return -1, None, "command timed out"
+
+    __BASH_DEBUG_INFO__ = ctx.get('__BASH_DEBUG_INFO__')
+    if __BASH_DEBUG_INFO__ is not None:
+        __BASH_DEBUG_INFO__.append({
+            'cmd': cmd,
+            'return_code': rc,
+            'stdout': out,
+            'stderr': err
+        })
+
+    if rc != ret_code and errorout:
+        raise BashError('failed to execute bash[%s], return code: %s, stdout: %s, stderr: %s' % (cmd, rc, out, err))
+    if rc == ret_code:
+        err = None
+
+    return rc, out, err

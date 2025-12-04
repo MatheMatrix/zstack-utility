@@ -9970,7 +9970,14 @@ host side snapshot files chian:
         retry_interval = 5
         logger.debug("try to virsh detach xml for %d times: %s" % (retry_num, content))
         for i in range(1, retry_num + 1):
-            r, o, e = bash.bash_roe("virsh detach-device %s %s" % (cmd.vmUuid, spath))
+            r, o, e = bash.bash_roe_with_timeout("virsh detach-device %s %s" % (cmd.vmUuid, spath))
+            if r == -1 and e == "command timed out":
+                rsp.success = False
+                rsp.error = "nodedev-detach %s timed out. " \
+                            "nvidia-persistenced may have been restarted by monitor. " \
+                            "Please stop the service and retry." % addr
+                return jsonobject.dumps(rsp)
+
             succ = linux.wait_callback_success(lambda args: not find_pci_device(args[0], args[1]), [cmd.vmUuid, addr], timeout=retry_interval)
             if succ:
                 break
@@ -10106,8 +10113,15 @@ host side snapshot files chian:
                 rsp.error = "failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s" % (addr, out, err)
                 return jsonobject.dumps(rsp)
 
-        r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
+        r, o, e = bash.bash_roe_with_timeout("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
         logger.debug("nodedev-detach %s: %s, %s" % (addr, o, e))
+        if r == -1 and e == "command timed out":
+            rsp.success = False
+            rsp.error = "nodedev-detach %s timed out. " \
+                        "nvidia-persistenced may have been restarted by monitor. " \
+                        "Please stop the service and retry." % addr
+            return jsonobject.dumps(rsp)
+
         if r != 0:
             rsp.success = False
             rsp.error = "failed to nodedev-detach %s: %s, %s" % (addr, o, e)
