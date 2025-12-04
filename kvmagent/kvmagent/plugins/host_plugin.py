@@ -92,6 +92,7 @@ class HostCapacityResponse(kvmagent.AgentResponse):
         self.totalMemory = None
         self.usedMemory = None
         self.cpuSockets = None
+        self.cpuCoreNum = None
 
 class HostFactResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -1717,6 +1718,7 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.totalMemory = _get_total_memory()
         rsp.usedMemory = used_memory
         rsp.cpuSockets = linux.get_socket_num()
+        rsp.cpuCoreNum = linux.get_cpu_core_num()
 
         return jsonobject.dumps(rsp)
 
