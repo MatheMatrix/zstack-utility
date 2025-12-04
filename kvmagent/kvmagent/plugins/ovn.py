@@ -494,7 +494,11 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                 conn_str += "tcp:%s:%d," % (server, 6642)
 
         vsctl = ovn.VsCtl()
-        vsctl.setOvsExternalIds("ovn-remote", conn_str)
+        r = vsctl.setOvsExternalIdsConfig("ovn-remote", conn_str)
+        if r != 0:
+            rsp.success = False
+            rsp.error = "Failed to set ovn-remote connection"
+        return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
     @bash.in_bash
