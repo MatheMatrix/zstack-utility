@@ -18,6 +18,7 @@ class VendorEnum:
     TIANSHU = "TianShu"
     VASTAI = "Vastai"
     ENFLAME = "Enflame"
+    KUNLUNXIN = "Kunlunxin"
 
 
 _pci_device_cache = {}
@@ -37,7 +38,8 @@ def update_cache_devices(devices_dict):
 
 
 def is_gpu(type):
-    return type in ['GPU_3D_Controller', 'GPU_Video_Controller', 'GPU_Processing_Accelerators', 'GPU_Co_Processor']
+    return type in ['GPU_3D_Controller', 'GPU_Video_Controller', 'GPU_Processing_Accelerators', 'GPU_Co_Processor',
+                    'GPU_Communication_Controller']
 
 
 def is_haiguang_pci_device(vendor_id):
@@ -229,3 +231,13 @@ def get_pci_device_ids():
 def get_pci_device_names():
     # Get names using -Dmmv (without 'nn' to get full names)
     return bash_roe("lspci -Dmmv")
+
+
+def collect_pci_devices_with_dependencies(pciDeviceAddress):
+    pcis = []
+    device_path = os.path.join("/sys/bus/pci/devices/", pciDeviceAddress)
+    for item in os.listdir(device_path):
+        if item.startswith("consumer:pci:"):
+            dependent_addr = item.replace("consumer:pci:", "")
+            pcis.append(dependent_addr)
+    return pcis
