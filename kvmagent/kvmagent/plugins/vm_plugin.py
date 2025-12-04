@@ -9929,16 +9929,34 @@ host side snapshot files chian:
             r, o, e = bash.bash_roe(cmd)
             return o != ""
 
+        @linux.retry(3, 2)
+        def detach_pci_device_from_vm(cmd, xml_path, vm_domain):
+            if not find_pci_device(cmd.vmUuid, cmd.pciDeviceAddress):
+                return
+
+            # Pre-detach if GPU
+            if pci.is_gpu(cmd.type):
+                return_code, output = gpu.pre_detach_from_vm(vm_domain, cmd.vmUuid, cmd.vendor)
+                if return_code != 0:
+                    raise Exception("pre_detach_from_vm failed: %s" % output)
+
+            # Perform detach-device
+            r, o, e = bash.bash_roe("virsh detach-device %s %s" % (cmd.vmUuid, xml_path))
+            if r != 0:
+                raise Exception("detach-device failed: %s, %s" % (o, e))
+
+            # Verify device is actually detached
+            if not linux.wait_callback_success(
+                    lambda args: not find_pci_device(args[0], args[1]),
+                    [cmd.vmUuid, cmd.pciDeviceAddress],
+                    timeout=5
+            ):
+                raise Exception("device still exists after detach")
+
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = HotUnplugPciDeviceRsp()
         addr = cmd.pciDeviceAddress
         vm = get_vm_by_uuid(cmd.vmUuid)
-        if pci.is_gpu(cmd.type):
-            return_code, output = gpu.pre_detach_from_vm(vm.domain, cmd.vmUuid, cmd.vendor)
-            if return_code != 0:
-                rsp.success = False
-                rsp.error = output
-                return jsonobject.dumps(rsp)
 
         if not find_pci_device(cmd.vmUuid, addr):
             logger.debug("pci device %s not found" % addr)
@@ -9971,27 +9989,12 @@ host side snapshot files chian:
         self.timeout_object.wait_until_object_timeout('hot-plug-pci-device-to-vm-%s' % cmd.vmUuid)
         self.timeout_object.put('hot-unplug-pci-device-from-vm-%s' % cmd.vmUuid, timeout=10)
 
-        retry_num = 4
-        retry_interval = 5
-        logger.debug("try to virsh detach xml for %d times: %s" % (retry_num, content))
-        for i in range(1, retry_num + 1):
-            r, o, e = bash.bash_roe("virsh detach-device %s %s" % (cmd.vmUuid, spath))
-            succ = linux.wait_callback_success(lambda args: not find_pci_device(args[0], args[1]), [cmd.vmUuid, addr], timeout=retry_interval)
-            if succ:
-                break
-
-            if i < retry_num:
-                continue
-
-            if r != 0:
-                rsp.success = False
-                rsp.error = "failed to detach-device %s from %s: %s, %s" % (addr, cmd.vmUuid, o, e)
-                return jsonobject.dumps(rsp)
-
-            if not succ:
-                rsp.success = False
-                rsp.error = "pci device %s still exists on vm %s after %ds" % (addr, cmd.vmUuid, retry_num * retry_interval)
-                return jsonobject.dumps(rsp)
+        try:
+            detach_pci_device_from_vm(cmd, spath, vm.domain)
+        except Exception as e:
+            rsp.success = False
+            rsp.error = str(e)
+            return jsonobject.dumps(rsp)
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -10094,15 +10097,23 @@ host side snapshot files chian:
     @kvmagent.replyerror
     @in_bash
     def detach_pci_device_from_host(self, req):
+        @linux.retry(2, 1)
+        def detach_pci_device(cmd):
+            # Pre-detach if GPU
+            if pci.is_gpu(cmd.type):
+                return_code, output = gpu.pre_detach_from_host(cmd.vendor)
+                if return_code != 0:
+                    raise Exception("pre_detach_from_host failed: %s" % output)
+
+            # Perform nodedev-detach
+            formatted_addr = cmd.pciDeviceAddress.replace(':', '_').replace('.', '_')
+            r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % formatted_addr)
+            if r != 0:
+                raise Exception("nodedev-detach failed: %s, %s" % (o, e))
+
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = DetachPciDeviceFromHostRsp()
         addr = cmd.pciDeviceAddress
-        if pci.is_gpu(cmd.type):
-            return_code, output = gpu.pre_detach_from_host(cmd.vendor)
-            if return_code != 0:
-                rsp.success = False
-                rsp.error = output
-                return jsonobject.dumps(rsp)
 
         if os.path.exists('/usr/lib/nvidia/sriov-manage'):
             ret, out, err = self._exec_sriov_manage(addr, False)
@@ -10111,11 +10122,12 @@ host side snapshot files chian:
                 rsp.error = "failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s" % (addr, out, err)
                 return jsonobject.dumps(rsp)
 
-        r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
-        logger.debug("nodedev-detach %s: %s, %s" % (addr, o, e))
-        if r != 0:
+        try:
+            detach_pci_device(cmd)
+        except Exception as e:
             rsp.success = False
-            rsp.error = "failed to nodedev-detach %s: %s, %s" % (addr, o, e)
+            rsp.error = str(e)
+            return jsonobject.dumps(rsp)
 
         return jsonobject.dumps(rsp)
 
