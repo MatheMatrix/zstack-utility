@@ -480,11 +480,6 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         rsp = OvnSetDbConnectionResponse()
         logger.debug("cmd: %s: %s" % (cmd, cmd.__dict__))
 
-        if  len(cmd["nodes"]) <= 0:
-            rsp.success = False
-            rsp.error = "db servers should not be empty"
-            return jsonobject.dumps(rsp)
-
         # Build connection str
         conn_str = ""
         for index, server in enumerate(cmd["nodes"]):
@@ -494,7 +489,11 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                 conn_str += "tcp:%s:%d," % (server, 6642)
 
         vsctl = ovn.VsCtl()
-        vsctl.setOvsExternalIds("ovn-remote", conn_str)
+        r = vsctl.setOvsExternalIdsConfig("ovn-remote", conn_str)
+        if r != 0:
+            rsp.success = False
+            rsp.error = "Failed to set ovn-remote connection"
+        return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
     @bash.in_bash
