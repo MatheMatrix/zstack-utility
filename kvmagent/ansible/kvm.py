@@ -199,7 +199,7 @@ run_remote_command("rm -rf {}/*; mkdir -p /usr/local/zstack/ || true".format(kvm
 def install_kvm_pkg():
     def rpm_based_install():
         os_base_dep = "bridge-utils chrony conntrack-tools cyrus-sasl-md5 device-mapper-multipath expect ipmitool iproute ipset \
-                        usbredir-server iputils libvirt libvirt-client libvirt-python lighttpd lsof net-tools nfs-utils nmap openssh-clients \
+                        usbredir-server iputils libvirt libvirt-client libvirt-python lighttpd lsof net-tools nfs-utils nmap \
                         smartmontools sshpass usbutils wget audit collectd-virt storcli nvme-cli pv rsync sed pciutils tar"
 
         distro_mapping = {
@@ -235,6 +235,10 @@ def install_kvm_pkg():
             'aarch64': 'edk2-aarch64'
         }
 
+        # kylin-0309 need to remove conflicted lvm dependents
+        remove_lvm = "rpm -e lvm2-dbusd --nodeps || true"
+        run_remote_command(remove_lvm, host_post_info)
+
         # handle zstack_repo
         if zstack_repo != 'false':
             distro_head = host_info.distro.split("_")[0] if releasever in kylin or releasever in uos else host_info.distro
@@ -245,7 +249,7 @@ def install_kvm_pkg():
                 edk2_mapping.get(host_info.host_arch, ''))
             # common kvmagent deps of x86 and arm that need to update
             common_update_list = ("sanlock sysfsutils hwdata sg3_utils lvm2"
-                                  " lvm2-libs lvm2-lockd systemd openssh"
+                                  " lvm2-libs lvm2-lockd systemd"
                                   " glusterfs")
             common_no_update_list = "librbd1"
             # common kvmagent deps of x86 and arm that no need to update

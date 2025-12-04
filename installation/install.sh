@@ -960,6 +960,7 @@ check_system(){
     else
         cs_check_hostname_zstack
     fi
+    [ x`systemctl is-enabled cockpit.socket 2>/dev/null` = x"enabled" ] && (systemctl disable cockpit.socket && systemctl stop cockpit.socket)
     show_spinner do_check_system
     cs_check_zstack_data_exist
     show_spinner cs_create_repo
@@ -1648,9 +1649,6 @@ is_install_general_libs_rh(){
             gzip \
             unzip \
             httpd \
-            openssh \
-            openssh-clients \
-            openssh-server \
             rsync \
             sshpass \
             sudo \
@@ -1667,7 +1665,6 @@ is_install_general_libs_rh(){
             python2-backports-ssl_match_hostname \
             python2-setuptools \
             avahi \
-            gnutls-utils \
             avahi-tools \
             audit \
             redis \
