@@ -319,7 +319,7 @@ def install_kvm_pkg():
                 dep_list = dep_list.replace('libvirt libvirt-client libvirt-python ', '')
 
             # x86_64 aqb temporarily use qemu of kylin
-            if host_info.host_arch == 'x86_64' and releasever in ["ns10", "ky10sp3.2403"]:
+            if host_info.host_arch == 'x86_64' and releasever in ["ns10"]:
                 dep_list = dep_list.replace('qemu-kvm', 'qemu')
 
             # skip these packages when connect host
