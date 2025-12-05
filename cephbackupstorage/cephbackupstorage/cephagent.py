@@ -33,6 +33,7 @@ from zstacklib.utils import qemu_img
 from zstacklib.utils import traceable_shell
 from zstacklib.utils.rollback import rollback, rollbackable
 from zstacklib.utils.upload_task import UploadTask, UploadHandler, StorageObject, UploadTasks
+from zstacklib.utils.thread import AsyncThread
 
 logger = log.get_logger(__name__)
 BUFFER_SIZE = 16 * 1024 ** 2
@@ -222,6 +223,7 @@ class CephUploadTask(UploadTask):
         self.ioctx = ioctx
         self.image_format = "raw"
 
+    @AsyncThread
     def complete_upload(self):
         try:
             file_format = linux.get_img_fmt('rbd:' + self.tmpPath)
@@ -246,7 +248,7 @@ class CephUploadTask(UploadTask):
                 shell.check_run('%s -f %s -O rbd rbd:%s rbd:%s:conf=%s' % (qemu_img.subcmd('convert'), file_format,
                                                                            self.tmpPath, self.dstPath, conf_path))
             except Exception as e:
-                self.fail('cannot convert %s image %s to rbd' % (file_format, self.taskUuid))
+                self.fail('cannot convert %s image %s to rbd, error: %s' % (file_format, self.taskUuid, str(e)))
                 logger.warn('convert image %s failed: %s' % (self.taskUuid, str(e)))
                 return
             finally:
