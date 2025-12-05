@@ -23,10 +23,11 @@ from kvmagent.plugins.bmv2_gateway_agent.object import NetworkObj
 from kvmagent.plugins.bmv2_gateway_agent.object import VolumeObj
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.bmv2_gateway_agent import volume
-
+from zstacklib.utils import oem_name
 
 logger = log.get_logger(__name__)
 
+oemname = oem_name.get_oem_name()
 
 class AccessPathInfo():
     def __init__(self):
@@ -212,8 +213,8 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
 
         # download pxe images from management node
         # static repo url like: http://10.10.0.1:8080/zstack/static/zstack-repo/x86_64/c76
-        mn_repo_url = 'http://{ip}:{port}/zstack/static/zstack-repo'.format(
-            ip=network_obj.callback_ip, port=network_obj.callback_port)
+        mn_repo_url = 'http://{ip}:{port}/{name}/static/zstack-repo'.format(
+            ip=network_obj.callback_ip, port=network_obj.callback_port, name=oemname )
 
         bm_temp_dir = tempfile.mkdtemp()
         try:
@@ -527,7 +528,8 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             mn_callback_uri=mn_callback_uri,
             bm_gateway_httpboot=self.BAREMETAL_LIB_DIR,
             bm_agent_proxy_conf_dir=self.NGINX_BM_AGENT_PROXY_CONF_DIR,
-            report_progress_uri=network_obj.send_command_url
+            report_progress_uri=network_obj.send_command_url,
+            oemname=oemname
         )
         with open(self.NGINX_CONF_PATH, 'w') as f:
             f.write(conf)

@@ -9,9 +9,12 @@ import time
 from zstacklib.utils import jsonobject
 from zstacklib.utils import log
 from zstacklib.utils import http
+from zstacklib.utils import oem_name
 import inventory
 
 logger = log.get_logger(__name__)
+
+oemname = oem_name.get_oem_name()
 
 
 class ApiError(Exception):
@@ -29,7 +32,7 @@ class Api(object):
         apicmd.session = session
         return apicmd
 
-    def __init__(self, host='localhost', port=8080, api_path='/zstack/api', result_path='/zstack/api/result', curl=False):
+    def __init__(self, host='localhost', port=8080, api_path='/%s/api' % oemname, result_path='/%s/api/result' % oemname, curl=False):
         '''
         Constructor
         '''
