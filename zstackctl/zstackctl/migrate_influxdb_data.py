@@ -21,6 +21,7 @@ from threading import Thread
 from Crypto.Cipher import AES
 from Crypto.Util.py3compat import *
 from hashlib import md5
+from zstacklib.utils.oem_name import oemname
 
 try:
     from influxdb import InfluxDBClient
@@ -123,7 +124,7 @@ class DBUtil:
         class Properties:
 
             def __init__(self):
-                self.zstack_home = '/usr/local/zstack/apache-tomcat/webapps/zstack/'
+                self.zstack_home = '/usr/local/zstack/apache-tomcat/webapps/%s/' %oemname
                 self.file_name = os.path.join(self.zstack_home, 'WEB-INF/classes/zstack.properties')
                 self.properties = {}
 

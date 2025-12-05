@@ -6,6 +6,7 @@ import datetime
 import io
 import marshal
 import os
+from zstacklib.utils.oem_name import oemname
 # Pre import strptime to avoid import lockis
 # See: https://forums.raspberrypi.com/viewtopic.php?t=166912
 import _strptime
@@ -289,7 +290,7 @@ class CollectFromYml(object):
     check = False
     check_result = {}
     max_thread_num = 20
-    DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/zstack/'
+    DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/%s/' %oemname
     HA_KEEPALIVED_CONF = "/etc/keepalived/keepalived.conf"
     summary = Summary()
 

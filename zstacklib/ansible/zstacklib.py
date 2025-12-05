@@ -26,6 +26,7 @@ import jinja2
 import time
 import urllib2
 import yaml
+from zstacklib.utils import oem_name
 
 
 __metaclass__ = type
@@ -2423,11 +2424,11 @@ class ZstackLib(object):
         generate_exp_repo_raw_command = """
 echo -e "[zstack-experimental-mn]
 name=zstack-experimental-mn
-baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/Extra/zstack-experimental/
+baseurl=http://{{ yum_server }}/%s/static/zstack-repo/\$basearch/\$YUM0/Extra/zstack-experimental/
 gpgcheck=0
 module_hotfixes=true
 enabled=0" >  /etc/yum.repos.d/zstack-experimental-mn.repo; sync /etc/yum.repos.d/zstack-experimental-mn.repo
-               """
+               """ % oem_name.get_oem_name()
         generate_exp_repo_template = jinja2.Template(
             generate_exp_repo_raw_command)
         generate_exp_repo_command = generate_exp_repo_template.render({
@@ -2440,11 +2441,11 @@ enabled=0" >  /etc/yum.repos.d/zstack-experimental-mn.repo; sync /etc/yum.repos.
         generate_mlnx_repo_raw_command = """
 echo -e "[mlnx-ofed-mn]
 name=mlnx-ofed-mn
-baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/Extra/mlnx-ofed/
+baseurl=http://{{ yum_server }}/%s/static/zstack-repo/\$basearch/\$YUM0/Extra/mlnx-ofed/
 gpgcheck=0
 module_hotfixes=true
 enabled=0" >  /etc/yum.repos.d/mlnx-ofed-mn.repo; sync /etc/yum.repos.d/mlnx-ofed-mn.repo
-               """
+               """ % oem_name.get_oem_name()
         generate_mlnx_repo_template = jinja2.Template(
             generate_mlnx_repo_raw_command)
         generate_mlnx_repo_command = generate_mlnx_repo_template.render({
@@ -2457,11 +2458,11 @@ enabled=0" >  /etc/yum.repos.d/mlnx-ofed-mn.repo; sync /etc/yum.repos.d/mlnx-ofe
         generate_kvm_repo_raw_command = """
 echo -e "[qemu-kvm-ev-mn]
 name=qemu-kvm-ev-mn
-baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/Extra/qemu-kvm-ev/
+baseurl=http://{{ yum_server }}/%s/static/zstack-repo/\$basearch/\$YUM0/Extra/qemu-kvm-ev/
 gpgcheck=0
 module_hotfixes=true
 enabled=0" >  /etc/yum.repos.d/qemu-kvm-ev-mn.repo; sync /etc/yum.repos.d/qemu-kvm-ev-mn.repo
-               """
+               """ % oem_name.get_oem_name()
         generate_kvm_repo_template = jinja2.Template(
             generate_kvm_repo_raw_command)
         generate_kvm_repo_command = generate_kvm_repo_template.render({
@@ -2476,11 +2477,11 @@ enabled=0" >  /etc/yum.repos.d/qemu-kvm-ev-mn.repo; sync /etc/yum.repos.d/qemu-k
         generate_mn_repo_raw_command = """
 echo -e "[zstack-mn]
 name=zstack-mn
-baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/
+baseurl=http://{{ yum_server }}/%s/static/zstack-repo/\$basearch/\$YUM0/
 gpgcheck=0
 module_hotfixes=true
 enabled=0" >  /etc/yum.repos.d/zstack-mn.repo; sync /etc/yum.repos.d/zstack-mn.repo
-               """
+               """ % oem_name.get_oem_name()
         generate_mn_repo_template = jinja2.Template(
             generate_mn_repo_raw_command)
         generate_mn_repo_command = generate_mn_repo_template.render({
@@ -2617,9 +2618,9 @@ deb-src http://mirrors.{{ zstack_apt_source }}.com/ubuntu/ {{ DISTRIB_CODENAME }
             update_aptsource_command = """
 basearch=`uname -m`;
 cat > /etc/apt/sources.list.d/zstack-mn.list << EOF
-deb http://{{ apt_server }}/zstack/static/zstack-repo/$basearch/{{ zstack_releasever }}/ Packages/
-deb http://{{ apt_server }}/zstack/static/zstack-repo/$basearch/{{ zstack_releasever }}/ qemu_libvirt/
-                """
+deb http://{{ apt_server }}/%s/static/zstack-repo/$basearch/{{ zstack_releasever }}/ Packages/
+deb http://{{ apt_server }}/%s/static/zstack-repo/$basearch/{{ zstack_releasever }}/ qemu_libvirt/
+                """ %(oem_name.get_oem_name() ,oem_name.get_oem_name())
             update_repo_command_template = jinja2.Template(
                 update_aptsource_command)
             update_repo_command = update_repo_command_template.render({

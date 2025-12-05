@@ -15,6 +15,7 @@ from zstacklib.utils import iproute
 from zstacklib.utils import lock
 from zstacklib.utils import log
 from zstacklib.utils import shell
+from zstacklib.utils.oem_name import oemname
 
 from kvmagent import kvmagent
 from kvmagent.plugins.bmv2_gateway_agent import exception
@@ -212,8 +213,8 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
 
         # download pxe images from management node
         # static repo url like: http://10.10.0.1:8080/zstack/static/zstack-repo/x86_64/c76
-        mn_repo_url = 'http://{ip}:{port}/zstack/static/zstack-repo'.format(
-            ip=network_obj.callback_ip, port=network_obj.callback_port)
+        mn_repo_url = 'http://{ip}:{port}/{name}/static/zstack-repo'.format(
+            ip=network_obj.callback_ip, port=network_obj.callback_port, name=oemname)
 
         bm_temp_dir = tempfile.mkdtemp()
         try:
