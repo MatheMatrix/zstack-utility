@@ -1096,7 +1096,7 @@ def pip_install_package(pip_install_arg, host_post_info):
     runner_args.host_post_info = host_post_info
     runner_args.module_name = 'pip'
     runner_args.module_args = option
-    runner_args.ansible_vars = {'ansible_python_interpreter': '/usr/bin/python2'}
+    runner_args.ansible_vars = {'ansible_python_interpreter': '/usr/bin/python3.11'}
 
     zstack_runner = ZstackRunner(runner_args)
     result = zstack_runner.run()
