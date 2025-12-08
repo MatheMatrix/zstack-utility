@@ -211,6 +211,9 @@ def ignore_error_retry(times=3, sleep_time=3, return_after_exception=None):
             logger.warn(str(orig_except))
             return return_after_exception
 
+        return inner
+    return wrap
+
 def retry_with_check(handler=None):
     def wrap(f):
         @functools.wraps(f)
