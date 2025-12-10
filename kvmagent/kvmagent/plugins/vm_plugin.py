@@ -5442,11 +5442,6 @@ class Vm(object):
                 for arg in args:
                     e(qcmd, "qemu:arg", attrib={"value": arg.strip('"')})
 
-            # Add PSP device if Hygon security element is enabled
-            if hasattr(cmd, 'enableHygonSecurityElement') and cmd.enableHygonSecurityElement:
-                e(qcmd, "qemu:arg", attrib={"value": "-device"})
-                e(qcmd, "qemu:arg", attrib={"value": "psp,vid=1"})
-
             # Add Hygon HCT mdev devices
             if cmd.addons:
                 hygonMdevDevices = cmd.addons['hygonMdevDevice']
