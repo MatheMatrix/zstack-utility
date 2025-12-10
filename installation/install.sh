@@ -2473,6 +2473,23 @@ sp_setup_install_param(){
     if [ $OS == "KYLIN4.0.2" ];then
         zstack-ctl configure Prometheus.port=9080
     fi
+
+    # read properties from init_package
+    if [ -e "/opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/zs_init_config/global_properties" ]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+
+            if [[ -z "$line" ]] || [[ "$line" == \#* ]]; then
+                continue
+            fi
+
+            # line is "locale = en_US"
+            # zstack-ctl configure locale=en_US
+            normalized_line=$(printf '%s\n' "$line" | sed 's/[[:space:]]*=[[:space:]]*/=/')
+            zstack-ctl configure $normalized_line
+        done < "/opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/zs_init_config/global_properties"
+    fi
 }
 
 install_license(){
