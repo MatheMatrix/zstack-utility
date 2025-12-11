@@ -1691,6 +1691,114 @@ class MySqlCommandLineQuery(object):
 
         return ret
 
+class ShowGrayscaleUpgradeStatusCmd(Command):
+    def __init__(self):
+        super(ShowGrayscaleUpgradeStatusCmd, self).__init__()
+        self.name = 'show_grayscale_upgrade_status'
+        self.description = 'show the status of the grayscale upgrade.'
+        ctl.register_command(self)
+
+    def install_argparse_arguments(self, parser):
+        parser.add_argument('--limit', help='the maximum number of sql results to display', default=5, type=int)
+
+    def run(self, args):
+        limit = args.limit
+        try:
+            db_hostname, db_port, db_user, db_password = ctl.get_live_mysql_portal()
+        except CtlError as e:
+            info('cannot get the database connection status, %s' % e)
+
+        info('checking the status of the grayscale upgrade(current limit %s):' % limit)
+
+        def check_if_grayscale_upgrade_is_enabled():
+            if db_password:
+                cmd = ShellCmd('''mysql -u %s -p%s --host %s --port %s -t zstack -e "select * from GlobalConfigVO where name='grayscaleUpgrade' and value='true'"''' % (db_user, shell_quote(db_password), db_hostname, db_port))
+            else:
+                cmd = ShellCmd('''mysql -u %s --host %s --port %s -t zstack -e "select * from GlobalConfigVO where name='grayscaleUpgrade' and value='true'"''' % (db_user, db_hostname, db_port))
+
+            cmd(False)
+            if cmd.return_code != 0:
+                info('cannot connect to the database, %s' % cmd.stderr)
+
+            if not cmd.stdout:
+                info('grayscale upgrade is %s' % colored('Disabled', 'red'))
+                info('please enable it by setting the global configuration "grayscaleUpgrade" to "true"')
+                return False
+
+            info('grayscale upgrade is %s' % colored('Enabled', 'green'))
+            return True
+
+        def show_host_vo_connection_status():
+            if db_password:
+                cmd = ShellCmd('''mysql -u %s -p%s --host %s --port %s -t zstack -e "select uuid,managementIp,status from HostVO where status != 'Connected' and hypervisorType='kvm' limit %s"''' % (db_user, shell_quote(db_password), db_hostname, db_port, limit))
+            else:
+                cmd = ShellCmd('''mysql -u %s --host %s --port %s -t zstack -e "select uuid,managementIp,status from HostVO where status != 'Connected' and hypervisorType='kvm' limit %s"''' % (db_user, db_hostname, db_port, limit))
+
+            cmd(False)
+            if cmd.return_code != 0:
+                info('cannot connect to the database, %s' % cmd.stderr)
+
+            out = cmd.stdout
+            passed = True
+            message = None
+            if out:
+                passed = False
+                message = 'the following hosts are not connected to the management node:\n%s' % out
+
+            info('grayscale upgrade hosts check: %s' % colored('Passed' if passed else 'Failed', 'green' if passed else 'red'))
+            if message:
+                info(message)
+
+        def show_agent_version():
+            if db_password:
+                cmd = ShellCmd('''mysql -u %s -p%s --host %s --port %s -t zstack -e "select uuid,managementIp,status from HostVO where uuid not in (select uuid from AgentVersionVO) limit %s"''' % (db_user, shell_quote(db_password), db_hostname, db_port, limit))
+            else:
+                cmd = ShellCmd('''mysql -u %s --host %s --port %s -t zstack -e "select uuid,managementIp,status from HostVO where uuid not in (select uuid from AgentVersionVO) limit %s"''' % (db_user, db_hostname, db_port, limit))
+
+            cmd(False)
+            if cmd.return_code != 0:
+                info('cannot connect to the database, %s' % cmd.stderr)
+
+            out = cmd.stdout
+            passed = True
+            message = None
+            if out:
+                passed = False
+                message = 'the following hosts have not reported their agent version to the management node:\n%s' % out
+
+            info('grayscale upgrade agent version check: %s' % colored('Passed' if passed else 'Failed', 'green' if passed else 'red'))
+            if message:
+                info(message)
+
+        def show_vpc_vo_connection_status():
+            if db_password:
+                cmd = ShellCmd('''mysql -u %s -p%s --host %s --port %s -t zstack -e "select uuid,applianceVmType from ApplianceVmVO where status != 'Connected' limit %s"''' % (db_user, shell_quote(db_password), db_hostname, db_port, limit))
+            else:
+                cmd = ShellCmd('''mysql -u %s --host %s --port %s -t zstack -e "select uuid,applianceVmType from ApplianceVmVO where status != 'Connected' limit %s"''' % (db_user, db_hostname, db_port, limit))
+
+            cmd(False)
+            if cmd.return_code != 0:
+                info('cannot connect to the database, %s' % cmd.stderr)
+
+            out = cmd.stdout
+            passed = True
+            message = None
+            if out:
+                passed = False
+                message = 'the following VPCs are not connected to the management node:\n%s' % out
+
+            info('grayscale upgrade VPC check: %s' % colored('Passed' if passed else 'Failed', 'green' if passed else 'red'))
+            if message:
+                info(message)
+
+        if not check_if_grayscale_upgrade_is_enabled():
+            return
+
+        show_host_vo_connection_status()
+        show_vpc_vo_connection_status()
+        show_agent_version()
+
+
 class ShowStatusCmd(Command):
     def __init__(self):
         super(ShowStatusCmd, self).__init__()
@@ -5572,6 +5680,9 @@ class DumpMysqlCmd(Command):
         parser.add_argument('--remote-keep-amount', type=int,
                             help="The amount of files you want to keep on remote host, older files will be deleted, default number is 60",
                             required=False)
+        parser.add_argument('--bwlimit',
+                            help="This option allows you to specify the maximum transfer rate for the data sent over the socket, specified in units per second. The RATE value can be suffixed with a string to indicate a size multiplier, and may be a fractional value (e.g. `--bwlimit=1.5m`)",
+                            required=False)
 
     def sync_local_backup_db_to_remote_host(self, args, user, private_key, remote_host_ip, remote_host_port):
         def check_and_delete_remote_host_backup_files(all_files):
@@ -5593,10 +5704,22 @@ class DumpMysqlCmd(Command):
         (status, output, stderr) = shell_return_stdout_stderr(command)
         if status != 0:
             error(stderr)
-        sync_command = "rsync -lr -e 'ssh -i %s -p %s'  %s %s %s %s@%s:%s" % (private_key, remote_host_port,
-                                                                              self.mysql_backup_dir, self.ui_backup_dir,
-                                                                              self.zstone_backup_dir, user,
-                                                                              remote_host_ip, self.remote_backup_dir)
+
+        if args.bwlimit is not None:
+            sync_command = "rsync -lr --bwlimit=%s -e 'ssh -i %s -p %s'  %s %s %s %s@%s:%s" % (args.bwlimit, private_key, remote_host_port,
+                                                                                  self.mysql_backup_dir,
+                                                                                  self.ui_backup_dir,
+                                                                                  self.zstone_backup_dir, user,
+                                                                                  remote_host_ip,
+                                                                                  self.remote_backup_dir)
+
+        else:
+            sync_command = "rsync -lr -e 'ssh -i %s -p %s'  %s %s %s %s@%s:%s" % (private_key, remote_host_port,
+                                                                                  self.mysql_backup_dir,
+                                                                                  self.ui_backup_dir,
+                                                                                  self.zstone_backup_dir, user,
+                                                                                  remote_host_ip,
+                                                                                  self.remote_backup_dir)
         (status, output, stderr) = shell_return_stdout_stderr(sync_command)
         if status != 0:
             error(stderr)
@@ -6862,10 +6985,17 @@ class CollectLogCmd(Command):
 
 
 def is_hyper_converged_host():
-    r, o = commands.getstatusoutput("bootstrap is_deployed")
-    if r != 0 or o.strip() != "true":
+    if not os.path.exists("/usr/local/hyperconverged"):
         return False
-    return True
+
+    # Compatible with lower versions
+    if os.path.exists("/usr/local/hyperconverged/conf/host_info.json"):
+        return True
+
+    if os.path.exists("/usr/local/hyperconverged/conf/deployed_info"):
+        return True
+
+    return False
 
 def is_zsv_env():
     properties_file_path = os.path.join(os.environ['ZSTACK_HOME'], 'WEB-INF/classes/zstack.properties')
@@ -10964,6 +11094,7 @@ def main():
     ZBoxBackupRestoreCmd()
     RecoverHACmd()
     ScanDatabaseBackupCmd()
+    ShowGrayscaleUpgradeStatusCmd()
     ShowStatus2Cmd()
     ShowStatus3Cmd()
     ShowStatusCmd()
