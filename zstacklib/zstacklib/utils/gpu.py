@@ -1,9 +1,10 @@
 import threading
 
-from zstacklib.utils import thread
+from zstacklib.utils import thread, lock, bash
 from zstacklib.utils.bash import *
 from enum import Enum
 import json
+import os
 
 from zstacklib.utils.pci import VendorEnum
 from zstacklib.utils.qga import VmQga
@@ -665,6 +666,37 @@ _nvidia_persistenced_active = False
 _nvidia_persistenced_lock = threading.Lock()
 
 
+@lock.lock("gpu-detach-from-host")
+def detach_from_host_with_lock(addr, vendor):
+    pre_detach_from_host(vendor)
+    r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
+    if r != 0:
+        raise "failed to nodedev-detach %s: %s, %s" % (addr, o, e)
+
+
+@linux.retry(times=30, sleep_time=5)
+def exec_sriov_manage(addr, is_enable = True):
+    if is_enable:
+        return bash.bash_roe("/usr/lib/nvidia/sriov-manage -e %s" % addr)
+    else:
+        return bash.bash_roe("/usr/lib/nvidia/sriov-manage -d %s" % addr)
+
+
+def detach_from_host(addr, vendor):
+    if os.path.exists('/usr/lib/nvidia/sriov-manage'):
+        ret, out, err = exec_sriov_manage(addr, False)
+        if ret != 0:
+            raise "failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s" % (addr, out, err)
+
+    if vendor in _pre_detach_from_host_hooks:
+        return detach_from_host_with_lock(addr, vendor)
+
+    r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
+    logger.debug("nodedev-detach %s: %s, %s" % (addr, o, e))
+    if r != 0:
+        raise "failed to nodedev-detach %s: %s, %s" % (addr, o, e)
+
+@lock.lock("gpu-detach-from-host")
 def ensure_nvidia_persistenced_once(timeout=5):
     global _nvidia_persistenced_active
 
