@@ -1649,6 +1649,9 @@ is_install_general_libs_rh(){
             gzip \
             unzip \
             httpd \
+            openssh \
+            openssh-clients \
+            openssh-server \
             rsync \
             sshpass \
             sudo \
@@ -1665,6 +1668,7 @@ is_install_general_libs_rh(){
             python2-backports-ssl_match_hostname \
             python2-setuptools \
             avahi \
+            gnutls-utils \
             avahi-tools \
             audit \
             redis \
