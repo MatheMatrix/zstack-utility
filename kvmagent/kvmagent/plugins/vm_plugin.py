@@ -6354,19 +6354,12 @@ class Vm(object):
                     raise kvmagent.KvmError('pci device %s not found in pci cache, can not run gpu detach pre-check' % addr)
 
                 if pci.is_gpu(device.type):
-                    return_code, output = gpu.pre_detach_from_host(device.vendor)
-                    if return_code != 0:
-                        raise kvmagent.KvmError('pci device %s detach pre-check failed on host, detail: %s' % (addr, output))
-
-                if os.path.exists('/usr/lib/nvidia/sriov-manage'):
-                    r, o, stderr = bash.bash_roe("/usr/lib/nvidia/sriov-manage -d %s" % addr)
-                    if r != 0:
-                        raise kvmagent.KvmError('failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s' % (addr, o, stderr))
-
-
-                ret, out, err = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
-                if ret != 0:
-                    raise kvmagent.KvmError('failed to nodedev-detach %s: %s, %s' % (addr, out, err))
+                    gpu.detach_from_host(addr, device.vendor)
+                else:
+                    ret, out, err = bash.bash_roe(
+                        "virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
+                    if ret != 0:
+                        raise kvmagent.KvmError('failed to nodedev-detach %s: %s, %s' % (addr, out, err))
 
                 if match_pci_device(addr):
                     hostdev = e(devices, "hostdev", None, {'mode': 'subsystem', 'type': 'pci', 'managed': 'no'})
@@ -10100,41 +10093,22 @@ host side snapshot files chian:
     @kvmagent.replyerror
     @in_bash
     def detach_pci_device_from_host(self, req):
-        @linux.retry(2, 1)
-        def detach_pci_device(cmd):
-            # Pre-detach if GPU
-            if pci.is_gpu(cmd.type):
-                return_code, output = gpu.pre_detach_from_host(cmd.vendor)
-                if return_code != 0:
-                    raise Exception("pre_detach_from_host failed: %s" % output)
-
-            # Perform nodedev-detach
-            formatted_addr = cmd.pciDeviceAddress.replace(':', '_').replace('.', '_')
-            r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % formatted_addr)
-            if r != 0:
-                raise Exception("nodedev-detach failed: %s, %s" % (o, e))
-
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = DetachPciDeviceFromHostRsp()
         addr = cmd.pciDeviceAddress
 
-        if os.path.exists('/usr/lib/nvidia/sriov-manage'):
-            ret, out, err = self._exec_sriov_manage(addr, False)
-            if ret != 0:
+        if pci.is_gpu(cmd.type):
+            gpu.detach_from_host(addr, cmd.vendor)
+        else:
+            r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
+            logger.debug("nodedev-detach %s: %s, %s" % (addr, o, e))
+            if r != 0:
                 rsp.success = False
-                rsp.error = "failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s" % (addr, out, err)
-                return jsonobject.dumps(rsp)
-
-        try:
-            detach_pci_device(cmd)
-        except Exception as e:
-            rsp.success = False
-            rsp.error = str(e)
-            return jsonobject.dumps(rsp)
+                rsp.error = "failed to nodedev-detach %s: %s, %s" % (addr, o, e)
 
         return jsonobject.dumps(rsp)
 
-    @linux.retry(times=30, sleep_time=5)
+    @linux.retry(times=3, sleep_time=5)
     def _exec_sriov_manage(self, addr, is_enable = True):
         if is_enable:
             return bash.bash_roe("/usr/lib/nvidia/sriov-manage -e %s" % addr)
