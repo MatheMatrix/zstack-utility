@@ -506,7 +506,6 @@ def calc_id_renewal_fail_seconds(io_timeout):
 def calc_host_dead_seconds(io_timeout):
     return 8 * int(io_timeout) + get_watchdog_fire_timeout()
 
-
 @bash.in_bash
 def get_watchdog_fire_timeout():
     r, o = bash.bash_ro("sanlock client status -D | grep watchdog_fire_timeout")
