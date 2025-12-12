@@ -1,6 +1,7 @@
 import os
 import threading
 
+from ansible.zstacklib import retry
 from zstacklib.utils import thread, lock
 from zstacklib.utils.bash import *
 from enum import Enum
@@ -663,6 +664,7 @@ def has_nvidia_gpu():
 
 
 @lock.lock("gpu-detach-from-host")
+@retry(times=3, sleep_time=3)
 def detach_from_host_with_lock(addr, vendor):
     pre_detach_from_host(vendor)
     r, o, e = bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))

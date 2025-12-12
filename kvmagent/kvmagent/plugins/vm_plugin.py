@@ -69,7 +69,7 @@ from zstacklib.utils import drbd
 from zstacklib.utils import qemu_nbd
 from zstacklib.utils.jsonobject import JsonObject
 from zstacklib.utils import linux
-from zstacklib.utils.linux import is_virtual_machine
+from zstacklib.utils.linux import is_virtual_machine, retry
 from zstacklib.utils.pci import VendorEnum
 from zstacklib.utils.plugin import TaskManager, TaskResult
 from zstacklib.utils.qga import *
@@ -10070,6 +10070,7 @@ host side snapshot files chian:
 
     @kvmagent.replyerror
     @in_bash
+    @retry(times=3, sleep_time=3)
     def attach_pci_device_to_host(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AttachPciDeviceToHostRsp()
