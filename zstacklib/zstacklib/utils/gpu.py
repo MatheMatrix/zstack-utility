@@ -1,7 +1,6 @@
 import os
 import threading
 
-from ansible.zstacklib import retry
 from zstacklib.utils import thread, lock
 from zstacklib.utils.bash import *
 from enum import Enum
@@ -664,7 +663,7 @@ def has_nvidia_gpu():
 
 
 @lock.lock("gpu-detach-from-host")
-@retry(times=3, sleep_time=3)
+@linux.retry(times=3, sleep_time=3)
 def detach_from_host_with_lock(addr, vendor):
     pre_detach_from_host(vendor)
     r, o, e = bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
@@ -672,7 +671,7 @@ def detach_from_host_with_lock(addr, vendor):
         raise Exception("failed to nodedev-detach %s: %s, %s" % (addr, o, e))
 
 
-@linux.retry(times=3, sleep_time=5)
+@linux.retry(times=30, sleep_time=5)
 def exec_sriov_manage(addr, is_enable=True):
     if is_enable:
         return bash_roe("/usr/lib/nvidia/sriov-manage -e %s" % addr)

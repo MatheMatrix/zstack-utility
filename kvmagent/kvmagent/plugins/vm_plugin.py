@@ -69,7 +69,7 @@ from zstacklib.utils import drbd
 from zstacklib.utils import qemu_nbd
 from zstacklib.utils.jsonobject import JsonObject
 from zstacklib.utils import linux
-from zstacklib.utils.linux import is_virtual_machine, retry
+from zstacklib.utils.linux import is_virtual_machine
 from zstacklib.utils.pci import VendorEnum
 from zstacklib.utils.plugin import TaskManager, TaskResult
 from zstacklib.utils.qga import *
@@ -6353,7 +6353,7 @@ class Vm(object):
                 if device is None:
                     raise kvmagent.KvmError('pci device %s not found in pci cache, can not run gpu detach pre-check' % addr)
 
-                if pci.is_gpu(device.type):
+                if pci.is_gpu(device.type) or pci.is_gpu_associated_device(addr):
                     gpu.detach_from_host(addr, device.vendor)
                 else:
                     ret, out, err = bash.bash_roe(
@@ -10070,7 +10070,7 @@ host side snapshot files chian:
 
     @kvmagent.replyerror
     @in_bash
-    @retry(times=3, sleep_time=3)
+    @linux.retry(times=3, sleep_time=3)
     def attach_pci_device_to_host(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AttachPciDeviceToHostRsp()
@@ -10098,7 +10098,7 @@ host side snapshot files chian:
         rsp = DetachPciDeviceFromHostRsp()
         addr = cmd.pciDeviceAddress
 
-        if pci.is_gpu(cmd.type):
+        if pci.is_gpu(cmd.type) or pci.is_gpu_associated_device(addr):
             gpu.detach_from_host(addr, cmd.vendor)
         else:
             r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
@@ -10109,7 +10109,7 @@ host side snapshot files chian:
 
         return jsonobject.dumps(rsp)
 
-    @linux.retry(times=3, sleep_time=5)
+    @linux.retry(times=30, sleep_time=5)
     def _exec_sriov_manage(self, addr, is_enable = True):
         if is_enable:
             return bash.bash_roe("/usr/lib/nvidia/sriov-manage -e %s" % addr)
