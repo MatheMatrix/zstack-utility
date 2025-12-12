@@ -49,6 +49,9 @@
         <makeDir dir="${allinone.bin.dir}" />
         <move file="${allinone.file}" todir="${allinone.bin.dir}" />
         <copy file="${zstack.install}" todir="${allinone.bin.dir}" />
+        <antcall target="append-oem-config-outer">
+            <param name="base.dir" value="${allinone.bin.dir}"/>
+        </antcall>
 
         <exec executable="bash" dir="${allinone.bin.dir}" failonerror="true">
             <arg value="${offline.bin.gen.setup.script}" />

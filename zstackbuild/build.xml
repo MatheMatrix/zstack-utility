@@ -108,12 +108,15 @@
     <import file="${basedir}/projects/zstack-zwatch.xml" optional="false" />
     <!-- zstack-baremetalpxeserver need zwatch generate agent_version file -->
     <import file="${basedir}/projects/zstack-baremetalpxeserver.xml" optional="false" />
+    <import file="${basedir}/projects/oem-build.xml" optional="true" />
 
 
     <target name="prepare">
         <makeDir dir="${build.dir}" />
         <makeDir dir="${allinone.dir}" />
         <makeDir dir="${tools.dir}" />
+
+        <antcall target="patch-source-code" />
     </target>
     <target name="copy-pypi-source" >
         <makeDir dir="${pypi.parent.dir}" />
@@ -430,7 +433,7 @@
             </sequential>
         </parallel>
 
-        <antcall target="append-oem-config" />
+        <antcall target="append-oem-config-inner" />
 
         <makeDir dir="${libs.dir}" />
         <exec executable="cp" dir="${libs.dir}" failonerror="true">
@@ -506,38 +509,4 @@
         <echo message="successfully build zstack centos6/centos7 offline package at ${allinone.bin.file} " />
         <echo message="--------------------------------------------------------------------" />
     </target>
-
-    <target name="append-oem-config" if="OEM_NAME">
-        <echo message="Adding OEM configuration to zstack.properties: ${OEM_NAME} ..." />
-        <echo file="${war.classpath.dir}/zstack.properties" append="true">
-OEM_NAME=${OEM_NAME}
-CloudBus.httpContextPath=${OEM_NAME}
-ExternalAPIAdapter.ZSClient.contextPath=${OEM_NAME}</echo>
-        <echo message="Updating RESTFacade.xml path to: ${OEM_NAME}" />
-        <replaceregexp file="${war.classpath.dir}/zstack/conf/springConfigXml/RESTFacade.xml"
-                       match="RESTFacade\.path:zstack"
-                       replace="RESTFacade.path:${OEM_NAME}"
-                       byline="true"
-                       encoding="UTF-8" />
-
-        <echo message="Updating META-INF/context.xml Context Path..." />
-        <replaceregexp file="${war.dir}/META-INF/context.xml"
-                       match='path="/zstack/static"'
-                       replace='path="/${OEM_NAME}/static"'
-                       byline="true" encoding="UTF-8" />
-
-        <echo message="Updating zstack-server ..." />
-        <replaceregexp file="${war.classpath.dir}/install/zstack-server"
-                       match="webapps/zstack"
-                       replace="webapps/${OEM_NAME}"
-                       flags="g" encoding="UTF-8" />
-
-        <echo message="Updating v2v.xml global paths..." />
-        <replaceregexp file="${war.classpath.dir}/zstack/conf/globalConfig/v2v.xml"
-                       match="/zstack/static"
-                       replace="/${OEM_NAME}/static"
-                       flags="g"
-                       encoding="UTF-8" />
-    </target>
-
 </project>

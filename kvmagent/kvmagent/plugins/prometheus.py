@@ -25,7 +25,11 @@ from zstacklib.utils.gpu import VmGpuStatus
 from zstacklib.utils.ip import get_host_physicl_nics
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.linux import is_virtual_machine, is_support_bmc
+from zstacklib.utils import oem_name
 
+
+
+oemname = oem_name.get_oem_name()
 logger = log.get_logger(__name__)
 collector_dict = {}  # type: Dict[str, threading.Thread]
 collectd_dir = "/var/lib/zstack/collectd/"
@@ -486,7 +490,7 @@ collect_node_disk_capacity_last_result = None
 
 
 def collect_host_capacity_statistics():
-    default_zstack_path = '/usr/local/zstack/apache-tomcat/webapps/zstack'
+    default_zstack_path = '/usr/local/zstack/apache-tomcat/webapps/%s' % oemname
 
     zstack_env_path = os.environ.get('ZSTACK_HOME', None)
     if zstack_env_path and zstack_env_path != default_zstack_path:

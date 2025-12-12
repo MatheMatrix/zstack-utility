@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project name="zstack oem builder" basedir="..">
+    <description>
+        Configuration logic for OEM builds
+    </description>
+
+    <!-- ================================================================== -->
+    <!-- Target 1: Modify source code (called during 'prepare' phase)       -->
+    <!-- Scope: ${zstackutility.source}                                     -->
+    <!-- ================================================================== -->
+    <target name="patch-source-code" if="OEM_NAME">
+        <echo message="====================================================================" />
+        <echo message="[OEM-SOURCE] Starting to patch zstack-utility source code, OEM Name: ${OEM_NAME}" />
+
+        <!-- 1. Modify scripts in Installation directory -->
+        <!-- Involves: install.sh, online_install.sh, bootstrap.j2 -->
+        <echo message="Step 1: Patching Installation scripts..." />
+        <replaceregexp flags="g" encoding="UTF-8" match="webapps/zstack" replace="webapps/${OEM_NAME}">
+             <fileset dir="${zstackutility.source}/installation" includes="install.sh, online_install.sh, bootstrap.j2, zstack-server" />
+        </replaceregexp>
+
+        <!--
+        <replaceregexp flags="g" encoding="UTF-8" match="/zstack/" replace="/${OEM_NAME}/">
+             <fileset dir="${zstackutility.source}/installation" includes="install.sh, online_install.sh" />
+        </replaceregexp>
+        -->
+
+        <!-- Special handling for Context path in install.sh -->
+        <replaceregexp file="${zstackutility.source}/installation/install.sh"
+               match='path="/zstack"' replace='path="/${OEM_NAME}"' flags="g" encoding="UTF-8" />
+
+        <!-- 2. Modify zstackctl configurations -->
+        <!-- Involves: collect_log_full.yaml, etc. -->
+        <echo message="Step 2: Patching zstackctl configs..." />
+        <replaceregexp flags="g" encoding="UTF-8" match="webapps/zstack" replace="webapps/${OEM_NAME}">
+             <fileset dir="${zstackutility.source}/zstackctl/zstackctl/conf" includes="collect_log*.yaml" />
+        </replaceregexp>
+
+        <!-- 3. Modify Buildsystem scripts -->
+        <!-- Involves: installwar.sh, zstack (script) -->
+        <echo message="Step 4: Patching Buildsystem scripts..." />
+        <replaceregexp flags="g" encoding="UTF-8" match="webapps/zstack" replace="webapps/${OEM_NAME}">
+             <fileset dir="${zstackutility.source}/buildsystem" includes="installwar.sh, zstack" />
+        </replaceregexp>
+
+        <!-- Commented out: Rename internal WAR reference (lib/zstack.war -> lib/oem.war) -->
+        <!-- Not needed for the current phase -->
+        <!--
+        <replaceregexp flags="g" encoding="UTF-8" match="lib/zstack.war" replace="lib/${OEM_NAME}.war">
+             <fileset dir="${zstackutility.source}/buildsystem" includes="zstack" />
+        </replaceregexp>
+        -->
+
+
+        <echo message="[OEM-SOURCE] Source code patching completed." />
+    </target>
+
+
+    <!-- ================================================================== -->
+    <!-- Target 2: Modify files inside the WAR (called during 'pre-assemble') -->
+    <!-- Scope: ${war.classpath.dir} (Java Resources)                       -->
+    <!-- ================================================================== -->
+    <target name="append-oem-config-inner" if="OEM_NAME">
+        <echo message="====================================================================" />
+        <echo message="[OEM-INNER] Starting to modify internal WAR files..." />
+
+        <!-- 1. Properties & XMLs -->
+        <echo file="${war.classpath.dir}/zstack.properties" append="true">${line.separator}OEM_NAME=${OEM_NAME}
+CloudBus.httpContextPath=${OEM_NAME}
+ExternalAPIAdapter.ZSClient.contextPath=${OEM_NAME}</echo>
+
+        <replaceregexp file="${war.classpath.dir}/zstack/conf/springConfigXml/RESTFacade.xml"
+                       match="RESTFacade\.path:zstack" replace="RESTFacade.path:${OEM_NAME}" byline="true" encoding="UTF-8" />
+
+        <replaceregexp file="${war.dir}/META-INF/context.xml"
+                       match='path="/zstack/static"' replace='path="/${OEM_NAME}/static"' byline="true" encoding="UTF-8" />
+
+        <replaceregexp file="${war.classpath.dir}/zstack/conf/globalConfig/v2v.xml"
+                       match="/zstack/static" replace="/${OEM_NAME}/static" flags="g" encoding="UTF-8" />
+
+        <echo message="[OEM-INNER] Internal WAR files modification completed." />
+    </target>
+
+    <!-- ================================================================== -->
+    <!-- Target 3: Modify files outside the WAR (called during 'build-centos-offline') -->
+    <!-- Scope: ${base.dir} (The installation root directory)               -->
+    <!-- ================================================================== -->
+    <target name="append-oem-config-outer" if="OEM_NAME">
+        <!-- Double insurance: Although we patched the source, we check the final install.sh again -->
+        <!-- to ensure no overwritten files missed the patch. -->
+        <echo message="[OEM-OUTER] Double-checking root install.sh..." />
+        <replaceregexp file="${base.dir}/install.sh" match="webapps/zstack" replace="webapps/${OEM_NAME}" flags="g" encoding="UTF-8" />
+        <replaceregexp file="${base.dir}/install.sh" match='path="/zstack"' replace='path="/${OEM_NAME}"' flags="g" encoding="UTF-8" />
+        <replaceregexp file="${base.dir}/install.sh" match="/zstack/" replace="/${OEM_NAME}/" flags="g" encoding="UTF-8" />
+    </target>
+
+</project>

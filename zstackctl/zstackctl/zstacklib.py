@@ -35,6 +35,53 @@ DEB_BASED_OS = ["ubuntu", "kylin4.0.2", "uos", "debian", "uniontech"]
 DISTRO_WITH_RPM_DEB = ["kylin"]
 
 
+def get_oem_name_from_properties_preload():
+    default_name = 'zstack'
+    home = os.environ.get('ZSTACK_HOME')
+
+    if not home:
+        webapps = '/usr/local/zstack/apache-tomcat/webapps'
+        if not os.path.isdir(webapps):
+            return default_name
+
+        skip = {'ROOT', 'docs', 'examples', 'host-manager', 'manager'}
+        try:
+            for name in os.listdir(webapps):
+                if name in skip:
+                    continue
+                prop_path = os.path.join(webapps, name, 'WEB-INF/classes/zstack.properties')
+                if os.path.isfile(prop_path):
+                    home = os.path.join(webapps, name)
+                    break
+        except OSError:
+            pass
+
+    if not home:
+        return default_name
+
+    prop_file = os.path.join(home, 'WEB-INF/classes/zstack.properties')
+    if not os.path.isfile(prop_file):
+        return default_name
+
+    try:
+        with open(prop_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or 'OEM_NAME' not in line:
+                    continue
+
+                if '=' in line:
+                    k, v = line.split('=', 1)
+                    if k.strip() == 'OEM_NAME':
+                        return v.strip()
+    except (IOError, OSError):
+        pass
+
+    return default_name
+
+oemname = get_oem_name_from_properties_preload()
+
+
 def ignoreerror(func):
     @functools.wraps(func)
     def wrap(*args, **kwargs):
@@ -1565,10 +1612,10 @@ class ZstackLib(object):
         generate_exp_repo_raw_command = """
 echo -e "[zstack-experimental-mn]
 name=zstack-experimental-mn
-baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/Extra/zstack-experimental/
+baseurl=http://{{ yum_server }}/%s/static/zstack-repo/\$basearch/\$YUM0/Extra/zstack-experimental/
 gpgcheck=0
 enabled=0" >  /etc/yum.repos.d/zstack-experimental-mn.repo
-               """
+               """ % oemname
         generate_exp_repo_template = jinja2.Template(
             generate_exp_repo_raw_command)
         generate_exp_repo_command = generate_exp_repo_template.render({
@@ -1582,10 +1629,10 @@ enabled=0" >  /etc/yum.repos.d/zstack-experimental-mn.repo
         generate_mlnx_repo_raw_command = """
 echo -e "[mlnx-ofed-mn]
 name=mlnx-ofed-mn
-baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/Extra/mlnx-ofed/
+baseurl=http://{{ yum_server }}/%s/static/zstack-repo/\$basearch/\$YUM0/Extra/mlnx-ofed/
 gpgcheck=0
 enabled=0" >  /etc/yum.repos.d/mlnx-ofed-mn.repo
-               """
+               """ % oemname
         generate_mlnx_repo_template = jinja2.Template(
             generate_mlnx_repo_raw_command)
         generate_mlnx_repo_command = generate_mlnx_repo_template.render({
@@ -1599,10 +1646,10 @@ enabled=0" >  /etc/yum.repos.d/mlnx-ofed-mn.repo
         generate_kvm_repo_raw_command = """
 echo -e "[qemu-kvm-ev-mn]
 name=qemu-kvm-ev-mn
-baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/Extra/qemu-kvm-ev/
+baseurl=http://{{ yum_server }}/%s/static/zstack-repo/\$basearch/\$YUM0/Extra/qemu-kvm-ev/
 gpgcheck=0
 enabled=0" >  /etc/yum.repos.d/qemu-kvm-ev-mn.repo
-               """
+               """ % oemname
         generate_kvm_repo_template = jinja2.Template(
             generate_kvm_repo_raw_command)
         generate_kvm_repo_command = generate_kvm_repo_template.render({
@@ -1616,10 +1663,10 @@ enabled=0" >  /etc/yum.repos.d/qemu-kvm-ev-mn.repo
         generate_mn_repo_raw_command = """
 echo -e "[zstack-mn]
 name=zstack-mn
-baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/
+baseurl=http://{{ yum_server }}/%s/static/zstack-repo/\$basearch/\$YUM0/
 gpgcheck=0
 enabled=0" >  /etc/yum.repos.d/zstack-mn.repo
-               """
+               """ % oemname
         generate_mn_repo_template = jinja2.Template(
             generate_mn_repo_raw_command)
         generate_mn_repo_command = generate_mn_repo_template.render({
