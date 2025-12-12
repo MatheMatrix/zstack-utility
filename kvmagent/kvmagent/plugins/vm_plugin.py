@@ -6358,16 +6358,8 @@ class Vm(object):
 
         def make_pci_device(pciDevices):
             devices = elements['devices']
-            for pciDevice in pciDevices:
-                addr, spec_uuid = pciDevice.split(',')
-                device = pci.get_cached_device(addr)
-                if device is None:
-                    raise kvmagent.KvmError('pci device %s not found in pci cache, can not run gpu detach pre-check' % addr)
-
-                if pci.is_gpu(device.type):
-                    return_code, output = gpu.pre_detach_from_host(device.vendor)
-                    if return_code != 0:
-                        raise kvmagent.KvmError('pci device %s detach pre-check failed on host, detail: %s' % (addr, output))
+            for pci in pciDevices:
+                addr, spec_uuid = pci.split(',')
 
                 if os.path.exists('/usr/lib/nvidia/sriov-manage'):
                     r, o, stderr = bash.bash_roe("/usr/lib/nvidia/sriov-manage -d %s" % addr)
@@ -9941,7 +9933,7 @@ host side snapshot files chian:
                     raise Exception("pre_detach_from_vm failed: %s" % output)
 
             # Perform detach-device
-            r, o, e = bash.bash_roe("virsh detach-device %s %s" % (cmd.vmUuid, xml_path))
+            r, o, e = bash.bash_roe("timeout -k 5 60 virsh detach-device %s %s" % (cmd.vmUuid, xml_path))
             if r != 0:
                 raise Exception("detach-device failed: %s, %s" % (o, e))
 
@@ -10097,20 +10089,6 @@ host side snapshot files chian:
     @kvmagent.replyerror
     @in_bash
     def detach_pci_device_from_host(self, req):
-        @linux.retry(2, 1)
-        def detach_pci_device(cmd):
-            # Pre-detach if GPU
-            if pci.is_gpu(cmd.type):
-                return_code, output = gpu.pre_detach_from_host(cmd.vendor)
-                if return_code != 0:
-                    raise Exception("pre_detach_from_host failed: %s" % output)
-
-            # Perform nodedev-detach
-            formatted_addr = cmd.pciDeviceAddress.replace(':', '_').replace('.', '_')
-            r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % formatted_addr)
-            if r != 0:
-                raise Exception("nodedev-detach failed: %s, %s" % (o, e))
-
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = DetachPciDeviceFromHostRsp()
         addr = cmd.pciDeviceAddress
@@ -10123,7 +10101,10 @@ host side snapshot files chian:
                 return jsonobject.dumps(rsp)
 
         try:
-            detach_pci_device(cmd)
+            formatted_addr = cmd.pciDeviceAddress.replace(':', '_').replace('.', '_')
+            r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % formatted_addr)
+            if r != 0:
+                raise Exception("nodedev-detach failed: %s, %s" % (o, e))
         except Exception as e:
             rsp.success = False
             rsp.error = str(e)
