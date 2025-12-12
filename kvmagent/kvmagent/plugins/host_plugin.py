@@ -98,6 +98,7 @@ class HostFactResponse(kvmagent.AgentResponse):
         self.eptFlag = None
         self.libvirtCapabilities = []
         self.virtualizerInfo = vm_plugin.VirtualizerInfoTO()
+        self.kvmPtp = None
 
 class SetupMountablePrimaryStorageHeartbeatCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -710,6 +711,7 @@ class ZwatchInstallResult(object):
     def __init__(self):
         self.vmInstanceUuid = None
         self.version = None
+        self.timeProtocol = None
 
 class ZwatchInstallResultRsp(kvmagent.AgentResponse):
     def __init__(self):
@@ -1144,6 +1146,9 @@ class HostPlugin(kvmagent.KvmAgent):
             power_supply_max_power_capacity = run_dmidecode("dmidecode -t 39 | grep -vi 'unknown' | grep -m1 'Max Power Capacity' | awk -F ':' '{print $2}'")
             if bool(re.search(r'\d', power_supply_max_power_capacity)):
                 rsp.powerSupplyMaxPowerCapacity = filter(str.isdigit, power_supply_max_power_capacity.strip())
+
+        rc_kvm_ptp = shell.run("cat /lib/modules/$(uname -r)/modules.builtin | grep ptp_kvm || modinfo ptp_kvm")
+        rsp.kvmPtp = not rc_kvm_ptp
 
         rsp.qemuImgVersion = qemu_img_version
         rsp.libvirtVersion = self.libvirt_version
@@ -2951,6 +2956,7 @@ done
         result = ZwatchInstallResult()
         result.vmInstanceUuid = cmd.vmInstanceUuid
         result.version = cmd.version
+        result.timeProtocol = cmd.timeProtocol
         url = self.config.get(kvmagent.SEND_COMMAND_URL)
         if not url:
             raise kvmagent.KvmError("cannot find SEND_COMMAND_URL, unable to transmit zwatch install result to management node")
