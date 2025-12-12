@@ -65,12 +65,12 @@ def pre_detach_from_vm(domain, vm_uuid, vendor):
     return 0, None
 
 
-def pre_detach_from_host(vendor):
-    """Execute pre-detach-from-host hook for specific vendor"""
-    if vendor in _pre_detach_from_host_hooks:
-        return _pre_detach_from_host_hooks[vendor]()
-    logger.warn("No hook registered for vendor: {0}, do nothing".format(vendor))
-    return 0, None
+# def pre_detach_from_host(vendor):
+#     """Execute pre-detach-from-host hook for specific vendor"""
+#     if vendor in _pre_detach_from_host_hooks:
+#         return _pre_detach_from_host_hooks[vendor]()
+#     logger.warn("No hook registered for vendor: {0}, do nothing".format(vendor))
+#     return 0, None
 
 
 def parse_nvidia_gpu_output(output):
@@ -647,7 +647,7 @@ def get_gpu_status_cmd(pci_device_address, iswindows=False):
 
 
 def get_shut_nvidia_persistence_cmd(iswindows=False):
-    cmd = "ps -ef | grep nvidia-persistenced | grep -v grep | awk '{print $2}' | xargs -r kill -9"
+    cmd = "ps -ef | grep nvidia-persistenced | grep -v grep | awk '{print $2}' | xargs -r kill -15"
     if iswindows:
         cmd = cmd.replace(" ", "|")
     return cmd
