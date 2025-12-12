@@ -1,6 +1,7 @@
+import os
 import threading
 
-from zstacklib.utils import thread
+from zstacklib.utils import thread, lock
 from zstacklib.utils.bash import *
 from enum import Enum
 import json
@@ -647,7 +648,7 @@ def get_gpu_status_cmd(pci_device_address, iswindows=False):
 
 
 def get_shut_nvidia_persistence_cmd(iswindows=False):
-    cmd = "ps -ef | grep nvidia-persistenced | grep -v grep | awk '{print $2}' | xargs -r kill -9"
+    cmd = "ps -ef | grep nvidia-persistenced | grep -v grep | awk '{print $2}' | xargs -r kill -15"
     if iswindows:
         cmd = cmd.replace(" ", "|")
     return cmd
@@ -661,10 +662,43 @@ def has_nvidia_gpu():
     return r == 0 and o and len(o.strip()) > 0
 
 
+@lock.lock("gpu-detach-from-host")
+@linux.retry(times=3, sleep_time=3)
+def detach_from_host_with_lock(addr, vendor):
+    pre_detach_from_host(vendor)
+    r, o, e = bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
+    if r != 0:
+        raise Exception("failed to nodedev-detach %s: %s, %s" % (addr, o, e))
+
+
+@linux.retry(times=30, sleep_time=5)
+def exec_sriov_manage(addr, is_enable=True):
+    if is_enable:
+        return bash_roe("/usr/lib/nvidia/sriov-manage -e %s" % addr)
+    else:
+        return bash_roe("/usr/lib/nvidia/sriov-manage -d %s" % addr)
+
+
+def detach_from_host(addr, vendor):
+    if os.path.exists('/usr/lib/nvidia/sriov-manage'):
+        ret, out, err = exec_sriov_manage(addr, False)
+        if ret != 0:
+            raise Exception("failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s" % (addr, out, err))
+
+    if vendor in _pre_detach_from_host_hooks:
+        return detach_from_host_with_lock(addr, vendor)
+
+    r, o, e = bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
+    logger.debug("nodedev-detach %s: %s, %s" % (addr, o, e))
+    if r != 0:
+        raise Exception("failed to nodedev-detach %s: %s, %s" % (addr, o, e))
+
+
 _nvidia_persistenced_active = False
 _nvidia_persistenced_lock = threading.Lock()
 
 
+@lock.lock("gpu-detach-from-host")
 def ensure_nvidia_persistenced_once(timeout=5):
     global _nvidia_persistenced_active
 
