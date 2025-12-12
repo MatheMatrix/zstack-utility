@@ -115,7 +115,7 @@ def execute_qmp_command(domain, name, raise_exception=True, **kwargs):
             normalized_kwargs[k] = v
 
     qmp_cmd['arguments'] = normalized_kwargs
-    return _execute_qmp_command(domain, json.dumps(qmp_cmd).encode('utf-8'), raise_exception)
+    return _execute_qmp_command(domain, json.dumps(qmp_cmd), raise_exception)
 
 
 def qmp_subcmd(qemu_version, s_cmd):
@@ -240,6 +240,9 @@ class QEMUMonitorProtocol:
         https://docs.python.org/3/library/socket.html#socket.socket.settimeout
         """
         self.__sock.settimeout(timeout)
+        # 作为 QMP 服务器端时，需要先 bind + listen 再 accept
+        self.__sock.bind(self.__address)
+        self.__sock.listen(1)
         self.__sock, _ = self.__sock.accept()
         self.__sockfile = self.__sock.makefile()
         return self.__negotiate_capabilities()
@@ -289,9 +292,11 @@ class QEMUMonitorProtocol:
                 kwds[new_key] = kwds[old_key]
                 del kwds[old_key]
         ret = self._cmd(cmd, kwds)
+        if ret is None:
+            raise Exception("QMP connection closed")
         if "error" in ret:
             raise Exception(ret['error']['desc'])
-        return ret['return']
+        return ret.get('return')
 
     def close(self):
         """
