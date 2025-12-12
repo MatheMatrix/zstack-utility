@@ -96,7 +96,7 @@
     </controller>
     <interface type='bridge'>
       <mac address='fa:62:4a:61:6c:00'/>
-      <source bridge='br_ens3'/>
+      <source bridge='ens3'/>
       <target dev='vnic1.0'/>
       <model type='virtio'/>
       <mtu size='1500'/>
