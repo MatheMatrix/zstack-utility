@@ -498,6 +498,16 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         if r != 0:
             rsp.success = False
             rsp.error = "Failed to set ovn-remote connection"
+            return jsonobject.dumps(rsp)
+
+        if cmd["refreshCache"] is True:
+            controllerCtl = ovn.ControllerCtl()
+            r = controllerCtl.resetOvnControllerClusterIndex()
+            if r != 0:
+                rsp.success = False
+                rsp.error = "Failed to clear ovn-controller cache"
+                return jsonobject.dumps(rsp)
+
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror

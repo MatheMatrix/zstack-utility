@@ -24,6 +24,7 @@ from zstacklib.utils.lvm import lvm_check_operation
 
 logger = log.get_logger(__name__)
 
+AppCtlBin = "/usr/bin/ovn-appctl"
 CtlBin = "/usr/bin/ovs-vsctl "
 DevBindBin = "/usr/bin/dpdk-devbind.py "
 OVS_DPDK_SRC_PATH = "/var/run/openvswitch/"
@@ -226,6 +227,23 @@ def restoreNicDriver(pciAddressList):
 
 
     return 0, ""
+
+class ControllerCtl(object):
+    def __init__(self):
+        pass
+
+    @bash.in_bash
+    def resetOvnControllerClusterIndex(self):
+        ret = 0
+        try:
+            cmd = '{cmd} -t ovn-controller sb-cluster-state-reset'.format(cmd=AppCtlBin)
+            ret = bash.bash_r(cmd)
+        except Exception as err:
+            logger.error("ovn controller reset idl cache error when switching "
+                         "to new database, %s", str(err))
+            ret = 1
+        finally:
+            return ret
 
 class VsCtl(object):
     def __init__(self):
