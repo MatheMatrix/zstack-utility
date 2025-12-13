@@ -87,6 +87,7 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
     # Hygon tool paths (hardcoded, following project style)
     HCT_CCP_BIND_SCRIPT = "/opt/hygon/hct/hct/script/hct_ccp_bind.py"
     HCTCONFIG_SCRIPT = "/opt/hygon/hct/hct/script/hctconfig"
+    HCT_START_QEMU_SCRIPT = "/opt/hygon/hct/hct/script/start_qemu.py"
 
     # HTTP endpoints
     GET_HYGON_CCP_DEVICES = "/hygonccpdevice/get"
@@ -142,13 +143,15 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
                 'available': bool,      # True if all tools are available
                 'tools': {              # Tool paths and their existence status
                     'hct_ccp_bind': {'path': str, 'exists': bool},
-                    'hctconfig': {'path': str, 'exists': bool}
+                    'hctconfig': {'path': str, 'exists': bool},
+                    'start_qemu': {'path': str, 'exists': bool}
                 },
                 'missing': [str],       # List of missing tool paths
             }
         """
         hct_exists = os.path.exists(self.HCT_CCP_BIND_SCRIPT)
         hctconfig_exists = os.path.exists(self.HCTCONFIG_SCRIPT)
+        start_qemu_exists = os.path.exists(self.HCT_START_QEMU_SCRIPT)
 
         tools = {
             'hct_ccp_bind': {
@@ -158,6 +161,10 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
             'hctconfig': {
                 'path': self.HCTCONFIG_SCRIPT,
                 'exists': hctconfig_exists
+            },
+            'start_qemu': {
+                'path': self.HCT_START_QEMU_SCRIPT,
+                'exists': start_qemu_exists
             }
         }
 
@@ -166,12 +173,14 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
             missing.append(self.HCT_CCP_BIND_SCRIPT)
         if not hctconfig_exists:
             missing.append(self.HCTCONFIG_SCRIPT)
+        if not start_qemu_exists:
+            missing.append(self.HCT_START_QEMU_SCRIPT)
 
-        available = hct_exists and hctconfig_exists
+        available = hct_exists and hctconfig_exists and start_qemu_exists
 
         if available:
-            logger.debug("Hygon tools are available: %s and %s" % (
-                self.HCT_CCP_BIND_SCRIPT, self.HCTCONFIG_SCRIPT))
+            logger.debug("Hygon tools are available: %s, %s and %s" % (
+                self.HCT_CCP_BIND_SCRIPT, self.HCTCONFIG_SCRIPT, self.HCT_START_QEMU_SCRIPT))
         else:
             logger.debug("Hygon tools not available. Missing: %s" % ", ".join(missing))
 
@@ -558,7 +567,105 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
         mdev_bindings = self._collect_mdev_bindings(device_idx_to_pci_bdf)
         rsp.mdevBindings = mdev_bindings
 
+        # Execute start_qemu.py --update_qemu_conf to add VFIO devices to qemu.conf
+        r, o, e = bash_roe("timeout 60 python3 %s --update_qemu_conf" % self.HCT_START_QEMU_SCRIPT)
+        if r == 124:
+            logger.warning("start_qemu.py --update_qemu_conf timeout after 60s")
+        elif r != 0:
+            logger.warning("failed to execute start_qemu.py --update_qemu_conf: %s" % e)
+        else:
+            logger.info("start_qemu.py --update_qemu_conf executed successfully")
+
+        # Append /dev/hygon_psp_config to cgroup_device_acl in qemu.conf
+        self._append_hygon_psp_config_to_qemu_conf()
+
+        # Restart libvirtd service to apply qemu.conf changes
+        r, o, e = bash_roe("timeout 60 systemctl restart libvirtd")
+        if r == 124:
+            logger.warning("systemctl restart libvirtd timeout after 60s")
+        elif r != 0:
+            logger.warning("failed to restart libvirtd: %s" % e)
+        else:
+            logger.info("libvirtd restarted successfully to apply qemu.conf changes")
+
         return jsonobject.dumps(rsp)
+
+    def _append_hygon_psp_config_to_qemu_conf(self):
+        """
+        Append /dev/hygon_psp_config to cgroup_device_acl in /etc/libvirt/qemu.conf
+
+        This device is required for Hygon CCP secure encryption features.
+        The method checks if the device is already present to avoid duplicates.
+
+        qemu.conf cgroup_device_acl format:
+            cgroup_device_acl = [
+                "/dev/null", "/dev/full", "/dev/zero",
+                ...
+                "/dev/hygon_psp_config"
+            ]
+        """
+        qemu_conf_path = "/etc/libvirt/qemu.conf"
+        hygon_psp_config_device = "/dev/hygon_psp_config"
+
+        if not os.path.exists(qemu_conf_path):
+            logger.warning("qemu.conf not found at %s, skip appending %s" %
+                         (qemu_conf_path, hygon_psp_config_device))
+            return
+
+        try:
+            with open(qemu_conf_path, 'r') as f:
+                content = f.read()
+
+            # Check if /dev/hygon_psp_config is already present
+            if hygon_psp_config_device in content:
+                logger.debug("%s already exists in %s" % (hygon_psp_config_device, qemu_conf_path))
+                return
+
+            # Find cgroup_device_acl array and append the device
+            import re
+            # Pattern to match cgroup_device_acl = [ ... ] with possible multiline content
+            pattern = r'(cgroup_device_acl\s*=\s*\[)(.*?)(\])'
+            match = re.search(pattern, content, re.DOTALL)
+
+            if not match:
+                logger.warning("cgroup_device_acl not found in %s, skip appending %s" %
+                             (qemu_conf_path, hygon_psp_config_device))
+                return
+
+            # Get the array content and check the last entry format
+            array_content = match.group(2).rstrip()
+
+            # Determine if we need a comma before adding the new entry
+            # Remove trailing whitespace and check if it ends with a comma or quote
+            stripped_content = array_content.rstrip()
+            if stripped_content.endswith(','):
+                # Already has trailing comma, just add the new entry
+                new_entry = '\n    "%s"' % hygon_psp_config_device
+            elif stripped_content.endswith('"'):
+                # Ends with a quoted string, need to add comma first
+                new_entry = ',\n    "%s"' % hygon_psp_config_device
+            else:
+                # Empty or unknown format, add with proper formatting
+                new_entry = '\n    "%s"' % hygon_psp_config_device
+
+            # Build the new cgroup_device_acl content
+            new_array_content = array_content + new_entry + '\n'
+            new_cgroup_device_acl = match.group(1) + new_array_content + match.group(3)
+
+            # Replace in content
+            new_content = content[:match.start()] + new_cgroup_device_acl + content[match.end():]
+
+            # Write back to file
+            with open(qemu_conf_path, 'w') as f:
+                f.write(new_content)
+
+            logger.info("Successfully appended %s to cgroup_device_acl in %s" %
+                       (hygon_psp_config_device, qemu_conf_path))
+
+        except IOError as e:
+            logger.warning("Failed to read/write %s: %s" % (qemu_conf_path, str(e)))
+        except Exception as e:
+            logger.warning("Failed to append %s to qemu.conf: %s" % (hygon_psp_config_device, str(e)))
 
     def _collect_mdev_bindings(self, device_idx_to_pci_bdf):
         """
