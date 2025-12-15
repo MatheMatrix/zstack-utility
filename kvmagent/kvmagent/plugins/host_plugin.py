@@ -17,6 +17,7 @@ import socket
 import sys
 import yaml
 import subprocess
+import pipes
 
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
@@ -237,6 +238,13 @@ class SetServiceTypeOnHostNetworkInterfaceCmd(kvmagent.AgentCommand):
         self.interfaceName = None
         self.vlanId = None
         self.serviceType = []
+
+class SetVmConsolePasswordLiveCmd(kvmagent.AgentCommand):
+    @log.sensitive_fields("password")
+    def __init__(self):
+        super(SetVmConsolePasswordLiveCmd, self).__init__()
+        self.vmUuid = None
+        self.password = None
 
 class HostPhysicalMemoryStruct(object):
     def __init__(self):
@@ -977,6 +985,7 @@ class HostPlugin(kvmagent.KvmAgent):
     GET_NUMA_TOPOLOGY_PATH = "/numa/topology"
     ATTACH_VOLUME_PATH = "/host/volume/attach"
     DETACH_VOLUME_PATH = "/host/volume/detach"
+    UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH = "/host/vm/updateConsolePassword/live"
 
     def __init__(self):
         self.IS_YUM = False
@@ -3914,6 +3923,56 @@ done
 
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def update_vm_console_password_live(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+
+        if not cmd.password:
+            raise kvmagent.KvmError('Password cannot be empty')
+        vm = vm_plugin.get_vm_by_uuid(cmd.vmUuid)
+        if vm.state != vm_plugin.Vm.VM_STATE_RUNNING:
+            raise kvmagent.KvmError('VM[uuid:%s] is not running, cannot set password live.' % cmd.vmUuid)
+
+        console_modes = []
+        graphics_devices = vm.domain_xmlobject.devices.get_child_node_as_list('graphics')
+        for g in graphics_devices:
+            if g.type_ == 'vnc':
+                console_modes.append('vnc')
+            elif g.type_ == 'spice':
+                console_modes.append('spice')
+
+        if not console_modes:
+            raise kvmagent.KvmError('VM[uuid:%s] has no graphical console (VNC/SPICE) configured.' % cmd.vmUuid)
+
+        logger.debug("Found console modes %s for VM[uuid:%s]" % (console_modes, cmd.vmUuid))
+
+        errors = []
+        if 'vnc' in console_modes:
+            hmp_cmd = "set_password vnc %s" % cmd.password
+            safe_hmp_arg = pipes.quote(hmp_cmd)
+            command = "virsh qemu-monitor-command %s --hmp %s" % (cmd.vmUuid, safe_hmp_arg)
+            r, o, e = bash_roe(command)
+            if r != 0:
+                errors.append("Failed to set VNC password: %s" % e)
+            else:
+                logger.debug("Successfully set VNC password for VM[uuid:%s]" % cmd.vmUuid)
+
+        if 'spice' in console_modes:
+            hmp_cmd = "set_password spice %s" % cmd.password
+            safe_hmp_arg = pipes.quote(hmp_cmd)
+            command = "virsh qemu-monitor-command %s --hmp %s" % (cmd.vmUuid, safe_hmp_arg)
+            r, o, e = bash_roe(command)
+            if r != 0:
+                errors.append("Failed to set SPICE password: %s" % e)
+            else:
+                logger.debug("Successfully set SPICE password for VM[uuid:%s]" % cmd.vmUuid)
+
+        if errors:
+            raise kvmagent.KvmError(". ".join(errors))
+
+        return jsonobject.dumps(rsp)
+
     @property
     def libvirt_version(self):
         return linux.get_libvirt_version()
@@ -3983,6 +4042,7 @@ done
         http_server.register_async_uri(self.GET_NUMA_TOPOLOGY_PATH, self.get_numa_topology)
         http_server.register_async_uri(self.ATTACH_VOLUME_PATH, self.attach_volume_path)
         http_server.register_async_uri(self.DETACH_VOLUME_PATH, self.detach_volume__path)
+        http_server.register_async_uri(self.UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH, self.update_vm_console_password_live)
 
         self.heartbeat_timer = {}
         filepath = r'/etc/libvirt/qemu/networks/autostart/default.xml'
