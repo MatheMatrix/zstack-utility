@@ -1946,6 +1946,8 @@ class BlockCommitDaemon(plugin.TaskDaemon):
         self.base = base
         self.disk_name = disk_name
         self.active_commit = active_commit
+        self.chainInstallPathInDb = self.task_spec.chainInstallPathInDb
+        self.topChildrenInstallPathInDb = self.task_spec.topChildrenInstallPathInDb
 
     def _cancel(self):
         # if canceled with task success, need pivot abort
@@ -1957,6 +1959,50 @@ class BlockCommitDaemon(plugin.TaskDaemon):
             percent = min(99, cur * 100.0 / end)
             return get_exact_percent(percent, self.stage)
 
+    def check_vm_xml_backing_file_consistency(self, top_child_new_backing):
+        expected = False
+        for disk_backing_file_chain in self.vm.get_all_disk_backing_chain():
+            logger.debug("disk_backing_file_chain %s" % disk_backing_file_chain)
+            if self.base in disk_backing_file_chain:
+                expected = self.top not in disk_backing_file_chain and top_child_new_backing == self.base
+                break
+        return expected
+
+    def __exit__(self, exc_type, ex, exc_tb):
+        super(BlockCommitDaemon, self).__exit__(exc_type, ex, exc_tb)
+        if exc_type is None:
+            if self.topChildrenInstallPathInDb is None:
+                return
+
+            for children in self.topChildrenInstallPathInDb:
+                if linux.qcow2_get_backing_file(children) != self.base:
+                    linux.qcow2_rebase_no_check(self.base, children)
+            return
+
+        top_child_path = self.chainInstallPathInDb[self.chainInstallPathInDb.index(self.top) - 1]
+        top_child_new_backing = linux.qcow2_get_backing_file(top_child_path)
+        consistent_backing_store_by_libvirt = False
+        for i in xrange(5):
+            self.vm.refresh()
+            consistent_backing_store_by_libvirt = self.check_vm_xml_backing_file_consistency(top_child_new_backing)
+            if consistent_backing_store_by_libvirt:
+                break
+            time.sleep(1)
+
+        if consistent_backing_store_by_libvirt:
+            logger.debug("libvirt return live commit snapshot failure, but it succeed actually! "
+                         "expected volume[install path: %s] backing file is %s. "
+                         "check the vm xml meets expectations" % (top_child_path, self.base))
+
+            if self.topChildrenInstallPathInDb:
+                for children in self.topChildrenInstallPathInDb:
+                    if linux.qcow2_get_backing_file(children) != self.base:
+                        linux.qcow2_rebase_no_check(self.base, children)
+            return True
+        else:
+            logger.debug("live commit snapshot failed. expected backing %s, actually backing %s. "
+                         "check the vm xml does not meet expectations" % (self.base, top_child_new_backing))
+            raise ex
 
 class MergeSnapshotDaemon(plugin.TaskDaemon):
     def __init__(self, task_spec, vm, disk_name, top, base=None):
@@ -9585,12 +9631,26 @@ host side snapshot files chian:
         if vm.state != Vm.VM_STATE_RUNNING and vm.state != Vm.VM_STATE_PAUSED:
             raise kvmagent.KvmError('unable to commit volume snapshot, vm must be running or paused')
 
+        if cmd.chainInstallPathInDb:
+            chainInstallPathInXml = None
+            for chainInXml in vm.get_all_disk_backing_chain():
+                if cmd.top in chainInXml and cmd.base in chainInXml:
+                    chainInstallPathInXml = chainInXml
+            if chainInstallPathInXml is None:
+                raise kvmagent.KvmError("can not find top[%s] an base[%s] in xml" % (cmd.top, cmd.base))
+
+            chain_is_consistent = True
+            for i in range(len(cmd.chainInstallPathInDb)):
+                if cmd.chainInstallPathInDb[i] not in chainInstallPathInXml:
+                    chain_is_consistent = False
+
+            if not chain_is_consistent:
+                raise kvmagent.KvmError(
+                    "the volume alive snapshot chain in database is %s, but the actual chain in xml is %s" % (
+                        cmd.chainInstallPathInDb, chainInstallPathInXml))
+
         try:
             vm.do_block_commit(cmd, cmd.volume)
-            if cmd.topChildrenInstallPathInDb:
-                for children in cmd.topChildrenInstallPathInDb:
-                    if linux.qcow2_get_backing_file(children) != cmd.base:
-                        linux.qcow2_rebase_no_check(cmd.base, children)
         except kvmagent.KvmError as err:
             logger.warn(linux.get_exception_stacktrace())
             rsp.error = str(err)
