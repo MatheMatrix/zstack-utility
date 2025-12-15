@@ -727,3 +727,84 @@ def watch_and_ensure_nvidia_persistenced(poll_interval=30, stop_event=None):
             return
 
         stop_event.wait(poll_interval)
+
+
+def get_alibaba_ppu_basic_info_cmd(iswindows=False):
+    """Get Alibaba PPU basic info command (PCI address, memory, power limit, serial)"""
+    cmd = "ppu-smi --query-ppu=gpu_bus_id,memory.total,power.limit,gpu_serial --format=csv,noheader"
+    if iswindows:
+        cmd = cmd.replace(" ", "|")
+    return cmd
+
+
+def get_alibaba_ppu_metric_info_cmd(iswindows=False):
+    """Get Alibaba PPU metric info command (PCI address, utilization, temperature, power draw, memory utilization, pcie tx/rx, serial)"""
+    cmd = "ppu-smi --query-ppu=gpu_bus_id,utilization.ppu,temperature.ppu,power.draw,utilization.memory,pcie.throughput.tx,pcie.throughput.rx,gpu_serial --format=csv,noheader"
+    if iswindows:
+        cmd = cmd.replace(" ", "|")
+    return cmd
+
+
+def parse_alibaba_ppu_output(output):
+    """
+    Parse Alibaba PPU basic info output.
+
+    Input format:
+    00000000:08:00.0, 98304 MiB, 400.00 W, 02A8B95253C002B8
+
+    Returns list of dicts with pciAddress, memory, power, serialNumber
+    """
+    gpuinfos = []
+    for line in output.split('\n'):
+        if len(line.strip()) == 0:
+            continue
+        parts = line.split(',')
+        if len(parts) < 4:
+            continue
+
+        gpuinfo = {}
+        pci_address = parts[0].strip().lower()
+        # Remove domain prefix if 8 chars (e.g., 00000000:08:00.0 -> 0000:08:00.0)
+        if len(pci_address.split(':')[0]) == 8:
+            pci_address = pci_address[4:].lower()
+
+        gpuinfo["pciAddress"] = pci_address
+        gpuinfo["memory"] = parts[1].strip()
+        gpuinfo["power"] = parts[2].strip()
+        gpuinfo["serialNumber"] = parts[3].strip()
+        gpuinfos.append(gpuinfo)
+
+    return gpuinfos
+
+
+def parse_alibaba_ppu_metric_output(output):
+    """
+    Parse Alibaba PPU metric info output.
+
+    Input format:
+    00000000:08:00.0, 0 %, 27 C, 83.03 W, 02A8B95253C002B8
+
+    Returns list of dicts with pciAddress, utilization, temperature, power, serialNumber
+    """
+    gpuinfos = []
+    for line in output.split('\n'):
+        if len(line.strip()) == 0:
+            continue
+        parts = line.split(',')
+        if len(parts) < 5:
+            continue
+
+        gpuinfo = {}
+        pci_address = parts[0].strip().lower()
+        # Remove domain prefix if 8 chars
+        if len(pci_address.split(':')[0]) == 8:
+            pci_address = pci_address[4:].lower()
+
+        gpuinfo["pciAddress"] = pci_address
+        gpuinfo["utilization"] = parts[1].replace('%', '').strip()
+        gpuinfo["temperature"] = parts[2].replace('C', '').strip()
+        gpuinfo["power"] = parts[3].replace('W', '').strip()
+        gpuinfo["serialNumber"] = parts[4].strip()
+        gpuinfos.append(gpuinfo)
+
+    return gpuinfos

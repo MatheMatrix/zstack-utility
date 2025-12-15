@@ -2538,6 +2538,8 @@ done
             return VendorEnum.VASTAI
         elif 'Enflame' in name:
             return VendorEnum.ENFLAME
+        elif 'Alibaba' in name or vendor_id == '1ded':
+            return VendorEnum.ALIBABA
         else:
             return name.replace('Co., Ltd ', '')
 
@@ -2647,7 +2649,7 @@ done
             to.name = "%s_%s" % (subvendor_name if subvendor_name else vendor_name, device_name)
 
             def _set_pci_to_type():
-                gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel", "Vastai"]
+                gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel", "Vastai", "Alibaba"]
                 custom_gpu_vendors = "Display controller"
 
                 if any(vendor in to.description for vendor in gpu_vendors) \
@@ -2733,6 +2735,7 @@ done
             VendorEnum.TIANSHU: self._collect_tianshu_gpu_info,
             VendorEnum.VASTAI: self._collect_vastai_gpu_info,
             VendorEnum.ENFLAME: self._collect_enflame_gpu_info,
+            VendorEnum.ALIBABA: self._collect_alibaba_ppu_info,
         }
         handler = collect_vendor_nvidia_gpu_infos.get(vendor_name)
         if not handler:
@@ -2923,6 +2926,19 @@ done
             logger.error("nvidia query gpu is error, %s " % e)
             return
         self._update_to_addon_info_from_gpu_infos(gpu.parse_nvidia_gpu_output(o), to)
+
+    @in_bash
+    def _collect_alibaba_ppu_info(self, to, opaque=None):
+        r, o, e = bash_roe("which ppu-smi")
+        if r != 0:
+            logger.debug("no ppu-smi, detail: %s " % o)
+            return
+
+        r, o, e = bash_roe(gpu.get_alibaba_ppu_basic_info_cmd())
+        if r != 0:
+            logger.error("ppu-smi query gpu is error, %s " % e)
+            return
+        self._update_to_addon_info_from_gpu_infos(gpu.parse_alibaba_ppu_output(o), to)
 
     @in_bash
     def _collect_enflame_gpu_info(self, to, opaque=None):

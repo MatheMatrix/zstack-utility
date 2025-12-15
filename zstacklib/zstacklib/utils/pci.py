@@ -18,6 +18,7 @@ class VendorEnum:
     TIANSHU = "TianShu"
     VASTAI = "Vastai"
     ENFLAME = "Enflame"
+    ALIBABA = "Alibaba"
 
 
 _pci_device_cache = {}

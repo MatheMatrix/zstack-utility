@@ -366,6 +366,15 @@ class VmConfigPlugin(kvmagent.KvmAgent):
 
         return self.map_pci_addresses_in_gpu_info(gpu.parse_enflame_gpu_output(gpu_info_output), qga)
 
+    def get_vm_alibaba_ppu_info_by_guesttool(self, qga):
+        gpuinfos = []
+        cmd = gpu.get_alibaba_ppu_basic_info_cmd("mswindows" in qga.os)
+        gpu_info_output = qga.guest_exec_cmd_no_exitcode(cmd)
+        if gpu_info_output is None:
+            return gpuinfos
+
+        return self.map_pci_addresses_in_gpu_info(gpu.parse_alibaba_ppu_output(gpu_info_output), qga)
+
     def get_vm_hauwei_gpu_info_by_guesttool(self, qga):
         gpuinfos = []
         npu_id_output = qga.guest_exec_cmd_no_exitcode(gpu.get_huawei_gpu_npu_id_cmd())
@@ -403,6 +412,7 @@ class VmConfigPlugin(kvmagent.KvmAgent):
             VendorEnum.HUAWEI: self.get_vm_hauwei_gpu_info_by_guesttool,
             VendorEnum.TIANSHU: self.get_vm_tianshu_gpu_info_by_guesttool,
             VendorEnum.ENFLAME: self.get_vm_enflame_gpu_info_by_guesttool,
+            VendorEnum.ALIBABA: self.get_vm_alibaba_ppu_info_by_guesttool,
         }
 
         for vendor in vendors:
