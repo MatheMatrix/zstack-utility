@@ -49,7 +49,8 @@ gpu_devices = {
     'HUAWEI': set(),
     'TIANSHU': set(),
     'VASTAI': set(),
-    'ENFLAME': set()
+    'ENFLAME': set(),
+    'ALIBABA': set()
 }
 
 hw_status_abnormal_list_record = {
@@ -1307,7 +1308,11 @@ def collect_node_disk_wwid():
         return ["/dev/%s" % re.sub('[0-9]$', '', s) for s in disks]
 
     def get_device_from_path(ctx, devpath):
-        return pyudev.Device.from_device_file(ctx, devpath)
+        try:
+            return pyudev.Device.from_device_file(ctx, devpath)
+        except Exception:
+            logger.warning("failed to get device from path %s" % devpath)
+            return {}
 
     def get_disk_wwids(b):
         links = b.get('DEVLINKS')
@@ -1988,6 +1993,86 @@ def collect_enflame_gpu_status():
     return metrics.values()
 
 
+def has_ppu_smi():
+    r, o, _ = bash_roe("which ppu-smi")
+    if r == 0:
+        logger.debug("[ALIBABA PPU] ppu-smi found at: %s" % o.strip())
+        return True
+    # Also check common installation path
+    if os.path.exists("/usr/local/bin/ppu-smi"):
+        logger.debug("[ALIBABA PPU] ppu-smi found at /usr/local/bin/ppu-smi")
+        return True
+    logger.debug("[ALIBABA PPU] ppu-smi not found")
+    return False
+
+
+def _parse_ppu_throughput_to_bytes(value):
+    """Parse PPU PCIe throughput value to bytes (e.g., '0 KB/s' -> 0, '1024 KB/s' -> 1048576)"""
+    if not value:
+        return None
+    value = value.strip()
+    match = re.match(r'([\d.]+)\s*(KB|MB|GB)/s', value, re.IGNORECASE)
+    if not match:
+        logger.debug("[ALIBABA PPU] Failed to parse throughput value: %s" % value)
+        return None
+    num = float(match.group(1))
+    unit = match.group(2).upper()
+    if unit == 'KB':
+        return num * 1024
+    elif unit == 'MB':
+        return num * 1024 * 1024
+    elif unit == 'GB':
+        return num * 1024 * 1024 * 1024
+    return num
+
+
+def collect_alibaba_ppu_status():
+    """Collect Alibaba PPU (T-Head) GPU metrics for Prometheus"""
+    metrics = get_gpu_metrics()
+
+    if not has_ppu_smi():
+        return metrics.values()
+
+    r, gpu_info = bash_ro(gpu.get_alibaba_ppu_metric_info_cmd())
+    if r != 0:
+        check_gpu_status_and_save_gpu_status("ALIBABA", metrics)
+        return metrics.values()
+
+    for line in gpu_info.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        parts = line.split(',')
+        # Command returns: gpu_bus_id, utilization.ppu, temperature.ppu, power.draw, utilization.memory, pcie.throughput.tx, pcie.throughput.rx, gpu_serial
+        if len(parts) < 8:
+            continue
+
+        pci_device_address = parts[0].strip().lower()
+        if len(pci_device_address.split(':')[0]) == 8:
+            pci_device_address = pci_device_address[4:].lower()
+
+        utilization = parts[1].replace('%', '').strip()
+        temperature = parts[2].replace('C', '').strip()
+        power_draw = parts[3].replace('W', '').strip()
+        memory_utilization = parts[4].replace('%', '').strip()
+        pcie_tx = _parse_ppu_throughput_to_bytes(parts[5])
+        pcie_rx = _parse_ppu_throughput_to_bytes(parts[6])
+        gpu_serial = parts[7].strip()
+
+        add_gpu_pci_device_address("ALIBABA", pci_device_address, gpu_serial)
+
+        add_metrics('host_gpu_power_draw', power_draw, [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_temperature', temperature, [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_utilization', utilization, [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_memory_utilization', memory_utilization, [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_txpci_in_bytes', pcie_tx, [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_rxpci_in_bytes', pcie_rx, [pci_device_address, gpu_serial], metrics)
+
+    check_gpu_status_and_save_gpu_status("ALIBABA", metrics)
+    return metrics.values()
+
+
 def collect_disk_stat():
     global sblk_pv_state_fail_last_report_time
     class BlockInfo(object):
@@ -2300,6 +2385,7 @@ kvmagent.register_prometheus_collector(collect_huawei_gpu_status)
 kvmagent.register_prometheus_collector(collect_tianshu_gpu_status)
 kvmagent.register_prometheus_collector(collect_vastai_gpu_status)
 kvmagent.register_prometheus_collector(collect_enflame_gpu_status)
+kvmagent.register_prometheus_collector(collect_alibaba_ppu_status)
 kvmagent.register_prometheus_collector(collect_hba_port_device_state)
 kvmagent.register_prometheus_collector(collect_disk_stat)
 kvmagent.register_prometheus_collector(collect_kvmagent_memory_statistics)
