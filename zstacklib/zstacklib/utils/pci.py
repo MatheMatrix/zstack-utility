@@ -1,5 +1,7 @@
 import os
 import platform
+import re
+import json
 
 from zstacklib.utils import log, linux, sizeunit
 import xml.etree.ElementTree as ET
@@ -25,6 +27,83 @@ class VendorEnum:
 _pci_device_cache = {}
 
 
+def normalize_pci_address(pci_address):
+    """
+    Normalize PCI address to standard format for exact matching.
+    
+    Handles various input formats:
+    - "00000000:3B:00.0" -> "0000:3b:00.0"
+    - "0000:3B:00.0" -> "0000:3b:00.0"
+    - "3B:00.0" -> "0000:3b:00.0"
+    - "0x0000:0x3b:0x00.0x0" -> "0000:3b:00.0"
+    
+    Args:
+        pci_address: PCI address string in any format
+        
+    Returns:
+        str: Normalized PCI address in format "xxxx:xx:xx.x" (lowercase), or None if invalid
+    """
+    if not pci_address:
+        return None
+    
+    # Convert to string and strip whitespace
+    addr = str(pci_address).strip()
+    if not addr:
+        return None
+    
+    # Remove 0x prefixes if present
+    addr = re.sub(r'0x', '', addr, flags=re.IGNORECASE)
+    
+    # Parse components
+    parts = addr.split(':')
+    if len(parts) == 2:
+        # Format: "3B:00.0" -> domain defaults to "0000"
+        domain = '0000'
+        bus_slot_func = parts[1]
+    elif len(parts) == 3:
+        # Format: "0000:3B:00.0" or "00000000:3B:00.0"
+        domain = parts[0]
+        bus_slot_func = ':'.join(parts[1:])
+    else:
+        # Invalid format
+        return None
+    
+    # Normalize domain (remove leading zeros, pad to 4 chars)
+    try:
+        domain_num = int(domain, 16)
+        domain = format(domain_num, '04x')
+    except ValueError:
+        return None
+    
+    # Handle 8-char domain (e.g., "00000000" -> "0000")
+    if len(domain) == 8:
+        domain = domain[4:]
+    
+    # Parse bus:slot.function
+    if '.' not in bus_slot_func:
+        return None
+    
+    bus_slot, function = bus_slot_func.split('.', 1)
+    if ':' in bus_slot:
+        bus, slot = bus_slot.split(':', 1)
+    else:
+        # Should not happen with valid PCI address, but handle gracefully
+        return None
+    
+    # Normalize bus, slot, function
+    try:
+        bus_num = int(bus, 16)
+        slot_num = int(slot, 16)
+        func_num = int(function, 16)
+        bus = format(bus_num, '02x')
+        slot = format(slot_num, '02x')
+        function = format(func_num, 'x')
+    except ValueError:
+        return None
+    
+    return "%s:%s:%s.%s" % (domain, bus, slot, function)
+
+
 def get_cached_device(pci_address):
     return _pci_device_cache.get(pci_address)
 
@@ -38,9 +117,255 @@ def update_cache_devices(devices_dict):
     _pci_device_cache.update(devices_dict)
 
 
-def is_gpu(type):
-    return type in ['GPU_3D_Controller', 'GPU_Video_Controller', 'GPU_Processing_Accelerators', 'GPU_Co_Processor',
-                    'GPU_Communication_Controller']
+def is_gpu(pci_address=None):
+    """
+    Check if a device is a GPU - based solely on GPU plugin and SMI tool actual returns
+
+    Strategy:
+    1. Priority: Iterate through all GPU plugins, call get_basic_info(), check if the PCI address
+       is in the returned GPUInfo list
+    2. Fallback: Iterate through all known SMI tools, check if tool is available, and if the PCI
+       address is in the tool's output
+    3. If no match, return False
+
+    Does not depend on vendor_id, completely based on actual tool output
+
+    Args:
+        pci_address: PCI address (e.g., '0000:3b:00.0'), required parameter
+
+    Returns:
+        bool: Whether the device is a GPU
+    """
+    if not pci_address:
+        return False
+
+    # Normalize PCI address
+    pci_address = normalize_pci_address(pci_address)
+    if not pci_address:
+        return False
+
+    # 1. Priority: Check via GPU plugin system (call get_basic_info() for actual returns)
+    try:
+        from zstacklib.gpu import get_all_gpu_vendors
+
+        for vendor_class in get_all_gpu_vendors():
+            if not vendor_class.is_available():
+                continue
+
+            try:
+                # Call get_basic_info() to get actual returned GPU list
+                gpu_infos = vendor_class.get_basic_info()
+                for gpu_info in gpu_infos:
+                    # Check if returned PCI address matches (normalize both for exact comparison)
+                    if gpu_info.pci_address:
+                        normalized_gpu_pci = normalize_pci_address(gpu_info.pci_address)
+                        if normalized_gpu_pci and normalized_gpu_pci == pci_address:
+                            logger.debug("GPU identified via plugin %s for PCI %s" %
+                                         (vendor_class.VENDOR_NAME, pci_address))
+                            return True
+            except Exception as e:
+                logger.debug("Failed to get basic info from plugin %s: %s" %
+                             (vendor_class.VENDOR_NAME, str(e)))
+                continue
+    except Exception as e:
+        logger.debug("Failed to check GPU via plugin system: %s" % str(e))
+
+    # 2. Fallback: Check via SMI tools (check if tool is available and if PCI address is in output)
+    if _is_gpu_by_smi_tools(pci_address):
+        return True
+
+    return False
+
+
+def _is_gpu_by_smi_tools(pci_address):
+    """
+    Check if device is GPU via SMI tools (all devices recognized by SMI are considered GPUs)
+
+    Iterate through all known SMI tools, check:
+    1. If tool is available
+    2. If the PCI address is in the tool's output
+    """
+    # List of all known SMI tools
+    smi_tools = [
+        ('nvidia-smi', _check_nvidia_smi),
+        ('rocm-smi', _check_rocm_smi),
+        ('hy-smi', _check_hy_smi),
+        ('npu-smi', _check_npu_smi),
+        ('efsmi', _check_efsmi),
+        ('vasmi', _check_vasmi),
+        ('ixsmi', _check_ixsmi),
+        ('ppu-smi', _check_ppu_smi),
+    ]
+
+    for tool_name, check_func in smi_tools:
+        try:
+            # Check if tool is available
+            r, _, _ = bash_roe("which %s" % tool_name)
+            if r != 0:
+                continue
+
+            # Call corresponding check function to verify if PCI address is in output
+            try:
+                if check_func(pci_address):
+                    logger.debug("GPU identified via SMI tool %s for PCI %s" %
+                                 (tool_name, pci_address))
+                    return True
+            except Exception as e:
+                logger.debug("Failed to check SMI tool %s function: %s" %
+                             (tool_name, str(e)))
+                continue
+        except Exception as e:
+            logger.debug("Failed to check SMI tool %s: %s" %
+                         (tool_name, str(e)))
+            continue
+
+    return False
+
+
+def _check_nvidia_smi(pci_address):
+    """Check if nvidia-smi output contains the PCI address"""
+    try:
+        r, o, _ = bash_roe(
+            "nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader")
+        if r == 0 and o:
+            # Normalize PCI addresses in output and compare
+            for line in o.strip().split('\n'):
+                addr = normalize_pci_address(line.strip())
+                if addr and addr == pci_address:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _check_rocm_smi(pci_address):
+    """Check if rocm-smi output contains the PCI address"""
+    try:
+        r, o, _ = bash_roe("rocm-smi --showbus --json")
+        if r == 0 and o:
+            try:
+                data = json.loads(o)
+                # Try to parse JSON structure if available
+                if isinstance(data, dict):
+                    # Check various possible JSON structures
+                    for key in ['devices', 'card_list', 'gpu_list']:
+                        if key in data and isinstance(data[key], list):
+                            for device in data[key]:
+                                bus = device.get('pci_bus') or device.get('PCI Bus') or device.get('bus_id', '')
+                                if bus:
+                                    # Normalize and compare exactly
+                                    normalized_bus = normalize_pci_address(bus)
+                                    if normalized_bus and normalized_bus == pci_address:
+                                        return True
+            except (ValueError, TypeError, KeyError):
+                # Fallback: parse PCI addresses from raw output
+                pass
+            # Fallback: try to extract and normalize PCI addresses from output
+            # Look for PCI address patterns in output
+            pci_pattern = r'[0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]'
+            for match in re.finditer(pci_pattern, o, re.IGNORECASE):
+                found_addr = normalize_pci_address(match.group(0))
+                if found_addr and found_addr == pci_address:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _check_hy_smi(pci_address):
+    """Check if hy-smi output contains the PCI address"""
+    try:
+        r, o, _ = bash_roe("hy-smi info")
+        if r == 0 and o:
+            # Extract and normalize PCI addresses from output
+            pci_pattern = r'[0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]'
+            for match in re.finditer(pci_pattern, o, re.IGNORECASE):
+                found_addr = normalize_pci_address(match.group(0))
+                if found_addr and found_addr == pci_address:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _check_npu_smi(pci_address):
+    """Check if npu-smi output contains the PCI address"""
+    try:
+        r, o, _ = bash_roe("npu-smi info -l")
+        if r == 0 and o:
+            # Extract and normalize PCI addresses from output
+            pci_pattern = r'[0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]'
+            for match in re.finditer(pci_pattern, o, re.IGNORECASE):
+                found_addr = normalize_pci_address(match.group(0))
+                if found_addr and found_addr == pci_address:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _check_efsmi(pci_address):
+    """Check if efsmi output contains the PCI address"""
+    try:
+        r, o, _ = bash_roe("efsmi -q")
+        if r == 0 and o:
+            # Extract and normalize PCI addresses from output
+            pci_pattern = r'[0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]'
+            for match in re.finditer(pci_pattern, o, re.IGNORECASE):
+                found_addr = normalize_pci_address(match.group(0))
+                if found_addr and found_addr == pci_address:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _check_vasmi(pci_address):
+    """Check if vasmi output contains the PCI address"""
+    try:
+        from zstacklib.utils import shell
+        data = shell.run_with_json_result("vasmi getmem --display-format=json")
+        if data and "elem" in data:
+            for elem in data["elem"]:
+                pci_bus = elem.get("pci_bus", "")
+                if pci_bus:
+                    # Normalize PCI address and compare exactly
+                    addr = normalize_pci_address(pci_bus)
+                    if addr and addr == pci_address:
+                        return True
+    except Exception:
+        pass
+    return False
+
+
+def _check_ixsmi(pci_address):
+    """Check if ixsmi output contains the PCI address"""
+    try:
+        r, o, _ = bash_roe(
+            "ixsmi --query-gpu=gpu_bus_id --format=csv,noheader")
+        if r == 0 and o:
+            for line in o.strip().split('\n'):
+                addr = normalize_pci_address(line.strip())
+                if addr and addr == pci_address:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _check_ppu_smi(pci_address):
+    """Check if ppu-smi output contains the PCI address"""
+    try:
+        r, o, _ = bash_roe(
+            "ppu-smi --query-ppu=gpu_bus_id --format=csv,noheader")
+        if r == 0 and o:
+            for line in o.strip().split('\n'):
+                addr = normalize_pci_address(line.strip())
+                if addr and addr == pci_address:
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def is_haiguang_pci_device(vendor_id):
@@ -118,7 +443,8 @@ def need_config_pcimmio():
 
 def get_bars_max_addressable_memory():
     if max_addressable_memory_64bit is None:
-        logger.warn("max_addressable_memory is None, please reconnect host and try again")
+        logger.warn(
+            "max_addressable_memory is None, please reconnect host and try again")
 
     if platform.machine() == 'aarch64':
         return "%sG" % sizeunit.Byte.toGigaByte(max_addressable_memory_64bit)
@@ -136,10 +462,11 @@ def calculate_max_addressable_memory(pci_devices):
     max64bit = 2 * 1024 * 1024
 
     for dev in pci_devices:
-        if not is_gpu(dev.type):
+        if not is_gpu(pci_address=dev.pciDeviceAddress):
             continue
 
-        mem_size_32bit, mem_size_64bit = get_total_addressable_memory(get_pci_resources(dev.pciDeviceAddress))
+        mem_size_32bit, mem_size_64bit = get_total_addressable_memory(
+            get_pci_resources(dev.pciDeviceAddress))
         logger.info("get pci device: %s, name: %s, max addressable memory: %s" %
                     (dev.pciDeviceAddress, dev.name, mem_size_64bit))
         max32bit += calc_next_power_of_2(mem_size_32bit)
@@ -191,14 +518,18 @@ def parse_resources(device_path):
     try:
         with open(os.path.join(device_path, "resource"), "r") as f:
             for i, line in enumerate(f):
-                start, end, flags = map(lambda x: int(x, 16), line.strip().split())
+                start, end, flags = map(
+                    lambda x: int(x, 16), line.strip().split())
                 if start != 0 or end != 0:
-                    resources[i] = MemoryResource(start, end, flags, os.path.join(device_path, "resource"))
+                    resources[i] = MemoryResource(
+                        start, end, flags, os.path.join(device_path, "resource"))
     except Exception as e:
         logger.warn(linux.get_exception_stacktrace())
-        logger.warn("Error parsing resources for %s: %s" % (device_path, str(e)))
+        logger.warn("Error parsing resources for %s: %s" %
+                    (device_path, str(e)))
 
-    logger.info("get pci device[path: %s],resources: %s" % (device_path, resources))
+    logger.info("get pci device[path: %s],resources: %s" %
+                (device_path, resources))
     return resources
 
 
@@ -211,14 +542,16 @@ def get_pci_passthrough_mapping(vm_dom):
         host_bus = source_address.get('bus').replace('0x', '')
         host_slot = source_address.get('slot').replace('0x', '')
         host_function = source_address.get('function').replace('0x', '')
-        host_pci_address = "{}:{}:{}.{}".format(host_domain, host_bus, host_slot, host_function)
+        host_pci_address = "{}:{}:{}.{}".format(
+            host_domain, host_bus, host_slot, host_function)
 
         vm_address = hostdev.find('address')
         vm_domain = vm_address.get('domain').replace('0x', '')
         vm_bus = vm_address.get('bus').replace('0x', '')
         vm_slot = vm_address.get('slot').replace('0x', '')
         vm_function = vm_address.get('function').replace('0x', '')
-        vm_pci_address = "{}:{}:{}.{}".format(vm_domain, vm_bus, vm_slot, vm_function)
+        vm_pci_address = "{}:{}:{}.{}".format(
+            vm_domain, vm_bus, vm_slot, vm_function)
         pci_mapping[vm_pci_address] = host_pci_address
 
     return pci_mapping

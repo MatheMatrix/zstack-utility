@@ -1,0 +1,512 @@
+# -*- coding: utf-8 -*-
+"""
+GPU Base Class and Registry (Python 2/3 Compatible)
+"""
+
+import abc
+import re
+import threading
+
+from zstacklib.utils import log
+from zstacklib.utils.bash import bash_roe, bash_ro
+
+logger = log.get_logger(__name__)
+
+
+# =============================================================================
+# Data Classes (Python 2/3 Compatible)
+# =============================================================================
+
+class GPUInfo(object):
+    """
+    Standard GPU information structure returned by basic info collection.
+    """
+    def __init__(self, pci_address, memory=None, power=None, serial_number=None, 
+                 device_name=None, driver_loaded=True, extra=None):
+        self.pci_address = pci_address
+        self.memory = memory
+        self.power = power
+        self.serial_number = serial_number
+        self.device_name = device_name
+        self.driver_loaded = driver_loaded
+        self.extra = extra or {}
+    
+    def to_addon_dict(self):
+        """Convert to addonInfo dictionary format used by host_plugin"""
+        result = {
+            "isDriverLoaded": self.driver_loaded
+        }
+        if self.memory:
+            result["memory"] = self.memory
+        if self.power:
+            result["power"] = self.power
+        if self.serial_number:
+            result["serialNumber"] = self.serial_number
+        if self.extra:
+            result.update(self.extra)
+        return result
+
+
+class GPUMetrics(object):
+    """
+    Standard GPU metrics structure for Prometheus collection.
+    """
+    def __init__(self, pci_address, serial_number=None, utilization=None, 
+                 memory_utilization=None, temperature=None, power_draw=None, 
+                 fan_speed=None, pcie_tx_bytes=None, pcie_rx_bytes=None, extra=None):
+        self.pci_address = pci_address
+        self.serial_number = serial_number
+        self.utilization = utilization
+        self.memory_utilization = memory_utilization
+        self.temperature = temperature
+        self.power_draw = power_draw
+        self.fan_speed = fan_speed
+        self.pcie_tx_bytes = pcie_tx_bytes
+        self.pcie_rx_bytes = pcie_rx_bytes
+        self.extra = extra or {}
+
+
+class VGPUMetrics(object):
+    """vGPU/mdev metrics for Prometheus collection"""
+    def __init__(self, vm_uuid, mdev_uuid, utilization=None, memory_utilization=None):
+        self.vm_uuid = vm_uuid
+        self.mdev_uuid = mdev_uuid
+        self.utilization = utilization
+        self.memory_utilization = memory_utilization
+
+
+# =============================================================================
+# Abstract Base Class (Python 2/3 Compatible)
+# =============================================================================
+
+class GPUBase(object):
+    """
+    Abstract base class for GPU vendor implementations.
+    """
+    __metaclass__ = abc.ABCMeta
+    
+    # ==========================================================================
+    # Class Attributes - Must be overridden by subclasses
+    # ==========================================================================
+    
+    VENDOR_NAME = ""                   # e.g., "NVIDIA", "AMD", "Huawei"
+    VENDOR_ENUM_NAME = None            # Corresponding VendorEnum value
+    VENDOR_IDS = set()                 # PCI vendor IDs, e.g., {"10de"}
+    PCI_NAME_KEYWORDS = set()          # Keywords in lspci vendor name
+    CLI_TOOL = ""                      # e.g., "nvidia-smi", "rocm-smi"
+    CLI_TOOL_PATH = None               # Optional: full path to tool
+    
+    # Device type configuration
+    DEVICE_TYPES = {"3D controller"}   # Default device types
+    IS_GPU_VENDOR = True               # Is this a GPU vendor
+    
+    # ==========================================================================
+    # Tool Availability Check
+    # ==========================================================================
+    
+    @classmethod
+    def is_available(cls):
+        """
+        Check if the vendor's CLI tool is available.
+        """
+        if not cls.CLI_TOOL:
+            return False
+        r, _, _ = bash_roe("which %s" % cls.CLI_TOOL)
+        return r == 0
+    
+    @classmethod
+    def get_tool_path(cls):
+        """Get the full path to the CLI tool"""
+        if cls.CLI_TOOL_PATH:
+            return cls.CLI_TOOL_PATH
+        if not cls.CLI_TOOL:
+            return None
+        r, o, _ = bash_roe("which %s" % cls.CLI_TOOL)
+        return o.strip() if r == 0 else None
+    
+    # ==========================================================================
+    # Device Identification
+    # ==========================================================================
+    
+    @classmethod
+    def matches_vendor_id(cls, vendor_id):
+        """Check if vendor_id matches this vendor"""
+        return vendor_id.lower() in [v.lower() for v in cls.VENDOR_IDS]
+    
+    @classmethod
+    def matches_pci_name(cls, pci_name):
+        """Check if PCI device name contains vendor keywords"""
+        pci_name_lower = pci_name.lower()
+        return any(kw.lower() in pci_name_lower for kw in cls.PCI_NAME_KEYWORDS)
+    
+    @classmethod
+    def simplify_vendor_name(cls, pci_name, vendor_id):
+        """
+        Return simplified vendor name if this vendor matches.
+        """
+        if cls.matches_vendor_id(vendor_id) or cls.matches_pci_name(pci_name):
+            return cls.VENDOR_NAME
+        return None
+    
+    # ==========================================================================
+    # Basic Information Collection
+    # ==========================================================================
+    
+    @classmethod
+    @abc.abstractmethod
+    def get_basic_info_cmd(cls, is_windows=False):
+        """
+        Return the command to get basic GPU information.
+        """
+        pass
+    
+    @classmethod
+    def get_basic_info(cls):
+        """
+        Collect and parse basic GPU information.
+        """
+        if not cls.is_available():
+            return []
+            
+        cmd = cls.get_basic_info_cmd()
+        if not cmd:
+            return []
+            
+        r, o, e = bash_roe(cmd)
+        if r != 0:
+            logger.warn("Failed to get basic info for %s: %s" % (cls.VENDOR_NAME, e))
+            return []
+            
+        return cls.parse_basic_info(o)
+    
+    @classmethod
+    @abc.abstractmethod
+    def parse_basic_info(cls, output):
+        """
+        Parse command output to GPUInfo list.
+        """
+        pass
+    
+    # ==========================================================================
+    # Prometheus Metrics Collection
+    # ==========================================================================
+    
+    @classmethod
+    @abc.abstractmethod
+    def get_metric_cmd(cls, is_windows=False):
+        """
+        Return the command to get GPU metrics for Prometheus.
+        
+        The command should output parseable format containing:
+        - PCI Address
+        - GPU Utilization
+        - Memory Utilization
+        - Temperature
+        - Power Draw
+        - Serial Number
+        
+        Args:
+            is_windows: True if running in Windows guest
+            
+        Returns:
+            Command string to execute
+        """
+        pass
+    
+    @classmethod
+    @abc.abstractmethod
+    def parse_metrics(cls, output):
+        """
+        Parse the output of get_metric_cmd() into GPUMetrics objects.
+        
+        Args:
+            output: Raw command output string
+            
+        Returns:
+            List of GPUMetrics objects
+        """
+        pass
+    
+    @classmethod
+    def collect_metrics(cls):
+        """
+        Collect GPU metrics for Prometheus.
+        
+        Returns:
+            List of GPUMetrics objects, empty list if collection fails
+        """
+        if not cls.is_available():
+            return []
+        
+        cmd = cls.get_metric_cmd()
+        r, o, e = bash_roe(cmd)
+        if r != 0:
+            logger.warn("Failed to collect metrics for %s: %s" % (cls.VENDOR_NAME, e))
+            return []
+        
+        try:
+            return cls.parse_metrics(o)
+        except Exception as ex:
+            logger.error("Failed to parse metrics for %s: %s" % (cls.VENDOR_NAME, str(ex)))
+            return []
+    
+    @classmethod
+    def collect_vgpu_metrics(cls):
+        """
+        Collect vGPU/mdev metrics for Prometheus.
+        
+        Override if the vendor supports vGPU/mdev.
+        Default implementation returns empty list.
+        
+        Returns:
+            List of VGPUMetrics objects
+        """
+        return []
+    
+    @classmethod
+    def get_custom_prometheus_metrics(cls):
+        """
+        Return vendor-specific custom Prometheus metrics definitions.
+        
+        Override to add vendor-specific metrics beyond the standard ones.
+        
+        Returns:
+            Dict of metric_name -> (help_text, metric_type, label_names)
+            
+        Example:
+            return {
+                "host_gpu_ddr_capacity": ("GPU DDR Capacity", "gauge", ["pci_device_address", "gpu_serial"]),
+            }
+        """
+        return {}
+    
+    # ==========================================================================
+    # Pre-Detach Hooks
+    # ==========================================================================
+    
+    @classmethod
+    def pre_detach_from_vm(cls, domain, vm_uuid):
+        """
+        Hook called before detaching GPU from VM.
+        
+        Override if vendor requires special handling before detach.
+        For example, NVIDIA needs to stop nvidia-persistenced.
+        
+        Args:
+            domain: libvirt domain object
+            vm_uuid: VM UUID
+            
+        Returns:
+            Tuple of (return_code, output_message)
+        """
+        return 0, None
+    
+    @classmethod
+    def pre_detach_from_host(cls):
+        """
+        Hook called before detaching GPU from host.
+        
+        Override if vendor requires special handling before detach.
+        
+        Returns:
+            Tuple of (return_code, output_message)
+        """
+        return 0, None
+    
+    # ==========================================================================
+    # Post-Processing Hooks
+    # ==========================================================================
+    
+    @classmethod
+    def post_process_pci_device(cls, pci_device_to):
+        """
+        Post-process PCI device info after collection.
+        
+        Override to modify the PCI device object after basic collection.
+        For example, Enflame sets virtStatus to UNVIRTUALIZABLE.
+        
+        Args:
+            pci_device_to: The PCI device transfer object
+        """
+        pass
+    
+    # ==========================================================================
+    # Device Type Validation
+    # ==========================================================================
+    
+    @classmethod
+    def is_valid_device(cls, device_name, device_type):
+        """
+        Validate if a PCI device should be recognized as GPU.
+        
+        Override for custom validation logic.
+        Default checks against DEVICE_TYPES.
+        
+        Args:
+            device_name: Device name from lspci
+            device_type: Device type (e.g., "3D controller")
+            
+        Returns:
+            True if device should be recognized as GPU
+        """
+        return True
+    
+    # ==========================================================================
+    # VM Guest Tool Support
+    # ==========================================================================
+    
+    @classmethod
+    def get_vm_gpu_info_cmd(cls, is_windows=False):
+        """
+        Get command to retrieve GPU info inside VM via guest agent.
+        
+        Default implementation returns basic_info_cmd with Windows escaping.
+        Override if different command is needed inside VM.
+        """
+        return cls.get_basic_info_cmd(is_windows)
+    
+    @classmethod
+    def parse_vm_gpu_info(cls, output):
+        """
+        Parse GPU info output from inside VM.
+        
+        Default implementation uses parse_basic_info.
+        Override if different parsing is needed.
+        """
+        return cls.parse_basic_info(output)
+    
+    # ==========================================================================
+    # Utility Methods
+    # ==========================================================================
+    
+    @staticmethod
+    def normalize_pci_address(pci_address):
+        """
+        Normalize PCI address to standard format.
+        
+        Converts "00000000:3B:00.0" to "0000:3B:00.0"
+        """
+        pci_address = pci_address.strip().lower()
+        # Remove 8-char domain prefix (e.g., 00000000:3B:00.0 -> 0000:3B:00.0)
+        if len(pci_address.split(':')[0]) == 8:
+            pci_address = pci_address[4:]
+        return pci_address
+    
+    @staticmethod
+    def parse_unit_value(value, target_unit=None):
+        """
+        Parse a value with unit (e.g., "15360 MiB", "70.00 W").
+        
+        Args:
+            value: Value string with unit
+            target_unit: Expected unit suffix (optional). If provided, validates
+                        that the parsed unit matches the target unit.
+            
+        Returns:
+            Numeric value as float, or None if parsing fails or unit mismatch
+        """
+        if not value:
+            return None
+        value = value.strip()
+        
+        # Remove unit suffix
+        match = re.match(r'^([\d.]+)\s*(\S*)$', value)
+        if not match:
+            return None
+        
+        parsed_value = match.group(1)
+        parsed_unit = match.group(2).strip()
+        
+        # If target_unit is provided, validate unit match
+        if target_unit:
+            # Normalize units for comparison (case-insensitive, handle variations)
+            target_unit_norm = target_unit.strip().lower()
+            parsed_unit_norm = parsed_unit.lower()
+            
+            # Handle common unit variations
+            unit_aliases = {
+                'mib': ['mib', 'mb', 'm'],
+                'w': ['w', 'watts', 'watt'],
+                'c': ['c', 'celsius', '°c'],
+                '%': ['%', 'percent', 'pct'],
+            }
+            
+            # Check if units match (exact match or alias match)
+            units_match = False
+            if parsed_unit_norm == target_unit_norm:
+                units_match = True
+            else:
+                # Check aliases
+                for canonical, aliases in unit_aliases.items():
+                    if target_unit_norm in aliases and parsed_unit_norm in aliases:
+                        units_match = True
+                        break
+            
+            if not units_match:
+                return None
+        
+        try:
+            return float(parsed_value)
+        except ValueError:
+            return None
+
+
+# =============================================================================
+# Registry System
+# =============================================================================
+
+_vendor_registry = {}
+
+def register_gpu_vendor(cls):
+    """Decorator to register a GPU vendor plugin"""
+    if cls.VENDOR_NAME:
+        _vendor_registry[cls.VENDOR_NAME] = cls
+    return cls
+
+def get_gpu_vendor(vendor_name):
+    """Get vendor class by name"""
+    return _vendor_registry.get(vendor_name)
+
+def get_all_gpu_vendors():
+    """Get all registered vendor classes"""
+    return _vendor_registry.values()
+
+def get_vendor_by_id(vendor_id):
+    """Find vendor class by PCI vendor ID"""
+    vendor_id = vendor_id.lower()
+    for vendor_class in _vendor_registry.values():
+        if vendor_class.matches_vendor_id(vendor_id):
+            return vendor_class
+    return None
+
+def get_vendor_by_pci_name(pci_name):
+    """Find vendor class by PCI device name"""
+    for vendor_class in _vendor_registry.values():
+        if vendor_class.matches_pci_name(pci_name):
+            return vendor_class
+    return None
+
+def get_gpu_vendor_names():
+    """Get list of vendor names for devices that should be recognized as GPU"""
+    return [
+        vendor_class.VENDOR_NAME 
+        for vendor_class in _vendor_registry.values() 
+        if vendor_class.IS_GPU_VENDOR
+    ]
+
+def identify_vendor(pci_name, vendor_id):
+    """Identify vendor name from PCI information"""
+    for vendor_class in _vendor_registry.values():
+        result = vendor_class.simplify_vendor_name(pci_name, vendor_id)
+        if result:
+            return result
+    return None
+
+def get_vendor_enum_mapping():
+    """Get mapping from VendorEnum names to plugin vendor names"""
+    mapping = {}
+    for vendor_class in _vendor_registry.values():
+        enum_name = vendor_class.VENDOR_ENUM_NAME or vendor_class.VENDOR_NAME
+        if enum_name:
+            mapping[enum_name] = vendor_class.VENDOR_NAME
+    return mapping

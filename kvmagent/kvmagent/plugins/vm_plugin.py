@@ -10296,8 +10296,8 @@ host side snapshot files chian:
             if not find_pci_device(cmd.vmUuid, cmd.pciDeviceAddress):
                 return
 
-            # Pre-detach if GPU
-            if pci.is_gpu(cmd.type):
+            # Pre-detach if GPU (only based on actual tool returns)
+            if pci.is_gpu(pci_address=cmd.pciDeviceAddress):
                 return_code, output = gpu.pre_detach_from_vm(vm_domain, cmd.vmUuid, cmd.vendor)
                 if return_code != 0:
                     raise Exception("pre_detach_from_vm failed: %s" % output)

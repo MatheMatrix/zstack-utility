@@ -57,6 +57,10 @@ GRUB_FILES = ["/boot/grub2/grub.cfg", "/boot/grub/grub.cfg", "/etc/grub2-efi.cfg
 IPTABLES_CMD = iptables.get_iptables_cmd()
 EBTABLES_CMD = ebtables.get_ebtables_cmd()
 
+# =============================================================================
+# GPU Plugin Configuration - Simplified, adapter no longer needed
+# =============================================================================
+
 COLO_QEMU_KVM_VERSION = '/var/lib/zstack/colo/qemu_kvm_version'
 COLO_LIB_PATH = '/var/lib/zstack/colo/'
 HOST_TAKEOVER_FLAG_PATH = '/var/run/zstack/takeOver'
@@ -2366,7 +2370,7 @@ done
             # for NVIDIA A-Series, after driver successfully installed, virtfn files will be created
             # set deviceId and vendorId null
             virtfn = os.path.join(dev, os.readlink(physfn), 'virtfn0')
-            if pci.is_gpu(to.type) and self.NVIDIA_SMI_INSTALLED and os.path.exists(virtfn):
+            if pci.is_gpu(pci_address=to.pciDeviceAddress) and self.NVIDIA_SMI_INSTALLED and os.path.exists(virtfn):
                 to.deviceId = ""
                 to.vendorId = ""
             else:
@@ -2674,31 +2678,28 @@ done
             to.vmPciDeviceAddress = host_mappings[to.pciDeviceAddress] if to.pciDeviceAddress in host_mappings else ""
 
             def _set_pci_to_type():
-                gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel", "Vastai", "Alibaba", "Kunlunxin"]
-                custom_gpu_vendors = "Display controller"
+                # Use is_gpu() to dynamically identify GPU (based solely on actual tool returns)
+                is_gpu_device = pci.is_gpu(pci_address=to.pciDeviceAddress)
 
-                if any(vendor in to.description for vendor in gpu_vendors) \
-                        and ('VGA compatible controller' in to.type or 'Display controller' in to.type
+                if is_gpu_device:
+                    # GPU-related device type determination
+                    if ('VGA compatible controller' in to.type or 'Display controller' in to.type
                              or (pci_device_mapper.get('VGA compatible controller') is not None
                                and pci_device_mapper.get('VGA compatible controller') in to.type)) \
                         and gpu.is_valid_video_controller(to.device):
-                    to.type = "GPU_Video_Controller"
-                elif any(vendor in to.description for vendor in gpu_vendors) \
-                        and ('Audio device' in to.type or (pci_device_mapper.get('Audio device') is not None
+                        to.type = "GPU_Video_Controller"
+                    elif ('Audio device' in to.type or (pci_device_mapper.get('Audio device') is not None
                                                            and pci_device_mapper.get('Audio device') in to.type)):
-                    to.type = "GPU_Audio_Controller"
-                elif any(vendor in to.description for vendor in gpu_vendors) \
-                        and ('USB controller' in to.type or (pci_device_mapper.get('USB controller') is not None
+                        to.type = "GPU_Audio_Controller"
+                    elif ('USB controller' in to.type or (pci_device_mapper.get('USB controller') is not None
                                                              and pci_device_mapper.get('USB controller') in to.type)):
-                    to.type = "GPU_USB_Controller"
-                elif any(vendor in to.description for vendor in gpu_vendors) \
-                        and ('Serial bus controller' in to.type or (pci_device_mapper.get('Serial bus controller') is not None
+                        to.type = "GPU_USB_Controller"
+                    elif ('Serial bus controller' in to.type or (pci_device_mapper.get('Serial bus controller') is not None
                                                                     and pci_device_mapper.get('Serial bus controller') in to.type)):
-                    to.type = "GPU_Serial_Controller"
-                elif any(vendor in to.description for vendor in gpu_vendors) \
-                        and ('3D controller' in to.type or custom_gpu_vendors in to.type
+                        to.type = "GPU_Serial_Controller"
+                    elif ('3D controller' in to.type or 'Display controller' in to.type
                              or (pci_device_mapper.get('3D controller') is not None and pci_device_mapper.get('3D controller') in to.type)):
-                    to.type = "GPU_3D_Controller"
+                        to.type = "GPU_3D_Controller"
                 elif 'Ethernet controller' in to.type or (pci_device_mapper.get('Ethernet controller') is not None
                                                           and pci_device_mapper.get('Ethernet controller') in to.type):
                     to.type = "Ethernet_Controller"
@@ -2801,318 +2802,37 @@ done
         return mdev_mapping
 
     def _collect_gpu_addoninfo(self, to, vendor_name, opaque=None):
-        if not pci.is_gpu(to.type):
+        """
+        Collect GPU addon information - using unified simplified interface
+
+        One-line call handles all logic (auto plugin + fallback + special field processing)
+        """
+        # Use GPU plugin system and SMI tools to identify GPU (based solely on actual tool returns, not vendor_id)
+        if not pci.is_gpu(pci_address=to.pciDeviceAddress):
             logger.debug("pci device %s is not gpu, skip collect gpu info" % to.pciDeviceAddress)
             return
 
-        collect_vendor_nvidia_gpu_infos = {
-            VendorEnum.NVIDIA: self._collect_nvidia_gpu_info,
-            VendorEnum.AMD: self._collect_amd_gpu_info,
-            VendorEnum.HAIGUANG: self._collect_haiguang_gpu_info,
-            VendorEnum.HUAWEI: self._collect_huawei_gpu_info,
-            VendorEnum.TIANSHU: self._collect_tianshu_gpu_info,
-            VendorEnum.VASTAI: self._collect_vastai_gpu_info,
-            VendorEnum.ENFLAME: self._collect_enflame_gpu_info,
-            VendorEnum.ALIBABA: self._collect_alibaba_ppu_info,
-            VendorEnum.KUNLUNXIN: self._collect_kunlunxin_gpu_info,
-        }
-        handler = collect_vendor_nvidia_gpu_infos.get(vendor_name)
-        if not handler:
-            logger.debug("not support collect gpu info for vendor %s" % vendor_name)
-            return
-
-        handler(to, opaque)
+        # One-line call, automatically handles all logic (plugin + fallback + special fields)
+        info = gpu.get_info(pci_device=to, vendor_name=vendor_name)
+        if info:
+            to.addonInfo = info
+            # Handle product name (if need to update to.device and to.name)
+            product_name = info.get("productName")
+            if product_name:
+                if vendor_name == VendorEnum.HUAWEI:
+                    to.device = "-"
+                    to.name = product_name
+                elif vendor_name == VendorEnum.TIANSHU:
+                    to.device = product_name.split(" ")[1] if " " in product_name else product_name
+                    to.name = product_name
+                elif vendor_name == VendorEnum.ALIBABA:
+                    to.device = product_name
+                    to.name = product_name
 
     def _post_process_pci_device_info(self, to):
-        if pci.is_gpu(to.type):
-            post_process_gpu_devices_handlers = {
-                VendorEnum.ENFLAME: gpu.post_process_enflame_gpu_device
-            }
-            handler = post_process_gpu_devices_handlers.get(to.vendor)
-            if handler:
-                handler(to)
-
-    @in_bash
-    def _collect_tianshu_gpu_info(self, to, opaque=None):
-        r, o, e = bash_roe("which ixsmi")
-        if r != 0:
-            logger.debug("no ixsmi, detail: %s " % o)
-            return
-        if shell.run(gpu.is_tianshu_v1()) == 0:
-            cmd = gpu.get_tianshu_gpu_basic_info_cmd_v1()
-        else:
-            cmd = gpu.get_tianshu_gpu_basic_info_cmd_v2()
-        r, o, e = bash_roe(cmd)
-        if r != 0:
-            logger.error("ixsmi query gpu is error, %s " % e)
-            return
-
-        self._update_to_addon_info_from_gpu_infos(gpu.parse_tianshu_gpu_output(o), to)
-
-        # support product name(^_^)
-        r, o, e = bash_roe(gpu.get_tianshu_gpu_product_name_cmd())
-        if r != 0:
-            logger.error("ixsmi query gpu product name is error, %s " % e)
-            return
-
-        product_name = gpu.get_tianshu_product_name(o)
-        if product_name:
-            to.device = product_name.split(" ")[1]
-            to.name = product_name
-
-    @in_bash
-    def _collect_vastai_gpu_info(self, to, opaque=None):
-        r, o, e = bash_roe("which vasmi")
-        if r != 0:
-            logger.debug("no vasmi, detail: %s " % o)
-            return
-        output = self._collect_vastai_gpu_basic_info(gpu.get_vastai_type())
-        if output is not None and len(output) > 0:
-            self._update_to_addon_info_from_gpu_infos(output, to)
-        else:
-            logger.error("vasmi query gpu is error")
-            return
-
-    @in_bash
-    def _collect_vastai_gpu_basic_info(self, gpu_type):
-        gpuinfos = []
-        data = shell.run_with_json_result("vasmi getmem --display-format=json")
-        if data is None :
-            return gpuinfos
-        for elem in data["elem"]:
-            gpuinfo = {}
-            gpuinfo["pciAddress"] = elem.get("pci_bus", "N/A")
-            gpuinfo["serialNumber"] = elem.get("sn", "N/A")
-            key = "Physical" if gpu_type == "AI" else "Physical memory"
-            row_memory = elem.get("vals", {}).get(key, {}).get("value", "N/A")
-            gpuinfo["memory"] = row_memory if row_memory == "N/A" else str(get_size(row_memory)) + "B"
-            gpuinfos.append(gpuinfo)
-
-        summary_data = shell.run_with_json_result("vasmi summary --display-format=json")
-        if summary_data is None:
-            return gpuinfos
-        for elem in summary_data["elem"]:
-            dev_bus_id = elem.get("vals", {}).get("devBusId", {}).get("value", "N/A")
-            max_power = elem.get("vals", {}).get("P_Cap", {}).get("value", "N/A")
-            for gpuinfo in gpuinfos:
-                if gpuinfo["pciAddress"] == dev_bus_id:
-                    gpuinfo["power"] = max_power
-                    continue #two same records using the last one
-        return gpuinfos
-
-    @in_bash
-    def _collect_huawei_gpu_info(self, to, opaque=None):
-        r, o, e = bash_roe("which npu-smi")
-        if r != 0:
-            logger.debug("no npu-smi, detail: %s " % o)
-            return
-
-        r, npu_ids_out = bash_ro(gpu.get_huawei_gpu_npu_id_cmd())
-        if r != 0:
-            logger.error("npu query gpu is error, %s " % npu_ids_out)
-            return
-        npu_ids = gpu.get_huawei_npu_id(npu_ids_out)
-        if len(npu_ids) == 0:
-            logger.debug("no npu id can be found from output: %s" % npu_ids_out)
-            return
-
-        npu_infos = []
-        npu_id_map = {}  # used to map pci address to npu id
-        for npu_id in npu_ids:
-            r, o, e = bash_roe(gpu.get_huawei_gpu_basic_info_cmd(npu_id))
-            if r != 0:
-                logger.error("npu query gpu board is error, %s " % e)
-                break
-
-            parsed_infos = gpu.parse_huawei_gpu_output_by_npu_id(o)
-            # save mapping info
-            for info in parsed_infos:
-                pci_addr = info.get("pciAddress", "")
-                if pci_addr:
-                    npu_id_map[pci_addr.lower()] = npu_id
-            npu_infos.extend(parsed_infos)
-
-        self._update_to_addon_info_from_gpu_infos(npu_infos, to)
-
-        for npu_info in npu_infos:
-            if to.pciDeviceAddress not in npu_info.get("pciAddress"):
-                continue
-
-            # keep saved npu id
-            matched_npu_id = npu_id_map.get(to.pciDeviceAddress.lower())
-            if matched_npu_id:
-                to.addonInfo["npuId"] = matched_npu_id
-                logger.debug("found npu id %s for pci address %s" % (matched_npu_id, to.pciDeviceAddress))
-
-                try:
-                    is_isolated = gpu.check_huawei_npu_is_isolated(matched_npu_id, npu_ids)
-                    if is_isolated:
-                        to.addonInfo["isIsolated"] = True
-                        logger.debug("NPU %s is isolated, name changed to: %s" % (matched_npu_id, to.name))
-                    else:
-                        to.addonInfo["isIsolated"] = False
-                except Exception as ex:
-                    logger.debug("failed to check isolation status for NPU %s: %s" % (matched_npu_id, str(ex)))
-                    to.addonInfo["isIsolated"] = False
-
-            r, o, e = bash_roe(gpu.get_huawei_gpu_product_name_cmd(npu_ids))
-            if r != 0:
-                logger.error("npu-smi query gpu product type is error, %s " % e)
-                break
-
-            if "not support" in o:
-                logger.error("current gpu device not support query product")
-                break
-
-            product_type = gpu.get_huawei_product_type(o)
-            if product_type:
-                to.device = "-"
-                to.name = product_type
-
-        # collect aios rank table
-        try:
-            aios_rank_table = gpu.get_huawei_gpu_aios_rank_table_dict(npu_ids)
-            if aios_rank_table:
-                to.addonInfo["opaque"] = {
-                    "aiosRankTable": aios_rank_table
-                }
-        except Exception as e:
-            logger.debug("failed to get aios rank table: %s" % str(e))
-
-
-    @in_bash
-    def _collect_haiguang_gpu_info(self, to, opaque=None):
-        r, o, e = bash_roe("which hy-smi")
-        if r != 0:
-            logger.debug("no hy-smi, detail: %s " % o)
-            return
-
-        r, o, e = bash_roe(gpu.get_hy_gpu_basic_info_cmd())
-        if r != 0:
-            logger.error("hy query gpu is error, %s " % e)
-            return
-        self._update_to_addon_info_from_gpu_infos(gpu.parse_hy_gpu_output(o), to)
-
-    @in_bash
-    def _collect_nvidia_gpu_info(self, to, opaque=None):
-        r, o, e = bash_roe("which nvidia-smi")
-        if r != 0:
-            logger.debug("no nvidia-smi, detail: %s " % o)
-            return
-
-        r, o, e = bash_roe(gpu.get_nvidia_gpu_basic_info_cmd())
-        if r != 0:
-            logger.error("nvidia query gpu is error, %s " % e)
-            return
-        self._update_to_addon_info_from_gpu_infos(gpu.parse_nvidia_gpu_output(o), to)
-
-    @in_bash
-    def _collect_alibaba_ppu_info(self, to, opaque=None):
-        r, o, e = bash_roe("which ppu-smi")
-        if r != 0:
-            logger.debug("no ppu-smi, detail: %s " % o)
-            return
-
-        r, o, e = bash_roe(gpu.get_alibaba_ppu_basic_info_cmd())
-        if r != 0:
-            logger.error("ppu-smi query gpu is error, %s " % e)
-            return
-        self._update_to_addon_info_from_gpu_infos(gpu.parse_alibaba_ppu_output(o), to)
-
-        # support product name
-        r, o, e = bash_roe(gpu.get_alibaba_ppu_product_name_cmd())
-        if r != 0:
-            logger.error("ppu-smi query gpu product name is error, %s " % e)
-            return
-
-        product_name = gpu.get_alibaba_ppu_product_name(o)
-        if product_name:
-            to.device = product_name
-            to.name = product_name
-
-    @in_bash
-    def _collect_enflame_gpu_info(self, to, opaque=None):
-        r, o, e = bash_roe("which efsmi")
-        if r != 0:
-            logger.debug("no efsmi, detail: %s " % o)
-            return
-
-        r, o, e = bash_roe(gpu.get_enflame_gpu_info_cmd())
-        if r != 0:
-            logger.error("enflame query gcu is error, %s " % e)
-            return
-
-        for info in gpu.parse_enflame_gpu_output(o):
-            if to.pciDeviceAddress not in info.get("pciAddress"):
-                continue
-
-            mem = info.get("memory", "")
-            power = info.get("powerCap", "")
-            serial = info.get("serialNumber", "")
-
-            if mem and re.match(r"^\s*\d+\s*MiB\s*$", mem, re.IGNORECASE):
-                to.addonInfo["memory"] = mem.strip()
-
-            if power and re.match(r"^\s*\d+(\.\d+)?\s*W\s*$", power, re.IGNORECASE):
-                to.addonInfo["power"] = power.strip()
-
-            if serial and serial.strip():
-                to.addonInfo["serialNumber"] = serial
-
-            to.addonInfo["isDriverLoaded"] = True
-            break
-        return
-
-    @in_bash
-    def _collect_kunlunxin_gpu_info(self, to, opaque=None):
-        r, o, e = bash_roe("which xpu-smi")
-        if r != 0:
-            logger.debug("no xpu-smi, detail: %s " % o)
-            return
-
-        r, xpu_ids_out = bash_ro(gpu.get_kunlunxin_gpu_xpu_id_cmd())
-        if r != 0:
-            logger.error("xpu query gpu is error, %s " % xpu_ids_out)
-            return
-        xpu_ids = gpu.get_kunlunxin_xpu_id(xpu_ids_out)
-        if len(xpu_ids) == 0:
-            logger.debug("no xpu id can be found from output: %s" % xpu_ids_out)
-            return
-
-        xpu_infos = []
-        for xpu_id in xpu_ids:
-            r, o, e = bash_roe(gpu.get_kunlunxin_gpu_basic_info_cmd(xpu_id))
-            if r != 0:
-                logger.error("xpu query gpu is error, %s " % e)
-                break
-
-            xpu_infos.extend(gpu.parse_kunlunxin_gpu_output_by_npu_id(o))
-
-        self._update_to_addon_info_from_gpu_infos(xpu_infos, to)
-
-    def _update_to_addon_info_from_gpu_infos(self, gpu_infos, to, opaque=None):
-        for gpuinfo in gpu_infos:
-            if to.pciDeviceAddress not in gpuinfo.get("pciAddress"):
-                continue
-            to.addonInfo["memory"] = gpuinfo.get("memory")
-            to.addonInfo["power"] = gpuinfo.get("power")
-            to.addonInfo["serialNumber"] = gpuinfo.get("serialNumber")
-            to.addonInfo["isDriverLoaded"] = True
-
-    @in_bash
-    def _collect_amd_gpu_info(self, to, opaque=None):
-        #todo collect amd gpu info
-        r, o, e = bash_roe("which rocm-smi")
-        if r != 0:
-            logger.debug("no rocm-smi, detail: %s " % o)
-            return
-
-        r, o, e = bash_roe(gpu.get_amd_gpu_basic_info_cmd())
-        if r != 0:
-            logger.error("amd query gpu is error, %s " % e)
-            return
-
-        self._update_to_addon_info_from_gpu_infos(gpu.parse_amd_gpu_output(o), to)
+        """Post-process PCI device information - only keep Enflame special handling"""
+        if pci.is_gpu(pci_address=to.pciDeviceAddress) and to.vendor == VendorEnum.ENFLAME:
+            gpu.post_process_enflame_gpu_device(to)
 
     # moved from vm_plugin to host_plugin
     @kvmagent.replyerror
@@ -3276,7 +2996,7 @@ done
             logger.debug("no need to re-splite pci device[addr:%s] into sriov pci devices" % addr)
             return jsonobject.dumps(rsp)
 
-        if pci.is_gpu(cmd.pciDeviceType):
+        if pci.is_gpu(pci_address=cmd.pciDeviceAddress):
             self._generate_sriov_gpu_devices(cmd, rsp)
         elif cmd.pciDeviceType == 'Ethernet_Controller':
             self._generate_sriov_net_devices(cmd, rsp)
@@ -3359,7 +3079,7 @@ done
 
         addr = cmd.pciDeviceAddress
 
-        if pci.is_gpu(cmd.pciDeviceType):
+        if pci.is_gpu(pci_address=cmd.pciDeviceAddress):
             self._ungenerate_sriov_gpu_devices(cmd, rsp)
         elif cmd.pciDeviceType == 'Ethernet_Controller':
             self._ungenerate_sriov_net_devices(cmd, rsp)
