@@ -3039,6 +3039,20 @@ class Vm(object):
             return
         e(volume_xml_obj, 'serial', vol_uuid)
 
+
+    def validate_vhost_attach_requirements(self):
+        hugepage_enabled = False
+        mem_shared = False
+        if self.domain_xmlobject.has_element("memoryBacking"):
+            memory_backing = self.domain_xmlobject.memoryBacking
+            hugepage_enabled = memory_backing.has_element("hugepages")
+            mem_shared = memory_backing.has_element("access") and memory_backing.access.mode_ == "shared"
+
+        if not hugepage_enabled or not mem_shared:
+            raise Exception("unable to attach the vhost volume online: memory access mode is not shared or hugepage not enabled. "
+                            "Please shutdown and try again.")
+
+
     def _attach_data_volume(self, volume, addons):
         Vm.check_device_exceed_limit(volume.deviceId)
 
@@ -3256,6 +3270,7 @@ class Vm(object):
         elif volume.deviceType == 'spool':
             disk_element = spool_volume()
         elif volume.deviceType == 'vhost':
+            self.validate_vhost_attach_requirements()
             disk_element = vhost_volume()
         elif volume.deviceType == 'cbd':
             disk_element = cbd_volume()
