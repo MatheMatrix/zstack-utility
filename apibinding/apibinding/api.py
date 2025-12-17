@@ -29,7 +29,7 @@ class Api(object):
         apicmd.session = session
         return apicmd
 
-    def __init__(self, host='localhost', port=8080, api_path='/zstack/api', result_path='/zstack/api/result', curl=False):
+    def __init__(self, host='localhost', port=8080, api_path='/cloud/api', result_path='/cloud/api/result', curl=False):
         '''
         Constructor
         '''
