@@ -91,7 +91,9 @@ ExternalAPIAdapter.ZSClient.contextPath=${OEM_NAME}</echo>
         <echo message="[OEM-OUTER] Double-checking root install.sh..." />
         <replaceregexp file="${base.dir}/install.sh" match="webapps/zstack" replace="webapps/${OEM_NAME}" flags="g" encoding="UTF-8" />
         <replaceregexp file="${base.dir}/install.sh" match='path="/zstack"' replace='path="/${OEM_NAME}"' flags="g" encoding="UTF-8" />
+        <!--
         <replaceregexp file="${base.dir}/install.sh" match="/zstack/" replace="/${OEM_NAME}/" flags="g" encoding="UTF-8" />
+        -->
     </target>
 
 </project>
