@@ -38,9 +38,10 @@ DISTRO_WITH_RPM_DEB = ["kylin"]
 def get_oem_name_from_properties_preload():
     default_name = 'zstack'
     home = os.environ.get('ZSTACK_HOME')
+    USER_ZSTACK_HOME_DIR = os.path.expanduser('~zstack')
 
     if not home:
-        webapps = '/usr/local/zstack/apache-tomcat/webapps'
+        webapps =  os.path.join(USER_ZSTACK_HOME_DIR,'apache-tomcat/webapps')
         if not os.path.isdir(webapps):
             return default_name
 
