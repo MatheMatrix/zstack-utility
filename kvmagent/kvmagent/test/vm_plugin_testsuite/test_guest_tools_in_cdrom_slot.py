@@ -141,11 +141,11 @@ class TestGuestToolsInRandomCdromSlot(TestCase, vm_utils.VmPluginTestStub):
                 'vmInstanceUuid': vm_uuid
             }))
             rsp = jsonobject.loads(rsp_json)
-            self.assertTrue(rsp.success, error_message("failed to detach guest tools iso from vm: %s" % rsp.error))
 
             time.sleep(1)
             vm_instance.refresh()
             context['vm_instance_after_detach'] = vm_instance.domain_xml
+            self.assertTrue(rsp.success, error_message("failed to detach guest tools iso from vm: %s" % rsp.error))
 
             self.assertIsNotNone(vm_instance)
             domain_xmlobject = xmlobject.loads(vm_instance.domain_xml)

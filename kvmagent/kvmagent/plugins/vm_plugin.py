@@ -10295,6 +10295,7 @@ host side snapshot files chian:
         vm_uuid = cmd.vmInstanceUuid
 
         vm = get_vm_by_uuid_no_retry(vm_uuid)
+        errs = []
 
         # detach temp_disk from vm
         temp_disk = self._guesttools_temp_disk_file_path(vm_uuid)
@@ -10305,10 +10306,11 @@ host side snapshot files chian:
         def detach_temp_disk_and_retry(vm):
             try:
                 vm.domain.detachDevice(self._create_xml_for_guesttools_temp_disk(vm.uuid))
-            except Exception:
+            except Exception as e:
                 logger.info("detach device success, can not find disk vdz")
+                errs.append("detachDevice failed: " + str(e))
             if vm._check_target_disk_existing_by_path(self._guesttools_temp_disk_file_path(vm.uuid)):
-                raise RetryException("current vm %s can not detach guest tools temp disk" % vm.uuid)
+                raise RetryException("current vm %s can not detach guest tools temp disk: %s" % vm.uuid, str(errs))
 
         if vm._check_target_disk_existing_by_path(self._guesttools_temp_disk_file_path(vm.uuid)):
             detach_temp_disk_and_retry(vm)
