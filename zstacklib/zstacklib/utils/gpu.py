@@ -73,6 +73,29 @@ def pre_detach_from_vm(domain, vm_uuid, vendor):
 #     return 0, None
 
 
+def extract_and_clean_json(smi_output):
+    start_idx = smi_output.find('{')
+    end_idx = smi_output.rfind('}')
+
+    if start_idx == -1 or end_idx == -1:
+        logger.info("No JSON brackets found in SMI output")
+        return None
+
+    if start_idx >= end_idx:
+        logger.info("Invalid JSON bracket order in SMI output")
+        return None
+
+    json_str = (
+        smi_output[start_idx:end_idx + 1]
+        .strip()
+        .replace(', ,', ',')
+        .replace(',,', ',')
+        .replace(', }', '}')
+        .replace(', ]', ']')
+    )
+    return json_str
+
+
 def parse_nvidia_gpu_output(output):
     gpuinfos = []
     for part in output.split('\n'):
@@ -94,7 +117,10 @@ def parse_nvidia_gpu_output(output):
 def parse_amd_gpu_output(output):
     gpuinfos = []
     try:
-        gpu_info_json = json.loads(output.strip())
+        gpu_info_json = json.loads(extract_and_clean_json(output))
+        if gpu_info_json is None:
+            return gpuinfos
+
         for card_name, card_data in gpu_info_json.items():
             gpuinfo = {}
             pci_device_address = card_data.get('PCI Bus').lower()
@@ -116,7 +142,10 @@ def parse_amd_gpu_output(output):
 def parse_hy_gpu_output(output):
     gpuinfos = []
     try:
-        gpu_info_json = json.loads(output)
+        gpu_info_json = json.loads(extract_and_clean_json(output))
+        if gpu_info_json is None:
+            return gpuinfos
+
         for card_name, card_data in gpu_info_json.items():
             gpuinfo = {}
             pci_device_address = card_data['PCI Bus'].lower()

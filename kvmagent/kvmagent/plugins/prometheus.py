@@ -1880,15 +1880,11 @@ def collect_hy_gpu_status():
         check_gpu_status_and_save_gpu_status("HY", metrics)
         return metrics.values()
 
-    start_idx = gpu_info.find('{')
-    end_idx = gpu_info.rfind('}')
-    if start_idx == -1 or end_idx == -1 or start_idx >= end_idx:
-        logger.info("No valid hygon json found in hy-smi output")
+    gpu_info_json = json.loads(gpu.extract_and_clean_json(gpu_info))
+    if gpu_info_json is None:
         check_gpu_status_and_save_gpu_status("HY", metrics)
         return metrics.values()
 
-    json_str = gpu_info[start_idx:end_idx + 1].strip().replace(', ,', ',')
-    gpu_info_json = json.loads(json_str)
     for card_name, card_data in gpu_info_json.items():
         gpu_serial = card_data['Serial Number']
         pci_device_address = card_data["PCI Bus"].lower()
@@ -1919,7 +1915,11 @@ def collect_amd_gpu_status():
         check_gpu_status_and_save_gpu_status("AMD", metrics)
         return metrics.values()
 
-    gpu_info_json = json.loads(gpu_info.strip())
+    gpu_info_json = json.loads(gpu.extract_and_clean_json(gpu_info))
+    if gpu_info_json is None:
+        check_gpu_status_and_save_gpu_status("AMD", metrics)
+        return metrics.values()
+
     for card_name, card_data in gpu_info_json.items():
         gpu_serial = card_data['Serial Number']
         pci_device_address = card_data['PCI Bus'].lower()
