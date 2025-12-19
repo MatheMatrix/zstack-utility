@@ -367,7 +367,9 @@ class ZbsAgent(plugin.TaskManager):
         physical_pool, logical_pool, volume, snapshot = zbsutils.parse_cbd_path(cmd.path)
 
         snapshot_path = logical_pool + "/" + volume + "@" + snapshot
-        dst_volume_path = logical_pool + "/" + cmd.dstVolume
+        dst_pool = cmd.dstPool if cmd.dstPool else logical_pool
+        dst_physical_pool = physical_pool if logical_pool == dst_pool else zbsutils.get_physical_pool_name(dst_pool)
+        dst_volume_path = dst_pool + "/" + cmd.dstVolume
 
         with CopyDaemon(task_spec=cmd):
             o = zbsutils.query_snapshot_info(logical_pool, volume)
@@ -381,11 +383,11 @@ class ZbsAgent(plugin.TaskManager):
                 raise Exception('failed to copy snapshot[%s] to volume[%s], error[%s]' % (
                 snapshot_path, dst_volume_path, ret.error.message))
             elif ret.result.hasattr('fileStatus') and ret.result.fileStatus != 0:
-                zbsutils.delete_volume_and_snapshots(logical_pool, cmd.dstVolume)
+                zbsutils.delete_volume_and_snapshots(dst_pool, cmd.dstVolume)
                 raise Exception(
                     'target volume[%s] exception[fileStatus:%d], deleted' % (dst_volume_path, ret.result.fileStatus))
             rsp.size = ret.result.fileLength
-            rsp.installPath = zbsutils.CBD_VOLUME_PATH.format(physical_pool, logical_pool, cmd.dstVolume)
+            rsp.installPath = zbsutils.CBD_VOLUME_PATH.format(dst_physical_pool, dst_pool, cmd.dstVolume)
 
             return jsonobject.dumps(rsp)
 
@@ -663,13 +665,13 @@ class ZbsAgent(plugin.TaskManager):
 
         found = False
         for physical_pool in r.result:
-            for logical_pool in physical_pool.logicalPoolInfos:
+            for logical_pool in physical_pool.logicalPoolInfos: 
                 rsp.logicalPoolInfos.append(LogicalPoolInfo(logical_pool))
-                if cmd.logicalPool in logical_pool.logicalPoolName:
+                if not cmd.logicalPoolNames or logical_pool.logicalPoolName in cmd.logicalPoolNames:
                     found = True
 
         if not found:
-            raise Exception('cannot found logical pool[%s], you must create it manually' % cmd.logicalPool)
+            raise Exception('cannot found logical pool[%s], you must create it manually' % cmd.logicalPoolNames)
 
         return jsonobject.dumps(rsp)
 
