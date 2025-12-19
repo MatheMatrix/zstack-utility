@@ -1026,7 +1026,9 @@ def get_power_info_from_ipmi(sensor_info, metrics):
 
         if re.match(r"^ps\w*(\ |_)status", name):
             ps_id = name.strip().split(" ")[0].split("_")[0]
-            if "presence detected" == event:
+            if "ok" == event:
+                metrics['power_supply'].add_metric([ps_id], 0)
+            elif "presence detected" == event:
                 metrics['power_supply'].add_metric([ps_id], 0)
             elif "presence detected" in event and "ac lost" in event:
                 metrics['power_supply'].add_metric([ps_id], 10)
