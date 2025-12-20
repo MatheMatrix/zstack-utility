@@ -15,6 +15,8 @@ import traceback
 import xml.etree.ElementTree as etree
 import re
 import platform
+from time import sleep
+
 import netaddr
 import uuid
 import shutil
@@ -40,8 +42,10 @@ import zstacklib.utils.ip as ip
 import zstacklib.utils.ebtables as ebtables
 import zstacklib.utils.iptables as iptables
 import zstacklib.utils.lock as lock
+from zstacklib.utils import sizeunit
 
 from jinja2 import Template
+
 from kvmagent import kvmagent
 from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
@@ -70,6 +74,7 @@ from zstacklib.utils import qemu_nbd
 from zstacklib.utils.jsonobject import JsonObject
 from zstacklib.utils import linux
 from zstacklib.utils.linux import is_virtual_machine
+from zstacklib.utils.ovn import delVnicFromOvsByVmUuidIfExist
 from zstacklib.utils.pci import VendorEnum
 from zstacklib.utils.plugin import TaskManager, TaskResult
 from zstacklib.utils.qga import *
@@ -7364,6 +7369,13 @@ class VmPlugin(kvmagent.KvmAgent):
                     vm.destroy()
 
             vm = Vm.from_StartVmCmd(cmd)
+            if getattr(cmd, 'HostMinimumFreeMemorySize', None):
+                memSize = linux.get_free_memory()
+                minSize = sizeunit.get_size(cmd.HostMinimumFreeMemorySize)
+                if memSize < minSize:
+                    raise kvmagent.KvmError(
+                        "unable to start vm[uuid:{}, name:{}], available memory [{}] is less than expected[{}]".format(
+                            cmd.vmInstanceUuid, cmd.vmName, memSize, minSize))
 
             if cmd.memorySnapshotPath:
                 snapshot_path = None
@@ -8336,12 +8348,14 @@ class VmPlugin(kvmagent.KvmAgent):
             else:
                 vm.stop(timeout=cmd.timeout / 2)
 
+            delVnicFromOvsByVmUuidIfExist(vmUuid)
             if vmUseOpenvSwitch:
                 ovs.getOvsCtl(with_dpdk=True).destoryNicBackend(vmUuid)
         except kvmagent.KvmError as e:
             logger.debug(linux.get_exception_stacktrace())
         finally:
             # libvirt is not reliable, c.f. ZSTAC-15412
+            delVnicFromOvsByVmUuidIfExist(vmUuid)
             self.kill_vm(vmUuid)
 
     def kill_vm(self, vm_uuid):
@@ -8440,6 +8454,7 @@ class VmPlugin(kvmagent.KvmAgent):
             if vm:
                 vmUseOpenvSwitch = ovs.isVmUseOpenvSwitch(cmd.uuid)
                 vm.destroy()
+                delVnicFromOvsByVmUuidIfExist(cmd.uuid)
                 if vmUseOpenvSwitch:
                     ovs.getOvsCtl(with_dpdk=True).destoryNicBackend(cmd.uuid)
                 # notify vrouter agent nic removed from source host
@@ -12634,42 +12649,6 @@ host side snapshot files chian:
             content = traceback.format_exc()
             logger.warn("traceback: %s" % content)
 
-    def _vm_resume_event(self, conn, dom, event, detail, opaque):
-        try:
-            event = LibvirtEventManager.event_to_string(event)
-            if event not in (LibvirtEventManager.EVENT_RESUMED,):
-                return
-            vm_uuid = dom.name()
-            # get all vnic name of the vm
-            vnic_names = []
-            domain_xml = dom.XMLDesc(0)
-            domain_xmlobject = xmlobject.loads(domain_xml)
-            for interface in domain_xmlobject.devices.get_child_node_as_list('interface'):
-                if interface.type_ == 'vhostuser':
-                    vnic_names.append(interface.target.dev_)
-
-            @thread.AsyncThread
-            def change_chassis_to_dst_host():
-                # get system-id by ovs-vsctl cmd
-                system_id = bash.bash_o('ovs-vsctl get Open_vSwitch . external_ids:system-id').strip().strip('"')
-                # get ovn-remote by ovs-vsctl cmd
-                ovn_remote = bash.bash_o('ovs-vsctl get Open_vSwitch . external_ids:ovn-remote').strip().strip('"')
-                ovn_remote = ovn_remote.replace('6642', '6641')
-                # get all iface-id by ovs-vsctl cmd using vnic name
-                iface_ids = []
-                for vnic_name in vnic_names:
-                    iface_id = bash.bash_o('ovs-vsctl get Interface %s external_ids:iface-id' % vnic_name).strip().strip('"')
-                    iface_ids.append(iface_id)
-
-                # call ovn-nbctl lsp-set-options {iface_id} requested-chassis={system_id}
-                for iface_id in iface_ids:
-                    bash.bash_o('ovn-nbctl --db=tcp:%s lsp-set-options %s requested-chassis=%s' % (ovn_remote, iface_id, system_id))
-
-            change_chassis_to_dst_host()
-        except:
-            content = traceback.format_exc()
-            logger.warn("traceback: %s" % content)
-
     def _vm_crashed_event(self, conn, dom, event, detail, opaque):
         try:
             event = LibvirtEventManager.event_to_string(event)
@@ -12788,7 +12767,6 @@ host side snapshot files chian:
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_shutdown_event)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_shutdown_event_from_guest)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_start_event)
-        LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_resume_event)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_crashed_event)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._release_sharedblocks)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._deactivate_drbd)
