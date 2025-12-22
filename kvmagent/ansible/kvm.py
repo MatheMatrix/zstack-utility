@@ -990,16 +990,12 @@ def modprobe_mpci_module():
     run_remote_command(command, host_post_info)
 
 
-@with_arch(todo_list=['aarch64'], host_arch=host_info.host_arch)
 def set_gpu_blacklist():
-    if releasever not in kylin:
-        return
-
     gpu_name_list = "snd_hda_intel nouveau amdgpu"
 
     command = "for gpu_name in %s; \
-        do cat /etc/modprobe.d/${gpu_name}-blacklist.conf | grep \"blacklist ${gpu_name}\" \
-        || echo \"blacklist ${gpu_name}\" >> /etc/modprobe.d/${gpu_name}-blacklist.conf; done" % gpu_name_list
+        do cat /etc/modprobe.d/${gpu_name}-blacklist.conf | grep \"install ${gpu_name} /bin/false\" \
+        || echo \"install ${gpu_name} /bin/false\" >> /etc/modprobe.d/${gpu_name}-blacklist.conf; done" % gpu_name_list
     run_remote_command(command, host_post_info)
 
 
