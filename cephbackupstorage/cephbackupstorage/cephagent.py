@@ -3,6 +3,7 @@ __author__ = 'frank'
 import os
 import os.path
 import pprint
+import time
 import traceback
 import urllib
 import urllib2
@@ -21,11 +22,13 @@ import zstacklib.utils.daemon as daemon
 import zstacklib.utils.plugin as plugin
 import zstacklib.utils.http as http
 import zstacklib.utils.jsonobject as jsonobject
-from zstacklib.utils import lock
+from zstacklib.utils import lock, file_system_upload_task, report
 from zstacklib.utils import linux
 from zstacklib.utils import thread
 from zstacklib.utils.bash import *
 from zstacklib.utils.ceph import get_mon_addr
+from zstacklib.utils.file_downloader import FileDownloader
+from zstacklib.utils.file_system_upload_task import FileSystemUploadTask
 from zstacklib.utils.report import Report, get_exact_percent
 from zstacklib.utils import shell
 from zstacklib.utils import ceph
@@ -148,6 +151,40 @@ class GetLocalFileSizeRsp(AgentResponse):
     def __init__(self):
         super(GetLocalFileSizeRsp, self).__init__()
         self.size = None
+
+class DownloadFileRsp(AgentResponse):
+    def __init__(self):
+        super(DownloadFileRsp, self).__init__()
+        self.md5sum = None
+        self.size = None
+        self.unzipInstallPath = None
+        self.filesSize = None
+
+class DeleteFilesRsp(AgentResponse):
+    def __init__(self):
+        super(DeleteFilesRsp, self).__init__()
+
+class UploadFileRsp(AgentResponse):
+    def __init__(self):
+        super(UploadFileRsp, self).__init__()
+        self.directUploadPath = None
+
+class UploadFileProgressRsp(AgentResponse):
+    def __init__(self):
+        super(UploadFileProgressRsp, self).__init__()
+        self.apiId = None
+        self.completed = False
+        self.progress = 0
+        self.size = 0
+        self.actualSize = 0
+        self.installPath = None
+        self.lastOpTime = 0
+        self.downloadSize = 0
+        self.md5sum = None
+        self.supportSuspend = False
+        self.unzipInstallPath = False
+        self.unzipFiles = None
+
 
 def replyerror(func):
     @functools.wraps(func)
@@ -346,6 +383,12 @@ class CephAgent(object):
     GET_LOCAL_FILE_SIZE = "/ceph/backupstorage/getlocalfilesize/"
     MIGRATE_IMAGE_PATH = "/ceph/backupstorage/image/migrate"
 
+    FILE_DOWNLOAD_PATH = "/ceph/file/download"
+    FILE_DIRECT_UPLOAD_PATH = "/ceph/file/direct/upload"
+    FILE_UPLOAD_PATH = "/ceph/file/upload"
+    FILE_UPLOAD_PROGRESS_PATH = "/ceph/file/progress"
+    DELETE_FILES_PATH = "/ceph/files/delete"
+
     CEPH_METADATA_FILE = "bs_ceph_info.json"
     UPLOAD_PROTO = "upload://"
     LENGTH_OF_UUID = 32
@@ -376,6 +419,12 @@ class CephAgent(object):
         self.http_server.register_async_uri(self.CHECK_POOL_PATH, self.check_pool)
         self.http_server.register_async_uri(self.GET_LOCAL_FILE_SIZE, self.get_local_file_size)
         self.http_server.register_async_uri(self.MIGRATE_IMAGE_PATH, self.migrate_image, cmd=CephToCephMigrateImageCmd())
+
+        self.http_server.register_async_uri(self.FILE_DOWNLOAD_PATH, self.download_file)
+        self.http_server.register_async_uri(self.FILE_DIRECT_UPLOAD_PATH, self.direct_upload_file)
+        self.http_server.register_async_uri(self.FILE_UPLOAD_PATH, self.upload_file)
+        self.http_server.register_async_uri(self.FILE_UPLOAD_PROGRESS_PATH, self.get_upload_file_progress)
+        self.http_server.register_async_uri(self.DELETE_FILES_PATH, self.delets_files)
 
         self.cluster = None
         self.ioctx = {}
@@ -653,7 +702,7 @@ class CephAgent(object):
         rsp.size = task.expectedSize
         rsp.actualSize = task.expectedSize
         rsp.downloadSize = task.checked_download_size()
-        rsp.lastOpTime = long(task.lastOpTime) * 1000
+        rsp.lastOpTime = int(task.lastOpTime) * 1000
         rsp.format = task.image_format
         if task.expectedSize == 0:
             rsp.progress = 0
@@ -1071,6 +1120,138 @@ class CephAgent(object):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
         return jsonobject.dumps(plugin.cancel_job(cmd, rsp))
+
+    @replyerror
+    def download_file(self, req):
+        rsp = DownloadFileRsp()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+
+        # 获取 file 大小，如果目录容量不足了（需要两倍空间），直接报错
+        reporter = report.Report.from_spec(cmd, "DownloadFile")
+        fileDownloader = FileDownloader(reporter, cmd)
+        success, error = fileDownloader.download()
+        if not success:
+            rsp.success = False
+            rsp.error = error if error else 'download failed'
+            return jsonobject.dumps(rsp)
+
+        rsp.md5sum = linux.get_file_md5sum_hashlib(cmd.installPath)
+        rsp.size = os.path.getsize(cmd.installPath)
+
+        # 解压文件
+        unzipInstallPath = "%s_%s_%d" % (cmd.installPath, rsp.md5sum, int(time.time()))
+        linux.unzip_file(cmd.installPath, unzipInstallPath)
+        rsp.unzipInstallPath = unzipInstallPath
+
+        unzipFiles = {}
+        for f in os.listdir(unzipInstallPath):
+            unzipFiles[f] = {
+                'path': os.path.join(unzipInstallPath, f),
+                'size': os.path.getsize(os.path.join(unzipInstallPath, f)),
+            }
+        rsp.unzipFiles = unzipFiles
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def delets_files(self, req):
+        rsp = DeleteFilesRsp()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        filesPath = cmd.filesPath
+        for f in filesPath:
+            linux.rm_file_force(f)
+
+        return jsonobject.dumps(rsp)
+
+    def get_direct_upload_path(self, host):
+        return 'http://' + host + self.FILE_DIRECT_UPLOAD_PATH
+
+    def upload_file(self, req):
+        rsp = UploadFileRsp()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+
+        def _prepare_upload():
+            class FileUploadDaemon(plugin.TaskDaemon):
+                def __init__(self, task):
+                    super(FileUploadDaemon, self).__init__(cmd, 'fileUpload')
+                    self.task = task
+                    self.task.close = self.close
+
+                def _cancel(self):
+                    if self.task.completed:
+                        return
+                    self.task.lastError = "file[%s] upload canceled" % cmd.installPath
+                    linux.rm_file_force(cmd.installPath)
+
+            task = FileSystemUploadTask(cmd.taskUuid, cmd.installPath)
+            self.upload_tasks.add_task(task)
+            FileUploadDaemon(task).start()
+
+        _prepare_upload()
+        rsp.directUploadPath = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def direct_upload_file(self, req):
+        try:
+            UploadHandler(req, self.upload_tasks).handle_upload()
+        except Exception as e:
+            logger.exception("File upload failed: %s", str(e))
+
+    @replyerror
+    def get_upload_file_progress(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        task = self.upload_tasks.get_task(cmd.taskUuid)
+        if task is None:
+            raise Exception('file not found')
+
+        def _get_file_size(file_path):
+            return os.path.getsize(file_path) if os.path.exists(file_path) else 0
+
+        rsp = UploadFileProgressRsp()
+        rsp.apiId = cmd.taskUuid
+        rsp.completed = task.completed
+        rsp.size = task.expectedSize
+        rsp.actualSize = task.expectedSize
+        rsp.downloadSize = task.checked_download_size()
+        rsp.lastOpTime = long(task.lastOpTime) * 1000
+        rsp.supportSuspend = True
+        if task.downloadSize == 0:
+            rsp.progress = 0
+            rsp.installPath = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
+        elif task.completed and not task.lastError:
+            actual_size = _get_file_size(task.installPath)
+            if actual_size == 0:
+                rsp.success = False
+                rsp.error = "Upload completed but file not found or empty"
+                return jsonobject.dumps(rsp)
+            rsp.size = actual_size
+            rsp.md5sum = linux.get_file_md5sum_hashlib(task.installPath)
+            rsp.installPath = task.installPath
+
+            # 解压文件
+            unzipInstallPath = "%s_%s_%d" % (cmd.installPath, rsp.md5sum, int(time.time()))
+            linux.unzip_file(cmd.installPath, unzipInstallPath)
+            rsp.unzipInstallPath = unzipInstallPath
+
+            unzipFiles = {}
+            for f in os.listdir(unzipInstallPath):
+                unzipFiles[f] = {
+                    'path': os.path.join(unzipInstallPath, f),
+                    'size': os.path.getsize(os.path.join(unzipInstallPath, f)),
+                }
+            rsp.unzipFiles = unzipFiles
+
+
+            rsp.progress = 100
+        else:
+            rsp.progress = task.downloadSize * 90 / task.expectedSize
+            rsp.installPath = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
+
+        if task.lastError is not None:
+            rsp.success = False
+            rsp.error = task.lastError
+        return jsonobject.dumps(rsp)
 
 class CephDaemon(daemon.Daemon):
     def __init__(self, pidfile, py_process_name):
