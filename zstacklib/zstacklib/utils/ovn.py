@@ -119,7 +119,7 @@ def delVnicFromOvsByVmUuidIfExist(vmUuid, brName="br-int"):
 
             bash.bash_o(CtlBin + '--if-exists del-port {} {}'.format(brName, vnic_name))
     except Exception as err:
-        logger.exception("Delete vnic for brdige {} failed. {}".format(brName, err))
+        logger.exception("Delete vnic for bridge {} failed. {}".format(brName, err))
 
 
 @bash.in_bash
@@ -271,7 +271,7 @@ class VsCtl(object):
             return vnics
         except Exception as err:
             logger.error(
-                "Add port for brdige {} failed. {}".format(brName, err))
+                "Get port for bridge {} failed. {}".format(brName, err))
             return []
 
     @bash.in_bash
@@ -302,7 +302,7 @@ class VsCtl(object):
             return vnics
         except Exception as err:
             logger.error(
-                "Add port from brdige {} failed. {}".format(brName, err))
+                "Get port from bridge {} failed. {}".format(brName, err))
             return {}
 
 
@@ -316,7 +316,7 @@ class VsCtl(object):
             return ret
         except Exception as err:
             logger.error(
-                "Get interface id from brdige {} failed. {}".format(brName, err)
+                "Get interface id from bridge {} failed. {}".format(brName, err)
             )
             return {}
 
@@ -343,7 +343,7 @@ class VsCtl(object):
             return vnics
         except Exception as err:
             logger.error(
-                "get port from brdige {} failed. {}".format(brName, err))
+                "get port from bridge {} failed. {}".format(brName, err))
             return []
 
     @bash.in_bash
@@ -370,7 +370,7 @@ class VsCtl(object):
             bash.bash_r(cmd)
         except Exception as err:
             logger.error(
-                "Add port for brdige {} failed. {}".format(brName, err))
+                "Add port {} for bridge {} failed. {}".format(nicName, brName, err))
 
     @bash.in_bash
     def delVnic(self, nicName, brName="br-int"):
