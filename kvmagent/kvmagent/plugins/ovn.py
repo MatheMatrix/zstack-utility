@@ -455,7 +455,8 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
             reinstall = cmd.reInstall
 
         for nicName, nicUuid in cmd.nicMap.__dict__.items():
-            vsctl.addVnic(nicName, nicUuid, reinstall)
+            vm_uuid = cmd.nicVmInstanceUuidMap.__dict__.get(nicName, None)
+            vsctl.addVnic(nicName, nicUuid, vm_uuid, reinstall)
         rsp = OvnAddPortResponse()
 
         return jsonobject.dumps(rsp)
