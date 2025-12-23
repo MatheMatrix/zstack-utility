@@ -3,6 +3,7 @@ __author__ = 'frank'
 import os
 import os.path
 import pprint
+import time
 import traceback
 import urllib
 import urllib2
@@ -21,11 +22,13 @@ import zstacklib.utils.daemon as daemon
 import zstacklib.utils.plugin as plugin
 import zstacklib.utils.http as http
 import zstacklib.utils.jsonobject as jsonobject
-from zstacklib.utils import lock
+from zstacklib.utils import lock, file_system_upload_task, report, bash
 from zstacklib.utils import linux
 from zstacklib.utils import thread
 from zstacklib.utils.bash import *
 from zstacklib.utils.ceph import get_mon_addr
+from zstacklib.utils.file_downloader import FileDownloader
+from zstacklib.utils.file_system_upload_task import FileSystemUploadTask
 from zstacklib.utils.report import Report, get_exact_percent
 from zstacklib.utils import shell
 from zstacklib.utils import ceph
@@ -148,6 +151,44 @@ class GetLocalFileSizeRsp(AgentResponse):
     def __init__(self):
         super(GetLocalFileSizeRsp, self).__init__()
         self.size = None
+
+class DownloadFileRsp(AgentResponse):
+    def __init__(self):
+        super(DownloadFileRsp, self).__init__()
+        self.md5sum = None
+        self.size = None
+        self.unzipInstallPath = None
+        self.filesSize = None
+
+class DeleteFilesRsp(AgentResponse):
+    def __init__(self):
+        super(DeleteFilesRsp, self).__init__()
+
+class UploadFileRsp(AgentResponse):
+    def __init__(self):
+        super(UploadFileRsp, self).__init__()
+        self.directUploadPath = None
+
+class UploadFileProgressRsp(AgentResponse):
+    def __init__(self):
+        super(UploadFileProgressRsp, self).__init__()
+        self.apiId = None
+        self.completed = False
+        self.progress = 0
+        self.size = 0
+        self.actualSize = 0
+        self.installPath = None
+        self.lastOpTime = 0
+        self.downloadSize = 0
+        self.md5sum = None
+        self.supportSuspend = False
+        self.unzipInstallPath = None
+        self.unzipFiles = None
+
+class SoftwareUpgradePackageResponse(AgentResponse):
+    def __init__(self):
+        super(SoftwareUpgradePackageResponse, self).__init__()
+        self.upgradeScriptPath = None
 
 def replyerror(func):
     @functools.wraps(func)
@@ -346,6 +387,13 @@ class CephAgent(object):
     GET_LOCAL_FILE_SIZE = "/ceph/backupstorage/getlocalfilesize/"
     MIGRATE_IMAGE_PATH = "/ceph/backupstorage/image/migrate"
 
+    FILE_DOWNLOAD_PATH = "/ceph/file/download"
+    FILE_DIRECT_UPLOAD_PATH = "/ceph/file/direct/upload"
+    FILE_UPLOAD_PATH = "/ceph/file/upload"
+    FILE_UPLOAD_PROGRESS_PATH = "/ceph/file/progress"
+    DELETE_FILES_PATH = "/ceph/file/delete"
+    SOFTWARE_UPGRADE_PACKAGE_DEPLOY_PATH = "/ceph/upgrade/deploy"
+
     CEPH_METADATA_FILE = "bs_ceph_info.json"
     UPLOAD_PROTO = "upload://"
     LENGTH_OF_UUID = 32
@@ -376,6 +424,13 @@ class CephAgent(object):
         self.http_server.register_async_uri(self.CHECK_POOL_PATH, self.check_pool)
         self.http_server.register_async_uri(self.GET_LOCAL_FILE_SIZE, self.get_local_file_size)
         self.http_server.register_async_uri(self.MIGRATE_IMAGE_PATH, self.migrate_image, cmd=CephToCephMigrateImageCmd())
+
+        self.http_server.register_async_uri(self.FILE_DOWNLOAD_PATH, self.download_file)
+        self.http_server.register_raw_uri(self.FILE_DIRECT_UPLOAD_PATH, self.direct_upload_file)
+        self.http_server.register_async_uri(self.FILE_UPLOAD_PATH, self.upload_file)
+        self.http_server.register_async_uri(self.FILE_UPLOAD_PROGRESS_PATH, self.get_upload_file_progress)
+        self.http_server.register_async_uri(self.DELETE_FILES_PATH, self.delete_files)
+        self.http_server.register_async_uri(self.SOFTWARE_UPGRADE_PACKAGE_DEPLOY_PATH, self.deploy_and_execute_software_upgrade_package)
 
         self.cluster = None
         self.ioctx = {}
@@ -653,7 +708,7 @@ class CephAgent(object):
         rsp.size = task.expectedSize
         rsp.actualSize = task.expectedSize
         rsp.downloadSize = task.checked_download_size()
-        rsp.lastOpTime = long(task.lastOpTime) * 1000
+        rsp.lastOpTime = int(task.lastOpTime) * 1000
         rsp.format = task.image_format
         if task.expectedSize == 0:
             rsp.progress = 0
@@ -730,6 +785,8 @@ class CephAgent(object):
                 logger.warn(linux.get_exception_stacktrace())
                 return length
 
+        def quote_url():
+            return urllib.quote(cmd.url.encode('utf-8'), safe=':/?=')
         # whether we have an upload request
         if cmd.url.startswith(self.UPLOAD_PROTO):
             self._prepare_upload(cmd)
@@ -746,10 +803,9 @@ class CephAgent(object):
         report.resourceUuid = cmd.imageUuid
         report.progress_report("0", "start")
 
-        cmd.url = urllib.quote(cmd.url.encode('utf-8'), safe=':/?=')
-
         url = urlparse.urlparse(cmd.url)
         if url.scheme in ('http', 'https', 'ftp'):
+            cmd.url = quote_url()
             image_format = get_origin_format(cmd.url, True)
             cmd.url = linux.shellquote(cmd.url)
             # roll back tmp ceph file after import it
@@ -785,6 +841,7 @@ class CephAgent(object):
                 os.remove(PFILE)
 
         elif url.scheme == 'sftp':
+            cmd.url = quote_url()
             port = (url.port, 22)[url.port is None]
             PFILE = linux.create_temp_file()
             ssh_pswd_file = None
@@ -847,7 +904,7 @@ class CephAgent(object):
                 return synced
 
             t_shell = traceable_shell.get_shell(cmd)
-            t_shell.bash_progress_1("rbd import --image-format 2 %s %s/%s 2>%s " % (src_path, pool, tmp_image_name, p_file), _get_percent)
+            t_shell.bash_progress_1("rbd import --image-format 2 '%s' %s/%s 2>%s " % (src_path, pool, tmp_image_name, p_file), _get_percent)
             actual_size = os.path.getsize(src_path)
         else:
             raise Exception('unknown url[%s]' % cmd.url)
@@ -1071,6 +1128,202 @@ class CephAgent(object):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
         return jsonobject.dumps(plugin.cancel_job(cmd, rsp))
+
+    @replyerror
+    def download_file(self, req):
+        rsp = DownloadFileRsp()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+
+        reporter = report.Report.from_spec(cmd, "DownloadFile")
+        fileDownloader = FileDownloader(reporter, cmd)
+        success, error = fileDownloader.download()
+        if not success:
+            rsp.success = False
+            rsp.error = error if error else 'download failed'
+            return jsonobject.dumps(rsp)
+
+        rsp.md5sum = linux.get_file_md5sum_hashlib(cmd.installPath)
+        rsp.size = os.path.getsize(cmd.installPath)
+        _, availableCapacity =  linux.get_disk_capacity_by_df(os.path.dirname(cmd.installPath))
+        if availableCapacity<rsp.size:
+            linux.rm_file_force(cmd.installPath)
+            rsp.success = False
+            rsp.error = "insufficient disk space on the host to store the downloaded file"
+            return jsonobject.dumps(rsp)
+
+        rsp.unzipInstallPath, rsp.filesSize = self.get_unzip_file_size(cmd.installPath)
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def delete_files(self, req):
+        rsp = DeleteFilesRsp()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        filesPath = cmd.filesPath
+        for f in filesPath:
+            linux.rm_file_force(f)
+
+        return jsonobject.dumps(rsp)
+
+    def get_direct_upload_path(self, host):
+        return 'http://' + host + self.FILE_DIRECT_UPLOAD_PATH
+
+    @replyerror
+    def upload_file(self, req):
+        rsp = UploadFileRsp()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+
+        def _prepare_upload():
+            class FileUploadDaemon(plugin.TaskDaemon):
+                def __init__(self, task):
+                    super(FileUploadDaemon, self).__init__(cmd, 'fileUpload')
+                    self.task = task
+                    self.task.close = self.close
+
+                def _cancel(self):
+                    if self.task.completed:
+                        return
+                    self.task.lastError = "file[%s] upload canceled" % cmd.installPath
+                    linux.rm_file_force(cmd.installPath)
+
+            task = FileSystemUploadTask(cmd.taskUuid, cmd.installPath)
+            self.upload_tasks.add_task(task)
+            FileUploadDaemon(task).start()
+
+        _prepare_upload()
+        rsp.directUploadPath = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def direct_upload_file(self, req):
+        try:
+            UploadHandler(req, self.upload_tasks).handle_upload()
+        except Exception as e:
+            logger.exception("File upload failed: %s", str(e))
+
+    @staticmethod
+    def get_unzip_file_size(install_path):
+        unzipInstallPath = "%s/unzip_path_%d" % (os.path.dirname(install_path), int(time.time()))
+        if not os.path.exists(unzipInstallPath):
+            os.makedirs(unzipInstallPath, 0777)
+        shell.call('tar -zxf %s -C %s' % (install_path, unzipInstallPath))
+        unzipFiles = {}
+        for root, dirs, files in os.walk(unzipInstallPath):
+            for file in files:
+                file_path = os.path.join(root, file)
+                try:
+                    unzipFiles[file_path] = os.path.getsize(file_path)
+                except (OSError, IOError) as e:
+                    pass
+        return  unzipInstallPath, unzipFiles
+
+    @replyerror
+    def get_upload_file_progress(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        task = self.upload_tasks.get_task(cmd.taskUuid)
+        if task is None:
+            raise Exception('file not found')
+
+        def _get_file_size(file_path):
+            return os.path.getsize(file_path) if os.path.exists(file_path) else 0
+
+        rsp = UploadFileProgressRsp()
+        rsp.apiId = cmd.taskUuid
+        rsp.completed = task.completed
+        rsp.size = task.expectedSize
+        rsp.actualSize = task.expectedSize
+        rsp.downloadSize = task.checked_download_size()
+        rsp.lastOpTime = int(task.lastOpTime) * 1000
+        rsp.supportSuspend = True
+        if task.downloadSize == 0:
+            rsp.progress = 0
+            rsp.installPath = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
+        elif task.completed and not task.lastError:
+            actual_size = _get_file_size(task.installPath)
+            if actual_size == 0:
+                rsp.success = False
+                rsp.error = "Upload completed but file not found or empty"
+                return jsonobject.dumps(rsp)
+            rsp.size = actual_size
+            rsp.md5sum = linux.get_file_md5sum_hashlib(task.installPath)
+            rsp.installPath = task.installPath
+            rsp.progress = 100
+            rsp.unzipInstallPath, rsp.unzipFiles = self.get_unzip_file_size(task.installPath)
+        else:
+            rsp.progress = task.downloadSize * 90 / task.expectedSize
+            rsp.installPath = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
+
+        if task.lastError is not None:
+            rsp.success = False
+            rsp.error = task.lastError
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def deploy_and_execute_software_upgrade_package(self, req):
+        rsp = SoftwareUpgradePackageResponse()
+
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        upgrade_package_source_path = cmd.upgradePackagePath
+        upgrade_package_target_path = cmd.upgradePackageTargetPath
+        upgrade_script_path = cmd.upgradeScriptPath
+        target_host_ssh_port = cmd.targetHostSshPort
+        target_host_ssh_username = cmd.targetHostSshUsername
+        target_host_ssh_password = cmd.targetHostSshPassword
+        target_host_ip = cmd.targetHostIp
+
+        package_name = os.path.basename(upgrade_package_source_path)
+        try:
+            # sshpass -p 'password' ssh -p 50022 zmuser@172.24.10.126 'mkdir -p /tmp/upgrade.tar.gz_1770555094973'
+            cmd = "sshpass -p '%s' ssh -p %d %s@%s 'mkdir -p %s'" % (target_host_ssh_password, target_host_ssh_port,
+                                                                     target_host_ssh_username, target_host_ip,
+                                                                     upgrade_package_target_path)
+            r, _, e = bash.bash_roe(cmd)
+            if r != 0:
+                raise Exception("mkdir failed: %s" % e)
+
+            # copy file to host
+            # sshpass -p 'password' scp -P 50022 /root/files/upgrade.tar.gz zmuser@172.24.10.126:/tmp/upgrade.tar.gz_1770555094973/upgrade.tar.gz
+            cmd = "sshpass -p '%s' scp -P %d %s %s@%s:%s/%s" % (target_host_ssh_password, target_host_ssh_port,
+                                                                upgrade_package_source_path, target_host_ssh_username,
+                                                                target_host_ip, upgrade_package_target_path,
+                                                                package_name)
+            r, _, e = bash.bash_roe(cmd)
+            if r != 0:
+                raise Exception("scp failed: %s" % e)
+
+            # sshpass -p 'password' ssh -p 50022 zmuser@172.24.7.110
+            # 'sudo tar -zxf /tmp/upgrade_package_1770172757/upgrade.tar.gz  -C /tmp/upgrade.tar.gz_1770558225716/'"
+            cmd = "sshpass -p '%s' ssh -p %d %s@%s 'echo \'%s\' | sudo -S tar -zxf %s/%s -C %s/'" % (
+                target_host_ssh_password, target_host_ssh_port, target_host_ssh_username,
+                target_host_ip, target_host_ssh_password, upgrade_package_target_path, package_name,
+                upgrade_package_target_path)
+            r, _, e = bash.bash_roe(cmd)
+            if r != 0:
+                raise Exception("tar failed: %s" % e)
+
+            # run upgrade script
+            # sshpass -p 'password' ssh -p 50022 zmuser@172.24.7.110 "sudo /tmp/upgrade_package_1770172757/upgrade/upgrade.sh"
+            cmd = ("sshpass -p '%s' ssh -p %d %s@%s "
+                   "'echo \'%s\' | sudo -S chmod +x %s && echo \'%s\' | sudo -S %s'") % (
+                      target_host_ssh_password, target_host_ssh_port, target_host_ssh_username, target_host_ip,
+                      target_host_ssh_password, upgrade_script_path, target_host_ssh_password, upgrade_script_path)
+            r, _, e = bash.bash_roe(cmd)
+            if r != 0:
+                raise Exception("upgrade.sh failed: %s" % e)
+        except Exception as e:
+            rsp.success = False
+            rsp.error = str(e)
+            return jsonobject.dumps(rsp)
+        finally:
+            # sshpass -p 'password' ssh -p 50022 zmuser@172.24.7.110 "echo \'password\' | sudo -S rm -rf /tmp/upgrade_package_1770172757"
+            cmd = ("sshpass -p '%s' ssh -p %d %s@%s 'echo \'%s\' | sudo -S rm -rf %s'" % (target_host_ssh_password,
+                                                                                          target_host_ssh_port,
+                                                                                          target_host_ssh_username,
+                                                                                          target_host_ip,
+                                                                                          target_host_ssh_password,
+                                                                                          upgrade_package_target_path))
+            r, _, e = bash.bash_roe(cmd)
+
+        return jsonobject.dumps(rsp)
 
 class CephDaemon(daemon.Daemon):
     def __init__(self, pidfile, py_process_name):
