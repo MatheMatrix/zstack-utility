@@ -235,10 +235,16 @@ def get_pci_device_names():
 
 
 def collect_pci_devices_with_dependencies(pciDeviceAddress):
-    pcis = []
-    device_path = os.path.join("/sys/bus/pci/devices/", pciDeviceAddress)
-    for item in os.listdir(device_path):
-        if item.startswith("consumer:pci:"):
-            dependent_addr = item.replace("consumer:pci:", "")
-            pcis.append(dependent_addr)
-    return pcis
+    devices = []
+    base_address = pciDeviceAddress.rsplit('.', 1)[0]
+    r, o, e = bash_roe("lspci -s %s" % base_address)
+    if r != 0:
+        return devices
+
+    for line in o.splitlines():
+        device = line.split()[0]
+        full_address = "{}:{}".format(pciDeviceAddress.split(':')[0], device)
+        if full_address != pciDeviceAddress:
+            devices.append(full_address)
+    return devices
+
