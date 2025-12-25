@@ -16,7 +16,7 @@
         <!-- Involves: install.sh, online_install.sh, bootstrap.j2 -->
         <echo message="Step 1: Patching Installation scripts..." />
         <replaceregexp flags="g" encoding="UTF-8" match="webapps/zstack" replace="webapps/${OEM_NAME}">
-             <fileset dir="${zstackutility.source}/installation" includes="install.sh, online_install.sh, bootstrap.j2, zstack-server" />
+             <fileset dir="${zstackutility.source}/installation" includes="bootstrap.j2, zstack-server" />
         </replaceregexp>
 
         <!--
@@ -25,9 +25,17 @@
         </replaceregexp>
         -->
 
-        <!-- Special handling for Context path in install.sh -->
+        <!-- Commented out: No longer needed as install.sh now uses oemname variable directly -->
+        <!--
         <replaceregexp file="${zstackutility.source}/installation/install.sh"
                match='path="/zstack"' replace='path="/${OEM_NAME}"' flags="g" encoding="UTF-8" />
+        -->
+
+        <!-- Replace oemname variable value in install and buildsystem scripts -->
+        <echo message="Step 1.6: Patching oemname variable value..." />
+        <replaceregexp flags="g" encoding="UTF-8" match='oemname="zstack"' replace='oemname="${OEM_NAME}"'>
+             <fileset dir="${zstackutility.source}" includes="installation/install.sh, installation/online_install.sh, buildsystem/zstack, buildsystem/installwar.sh" />
+        </replaceregexp>
 
         <!-- 2. Modify zstackctl configurations -->
         <!-- Involves: collect_log_full.yaml, etc. -->
@@ -37,9 +45,15 @@
         </replaceregexp>
 
         <!-- 3. Modify Buildsystem scripts -->
-        <!-- Involves: installwar.sh, zstack (script) -->
+        <!-- Involves: installwar.sh, zstack (script)
         <echo message="Step 4: Patching Buildsystem scripts..." />
         <replaceregexp flags="g" encoding="UTF-8" match="webapps/zstack" replace="webapps/${OEM_NAME}">
+             <fileset dir="${zstackutility.source}/buildsystem" includes="installwar.sh, zstack" />
+        </replaceregexp>
+        -->
+
+        <!-- Rename WAR file reference in Buildsystem scripts -->
+        <replaceregexp flags="g" encoding="UTF-8" match="zstack\.war" replace="${OEM_NAME}.war">
              <fileset dir="${zstackutility.source}/buildsystem" includes="installwar.sh, zstack" />
         </replaceregexp>
 
@@ -81,19 +95,5 @@ ExternalAPIAdapter.ZSClient.contextPath=${OEM_NAME}</echo>
         <echo message="[OEM-INNER] Internal WAR files modification completed." />
     </target>
 
-    <!-- ================================================================== -->
-    <!-- Target 3: Modify files outside the WAR (called during 'build-centos-offline') -->
-    <!-- Scope: ${base.dir} (The installation root directory)               -->
-    <!-- ================================================================== -->
-    <target name="append-oem-config-outer" if="OEM_NAME">
-        <!-- Double insurance: Although we patched the source, we check the final install.sh again -->
-        <!-- to ensure no overwritten files missed the patch. -->
-        <echo message="[OEM-OUTER] Double-checking root install.sh..." />
-        <replaceregexp file="${base.dir}/install.sh" match="webapps/zstack" replace="webapps/${OEM_NAME}" flags="g" encoding="UTF-8" />
-        <replaceregexp file="${base.dir}/install.sh" match='path="/zstack"' replace='path="/${OEM_NAME}"' flags="g" encoding="UTF-8" />
-        <!--
-        <replaceregexp file="${base.dir}/install.sh" match="/zstack/" replace="/${OEM_NAME}/" flags="g" encoding="UTF-8" />
-        -->
-    </target>
 
 </project>

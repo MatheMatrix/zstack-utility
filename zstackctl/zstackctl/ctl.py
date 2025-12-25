@@ -7772,19 +7772,20 @@ class InstallManagementNodeCmd(Command):
         apache_tomcat = None
         zstack = None
         apache_tomcat_zip_name = None
+        war_name = '%s.war' % oemname
         for file in os.listdir(args.source_dir):
             full_path = os.path.join(args.source_dir, file)
             if file.startswith('apache-tomcat') and file.endswith('zip') and os.path.isfile(full_path):
                 apache_tomcat = full_path
                 apache_tomcat_zip_name = file
-            if file == 'zstack.war':
+            if file == war_name:
                 zstack = full_path
 
         if not apache_tomcat:
             raise CtlError('cannot find Apache Tomcat ZIP in %s, please use --source-dir to specify the directory containing the ZIP' % args.source_dir)
 
         if not zstack:
-            raise CtlError('cannot find zstack.war in %s, please use --source-dir to specify the directory containing the WAR file' % args.source_dir)
+            raise CtlError('cannot find %s in %s, please use --source-dir to specify the directory containing the WAR file' % (war_name, args.source_dir))
 
         pypi_path = os.path.join(ctl.zstack_home, "static/pypi/")
         if not os.path.isdir(pypi_path):
@@ -8933,7 +8934,7 @@ class UpgradeMultiManagementNodeCmd(Command):
                 SpinnerInfo.spinner_status = reset_dict_value(SpinnerInfo.spinner_status,False)
                 SpinnerInfo.spinner_status['upgrade'] = True
                 ZstackSpinner(spinner_info)
-                war_file = ctl.zstack_home + "/../../../apache-tomcat/webapps/zstack.war"
+                war_file = ctl.zstack_home + "/../../../apache-tomcat/webapps/%s.war" % oemname
                 ssh_key = ctl.zstack_home + "/WEB-INF/classes/ansible/rsaKeys/id_rsa"
                 status,output = commands.getstatusoutput("zstack-ctl upgrade_management_node --host %s --ssh-key %s --war-file %s" % (mn_ip, ssh_key, war_file))
                 if status != 0:
