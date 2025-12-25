@@ -18,6 +18,8 @@ except NameError:
 log.configure_log('/var/log/zstack/zstack-kvmagent.log')
 logger = log.get_logger(__name__)
 
+VF_CHECK_INTERVAL = 30
+
 
 class AgentRsp(object):
     def __init__(self):
@@ -153,13 +155,16 @@ class BondControl(object):
         self.pending_state = None
         self.pending_since = 0
         self.initialized = False
+        self.inactive_times = 0
+        self._no_vf_until = {}
+        self._vf_cache = {}
+        self._force_reapply = set()
 
     def update_settings(self, scenario, debounce):
         scenario_changed = scenario and scenario != self.scenario
         if scenario_changed:
             self.scenario = scenario
             self.initialized = False
-            self.applied_state = {}
             self.pending_state = None
 
         if debounce is not None:
@@ -170,21 +175,31 @@ class BondControl(object):
             return
 
         desired = dict(desired_state)
-        for pf in list(self.applied_state.keys()):
-            desired.setdefault(pf, False)
+        known_pfs = set(self.applied_state.keys())
+        if self.pending_state is not None:
+            known_pfs.update(self.pending_state.keys())
+        for pf in known_pfs:
+            desired.setdefault(pf, True)
+
+        vf_changed = self._refresh_vf_cache(desired.keys(), now, agent)
+        needs_reapply = vf_changed or bool(self._force_reapply)
 
         if not self.initialized:
-            self._apply(desired, agent, 'initial sync')
-            self.applied_state = desired
+            ok = self._apply(desired, agent, 'initial sync', now)
             self.initialized = True
+            if ok:
+                self.applied_state = desired
+                self.pending_state = None
+            else:
+                self.pending_state = desired
+                self.pending_since = now
+            return
+
+        if desired == self.applied_state and not needs_reapply:
             self.pending_state = None
             return
 
-        if desired == self.applied_state:
-            self.pending_state = None
-            return
-
-        if self.pending_state is not None and desired == self.pending_state:
+        if self.pending_state is not None and desired == self.pending_state and not vf_changed:
             return
 
         self.pending_state = desired
@@ -196,18 +211,40 @@ class BondControl(object):
         if now - self.pending_since < self.debounce:
             return
 
-        self._apply(self.pending_state, agent, 'stable for %.3fs' % (now - self.pending_since))
-        self.applied_state = self.pending_state
-        self.pending_state = None
+        ok = self._apply(self.pending_state, agent, 'stable for %.3fs' % (now - self.pending_since), now)
+        if ok:
+            self.applied_state = self.pending_state
+            self.pending_state = None
+            return
 
-    def _apply(self, states, agent, reason):
+        self.pending_since = now
+
+    def _apply(self, states, agent, reason, now):
+        ok = True
         for pf, desired in states.items():
             previous = self.applied_state.get(pf)
-            if self.initialized and previous == desired:
+            force_reapply = pf in self._force_reapply
+            if self.initialized and previous == desired and not force_reapply:
+                continue
+
+            until = self._no_vf_until.get(pf, 0)
+            if until and now < until:
+                ok = False
                 continue
 
             try:
-                agent._set_pf_vfs_state(pf, desired)
+                success_count, total_count = agent._set_pf_vfs_state(pf, desired)
+                if total_count == 0:
+                    self._no_vf_until[pf] = now + VF_CHECK_INTERVAL
+                    ok = False
+                    continue
+                self._no_vf_until.pop(pf, None)
+                if success_count != total_count:
+                    ok = False
+                    continue
+                if force_reapply:
+                    self._force_reapply.discard(pf)
+                self.applied_state[pf] = desired
                 logger.info('bond %s pf %s: %s -> %s (%s)',
                             self.bond_name, pf,
                             'usable' if previous else 'blocked',
@@ -215,6 +252,47 @@ class BondControl(object):
                             reason)
             except Exception as err:
                 logger.warn('failed to set pf %s state for bond %s: %s', pf, self.bond_name, err)
+                ok = False
+
+        return ok
+
+    def _refresh_vf_cache(self, pfs, now, agent):
+        changed = False
+        for pf in pfs:
+            cached = self._vf_cache.get(pf)
+            if cached and now - cached['checked_at'] < VF_CHECK_INTERVAL:
+                continue
+            count = agent._get_vf_count(pf)
+            if cached is not None and count != cached['count']:
+                logger.debug('pf %s vf count changed %d -> %d', pf, cached['count'], count)
+                self._force_reapply.add(pf)
+                changed = True
+            self._vf_cache[pf] = {'count': count, 'checked_at': now}
+        return changed
+
+    def release(self, agent, reason, skip_pfs=None):
+        if skip_pfs is None:
+            skip_pfs = set()
+
+        pfs = set(self.applied_state.keys())
+        if self.pending_state:
+            pfs.update(self.pending_state.keys())
+
+        for pf in sorted(pfs):
+            if pf in skip_pfs:
+                continue
+
+            previous = self.applied_state.get(pf)
+            try:
+                agent._set_pf_vfs_state(pf, True)
+                if previous is None:
+                    previous_text = 'unknown'
+                else:
+                    previous_text = 'usable' if previous else 'blocked'
+                logger.info('bond %s pf %s: %s -> usable (%s)',
+                            self.bond_name, pf, previous_text, reason)
+            except Exception as err:
+                logger.warn('failed to restore pf %s state for bond %s: %s', pf, self.bond_name, err)
 
 
 class PhysicalBondMonitor(kvmagent.KvmAgent):
@@ -223,6 +301,7 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
     MIN_POLL_INTERVAL = 0.05
     DEFAULT_STABILIZE_WINDOW = 0.5
     MIN_STABILIZE_WINDOW = 0.1
+    RELEASE_AFTER_INACTIVE_TIMES = 3
 
     def __init__(self):
         super(PhysicalBondMonitor, self).__init__()
@@ -248,6 +327,8 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
         with self._state_lock:
             self._enabled = False
             self._stop_worker_locked()
+            self._release_all_bonds_locked('bond monitor stopped')
+            self._bond_states.clear()
 
     @kvmagent.replyerror
     def update_physical_bond_monitor(self, req):
@@ -292,9 +373,16 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
             else:
                 self._enabled = False
                 self._stop_worker_locked()
+                self._release_all_bonds_locked('bond monitor disabled')
                 self._bond_states.clear()
 
         return jsonobject.dumps(AgentRsp())
+
+    def _release_all_bonds_locked(self, reason):
+        for control in list(self._bond_states.values()):
+            if control is None:
+                continue
+            control.release(self, reason)
 
     def _ensure_worker_locked(self):
         if self._worker and self._worker.is_alive():
@@ -333,34 +421,56 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
             return
 
         bond_names = self._list_bonds()
+        expected_bonds = set(bond_names)
         now = time.time()
-        active_bonds = set()
+        managed_pfs = set()
+
+        stale = set(self._bond_states.keys()) - expected_bonds
+        for bond in stale:
+            control = self._bond_states.get(bond)
+            if control is not None:
+                control.release(self, 'bond monitor released')
+            logger.debug('remove stale bond control %s', bond)
+            self._bond_states.pop(bond, None)
 
         for bond_name in bond_names:
             info = self._read_bond_info(bond_name)
+            control = self._bond_states.get(bond_name)
             if info is None or not info.slaves:
+                if control is not None:
+                    control.inactive_times += 1
                 continue
 
             scenario = self._resolve_scenario(bond_name, info.mode)
             if not scenario:
+                if control is not None:
+                    config = self._bond_settings.get(bond_name) or {}
+                    if config.get('enabled') is False or info.mode:
+                        control.inactive_times = self.RELEASE_AFTER_INACTIVE_TIMES
+                    else:
+                        control.inactive_times += 1
                 continue
 
             debounce = self._bond_settings.get(bond_name, {}).get('stabilize') or self._default_stabilize
-            control = self._bond_states.get(bond_name)
             if control is None:
                 control = BondControl(bond_name, scenario, debounce)
                 self._bond_states[bond_name] = control
             else:
                 control.update_settings(scenario, debounce)
 
+            control.inactive_times = 0
+            managed_pfs.update(info.slaves.keys())
             desired = self._build_desired_state(info, scenario)
             control.update_desired(desired, now, self)
             control.try_apply(now, self)
-            active_bonds.add(bond_name)
 
-        stale = set(self._bond_states.keys()) - active_bonds
-        for bond in stale:
-            logger.debug('remove stale bond control %s', bond)
+        for bond, control in list(self._bond_states.items()):
+            if bond not in expected_bonds:
+                continue
+            if control.inactive_times < self.RELEASE_AFTER_INACTIVE_TIMES:
+                continue
+            control.release(self, 'bond monitor released', skip_pfs=managed_pfs)
+            logger.debug('remove inactive bond control %s after %d times', bond, control.inactive_times)
             self._bond_states.pop(bond, None)
 
     def _list_bonds(self):
@@ -474,7 +584,7 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
         vf_indexes = self._get_vf_indexes(pf_name)
         if not vf_indexes:
             logger.debug('pf %s has no vf to operate on', pf_name)
-            return
+            return 0, 0
 
         driver = self._get_pf_driver(pf_name)
         if enable:
@@ -493,6 +603,7 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
 
         if success_count > 0:
             logger.debug('pf %s vfs(%d/%d) state set to %s (driver: %s)', pf_name, success_count, len(vf_indexes), state, driver or 'unknown')
+        return success_count, len(vf_indexes)
 
     def _get_pf_driver(self, pf_name):
         path = '/sys/class/net/{0}/device/driver'.format(pf_name)
@@ -502,6 +613,9 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
             return os.path.basename(os.path.realpath(path))
         except OSError:
             return None
+
+    def _get_vf_count(self, pf_name):
+        return len(self._get_vf_indexes(pf_name))
 
     def _get_vf_indexes(self, pf_name):
         base_path = os.path.join("/sys/class/net", pf_name, "device")
