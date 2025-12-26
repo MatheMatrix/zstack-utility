@@ -1360,9 +1360,19 @@ class CbdHeartbeatController(AbstractStorageFencer):
         for covering_path in self.covering_paths:
             running_vm_uuids.update(find_ps_running_vm(covering_path))
 
+        logger.info("cbd fencer found running vms on ps %s: %s" % (self.ps_uuid, running_vm_uuids))
         for vm_uuid in running_vm_uuids:
             pid = linux.get_vm_pid(vm_uuid)
-            linux.kill_process(pid)
+            try:
+                logger.info("cbd fencer try to kill vm %s with pid %s" % (vm_uuid, pid))
+                linux.kill_process(pid, is_graceful=False)
+            except Exception as e:
+                # Actually, kill is only sending signal to the process,
+                # even if the VM in uninterruptible sleep, this command will not fail.
+                logger.warning("failed to kill vm %s with pid %s: %s" % (vm_uuid, pid, str(e)))
+                continue
+
+            logger.info("cbd fencer killed vm %s with pid %s" % (vm_uuid, pid))
             ret[vm_uuid] = pid
         return ret
 
