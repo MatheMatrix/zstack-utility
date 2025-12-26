@@ -9,7 +9,10 @@
     <property file="${zstack.source}/VERSION" />
     <property file="${zstack.source}/PJNUM"/>
     <property name="build.dir" location="${basedir}/target" />
-    <property name="war.file" location="${build.dir}/zstack.war" />
+    <condition property="war.filename" value="${OEM_NAME}.war" else="zstack.war">
+        <isset property="OEM_NAME"/>
+    </condition>
+    <property name="war.file" location="${build.dir}/${war.filename}" />
     <property name="war.dir" location="${build.dir}/zstack-assemble" />
     <property name="pypi.parent.dir" location="${war.dir}/static/" />
     <property name="zstack.install" location="${zstackutility.source}/installation/install.sh" />

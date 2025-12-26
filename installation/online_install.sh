@@ -31,7 +31,10 @@ ZSTACK_ALL_IN_ONE=${ZSTACK_ALL_IN_ONE-"http://download.zstack.org/releases/0.9/0
 WEBSITE=${WEBSITE-'mirrors.aliyun.com'}
 [ -z $WEBSITE ] && WEBSITE='mirrors.aliyun.com'
 ZSTACK_VERSION=$ZSTACK_INSTALL_ROOT/VERSION
-CATALINA_ZSTACK_PATH=apache-tomcat/webapps/zstack
+# OEM name variable - used to customize webapp path and war file name
+# This is the only line that needs to be changed for OEM builds
+oemname="zstack"
+CATALINA_ZSTACK_PATH=apache-tomcat/webapps/${oemname}
 CATALINA_ZSTACK_CLASSES=$CATALINA_ZSTACK_PATH/WEB-INF/classes
 ZSTACK_PROPERTIES=$CATALINA_ZSTACK_CLASSES/zstack.properties
 ZSTACK_DB_DEPLOYER=$CATALINA_ZSTACK_CLASSES/deploydb.sh
@@ -346,7 +349,7 @@ ia_install_python_gcc_rh(){
 
 ia_install_pip(){
     echo_subtitle "Install PIP"
-    pypi_source="file://${ZSTACK_INSTALL_ROOT}/apache-tomcat/webapps/zstack/static/pypi/simple"
+    pypi_source="file://${ZSTACK_INSTALL_ROOT}/apache-tomcat/webapps/${oemname}/static/pypi/simple"
     if [ ! -z $DEBUG ]; then
         easy_install -i $pypi_source --upgrade pip
     else
@@ -581,7 +584,7 @@ EOF
 
 is_install_virtualenv(){
     echo_subtitle "Install Virtualenv"
-    pypi_source="file://${ZSTACK_INSTALL_ROOT}/apache-tomcat/webapps/zstack/static/pypi/simple"
+    pypi_source="file://${ZSTACK_INSTALL_ROOT}/apache-tomcat/webapps/${oemname}/static/pypi/simple"
     if [ ! -z $DEBUG ]; then
         pip install -i $pypi_source --trusted-host localhost --ignore-installed virtualenv
     else
@@ -654,10 +657,10 @@ iz_unpack_zstack(){
 uz_upgrade_zstack(){
     echo_subtitle "Upgrade ZStack"
     cd $upgrade_folder
-    unzip -d zstack zstack.war >>$ZSTACK_INSTALL_LOG 2>&1
+    unzip -d zstack ${oemname}.war >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -ne 0 ];then
         rm -rf $upgrade_folder
-        fail "failed to unzip zstack.war to $upgrade_folder/zstack"
+        fail "failed to unzip ${oemname}.war to $upgrade_folder/zstack"
     fi
     if [ ! -z $DEBUG ]; then
         bash zstack/WEB-INF/classes/tools/install.sh zstack-ctl
@@ -675,9 +678,9 @@ uz_upgrade_zstack(){
     fi
 
     if [ ! -z $DEBUG ]; then
-        zstack-ctl upgrade_management_node --war-file $upgrade_folder/zstack.war 
+        zstack-ctl upgrade_management_node --war-file $upgrade_folder/${oemname}.war
     else
-        zstack-ctl upgrade_management_node --war-file $upgrade_folder/zstack.war >>$ZSTACK_INSTALL_LOG 2>&1
+        zstack-ctl upgrade_management_node --war-file $upgrade_folder/${oemname}.war >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     if [ $? -ne 0 ];then
         rm -rf $upgrade_folder
@@ -734,9 +737,9 @@ iz_unzip_tomcat(){
 iz_install_zstack(){
     echo_subtitle "Install ZStack into Tomcat"
     cd $ZSTACK_INSTALL_ROOT
-    unzip -d $CATALINA_ZSTACK_PATH zstack.war >>$ZSTACK_INSTALL_LOG 2>&1
+    unzip -d $CATALINA_ZSTACK_PATH ${oemname}.war >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -ne 0 ];then
-       fail "failed to install zstack.war to $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_PATH."
+       fail "failed to install ${oemname}.war to $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_PATH."
     fi
     pass
 }
@@ -1049,7 +1052,7 @@ EOF
 }
 
 check_zstack_server(){
-    curl --noproxy -H "Content-Type: application/json" -d '{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' http://localhost:8080/zstack/api >>$ZSTACK_INSTALL_LOG 2>&1
+    curl --noproxy -H "Content-Type: application/json" -d '{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' http://localhost:8080/${oemname}/api >>$ZSTACK_INSTALL_LOG 2>&1
     return $?
 }
 

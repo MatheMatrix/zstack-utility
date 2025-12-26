@@ -25,6 +25,9 @@ VERSION=${PRODUCT_VERSION:-""}
 VERSION_RELEASE_NR=`echo $PRODUCT_VERSION | awk -F '.' '{print $1"."$2"."$3}'`
 ZSTACK_INSTALL_ROOT=${ZSTACK_INSTALL_ROOT:-"/usr/local/zstack"}
 MINI_INSTALL_ROOT=${ZSTACK_INSTALL_ROOT}/zstack-mini/
+# OEM name variable - used to customize webapp path and war file name
+# This is the only line that needs to be changed for OEM builds
+oemname="zstack"
 CURRENT_PROJECT_NUM=${ZSTACK_INSTALL_ROOT}/PJNUM
 UPGRADE_PROJECT_NUM=${PROJECT_NUM:-"001"}
 
@@ -73,7 +76,7 @@ ZSTACK_ALL_IN_ONE=${ZSTACK_ALL_IN_ONE-"http://download.zstack.org/releases/0.8/0
 WEBSITE=${WEBSITE-'zstack.org'}
 [ -z $WEBSITE ] && WEBSITE='zstack.org'
 ZSTACK_VERSION=$ZSTACK_INSTALL_ROOT/VERSION
-CATALINA_ZSTACK_PATH=apache-tomcat/webapps/zstack
+CATALINA_ZSTACK_PATH=apache-tomcat/webapps/$oemname
 CATALINA_ZSTACK_CLASSES=$CATALINA_ZSTACK_PATH/WEB-INF/classes
 CATALINA_ZSTACK_LIBS=$CATALINA_ZSTACK_PATH/WEB-INF/lib
 ZSTACK_PROPERTIES=$CATALINA_ZSTACK_CLASSES/zstack.properties
@@ -706,7 +709,7 @@ set_tomcat_config() {
 
       <Host name="localhost"  appBase="webapps"
             unpackWARs="true" autoDeploy="true">
-        <Context path="/zstack" reloadable="false" crossContext="true" allowLinking="true"/>
+        <Context path="/$oemname" reloadable="false" crossContext="true" allowLinking="true"/>
 
         <Valve className="org.apache.catalina.valves.AccessLogValve" directory="logs"
                prefix="localhost_access_log" suffix=".txt"
@@ -1940,7 +1943,7 @@ iz_unpack_zstack(){
            fail "failed to unpack ${PRODUCT_NAME} package: $all_in_one."
         fi
         current_date=`date +%s`
-        zstack_build_time=`stat zstack.war|grep Modify|awk '{ print substr($0, index($0,$2)) }'`
+        zstack_build_time=`stat $oemname.war|grep Modify|awk '{ print substr($0, index($0,$2)) }'`
         zstack_build_date=`date --date="$zstack_build_time" +%s`
         if [ $zstack_build_date -gt $current_date ]; then
             fail "Your system time is earlier than ${PRODUCT_NAME} build time: $zstack_build_time . Please fix it."
@@ -1957,7 +1960,7 @@ iz_unpack_zstack(){
         # Remove zstack_all_in_one.tgz to reduce tmp space usage
         rm -rf $all_in_one
         current_date=`date +%s`
-        zstack_build_time=`stat zstack.war|grep Modify|awk '{ print substr($0, index($0,$2)) }'`
+        zstack_build_time=`stat $oemname.war|grep Modify|awk '{ print substr($0, index($0,$2)) }'`
         zstack_build_date=`date --date="$zstack_build_time" +%s`
         if [ $zstack_build_date -gt $current_date ]; then
             fail "Your system time is earlier than ${PRODUCT_NAME} build time: $zstack_build_time . Please fix it."
@@ -1970,8 +1973,8 @@ iz_check_space(){
     echo_subtitle "Checking space"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
 
-    # Check the /tmp directory have enough space to store unpackaged zstack.war and pip tmp files
-    zstack_war_size_B=`unzip -l $upgrade_folder/zstack.war | tail -n1 | awk '{ print $1 }'`
+    # Check the /tmp directory have enough space to store unpackaged $oemname.war and pip tmp files
+    zstack_war_size_B=`unzip -l $upgrade_folder/$oemname.war | tail -n1 | awk '{ print $1 }'`
     (( zstack_war_size_KiB = $zstack_war_size_B / 1024 ))
     (( pip_tmp_size_KiB = 768 * 1024 ))
     (( required_total_KiB = $pip_tmp_size_KiB + $zstack_war_size_KiB ))
@@ -2032,7 +2035,7 @@ uz_upgrade_tomcat(){
     echo_subtitle "Upgrade apache-tomcat"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     ZSTACK_HOME=${ZSTACK_HOME:-`zstack-ctl getenv ZSTACK_HOME | awk -F '=' '{ print $2 }'`}
-    ZSTACK_HOME=${ZSTACK_HOME:-"/usr/local/zstack/apache-tomcat/webapps/zstack/"}
+    ZSTACK_HOME=${ZSTACK_HOME:-"/usr/local/zstack/apache-tomcat/webapps/$oemname/"}
     TOMCAT_PATH=${ZSTACK_HOME%/apache-tomcat*}
 
     local TOMCAT_FILE_OLD=$(basename $TOMCAT_PATH/apache-tomcat-*.zip)
@@ -2052,7 +2055,7 @@ uz_upgrade_tomcat(){
         rm -rf $TOMCAT_NAME_NEW/{webapps,logs}/*
         /bin/mv $TOMCAT_NAME_OLD/logs/* $TOMCAT_NAME_NEW/logs/
         /bin/mv $TOMCAT_NAME_OLD/bin/setenv.sh $TOMCAT_NAME_NEW/bin/
-        /bin/mv $TOMCAT_NAME_OLD/webapps/zstack $TOMCAT_NAME_NEW/webapps/
+        /bin/mv $TOMCAT_NAME_OLD/webapps/$oemname $TOMCAT_NAME_NEW/webapps/
         unzip -o -d $TOMCAT_NAME_NEW/webapps $upgrade_folder/libs/tomcat_root_app.zip >>$ZSTACK_INSTALL_LOG 2>&1
         if [ $? -ne 0 ];then
            fail "failed to unzip Tomcat package: $upgrade_folder/libs/tomcat_root_app.zip."
@@ -2060,8 +2063,8 @@ uz_upgrade_tomcat(){
 
         rm -rf $TOMCAT_NAME_OLD.zip $TOMCAT_NAME_OLD apache-tomcat VERSION PJNUM
         ln -sf $TOMCAT_NAME_NEW apache-tomcat
-        ln -sf apache-tomcat/webapps/zstack/VERSION VERSION
-        ln -sf apache-tomcat/webapps/zstack/PJNUM PJNUM
+        ln -sf apache-tomcat/webapps/$oemname/VERSION VERSION
+        ln -sf apache-tomcat/webapps/$oemname/PJNUM PJNUM
         chown -R zstack:zstack $TOMCAT_NAME_NEW.zip $TOMCAT_NAME_NEW apache-tomcat VERSION PJNUM
         cd $upgrade_folder
 
@@ -2080,10 +2083,10 @@ uz_upgrade_zstack_ctl(){
     echo_subtitle "Upgrade ${PRODUCT_NAME,,}-ctl"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     cd $upgrade_folder
-    unzip -d zstack zstack.war >>$ZSTACK_INSTALL_LOG 2>&1
+    unzip -d zstack $oemname.war >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -ne 0 ];then
         cd /; rm -rf $upgrade_folder
-        fail "failed to unzip zstack.war to $upgrade_folder/zstack"
+        fail "failed to unzip $oemname.war to $upgrade_folder/zstack"
     fi
 
     if [ ! -z $DEBUG ]; then
@@ -2227,9 +2230,9 @@ uz_upgrade_zstack(){
     chown -R zstack:zstack $ZSTACK_INSTALL_ROOT/imagestore >/dev/null 2>&1
 
     if [ ! -z $DEBUG ]; then
-        zstack-ctl upgrade_management_node --war-file $upgrade_folder/zstack.war 
+        zstack-ctl upgrade_management_node --war-file $upgrade_folder/$oemname.war
     else
-        zstack-ctl upgrade_management_node --war-file $upgrade_folder/zstack.war >>$ZSTACK_INSTALL_LOG 2>&1
+        zstack-ctl upgrade_management_node --war-file $upgrade_folder/$oemname.war >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     if [ $? -ne 0 ];then
         cd /; rm -rf $upgrade_folder
@@ -2348,9 +2351,9 @@ iz_install_zstack(){
     echo_subtitle "Install ${PRODUCT_NAME} into Tomcat"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     cd $ZSTACK_INSTALL_ROOT
-    unzip -d $CATALINA_ZSTACK_PATH zstack.war >>$ZSTACK_INSTALL_LOG 2>&1
+    unzip -d $CATALINA_ZSTACK_PATH $oemname.war >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -ne 0 ];then
-       fail "failed to install zstack.war to $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_PATH."
+       fail "failed to install $oemname.war to $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_PATH."
     fi
     ln -s $CATALINA_ZSTACK_PATH/VERSION $ZSTACK_INSTALL_ROOT/VERSION
     ln -s $CATALINA_ZSTACK_PATH/PJNUM $ZSTACK_INSTALL_ROOT/PJNUM
@@ -4203,8 +4206,8 @@ echo "NFS Folder: $NFS_FOLDER" >> $ZSTACK_INSTALL_LOG
 [ -z $HTTP_FOLDER ] && HTTP_FOLDER=$ZSTACK_INSTALL_ROOT/http_root
 echo "HTTP Folder: $HTTP_FOLDER" >> $ZSTACK_INSTALL_LOG
 
-pypi_source_easy_install="file://${ZSTACK_INSTALL_ROOT}/apache-tomcat/webapps/zstack/static/pypi/simple"
-pypi_source_pip="file://${ZSTACK_INSTALL_ROOT}/apache-tomcat/webapps/zstack/static/pypi/simple"
+pypi_source_easy_install="file://${ZSTACK_INSTALL_ROOT}/apache-tomcat/webapps/${oemname}/static/pypi/simple"
+pypi_source_pip="file://${ZSTACK_INSTALL_ROOT}/apache-tomcat/webapps/${oemname}/static/pypi/simple"
 unzip_el6_rpm="${ZSTACK_INSTALL_ROOT}/libs/unzip*el6*.rpm"
 
 if [ `uname -m` == "x86_64" ]; then
@@ -4327,7 +4330,7 @@ echo_custom_pcidevice_xml_warning_if_need() {
     old_xml="$zstack_home/upgrade/`ls $zstack_home/upgrade/ -rt | tail -1`/zstack/WEB-INF/classes/mevoco/pciDevice/customPciDevices.xml"
     [ -f $old_xml ] || return
 
-    new_xml="$zstack_home/apache-tomcat/webapps/zstack/WEB-INF/classes/mevoco/pciDevice/customPciDevices.xml"
+    new_xml="$zstack_home/apache-tomcat/webapps/${oemname}/WEB-INF/classes/mevoco/pciDevice/customPciDevices.xml"
     diff $old_xml $new_xml >/dev/null || echo -e "$(tput setaf 3) Your old customPciDevices.xml was saved in $old_xml"
 }
 
