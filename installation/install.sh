@@ -2667,7 +2667,7 @@ cs_gen_sshkey(){
         chmod 600 $authorized_keys_file
     else
         ssh_pub_key=`cat $rsa_pub_key_file`
-        grep $ssh_pub_key $authorized_keys_file >/dev/null 2>&1
+        grep "$ssh_pub_key" $authorized_keys_file >/dev/null 2>&1
         if [ $? -ne 0 ]; then
             cat $rsa_pub_key_file >> $authorized_keys_file
         fi
