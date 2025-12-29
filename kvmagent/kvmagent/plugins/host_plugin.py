@@ -1279,13 +1279,26 @@ if __name__ == "__main__":
         exclude = "--exclude=" + cmd.excludePackages if cmd.excludePackages else ""
         updates = cmd.updatePackages if cmd.updatePackages else ""
         releasever = cmd.releaseVersion if cmd.releaseVersion else kvmagent.get_host_yum_release()
-        yum_cmd = "export YUM0={};yum --enablerepo=* clean all && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{} {} update {} -y"
-        yum_cmd = yum_cmd.format(releasever, ',zstack-experimental-mn' if cmd.enableExpRepo else '', exclude, updates)
-        #support update qemu-kvm and update OS
-        if releasever in ['c74', 'c76'] and "qemu-kvm" in updates or cmd.releaseVersion is not None:
-            update_qemu_cmd = "export YUM0={};yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn  swap -y -- remove qemu-img-ev -- install qemu-img " \
-                              "&& yum remove qemu-kvm-ev qemu-kvm-common-ev -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn install qemu-kvm qemu-kvm-common -y && "
-            yum_cmd = update_qemu_cmd.format(releasever) + yum_cmd
+        yum_cmd = "yum --enablerepo=* clean all && echo {}>/etc/yum/vars/YUM0 && ".format(releasever)
+        # If upgrade qemu-kvm and libvirt at the same time
+        # you need to upgrade qemu-kvm and then upgrade libvirt
+        # to ensure that libvirtd is rebooted after upgrading qemu-kvm
+        if "qemu-kvm" in updates or (cmd.releaseVersion != '' and "qemu-kvm" not in exclude):
+            update_qemu_cmd = "export YUM0={0};"
+            if releasever in ['c74', 'c76', 'c79']:
+                update_qemu_cmd += "yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn swap -y -- remove qemu-img-ev -- install qemu-img " \
+                                   "&& yum remove qemu-kvm-ev qemu-kvm-common-ev -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn update " \
+                                   "qemu-storage-daemon -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn install qemu-kvm qemu-kvm-common -y && "
+            else:
+                update_qemu_cmd += " yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn update qemu-kvm qemu-img qemu-storage-daemon -y;"
+            yum_cmd = yum_cmd + update_qemu_cmd.format(releasever)
+        if "libvirt" in updates or (cmd.releaseVersion != '' and "libvirt" not in exclude):
+            update_libvirt_cmd = "export YUM0={};yum remove libvirt libvirt-libs libvirt-client libvirt-python libvirt-admin libvirt-bash-completion libvirt-daemon-driver-lxc -y && export YUM0={};" \
+                                 "yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn install libvirt libvirt-client libvirt-python -y && "
+            yum_cmd = yum_cmd + update_libvirt_cmd.format(releasever, releasever)
+        upgrade_os_cmd = "export YUM0={};yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{} {} update {} -y"
+        yum_cmd = yum_cmd + upgrade_os_cmd.format(releasever, ',zstack-experimental-mn' if cmd.enableExpRepo else '',
+                                                  exclude, updates)
 
         rsp = UpdateHostOSRsp()
         if shell.run("which yum") != 0:
@@ -1297,11 +1310,15 @@ if __name__ == "__main__":
         elif shell.run("export YUM0={};yum --disablerepo=* --enablerepo=qemu-kvm-ev-mn repoinfo".format(releasever)) != 0:
             rsp.success = False
             rsp.error = "no qemu-kvm-ev-mn repo found, cannot update host os"
-        elif shell.run(yum_cmd) != 0:
-            rsp.success = False
-            rsp.error = "failed to update host os using zstack-mn,qemu-kvm-ev-mn repo"
         else:
-            logger.debug("successfully run: %s" % yum_cmd)
+            shell_cmd = shell.ShellCmd(yum_cmd, None, False)
+            shell_cmd(False)
+            if shell_cmd.return_code == 0:
+                logger.debug("successfully run: %s" % yum_cmd)
+            else:
+                rsp.success = False
+                rsp.error = "failed to update host os using zstack-mn,qemu-kvm-ev-mn repo, stdout: %s, stderr: %s" % (
+                shell_cmd.stdout, shell_cmd.stderr)
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
