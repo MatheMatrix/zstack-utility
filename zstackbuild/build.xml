@@ -230,7 +230,7 @@
     <target name="zip-war">
         <jar destfile="${war.file}" basedir="${war.dir}"/>
 
-        <echo message="successfully build zstack.war at ${war.file}" />
+        <echo message="successfully build ${war.filename} at ${war.file}" />
     </target>
 
     <!-- For UI 1.x -->
@@ -475,7 +475,7 @@
     <target name="build-woodpecker" depends="prepare, build-zstacklib, buildtestagent, build-testconf" />
     <target name="all" depends="build-war, build-testconf, buildtestagent">
         <echo message="--------------------------------------------------------------------" />
-        <echo message="successfully build zstack.war at ${build.dir}/zstack.war" />
+        <echo message="successfully build ${war.filename} at ${war.file}" />
         <echo message="successfully build zstacktestagent.tar.bz at ${testagent.tar.file}" />
         <echo message="successfully copy zstck.properties conf to ${testconf.dir}" />
         <echo message="--------------------------------------------------------------------" />

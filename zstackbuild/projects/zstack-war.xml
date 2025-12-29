@@ -16,7 +16,7 @@
             <arg value="${zstack.source}" />
         </exec>
 
-        <copy file="${zstack.source}/build/target/zstack.war" todir="${build.dir}" overwrite="true" />
+        <copy file="${zstack.source}/build/target/zstack.war" tofile="${war.file}" overwrite="true" />
 
         <exec executable="bash" dir="${zstack.source}" failonerror="true">
             <arg value="${build.zstack.pyapis.script}" />
