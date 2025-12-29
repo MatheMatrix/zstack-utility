@@ -54,6 +54,7 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
         self.running_vm_list = []
         self.qga_state = {}
         self.tools_state = {}
+        self.time_protocol = {}
         self.running_vm_lock = threading.Lock()
         self.zwatch_qga_lock = threading.Lock()
 
@@ -85,6 +86,8 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
                             vmUuid: qgaStatus.qgaRunning for vmUuid, qgaStatus in vm_states.items()
                         }, {
                             vmUuid: qgaStatus.zsToolsFound for vmUuid, qgaStatus in vm_states.items()
+                        }, {
+                            vmUuid: qgaStatus.timeProtocol for vmUuid, qgaStatus in vm_states.items()
                         })
                         # remove stopped vm which in running_vm_list
                         logger.debug('debug: vm list: %s' % self.running_vm_list)
@@ -209,22 +212,24 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
         http.json_dump_post(url, VmNicInfo(uuid, nic_info), {'commandpath': '/vm/nicinfo/sync'})
 
     @lock.lock('qga_state_report_to_mn')
-    def report_vm_qga_state(self, qga_state, tools_state):
+    def report_vm_qga_state(self, qga_state, tools_state, time_protocol):
         if not qga_state or not tools_state:
             return
-        if self.qga_state == qga_state and self.tools_state == tools_state:
+        if self.qga_state == qga_state and self.tools_state == tools_state and self.time_protocol == time_protocol:
             return
         else:
             self.qga_state = qga_state
             self.tools_state = tools_state
+            self.time_protocol = time_protocol
         qga_state_json = json.dumps(self.qga_state)
         tools_state_json = json.dumps(self.tools_state)
-        logger.debug('transmitting vm qga state [%s] and tools state [%s] to management node' % (
-            qga_state_json, tools_state_json))
+        time_protocol_json = json.dumps(self.time_protocol)
+        logger.debug('transmitting vm qga state [%s] and tools state [%s] and time protocol [%s] to management node' % (
+            qga_state_json, tools_state_json, time_protocol_json))
         url = self.config.get(kvmagent.SEND_COMMAND_URL)
         if not url:
             raise kvmagent.KvmError("cannot find SEND_COMMAND_URL, unable to transmit vm operation to management node")
-        http.json_dump_post(url, VmQgaState(qga_state_json, tools_state_json), {'commandpath': '/vm/qgastate/report'})
+        http.json_dump_post(url, VmQgaState(qga_state_json, tools_state_json, time_protocol_json), {'commandpath': '/vm/qgastate/report'})
 
 
 class VmQgaStatus:
@@ -234,6 +239,7 @@ class VmQgaStatus:
         self.version = ""
         self.platForm = ""
         self.osType = ""
+        self.timeProtocol = None
 
 
 class VmNicInfo:
@@ -243,9 +249,10 @@ class VmNicInfo:
 
 
 class VmQgaState:
-    def __init__(self, qga_state, tools_state):
+    def __init__(self, qga_state, tools_state, time_protocol):
         self.qgaState = qga_state
         self.toolsState = tools_state
+        self.timeProtocol = time_protocol
 
 
 @vm_plugin.LibvirtAutoReconnect
@@ -298,6 +305,9 @@ def get_guest_tools_states(domains):
                 if not config:
                     logger.debug("read /usr/local/zstack/guesttools failed")
                     return qga_status
+                time_protocol = qga.guest_exec_bash_no_exitcode(
+                    "grep -v '^[[:space:]]*#' /etc/chrony.conf | grep '/dev/ptp0' > /dev/null && echo 'ptp' || echo 'ntp'").strip()
+                qga_status.timeProtocol = time_protocol
             except Exception as e:
                 logger.debug("read /usr/local/zstack/guesttools failed {}".format(e))
                 return qga_status
