@@ -7371,7 +7371,7 @@ class VmPlugin(kvmagent.KvmAgent):
             vm = Vm.from_StartVmCmd(cmd)
             if getattr(cmd, 'HostMinimumFreeMemorySize', None):
                 memSize = linux.get_free_memory()
-                minSize = sizeunit.get_size(cmd.HostMinimumFreeMemorySize)
+                minSize = cmd.HostMinimumFreeMemorySize
                 if memSize < minSize:
                     raise kvmagent.KvmError(
                         "unable to start vm[uuid:{}, name:{}], available memory [{}] is less than expected[{}]".format(
