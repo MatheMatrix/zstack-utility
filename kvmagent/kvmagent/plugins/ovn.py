@@ -436,17 +436,17 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
         logger.debug("cmd: %s: %s" % (cmd, cmd.__dict__))
         logger.debug("cmd nicMap: %s: %s" % (cmd.nicMap, cmd.nicMap.__dict__))
         vsctl = ovn.VsCtl()
-        
+
         if cmd.sync:
             oldNics = vsctl.getVnics()
-            
+
             for oldNic in oldNics:
                 found = False
                 for nicName, nicUuid in cmd.nicMap.__dict__.items():
                     if oldNic == nicName:
                         found = True
                         break
-                        
+
                 if not found:
                     vsctl.delVnic(oldNic)
 
@@ -510,6 +510,31 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
 
         return jsonobject.dumps(rsp)
 
+    def parse_requested_chassis(self, data):
+        """
+        Parses a string representing a chassis ID or a list of IDs.
+        Handles formats: '[]', 'uuid', and '[uuid1, uuid2]'.
+        """
+        # Remove leading and trailing whitespace
+        data = data.strip()
+
+        # Check if the data is in list format (e.g., '[]' or '[uuid1, uuid2]')
+        if data.startswith('[') and data.endswith(']'):
+            # Remove the outer brackets
+            content = data[1:-1].strip()
+
+            # If the content inside brackets is empty, return an empty list
+            if not content:
+                return []
+
+            # Split by comma and strip whitespace from each individual ID
+            # The filter 'if item.strip()' prevents empty strings from being added
+            return [item.strip() for item in content.split(',') if item.strip()]
+
+        # Handle single value format (e.g., 'uuid')
+        # If data is an empty string, return an empty list, otherwise wrap it in a list
+        return [data] if data else []
+
     @kvmagent.replyerror
     @bash.in_bash
     def ovn_check_local_port(self, req):
@@ -559,7 +584,9 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
                 continue
 
             try:
-                requestedChassis = ast.literal_eval(requestedChassis.strip())
+                requestedChassis = requestedChassis.strip()
+                requestedChassis = requestedChassis.replace('\\n',  '');
+                requestedChassis = self.parse_requested_chassis(requestedChassis)
             except (ValueError, SyntaxError):
                 errStr.append("Failed to parse requested_chassis for lsp %s: %s" % (lsp, requestedChassis))
                 continue
