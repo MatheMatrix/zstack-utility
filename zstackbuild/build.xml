@@ -9,8 +9,8 @@
     <property file="${zstack.source}/VERSION" />
     <property file="${zstack.source}/PJNUM"/>
     <property name="build.dir" location="${basedir}/target" />
-    <condition property="war.filename" value="${OEM_NAME}.war" else="zstack.war">
-        <isset property="OEM_NAME"/>
+    <condition property="war.filename" value="${APP_NAME}.war" else="zstack.war">
+        <isset property="APP_NAME"/>
     </condition>
     <property name="war.file" location="${build.dir}/${war.filename}" />
     <property name="war.dir" location="${build.dir}/zstack-assemble" />
@@ -111,7 +111,7 @@
     <import file="${basedir}/projects/zstack-zwatch.xml" optional="false" />
     <!-- zstack-baremetalpxeserver need zwatch generate agent_version file -->
     <import file="${basedir}/projects/zstack-baremetalpxeserver.xml" optional="false" />
-    <import file="${basedir}/projects/oem-build.xml" optional="true" />
+    <import file="${basedir}/projects/app-build.xml" optional="true" />
 
 
     <target name="prepare">
@@ -436,7 +436,7 @@
             </sequential>
         </parallel>
 
-        <antcall target="append-oem-config-inner" />
+        <antcall target="append-app-config-inner" />
 
         <makeDir dir="${libs.dir}" />
         <exec executable="cp" dir="${libs.dir}" failonerror="true">

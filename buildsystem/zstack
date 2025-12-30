@@ -1,8 +1,8 @@
 #!/bin/sh
 
-# OEM name variable - used to customize webapp path and war file name
-# This is the only line that needs to be changed for OEM builds
-oemname="zstack"
+# APP name variable - used to customize webapp path and war file name
+# This is the only line that needs to be changed for APP builds
+app_name="zstack"
 
 SCRIPT="$0"
 
@@ -30,7 +30,7 @@ unzip_elasticsearch() {
 }
 
 unzip_tomcat_deploy_war() {
-    echo "unzip tomcat and deploy ${oemname}.war"
+    echo "unzip tomcat and deploy ${app_name}.war"
 
     tomcat_path=$ZS_HOME/thirdparty/apache-tomcat*
     ls $tomcat_path &>/dev/null
@@ -41,9 +41,9 @@ unzip_tomcat_deploy_war() {
     tar xzf $tomcat_path -C $RUNTIME_HOME
     tcathome=`ls -d $RUNTIME_HOME/apache-tomcat*`
 
-    warfile=$ZS_HOME/lib/${oemname}.war
+    warfile=$ZS_HOME/lib/${app_name}.war
     check_file $warfile
-    wardir=$tcathome/webapps/${oemname}
+    wardir=$tcathome/webapps/${app_name}
 
     mkdir -p $wardir
     unzip $warfile -d $wardir &>/dev/null
