@@ -10136,6 +10136,17 @@ host side snapshot files chian:
                 rsp.error = "failed to handle_vfio_irq_conflict_with_addr: %s, details: %s %s" % (err, o, e)
 
         logger.debug("attach-device %s to %s: %s, %s" % (spath, cmd.vmUuid, o, e))
+
+        @LibvirtAutoReconnect
+        def call_libvirt(conn):
+            return conn.lookupByName(cmd.vmUuid)
+
+        qga = VmQga(call_libvirt())
+        pci_mapping = pci.get_pci_passthrough_mapping(qga.domain)
+        vm_addr = next((k for k, v in pci_mapping.items() if v == addr), None)
+        if vm_addr:
+            logger.info("the vm pci address: %s" % vm_addr)
+
         return jsonobject.dumps(rsp)
 
     @in_bash
