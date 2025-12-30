@@ -20,6 +20,7 @@ class VmQgaStatus:
         self.version = ""
         self.platForm = ""
         self.osType = ""
+        self.timeProtocol = ""
 
 
 def get_virt_domain(vmUuid):
@@ -94,6 +95,9 @@ def get_guest_tools_states(vmUuids):
                 if not config:
                     logger.debug("read /usr/local/zstack/guesttools failed")
                     return qga_status
+                time_protocol = qga.guest_exec_bash_no_exitcode(
+                    "grep -v '^[[:space:]]*#' /etc/chrony.conf | grep '/dev/ptp0' > /dev/null && echo 'ptp' || echo 'ntp'").strip()
+                qga_status.timeProtocol = time_protocol
             except Exception as e:
                 logger.debug("read /usr/local/zstack/guesttools failed {}".format(e))
                 return qga_status

@@ -1008,6 +1008,7 @@ class GetVmGuestToolsInfoRsp(kvmagent.AgentResponse):
         self.version = None
         self.status = None
         self.features = {}
+        self.timeProtocol = None
 
 class GetVmMetricsRoutingStatusRsp(kvmagent.AgentResponse):
     def __init__(self):
@@ -9742,7 +9743,7 @@ host side snapshot files chian:
 
         qga = VmQga(call_libvirt())
         if qga.state != VmQga.QGA_STATE_RUNNING:
-            return VmPlugin.GUESTTOOLS_STATE_NOT_CONNECT, None
+            return VmPlugin.GUESTTOOLS_STATE_NOT_CONNECT, None, None
         try:
             version_data = qga.guest_exec_bash_no_exitcode(
                 "/usr/local/zstack/zwatch-vm-agent/zwatch-vm-agent -version 2>/dev/null").strip()
@@ -9750,12 +9751,16 @@ host side snapshot files chian:
             version_data = None
         running_data = qga.guest_exec_bash_no_exitcode(
             "ps -ef | grep zwatch-vm-agent | grep -v grep > /dev/null && echo 'True' || echo 'False'").strip()
-        if running_data and version_data and "True" == running_data:
-            return VmPlugin.GUESTTOOLS_STATE_RUNNING, version_data
-        elif running_data and version_data and "False" == running_data:
-            return VmPlugin.GUESTTOOLS_STATE_NOT_RUNNING, version_data
 
-        return VmPlugin.GUESTTOOLS_STATE_NOT_RUNNING, None
+        time_protocol = qga.guest_exec_bash_no_exitcode(
+            "grep -v '^[[:space:]]*#' /etc/chrony.conf | grep '/dev/ptp0' > /dev/null && echo 'ptp' || echo 'ntp''").strip()
+
+        if running_data and version_data and "True" == running_data:
+            return VmPlugin.GUESTTOOLS_STATE_RUNNING, version_data, time_protocol
+        elif running_data and version_data and "False" == running_data:
+            return VmPlugin.GUESTTOOLS_STATE_NOT_RUNNING, version_data, time_protocol
+
+        return VmPlugin.GUESTTOOLS_STATE_NOT_RUNNING, None, None
 
     @kvmagent.replyerror
     def get_vm_guest_tools_info(self, req):
@@ -9768,7 +9773,7 @@ host side snapshot files chian:
             self.get_vm_guest_tools_info_for_windows_guest(vm_uuid, rsp)
         elif cmd.platform.lower() == 'linux':
             try:
-                rsp.status, rsp.version = self.get_linux_vm_guest_tools_info(vm_uuid)
+                rsp.status, rsp.version, rsp.timeProtocol = self.get_linux_vm_guest_tools_info(vm_uuid)
             except Exception as e:
                 rsp.success = False
                 rsp.error = e.message
