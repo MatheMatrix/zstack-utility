@@ -21,7 +21,7 @@ from utils.sql_query import MySqlCommandLineQuery
 import zstackctl.ctl
 from zstacklib import *
 
-oemname = get_oem_name_from_properties_preload()
+app_name = get_app_name_from_properties_preload()
 
 def info_verbose(*msg):
     if len(msg) == 1:
@@ -290,7 +290,7 @@ class CollectFromYml(object):
     check = False
     check_result = {}
     max_thread_num = 20
-    DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/%s/' % oemname
+    DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/%s/' % app_name
     HA_KEEPALIVED_CONF = "/etc/keepalived/keepalived.conf"
     summary = Summary()
 

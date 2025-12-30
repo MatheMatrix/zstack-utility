@@ -53,7 +53,7 @@ enable_spice_tls = None
 enable_cgroup_device_acl = None
 isRemoteCube = False
 reserved_ports = "49152-49215"
-oem_name = ""
+app_name = ""
 
 
 # get parameter from shell
@@ -175,7 +175,7 @@ def load_zstacklib():
         zstacklib_args.zstack_apt_source = zstack_repo
     else :
         zstacklib_args.yum_server = yum_server
-    zstacklib_args.oem_name = oem_name
+    zstacklib_args.app_name = app_name
     zstacklib = ZstackLib(zstacklib_args)
 
 
@@ -870,21 +870,21 @@ def do_systemd_config():
     run_remote_command(command, host_post_info)
 
 
-def inject_oem_env(host_post_info):
-    if not oem_name:
+def inject_app_env(host_post_info):
+    if not app_name:
         return
 
     init_script = "/etc/init.d/zstack-kvmagent"
 
     cmd = """
-echo 'export OEM_NAME="{val}"' > /etc/profile.d/zstack_oem.sh
+echo 'export APP_USER="{val}"' > /etc/profile.d/zstack_app.sh
 
 if [ -f {file} ]; then
-    grep -q "export OEM_NAME=" {file} || sed -i '2i export OEM_NAME="{val}"' {file}
-fi""".format(file=init_script, val=oem_name)
+    grep -q "export APP_USER=" {file} || sed -i '2i export APP_USER="{val}"' {file}
+fi""".format(file=init_script, val=app_name)
 
-    host_post_info.post_label = "ansible.shell.inject_oem"
-    host_post_info.post_label_param = "Inject OEM Name to Agent"
+    host_post_info.post_label = "ansible.shell.inject_app_name"
+    host_post_info.post_label_param = "Inject APP Name to Agent"
 
     run_remote_command(cmd, host_post_info)
 
@@ -998,7 +998,7 @@ do_ksm_config()
 modprobe_usb_module()
 modprobe_mpci_module()
 set_gpu_blacklist()
-inject_oem_env(host_post_info)
+inject_app_env(host_post_info)
 start_kvmagent()
 
 host_post_info.start_time = start_time

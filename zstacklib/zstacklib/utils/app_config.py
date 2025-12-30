@@ -2,8 +2,8 @@ import os
 
 
 
-def get_oem_name():
-    name = os.environ.get('OEM_NAME')
+def get_app_name():
+    name = os.environ.get('APP_USER')
     if name:
         return name
     else:

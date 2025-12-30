@@ -55,7 +55,7 @@ from collections import OrderedDict
 
 
 
-oemname = get_oem_name_from_properties_preload()
+app_name = get_app_name_from_properties_preload()
 
 mysql_db_config_script='''
 #!/bin/bash
@@ -1033,9 +1033,9 @@ def check_ha():
 
 class Ctl(object):
     IS_AARCH64 = platform.machine() == 'aarch64'
-    DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/%s/' % oemname
+    DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/%s/' % app_name
     USER_ZSTACK_HOME_DIR = os.path.expanduser('~zstack')
-    ZSTACK_TOOLS_DIR = os.path.join(USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/%s/WEB-INF/classes/tools/') % oemname
+    ZSTACK_TOOLS_DIR = os.path.join(USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/%s/WEB-INF/classes/tools/') % app_name
     LAST_ALIVE_MYSQL_IP = "MYSQL_LATEST_IP"
     LAST_ALIVE_MYSQL_PORT = "MYSQL_LATEST_PORT"
     LOGGER_DIR = "/var/log/zstack/"
@@ -1657,9 +1657,9 @@ def create_check_mgmt_node_command(timeout=10, mn_node='127.0.0.1'):
     mn_port = get_mn_port()
     # tag::get_zstack_status[]
     if what_tool == USE_CURL:
-        return ShellCmd('''curl --noproxy --connect-timeout=1 --retry %s --retry-delay 0 --retry-max-time %s --max-time %s -H "Content-Type: application/json" -d '{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' http://%s:%s/%s/api''' % (timeout, timeout, timeout, mn_node, mn_port, oemname))
+        return ShellCmd('''curl --noproxy --connect-timeout=1 --retry %s --retry-delay 0 --retry-max-time %s --max-time %s -H "Content-Type: application/json" -d '{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' http://%s:%s/%s/api''' % (timeout, timeout, timeout, mn_node, mn_port, app_name))
     elif what_tool == USE_WGET:
-        return ShellCmd('''wget --no-proxy -O- --tries=%s --timeout=1  --header=Content-Type:application/json --post-data='{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' http://%s:%s/%s/api''' % (timeout, mn_node, mn_port, oemname))
+        return ShellCmd('''wget --no-proxy -O- --tries=%s --timeout=1  --header=Content-Type:application/json --post-data='{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' http://%s:%s/%s/api''' % (timeout, mn_node, mn_port, app_name))
         # end::get_zstack_status[]
     else:
         return None
@@ -2474,7 +2474,7 @@ EOF
         mn_port = ctl.read_property('RESTFacade.port')
         if not mn_port:
             mn_port = 8080
-        ShellCmd(ctl.http_call_cmd % (self.reportPath, simplejson.dumps(config_cmd), config_cmd.mnIp, mn_port, oemname))
+        ShellCmd(ctl.http_call_cmd % (self.reportPath, simplejson.dumps(config_cmd), config_cmd.mnIp, mn_port, app_name))
         logger.debug('report properties updated, propertiesDigestValue: %s, mnIp: %s' % (config_cmd.propertiesDigestValue, config_cmd.mnIp))
 
     def run(self, args):
@@ -3967,7 +3967,7 @@ class AddManagementNodeCmd(Command):
                 "mkdir -p /usr/local/zstack/apache-tomcat/webapps/{name}/static/zstack-repo && "
                 "ln -s /opt/zstack-dvd/x86_64 /usr/local/zstack/apache-tomcat/webapps/{name}/static/zstack-repo/x86_64 && "
                 "ln -s /opt/zstack-dvd/aarch64 /usr/local/zstack/apache-tomcat/webapps/{name}/static/zstack-repo/aarch64"
-                ).format(name=oemname)
+                ).format(name=app_name)
 
         run_remote_command(command, host_info, True, True)
         if status != 0:
@@ -7772,7 +7772,7 @@ class InstallManagementNodeCmd(Command):
         apache_tomcat = None
         zstack = None
         apache_tomcat_zip_name = None
-        war_name = '%s.war' % oemname
+        war_name = '%s.war' % app_name
         for file in os.listdir(args.source_dir):
             full_path = os.path.join(args.source_dir, file)
             if file.startswith('apache-tomcat') and file.endswith('zip') and os.path.isfile(full_path):
@@ -7913,12 +7913,12 @@ class InstallManagementNodeCmd(Command):
       script: $post_script
 
     - name: copy zstack.properties
-      copy: src=$properties_file dest={{root}}/apache-tomcat/webapps/{oemname}/WEB-INF/classes/zstack.properties
+      copy: src=$properties_file dest={{root}}/apache-tomcat/webapps/{app_name}/WEB-INF/classes/zstack.properties
 
     - name: mount zstack-dvd
       file:
         src: /opt/zstack-dvd
-        dest: $install_path/apache-tomcat/webapps/{oemname}/static/zstack-dvd
+        dest: $install_path/apache-tomcat/webapps/{app_name}/static/zstack-dvd
         state: link
         force: yes
 
@@ -7928,7 +7928,7 @@ class InstallManagementNodeCmd(Command):
     - name: change owner of /var/lib/zstack/
       shell: "mkdir -p /var/lib/zstack/; chown -R zstack:zstack /var/lib/zstack/"
 '''
-        yaml = yaml.replace('{oemname}', oemname)
+        yaml = yaml.replace('{app_name}', app_name)
         pre_script = '''
 {0}
 
@@ -7978,7 +7978,7 @@ foldername="$${filename%.*}"
 apache_path=$install_path/apache-tomcat
 unzip $apache -d $install_path
 ln -s $install_path/$$foldername $$apache_path
-unzip $zstack -d $$apache_path/webapps/{oemname}
+unzip $zstack -d $$apache_path/webapps/{app_name}
 
 chmod a+x $$apache_path/bin/*
 
@@ -7986,7 +7986,7 @@ cat >> $$apache_path/bin/setenv.sh <<EOF
 export CATALINA_OPTS=" -Djava.net.preferIPv4Stack=true -Dcom.sun.management.jmxremote=true"
 EOF
 
-install_script="$$apache_path/webapps/{oemname}/WEB-INF/classes/tools/install.sh"
+install_script="$$apache_path/webapps/{app_name}/WEB-INF/classes/tools/install.sh"
 
 eval "bash $$install_script zstack-ctl"
 eval "bash $$install_script zstack-cli"
@@ -7994,9 +7994,9 @@ eval "bash $$install_script zstack-cli"
 set +e
 grep "ZSTACK_HOME" ~/.bashrc > /dev/null
 if [ $$? -eq 0 ]; then
-    sed -i "s#export ZSTACK_HOME=.*#export ZSTACK_HOME=$$apache_path/webapps/{oemname}#" ~/.bashrc
+    sed -i "s#export ZSTACK_HOME=.*#export ZSTACK_HOME=$$apache_path/webapps/{app_name}#" ~/.bashrc
 else
-    echo "export ZSTACK_HOME=$$apache_path/webapps/{oemname}" >> ~/.bashrc
+    echo "export ZSTACK_HOME=$$apache_path/webapps/{app_name}" >> ~/.bashrc
 fi
 
 which ansible-playbook &> /dev/null
@@ -8004,7 +8004,7 @@ if [ $$? -ne 0 ]; then
     pip install -i file://$pypi_path/simple --trusted-host localhost ansible
 fi
 '''
-        post_script = post_script.replace('{oemname}', oemname)
+        post_script = post_script.replace('{app_name}', app_name)
         t = string.Template(post_script)
         post_script = t.substitute({
             'install_path': args.install_path,
@@ -8033,9 +8033,9 @@ grep '^root' /etc/sudoers >/dev/null || echo 'root        ALL=(ALL)       NOPASS
 sed -i '/requiretty$$/d' /etc/sudoers
 chown -R zstack.zstack $install_path
 mkdir /home/zstack && chown -R zstack.zstack /home/zstack
-zstack-ctl setenv ZSTACK_HOME=$install_path/apache-tomcat/webapps/{oemname}
+zstack-ctl setenv ZSTACK_HOME=$install_path/apache-tomcat/webapps/{app_name}
 '''
-        setup_account = setup_account.replace('{oemname}', oemname)
+        setup_account = setup_account.replace('{app_name}', app_name)
         t = string.Template(setup_account)
         setup_account = t.substitute({
             'install_path': args.install_path
@@ -8156,7 +8156,7 @@ yum clean all >/dev/null 2>&1
         command = "yum --disablerepo=* --enablerepo=zstack-mn repoinfo | grep Repo-baseurl | awk -F ' : ' '{ print $NF }'"
         (status, baseurl, stderr) = shell_return_stdout_stderr(command)
         if status != 0:
-            baseurl = 'http://localhost:%s/%s/static/zstack-dvd/' % (ctl.get_mn_port(), oemname)
+            baseurl = 'http://localhost:%s/%s/static/zstack-dvd/' % (ctl.get_mn_port(), app_name)
 
         with open('/opt/zstack-dvd/{}/{}/.repo_version'.format(ctl.BASEARCH, ctl.ZS_RELEASE)) as f:
             repoversion = f.readline().strip()
@@ -8662,7 +8662,7 @@ class UpgradeManagementNodeCmd(Command):
                 shell('cp %s %s' % (new_war.path, webapp_dir))
                 ShellCmd('unzip %s -d zstack' % os.path.basename(new_war.path), workdir=webapp_dir)()
                 #create local repo folder for possible zstack local yum repo
-                zstack_dvd_repo = '{}/{}/static/zstack-repo'.format(webapp_dir, oemname)
+                zstack_dvd_repo = '{}/{}/static/zstack-repo'.format(webapp_dir, app_name)
                 shell('rm -f {0}; mkdir -p {0};ln -s /opt/zstack-dvd/x86_64 {0}/x86_64; ln -s /opt/zstack-dvd/aarch64 {0}/aarch64; ln -s /opt/zstack-dvd/mips64el {0}/mips64el; ln -s /opt/zstack-dvd/loongarch64 {0}/loongarch64; chown -R zstack:zstack {0}'.format(zstack_dvd_repo))
 
             def restore_config():
@@ -8671,8 +8671,8 @@ class UpgradeManagementNodeCmd(Command):
 
             def restore_custom_pcidevice_xml():
                 info('restoring the customPciDevices.xml ...')
-                custom_pcidevice_xml_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/%s/WEB-INF/classes/mevoco/pciDevice/' % oemname)
-                custom_pcidevice_xml_backup_path = os.path.join(upgrade_tmp_dir, '%s/WEB-INF/classes/mevoco/pciDevice/customPciDevices.xml' % oemname)
+                custom_pcidevice_xml_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/%s/WEB-INF/classes/mevoco/pciDevice/' % app_name)
+                custom_pcidevice_xml_backup_path = os.path.join(upgrade_tmp_dir, '%s/WEB-INF/classes/mevoco/pciDevice/customPciDevices.xml' % app_name)
                 if not os.path.isfile(custom_pcidevice_xml_backup_path):
                     info('no backup customPciDevices.xml found')
                     return
@@ -8686,8 +8686,8 @@ class UpgradeManagementNodeCmd(Command):
 
             def update_gray_upgrade_json():
                 info('update the grayUpgrade.json ...')
-                gray_upgrade_json_backup_path = os.path.join(upgrade_tmp_dir, '%s/WEB-INF/classes/grayUpgrade/grayUpgrade.json' % oemname)
-                gray_upgrade_json_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/%s/WEB-INF/classes/grayUpgrade/' % oemname)
+                gray_upgrade_json_backup_path = os.path.join(upgrade_tmp_dir, '%s/WEB-INF/classes/grayUpgrade/grayUpgrade.json' % app_name)
+                gray_upgrade_json_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/%s/WEB-INF/classes/grayUpgrade/' % app_name)
                 if not os.path.exists(gray_upgrade_json_backup_path):
                     info('no backup grayUpgrade.json found')
                     return
@@ -8934,7 +8934,7 @@ class UpgradeMultiManagementNodeCmd(Command):
                 SpinnerInfo.spinner_status = reset_dict_value(SpinnerInfo.spinner_status,False)
                 SpinnerInfo.spinner_status['upgrade'] = True
                 ZstackSpinner(spinner_info)
-                war_file = ctl.zstack_home + "/../../../apache-tomcat/webapps/%s.war" % oemname
+                war_file = ctl.zstack_home + "/../../../apache-tomcat/webapps/%s.war" % app_name
                 ssh_key = ctl.zstack_home + "/WEB-INF/classes/ansible/rsaKeys/id_rsa"
                 status,output = commands.getstatusoutput("zstack-ctl upgrade_management_node --host %s --ssh-key %s --war-file %s" % (mn_ip, ssh_key, war_file))
                 if status != 0:
@@ -10341,7 +10341,7 @@ class StartUiCmd(Command):
         if not mn_port:
             mn_port = 8080
         content_json = simplejson.dumps(sns_cmd)
-        http_cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/sns/globalpropertyupdated" -d \'%s\' --retry 5 http://%s:%s/%s/asyncrest/sendcommand' % (content_json, mn_ip, mn_port, oemname)
+        http_cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/sns/globalpropertyupdated" -d \'%s\' --retry 5 http://%s:%s/%s/asyncrest/sendcommand' % (content_json, mn_ip, mn_port, app_name)
         logger.debug('report sns global property updated')
         ShellCmd(http_cmd)
 
@@ -11148,7 +11148,7 @@ class SharedBlockQcow2SharedVolumeFixCmd(Command):
         ctl.register_command(self)
 
         self.support_operations = ["convert_volume", "delete_qcow2_volume", "commit_snapshot_to_image", "delete_shared_volume_snapshots"]
-        self.key = "/usr/local/zstack/apache-tomcat/webapps/%s/WEB-INF/classes/ansible/rsaKeys/id_rsa" % oemname
+        self.key = "/usr/local/zstack/apache-tomcat/webapps/%s/WEB-INF/classes/ansible/rsaKeys/id_rsa" % app_name
         self.script_path = "/tmp/zstack-convert-volume.py"
 
     def install_argparse_arguments(self, parser):
