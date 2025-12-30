@@ -10096,6 +10096,13 @@ class ClearLicenseCmd(Command):
 
         shell('''find %s -maxdepth 1 -name 'license_*' -type f -exec mv {} %s \;''' % (license_folder, license_bck))
 
+        if os.path.exists(license_folder):
+            appid_pattern = re.compile(r'^[0-9a-fA-F]{32}$')
+            for item in os.listdir(license_folder):
+                item_path = os.path.join(license_folder, item)
+                if os.path.isdir(item_path) and appid_pattern.match(item):
+                    shell("mv -f '%s' '%s'" % (item_path, license_bck))
+
         info("Successfully clear and backup zstack license files to " + license_bck)
 
 # For UI 1.x
