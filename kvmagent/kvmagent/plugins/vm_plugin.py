@@ -2775,6 +2775,41 @@ class Vm(object):
         except:
             return False
 
+    def _has_qemu_commandline_devices(self):
+        """Check if VM has devices added via qemu:commandline (like hct mdev devices)"""
+        try:
+            xml = self.domain.XMLDesc(0)
+            return 'qemu:commandline' in xml and '-device' in xml
+        except:
+            return False
+
+    def _find_free_pci_slot(self):
+        """Find a free PCI slot by querying QEMU for currently used slots"""
+        try:
+            import json
+            # Query QEMU for PCI device info using virsh command
+            result = shell.call("virsh qemu-monitor-command %s '{\"execute\": \"query-pci\"}'" % self.uuid)
+            pci_info = json.loads(result)
+
+            used_slots = set()
+            if 'return' in pci_info:
+                for bus in pci_info['return']:
+                    if 'devices' in bus:
+                        for dev in bus['devices']:
+                            if 'slot' in dev:
+                                used_slots.add(dev['slot'])
+
+            # Find first free slot starting from slot 3 (slots 0-2 are usually reserved)
+            # PCI bus 0 can have slots 0-31
+            for slot in range(3, 31):
+                if slot not in used_slots:
+                    return slot
+
+            return None
+        except Exception as ex:
+            logger.warn('failed to query PCI slots: %s' % str(ex))
+            return None
+
     def _wait_for_vm_running(self, timeout=60, wait_console=True):
         if not linux.wait_callback_success(self.wait_for_state_change, [self.VM_STATE_RUNNING, self.VM_STATE_PAUSED], interval=0.5,
                                            timeout=timeout):
@@ -4712,6 +4747,19 @@ class Vm(object):
             # Make sure key:vmInstanceUuid exists
             if cmd.nic.type == "TFVNIC":
                 cmd.put('vmInstanceUuid', cmd.vmUuid)
+
+            # Check if VM has qemu:commandline devices (like hct) that libvirt doesn't know about
+            # If so, query QEMU for used PCI slots and assign an available slot to avoid conflicts
+            if cmd.nic.pci is None and self._has_qemu_commandline_devices():
+                free_slot = self._find_free_pci_slot()
+                if free_slot is not None:
+                    cmd.nic.pci = jsonobject.JsonObject()
+                    cmd.nic.pci.type = 'pci'
+                    cmd.nic.pci.domain = '0x0000'
+                    cmd.nic.pci.bus = '0x00'
+                    cmd.nic.pci.slot = '0x%02x' % free_slot
+                    cmd.nic.pci.function = '0x0'
+                    logger.debug('assigned PCI slot 0x%02x to nic to avoid conflict with qemu:commandline devices' % free_slot)
 
             # Attach main nic
             xml = self._interface_cmd_to_xml(cmd, action='Attach')
