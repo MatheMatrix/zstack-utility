@@ -47,7 +47,7 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.imagestore import ImageStoreClient
-from zstacklib.utils import bash, plugin, iscsi, qemu_nbd
+from zstacklib.utils import bash, plugin, iscsi, qemu_nbd, storageDriver
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import lvm
 from zstacklib.utils import ft
@@ -67,10 +67,12 @@ from zstacklib.utils import ovs
 from zstacklib.utils import drbd
 from zstacklib.utils.jsonobject import JsonObject
 from zstacklib.utils.linux import is_virtual_machine
+from zstacklib.utils.localStorageDriver import LocalStorageDriver
 from zstacklib.utils.qga import *
 from zstacklib.utils import jsonobject
 from zstacklib.utils.qmp import get_block_node_name_and_file
 from zstacklib.utils.report import *
+from zstacklib.utils.sharedBlockStorageDriver import SharedBlockStorageDriver
 from zstacklib.utils.vm_plugin_queue_singleton import VmPluginQueueSingleton
 from zstacklib.utils.libvirt_singleton import LibvirtEventManager
 from zstacklib.utils.libvirt_singleton import LibvirtEventManagerSingleton
@@ -7128,6 +7130,9 @@ class VmPlugin(kvmagent.KvmAgent):
 
     SET_VM_VF_NIC_STATE = "/vm/vfnic/state"
 
+    WRITE_VM_METADATA = "/vm/metadata/write"
+    READ_VM_METADATA = "/vm/metadata/read"
+
     VM_OP_START = "start"
     VM_OP_STOP = "stop"
     VM_OP_REBOOT = "reboot"
@@ -11532,6 +11537,9 @@ host side snapshot files chian:
         http_server.register_async_uri(self.GET_VM_PROCESS_IDENTIFIER_CREATE_TIME_PATH, self.get_vm_process_identifier_create_time)
         http_server.register_async_uri(self.FSTRIM_VM_PATH, self.fstrim_vm)
         http_server.register_async_uri(self.SET_VM_VF_NIC_STATE, self.set_vf_nic_state)
+        http_server.register_async_uri(self.WRITE_VM_METADATA, self.write_vm_metadata)
+        http_server.register_async_uri(self.READ_VM_METADATA, self.read_vm_metadata)
+
         self.clean_old_sshfs_mount_points()
         self.register_libvirt_event()
         self.register_qemu_log_cleaner()
@@ -12616,6 +12624,30 @@ host side snapshot files chian:
         else:
             leagacy_remove_authorized_keys()
 
+    def getDriver(self, path):
+        if path.startswith("/dev/"):
+            return SharedBlockStorageDriver()
+        return LocalStorageDriver()
+
+    @kvmagent.replyerror
+    def write_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+
+        driver = self.getDriver(cmd.metadataPath)
+        driver.write_metadata(cmd.metadataPath, cmd.metadata)
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def read_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+
+        driver = self.getDriver(cmd.metadataPath)
+        rsp.metadata = driver.read_metadata(cmd.metadataPath)
+
+        return jsonobject.dumps(rsp)
 
 class EmptyCdromConfig():
     def __init__(self, targetDev, bus, unit):
