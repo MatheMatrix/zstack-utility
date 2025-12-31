@@ -1293,7 +1293,7 @@ if __name__ == "__main__":
                 update_qemu_cmd += " yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn update qemu-kvm qemu-img qemu-storage-daemon -y;"
             yum_cmd = yum_cmd + update_qemu_cmd.format(releasever)
         if "libvirt" in updates or (cmd.releaseVersion != '' and "libvirt" not in exclude):
-            update_libvirt_cmd = "export YUM0={};yum remove libvirt libvirt-libs libvirt-client libvirt-python libvirt-admin libvirt-bash-completion libvirt-daemon-driver-lxc -y && export YUM0={};" \
+            update_libvirt_cmd = "export YUM0={};yum remove libvirt libvirt-libs libvirt-client libvirt-python libvirt-admin libvirt-bash-completion libvirt-daemon-driver-lxc -y --noautoremove && export YUM0={};" \
                                  "yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn install libvirt libvirt-client libvirt-python -y && "
             yum_cmd = yum_cmd + update_libvirt_cmd.format(releasever, releasever)
         upgrade_os_cmd = "export YUM0={};yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{} {} update {} -y"
