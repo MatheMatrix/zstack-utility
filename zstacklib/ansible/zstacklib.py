@@ -238,7 +238,7 @@ class ZstackLibArgs(object):
         self.pip_url = None
         self.require_python_env = "true"
         self.host_info = None
-        self.oem_name = None
+        self.app_name = None
 
 
 class Msg(object):
@@ -2281,7 +2281,7 @@ class ZstackLib(object):
         enforce_history(trusted_host, self.host_post_info)
         check_umask(self.host_post_info)
         configure_hosts(self.host_post_info)
-        self.oem_name = args.oem_name if args.oem_name else "zstack"
+        self.app_name = args.app_name if args.app_name else "zstack"
 
         host_info = args.host_info
         if not host_info:
@@ -2425,7 +2425,7 @@ class ZstackLib(object):
         generate_exp_repo_raw_command = """
 echo -e "[zstack-experimental-mn]
 name=zstack-experimental-mn
-baseurl=http://{{ yum_server }}/{{ oem_name }}/static/zstack-repo/\$basearch/\$YUM0/Extra/zstack-experimental/
+baseurl=http://{{ yum_server }}/{{ app_name }}/static/zstack-repo/\$basearch/\$YUM0/Extra/zstack-experimental/
 gpgcheck=0
 module_hotfixes=true
 enabled=0" >  /etc/yum.repos.d/zstack-experimental-mn.repo; sync /etc/yum.repos.d/zstack-experimental-mn.repo
@@ -2434,7 +2434,7 @@ enabled=0" >  /etc/yum.repos.d/zstack-experimental-mn.repo; sync /etc/yum.repos.
             generate_exp_repo_raw_command)
         generate_exp_repo_command = generate_exp_repo_template.render({
             'yum_server': self.yum_server,
-            'oem_name': self.oem_name
+            'app_name': self.app_name
 
         })
         run_remote_command(generate_exp_repo_command, self.host_post_info)
@@ -2444,7 +2444,7 @@ enabled=0" >  /etc/yum.repos.d/zstack-experimental-mn.repo; sync /etc/yum.repos.
         generate_mlnx_repo_raw_command = """
 echo -e "[mlnx-ofed-mn]
 name=mlnx-ofed-mn
-baseurl=http://{{ yum_server }}/{{ oem_name }}/static/zstack-repo/\$basearch/\$YUM0/Extra/mlnx-ofed/
+baseurl=http://{{ yum_server }}/{{ app_name }}/static/zstack-repo/\$basearch/\$YUM0/Extra/mlnx-ofed/
 gpgcheck=0
 module_hotfixes=true
 enabled=0" >  /etc/yum.repos.d/mlnx-ofed-mn.repo; sync /etc/yum.repos.d/mlnx-ofed-mn.repo
@@ -2453,7 +2453,7 @@ enabled=0" >  /etc/yum.repos.d/mlnx-ofed-mn.repo; sync /etc/yum.repos.d/mlnx-ofe
             generate_mlnx_repo_raw_command)
         generate_mlnx_repo_command = generate_mlnx_repo_template.render({
             'yum_server': self.yum_server,
-            'oem_name': self.oem_name
+            'app_name': self.app_name
         })
         run_remote_command(generate_mlnx_repo_command, self.host_post_info)
 
@@ -2462,7 +2462,7 @@ enabled=0" >  /etc/yum.repos.d/mlnx-ofed-mn.repo; sync /etc/yum.repos.d/mlnx-ofe
         generate_kvm_repo_raw_command = """
 echo -e "[qemu-kvm-ev-mn]
 name=qemu-kvm-ev-mn
-baseurl=http://{{ yum_server }}/{{ oem_name }}/static/zstack-repo/\$basearch/\$YUM0/Extra/qemu-kvm-ev/
+baseurl=http://{{ yum_server }}/{{ app_name }}/static/zstack-repo/\$basearch/\$YUM0/Extra/qemu-kvm-ev/
 gpgcheck=0
 module_hotfixes=true
 enabled=0" >  /etc/yum.repos.d/qemu-kvm-ev-mn.repo; sync /etc/yum.repos.d/qemu-kvm-ev-mn.repo
@@ -2471,7 +2471,7 @@ enabled=0" >  /etc/yum.repos.d/qemu-kvm-ev-mn.repo; sync /etc/yum.repos.d/qemu-k
             generate_kvm_repo_raw_command)
         generate_kvm_repo_command = generate_kvm_repo_template.render({
             'yum_server': self.yum_server,
-            'oem_name': self.oem_name
+            'app_name': self.app_name
         })
         self.host_post_info.post_label = "ansible.shell.deploy.repo"
         self.host_post_info.post_label_param = "qemu-kvm-ev-mn"
@@ -2482,7 +2482,7 @@ enabled=0" >  /etc/yum.repos.d/qemu-kvm-ev-mn.repo; sync /etc/yum.repos.d/qemu-k
         generate_mn_repo_raw_command = """
 echo -e "[zstack-mn]
 name=zstack-mn
-baseurl=http://{{ yum_server }}/{{ oem_name }}/static/zstack-repo/\$basearch/\$YUM0/
+baseurl=http://{{ yum_server }}/{{ app_name }}/static/zstack-repo/\$basearch/\$YUM0/
 gpgcheck=0
 module_hotfixes=true
 enabled=0" >  /etc/yum.repos.d/zstack-mn.repo; sync /etc/yum.repos.d/zstack-mn.repo
@@ -2491,7 +2491,7 @@ enabled=0" >  /etc/yum.repos.d/zstack-mn.repo; sync /etc/yum.repos.d/zstack-mn.r
             generate_mn_repo_raw_command)
         generate_mn_repo_command = generate_mn_repo_template.render({
             'yum_server': self.yum_server,
-            'oem_name': self.oem_name
+            'app_name': self.app_name
         })
         run_remote_command(generate_mn_repo_command, self.host_post_info)
 
@@ -2624,15 +2624,15 @@ deb-src http://mirrors.{{ zstack_apt_source }}.com/ubuntu/ {{ DISTRIB_CODENAME }
             update_aptsource_command = """
 basearch=`uname -m`;
 cat > /etc/apt/sources.list.d/zstack-mn.list << EOF
-deb http://{{ apt_server }}/{{ oem_name }}/static/zstack-repo/$basearch/{{ zstack_releasever }}/ Packages/
-deb http://{{ apt_server }}/{{ oem_name }}/static/zstack-repo/$basearch/{{ zstack_releasever }}/ qemu_libvirt/
+deb http://{{ apt_server }}/{{ app_name }}/static/zstack-repo/$basearch/{{ zstack_releasever }}/ Packages/
+deb http://{{ apt_server }}/{{ app_name }}/static/zstack-repo/$basearch/{{ zstack_releasever }}/ qemu_libvirt/
                 """
             update_repo_command_template = jinja2.Template(
                 update_aptsource_command)
             update_repo_command = update_repo_command_template.render({
                 'apt_server': apt_server,
                 'zstack_releasever': zstack_releasever,
-                'oem_name': self.oem_name
+                'app_name': self.app_name
             })
             host_post_info.post_label = "ansible.shell.deploy.repo"
             host_post_info.post_label_param = "zstack"

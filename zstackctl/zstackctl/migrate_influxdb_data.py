@@ -23,7 +23,7 @@ from Crypto.Util.py3compat import *
 from hashlib import md5
 from zstacklib import *
 
-oemname = get_oem_name_from_properties_preload()
+app_name = get_app_name_from_properties_preload()
 try:
     from influxdb import InfluxDBClient
 except ImportError:
@@ -125,7 +125,7 @@ class DBUtil:
         class Properties:
 
             def __init__(self):
-                self.zstack_home = '/usr/local/zstack/apache-tomcat/webapps/%s/' % oemname
+                self.zstack_home = '/usr/local/zstack/apache-tomcat/webapps/%s/' % app_name
                 self.file_name = os.path.join(self.zstack_home, 'WEB-INF/classes/zstack.properties')
                 self.properties = {}
 
