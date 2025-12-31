@@ -7635,14 +7635,15 @@ class VmPlugin(kvmagent.KvmAgent):
             rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo = self.get_vm_device_info(cmd.vmInstanceUuid)
             self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
 
-            qga = VmQga(call_libvirt())
-            pci_mapping = pci.get_pci_passthrough_mapping(qga.domain)
-            pciDevices = cmd.addons['pciDevice']
-            for dev in pciDevices:
-                addr, spec_uuid = dev.split(',')
-                vm_addr = next((k for k, v in pci_mapping.items() if v == addr), None)
-                if vm_addr:
-                    logger.info("when vm start with GPU, the vm pci address: %s" % vm_addr)
+            if cmd.addons['pciDevice']:
+                domain = call_libvirt()
+                pci_mapping = pci.get_pci_passthrough_mapping(domain)
+                pciDevices = cmd.addons['pciDevice']
+                for dev in pciDevices:
+                    addr, spec_uuid = dev.split(',')
+                    vm_addr = next((k for k, v in pci_mapping.items() if v == addr), None)
+                    if vm_addr:
+                        logger.info("when vm start with GPU, the vm pci address: %s" % vm_addr)
 
         return jsonobject.dumps(rsp)
 
