@@ -637,6 +637,6 @@ class OvsDpdkEnv(object):
             needAllocateHugepageNr = self.nr_hugepages
             if osCurrentnrHugepages < needAllocateHugepageNr:
                 logger.warning('osCurrentnrHugepages:{} needAllocatedHugepageNr:{} is not enough to allocate hugepages for ovs dpdk!'.format(osCurrentnrHugepages, needAllocateHugepageNr))
-            cmd = cmd + str(self.socketMem/len(numaNodePaths))
+            cmd = cmd + str(self.socketMem//len(numaNodePaths))
             cmd = cmd + ","
         return bash.bash_r(CtlBin + cmd[0:-1])
