@@ -634,3 +634,4 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
 
         indexes.sort()
         return indexes
+
