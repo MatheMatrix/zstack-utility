@@ -859,6 +859,13 @@ def start_lock_service(io_timeout=40):
         os.fsync(f.fileno())
     os.chmod(LVMLOCKD_LOG_LOGROTATE_PATH, 0o644)
 
+@bash.in_bash
+def stop_lock_service():
+    stop_sanlock()
+    stop_lvmlockd()
+    write_lvmlockd_adopt_file()
+    linux.rm_file_force(LVMLOCKD_SOCKET)
+
 def write_lvmlockd_adopt_file():
     def _get_lockspace_name(line):
         return line.split()[1].split(":")[0]
@@ -2743,3 +2750,10 @@ class LvmlockdStatus(object):
         except Exception as e:
             logger.warn(str(e))
             self.failed = True
+
+@bash.in_bash
+def stop_lock_service():
+    stop_sanlock()
+    stop_lvmlockd()
+    write_lvmlockd_adopt_file()
+    linux.rm_file_force(LVMLOCKD_SOCKET)
