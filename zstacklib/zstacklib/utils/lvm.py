@@ -2735,3 +2735,10 @@ class LvmlockdStatus(object):
         except Exception as e:
             logger.warn(str(e))
             self.failed = True
+
+@bash.in_bash
+def stop_lock_service():
+    stop_sanlock()
+    stop_lvmlockd()
+    write_lvmlockd_adopt_file()
+    linux.rm_file_force(LVMLOCKD_SOCKET)

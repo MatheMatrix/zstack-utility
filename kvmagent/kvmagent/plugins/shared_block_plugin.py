@@ -31,7 +31,7 @@ DEFAULT_VG_METADATA_SIZE = "2g"
 DEFAULT_SANLOCK_LV_SIZE = "1024"
 QMP_SOCKET_PATH = "/var/lib/libvirt/qemu/zstack"
 MAX_ACTUAL_SIZE_FACTOR = 3
-
+VM_METADATA_TAG = "zs::sharedblock::vm::metadata"
 
 class AgentRsp(object):
     def __init__(self):
@@ -327,6 +327,9 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
     PING_PATH = "/sharedblock/ping"
     CONNECT_PATH = "/sharedblock/connect"
+    # register shared block
+    REGISTER_PATH = "/sharedblock/register"
+
     DISCONNECT_PATH = "/sharedblock/disconnect"
     CREATE_VOLUME_FROM_CACHE_PATH = "/sharedblock/createrootvolume"
     DELETE_BITS_PATH = "/sharedblock/bits/delete"
@@ -379,6 +382,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.PING_PATH, self.ping)
         http_server.register_async_uri(self.CONNECT_PATH, self.connect)
+        http_server.register_async_uri(self.REGISTER_PATH, self.register_shared_block)
+
         http_server.register_async_uri(self.DISCONNECT_PATH, self.disconnect)
         http_server.register_async_uri(self.CREATE_VOLUME_FROM_CACHE_PATH, self.create_root_volume)
         http_server.register_async_uri(self.CREATE_DATA_VOLUME_WITH_BACKING_PATH, self.create_data_volume_with_backing)
@@ -721,6 +726,138 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
         # lvm.clean_vg_exists_host_tags(cmd.vgUuid, cmd.hostUuid, HEARTBEAT_TAG)
         # lvm.add_vg_tag(cmd.vgUuid, "%s::%s::%s::%s" % (HEARTBEAT_TAG, cmd.hostUuid, time.time(), linux.get_hostname()))
+        self.clear_stalled_qmp_socket()
+        lvm.check_missing_pv(cmd.vgUuid)
+
+        rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
+        rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
+        rsp.vgLvmUuid = lvm.get_vg_lvm_uuid(cmd.vgUuid)
+        rsp.hostUuid = cmd.hostUuid
+        rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
+        return jsonobject.dumps(rsp)
+
+    def register_shared_block(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = None
+        try:
+            rsp = self.do_connect(cmd)
+        except SharedBlockConnectException as e:
+            r = AgentRsp()
+            r.success = False
+            r.error = "can not connect sharedblock primary storage[uuid: %s] on host[uuid: %s], " \
+                        "because other thread is connecting now" % (cmd.vgUuid, cmd.hostUuid)
+            rsp = jsonobject.dumps(r)
+        except Exception as e:
+            if rsp is None:
+                r = AgentRsp()
+                r.success = False
+                content = traceback.format_exc()
+                r.error = "%s\n%s" % (str(e), content)
+                rsp = jsonobject.dumps(r)
+        finally:
+            return rsp
+
+    @kvmagent.replyerror
+    @lock.file_lock(LOCK_FILE)
+    def do_register(self, cmd):
+        rsp = ConnectRsp()
+        diskPaths = set()
+        disks = set()
+        allDiskPaths = set()
+        allDisks = set()
+
+        self.vgs_path_and_wwid[cmd.vgUuid] = {}
+        for diskUuid in cmd.sharedBlockUuids:
+            disk = CheckDisk(diskUuid)
+            disks.add(disk)
+            diskPaths.add(disk.get_path())
+
+        for diskUuid in cmd.allSharedBlockUuids:
+            disk = CheckDisk(diskUuid)
+            p = disk.get_path(raise_exception=False)
+            if p is not None:
+                allDiskPaths.add(p)
+                allDisks.add(disk)
+                if diskUuid in cmd.sharedBlockUuids:
+                    self.vgs_path_and_wwid[cmd.vgUuid][p] = diskUuid
+
+        allDiskPaths = allDiskPaths.union(diskPaths)
+        allDisks = allDisks.union(disks)
+
+        try:
+            root_disks = ["%s[0-9]*" % d for d in linux.get_physical_disk()]
+            allDiskPaths = allDiskPaths.union(root_disks)
+        except Exception as e:
+            logger.warn("get exception: %s" % e.message)
+            allDiskPaths.add("/dev/sd*")
+            allDiskPaths.add("/dev/vd*")
+
+        def config_lvm(host_id, enableLvmetad=False):
+            lvm.backup_lvm_config()
+            config = lvm.get_lvm_default_config()
+            lvmlockd_lock_retries = 6
+            config.modify({
+                "use_lvmlockd": 1,
+                "host_id": host_id,
+                "sanlock_lv_extend": DEFAULT_SANLOCK_LV_SIZE,
+                "lvmlockd_lock_retries": lvmlockd_lock_retries,
+                "issue_discards": 0,
+                "reserved_stack": 256,
+                "reserved_memory": 131072,
+                "use_lvmetad": 1 if enableLvmetad else 0
+            })
+            if kvmagent.get_host_os_type() == "debian":
+                config.modify({"udev_rules": 0, "udev_sync": 0})
+            config.write_to_file(lvm.LVM_CONFIG_TMP_FILE)
+            lvm.config_lvm_filter([os.path.basename(lvm.LVM_CONFIG_TMP_FILE)], preserve_disks=allDiskPaths)
+
+            new_config = linux.read_file(lvm.LVM_CONFIG_TMP_FILE)
+            old_config = linux.read_file(lvm.LVM_LOCAL_CONFIG_FILE)
+            diff = list(difflib.unified_diff(old_config.splitlines() if old_config is not None else [],
+                                             new_config.splitlines()))
+            if len(diff) == 0:
+                logger.debug("lvm config has not changed")
+            else:
+                linux.write_file(lvm.LVM_CONFIG_FILE, new_config, create_if_not_exist=True)
+                linux.write_file(lvm.LVM_LOCAL_CONFIG_FILE, new_config, create_if_not_exist=True)
+                logger.debug("lvm config has changed:\n %s" % '\n'.join(diff))
+                lvm.report_config_changed()
+
+            # max lock retries times = (external lvmlockd_lock_retries + 1) * (internal lock_retries + 1 after a lock conflict)
+            lvm.lvm_cmd_timeout_with_locking = ((lvmlockd_lock_retries + 1) * 6) * 5
+            lvm.modify_sanlock_config("sh_retries", 20)
+            lvm.modify_sanlock_config("logfile_priority", 7)
+            lvm.modify_sanlock_config("renewal_read_extend_sec", 24)
+            lvm.modify_sanlock_config("debug_renew", 1)
+            lvm.modify_sanlock_config("use_watchdog", 0)
+            lvm.modify_sanlock_config("max_sectors_kb", "ignore")
+            lvm.modify_sanlock_config("watchdog_fire_timeout", 1)
+            lvm.modify_sanlock_config("kill_grace_seconds", 40)
+            lvm.modify_sanlock_config("zstack_vglock_timeout", 0)
+            lvm.modify_sanlock_config("use_zstack_vglock_timeout", 0)
+            lvm.modify_sanlock_config("zstack_vglock_large_delay", 8)
+            lvm.modify_sanlock_config("use_zstack_vglock_large_delay", 0)
+
+            sanlock_hostname = "%s-%s-%s" % (cmd.vgUuid[:8], cmd.hostUuid[:8], linux.get_hostname()[:20])
+            lvm.modify_sanlock_config("our_host_name", sanlock_hostname)
+            shell.call("sed -i 's/.*rotate .*/rotate 10/g' /etc/logrotate.d/sanlock", exception=False)
+            shell.call("sed -i 's/.*size .*/size 20M/g' /etc/logrotate.d/sanlock", exception=False)
+
+        config_lvm(cmd.hostId, cmd.enableLvmetad)
+
+        # lvm.stop_lock_service()
+        lvm.stop_sanlock()
+        lvm.stop_lvmlockd()
+        lvm.write_lvmlockd_adopt_file()
+        linux.rm_file_force(lvm.LVMLOCKD_SOCKET)
+
+        logger.debug("find/create vg %s lock..." % cmd.vgUuid)
+        rsp.isFirst = self.create_vg_if_not_found(cmd.vgUuid, disks, cmd.hostUuid, allDisks, cmd.forceWipe, cmd.isFirst)
+
+        logger.debug("stop vg %s lock..." % cmd.vgUuid)
+        lvm.stop_vg_lock(cmd.vgUuid)
+        lvm.drop_vg_lock(cmd.vgUuid)
+
         self.clear_stalled_qmp_socket()
         lvm.check_missing_pv(cmd.vgUuid)
 
