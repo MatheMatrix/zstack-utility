@@ -234,10 +234,14 @@ class BondControl(object):
 
             try:
                 success_count, total_count = agent._set_pf_vfs_state(pf, desired)
-                if total_count == 0:
+                # When NIC is removed or all operations fail (e.g. RTNETLINK Input/output error),
+                # stop touching its VFs for a while to avoid log flooding.
+                if total_count == 0 or success_count == 0:
                     self._no_vf_until[pf] = now + VF_CHECK_INTERVAL
                     ok = False
                     continue
+
+                # We have at least one successful operation, clear the backoff flag.
                 self._no_vf_until.pop(pf, None)
                 if success_count != total_count:
                     ok = False
@@ -264,7 +268,10 @@ class BondControl(object):
                 continue
             count = agent._get_vf_count(pf)
             if cached is not None and count != cached['count']:
-                logger.debug('pf %s vf count changed %d -> %d', pf, cached['count'], count)
+                if cached['count'] > 0 and count == 0:
+                    logger.debug('pf %s has no vf to operate on', pf)
+                else:
+                    logger.debug('pf %s vf count changed %d -> %d', pf, cached['count'], count)
                 self._force_reapply.add(pf)
                 changed = True
             self._vf_cache[pf] = {'count': count, 'checked_at': now}
@@ -583,7 +590,6 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
     def _set_pf_vfs_state(self, pf_name, enable):
         vf_indexes = self._get_vf_indexes(pf_name)
         if not vf_indexes:
-            logger.debug('pf %s has no vf to operate on', pf_name)
             return 0, 0
 
         driver = self._get_pf_driver(pf_name)
@@ -597,7 +603,7 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
         for vf_index in vf_indexes:
             rc, out, err = bash.bash_roe("ip link set %s vf %d state %s" % (pf_name, vf_index, state))
             if rc != 0:
-                logger.warn('failed to set pf %s vf %d state %s: %s %s', pf_name, vf_index, state, out, err)
+                pass
             else:
                 success_count += 1
 
