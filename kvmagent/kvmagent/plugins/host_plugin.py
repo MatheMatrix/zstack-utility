@@ -2959,6 +2959,17 @@ done
             return
         self._update_to_addon_info_from_gpu_infos(gpu.parse_alibaba_ppu_output(o), to)
 
+        # support product name
+        r, o, e = bash_roe(gpu.get_alibaba_ppu_product_name_cmd())
+        if r != 0:
+            logger.error("ppu-smi query gpu product name is error, %s " % e)
+            return
+
+        product_name = gpu.get_alibaba_ppu_product_name(o)
+        if product_name:
+            to.device = product_name
+            to.name = product_name
+
     @in_bash
     def _collect_enflame_gpu_info(self, to, opaque=None):
         r, o, e = bash_roe("which efsmi")
