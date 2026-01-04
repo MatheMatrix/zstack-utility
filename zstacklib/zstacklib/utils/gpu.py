@@ -896,6 +896,27 @@ def watch_and_ensure_nvidia_persistenced(poll_interval=30, stop_event=None):
         stop_event.wait(poll_interval)
 
 
+def get_alibaba_ppu_product_name_cmd(iswindows=False):
+    """Get Alibaba PPU product name command"""
+    cmd = "ppu-smi -q | grep 'Product Name'"
+    if iswindows:
+        cmd = cmd.replace(" ", "|")
+    return cmd
+
+
+def get_alibaba_ppu_product_name(output):
+    """Parse Alibaba PPU product name from ppu-smi -q output"""
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "Product Name" in line:
+            parts = line.split(":", 1)
+            if len(parts) > 1:
+                return parts[1].strip()
+    return None
+
+
 def get_alibaba_ppu_basic_info_cmd(iswindows=False):
     """Get Alibaba PPU basic info command (PCI address, memory, power limit, serial)"""
     cmd = "ppu-smi --query-ppu=gpu_bus_id,memory.total,power.limit,gpu_serial --format=csv,noheader"
