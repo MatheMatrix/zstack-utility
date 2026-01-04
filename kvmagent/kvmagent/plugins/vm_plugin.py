@@ -458,6 +458,7 @@ class StartVmResponse(kvmagent.AgentResponse):
         self.virtualDeviceInfoList = []  # type:list[VirtualDeviceInfo]
         self.memBalloonInfo = None  # type:VirtualDeviceInfo
         self.virtualizerInfo = VirtualizerInfoTO()  # type:VirtualizerInfoTO
+        self.addonInfos = {} # type:dict[str,dict[str,str]]
 
 class SyncVmDeviceInfoCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -940,6 +941,7 @@ class HotPlugPciDeviceCommand(kvmagent.AgentCommand):
 class HotPlugPciDeviceRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(HotPlugPciDeviceRsp, self).__init__()
+        self.vmPciDeviceAddress = None
 
 class HotUnplugPciDeviceCommand(kvmagent.AgentCommand):
     def __init__(self):
@@ -7659,6 +7661,10 @@ class VmPlugin(kvmagent.KvmAgent):
                 rsp.error = "%s, details: %s" % (err, rsp.error)
             rsp.success = False
 
+        @LibvirtAutoReconnect
+        def call_libvirt(conn):
+            return conn.lookupByName(cmd.vmInstanceUuid)
+
         if rsp.success:
             vm_pid = None
             try:
@@ -7678,6 +7684,20 @@ class VmPlugin(kvmagent.KvmAgent):
         if rsp.success == True:
             rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo = self.get_vm_device_info(cmd.vmInstanceUuid)
             self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
+
+            if cmd.addons and cmd.addons['pciDevice']:
+                domain = call_libvirt()
+                pci_mapping = pci.get_pci_passthrough_mapping(domain)
+                host_to_vm_mapping = {v: k for k, v in pci_mapping.items()}
+                pciDevices = cmd.addons['pciDevice']
+                pciDeviceMappingInfos = {}
+                for dev in pciDevices:
+                    addr, spec_uuid = dev.split(',')
+                    vm_addr = host_to_vm_mapping.get(addr)
+                    if vm_addr:
+                       pciDeviceMappingInfos[addr] = vm_addr
+                       logger.info("vm[uuid:%s] mapped pci device[%s] to %s" % (cmd.vmInstanceUuid, addr, vm_addr))
+                rsp.addonInfos["pciDevice"] = pciDeviceMappingInfos
 
         return jsonobject.dumps(rsp)
 
@@ -10184,6 +10204,16 @@ host side snapshot files chian:
                 rsp.error = "failed to handle_vfio_irq_conflict_with_addr: %s, details: %s %s" % (err, o, e)
 
         logger.debug("attach-device %s to %s: %s, %s" % (spath, cmd.vmUuid, o, e))
+
+        @LibvirtAutoReconnect
+        def call_libvirt(conn):
+            return conn.lookupByName(cmd.vmUuid)
+
+        vm_addr = pci.get_vm_pci_device_address_by_host_address(call_libvirt(), addr)
+        if vm_addr:
+            rsp.vmPciDeviceAddress = vm_addr
+            logger.info("the pci device[%s] mapped to %s on vm[uuid:%s]" % (addr, vm_addr, cmd.vmUuid))
+
         return jsonobject.dumps(rsp)
 
     @in_bash

@@ -224,6 +224,12 @@ def get_pci_passthrough_mapping(vm_dom):
     return pci_mapping
 
 
+def get_vm_pci_device_address_by_host_address(vm_dom, host_address):
+    pci_mapping = get_pci_passthrough_mapping(vm_dom)
+    host_to_vm_mapping = {v: k for k, v in pci_mapping.items()}
+    return host_to_vm_mapping.get(host_address)
+
+
 def get_pci_device_ids():
     # Get IDs using -Dmmnv (without second 'n' to avoid truncation)
     return bash_roe("lspci -Dmmnv")
