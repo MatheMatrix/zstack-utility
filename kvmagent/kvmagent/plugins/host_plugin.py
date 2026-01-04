@@ -39,6 +39,7 @@ from zstacklib.utils import misc
 from zstacklib.utils.bash import *
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.ip import get_nic_driver_type
+from zstacklib.utils.libvirt_singleton import LibvirtSingleton
 from zstacklib.utils.pci import VendorEnum
 from zstacklib.utils.report import Report
 from zstacklib.utils import ovn
@@ -626,6 +627,7 @@ class GetPciDevicesResponse(kvmagent.AgentResponse):
         super(GetPciDevicesResponse, self).__init__()
         self.pciDevicesInfo = []
         self.hostIommuStatus = False
+        self.mdevDeviceInfos = {}
 
 class GetMttyDevicesCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -806,6 +808,7 @@ class PciDeviceTO(object):
         self.rev = ""
         self.addonInfo = {}
         self.dependentDevices = []
+        self.vmPciDeviceAddress = ""
 
 
 class MttyDeviceTO(object):
@@ -2608,6 +2611,7 @@ done
             if slot:
                 device_names[slot] = names
 
+        host_mappings = self.get_all_vm_pci_mappings()
         # Create PciDeviceTO objects
         for slot in device_ids.keys():
             if slot not in device_names:
@@ -2660,6 +2664,7 @@ done
 
             to.name = "%s_%s" % (subvendor_name if subvendor_name else vendor_name, device_name)
             to.dependentDevices = pci.collect_pci_devices_with_dependencies(to.pciDeviceAddress)
+            to.vmPciDeviceAddress = host_mappings[to.pciDeviceAddress] if to.pciDeviceAddress in host_mappings else ""
 
             def _set_pci_to_type():
                 gpu_vendors = ["NVIDIA", "AMD", "Haiguang", "Intel", "Vastai", "Alibaba", "Kunlunxin"]
@@ -2746,6 +2751,47 @@ done
 
         pci.update_cache_devices(pci_devices_dict)
         pci.calculate_max_addressable_memory(rsp.pciDevicesInfo)
+        rsp.mdevDeviceInfos = self.get_all_vm_mdev_mappings()
+
+    def list_vm_uuids(self):
+        r, o, e = bash_roe("virsh list --uuid --state-running --state-paused --state-other")
+        if r != 0:
+            logger.error("failed to run 'virsh list --uuid --state-running --state-paused --state-other': %s" % e)
+            return []
+        uuids = [line.strip().replace('-', '') for line in o.strip().splitlines() if line.strip()]
+        return uuids
+
+    def get_all_vm_pci_mappings(self):
+        """
+        mapping: {host_pci_address: vm_pci_address}
+        """
+        host_pci_mapping = {}
+        libvirt_singleton = LibvirtSingleton()
+        conn = libvirt_singleton.conn
+        for uuid in self.list_vm_uuids():
+            domain = conn.lookupByName(uuid)
+            if domain is None:
+                continue
+            original_mapping = pci.get_pci_passthrough_mapping(domain)
+            if original_mapping:
+                for vm_pci_addr, host_pci_addr in original_mapping.items():
+                    host_pci_mapping[host_pci_addr] = vm_pci_addr
+        return host_pci_mapping
+
+    def get_all_vm_mdev_mappings(self):
+        """
+        mapping: {mdev_uuid: vm_pci_address}
+        """
+        mdev_mapping = {}
+        libvirt_singleton = LibvirtSingleton()
+        conn = libvirt_singleton.conn
+        for uuid in self.list_vm_uuids():
+            domain = conn.lookupByName(uuid)
+            if domain is None:
+                continue
+            mapping = pci.get_mdev_passthrough_mapping(domain)
+            mdev_mapping.update(mapping)
+        return mdev_mapping
 
     def _collect_gpu_addoninfo(self, to, vendor_name, opaque=None):
         if not pci.is_gpu(to.type):

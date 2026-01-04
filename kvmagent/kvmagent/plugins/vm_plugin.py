@@ -458,6 +458,8 @@ class StartVmResponse(kvmagent.AgentResponse):
         self.virtualDeviceInfoList = []  # type:list[VirtualDeviceInfo]
         self.memBalloonInfo = None  # type:VirtualDeviceInfo
         self.virtualizerInfo = VirtualizerInfoTO()  # type:VirtualizerInfoTO
+        self.pciDeviceInfos = {} # type:dict[str,str]
+        self.mdevDeviceInfos = {}  # type:dict[str,str]
 
 class SyncVmDeviceInfoCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -940,6 +942,7 @@ class HotPlugPciDeviceCommand(kvmagent.AgentCommand):
 class HotPlugPciDeviceRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(HotPlugPciDeviceRsp, self).__init__()
+        self.vmPciDeviceAddress = None
 
 class HotUnplugPciDeviceCommand(kvmagent.AgentCommand):
     def __init__(self):
@@ -962,6 +965,7 @@ class HotPlugMdevDeviceCommand(kvmagent.AgentCommand):
 class HotPlugMdevDeviceRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(HotPlugMdevDeviceRsp, self).__init__()
+        self.mdevDeviceAddress = None
 
 class HotUnplugMdevDeviceCommand(kvmagent.AgentCommand):
     def __init__(self):
@@ -7678,8 +7682,48 @@ class VmPlugin(kvmagent.KvmAgent):
         if rsp.success == True:
             rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo = self.get_vm_device_info(cmd.vmInstanceUuid)
             self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
+            vm = get_vm_by_uuid(cmd.vmInstanceUuid)
+            rsp.pciDeviceInfos = self.collect_vm_pci_device_infos(vm.domain, cmd)
+            rsp.mdevDeviceInfos = self.collect_vm_mdev_device_infos(vm.domain, cmd)
 
         return jsonobject.dumps(rsp)
+
+    def collect_vm_pci_device_infos(self, vm_domain, cmd):
+        pciDeviceMappingInfos = {}
+        if not cmd.addons:
+            return pciDeviceMappingInfos
+
+        pciDevices = cmd.addons['pciDevice']
+        if not pciDevices:
+            return pciDeviceMappingInfos
+
+        pci_mapping = pci.get_pci_passthrough_mapping(vm_domain)
+        host_to_vm_mapping = {v: k for k, v in pci_mapping.items()}
+        for dev in pciDevices:
+            addr, spec_uuid = dev.split(',')
+            vm_addr = host_to_vm_mapping.get(addr)
+            if vm_addr:
+                pciDeviceMappingInfos[addr] = vm_addr
+                logger.info("vm[uuid:%s] mapped pci device[%s] to %s" % (cmd.vmInstanceUuid, addr, vm_addr))
+        return pciDeviceMappingInfos
+
+    def collect_vm_mdev_device_infos(self, vm_domain, cmd):
+        mdevDeviceMappingInfos = {}
+        if not cmd.addons:
+            return mdevDeviceMappingInfos
+
+        mdevDeviceUuids = cmd.addons['mdevDevice']
+        if not mdevDeviceUuids:
+            return mdevDeviceMappingInfos
+
+        mdev_device_mapping = pci.get_mdev_passthrough_mapping(vm_domain)
+        for uuid in mdevDeviceUuids:
+            mdev_addr = mdev_device_mapping.get(uuid)
+            if mdev_addr:
+                mdevDeviceMappingInfos[uuid] = mdev_addr
+                logger.info("vm[uuid:%s] mapped mdev device[%s] to %s" % (cmd.vmInstanceUuid, uuid, mdev_addr))
+
+        return mdevDeviceMappingInfos
 
     def get_vm_device_info(self, uuid):
         vm = get_vm_by_uuid(uuid)
@@ -10184,6 +10228,13 @@ host side snapshot files chian:
                 rsp.error = "failed to handle_vfio_irq_conflict_with_addr: %s, details: %s %s" % (err, o, e)
 
         logger.debug("attach-device %s to %s: %s, %s" % (spath, cmd.vmUuid, o, e))
+
+        vm.refresh()
+        vm_addr = pci.get_vm_pci_device_address_by_host_address(vm.domain, addr)
+        if vm_addr:
+            rsp.vmPciDeviceAddress = vm_addr
+            logger.info("the pci device[%s] mapped to %s on vm[uuid:%s]" % (addr, vm_addr, cmd.vmUuid))
+
         return jsonobject.dumps(rsp)
 
     @in_bash
@@ -10329,6 +10380,13 @@ host side snapshot files chian:
             rsp.error = "failed to attach-device %s to %s: %s, %s" % (_uuid, cmd.vmUuid, o, e)
 
         logger.debug("attach-device %s to %s: %s, %s" % (spath, cmd.vmUuid, o, e))
+
+        vm = get_vm_by_uuid(cmd.vmUuid)
+        mdev_mapping = pci.get_mdev_passthrough_mapping(vm.domain)
+        if mdev_mapping and cmd.MdevDeviceUuid in mdev_mapping:
+            rsp.mdevDeviceAddress = mdev_mapping[cmd.MdevDeviceUuid]
+            logger.info("the mdev device[%s] mapped to %s on vm[uuid:%s]" % (cmd.MdevDeviceUuid, rsp.mdevDeviceAddress, cmd.vmUuid))
+
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror

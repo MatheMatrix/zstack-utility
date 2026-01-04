@@ -224,6 +224,33 @@ def get_pci_passthrough_mapping(vm_dom):
     return pci_mapping
 
 
+def get_mdev_passthrough_mapping(vm_dom):
+    mdev_mapping = {}
+    xml_tree = ET.fromstring(vm_dom.XMLDesc())
+    for hostdev in xml_tree.find('devices').findall('hostdev'):
+        if hostdev.get('type') != 'mdev':
+            continue
+
+        source_uuid = hostdev.find('source/address')
+        mdev_uuid = source_uuid.get('uuid').replace('-', '')
+
+        vm_address = hostdev.find('address')
+        vm_domain = vm_address.get('domain').replace('0x', '')
+        vm_bus = vm_address.get('bus').replace('0x', '')
+        vm_slot = vm_address.get('slot').replace('0x', '')
+        vm_function = vm_address.get('function').replace('0x', '')
+        vm_mdev_address = "{}:{}:{}.{}".format(vm_domain, vm_bus, vm_slot, vm_function)
+        mdev_mapping[mdev_uuid] = vm_mdev_address
+
+    return mdev_mapping
+
+
+def get_vm_pci_device_address_by_host_address(vm_dom, host_address):
+    pci_mapping = get_pci_passthrough_mapping(vm_dom)
+    host_to_vm_mapping = {v: k for k, v in pci_mapping.items()}
+    return host_to_vm_mapping.get(host_address)
+
+
 def get_pci_device_ids():
     # Get IDs using -Dmmnv (without second 'n' to avoid truncation)
     return bash_roe("lspci -Dmmnv")
