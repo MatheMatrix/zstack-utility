@@ -1,5 +1,9 @@
 #!/bin/sh
 
+# APP name variable - used to customize webapp path and war file name
+# This is the only line that needs to be changed for APP builds
+app_name="zstack"
+
 SCRIPT="$0"
 
 err_exit() {
@@ -26,7 +30,7 @@ unzip_elasticsearch() {
 }
 
 unzip_tomcat_deploy_war() {
-    echo "unzip tomcat and deploy zstack.war"
+    echo "unzip tomcat and deploy ${app_name}.war"
 
     tomcat_path=$ZS_HOME/thirdparty/apache-tomcat*
     ls $tomcat_path &>/dev/null
@@ -37,9 +41,9 @@ unzip_tomcat_deploy_war() {
     tar xzf $tomcat_path -C $RUNTIME_HOME
     tcathome=`ls -d $RUNTIME_HOME/apache-tomcat*`
 
-    warfile=$ZS_HOME/lib/zstack.war
+    warfile=$ZS_HOME/lib/${app_name}.war
     check_file $warfile
-    wardir=$tcathome/webapps/zstack
+    wardir=$tcathome/webapps/${app_name}
 
     mkdir -p $wardir
     unzip $warfile -d $wardir &>/dev/null
@@ -99,12 +103,12 @@ fi
 
 start_tomcat() {
    sh $TOMCAT_HOME/bin/startup.sh
-   echo "start zstack ... SUCCESS"
+   echo "start ${app_name} ... SUCCESS"
 }
 
 stop_tomcat() {
    sh $TOMCAT_HOME/bin/shutdown.sh
-   echo "start zstack ... SUCCESS"
+   echo "stop ${app_name} ... SUCCESS"
 }
 
 restart_tomcat() {

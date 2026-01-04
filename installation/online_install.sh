@@ -657,20 +657,20 @@ iz_unpack_zstack(){
 uz_upgrade_zstack(){
     echo_subtitle "Upgrade ZStack"
     cd $upgrade_folder
-    unzip -d zstack ${app_name}.war >>$ZSTACK_INSTALL_LOG 2>&1
+    unzip -d ${app_name} ${app_name}.war >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -ne 0 ];then
         rm -rf $upgrade_folder
-        fail "failed to unzip ${app_name}.war to $upgrade_folder/zstack"
+        fail "failed to unzip ${app_name}.war to $upgrade_folder/${app_name}"
     fi
     if [ ! -z $DEBUG ]; then
-        bash zstack/WEB-INF/classes/tools/install.sh zstack-ctl
+        bash ${app_name}/WEB-INF/classes/tools/install.sh zstack-ctl
     else
-        bash zstack/WEB-INF/classes/tools/install.sh zstack-ctl >>$ZSTACK_INSTALL_LOG 2>&1
+        bash ${app_name}/WEB-INF/classes/tools/install.sh zstack-ctl >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     if [ ! -z $DEBUG ]; then
-        bash zstack/WEB-INF/classes/tools/install.sh zstack-sys
+        bash ${app_name}/WEB-INF/classes/tools/install.sh zstack-sys
     else
-        bash zstack/WEB-INF/classes/tools/install.sh zstack-sys >>$ZSTACK_INSTALL_LOG 2>&1
+        bash ${app_name}/WEB-INF/classes/tools/install.sh zstack-sys >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     if [ $? -ne 0 ];then
         rm -rf $upgrade_folder

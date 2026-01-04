@@ -881,7 +881,9 @@ echo 'export APP_NAME="{val}"' > /etc/profile.d/cloud_config.sh
 
 if [ -f {file} ]; then
     grep -q "export APP_NAME=" {file} || sed -i '2i export APP_NAME="{val}"' {file}
-fi""".format(file=init_script, val=app_name)
+fi
+source /etc/profile.d/cloud_config.sh >/dev/null 2>&1
+""".format(file=init_script, val=app_name)
 
     host_post_info.post_label = "ansible.shell.inject_app_name"
     host_post_info.post_label_param = "Inject APP Name to Agent"
