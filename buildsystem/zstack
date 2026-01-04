@@ -103,12 +103,12 @@ fi
 
 start_tomcat() {
    sh $TOMCAT_HOME/bin/startup.sh
-   echo "start zstack ... SUCCESS"
+   echo "start ${app_name} ... SUCCESS"
 }
 
 stop_tomcat() {
    sh $TOMCAT_HOME/bin/shutdown.sh
-   echo "start zstack ... SUCCESS"
+   echo "stop ${app_name} ... SUCCESS"
 }
 
 restart_tomcat() {

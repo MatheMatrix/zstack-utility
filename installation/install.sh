@@ -4501,7 +4501,6 @@ if [ $? -eq 0 ]; then
 else
     echo "export ZSTACK_HOME=${ZSTACK_HOME}" >> ~/.bashrc
 fi
-source ~/.bashrc >/dev/null 2>&1
 
 export APP_NAME=$app_name
 grep "APP_NAME" ~/.bashrc > /dev/null
@@ -4512,6 +4511,8 @@ else
 fi
 echo "export APP_NAME=${app_name}" > /etc/profile.d/cloud_config.sh
 chmod +x /etc/profile.d/cloud_config.sh
+source ~/.bashrc >/dev/null 2>&1
+source /etc/profile.d/cloud_config.sh >/dev/null 2>&1
 
 #Do preinstallation checking for CentOS and Ubuntu
 check_system

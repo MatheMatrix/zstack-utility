@@ -23,7 +23,7 @@
         <!-- Replace appname variable value in install and buildsystem scripts -->
         <echo message="Step 1.6: Patching appname variable value..." />
         <replaceregexp flags="g" encoding="UTF-8" match='app_name="zstack"' replace='app_name="${APP_NAME}"'>
-             <fileset dir="${zstackutility.source}" includes="installation/install.sh, installation/online_install.sh, buildsystem/zstack, buildsystem/installwar.sh" />
+             <fileset dir="${zstackutility.source}" includes="installation/install.sh, installation/online_install.sh, buildsystem/zstack, buildsystem/installwar.sh, zstackbuild/scripts/zstack" />
         </replaceregexp>
 
         <!-- 2. Modify zstackctl configurations -->
