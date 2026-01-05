@@ -8660,7 +8660,7 @@ class UpgradeManagementNodeCmd(Command):
                     webapp_dir = os.path.dirname(ctl.zstack_home)
 
                 shell('cp %s %s' % (new_war.path, webapp_dir))
-                ShellCmd('unzip %s -d zstack' % os.path.basename(new_war.path), workdir=webapp_dir)()
+                ShellCmd('unzip %s -d %s' % (os.path.basename(new_war.path), app_name), workdir=webapp_dir)()
                 #create local repo folder for possible zstack local yum repo
                 zstack_dvd_repo = '{}/{}/static/zstack-repo'.format(webapp_dir, app_name)
                 shell('rm -f {0}; mkdir -p {0};ln -s /opt/zstack-dvd/x86_64 {0}/x86_64; ln -s /opt/zstack-dvd/aarch64 {0}/aarch64; ln -s /opt/zstack-dvd/mips64el {0}/mips64el; ln -s /opt/zstack-dvd/loongarch64 {0}/loongarch64; chown -R zstack:zstack {0}'.format(zstack_dvd_repo))
