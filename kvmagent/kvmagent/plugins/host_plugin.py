@@ -2382,9 +2382,6 @@ done
         check_virtfn_folder = '/sys/bus/pci/devices/%s/virtfn0/mdev_supported_types' % addr
         virt_function_dir_exits = os.path.isdir(check_virtfn_folder)
 
-        if not legacy_mdev_dir_exists and not virt_function_dir_exits:
-            return False
-
         # check if nvidia vgpu is supported by current device
         r, o, e = bash_roe("nvidia-smi vgpu -i %s -v -c" % addr)
         if r != 0:
@@ -2405,6 +2402,8 @@ done
             self._legacy_mdev(to)
         elif virt_function_dir_exits:
             self._virt_function(to)
+        else:
+            to.virtStatus = 'VFIO_MDEV_VIRTUALIZABLE'
 
         return True
 
@@ -2728,7 +2727,15 @@ done
             self._collect_gpu_addoninfo(to, vendor_name, opaque)
 
             # if support both mdev and sriov, then set the pci device to VFIO_MDEV_VIRTUALIZABLE
-            if not self._get_vfio_mdev_info(to) and not self._get_sriov_info(to):
+            vfio_mdev_supported = self._get_vfio_mdev_info(to)
+            vfio_mdev_status = to.virtStatus
+
+            sriov_supported = self._get_sriov_info(to)
+
+            if vfio_mdev_supported and sriov_supported:
+                if vfio_mdev_status != "VFIO_MDEV_VIRTUALIZED":
+                    to.virtStatus = "VFIO_MDEV_VIRTUALIZABLE"
+            elif not vfio_mdev_supported and not sriov_supported:
                 to.virtStatus = "UNVIRTUALIZABLE"
 
             self._post_process_pci_device_info(to)
