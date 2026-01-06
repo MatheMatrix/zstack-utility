@@ -60,10 +60,7 @@ ExternalAPIAdapter.ZSClient.contextPath=${APP_NAME}</echo>
 
         <replaceregexp file="${war.dir}/META-INF/context.xml"
                        match='path="/zstack/static"' replace='path="/${APP_NAME}/static"' byline="true" encoding="UTF-8" />
-
-        <replaceregexp file="${war.classpath.dir}/zstack/conf/globalConfig/v2v.xml"
-                       match="/zstack/static" replace="/${APP_NAME}/static" flags="g" encoding="UTF-8" />
-
+        
         <echo message="[APP-INNER] Internal WAR files modification completed." />
     </target>
 
