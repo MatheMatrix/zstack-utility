@@ -46,12 +46,12 @@ class TestVolume(TestCase, vm_utils.VmPluginTestStub):
         # just sleep 10s for guest os booting
         time.sleep(10)
         rsp = vm_utils.detach_volume_from_vm(TestVolume.vm_uuid, TestVolume.vol)
-        self.assertTrue(rsp.success)
+        self.assertTrue(rsp.success, rsp.error)
         xml = vm_utils.get_vm_xmlobject_from_virsh_dump(TestVolume.vm_uuid)
         vol_xml = volume_utils.find_volume_in_vm_xml_by_path(xml, TestVolume.vol_path)
         self.assertIsNone(vol_xml)
 
         rsp = vm_utils.check_volume(TestVolume.vm_uuid, [TestVolume.vol])
-        self.assertFalse(rsp.success)
+        self.assertFalse(rsp.success, rsp.error)
 
         self._destroy_vm(TestVolume.vm_uuid)
