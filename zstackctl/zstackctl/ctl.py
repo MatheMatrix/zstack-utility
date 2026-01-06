@@ -11465,10 +11465,30 @@ class IamService(ExtraService):
     default_nginx_port = 18182
     base_init_path = "/var/lib/zstack/keycloak/init.sh"
 
+    SUPPORTED_OS = ['h84r', 'ky10sp3']
+    SUPPORTED_ARCH = ['x86_64', 'aarch64']
+
     def service_name(self):
         return "keycloak"
 
+    def init_validation(self):
+        """
+        Validate that the current OS and architecture are supported for IAM service.
+        Raises CtlError if validation fails.
+        """
+        current_arch = Ctl.BASEARCH
+        current_os = Ctl.ZS_RELEASE
+
+        if current_arch not in self.SUPPORTED_ARCH:
+            raise CtlError("IAM service does not support architecture '%s'. Supported architectures: %s"
+                           % (current_arch, ', '.join(self.SUPPORTED_ARCH)))
+
+        if current_os not in self.SUPPORTED_OS:
+            raise CtlError("IAM service does not support OS '%s'. Supported OS: %s"
+                           % (current_os, ', '.join(self.SUPPORTED_OS)))
+
     def init(self):
+        self.init_validation()
         if not self.zsha2_utils:
             return
         template_path = "/var/lib/zstack/keycloak/conf/keycloak.upstream.nginx.conf"
