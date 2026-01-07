@@ -79,7 +79,8 @@ ZSTACK_VERSION=$ZSTACK_INSTALL_ROOT/VERSION
 CATALINA_ZSTACK_PATH=apache-tomcat/webapps/$app_name
 CATALINA_ZSTACK_CLASSES=$CATALINA_ZSTACK_PATH/WEB-INF/classes
 CATALINA_ZSTACK_LIBS=$CATALINA_ZSTACK_PATH/WEB-INF/lib
-ZSTACK_PROPERTIES=$CATALINA_ZSTACK_CLASSES/zstack.properties
+ZSTACK_PROPERTIES=$CATALINA_ZSTACK_CLASSES/${app_name}.properties
+ZSTACK_PROPERTIES_NAME=${app_name}.properties
 ZSTACK_DB_DEPLOYER=$CATALINA_ZSTACK_CLASSES/deploydb.sh
 CATALINA_ZSTACK_TOOLS=$CATALINA_ZSTACK_CLASSES/tools
 ZSTACK_TOOLS_INSTALLER=$CATALINA_ZSTACK_TOOLS/install.sh
@@ -129,7 +130,7 @@ MIRROR_163_YUM_REPOS='163base,163updates,163extras,ustcepel,163-qemu-ev'
 MIRROR_163_YUM_WEBSITE='mirrors.163.com'
 MIRROR_ALI_YUM_REPOS='alibase,aliupdates,aliextras,aliepel,ali-qemu-ev'
 MIRROR_ALI_YUM_WEBSITE='mirrors.aliyun.com'
-#used for zstack.properties Ansible.var.zstack_repo
+#used for $ZSTACK_PROPERTIES_NAME Ansible.var.zstack_repo
 ZSTACK_PROPERTIES_REPO=''
 ZSTACK_ANSIBLE_EXECUTABLE='python2'
 ZSTACK_OFFLINE_INSTALL='n'
@@ -234,7 +235,7 @@ declare -a upgrade_params_array=(
     '5.3.28,-DupgradeLogLabelToLogServer=true'
     '5.3.52,-DupgradeModelServiceYaml5352=true'
 )
-#other than the upon params_array, this one could be persisted in zstack.properties
+#other than the upon params_array, this one could be persisted in $ZSTACK_PROPERTIES_NAME
 declare -a upgrade_persist_params_array=(
     '3.9.0,InfluxDB.enable.message.retention=false'
 )
@@ -1565,10 +1566,10 @@ cs_pre_check(){
             fail "Your system only has $current_memory MB memory. $PRODUCT_NAME needs at least 8 GB memory, we recommend 12 GB."
         fi
     fi
-    #change zstack.properties config
+    #change management properties config
     if [ x"$UPGRADE" != x'n' ]; then
         sharedblock_check_qcow2_volume
-        zstack_properties=`zstack-ctl status 2>/dev/null|grep zstack.properties|awk '{print $2}'`
+        zstack_properties=`zstack-ctl status 2>/dev/null | grep '^[^ ]*\.properties:' | head -n 1 | awk '{print $2}'`
     else
         zstack_properties=$ZSTACK_INSTALL_ROOT/$ZSTACK_PROPERTIES
     fi
