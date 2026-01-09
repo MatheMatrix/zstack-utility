@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<project name="zstack-dpuagent builder" basedir="../">
+    <property name="dpuagent.bdir" location="${build.dir}/zstack-bm2-dpu-agent" />
+    <property name="dpuagent.ansible.dir" location="${ansible.dir}/dpuagent/" />
+
+    <target name="build-dpuagent" if="build_war_flag">
+        <makeDir dir="${dpuagent.bdir}" />
+
+        <checkProperty property="bm2dpuagent.source" />
+        <checkFile file="${bm2dpuagent.source}" />
+        
+        <checkProperty property="dpuagent.source" />
+        <checkFile file="${dpuagent.source}" />
+
+        <exec executable="make" dir="${bm2dpuagent.source}" failonerror="true">
+            <arg value="clean" />
+        </exec>
+
+        <exec executable="make" dir="${bm2dpuagent.source}" failonerror="true">
+            <arg value="package" />
+            <arg value="ARCH=amd64 arm64" />
+        </exec>
+
+        <copy todir="${dpuagent.bdir}/">
+            <fileset dir="${bm2dpuagent.source}/target/package">
+                <exclude name="**/*~" />
+                <include name="**/*" />
+            </fileset>
+        </copy>
+    </target>
+
+    <target name="assemble-dpuagent" if="build_war_flag">
+        <makeDir dir="${dpuagent.ansible.dir}" />
+
+        <copy todir="${dpuagent.ansible.dir}">
+            <fileset dir="${dpuagent.bdir}">
+                <include name="**/*" />
+            </fileset>
+        </copy>
+
+        <copy todir="${dpuagent.ansible.dir}">
+            <fileset dir="${dpuagent.source}/ansible">
+                <include name="**/*" />
+            </fileset>
+        </copy>
+    </target>
+
+</project>
