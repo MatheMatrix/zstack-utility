@@ -8,8 +8,11 @@ logger = log.get_logger(__name__)
 
 @singleton.singleton
 class LibvirtSingleton(object):
-    def __init__(self):
-        self.conn = libvirt.open('qemu:///system')
+    def __init__(self, uri='qemu:///system'):
+        self.conn = libvirt.open(uri)
+        if not self.conn:
+            raise Exception('Failed to open connection to the hypervisor')
+
     libvirt_event_callbacks = {}
 
 @singleton.singleton

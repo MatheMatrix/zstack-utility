@@ -2328,16 +2328,17 @@ class ZstackLib(object):
             self.install_rpm_based_os_requirements(
                 self.zstack_repo, user_defined)
         elif self.distro in DEB_BASED_OS:
-            install_release_on_host(False, host_info, self.host_post_info)
-            self.update_debian_repo(
-                self.zstack_apt_source,
-                self.host_post_info,
-                self.distro_release,
-                self.zstack_releasever)
-            self.enable_debian_services(
-                self.host_post_info,
-                self.require_python_env,
-                self.distro)
+            logger.debug("111")
+            # install_release_on_host(False, host_info, self.host_post_info)
+            # self.update_debian_repo(
+            #     self.zstack_apt_source,
+            #     self.host_post_info,
+            #     self.distro_release,
+            #     self.zstack_releasever)
+            # self.enable_debian_services(
+            #     self.host_post_info,
+            #     self.require_python_env,
+            #     self.distro)
         else:
             error("ERROR: Unsupported distribution %s" % self.distro)
 
