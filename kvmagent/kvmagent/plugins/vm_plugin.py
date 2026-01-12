@@ -7659,6 +7659,10 @@ class VmPlugin(kvmagent.KvmAgent):
                 rsp.error = "%s, details: %s" % (err, rsp.error)
             rsp.success = False
 
+        @LibvirtAutoReconnect
+        def call_libvirt(conn):
+            return conn.lookupByName(cmd.vmInstanceUuid)
+
         if rsp.success:
             vm_pid = None
             try:
@@ -7678,6 +7682,16 @@ class VmPlugin(kvmagent.KvmAgent):
         if rsp.success == True:
             rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo = self.get_vm_device_info(cmd.vmInstanceUuid)
             self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
+
+            if cmd.addons['pciDevice']:
+                domain = call_libvirt()
+                pci_mapping = pci.get_pci_passthrough_mapping(domain)
+                pciDevices = cmd.addons['pciDevice']
+                for dev in pciDevices:
+                    addr, spec_uuid = dev.split(',')
+                    vm_addr = next((k for k, v in pci_mapping.items() if v == addr), None)
+                    if vm_addr:
+                        logger.info("when vm start with GPU, the vm pci address: %s" % vm_addr)
 
         return jsonobject.dumps(rsp)
 
@@ -10184,6 +10198,17 @@ host side snapshot files chian:
                 rsp.error = "failed to handle_vfio_irq_conflict_with_addr: %s, details: %s %s" % (err, o, e)
 
         logger.debug("attach-device %s to %s: %s, %s" % (spath, cmd.vmUuid, o, e))
+
+        @LibvirtAutoReconnect
+        def call_libvirt(conn):
+            return conn.lookupByName(cmd.vmUuid)
+
+        qga = VmQga(call_libvirt())
+        pci_mapping = pci.get_pci_passthrough_mapping(qga.domain)
+        vm_addr = next((k for k, v in pci_mapping.items() if v == addr), None)
+        if vm_addr:
+            logger.info("the vm pci address: %s" % vm_addr)
+
         return jsonobject.dumps(rsp)
 
     @in_bash
