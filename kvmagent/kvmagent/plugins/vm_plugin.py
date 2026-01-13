@@ -444,6 +444,7 @@ class StartVmResponse(kvmagent.AgentResponse):
         self.memBalloonInfo = None  # type:VirtualDeviceInfo
         self.virtualizerInfo = VirtualizerInfoTO()  # type:VirtualizerInfoTO
         self.vmXml = None
+        self.edkRpm = None
 
 class SyncVmDeviceInfoCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -458,6 +459,7 @@ class SyncVmDeviceInfoResponse(kvmagent.AgentResponse):
         self.memBalloonInfo = None  # type:VirtualDeviceInfo
         self.virtualizerInfo = VirtualizerInfoTO()  # type:VirtualizerInfoTO
         self.vmXml = None
+        self.edkRpm = None
 
 
 class VirtualDeviceInfo():
@@ -5305,8 +5307,13 @@ class Vm(object):
                 e(os, 'type', 'hvm', attrib={'machine': machine_type})
                 # if boot mode is UEFI
                 if cmd.bootMode == "UEFI":
-                    e(os, 'loader', '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-pure-efi.fd', attrib={'readonly': 'yes', 'type': 'pflash'})
-                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-pure-efi.fd'})
+                    releasever = kvmagent.get_host_yum_release()
+                    if releasever in ("ky10sp3", "ky10sp3.2403"):
+                        e(os, 'loader', '/usr/share/edk2/ovmf/OVMF_CODE.fd', attrib={'readonly': 'yes', 'type': 'pflash'})
+                        e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.fd'})
+                    else:
+                        e(os, 'loader', '/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd', attrib={'readonly': 'yes', 'type': 'pflash'})
+                        e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.secboot.fd'})
                 elif cmd.bootMode == "UEFI_WITH_CSM":
                     e(os, 'loader', '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-with-csm.fd', attrib={'readonly': 'yes', 'type': 'pflash'})
                     e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-with-csm.fd'})
@@ -7465,7 +7472,12 @@ class VmPlugin(kvmagent.KvmAgent):
                 logger.warn("enable coredump for VM: %s: %s" % (cmd.vmInstanceUuid, str(e)))
 
         if rsp.success == True:
-            rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo, rsp.vmXml = self.get_vm_device_info(cmd.vmInstanceUuid)
+            device_info_dict = self.get_vm_device_info(cmd.vmInstanceUuid)
+            rsp.nicInfos = device_info_dict["nicInfos"]
+            rsp.virtualDeviceInfoList.extend(device_info_dict["virtualDeviceInfoList"])
+            rsp.memBalloonInfo = device_info_dict["memBalloonInfo"]
+            rsp.vmXml = device_info_dict["vmXml"]
+            rsp.edkRpm = device_info_dict["edkRpm"]
             self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
 
         return jsonobject.dumps(rsp)
@@ -7474,6 +7486,9 @@ class VmPlugin(kvmagent.KvmAgent):
         vm = get_vm_by_uuid(uuid)
         nicInfos = []
         virtualDeviceInfoList = []
+        memBalloonInfo = ""
+        edkRpm = ""
+
         for iface in vm.domain_xmlobject.devices.get_child_node_as_list('interface'):
             vmNicInfo = VmNicInfo()
             vmNicInfo.deviceAddress.bus = iface.address.bus_
@@ -7490,15 +7505,30 @@ class VmPlugin(kvmagent.KvmAgent):
         memBalloonPci = vm.domain_xmlobject.devices.get_child_node('memballoon')
         if memBalloonPci is not None:
             memBalloonInfo = self.get_device_address_info(memBalloonPci)
-            return nicInfos, virtualDeviceInfoList, memBalloonInfo, vm.domain_xml
+        
+        osLoaderElement = vm.domain_xmlobject.os.get_child_node('loader')
+        if osLoaderElement is not None:
+            loaderPath = osLoaderElement.text_
+            edkRpm = bash.bash_o("rpm -qf %s" % loaderPath).strip()
 
-        return nicInfos, virtualDeviceInfoList, None, vm.domain_xml
+        return {
+            "nicInfos" : nicInfos,
+            "virtualDeviceInfoList" : virtualDeviceInfoList,
+            "memBalloonInfo" : memBalloonInfo,
+            "vmXml" : vm.domain_xml,
+            "edkRpm" : edkRpm,
+        }
 
     @kvmagent.replyerror
     def sync_vm_deviceinfo(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = SyncVmDeviceInfoResponse()
-        rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo, rsp.vmXml = self.get_vm_device_info(cmd.vmInstanceUuid)
+        device_info_dict = self.get_vm_device_info(cmd.vmInstanceUuid)
+        rsp.nicInfos = device_info_dict["nicInfos"]
+        rsp.virtualDeviceInfoList.extend(device_info_dict["virtualDeviceInfoList"])
+        rsp.memBalloonInfo = device_info_dict["memBalloonInfo"]
+        rsp.vmXml = device_info_dict["vmXml"]
+        rsp.edkRpm = device_info_dict["edkRpm"]
         self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
         return jsonobject.dumps(rsp)
 
