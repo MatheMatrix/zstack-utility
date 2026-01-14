@@ -41,29 +41,29 @@ class TestVolumeWithIoThreadPin(TestCase, vm_utils.VmPluginTestStub):
 
         def build_start_vm_body(with_memory_and_vm_xml=True):
             body = copy.deepcopy(startVmCmdBody)
-            body["rootVolume"]['deviceAddress'] = virtualDeviceInfoListByUuid[ROOT_VOLUME_UUID]
-            body["dataVolumes"] = build_start_data_volume_body()
+            body['rootVolume']['deviceAddress'] = virtualDeviceInfoListByUuid[ROOT_VOLUME_UUID]
+            body['dataVolumes'] = build_start_data_volume_body()
             if with_memory_and_vm_xml:
-                body["vmXml"] = deviceinfo.vmXml
-                body["memorySnapshotPath"] = memorySnapshotPath
-            body["cdRoms"] = [{
-                "bootOrder": 0,
-                "deviceId": 0,
-                "isEmpty": True,
-                "resourceUuid": CDROM_UUID,
-                "deviceAddress": virtualDeviceInfoListByUuid[CDROM_UUID]
+                body['vmXml'] = deviceinfo.vmXml
+                body['memorySnapshotPath'] = memorySnapshotPath
+            body['cdRoms'] = [{
+                'bootOrder': 0,
+                'deviceId': 0,
+                'isEmpty': True,
+                'resourceUuid': CDROM_UUID,
+                'deviceAddress': virtualDeviceInfoListByUuid[CDROM_UUID]
             }]
             return jsonobject.loads(jsonobject.dumps(body))
 
         def build_start_data_volume_body():
             def build_data_volume(vol_uuid, vol_path, use_virtio, use_virtio_scsi, device_address, device_id):
                 volume = copy.deepcopy(start_vm_data_vol)
-                volume["volumeUuid"] = vol_uuid
-                volume["installPath"] = vol_path
-                volume["useVirtio"] = use_virtio
-                volume["useVirtioSCSI"] = use_virtio_scsi
-                volume["deviceAddress"] = device_address
-                volume["deviceId"] = device_id
+                volume['volumeUuid'] = vol_uuid
+                volume['installPath'] = vol_path
+                volume['useVirtio'] = use_virtio
+                volume['useVirtioSCSI'] = use_virtio_scsi
+                volume['deviceAddress'] = device_address
+                volume['deviceId'] = device_id
                 return volume
 
             return [
@@ -79,11 +79,11 @@ class TestVolumeWithIoThreadPin(TestCase, vm_utils.VmPluginTestStub):
 
         # create vm with one nic and one cdRom
         vm = jsonobject.loads(jsonobject.dumps(startVmCmdBody))
-        vm["cdRoms"].append({
-            "bootOrder": 0,
-            "deviceId": 0,
-            "isEmpty": True,
-            "resourceUuid": CDROM_UUID,
+        vm['cdRoms'].append({
+            'bootOrder': 0,
+            'deviceId': 0,
+            'isEmpty': True,
+            'resourceUuid': CDROM_UUID,
         })
         vm_uuid = vm.vmInstanceUuid
         vm_utils.create_vm(vm)
@@ -172,27 +172,29 @@ class TestVolumeWithIoThreadPin(TestCase, vm_utils.VmPluginTestStub):
 
         # sync vm deviceinfo
         deviceinfo = vm_utils.sync_vm_deviceinfo(vm_uuid)
+        self.assertTrue(deviceinfo.success, "deviceinfo.success should be true: deviceinfo = %s" % deviceinfo.to_dict())
+        self.assertIsNotNone(deviceinfo.virtualDeviceInfoList, "deviceinfo.virtualDeviceInfoList should be not None: deviceinfo = %s" % deviceinfo.to_dict())
 
         # get disk deviceAddress
         virtualDeviceInfoListByUuid = {}
         for vdi in deviceinfo.virtualDeviceInfoList:
             deviceAddress = {}
             if vdi.deviceAddress.type:
-                deviceAddress["type"] = vdi.deviceAddress.type
+                deviceAddress['type'] = vdi.deviceAddress.type
             if vdi.deviceAddress.slot:
-                deviceAddress["slot"] = vdi.deviceAddress.slot
+                deviceAddress['slot'] = vdi.deviceAddress.slot
             if vdi.deviceAddress.bus:
-                deviceAddress["bus"] = vdi.deviceAddress.bus
+                deviceAddress['bus'] = vdi.deviceAddress.bus
             if vdi.deviceAddress.domain:
-                deviceAddress["domain"] = vdi.deviceAddress.domain
+                deviceAddress['domain'] = vdi.deviceAddress.domain
             if vdi.deviceAddress.function:
-                deviceAddress["function"] = vdi.deviceAddress.function
+                deviceAddress['function'] = vdi.deviceAddress.function
             if vdi.deviceAddress.controller:
-                deviceAddress["controller"] = vdi.deviceAddress.controller
+                deviceAddress['controller'] = vdi.deviceAddress.controller
             if vdi.deviceAddress.target:
-                deviceAddress["target"] = vdi.deviceAddress.target
+                deviceAddress['target'] = vdi.deviceAddress.target
             if vdi.deviceAddress.unit:
-                deviceAddress["unit"] = vdi.deviceAddress.unit
+                deviceAddress['unit'] = vdi.deviceAddress.unit
             virtualDeviceInfoListByUuid[vdi.resourceUuid] = deviceAddress
 
         # stop vm
