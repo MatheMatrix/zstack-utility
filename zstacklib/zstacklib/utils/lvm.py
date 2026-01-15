@@ -2531,6 +2531,18 @@ def disable_multipath():
         raise RetryException("multipath is still running")
 
 
+@bash.in_bash
+def rename_vg(old_vgUuid, new_vgUuid):
+    @linux.retry(times=3, sleep_time=random.uniform(0.1, 1))
+    def restore_missing_pv():
+        r, o, e = bash.bash_roe("vgrename %s %s" % (old_vgUuid, new_vgUuid))
+        if r != 0:
+            raise Exception(
+                "unable to rename vg %s to %s, stdout:%s, stderr:%s" % (old_vgUuid, new_vgUuid, str(o), str(e)))
+        logger.debug("rename vg %s to %s successfully" % (old_vgUuid, new_vgUuid))
+
+    restore_missing_pv()
+
 
 pv_allocate_strategy = {}  # type:dict
 
