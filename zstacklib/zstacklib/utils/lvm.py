@@ -13,7 +13,7 @@ import xml.etree.ElementTree as etree
 
 import simplejson
 
-from zstacklib.utils import form, report
+from zstacklib.utils import form, report, jsonobject
 from zstacklib.utils import shell
 from zstacklib.utils import bash
 from zstacklib.utils import lock
@@ -2531,6 +2531,26 @@ def disable_multipath():
         raise RetryException("multipath is still running")
 
 
+@bash.in_bash
+def rename_vg(old_vgUuid, new_vgUuid):
+    if old_vgUuid == new_vgUuid:
+        logger.debug("rename vg skipped: old_vgUuid == new_vgUuid (%s)" % old_vgUuid)
+        return
+
+    if vg_exists(new_vgUuid) and not vg_exists(old_vgUuid):
+        logger.debug("rename vg skipped: %s already exists and %s not found" % (new_vgUuid, old_vgUuid))
+        return
+
+    @linux.retry(times=3, sleep_time=random.uniform(0.1, 1))
+    def restore_missing_pv():
+        r, o, e = bash.bash_roe("vgrename %s %s" % (old_vgUuid, new_vgUuid))
+        if r != 0:
+            raise Exception(
+                "unable to rename vg %s to %s, stdout:%s, stderr:%s" % (old_vgUuid, new_vgUuid, str(o), str(e)))
+        logger.debug("rename vg %s to %s successfully" % (old_vgUuid, new_vgUuid))
+
+    restore_missing_pv()
+
 
 pv_allocate_strategy = {}  # type:dict
 
@@ -2743,3 +2763,95 @@ class LvmlockdStatus(object):
         except Exception as e:
             logger.warn(str(e))
             self.failed = True
+
+
+def get_pv_devices():
+    '''
+    pvs --reportformat json -o pv_name,vg_name
+    {
+      "report": [
+          {
+              "pv": [
+                  {"pv_name":"/dev/sdb", "vg_name":"d7ac3dafa12f4ac2aeace05f279cd010"},
+                  {"pv_name":"/dev/sdc", "vg_name":"7c32b42292e648cf92ef61b8b48bb41f"},
+                  {"pv_name":"/dev/sdd", "vg_name":"3c93394b20b14db892fa3be01e3cbf54"},
+                  {"pv_name":"/dev/vda2", "vg_name":"zstack"}
+              ]
+          }
+      ]
+    }
+
+     {'/dev/sdd': ['3c93394b20b14db892fa3be01e3cbf54'], '/dev/sdb': ['d7ac3dafa12f4ac2aeace05f279cd010'], '/dev/sdc': ['7c32b42292e648cf92ef61b8b48bb41f'], '/dev/vda2': ['zstack']}
+    '''
+    r, o, e = bash.bash_roe("pvs --reportformat json -o pv_name,vg_name")
+    pvs = jsonobject.loads(o)
+    pv_dev_names_by_vg_name = {}
+    for pv in pvs['report'][0]['pv']:
+        pv_name = pv['pv_name']
+        vg_name = pv['vg_name']
+        if pv_name not in  pv_dev_names_by_vg_name:
+            if pv_name not in pv_dev_names_by_vg_name:
+                pv_dev_names_by_vg_name[pv_name] = []
+            pv_dev_names_by_vg_name[pv_name].append(vg_name)
+    return pv_dev_names_by_vg_name
+
+
+def get_multipath_info():
+    output = bash.bash_o("multipath -ll").strip().splitlines()
+    wwid_to_mpath = {}  # WWID -> 多路径设备名
+    dev_to_mpath = {}  # 底层设备名 -> 多路径设备名
+    mpath_to_wwid = {}  # 多路径设备名 -> WWID（新增反向映射）
+    current_mpath = None
+    current_wwid = None
+    mpath_pattern = re.compile(r'^(\S+) \(([^\)]+)\)')
+    dev_pattern = re.compile(r'\s+\S+\s+\S+\s+(\S+)\s+\d+:\d+')
+    for line in output:
+        line = line.strip()
+        if not line:
+            continue
+        mpath_match = mpath_pattern.match(line)
+        if mpath_match:
+            current_mpath = mpath_match.group(1)
+            current_wwid = mpath_match.group(2)
+            wwid_to_mpath[current_wwid] = current_mpath
+            mpath_to_wwid[current_mpath] = current_wwid
+        dev_match = dev_pattern.match(line)
+        if dev_match and current_mpath:
+            dev_name = dev_match.group(1)
+            dev_to_mpath[dev_name] = current_mpath
+    return wwid_to_mpath, dev_to_mpath, mpath_to_wwid
+
+
+def get_pv_full_info():
+    pv_dev_to_vgs = get_pv_devices()
+    scsi_info = get_lsscsi_info()
+    wwid_to_mpath, dev_to_mpath, mpath_to_wwid = get_multipath_info()
+    pv_full_info = {}
+    for pv_dev in pv_dev_to_vgs:
+        pv_full_info[pv_dev] = {}
+        # 适配1：多路径设备（/dev/mapper/mpath*）
+        if pv_dev.startswith("/dev/mapper/mpath"):
+            mpath_name = pv_dev.split("/")[-1]
+            pv_full_info[pv_dev] = {
+                "device_type": "multipath",
+                "wwid": mpath_to_wwid.get(mpath_name),
+                "underlying_devs": [dev for dev, mpath in dev_to_mpath.items() if mpath == mpath_name],
+                "vg_names": pv_dev_to_vgs[pv_dev]  # 补充关联 VG 名称（适配 get_pv_devices）
+            }
+        # 适配2：普通 SD 磁盘（/dev/sd*）
+        elif pv_dev.startswith("/dev/") and pv_dev.split("/")[-1].startswith("sd"):
+            dev_name = pv_dev.split("/")[-1]
+            pv_full_info[pv_dev] = {
+                "device_type": "physical_disk",
+                "wwid": scsi_info.get(dev_name),
+                "multipath_dev": dev_to_mpath.get(dev_name),  # 关联所属多路径设备
+                "vg_names": pv_dev_to_vgs[pv_dev]  # 补充关联 VG 名称（适配 get_pv_devices）
+            }
+        # 适配3：其他类型设备（如 /dev/vda2）
+        else:
+            pv_full_info[pv_dev] = {
+                "device_type": "unknown",
+                "wwid": None,
+                "vg_names": pv_dev_to_vgs[pv_dev]  # 补充关联 VG 名称（适配 get_pv_devices）
+            }
+    return pv_full_info

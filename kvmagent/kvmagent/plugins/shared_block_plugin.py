@@ -219,6 +219,13 @@ class CreateVolumeFromCacheRsp(AgentRsp):
         self.actualSize = None
         self.size = None
 
+
+class GetVgsInfoRsp(AgentRsp):
+    def __init__(self):
+        super(GetVgsInfoRsp, self).__init__()
+        self.vgsInfos = {}
+
+
 def translate_absolute_path_from_install_path(path):
     if path is None:
         raise Exception("install path can not be null")
@@ -328,6 +335,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     PING_PATH = "/sharedblock/ping"
     CONNECT_PATH = "/sharedblock/connect"
     DISCONNECT_PATH = "/sharedblock/disconnect"
+    TAKEOVER_PATH = "/sharedblock/takeover"
     CREATE_VOLUME_FROM_CACHE_PATH = "/sharedblock/createrootvolume"
     DELETE_BITS_PATH = "/sharedblock/bits/delete"
     CREATE_TEMPLATE_FROM_VOLUME_PATH = "/sharedblock/createtemplatefromvolume"
@@ -367,6 +375,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     SHRINK_SNAPSHOT_PATH = "/sharedblock/snapshot/shrink"
     GET_QCOW2_HASH_VALUE_PATH = "/sharedblock/getqcow2hash"
     CHECK_STATE_PATH = "/sharedblock/vgstate/check"
+    VGS_INFO_PATH = "/sharedblock/vgs/info"
 
     vgs_in_progress = set()
     vg_size = {}
@@ -380,6 +389,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.PING_PATH, self.ping)
         http_server.register_async_uri(self.CONNECT_PATH, self.connect)
         http_server.register_async_uri(self.DISCONNECT_PATH, self.disconnect)
+        http_server.register_async_uri(self.TAKEOVER_PATH, self.takeover)
         http_server.register_async_uri(self.CREATE_VOLUME_FROM_CACHE_PATH, self.create_root_volume)
         http_server.register_async_uri(self.CREATE_DATA_VOLUME_WITH_BACKING_PATH, self.create_data_volume_with_backing)
         http_server.register_async_uri(self.DELETE_BITS_PATH, self.delete_bits)
@@ -419,6 +429,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.SHRINK_SNAPSHOT_PATH, self.shrink_snapshot)
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
         http_server.register_async_uri(self.CHECK_STATE_PATH, self.check_vg_state)
+        http_server.register_async_uri(self.VGS_INFO_PATH, self.get_vgs_info)
 
         self.imagestore_client = ImageStoreClient()
 
@@ -461,6 +472,16 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             diskPaths.add(disk.get_path())
 
         return diskPaths
+
+    @linux.retry(times=5, sleep_time=random.uniform(0.1, 3))
+    def find_vg(vgUuid, raise_exception=True):
+        cmd = shell.ShellCmd("timeout 5 vgscan --ignorelockingfailure; vgs --nolocking -t %s -otags | grep %s" % (vgUuid, INIT_TAG))
+        cmd(is_exception=False)
+        if cmd.return_code != 0 and raise_exception:
+            raise RetryException("can not find vg %s with tag %s" % (vgUuid, INIT_TAG))
+        elif cmd.return_code != 0:
+            return False
+        return True
 
     def create_vg_if_not_found(self, vgUuid, disks, hostUuid, allDisks, forceWipe=False, is_first_create_vg=False):
         # type: (str, set([CheckDisk]), str, set([CheckDisk]), bool) -> bool
@@ -723,6 +744,188 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         # lvm.add_vg_tag(cmd.vgUuid, "%s::%s::%s::%s" % (HEARTBEAT_TAG, cmd.hostUuid, time.time(), linux.get_hostname()))
         self.clear_stalled_qmp_socket()
         lvm.check_missing_pv(cmd.vgUuid)
+
+        rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
+        rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
+        rsp.vgLvmUuid = lvm.get_vg_lvm_uuid(cmd.vgUuid)
+        rsp.hostUuid = cmd.hostUuid
+        rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def takeover(self, req):
+        @linux.retry(times=10, sleep_time=random.uniform(0.1, 1))
+        def get_lock(sblk_lock):
+            sblk_lock.lock = lock._get_lock(sblk_lock.name)
+            if sblk_lock.lock.acquire(False) is False:
+                raise SharedBlockConnectException("can not get %s lock, there is other thread running" % sblk_lock.name)
+
+        def release_lock(sblk_lock):
+            try:
+                sblk_lock.lock.release()
+            except Exception:
+                return
+
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        global MAX_ACTUAL_SIZE_FACTOR
+        MAX_ACTUAL_SIZE_FACTOR = cmd.maxActualSizeFactor
+        sblk_lock = lock.NamedLock("sharedblock-%s" % cmd.vgUuid)
+        rsp = None
+        try:
+            get_lock(sblk_lock)
+            rsp = self.do_connect(cmd)
+        except SharedBlockConnectException as e:
+            r = AgentRsp()
+            r.success = False
+            r.error = "can not connect sharedblock primary storage[uuid: %s] on host[uuid: %s], " \
+                        "because other thread is connecting now" % (cmd.vgUuid, cmd.hostUuid)
+            rsp = jsonobject.dumps(r)
+        except Exception as e:
+            if rsp is None:
+                r = AgentRsp()
+                r.success = False
+                content = traceback.format_exc()
+                r.error = "%s\n%s" % (str(e), content)
+                rsp = jsonobject.dumps(r)
+        finally:
+            release_lock(sblk_lock)
+            return rsp
+
+    @kvmagent.replyerror
+    @lock.file_lock(LOCK_FILE)
+    def do_reload(self, cmd):
+        rsp = ConnectRsp()
+        diskPaths = set()
+        disks = set()
+        allDiskPaths = set()
+        allDisks = set()
+
+        self.vgs_path_and_wwid[cmd.vgUuid] = {}
+        for diskUuid in cmd.sharedBlockUuids:
+            disk = CheckDisk(diskUuid)
+            disks.add(disk)
+            diskPaths.add(disk.get_path())
+
+        for diskUuid in cmd.allSharedBlockUuids:
+            disk = CheckDisk(diskUuid)
+            p = disk.get_path(raise_exception=False)
+            if p is not None:
+                allDiskPaths.add(p)
+                allDisks.add(disk)
+                if diskUuid in cmd.sharedBlockUuids:
+                    self.vgs_path_and_wwid[cmd.vgUuid][p] = diskUuid
+
+        allDiskPaths = allDiskPaths.union(diskPaths)
+        allDisks = allDisks.union(disks)
+
+        try:
+            root_disks = ["%s[0-9]*" % d for d in linux.get_physical_disk()]
+            allDiskPaths = allDiskPaths.union(root_disks)
+        except Exception as e:
+            logger.warn("get exception: %s" % e.message)
+            allDiskPaths.add("/dev/sd*")
+            allDiskPaths.add("/dev/vd*")
+
+        def config_lvm(host_id, enableLvmetad=False):
+            lvm.backup_lvm_config()
+            config = lvm.get_lvm_default_config()
+            lvmlockd_lock_retries = 6
+            config.modify({
+                "use_lvmlockd": 1,
+                "host_id": host_id,
+                "sanlock_lv_extend": DEFAULT_SANLOCK_LV_SIZE,
+                "lvmlockd_lock_retries": lvmlockd_lock_retries,
+                "issue_discards": 0,
+                "reserved_stack": 256,
+                "reserved_memory": 131072,
+                "use_lvmetad": 1 if enableLvmetad else 0
+            })
+            if kvmagent.get_host_os_type() == "debian":
+                config.modify({"udev_rules": 0, "udev_sync": 0})
+            config.write_to_file(lvm.LVM_CONFIG_TMP_FILE)
+            lvm.config_lvm_filter([os.path.basename(lvm.LVM_CONFIG_TMP_FILE)], preserve_disks=allDiskPaths)
+
+            new_config = linux.read_file(lvm.LVM_CONFIG_TMP_FILE)
+            old_config = linux.read_file(lvm.LVM_LOCAL_CONFIG_FILE)
+            diff = list(difflib.unified_diff(old_config.splitlines() if old_config is not None else [],
+                                             new_config.splitlines()))
+            if len(diff) == 0:
+                logger.debug("lvm config has not changed")
+            else:
+                linux.write_file(lvm.LVM_CONFIG_FILE, new_config, create_if_not_exist=True)
+                linux.write_file(lvm.LVM_LOCAL_CONFIG_FILE, new_config, create_if_not_exist=True)
+                logger.debug("lvm config has changed:\n %s" % '\n'.join(diff))
+                lvm.report_config_changed()
+
+            # max lock retries times = (external lvmlockd_lock_retries + 1) * (internal lock_retries + 1 after a lock conflict)
+            lvm.lvm_cmd_timeout_with_locking = ((lvmlockd_lock_retries + 1) * 6) * 5
+            lvm.modify_sanlock_config("sh_retries", 20)
+            lvm.modify_sanlock_config("logfile_priority", 7)
+            lvm.modify_sanlock_config("renewal_read_extend_sec", 24)
+            lvm.modify_sanlock_config("debug_renew", 1)
+            lvm.modify_sanlock_config("use_watchdog", 0)
+            lvm.modify_sanlock_config("max_sectors_kb", "ignore")
+            lvm.modify_sanlock_config("watchdog_fire_timeout", 1)
+            lvm.modify_sanlock_config("kill_grace_seconds", 40)
+            lvm.modify_sanlock_config("zstack_vglock_timeout", 0)
+            lvm.modify_sanlock_config("use_zstack_vglock_timeout", 0)
+            lvm.modify_sanlock_config("zstack_vglock_large_delay", 8)
+            lvm.modify_sanlock_config("use_zstack_vglock_large_delay", 0)
+
+            sanlock_hostname = "%s-%s-%s" % (cmd.vgUuid[:8], cmd.hostUuid[:8], linux.get_hostname()[:20])
+            lvm.modify_sanlock_config("our_host_name", sanlock_hostname)
+            shell.call("sed -i 's/.*rotate .*/rotate 10/g' /etc/logrotate.d/sanlock", exception=False)
+            shell.call("sed -i 's/.*size .*/size 20M/g' /etc/logrotate.d/sanlock", exception=False)
+
+        config_lvm(cmd.hostId, cmd.enableLvmetad)
+
+        lvm.start_lock_service(cmd.ioTimeout)
+
+        # 1 注册 生成一个新的vg 和 选中的 lun wwid
+        # 选中存储上vg 和 lun wwid，指定了新的vgUuid
+        # 1）如果 vgUuid 和 lun 组成的vg一致，直接返回
+        # 2）如果 vgUuid 和 lun 组成的vg 不一致，需要重新加载（vgrename）
+
+        # 2 重新加载 控制面vg 和 选中的 lun wwid
+        # wwid 的lun 组成的 vg 是不是 与 控制面一致
+        # 1）不一致，需要重新加载（vgrename）
+        # 2）一致，直接返回
+
+        # 获取 lun 的 盘符
+        # 获取 vg pvdisplay 里面 pv 的盘符，从而判断 lun 和 vg 的关联关系
+
+        # 获取当前物理机 所有 vg 信息
+
+        # 获取控制面记录的vg
+        # vg 存在，直接返回
+        # vg 不存在，但是 控制面 lv
+
+        @bash.in_bash
+        def get_retry_times_for_checking_vg_lockspace():
+            r, sanlock_patch_version = bash.bash_ro("sanlock get_patch_version")
+            # if version is not a digit, e.g. "client action get_patch_version is unknown", it also means that sanlock patch version < 2
+            if sanlock_patch_version.strip().isdigit() is False:
+                return 15
+            elif int(sanlock_patch_version.strip()) >= 2:
+                return 3
+            else:
+                return 15
+
+        retry_times_for_checking_vg_lockspace = get_retry_times_for_checking_vg_lockspace()
+
+        lvm.check_stuck_vglk_and_gllk()
+        logger.debug("starting vg %s lock..." % cmd.vgUuid)
+        lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
+
+        if lvm.lvm_vgck(cmd.vgUuid, 60)[0] is False and lvm.lvm_check_operation(cmd.vgUuid) is False:
+            lvm.drop_vg_lock(cmd.vgUuid)
+            logger.debug("restarting vg %s lock..." % cmd.vgUuid)
+            lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
+
+        self.clear_stalled_qmp_socket()
+        lvm.check_missing_pv(cmd.vgUuid)
+
+        rename_vg()
 
         rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
         rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
@@ -1785,4 +1988,31 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             if error:
                 rsp.failedVgs.update({vg_uuid: error})
 
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def get_vgs_info(self, req):
+        rsp = GetVgsInfoRsp()
+
+        r, o, e = bash.bash_roe("pvs --reportformat json -o pv_name,vg_name")
+        pvs = jsonobject.loads(o)
+        pv_name_by_dev_name = {}
+        for pv in pvs['report'][0]['pv']:
+            if not pv_name_by_dev_name.has_key(pv['pv_name']):
+                pv_name = pv['pv_name']
+                vg_name = pv['vg_name']
+                if pv_name not in pv_name_by_dev_name:
+                    pv_name_by_dev_name[pv_name] = []
+                pv_name_by_dev_name[pv_name].append(vg_name)
+
+        dev_name_by_wwid = lvm.get_pv_full_info()
+
+        vgsInfos = {}
+        lunUuids = ["111ec2b3e2f443d8b79a1a4d882b1e45", "222ec2b3e2f443d8b79a1a4d882b1e45"]
+        vgsInfos['555ec2b3e2f443d8b79a1a4d882b1e45'] = lunUuids
+
+        lunUuids = ["333ec2b3e2f443d8b79a1a4d882b1e45", "444ec2b3e2f443d8b79a1a4d882b1e45"]
+        vgsInfos['666ec2b3e2f443d8b79a1a4d882b1e45'] = lunUuids
+
+        rsp.vgsInfos = vgsInfos
         return jsonobject.dumps(rsp)
