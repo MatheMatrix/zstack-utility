@@ -219,6 +219,21 @@ class CreateVolumeFromCacheRsp(AgentRsp):
         self.actualSize = None
         self.size = None
 
+
+class TakeoverRsp(AgentRsp):
+    def __init__(self):
+        super(TakeoverRsp, self).__init__()
+        self.hostId = None
+        self.vgLvmUuid = None
+        self.hostUuid = None
+
+
+class GetVgsInfoRsp(AgentRsp):
+    def __init__(self):
+        super(GetVgsInfoRsp, self).__init__()
+        self.vgsSharedBlockStructs = {}
+        self.vgsSharedBlockCount = {}
+
 def translate_absolute_path_from_install_path(path):
     if path is None:
         raise Exception("install path can not be null")
@@ -367,6 +382,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     SHRINK_SNAPSHOT_PATH = "/sharedblock/snapshot/shrink"
     GET_QCOW2_HASH_VALUE_PATH = "/sharedblock/getqcow2hash"
     CHECK_STATE_PATH = "/sharedblock/vgstate/check"
+    TAKEOVER_PATH = "/sharedblock/takeover"
+    VGS_INFO_PATH = "/sharedblock/vgs/info"
 
     vgs_in_progress = set()
     vg_size = {}
@@ -419,6 +436,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.SHRINK_SNAPSHOT_PATH, self.shrink_snapshot)
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
         http_server.register_async_uri(self.CHECK_STATE_PATH, self.check_vg_state)
+        http_server.register_async_uri(self.TAKEOVER_PATH, self.takeover)
+        http_server.register_async_uri(self.VGS_INFO_PATH, self.vgs_info)
 
         self.imagestore_client = ImageStoreClient()
 
@@ -552,25 +571,13 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
     @kvmagent.replyerror
     def connect(self, req):
-        @linux.retry(times=10, sleep_time=random.uniform(0.1, 1))
-        def get_lock(sblk_lock):
-            sblk_lock.lock = lock._get_lock(sblk_lock.name)
-            if sblk_lock.lock.acquire(False) is False:
-                raise SharedBlockConnectException("can not get %s lock, there is other thread running" % sblk_lock.name)
-
-        def release_lock(sblk_lock):
-            try:
-                sblk_lock.lock.release()
-            except Exception:
-                return
-
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         global MAX_ACTUAL_SIZE_FACTOR
         MAX_ACTUAL_SIZE_FACTOR = cmd.maxActualSizeFactor
         sblk_lock = lock.NamedLock("sharedblock-%s" % cmd.vgUuid)
         rsp = None
         try:
-            get_lock(sblk_lock)
+            self.get_lock(sblk_lock)
             rsp = self.do_connect(cmd)
         except SharedBlockConnectException as e:
             r = AgentRsp()
@@ -586,13 +593,76 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                 r.error = "%s\n%s" % (str(e), content)
                 rsp = jsonobject.dumps(r)
         finally:
-            release_lock(sblk_lock)
+            self.release_lock(sblk_lock)
             return rsp
 
     @kvmagent.replyerror
     @lock.file_lock(LOCK_FILE)
     def do_connect(self, cmd):
         rsp = ConnectRsp()
+
+        diskPaths, disks, allDiskPaths, allDisks = self.prepare_disk(cmd)
+
+        lvm.config_lvm(cmd.hostId, allDiskPaths, cmd.vgUuid, cmd.hostUuid, DEFAULT_SANLOCK_LV_SIZE,
+                       kvmagent.get_host_os_type(), cmd.enableLvmetad)
+
+        lvm.start_lock_service(cmd.ioTimeout)
+        logger.debug("find/create vg %s lock..." % cmd.vgUuid)
+        rsp.isFirst = self.create_vg_if_not_found(cmd.vgUuid, disks, cmd.hostUuid, allDisks, cmd.forceWipe, cmd.isFirst)
+
+#       sanlock table:
+#       
+#       | sanlock patch version | delta lease sleep time | retry times |
+#       | --------------------- | ---------------------- | ----------- |
+#       | 1                     | 40 seconds             | 15          |
+#       | 2 or higher           | 0 second               | 3           |
+#       
+#       
+#       explain:
+#       
+#       In sanlock patch version 1, when you start a vg lock, it takes around 40 seconds
+#       in delta lease. So 15 retry times are required to check if vg lockspace exists.
+#       
+#       In sanlock patch version 2, the sleep time in delta lease can be defined by zstack
+#       utility in sanlock.conf. It's 0 second by default, so retry times can be reduced to
+#       3 in order to save time.
+
+        retry_times_for_checking_vg_lockspace = lvm.get_retry_times_for_checking_vg_lockspace()
+
+        lvm.check_stuck_vglk_and_gllk()
+        logger.debug("starting vg %s lock..." % cmd.vgUuid)
+        lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
+
+        if lvm.lvm_vgck(cmd.vgUuid, 60)[0] is False and lvm.lvm_check_operation(cmd.vgUuid) is False:
+            lvm.drop_vg_lock(cmd.vgUuid)
+            logger.debug("restarting vg %s lock..." % cmd.vgUuid)
+            lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
+
+        # lvm.clean_vg_exists_host_tags(cmd.vgUuid, cmd.hostUuid, HEARTBEAT_TAG)
+        # lvm.add_vg_tag(cmd.vgUuid, "%s::%s::%s::%s" % (HEARTBEAT_TAG, cmd.hostUuid, time.time(), linux.get_hostname()))
+        self.clear_stalled_qmp_socket()
+        lvm.check_missing_pv(cmd.vgUuid)
+
+        rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
+        rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
+        rsp.vgLvmUuid = lvm.get_vg_lvm_uuid(cmd.vgUuid)
+        rsp.hostUuid = cmd.hostUuid
+        rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
+        return jsonobject.dumps(rsp)
+
+    @linux.retry(times=10, sleep_time=random.uniform(0.1, 1))
+    def get_lock(self, sblk_lock):
+        sblk_lock.lock = lock._get_lock(sblk_lock.name)
+        if sblk_lock.lock.acquire(False) is False:
+            raise SharedBlockConnectException("can not get %s lock, there is other thread running" % sblk_lock.name)
+
+    def release_lock(self, sblk_lock):
+        try:
+            sblk_lock.lock.release()
+        except Exception:
+            return
+
+    def prepare_disk(self, cmd):
         diskPaths = set()
         disks = set()
         allDiskPaths = set()
@@ -624,112 +694,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             allDiskPaths.add("/dev/sd*")
             allDiskPaths.add("/dev/vd*")
 
-        def config_lvm(host_id, enableLvmetad=False):
-            lvm.backup_lvm_config()
-            config = lvm.get_lvm_default_config()
-            lvmlockd_lock_retries = 6
-            config.modify({
-                "use_lvmlockd": 1,
-                "host_id": host_id,
-                "sanlock_lv_extend": DEFAULT_SANLOCK_LV_SIZE,
-                "lvmlockd_lock_retries": lvmlockd_lock_retries,
-                "issue_discards": 0,
-                "reserved_stack": 256,
-                "reserved_memory": 131072,
-                "use_lvmetad": 1 if enableLvmetad else 0
-            })
-            if kvmagent.get_host_os_type() == "debian":
-                config.modify({"udev_rules": 0, "udev_sync": 0})
-            config.write_to_file(lvm.LVM_CONFIG_TMP_FILE)
-            lvm.config_lvm_filter([os.path.basename(lvm.LVM_CONFIG_TMP_FILE)], preserve_disks=allDiskPaths)
-
-            new_config = linux.read_file(lvm.LVM_CONFIG_TMP_FILE)
-            old_config = linux.read_file(lvm.LVM_LOCAL_CONFIG_FILE)
-            diff = list(difflib.unified_diff(old_config.splitlines() if old_config is not None else [], new_config.splitlines()))
-            if len(diff) == 0:
-                logger.debug("lvm config has not changed")
-            else:
-                linux.write_file(lvm.LVM_CONFIG_FILE, new_config, create_if_not_exist=True)
-                linux.write_file(lvm.LVM_LOCAL_CONFIG_FILE, new_config, create_if_not_exist=True)
-                logger.debug("lvm config has changed:\n %s" % '\n'.join(diff))
-                lvm.report_config_changed()
-
-            # max lock retries times = (external lvmlockd_lock_retries + 1) * (internal lock_retries + 1 after a lock conflict)
-            lvm.lvm_cmd_timeout_with_locking = ((lvmlockd_lock_retries + 1) * 6) * 5
-            lvm.modify_sanlock_config("sh_retries", 20)
-            lvm.modify_sanlock_config("logfile_priority", 7)
-            lvm.modify_sanlock_config("renewal_read_extend_sec", 24)
-            lvm.modify_sanlock_config("debug_renew", 1)
-            lvm.modify_sanlock_config("use_watchdog", 0)
-            lvm.modify_sanlock_config("max_sectors_kb", "ignore")
-            lvm.modify_sanlock_config("watchdog_fire_timeout", 1)
-            lvm.modify_sanlock_config("kill_grace_seconds", 40)
-            lvm.modify_sanlock_config("zstack_vglock_timeout", 0)
-            lvm.modify_sanlock_config("use_zstack_vglock_timeout", 0)
-            lvm.modify_sanlock_config("zstack_vglock_large_delay", 8)
-            lvm.modify_sanlock_config("use_zstack_vglock_large_delay", 0)
-
-            sanlock_hostname = "%s-%s-%s" % (cmd.vgUuid[:8], cmd.hostUuid[:8], linux.get_hostname()[:20])
-            lvm.modify_sanlock_config("our_host_name", sanlock_hostname)
-            shell.call("sed -i 's/.*rotate .*/rotate 10/g' /etc/logrotate.d/sanlock", exception=False)
-            shell.call("sed -i 's/.*size .*/size 20M/g' /etc/logrotate.d/sanlock", exception=False)
-
-        config_lvm(cmd.hostId, cmd.enableLvmetad)
-
-        lvm.start_lock_service(cmd.ioTimeout)
-        logger.debug("find/create vg %s lock..." % cmd.vgUuid)
-        rsp.isFirst = self.create_vg_if_not_found(cmd.vgUuid, disks, cmd.hostUuid, allDisks, cmd.forceWipe, cmd.isFirst)
-
-#       sanlock table:
-#       
-#       | sanlock patch version | delta lease sleep time | retry times |
-#       | --------------------- | ---------------------- | ----------- |
-#       | 1                     | 40 seconds             | 15          |
-#       | 2 or higher           | 0 second               | 3           |
-#       
-#       
-#       explain:
-#       
-#       In sanlock patch version 1, when you start a vg lock, it takes around 40 seconds
-#       in delta lease. So 15 retry times are required to check if vg lockspace exists.
-#       
-#       In sanlock patch version 2, the sleep time in delta lease can be defined by zstack
-#       utility in sanlock.conf. It's 0 second by default, so retry times can be reduced to
-#       3 in order to save time.
-
-        @bash.in_bash
-        def get_retry_times_for_checking_vg_lockspace():
-            r, sanlock_patch_version = bash.bash_ro("sanlock get_patch_version")
-            # if version is not a digit, e.g. "client action get_patch_version is unknown", it also means that sanlock patch version < 2
-            if sanlock_patch_version.strip().isdigit() is False:
-                return 15
-            elif int(sanlock_patch_version.strip()) >= 2:
-                return 3
-            else:
-                return 15
-
-        retry_times_for_checking_vg_lockspace = get_retry_times_for_checking_vg_lockspace()
-
-        lvm.check_stuck_vglk_and_gllk()
-        logger.debug("starting vg %s lock..." % cmd.vgUuid)
-        lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
-
-        if lvm.lvm_vgck(cmd.vgUuid, 60)[0] is False and lvm.lvm_check_operation(cmd.vgUuid) is False:
-            lvm.drop_vg_lock(cmd.vgUuid)
-            logger.debug("restarting vg %s lock..." % cmd.vgUuid)
-            lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
-
-        # lvm.clean_vg_exists_host_tags(cmd.vgUuid, cmd.hostUuid, HEARTBEAT_TAG)
-        # lvm.add_vg_tag(cmd.vgUuid, "%s::%s::%s::%s" % (HEARTBEAT_TAG, cmd.hostUuid, time.time(), linux.get_hostname()))
-        self.clear_stalled_qmp_socket()
-        lvm.check_missing_pv(cmd.vgUuid)
-
-        rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
-        rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
-        rsp.vgLvmUuid = lvm.get_vg_lvm_uuid(cmd.vgUuid)
-        rsp.hostUuid = cmd.hostUuid
-        rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
-        return jsonobject.dumps(rsp)
+        return diskPaths, disks, allDiskPaths, allDisks
 
     @staticmethod
     @bash.in_bash
@@ -1785,4 +1750,121 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             if error:
                 rsp.failedVgs.update({vg_uuid: error})
 
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def takeover(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        global MAX_ACTUAL_SIZE_FACTOR
+        MAX_ACTUAL_SIZE_FACTOR = cmd.maxActualSizeFactor
+        sblk_lock = lock.NamedLock("sharedblock-%s" % cmd.vgUuid)
+        rsp = None
+        try:
+            self.get_lock(sblk_lock)
+            rsp = self.do_takeover(cmd)
+        except SharedBlockConnectException as e:
+            r = AgentRsp()
+            r.success = False
+            r.error = "can not takeover sharedblock primary storage[uuid: %s] on host[uuid: %s], " \
+                        "because other thread is takeovering now" % (cmd.vgUuid, cmd.hostUuid)
+            rsp = jsonobject.dumps(r)
+        except Exception as e:
+            if rsp is None:
+                r = AgentRsp()
+                r.success = False
+                content = traceback.format_exc()
+                r.error = "%s\n%s" % (str(e), content)
+                rsp = jsonobject.dumps(r)
+        finally:
+            self.release_lock(sblk_lock)
+            return rsp
+
+    @kvmagent.replyerror
+    @lock.file_lock(LOCK_FILE)
+    def do_takeover(self, cmd):
+        rsp = TakeoverRsp()
+
+        # Step 1: prepare disk paths
+        _, _, allDiskPaths, allDisks = self.prepare_disk(cmd)
+
+        # Step 2: configure LVM filter first so that vgs can see target PVs
+        lvm.config_lvm(cmd.hostId, allDiskPaths, cmd.vgUuid, cmd.hostUuid, DEFAULT_SANLOCK_LV_SIZE,
+                       kvmagent.get_host_os_type(), cmd.enableLvmetad)
+
+        # Step 3: start lock service
+        lvm.start_lock_service(cmd.ioTimeout)
+
+        # Step 4: find VG by exact WWID match (no fallback)
+        def get_vg_name_by_shared_block_uuid():
+            vgsSharedBlockStructs, _ = lvm.get_vgs_info(tag=INIT_TAG)
+            target_wwids = set(cmd.sharedBlockUuids)
+            matched_vgs = []
+
+            for _vg_uuid, block_devices in vgsSharedBlockStructs.items():
+                vg_wwids = set(bd.wwid for bd in block_devices)
+                if target_wwids == vg_wwids:
+                    matched_vgs.append(_vg_uuid)
+
+            if len(matched_vgs) == 0:
+                available = {k: [bd.wwid for bd in v]
+                             for k, v in vgsSharedBlockStructs.items()}
+                raise Exception("cannot find VG with exact WWID match. "
+                                "target=%s, available=%s" % (cmd.sharedBlockUuids, available))
+            if len(matched_vgs) > 1:
+                raise Exception("found multiple VGs matching the same WWID set: %s. "
+                                "Manual investigation required." % matched_vgs)
+            return matched_vgs[0]
+
+        vg_uuid_on_storage = get_vg_name_by_shared_block_uuid()
+
+        # Step 5: reset sanlock lockspace
+        lvm.reset_sanlock_lockspace(vg_uuid_on_storage)
+
+        # Step 6: start VG lock
+        lvm.check_stuck_vglk_and_gllk()
+        logger.debug("starting vg %s lock..." % vg_uuid_on_storage)
+        retry_times_for_checking_vg_lockspace = lvm.get_retry_times_for_checking_vg_lockspace()
+        lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times_for_checking_vg_lockspace)
+
+        # After Step 6, all subsequent steps are protected by a unified try/except:
+        # any failure will auto drop_vg_lock to release lockspace, then re-raise.
+        # The control plane does not need to send cleanup commands.
+        current_vg = vg_uuid_on_storage  # tracks VG name (changes after rename)
+        try:
+            # Step 7: vgck check
+            if lvm.lvm_vgck(vg_uuid_on_storage, 60)[0] is False and lvm.lvm_check_operation(vg_uuid_on_storage) is False:
+                lvm.drop_vg_lock(vg_uuid_on_storage)
+                logger.debug("restarting vg %s lock..." % vg_uuid_on_storage)
+                lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times_for_checking_vg_lockspace)
+
+            self.clear_stalled_qmp_socket()
+
+            # Step 8: VG rename
+            lvm.rename_vg(vg_uuid_on_storage, cmd.vgUuid)
+            current_vg = cmd.vgUuid
+
+            # Step 9: fix missing PV
+            lvm.check_missing_pv(cmd.vgUuid)
+
+            # Step 10: reset PV UUIDs
+            lvm.reset_pv_uuids(cmd.vgUuid)
+
+            # Step 11: update VG tag
+            new_tag = "%s::%s::%s::%s" % (INIT_TAG, cmd.hostUuid, time.time(), linux.get_hostname())
+            lvm.update_vg_tag(cmd.vgUuid, INIT_TAG, new_tag)
+        except Exception:
+            lvm.drop_vg_lock(current_vg)
+            raise
+
+        rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
+        rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
+        rsp.vgLvmUuid = lvm.get_vg_lvm_uuid(cmd.vgUuid)
+        rsp.hostUuid = cmd.hostUuid
+        rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def vgs_info(self, req):
+        rsp = GetVgsInfoRsp()
+        rsp.vgsSharedBlockStructs, rsp.vgsSharedBlockCount = lvm.get_vgs_info(tag=INIT_TAG)
         return jsonobject.dumps(rsp)
