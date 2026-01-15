@@ -3,7 +3,6 @@ import os.path
 import re
 import random
 import traceback
-import difflib
 
 from kvmagent import kvmagent
 from kvmagent.plugins.imagestore import ImageStoreClient
@@ -219,6 +218,20 @@ class CreateVolumeFromCacheRsp(AgentRsp):
         self.actualSize = None
         self.size = None
 
+
+class TakeoverRsp(AgentRsp):
+    def __init__(self):
+        super(TakeoverRsp, self).__init__()
+        self.hostId = None
+        self.hostUuid = None
+
+
+class GetVgsInfoRsp(AgentRsp):
+    def __init__(self):
+        super(GetVgsInfoRsp, self).__init__()
+        self.vgsSharedBlockStructs = {}
+        self.vgsSharedBlockCount = {}
+
 def translate_absolute_path_from_install_path(path):
     if path is None:
         raise Exception("install path can not be null")
@@ -324,7 +337,6 @@ class CheckDisk(object):
 
 
 class SharedBlockPlugin(kvmagent.KvmAgent):
-
     PING_PATH = "/sharedblock/ping"
     CONNECT_PATH = "/sharedblock/connect"
     DISCONNECT_PATH = "/sharedblock/disconnect"
@@ -367,6 +379,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     SHRINK_SNAPSHOT_PATH = "/sharedblock/snapshot/shrink"
     GET_QCOW2_HASH_VALUE_PATH = "/sharedblock/getqcow2hash"
     CHECK_STATE_PATH = "/sharedblock/vgstate/check"
+    TAKEOVER_PATH = "/sharedblock/takeover"
+    VGS_INFO_PATH = "/sharedblock/vgs/info"
 
     vgs_in_progress = set()
     vg_size = {}
@@ -415,10 +429,13 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.CONVERT_VOLUME_PROVISIONING_PATH, self.convert_volume_provisioning)
         http_server.register_async_uri(self.CONFIG_FILTER_PATH, self.config_filter)
         http_server.register_async_uri(self.CONVERT_VOLUME_FORMAT_PATH, self.convert_volume_format)
-        http_server.register_async_uri(self.GET_DOWNLOAD_BITS_FROM_KVM_HOST_PROGRESS_PATH, self.get_download_bits_from_kvmhost_progress)
+        http_server.register_async_uri(self.GET_DOWNLOAD_BITS_FROM_KVM_HOST_PROGRESS_PATH,
+                                       self.get_download_bits_from_kvmhost_progress)
         http_server.register_async_uri(self.SHRINK_SNAPSHOT_PATH, self.shrink_snapshot)
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
         http_server.register_async_uri(self.CHECK_STATE_PATH, self.check_vg_state)
+        http_server.register_async_uri(self.TAKEOVER_PATH, self.takeover)
+        http_server.register_async_uri(self.VGS_INFO_PATH, self.vgs_info)
 
         self.imagestore_client = ImageStoreClient()
 
@@ -466,7 +483,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         # type: (str, set([CheckDisk]), str, set([CheckDisk]), bool) -> bool
         @linux.retry(times=5, sleep_time=random.uniform(0.1, 3))
         def find_vg(vgUuid, raise_exception=True):
-            cmd = shell.ShellCmd("timeout 5 vgscan --ignorelockingfailure; vgs --nolocking -t %s -otags | grep %s" % (vgUuid, INIT_TAG))
+            cmd = shell.ShellCmd(
+                "timeout 5 vgscan --ignorelockingfailure; vgs --nolocking -t %s -otags | grep %s" % (vgUuid, INIT_TAG))
             cmd(is_exception=False)
             if cmd.return_code != 0 and raise_exception:
                 raise RetryException("can not find vg %s with tag %s" % (vgUuid, INIT_TAG))
@@ -487,7 +505,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                          (vgUuid, cmd.return_code, cmd.stdout, cmd.stderr))
             if cmd.return_code != 0 and raise_exception:
                 raise RetryException("ret: %s, stdout: %s, stderr: %s" %
-                                (cmd.return_code, cmd.stdout, cmd.stderr))
+                                     (cmd.return_code, cmd.stdout, cmd.stderr))
             elif cmd.return_code != 0:
                 return False
             else:
@@ -535,7 +553,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                 self.vgs_in_progress.remove(cmd.vgUuid)
 
         lun_capacities_cache = self.lun_capacities.get(cmd.vgUuid)
-        if lun_capacities_cache is not None and linux.get_current_timestamp() - lun_capacities_cache['currentTimestamp'] < 60:
+        if lun_capacities_cache is not None and linux.get_current_timestamp() - lun_capacities_cache[
+            'currentTimestamp'] < 60:
             rsp.lunCapacities = lun_capacities_cache['lun_capacities']
         elif cmd.vgUuid not in self.pvs_in_progress:
             try:
@@ -550,33 +569,18 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         ## lvm.refresh_lv_uuid_cache_if_need()
         return jsonobject.dumps(rsp)
 
-    @kvmagent.replyerror
-    def connect(self, req):
-        @linux.retry(times=10, sleep_time=random.uniform(0.1, 1))
-        def get_lock(sblk_lock):
-            sblk_lock.lock = lock._get_lock(sblk_lock.name)
-            if sblk_lock.lock.acquire(False) is False:
-                raise SharedBlockConnectException("can not get %s lock, there is other thread running" % sblk_lock.name)
-
-        def release_lock(sblk_lock):
-            try:
-                sblk_lock.lock.release()
-            except Exception:
-                return
-
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        global MAX_ACTUAL_SIZE_FACTOR
-        MAX_ACTUAL_SIZE_FACTOR = cmd.maxActualSizeFactor
+    def _run_with_sblk_lock(self, cmd, handler, operation):
+        """Common wrapper for connect/takeover: acquires NamedLock, calls handler, handles errors."""
         sblk_lock = lock.NamedLock("sharedblock-%s" % cmd.vgUuid)
         rsp = None
         try:
-            get_lock(sblk_lock)
-            rsp = self.do_connect(cmd)
+            self.get_lock(sblk_lock)
+            rsp = handler(cmd)
         except SharedBlockConnectException as e:
             r = AgentRsp()
             r.success = False
-            r.error = "can not connect sharedblock primary storage[uuid: %s] on host[uuid: %s], " \
-                        "because other thread is connecting now" % (cmd.vgUuid, cmd.hostUuid)
+            r.error = "can not %s sharedblock primary storage[uuid: %s] on host[uuid: %s], " \
+                      "because other thread is %s now" % (operation, cmd.vgUuid, cmd.hostUuid, operation)
             rsp = jsonobject.dumps(r)
         except Exception as e:
             if rsp is None:
@@ -586,13 +590,83 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                 r.error = "%s\n%s" % (str(e), content)
                 rsp = jsonobject.dumps(r)
         finally:
-            release_lock(sblk_lock)
-            return rsp
+            self.release_lock(sblk_lock)
+        return rsp
+
+    @kvmagent.replyerror
+    def connect(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        global MAX_ACTUAL_SIZE_FACTOR
+        MAX_ACTUAL_SIZE_FACTOR = cmd.maxActualSizeFactor
+        return self._run_with_sblk_lock(cmd, self.do_connect, "connecting")
 
     @kvmagent.replyerror
     @lock.file_lock(LOCK_FILE)
     def do_connect(self, cmd):
         rsp = ConnectRsp()
+
+        diskPaths, disks, allDiskPaths, allDisks = self.prepare_disk(cmd)
+
+        lvm.config_lvm(cmd.hostId, allDiskPaths, cmd.vgUuid, cmd.hostUuid, DEFAULT_SANLOCK_LV_SIZE,
+                       kvmagent.get_host_os_type(), cmd.enableLvmetad)
+
+        lvm.start_lock_service(cmd.ioTimeout)
+        logger.debug("find/create vg %s lock..." % cmd.vgUuid)
+        rsp.isFirst = self.create_vg_if_not_found(cmd.vgUuid, disks, cmd.hostUuid, allDisks, cmd.forceWipe, cmd.isFirst)
+
+        #       sanlock table:
+        #
+        #       | sanlock patch version | delta lease sleep time | retry times |
+        #       | --------------------- | ---------------------- | ----------- |
+        #       | 1                     | 40 seconds             | 15          |
+        #       | 2 or higher           | 0 second               | 3           |
+        #
+        #
+        #       explain:
+        #
+        #       In sanlock patch version 1, when you start a vg lock, it takes around 40 seconds
+        #       in delta lease. So 15 retry times are required to check if vg lockspace exists.
+        #
+        #       In sanlock patch version 2, the sleep time in delta lease can be defined by zstack
+        #       utility in sanlock.conf. It's 0 second by default, so retry times can be reduced to
+        #       3 in order to save time.
+
+        retry_times_for_checking_vg_lockspace = lvm.get_retry_times_for_checking_vg_lockspace()
+
+        lvm.check_stuck_vglk_and_gllk()
+        logger.debug("starting vg %s lock..." % cmd.vgUuid)
+        lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
+
+        if lvm.lvm_vgck(cmd.vgUuid, 60)[0] is False and lvm.lvm_check_operation(cmd.vgUuid) is False:
+            lvm.drop_vg_lock(cmd.vgUuid)
+            logger.debug("restarting vg %s lock..." % cmd.vgUuid)
+            lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
+
+        # lvm.clean_vg_exists_host_tags(cmd.vgUuid, cmd.hostUuid, HEARTBEAT_TAG)
+        # lvm.add_vg_tag(cmd.vgUuid, "%s::%s::%s::%s" % (HEARTBEAT_TAG, cmd.hostUuid, time.time(), linux.get_hostname()))
+        self.clear_stalled_qmp_socket()
+        lvm.check_missing_pv(cmd.vgUuid)
+
+        rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
+        rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
+        rsp.vgLvmUuid = lvm.get_vg_lvm_uuid(cmd.vgUuid)
+        rsp.hostUuid = cmd.hostUuid
+        rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
+        return jsonobject.dumps(rsp)
+
+    @linux.retry(times=10, sleep_time=random.uniform(0.1, 1))
+    def get_lock(self, sblk_lock):
+        sblk_lock.lock = lock._get_lock(sblk_lock.name)
+        if sblk_lock.lock.acquire(False) is False:
+            raise SharedBlockConnectException("can not get %s lock, there is other thread running" % sblk_lock.name)
+
+    def release_lock(self, sblk_lock):
+        try:
+            sblk_lock.lock.release()
+        except Exception:
+            return
+
+    def prepare_disk(self, cmd):
         diskPaths = set()
         disks = set()
         allDiskPaths = set()
@@ -624,112 +698,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             allDiskPaths.add("/dev/sd*")
             allDiskPaths.add("/dev/vd*")
 
-        def config_lvm(host_id, enableLvmetad=False):
-            lvm.backup_lvm_config()
-            config = lvm.get_lvm_default_config()
-            lvmlockd_lock_retries = 6
-            config.modify({
-                "use_lvmlockd": 1,
-                "host_id": host_id,
-                "sanlock_lv_extend": DEFAULT_SANLOCK_LV_SIZE,
-                "lvmlockd_lock_retries": lvmlockd_lock_retries,
-                "issue_discards": 0,
-                "reserved_stack": 256,
-                "reserved_memory": 131072,
-                "use_lvmetad": 1 if enableLvmetad else 0
-            })
-            if kvmagent.get_host_os_type() == "debian":
-                config.modify({"udev_rules": 0, "udev_sync": 0})
-            config.write_to_file(lvm.LVM_CONFIG_TMP_FILE)
-            lvm.config_lvm_filter([os.path.basename(lvm.LVM_CONFIG_TMP_FILE)], preserve_disks=allDiskPaths)
-
-            new_config = linux.read_file(lvm.LVM_CONFIG_TMP_FILE)
-            old_config = linux.read_file(lvm.LVM_LOCAL_CONFIG_FILE)
-            diff = list(difflib.unified_diff(old_config.splitlines() if old_config is not None else [], new_config.splitlines()))
-            if len(diff) == 0:
-                logger.debug("lvm config has not changed")
-            else:
-                linux.write_file(lvm.LVM_CONFIG_FILE, new_config, create_if_not_exist=True)
-                linux.write_file(lvm.LVM_LOCAL_CONFIG_FILE, new_config, create_if_not_exist=True)
-                logger.debug("lvm config has changed:\n %s" % '\n'.join(diff))
-                lvm.report_config_changed()
-
-            # max lock retries times = (external lvmlockd_lock_retries + 1) * (internal lock_retries + 1 after a lock conflict)
-            lvm.lvm_cmd_timeout_with_locking = ((lvmlockd_lock_retries + 1) * 6) * 5
-            lvm.modify_sanlock_config("sh_retries", 20)
-            lvm.modify_sanlock_config("logfile_priority", 7)
-            lvm.modify_sanlock_config("renewal_read_extend_sec", 24)
-            lvm.modify_sanlock_config("debug_renew", 1)
-            lvm.modify_sanlock_config("use_watchdog", 0)
-            lvm.modify_sanlock_config("max_sectors_kb", "ignore")
-            lvm.modify_sanlock_config("watchdog_fire_timeout", 1)
-            lvm.modify_sanlock_config("kill_grace_seconds", 40)
-            lvm.modify_sanlock_config("zstack_vglock_timeout", 0)
-            lvm.modify_sanlock_config("use_zstack_vglock_timeout", 0)
-            lvm.modify_sanlock_config("zstack_vglock_large_delay", 8)
-            lvm.modify_sanlock_config("use_zstack_vglock_large_delay", 0)
-
-            sanlock_hostname = "%s-%s-%s" % (cmd.vgUuid[:8], cmd.hostUuid[:8], linux.get_hostname()[:20])
-            lvm.modify_sanlock_config("our_host_name", sanlock_hostname)
-            shell.call("sed -i 's/.*rotate .*/rotate 10/g' /etc/logrotate.d/sanlock", exception=False)
-            shell.call("sed -i 's/.*size .*/size 20M/g' /etc/logrotate.d/sanlock", exception=False)
-
-        config_lvm(cmd.hostId, cmd.enableLvmetad)
-
-        lvm.start_lock_service(cmd.ioTimeout)
-        logger.debug("find/create vg %s lock..." % cmd.vgUuid)
-        rsp.isFirst = self.create_vg_if_not_found(cmd.vgUuid, disks, cmd.hostUuid, allDisks, cmd.forceWipe, cmd.isFirst)
-
-#       sanlock table:
-#       
-#       | sanlock patch version | delta lease sleep time | retry times |
-#       | --------------------- | ---------------------- | ----------- |
-#       | 1                     | 40 seconds             | 15          |
-#       | 2 or higher           | 0 second               | 3           |
-#       
-#       
-#       explain:
-#       
-#       In sanlock patch version 1, when you start a vg lock, it takes around 40 seconds
-#       in delta lease. So 15 retry times are required to check if vg lockspace exists.
-#       
-#       In sanlock patch version 2, the sleep time in delta lease can be defined by zstack
-#       utility in sanlock.conf. It's 0 second by default, so retry times can be reduced to
-#       3 in order to save time.
-
-        @bash.in_bash
-        def get_retry_times_for_checking_vg_lockspace():
-            r, sanlock_patch_version = bash.bash_ro("sanlock get_patch_version")
-            # if version is not a digit, e.g. "client action get_patch_version is unknown", it also means that sanlock patch version < 2
-            if sanlock_patch_version.strip().isdigit() is False:
-                return 15
-            elif int(sanlock_patch_version.strip()) >= 2:
-                return 3
-            else:
-                return 15
-
-        retry_times_for_checking_vg_lockspace = get_retry_times_for_checking_vg_lockspace()
-
-        lvm.check_stuck_vglk_and_gllk()
-        logger.debug("starting vg %s lock..." % cmd.vgUuid)
-        lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
-
-        if lvm.lvm_vgck(cmd.vgUuid, 60)[0] is False and lvm.lvm_check_operation(cmd.vgUuid) is False:
-            lvm.drop_vg_lock(cmd.vgUuid)
-            logger.debug("restarting vg %s lock..." % cmd.vgUuid)
-            lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
-
-        # lvm.clean_vg_exists_host_tags(cmd.vgUuid, cmd.hostUuid, HEARTBEAT_TAG)
-        # lvm.add_vg_tag(cmd.vgUuid, "%s::%s::%s::%s" % (HEARTBEAT_TAG, cmd.hostUuid, time.time(), linux.get_hostname()))
-        self.clear_stalled_qmp_socket()
-        lvm.check_missing_pv(cmd.vgUuid)
-
-        rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
-        rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
-        rsp.vgLvmUuid = lvm.get_vg_lvm_uuid(cmd.vgUuid)
-        rsp.hostUuid = cmd.hostUuid
-        rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
-        return jsonobject.dumps(rsp)
+        return diskPaths, disks, allDiskPaths, allDisks
 
     @staticmethod
     @bash.in_bash
@@ -821,7 +790,6 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                     _do_detach_disks(slaves)
                 elif pv.startswith('/dev/sd'):
                     _do_detach_disks([bname])
-
 
         deactive_lvs_on_vg(cmd.vgUuid)
         lvm.clean_vg_exists_host_tags(cmd.vgUuid, cmd.hostUuid, HEARTBEAT_TAG)
@@ -1037,7 +1005,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             with lvm.OperateLv(install_abs_path, shared=False, delete_when_exception=True):
                 t_shell = traceable_shell.get_shell(cmd)
                 linux.create_template(volume_abs_path, install_abs_path, shell=t_shell)
-                logger.debug('successfully created template cache [%s] from volume[%s]' % (cmd.installPath, cmd.volumePath))
+                logger.debug(
+                    'successfully created template cache [%s] from volume[%s]' % (cmd.installPath, cmd.volumePath))
 
                 if cmd.compareQcow2:
                     self.compare_qcow2(volume_abs_path, install_abs_path)
@@ -1057,7 +1026,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             if not os.path.exists(install_abs_path):
                 raise kvmagent.KvmError('cannot find %s' % install_abs_path)
 
-            linux.scp_upload(cmd.hostname, cmd.sshKey, install_abs_path, cmd.backupStorageInstallPath, cmd.username, cmd.sshPort)
+            linux.scp_upload(cmd.hostname, cmd.sshKey, install_abs_path, cmd.backupStorageInstallPath, cmd.username,
+                             cmd.sshPort)
 
         with lvm.OperateLv(install_abs_path, shared=True):
             upload()
@@ -1077,14 +1047,17 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
     def do_download_from_sftp(self, cmd, install_abs_path):
         if not lvm.lv_exists(install_abs_path):
-            size = linux.sftp_get(cmd.hostname, cmd.sshKey, cmd.backupStorageInstallPath, install_abs_path, sshPort=cmd.sshPort, get_size=True)
+            size = linux.sftp_get(cmd.hostname, cmd.sshKey, cmd.backupStorageInstallPath, install_abs_path,
+                                  sshPort=cmd.sshPort, get_size=True)
             lvm.update_pv_allocate_strategy(cmd)
             lvm.create_lv_from_absolute_path(install_abs_path, size,
                                              "%s::%s::%s" % (VOLUME_TAG, cmd.hostUuid, time.time()))
 
         with lvm.OperateLv(install_abs_path, shared=False, delete_when_exception=True):
-            linux.scp_download(cmd.hostname, cmd.sshKey, cmd.backupStorageInstallPath, install_abs_path, cmd.username, cmd.sshPort, cmd.bandWidth)
-        logger.debug('successfully download %s/%s to %s' % (cmd.hostname, cmd.backupStorageInstallPath, cmd.primaryStorageInstallPath))
+            linux.scp_download(cmd.hostname, cmd.sshKey, cmd.backupStorageInstallPath, install_abs_path, cmd.username,
+                               cmd.sshPort, cmd.bandWidth)
+        logger.debug('successfully download %s/%s to %s' % (cmd.hostname, cmd.backupStorageInstallPath,
+                                                            cmd.primaryStorageInstallPath))
 
         self.do_active_lv(cmd.primaryStorageInstallPath, cmd.lockType, False)
 
@@ -1176,7 +1149,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             size = linux.qcow2_virtualsize(snapshot_abs_path)
             pe_ranges = lvm.get_lv_affinity_sorted_pvs(snapshot_abs_path, cmd)
             lvm.create_lv_from_cmd(new_volume_path, size, cmd,
-                                             "%s::%s::%s" % (VOLUME_TAG, cmd.hostUuid, time.time()), pe_ranges=pe_ranges)
+                                   "%s::%s::%s" % (VOLUME_TAG, cmd.hostUuid, time.time()), pe_ranges=pe_ranges)
             with lvm.OperateLv(new_volume_path, shared=False, delete_when_exception=True):
                 linux.qcow2_clone_with_option(snapshot_abs_path, new_volume_path, qcow2_options)
                 size = linux.qcow2_virtualsize(new_volume_path)
@@ -1234,7 +1207,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         dst_abs_path = translate_absolute_path_from_install_path(cmd.destPath)
 
         with lvm.OperateLv(dst_abs_path, shared=False):
-            lvm.extend_lv_from_cmd(dst_abs_path, cmd.requiredSize, cmd, extend_thin_by_specified_size=True, skip_if_sufficient=True)
+            lvm.extend_lv_from_cmd(dst_abs_path, cmd.requiredSize, cmd, extend_thin_by_specified_size=True,
+                                   skip_if_sufficient=True)
 
         rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
         return jsonobject.dumps(rsp)
@@ -1316,13 +1290,13 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
                 if not lvm.lv_exists(install_abs_path):
                     lvm.create_lv_from_cmd(install_abs_path, virtual_size, cmd,
-                                                     "%s::%s::%s" % (VOLUME_TAG, cmd.hostUuid, time.time()))
+                                           "%s::%s::%s" % (VOLUME_TAG, cmd.hostUuid, time.time()))
                 with lvm.OperateLv(install_abs_path, shared=False, delete_when_exception=True):
                     linux.qcow2_create_with_backing_file_and_option(backing_abs_path, install_abs_path, qcow2_options)
                     rsp.size = linux.qcow2_virtualsize(install_abs_path)
         elif not lvm.lv_exists(install_abs_path):
             lvm.create_lv_from_cmd(install_abs_path, cmd.size, cmd,
-                                                 "%s::%s::%s" % (VOLUME_TAG, cmd.hostUuid, time.time()))
+                                   "%s::%s::%s" % (VOLUME_TAG, cmd.hostUuid, time.time()))
             if cmd.volumeFormat != 'raw':
                 qcow2_options = self.calc_qcow2_option(self, cmd.kvmHostAddons, False, cmd.provisioning)
                 with lvm.OperateLv(install_abs_path, shared=False, delete_when_exception=True):
@@ -1331,7 +1305,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                         linux.qcow2_fill(0, 1048576, install_abs_path)
                     rsp.size = linux.qcow2_virtualsize(install_abs_path)
 
-        logger.debug('successfully create empty volume[uuid:%s, size:%s] at %s' % (cmd.volumeUuid, cmd.size, cmd.installPath))
+        logger.debug(
+            'successfully create empty volume[uuid:%s, size:%s] at %s' % (cmd.volumeUuid, cmd.size, cmd.installPath))
         rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
         rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
         rsp.actualSize = lvm.get_lv_size(install_abs_path)
@@ -1388,7 +1363,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                     converted_format = linux.get_img_fmt(temp_path)
                     if converted_format != cmd.dstFormat:
                         rsp.success = False
-                        rsp.error = "convert volume format failed, dest format %s, actual format %s" % (cmd.dstFormt, converted_format)
+                        rsp.error = "convert volume format failed, dest format %s, actual format %s" % (cmd.dstFormt,
+                                                                                                        converted_format)
                         lvm.delete_lv(temp_path)
                         lvm.delete_lv(install_abs_path)
                     else:
@@ -1438,9 +1414,10 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         try:
             cmd.installPath = cmd.installPath.split('?', 1)[0]
             self.do_active_lv(cmd.installPath, cmd.lockType, cmd.recursive, cmd.killProcess,
-                          raise_exception=True)
+                              raise_exception=True)
         except Exception as e:
-            lv_in_use = "Logical volume %s in use" % translate_absolute_path_from_install_path(cmd.installPath).replace("/dev/", "")
+            lv_in_use = "Logical volume %s in use" % translate_absolute_path_from_install_path(cmd.installPath).replace(
+                "/dev/", "")
             if not re.search(lv_in_use, str(e)):
                 raise e
             rsp.inUse = True
@@ -1550,17 +1527,20 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                         opts += re.sub("-o preallocation=\w*", "", cmd.kvmHostAddons.qcow2Options)
                         if current_abs_path != top:
                             # keep origin cluster_size
-                            opts = re.sub(r"(cluster_size=)\w+", r"\g<1>"+str(linux.qcow2_get_cluster_size(current_abs_path)), opts)
+                            opts = re.sub(r"(cluster_size=)\w+",
+                                          r"\g<1>" + str(linux.qcow2_get_cluster_size(current_abs_path)), opts)
                         qcow2.create_template_with_task_daemon(current_abs_path, target_abs_path, cmd,
-                                                           opts=opts,
-                                                           dst_format=linux.get_img_fmt(current_abs_path),
-                                                           stage="%s-%s" % (start, end),
-                                                           task_name="MigrateVolumes")
+                                                               opts=opts,
+                                                               dst_format=linux.get_img_fmt(current_abs_path),
+                                                               stage="%s-%s" % (start, end),
+                                                               task_name="MigrateVolumes")
 
                     if top == current_abs_path and cmd.provisioning == lvm.VolumeProvisioningStrategy.ThinProvisioning:
                         lvm.active_lv(target_abs_path, shared=False)
-                        old_size, new_size = self.shrink_lv_on_qcow2(target_abs_path, cmd.addons[lvm.thinProvisioningInitializeSize])
-                        logger.debug("shrink lv %s from %s to %s on qcow2 after migration" % (target_abs_path, old_size, new_size))
+                        old_size, new_size = self.shrink_lv_on_qcow2(target_abs_path,
+                                                                     cmd.addons[lvm.thinProvisioningInitializeSize])
+                        logger.debug("shrink lv %s from %s to %s on qcow2 after migration" % (target_abs_path, old_size,
+                                                                                              new_size))
                         lvm.active_lv(target_abs_path, shared=True)
 
                 migrated_size += struct.lv_size
@@ -1578,7 +1558,9 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                         if linux.get_img_fmt(current_abs_path) == "qcow2":
                             r, o, e = bash.bash_roe("%s %s" % (qemu_img.subcmd("check"), target_abs_path))
                             if r != 0 and "No errors were found" not in str(o):
-                                raise Exception("target qcow2 image[%s] has been corrupted after migration, stdout: %s, stderr: %s" % (target_abs_path, o ,e))
+                                raise Exception(
+                                    "target qcow2 image[%s] has been corrupted after migration, stdout: %s, stderr: %s" % (
+                                        target_abs_path, o, e))
                     if current_backing_file and not struct.independent:
                         target_backing_file = current_backing_file.replace(previous_ps_uuid, target_ps_uuid)
                         lvm.active_lv(target_backing_file, shared=True)
@@ -1630,7 +1612,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         rsp = GetBackingChainRsp()
         abs_path = translate_absolute_path_from_install_path(cmd.installPath)
 
-        with lvm.RecursiveOperateLv(abs_path, shared=True, skip_deactivate_tags=[IMAGE_TAG], delete_when_exception=False):
+        with lvm.RecursiveOperateLv(abs_path, shared=True, skip_deactivate_tags=[IMAGE_TAG],
+                                    delete_when_exception=False):
             rsp.backingChain = linux.qcow2_get_file_chain(abs_path)
             if not cmd.containSelf:
                 rsp.backingChain.pop(0)
@@ -1655,7 +1638,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         with lvm.RecursiveOperateLv(abs_path, shared=False):
             image_offest = long(
                 bash.bash_o("%s %s | grep 'Image end offset' | awk -F ': ' '{print $2}'" %
-                        (qemu_img.subcmd('check'), abs_path)).strip())
+                            (qemu_img.subcmd('check'), abs_path)).strip())
             current_size = long(lvm.get_lv_size(abs_path))
             virtual_size = linux.qcow2_virtualsize(abs_path)
             size = image_offest + cmd.addons[lvm.thinProvisioningInitializeSize]
@@ -1767,7 +1750,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                     lvmlockd_status.ls_status.get(cur_vg).dropped:
                 return "no working lockspace for vg %s on lvmlockd" % cur_vg
 
-            if sanlock_ls.get_lockspace_record(cur_vg) is None or sanlock_ls.get_lockspace_record(cur_vg).is_space_dead():
+            if sanlock_ls.get_lockspace_record(cur_vg) is None or sanlock_ls.get_lockspace_record(
+                    cur_vg).is_space_dead():
                 return "no working lockspace for vg %s on sanlock" % cur_vg
 
             invalid_pv_uuid, err = lvm.get_invalid_pv_uuids(cur_vg, checkIo=False, timeout=60)
@@ -1785,4 +1769,128 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             if error:
                 rsp.failedVgs.update({vg_uuid: error})
 
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def takeover(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        global MAX_ACTUAL_SIZE_FACTOR
+        MAX_ACTUAL_SIZE_FACTOR = cmd.maxActualSizeFactor
+        return self._run_with_sblk_lock(cmd, self.do_takeover, "taking over")
+
+    @kvmagent.replyerror
+    @lock.file_lock(LOCK_FILE)
+    def do_takeover(self, cmd):
+        logger.debug("===============================================================")
+        logger.debug("===============================================================")
+        logger.debug("===============================================================")
+        logger.debug("===============================================================")
+        logger.debug("===============================================================")
+        logger.debug("===============================================================")
+        logger.debug("===============================================================")
+        rsp = TakeoverRsp()
+        logger.info("takeover starts: vgUuid=%s, hostId=%s, hostUuid=%s, disks=%s"
+                    % (cmd.vgUuid, cmd.hostId, cmd.hostUuid, cmd.sharedBlockUuids))
+
+        # Step 1: prepare disk paths
+        _, _, allDiskPaths, allDisks = self.prepare_disk(cmd)
+        logger.info("takeover[1/10] prepared %d disk paths" % len(allDiskPaths))
+
+        # Step 2: configure LVM filter
+        lvm.config_lvm(cmd.hostId, allDiskPaths, cmd.vgUuid, cmd.hostUuid, DEFAULT_SANLOCK_LV_SIZE,
+                       kvmagent.get_host_os_type(), cmd.enableLvmetad)
+        logger.info("takeover[2/10] LVM config applied")
+
+        # Step 3: start lock service (lvmlockd + sanlock)
+        lvm.start_lock_service(cmd.ioTimeout)
+        logger.info("takeover[3/10] lock service started")
+
+        # Step 4: find VG on storage by exact WWID match
+        def get_vg_name_by_shared_block_uuid():
+            vgsSharedBlockStructs, vgsSharedBlockCount = lvm.get_vgs_info(tag=INIT_TAG)
+            target_wwids = set(w.strip().lower() for w in cmd.sharedBlockUuids if w and w.strip())
+            matched_vgs = []
+
+            for _vg_uuid, block_devices in vgsSharedBlockStructs.items():
+                expected_pv_count = vgsSharedBlockCount.get(_vg_uuid, len(block_devices))
+                if any(not bd.wwid for bd in block_devices) or len(block_devices) != expected_pv_count:
+                    logger.warn("skip VG %s: incomplete WWID set" % _vg_uuid)
+                    continue
+                vg_wwids = set(bd.wwid.strip().lower() for bd in block_devices)
+                if target_wwids == vg_wwids:
+                    matched_vgs.append(_vg_uuid)
+
+            if len(matched_vgs) == 0:
+                available = {k: [bd.wwid for bd in v]
+                             for k, v in vgsSharedBlockStructs.items()}
+                raise Exception("cannot find VG with tag prefix [%s] and exact WWID match. "
+                                "target=%s, available=%s" % (INIT_TAG, cmd.sharedBlockUuids, available))
+            if len(matched_vgs) > 1:
+                raise Exception("found multiple VGs matching the same WWID set: %s" % matched_vgs)
+            return matched_vgs[0]
+
+        vg_uuid_on_storage = get_vg_name_by_shared_block_uuid()
+        logger.info("takeover[4/10] matched VG on storage: %s (target: %s)"
+                    % (vg_uuid_on_storage, cmd.vgUuid))
+
+        # Step 5: reset stale sanlock data so all old-host leases become reclaimable.
+        #   start_vg_lock activates the hidden lvmlock device + registers lockspace.
+        #   drop_vg_lock stops the lockspace (dm device stays).
+        #   reset_sanlock_lockspace reinits the delta lease area (clears all host slots)
+        #     + reinits VGLK/GLLK if corrupted. After this, sanlock has no record of
+        #     the old host, so ALL leases (VGLK, LV locks) are immediately reclaimable.
+        #   start_vg_lock again registers our host on a clean lockspace.
+        lvm.check_stuck_vglk_and_gllk()
+        retry_times_for_checking_vg_lockspace = lvm.get_retry_times_for_checking_vg_lockspace()
+        lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times_for_checking_vg_lockspace)
+        lvm.drop_vg_lock(vg_uuid_on_storage)
+        lvm.reset_sanlock_lockspace(vg_uuid_on_storage)
+        lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times_for_checking_vg_lockspace)
+        lvm.check_gl_lock()
+        logger.info("takeover[5/10] lockspace reset and restarted for %s" % vg_uuid_on_storage)
+
+        # Step 6: vgck health check; restart lockspace if metadata broken
+        if lvm.lvm_vgck(vg_uuid_on_storage, 60)[0] is False and lvm.lvm_check_operation(
+                vg_uuid_on_storage) is False:
+            logger.warn("takeover[6/10] vgck failed for %s, restarting VG lock" % vg_uuid_on_storage)
+            try:
+                lvm.drop_vg_lock(vg_uuid_on_storage)
+            except Exception as drop_err:
+                logger.warn("drop_vg_lock during vgck recovery failed: %s" % str(drop_err))
+            lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times_for_checking_vg_lockspace)
+        else:
+            logger.info("takeover[6/10] vgck passed for %s" % vg_uuid_on_storage)
+
+        self.clear_stalled_qmp_socket()
+
+        # Step 7: deactivate all LVs before rename.
+        # vgrename --nolocking bypasses lvmlockd (no sanlock LV lock acquisition),
+        # but still requires all dm devices to be inactive.
+        bash.bash_roe("vgchange -an --nolocking %s" % vg_uuid_on_storage)
+        logger.info("takeover[7/10] deactivated all LVs for %s" % vg_uuid_on_storage)
+
+        # Step 8: rename VG (--nolocking), then wait for lockspace under new name
+        lvm.rename_vg(vg_uuid_on_storage, cmd.vgUuid)
+        lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
+        logger.info("takeover[8/10] VG renamed %s -> %s, lockspace active" % (vg_uuid_on_storage, cmd.vgUuid))
+
+        # Step 9: fix PV state
+        lvm.check_missing_pv(cmd.vgUuid)
+        lvm.reset_pv_uuids(cmd.vgUuid)
+        logger.info("takeover[9/10] PV state fixed for %s" % cmd.vgUuid)
+
+        # Step 10: update VG tag
+        new_tag = "%s::%s::%s::%s" % (INIT_TAG, cmd.hostUuid, time.time(), linux.get_hostname())
+        lvm.update_vg_tag(cmd.vgUuid, INIT_TAG, new_tag)
+        logger.info("takeover[10/10] VG tag updated for %s" % cmd.vgUuid)
+
+        rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
+        rsp.hostUuid = cmd.hostUuid
+        logger.info("takeover completed: vgUuid=%s, hostId=%s" % (cmd.vgUuid, rsp.hostId))
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def vgs_info(self, req):
+        rsp = GetVgsInfoRsp()
+        rsp.vgsSharedBlockStructs, rsp.vgsSharedBlockCount = lvm.get_vgs_info(tag=INIT_TAG)
         return jsonobject.dumps(rsp)

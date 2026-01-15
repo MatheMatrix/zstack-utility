@@ -465,6 +465,17 @@ def init_vglk_if_need(vg_uuid):
 
 
 @bash.in_bash
+def force_init_vglk(vg_uuid):
+    """Unconditionally reinit VGLK resource lease, clearing any stale holder.
+    Used in takeover where the old host is dead but its lease is still valid/readable."""
+    sector_size = get_sector_size(vg_uuid)
+    offset = VGLK_BEGIN * sector_size_to_align_size(sector_size)
+    r = direct_init_resource("lvm_%s:VGLK:/dev/mapper/%s-lvmlock:%s" % (vg_uuid, vg_uuid, offset))
+    if r != 0:
+        raise Exception("failed to force reinit VGLK for VG %s" % vg_uuid)
+
+
+@bash.in_bash
 def init_gllk_if_need(vg_uuid):
     sector_size = get_sector_size(vg_uuid)
     if vertify_paxos_lease(vg_uuid, "_GLLK_disabled", GLLK_BEGIN * sector_size_to_align_size(sector_size)) == 0 or \
@@ -473,6 +484,18 @@ def init_gllk_if_need(vg_uuid):
 
     direct_init_resource("lvm_%s:_GLLK_disabled:/dev/mapper/%s-lvmlock:%s" % (vg_uuid, vg_uuid, GLLK_BEGIN * sector_size_to_align_size(sector_size)))
     return True
+
+
+@bash.in_bash
+def force_init_gllk(vg_uuid):
+    """Unconditionally reinit GLLK resource lease, clearing any stale holder.
+    Uses _GLLK_disabled so lvmlockd does not treat this VG as GL owner;
+    caller should run check_gl_lock() afterwards to re-enable GL."""
+    sector_size = get_sector_size(vg_uuid)
+    offset = GLLK_BEGIN * sector_size_to_align_size(sector_size)
+    r = direct_init_resource("lvm_%s:_GLLK_disabled:/dev/mapper/%s-lvmlock:%s" % (vg_uuid, vg_uuid, offset))
+    if r != 0:
+        raise Exception("failed to force reinit GLLK for VG %s" % vg_uuid)
 
 
 def dd_check_lockspace(path):
