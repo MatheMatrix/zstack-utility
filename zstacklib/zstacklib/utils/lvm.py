@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import functools
 import random
 import os
@@ -13,7 +14,7 @@ import xml.etree.ElementTree as etree
 
 import simplejson
 
-from zstacklib.utils import form, report
+from zstacklib.utils import form, report, jsonobject
 from zstacklib.utils import shell
 from zstacklib.utils import bash
 from zstacklib.utils import lock
@@ -167,6 +168,7 @@ class SharedBlockCandidateStruct:
         self.source = None  # type: str
         self.transport = None  # type: str
         self.targetIdentifier = None  # type: str
+        self.mpathDevice = None  # type: str
 
 def get_vg_uuid(path):
     # type: (str) -> str
@@ -314,6 +316,7 @@ def get_mpath_block_devices(scsi_info):
                 struct = SharedBlockCandidateStruct()
                 struct.wwid = get_dm_wwid(dm)
                 struct.type = "mpath"
+                struct.mpathDevice = mpath_device
                 block_devices_list[idx] = struct
                 continue
 
@@ -2530,6 +2533,27 @@ def disable_multipath():
     if is_multipath_running():
         raise RetryException("multipath is still running")
 
+
+@bash.in_bash
+@linux.retry(times=10, sleep_time=6)
+def rename_vg(old_vgUuid, new_vgUuid):
+    if old_vgUuid == new_vgUuid:
+        logger.debug("rename vg skipped: old_vgUuid == new_vgUuid (%s)" % old_vgUuid)
+        return
+
+    if vg_exists(new_vgUuid) and not vg_exists(old_vgUuid):
+        logger.debug("rename vg skipped: %s already exists and %s not found" % (new_vgUuid, old_vgUuid))
+        return
+
+    @linux.retry(times=3, sleep_time=random.uniform(0.1, 1))
+    def restore_missing_pv():
+        r, o, e = bash.bash_roe("vgrename %s %s" % (old_vgUuid, new_vgUuid))
+        if r != 0:
+            raise Exception(
+                "unable to rename vg %s to %s, stdout:%s, stderr:%s" % (old_vgUuid, new_vgUuid, str(o), str(e)))
+        logger.debug("rename vg %s to %s successfully" % (old_vgUuid, new_vgUuid))
+
+    restore_missing_pv()
 
 
 pv_allocate_strategy = {}  # type:dict
