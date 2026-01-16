@@ -402,6 +402,16 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             if host not in f.read():
                 f.write(host)
 
+        if len(instance_obj.extra_provision_nic_infos) > 0:
+            for info in instance_obj.extra_provision_nic_infos:
+                host = '{mac_addr},{ip_addr},set:instance,set:{uuid}\n'.format(
+                    mac_addr=info.provision_mac,
+                    ip_addr=info.provision_ip,
+                    uuid=instance_obj.uuid)
+                with open(self.DNSMASQ_HOSTS_PATH, 'a+r') as f:
+                    if host not in f.read():
+                        f.write(host)
+
         opts_template = self._load_template('dnsmasq.opts')
         opts = opts_template.render(
             uuid=instance_obj.uuid,
@@ -1009,10 +1019,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         volumes = {}
         for volume_driver in volume_drivers:
             if volume_driver.volume_obj.type == 'Root':
-                uri = 'iscsi:{gw_ip}:::{lun_id}:{target}'.format(
-                    gw_ip=self.provision_network_conf.provision_nic_ip,
-                    lun_id=volume_driver.iscsi_lun,
-                    target=volume_driver.iscsi_target)
+                uri = volume_driver.build_iscsi_uri(self.provision_network_conf.provision_nic_ip)
                 drive_id = '0x%x' % (128 + volume_driver.iscsi_lun)
                 volumes[uri] = drive_id
 
