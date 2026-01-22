@@ -25,7 +25,13 @@ class AsyncThread(object):
 class ThreadFacade(object):
     @staticmethod
     def run_in_thread(target, args=(), kwargs={}):
+        task_uuid = log.get_task_uuid()
+        if not task_uuid:
+            task_uuid = target.__name__
+
         def safe_run(*sargs, **skwargs):
+            if task_uuid:
+                log.set_task_uuid(task_uuid)
             try:
                 target(*sargs, **skwargs)
             except Exception as e:

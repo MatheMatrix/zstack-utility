@@ -169,9 +169,8 @@ class AbstractHaFencer(object):
         threads = []
         for fencer in self.run_fencer_list:
             if fencer in self.ha_fencer:
-                thread = threading.Thread(target=self.ha_fencer[fencer].exec_fencer)
-                thread.start()
-                threads.append(thread)
+                thread_obj = thread.ThreadFacade.run_in_thread(target=self.ha_fencer[fencer].exec_fencer)
+                threads.append(thread_obj)
 
         for t in threads:
             t.join()
