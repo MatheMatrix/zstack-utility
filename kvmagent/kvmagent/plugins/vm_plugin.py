@@ -750,8 +750,11 @@ class QueryVmLatenciesThread(threading.Thread):
         self.uuids = uuids
         self.times = times
         self.res = []
+        self.task_uuid = log.get_task_uuid()
 
     def run(self):
+        if self.task_uuid:
+            log.set_task_uuid(self.task_uuid)
         self.res = self.func(self.uuids, self.times)
 
     def getResult(self):

@@ -4,6 +4,7 @@ from zstacklib.utils import jsonobject
 from zstacklib.utils import lock
 from zstacklib.utils import log
 from zstacklib.utils import bash
+from zstacklib.utils import thread
 import time
 import threading
 
@@ -77,8 +78,7 @@ class PhysicalMemoryMonitor(kvmagent.KvmAgent):
 			self.monitor_thread.join()
 
 		self.state = True
-		self.monitor_thread = threading.Thread(target=_monitor_error)
-		self.monitor_thread.start()
+		self.monitor_thread = thread.ThreadFacade.run_in_thread(target=_monitor_error)
 	
 	def send_physical_memory_ecc_error_alarm_to_mn(self, detail):
 		physical_memory_ecc_error_alarm = PhysicalMemoryECCErrorAlarm()

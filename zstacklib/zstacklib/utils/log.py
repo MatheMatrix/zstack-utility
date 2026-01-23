@@ -7,10 +7,41 @@ import sys
 import os.path
 import gzip
 import shutil
+import threading
 
 import simplejson
 from concurrentlog_handler import ConcurrentRotatingFileHandler
 from random import randint
+
+class ZstackLoggingContext(object):
+    def __init__(self):
+        self.tl = threading.local()
+
+    def set_task_uuid(self, uuid):
+        self.tl.task_uuid = uuid
+
+    def get_task_uuid(self):
+        try:
+            return self.tl.task_uuid
+        except AttributeError:
+            return None
+
+_zstack_logging_context = ZstackLoggingContext()
+
+def set_task_uuid(task_uuid):
+    _zstack_logging_context.set_task_uuid(task_uuid)
+
+def get_task_uuid():
+    return _zstack_logging_context.get_task_uuid()
+
+class TaskUuidFilter(logging.Filter):
+    def filter(self, record):
+        uuid = get_task_uuid()
+        if uuid:
+            record.task_uuid = uuid
+        else:
+            record.task_uuid = 'None'
+        return True
 
 class ZstackRotatingFileHandler(ConcurrentRotatingFileHandler):
     def __init__(self, filename, **kws):
@@ -90,7 +121,7 @@ class LogConfig(object):
     instance = None
 
     LOG_FOLER = '/var/log/zstack'
-    LOG_FORMAT = '%(asctime)s %(thread)d %(levelname)s [%(name)s] %(message)s'
+    LOG_FORMAT = '%(asctime)s %(thread)d [task=%(task_uuid)s] %(levelname)s [%(name)s] %(message)s'
 
     def __init__(self):
         if not os.path.exists(self.LOG_FOLER):
@@ -123,6 +154,7 @@ class LogConfig(object):
             return logger
 
         logger.setLevel(logging.DEBUG)
+        logger.addFilter(TaskUuidFilter())
         max_rotate_handler = ZstackRotatingFileHandler(self.log_path, maxBytes=30*1024*1024, backupCount=30)
         formatter = logging.Formatter(self.LOG_FORMAT)
         max_rotate_handler.setFormatter(formatter)

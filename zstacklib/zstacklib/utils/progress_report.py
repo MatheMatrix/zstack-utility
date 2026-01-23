@@ -11,8 +11,11 @@ class WatchThread_1(threading.Thread):
         threading.Thread.__init__(self)
         self.func = func
         self.keepRunning = True
+        self.task_uuid = log.get_task_uuid()
 
     def run(self):
+        if self.task_uuid:
+            log.set_task_uuid(self.task_uuid)
         logger.debug("watch_thread_1: %s start" % self.__class__)
         try:
             synced = 0

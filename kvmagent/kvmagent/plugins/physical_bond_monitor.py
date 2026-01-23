@@ -9,6 +9,7 @@ from zstacklib.utils import jsonobject
 from zstacklib.utils import log
 from zstacklib.utils import linux
 from zstacklib.utils import bash
+from zstacklib.utils import thread
 
 try:
     unicode
@@ -395,7 +396,14 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
         if self._worker and self._worker.is_alive():
             return
         self._stop_event.clear()
-        self._worker = threading.Thread(target=self._run_loop, name='PhysicalBondMonitor')
+
+        task_uuid = log.get_task_uuid()
+        def _run_with_context():
+            if task_uuid:
+                log.set_task_uuid(task_uuid)
+            self._run_loop()
+
+        self._worker = threading.Thread(target=_run_with_context, name='PhysicalBondMonitor')
         self._worker.daemon = True
         self._worker.start()
 

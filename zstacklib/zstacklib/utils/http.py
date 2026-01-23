@@ -82,12 +82,18 @@ class SyncUriHandler(object):
 
     @cherrypy.expose
     def index(self):
-        req = Request.from_cherrypy_request(cherrypy.request)
-        logger.debug('sync http call: %s' % req.body)
-        rsp = self._do_index(req)
-        self._check_response(rsp)
-        logger.debug("sync http reply to %s: \"%s\"" % (cherrypy.url(), rsp))
-        return rsp
+        # sync request does not have taskuuid in design, use function name for tracking
+        task_uuid = self.uri_obj.func.__name__
+        log.set_task_uuid(task_uuid)
+        try:
+            req = Request.from_cherrypy_request(cherrypy.request)
+            logger.debug('sync http call: %s' % req.body)
+            rsp = self._do_index(req)
+            self._check_response(rsp)
+            logger.debug("sync http reply to %s: \"%s\"" % (cherrypy.url(), rsp))
+            return rsp
+        finally:
+            log.set_task_uuid(None)
 
 class RawUriHandler(object):
     def __init__(self, uri_obj):
@@ -96,18 +102,24 @@ class RawUriHandler(object):
     @cherrypy.config(**{'response.timeout': 7200}) # default is 300s
     @cherrypy.expose
     def index(self):
-        logger.debug('raw http handler: %s' % self.uri_obj.uri)
+        # sync request does not have taskuuid in design, use function name for tracking
+        task_uuid = self.uri_obj.func.__name__
+        log.set_task_uuid(task_uuid)
         try:
+            logger.debug('raw http handler: %s' % self.uri_obj.uri)
             return self.uri_obj.func(cherrypy.request)
+        except cherrypy.HTTPError as e:
+            content = traceback.format_exc()
+            logger.warn('[WARN]: %s]' % content)
+            cherrypy.response.status = e.status
+            return e._message
         except Exception as e:
             content = traceback.format_exc()
             logger.warn('[WARN]: %s]' % content)
-            if isinstance(e, cherrypy.HTTPError):
-                cherrypy.response.status = e.status
-                return e._message
-            else:
-                cherrypy.response.status = 500
-                return str(e)
+            cherrypy.response.status = 500
+            return str(e)
+        finally:
+            log.set_task_uuid(None)
 
 class RawUriStreamHandler(object):
     def __init__(self, uri_obj):
@@ -116,14 +128,19 @@ class RawUriStreamHandler(object):
     @cherrypy.config(**{'response.timeout': 7200}) # default is 300s
     @cherrypy.expose
     def index(self, **kwargs):
-        logger.debug('raw http handler: %s' % self.uri_obj.uri)
+        # sync request does not have taskuuid in design, use function name for tracking
+        task_uuid = self.uri_obj.func.__name__
+        log.set_task_uuid(task_uuid)
         try:
+            logger.debug('raw http handler: %s' % self.uri_obj.uri)
             return self.uri_obj.func(cherrypy.request, cherrypy.response, **kwargs)
         except Exception as e:
             content = traceback.format_exc()
             logger.warn('[WARN]: %s]' % content)
             cherrypy.response.status = 500
             return str(e)
+        finally:
+            log.set_task_uuid(None)
 
     index._cp_config = {'response.stream': True}
 
@@ -139,6 +156,7 @@ class AsyncUirHandler(SyncUriHandler):
 
     @thread.AsyncThread
     def _run_index(self, task_uuid, request):
+        log.set_task_uuid(task_uuid)
         callback_uri = self._get_callback_uri(request)
         with self.HANDLER_DICT_LOCK:
             if task_uuid in self.HANDLER_DICT:
@@ -188,6 +206,7 @@ class AsyncUirHandler(SyncUriHandler):
             raise cherrypy.HTTPError(400, err)
 
         task_uuid = cherrypy.request.headers[TASK_UUID]
+        log.set_task_uuid(task_uuid)
         req = Request.from_cherrypy_request(cherrypy.request)
 
         filter_body = log.mask_sensitive_field(self.uri_obj.cmd, req.body)
