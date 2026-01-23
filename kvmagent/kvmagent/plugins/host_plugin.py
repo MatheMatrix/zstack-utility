@@ -3047,7 +3047,7 @@ done
                 continue
 
             mem = info.get("memory", "")
-            power = info.get("powerCap", "")
+            power = info.get("power", "")
             serial = info.get("serialNumber", "")
 
             if mem and re.match(r"^\s*\d+\s*MiB\s*$", mem, re.IGNORECASE):

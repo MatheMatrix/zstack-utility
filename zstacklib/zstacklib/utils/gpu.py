@@ -407,10 +407,10 @@ def parse_enflame_gpu_output(output):
                 gpuinfo["memory"] = value
             elif key == "Mem Usage" or key == "Used Size":
                 gpuinfo["memoryUsage"] = value
-            elif key == "Cur Power":
-                gpuinfo["power"] = value
             elif key == "Power Capa":
-                gpuinfo["powerCap"] = value
+                gpuinfo["power"] = value
+            elif key == "Cur Power":
+                gpuinfo["currentPower"] = value
             elif key == "Dpm Level":
                 gpuinfo["dpmLevel"] = value
             elif key == "GCU Temp":

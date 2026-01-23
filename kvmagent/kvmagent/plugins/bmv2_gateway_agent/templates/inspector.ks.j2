@@ -364,7 +364,7 @@ def collect_enflame_gpu_info(pci_device_address):
             continue
 
         mem = info.get("memory", "")
-        power = info.get("powerCap", "")
+        power = info.get("power", "")
         serial = info.get("serialNumber", "")
 
         if mem and re.match(r"^\s*\d+\s*MiB\s*$", mem, re.IGNORECASE):
@@ -408,10 +408,10 @@ def parse_enflame_gpu_output(output):
                 gpuinfo["memory"] = value
             elif key == "Mem Usage" or key == "Used Size":
                 gpuinfo["memoryUsage"] = value
-            elif key == "Cur Power":
-                gpuinfo["power"] = value
             elif key == "Power Capa":
-                gpuinfo["powerCap"] = value
+                gpuinfo["power"] = value
+            elif key == "Cur Power":
+                gpuinfo["currentPower"] = value
             elif key == "Dpm Level":
                 gpuinfo["dpmLevel"] = value
             elif key == "GCU Temp":
