@@ -121,7 +121,7 @@ def get_bars_max_addressable_memory():
         logger.warn("max_addressable_memory is None, please reconnect host and try again")
 
     if platform.machine() == 'aarch64':
-        return "%sG" % sizeunit.Byte.toGigaByte(max_addressable_memory_64bit)
+        return "%sG" % sizeunit.Byte.toGigaByte(calc_next_power_of_2(max_addressable_memory_64bit))
 
     if max_addressable_memory_64bit < DEFAULT_PCDPCIMMIO64SIZE_MIN_SIZE:
         return DEFAULT_PCDPCIMMIO64SIZE_MIN_SIZE / 1024 / 1024
