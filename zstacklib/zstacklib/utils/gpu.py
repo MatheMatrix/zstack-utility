@@ -6,7 +6,7 @@ from zstacklib.utils.bash import *
 from enum import Enum
 import json
 
-from zstacklib.utils.pci import VendorEnum
+from zstacklib.gpu.base import VendorEnum
 from zstacklib.utils.qga import VmQga
 
 logger = log.get_logger(__name__)
@@ -1507,6 +1507,48 @@ def get_all_info():
         logger.debug("Plugin failed, fallback to legacy: %s" % str(e))
 
     return results
+
+
+def get_all_gpu_infos_by_pci():
+    """
+    Collect information for all GPUs and return as a dict mapping PCI address to GPU info.
+    
+    This is optimized for batch processing - queries all vendors once, then provides
+    O(1) lookup by PCI address.
+    
+    Returns:
+        dict: Mapping of normalized PCI address -> GPU info dict
+        Example: {
+            "0000:3b:00.0": {"memory": "15360 MiB", "power": "70.00 W", ...},
+            "0000:42:00.0": {"memory": "8192 MiB", "power": "50.00 W", ...}
+        }
+    """
+    from zstacklib.utils.pci import normalize_pci_address
+    
+    gpu_info_map = {}
+    
+    try:
+        from zstacklib.gpu import get_all_gpu_vendors
+        for vendor_class in get_all_gpu_vendors():
+            if not vendor_class.is_available():
+                continue
+            try:
+                gpu_infos = vendor_class.get_basic_info()
+                for gpu_info in gpu_infos:
+                    if gpu_info.pci_address:
+                        normalized_pci = normalize_pci_address(gpu_info.pci_address)
+                        if normalized_pci:
+                            result = gpu_info.to_addon_dict()
+                            result.update(gpu_info.extra)
+                            gpu_info_map[normalized_pci] = result
+            except Exception as e:
+                logger.debug("Failed to get basic info from plugin %s: %s" %
+                             (vendor_class.VENDOR_NAME, str(e)))
+                continue
+    except Exception as e:
+        logger.debug("Failed to collect GPU infos via plugin: %s" % str(e))
+    
+    return gpu_info_map
 
 
 def get_metrics(pci_address=None, pci_device=None, vendor_name=None):

@@ -122,7 +122,7 @@ class NVIDIA(GPUBase):
         nvidia-smi command to get GPU metrics.
         
         Output format (CSV, no units):
-        00000000:3B:00.0, 45, 62, 58, 65.23, 1322519087621
+        00000000:3B:00.0, 45, 62, 58, 65.23, 0, 1322519087621
         
         Fields:
         1. gpu_bus_id          - PCI address
@@ -130,9 +130,10 @@ class NVIDIA(GPUBase):
         3. utilization.memory  - Memory utilization (%)
         4. temperature.gpu     - GPU temperature (C)
         5. power.draw          - Current power draw (W)
-        6. gpu_serial          - Serial number
+        6. index               - GPU index (for PCIe metrics)
+        7. gpu_serial          - Serial number
         """
-        cmd = "nvidia-smi --query-gpu=gpu_bus_id,utilization.gpu,utilization.memory,temperature.gpu,power.draw,gpu_serial --format=csv,noheader"
+        cmd = "nvidia-smi --query-gpu=gpu_bus_id,utilization.gpu,utilization.memory,temperature.gpu,power.draw,index,gpu_serial --format=csv,noheader"
         if is_windows:
             cmd = cmd.replace(" ", "|")
         return cmd
@@ -150,7 +151,7 @@ class NVIDIA(GPUBase):
             
         for line in output.strip().split('\n'):
             parts = [p.strip() for p in line.split(',')]
-            if len(parts) < 6:
+            if len(parts) < 7:
                 continue
                 
             pci_address = cls.normalize_pci_address(parts[0])
@@ -158,7 +159,26 @@ class NVIDIA(GPUBase):
             mem_util = cls.parse_unit_value(parts[2])
             temp = cls.parse_unit_value(parts[3])
             power = cls.parse_unit_value(parts[4])
-            serial = parts[5]
+            gpu_index = parts[5].strip()
+            serial = parts[6]
+            
+            # Get PCIe metrics
+            pcie_tx_bytes = None
+            pcie_rx_bytes = None
+            if gpu_index:
+                try:
+                    r, pci_output, _ = bash_roe("nvidia-smi pci -gCnt -i %s" % gpu_index)
+                    if r == 0 and pci_output:
+                        for pci_line in pci_output.splitlines():
+                            pci_line = pci_line.strip()
+                            if pci_line.startswith("TX_BYTES:"):
+                                tx_value = pci_line.split()[-1]
+                                pcie_tx_bytes = cls.parse_unit_value(tx_value)
+                            elif pci_line.startswith("RX_BYTES:"):
+                                rx_value = pci_line.split()[-1]
+                                pcie_rx_bytes = cls.parse_unit_value(rx_value)
+                except Exception as e:
+                    logger.debug("Failed to get PCIe metrics for GPU %s: %s" % (gpu_index, str(e)))
             
             metrics = GPUMetrics(
                 pci_address=pci_address,
@@ -166,11 +186,11 @@ class NVIDIA(GPUBase):
                 utilization=util,
                 memory_utilization=mem_util,
                 temperature=temp,
-                power_draw=power
+                power_draw=power,
+                pcie_tx_bytes=pcie_tx_bytes,
+                pcie_rx_bytes=pcie_rx_bytes
             )
             
-            # Try to get PCIe metrics if possible
-            # ... (rest of the logic)
             results.append(metrics)
         return results
 

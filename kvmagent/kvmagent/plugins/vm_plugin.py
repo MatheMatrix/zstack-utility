@@ -75,7 +75,7 @@ from zstacklib.utils.jsonobject import JsonObject
 from zstacklib.utils import linux
 from zstacklib.utils.linux import is_virtual_machine
 from zstacklib.utils.ovn import delVnicFromOvsByVmUuidIfExist
-from zstacklib.utils.pci import VendorEnum
+from zstacklib.gpu.base import VendorEnum
 from zstacklib.utils.plugin import TaskManager, TaskResult
 from zstacklib.utils.qga import *
 from zstacklib.utils import jsonobject
@@ -10296,8 +10296,33 @@ host side snapshot files chian:
             if not find_pci_device(cmd.vmUuid, cmd.pciDeviceAddress):
                 return
 
-            # Pre-detach if GPU (only based on actual tool returns)
-            if pci.is_gpu(pci_address=cmd.pciDeviceAddress):
+            # Pre-detach if GPU - optimized: check vendor first for fast path
+            # If vendor is known GPU vendor, directly call pre_detach; otherwise try all vendors
+            is_gpu_device = False
+            if cmd.vendor:
+                from zstacklib.gpu.base import VendorEnum
+                gpu_vendors = {VendorEnum.NVIDIA, VendorEnum.AMD, VendorEnum.HUAWEI,
+                              VendorEnum.INTEL,
+                              VendorEnum.HAIGUANG, VendorEnum.TIANSHU, VendorEnum.VASTAI,
+                              VendorEnum.ENFLAME, VendorEnum.ALIBABA, VendorEnum.KUNLUNXIN}
+                if cmd.vendor in gpu_vendors:
+                    # Known GPU vendor, verify via get_info() (only queries that vendor)
+                    gpu_info = gpu.get_info(pci_address=cmd.pciDeviceAddress, vendor_name=cmd.vendor)
+                    is_gpu_device = gpu_info is not None
+                else:
+                    # Vendor not in known set: fallback to batch query all vendors
+                    # This ensures devices detected by GPU CLI are not missed
+                    gpu_info_map = gpu.get_all_gpu_infos_by_pci()
+                    normalized_pci = pci.normalize_pci_address(cmd.pciDeviceAddress)
+                    is_gpu_device = normalized_pci in gpu_info_map if normalized_pci else False
+            else:
+                # Unknown vendor: Try to get info from all vendors (batch query)
+                # This uses the same unified interface as other GPU checks
+                gpu_info_map = gpu.get_all_gpu_infos_by_pci()
+                normalized_pci = pci.normalize_pci_address(cmd.pciDeviceAddress)
+                is_gpu_device = normalized_pci in gpu_info_map if normalized_pci else False
+            
+            if is_gpu_device:
                 return_code, output = gpu.pre_detach_from_vm(vm_domain, cmd.vmUuid, cmd.vendor)
                 if return_code != 0:
                     raise Exception("pre_detach_from_vm failed: %s" % output)

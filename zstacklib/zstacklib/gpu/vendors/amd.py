@@ -80,7 +80,7 @@ class AMD(GPUBase):
 
     @classmethod
     def get_metric_cmd(cls, is_windows=False):
-        cmd = "rocm-smi --showuse --showmeminfo vram --showtemp --showpower --showserial --json"
+        cmd = "rocm-smi --showuse --showmeminfo vram --showtemp --showpower --showfan --showserial --json"
         if is_windows:
             cmd = cmd.replace(" ", "|")
         return cmd
@@ -103,18 +103,42 @@ class AMD(GPUBase):
                 pci_address = cls.normalize_pci_address(pci_bus)
                 
                 util = card_data.get('GPU use (%)')
-                mem_util = card_data.get('VRAM Total Memory (B)') # Simplified
-                temp = card_data.get('Temperature (Sensor edge) (C)')
-                power = card_data.get('Average Graphics Package Power (W)')
+                # Use GPU Memory Allocated (VRAM%) for memory utilization
+                mem_util = card_data.get('GPU Memory Allocated (VRAM%)')
+                temp = card_data.get('Temperature (Sensor edge) (C)',
+                    card_data.get('Temperature (Sensor junction) (C)'))
+                power = card_data.get('Average Graphics Package Power (W)',
+                    card_data.get('Current Socket Graphics Package Power (W)'))
+                fan_speed = card_data.get('Fan speed (%)')
                 serial = card_data.get('Serial Number')
+                
+                # Parse memory utilization percentage
+                mem_util_value = None
+                if mem_util not in (None, ''):
+                    try:
+                        # Remove % sign if present
+                        mem_util_str = str(mem_util).replace('%', '').strip()
+                        mem_util_value = float(mem_util_str)
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Parse fan speed percentage
+                fan_speed_value = None
+                if fan_speed not in (None, ''):
+                    try:
+                        fan_speed_str = str(fan_speed).replace('%', '').strip()
+                        fan_speed_value = float(fan_speed_str)
+                    except (ValueError, TypeError):
+                        pass
                 
                 results.append(GPUMetrics(
                     pci_address=pci_address,
                     serial_number=serial,
-                    memory_utilization=float(mem_util) if mem_util not in (None, '') else None,
+                    memory_utilization=mem_util_value,
                     utilization=float(util) if util not in (None, '') else None,
                     temperature=float(temp) if temp not in (None, '') else None,
-                    power_draw=float(power) if power not in (None, '') else None
+                    power_draw=float(power) if power not in (None, '') else None,
+                    fan_speed=fan_speed_value
                 ))
             except Exception as e:
                 logger.warn("Failed to parse AMD metrics for card %s: %s" % (card_name, str(e)))

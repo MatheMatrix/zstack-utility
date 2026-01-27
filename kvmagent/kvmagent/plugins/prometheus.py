@@ -1655,7 +1655,7 @@ def collect_gpu_metrics_via_plugin():
                                 [pci_addr, serial], metrics)
                 if m.utilization is not None:
                     add_metrics('host_gpu_utilization', m.utilization, [
-                                pci_addr], metrics)
+                                pci_addr, serial], metrics)
                 if m.memory_utilization is not None:
                     add_metrics('host_gpu_memory_utilization', m.memory_utilization, [
                                 pci_addr, serial], metrics)

@@ -14,6 +14,29 @@ logger = log.get_logger(__name__)
 
 
 # =============================================================================
+# VendorEnum - GPU Vendor Enumeration
+# =============================================================================
+
+class VendorEnum:
+    """
+    GPU vendor enumeration constants.
+    
+    This enum is used throughout the codebase for vendor identification.
+    Moved from zstacklib.utils.pci to keep GPU-related logic together.
+    """
+    INTEL = "Intel"
+    AMD = "AMD"
+    NVIDIA = "NVIDIA"
+    HAIGUANG = "Haiguang"
+    HUAWEI = "Huawei"
+    TIANSHU = "TianShu"
+    VASTAI = "Vastai"
+    ENFLAME = "Enflame"
+    ALIBABA = "Alibaba"
+    KUNLUNXIN = "Kunlunxin"
+
+
+# =============================================================================
 # Data Classes (Python 2/3 Compatible)
 # =============================================================================
 

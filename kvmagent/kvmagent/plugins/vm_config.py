@@ -8,7 +8,7 @@ from zstacklib.utils import log
 from zstacklib.utils.gpu import VmGpuStatus
 from zstacklib.utils.qga import VmQga
 from zstacklib.utils import pci
-from zstacklib.utils.pci import VendorEnum
+from zstacklib.gpu.base import VendorEnum
 from zstacklib.utils import gpu
 
 from kvmagent import kvmagent
