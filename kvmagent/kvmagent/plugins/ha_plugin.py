@@ -213,6 +213,8 @@ class PhysicalNicFencer(AbstractHaFencer):
         super(PhysicalNicFencer, self).__init__(interval, max_attempts, ps_uuid, run_fencer_list)
         self.name = self.get_ha_fencer_name()
         self.falut_nic_count = {} #type: dict[str, int]
+        # blacklist for physical nics that should be excluded from HA monitoring
+        self.blacklist_nics = set(['bond3'])  #type: set[str]
 
     def exec_fencer(self):
         vm_use_falut_nic_pids_dict, falut_nic = self.find_vm_use_falut_nic()
@@ -327,6 +329,17 @@ class PhysicalNicFencer(AbstractHaFencer):
         nics = []
         nics.extend(ipUtils.get_host_physicl_nics())
         nics.extend(self.get_nomal_bond_nic())
+
+        logger.warn("DEBUG: Initial NIC list before filter: %s" % nics)
+        logger.warn("DEBUG: Current Blacklist: %s" % self.blacklist_nics)
+        # filter out blacklisted nics that should be excluded from HA monitoring
+        if self.blacklist_nics:
+            original_nics_count = len(nics)
+            nics = [nic for nic in nics if nic not in self.blacklist_nics]
+            filtered_count = original_nics_count - len(nics)
+            if filtered_count > 0:
+                logger.debug("filtered out %d blacklisted nic(s): %s" % (filtered_count, self.blacklist_nics))
+
         for new_nic in nics:
             if new_nic not in self.falut_nic_count:
                 self.falut_nic_count[new_nic] = 0
@@ -340,7 +353,9 @@ class PhysicalNicFencer(AbstractHaFencer):
                 logger.warn('iproute query_links is except, %s' % e)
                 continue
 
-        return [nic for nic, count in self.falut_nic_count.items() if count > self.max_attempts]
+        # return failed nics, excluding blacklisted nics
+        return [nic for nic, count in self.falut_nic_count.items()
+                if count > self.max_attempts and nic not in self.blacklist_nics]
 
     def get_nomal_bond_nic(self):
         bond_path = "/proc/net/bonding/"
