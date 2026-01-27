@@ -178,8 +178,9 @@ class TestNVIDIA(unittest.TestCase):
         """Test NVIDIA metrics parsing"""
         from zstacklib.gpu.vendors.nvidia import NVIDIA
         
-        # Format: gpu_bus_id,utilization.gpu,utilization.memory,temperature.gpu,power.draw,gpu_serial
-        output = "00000000:3B:00.0, 45 %, 62 %, 58, 65.23, ABC123"
+        # Format: gpu_bus_id,utilization.gpu,utilization.memory,temperature.gpu,power.draw,index,gpu_serial
+        # Note: index is required (7 fields total)
+        output = "00000000:3B:00.0, 45 %, 62 %, 58, 65.23, 0, ABC123"
         
         metrics = NVIDIA.parse_metrics(output)
         

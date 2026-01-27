@@ -10,7 +10,7 @@ Tests cover:
 """
 
 from zstacklib.utils.bash import bash_roe
-from zstacklib.utils.pci import VendorEnum
+from zstacklib.gpu.base import VendorEnum
 from zstacklib.utils import gpu
 import unittest
 import sys

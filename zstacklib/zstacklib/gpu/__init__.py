@@ -40,6 +40,9 @@ Architecture:
 # Core exports: Base classes, data models, and registry
 # =============================================================================
 from zstacklib.gpu.base import (
+    # Vendor enumeration
+    VendorEnum,
+    
     # Abstract base class
     GPUBase,
     
@@ -97,6 +100,9 @@ from zstacklib.gpu.vendors import kunlunxin
 
 
 __all__ = [
+    # Vendor enumeration
+    'VendorEnum',
+    
     # Abstract base class
     'GPUBase',
     

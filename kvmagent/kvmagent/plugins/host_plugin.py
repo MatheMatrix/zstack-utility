@@ -40,7 +40,7 @@ from zstacklib.utils.bash import *
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.ip import get_nic_driver_type
 from zstacklib.utils.libvirt_singleton import LibvirtSingleton
-from zstacklib.utils.pci import VendorEnum
+from zstacklib.gpu.base import VendorEnum
 from zstacklib.utils.report import Report
 from zstacklib.utils import ovn
 import zstacklib.utils.ip as ip
@@ -53,7 +53,7 @@ IS_MIPS64EL = host_arch == 'mips64el'
 IS_LOONGARCH64 = host_arch == 'loongarch64'
 GRUB_ROCKY_ENVS = bash_o("find /boot -name grubenv").strip().split("\n")
 GRUB_FILES = ["/boot/grub2/grub.cfg", "/boot/grub/grub.cfg", "/etc/grub2-efi.cfg", "/etc/grub-efi.cfg"] \
-                + ["/boot/efi/EFI/{}/grub.cfg".format(platform.dist()[0])]
+    + ["/boot/efi/EFI/{}/grub.cfg".format(platform.dist()[0])]
 IPTABLES_CMD = iptables.get_iptables_cmd()
 EBTABLES_CMD = ebtables.get_ebtables_cmd()
 
@@ -81,9 +81,11 @@ BOND_MODE_ACTIVE_6 = "balance-alb"
 DISTRO_USING_DNF = ['rl84', 'h84r', 'ky10sp1', 'ky10sp2', 'ky10sp3',
                     'ky10sp3.2403', 'oe2203sp1', 'h2203sp1o', 'uos20r']
 
+
 class ConnectResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(ConnectResponse, self).__init__()
+
 
 class HostCapacityResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -95,6 +97,7 @@ class HostCapacityResponse(kvmagent.AgentResponse):
         self.usedMemory = None
         self.cpuSockets = None
         self.cpuCoreNum = None
+
 
 class HostFactResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -114,49 +117,59 @@ class HostFactResponse(kvmagent.AgentResponse):
         self.deployMode = None
         self.cpuFeatureMd5 = None
 
+
 class SetupMountablePrimaryStorageHeartbeatCmd(kvmagent.AgentCommand):
     def __init__(self):
         super(SetupMountablePrimaryStorageHeartbeatCmd, self).__init__()
         self.heartbeatFilePaths = None
         self.heartbeatInterval = None
 
+
 class SetupMountablePrimaryStorageHeartbeatResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(SetupMountablePrimaryStorageHeartbeatResponse, self).__init__()
+
 
 class PingResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(PingResponse, self).__init__()
         self.hostUuid = None
 
+
 class CheckFileOnHostResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(CheckFileOnHostResponse, self).__init__()
         self.existPaths = {}
+
 
 class GetUsbDevicesRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(GetUsbDevicesRsp, self).__init__()
         self.usbDevicesInfo = None
 
+
 class StartUsbRedirectServerRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(StartUsbRedirectServerRsp, self).__init__()
         self.port = None
 
+
 class StopUsbRedirectServerRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(StopUsbRedirectServerRsp, self).__init__()
+
 
 class CheckUsbServerPortRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(CheckUsbServerPortRsp, self).__init__()
         self.uuids = []
 
+
 class ReportDeviceEventCmd(kvmagent.AgentCommand):
     def __init__(self):
         super(ReportDeviceEventCmd, self).__init__()
         self.hostUuid = None
+
 
 class UpdateHostOSCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -164,18 +177,22 @@ class UpdateHostOSCmd(kvmagent.AgentCommand):
         self.hostUuid = None
         self.excludePackages = None
 
+
 class UpdateHostOSRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(UpdateHostOSRsp, self).__init__()
+
 
 class UpdateDependencyCmd(kvmagent.AgentCommand):
     def __init__(self):
         super(UpdateDependencyCmd, self).__init__()
         self.hostUuid = None
 
+
 class UpdateDependencyRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(UpdateDependencyRsp, self).__init__()
+
 
 class GetXfsFragDataRsp(kvmagent.AgentResponse):
     def __init__(self):
@@ -184,13 +201,16 @@ class GetXfsFragDataRsp(kvmagent.AgentResponse):
         self.hostFrag = None
         self.volumeFragMap = {}
 
+
 class EnableHugePageRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(EnableHugePageRsp, self).__init__()
 
+
 class DisableHugePageRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(DisableHugePageRsp, self).__init__()
+
 
 class SetIpOnHostNetworkInterfaceCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -203,9 +223,11 @@ class SetIpOnHostNetworkInterfaceCmd(kvmagent.AgentCommand):
         self.netmask = None
         self.gateway = None
 
+
 class SetIpOnHostNetworkInterfaceRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(SetIpOnHostNetworkInterfaceRsp, self).__init__()
+
 
 class CheckInterfaceVlanCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -213,30 +235,36 @@ class CheckInterfaceVlanCmd(kvmagent.AgentCommand):
         self.interfaceName = None
         self.vlanId = None
 
+
 class CheckInterfaceVlanRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(CheckInterfaceVlanRsp, self).__init__()
         self.valid = None
+
 
 class GetInterfaceVlanCmd(kvmagent.AgentCommand):
     def __init__(self):
         super(GetInterfaceVlanCmd, self).__init__()
         self.interfaceNames = []
 
+
 class GetInterfaceVlanRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(GetInterfaceVlanRsp, self).__init__()
         self.vlanIds = []
+
 
 class GetInterfaceNameCmd(kvmagent.AgentCommand):
     def __init__(self):
         super(GetInterfaceNameCmd, self).__init__()
         self.ipAddresses = []
 
+
 class GetInterfaceNameRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(GetInterfaceNameRsp, self).__init__()
         self.interfaceNames = []
+
 
 class SetServiceTypeOnHostNetworkInterfaceCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -245,12 +273,14 @@ class SetServiceTypeOnHostNetworkInterfaceCmd(kvmagent.AgentCommand):
         self.vlanId = None
         self.serviceType = []
 
+
 class SetVmConsolePasswordLiveCmd(kvmagent.AgentCommand):
     @log.sensitive_fields("password")
     def __init__(self):
         super(SetVmConsolePasswordLiveCmd, self).__init__()
         self.vmUuid = None
         self.password = None
+
 
 class HostPhysicalMemoryStruct(object):
     def __init__(self):
@@ -323,10 +353,14 @@ class HostNetworkBondingInventory(object):
 
         self.type = "LinuxBonding"
         self.speed = get_nic_supported_max_speed(self.bondingName)
-        self.mode = linux.read_file("/sys/class/net/%s/bonding/mode" % self.bondingName).strip()
-        self.xmitHashPolicy = linux.read_file("/sys/class/net/%s/bonding/xmit_hash_policy" % self.bondingName).strip()
-        self.miiStatus = linux.read_file("/sys/class/net/%s/bonding/mii_status" % self.bondingName).strip()
-        self.mac = linux.read_file("/sys/class/net/%s/address" % self.bondingName).strip()
+        self.mode = linux.read_file(
+            "/sys/class/net/%s/bonding/mode" % self.bondingName).strip()
+        self.xmitHashPolicy = linux.read_file(
+            "/sys/class/net/%s/bonding/xmit_hash_policy" % self.bondingName).strip()
+        self.miiStatus = linux.read_file(
+            "/sys/class/net/%s/bonding/mii_status" % self.bondingName).strip()
+        self.mac = linux.read_file(
+            "/sys/class/net/%s/address" % self.bondingName).strip()
         if len(bash_o("ip link show type bridge_slave %s" % self.bondingName).strip()) > 0:
             self.bondingType = "bridgeSlave"
         else:
@@ -334,15 +368,20 @@ class HostNetworkBondingInventory(object):
         self.callBackIp = managementServerIp
         if managementServerIp is not None:
             self.callBackIp = self._get_src_addr(managementServerIp)
-        self.ipAddresses = ['%s/%d' % (x.address, x.prefixlen) for x in iproute.query_addresses(ifname=self.bondingName, ip_version=4)]
+        self.ipAddresses = ['%s/%d' % (x.address, x.prefixlen)
+                            for x in iproute.query_addresses(ifname=self.bondingName, ip_version=4)]
         if len(self.ipAddresses) == 0:
-            master = linux.read_file("/sys/class/net/%s/master/ifindex" % self.bondingName)
+            master = linux.read_file(
+                "/sys/class/net/%s/master/ifindex" % self.bondingName)
             if master:
                 self.ipAddresses = ['%s/%d' % (x.address, x.prefixlen)
-                    for x in iproute.query_addresses(index=int(master.strip()), ip_version=4)]
-        self.miimon = linux.read_file_strip("/sys/class/net/%s/bonding/miimon" % self.bondingName)
-        self.allSlavesActive = linux.read_file_strip("/sys/class/net/%s/bonding/all_slaves_active" % self.bondingName) == "0"
-        slave_info = linux.read_file_strip("/sys/class/net/%s/bonding/slaves" % self.bondingName)
+                                    for x in iproute.query_addresses(index=int(master.strip()), ip_version=4)]
+        self.miimon = linux.read_file_strip(
+            "/sys/class/net/%s/bonding/miimon" % self.bondingName)
+        self.allSlavesActive = linux.read_file_strip(
+            "/sys/class/net/%s/bonding/all_slaves_active" % self.bondingName) == "0"
+        slave_info = linux.read_file_strip(
+            "/sys/class/net/%s/bonding/slaves" % self.bondingName)
         slave_names = slave_info.split() if slave_info else []
         if len(slave_names) == 0:
             return
@@ -350,7 +389,8 @@ class HostNetworkBondingInventory(object):
         self.slaves = [None] * len(slave_names)
         threads = []
         for idx, name in enumerate(slave_names, start=0):
-            threads.append(thread.ThreadFacade.run_in_thread(get_nic, [name.strip(), idx]))
+            threads.append(thread.ThreadFacade.run_in_thread(
+                get_nic, [name.strip(), idx]))
         for t in threads:
             t.join()
 
@@ -364,7 +404,7 @@ class HostNetworkBondingInventory(object):
             "802.3ad 4",
             "balance-tlb 5",
             "balance-alb 6"
-            ]
+        ]
 
         bondPolicyMap = {
             "l2": "layer 2",
@@ -406,8 +446,9 @@ class HostNetworkBondingInventory(object):
 
         self.slaves = [None] * len(bondData['bond']['slaves'])
         threads = []
-        for idx, name in  enumerate(bondData['bond']['slaves'], start=0):
-            threads.append(thread.ThreadFacade.run_in_thread(get_nic, [name.strip(), idx, self.bondingName]))
+        for idx, name in enumerate(bondData['bond']['slaves'], start=0):
+            threads.append(thread.ThreadFacade.run_in_thread(
+                get_nic, [name.strip(), idx, self.bondingName]))
         for t in threads:
             t.join()
 
@@ -420,7 +461,8 @@ class HostNetworkBondingInventory(object):
         return to_dict
 
     def _get_src_addr(self, ip_addr):
-        output = subprocess.check_output(['ip', 'r', 'get', ip_addr]).decode('utf-8')
+        output = subprocess.check_output(
+            ['ip', 'r', 'get', ip_addr]).decode('utf-8')
 
         pattern = r'src ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
         match = re.search(pattern, output)
@@ -429,6 +471,7 @@ class HostNetworkBondingInventory(object):
             return src_addr
         else:
             return None
+
 
 class HostNetworkInterfaceInventory(object):
     def init(self, name, master=None, managementServerIp=None, driverType=None, pciAddress=None):
@@ -467,7 +510,6 @@ class HostNetworkInterfaceInventory(object):
         else:
             self._init_from_name(managementServerIp)
 
-
     def __new__(cls, name, master=None, managementServerIp=None, driverType=None, pciAddress=None, *args, **kwargs):
         o = super(HostNetworkInterfaceInventory, cls).__new__(cls)
         o.init(name, master, managementServerIp, driverType, pciAddress)
@@ -475,7 +517,8 @@ class HostNetworkInterfaceInventory(object):
 
     def _updateActiveState(self):
         if self.interfaceType == "bondingSlave":
-            activeSlave = linux.read_file("/sys/class/net/%s/bonding/active_slave" % self.master)
+            activeSlave = linux.read_file(
+                "/sys/class/net/%s/bonding/active_slave" % self.master)
             self.slaveActive = self.interfaceName in activeSlave if activeSlave is not None else None
 
     @in_bash
@@ -485,11 +528,13 @@ class HostNetworkInterfaceInventory(object):
         self.speed = get_nic_supported_max_speed(self.interfaceName)
         # cannot read carrier of vf nic
         if not os.path.exists("/sys/class/net/%s/device/physfn" % self.interfaceName):
-            carrier = linux.read_file("/sys/class/net/%s/carrier" % self.interfaceName)
+            carrier = linux.read_file(
+                "/sys/class/net/%s/carrier" % self.interfaceName)
             if carrier:
                 self.carrierActive = carrier.strip() == "1"
 
-        self.mac = linux.read_file_strip("/sys/class/net/%s/address" % self.interfaceName)
+        self.mac = linux.read_file_strip(
+            "/sys/class/net/%s/address" % self.interfaceName)
         self.ipAddresses = linux.get_interface_ip_addresses(self.interfaceName)
         self.callBackIp = managementServerIp
         if managementServerIp is not None:
@@ -501,23 +546,27 @@ class HostNetworkInterfaceInventory(object):
 
         if len(self.ipAddresses) == 0:
             if self.master:
-                self.ipAddresses = linux.get_interface_ip_addresses(self.master)
+                self.ipAddresses = linux.get_interface_ip_addresses(
+                    self.master)
         if self.master is None:
             self.interfaceType = "noMaster"
         elif len(bash_o("ip link show type bond_slave %s" % self.interfaceName).strip()) > 0:
             self.interfaceType = "bondingSlave"
-            activeSlave = linux.read_file("/sys/class/net/%s/bonding/active_slave" % self.master)
+            activeSlave = linux.read_file(
+                "/sys/class/net/%s/bonding/active_slave" % self.master)
             self.slaveActive = self.interfaceName in activeSlave if activeSlave is not None else None
         else:
             self.interfaceType = "bridgeSlave"
 
-        self.pciDeviceAddress = os.readlink("/sys/class/net/%s/device" % self.interfaceName).strip().split('/')[-1]
+        self.pciDeviceAddress = os.readlink(
+            "/sys/class/net/%s/device" % self.interfaceName).strip().split('/')[-1]
         if "virtio" in self.pciDeviceAddress:
             # readlink  /sys/class/net/ens3/device
             # ../../../ virtio1
             # readlink -f /sys/class/net/ens3/device
             # /sys/devices/pci0000:00/0000:00:03.0/virtio1
-            self.pciDeviceAddress = bash_o("readlink -f /sys/class/net/%s/device | awk -F '/' '{print $5}'" % self.interfaceName)
+            self.pciDeviceAddress = bash_o(
+                "readlink -f /sys/class/net/%s/device | awk -F '/' '{print $5}'" % self.interfaceName)
             self.pciDeviceAddress = self.pciDeviceAddress.strip("\n")
 
         self.driverType = get_nic_driver_type(self.interfaceName)
@@ -535,16 +584,19 @@ class HostNetworkInterfaceInventory(object):
         self.speed = get_nic_supported_max_speed(self.interfaceName)
         # cannot read carrier of vf nic
         if not os.path.exists("/sys/class/net/%s/device/physfn" % self.interfaceName):
-            carrier = linux.read_file("/sys/class/net/%s/carrier" % self.interfaceName)
+            carrier = linux.read_file(
+                "/sys/class/net/%s/carrier" % self.interfaceName)
             if carrier:
                 self.carrierActive = carrier.strip() == "1"
-        self.mac = linux.read_file("/sys/class/net/%s/address" % self.interfaceName).strip()
+        self.mac = linux.read_file(
+            "/sys/class/net/%s/address" % self.interfaceName).strip()
         self.ipAddresses = linux.get_interface_ip_addresses(self.interfaceName)
         self.interfaceType = "bondingSlave"
 
         # TODO: check dpdk slave status
         # self.slaveActive = ovs.getOvsCtl(with_dpdk=True).checkDpdkSlaveStatus(self.interfaceName)
-        self.pciDeviceAddress = os.readlink("/sys/class/net/%s/device" % self.interfaceName).strip().split('/')[-1]
+        self.pciDeviceAddress = os.readlink(
+            "/sys/class/net/%s/device" % self.interfaceName).strip().split('/')[-1]
         self.offloadStatus = ovs.getOffloadStatus(self.interfaceName)
         self._init_interfacemodel()
 
@@ -552,9 +604,11 @@ class HostNetworkInterfaceInventory(object):
     def _init_interfacemodel(self):
         # todo: read file
         # Get IDs using -Dmmnv (without second 'n' to avoid truncation)
-        r_id, o_id, e_id = bash_roe("lspci -Dmmnv -s %s" % self.pciDeviceAddress)
+        r_id, o_id, e_id = bash_roe(
+            "lspci -Dmmnv -s %s" % self.pciDeviceAddress)
         # Get names using -Dmmv (without 'nn' to get full names)
-        r_name, o_name, e_name = bash_roe("lspci -Dmmv -s %s" % self.pciDeviceAddress)
+        r_name, o_name, e_name = bash_roe(
+            "lspci -Dmmv -s %s" % self.pciDeviceAddress)
 
         if r_id == 0 and r_name == 0:
             vendor_name = ""
@@ -564,7 +618,8 @@ class HostNetworkInterfaceInventory(object):
             # Parse IDs from -Dmmnv output
             ids = {}
             for line in o_id.split('\n'):
-                if len(line.split(':')) < 2: continue
+                if len(line.split(':')) < 2:
+                    continue
                 title = line.split(':')[0].strip()
                 content = line.split(':')[1].strip()
                 if title in ['Vendor', 'Device', 'SVendor', 'SDevice', 'Rev']:
@@ -572,7 +627,8 @@ class HostNetworkInterfaceInventory(object):
 
             # Parse names from -Dmmv output
             for line in o_name.split('\n'):
-                if len(line.split(':')) < 2: continue
+                if len(line.split(':')) < 2:
+                    continue
                 title = line.split(':')[0].strip()
                 content = line.split(':')[1].strip()
                 if title == 'Vendor':
@@ -582,13 +638,15 @@ class HostNetworkInterfaceInventory(object):
                     device_name = self._simplify_device_name(content.strip())
                     self.deviceId = ids.get('Device', '')
                 elif title == "SVendor":
-                    subvendor_name = self._simplify_device_name(content.strip())
+                    subvendor_name = self._simplify_device_name(
+                        content.strip())
                     self.subvendorId = ids.get('SVendor', '')
                 elif title == "SDevice":
                     self.subdeviceId = ids.get('SDevice', '')
                 elif title == "Rev":
                     self.rev = ids.get('Rev', '')
-            self.interfaceModel = "%s_%s" % (subvendor_name if subvendor_name and "Unknown" not in subvendor_name else vendor_name, device_name)
+            self.interfaceModel = "%s_%s" % (
+                subvendor_name if subvendor_name and "Unknown" not in subvendor_name else vendor_name, device_name)
 
     def _simplify_device_name(self, name):
         if 'Intel Corporation' in name:
@@ -605,7 +663,8 @@ class HostNetworkInterfaceInventory(object):
         return to_dict
 
     def _get_src_addr(self, ip_addr):
-        output = subprocess.check_output(['ip', 'r', 'get', ip_addr]).decode('utf-8')
+        output = subprocess.check_output(
+            ['ip', 'r', 'get', ip_addr]).decode('utf-8')
 
         pattern = r'src ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
         match = re.search(pattern, output)
@@ -615,10 +674,12 @@ class HostNetworkInterfaceInventory(object):
         else:
             return None
 
+
 class GetNumaTopologyResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(GetNumaTopologyResponse, self).__init__()
         self.topology = None
+
 
 class GetPciDevicesCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -627,6 +688,7 @@ class GetPciDevicesCmd(kvmagent.AgentCommand):
         self.enableIommu = True
         self.skipGrubConfig = False
 
+
 class GetPciDevicesResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(GetPciDevicesResponse, self).__init__()
@@ -634,14 +696,17 @@ class GetPciDevicesResponse(kvmagent.AgentResponse):
         self.hostIommuStatus = False
         self.mdevDeviceInfos = {}
 
+
 class GetMttyDevicesCmd(kvmagent.AgentCommand):
     def __init__(self):
         super(GetMttyDevicesCmd, self).__init__()
+
 
 class GetMttyDevicesResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(GetMttyDevicesResponse, self).__init__()
         self.mttyDeviceInfo = None
+
 
 class CreatePciDeviceRomFileCommand(kvmagent.AgentCommand):
     def __init__(self):
@@ -650,9 +715,11 @@ class CreatePciDeviceRomFileCommand(kvmagent.AgentCommand):
         self.romContent = None
         self.romMd5sum = None
 
+
 class CreatePciDeviceRomFileRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(CreatePciDeviceRomFileRsp, self).__init__()
+
 
 class GenerateSriovPciDevicesCommand(kvmagent.AgentCommand):
     def __init__(self):
@@ -661,18 +728,22 @@ class GenerateSriovPciDevicesCommand(kvmagent.AgentCommand):
         self.virtPartNum = None
         self.reSplite = False
 
+
 class GenerateSriovPciDevicesRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(GenerateSriovPciDevicesRsp, self).__init__()
+
 
 class UngenerateSriovPciDevicesCommand(kvmagent.AgentCommand):
     def __init__(self):
         super(UngenerateSriovPciDevicesCommand, self).__init__()
         self.pciDeviceAddress = None
 
+
 class UngenerateSriovPciDevicesRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(UngenerateSriovPciDevicesRsp, self).__init__()
+
 
 class GenerateVfioMdevDevicesCommand(kvmagent.AgentCommand):
     def __init__(self):
@@ -681,10 +752,12 @@ class GenerateVfioMdevDevicesCommand(kvmagent.AgentCommand):
         self.mdevSpecTypeId = None
         self.mdevUuids = None
 
+
 class GenerateVfioMdevDevicesRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(GenerateVfioMdevDevicesRsp, self).__init__()
         self.mdevUuids = []
+
 
 class UngenerateVfioMdevDevicesCommand(kvmagent.AgentCommand):
     def __init__(self):
@@ -692,9 +765,11 @@ class UngenerateVfioMdevDevicesCommand(kvmagent.AgentCommand):
         self.pciDeviceAddress = None
         self.mdevSpecTypeId = None
 
+
 class UngenerateVfioMdevDevicesRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(UngenerateVfioMdevDevicesRsp, self).__init__()
+
 
 class GenerateSeVfioMdevDevicesCommand(kvmagent.AgentCommand):
     def __init__(self):
@@ -703,28 +778,34 @@ class GenerateSeVfioMdevDevicesCommand(kvmagent.AgentCommand):
         self.mdevUuids = None
         self.reSplite = False
 
+
 class GenerateSeVfioMdevDevicesRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(GenerateSeVfioMdevDevicesRsp, self).__init__()
         self.mdevUuids = []
+
 
 class UngenerateSeVfioMdevDevicesCommand(kvmagent.AgentCommand):
     def __init__(self):
         super(UngenerateSeVfioMdevDevicesCommand, self).__init__()
         self.mttyDeviceUuid = None
 
+
 class UngenerateSeVfioMdevDevicesRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(UngenerateSeVfioMdevDevicesRsp, self).__init__()
+
 
 class DeleteVfioMdevDeviceCommand(kvmagent.AgentCommand):
     def __init__(self):
         super(DeleteVfioMdevDeviceCommand, self).__init__()
         self.MdevDeviceUuid = None
 
+
 class DeleteVfioMdevDeviceRsp(kvmagent.AgentCommand):
     def __init__(self):
         super(DeleteVfioMdevDeviceRsp, self).__init__()
+
 
 class UpdateSpiceChannelConfigResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -733,10 +814,13 @@ class UpdateSpiceChannelConfigResponse(kvmagent.AgentResponse):
 
 # using kvmagent to transmit vm operations to management node
 # like start/stop/reboot a specific vm instance
+
+
 class VmOperation(object):
     def __init__(self):
         self.uuid = None
         self.operation = None
+
 
 class TransmitVmOperationToMnCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -744,9 +828,11 @@ class TransmitVmOperationToMnCmd(kvmagent.AgentCommand):
         self.uuid = None
         self.operation = None
 
+
 class TransmitVmOperationToMnRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(TransmitVmOperationToMnRsp, self).__init__()
+
 
 class ChangeHostPasswordCmd(kvmagent.AgentCommand):
     @log.sensitive_fields("password")
@@ -754,27 +840,33 @@ class ChangeHostPasswordCmd(kvmagent.AgentCommand):
         super(ChangeHostPasswordCmd, self).__init__()
         self.password = None  # type:str
 
+
 class ZwatchInstallResult(object):
     def __init__(self):
         self.vmInstanceUuid = None
         self.version = None
 
+
 class ZwatchInstallResultRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(kvmagent.AgentResponse, self).__init__()
+
 
 class ScanVmPortRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(ScanVmPortRsp, self).__init__()
         self.portStatus = {}
 
+
 class EnableZeroCopyRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(EnableZeroCopyRsp, self).__init__()
 
+
 class DisableZeroCopyRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(DisableZeroCopyRsp, self).__init__()
+
 
 class GetDevCapacityRsp(kvmagent.AgentResponse):
     def __init__(self):
@@ -783,14 +875,17 @@ class GetDevCapacityRsp(kvmagent.AgentResponse):
         self.availableSize = None
         self.dirSize = None
 
+
 class AddBridgeFdbEntryRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(AddBridgeFdbEntryRsp, self).__init__()
+
 
 class AttachVolumeRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(AttachVolumeRsp, self).__init__()
         self.device = None
+
 
 class PciDeviceTO(object):
     def __init__(self):
@@ -824,11 +919,14 @@ class MttyDeviceTO(object):
         self.virtStatus = ""
 
 # moved from vm_plugin to host_plugin
+
+
 class UpdateConfigration(object):
     def __init__(self):
         self.path = None
         self.enableIommu = None
-        self.iommu_type = 'amd_iommu' if 'hygon' in linux.get_cpu_model()[1].lower() or 'amd' in linux.get_cpu_model()[1].lower() else 'intel_iommu'
+        self.iommu_type = 'amd_iommu' if 'hygon' in linux.get_cpu_model()[1].lower(
+        ) or 'amd' in linux.get_cpu_model()[1].lower() else 'intel_iommu'
 
     def executeCmdOnFile(self, shellCmd):
         return bash_roe("%s %s" % (shellCmd, self.path))
@@ -852,38 +950,47 @@ class UpdateConfigration(object):
 
         _create_iommu_conf()
 
-        r_on, o_on, e_on = self.executeCmdOnFile("grep -E '{}(\ )*=(\ )*on'".format(self.iommu_type))
-        r_off, o_off, e_off = self.executeCmdOnFile("grep -E '{}(\ )*=(\ )*off'".format(self.iommu_type))
-        r_modprobe_blacklist, o_modprobe_blacklist, e_modprobe_blacklist = self.executeCmdOnFile("grep -E 'modprobe.blacklist(\ )*='")
-        #When iommu has not changed,  No need to update /etc/default/grub
+        r_on, o_on, e_on = self.executeCmdOnFile(
+            "grep -E '{}(\ )*=(\ )*on'".format(self.iommu_type))
+        r_off, o_off, e_off = self.executeCmdOnFile(
+            "grep -E '{}(\ )*=(\ )*off'".format(self.iommu_type))
+        r_modprobe_blacklist, o_modprobe_blacklist, e_modprobe_blacklist = self.executeCmdOnFile(
+            "grep -E 'modprobe.blacklist(\ )*='")
+        # When iommu has not changed,  No need to update /etc/default/grub
         if self.enableIommu is False:
             if r_on != 0 and r_off != 0 and r_modprobe_blacklist != 0:
                 return True, None
         elif self.enableIommu is True:
-            if r_on ==0 and r_off != 0 and r_modprobe_blacklist == 0:
-                return True,None
+            if r_on == 0 and r_off != 0 and r_modprobe_blacklist == 0:
+                return True, None
 
         if r_on == 0:
-            r, o, e = self.executeCmdOnFile( "sed -i '/GRUB_CMDLINE_LINUX/s/[[:blank:]]*{}[[:blank:]]*=[[:blank:]]*on//g'".format(self.iommu_type))
+            r, o, e = self.executeCmdOnFile(
+                "sed -i '/GRUB_CMDLINE_LINUX/s/[[:blank:]]*{}[[:blank:]]*=[[:blank:]]*on//g'".format(self.iommu_type))
             if r != 0:
                 return False, "%s %s" % (e, o)
         if r_off == 0:
-            r, o, e = self.executeCmdOnFile("sed -i '/GRUB_CMDLINE_LINUX/s/[[:blank:]]*{}[[:blank:]]*=[[:blank:]]*off//g'".format(self.iommu_type))
+            r, o, e = self.executeCmdOnFile(
+                "sed -i '/GRUB_CMDLINE_LINUX/s/[[:blank:]]*{}[[:blank:]]*=[[:blank:]]*off//g'".format(self.iommu_type))
             if r != 0:
                 return False, "%s %s" % (e, o)
         if r_modprobe_blacklist == 0:
-            r, o, e = self.executeCmdOnFile("grep -E '[[:blank:]]*modprobe.blacklist[[:blank:]]*=[[:blank:]]*[[:graph:]]*\"$'")
+            r, o, e = self.executeCmdOnFile(
+                "grep -E '[[:blank:]]*modprobe.blacklist[[:blank:]]*=[[:blank:]]*[[:graph:]]*\"$'")
             if r == 0:
-                r, o, e = self.executeCmdOnFile("sed -i '/GRUB_CMDLINE_LINUX/s/[[:blank:]]*modprobe.blacklist[[:blank:]]*=[[:blank:]]*[[:graph:]]*\"$/\"/g'")
+                r, o, e = self.executeCmdOnFile(
+                    "sed -i '/GRUB_CMDLINE_LINUX/s/[[:blank:]]*modprobe.blacklist[[:blank:]]*=[[:blank:]]*[[:graph:]]*\"$/\"/g'")
                 if r != 0:
                     return False, "%s %s" % (e, o)
             else:
-                r, o, e = self.executeCmdOnFile("sed -i '/GRUB_CMDLINE_LINUX/s/[[:blank:]]*modprobe.blacklist[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g'")
+                r, o, e = self.executeCmdOnFile(
+                    "sed -i '/GRUB_CMDLINE_LINUX/s/[[:blank:]]*modprobe.blacklist[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g'")
                 if r != 0:
                     return False, "%s %s" % (e, o)
 
         if self.enableIommu is True:
-            r, o, e = self.executeCmdOnFile("sed -i '/GRUB_CMDLINE_LINUX/s/\"$/ {}=on modprobe.blacklist=snd_hda_intel,amd76x_edac,vga16fb,nouveau,rivafb,nvidiafb,rivatv,amdgpu,radeon\"/g'".format(self.iommu_type))
+            r, o, e = self.executeCmdOnFile(
+                "sed -i '/GRUB_CMDLINE_LINUX/s/\"$/ {}=on modprobe.blacklist=snd_hda_intel,amd76x_edac,vga16fb,nouveau,rivafb,nvidiafb,rivatv,amdgpu,radeon\"/g'".format(self.iommu_type))
             if r != 0:
                 return False, "%s %s" % (e, o)
 
@@ -891,8 +998,10 @@ class UpdateConfigration(object):
 
     def updateGrubConfig(self):
         def updateGrubContent(content):
-            content = re.sub('{0}\s*=\s*on'.format(self.iommu_type), '', content)
-            content = re.sub('{0}\s*=\s*off'.format(self.iommu_type), '', content)
+            content = re.sub(
+                '{0}\s*=\s*on'.format(self.iommu_type), '', content)
+            content = re.sub(
+                '{0}\s*=\s*off'.format(self.iommu_type), '', content)
             content = re.sub('\s*modprobe.blacklist\s*=\s*\S*', '', content)
             return content
 
@@ -917,23 +1026,29 @@ class UpdateConfigration(object):
     def enable_vfio_module(self):
         bash_o("modprobe vfio && modprobe vfio-pci")
 
+
 logger = log.get_logger(__name__)
+
 
 def _get_memory(word):
     out = shell.call("grep '%s' /proc/meminfo" % word)
     (name, capacity) = out.split(':')
     capacity = re.sub('[k|K][b|B]', '', capacity).strip()
-    #capacity = capacity.rstrip('kB').rstrip('KB').rstrip('kb').strip()
+    # capacity = capacity.rstrip('kB').rstrip('KB').rstrip('kb').strip()
     return sizeunit.KiloByte.toByte(long(capacity))
+
 
 def _get_total_memory():
     return _get_memory('MemTotal')
 
+
 def _get_free_memory():
     return _get_memory('MemFree')
 
+
 def _get_used_memory():
     return _get_total_memory() - _get_free_memory()
+
 
 class HostPlugin(kvmagent.KvmAgent):
     '''
@@ -958,8 +1073,8 @@ class HostPlugin(kvmagent.KvmAgent):
     HOST_STOP_USB_REDIRECT_PATH = "/host/usbredirect/stop"
     CHECK_USB_REDIRECT_PORT = "/host/usbredirect/check"
     IDENTIFY_HOST = "/host/identify"
-    LOCATE_HOST_NETWORK_INTERFACE = "/host/locate/networkinterface";
-    GET_HOST_PHYSICAL_MEMORY_FACTS = "/host/physicalmemoryfacts";
+    LOCATE_HOST_NETWORK_INTERFACE = "/host/locate/networkinterface"
+    GET_HOST_PHYSICAL_MEMORY_FACTS = "/host/physicalmemoryfacts"
     UPDATE_HOST_OVS_CPU_PINNING = "/host/ovs/cpu-pin/update"
     CHANGE_PASSWORD = "/host/changepassword"
     GET_HOST_NETWORK_FACTS = "/host/networkfacts"
@@ -981,7 +1096,7 @@ class HostPlugin(kvmagent.KvmAgent):
     GENERATE_SE_VFIO_MDEV_DEVICES = "/semdevdevice/generate"
     UNGENERATE_SE_VFIO_MDEV_DEVICES = "/semdevdevice/ungenerate"
     DELETE_VFIO_MDEV_DEVICE = "/mdevdevice/delete"
-    HOST_UPDATE_SPICE_CHANNEL_CONFIG_PATH = "/host/updateSpiceChannelConfig";
+    HOST_UPDATE_SPICE_CHANNEL_CONFIG_PATH = "/host/updateSpiceChannelConfig"
     TRANSMIT_VM_OPERATION_TO_MN_PATH = "/host/transmitvmoperation"
     TRANSMIT_ZWATCH_INSTALL_RESULT_TO_MN_PATH = "/host/zwatchInstallResult"
     SCAN_VM_PORT_PATH = "/host/vm/scanport"
@@ -1059,7 +1174,8 @@ class HostPlugin(kvmagent.KvmAgent):
         self.config[kvmagent.VERSION] = cmd.version
         Report.serverUuid = self.host_uuid
         Report.url = cmd.sendCommandUrl
-        logger.debug(http.path_msg(self.CONNECT_PATH, 'host[uuid: %s] connected' % cmd.hostUuid))
+        logger.debug(http.path_msg(self.CONNECT_PATH,
+                     'host[uuid: %s] connected' % cmd.hostUuid))
         rsp.libvirtVersion = self.libvirt_version
         rsp.qemuVersion = self.qemu_version
 
@@ -1119,7 +1235,6 @@ class HostPlugin(kvmagent.KvmAgent):
             pkt_counter += 1
             time.sleep(2)
 
-
     @kvmagent.replyerror
     def ping(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -1150,9 +1265,11 @@ class HostPlugin(kvmagent.KvmAgent):
                 continue
             with open(file_path, 'rb') as data:
                 try:
-                    rsp.existPaths[file_path] = hashlib.md5(data.read()).hexdigest()
+                    rsp.existPaths[file_path] = hashlib.md5(
+                        data.read()).hexdigest()
                 except IOError as err:
-                    logger.debug('can not open file %s because IOError: %s' % (file_path, str(err)))
+                    logger.debug('can not open file %s because IOError: %s' % (
+                        file_path, str(err)))
                     pass
         return jsonobject.dumps(rsp)
 
@@ -1186,7 +1303,8 @@ class HostPlugin(kvmagent.KvmAgent):
         elif rsp.osDistribution == "helix":
             rsp.osRelease = "release"
         # to be compatible with both `2.6.0` and `2.9.0(qemu-kvm-ev-2.9.0-16.el7_4.8.1)`
-        qemu_img_version = shell.call("qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1")
+        qemu_img_version = shell.call(
+            "qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1")
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
         ipV4Addrs = [chunk.address for chunk in filter(
             lambda x: x.address != '127.0.0.1' and not x.ifname.endswith('zs'), iproute.query_addresses(ip_version=4))]
@@ -1201,23 +1319,36 @@ class HostPlugin(kvmagent.KvmAgent):
 
         is_dmidecode = shell.run("dmidecode")
         if str(is_dmidecode) == '0':
-            rsp.systemSerialNumber = run_dmidecode('dmidecode -s system-serial-number', 'unknown')
-            system_product_name = run_dmidecode('dmidecode -s system-product-name')
+            rsp.systemSerialNumber = run_dmidecode(
+                'dmidecode -s system-serial-number', 'unknown')
+            system_product_name = run_dmidecode(
+                'dmidecode -s system-product-name')
             if system_product_name:
                 rsp.systemProductName = system_product_name
             else:
-                rsp.systemProductName = run_dmidecode('dmidecode -s baseboard-product-name')
-            rsp.systemManufacturer = run_dmidecode('dmidecode -s system-manufacturer', 'unknown')
-            rsp.systemUUID = run_dmidecode('dmidecode -s system-uuid', 'unknown')
-            rsp.biosVendor = run_dmidecode('dmidecode -s bios-vendor', 'unknown')
-            rsp.biosVersion = run_dmidecode('dmidecode -s bios-version', 'unknown')
-            rsp.biosReleaseDate = run_dmidecode('dmidecode -s bios-release-date', 'unknown')
-            rsp.memorySlotsMaximum = run_dmidecode('dmidecode -q -t memory | grep "Memory Device" | wc -l')
-            rsp.powerSupplyManufacturer = run_dmidecode("dmidecode -t 39 | grep -vi 'not specified' | grep -m1 'Manufacturer' | awk -F ':' '{print $2}'", 'unknown')
-            rsp.powerSupplyModelName = run_dmidecode("dmidecode -t 39 | grep -vi 'not specified' | grep -m1 'Name' | awk -F ':' '{print $2}'", 'unknown')
-            power_supply_max_power_capacity = run_dmidecode("dmidecode -t 39 | grep -vi 'unknown' | grep -m1 'Max Power Capacity' | awk -F ':' '{print $2}'")
+                rsp.systemProductName = run_dmidecode(
+                    'dmidecode -s baseboard-product-name')
+            rsp.systemManufacturer = run_dmidecode(
+                'dmidecode -s system-manufacturer', 'unknown')
+            rsp.systemUUID = run_dmidecode(
+                'dmidecode -s system-uuid', 'unknown')
+            rsp.biosVendor = run_dmidecode(
+                'dmidecode -s bios-vendor', 'unknown')
+            rsp.biosVersion = run_dmidecode(
+                'dmidecode -s bios-version', 'unknown')
+            rsp.biosReleaseDate = run_dmidecode(
+                'dmidecode -s bios-release-date', 'unknown')
+            rsp.memorySlotsMaximum = run_dmidecode(
+                'dmidecode -q -t memory | grep "Memory Device" | wc -l')
+            rsp.powerSupplyManufacturer = run_dmidecode(
+                "dmidecode -t 39 | grep -vi 'not specified' | grep -m1 'Manufacturer' | awk -F ':' '{print $2}'", 'unknown')
+            rsp.powerSupplyModelName = run_dmidecode(
+                "dmidecode -t 39 | grep -vi 'not specified' | grep -m1 'Name' | awk -F ':' '{print $2}'", 'unknown')
+            power_supply_max_power_capacity = run_dmidecode(
+                "dmidecode -t 39 | grep -vi 'unknown' | grep -m1 'Max Power Capacity' | awk -F ':' '{print $2}'")
             if bool(re.search(r'\d', power_supply_max_power_capacity)):
-                rsp.powerSupplyMaxPowerCapacity = filter(str.isdigit, power_supply_max_power_capacity.strip())
+                rsp.powerSupplyMaxPowerCapacity = filter(
+                    str.isdigit, power_supply_max_power_capacity.strip())
 
         rsp.qemuImgVersion = qemu_img_version
         rsp.libvirtVersion = self.libvirt_version
@@ -1236,7 +1367,8 @@ class HostPlugin(kvmagent.KvmAgent):
                 libvirtCapabilitiesList.append("blockcopynetworktarget")
             rsp.libvirtCapabilities = libvirtCapabilitiesList
 
-        bmc_version = shell.call("ipmitool mc info | grep 'Firmware Revision' | awk -F ':' '{print $2}'").strip()
+        bmc_version = shell.call(
+            "ipmitool mc info | grep 'Firmware Revision' | awk -F ':' '{print $2}'").strip()
         rsp.bmcVersion = bmc_version if bmc_version else 'unknown'
 
         # To see which lan the BMC is listening on, try the following (1-11), https://wiki.docking.org/index.php/Configuring_IPMI
@@ -1246,13 +1378,15 @@ class HostPlugin(kvmagent.KvmAgent):
             except result:         IP Address              : xxx.xxx.xxx.xxx 
             set ipmi_address "None" when got results unexpected or happened some errors   
             '''
-            ret, out, err = bash_roe("ipmitool lan print %s | grep -w 'IP Address'| grep -v 'Source'" % channel)
+            ret, out, err = bash_roe(
+                "ipmitool lan print %s | grep -w 'IP Address'| grep -v 'Source'" % channel)
             if ret == 0 and out != "":
                 rsp.ipmiAddress = out.split(":")[1].strip()
                 break
             else:
                 rsp.ipmiAddress = 'None'
-                logger.debug("failed to get ipmi address from BMC lan channel [%s], because %s" % (channel, err))
+                logger.debug(
+                    "failed to get ipmi address from BMC lan channel [%s], because %s" % (channel, err))
 
         rsp.deployMode = 'cube' if misc.isHyperConvergedHost() else 'cloud'
 
@@ -1263,25 +1397,32 @@ class HostPlugin(kvmagent.KvmAgent):
             try:
                 cpu_model = self._get_host_cpu_model()
             except AttributeError:
-                logger.debug("maybe XmlObject has no attribute model, use uname -p to get one")
+                logger.debug(
+                    "maybe XmlObject has no attribute model, use uname -p to get one")
                 if cpu_model is None:
                     cpu_model = os.uname()[-1]
 
             rsp.cpuModelName = cpu_model
-            host_cpu_model_name = shell.call("lscpu | awk -F':' '/Model name/{print $2}'")
-            rsp.hostCpuModelName = host_cpu_model_name.strip() if host_cpu_model_name  else "aarch64"
+            host_cpu_model_name = shell.call(
+                "lscpu | awk -F':' '/Model name/{print $2}'")
+            rsp.hostCpuModelName = host_cpu_model_name.strip(
+            ) if host_cpu_model_name else "aarch64"
 
             cpuMHz = shell.call("lscpu | awk '/max MHz/{ print $NF }'")
             # in case lscpu doesn't show cpu max mhz
             cpuMHz = "2500.0000" if cpuMHz.strip() == '' else cpuMHz
             rsp.cpuGHz = '%.2f' % (float(cpuMHz) / 1000)
-            cpu_cores_per_socket = shell.call("lscpu | awk -F':' '/per socket/{print $NF}'")
+            cpu_cores_per_socket = shell.call(
+                "lscpu | awk -F':' '/per socket/{print $NF}'")
             # On openeuler, lscpu otuputs 'per cluster' instead of 'per socket'
             if not cpu_cores_per_socket:
-                cpu_cores_per_socket = shell.call("lscpu | awk -F':' '/per cluster/{print $NF}'")
-            cpu_threads_per_core = shell.call("lscpu | awk -F':' '/per core/{print $NF}'")
+                cpu_cores_per_socket = shell.call(
+                    "lscpu | awk -F':' '/per cluster/{print $NF}'")
+            cpu_threads_per_core = shell.call(
+                "lscpu | awk -F':' '/per core/{print $NF}'")
             sockets = linux.get_socket_num()
-            rsp.cpuProcessorNum = int(cpu_cores_per_socket.strip()) * int(cpu_threads_per_core) * sockets
+            rsp.cpuProcessorNum = int(
+                cpu_cores_per_socket.strip()) * int(cpu_threads_per_core) * sockets
 
             '''
             examples:         
@@ -1298,13 +1439,15 @@ class HostPlugin(kvmagent.KvmAgent):
             rsp.hvmCpuFlag = 'vt'
             rsp.cpuModelName = self._get_host_cpu_model()
 
-            host_cpu_info = shell.call("grep -m2 -P -o -i '(model name|cpu MHz)\s*:\s*\K.*' /proc/cpuinfo").splitlines()
+            host_cpu_info = shell.call(
+                "grep -m2 -P -o -i '(model name|cpu MHz)\s*:\s*\K.*' /proc/cpuinfo").splitlines()
             host_cpu_model_name = host_cpu_info[0]
             rsp.hostCpuModelName = host_cpu_model_name
 
             transient_cpuGHz = '%.2f' % (float(host_cpu_info[1]) / 1000)
             static_cpuGHz_re = re.search('[0-9.]*GHz', host_cpu_model_name)
-            rsp.cpuGHz = static_cpuGHz_re.group(0)[:-3] if static_cpuGHz_re else transient_cpuGHz
+            rsp.cpuGHz = static_cpuGHz_re.group(
+                0)[:-3] if static_cpuGHz_re else transient_cpuGHz
         else:
             if shell.run('grep vmx /proc/cpuinfo') == 0:
                 rsp.hvmCpuFlag = 'vmx'
@@ -1318,21 +1461,27 @@ class HostPlugin(kvmagent.KvmAgent):
 
             rsp.cpuModelName = self._get_host_cpu_model()
 
-            host_cpu_info = shell.call("grep -m2 -P -o '(model name|cpu MHz)\s*:\s*\K.*' /proc/cpuinfo").splitlines()
+            host_cpu_info = shell.call(
+                "grep -m2 -P -o '(model name|cpu MHz)\s*:\s*\K.*' /proc/cpuinfo").splitlines()
             host_cpu_model_name = host_cpu_info[0]
             rsp.hostCpuModelName = host_cpu_model_name
 
             transient_cpuGHz = '%.2f' % (float(host_cpu_info[1]) / 1000)
             static_cpuGHz_re = re.search('[0-9.]*GHz', host_cpu_model_name)
-            rsp.cpuGHz = static_cpuGHz_re.group(0)[:-3] if static_cpuGHz_re else transient_cpuGHz
+            rsp.cpuGHz = static_cpuGHz_re.group(
+                0)[:-3] if static_cpuGHz_re else transient_cpuGHz
 
-            cpu_cores_per_socket = shell.call("lscpu | awk -F':' '/per socket/{print $NF}'")
+            cpu_cores_per_socket = shell.call(
+                "lscpu | awk -F':' '/per socket/{print $NF}'")
             # On openeuler, lscpu otuputs 'per cluster' instead of 'per socket'
             if not cpu_cores_per_socket:
-                cpu_cores_per_socket = shell.call("lscpu | awk -F':' '/per cluster/{print $NF}'")
-            cpu_threads_per_core = shell.call("lscpu | awk -F':' '/per core/{print $NF}'")
+                cpu_cores_per_socket = shell.call(
+                    "lscpu | awk -F':' '/per cluster/{print $NF}'")
+            cpu_threads_per_core = shell.call(
+                "lscpu | awk -F':' '/per core/{print $NF}'")
             sockets = linux.get_socket_num()
-            rsp.cpuProcessorNum = int(cpu_cores_per_socket.strip()) * int(cpu_threads_per_core) * sockets
+            rsp.cpuProcessorNum = int(
+                cpu_cores_per_socket.strip()) * int(cpu_threads_per_core) * sockets
 
             cpu_cache_list = self._get_cpu_cache()
             rsp.cpuCache = ",".join(str(cache) for cache in cpu_cache_list)
@@ -1340,13 +1489,16 @@ class HostPlugin(kvmagent.KvmAgent):
         # get virtualizer info
         rsp.virtualizerInfo.uuid = self.config.get(kvmagent.HOST_UUID)
         rsp.virtualizerInfo.virtualizer = "qemu-kvm"
-        rsp.virtualizerInfo.version = qemu.get_version_from_exe_file(qemu.get_path())
+        rsp.virtualizerInfo.version = qemu.get_version_from_exe_file(
+            qemu.get_path())
 
         # get CPU feature MD5 for migration compatibility check
-        sh_cmd = shell.ShellCmd('virsh capabilities | virsh cpu-baseline /dev/stdin')
+        sh_cmd = shell.ShellCmd(
+            'virsh capabilities | virsh cpu-baseline /dev/stdin')
         sh_cmd(False)
         if sh_cmd.return_code == 0 and sh_cmd.stdout.strip():
-            rsp.cpuFeatureMd5 = hashlib.md5(sh_cmd.stdout.strip().encode()).hexdigest()
+            rsp.cpuFeatureMd5 = hashlib.md5(
+                sh_cmd.stdout.strip().encode()).hexdigest()
 
         return jsonobject.dumps(rsp)
 
@@ -1385,13 +1537,17 @@ class HostPlugin(kvmagent.KvmAgent):
         cpu_cache_lines = shell.call("lscpu")
         for c_line in cpu_cache_lines.splitlines():
             if re.search('L1d cache', c_line):
-                cache.cpuL1dCache = self._cache_units_convert(c_line.split(':')[1].strip())
+                cache.cpuL1dCache = self._cache_units_convert(
+                    c_line.split(':')[1].strip())
             elif re.search('L1i cache', c_line):
-                cache.cpuL1iCache = self._cache_units_convert(c_line.split(':')[1].strip())
+                cache.cpuL1iCache = self._cache_units_convert(
+                    c_line.split(':')[1].strip())
             elif re.search('L2 cache', c_line):
-                cache.cpuL2Cache = self._cache_units_convert(c_line.split(':')[1].strip())
+                cache.cpuL2Cache = self._cache_units_convert(
+                    c_line.split(':')[1].strip())
             elif re.search('L3 cache', c_line):
-                cache.cpuL3Cache = self._cache_units_convert(c_line.split(':')[1].strip())
+                cache.cpuL3Cache = self._cache_units_convert(
+                    c_line.split(':')[1].strip())
 
         cpu_l1_cache = cache.cpuL1dCache + cache.cpuL1iCache
         cpuCacheList = [cpu_l1_cache, cache.cpuL2Cache, cache.cpuL3Cache]
@@ -1454,7 +1610,8 @@ class HostPlugin(kvmagent.KvmAgent):
             hb_dir = os.path.dirname(hb)
             mount_path = os.path.dirname(hb_dir)
             if not linux.is_mounted(mount_path):
-                rsp.error = '%s is not mounted, setup heartbeat file[%s] failed' % (mount_path, hb)
+                rsp.error = '%s is not mounted, setup heartbeat file[%s] failed' % (
+                    mount_path, hb)
                 rsp.success = False
                 return jsonobject.dumps(rsp)
 
@@ -1467,7 +1624,8 @@ class HostPlugin(kvmagent.KvmAgent):
             if not os.path.exists(hb_dir):
                 os.makedirs(hb_dir, 0755)
 
-            t = thread.timer(cmd.heartbeatInterval, self._heartbeat_func, args=[hb], stop_on_exception=False)
+            t = thread.timer(cmd.heartbeatInterval, self._heartbeat_func, args=[
+                             hb], stop_on_exception=False)
             t.start()
             self.heartbeat_timer[hb] = t
             logger.debug('create heartbeat file at[%s]' % hb)
@@ -1478,7 +1636,8 @@ class HostPlugin(kvmagent.KvmAgent):
         for port in range(4100, 4200):
             if bash_r("netstat -nap | grep :%s[[:space:]] | grep LISTEN" % port) != 0:
                 return port
-        raise kvmagent.KvmError('no more available port for start usbredirect server')
+        raise kvmagent.KvmError(
+            'no more available port for start usbredirect server')
 
     @kvmagent.replyerror
     @in_bash
@@ -1491,13 +1650,16 @@ class HostPlugin(kvmagent.KvmAgent):
             if bash_r("systemctl list-units |grep %s" % systemd_service_name) == 0:
                 bash_r("systemctl start %s" % systemd_service_name)
             else:
-                bash_r("systemd-run --unit %s usbredirserver -p %s %s-%s" % (systemd_service_name, port, busNum, devNum))
+                bash_r("systemd-run --unit %s usbredirserver -p %s %s-%s" %
+                       (systemd_service_name, port, busNum, devNum))
 
             ret, output = linux.check_port('127.0.0.1', port)
             if not ret:
-                logger.info("usb %s-%s start failed on port %s" % (busNum, devNum, port))
+                logger.info("usb %s-%s start failed on port %s" %
+                            (busNum, devNum, port))
                 return False, output
-            logger.info("usb %s-%s start successed on port %s" % (busNum, devNum, port))
+            logger.info("usb %s-%s start successed on port %s" %
+                        (busNum, devNum, port))
             return True, None
 
         def _check_usb_device_exist(busNum, devNum):
@@ -1510,7 +1672,8 @@ class HostPlugin(kvmagent.KvmAgent):
         port = cmd.port if cmd.port is not None else self._get_next_available_port()
         if not _check_usb_device_exist(cmd.busNum, cmd.devNum):
             rsp.success = False
-            rsp.error = "usb device[busNum: %s, deviceNum: %s does not exists." % (cmd.busNum, cmd.devNum)
+            rsp.error = "usb device[busNum: %s, deviceNum: %s does not exists." % (
+                cmd.busNum, cmd.devNum)
             return jsonobject.dumps(rsp)
 
         ret, output = _start_usb_server(int(port), cmd.busNum, cmd.devNum)
@@ -1529,7 +1692,8 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp = StopUsbRedirectServerRsp()
         if bash_r("netstat -nap | grep :%s[[:space:]] | grep LISTEN | grep usbredir" % cmd.port) != 0:
             logger.info("port %s is not occupied by usbredir" % cmd.port)
-        bash_r("systemctl stop usbredir-%s-%s-%s" % (cmd.port, cmd.busNum, cmd.devNum))
+        bash_r("systemctl stop usbredir-%s-%s-%s" %
+               (cmd.port, cmd.busNum, cmd.devNum))
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -1537,7 +1701,8 @@ class HostPlugin(kvmagent.KvmAgent):
     def check_usb_server_port(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = CheckUsbServerPortRsp()
-        r, o, e = bash_roe("netstat -nap | grep LISTEN | grep usbredir  | awk '{print $4}' | awk -F ':' '{ print $4 }'")
+        r, o, e = bash_roe(
+            "netstat -nap | grep LISTEN | grep usbredir  | awk '{print $4}' | awk -F ':' '{ print $4 }'")
         if r != 0:
             rsp.success = False
             rsp.error = "unable to get started usb server port"
@@ -1570,14 +1735,17 @@ class HostPlugin(kvmagent.KvmAgent):
                 self.iProduct = ""
                 self.iSerial = ""
                 self.usbVersion = ""
+
             def toString(self):
                 return self.busNum + ':' + self.devNum + ':' + self.idVendor + ':' + self.idProduct + ':' + self.iManufacturer + ':' + self.iProduct + ':' + self.iSerial + ':' + self.usbVersion + ";"
 
         def append_usb_device(info, dev_id):
             if info.busNum == '' or info.devNum == '' or info.idVendor == '' or info.idProduct == '':
-                logger.debug("cannot get busNum/devNum/idVendor/idProduct info in usbDevice %s, skip append" % dev_id)
+                logger.debug(
+                    "cannot get busNum/devNum/idVendor/idProduct info in usbDevice %s, skip append" % dev_id)
             elif '(error)' in info.iManufacturer or '(error)' in info.iProduct:
-                logger.debug("cannot get iManufacturer or iProduct info in usbDevice %s" % dev_id)
+                logger.debug(
+                    "cannot get iManufacturer or iProduct info in usbDevice %s" % dev_id)
                 usb_device_infos.append(info)
             else:
                 usb_device_infos.append(info)
@@ -1617,13 +1785,15 @@ class HostPlugin(kvmagent.KvmAgent):
                     info.busNum = line[1]
                     info.devNum = line[3].rsplit(':')[0]
                 elif line[0] == 'idVendor':
-                    info.iManufacturer = ' '.join(line[2:]) if len(line) > 2 else ""
+                    info.iManufacturer = ' '.join(
+                        line[2:]) if len(line) > 2 else ""
                 elif line[0] == 'idProduct':
                     info.iProduct = ' '.join(line[2:]) if len(line) > 2 else ""
                 elif line[0] == 'bcdUSB':
                     info.usbVersion = line[1]
                     # special case: USB2.0 with speed 1.5MBit/s or 12MBit/s should be attached to USB1.1 Controller
-                    rst = bash_r("/usr/local/bin/lsusb.py | grep -v 'grep' | grep '%s' | grep -E '1.5MBit/s|12MBit/s'" % dev_id)
+                    rst = bash_r(
+                        "/usr/local/bin/lsusb.py | grep -v 'grep' | grep '%s' | grep -E '1.5MBit/s|12MBit/s'" % dev_id)
                     info.usbVersion = info.usbVersion if rst != 0 else '1.1'
                 elif line[0] == 'iManufacturer' and len(line) > 2:
                     info.iManufacturer = ' '.join(line[2:])
@@ -1709,7 +1879,8 @@ if __name__ == "__main__":
         exclude = "--exclude=" + cmd.excludePackages if cmd.excludePackages else ""
         updates = cmd.updatePackages if cmd.updatePackages else ""
         releasever = cmd.releaseVersion if cmd.releaseVersion else kvmagent.get_host_yum_release()
-        yum_cmd = "yum --enablerepo=* clean all && echo {}>/etc/yum/vars/YUM0 && ".format(releasever)
+        yum_cmd = "yum --enablerepo=* clean all && echo {}>/etc/yum/vars/YUM0 && ".format(
+            releasever)
         # If upgrade qemu-kvm and libvirt at the same time
         # you need to upgrade qemu-kvm and then upgrade libvirt
         # to ensure that libvirtd is rebooted after upgrading qemu-kvm
@@ -1717,8 +1888,8 @@ if __name__ == "__main__":
             update_qemu_cmd = "export YUM0={0};"
             if releasever in ['c74', 'c76', 'c79', 'h76c', 'h79c']:
                 update_qemu_cmd += "yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} swap -y -- remove qemu-img-ev -- install qemu-img " \
-                              "&& yum remove qemu-kvm-ev qemu-kvm-common-ev -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} update " \
-                              "qemu-storage-daemon -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} install qemu-kvm qemu-kvm-common -y && "
+                    "&& yum remove qemu-kvm-ev qemu-kvm-common-ev -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} update " \
+                    "qemu-storage-daemon -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} install qemu-kvm qemu-kvm-common -y && "
             else:
                 update_qemu_cmd += " yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} update qemu-storage-daemon -y;"
             # centos, helix, rocky, kylin using edk2-ovmf, ipxe-roms-qemu seabios-bin seavgabios-bin, but h2203sp1o was not using them.
@@ -1733,7 +1904,8 @@ if __name__ == "__main__":
                                                           '--noautoremove' if releasever in DISTRO_USING_DNF else '', releasever,
                                                           ',zstack-experimental-mn' if cmd.enableExpRepo else '')
         upgrade_os_cmd = "export YUM0={};yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{} {} update {} -y"
-        yum_cmd = yum_cmd + upgrade_os_cmd.format(releasever, ',zstack-experimental-mn' if cmd.enableExpRepo else '', exclude, updates)
+        yum_cmd = yum_cmd + upgrade_os_cmd.format(
+            releasever, ',zstack-experimental-mn' if cmd.enableExpRepo else '', exclude, updates)
 
         if "kernel" in updates or (cmd.releaseVersion != '' and "kernel" not in exclude):
             dracut_conf_map = {
@@ -1761,7 +1933,8 @@ if __name__ == "__main__":
                 logger.debug("successfully run: %s" % yum_cmd)
             else:
                 rsp.success = False
-                rsp.error = "failed to update host os using zstack-mn,qemu-kvm-ev-mn repo, stdout: %s, stderr: %s" % (shell_cmd.stdout, shell_cmd.stderr)
+                rsp.error = "failed to update host os using zstack-mn,qemu-kvm-ev-mn repo, stdout: %s, stderr: %s" % (
+                    shell_cmd.stdout, shell_cmd.stderr)
 
         rsp.libvirtVersion = linux.get_libvirt_package_version()
 
@@ -1776,9 +1949,11 @@ if __name__ == "__main__":
             rsp.success = False
             rsp.error = "unexpected mode: " + cmd.mode
         else:
-            bash_r("/usr/local/bin/iohub_mocbr.sh %s start >> /var/log/iohubmocbr.log 2>&1" % cmd.mode)
+            bash_r(
+                "/usr/local/bin/iohub_mocbr.sh %s start >> /var/log/iohubmocbr.log 2>&1" % cmd.mode)
             if cmd.mode == 'mocbr':
-                iproute.set_link_attribute_no_error(cmd.masterVethName, master=cmd.bridgeName)
+                iproute.set_link_attribute_no_error(
+                    cmd.masterVethName, master=cmd.bridgeName)
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -1787,7 +1962,8 @@ if __name__ == "__main__":
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = UpdateDependencyRsp()
         if self.IS_YUM:
-            shell.run("yum --disablerepo=* --enablerepo=zstack-mn list >/dev/null 2>&1 || (rm -f /var/lib/rpm/_db.*; rpm --rebuilddb)")
+            shell.run(
+                "yum --disablerepo=* --enablerepo=zstack-mn list >/dev/null 2>&1 || (rm -f /var/lib/rpm/_db.*; rpm --rebuilddb)")
             releasever = kvmagent.get_host_yum_release()
             shell.run("yum remove -y qemu-kvm-tools-ev")
             yum_cmd = "export YUM0={};yum --enablerepo=* clean all && yum --disablerepo=* --enablerepo={} install `cat /var/lib/zstack/dependencies` -y"\
@@ -1801,14 +1977,15 @@ if __name__ == "__main__":
             elif shell.run(yum_cmd) != 0:
                 rsp.success = False
                 rsp.error = "failed to update kvmagent dependencies using %s repo" % cmd.zstackRepo
-            else :
+            else:
                 logger.debug("successfully run: {}".format(yum_cmd))
 
             if cmd.enableExpRepo:
                 exclude = "--exclude=" + cmd.excludePackages if cmd.excludePackages else ""
                 updates = cmd.updatePackages if cmd.updatePackages else ""
                 yum_cmd = "export YUM0={};yum --enablerepo=* clean all && yum --disablerepo=* --enablerepo={},zstack-experimental-mn {} update {} -y"
-                yum_cmd = yum_cmd.format(releasever, cmd.zstackRepo, exclude, updates)
+                yum_cmd = yum_cmd.format(
+                    releasever, cmd.zstackRepo, exclude, updates)
                 if shell.run("export YUM0={};yum --disablerepo=* --enablerepo=zstack-experimental-mn repoinfo".format(releasever)) != 0:
                     rsp.success = False
                     rsp.error = "no zstack-experimental-mn repo found, cannot update host dependency"
@@ -1821,10 +1998,11 @@ if __name__ == "__main__":
             apt_cmd = "apt-get clean && apt-get -y --allow-unauthenticated install `cat /var/lib/zstack/dependencies`"
             if shell.run(apt_cmd) != 0:
                 rsp.success = False
-                rsp.error = "failed to update kvmagent dependencies by {}.".format(apt_cmd)
-            else :
+                rsp.error = "failed to update kvmagent dependencies by {}.".format(
+                    apt_cmd)
+            else:
                 logger.debug("successfully run: {}".format(apt_cmd))
-        else :
+        else:
             rsp.success = False
             rsp.error = "no yum or apt found, cannot update kvmagent dependencies"
         return jsonobject.dumps(rsp)
@@ -1851,7 +2029,8 @@ if __name__ == "__main__":
             rsp.success = False
             return jsonobject.dumps(rsp)
 
-        frag_percent = bash_o("xfs_db -c frag -r %s | awk '/fragmentation factor/{print $7}'" % root_path, True)
+        frag_percent = bash_o(
+            "xfs_db -c frag -r %s | awk '/fragmentation factor/{print $7}'" % root_path, True)
         if not str(frag_percent).strip().endswith("%"):
             rsp.error = "error format %s" % frag_percent
             rsp.success = False
@@ -1943,7 +2122,8 @@ done
         disable_hugepage_script_path = linux.create_temp_file()
         with open(disable_hugepage_script_path, 'w') as f:
             f.write(disable_hugepage_script)
-        logger.info('close_hugepage_script_path is: %s' % disable_hugepage_script_path)
+        logger.info('close_hugepage_script_path is: %s' %
+                    disable_hugepage_script_path)
         cmd = shell.ShellCmd('bash %s' % disable_hugepage_script_path)
         cmd(False)
 
@@ -1961,38 +2141,41 @@ done
         # Calculate memory parameters
         reserveSize_mib = reserveSize // 1024 // 1024
         pageSize = cmd.pageSize
-        
+
         # Get system memory size
-        mem_output = shell.ShellCmd('free -m | awk \'/:/ {print $2;exit}\'')(False)
+        mem_output = shell.ShellCmd(
+            'free -m | awk \'/:/ {print $2;exit}\'')(False)
         memSize = int(mem_output.strip())
-        
+
         # Calculate page count
         pageNum = (memSize - reserveSize_mib) // pageSize
         if memSize < reserveSize_mib:
-            logger.error("Error: reserve size is bigger than system memory size")
+            logger.error(
+                "Error: reserve size is bigger than system memory size")
             rsp.success = False
             rsp.error = "Error: reserve size is bigger than system memory size"
             return jsonobject.dumps(rsp)
-        
+
         # Clear cache
         with open('/proc/sys/vm/drop_caches', 'w') as f:
             f.write('3')
-        
+
         # Enable transparent hugepages
         with open('/sys/kernel/mm/transparent_hugepage/enabled', 'w') as f:
             f.write('always')
-        
+
         # Configure grub files
-        hugepage_params = ' transparent_hugepage=always default_hugepagesz=%sM hugepagesz=%sM hugepages=%s' % (pageSize, pageSize, pageNum)
-        
+        hugepage_params = ' transparent_hugepage=always default_hugepagesz=%sM hugepagesz=%sM hugepages=%s' % (
+            pageSize, pageSize, pageNum)
+
         # Define grub configuration file processing function
         def configure_grub_file(file_path, pattern, replacement_pattern, description=""):
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
                     content = f.read()
-                
+
                 # logger.info("origin %s %s: %s" % (description, file_path, content))
-                
+
                 # First clean up all existing hugepage parameters
                 content = re.sub(r'\s*transparent_hugepage=\w+', '', content)
                 content = re.sub(r'\s*default_hugepagesz=\d+M', '', content)
@@ -2000,12 +2183,13 @@ done
                 content = re.sub(r'\s*hugepages=\d+', '', content)
 
                 # Then add new parameters
-                new_content = re.sub(pattern, replacement_pattern, content, flags=re.MULTILINE)
-                
+                new_content = re.sub(
+                    pattern, replacement_pattern, content, flags=re.MULTILINE)
+
                 with open(file_path, 'w') as f:
                     # logger.info("new %s %s: %s" % (description, file_path, new_content))
                     f.write(new_content)
-        
+
         # Configure /etc/default/grub - GRUB_CMDLINE_LINUX
         configure_grub_file(
             '/etc/default/grub',
@@ -2013,7 +2197,7 @@ done
             r'\1%s"\n' % hugepage_params,
             "grub"
         )
-        
+
         # Configure boot grub files - linux line
         # TODO h84r: /etc/grub2-efi.cfg does not match
         for grub_file in GRUB_FILES:
@@ -2023,7 +2207,7 @@ done
                 r'\1%s' % hugepage_params,
                 "boot grub"
             )
-        
+
         # Configure rocky grubenv files - kernelopts line
         for grub_env in GRUB_ROCKY_ENVS:
             if os.path.exists(grub_env):
@@ -2032,14 +2216,17 @@ done
                     m = re.search(r'^kernelopts=(.*)$', o, flags=re.MULTILINE)
                     current = m.group(1) if m else ''
                     # Clean existing hugepage parameters
-                    current = re.sub(r'\s*transparent_hugepage=\w+', '', current)
-                    current = re.sub(r'\s*default_hugepagesz=\d+M', '', current)
+                    current = re.sub(
+                        r'\s*transparent_hugepage=\w+', '', current)
+                    current = re.sub(
+                        r'\s*default_hugepagesz=\d+M', '', current)
                     current = re.sub(r'\s*hugepagesz=\d+M', '', current)
                     current = re.sub(r'\s*hugepages=\d+', '', current)
                     # Set new kernelopts
                     new_opts = (current + hugepage_params).strip()
-                    bash_roe("grub2-editenv %s set kernelopts='%s'" % (grub_env, new_opts))
-        
+                    bash_roe("grub2-editenv %s set kernelopts='%s'" %
+                             (grub_env, new_opts))
+
         # Set hugepage count
         r, _, e = bash_roe('sysctl -w vm.nr_hugepages=%s' % pageNum)
         if r != 0:
@@ -2063,7 +2250,6 @@ done
         os.remove(tmpfile)
         return jsonobject.dumps(rsp)
 
-
     def identify_host(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = kvmagent.AgentResponse()
@@ -2075,7 +2261,8 @@ done
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = kvmagent.AgentResponse()
         # Intel 82599ES not support identify.
-        sc = shell.ShellCmd("ethtool --identify %s %s" % (cmd.networkInterface, cmd.interval))
+        sc = shell.ShellCmd("ethtool --identify %s %s" %
+                            (cmd.networkInterface, cmd.interval))
         sc(False)
         return jsonobject.dumps(rsp)
 
@@ -2162,7 +2349,8 @@ done
             return True
 
         vlan_dev_name = '%s.' % ifname
-        output = subprocess.check_output(['ip', 'link', 'show', 'type', 'vlan'], universal_newlines=True)
+        output = subprocess.check_output(
+            ['ip', 'link', 'show', 'type', 'vlan'], universal_newlines=True)
         for line in output.split('\n'):
             if vlan_dev_name in line:
                 return True
@@ -2177,9 +2365,11 @@ done
 
         try:
             if self._has_vlan_or_bridge(cmd.interfaceName):
-                    raise Exception(cmd.interfaceName + ' has a sub-interface or a bridge port')
+                raise Exception(cmd.interfaceName +
+                                ' has a sub-interface or a bridge port')
         except Exception as e:
-            rsp.error = 'unable to update ip[%s], because %s' % (cmd.interfaceName, str(e))
+            rsp.error = 'unable to update ip[%s], because %s' % (
+                cmd.interfaceName, str(e))
             rsp.success = False
             return jsonobject.dumps(rsp)
 
@@ -2187,18 +2377,23 @@ done
             try:
                 # zs-network-setting -i eth0 192.168.1.10 255.255.255.0 192.168.1.1
                 if cmd.gateway is not None:
-                    shell.call('/usr/local/bin/zs-network-setting -i %s %s %s %s' % (cmd.interfaceName, cmd.ipAddress, cmd.netmask, cmd.gateway))
+                    shell.call('/usr/local/bin/zs-network-setting -i %s %s %s %s' %
+                               (cmd.interfaceName, cmd.ipAddress, cmd.netmask, cmd.gateway))
                 else:
                     # zs-network-setting -d eth0
-                    shell.call('/usr/local/bin/zs-network-setting -d %s' % cmd.interfaceName)
-                    bash_o('/usr/local/bin/zs-network-setting -i %s %s %s' % (cmd.interfaceName, cmd.ipAddress, cmd.netmask))
+                    shell.call('/usr/local/bin/zs-network-setting -d %s' %
+                               cmd.interfaceName)
+                    bash_o('/usr/local/bin/zs-network-setting -i %s %s %s' %
+                           (cmd.interfaceName, cmd.ipAddress, cmd.netmask))
             except Exception as e:
-                rsp.error = 'unable to add ip on %s, because %s' % (cmd.interfaceName, str(e))
+                rsp.error = 'unable to add ip on %s, because %s' % (
+                    cmd.interfaceName, str(e))
                 rsp.success = False
 
             # After configuring the ip, check the connectivity
             if cmd.gateway is not None and shell.run('ping -c 5 -W 1 %s > /dev/null 2>&1' % cmd.gateway) != 0:
-                shell.call('/usr/local/bin/zs-network-setting -d %s' % cmd.interfaceName)
+                shell.call('/usr/local/bin/zs-network-setting -d %s' %
+                           cmd.interfaceName)
 
                 # If it is not connected, it will fall back to the old ip address
                 if cmd.oldGateway is None:
@@ -2212,9 +2407,11 @@ done
         else:
             try:
                 # mv ip on interface
-                shell.call('/usr/local/bin/zs-network-setting -d %s' % cmd.interfaceName)
+                shell.call('/usr/local/bin/zs-network-setting -d %s' %
+                           cmd.interfaceName)
             except Exception as e:
-                rsp.error = 'unable to delete ip on %s, because %s' % (cmd.interfaceName, str(e))
+                rsp.error = 'unable to delete ip on %s, because %s' % (
+                    cmd.interfaceName, str(e))
                 rsp.success = False
 
         return jsonobject.dumps(rsp)
@@ -2242,7 +2439,8 @@ done
 
         vlan_ids = []
         for interface_name in cmd.interfaceNames:
-            output = shell.call("ip link show type vlan | grep '%s\.' | awk -F'[.@]' '{print $2}'" % interface_name)
+            output = shell.call(
+                "ip link show type vlan | grep '%s\.' | awk -F'[.@]' '{print $2}'" % interface_name)
             interface_vlan_ids = output.strip().split('\n')
 
             if not interface_vlan_ids:
@@ -2252,7 +2450,8 @@ done
 
             if not vlan_ids:
                 vlan_ids = interface_vlan_ids
-            vlan_ids = [vlan for vlan in vlan_ids if vlan and vlan in interface_vlan_ids]
+            vlan_ids = [
+                vlan for vlan in vlan_ids if vlan and vlan in interface_vlan_ids]
 
         rsp.success = True
         rsp.vlanIds = vlan_ids if vlan_ids != [] else ['0']
@@ -2270,14 +2469,16 @@ done
         interfaces = iproute.query_links()
         for interface in interfaces:
             interface_name = interface.ifname
-            addresses = iproute.query_addresses_by_ifname(ifname=interface_name)
+            addresses = iproute.query_addresses_by_ifname(
+                ifname=interface_name)
             ip_addresses = [addr.address for addr in addresses]
             for addr in ip_addresses:
                 if addr in cmd.ipAddresses:
                     if interface_name.startswith('br_'):
-                        output = shell.call("brctl show %s | awk '{print $NF}' | grep -vw interfaces" % interface_name).strip().split('\n')
+                        output = shell.call(
+                            "brctl show %s | awk '{print $NF}' | grep -vw interfaces" % interface_name).strip().split('\n')
                         non_virtual_eths = [name for name in output if
-                                  not (name.startswith('outer') or name.startswith('ud') or name.startswith('vnic'))]
+                                            not (name.startswith('outer') or name.startswith('ud') or name.startswith('vnic'))]
                         interface_name = non_virtual_eths[0]
                     interface_names.append(interface_name)
 
@@ -2291,7 +2492,8 @@ done
         pcis = set()
 
         def get_nic_info(interfaceName, index, driverType=None, pciAddress=None):
-            nics[index] = HostNetworkInterfaceInventory(interfaceName, None, managementServerIp, driverType, pciAddress)
+            nics[index] = HostNetworkInterfaceInventory(
+                interfaceName, None, managementServerIp, driverType, pciAddress)
 
         threads = []
         nic_names = ip.get_host_physicl_nics()
@@ -2302,17 +2504,20 @@ done
         nics = [None] * (len(nic_names) + len(vfioNics))
         for index, nic in enumerate(nic_names, start=0):
             interfaceName = nic.strip()
-            pciDeviceAddress = os.readlink("/sys/class/net/%s/device" % interfaceName).strip().split('/')[-1]
+            pciDeviceAddress = os.readlink(
+                "/sys/class/net/%s/device" % interfaceName).strip().split('/')[-1]
             # exclude vf representor
             if pciDeviceAddress not in pcis:
-                threads.append(thread.ThreadFacade.run_in_thread(get_nic_info, [interfaceName, index]))
+                threads.append(thread.ThreadFacade.run_in_thread(
+                    get_nic_info, [interfaceName, index]))
                 pcis.add(pciDeviceAddress)
         for t in threads:
             t.join()
 
         index = len(nic_names)
         for nic in vfioNics:
-            get_nic_info(nic.name, index, driverType=nic.driver, pciAddress=nic.pciAddress)
+            get_nic_info(nic.name, index, driverType=nic.driver,
+                         pciAddress=nic.pciAddress)
             index = index + 1
         return nics
 
@@ -2325,7 +2530,8 @@ done
             if len(bond_names) == 0:
                 return bonds
             for bond in bond_names:
-                bonds.append(HostNetworkBondingInventory(bond, "kernalBond", managementServerIp))
+                bonds.append(HostNetworkBondingInventory(
+                    bond, "kernalBond", managementServerIp))
 
         # get dpdk bond info
         dpdkBondFile = "/usr/local/etc/zstack-ovs/dpdk-bond.yaml"
@@ -2369,8 +2575,23 @@ done
                     to.maxPartNum = f.read().strip()
             # for NVIDIA A-Series, after driver successfully installed, virtfn files will be created
             # set deviceId and vendorId null
+            # Optimized: Use gpu.get_info() instead of is_gpu() for unified interface
             virtfn = os.path.join(dev, os.readlink(physfn), 'virtfn0')
-            if pci.is_gpu(pci_address=to.pciDeviceAddress) and self.NVIDIA_SMI_INSTALLED and os.path.exists(virtfn):
+            is_nvidia_gpu = False
+            if hasattr(to, 'vendor') and to.vendor == VendorEnum.NVIDIA:
+                # Known NVIDIA vendor, directly check if it's a GPU via get_info()
+                # This is faster because it only queries NVIDIA vendor
+                gpu_info = gpu.get_info(
+                    pci_device=to, vendor_name=VendorEnum.NVIDIA)
+                is_nvidia_gpu = gpu_info is not None
+            else:
+                # Unknown vendor: Try to get info from all vendors (batch query)
+                # This uses the same unified interface as other GPU checks
+                gpu_info_map = gpu.get_all_gpu_infos_by_pci()
+                normalized_pci = pci.normalize_pci_address(to.pciDeviceAddress)
+                is_nvidia_gpu = normalized_pci in gpu_info_map if normalized_pci else False
+
+            if is_nvidia_gpu and self.NVIDIA_SMI_INSTALLED and os.path.exists(virtfn):
                 to.deviceId = ""
                 to.vendorId = ""
             else:
@@ -2383,7 +2604,8 @@ done
                         line = line.strip()
                         if 'VF FB Size' in line:
                             to.ramSize = line.split(':')[-1].strip()
-                            to.description = "%s [RAM Size: %s]" % (to.description, to.ramSize)
+                            to.description = "%s [RAM Size: %s]" % (
+                                to.description, to.ramSize)
                             break
         else:
             return False
@@ -2403,7 +2625,8 @@ done
 
         for line in o.splitlines()[1:]:
             parts = line.split(':')
-            if len(parts) < 2: continue
+            if len(parts) < 2:
+                continue
             title = parts[0].strip()
             content = ' '.join(parts[1:]).strip()
             if title == "vGPU Type ID":
@@ -2466,7 +2689,8 @@ done
                 continue
 
             for line in o.splitlines():
-                match = re.match(r'\|(\w+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+\|', line)
+                match = re.match(
+                    r'\|(\w+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+\|', line)
                 if match and len(match.group(1)) > 0:
                     template = {
                         'Name': match.group(1),
@@ -2481,7 +2705,8 @@ done
                     to.mdevSpecifications.append(template)
 
         if not add_found:
-            logger.error("can't find gpu %s mdev spec in npu-smi output" % to.pciDeviceAddress)
+            logger.error(
+                "can't find gpu %s mdev spec in npu-smi output" % to.pciDeviceAddress)
             return False
 
         r, virtStatusOut = bash_ro("ls -l  /sys/bus/mdev/devices/")
@@ -2506,8 +2731,10 @@ done
 
     def _legacy_mdev(self, to):
         # if supported specs != creatable specs, means it's aleady virtualized
-        _, support, _ = bash_roe("nvidia-smi vgpu -i %s -s | grep -v %s" % (to.pciDeviceAddress, to.pciDeviceAddress))
-        _, creatable, _ = bash_roe("nvidia-smi vgpu -i %s -c | grep -v %s" % (to.pciDeviceAddress, to.pciDeviceAddress))
+        _, support, _ = bash_roe("nvidia-smi vgpu -i %s -s | grep -v %s" %
+                                 (to.pciDeviceAddress, to.pciDeviceAddress))
+        _, creatable, _ = bash_roe(
+            "nvidia-smi vgpu -i %s -c | grep -v %s" % (to.pciDeviceAddress, to.pciDeviceAddress))
         if support != creatable:
             to.virtStatus = "VFIO_MDEV_VIRTUALIZED"
         else:
@@ -2546,28 +2773,35 @@ done
             to.virtStatus = "VFIO_MDEV_VIRTUALIZED"
 
     def _simplify_pci_device_name(self, name, vendor_id):
-        if 'Intel Corporation' in name:
-            return VendorEnum.INTEL
-        elif 'Advanced Micro Devices' in name:
-            return VendorEnum.AMD
-        elif 'NVIDIA Corporation' in name:
-            return VendorEnum.NVIDIA
-        elif 'Haiguang' in name or pci.is_haiguang_pci_device(vendor_id):
-            return VendorEnum.HAIGUANG
-        elif 'Huawei' in name:
-            return VendorEnum.HUAWEI
-        elif '1e3e' in name:
-            return VendorEnum.TIANSHU
-        elif 'Vastai' in name:
-            return VendorEnum.VASTAI
-        elif 'Enflame' in name:
-            return VendorEnum.ENFLAME
-        elif 'Alibaba' in name or vendor_id == '1ded':
-            return VendorEnum.ALIBABA
-        elif '2057' in name:
-            return VendorEnum.KUNLUNXIN
-        else:
-            return name.replace('Co., Ltd ', '')
+        """
+        Simplify PCI device vendor name using lightweight PCI library function.
+
+        This function uses the lightweight simplify_vendor_name from pci module,
+        which does not depend on the GPU vendor system. This reduces dependencies
+        and simplifies the logic.
+
+        Returns VendorEnum values for known vendors, or cleaned original name.
+        """
+        # Use lightweight vendor name simplification from pci module
+        simplified = pci.simplify_vendor_name(name, vendor_id)
+
+        # Map simplified names to VendorEnum values for backward compatibility
+        # Note: simplify_vendor_name already returns values matching VendorEnum constants
+        vendor_enum_map = {
+            'Intel': VendorEnum.INTEL,
+            'AMD': VendorEnum.AMD,
+            'NVIDIA': VendorEnum.NVIDIA,
+            'Haiguang': VendorEnum.HAIGUANG,
+            'Huawei': VendorEnum.HUAWEI,
+            'TianShu': VendorEnum.TIANSHU,
+            'Vastai': VendorEnum.VASTAI,
+            'Enflame': VendorEnum.ENFLAME,
+            'Alibaba': VendorEnum.ALIBABA,
+            'Kunlunxin': VendorEnum.KUNLUNXIN,
+        }
+
+        # Return VendorEnum value if mapped, otherwise return simplified name
+        return vendor_enum_map.get(simplified, simplified)
 
     def _collect_format_pci_device_info(self, rsp, opaque):
         r_id, o_id, e_id = pci.get_pci_device_ids()
@@ -2575,7 +2809,8 @@ done
 
         if r_id != 0 or r_name != 0:
             rsp.success = False
-            rsp.error = "%s, %s" % (e_id if r_id != 0 else e_name, o_id if r_id != 0 else o_name)
+            rsp.error = "%s, %s" % (
+                e_id if r_id != 0 else e_name, o_id if r_id != 0 else o_name)
             return
         pci_devices_dict = {}
         pci_device_mapper = {}
@@ -2596,7 +2831,8 @@ done
             slot = None
             ids = {}
             for line in part.split('\n'):
-                if len(line.split(':')) < 2: continue
+                if len(line.split(':')) < 2:
+                    continue
                 title = line.split(':')[0].strip()
                 content = line.split(':')[1].strip()
                 if title == 'Slot':
@@ -2612,7 +2848,8 @@ done
             slot = None
             names = {}
             for line in part.split('\n'):
-                if len(line.split(':')) < 2: continue
+                if len(line.split(':')) < 2:
+                    continue
                 title = line.split(':')[0].strip()
                 content = line.split(':')[1].strip()
                 if title == 'Slot':
@@ -2638,7 +2875,8 @@ done
 
             # Set basic info
             to.pciDeviceAddress = slot
-            group_path = os.path.join('/sys/bus/pci/devices/', to.pciDeviceAddress, 'iommu_group')
+            group_path = os.path.join(
+                '/sys/bus/pci/devices/', to.pciDeviceAddress, 'iommu_group')
             to.iommuGroup = os.path.realpath(group_path)
 
             # Set class info
@@ -2648,7 +2886,8 @@ done
 
             # Set vendor info
             if 'Vendor' in names:
-                vendor_name = self._simplify_pci_device_name(names['Vendor'], ids.get('Vendor', ''))
+                vendor_name = self._simplify_pci_device_name(
+                    names['Vendor'], ids.get('Vendor', ''))
                 to.vendor = vendor_name
                 to.vendorId = ids.get('Vendor', '')
                 to.description += vendor_name + " "
@@ -2656,13 +2895,15 @@ done
             # Set device info
             if 'Device' in names:
                 to.device = names['Device']
-                device_name = self._simplify_pci_device_name(names['Device'], ids.get('Device', ''))
+                device_name = self._simplify_pci_device_name(
+                    names['Device'], ids.get('Device', ''))
                 to.deviceId = ids.get('Device', '')
                 to.description += device_name
 
             # Set subvendor info
             if 'SVendor' in names:
-                subvendor_name = self._simplify_pci_device_name(names['SVendor'], ids.get('SVendor', ''))
+                subvendor_name = self._simplify_pci_device_name(
+                    names['SVendor'], ids.get('SVendor', ''))
                 to.subvendorId = ids.get('SVendor', '')
 
             # Set subdevice info
@@ -2673,35 +2914,55 @@ done
             if 'Rev' in names:
                 to.rev = ids.get('Rev', '')
 
-            to.name = "%s_%s" % (subvendor_name if subvendor_name else vendor_name, device_name)
-            to.dependentDevices = pci.collect_pci_devices_with_dependencies(to.pciDeviceAddress)
+            to.name = "%s_%s" % (
+                subvendor_name if subvendor_name else vendor_name, device_name)
+            to.dependentDevices = pci.collect_pci_devices_with_dependencies(
+                to.pciDeviceAddress)
             to.vmPciDeviceAddress = host_mappings[to.pciDeviceAddress] if to.pciDeviceAddress in host_mappings else ""
 
             def _set_pci_to_type():
-                # Use is_gpu() to dynamically identify GPU (based solely on actual tool returns)
-                is_gpu_device = pci.is_gpu(pci_address=to.pciDeviceAddress)
+                # Optimized: Try to get GPU info directly - if it's a GPU, info will be returned
+                # This avoids redundant is_gpu() check since we need the info anyway
+                # If vendor_name is available, it only queries that specific vendor (fast)
+                gpu_info = gpu.get_info(
+                    pci_device=to, vendor_name=to.vendor if hasattr(to, 'vendor') else None)
+                is_gpu_device = gpu_info is not None
 
                 if is_gpu_device:
-                    # GPU-related device type determination
+                    # Priority: If SMI has confirmed it's a GPU, we must set a GPU type
+                    # This avoids issues where vendor name simplification fails or PCI class checks fail,
+                    # causing GPU devices to be incorrectly classified as non-GPU types
+                    #
+                    # Control plane only accepts these four GPU types:
+                    # GPU_Video_Controller, GPU_3D_Controller, GPU_Processing_Accelerators, GPU_Co_Processor
+
+                    # Try to determine specific GPU type based on PCI class
                     if ('VGA compatible controller' in to.type or 'Display controller' in to.type
-                             or (pci_device_mapper.get('VGA compatible controller') is not None
-                               and pci_device_mapper.get('VGA compatible controller') in to.type)) \
-                        and gpu.is_valid_video_controller(to.device):
+                            or (pci_device_mapper.get('VGA compatible controller') is not None
+                                and pci_device_mapper.get('VGA compatible controller') in to.type)) \
+                            and gpu.is_valid_video_controller(to.device):
                         to.type = "GPU_Video_Controller"
-                    elif ('Audio device' in to.type or (pci_device_mapper.get('Audio device') is not None
-                                                           and pci_device_mapper.get('Audio device') in to.type)):
-                        to.type = "GPU_Audio_Controller"
-                    elif ('USB controller' in to.type or (pci_device_mapper.get('USB controller') is not None
-                                                             and pci_device_mapper.get('USB controller') in to.type)):
-                        to.type = "GPU_USB_Controller"
-                    elif ('Serial bus controller' in to.type or (pci_device_mapper.get('Serial bus controller') is not None
-                                                                    and pci_device_mapper.get('Serial bus controller') in to.type)):
-                        to.type = "GPU_Serial_Controller"
+                    elif ("Processing accelerators" in to.type or (
+                            pci_device_mapper.get('Processing accelerators') is not None)) \
+                            and gpu.is_valid_processing_accelerator(to.device):
+                        to.type = "GPU_Processing_Accelerators"
+                    elif ('Co-processor' in to.type or (pci_device_mapper.get('Co-processor') is not None
+                                                        and pci_device_mapper.get('Co-processor') in to.type)) \
+                            and gpu.is_valid_co_processor(to.vendor):
+                        to.type = "GPU_Co_Processor"
                     elif ('3D controller' in to.type or 'Display controller' in to.type
-                             or (pci_device_mapper.get('3D controller') is not None and pci_device_mapper.get('3D controller') in to.type)):
+                          or (pci_device_mapper.get('3D controller') is not None and pci_device_mapper.get('3D controller') in to.type)):
                         to.type = "GPU_3D_Controller"
-                elif 'Ethernet controller' in to.type or (pci_device_mapper.get('Ethernet controller') is not None
-                                                          and pci_device_mapper.get('Ethernet controller') in to.type):
+                    else:
+                        # If cannot determine specific type, use GPU_3D_Controller as fallback
+                        # This ensures we never fallback to non-GPU types when SMI confirms it's a GPU
+                        to.type = "GPU_3D_Controller"
+                    # Critical: Return immediately after setting GPU type to avoid fallback to non-GPU types
+                    return
+
+                # Non-GPU device type determination (only reached if is_gpu_device is False)
+                if 'Ethernet controller' in to.type or (pci_device_mapper.get('Ethernet controller') is not None
+                                                        and pci_device_mapper.get('Ethernet controller') in to.type):
                     to.type = "Ethernet_Controller"
                 elif 'Audio device' in to.type or (pci_device_mapper.get('Audio device') is not None
                                                    and pci_device_mapper.get('Audio device') in to.type):
@@ -2721,17 +2982,6 @@ done
                 elif 'PCI bridge' in to.type or (pci_device_mapper.get('PCI bridge') is not None
                                                  and pci_device_mapper.get('PCI bridge') in to.type):
                     to.type = "PCI_Bridge"
-                elif ("Processing accelerators" in to.type or (
-                        pci_device_mapper.get('Processing accelerators') is not None)) and gpu.is_valid_processing_accelerator(to.device):
-                    to.type = "GPU_Processing_Accelerators"
-                elif ('Co-processor' in to.type or (pci_device_mapper.get('Co-processor') is not None
-                        and pci_device_mapper.get('Co-processor') in to.type)) \
-                        and gpu.is_valid_co_processor(to.vendor):
-                    to.type = "GPU_Co_Processor"
-                elif ('Communication controller' in to.type or (pci_device_mapper.get('Communication controller') is not None
-                        and pci_device_mapper.get('Communication controller') in to.type)) \
-                        and gpu.is_valid_communication_controller(to.vendor):
-                    to.type = "GPU_Communication_Controller"
                 else:
                     to.type = "Generic"
 
@@ -2762,11 +3012,14 @@ done
         rsp.mdevDeviceInfos = self.get_all_vm_mdev_mappings()
 
     def list_vm_uuids(self):
-        r, o, e = bash_roe("virsh list --uuid --state-running --state-paused --state-other")
+        r, o, e = bash_roe(
+            "virsh list --uuid --state-running --state-paused --state-other")
         if r != 0:
-            logger.error("failed to run 'virsh list --uuid --state-running --state-paused --state-other': %s" % e)
+            logger.error(
+                "failed to run 'virsh list --uuid --state-running --state-paused --state-other': %s" % e)
             return []
-        uuids = [line.strip().replace('-', '') for line in o.strip().splitlines() if line.strip()]
+        uuids = [line.strip().replace('-', '')
+                 for line in o.strip().splitlines() if line.strip()]
         return uuids
 
     def get_all_vm_pci_mappings(self):
@@ -2805,14 +3058,14 @@ done
         """
         Collect GPU addon information - using unified simplified interface
 
-        One-line call handles all logic (auto plugin + fallback + special field processing)
-        """
-        # Use GPU plugin system and SMI tools to identify GPU (based solely on actual tool returns, not vendor_id)
-        if not pci.is_gpu(pci_address=to.pciDeviceAddress):
-            logger.debug("pci device %s is not gpu, skip collect gpu info" % to.pciDeviceAddress)
-            return
+        Optimized: Directly call gpu.get_info() without is_gpu() pre-check.
+        If device is not a GPU, get_info() will return None quickly (especially
+        when vendor_name is provided, it only queries that specific vendor).
 
-        # One-line call, automatically handles all logic (plugin + fallback + special fields)
+        This eliminates redundant queries and improves performance.
+        """
+        # Directly try to get GPU info - if it's not a GPU, get_info() returns None quickly
+        # If vendor_name is provided, it only queries that specific vendor (fast path)
         info = gpu.get_info(pci_device=to, vendor_name=vendor_name)
         if info:
             to.addonInfo = info
@@ -2823,7 +3076,8 @@ done
                     to.device = "-"
                     to.name = product_name
                 elif vendor_name == VendorEnum.TIANSHU:
-                    to.device = product_name.split(" ")[1] if " " in product_name else product_name
+                    to.device = product_name.split(
+                        " ")[1] if " " in product_name else product_name
                     to.name = product_name
                 elif vendor_name == VendorEnum.ALIBABA:
                     to.device = product_name
@@ -2831,8 +3085,13 @@ done
 
     def _post_process_pci_device_info(self, to):
         """Post-process PCI device information - only keep Enflame special handling"""
-        if pci.is_gpu(pci_address=to.pciDeviceAddress) and to.vendor == VendorEnum.ENFLAME:
-            gpu.post_process_enflame_gpu_device(to)
+        # Optimized: Only check vendor, then try get_info() if it's Enflame
+        # This avoids is_gpu() check since we already know vendor
+        if to.vendor == VendorEnum.ENFLAME:
+            gpu_info = gpu.get_info(
+                pci_device=to, vendor_name=VendorEnum.ENFLAME)
+            if gpu_info:  # If get_info returns info, it's a GPU
+                gpu.post_process_enflame_gpu_device(to)
 
     # moved from vm_plugin to host_plugin
     @kvmagent.replyerror
@@ -2864,7 +3123,8 @@ done
         # check whether /sys/class/iommu is empty, if not then iommu is activated in bios
         iommu_folder = '/sys/class/iommu'
         r_bios = os.path.isdir(iommu_folder) and os.listdir(iommu_folder)
-        r_kernel, _, _ = bash_roe("grep '{}=on' /proc/cmdline".format(iommu_type))
+        r_kernel, _, _ = bash_roe(
+            "grep '{}=on' /proc/cmdline".format(iommu_type))
         if r_bios and r_kernel == 0:
             rsp.hostIommuStatus = True
         else:
@@ -2885,7 +3145,8 @@ done
         rom_file = os.path.join(PCI_ROM_PATH, cmd.specUuid)
         if not cmd.romContent:
             if os.path.exists(rom_file):
-                logger.debug("delete rom file %s because no content in db anymore" % rom_file)
+                logger.debug(
+                    "delete rom file %s because no content in db anymore" % rom_file)
                 os.remove(rom_file)
         elif cmd.romMd5sum != hashlib.md5(cmd.romContent).hexdigest():
             rsp.success = False
@@ -2907,7 +3168,8 @@ done
         pci_device_mapper = {}
         mxgpu_driver_tar = "/var/lib/zstack/mxgpu_driver.tar.gz"
         if os.path.exists(mxgpu_driver_tar) and not os.path.exists(PCI_CONFIG_PATH):
-            r, o, e = bash_roe("tar xvf %s -C /tmp; cd /tmp/mxgpu_driver; make; make install" % mxgpu_driver_tar)
+            r, o, e = bash_roe(
+                "tar xvf %s -C /tmp; cd /tmp/mxgpu_driver; make; make install" % mxgpu_driver_tar)
             if r != 0:
                 rsp.success = False
                 rsp.error = "failed to install mxgpu driver, %s, %s" % (o, e)
@@ -2925,7 +3187,8 @@ done
             return
 
         if used and int(used) == 0:
-            _, used, _ = bash_roe("modprobe -r gim; lsmod | grep gim | awk '{ print $3 }'")
+            _, used, _ = bash_roe(
+                "modprobe -r gim; lsmod | grep gim | awk '{ print $3 }'")
             if used:
                 rsp.success = False
                 rsp.error = "failed to uninstall gim.ko, need to run `modprobe -r gim` manually"
@@ -2953,36 +3216,37 @@ done
             rsp.success = False
             rsp.error = "failed to install gim.ko, %s, %s" % (o, e)
 
-
     @in_bash
     def _generate_sriov_net_devices(self, cmd, rsp):
         self._configure_sriov_vfs(cmd, rsp)
 
     @in_bash
     def _configure_sriov_vfs(self, cmd, rsp):
-        numvfs = os.path.join('/sys/bus/pci/devices/', cmd.pciDeviceAddress, 'sriov_numvfs')
+        numvfs = os.path.join('/sys/bus/pci/devices/',
+                              cmd.pciDeviceAddress, 'sriov_numvfs')
         if not os.path.exists(numvfs):
             rsp.success = False
             rsp.error = 'cannot find sriov_numvfs file for gpu device[addr:%s, type:%s]' % (
-            cmd.pciDeviceAddress, cmd.pciDeviceType)
+                cmd.pciDeviceAddress, cmd.pciDeviceType)
             return
 
         r, o, e = bash_roe("echo %s > %s" % (cmd.virtPartNum, numvfs))
         if r != 0:
             rsp.success = False
             rsp.error = 'failed to generate virtual functions on gpu device[addr:%s, type:%s]' % (
-            cmd.pciDeviceAddress, cmd.pciDeviceType)
+                cmd.pciDeviceAddress, cmd.pciDeviceType)
             return
 
         for i in range(0, cmd.virtPartNum):
             bash_r("ip link set {interfaceName} vf {vf} spoofchk off; ip link set {interfaceName} vf {vf} trust on"
-                     .format(interfaceName=cmd.interfaceName, vf=i))
+                   .format(interfaceName=cmd.interfaceName, vf=i))
 
     @kvmagent.replyerror
     def generate_sriov_pci_devices(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GenerateSriovPciDevicesRsp()
-        logger.debug("generate_sriov_pci_devices: pciType[%s], pciAddr[%s], reSplite[%s]" % (cmd.pciDeviceType, cmd.pciDeviceAddress, cmd.reSplite))
+        logger.debug("generate_sriov_pci_devices: pciType[%s], pciAddr[%s], reSplite[%s]" % (
+            cmd.pciDeviceType, cmd.pciDeviceAddress, cmd.reSplite))
 
         addr = cmd.pciDeviceAddress
 
@@ -2993,10 +3257,42 @@ done
             ramdisk = "/dev/shm/pci_sriov_gim"
 
         if cmd.reSplite and os.path.exists(ramdisk):
-            logger.debug("no need to re-splite pci device[addr:%s] into sriov pci devices" % addr)
+            logger.debug(
+                "no need to re-splite pci device[addr:%s] into sriov pci devices" % addr)
             return jsonobject.dumps(rsp)
 
-        if pci.is_gpu(pci_address=cmd.pciDeviceAddress):
+        # Optimized: Check pciDeviceType first (fast path), then vendor, finally try all vendors
+        # pciDeviceType may already indicate GPU type (e.g., 'GPU_3D_Controller')
+        is_gpu_device = False
+        if cmd.pciDeviceType and cmd.pciDeviceType.startswith('GPU_'):
+            # Already identified as GPU type
+            is_gpu_device = True
+        elif hasattr(cmd, 'vendor') and cmd.vendor:
+            # Check if vendor is a known GPU vendor (fast path)
+            from zstacklib.gpu.base import VendorEnum
+            gpu_vendors = {VendorEnum.NVIDIA, VendorEnum.AMD, VendorEnum.HUAWEI,
+                           VendorEnum.HAIGUANG, VendorEnum.TIANSHU, VendorEnum.VASTAI,
+                           VendorEnum.ENFLAME, VendorEnum.ALIBABA, VendorEnum.KUNLUNXIN,
+                           VendorEnum.INTEL}
+            if cmd.vendor in gpu_vendors:
+                # Known GPU vendor, verify via get_info() (only queries that vendor)
+                gpu_info = gpu.get_info(
+                    pci_address=cmd.pciDeviceAddress, vendor_name=cmd.vendor)
+                is_gpu_device = gpu_info is not None
+            else:
+                # Vendor not in known set: fallback to batch query all vendors
+                # This ensures devices detected by GPU CLI are not missed
+                gpu_info_map = gpu.get_all_gpu_infos_by_pci()
+                normalized_pci = pci.normalize_pci_address(cmd.pciDeviceAddress)
+                is_gpu_device = normalized_pci in gpu_info_map if normalized_pci else False
+        else:
+            # Unknown vendor/type: Try to get info from all vendors (batch query)
+            # This is equivalent to is_gpu() but uses the same unified interface
+            gpu_info_map = gpu.get_all_gpu_infos_by_pci()
+            normalized_pci = pci.normalize_pci_address(cmd.pciDeviceAddress)
+            is_gpu_device = normalized_pci in gpu_info_map if normalized_pci else False
+
+        if is_gpu_device:
             self._generate_sriov_gpu_devices(cmd, rsp)
         elif cmd.pciDeviceType == 'Ethernet_Controller':
             self._generate_sriov_net_devices(cmd, rsp)
@@ -3010,7 +3306,6 @@ done
 
         return jsonobject.dumps(rsp)
 
-
     @in_bash
     def _ungenerate_sriov_gpu_devices(self, cmd, rsp):
         if cmd.vendor == "Vastai":
@@ -3023,18 +3318,18 @@ done
             rsp.error = "failed to remove gim.ko, %s, %s" % (o, e)
             return
 
-
     @in_bash
     def _ungenerate_sriov_net_devices(self, cmd, rsp):
         self._reset_sriov_vfs(cmd, rsp)
 
     @in_bash
     def _reset_sriov_vfs(self, cmd, rsp):
-        numvfs = os.path.join('/sys/bus/pci/devices/', cmd.pciDeviceAddress, 'sriov_numvfs')
+        numvfs = os.path.join('/sys/bus/pci/devices/',
+                              cmd.pciDeviceAddress, 'sriov_numvfs')
         if not os.path.exists(numvfs):
             rsp.success = False
             rsp.error = 'cannot find sriov_numvfs file for pci device[addr:%s, type:%s]' % (
-            cmd.pciDeviceAddress, cmd.pciDeviceType)
+                cmd.pciDeviceAddress, cmd.pciDeviceType)
             return
 
         def _check_allocated_virtual_functions():
@@ -3044,17 +3339,20 @@ done
                 _addr = '0000:' + _addr
 
             pf = "pci_%s_%s_%s_%s" % tuple(re.split(':|\.', _addr))
-            r, vf_lines, e = bash_roe("virsh nodedev-dumpxml %s | grep 'address domain'" % pf)
+            r, vf_lines, e = bash_roe(
+                "virsh nodedev-dumpxml %s | grep 'address domain'" % pf)
             if r != 0:
                 return "failed to run `virsh nodedev-dumpxml %s`: %s" % (pf, e)
 
-            pattern = re.compile(r'.*0x([0-9a-f]*).*0x([0-9a-f]*).*0x([0-9a-f]*).*0x([0-9a-f]*).*')
+            pattern = re.compile(
+                r'.*0x([0-9a-f]*).*0x([0-9a-f]*).*0x([0-9a-f]*).*0x([0-9a-f]*).*')
             for vf_line in vf_lines.split('\n'):
                 vf_line = vf_line.strip()
                 match = pattern.match(vf_line)
                 if match:
                     vf = "pci_%s_%s_%s_%s" % tuple(match.groups())
-                    r, o, e = bash_roe("virsh nodedev-dumpxml %s | grep vfio-pci" % vf)
+                    r, o, e = bash_roe(
+                        "virsh nodedev-dumpxml %s | grep vfio-pci" % vf)
                     if r == 0:
                         return "virtual function %s of pf %s still allocated to some vm" % (vf, pf)
 
@@ -3068,9 +3366,8 @@ done
         if r != 0:
             rsp.success = False
             rsp.error = 'failed to ungenerate virtual functions on pci device[addr:%s, type:%s]' % (
-            cmd.pciDeviceAddress, cmd.pciDeviceType)
+                cmd.pciDeviceAddress, cmd.pciDeviceType)
             return
-
 
     @kvmagent.replyerror
     def ungenerate_sriov_pci_devices(self, req):
@@ -3079,7 +3376,37 @@ done
 
         addr = cmd.pciDeviceAddress
 
-        if pci.is_gpu(pci_address=cmd.pciDeviceAddress):
+        # Optimized: Check pciDeviceType first (fast path), then vendor, finally try all vendors
+        is_gpu_device = False
+        if cmd.pciDeviceType and cmd.pciDeviceType.startswith('GPU_'):
+            # Already identified as GPU type
+            is_gpu_device = True
+        elif hasattr(cmd, 'vendor') and cmd.vendor:
+            # Check if vendor is a known GPU vendor (fast path)
+            from zstacklib.gpu.base import VendorEnum
+            gpu_vendors = {VendorEnum.NVIDIA, VendorEnum.AMD, VendorEnum.HUAWEI,
+                           VendorEnum.HAIGUANG, VendorEnum.TIANSHU, VendorEnum.VASTAI,
+                           VendorEnum.ENFLAME, VendorEnum.ALIBABA, VendorEnum.KUNLUNXIN,
+                           VendorEnum.INTEL}
+            if cmd.vendor in gpu_vendors:
+                # Known GPU vendor, verify via get_info() (only queries that vendor)
+                gpu_info = gpu.get_info(
+                    pci_address=cmd.pciDeviceAddress, vendor_name=cmd.vendor)
+                is_gpu_device = gpu_info is not None
+            else:
+                # Vendor not in known set: fallback to batch query all vendors
+                # This ensures devices detected by GPU CLI are not missed
+                gpu_info_map = gpu.get_all_gpu_infos_by_pci()
+                normalized_pci = pci.normalize_pci_address(cmd.pciDeviceAddress)
+                is_gpu_device = normalized_pci in gpu_info_map if normalized_pci else False
+        else:
+            # Unknown vendor/type: Try to get info from all vendors (batch query)
+            # This is equivalent to is_gpu() but uses the same unified interface
+            gpu_info_map = gpu.get_all_gpu_infos_by_pci()
+            normalized_pci = pci.normalize_pci_address(cmd.pciDeviceAddress)
+            is_gpu_device = normalized_pci in gpu_info_map if normalized_pci else False
+
+        if is_gpu_device:
             self._ungenerate_sriov_gpu_devices(cmd, rsp)
         elif cmd.pciDeviceType == 'Ethernet_Controller':
             self._ungenerate_sriov_net_devices(cmd, rsp)
@@ -3093,10 +3420,12 @@ done
         rsp = GenerateVfioMdevDevicesRsp()
         addr = cmd.pciDeviceAddress
         # before 3.5.1, pciDeviceAddress is composed by only bus:slot.func
-        no_domain_addr = addr if len(addr.split(':')) != 3 else ':'.join(addr.split(':')[1:])
+        no_domain_addr = addr if len(addr.split(
+            ':')) != 3 else ':'.join(addr.split(':')[1:])
         ramdisk = os.path.join('/dev/shm', 'pci-' + no_domain_addr)
         if cmd.mdevUuids and len(cmd.mdevUuids) != 0 and os.path.exists(ramdisk):
-            logger.debug("no need to re-splite pci device[addr:%s] into mdev devices" % addr)
+            logger.debug(
+                "no need to re-splite pci device[addr:%s] into mdev devices" % addr)
             return jsonobject.dumps(rsp)
 
         @linux.retry(times=30, sleep_time=5)
@@ -3109,9 +3438,11 @@ done
 
         # support nvidia gpu only
         type = int(cmd.mdevSpecTypeId, 0)
-        spec_path = os.path.join("/sys/bus/pci/devices/", addr, "mdev_supported_types", "nvidia-%d" % type)
+        spec_path = os.path.join(
+            "/sys/bus/pci/devices/", addr, "mdev_supported_types", "nvidia-%d" % type)
         legacy_spec_exists = os.path.exists(spec_path)
-        virtfn_path = os.path.join("/sys/bus/pci/devices/", addr, "virtfn0", "mdev_supported_types", "nvidia-%d" % type)
+        virtfn_path = os.path.join(
+            "/sys/bus/pci/devices/", addr, "virtfn0", "mdev_supported_types", "nvidia-%d" % type)
         virt_function_spec_exits = os.path.exists(virtfn_path)
 
         if not legacy_spec_exists and not virt_function_spec_exits:
@@ -3124,7 +3455,8 @@ done
                 for _uuid in cmd.mdevUuids:
                     with open(os.path.join(spec_path, "create"), 'w') as f:
                         f.write(str(uuid.UUID(_uuid)))
-                        logger.debug("re-generate mdev device[uuid:%s] from pci device[addr:%s]" % (_uuid, addr))
+                        logger.debug(
+                            "re-generate mdev device[uuid:%s] from pci device[addr:%s]" % (_uuid, addr))
             else:
                 with open(os.path.join(spec_path, "available_instances"), 'r') as af:
                     max_instances = af.read().strip()
@@ -3133,9 +3465,11 @@ done
                     rsp.mdevUuids.append(_uuid)
                     with open(os.path.join(spec_path, "create"), 'w') as cf:
                         cf.write(_uuid)
-                        logger.debug("generate mdev device[uuid:%s] from pci device[addr:%s]" % (_uuid, addr))
+                        logger.debug(
+                            "generate mdev device[uuid:%s] from pci device[addr:%s]" % (_uuid, addr))
         elif virt_function_spec_exits:
-            r, o, e = bash_roe("ls /sys/bus/pci/devices/%s/ | grep virtfn" % addr)
+            r, o, e = bash_roe(
+                "ls /sys/bus/pci/devices/%s/ | grep virtfn" % addr)
             if r != 0:
                 rsp.success = False
                 rsp.error = e
@@ -3143,14 +3477,17 @@ done
 
             if cmd.mdevUuids and len(cmd.mdevUuids) != 0:
                 for _uuid, virtfn in zip(cmd.mdevUuids, o.splitlines()):
-                    virtfn_dir = "/sys/bus/pci/devices/%s/%s/mdev_supported_types/nvidia-%d" % (addr, virtfn, type)
+                    virtfn_dir = "/sys/bus/pci/devices/%s/%s/mdev_supported_types/nvidia-%d" % (
+                        addr, virtfn, type)
                     with open(os.path.join(virtfn_dir, "create"), 'w') as f:
                         f.write(str(uuid.UUID(_uuid)))
-                        logger.debug("re-generate mdev device[uuid:%s] from pci device[addr:%s]" % (_uuid, addr))
+                        logger.debug(
+                            "re-generate mdev device[uuid:%s] from pci device[addr:%s]" % (_uuid, addr))
             else:
                 is_generate = False
                 for virtfn in o.splitlines():
-                    virtfn_dir = "/sys/bus/pci/devices/%s/%s/mdev_supported_types/nvidia-%d" % (addr, virtfn, type)
+                    virtfn_dir = "/sys/bus/pci/devices/%s/%s/mdev_supported_types/nvidia-%d" % (
+                        addr, virtfn, type)
                     with open(os.path.join(virtfn_dir, "available_instances"), 'r') as af:
                         max_instances = af.read().strip()
                         if int(max_instances) > 0:
@@ -3160,13 +3497,15 @@ done
                         rsp.mdevUuids.append(_uuid)
                         with open(os.path.join(virtfn_dir, "create"), 'w') as cf:
                             cf.write(_uuid)
-                            logger.debug("generate mdev device[uuid:%s] from pci device[addr:%s]" % (_uuid, addr))
+                            logger.debug(
+                                "generate mdev device[uuid:%s] from pci device[addr:%s]" % (_uuid, addr))
 
                 if not is_generate:
                     with open(os.path.join(virtfn_path, "name"), 'r') as f:
                         name = f.read().strip()
                     rsp.success = False
-                    rsp.error = "generate mdev device[name:%s] from pci device[addr:%s] is fail " % (name, addr)
+                    rsp.error = "generate mdev device[name:%s] from pci device[addr:%s] is fail " % (
+                        name, addr)
 
         # create ramdisk file after pci device virtualization
         open(ramdisk, 'a').close()
@@ -3177,7 +3516,8 @@ done
         addr = cmd.pciDeviceAddress
         r, virtStatusOut = bash_ro("ls -l  /sys/bus/mdev/devices/")
         if r == 0 and addr in virtStatusOut:
-            logger.debug("no need to re-splite pci device[addr:%s] into mdev devices" % addr)
+            logger.debug(
+                "no need to re-splite pci device[addr:%s] into mdev devices" % addr)
             return jsonobject.dumps(rsp)
 
         r, o = bash_ro("npu-smi set -t vnpu-mode -d 1")
@@ -3186,7 +3526,8 @@ done
             rsp.error = o
             return jsonobject.dumps(rsp)
 
-        spec_path = os.path.join("/sys/bus/pci/devices/", addr, "mdev_supported_types", "vnpu-%s" % cmd.mdevSpecTypeId)
+        spec_path = os.path.join("/sys/bus/pci/devices/", addr,
+                                 "mdev_supported_types", "vnpu-%s" % cmd.mdevSpecTypeId)
         if not os.path.exists(spec_path):
             rsp.success = False
             rsp.error = "cannot generate vfio mdev devices from pci device[addr:%s]" % addr
@@ -3196,7 +3537,8 @@ done
             for _uuid in cmd.mdevUuids:
                 with open(os.path.join(spec_path, "create"), 'w') as f:
                     f.write(str(uuid.UUID(_uuid)))
-                    logger.debug("re-generate mdev device[uuid:%s] from pci device[addr:%s]" % (_uuid, addr))
+                    logger.debug(
+                        "re-generate mdev device[uuid:%s] from pci device[addr:%s]" % (_uuid, addr))
             return jsonobject.dumps(rsp)
 
         with open(os.path.join(spec_path, "available_instances"), 'r') as af:
@@ -3206,7 +3548,8 @@ done
             rsp.mdevUuids.append(_uuid)
             with open(os.path.join(spec_path, "create"), 'w') as cf:
                 cf.write(_uuid)
-                logger.debug("generate mdev device[uuid:%s] from pci device[addr:%s]" % (_uuid, addr))
+                logger.debug(
+                    "generate mdev device[uuid:%s] from pci device[addr:%s]" % (_uuid, addr))
 
         return jsonobject.dumps(rsp)
 
@@ -3214,14 +3557,16 @@ done
     def generate_vfio_mdev_devices(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GenerateVfioMdevDevicesRsp()
-        logger.debug("generate_vfio_mdev_devices: mdevUuids[%s]" % cmd.mdevUuids)
+        logger.debug(
+            "generate_vfio_mdev_devices: mdevUuids[%s]" % cmd.mdevUuids)
         if cmd.vendor == VendorEnum.NVIDIA:
             return self._generate_nvidia_vfio_mdev_devices(cmd)
         elif cmd.vendor == VendorEnum.HUAWEI:
             return self._generate_huawei_vfio_mdev_devices(cmd)
         else:
             rsp.success = False
-            rsp.error = "%s device does not support being generated into mdev devices" % (cmd.vendor)
+            rsp.error = "%s device does not support being generated into mdev devices" % (
+                cmd.vendor)
             return jsonobject.dumps(rsp)
 
     def _ungenerate_nvidia_vfio_mdev_devices(self, cmd):
@@ -3229,7 +3574,8 @@ done
         # support nvidia gpu only
         addr = cmd.pciDeviceAddress
         type = int(cmd.mdevSpecTypeId, 0)
-        device_path = os.path.join("/sys/bus/pci/devices/", addr, "mdev_supported_types", "nvidia-%d" % type, "devices")
+        device_path = os.path.join(
+            "/sys/bus/pci/devices/", addr, "mdev_supported_types", "nvidia-%d" % type, "devices")
         legacy_spec_exists = os.path.exists(device_path)
         virtfn_path = os.path.join("/sys/bus/pci/devices/", addr, "virtfn0", "mdev_supported_types", "nvidia-%d" % type,
                                    "devices")
@@ -3246,13 +3592,16 @@ done
                     f.write("1")
 
             # check
-            _, support, _ = bash_roe("nvidia-smi vgpu -i %s -s | grep -v %s" % (addr, addr))
-            _, creatable, _ = bash_roe("nvidia-smi vgpu -i %s -c | grep -v %s" % (addr, addr))
+            _, support, _ = bash_roe(
+                "nvidia-smi vgpu -i %s -s | grep -v %s" % (addr, addr))
+            _, creatable, _ = bash_roe(
+                "nvidia-smi vgpu -i %s -c | grep -v %s" % (addr, addr))
             if support != creatable:
                 rsp.success = False
                 rsp.error = "failed to ungenerate vfio mdev devices from pci device[addr:%s]" % addr
         elif virt_function_dir_exits:
-            r, o, e = bash_roe("ls /sys/bus/pci/devices/%s/ | grep virtfn" % addr)
+            r, o, e = bash_roe(
+                "ls /sys/bus/pci/devices/%s/ | grep virtfn" % addr)
             if r != 0:
                 rsp.success = False
                 rsp.error = e
@@ -3269,7 +3618,8 @@ done
 
     def _ungenerate_huawei_vfio_mdev_devices(self, cmd):
         rsp = UngenerateVfioMdevDevicesRsp()
-        device_path = os.path.join("/sys/bus/pci/devices/", cmd.pciDeviceAddress, "mdev_supported_types", "vnpu-%s" % cmd.mdevSpecTypeId, "devices")
+        device_path = os.path.join("/sys/bus/pci/devices/", cmd.pciDeviceAddress,
+                                   "mdev_supported_types", "vnpu-%s" % cmd.mdevSpecTypeId, "devices")
         if not os.path.exists(device_path):
             rsp.success = False
             rsp.error = "no vfio mdev devices to ungenerate from pci device[addr:%s]" % cmd.pciDeviceAddress
@@ -3298,7 +3648,8 @@ done
             return self._ungenerate_huawei_vfio_mdev_devices(cmd)
         else:
             rsp.success = False
-            rsp.error = "%s device does not support being ungenerate into mdev devices" % (cmd.vendor)
+            rsp.error = "%s device does not support being ungenerate into mdev devices" % (
+                cmd.vendor)
             return jsonobject.dumps(rsp)
 
     def _collect_format_mtty_device_info(self, rsp):
@@ -3317,7 +3668,7 @@ done
         to.description = to.type + ": " + "computing encryption device"
         to.name = "SE"
 
-        se_num_record_file =  "%s/mtty-2/available_instances" % check_virtfn_folder
+        se_num_record_file = "%s/mtty-2/available_instances" % check_virtfn_folder
         se_num_record_file_exits = os.path.isfile(se_num_record_file)
         if not se_num_record_file_exits:
             to.virtStatus = "UNKNOWN"
@@ -3345,12 +3696,14 @@ done
     def generate_se_vfio_mdev_devices(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GenerateSeVfioMdevDevicesRsp()
-        logger.debug("generate_se_vfio_mdev_devices: mdevUuids[%s]" % cmd.mdevUuids)
+        logger.debug(
+            "generate_se_vfio_mdev_devices: mdevUuids[%s]" % cmd.mdevUuids)
 
         mtty_uuid = cmd.mttyDeviceUuid
         ramdisk = os.path.join('/dev/shm', 'mtty-' + mtty_uuid)
         if cmd.reSplite and os.path.exists(ramdisk):
-            logger.debug("no need to re-splite mtty device[uuid:%s] into mdev devices" % mtty_uuid)
+            logger.debug(
+                "no need to re-splite mtty device[uuid:%s] into mdev devices" % mtty_uuid)
             return jsonobject.dumps(rsp)
 
         virt_path = "/sys/devices/virtual/mtty/mtty/mdev_supported_types/mtty-2/"
@@ -3365,7 +3718,8 @@ done
                 f.write(str(uuid.UUID(_uuid)))
                 if not cmd.reSplite:
                     rsp.mdevUuids.append(str(uuid.UUID(_uuid)))
-                logger.debug('generate mdev device[uuid:%s] from mtty device[uuid:%s]'% (str(_uuid), mtty_uuid))
+                logger.debug('generate mdev device[uuid:%s] from mtty device[uuid:%s]' % (
+                    str(_uuid), mtty_uuid))
 
         # create ramdisk file after mtty device virtualization
         open(ramdisk, 'a').close()
@@ -3406,7 +3760,7 @@ done
             return jsonobject.dumps(rsp)
 
         with open(os.path.join("/sys/bus/mdev/devices/", _uuid, "remove"), "w") as f:
-                f.write("1")
+            f.write("1")
 
         return jsonobject.dumps(rsp)
 
@@ -3415,8 +3769,10 @@ done
     def update_spice_channel_config(self, req):
         # Note: /etc/libvirt/qemu.conf is overwritten when connect host
         rsp = UpdateSpiceChannelConfigResponse()
-        r1 = bash_r("grep '^[[:space:]]*spice_tls[[:space:]]*=[[:space:]]*1' /etc/libvirt/qemu.conf")
-        r2 = bash_r("grep '^[[:space:]]*spice_tls_x509_cert_dir[[:space:]]*=[[:space:]]*' /etc/libvirt/qemu.conf")
+        r1 = bash_r(
+            "grep '^[[:space:]]*spice_tls[[:space:]]*=[[:space:]]*1' /etc/libvirt/qemu.conf")
+        r2 = bash_r(
+            "grep '^[[:space:]]*spice_tls_x509_cert_dir[[:space:]]*=[[:space:]]*' /etc/libvirt/qemu.conf")
 
         if r1 == 0 and r2 == 0:
             return jsonobject.dumps(rsp)
@@ -3429,7 +3785,8 @@ done
                 return jsonobject.dumps(rsp)
 
         if r2 != 0:
-            r = bash_r("sed -i '$a spice_tls_x509_cert_dir = \"/var/lib/zstack/kvm/package/spice-certs/\"' /etc/libvirt/qemu.conf")
+            r = bash_r(
+                "sed -i '$a spice_tls_x509_cert_dir = \"/var/lib/zstack/kvm/package/spice-certs/\"' /etc/libvirt/qemu.conf")
             if r != 0:
                 rsp.success = False
                 rsp.error = "update /etc/libvirt/qemu.conf failed, please check qemu.conf"
@@ -3454,10 +3811,13 @@ done
         vm_operation.operation = cmd.operation
         url = self.config.get(kvmagent.SEND_COMMAND_URL)
         if not url:
-            raise kvmagent.KvmError("cannot find SEND_COMMAND_URL, unable to transmit vm operation to management node")
+            raise kvmagent.KvmError(
+                "cannot find SEND_COMMAND_URL, unable to transmit vm operation to management node")
 
-        logger.debug('transmitting vm operation [uuid:%s, operation:%s] to management node'% (cmd.uuid, cmd.operation))
-        http.json_dump_post(url, vm_operation, {'commandpath': '/host/transmitvmoperation'})
+        logger.debug('transmitting vm operation [uuid:%s, operation:%s] to management node' % (
+            cmd.uuid, cmd.operation))
+        http.json_dump_post(url, vm_operation, {
+                            'commandpath': '/host/transmitvmoperation'})
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -3470,10 +3830,13 @@ done
         result.version = cmd.version
         url = self.config.get(kvmagent.SEND_COMMAND_URL)
         if not url:
-            raise kvmagent.KvmError("cannot find SEND_COMMAND_URL, unable to transmit zwatch install result to management node")
+            raise kvmagent.KvmError(
+                "cannot find SEND_COMMAND_URL, unable to transmit zwatch install result to management node")
 
-        logger.debug('transmitting zwatch install result [uuid:%s, version:%s] to management node' % (cmd.vmInstanceUuid, cmd.version))
-        http.json_dump_post(url, result, {'commandpath': '/host/zwatchInstallResult'})
+        logger.debug('transmitting zwatch install result [uuid:%s, version:%s] to management node' % (
+            cmd.vmInstanceUuid, cmd.version))
+        http.json_dump_post(
+            url, result, {'commandpath': '/host/zwatchInstallResult'})
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -3505,11 +3868,13 @@ done
                 with open(version_file, 'r') as vfd:
                     return vfd.readline()
 
-        last_modified = shell.call("curl -I %s | grep 'Last-Modified'" % qemu_url).strip('\n\r')
+        last_modified = shell.call(
+            "curl -I %s | grep 'Last-Modified'" % qemu_url).strip('\n\r')
         version = get_dep_version_from_version_file(COLO_QEMU_KVM_VERSION)
         if version != last_modified:
             cmdstr = 'cd {} && rm -f qemu-system-x86_64.tar.gz && wget -c {} -O qemu-system-x86_64.tar.gz && ' \
-                     'tar zxf qemu-system-x86_64.tar.gz && chown root:root qemu-system-x86_64'.format(COLO_LIB_PATH, qemu_url)
+                     'tar zxf qemu-system-x86_64.tar.gz && chown root:root qemu-system-x86_64'.format(
+                         COLO_LIB_PATH, qemu_url)
             if shell.run(cmdstr) != 0:
                 rsp.success = False
                 rsp.error = "failed to download qemu-system-x86_64.tar.gz from management node"
@@ -3519,7 +3884,6 @@ done
             fd.write(last_modified)
 
         return jsonobject.dumps(rsp)
-
 
     @kvmagent.replyerror
     def scan_vm_port(self, req):
@@ -3533,7 +3897,8 @@ done
             ports.append(str(cmd.port))
 
         for port in ports:
-            r, o, e = bash_roe("ip netns exec %s nping --tcp -p %s -c 1 %s" % (cmd.brname, port, cmd.ip))
+            r, o, e = bash_roe(
+                "ip netns exec %s nping --tcp -p %s -c 1 %s" % (cmd.brname, port, cmd.ip))
             if r != 0:
                 rsp.success = False
                 rsp.error = e
@@ -3639,7 +4004,8 @@ done
             def get_topology(self):
                 node_id = 0
                 while True:
-                    node_path = os.path.join(NODE_INFO_PATH, "node{}".format(node_id))
+                    node_path = os.path.join(
+                        NODE_INFO_PATH, "node{}".format(node_id))
                     if not os.path.isdir(node_path):
                         break
 
@@ -3672,7 +4038,8 @@ done
                 for i in info:
                     if "-" in i:
                         temp = i.split("-")
-                        cpu_list.extend([str(cpu_id) for cpu_id in range(int(temp[0]), int(temp[1]) + 1)])
+                        cpu_list.extend([str(cpu_id) for cpu_id in range(
+                            int(temp[0]), int(temp[1]) + 1)])
                     elif "^" in i:
                         cpu_list.remove(i[1:])
                     else:
@@ -3712,7 +4079,6 @@ done
         rsp.topology = NumaTopology()()
         return jsonobject.dumps(rsp)
 
-
     @kvmagent.replyerror
     def attach_volume_path(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -3723,9 +4089,11 @@ done
             raise Exception("mount path can not be null")
 
         if cmd.volumeInstallPath.startswith('sharedblock'):
-            rsp.device = lvm.LvmRemoteStorage(cmd.volumeInstallPath, cmd.mountPath, cmd.device).mount()
+            rsp.device = lvm.LvmRemoteStorage(
+                cmd.volumeInstallPath, cmd.mountPath, cmd.device).mount()
         elif cmd.volumeInstallPath.startswith('ceph'):
-            rsp.device = ceph.NbdRemoteStorage(cmd.volumeInstallPath, cmd.mountPath, cmd.device, cmd.volumePrimaryStorageUuid).mount()
+            rsp.device = ceph.NbdRemoteStorage(
+                cmd.volumeInstallPath, cmd.mountPath, cmd.device, cmd.volumePrimaryStorageUuid).mount()
         else:
             raise Exception("do not support volume type")
 
@@ -3743,9 +4111,11 @@ done
             raise Exception("device can not be null")
 
         if cmd.volumeInstallPath.startswith('sharedblock'):
-            lvm.LvmRemoteStorage(cmd.volumeInstallPath, cmd.mountPath, cmd.device).umount()
+            lvm.LvmRemoteStorage(cmd.volumeInstallPath,
+                                 cmd.mountPath, cmd.device).umount()
         elif cmd.volumeInstallPath.startswith('ceph'):
-            ceph.NbdRemoteStorage(cmd.volumeInstallPath, cmd.mountPath, cmd.device).umount()
+            ceph.NbdRemoteStorage(cmd.volumeInstallPath,
+                                  cmd.mountPath, cmd.device).umount()
         else:
             raise Exception("do not support volume type")
 
@@ -3760,10 +4130,12 @@ done
             raise kvmagent.KvmError('Password cannot be empty')
         vm = vm_plugin.get_vm_by_uuid(cmd.vmUuid)
         if vm.state != vm_plugin.Vm.VM_STATE_RUNNING:
-            raise kvmagent.KvmError('VM[uuid:%s] is not running, cannot set password live.' % cmd.vmUuid)
+            raise kvmagent.KvmError(
+                'VM[uuid:%s] is not running, cannot set password live.' % cmd.vmUuid)
 
         console_modes = []
-        graphics_devices = vm.domain_xmlobject.devices.get_child_node_as_list('graphics')
+        graphics_devices = vm.domain_xmlobject.devices.get_child_node_as_list(
+            'graphics')
         for g in graphics_devices:
             if g.type_ == 'vnc':
                 console_modes.append('vnc')
@@ -3771,30 +4143,36 @@ done
                 console_modes.append('spice')
 
         if not console_modes:
-            raise kvmagent.KvmError('VM[uuid:%s] has no graphical console (VNC/SPICE) configured.' % cmd.vmUuid)
+            raise kvmagent.KvmError(
+                'VM[uuid:%s] has no graphical console (VNC/SPICE) configured.' % cmd.vmUuid)
 
-        logger.debug("Found console modes %s for VM[uuid:%s]" % (console_modes, cmd.vmUuid))
+        logger.debug("Found console modes %s for VM[uuid:%s]" % (
+            console_modes, cmd.vmUuid))
 
         errors = []
         if 'vnc' in console_modes:
             hmp_cmd = "set_password vnc %s" % cmd.password
             safe_hmp_arg = pipes.quote(hmp_cmd)
-            command = "virsh qemu-monitor-command %s --hmp %s" % (cmd.vmUuid, safe_hmp_arg)
+            command = "virsh qemu-monitor-command %s --hmp %s" % (
+                cmd.vmUuid, safe_hmp_arg)
             r, o, e = bash_roe(command)
             if r != 0:
                 errors.append("Failed to set VNC password: %s" % e)
             else:
-                logger.debug("Successfully set VNC password for VM[uuid:%s]" % cmd.vmUuid)
+                logger.debug(
+                    "Successfully set VNC password for VM[uuid:%s]" % cmd.vmUuid)
 
         if 'spice' in console_modes:
             hmp_cmd = "set_password spice %s" % cmd.password
             safe_hmp_arg = pipes.quote(hmp_cmd)
-            command = "virsh qemu-monitor-command %s --hmp %s" % (cmd.vmUuid, safe_hmp_arg)
+            command = "virsh qemu-monitor-command %s --hmp %s" % (
+                cmd.vmUuid, safe_hmp_arg)
             r, o, e = bash_roe(command)
             if r != 0:
                 errors.append("Failed to set SPICE password: %s" % e)
             else:
-                logger.debug("Successfully set SPICE password for VM[uuid:%s]" % cmd.vmUuid)
+                logger.debug(
+                    "Successfully set SPICE password for VM[uuid:%s]" % cmd.vmUuid)
 
         if errors:
             raise kvmagent.KvmError(". ".join(errors))
@@ -3816,61 +4194,106 @@ done
         http_server = kvmagent.get_http_server()
         http_server.register_sync_uri(self.CONNECT_PATH, self.connect)
         http_server.register_async_uri(self.PING_PATH, self.ping)
-        http_server.register_async_uri(self.CHECK_FILE_ON_HOST_PATH, self.check_file_on_host)
+        http_server.register_async_uri(
+            self.CHECK_FILE_ON_HOST_PATH, self.check_file_on_host)
         http_server.register_async_uri(self.CAPACITY_PATH, self.capacity)
         http_server.register_sync_uri(self.ECHO_PATH, self.echo)
-        http_server.register_async_uri(self.SETUP_MOUNTABLE_PRIMARY_STORAGE_HEARTBEAT, self.setup_heartbeat_file)
+        http_server.register_async_uri(
+            self.SETUP_MOUNTABLE_PRIMARY_STORAGE_HEARTBEAT, self.setup_heartbeat_file)
         http_server.register_async_uri(self.FACT_PATH, self.fact)
-        http_server.register_async_uri(self.GET_USB_DEVICES_PATH, self.get_usb_devices)
+        http_server.register_async_uri(
+            self.GET_USB_DEVICES_PATH, self.get_usb_devices)
         http_server.register_async_uri(self.UPDATE_OS_PATH, self.update_os)
-        http_server.register_async_uri(self.INIT_HOST_MOC_PATH, self.init_host_moc)
-        http_server.register_async_uri(self.UPDATE_DEPENDENCY, self.update_dependency)
-        http_server.register_async_uri(self.ENABLE_HUGEPAGE, self.enable_hugepage)
-        http_server.register_async_uri(self.DISABLE_HUGEPAGE, self.disable_hugepage)
-        http_server.register_async_uri(self.CLEAN_LOCAL_CACHE, self.clean_local_cache)
-        http_server.register_async_uri(self.HOST_START_USB_REDIRECT_PATH, self.start_usb_redirect_server)
-        http_server.register_async_uri(self.HOST_STOP_USB_REDIRECT_PATH, self.stop_usb_redirect_server)
-        http_server.register_async_uri(self.CHECK_USB_REDIRECT_PORT, self.check_usb_server_port)
+        http_server.register_async_uri(
+            self.INIT_HOST_MOC_PATH, self.init_host_moc)
+        http_server.register_async_uri(
+            self.UPDATE_DEPENDENCY, self.update_dependency)
+        http_server.register_async_uri(
+            self.ENABLE_HUGEPAGE, self.enable_hugepage)
+        http_server.register_async_uri(
+            self.DISABLE_HUGEPAGE, self.disable_hugepage)
+        http_server.register_async_uri(
+            self.CLEAN_LOCAL_CACHE, self.clean_local_cache)
+        http_server.register_async_uri(
+            self.HOST_START_USB_REDIRECT_PATH, self.start_usb_redirect_server)
+        http_server.register_async_uri(
+            self.HOST_STOP_USB_REDIRECT_PATH, self.stop_usb_redirect_server)
+        http_server.register_async_uri(
+            self.CHECK_USB_REDIRECT_PORT, self.check_usb_server_port)
         http_server.register_async_uri(self.IDENTIFY_HOST, self.identify_host)
-        http_server.register_async_uri(self.LOCATE_HOST_NETWORK_INTERFACE,self.locate_host_network_interface)
-        http_server.register_async_uri(self.GET_HOST_PHYSICAL_MEMORY_FACTS,self.get_host_physical_memory_facts)
-        http_server.register_async_uri(self.UPDATE_HOST_OVS_CPU_PINNING, self.update_ovs_cpu_pinning)
-        http_server.register_async_uri(self.CHANGE_PASSWORD, self.change_password, cmd=ChangeHostPasswordCmd())
-        http_server.register_async_uri(self.GET_HOST_NETWORK_FACTS, self.get_host_network_facts)
-        http_server.register_async_uri(self.SET_IP_ON_HOST_NETWORK_INTERFACE, self.set_ip_on_host_network_interface)
+        http_server.register_async_uri(
+            self.LOCATE_HOST_NETWORK_INTERFACE, self.locate_host_network_interface)
+        http_server.register_async_uri(
+            self.GET_HOST_PHYSICAL_MEMORY_FACTS, self.get_host_physical_memory_facts)
+        http_server.register_async_uri(
+            self.UPDATE_HOST_OVS_CPU_PINNING, self.update_ovs_cpu_pinning)
+        http_server.register_async_uri(
+            self.CHANGE_PASSWORD, self.change_password, cmd=ChangeHostPasswordCmd())
+        http_server.register_async_uri(
+            self.GET_HOST_NETWORK_FACTS, self.get_host_network_facts)
+        http_server.register_async_uri(
+            self.SET_IP_ON_HOST_NETWORK_INTERFACE, self.set_ip_on_host_network_interface)
 
-        http_server.register_async_uri(self.CHECK_INTERFACE_VLAN, self.check_interface_vlan)
-        http_server.register_async_uri(self.GET_INTERFACE_VLAN, self.get_interface_vlan)
-        http_server.register_async_uri(self.GET_INTERFACE_NAME, self.get_interface_name)
-        http_server.register_async_uri(self.HOST_XFS_SCRAPE_PATH, self.get_xfs_frag_data)
+        http_server.register_async_uri(
+            self.CHECK_INTERFACE_VLAN, self.check_interface_vlan)
+        http_server.register_async_uri(
+            self.GET_INTERFACE_VLAN, self.get_interface_vlan)
+        http_server.register_async_uri(
+            self.GET_INTERFACE_NAME, self.get_interface_name)
+        http_server.register_async_uri(
+            self.HOST_XFS_SCRAPE_PATH, self.get_xfs_frag_data)
         http_server.register_async_uri(self.HOST_SHUTDOWN, self.shutdown_host)
         http_server.register_async_uri(self.HOST_REBOOT, self.reboot_host)
         http_server.register_async_uri(self.GET_PCI_DEVICES, self.get_pci_info)
-        http_server.register_async_uri(self.CREATE_PCI_DEVICE_ROM_FILE, self.create_pci_device_rom_file)
-        http_server.register_async_uri(self.GENERATE_SRIOV_PCI_DEVICES, self.generate_sriov_pci_devices)
-        http_server.register_async_uri(self.UNGENERATE_SRIOV_PCI_DEVICES, self.ungenerate_sriov_pci_devices)
-        http_server.register_async_uri(self.GENERATE_VFIO_MDEV_DEVICES, self.generate_vfio_mdev_devices)
-        http_server.register_async_uri(self.UNGENERATE_VFIO_MDEV_DEVICES, self.ungenerate_vfio_mdev_devices)
-        http_server.register_async_uri(self.GET_MTTY_DEVICES, self.get_mtty_info)
-        http_server.register_async_uri(self.GENERATE_SE_VFIO_MDEV_DEVICES, self.generate_se_vfio_mdev_devices)
-        http_server.register_async_uri(self.UNGENERATE_SE_VFIO_MDEV_DEVICES, self.ungenerate_se_vfio_mdev_devices)
-        http_server.register_async_uri(self.DELETE_VFIO_MDEV_DEVICE, self.delete_vfio_mdev_device)
-        http_server.register_async_uri(self.HOST_UPDATE_SPICE_CHANNEL_CONFIG_PATH, self.update_spice_channel_config)
+        http_server.register_async_uri(
+            self.CREATE_PCI_DEVICE_ROM_FILE, self.create_pci_device_rom_file)
+        http_server.register_async_uri(
+            self.GENERATE_SRIOV_PCI_DEVICES, self.generate_sriov_pci_devices)
+        http_server.register_async_uri(
+            self.UNGENERATE_SRIOV_PCI_DEVICES, self.ungenerate_sriov_pci_devices)
+        http_server.register_async_uri(
+            self.GENERATE_VFIO_MDEV_DEVICES, self.generate_vfio_mdev_devices)
+        http_server.register_async_uri(
+            self.UNGENERATE_VFIO_MDEV_DEVICES, self.ungenerate_vfio_mdev_devices)
+        http_server.register_async_uri(
+            self.GET_MTTY_DEVICES, self.get_mtty_info)
+        http_server.register_async_uri(
+            self.GENERATE_SE_VFIO_MDEV_DEVICES, self.generate_se_vfio_mdev_devices)
+        http_server.register_async_uri(
+            self.UNGENERATE_SE_VFIO_MDEV_DEVICES, self.ungenerate_se_vfio_mdev_devices)
+        http_server.register_async_uri(
+            self.DELETE_VFIO_MDEV_DEVICE, self.delete_vfio_mdev_device)
+        http_server.register_async_uri(
+            self.HOST_UPDATE_SPICE_CHANNEL_CONFIG_PATH, self.update_spice_channel_config)
         http_server.register_async_uri(self.CANCEL_JOB, self.cancel)
-        http_server.register_sync_uri(self.TRANSMIT_VM_OPERATION_TO_MN_PATH, self.transmit_vm_operation_to_vm)
-        http_server.register_sync_uri(self.TRANSMIT_ZWATCH_INSTALL_RESULT_TO_MN_PATH, self.transmit_zwatch_install_result_to_mn)
-        http_server.register_async_uri(self.SCAN_VM_PORT_PATH, self.scan_vm_port)
-        http_server.register_async_uri(self.ENABLE_ZEROCOPY, self.enable_zerocopy)
-        http_server.register_async_uri(self.DISABLE_ZEROCOPY, self.disable_zerocopy)
-        http_server.register_async_uri(self.GET_DEV_CAPACITY, self.get_dev_capacity)
-        http_server.register_async_uri(self.ADD_BRIDGE_FDB_ENTRY_PATH, self.add_bridge_fdb_entry)
-        http_server.register_async_uri(self.DEL_BRIDGE_FDB_ENTRY_PATH, self.del_bridge_fdb_entry)
-        http_server.register_async_uri(self.DEPLOY_COLO_QEMU_PATH, self.deploy_colo_qemu)
-        http_server.register_async_uri(self.UPDATE_CONFIGURATION_PATH, self.update_host_configuration)
-        http_server.register_async_uri(self.GET_NUMA_TOPOLOGY_PATH, self.get_numa_topology)
-        http_server.register_async_uri(self.ATTACH_VOLUME_PATH, self.attach_volume_path)
-        http_server.register_async_uri(self.DETACH_VOLUME_PATH, self.detach_volume__path)
-        http_server.register_async_uri(self.UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH, self.update_vm_console_password_live)
+        http_server.register_sync_uri(
+            self.TRANSMIT_VM_OPERATION_TO_MN_PATH, self.transmit_vm_operation_to_vm)
+        http_server.register_sync_uri(
+            self.TRANSMIT_ZWATCH_INSTALL_RESULT_TO_MN_PATH, self.transmit_zwatch_install_result_to_mn)
+        http_server.register_async_uri(
+            self.SCAN_VM_PORT_PATH, self.scan_vm_port)
+        http_server.register_async_uri(
+            self.ENABLE_ZEROCOPY, self.enable_zerocopy)
+        http_server.register_async_uri(
+            self.DISABLE_ZEROCOPY, self.disable_zerocopy)
+        http_server.register_async_uri(
+            self.GET_DEV_CAPACITY, self.get_dev_capacity)
+        http_server.register_async_uri(
+            self.ADD_BRIDGE_FDB_ENTRY_PATH, self.add_bridge_fdb_entry)
+        http_server.register_async_uri(
+            self.DEL_BRIDGE_FDB_ENTRY_PATH, self.del_bridge_fdb_entry)
+        http_server.register_async_uri(
+            self.DEPLOY_COLO_QEMU_PATH, self.deploy_colo_qemu)
+        http_server.register_async_uri(
+            self.UPDATE_CONFIGURATION_PATH, self.update_host_configuration)
+        http_server.register_async_uri(
+            self.GET_NUMA_TOPOLOGY_PATH, self.get_numa_topology)
+        http_server.register_async_uri(
+            self.ATTACH_VOLUME_PATH, self.attach_volume_path)
+        http_server.register_async_uri(
+            self.DETACH_VOLUME_PATH, self.detach_volume__path)
+        http_server.register_async_uri(
+            self.UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH, self.update_vm_console_password_live)
 
         self.heartbeat_timer = {}
         filepath = r'/etc/libvirt/qemu/networks/autostart/default.xml'
