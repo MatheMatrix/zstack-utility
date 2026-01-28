@@ -45,6 +45,20 @@ class TestPCINormalization(unittest.TestCase):
         self.assertIsNone(pci.normalize_pci_address(""))
         self.assertIsNone(pci.normalize_pci_address(None))
 
+    def test_normalize_pci_address_function_0(self):
+        """Test PCI address normalization with function 0"""
+        addr = "0000:34:00.0"
+        normalized = pci.normalize_pci_address(addr)
+        self.assertEqual(normalized, "0000:34:00.0")
+
+    def test_normalize_pci_address_function_1(self):
+        """Test PCI address normalization with function 1"""
+        addr = "0000:34:00.1"
+        normalized = pci.normalize_pci_address(addr)
+        self.assertEqual(normalized, "0000:34:00.1")
+        # Function 1 should be normalized correctly but should NOT match function 0
+        self.assertNotEqual(normalized, "0000:34:00.0")
+
 
 class TestVendorNameSimplification(unittest.TestCase):
     """Test vendor name simplification functions"""
