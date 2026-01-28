@@ -1512,10 +1512,14 @@ def get_all_info():
 def get_all_gpu_infos_by_pci():
     """
     Collect information for all GPUs and return as a dict mapping PCI address to GPU info.
-    
+
     This is optimized for batch processing - queries all vendors once, then provides
     O(1) lookup by PCI address.
-    
+
+    Note: Only function 0 devices are included in the map. GPU devices typically
+    only have function 0 as the actual GPU, while function 1+ may be other functions
+    (e.g., audio controller) and should not be treated as GPU devices.
+
     Returns:
         dict: Mapping of normalized PCI address -> GPU info dict
         Example: {
@@ -1524,9 +1528,9 @@ def get_all_gpu_infos_by_pci():
         }
     """
     from zstacklib.utils.pci import normalize_pci_address
-    
+
     gpu_info_map = {}
-    
+
     try:
         from zstacklib.gpu import get_all_gpu_vendors
         for vendor_class in get_all_gpu_vendors():
@@ -1538,9 +1542,17 @@ def get_all_gpu_infos_by_pci():
                     if gpu_info.pci_address:
                         normalized_pci = normalize_pci_address(gpu_info.pci_address)
                         if normalized_pci:
-                            result = gpu_info.to_addon_dict()
-                            result.update(gpu_info.extra)
-                            gpu_info_map[normalized_pci] = result
+                            # Only include function 0 devices in the map
+                            # GPU devices typically only have function 0 as the actual GPU,
+                            # while function 1+ may be other functions (e.g., audio controller)
+                            # and should not be treated as GPU devices.
+                            if normalized_pci.endswith('.0'):
+                                result = gpu_info.to_addon_dict()
+                                result.update(gpu_info.extra)
+                                gpu_info_map[normalized_pci] = result
+                            else:
+                                logger.debug("Skipping non-function-0 GPU device: %s (vendor: %s)" %
+                                           (normalized_pci, vendor_class.VENDOR_NAME))
             except Exception as e:
                 logger.debug("Failed to get basic info from plugin %s: %s" %
                              (vendor_class.VENDOR_NAME, str(e)))

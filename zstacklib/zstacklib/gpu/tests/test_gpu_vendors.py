@@ -162,17 +162,36 @@ class TestNVIDIA(unittest.TestCase):
     def test_parse_basic_info(self):
         """Test NVIDIA basic info parsing"""
         from zstacklib.gpu.vendors.nvidia import NVIDIA
-        
+
         output = """00000000:3B:00.0, 15360 MiB, 70.00 W, 1322519087621
 00000000:86:00.0, 15360 MiB, 70.00 W, 1322519087622"""
-        
+
         infos = NVIDIA.parse_basic_info(output)
-        
+
         self.assertEqual(len(infos), 2)
         self.assertEqual(infos[0].pci_address, "0000:3b:00.0")
         self.assertEqual(infos[0].memory, "15360 MiB")
         self.assertEqual(infos[0].power, "70.00 W")
         self.assertEqual(infos[0].serial_number, "1322519087621")
+
+    def test_parse_basic_info_with_function_1(self):
+        """Test NVIDIA basic info parsing with function 1 devices (should only return function 0)"""
+        from zstacklib.gpu.vendors.nvidia import NVIDIA
+
+        # Simulate nvidia-smi returning both function 0 and function 1
+        # Note: In reality, nvidia-smi should only return function 0, but we test the edge case
+        output = """00000000:34:00.0, 15360 MiB, 70.00 W, 1322519087621
+00000000:34:00.1, 15360 MiB, 70.00 W, 1322519087621
+00000000:9e:00.0, 15360 MiB, 70.00 W, 1322519087622"""
+
+        infos = NVIDIA.parse_basic_info(output)
+
+        # All devices are parsed, but in get_all_gpu_infos_by_pci() we should filter to only function 0
+        self.assertEqual(len(infos), 3)
+        # Verify function numbers are preserved
+        self.assertEqual(infos[0].pci_address, "0000:34:00.0")
+        self.assertEqual(infos[1].pci_address, "0000:34:00.1")
+        self.assertEqual(infos[2].pci_address, "0000:9e:00.0")
     
     def test_parse_metrics(self):
         """Test NVIDIA metrics parsing"""

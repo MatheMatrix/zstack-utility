@@ -247,5 +247,52 @@ class TestLegacyCollectors(unittest.TestCase):
         self.assertIsNotNone(result)
 
 
+class TestGetAllGPUInfosByPCI(unittest.TestCase):
+    """Test get_all_gpu_infos_by_pci() function"""
+
+    @patch('zstacklib.utils.gpu.bash_roe')
+    def test_get_all_gpu_infos_by_pci_only_function_0(self, mock_bash):
+        """Test that get_all_gpu_infos_by_pci() only includes function 0 devices"""
+        with patch('zstacklib.gpu.get_all_gpu_vendors') as mock_get_vendors:
+            from zstacklib.gpu.base import GPUInfo
+            from zstacklib.utils import gpu
+
+            # Mock NVIDIA vendor returning both function 0 and function 1
+            mock_nvidia = MagicMock()
+            mock_nvidia.is_available.return_value = True
+            mock_nvidia.VENDOR_NAME = "NVIDIA"
+            mock_nvidia.get_basic_info.return_value = [
+                GPUInfo(
+                    pci_address="0000:34:00.0",
+                    memory="15360 MiB",
+                    power="70.00 W",
+                    serial_number="SN001"
+                ),
+                GPUInfo(
+                    pci_address="0000:34:00.1",
+                    memory="15360 MiB",
+                    power="70.00 W",
+                    serial_number="SN001"
+                ),
+                GPUInfo(
+                    pci_address="0000:9e:00.0",
+                    memory="16384 MiB",
+                    power="75.00 W",
+                    serial_number="SN002"
+                )
+            ]
+
+            mock_get_vendors.return_value = [mock_nvidia]
+
+            result = gpu.get_all_gpu_infos_by_pci()
+
+            # Should only include function 0 devices
+            self.assertIn("0000:34:00.0", result)
+            self.assertIn("0000:9e:00.0", result)
+            # Function 1 device should NOT be in the map
+            self.assertNotIn("0000:34:00.1", result)
+            self.assertEqual(len(result), 2)
+
+
 if __name__ == '__main__':
     unittest.main()
