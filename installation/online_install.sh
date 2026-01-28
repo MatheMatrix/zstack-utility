@@ -654,10 +654,10 @@ iz_unpack_zstack(){
 uz_upgrade_zstack(){
     echo_subtitle "Upgrade ZStack"
     cd $upgrade_folder
-    unzip -d zstack zstack.war >>$ZSTACK_INSTALL_LOG 2>&1
+    unzip -d zstack cloud.war >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -ne 0 ];then
         rm -rf $upgrade_folder
-        fail "failed to unzip zstack.war to $upgrade_folder/zstack"
+        fail "failed to unzip cloud.war to $upgrade_folder/zstack"
     fi
     if [ ! -z $DEBUG ]; then
         bash zstack/WEB-INF/classes/tools/install.sh zstack-ctl
@@ -675,9 +675,9 @@ uz_upgrade_zstack(){
     fi
 
     if [ ! -z $DEBUG ]; then
-        zstack-ctl upgrade_management_node --war-file $upgrade_folder/zstack.war 
+        zstack-ctl upgrade_management_node --war-file $upgrade_folder/cloud.war
     else
-        zstack-ctl upgrade_management_node --war-file $upgrade_folder/zstack.war >>$ZSTACK_INSTALL_LOG 2>&1
+        zstack-ctl upgrade_management_node --war-file $upgrade_folder/cloud.war >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     if [ $? -ne 0 ];then
         rm -rf $upgrade_folder
@@ -734,9 +734,9 @@ iz_unzip_tomcat(){
 iz_install_zstack(){
     echo_subtitle "Install ZStack into Tomcat"
     cd $ZSTACK_INSTALL_ROOT
-    unzip -d $CATALINA_ZSTACK_PATH zstack.war >>$ZSTACK_INSTALL_LOG 2>&1
+    unzip -d $CATALINA_ZSTACK_PATH cloud.war >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -ne 0 ];then
-       fail "failed to install zstack.war to $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_PATH."
+       fail "failed to install cloud.war to $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_PATH."
     fi
     pass
 }
