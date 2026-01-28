@@ -1963,6 +1963,14 @@ iz_unpack_zstack(){
         if [ $zstack_build_date -gt $current_date ]; then
             fail "Your system time is earlier than ${PRODUCT_NAME} build time: $zstack_build_time . Please fix it."
         fi
+        # Rename war file from zstack.war to cloud.war for brand migration
+        if [ -f zstack.war ]; then
+            echo "Renaming zstack.war to cloud.war" >>$ZSTACK_INSTALL_LOG
+            mv zstack.war cloud.war
+            if [ $? -ne 0 ]; then
+                fail "Failed to rename zstack.war to cloud.war"
+            fi
+        fi
     fi
     pass
 }
@@ -1971,8 +1979,8 @@ iz_check_space(){
     echo_subtitle "Checking space"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
 
-    # Check the /tmp directory have enough space to store unpackaged zstack.war and pip tmp files
-    zstack_war_size_B=`unzip -l $upgrade_folder/zstack.war | tail -n1 | awk '{ print $1 }'`
+    # Check the /tmp directory have enough space to store unpackaged cloud.war and pip tmp files
+    zstack_war_size_B=`unzip -l $upgrade_folder/cloud.war | tail -n1 | awk '{ print $1 }'`
     (( zstack_war_size_KiB = $zstack_war_size_B / 1024 ))
     (( pip_tmp_size_KiB = 768 * 1024 ))
     (( required_total_KiB = $pip_tmp_size_KiB + $zstack_war_size_KiB ))
@@ -2053,7 +2061,13 @@ uz_upgrade_tomcat(){
         rm -rf $TOMCAT_NAME_NEW/{webapps,logs}/*
         /bin/mv $TOMCAT_NAME_OLD/logs/* $TOMCAT_NAME_NEW/logs/
         /bin/mv $TOMCAT_NAME_OLD/bin/setenv.sh $TOMCAT_NAME_NEW/bin/
-        /bin/mv $TOMCAT_NAME_OLD/webapps/cloud $TOMCAT_NAME_NEW/webapps/
+        # Handle webapp migration: move old webapp name to cloud
+        if [ "$OLD_WEBAPP_NAME" != "cloud" ] && [ -d "$TOMCAT_NAME_OLD/webapps/$OLD_WEBAPP_NAME" ]; then
+            echo "Migrating webapp from $OLD_WEBAPP_NAME to cloud" >>$ZSTACK_INSTALL_LOG
+            /bin/mv $TOMCAT_NAME_OLD/webapps/$OLD_WEBAPP_NAME $TOMCAT_NAME_NEW/webapps/cloud
+        else
+            /bin/mv $TOMCAT_NAME_OLD/webapps/cloud $TOMCAT_NAME_NEW/webapps/
+        fi
         unzip -o -d $TOMCAT_NAME_NEW/webapps $upgrade_folder/libs/tomcat_root_app.zip >>$ZSTACK_INSTALL_LOG 2>&1
         if [ $? -ne 0 ];then
            fail "failed to unzip Tomcat package: $upgrade_folder/libs/tomcat_root_app.zip."
@@ -2081,10 +2095,10 @@ uz_upgrade_zstack_ctl(){
     echo_subtitle "Upgrade ${PRODUCT_NAME,,}-ctl"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     cd $upgrade_folder
-    unzip -d zstack zstack.war >>$ZSTACK_INSTALL_LOG 2>&1
+    unzip -d zstack cloud.war >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -ne 0 ];then
         cd /; rm -rf $upgrade_folder
-        fail "failed to unzip zstack.war to $upgrade_folder/zstack"
+        fail "failed to unzip cloud.war to $upgrade_folder/zstack"
     fi
 
     if [ ! -z $DEBUG ]; then
@@ -2228,9 +2242,9 @@ uz_upgrade_zstack(){
     chown -R zstack:zstack $ZSTACK_INSTALL_ROOT/imagestore >/dev/null 2>&1
 
     if [ ! -z $DEBUG ]; then
-        zstack-ctl upgrade_management_node --war-file $upgrade_folder/zstack.war 
+        zstack-ctl upgrade_management_node --war-file $upgrade_folder/cloud.war
     else
-        zstack-ctl upgrade_management_node --war-file $upgrade_folder/zstack.war >>$ZSTACK_INSTALL_LOG 2>&1
+        zstack-ctl upgrade_management_node --war-file $upgrade_folder/cloud.war >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     if [ $? -ne 0 ];then
         cd /; rm -rf $upgrade_folder
@@ -4444,6 +4458,20 @@ if [ x"$UPGRADE" = x'y' ]; then
 
     MINI_INSTALL_ROOT=${ZSTACK_INSTALL_ROOT}/zstack-mini/
     MINI_VERSION=${MINI_INSTALL_ROOT}/VERSION
+
+    # Detect old webapp name for migration to cloud
+    OLD_WEBAPP_NAME=""
+    if [ -d "$ZSTACK_INSTALL_ROOT/apache-tomcat/webapps" ]; then
+        for webapp_dir in "$ZSTACK_INSTALL_ROOT"/apache-tomcat/webapps/*; do
+            if [ -d "$webapp_dir" ] && [ -f "$webapp_dir/WEB-INF/web.xml" ]; then
+                OLD_WEBAPP_NAME=$(basename "$webapp_dir")
+                echo "Detected old webapp name: $OLD_WEBAPP_NAME" >>$ZSTACK_INSTALL_LOG
+                break
+            fi
+        done
+    fi
+    [ -z "$OLD_WEBAPP_NAME" ] && OLD_WEBAPP_NAME="cloud"
+    echo "Will migrate from webapp: $OLD_WEBAPP_NAME to: cloud" >>$ZSTACK_INSTALL_LOG
 
     check_version
     touch $UPGRADE_LOCK
