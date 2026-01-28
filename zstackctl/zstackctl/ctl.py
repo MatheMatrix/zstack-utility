@@ -9501,23 +9501,29 @@ class ClearLicenseCmd(Command):
     def run(self, args):
         license_folder = '/var/lib/zstack/license/'
         license_bck = license_folder + 'backup/' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-        license_files = license_folder + '*.txt'
-        license_pri_key = license_folder + 'pri.key'
+        blacklist = {
+            'backup', 'ca.pem', 'genlicreq', 'lic-application-code.txt', 'pri.key', 'zstack_trial_license',
+            '.', '..',
+        }
 
         shell('''mkdir -p %s''' % license_bck)
 
-        if os.path.exists(license_folder + 'license.txt'):
-            shell('''/bin/mv -f %s %s''' % (license_files, license_bck))
-            shell('''/bin/cp -f %s %s''' % (license_pri_key, license_bck))
+        try:
+            items = os.listdir(license_folder)
+        except OSError:
+            return
 
-        if os.path.exists(license_folder + 'license.bak'):
-            shell('''/bin/mv %s %s''' % (os.path.join(license_folder, 'license.bak'), license_bck))
+        for item in items:
+            if item in blacklist:
+                continue
 
-        if os.path.isdir(license_folder + 'packaged'):
-            shell('''/bin/mv -f %s %s''' % (license_folder + 'packaged', license_bck))
-            shell('''/bin/cp -f %s %s''' % (license_pri_key, license_bck))
+            src_path = os.path.join(license_folder, item)
+            dst_path = os.path.join(license_bck, item)
+            shell('''/bin/mv -f %s %s''' % (src_path, dst_path))
 
-        shell('''find %s -maxdepth 1 -name 'license_*' -type f -exec mv {} %s \;''' % (license_folder, license_bck))
+        pri_key = os.path.join(license_folder, 'pri.key')
+        if os.path.exists(pri_key):
+            shell('''/bin/cp -f %s %s''' % (pri_key, license_bck))
 
         info("Successfully clear and backup zstack license files to " + license_bck)
 
