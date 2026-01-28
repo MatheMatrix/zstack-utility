@@ -334,6 +334,10 @@ class CephAgent(plugin.TaskManager):
     GET_VOLUME_SNAPINFOS_PATH = "/ceph/primarystorage/volume/getsnapinfos"
     UPLOAD_IMAGESTORE_PATH = "/ceph/primarystorage/imagestore/backupstorage/commit"
     DOWNLOAD_IMAGESTORE_PATH = "/ceph/primarystorage/imagestore/backupstorage/download"
+    STORAGE_BACKUP_PATH = "/ceph/primarystorage/volume/takebackup"
+    CANCEL_STORAGE_BACKUP_PATH = "/ceph/primarystorage/volume/cancelbackup"
+    GET_STORAGE_BACKUP_MODE_PATH = "/ceph/primarystorage/volume/getbackupmode"
+    CLEAN_STORAGE_BACKUP_CACHE_PATH = "/ceph/primarystorage/volume/cleanbackupcache"
     DOWNLOAD_BITS_FROM_KVM_HOST_PATH = "/ceph/primarystorage/kvmhost/download"
     DOWNLOAD_BITS_FROM_NBD_EXPT_PATH = "/ceph/primarystorage/nbd/download"
     CLAEN_TRASH_PATH = "/ceph/primarystorage/trash/clean"
@@ -349,6 +353,7 @@ class CephAgent(plugin.TaskManager):
     XSKY_UPDATE_BLOCK_VOLUME_SNAPSHOT = "/xsky/ceph/primarystorage/volume/snapshot/update"
 
     CEPH_CONF_PATH = "/etc/ceph/ceph.conf"
+    BACKUP_SNAPSHOT_PREFIX = "rbd-storage-backup-"
 
     http_server = http.HttpServer(port=7762)
     http_server.logfile_path = log.get_logfile_path()
@@ -395,7 +400,10 @@ class CephAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.CP_PATH, self.cp)
         self.http_server.register_async_uri(self.UPLOAD_IMAGESTORE_PATH, self.upload_imagestore)
         self.http_server.register_async_uri(self.DOWNLOAD_IMAGESTORE_PATH, self.download_imagestore)
-        self.http_server.register_async_uri(self.DELETE_POOL_PATH, self.delete_pool)
+        self.http_server.register_async_uri(self.STORAGE_BACKUP_PATH, self.take_storage_backup)
+        self.http_server.register_async_uri(self.CANCEL_STORAGE_BACKUP_PATH, self.cancel_storage_backup)
+        self.http_server.register_async_uri(self.GET_STORAGE_BACKUP_MODE_PATH, self.get_storage_backup_mode)
+        self.http_server.register_async_uri(self.CLEAN_STORAGE_BACKUP_CACHE_PATH, self.clean_storage_backup_cache)
         self.http_server.register_async_uri(self.GET_VOLUME_SIZE_PATH, self.get_volume_size)
         self.http_server.register_async_uri(self.BATCH_GET_VOLUME_SIZE_PATH, self.batch_get_volume_size)
         self.http_server.register_async_uri(self.GET_VOLUME_WATCHES_PATH, self.get_volume_watchers)
@@ -885,6 +893,52 @@ class CephAgent(plugin.TaskManager):
     def upload_imagestore(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         return self.imagestore_client.upload_imagestore(cmd, req)
+
+    @replyerror
+    def take_storage_backup(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        return self.imagestore_client.storage_backup(cmd)
+
+    @replyerror
+    def cancel_storage_backup(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        return self.imagestore_client.cancel_storage_backup(cmd)
+
+    @replyerror
+    def get_storage_backup_mode(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+        mode = 'incremental'
+        if not cmd.lastBackupUuid:
+            mode = 'full'
+        if shell.run('rbd info %s@%s%s' % (
+                cmd.volumePath.replace('ceph://', ''), self.BACKUP_SNAPSHOT_PREFIX, cmd.lastBackupUuid)) != 0:
+            mode = 'full'
+
+        rsp.mode = mode
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def clean_storage_backup_cache(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+
+        vpath = self._normalize_install_path(cmd.volumePath)
+
+        snaps = self._get_snapshots(vpath)
+        if not snaps:
+            return jsonobject.dumps(rsp)
+
+        target_snaps = [s for s in snaps if s.name.startswith(self.BACKUP_SNAPSHOT_PREFIX)]
+
+        if not target_snaps:
+            return jsonobject.dumps(rsp)
+
+        for snap in target_snaps:
+            full_snap_name = vpath + '@' + snap.name
+            shell.call('rbd snap rm %s' % full_snap_name)
+
+        return jsonobject.dumps(rsp)
 
     @replyerror
     def commit_image(self, req):
