@@ -8650,10 +8650,12 @@ class UpgradeManagementNodeCmd(Command):
                     webapp_dir = os.path.dirname(ctl.zstack_home)
 
                 shell('cp %s %s' % (new_war.path, webapp_dir))
-                ShellCmd('unzip %s -d zstack' % os.path.basename(new_war.path), workdir=webapp_dir)()
+                ShellCmd('unzip %s -d cloud' % os.path.basename(new_war.path), workdir=webapp_dir)()
                 #create local repo folder for possible zstack local yum repo
                 zstack_dvd_repo = '{}/cloud/static/zstack-repo'.format(webapp_dir)
                 shell('rm -f {0}; mkdir -p {0};ln -s /opt/zstack-dvd/x86_64 {0}/x86_64; ln -s /opt/zstack-dvd/aarch64 {0}/aarch64; ln -s /opt/zstack-dvd/mips64el {0}/mips64el; ln -s /opt/zstack-dvd/loongarch64 {0}/loongarch64; chown -R zstack:zstack {0}'.format(zstack_dvd_repo))
+                # Update zstack_home to point to new cloud directory
+                ctl.zstack_home = os.path.join(webapp_dir, 'cloud')
 
             def restore_config():
                 info('restoring the zstack.properties ...')
@@ -8662,7 +8664,7 @@ class UpgradeManagementNodeCmd(Command):
             def restore_custom_pcidevice_xml():
                 info('restoring the customPciDevices.xml ...')
                 custom_pcidevice_xml_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/cloud/WEB-INF/classes/mevoco/pciDevice/')
-                custom_pcidevice_xml_backup_path = os.path.join(upgrade_tmp_dir, 'zstack/WEB-INF/classes/mevoco/pciDevice/customPciDevices.xml')
+                custom_pcidevice_xml_backup_path = os.path.join(upgrade_tmp_dir, 'cloud/WEB-INF/classes/mevoco/pciDevice/customPciDevices.xml')
                 if not os.path.isfile(custom_pcidevice_xml_backup_path):
                     info('no backup customPciDevices.xml found')
                     return
@@ -8676,7 +8678,7 @@ class UpgradeManagementNodeCmd(Command):
 
             def update_gray_upgrade_json():
                 info('update the grayUpgrade.json ...')
-                gray_upgrade_json_backup_path = os.path.join(upgrade_tmp_dir, 'zstack/WEB-INF/classes/grayUpgrade/grayUpgrade.json')
+                gray_upgrade_json_backup_path = os.path.join(upgrade_tmp_dir, 'cloud/WEB-INF/classes/grayUpgrade/grayUpgrade.json')
                 gray_upgrade_json_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'apache-tomcat/webapps/cloud/WEB-INF/classes/grayUpgrade/')
                 if not os.path.exists(gray_upgrade_json_backup_path):
                     info('no backup grayUpgrade.json found')

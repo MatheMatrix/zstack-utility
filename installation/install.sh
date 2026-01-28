@@ -2086,6 +2086,18 @@ uz_upgrade_tomcat(){
         fi
     fi
 
+    # Handle webapp migration when Tomcat version is the same
+    if [ "$TOMCAT_NAME_OLD" = "$TOMCAT_NAME_NEW" ]; then
+        if [ "$OLD_WEBAPP_NAME" != "cloud" ] && [ -d "$TOMCAT_PATH/$TOMCAT_NAME_OLD/webapps/$OLD_WEBAPP_NAME" ]; then
+            echo "Migrating webapp from $OLD_WEBAPP_NAME to cloud (same Tomcat version)" >>$ZSTACK_INSTALL_LOG
+            /bin/mv $TOMCAT_PATH/$TOMCAT_NAME_OLD/webapps/$OLD_WEBAPP_NAME $TOMCAT_PATH/$TOMCAT_NAME_OLD/webapps/cloud
+            # Update symlinks to point to new cloud webapp
+            rm -f $TOMCAT_PATH/VERSION $TOMCAT_PATH/PJNUM
+            ln -sf $TOMCAT_PATH/$TOMCAT_NAME_OLD/webapps/cloud/VERSION $TOMCAT_PATH/VERSION
+            ln -sf $TOMCAT_PATH/$TOMCAT_NAME_OLD/webapps/cloud/PJNUM $TOMCAT_PATH/PJNUM
+        fi
+    fi
+
     #If tomcat use the default conf update it, ensure the configuration is latest
     set_tomcat_config
     pass
@@ -4520,7 +4532,13 @@ if [ x"$UPGRADE" = x'y' ]; then
 fi
 
 #Set ZSTACK_HOME for zstack-ctl.
-export ZSTACK_HOME=$ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_PATH
+# If upgrading from old webapp name , temporarily set ZSTACK_HOME to old directory
+if [ x"$UPGRADE" = x'y' ] && [ x"$OLD_WEBAPP_NAME" != x'cloud' ] && [ -n "$OLD_WEBAPP_NAME" ]; then
+    export ZSTACK_HOME=$ZSTACK_INSTALL_ROOT/apache-tomcat/webapps/$OLD_WEBAPP_NAME
+    echo "Temporarily set ZSTACK_HOME to old webapp for migration: $ZSTACK_HOME" >>$ZSTACK_INSTALL_LOG
+else
+    export ZSTACK_HOME=$ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_PATH
+fi
 grep "ZSTACK_HOME" ~/.bashrc > /dev/null
 if [ $? -eq 0 ]; then
     sed -i "s#export ZSTACK_HOME=.*#export ZSTACK_HOME=${ZSTACK_HOME}#" ~/.bashrc
@@ -4573,6 +4591,15 @@ if [ x"$UPGRADE" = x'y' ]; then
 
     #only upgrade zstack
     upgrade_zstack
+
+    # After migration, update ZSTACK_HOME to new cloud directory
+    if [ x"$UPGRADE" = x'y' ] && [ x"$OLD_WEBAPP_NAME" != x'cloud' ] && [ -n "$OLD_WEBAPP_NAME" ]; then
+        NEW_ZSTACK_HOME=$ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_PATH
+        export ZSTACK_HOME=$NEW_ZSTACK_HOME
+        sed -i "s#export ZSTACK_HOME=.*#export ZSTACK_HOME=${NEW_ZSTACK_HOME}#" ~/.bashrc
+        source ~/.bashrc >/dev/null 2>&1
+        echo "Updated ZSTACK_HOME to new webapp after migration: $NEW_ZSTACK_HOME" >>$ZSTACK_INSTALL_LOG
+    fi
 
     #Upgrade or install zops
     install_zops
