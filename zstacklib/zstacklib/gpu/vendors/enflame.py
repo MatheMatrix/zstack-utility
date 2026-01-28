@@ -238,3 +238,15 @@ class Enflame(GPUBase):
                 ))
         
         return results
+    
+    @classmethod
+    def post_process_pci_device(cls, pci_device_to):
+        """
+        Post-process PCI device after collection.
+        
+        Enflame GPUs are not virtualizable, so set virtStatus to UNVIRTUALIZABLE.
+        
+        Args:
+            pci_device_to: The PCI device transfer object
+        """
+        pci_device_to.virtStatus = "UNVIRTUALIZABLE"

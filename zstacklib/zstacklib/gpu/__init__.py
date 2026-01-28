@@ -11,7 +11,7 @@ This module provides:
 
 Usage in kvmagent (host_plugin, prometheus, etc.):
   from zstacklib.gpu import get_all_gpu_vendors, get_gpu_vendor
-  
+
   # Get all registered GPU vendors
   for vendor_class in get_all_gpu_vendors():
       if vendor_class.is_available():
@@ -42,24 +42,24 @@ Architecture:
 from zstacklib.gpu.base import (
     # Vendor enumeration
     VendorEnum,
-    
+
     # Abstract base class
     GPUBase,
-    
+
     # Data models
     GPUInfo,
     GPUMetrics,
     VGPUMetrics,
-    
+
     # Registration decorator
     register_gpu_vendor,
-    
+
     # Registry query functions
     get_gpu_vendor,
     get_all_gpu_vendors,
     get_gpu_vendor_names,
     get_vendor_enum_mapping,
-    
+
     # Vendor identification (core utilities)
     get_vendor_by_id,
     get_vendor_by_pci_name,
@@ -99,29 +99,80 @@ from zstacklib.gpu.vendors import haiguang
 from zstacklib.gpu.vendors import kunlunxin
 
 
+# =============================================================================
+# Batch addon enrichment - common logic using vendor hooks
+# =============================================================================
+
+def enrich_gpu_info_map(gpu_info_map):
+    """
+    Enrich gpu_info_map with vendor-specific additional fields (productName, opaque, etc.).
+
+    Builds pci -> vendor mapping from get_basic_info, then calls each vendor's
+    enrich_addon_info(gpu_info_map, pci_list) for its PCI addresses.
+
+    Args:
+        gpu_info_map: dict from get_all_gpu_infos_by_pci(); mutated in place
+    """
+    if not gpu_info_map:
+        return
+    from zstacklib.utils.pci import normalize_pci_address
+    from zstacklib.utils import log
+    _log = log.get_logger(__name__)
+
+    pci_to_vendor = {}
+    for vendor_class in get_all_gpu_vendors():
+        if not vendor_class.is_available():
+            continue
+        try:
+            for gpu_info in vendor_class.get_basic_info():
+                if gpu_info.pci_address:
+                    norm = normalize_pci_address(gpu_info.pci_address)
+                    if norm and norm in gpu_info_map:
+                        pci_to_vendor[norm] = vendor_class.VENDOR_NAME
+        except Exception as e:
+            _log.debug("enrich_gpu_info_map: get_basic_info from %s: %s" %
+                       (vendor_class.VENDOR_NAME, str(e)))
+
+    vendor_to_pcis = {}
+    for pci, vendor in pci_to_vendor.items():
+        vendor_to_pcis.setdefault(vendor, []).append(pci)
+
+    for vendor_name, pcis in vendor_to_pcis.items():
+        vendor_class = get_gpu_vendor(vendor_name)
+        if vendor_class and hasattr(vendor_class, 'enrich_addon_info'):
+            try:
+                vendor_class.enrich_addon_info(gpu_info_map, pcis)
+            except Exception as e:
+                _log.debug("enrich_gpu_info_map: enrich_addon_info for %s: %s" %
+                           (vendor_name, str(e)))
+
+
 __all__ = [
     # Vendor enumeration
     'VendorEnum',
-    
+
     # Abstract base class
     'GPUBase',
-    
+
     # Data models
     'GPUInfo',
     'GPUMetrics',
     'VGPUMetrics',
-    
+
     # Registration
     'register_gpu_vendor',
-    
+
     # Registry query
     'get_gpu_vendor',
     'get_all_gpu_vendors',
     'get_gpu_vendor_names',
     'get_vendor_enum_mapping',
-    
+
     # Vendor identification
     'get_vendor_by_id',
     'get_vendor_by_pci_name',
     'identify_vendor',
+
+    # Batch addon enrichment
+    'enrich_gpu_info_map',
 ]
