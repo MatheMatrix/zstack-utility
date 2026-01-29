@@ -139,3 +139,17 @@ class Tianshu(GPUBase):
             results.append(metrics)
         
         return results
+
+    @classmethod
+    def enrich_addon_info(cls, gpu_info_map, pci_addresses):
+        """Add productName for Tianshu GPUs."""
+        if not pci_addresses:
+            return
+        from zstacklib.utils.gpu import get_tianshu_gpu_product_name_cmd, get_tianshu_product_name
+        r, o, e = bash_roe(get_tianshu_gpu_product_name_cmd())
+        if r == 0 and o:
+            product_name = get_tianshu_product_name(o)
+            if product_name:
+                for pci_addr in pci_addresses:
+                    if pci_addr in gpu_info_map:
+                        gpu_info_map[pci_addr]["productName"] = product_name

@@ -11,6 +11,66 @@ logger = log.get_logger(__name__)
 
 _pci_device_cache = {}
 
+
+class PciDeviceProcessingContext(object):
+    """
+    Context object for PCI device processing.
+
+    This replaces the dict-based context to provide better structure and type safety.
+    Processors can access and modify context data through this object.
+    """
+
+    def __init__(self, pci_device_mapper=None, opaque=None):
+        """
+        Initialize PCI device processing context.
+
+        Args:
+            pci_device_mapper: dict mapping PCI class names (for type detection)
+            opaque: Optional opaque data for vendor-specific enrichment
+        """
+        self.pci_device_mapper = pci_device_mapper or {}
+        self.opaque = opaque
+
+        # Device-type-specific data (populated by processors during prepare phase)
+        self.gpu_info_map = None  # Populated by GPU processor
+
+        # Device capabilities storage: pciDeviceAddress -> capabilities dict
+        # Note: This is now primarily used for non-GPU devices or legacy code
+        # GPU capabilities are detected via vendor methods in GPU processor
+        self.device_capabilities = {}
+
+    def get_device_capabilities(self, pci_device_to):
+        """
+        Get capabilities for a PCI device.
+
+        Args:
+            pci_device_to: PciDeviceTO object
+
+        Returns:
+            dict: Capabilities dict, or empty dict if not found
+        """
+        return self.device_capabilities.get(pci_device_to.pciDeviceAddress, {})
+
+    def set_device_capabilities(self, pci_device_to, capabilities):
+        """
+        Set capabilities for a PCI device.
+
+        Args:
+            pci_device_to: PciDeviceTO object
+            capabilities: dict with capability information
+        """
+        self.device_capabilities[pci_device_to.pciDeviceAddress] = capabilities
+
+
+# PCI device operations registry (Linux kernel style)
+# Similar to pci_driver in Linux kernel, each ops contains:
+#   - probe: (pci_device_to) -> bool, returns True if device matches (like pci_driver.id_table matching)
+#   - init: (pci_device_to, context) -> bool, processes the device (like pci_driver.probe)
+#   - prepare: (context) -> callable or None, optional, called once before processing devices
+#     Can return a post-prepare hook (device_list, context) -> None to refine capabilities
+# Reference: Linux kernel pci_driver structure and pci_register_driver()
+_pci_device_ops_list = []
+
 # Vendor name mapping for simplification (lightweight, no GPU vendor system dependency)
 # Maps full vendor names from lspci to simplified names
 _VENDOR_NAME_MAPPING = {
@@ -423,3 +483,157 @@ def collect_pci_devices_with_dependencies(pciDeviceAddress):
         if full_address != pciDeviceAddress:
             devices.append(full_address)
     return devices
+
+
+class PciDeviceOps(object):
+    """
+    PCI device operations structure (Linux kernel style).
+
+    Similar to pci_driver in Linux kernel, this defines operations for handling
+    specific types of PCI devices (e.g., GPU, Ethernet, etc.).
+
+    Reference: Linux kernel pci_driver structure
+    """
+
+    def __init__(self, probe, init, prepare=None):
+        """
+        Initialize PCI device operations.
+
+        Args:
+            probe: Function (pci_device_to) -> bool
+                Probe function to match devices (like pci_driver.id_table matching).
+                Returns True if this ops should handle the device.
+            init: Function (pci_device_to, context: PciDeviceProcessingContext) -> bool
+                Initialize function to process the device (like pci_driver.probe).
+                Returns True if device was processed.
+            prepare: Function (context: PciDeviceProcessingContext) -> callable or None, optional
+                Prepare function called once before processing devices (like driver init).
+                Can modify context to add prepared data (e.g., gpu_info_map).
+                Can return a post-prepare hook (device_list, context) -> None to refine capabilities.
+        """
+        self.probe = probe
+        self.init = init
+        self.prepare = prepare
+
+
+def pci_register_device_ops(ops):
+    """
+    Register PCI device operations (Linux kernel style).
+
+    Similar to pci_register_driver() in Linux kernel, this registers operations
+    for handling specific types of PCI devices.
+
+    Architecture (similar to Linux kernel device driver model):
+    1. Abstract layer: Generic PCI capabilities are detected in main loop
+    2. Registry layer: Device ops are registered here (like pci_register_driver)
+    3. Device-specific layer: Each ops handles its device type (like pci_driver.probe)
+
+    Args:
+        ops: PciDeviceOps object containing probe, init, and optional prepare functions
+
+    Reference: Linux kernel pci_register_driver()
+    """
+    if not isinstance(ops, PciDeviceOps):
+        raise TypeError("ops must be a PciDeviceOps instance")
+    _pci_device_ops_list.append(ops)
+
+
+# Backward compatibility: keep old function name as alias
+def register_pci_device_processor(matcher_func, processor_func, prepare_func=None):
+    """
+    Register a PCI device processor (deprecated, use pci_register_device_ops instead).
+
+    This is kept for backward compatibility. New code should use pci_register_device_ops()
+    with a PciDeviceOps object.
+    """
+    ops = PciDeviceOps(probe=matcher_func,
+                       init=processor_func, prepare=prepare_func)
+    pci_register_device_ops(ops)
+
+
+def pci_device_prepare_chain(context):
+    """
+    Call prepare hooks of all registered device operations (Linux kernel style).
+
+    Similar to calling driver init functions before device probing in Linux kernel.
+    This allows device ops to do batch preparation (e.g., collect GPU info map)
+    before individual device processing begins.
+
+    Device ops can also register post-prepare hooks to refine capabilities
+    (e.g., update sriov detection with GPU info map).
+
+    Args:
+        context: PciDeviceProcessingContext object that ops can modify
+
+    Returns:
+        list: List of post-prepare hooks (device_list, context) -> None
+
+    Reference: Linux kernel driver initialization before device probing
+    """
+    post_prepare_hooks = []
+    for ops in _pci_device_ops_list:
+        if ops.prepare:
+            try:
+                result = ops.prepare(context)
+                # If prepare function returns a post-prepare hook, collect it
+                if result and callable(result):
+                    post_prepare_hooks.append(result)
+            except Exception as e:
+                logger.debug("PCI device ops prepare error: %s" % str(e))
+                continue
+    return post_prepare_hooks
+
+
+# Backward compatibility: keep old function name as alias
+def prepare_pci_device_processors(context):
+    """
+    Call prepare functions of all registered processors (deprecated, use pci_device_prepare_chain instead).
+    """
+    return pci_device_prepare_chain(context)
+
+
+def pci_device_probe(pci_device_to, context):
+    """
+    Probe PCI device to find matching device operations (Linux kernel style).
+
+    Similar to pci_device_probe() in Linux kernel, this probes the device
+    by calling probe() functions of registered device operations until a match is found.
+
+    Flow (similar to Linux kernel device driver matching):
+    1. Probe device by calling ops.probe() of each registered ops (like pci_driver.id_table matching)
+    2. If match found, call ops.init() to initialize the device (like pci_driver.probe)
+    3. Device ops handles: type refinement, virtStatus, addon info, etc.
+
+    Args:
+        pci_device_to: PciDeviceTO object (with _pci_capabilities set)
+        context: PciDeviceProcessingContext object containing processing context
+
+    Returns:
+        bool: True if device was processed by a registered ops, False otherwise
+
+    Reference: Linux kernel pci_device_probe() and pci_driver.probe()
+    """
+    if not pci_device_to:
+        return False
+
+    # Try each registered ops in order (like Linux kernel driver matching)
+    for ops in _pci_device_ops_list:
+        try:
+            # Probe: check if this ops should handle the device (like pci_driver.id_table matching)
+            if ops.probe(pci_device_to):
+                # Init: process the device (like pci_driver.probe)
+                if ops.init(pci_device_to, context):
+                    return True
+        except Exception as e:
+            logger.debug("PCI device ops error: %s" % str(e))
+            continue
+
+    return False
+
+
+# Backward compatibility: keep old function name as alias
+def enrich_pci_device(pci_device_to, context):
+    """
+    Enrich PCI device by finding and calling the appropriate processor (deprecated, use pci_device_probe instead).
+    """
+    return pci_device_probe(pci_device_to, context)

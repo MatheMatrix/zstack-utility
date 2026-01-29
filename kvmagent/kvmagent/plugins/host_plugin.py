@@ -361,7 +361,8 @@ class HostNetworkBondingInventory(object):
             "/sys/class/net/%s/bonding/mii_status" % self.bondingName).strip()
         self.mac = linux.read_file(
             "/sys/class/net/%s/address" % self.bondingName).strip()
-        if len(bash_o("ip link show type bridge_slave %s" % self.bondingName).strip()) > 0:
+        if len(bash_o("ip link show type bridge_slave %s" %
+               self.bondingName).strip()) > 0:
             self.bondingType = "bridgeSlave"
         else:
             self.bondingType = "noBridge"
@@ -474,7 +475,8 @@ class HostNetworkBondingInventory(object):
 
 
 class HostNetworkInterfaceInventory(object):
-    def init(self, name, master=None, managementServerIp=None, driverType=None, pciAddress=None):
+    def init(self, name, master=None, managementServerIp=None,
+             driverType=None, pciAddress=None):
         super(HostNetworkInterfaceInventory, self).__init__()
         self.interfaceName = name
         self.speed = None
@@ -510,7 +512,8 @@ class HostNetworkInterfaceInventory(object):
         else:
             self._init_from_name(managementServerIp)
 
-    def __new__(cls, name, master=None, managementServerIp=None, driverType=None, pciAddress=None, *args, **kwargs):
+    def __new__(cls, name, master=None, managementServerIp=None,
+                driverType=None, pciAddress=None, *args, **kwargs):
         o = super(HostNetworkInterfaceInventory, cls).__new__(cls)
         o.init(name, master, managementServerIp, driverType, pciAddress)
         return o
@@ -527,7 +530,8 @@ class HostNetworkInterfaceInventory(object):
             return
         self.speed = get_nic_supported_max_speed(self.interfaceName)
         # cannot read carrier of vf nic
-        if not os.path.exists("/sys/class/net/%s/device/physfn" % self.interfaceName):
+        if not os.path.exists(
+                "/sys/class/net/%s/device/physfn" % self.interfaceName):
             carrier = linux.read_file(
                 "/sys/class/net/%s/carrier" % self.interfaceName)
             if carrier:
@@ -583,7 +587,8 @@ class HostNetworkInterfaceInventory(object):
 
         self.speed = get_nic_supported_max_speed(self.interfaceName)
         # cannot read carrier of vf nic
-        if not os.path.exists("/sys/class/net/%s/device/physfn" % self.interfaceName):
+        if not os.path.exists(
+                "/sys/class/net/%s/device/physfn" % self.interfaceName):
             carrier = linux.read_file(
                 "/sys/class/net/%s/carrier" % self.interfaceName)
             if carrier:
@@ -951,11 +956,11 @@ class UpdateConfigration(object):
         _create_iommu_conf()
 
         r_on, o_on, e_on = self.executeCmdOnFile(
-            "grep -E '{}(\ )*=(\ )*on'".format(self.iommu_type))
+            "grep -E '{}(\\ )*=(\\ )*on'".format(self.iommu_type))
         r_off, o_off, e_off = self.executeCmdOnFile(
-            "grep -E '{}(\ )*=(\ )*off'".format(self.iommu_type))
+            "grep -E '{}(\\ )*=(\\ )*off'".format(self.iommu_type))
         r_modprobe_blacklist, o_modprobe_blacklist, e_modprobe_blacklist = self.executeCmdOnFile(
-            "grep -E 'modprobe.blacklist(\ )*='")
+            "grep -E 'modprobe.blacklist(\\ )*='")
         # When iommu has not changed,  No need to update /etc/default/grub
         if self.enableIommu is False:
             if r_on != 0 and r_off != 0 and r_modprobe_blacklist != 0:
@@ -999,10 +1004,11 @@ class UpdateConfigration(object):
     def updateGrubConfig(self):
         def updateGrubContent(content):
             content = re.sub(
-                '{0}\s*=\s*on'.format(self.iommu_type), '', content)
+                '{0}\\s*=\\s*on'.format(self.iommu_type), '', content)
             content = re.sub(
-                '{0}\s*=\s*off'.format(self.iommu_type), '', content)
-            content = re.sub('\s*modprobe.blacklist\s*=\s*\S*', '', content)
+                '{0}\\s*=\\s*off'.format(self.iommu_type), '', content)
+            content = re.sub(
+                '\\s*modprobe.blacklist\\s*=\\s*\\S*', '', content)
             return content
 
         for grub_path in GRUB_FILES:
@@ -1302,7 +1308,8 @@ class HostPlugin(kvmagent.KvmAgent):
             rsp.osRelease = rsp.osRelease.replace('ZStack', 'Sword')
         elif rsp.osDistribution == "helix":
             rsp.osRelease = "release"
-        # to be compatible with both `2.6.0` and `2.9.0(qemu-kvm-ev-2.9.0-16.el7_4.8.1)`
+        # to be compatible with both `2.6.0` and
+        # `2.9.0(qemu-kvm-ev-2.9.0-16.el7_4.8.1)`
         qemu_img_version = shell.call(
             "qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1")
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
@@ -1371,12 +1378,13 @@ class HostPlugin(kvmagent.KvmAgent):
             "ipmitool mc info | grep 'Firmware Revision' | awk -F ':' '{print $2}'").strip()
         rsp.bmcVersion = bmc_version if bmc_version else 'unknown'
 
-        # To see which lan the BMC is listening on, try the following (1-11), https://wiki.docking.org/index.php/Configuring_IPMI
+        # To see which lan the BMC is listening on, try the following (1-11),
+        # https://wiki.docking.org/index.php/Configuring_IPMI
         for channel in range(1, 12):
-            '''     
+            '''
             example:
-            except result:         IP Address              : xxx.xxx.xxx.xxx 
-            set ipmi_address "None" when got results unexpected or happened some errors   
+            except result:         IP Address              : xxx.xxx.xxx.xxx
+            set ipmi_address "None" when got results unexpected or happened some errors
             '''
             ret, out, err = bash_roe(
                 "ipmitool lan print %s | grep -w 'IP Address'| grep -v 'Source'" % channel)
@@ -1425,7 +1433,7 @@ class HostPlugin(kvmagent.KvmAgent):
                 cpu_cores_per_socket.strip()) * int(cpu_threads_per_core) * sockets
 
             '''
-            examples:         
+            examples:
                     lscpu | grep 'L1i cache'
                     L1i cache:                       768 KiB
                     lscpu | grep 'L1d cache'
@@ -1440,7 +1448,7 @@ class HostPlugin(kvmagent.KvmAgent):
             rsp.cpuModelName = self._get_host_cpu_model()
 
             host_cpu_info = shell.call(
-                "grep -m2 -P -o -i '(model name|cpu MHz)\s*:\s*\K.*' /proc/cpuinfo").splitlines()
+                "grep -m2 -P -o -i '(model name|cpu MHz)\\s*:\\s*\\K.*' /proc/cpuinfo").splitlines()
             host_cpu_model_name = host_cpu_info[0]
             rsp.hostCpuModelName = host_cpu_model_name
 
@@ -1462,7 +1470,7 @@ class HostPlugin(kvmagent.KvmAgent):
             rsp.cpuModelName = self._get_host_cpu_model()
 
             host_cpu_info = shell.call(
-                "grep -m2 -P -o '(model name|cpu MHz)\s*:\s*\K.*' /proc/cpuinfo").splitlines()
+                "grep -m2 -P -o '(model name|cpu MHz)\\s*:\\s*\\K.*' /proc/cpuinfo").splitlines()
             host_cpu_model_name = host_cpu_info[0]
             rsp.hostCpuModelName = host_cpu_model_name
 
@@ -1590,7 +1598,8 @@ class HostPlugin(kvmagent.KvmAgent):
         old_ept = self._get_intel_ept()
         if new_ept != old_ept:
             param = "ept=%d" % new_ept
-            if shell.run("modprobe -r kvm-intel") != 0 or shell.run("modprobe kvm-intel %s" % param) != 0:
+            if shell.run(
+                    "modprobe -r kvm-intel") != 0 or shell.run("modprobe kvm-intel %s" % param) != 0:
                 error = "failed to reload kvm-intel, please stop the running VM on the host and try again."
             else:
                 with open('/etc/modprobe.d/intel-ept.conf', 'w') as writer:
@@ -1634,7 +1643,8 @@ class HostPlugin(kvmagent.KvmAgent):
 
     def _get_next_available_port(self):
         for port in range(4100, 4200):
-            if bash_r("netstat -nap | grep :%s[[:space:]] | grep LISTEN" % port) != 0:
+            if bash_r(
+                    "netstat -nap | grep :%s[[:space:]] | grep LISTEN" % port) != 0:
                 return port
         raise kvmagent.KvmError(
             'no more available port for start usbredirect server')
@@ -1647,7 +1657,8 @@ class HostPlugin(kvmagent.KvmAgent):
             iptc.add_rule('-A INPUT -p tcp -m tcp --dport %s -j ACCEPT' % port)
             iptc.iptable_restore()
             systemd_service_name = "usbredir-%s-%s-%s" % (port, busNum, devNum)
-            if bash_r("systemctl list-units |grep %s" % systemd_service_name) == 0:
+            if bash_r("systemctl list-units |grep %s" %
+                      systemd_service_name) == 0:
                 bash_r("systemctl start %s" % systemd_service_name)
             else:
                 bash_r("systemd-run --unit %s usbredirserver -p %s %s-%s" %
@@ -1690,7 +1701,8 @@ class HostPlugin(kvmagent.KvmAgent):
     def stop_usb_redirect_server(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = StopUsbRedirectServerRsp()
-        if bash_r("netstat -nap | grep :%s[[:space:]] | grep LISTEN | grep usbredir" % cmd.port) != 0:
+        if bash_r(
+                "netstat -nap | grep :%s[[:space:]] | grep LISTEN | grep usbredir" % cmd.port) != 0:
             logger.info("port %s is not occupied by usbredir" % cmd.port)
         bash_r("systemctl stop usbredir-%s-%s-%s" %
                (cmd.port, cmd.busNum, cmd.devNum))
@@ -1737,7 +1749,9 @@ class HostPlugin(kvmagent.KvmAgent):
                 self.usbVersion = ""
 
             def toString(self):
-                return self.busNum + ':' + self.devNum + ':' + self.idVendor + ':' + self.idProduct + ':' + self.iManufacturer + ':' + self.iProduct + ':' + self.iSerial + ':' + self.usbVersion + ";"
+                return self.busNum + ':' + self.devNum + ':' + self.idVendor + ':' + self.idProduct + ':' + \
+                    self.iManufacturer + ':' + self.iProduct + ':' + \
+                    self.iSerial + ':' + self.usbVersion + ";"
 
         def append_usb_device(info, dev_id):
             if info.busNum == '' or info.devNum == '' or info.idVendor == '' or info.idProduct == '':
@@ -1791,7 +1805,8 @@ class HostPlugin(kvmagent.KvmAgent):
                     info.iProduct = ' '.join(line[2:]) if len(line) > 2 else ""
                 elif line[0] == 'bcdUSB':
                     info.usbVersion = line[1]
-                    # special case: USB2.0 with speed 1.5MBit/s or 12MBit/s should be attached to USB1.1 Controller
+                    # special case: USB2.0 with speed 1.5MBit/s or 12MBit/s
+                    # should be attached to USB1.1 Controller
                     rst = bash_r(
                         "/usr/local/bin/lsusb.py | grep -v 'grep' | grep '%s' | grep -E '1.5MBit/s|12MBit/s'" % dev_id)
                     info.usbVersion = info.usbVersion if rst != 0 else '1.1'
@@ -1884,7 +1899,8 @@ if __name__ == "__main__":
         # If upgrade qemu-kvm and libvirt at the same time
         # you need to upgrade qemu-kvm and then upgrade libvirt
         # to ensure that libvirtd is rebooted after upgrading qemu-kvm
-        if "qemu-kvm" in updates or (cmd.releaseVersion != '' and "qemu-kvm" not in exclude):
+        if "qemu-kvm" in updates or (cmd.releaseVersion !=
+                                     '' and "qemu-kvm" not in exclude):
             update_qemu_cmd = "export YUM0={0};"
             if releasever in ['c74', 'c76', 'c79', 'h76c', 'h79c']:
                 update_qemu_cmd += "yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} swap -y -- remove qemu-img-ev -- install qemu-img " \
@@ -1892,12 +1908,14 @@ if __name__ == "__main__":
                     "qemu-storage-daemon -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} install qemu-kvm qemu-kvm-common -y && "
             else:
                 update_qemu_cmd += " yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} update qemu-storage-daemon -y;"
-            # centos, helix, rocky, kylin using edk2-ovmf, ipxe-roms-qemu seabios-bin seavgabios-bin, but h2203sp1o was not using them.
+            # centos, helix, rocky, kylin using edk2-ovmf, ipxe-roms-qemu
+            # seabios-bin seavgabios-bin, but h2203sp1o was not using them.
             if releasever not in ['h2203sp1o']:
                 update_qemu_cmd += " yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} update edk2-ovmf ipxe-roms-qemu seabios-bin seavgabios-bin -y;"
             yum_cmd = yum_cmd + update_qemu_cmd.format(releasever,
                                                        ',zstack-experimental-mn' if cmd.enableExpRepo else '')
-        if "libvirt" in updates or (cmd.releaseVersion != '' and "libvirt" not in exclude):
+        if "libvirt" in updates or (
+                cmd.releaseVersion != '' and "libvirt" not in exclude):
             update_libvirt_cmd = "export YUM0={};yum remove libvirt libvirt-libs libvirt-client libvirt-python libvirt-admin libvirt-bash-completion libvirt-daemon-driver-lxc -y {} && export YUM0={};" \
                                  "yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{} install libvirt libvirt-client libvirt-python -y && "
             yum_cmd = yum_cmd + update_libvirt_cmd.format(releasever,
@@ -1907,7 +1925,8 @@ if __name__ == "__main__":
         yum_cmd = yum_cmd + upgrade_os_cmd.format(
             releasever, ',zstack-experimental-mn' if cmd.enableExpRepo else '', exclude, updates)
 
-        if "kernel" in updates or (cmd.releaseVersion != '' and "kernel" not in exclude):
+        if "kernel" in updates or (
+                cmd.releaseVersion != '' and "kernel" not in exclude):
             dracut_conf_map = {
                 '/etc/dracut.conf.d/no_lvmconf.conf': 'lvmconf=no',
                 '/etc/dracut.conf.d/no_hostonly.conf': 'hostonly=no'}
@@ -1968,7 +1987,8 @@ if __name__ == "__main__":
             shell.run("yum remove -y qemu-kvm-tools-ev")
             yum_cmd = "export YUM0={};yum --enablerepo=* clean all && yum --disablerepo=* --enablerepo={} install `cat /var/lib/zstack/dependencies` -y"\
                 .format(releasever, cmd.zstackRepo)
-            if shell.run("export YUM0={};yum --disablerepo=* --enablerepo=zstack-mn repoinfo".format(releasever)) != 0:
+            if shell.run(
+                    "export YUM0={};yum --disablerepo=* --enablerepo=zstack-mn repoinfo".format(releasever)) != 0:
                 rsp.success = False
                 rsp.error = "no zstack-mn repo found, cannot update kvmagent dependencies"
             elif shell.run("export YUM0={};yum --disablerepo=* --enablerepo=qemu-kvm-ev-mn repoinfo".format(releasever)) != 0:
@@ -1986,7 +2006,8 @@ if __name__ == "__main__":
                 yum_cmd = "export YUM0={};yum --enablerepo=* clean all && yum --disablerepo=* --enablerepo={},zstack-experimental-mn {} update {} -y"
                 yum_cmd = yum_cmd.format(
                     releasever, cmd.zstackRepo, exclude, updates)
-                if shell.run("export YUM0={};yum --disablerepo=* --enablerepo=zstack-experimental-mn repoinfo".format(releasever)) != 0:
+                if shell.run(
+                        "export YUM0={};yum --disablerepo=* --enablerepo=zstack-experimental-mn repoinfo".format(releasever)) != 0:
                     rsp.success = False
                     rsp.error = "no zstack-experimental-mn repo found, cannot update host dependency"
                 elif shell.run(yum_cmd) != 0:
@@ -2092,32 +2113,32 @@ sed -i '/GRUB_CMDLINE_LINUX=/s/[[:blank:]]*hugepagesz[[:blank:]]*=[[:blank:]]*[[
 sed -i '/GRUB_CMDLINE_LINUX=/s/[[:blank:]]*hugepages[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' /etc/default/grub
 sed -i '/GRUB_CMDLINE_LINUX=/s/[[:blank:]]*transparent_hugepage[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' /etc/default/grub
 line=`cat /etc/default/grub | grep GRUB_CMDLINE_LINUX`
-result=$(echo $line | grep '\"$') 
-if [ ! -n "$result" ]; then 
+result=$(echo $line | grep '\"$')
+if [ ! -n "$result" ]; then
     sed -i '/GRUB_CMDLINE_LINUX/s/$/\"/g' /etc/default/grub
 fi
 
 #clear boot grub config
-for var in $grubs 
-do 
+for var in $grubs
+do
    if [ -f $var ]; then
        sed -i '/^[[:space:]]*linux/s/[[:blank:]]*default_[[:graph:]]*//g' $var
        sed -i '/^[[:space:]]*linux/s/[[:blank:]]*hugepagesz[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $var
        sed -i '/^[[:space:]]*linux/s/[[:blank:]]*hugepages[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $var
        sed -i '/^[[:space:]]*linux/s/[[:blank:]]*transparent_hugepage[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $var
-   fi    
+   fi
 done
 
 #clear boot config related to huge pages in rocky grubenv
 for env in $grubRockyEnvs
-do 
+do
   if [ -f $env ]; then
        sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*default_[[:graph:]]*//g' $env
        sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*hugepagesz[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $env
        sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*hugepages[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $env
        sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*transparent_hugepage[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $env
   fi
-done  
+done
 ''' % (' '.join(GRUB_FILES), ' '.join(GRUB_ROCKY_ENVS))
         disable_hugepage_script_path = linux.create_temp_file()
         with open(disable_hugepage_script_path, 'w') as f:
@@ -2169,7 +2190,8 @@ done
             pageSize, pageSize, pageNum)
 
         # Define grub configuration file processing function
-        def configure_grub_file(file_path, pattern, replacement_pattern, description=""):
+        def configure_grub_file(
+                file_path, pattern, replacement_pattern, description=""):
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
                     content = f.read()
@@ -2307,7 +2329,8 @@ done
                 elif "configured clock speed" == k:
                     clock_speed = v
                 elif "configured voltage" == k:
-                    if serial_number.lower() != "no dimm" and serial_number.lower() != "unknown" and serial_number is not None:
+                    if serial_number.lower() != "no dimm" and serial_number.lower(
+                    ) != "unknown" and serial_number is not None:
                         m = HostPhysicalMemoryStruct()
                         m.size = size
                         m.speed = speed
@@ -2375,7 +2398,8 @@ done
 
         if cmd.ipAddress is not None:
             try:
-                # zs-network-setting -i eth0 192.168.1.10 255.255.255.0 192.168.1.1
+                # zs-network-setting -i eth0 192.168.1.10 255.255.255.0
+                # 192.168.1.1
                 if cmd.gateway is not None:
                     shell.call('/usr/local/bin/zs-network-setting -i %s %s %s %s' %
                                (cmd.interfaceName, cmd.ipAddress, cmd.netmask, cmd.gateway))
@@ -2391,11 +2415,13 @@ done
                 rsp.success = False
 
             # After configuring the ip, check the connectivity
-            if cmd.gateway is not None and shell.run('ping -c 5 -W 1 %s > /dev/null 2>&1' % cmd.gateway) != 0:
+            if cmd.gateway is not None and shell.run(
+                    'ping -c 5 -W 1 %s > /dev/null 2>&1' % cmd.gateway) != 0:
                 shell.call('/usr/local/bin/zs-network-setting -d %s' %
                            cmd.interfaceName)
 
-                # If it is not connected, it will fall back to the old ip address
+                # If it is not connected, it will fall back to the old ip
+                # address
                 if cmd.oldGateway is None:
                     shell.call('/usr/local/bin/zs-network-setting -i %s %s %s' % (cmd.interfaceName, cmd.ipAddress,
                                cmd.netmask))
@@ -2440,7 +2466,7 @@ done
         vlan_ids = []
         for interface_name in cmd.interfaceNames:
             output = shell.call(
-                "ip link show type vlan | grep '%s\.' | awk -F'[.@]' '{print $2}'" % interface_name)
+                "ip link show type vlan | grep '%s\\.' | awk -F'[.@]' '{print $2}'" % interface_name)
             interface_vlan_ids = output.strip().split('\n')
 
             if not interface_vlan_ids:
@@ -2491,7 +2517,8 @@ done
         nics = []
         pcis = set()
 
-        def get_nic_info(interfaceName, index, driverType=None, pciAddress=None):
+        def get_nic_info(interfaceName, index,
+                         driverType=None, pciAddress=None):
             nics[index] = HostNetworkInterfaceInventory(
                 interfaceName, None, managementServerIp, driverType, pciAddress)
 
@@ -2549,7 +2576,7 @@ done
 
         return bonds
 
-    def _get_sriov_info(self, to):
+    def _get_sriov_info(self, to, gpu_info_map=None):
         addr = to.pciDeviceAddress
         dev = os.path.join("/sys/bus/pci/devices/", addr)
         totalvfs = os.path.join(dev, "sriov_totalvfs")
@@ -2575,23 +2602,37 @@ done
                     to.maxPartNum = f.read().strip()
             # for NVIDIA A-Series, after driver successfully installed, virtfn files will be created
             # set deviceId and vendorId null
-            # Optimized: Use gpu.get_info() instead of is_gpu() for unified interface
+            # Optimized: Use pre-collected gpu_info_map if available, otherwise
+            # fallback to individual query
             virtfn = os.path.join(dev, os.readlink(physfn), 'virtfn0')
             is_nvidia_gpu = False
             if hasattr(to, 'vendor') and to.vendor == VendorEnum.NVIDIA:
-                # Known NVIDIA vendor, directly check if it's a GPU via get_info()
-                # This is faster because it only queries NVIDIA vendor
-                gpu_info = gpu.get_info(
-                    pci_device=to, vendor_name=VendorEnum.NVIDIA)
-                is_nvidia_gpu = gpu_info is not None
+                # Known NVIDIA vendor, use pre-collected gpu_info_map if
+                # available
+                if gpu_info_map is not None:
+                    normalized_pci = pci.normalize_pci_address(
+                        to.pciDeviceAddress)
+                    is_nvidia_gpu = normalized_pci in gpu_info_map if normalized_pci else False
+                else:
+                    # Fallback to individual query (backward compatibility)
+                    gpu_info = gpu.get_info(
+                        pci_device=to, vendor_name=VendorEnum.NVIDIA)
+                    is_nvidia_gpu = gpu_info is not None
             else:
-                # Unknown vendor: Try to get info from all vendors (batch query)
-                # This uses the same unified interface as other GPU checks
-                gpu_info_map = gpu.get_all_gpu_infos_by_pci()
-                normalized_pci = pci.normalize_pci_address(to.pciDeviceAddress)
-                is_nvidia_gpu = normalized_pci in gpu_info_map if normalized_pci else False
+                # Unknown vendor: Use pre-collected gpu_info_map if available
+                if gpu_info_map is not None:
+                    normalized_pci = pci.normalize_pci_address(
+                        to.pciDeviceAddress)
+                    is_nvidia_gpu = normalized_pci in gpu_info_map if normalized_pci else False
+                else:
+                    # Fallback to batch query (backward compatibility)
+                    gpu_info_map_local = gpu.get_all_gpu_infos_by_pci()
+                    normalized_pci = pci.normalize_pci_address(
+                        to.pciDeviceAddress)
+                    is_nvidia_gpu = normalized_pci in gpu_info_map_local if normalized_pci else False
 
-            if is_nvidia_gpu and self.NVIDIA_SMI_INSTALLED and os.path.exists(virtfn):
+            if is_nvidia_gpu and self.NVIDIA_SMI_INSTALLED and os.path.exists(
+                    virtfn):
                 to.deviceId = ""
                 to.vendorId = ""
             else:
@@ -2757,7 +2798,8 @@ done
                     mdev_devices_exists = True
                     break
 
-            for virf in os.listdir(os.path.join(virtfn_dir, 'mdev_supported_types')):
+            for virf in os.listdir(os.path.join(
+                    virtfn_dir, 'mdev_supported_types')):
                 if "nvidia-" in virf:
                     with open(os.path.join(virtfn_dir, 'mdev_supported_types', virf, "available_instances"), 'r') as af:
                         max_instances = af.read().strip()
@@ -2786,7 +2828,8 @@ done
         simplified = pci.simplify_vendor_name(name, vendor_id)
 
         # Map simplified names to VendorEnum values for backward compatibility
-        # Note: simplify_vendor_name already returns values matching VendorEnum constants
+        # Note: simplify_vendor_name already returns values matching VendorEnum
+        # constants
         vendor_enum_map = {
             'Intel': VendorEnum.INTEL,
             'AMD': VendorEnum.AMD,
@@ -2803,7 +2846,98 @@ done
         # Return VendorEnum value if mapped, otherwise return simplified name
         return vendor_enum_map.get(simplified, simplified)
 
-    def _collect_format_pci_device_info(self, rsp, opaque):
+    def _convert_pci_info_to_to(
+            self, slot, ids, names, pci_device_mapper, host_mappings):
+        """
+        Convert PCI device information to PciDeviceTO object.
+
+        Args:
+            slot: PCI device slot address
+            ids: Dictionary of PCI IDs (Vendor, Device, etc.)
+            names: Dictionary of PCI names (Vendor, Device, etc.)
+            pci_device_mapper: PCI device type mapper
+            host_mappings: Host PCI address mappings
+
+        Returns:
+            PciDeviceTO object or None if conversion fails
+        """
+        if slot not in names:
+            logger.error("PCI device slot %s not found in names" % slot)
+            return None
+
+        # names is slot -> {field: name}; use per-slot field dict
+        slot_names = names[slot]
+
+        vendor_name = ""
+        device_name = ""
+        subvendor_name = ""
+        to = PciDeviceTO()
+
+        # Set basic info
+        to.pciDeviceAddress = slot
+        group_path = os.path.join(
+            '/sys/bus/pci/devices/', to.pciDeviceAddress, 'iommu_group')
+        to.iommuGroup = os.path.realpath(group_path)
+
+        # Set class info
+        if 'Class' in slot_names:
+            to.type = slot_names['Class']
+            to.description = slot_names['Class'] + ": "
+
+        # Set vendor info
+        if 'Vendor' in slot_names:
+            vendor_name = self._simplify_pci_device_name(
+                slot_names['Vendor'], ids.get('Vendor', ''))
+            to.vendor = vendor_name
+            to.vendorId = ids.get('Vendor', '')
+            to.description += vendor_name + " "
+
+        # Set device info
+        if 'Device' in slot_names:
+            to.device = slot_names['Device']
+            device_name = self._simplify_pci_device_name(
+                slot_names['Device'], ids.get('Device', ''))
+            to.deviceId = ids.get('Device', '')
+            to.description += device_name
+
+        # Set subvendor info
+        if 'SVendor' in slot_names:
+            subvendor_name = self._simplify_pci_device_name(
+                slot_names['SVendor'], ids.get('SVendor', ''))
+            to.subvendorId = ids.get('SVendor', '')
+
+        # Set subdevice info
+        if 'SDevice' in slot_names:
+            to.subdeviceId = ids.get('SDevice', '')
+
+        # Set revision info
+        if 'Rev' in slot_names:
+            to.rev = ids.get('Rev', '')
+
+        to.name = "%s_%s" % (
+            subvendor_name if subvendor_name else vendor_name, device_name)
+        to.dependentDevices = pci.collect_pci_devices_with_dependencies(
+            to.pciDeviceAddress)
+        to.vmPciDeviceAddress = host_mappings[to.pciDeviceAddress] if to.pciDeviceAddress in host_mappings else ""
+
+        # Set generic PCI device type (base types only, not device-type-specific refinements)
+        # Device-type-specific type refinement (e.g., GPU_Video_Controller) is
+        # handled by hooks
+        self._set_generic_pci_device_type(to, pci_device_mapper)
+
+        return to
+
+    def _parse_pci_device_info(self, rsp):
+        """
+        Parse PCI device information from lspci output and config file.
+
+        Args:
+            rsp: Response object to set error if parsing fails
+
+        Returns:
+            Tuple of (device_ids, device_names, pci_device_mapper) if successful,
+            None if failed (error is set in rsp)
+        """
         r_id, o_id, e_id = pci.get_pci_device_ids()
         r_name, o_name, e_name = pci.get_pci_device_names()
 
@@ -2811,10 +2945,9 @@ done
             rsp.success = False
             rsp.error = "%s, %s" % (
                 e_id if r_id != 0 else e_name, o_id if r_id != 0 else o_name)
-            return
-        pci_devices_dict = {}
-        pci_device_mapper = {}
+            return None
 
+        pci_device_mapper = {}
         for line in linux.read_file_lines(PCI_CONFIG_PATH):
             parts = line.strip().split(':')
             if len(parts) == 2:
@@ -2859,153 +2992,85 @@ done
             if slot:
                 device_names[slot] = names
 
+        return device_ids, device_names, pci_device_mapper
+
+    def _collect_format_pci_device_info(self, rsp, opaque):
+        result = self._parse_pci_device_info(rsp)
+        if result is None:
+            return
+        device_ids, device_names, pci_device_mapper = result
+
+        pci_devices_dict = {}
+
         host_mappings = self.get_all_vm_pci_mappings()
-        # Create PciDeviceTO objects
+
+        # Create processing context early so capabilities can be stored
+        # directly
+        context = pci.PciDeviceProcessingContext(
+            pci_device_mapper=pci_device_mapper,
+            opaque=opaque
+        )
+
+        # Create PciDeviceTO objects with generic PCI logic
         for slot in device_ids.keys():
-            if slot not in device_names:
+            to = self._convert_pci_info_to_to(
+                slot, device_ids[slot], device_names, pci_device_mapper, host_mappings)
+            if not to:
                 continue
 
-            vendor_name = ""
-            device_name = ""
-            subvendor_name = ""
-            to = PciDeviceTO()
-
-            ids = device_ids[slot]
-            names = device_names[slot]
-
-            # Set basic info
-            to.pciDeviceAddress = slot
-            group_path = os.path.join(
-                '/sys/bus/pci/devices/', to.pciDeviceAddress, 'iommu_group')
-            to.iommuGroup = os.path.realpath(group_path)
-
-            # Set class info
-            if 'Class' in names:
-                to.type = names['Class']
-                to.description = names['Class'] + ": "
-
-            # Set vendor info
-            if 'Vendor' in names:
-                vendor_name = self._simplify_pci_device_name(
-                    names['Vendor'], ids.get('Vendor', ''))
-                to.vendor = vendor_name
-                to.vendorId = ids.get('Vendor', '')
-                to.description += vendor_name + " "
-
-            # Set device info
-            if 'Device' in names:
-                to.device = names['Device']
-                device_name = self._simplify_pci_device_name(
-                    names['Device'], ids.get('Device', ''))
-                to.deviceId = ids.get('Device', '')
-                to.description += device_name
-
-            # Set subvendor info
-            if 'SVendor' in names:
-                subvendor_name = self._simplify_pci_device_name(
-                    names['SVendor'], ids.get('SVendor', ''))
-                to.subvendorId = ids.get('SVendor', '')
-
-            # Set subdevice info
-            if 'SDevice' in names:
-                to.subdeviceId = ids.get('SDevice', '')
-
-            # Set revision info
-            if 'Rev' in names:
-                to.rev = ids.get('Rev', '')
-
-            to.name = "%s_%s" % (
-                subvendor_name if subvendor_name else vendor_name, device_name)
-            to.dependentDevices = pci.collect_pci_devices_with_dependencies(
-                to.pciDeviceAddress)
-            to.vmPciDeviceAddress = host_mappings[to.pciDeviceAddress] if to.pciDeviceAddress in host_mappings else ""
-
-            def _set_pci_to_type():
-                # Optimized: Try to get GPU info directly - if it's a GPU, info will be returned
-                # This avoids redundant is_gpu() check since we need the info anyway
-                # If vendor_name is available, it only queries that specific vendor (fast)
-                gpu_info = gpu.get_info(
-                    pci_device=to, vendor_name=to.vendor if hasattr(to, 'vendor') else None)
-                is_gpu_device = gpu_info is not None
-
-                if is_gpu_device:
-                    # Priority: If SMI has confirmed it's a GPU, we must set a GPU type
-                    # This avoids issues where vendor name simplification fails or PCI class checks fail,
-                    # causing GPU devices to be incorrectly classified as non-GPU types
-                    #
-                    # Control plane only accepts these four GPU types:
-                    # GPU_Video_Controller, GPU_3D_Controller, GPU_Processing_Accelerators, GPU_Co_Processor
-
-                    # Try to determine specific GPU type based on PCI class
-                    if ('VGA compatible controller' in to.type or 'Display controller' in to.type
-                            or (pci_device_mapper.get('VGA compatible controller') is not None
-                                and pci_device_mapper.get('VGA compatible controller') in to.type)) \
-                            and gpu.is_valid_video_controller(to.device):
-                        to.type = "GPU_Video_Controller"
-                    elif ("Processing accelerators" in to.type or (
-                            pci_device_mapper.get('Processing accelerators') is not None)) \
-                            and gpu.is_valid_processing_accelerator(to.device):
-                        to.type = "GPU_Processing_Accelerators"
-                    elif ('Co-processor' in to.type or (pci_device_mapper.get('Co-processor') is not None
-                                                        and pci_device_mapper.get('Co-processor') in to.type)) \
-                            and gpu.is_valid_co_processor(to.vendor):
-                        to.type = "GPU_Co_Processor"
-                    elif ('3D controller' in to.type or 'Display controller' in to.type
-                          or (pci_device_mapper.get('3D controller') is not None and pci_device_mapper.get('3D controller') in to.type)):
-                        to.type = "GPU_3D_Controller"
-                    else:
-                        # If cannot determine specific type, use GPU_3D_Controller as fallback
-                        # This ensures we never fallback to non-GPU types when SMI confirms it's a GPU
-                        to.type = "GPU_3D_Controller"
-                    # Critical: Return immediately after setting GPU type to avoid fallback to non-GPU types
-                    return
-
-                # Non-GPU device type determination (only reached if is_gpu_device is False)
-                if 'Ethernet controller' in to.type or (pci_device_mapper.get('Ethernet controller') is not None
-                                                        and pci_device_mapper.get('Ethernet controller') in to.type):
-                    to.type = "Ethernet_Controller"
-                elif 'Audio device' in to.type or (pci_device_mapper.get('Audio device') is not None
-                                                   and pci_device_mapper.get('Audio device') in to.type):
-                    to.type = "Audio_Controller"
-                elif 'USB controller' in to.type or (pci_device_mapper.get('USB controller') is not None
-                                                     and pci_device_mapper.get('USB controller') in to.type):
-                    to.type = "USB_Controller"
-                elif 'Serial controller' in to.type or (pci_device_mapper.get('Serial controller') is not None
-                                                        and pci_device_mapper.get('Serial controller') in to.type):
-                    to.type = "Serial_Controller"
-                elif 'Moxa Technologies' in to.type or (pci_device_mapper.get('Moxa Technologies') is not None
-                                                        and pci_device_mapper.get('Moxa Technologies') in to.type):
-                    to.type = "Moxa_Device"
-                elif 'Host bridge' in to.type or (pci_device_mapper.get('Host bridge') is not None
-                                                  and pci_device_mapper.get('Host bridge') in to.type):
-                    to.type = "Host_Bridge"
-                elif 'PCI bridge' in to.type or (pci_device_mapper.get('PCI bridge') is not None
-                                                 and pci_device_mapper.get('PCI bridge') in to.type):
-                    to.type = "PCI_Bridge"
-                else:
-                    to.type = "Generic"
-
-            _set_pci_to_type()
-
-            self._collect_gpu_addoninfo(to, vendor_name, opaque)
-
-            # if support both mdev and sriov, then set the pci device to VFIO_MDEV_VIRTUALIZABLE
-            vfio_mdev_supported = self._get_vfio_mdev_info(to)
-            vfio_mdev_status = to.virtStatus
-
-            sriov_supported = self._get_sriov_info(to)
-
-            if vfio_mdev_supported and sriov_supported:
-                if vfio_mdev_status != "VFIO_MDEV_VIRTUALIZED":
-                    to.virtStatus = "VFIO_MDEV_VIRTUALIZABLE"
-            elif not vfio_mdev_supported and not sriov_supported:
-                to.virtStatus = "UNVIRTUALIZABLE"
-
-            self._post_process_pci_device_info(to)
-
+            # Capabilities detection is now handled by device-type-specific processors
+            # (e.g., GPU processor will call vendor methods to detect vfio_mdev and sriov)
             if to.vendorId != '' and to.deviceId != '':
                 rsp.pciDevicesInfo.append(to)
                 pci_devices_dict[to.pciDeviceAddress] = to
+            else:
+                logger.error(
+                    "missing vendor or device id for PCI device: %s" %
+                    to.pciDeviceAddress)
+
+        # Device-type-specific enrichment phase: probe and init devices via registered ops
+        # Architecture (Linux kernel style, similar to pci_driver model):
+        # 1. Basic PCI info collection: Convert PCI info to PciDeviceTO objects
+        # 2. Registry layer: Device ops are registered (GPU, Ethernet, etc.) via pci_register_device_ops()
+        # 3. Preparation phase: Device ops prepare batch data (e.g., GPU info map) via pci_device_prepare_chain()
+        # 4. Device-specific layer: pci_device_probe() finds matching ops by calling ops.probe() (like pci_driver.id_table)
+        #    Then calls ops.init() to process device (like pci_driver.probe)
+        #    Device ops handles: capability detection (via vendor methods), type refinement, virtStatus, addon info, post_process
+        # Note: GPU vendors implement detect_vfio_mdev_capability and
+        # detect_sriov_capability methods
+
+        # Call device ops prepare chain (like Linux kernel driver initialization before device probing)
+        # Prepare device ops (e.g., collect GPU info map for efficient batch
+        # processing)
+        post_prepare_hooks = pci.pci_device_prepare_chain(context)
+
+        # Call post-prepare hooks if any (currently not used, but kept for
+        # extensibility)
+        for post_prepare_hook in post_prepare_hooks:
+            try:
+                post_prepare_hook(rsp.pciDevicesInfo, context)
+            except Exception as e:
+                logger.debug(
+                    "PCI device ops post-prepare hook error: %s" %
+                    str(e))
+                continue
+
+        # Probe and init each device via registered ops (like Linux kernel
+        # pci_device_probe)
+        for to in rsp.pciDevicesInfo:
+            # Unified entry point: pci_device_probe() finds matching ops via ops.probe() and calls ops.init()
+            # Device ops are registered via pci.pci_register_device_ops()
+            pci.pci_device_probe(to, context)
+
+        # Generic fallback: Set default virtStatus for devices that don't have it set
+        # This is a generic PCI logic that applies to all devices after all
+        # device ops have run
+        for to in rsp.pciDevicesInfo:
+            if not to.virtStatus or to.virtStatus == "":
+                # Default: If no device ops set virtStatus, mark as UNVIRTUALIZABLE
+                # Device ops (e.g., GPU) should have set virtStatus based on
+                # their specific logic
+                to.virtStatus = "UNVIRTUALIZABLE"
 
         pci.update_cache_devices(pci_devices_dict)
         pci.calculate_max_addressable_memory(rsp.pciDevicesInfo)
@@ -3054,44 +3119,36 @@ done
             mdev_mapping.update(mapping)
         return mdev_mapping
 
-    def _collect_gpu_addoninfo(self, to, vendor_name, opaque=None):
+    def _set_generic_pci_device_type(self, to, pci_device_mapper):
         """
-        Collect GPU addon information - using unified simplified interface
+        Set generic PCI device type (non-GPU types only).
 
-        Optimized: Directly call gpu.get_info() without is_gpu() pre-check.
-        If device is not a GPU, get_info() will return None quickly (especially
-        when vendor_name is provided, it only queries that specific vendor).
-
-        This eliminates redundant queries and improves performance.
+        GPU types are handled separately by GPU hook (process_pci_device_for_gpu).
+        This keeps generic PCI logic separate from GPU-specific logic.
         """
-        # Directly try to get GPU info - if it's not a GPU, get_info() returns None quickly
-        # If vendor_name is provided, it only queries that specific vendor (fast path)
-        info = gpu.get_info(pci_device=to, vendor_name=vendor_name)
-        if info:
-            to.addonInfo = info
-            # Handle product name (if need to update to.device and to.name)
-            product_name = info.get("productName")
-            if product_name:
-                if vendor_name == VendorEnum.HUAWEI:
-                    to.device = "-"
-                    to.name = product_name
-                elif vendor_name == VendorEnum.TIANSHU:
-                    to.device = product_name.split(
-                        " ")[1] if " " in product_name else product_name
-                    to.name = product_name
-                elif vendor_name == VendorEnum.ALIBABA:
-                    to.device = product_name
-                    to.name = product_name
-
-    def _post_process_pci_device_info(self, to):
-        """Post-process PCI device information - only keep Enflame special handling"""
-        # Optimized: Only check vendor, then try get_info() if it's Enflame
-        # This avoids is_gpu() check since we already know vendor
-        if to.vendor == VendorEnum.ENFLAME:
-            gpu_info = gpu.get_info(
-                pci_device=to, vendor_name=VendorEnum.ENFLAME)
-            if gpu_info:  # If get_info returns info, it's a GPU
-                gpu.post_process_enflame_gpu_device(to)
+        if 'Ethernet controller' in to.type or (pci_device_mapper.get('Ethernet controller') is not None
+                                                and pci_device_mapper.get('Ethernet controller') in to.type):
+            to.type = "Ethernet_Controller"
+        elif 'Audio device' in to.type or (pci_device_mapper.get('Audio device') is not None
+                                           and pci_device_mapper.get('Audio device') in to.type):
+            to.type = "Audio_Controller"
+        elif 'USB controller' in to.type or (pci_device_mapper.get('USB controller') is not None
+                                             and pci_device_mapper.get('USB controller') in to.type):
+            to.type = "USB_Controller"
+        elif 'Serial controller' in to.type or (pci_device_mapper.get('Serial controller') is not None
+                                                and pci_device_mapper.get('Serial controller') in to.type):
+            to.type = "Serial_Controller"
+        elif 'Moxa Technologies' in to.type or (pci_device_mapper.get('Moxa Technologies') is not None
+                                                and pci_device_mapper.get('Moxa Technologies') in to.type):
+            to.type = "Moxa_Device"
+        elif 'Host bridge' in to.type or (pci_device_mapper.get('Host bridge') is not None
+                                          and pci_device_mapper.get('Host bridge') in to.type):
+            to.type = "Host_Bridge"
+        elif 'PCI bridge' in to.type or (pci_device_mapper.get('PCI bridge') is not None
+                                         and pci_device_mapper.get('PCI bridge') in to.type):
+            to.type = "PCI_Bridge"
+        else:
+            to.type = "Generic"
 
     # moved from vm_plugin to host_plugin
     @kvmagent.replyerror
@@ -3120,7 +3177,8 @@ done
 
         updateConfigration.updateGrubConfig()
         iommu_type = updateConfigration.iommu_type
-        # check whether /sys/class/iommu is empty, if not then iommu is activated in bios
+        # check whether /sys/class/iommu is empty, if not then iommu is
+        # activated in bios
         iommu_folder = '/sys/class/iommu'
         r_bios = os.path.isdir(iommu_folder) and os.listdir(iommu_folder)
         r_kernel, _, _ = bash_roe(
@@ -3167,7 +3225,8 @@ done
         # make install mxgpu driver if need to
         pci_device_mapper = {}
         mxgpu_driver_tar = "/var/lib/zstack/mxgpu_driver.tar.gz"
-        if os.path.exists(mxgpu_driver_tar) and not os.path.exists(PCI_CONFIG_PATH):
+        if os.path.exists(mxgpu_driver_tar) and not os.path.exists(
+                PCI_CONFIG_PATH):
             r, o, e = bash_roe(
                 "tar xvf %s -C /tmp; cd /tmp/mxgpu_driver; make; make install" % mxgpu_driver_tar)
             if r != 0:
@@ -3262,7 +3321,8 @@ done
             return jsonobject.dumps(rsp)
 
         # Optimized: Check pciDeviceType first (fast path), then vendor, finally try all vendors
-        # pciDeviceType may already indicate GPU type (e.g., 'GPU_3D_Controller')
+        # pciDeviceType may already indicate GPU type (e.g.,
+        # 'GPU_3D_Controller')
         is_gpu_device = False
         if cmd.pciDeviceType and cmd.pciDeviceType.startswith('GPU_'):
             # Already identified as GPU type
@@ -3275,7 +3335,8 @@ done
                            VendorEnum.ENFLAME, VendorEnum.ALIBABA, VendorEnum.KUNLUNXIN,
                            VendorEnum.INTEL}
             if cmd.vendor in gpu_vendors:
-                # Known GPU vendor, verify via get_info() (only queries that vendor)
+                # Known GPU vendor, verify via get_info() (only queries that
+                # vendor)
                 gpu_info = gpu.get_info(
                     pci_address=cmd.pciDeviceAddress, vendor_name=cmd.vendor)
                 is_gpu_device = gpu_info is not None
@@ -3283,11 +3344,13 @@ done
                 # Vendor not in known set: fallback to batch query all vendors
                 # This ensures devices detected by GPU CLI are not missed
                 gpu_info_map = gpu.get_all_gpu_infos_by_pci()
-                normalized_pci = pci.normalize_pci_address(cmd.pciDeviceAddress)
+                normalized_pci = pci.normalize_pci_address(
+                    cmd.pciDeviceAddress)
                 is_gpu_device = normalized_pci in gpu_info_map if normalized_pci else False
         else:
             # Unknown vendor/type: Try to get info from all vendors (batch query)
-            # This is equivalent to is_gpu() but uses the same unified interface
+            # This is equivalent to is_gpu() but uses the same unified
+            # interface
             gpu_info_map = gpu.get_all_gpu_infos_by_pci()
             normalized_pci = pci.normalize_pci_address(cmd.pciDeviceAddress)
             is_gpu_device = normalized_pci in gpu_info_map if normalized_pci else False
@@ -3338,7 +3401,7 @@ done
             if len(_addr.split(':')) != 3:
                 _addr = '0000:' + _addr
 
-            pf = "pci_%s_%s_%s_%s" % tuple(re.split(':|\.', _addr))
+            pf = "pci_%s_%s_%s_%s" % tuple(re.split(':|\\.', _addr))
             r, vf_lines, e = bash_roe(
                 "virsh nodedev-dumpxml %s | grep 'address domain'" % pf)
             if r != 0:
@@ -3354,7 +3417,8 @@ done
                     r, o, e = bash_roe(
                         "virsh nodedev-dumpxml %s | grep vfio-pci" % vf)
                     if r == 0:
-                        return "virtual function %s of pf %s still allocated to some vm" % (vf, pf)
+                        return "virtual function %s of pf %s still allocated to some vm" % (
+                            vf, pf)
 
         _error = _check_allocated_virtual_functions()
         if _error:
@@ -3376,7 +3440,8 @@ done
 
         addr = cmd.pciDeviceAddress
 
-        # Optimized: Check pciDeviceType first (fast path), then vendor, finally try all vendors
+        # Optimized: Check pciDeviceType first (fast path), then vendor,
+        # finally try all vendors
         is_gpu_device = False
         if cmd.pciDeviceType and cmd.pciDeviceType.startswith('GPU_'):
             # Already identified as GPU type
@@ -3389,7 +3454,8 @@ done
                            VendorEnum.ENFLAME, VendorEnum.ALIBABA, VendorEnum.KUNLUNXIN,
                            VendorEnum.INTEL}
             if cmd.vendor in gpu_vendors:
-                # Known GPU vendor, verify via get_info() (only queries that vendor)
+                # Known GPU vendor, verify via get_info() (only queries that
+                # vendor)
                 gpu_info = gpu.get_info(
                     pci_address=cmd.pciDeviceAddress, vendor_name=cmd.vendor)
                 is_gpu_device = gpu_info is not None
@@ -3397,11 +3463,13 @@ done
                 # Vendor not in known set: fallback to batch query all vendors
                 # This ensures devices detected by GPU CLI are not missed
                 gpu_info_map = gpu.get_all_gpu_infos_by_pci()
-                normalized_pci = pci.normalize_pci_address(cmd.pciDeviceAddress)
+                normalized_pci = pci.normalize_pci_address(
+                    cmd.pciDeviceAddress)
                 is_gpu_device = normalized_pci in gpu_info_map if normalized_pci else False
         else:
             # Unknown vendor/type: Try to get info from all vendors (batch query)
-            # This is equivalent to is_gpu() but uses the same unified interface
+            # This is equivalent to is_gpu() but uses the same unified
+            # interface
             gpu_info_map = gpu.get_all_gpu_infos_by_pci()
             normalized_pci = pci.normalize_pci_address(cmd.pciDeviceAddress)
             is_gpu_device = normalized_pci in gpu_info_map if normalized_pci else False
@@ -3423,7 +3491,8 @@ done
         no_domain_addr = addr if len(addr.split(
             ':')) != 3 else ':'.join(addr.split(':')[1:])
         ramdisk = os.path.join('/dev/shm', 'pci-' + no_domain_addr)
-        if cmd.mdevUuids and len(cmd.mdevUuids) != 0 and os.path.exists(ramdisk):
+        if cmd.mdevUuids and len(
+                cmd.mdevUuids) != 0 and os.path.exists(ramdisk):
             logger.debug(
                 "no need to re-splite pci device[addr:%s] into mdev devices" % addr)
             return jsonobject.dumps(rsp)
@@ -3432,7 +3501,8 @@ done
         def _exec_nvidia_sriov_manage(addr):
             bash_roe("/usr/lib/nvidia/sriov-manage -e %s" % addr)
 
-        # virtualization needs to be enabled when restarting the host to sync vgpu mdev
+        # virtualization needs to be enabled when restarting the host to sync
+        # vgpu mdev
         if os.path.exists('/usr/lib/nvidia/sriov-manage'):
             _exec_nvidia_sriov_manage(addr)
 
@@ -4060,9 +4130,9 @@ done
                     if temp == "0":
                         continue
                     if "MemTotal" in mem:
-                        size = int(temp)*1024
+                        size = int(temp) * 1024
                     if "MemFree:" in mem:
-                        free = int(temp)*1024
+                        free = int(temp) * 1024
                 return size, free
 
             @staticmethod

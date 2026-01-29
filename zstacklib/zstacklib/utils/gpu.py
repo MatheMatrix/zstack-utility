@@ -1,3 +1,4 @@
+from zstacklib.utils import pci
 import threading
 import re
 
@@ -672,7 +673,220 @@ def get_enflame_gpu_info_cmd():
 
 
 def post_process_enflame_gpu_device(to):
+    """Deprecated: Use post_process_pci_device_by_vendor instead"""
     to.virtStatus = "UNVIRTUALIZABLE"
+
+
+def _gpu_device_matcher(pci_device_to):
+    """Matcher function for GPU devices - checks if device is a GPU"""
+    from zstacklib.utils.pci import normalize_pci_address
+
+    # Check via gpu_info_map if available in context
+    # This will be called from pci_device_probe, so we need to check differently
+    # For now, use vendor-based matching as fallback
+    if not hasattr(pci_device_to, 'vendor'):
+        return False
+
+    from zstacklib.gpu.base import VendorEnum
+    gpu_vendors = {
+        VendorEnum.NVIDIA, VendorEnum.AMD, VendorEnum.INTEL,
+        VendorEnum.HUAWEI, VendorEnum.HAIGUANG, VendorEnum.TIANSHU,
+        VendorEnum.VASTAI, VendorEnum.ENFLAME, VendorEnum.ALIBABA,
+        VendorEnum.KUNLUNXIN
+    }
+
+    if pci_device_to.vendor in gpu_vendors:
+        return True
+
+    # Also check by PCI class
+    if hasattr(pci_device_to, 'type'):
+        gpu_classes = ['VGA compatible controller', 'Display controller',
+                       '3D controller', 'Processing accelerators', 'Co-processor']
+        for cls in gpu_classes:
+            if cls in pci_device_to.type:
+                return True
+
+    return False
+
+
+def _gpu_device_processor(pci_device_to, context):
+    """
+    GPU device ops init function (Linux kernel style).
+
+    Similar to pci_driver.probe() in Linux kernel, this initializes GPU devices.
+
+    Architecture (Linux kernel style):
+    1. Abstract layer: Generic PCI capabilities (vfio_mdev, sriov) are detected in main loop
+    2. Device ops layer: This function implements GPU-specific processing (like pci_driver.probe)
+    3. Device-specific layer: Uses abstract capabilities + GPU-specific logic
+
+    This device ops handles GPU-specific logic:
+    1. Final GPU confirmation (via gpu_info_map)
+    2. Set GPU type refinement (e.g., GPU_Video_Controller)
+    3. Determine virtStatus based on GPU-specific interpretation of abstract capabilities
+    4. Collect GPU addon info (productName, etc.)
+    5. Call vendor's post_process_pci_device hook
+
+    Args:
+        pci_device_to: PciDeviceTO object (with _pci_capabilities attribute set by main loop)
+        context: PciDeviceProcessingContext object containing processing context
+
+    Returns:
+        bool: True if device was processed (is a GPU), False otherwise
+    """
+    if not pci_device_to:
+        return False
+
+    from zstacklib.utils.pci import normalize_pci_address
+
+    gpu_info_map = context.gpu_info_map or {}
+    pci_device_mapper = context.pci_device_mapper or {}
+    opaque = context.opaque
+
+    # Check if device is GPU
+    normalized_pci = normalize_pci_address(pci_device_to.pciDeviceAddress)
+    is_gpu_device = normalized_pci and normalized_pci in gpu_info_map
+
+    if not is_gpu_device:
+        # Fallback to individual query for backward compatibility
+        vendor_name = pci_device_to.vendor if hasattr(
+            pci_device_to, 'vendor') else None
+        gpu_info = get_info(
+            pci_device=pci_device_to, vendor_name=vendor_name)
+        is_gpu_device = gpu_info is not None
+
+    if not is_gpu_device:
+        return False
+
+    # GPU-specific type refinement
+    if ('VGA compatible controller' in pci_device_to.type or 'Display controller' in pci_device_to.type
+            or (pci_device_mapper.get('VGA compatible controller') is not None
+                and pci_device_mapper.get('VGA compatible controller') in pci_device_to.type)) \
+            and is_valid_video_controller(pci_device_to.device):
+        pci_device_to.type = "GPU_Video_Controller"
+    elif ("Processing accelerators" in pci_device_to.type or (
+            pci_device_mapper.get('Processing accelerators') is not None)) \
+            and is_valid_processing_accelerator(pci_device_to.device):
+        pci_device_to.type = "GPU_Processing_Accelerators"
+    elif ('Co-processor' in pci_device_to.type or (pci_device_mapper.get('Co-processor') is not None
+                                                   and pci_device_mapper.get('Co-processor') in pci_device_to.type)) \
+            and is_valid_co_processor(pci_device_to.vendor):
+        pci_device_to.type = "GPU_Co_Processor"
+    elif ('3D controller' in pci_device_to.type or 'Display controller' in pci_device_to.type
+          or (pci_device_mapper.get('3D controller') is not None and pci_device_mapper.get('3D controller') in pci_device_to.type)):
+        pci_device_to.type = "GPU_3D_Controller"
+    else:
+        # Fallback to GPU_3D_Controller if cannot determine specific type
+        pci_device_to.type = "GPU_3D_Controller"
+
+    # GPU-specific virtualization capabilities detection via vendor methods
+    # Each GPU vendor implements detect_vfio_mdev_capability and detect_sriov_capability
+    vendor_name = pci_device_to.vendor if hasattr(
+        pci_device_to, 'vendor') else None
+    if vendor_name:
+        try:
+            from zstacklib.gpu import get_gpu_vendor
+            vendor_class = get_gpu_vendor(vendor_name)
+            if vendor_class:
+                # Detect vfio_mdev capability via vendor method
+                vfio_mdev_supported, vfio_mdev_info = vendor_class.detect_vfio_mdev_capability(
+                    pci_device_to)
+                if vfio_mdev_supported:
+                    # Apply mdev specifications if provided
+                    if 'mdevSpecifications' in vfio_mdev_info:
+                        pci_device_to.mdevSpecifications = vfio_mdev_info['mdevSpecifications']
+                    # Set virtStatus if provided
+                    if 'virtStatus' in vfio_mdev_info:
+                        pci_device_to.virtStatus = vfio_mdev_info['virtStatus']
+
+                # Detect sriov capability via vendor method (with gpu_info_map for efficient processing)
+                sriov_supported, sriov_info = vendor_class.detect_sriov_capability(
+                    pci_device_to, gpu_info_map)
+                if sriov_supported:
+                    # Apply sriov info if provided
+                    if 'maxPartNum' in sriov_info:
+                        pci_device_to.maxPartNum = sriov_info['maxPartNum']
+                    if 'virtStatus' in sriov_info:
+                        pci_device_to.virtStatus = sriov_info['virtStatus']
+                    if 'parentAddress' in sriov_info:
+                        pci_device_to.parentAddress = sriov_info['parentAddress']
+                    if 'ramSize' in sriov_info:
+                        pci_device_to.ramSize = sriov_info['ramSize']
+                        pci_device_to.description = "%s [RAM Size: %s]" % (
+                            pci_device_to.description, sriov_info['ramSize'])
+
+                # GPU-specific logic: combine vfio_mdev and sriov capabilities
+                if vfio_mdev_supported and sriov_supported:
+                    if not pci_device_to.virtStatus or pci_device_to.virtStatus != "VFIO_MDEV_VIRTUALIZED":
+                        pci_device_to.virtStatus = "VFIO_MDEV_VIRTUALIZABLE"
+                elif not vfio_mdev_supported and not sriov_supported:
+                    # Only set UNVIRTUALIZABLE if neither capability is supported
+                    if not pci_device_to.virtStatus or pci_device_to.virtStatus == "":
+                        pci_device_to.virtStatus = "UNVIRTUALIZABLE"
+        except Exception as e:
+            logger.debug("Failed to detect GPU capabilities for vendor %s: %s" % (
+                vendor_name, str(e)))
+            # Fallback: set UNVIRTUALIZABLE if detection fails
+            if not pci_device_to.virtStatus or pci_device_to.virtStatus == "":
+                pci_device_to.virtStatus = "UNVIRTUALIZABLE"
+
+    # Collect GPU addon info (productName, etc.) from enriched gpu_info_map
+    vendor_name = pci_device_to.vendor if hasattr(
+        pci_device_to, 'vendor') else None
+    if vendor_name and normalized_pci and normalized_pci in gpu_info_map:
+        info = gpu_info_map[normalized_pci].copy()
+        pci_device_to.addonInfo = info
+
+        # Handle product name (vendor-specific)
+        product_name = info.get("productName")
+        if product_name:
+            if vendor_name == VendorEnum.HUAWEI:
+                pci_device_to.device = "-"
+                pci_device_to.name = product_name
+            elif vendor_name == VendorEnum.TIANSHU:
+                pci_device_to.device = product_name.split(
+                    " ")[1] if " " in product_name else product_name
+                pci_device_to.name = product_name
+            elif vendor_name == VendorEnum.ALIBABA:
+                pci_device_to.device = product_name
+                pci_device_to.name = product_name
+
+    # Call vendor's post_process_pci_device hook
+    if vendor_name:
+        post_process_pci_device_by_vendor(pci_device_to, vendor_name)
+
+    return True
+
+
+def post_process_pci_device_by_vendor(pci_device_to, vendor_name=None):
+    """
+    Post-process PCI device by calling vendor's post_process_pci_device hook.
+
+    This allows each vendor to handle their own virtualization status and other
+    post-processing logic.
+
+    Args:
+        pci_device_to: PciDeviceTO object
+        vendor_name: VendorEnum value (optional, will extract from pci_device_to if not provided)
+    """
+    if not pci_device_to:
+        return
+
+    # Extract vendor_name from pci_device_to if not provided
+    if not vendor_name and hasattr(pci_device_to, 'vendor'):
+        vendor_name = pci_device_to.vendor
+
+    if not vendor_name:
+        return
+
+    try:
+        from zstacklib.gpu import get_gpu_vendor
+        vendor_class = get_gpu_vendor(vendor_name)
+        if vendor_class and hasattr(vendor_class, 'post_process_pci_device'):
+            vendor_class.post_process_pci_device(pci_device_to)
+    except Exception as e:
+        logger.debug(
+            "Failed to post-process PCI device for vendor %s: %s" % (vendor_name, str(e)))
 
 
 def get_kunlunxin_gpu_xpu_id_cmd():
@@ -1011,6 +1225,29 @@ def parse_alibaba_ppu_metric_output(output):
 # Unified Simplified Interface - One-line call handles all logic
 # =============================================================================
 
+def _is_function_0(pci_address):
+    """
+    Check if PCI address is function 0.
+
+    Args:
+        pci_address: PCI address string (any format)
+
+    Returns:
+        bool: True if function is 0, False otherwise or if parsing fails
+    """
+    from zstacklib.utils.pci import normalize_pci_address
+    normalized = normalize_pci_address(pci_address)
+    if not normalized:
+        return False
+    # Extract function part (last component after '.')
+    try:
+        function_part = normalized.split('.')[-1]
+        func_num = int(function_part, 16)
+        return func_num == 0
+    except (ValueError, IndexError):
+        return False
+
+
 def get_info(pci_address=None, pci_device=None, vendor_name=None):
     """
     Unified GPU information collection interface - one-line call handles all logic
@@ -1030,7 +1267,7 @@ def get_info(pci_address=None, pci_device=None, vendor_name=None):
         dict: GPU information dictionary, format:
         {
             "memory": "15360 MiB",
-            "power": "70.00 W", 
+            "power": "70.00 W",
             "serialNumber": "...",
             "isDriverLoaded": True,
             # vendor-specific fields (e.g., Huawei's npuId, isIsolated, productName, aiosRankTable, etc.)
@@ -1046,10 +1283,22 @@ def get_info(pci_address=None, pci_device=None, vendor_name=None):
     if not pci_address:
         return None
 
-    # Normalize PCI address
-    pci_address = pci_address.lower().strip()
-    if len(pci_address.split(':')[0]) == 8:
-        pci_address = pci_address[4:]
+    # Normalize PCI address using proper normalization function
+    from zstacklib.utils.pci import normalize_pci_address
+    normalized_pci = normalize_pci_address(pci_address)
+    if not normalized_pci:
+        logger.debug("Invalid PCI address format: %s" % pci_address)
+        return None
+
+    # Only process function 0 devices - GPU devices typically only have function 0 as the actual GPU,
+    # while function 1+ may be other functions (e.g., audio controller) and should not be treated as GPU devices.
+    if not _is_function_0(normalized_pci):
+        logger.debug("Skipping non-function-0 PCI device: %s (only function 0 devices are treated as GPU)" %
+                     normalized_pci)
+        return None
+
+    # Use normalized address for all subsequent operations
+    pci_address = normalized_pci
 
     # 2. Try using plugin (no environment variable check, try directly)
     try:
@@ -1069,8 +1318,13 @@ def get_info(pci_address=None, pci_device=None, vendor_name=None):
                 # Use plugin to collect information
                 gpu_infos = plugin.get_basic_info()
                 for gpu_info in gpu_infos:
-                    # Plugin returned pci_address is already normalized, compare directly
-                    if gpu_info.pci_address.lower() == pci_address.lower():
+                    # Normalize plugin returned pci_address for consistent comparison
+                    normalized_gpu_pci = normalize_pci_address(
+                        gpu_info.pci_address)
+                    if not normalized_gpu_pci:
+                        continue
+                    # Only match function 0 devices and ensure exact match
+                    if normalized_gpu_pci == pci_address and _is_function_0(normalized_gpu_pci):
                         result = gpu_info.to_addon_dict()
 
                         # Handle vendor-specific extra fields
@@ -1366,7 +1620,7 @@ def _collect_vastai_legacy(pci_address):
         from zstacklib.utils import shell, sizeunit
     except ImportError:
         return {"isDriverLoaded": False}
-    
+
     r, o, e = bash_roe("which vasmi")
     if r != 0:
         return {"isDriverLoaded": False}
@@ -1540,7 +1794,8 @@ def get_all_gpu_infos_by_pci():
                 gpu_infos = vendor_class.get_basic_info()
                 for gpu_info in gpu_infos:
                     if gpu_info.pci_address:
-                        normalized_pci = normalize_pci_address(gpu_info.pci_address)
+                        normalized_pci = normalize_pci_address(
+                            gpu_info.pci_address)
                         if normalized_pci:
                             # Only include function 0 devices in the map
                             # GPU devices typically only have function 0 as the actual GPU,
@@ -1552,15 +1807,29 @@ def get_all_gpu_infos_by_pci():
                                 gpu_info_map[normalized_pci] = result
                             else:
                                 logger.debug("Skipping non-function-0 GPU device: %s (vendor: %s)" %
-                                           (normalized_pci, vendor_class.VENDOR_NAME))
+                                             (normalized_pci, vendor_class.VENDOR_NAME))
             except Exception as e:
                 logger.debug("Failed to get basic info from plugin %s: %s" %
                              (vendor_class.VENDOR_NAME, str(e)))
                 continue
     except Exception as e:
         logger.debug("Failed to collect GPU infos via plugin: %s" % str(e))
-    
+
     return gpu_info_map
+
+
+def enrich_gpu_info_map(gpu_info_map):
+    """
+    Enrich gpu_info_map with vendor-specific addon fields (productName, opaque, etc.).
+
+    Delegates to zstacklib.gpu.enrich_gpu_info_map which uses each vendor's
+    enrich_addon_info hook.
+
+    Args:
+        gpu_info_map: dict from get_all_gpu_infos_by_pci(); mutated in place
+    """
+    from zstacklib.gpu import enrich_gpu_info_map as _enrich
+    _enrich(gpu_info_map)
 
 
 def get_metrics(pci_address=None, pci_device=None, vendor_name=None):
@@ -1613,3 +1882,48 @@ def get_all_metrics():
         logger.debug("Failed to collect metrics via plugin: %s" % str(e))
 
     return results
+
+
+def _gpu_device_prepare(context):
+    """
+    GPU device ops preparation hook (Linux kernel style).
+
+    Similar to driver initialization in Linux kernel, this is called once before
+    processing devices to batch collect and enrich GPU info map.
+    This avoids repeated queries and allows other device ops (e.g., sriov) to use the data.
+
+    Args:
+        context: PciDeviceProcessingContext object
+
+    Returns:
+        callable or None: Post-prepare hook (device_list, context) -> None, or None
+    """
+    import os
+
+    # Batch collect GPU info
+    gpu_info_map = get_all_gpu_infos_by_pci()
+
+    # Batch enrich with vendor-specific info (productName, etc.)
+    enrich_gpu_info_map(gpu_info_map)
+
+    # Store in context for use by device ops and other components (e.g., sriov detection)
+    context.gpu_info_map = gpu_info_map
+
+    # No post-prepare hook needed anymore
+    # SR-IOV detection is now handled by vendor methods in GPU device ops
+    # gpu_info_map is available in context for vendor methods to use
+    return None
+
+
+# Register GPU device operations on module import (Linux kernel style)
+# Similar to pci_register_driver() in Linux kernel, this registers GPU device ops
+# This allows the PCI device framework to automatically probe and init GPU devices
+gpu_device_ops = pci.PciDeviceOps(
+    # Probe function: matches GPU devices (like pci_driver.id_table)
+    probe=_gpu_device_matcher,
+    # Init function: processes GPU devices (like pci_driver.probe)
+    init=_gpu_device_processor,
+    # Prepare hook: batch preparation (like driver init)
+    prepare=_gpu_device_prepare
+)
+pci.pci_register_device_ops(gpu_device_ops)
