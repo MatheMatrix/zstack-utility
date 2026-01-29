@@ -8649,8 +8649,13 @@ class UpgradeManagementNodeCmd(Command):
                 else:
                     webapp_dir = os.path.dirname(ctl.zstack_home)
 
+                # Remove cloud directory if it exists to avoid unzip conflicts
+                cloud_dir = os.path.join(webapp_dir, 'cloud')
+                if os.path.exists(cloud_dir):
+                    linux.rm_dir_force(cloud_dir)
+
                 shell('cp %s %s' % (new_war.path, webapp_dir))
-                ShellCmd('unzip %s -d cloud' % os.path.basename(new_war.path), workdir=webapp_dir)()
+                ShellCmd('unzip -o %s -d cloud' % os.path.basename(new_war.path), workdir=webapp_dir)()
                 #create local repo folder for possible zstack local yum repo
                 zstack_dvd_repo = '{}/cloud/static/zstack-repo'.format(webapp_dir)
                 shell('rm -f {0}; mkdir -p {0};ln -s /opt/zstack-dvd/x86_64 {0}/x86_64; ln -s /opt/zstack-dvd/aarch64 {0}/aarch64; ln -s /opt/zstack-dvd/mips64el {0}/mips64el; ln -s /opt/zstack-dvd/loongarch64 {0}/loongarch64; chown -R zstack:zstack {0}'.format(zstack_dvd_repo))

@@ -2098,6 +2098,12 @@ uz_upgrade_tomcat(){
         fi
     fi
 
+    # Update ZSTACK_HOME after migration to cloud
+    if [ "$OLD_WEBAPP_NAME" != "cloud" ] && [ -n "$OLD_WEBAPP_NAME" ]; then
+        export ZSTACK_HOME=$ZSTACK_INSTALL_ROOT/apache-tomcat/webapps/cloud
+        echo "Updated ZSTACK_HOME to cloud after migration: $ZSTACK_HOME" >>$ZSTACK_INSTALL_LOG
+    fi
+
     #If tomcat use the default conf update it, ensure the configuration is latest
     set_tomcat_config
     pass
@@ -2107,16 +2113,16 @@ uz_upgrade_zstack_ctl(){
     echo_subtitle "Upgrade ${PRODUCT_NAME,,}-ctl"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     cd $upgrade_folder
-    unzip -d zstack cloud.war >>$ZSTACK_INSTALL_LOG 2>&1
+    unzip -d cloud cloud.war >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -ne 0 ];then
         cd /; rm -rf $upgrade_folder
-        fail "failed to unzip cloud.war to $upgrade_folder/zstack"
+        fail "failed to unzip cloud.war to $upgrade_folder/cloud"
     fi
 
     if [ ! -z $DEBUG ]; then
-        bash zstack/WEB-INF/classes/tools/install.sh zstack-ctl
+        bash cloud/WEB-INF/classes/tools/install.sh zstack-ctl
     else
-        bash zstack/WEB-INF/classes/tools/install.sh zstack-ctl >>$ZSTACK_INSTALL_LOG 2>&1
+        bash cloud/WEB-INF/classes/tools/install.sh zstack-ctl >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     if [ $? -ne 0 ];then
         cd /; rm -rf $upgrade_folder
@@ -2132,9 +2138,9 @@ uz_upgrade_zstack_sys(){
     cd $upgrade_folder
 
     if [ ! -z $DEBUG ]; then
-        bash zstack/WEB-INF/classes/tools/install.sh zstack-sys
+        bash cloud/WEB-INF/classes/tools/install.sh zstack-sys
     else
-        bash zstack/WEB-INF/classes/tools/install.sh zstack-sys >>$ZSTACK_INSTALL_LOG 2>&1
+        bash cloud/WEB-INF/classes/tools/install.sh zstack-sys >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     if [ $? -ne 0 ];then
         cd /; rm -rf $upgrade_folder
@@ -2241,16 +2247,21 @@ uz_upgrade_zstack(){
     fi
 
     if [ ! -z $DEBUG ]; then
-        bash zstack/WEB-INF/classes/tools/install.sh zstack-cli
+        bash cloud/WEB-INF/classes/tools/install.sh zstack-cli
     else
-        bash zstack/WEB-INF/classes/tools/install.sh zstack-cli >>$ZSTACK_INSTALL_LOG 2>&1
+        bash cloud/WEB-INF/classes/tools/install.sh zstack-cli >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     if [ $? -ne 0 ];then
         cd /; rm -rf $upgrade_folder
         fail "failed to upgrade ${PRODUCT_NAME,,}-cli"
     fi
 
-    bash ${zstore_bin} >>$ZSTACK_INSTALL_LOG 2>&1
+    # Execute zstore_bin from the temporary extracted cloud directory
+    if [ `uname -m` == "x86_64" ]; then
+        bash cloud/WEB-INF/classes/ansible/imagestorebackupstorage/zstack-store.bin >>$ZSTACK_INSTALL_LOG 2>&1
+    else
+        bash cloud/WEB-INF/classes/ansible/imagestorebackupstorage/zstack-store.$(uname -m).bin >>$ZSTACK_INSTALL_LOG 2>&1
+    fi
     chown -R zstack:zstack $ZSTACK_INSTALL_ROOT/imagestore >/dev/null 2>&1
 
     if [ ! -z $DEBUG ]; then
