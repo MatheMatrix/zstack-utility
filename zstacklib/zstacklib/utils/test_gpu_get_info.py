@@ -179,6 +179,30 @@ class TestGetInfo(unittest.TestCase):
         result = gpu._get_info_legacy("0000:ff:00.0", "UnknownVendor")
         self.assertIsNone(result)
 
+    @patch('zstacklib.utils.gpu.bash_roe')
+    def test_get_info_returns_none_when_plugin_finds_no_matching_gpu(self, mock_bash):
+        """Test get_info returns None when plugin runs but no GPU matches the given PCI (ZSTAC-81489)"""
+        with patch('zstacklib.gpu.get_gpu_vendor') as mock_get_vendor, \
+             patch('zstacklib.gpu.get_vendor_enum_mapping') as mock_mapping:
+            from zstacklib.gpu.base import GPUInfo
+
+            # Plugin returns list that does NOT contain the requested PCI
+            mock_plugin = MagicMock()
+            mock_plugin.is_available.return_value = True
+            mock_plugin.get_basic_info.return_value = [
+                GPUInfo(
+                    pci_address="0000:86:00.0",
+                    memory="16384 MiB",
+                    power="75.00 W",
+                    serial_number="OTHER_PCI"
+                )
+            ]
+            mock_get_vendor.return_value = mock_plugin
+            mock_mapping.return_value = {"NVIDIA": "NVIDIA"}
+
+            result = gpu.get_info("0000:3b:00.0", vendor_name=VendorEnum.NVIDIA)
+            self.assertIsNone(result)
+
 
 class TestLegacyCollectors(unittest.TestCase):
     """Test legacy collection functions for each vendor"""
@@ -197,11 +221,21 @@ class TestLegacyCollectors(unittest.TestCase):
 
     @patch('zstacklib.utils.gpu.bash_roe')
     def test_collect_nvidia_legacy_no_tool(self, mock_bash):
-        """Test _collect_nvidia_legacy when tool not available"""
+        """Test _collect_nvidia_legacy returns None when tool not available (no-match/failure)"""
         mock_bash.return_value = (1, "", "command not found")
 
         result = gpu._collect_nvidia_legacy("0000:3b:00.0")
-        self.assertFalse(result.get("isDriverLoaded", True))
+        self.assertIsNone(result)
+
+    @patch('zstacklib.utils.gpu.bash_roe')
+    def test_collect_nvidia_legacy_returns_none_when_no_matching_pci(self, mock_bash):
+        """Test _collect_nvidia_legacy returns None when no GPU in output matches PCI (ZSTAC-81489)"""
+        mock_bash.side_effect = [
+            (0, "/usr/bin/nvidia-smi", ""),
+            (0, "00000000:86:00.0, 16384 MiB, 75.00 W, SN_OTHER", ""),
+        ]
+        result = gpu._collect_nvidia_legacy("0000:3b:00.0")
+        self.assertIsNone(result)
 
     @patch('zstacklib.utils.gpu.bash_roe')
     def test_collect_amd_legacy(self, mock_bash):
@@ -292,6 +326,52 @@ class TestGetAllGPUInfosByPCI(unittest.TestCase):
             # Function 1 device should NOT be in the map
             self.assertNotIn("0000:34:00.1", result)
             self.assertEqual(len(result), 2)
+
+
+class TestGPUDeviceProcessor(unittest.TestCase):
+    """Test _gpu_device_processor: only treats device as GPU when gpu_info is valid (ZSTAC-81489)"""
+
+    @patch('zstacklib.utils.gpu.get_info')
+    def test_processor_returns_false_when_get_info_returns_none(self, mock_get_info):
+        """Processor does not treat device as GPU when get_info returns None (no-match)"""
+        from zstacklib.utils.gpu import _gpu_device_processor
+
+        mock_get_info.return_value = None
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:3b:00.0"
+            type = "VGA compatible controller"
+            device = "Tesla T4"
+            vendor = None
+
+        class MockContext(object):
+            gpu_info_map = {}
+            pci_device_mapper = {}
+            opaque = None
+
+        result = _gpu_device_processor(MockTO(), MockContext())
+        self.assertFalse(result)
+
+    @patch('zstacklib.utils.gpu.get_info')
+    def test_processor_returns_false_when_get_info_returns_is_driver_loaded_false(self, mock_get_info):
+        """Processor does not treat device as GPU when get_info returns isDriverLoaded=False placeholder"""
+        from zstacklib.utils.gpu import _gpu_device_processor
+
+        mock_get_info.return_value = {"isDriverLoaded": False}
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:3b:00.0"
+            type = "VGA compatible controller"
+            device = "Tesla T4"
+            vendor = None
+
+        class MockContext(object):
+            gpu_info_map = {}
+            pci_device_mapper = {}
+            opaque = None
+
+        result = _gpu_device_processor(MockTO(), MockContext())
+        self.assertFalse(result)
 
 
 if __name__ == '__main__':

@@ -289,6 +289,22 @@ class TestGPUInfo(unittest.TestCase):
         self.assertEqual(addon["serialNumber"], "ABC123")
         self.assertTrue(addon["isDriverLoaded"])
 
+    def test_to_addon_dict_with_driver_not_loaded(self):
+        """Test to_addon_dict with isDriverLoaded=False: reserved for real GPU info, driver not loaded (ZSTAC-81489).
+        No-match/failure should return None, not this dict."""
+        from zstacklib.gpu.base import GPUInfo
+
+        info = GPUInfo(
+            pci_address="0000:3b:00.0",
+            memory="15360 MiB",
+            power="70 W",
+            serial_number="ABC123",
+            driver_loaded=False,
+        )
+        addon = info.to_addon_dict()
+        self.assertFalse(addon["isDriverLoaded"])
+        self.assertEqual(addon["memory"], "15360 MiB")
+
 
 class TestIdentifyVendor(unittest.TestCase):
     """Test vendor identification utilities"""

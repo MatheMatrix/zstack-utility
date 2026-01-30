@@ -753,7 +753,11 @@ def _gpu_device_processor(pci_device_to, context):
             pci_device_to, 'vendor') else None
         gpu_info = get_info(
             pci_device=pci_device_to, vendor_name=vendor_name)
-        is_gpu_device = gpu_info is not None
+        # Only treat as GPU if we got valid info (not None and not "no match" placeholder)
+        is_gpu_device = (
+            gpu_info is not None
+            and gpu_info.get("isDriverLoaded") is not False
+        )
 
     if not is_gpu_device:
         return False
@@ -1386,6 +1390,8 @@ def get_info(pci_address=None, pci_device=None, vendor_name=None):
                                     "Failed to get Alibaba product name: %s" % str(e))
 
                         return result
+                # Plugin ran but no matching GPU found for this PCI address
+                return None
     except Exception as e:
         logger.debug("Plugin failed for %s, fallback to legacy: %s" %
                      (pci_address, str(e)))
@@ -1431,11 +1437,11 @@ def _collect_nvidia_legacy(pci_address):
     """NVIDIA legacy collection"""
     r, o, e = bash_roe("which nvidia-smi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     r, o, e = bash_roe(get_nvidia_gpu_basic_info_cmd())
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     gpu_infos = parse_nvidia_gpu_output(o)
     for gpuinfo in gpu_infos:
@@ -1448,18 +1454,18 @@ def _collect_nvidia_legacy(pci_address):
             }
             return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_amd_legacy(pci_address):
     """AMD legacy collection"""
     r, o, e = bash_roe("which rocm-smi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     r, o, e = bash_roe(get_amd_gpu_basic_info_cmd())
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     gpu_infos = parse_amd_gpu_output(o)
     for gpuinfo in gpu_infos:
@@ -1472,18 +1478,18 @@ def _collect_amd_legacy(pci_address):
             }
             return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_haiguang_legacy(pci_address):
     """Haiguang legacy collection"""
     r, o, e = bash_roe("which hy-smi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     r, o, e = bash_roe(get_hy_gpu_basic_info_cmd())
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     gpu_infos = parse_hy_gpu_output(o)
     for gpuinfo in gpu_infos:
@@ -1496,22 +1502,22 @@ def _collect_haiguang_legacy(pci_address):
             }
             return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_huawei_legacy(pci_address):
     """Huawei legacy collection (includes special fields)"""
     r, o, e = bash_roe("which npu-smi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     r, npu_ids_out = bash_ro(get_huawei_gpu_npu_id_cmd())
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     npu_ids = get_huawei_npu_id(npu_ids_out)
     if not npu_ids:
-        return {"isDriverLoaded": False}
+        return None
 
     npu_infos = []
     npu_id_map = {}
@@ -1570,14 +1576,14 @@ def _collect_huawei_legacy(pci_address):
 
         return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_tianshu_legacy(pci_address):
     """Tianshu legacy collection"""
     r, o, e = bash_roe("which ixsmi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     if shell.run(is_tianshu_v1()) == 0:
         cmd = get_tianshu_gpu_basic_info_cmd_v1()
@@ -1586,7 +1592,7 @@ def _collect_tianshu_legacy(pci_address):
 
     r, o, e = bash_roe(cmd)
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     gpu_infos = parse_tianshu_gpu_output(o)
     for gpuinfo in gpu_infos:
@@ -1610,7 +1616,7 @@ def _collect_tianshu_legacy(pci_address):
 
             return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_vastai_legacy(pci_address):
@@ -1619,11 +1625,11 @@ def _collect_vastai_legacy(pci_address):
         from zstacklib.gpu.vendors.vastai import Vastai
         from zstacklib.utils import shell, sizeunit
     except ImportError:
-        return {"isDriverLoaded": False}
+        return None
 
     r, o, e = bash_roe("which vasmi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     gpu_type = Vastai.get_vastai_type()
     gpuinfos = []
@@ -1664,18 +1670,18 @@ def _collect_vastai_legacy(pci_address):
             }
             return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_enflame_legacy(pci_address):
     """Enflame legacy collection"""
     r, o, e = bash_roe("which efsmi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     r, o, e = bash_roe(get_enflame_gpu_info_cmd())
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     for info in parse_enflame_gpu_output(o):
         if pci_address not in info.get("pciAddress", "").lower():
@@ -1696,18 +1702,18 @@ def _collect_enflame_legacy(pci_address):
 
         return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_alibaba_legacy(pci_address):
     """Alibaba legacy collection"""
     r, o, e = bash_roe("which ppu-smi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     r, o, e = bash_roe(get_alibaba_ppu_basic_info_cmd())
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     gpu_infos = parse_alibaba_ppu_output(o)
     for gpuinfo in gpu_infos:
@@ -1731,7 +1737,7 @@ def _collect_alibaba_legacy(pci_address):
 
             return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def get_all_info():
