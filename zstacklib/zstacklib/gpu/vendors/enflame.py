@@ -1,12 +1,90 @@
 # -*- coding: utf-8 -*-
+"""
+Enflame GPU vendor plugin.
+
+Adaptation requirement: basic info and metrics both rely on the efsmi CLI; output format must
+match the efsmi -q sample below. If driver/efsmi upgrade changes field names or section layout,
+update parse_basic_info / parse_metrics accordingly.
+"""
 import re
 from zstacklib.gpu.base import GPUBase, GPUInfo, GPUMetrics, register_gpu_vendor
 from zstacklib.utils import log
 
 logger = log.get_logger(__name__)
 
+# efsmi -q output format (GPU CLI adaptation requirement; parse with exact key match for key: value)
+# Old driver may use Mem Size / Mem Usage; new driver uses Total Size / Used Size / Free Size.
+#
+# -------------------------------------------------------------------------------
+# ---------------------- Enflame System Management Interface ----------------------
+# --------- Enflame Tech, All Rights Reserved. 2024-2025 Copyright (C) ----------
+# --------------------------------------------------------------------------------
+# DEV ID 0
+#     Driver Info
+#         Ver                     : 1.4.3.4
+#     Device Info
+#         Dev Name                : S60
+#         Dev UUID                : TR6Y46010302
+#         Dev SN                  : A0A1650510676
+#         Dev PN                  : EFB-0088000-00
+#         Dev MFD                 : 2025-1-6
+#         Health                  : True
+#     PCIe Info
+#         Vendor ID               : 1e36
+#         Device ID               : c035
+#         Domain                  : 0000
+#         Bus                     : 17
+#         Dev                     : 00
+#         Func                    : 0
+#         Link Info
+#         Max Link Speed          : Gen5
+#         Max Link Width          : X16
+#         Cur Link Speed          : Gen3
+#         Cur Link Width          : X8
+#         Tx Throughput           : 0 MiB/s
+#         Rx Throughput           : 0 MiB/s
+#     Clock Info
+#         Mem CLK                 : 7000 MHz
+#     Power Info
+#         Power Capa              : 300 W
+#         Cur Power               : 96 W
+#         Dpm Level               : Sleep
+#     Device Mem Info
+#         Total Size              : 42976 MiB
+#         Reserved Size           : 1129 MiB
+#         Used Size               : 0 MiB
+#         Free Size               : 41846 MiB
+#     Temperature Info
+#         GCU Temp                : 35 ℃
+#     Voltage Info
+#         VDD GCU                 : 0.702 V
+#         VDD SOC                 : 0.743 V
+#         VDD MEMQC               : 1.349 V
+#     Device Usage Info
+#         GCU Usage               : 0.0 %
+#     ECC Mode
+#         Current                 : Enable
+#         Pending                 : Enable
+#     RMA Info
+#         Flags                   : False
+#         Total DBE               : 0
+#         ...
+#     Power Cable
+#         Status                  : Normal
+#     VPU Info
+#         Encoder Usage           : 0 %
+#         Decoder Usage           : 0 %
+#     Error Records / Error Details
+#         ...
+# DEV ID 1
+#     ... (same structure, repeated for multiple devices)
+# -------------------------------------------------------------------------------
+
+
 @register_gpu_vendor
 class Enflame(GPUBase):
+    """Enflame GPU; CLI is efsmi; basic info and metrics both use efsmi -q; output format see file header."""
+
     VENDOR_NAME = "Enflame"
     VENDOR_ENUM_NAME = "Enflame"
     VENDOR_IDS = {"1e36"}
@@ -15,14 +93,22 @@ class Enflame(GPUBase):
 
     @classmethod
     def get_basic_info_cmd(cls, is_windows=False):
-        return "efsmi -a"
+        """Use efsmi -q for basic info (same as new driver; -a may be unavailable after upgrade)."""
+        return "efsmi -q"
 
     @classmethod
     def parse_basic_info(cls, output):
+        """
+        Parse efsmi -q output; format see efsmi -q output block at file header (GPU CLI adaptation requirement).
+
+        Supports old driver (Mem Size) and new driver (Total Size); PCI uses exact key match for Dev
+        (do not match Device ID). Parsed fields: Dev Name, Dev SN, Domain, Bus, Dev, Func,
+        Power Capa, Mem Size / Total Size.
+        """
         gpu_infos = []
         if not output:
             return gpu_infos
-            
+
         current_gpu = {}
         for line in output.splitlines():
             line = line.strip()
@@ -36,20 +122,25 @@ class Enflame(GPUBase):
                         device_name=current_gpu.get("deviceName")
                     ))
                 current_gpu = {}
-            elif "Dev Name" in line:
-                current_gpu["deviceName"] = line.split(":")[1].strip()
-            elif "Dev SN" in line:
-                current_gpu["serialNumber"] = line.split(":")[1].strip()
-            elif "Domain" in line:
-                current_gpu["domain"] = line.split(":")[1].strip()
-            elif "Bus" in line:
-                current_gpu["bus"] = line.split(":")[1].strip()
-            elif "Dev" in line and ":" in line:
-                current_gpu["dev"] = line.split(":")[1].strip()
-            elif "Func" in line:
-                current_gpu["func"] = line.split(":")[1].strip()
+                continue
+            if ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if key == "Dev Name":
+                current_gpu["deviceName"] = value
+            elif key == "Dev SN":
+                current_gpu["serialNumber"] = value
+            elif key == "Domain":
+                current_gpu["domain"] = value
+            elif key == "Bus":
+                current_gpu["bus"] = value
+            elif key == "Dev":
+                current_gpu["dev"] = value
+            elif key == "Func":
+                current_gpu["func"] = value
                 if all(k in current_gpu for k in ["domain", "bus", "dev", "func"]):
-                    # Normalize domain: if 8 chars, take last 4; otherwise pad to 4
                     domain = current_gpu["domain"].strip()
                     if len(domain) == 8:
                         domain = domain[-4:]
@@ -62,10 +153,10 @@ class Enflame(GPUBase):
                         current_gpu["func"]
                     )
                     current_gpu["pciAddress"] = cls.normalize_pci_address(addr)
-            elif "Power Capa" in line:
-                current_gpu["power"] = line.split(":")[1].strip()
-            elif "Mem Size" in line:
-                current_gpu["memory"] = line.split(":")[1].strip()
+            elif key == "Power Capa":
+                current_gpu["power"] = value
+            elif key == "Mem Size" or key == "Total Size":
+                current_gpu["memory"] = value
 
         if current_gpu and "pciAddress" in current_gpu:
             gpu_infos.append(GPUInfo(
@@ -75,14 +166,14 @@ class Enflame(GPUBase):
                 serial_number=current_gpu.get("serialNumber"),
                 device_name=current_gpu.get("deviceName")
             ))
-            
+
         return gpu_infos
 
     @classmethod
     def get_metric_cmd(cls, is_windows=False):
         """
-        Return command to get Enflame GPU metrics.
-        
+        Return command to collect Enflame GPU metrics; output format see efsmi -q block at file header.
+
         Command: efsmi -q
         """
         cmd = "efsmi -q"
@@ -143,9 +234,9 @@ class Enflame(GPUBase):
     @classmethod
     def parse_metrics(cls, output):
         """
-        Parse efsmi -q output to extract GPU metrics.
-        
-        Uses the same parsing logic as parse_enflame_gpu_output from gpu.py
+        Parse efsmi -q output to get GPU metrics; format see efsmi -q block at file header.
+
+        Same parsing logic as gpu.parse_enflame_gpu_output; use exact key match (e.g. Dev vs Device ID).
         """
         results = []
         if not output:

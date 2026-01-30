@@ -14,6 +14,8 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from zstacklib.gpu.base import PCI_CLASS_PROCESSING_ACCEL
+
 
 class TestGPUBase(unittest.TestCase):
     """Test base class functionality"""
@@ -275,7 +277,7 @@ Power Dissipation : 150 W
         }
         device_names = {
             "0000:82:00.0": {
-                "Class": "Processing accelerators",
+                "Class": PCI_CLASS_PROCESSING_ACCEL,
                 "Vendor": "Huawei Technologies Co., Ltd.",
                 "Device": "Device d802",
             },
@@ -294,7 +296,7 @@ Power Dissipation : 150 W
         }
         device_names = {
             "0000:82:00.0": {
-                "Class": "Processing accelerators",
+                "Class": PCI_CLASS_PROCESSING_ACCEL,
                 "Vendor": "Huawei Technologies Co., Ltd.",
                 "Device": "Unknown accelerator XYZ",
             },
@@ -311,13 +313,52 @@ Power Dissipation : 150 W
         }
         device_names = {
             "0000:82:00.1": {
-                "Class": "Processing accelerators",
+                "Class": PCI_CLASS_PROCESSING_ACCEL,
                 "Vendor": "Huawei Technologies Co., Ltd.",
                 "Device": "Device d802",
             },
         }
         candidates = Huawei.get_pci_only_candidates(device_ids, device_names)
         self.assertEqual(candidates, [])
+
+
+class TestEnflame(unittest.TestCase):
+    """Test Enflame (燧原) vendor plugin; efsmi -q new driver uses Total Size."""
+
+    def test_parse_basic_info_new_driver_total_size(self):
+        """parse_basic_info accepts Total Size (new efsmi) and exact Dev key (not Device ID)."""
+        from zstacklib.gpu.vendors.enflame import Enflame
+
+        output = """
+DEV ID 0
+    Device Info
+        Dev Name                : S60
+        Dev SN                  : A0A1650510676
+    PCIe Info
+        Vendor ID               : 1e36
+        Device ID               : c035
+        Domain                  : 0000
+        Bus                     : 17
+        Dev                     : 00
+        Func                    : 0
+    Power Info
+        Power Capa              : 300 W
+    Device Mem Info
+        Total Size              : 42976 MiB
+"""
+        infos = Enflame.parse_basic_info(output)
+        self.assertEqual(len(infos), 1)
+        self.assertEqual(infos[0].pci_address, "0000:17:00.0")
+        self.assertEqual(infos[0].serial_number, "A0A1650510676")
+        self.assertEqual(infos[0].memory, "42976 MiB")
+        self.assertEqual(infos[0].power, "300 W")
+        self.assertEqual(infos[0].device_name, "S60")
+
+    def test_get_basic_info_cmd_uses_efsmi_q(self):
+        """get_basic_info_cmd returns efsmi -q for new driver compatibility."""
+        from zstacklib.gpu.vendors.enflame import Enflame
+
+        self.assertEqual(Enflame.get_basic_info_cmd(), "efsmi -q")
 
 
 class TestGPUInfo(unittest.TestCase):

@@ -15,7 +15,11 @@ class Haiguang(GPUBase):
 
     @classmethod
     def get_basic_info_cmd(cls, is_windows=False):
-        return "hy-smi -a --json"
+        """Same as 5.5.0 / gpu.get_hy_gpu_basic_info_cmd(); exact flags ensure JSON keys match parse_basic_info."""
+        cmd = "hy-smi --showserial --showmaxpower --showmemavailable --showbus --json"
+        if is_windows:
+            cmd = cmd.replace(" ", "|")
+        return cmd
 
     @classmethod
     def parse_basic_info(cls, output):

@@ -7,7 +7,20 @@ from zstacklib.utils.bash import *
 from enum import Enum
 import json
 
-from zstacklib.gpu.base import VendorEnum
+from zstacklib.gpu.base import (
+    VendorEnum,
+    PCI_CLASS_VGA,
+    PCI_CLASS_DISPLAY,
+    PCI_CLASS_PROCESSING_ACCEL,
+    PCI_CLASS_COPROCESSOR,
+    PCI_CLASS_COMMUNICATION,
+    PCI_CLASS_3D,
+    GPU_TYPE_VIDEO_CONTROLLER,
+    GPU_TYPE_PROCESSING_ACCELERATORS,
+    GPU_TYPE_CO_PROCESSOR,
+    GPU_TYPE_COMMUNICATION_CONTROLLER,
+    GPU_TYPE_3D_CONTROLLER,
+)
 from zstacklib.utils.qga import VmQga
 
 logger = log.get_logger(__name__)
@@ -780,26 +793,52 @@ def _gpu_device_processor(pci_device_to, context):
     if not is_gpu_device:
         return False
 
-    # GPU-specific type refinement
-    if ('VGA compatible controller' in pci_device_to.type or 'Display controller' in pci_device_to.type
-            or (pci_device_mapper.get('VGA compatible controller') is not None
-                and pci_device_mapper.get('VGA compatible controller') in pci_device_to.type)) \
-            and is_valid_video_controller(pci_device_to.device):
-        pci_device_to.type = "GPU_Video_Controller"
-    elif ("Processing accelerators" in pci_device_to.type or (
-            pci_device_mapper.get('Processing accelerators') is not None)) \
-            and is_valid_processing_accelerator(pci_device_to.device):
-        pci_device_to.type = "GPU_Processing_Accelerators"
-    elif ('Co-processor' in pci_device_to.type or (pci_device_mapper.get('Co-processor') is not None
-                                                   and pci_device_mapper.get('Co-processor') in pci_device_to.type)) \
-            and is_valid_co_processor(pci_device_to.vendor):
-        pci_device_to.type = "GPU_Co_Processor"
-    elif ('3D controller' in pci_device_to.type or 'Display controller' in pci_device_to.type
-          or (pci_device_mapper.get('3D controller') is not None and pci_device_mapper.get('3D controller') in pci_device_to.type)):
-        pci_device_to.type = "GPU_3D_Controller"
+    # GPU-specific type refinement: try vendor plugin first, else central table
+    vendor_name = getattr(pci_device_to, 'vendor', None)
+    refined_type = None
+    if vendor_name:
+        try:
+            from zstacklib.gpu import get_gpu_vendor
+            vendor_class = get_gpu_vendor(vendor_name)
+            if vendor_class:
+                refined_type = vendor_class.refine_gpu_type(
+                    pci_device_to, pci_device_to.type, pci_device_mapper)
+        except Exception as e:
+            logger.debug("refine_gpu_type for vendor %s failed: %s" % (
+                vendor_name, str(e)))
+    if refined_type is not None:
+        pci_device_to.type = refined_type
     else:
-        # Fallback to GPU_3D_Controller if cannot determine specific type
-        pci_device_to.type = "GPU_3D_Controller"
+        # Central type refinement table: map PCI class (lspci Class) to ZStack GPU type.
+        # Used when vendor refine_gpu_type() returns None. Order matters (first match wins):
+        # Video > Processing accelerators > Co-processor > Communication > 3D/Display > fallback.
+        # pci_device_mapper: i18n for PCI class (English key -> localized string in type).
+        # Constants: PCI_CLASS_* and GPU_TYPE_* from zstacklib.gpu.base.
+        if ((PCI_CLASS_VGA in pci_device_to.type or PCI_CLASS_DISPLAY in pci_device_to.type
+             or (pci_device_mapper.get(PCI_CLASS_VGA) is not None
+                 and pci_device_mapper.get(PCI_CLASS_VGA) in pci_device_to.type))
+                and is_valid_video_controller(pci_device_to.device)):
+            pci_device_to.type = GPU_TYPE_VIDEO_CONTROLLER
+        elif ((PCI_CLASS_PROCESSING_ACCEL in pci_device_to.type or (
+                pci_device_mapper.get(PCI_CLASS_PROCESSING_ACCEL) is not None))
+              and is_valid_processing_accelerator(pci_device_to.device)):
+            pci_device_to.type = GPU_TYPE_PROCESSING_ACCELERATORS
+        elif ((PCI_CLASS_COPROCESSOR in pci_device_to.type or (
+                pci_device_mapper.get(PCI_CLASS_COPROCESSOR) is not None
+                and pci_device_mapper.get(PCI_CLASS_COPROCESSOR) in pci_device_to.type))
+              and is_valid_co_processor(pci_device_to.vendor)):
+            pci_device_to.type = GPU_TYPE_CO_PROCESSOR
+        elif ((PCI_CLASS_COMMUNICATION in pci_device_to.type or (
+                pci_device_mapper.get(PCI_CLASS_COMMUNICATION) is not None
+                and pci_device_mapper.get(PCI_CLASS_COMMUNICATION) in pci_device_to.type))
+              and is_valid_communication_controller(pci_device_to.vendor)):
+            pci_device_to.type = GPU_TYPE_COMMUNICATION_CONTROLLER
+        elif (PCI_CLASS_3D in pci_device_to.type or PCI_CLASS_DISPLAY in pci_device_to.type
+              or (pci_device_mapper.get(PCI_CLASS_3D) is not None
+                  and pci_device_mapper.get(PCI_CLASS_3D) in pci_device_to.type)):
+            pci_device_to.type = GPU_TYPE_3D_CONTROLLER
+        else:
+            pci_device_to.type = GPU_TYPE_3D_CONTROLLER
 
     # GPU-specific virtualization capabilities detection via vendor methods
     # Each GPU vendor implements detect_vfio_mdev_capability and detect_sriov_capability
@@ -1408,8 +1447,8 @@ def get_info(pci_address=None, pci_device=None, vendor_name=None):
                                     "Failed to get Alibaba product name: %s" % str(e))
 
                         return result
-                # Plugin ran but no matching GPU found for this PCI address
-                return None
+                # Plugin ran but no matching GPU found (e.g. hy-smi "No device available" in VM)
+                # Fall through to legacy so vendor can return minimal addon and device still recognized as GPU
     except Exception as e:
         logger.debug("Plugin failed for %s, fallback to legacy: %s" %
                      (pci_address, str(e)))
@@ -1437,6 +1476,7 @@ def _get_info_legacy(pci_address, vendor_name):
         VendorEnum.VASTAI: _collect_vastai_legacy,
         VendorEnum.ENFLAME: _collect_enflame_legacy,
         VendorEnum.ALIBABA: _collect_alibaba_legacy,
+        VendorEnum.KUNLUNXIN: _collect_kunlunxin_legacy,
     }
 
     handler = legacy_handlers.get(vendor_name)
@@ -1500,27 +1540,40 @@ def _collect_amd_legacy(pci_address):
 
 
 def _collect_haiguang_legacy(pci_address):
-    """Haiguang legacy collection"""
+    """
+    Haiguang legacy collection.
+    When hy-smi fails (e.g. "No device available" inside VM after GPU passthrough),
+    still return minimal addon so the PCI device is recognized as GPU type.
+    """
+    # Minimal addon when SMI unavailable/fails: device still treated as GPU (e.g. passthrough VM)
+    minimal_addon = {
+        "memory": None,
+        "power": None,
+        "serialNumber": "",
+        "isDriverLoaded": True,
+    }
+
     r, o, e = bash_roe("which hy-smi")
     if r != 0:
-        return None
+        return minimal_addon
 
     r, o, e = bash_roe(get_hy_gpu_basic_info_cmd())
     if r != 0:
-        return None
+        # e.g. "No device available, no device found or initialization failed" in VM
+        return minimal_addon
 
     gpu_infos = parse_hy_gpu_output(o)
     for gpuinfo in gpu_infos:
         if pci_address in gpuinfo.get("pciAddress", "").lower():
-            result = {
+            return {
                 "memory": gpuinfo.get("memory"),
                 "power": gpuinfo.get("power"),
                 "serialNumber": gpuinfo.get("serialNumber"),
                 "isDriverLoaded": True,
             }
-            return result
 
-    return None
+    # No matching PCI (e.g. empty output in VM) -> still recognize as GPU
+    return minimal_addon
 
 
 def _collect_huawei_legacy(pci_address):
@@ -1754,6 +1807,35 @@ def _collect_alibaba_legacy(pci_address):
                 logger.debug("Failed to get Alibaba product name: %s" % str(e))
 
             return result
+
+    return None
+
+
+def _collect_kunlunxin_legacy(pci_address):
+    """Kunlunxin legacy collection"""
+    r, o, e = bash_roe("which xpu-smi")
+    if r != 0:
+        return None
+
+    r, o, e = bash_roe(get_kunlunxin_gpu_xpu_id_cmd())
+    if r != 0:
+        return None
+
+    xpu_ids = get_kunlunxin_xpu_id(o)
+    for xpu_id in xpu_ids:
+        r, o, e = bash_roe(get_kunlunxin_gpu_basic_info_cmd(xpu_id))
+        if r != 0:
+            continue
+        gpu_infos = parse_kunlunxin_gpu_output_by_npu_id(o)
+        for gpuinfo in gpu_infos:
+            if pci_address in gpuinfo.get("pciAddress", "").lower():
+                result = {
+                    "memory": gpuinfo.get("memory"),
+                    "power": gpuinfo.get("power"),
+                    "serialNumber": gpuinfo.get("serialNumber"),
+                    "isDriverLoaded": True,
+                }
+                return result
 
     return None
 
