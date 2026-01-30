@@ -264,8 +264,13 @@ class Huawei(GPUBase):
 
     @classmethod
     def get_metric_cmd_for_npu(cls, npu_id):
-        """Get metrics command for specific NPU"""
-        return ("npu-smi info -t usages -i {0};"
+        """Get metrics command for specific NPU.
+        Include board so combined output has PCIe Bus Info and Serial Number
+        (usages/memory/temp/power alone may not contain them -> pci_address
+        stays empty -> _collect_metrics_for_npu returns None -> no monitoring).
+        """
+        return ("npu-smi info -t board -i {0};"
+                "npu-smi info -t usages -i {0};"
                 "npu-smi info -t memory -i {0};"
                 "npu-smi info -t temp -i {0};"
                 "npu-smi info -t power -i {0}".format(npu_id))
@@ -326,9 +331,11 @@ class Huawei(GPUBase):
             if not line:
                 continue
 
-            if "PCIe Bus Info" in line:
-                pci_address = cls.normalize_pci_address(
-                    line.partition(": ")[-1])
+            if "PCIe Bus Info" in line or "Bus-Id" in line or "Bus Id" in line:
+                raw = (line.partition(": ")[-1] or line.partition(":")[-1]).strip()
+                normalized = cls.normalize_pci_address(raw)
+                if normalized:
+                    pci_address = normalized
             elif "Serial Number" in line:
                 serial_number = line.split(":")[1].strip()
             elif "Aicore Usage Rate" in line or "NPU Usage" in line:
