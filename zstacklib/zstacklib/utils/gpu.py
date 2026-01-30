@@ -1447,8 +1447,8 @@ def get_info(pci_address=None, pci_device=None, vendor_name=None):
                                     "Failed to get Alibaba product name: %s" % str(e))
 
                         return result
-                # Plugin ran but no matching GPU found for this PCI address
-                return None
+                # Plugin ran but no matching GPU found (e.g. hy-smi "No device available" in VM)
+                # Fall through to legacy so vendor can return minimal addon and device still recognized as GPU
     except Exception as e:
         logger.debug("Plugin failed for %s, fallback to legacy: %s" %
                      (pci_address, str(e)))
@@ -1540,27 +1540,40 @@ def _collect_amd_legacy(pci_address):
 
 
 def _collect_haiguang_legacy(pci_address):
-    """Haiguang legacy collection"""
+    """
+    Haiguang legacy collection.
+    When hy-smi fails (e.g. "No device available" inside VM after GPU passthrough),
+    still return minimal addon so the PCI device is recognized as GPU type.
+    """
+    # Minimal addon when SMI unavailable/fails: device still treated as GPU (e.g. passthrough VM)
+    minimal_addon = {
+        "memory": None,
+        "power": None,
+        "serialNumber": "",
+        "isDriverLoaded": True,
+    }
+
     r, o, e = bash_roe("which hy-smi")
     if r != 0:
-        return None
+        return minimal_addon
 
     r, o, e = bash_roe(get_hy_gpu_basic_info_cmd())
     if r != 0:
-        return None
+        # e.g. "No device available, no device found or initialization failed" in VM
+        return minimal_addon
 
     gpu_infos = parse_hy_gpu_output(o)
     for gpuinfo in gpu_infos:
         if pci_address in gpuinfo.get("pciAddress", "").lower():
-            result = {
+            return {
                 "memory": gpuinfo.get("memory"),
                 "power": gpuinfo.get("power"),
                 "serialNumber": gpuinfo.get("serialNumber"),
                 "isDriverLoaded": True,
             }
-            return result
 
-    return None
+    # No matching PCI (e.g. empty output in VM) -> still recognize as GPU
+    return minimal_addon
 
 
 def _collect_huawei_legacy(pci_address):
