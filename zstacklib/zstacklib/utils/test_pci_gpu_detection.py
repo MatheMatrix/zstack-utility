@@ -91,5 +91,34 @@ class TestVendorNameSimplification(unittest.TestCase):
         self.assertNotIn("Co., Ltd", result)
 
 
+class TestPciDeviceProbeContext(unittest.TestCase):
+    """Test pci_device_probe passes context to ops.probe (ZSTAC-81489)"""
+
+    def test_probe_receives_context(self):
+        """Probe function is called with (pci_device_to, context) so matcher can use gpu_info_map"""
+        from zstacklib.utils import pci
+
+        probe_calls = []
+
+        def my_probe(pci_device_to, context):
+            probe_calls.append((pci_device_to, context))
+            return False
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:3b:00.0"
+
+        class MockContext(object):
+            gpu_info_map = {}
+
+        ops = pci.PciDeviceOps(probe=my_probe, init=lambda to, ctx: False)
+        try:
+            pci.pci_register_device_ops(ops)
+            pci.pci_device_probe(MockTO(), MockContext())
+            self.assertEqual(len(probe_calls), 1)
+            self.assertIs(probe_calls[0][1].gpu_info_map, MockContext.gpu_info_map)
+        finally:
+            pci._pci_device_ops_list.remove(ops)
+
+
 if __name__ == '__main__':
     unittest.main()

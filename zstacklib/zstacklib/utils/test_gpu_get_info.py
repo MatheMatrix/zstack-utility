@@ -328,6 +328,55 @@ class TestGetAllGPUInfosByPCI(unittest.TestCase):
             self.assertEqual(len(result), 2)
 
 
+class TestGPUDeviceMatcher(unittest.TestCase):
+    """Test _gpu_device_matcher: only matches devices in context.gpu_info_map (ZSTAC-81489)"""
+
+    def test_matcher_returns_true_only_when_in_gpu_info_map(self):
+        """Matcher returns True only when device PCI is in context.gpu_info_map"""
+        from zstacklib.utils.gpu import _gpu_device_matcher
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:3b:00.0"
+
+        class MockContext(object):
+            gpu_info_map = {"0000:3b:00.0": {"memory": "15360 MiB"}}
+
+        self.assertTrue(_gpu_device_matcher(MockTO(), MockContext()))
+
+    def test_matcher_returns_false_when_no_context(self):
+        """Matcher returns False when context is None"""
+        from zstacklib.utils.gpu import _gpu_device_matcher
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:3b:00.0"
+
+        self.assertFalse(_gpu_device_matcher(MockTO(), None))
+
+    def test_matcher_returns_false_when_no_gpu_info_map(self):
+        """Matcher returns False when context has no gpu_info_map"""
+        from zstacklib.utils.gpu import _gpu_device_matcher
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:3b:00.0"
+
+        class MockContext(object):
+            gpu_info_map = None
+
+        self.assertFalse(_gpu_device_matcher(MockTO(), MockContext()))
+
+    def test_matcher_returns_false_when_pci_not_in_map(self):
+        """Matcher returns False when device PCI is not in gpu_info_map"""
+        from zstacklib.utils.gpu import _gpu_device_matcher
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:ff:00.0"
+
+        class MockContext(object):
+            gpu_info_map = {"0000:3b:00.0": {}}
+
+        self.assertFalse(_gpu_device_matcher(MockTO(), MockContext()))
+
+
 class TestGPUDeviceProcessor(unittest.TestCase):
     """Test _gpu_device_processor: only treats device as GPU when gpu_info is valid (ZSTAC-81489)"""
 

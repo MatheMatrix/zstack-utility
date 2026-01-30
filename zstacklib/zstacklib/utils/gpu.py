@@ -677,36 +677,24 @@ def post_process_enflame_gpu_device(to):
     to.virtStatus = "UNVIRTUALIZABLE"
 
 
-def _gpu_device_matcher(pci_device_to):
-    """Matcher function for GPU devices - checks if device is a GPU"""
+def _gpu_device_matcher(pci_device_to, context):
+    """
+    Matcher function for GPU devices: only treat as GPU when gpu.py has already
+    identified the device as a GPU (i.e. it is in gpu_info_map from vendor plugins).
+
+    This avoids wrongly sending non-GPU PCI devices (e.g. same vendor/class but not
+    actually a GPU) into the GPU processor, where they would get type overwritten
+    to GPU_3D_Controller when type refinement branches do not match.
+    """
     from zstacklib.utils.pci import normalize_pci_address
 
-    # Check via gpu_info_map if available in context
-    # This will be called from pci_device_probe, so we need to check differently
-    # For now, use vendor-based matching as fallback
-    if not hasattr(pci_device_to, 'vendor'):
+    if not context or not getattr(context, 'gpu_info_map', None):
         return False
-
-    from zstacklib.gpu.base import VendorEnum
-    gpu_vendors = {
-        VendorEnum.NVIDIA, VendorEnum.AMD, VendorEnum.INTEL,
-        VendorEnum.HUAWEI, VendorEnum.HAIGUANG, VendorEnum.TIANSHU,
-        VendorEnum.VASTAI, VendorEnum.ENFLAME, VendorEnum.ALIBABA,
-        VendorEnum.KUNLUNXIN
-    }
-
-    if pci_device_to.vendor in gpu_vendors:
-        return True
-
-    # Also check by PCI class
-    if hasattr(pci_device_to, 'type'):
-        gpu_classes = ['VGA compatible controller', 'Display controller',
-                       '3D controller', 'Processing accelerators', 'Co-processor']
-        for cls in gpu_classes:
-            if cls in pci_device_to.type:
-                return True
-
-    return False
+    normalized_pci = normalize_pci_address(
+        getattr(pci_device_to, 'pciDeviceAddress', None) or '')
+    if not normalized_pci:
+        return False
+    return normalized_pci in context.gpu_info_map
 
 
 def _gpu_device_processor(pci_device_to, context):
@@ -743,17 +731,22 @@ def _gpu_device_processor(pci_device_to, context):
     pci_device_mapper = context.pci_device_mapper or {}
     opaque = context.opaque
 
-    # Check if device is GPU
+    # Check if device is GPU. Matcher already restricts to gpu_info_map, so
+    # normally we only reach here for devices in the map; fallback is for
+    # key mismatch or hot-plug edge cases (get_info still uses vendor plugins).
     normalized_pci = normalize_pci_address(pci_device_to.pciDeviceAddress)
     is_gpu_device = normalized_pci and normalized_pci in gpu_info_map
 
     if not is_gpu_device:
-        # Fallback to individual query for backward compatibility
+        # Fallback: per-device get_info() when not in gpu_info_map. Purpose:
+        # (1) Hot-plug GPUs that were not present at prepare time. (2) Vendors
+        # that implement get_info() but not get_basic_info(). (3) Historical
+        # compatibility when matcher was looser. With strict matcher (only
+        # gpu_info_map), this path is normally unreachable; kept as safety net.
         vendor_name = pci_device_to.vendor if hasattr(
             pci_device_to, 'vendor') else None
         gpu_info = get_info(
             pci_device=pci_device_to, vendor_name=vendor_name)
-        # Only treat as GPU if we got valid info (not None and not "no match" placeholder)
         is_gpu_device = (
             gpu_info is not None
             and gpu_info.get("isDriverLoaded") is not False
