@@ -64,7 +64,7 @@ class PciDeviceProcessingContext(object):
 
 # PCI device operations registry (Linux kernel style)
 # Similar to pci_driver in Linux kernel, each ops contains:
-#   - probe: (pci_device_to) -> bool, returns True if device matches (like pci_driver.id_table matching)
+#   - probe: (pci_device_to, context) -> bool, returns True if device matches (like pci_driver.id_table matching)
 #   - init: (pci_device_to, context) -> bool, processes the device (like pci_driver.probe)
 #   - prepare: (context) -> callable or None, optional, called once before processing devices
 #     Can return a post-prepare hook (device_list, context) -> None to refine capabilities
@@ -92,6 +92,7 @@ _VENDOR_NAME_MAPPING = {
 _VENDOR_ID_MAPPING = {
     '1ded': 'Alibaba',  # Alibaba vendor ID
     '1e3e': 'TianShu',  # TianShu vendor ID
+    '19e5': 'Huawei',   # Huawei vendor ID (NPU, etc.)
     '2057': 'Kunlunxin',  # Kunlunxin vendor ID
 }
 
@@ -500,9 +501,10 @@ class PciDeviceOps(object):
         Initialize PCI device operations.
 
         Args:
-            probe: Function (pci_device_to) -> bool
+            probe: Function (pci_device_to, context: PciDeviceProcessingContext) -> bool
                 Probe function to match devices (like pci_driver.id_table matching).
                 Returns True if this ops should handle the device.
+                Context is available so probe can use prepared data (e.g. gpu_info_map).
             init: Function (pci_device_to, context: PciDeviceProcessingContext) -> bool
                 Initialize function to process the device (like pci_driver.probe).
                 Returns True if device was processed.
@@ -620,7 +622,7 @@ def pci_device_probe(pci_device_to, context):
     for ops in _pci_device_ops_list:
         try:
             # Probe: check if this ops should handle the device (like pci_driver.id_table matching)
-            if ops.probe(pci_device_to):
+            if ops.probe(pci_device_to, context):
                 # Init: process the device (like pci_driver.probe)
                 if ops.init(pci_device_to, context):
                     return True

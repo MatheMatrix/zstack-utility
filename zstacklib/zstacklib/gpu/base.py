@@ -426,6 +426,29 @@ class GPUBase(object):
         return False, {}
 
     # ==========================================================================
+    # PCI-only fallback (no SMI): candidates to add to gpu_info_map
+    # ==========================================================================
+
+    @classmethod
+    def get_pci_only_candidates(cls, device_ids, device_names):
+        """
+        When SMI is not available, return PCI devices that should still be
+        treated as this vendor's GPU/NPU (e.g. by vendor_id + class + device name).
+
+        Override in vendor (e.g. Huawei) to implement vendor-specific rules.
+        Called by gpu.get_all_gpu_infos_by_pci() supplement step.
+
+        Args:
+            device_ids: dict slot -> {Vendor, Class, Device, ...} from lspci -Dmmnv
+            device_names: dict slot -> {Vendor, Class, Device, ...} from lspci -Dmmv
+
+        Returns:
+            list of (normalized_pci_address, info_dict). info_dict at least
+            {"isDriverLoaded": False}. Only function 0 slots should be included.
+        """
+        return []
+
+    # ==========================================================================
     # Addon Info Enrichment (productName, opaque, etc.)
     # ==========================================================================
 

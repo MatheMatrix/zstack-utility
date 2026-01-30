@@ -266,6 +266,59 @@ Power Dissipation : 150 W
         self.assertEqual(infos[0].serial_number, "ABC123456")
         self.assertEqual(infos[0].memory, "32768 MB")
 
+    def test_get_pci_only_candidates_processing_accelerators(self):
+        """Huawei get_pci_only_candidates returns 19e5 + Processing accelerators when device name is valid."""
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        device_ids = {
+            "0000:82:00.0": {"Vendor": "19e5", "Class": "120000", "Device": "d802"},
+        }
+        device_names = {
+            "0000:82:00.0": {
+                "Class": "Processing accelerators",
+                "Vendor": "Huawei Technologies Co., Ltd.",
+                "Device": "Device d802",
+            },
+        }
+        candidates = Huawei.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0][0], "0000:82:00.0")
+        self.assertEqual(candidates[0][1], {"isDriverLoaded": False})
+
+    def test_get_pci_only_candidates_skips_invalid_device_name(self):
+        """Huawei get_pci_only_candidates returns empty when device name fails is_valid_processing_accelerator."""
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        device_ids = {
+            "0000:82:00.0": {"Vendor": "19e5", "Class": "120000", "Device": "unknown"},
+        }
+        device_names = {
+            "0000:82:00.0": {
+                "Class": "Processing accelerators",
+                "Vendor": "Huawei Technologies Co., Ltd.",
+                "Device": "Unknown accelerator XYZ",
+            },
+        }
+        candidates = Huawei.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(candidates, [])
+
+    def test_get_pci_only_candidates_skips_non_function_0(self):
+        """Huawei get_pci_only_candidates returns only function 0 slots."""
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        device_ids = {
+            "0000:82:00.1": {"Vendor": "19e5", "Class": "120000", "Device": "d802"},
+        }
+        device_names = {
+            "0000:82:00.1": {
+                "Class": "Processing accelerators",
+                "Vendor": "Huawei Technologies Co., Ltd.",
+                "Device": "Device d802",
+            },
+        }
+        candidates = Huawei.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(candidates, [])
+
 
 class TestGPUInfo(unittest.TestCase):
     """Test GPUInfo dataclass"""
@@ -288,6 +341,22 @@ class TestGPUInfo(unittest.TestCase):
         self.assertEqual(addon["power"], "70 W")
         self.assertEqual(addon["serialNumber"], "ABC123")
         self.assertTrue(addon["isDriverLoaded"])
+
+    def test_to_addon_dict_with_driver_not_loaded(self):
+        """Test to_addon_dict with isDriverLoaded=False: reserved for real GPU info, driver not loaded (ZSTAC-81489).
+        No-match/failure should return None, not this dict."""
+        from zstacklib.gpu.base import GPUInfo
+
+        info = GPUInfo(
+            pci_address="0000:3b:00.0",
+            memory="15360 MiB",
+            power="70 W",
+            serial_number="ABC123",
+            driver_loaded=False,
+        )
+        addon = info.to_addon_dict()
+        self.assertFalse(addon["isDriverLoaded"])
+        self.assertEqual(addon["memory"], "15360 MiB")
 
 
 class TestIdentifyVendor(unittest.TestCase):

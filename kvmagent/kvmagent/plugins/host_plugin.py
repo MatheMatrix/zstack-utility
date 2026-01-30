@@ -2847,7 +2847,7 @@ done
         return vendor_enum_map.get(simplified, simplified)
 
     def _convert_pci_info_to_to(
-            self, slot, ids, names, pci_device_mapper, host_mappings):
+            self, slot, ids, names, pci_device_mapper, host_mappings, context=None):
         """
         Convert PCI device information to PciDeviceTO object.
 
@@ -2857,6 +2857,8 @@ done
             names: Dictionary of PCI names (Vendor, Device, etc.)
             pci_device_mapper: PCI device type mapper
             host_mappings: Host PCI address mappings
+            context: PciDeviceProcessingContext (optional); used so generic type
+                is not overwritten for devices in gpu_info_map (GPU identified by gpu.py).
 
         Returns:
             PciDeviceTO object or None if conversion fails
@@ -2922,8 +2924,9 @@ done
 
         # Set generic PCI device type (base types only, not device-type-specific refinements)
         # Device-type-specific type refinement (e.g., GPU_Video_Controller) is
-        # handled by hooks
-        self._set_generic_pci_device_type(to, pci_device_mapper)
+        # handled by GPU processor; context is used to skip overwriting type for
+        # devices already identified as GPU in gpu_info_map (no hardcoded GPU class list).
+        self._set_generic_pci_device_type(to, pci_device_mapper, context)
 
         return to
 
@@ -3011,10 +3014,15 @@ done
             opaque=opaque
         )
 
+        # Run device ops prepare chain first so context has gpu_info_map etc.
+        # This allows _set_generic_pci_device_type to skip overwriting type for
+        # devices that gpu.py has identified as GPU (no hardcoded GPU class list).
+        post_prepare_hooks = pci.pci_device_prepare_chain(context)
+
         # Create PciDeviceTO objects with generic PCI logic
         for slot in device_ids.keys():
             to = self._convert_pci_info_to_to(
-                slot, device_ids[slot], device_names, pci_device_mapper, host_mappings)
+                slot, device_ids[slot], device_names, pci_device_mapper, host_mappings, context)
             if not to:
                 continue
 
@@ -3032,17 +3040,12 @@ done
         # Architecture (Linux kernel style, similar to pci_driver model):
         # 1. Basic PCI info collection: Convert PCI info to PciDeviceTO objects
         # 2. Registry layer: Device ops are registered (GPU, Ethernet, etc.) via pci_register_device_ops()
-        # 3. Preparation phase: Device ops prepare batch data (e.g., GPU info map) via pci_device_prepare_chain()
+        # 3. Preparation phase: Already run above so gpu_info_map is available before setting generic type
         # 4. Device-specific layer: pci_device_probe() finds matching ops by calling ops.probe() (like pci_driver.id_table)
         #    Then calls ops.init() to process device (like pci_driver.probe)
         #    Device ops handles: capability detection (via vendor methods), type refinement, virtStatus, addon info, post_process
         # Note: GPU vendors implement detect_vfio_mdev_capability and
         # detect_sriov_capability methods
-
-        # Call device ops prepare chain (like Linux kernel driver initialization before device probing)
-        # Prepare device ops (e.g., collect GPU info map for efficient batch
-        # processing)
-        post_prepare_hooks = pci.pci_device_prepare_chain(context)
 
         # Call post-prepare hooks if any (currently not used, but kept for
         # extensibility)
@@ -3119,13 +3122,20 @@ done
             mdev_mapping.update(mapping)
         return mdev_mapping
 
-    def _set_generic_pci_device_type(self, to, pci_device_mapper):
+    def _set_generic_pci_device_type(self, to, pci_device_mapper, context=None):
         """
         Set generic PCI device type (non-GPU types only).
 
-        GPU types are handled separately by GPU hook (process_pci_device_for_gpu).
-        This keeps generic PCI logic separate from GPU-specific logic.
+        Do not overwrite to.type when the device is already identified as a GPU
+        by gpu.py (present in context.gpu_info_map). This uses the same source
+        of truth as the GPU matcher (gpu_info_map) instead of hardcoding PCI
+        class names; GPU type refinement is then done by the GPU processor.
         """
+        if context and getattr(context, 'gpu_info_map', None):
+            normalized = pci.normalize_pci_address(
+                getattr(to, 'pciDeviceAddress', None) or '')
+            if normalized and normalized in context.gpu_info_map:
+                return
         if 'Ethernet controller' in to.type or (pci_device_mapper.get('Ethernet controller') is not None
                                                 and pci_device_mapper.get('Ethernet controller') in to.type):
             to.type = "Ethernet_Controller"

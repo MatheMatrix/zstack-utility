@@ -37,6 +37,42 @@ class Huawei(GPUBase):
     IS_GPU_VENDOR = True
 
     # ==========================================================================
+    # PCI-only fallback (no npu-smi): match by vendor_id + class + device name
+    # ==========================================================================
+
+    @classmethod
+    def get_pci_only_candidates(cls, device_ids, device_names):
+        """
+        When npu-smi is not available, identify Huawei NPU by PCI: vendor 19e5,
+        class Processing accelerators, and device name passing
+        is_valid_processing_accelerator (supplementary filter).
+        """
+        from zstacklib.utils.gpu import is_valid_processing_accelerator
+        from zstacklib.utils.pci import normalize_pci_address
+
+        result = []
+        vendor_ids_lower = {v.lower() for v in cls.VENDOR_IDS}
+        for slot in device_ids:
+            if slot not in device_names or not slot.endswith('.0'):
+                continue
+            ids = device_ids[slot]
+            names = device_names[slot]
+            vendor_id = (ids.get('Vendor') or '').strip().lower()
+            class_name = (names.get('Class') or '').strip()
+            device_name = (names.get('Device') or '').strip()
+            if vendor_id not in vendor_ids_lower:
+                continue
+            if class_name not in cls.DEVICE_TYPES:
+                continue
+            if class_name == 'Processing accelerators' and not is_valid_processing_accelerator(
+                    device_name):
+                continue
+            normalized = normalize_pci_address(slot)
+            if normalized:
+                result.append((normalized, {"isDriverLoaded": False}))
+        return result
+
+    # ==========================================================================
     # Multi-Device Enumeration
     # ==========================================================================
 
@@ -228,8 +264,13 @@ class Huawei(GPUBase):
 
     @classmethod
     def get_metric_cmd_for_npu(cls, npu_id):
-        """Get metrics command for specific NPU"""
-        return ("npu-smi info -t usages -i {0};"
+        """Get metrics command for specific NPU.
+        Include board so combined output has PCIe Bus Info and Serial Number
+        (usages/memory/temp/power alone may not contain them -> pci_address
+        stays empty -> _collect_metrics_for_npu returns None -> no monitoring).
+        """
+        return ("npu-smi info -t board -i {0};"
+                "npu-smi info -t usages -i {0};"
                 "npu-smi info -t memory -i {0};"
                 "npu-smi info -t temp -i {0};"
                 "npu-smi info -t power -i {0}".format(npu_id))
@@ -290,9 +331,11 @@ class Huawei(GPUBase):
             if not line:
                 continue
 
-            if "PCIe Bus Info" in line:
-                pci_address = cls.normalize_pci_address(
-                    line.partition(": ")[-1])
+            if "PCIe Bus Info" in line or "Bus-Id" in line or "Bus Id" in line:
+                raw = (line.partition(": ")[-1] or line.partition(":")[-1]).strip()
+                normalized = cls.normalize_pci_address(raw)
+                if normalized:
+                    pci_address = normalized
             elif "Serial Number" in line:
                 serial_number = line.split(":")[1].strip()
             elif "Aicore Usage Rate" in line or "NPU Usage" in line:

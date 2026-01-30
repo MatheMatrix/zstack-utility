@@ -19,7 +19,8 @@ class Alibaba(GPUBase):
 
     @classmethod
     def get_basic_info_cmd(cls, is_windows=False):
-        return "ppu-smi --query-ppu=bus_id,memory.total,power.limit,serial --format=csv,noheader"
+        # Use gpu_bus_id/gpu_serial (same as gpu.py legacy) so ppu-smi returns 4 columns: pci, memory, power, serial
+        return "ppu-smi --query-ppu=gpu_bus_id,memory.total,power.limit,gpu_serial --format=csv,noheader"
 
     @classmethod
     def parse_basic_info(cls, output):

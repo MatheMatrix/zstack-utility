@@ -179,6 +179,30 @@ class TestGetInfo(unittest.TestCase):
         result = gpu._get_info_legacy("0000:ff:00.0", "UnknownVendor")
         self.assertIsNone(result)
 
+    @patch('zstacklib.utils.gpu.bash_roe')
+    def test_get_info_returns_none_when_plugin_finds_no_matching_gpu(self, mock_bash):
+        """Test get_info returns None when plugin runs but no GPU matches the given PCI (ZSTAC-81489)"""
+        with patch('zstacklib.gpu.get_gpu_vendor') as mock_get_vendor, \
+             patch('zstacklib.gpu.get_vendor_enum_mapping') as mock_mapping:
+            from zstacklib.gpu.base import GPUInfo
+
+            # Plugin returns list that does NOT contain the requested PCI
+            mock_plugin = MagicMock()
+            mock_plugin.is_available.return_value = True
+            mock_plugin.get_basic_info.return_value = [
+                GPUInfo(
+                    pci_address="0000:86:00.0",
+                    memory="16384 MiB",
+                    power="75.00 W",
+                    serial_number="OTHER_PCI"
+                )
+            ]
+            mock_get_vendor.return_value = mock_plugin
+            mock_mapping.return_value = {"NVIDIA": "NVIDIA"}
+
+            result = gpu.get_info("0000:3b:00.0", vendor_name=VendorEnum.NVIDIA)
+            self.assertIsNone(result)
+
 
 class TestLegacyCollectors(unittest.TestCase):
     """Test legacy collection functions for each vendor"""
@@ -197,23 +221,34 @@ class TestLegacyCollectors(unittest.TestCase):
 
     @patch('zstacklib.utils.gpu.bash_roe')
     def test_collect_nvidia_legacy_no_tool(self, mock_bash):
-        """Test _collect_nvidia_legacy when tool not available"""
+        """Test _collect_nvidia_legacy returns None when tool not available (no-match/failure)"""
         mock_bash.return_value = (1, "", "command not found")
 
         result = gpu._collect_nvidia_legacy("0000:3b:00.0")
-        self.assertFalse(result.get("isDriverLoaded", True))
+        self.assertIsNone(result)
+
+    @patch('zstacklib.utils.gpu.bash_roe')
+    def test_collect_nvidia_legacy_returns_none_when_no_matching_pci(self, mock_bash):
+        """Test _collect_nvidia_legacy returns None when no GPU in output matches PCI (ZSTAC-81489)"""
+        mock_bash.side_effect = [
+            (0, "/usr/bin/nvidia-smi", ""),
+            (0, "00000000:86:00.0, 16384 MiB, 75.00 W, SN_OTHER", ""),
+        ]
+        result = gpu._collect_nvidia_legacy("0000:3b:00.0")
+        self.assertIsNone(result)
 
     @patch('zstacklib.utils.gpu.bash_roe')
     def test_collect_amd_legacy(self, mock_bash):
-        """Test _collect_amd_legacy"""
+        """Test _collect_amd_legacy with card_list format from rocm-smi."""
         mock_bash.side_effect = [
             (0, "/usr/bin/rocm-smi", ""),  # which
-            (0, '{"card_list": []}', ""),  # rocm-smi
+            (0, '{"card_list": [{"pci_bus": "0000:42:00.0", "memory": "16384 MiB"}]}', ""),  # rocm-smi
         ]
 
         result = gpu._collect_amd_legacy("0000:42:00.0")
-        # Note: Requires actual parse_amd_gpu_output
         self.assertIsNotNone(result)
+        self.assertEqual(result.get("memory"), "16384 MiB")
+        self.assertTrue(result.get("isDriverLoaded"))
 
     @patch('zstacklib.utils.gpu.bash_roe')
     @patch('zstacklib.utils.gpu.bash_ro')
@@ -231,16 +266,17 @@ class TestLegacyCollectors(unittest.TestCase):
         # Note: Requires actual implementation
         self.assertIsNotNone(result)
 
-    @patch('zstacklib.utils.gpu.shell')
+    @patch('zstacklib.utils.shell.run_with_json_result')
     @patch('zstacklib.utils.gpu.bash_roe')
-    def test_collect_vastai_legacy(self, mock_bash, mock_shell):
-        """Test _collect_vastai_legacy"""
+    def test_collect_vastai_legacy(self, mock_bash, mock_run_json):
+        """Test _collect_vastai_legacy (shell is imported inside the function from zstacklib.utils)."""
         mock_bash.return_value = (0, "/usr/bin/vasmi", "")
-        mock_shell.run_with_json_result.side_effect = [
+        mock_run_json.side_effect = [
             # getmem
             {"elem": [{"pci_bus": "00000000:65:00.0", "sn": "VASTAI001"}]},
+            # summary
             {"elem": [{"vals": {"devBusId": {"value": "00000000:65:00.0"},
-                                "P_Cap": {"value": "300 W"}}}]},  # summary
+                               "P_Cap": {"value": "300 W"}}}]},
         ]
 
         result = gpu._collect_vastai_legacy("0000:65:00.0")
@@ -292,6 +328,316 @@ class TestGetAllGPUInfosByPCI(unittest.TestCase):
             # Function 1 device should NOT be in the map
             self.assertNotIn("0000:34:00.1", result)
             self.assertEqual(len(result), 2)
+
+
+class TestGPUDeviceMatcher(unittest.TestCase):
+    """Test _gpu_device_matcher: only matches devices in context.gpu_info_map (ZSTAC-81489)"""
+
+    def test_matcher_returns_true_only_when_in_gpu_info_map(self):
+        """Matcher returns True only when device PCI is in context.gpu_info_map"""
+        from zstacklib.utils.gpu import _gpu_device_matcher
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:3b:00.0"
+
+        class MockContext(object):
+            gpu_info_map = {"0000:3b:00.0": {"memory": "15360 MiB"}}
+
+        self.assertTrue(_gpu_device_matcher(MockTO(), MockContext()))
+
+    def test_matcher_returns_false_when_no_context(self):
+        """Matcher returns False when context is None"""
+        from zstacklib.utils.gpu import _gpu_device_matcher
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:3b:00.0"
+
+        self.assertFalse(_gpu_device_matcher(MockTO(), None))
+
+    def test_matcher_returns_false_when_no_gpu_info_map(self):
+        """Matcher returns False when context has no gpu_info_map"""
+        from zstacklib.utils.gpu import _gpu_device_matcher
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:3b:00.0"
+
+        class MockContext(object):
+            gpu_info_map = None
+
+        self.assertFalse(_gpu_device_matcher(MockTO(), MockContext()))
+
+    def test_matcher_returns_false_when_pci_not_in_map(self):
+        """Matcher returns False when device PCI is not in gpu_info_map"""
+        from zstacklib.utils.gpu import _gpu_device_matcher
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:ff:00.0"
+
+        class MockContext(object):
+            gpu_info_map = {"0000:3b:00.0": {}}
+
+        self.assertFalse(_gpu_device_matcher(MockTO(), MockContext()))
+
+
+class TestGPUDeviceProcessor(unittest.TestCase):
+    """Test _gpu_device_processor: only treats device as GPU when gpu_info is valid (ZSTAC-81489)"""
+
+    @patch('zstacklib.utils.gpu.get_info')
+    def test_processor_returns_false_when_get_info_returns_none(self, mock_get_info):
+        """Processor does not treat device as GPU when get_info returns None (no-match)"""
+        from zstacklib.utils.gpu import _gpu_device_processor
+
+        mock_get_info.return_value = None
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:3b:00.0"
+            type = "VGA compatible controller"
+            device = "Tesla T4"
+            vendor = None
+
+        class MockContext(object):
+            gpu_info_map = {}
+            pci_device_mapper = {}
+            opaque = None
+
+        result = _gpu_device_processor(MockTO(), MockContext())
+        self.assertFalse(result)
+
+    @patch('zstacklib.utils.gpu.get_info')
+    def test_processor_returns_false_when_get_info_returns_is_driver_loaded_false(self, mock_get_info):
+        """Processor does not treat device as GPU when get_info returns isDriverLoaded=False placeholder"""
+        from zstacklib.utils.gpu import _gpu_device_processor
+
+        mock_get_info.return_value = {"isDriverLoaded": False}
+
+        class MockTO(object):
+            pciDeviceAddress = "0000:3b:00.0"
+            type = "VGA compatible controller"
+            device = "Tesla T4"
+            vendor = None
+
+        class MockContext(object):
+            gpu_info_map = {}
+            pci_device_mapper = {}
+            opaque = None
+
+        result = _gpu_device_processor(MockTO(), MockContext())
+        self.assertFalse(result)
+
+
+class TestParseLspciOutput(unittest.TestCase):
+    """Test _parse_lspci_output for PCI supplement parsing."""
+
+    def test_parse_lspci_output_single_device(self):
+        """Parse single device block from lspci -Dmmnv / -Dmmv style."""
+        from zstacklib.utils.gpu import _parse_lspci_output
+
+        o_id = """Slot:	0000:82:00.0
+Class:	120000
+Vendor:	19e5
+Device:	d802
+"""
+        o_name = """Slot:	0000:82:00.0
+Class:	Processing accelerators
+Vendor:	Huawei Technologies Co., Ltd.
+Device:	Device d802
+"""
+        device_ids, device_names = _parse_lspci_output(o_id, o_name)
+        self.assertIn("0000:82:00.0", device_ids)
+        self.assertIn("0000:82:00.0", device_names)
+        self.assertEqual(device_ids["0000:82:00.0"].get("Vendor"), "19e5")
+        self.assertEqual(device_names["0000:82:00.0"].get("Class"), "Processing accelerators")
+        self.assertIn("Device d802", device_names["0000:82:00.0"].get("Device", ""))
+
+    def test_parse_lspci_output_multiple_devices(self):
+        """Parse multiple device blocks."""
+        from zstacklib.utils.gpu import _parse_lspci_output
+
+        o_id = """Slot:	0000:82:00.0
+Class:	120000
+Vendor:	19e5
+Device:	d802
+
+Slot:	0000:01:00.0
+Class:	020000
+Vendor:	8086
+Device:	1234
+"""
+        o_name = """Slot:	0000:82:00.0
+Class:	Processing accelerators
+Vendor:	Huawei Technologies Co., Ltd.
+Device:	Device d802
+
+Slot:	0000:01:00.0
+Class:	Ethernet controller
+Vendor:	Intel Corporation
+Device:	Ethernet X710
+"""
+        device_ids, device_names = _parse_lspci_output(o_id, o_name)
+        self.assertEqual(len(device_ids), 2)
+        self.assertEqual(device_ids["0000:82:00.0"].get("Vendor"), "19e5")
+        self.assertEqual(device_ids["0000:01:00.0"].get("Vendor"), "8086")
+        self.assertEqual(device_names["0000:82:00.0"].get("Class"), "Processing accelerators")
+        self.assertEqual(device_names["0000:01:00.0"].get("Class"), "Ethernet controller")
+
+
+class TestSupplementGpuInfoMapFromPci(unittest.TestCase):
+    """Test SMI primary + PCI fallback: supplement only when vendor has no SMI."""
+
+    @patch('zstacklib.gpu.get_all_gpu_vendors')
+    @patch('zstacklib.utils.pci.get_pci_device_names')
+    @patch('zstacklib.utils.pci.get_pci_device_ids')
+    def test_supplement_adds_npu_when_vendor_not_available(
+            self, mock_get_ids, mock_get_names, mock_get_vendors):
+        """When Huawei vendor is not available (no npu-smi), PCI supplement adds via get_pci_only_candidates."""
+        from zstacklib.utils.gpu import get_all_gpu_infos_by_pci
+
+        mock_get_ids.return_value = (
+            0,
+            "Slot:\t0000:82:00.0\nClass:\t120000\nVendor:\t19e5\nDevice:\td802\n",
+            "",
+        )
+        mock_get_names.return_value = (
+            0,
+            "Slot:\t0000:82:00.0\nClass:\tProcessing accelerators\n"
+            "Vendor:\tHuawei Technologies Co., Ltd.\nDevice:\tDevice d802\n",
+            "",
+        )
+        mock_huawei = MagicMock()
+        mock_huawei.is_available.return_value = False
+        mock_huawei.VENDOR_NAME = "Huawei"
+        mock_huawei.get_pci_only_candidates.return_value = [
+            ("0000:82:00.0", {"isDriverLoaded": False})
+        ]
+        mock_get_vendors.return_value = [mock_huawei]
+
+        result = get_all_gpu_infos_by_pci()
+
+        self.assertIn("0000:82:00.0", result)
+        self.assertEqual(result["0000:82:00.0"].get("isDriverLoaded"), False)
+
+    @patch('zstacklib.gpu.get_all_gpu_vendors')
+    @patch('zstacklib.utils.pci.get_pci_device_names')
+    @patch('zstacklib.utils.pci.get_pci_device_ids')
+    def test_smi_primary_not_overwritten_by_supplement(
+            self, mock_get_ids, mock_get_names, mock_get_vendors):
+        """When SMI already provided a device, supplement does not overwrite (SMI is primary)."""
+        from zstacklib.gpu.base import GPUInfo
+        from zstacklib.utils.gpu import get_all_gpu_infos_by_pci
+
+        mock_get_ids.return_value = (
+            0,
+            "Slot:\t0000:82:00.0\nClass:\t120000\nVendor:\t19e5\nDevice:\td802\n",
+            "",
+        )
+        mock_get_names.return_value = (
+            0,
+            "Slot:\t0000:82:00.0\nClass:\tProcessing accelerators\n"
+            "Vendor:\tHuawei Technologies Co., Ltd.\nDevice:\tDevice d802\n",
+            "",
+        )
+        mock_huawei = MagicMock()
+        mock_huawei.is_available.return_value = True
+        mock_huawei.VENDOR_NAME = "Huawei"
+        mock_huawei.VENDOR_IDS = {"19e5"}
+        mock_huawei.DEVICE_TYPES = {"Processing accelerators"}
+        mock_huawei.IS_GPU_VENDOR = True
+        mock_huawei.get_basic_info.return_value = [
+            GPUInfo(pci_address="0000:82:00.0", memory="8192 MB", serial_number="SN1")
+        ]
+        mock_get_vendors.return_value = [mock_huawei]
+
+        result = get_all_gpu_infos_by_pci()
+
+        self.assertIn("0000:82:00.0", result)
+        self.assertEqual(result["0000:82:00.0"].get("memory"), "8192 MB")
+        self.assertNotEqual(result["0000:82:00.0"].get("isDriverLoaded"), False)
+
+    @patch('zstacklib.gpu.get_all_gpu_vendors')
+    @patch('zstacklib.utils.pci.get_pci_device_names')
+    @patch('zstacklib.utils.pci.get_pci_device_ids')
+    def test_supplement_skips_same_vendor_different_class(
+            self, mock_get_ids, mock_get_names, mock_get_vendors):
+        """Same vendor id (19e5) but different class (Ethernet): vendor returns no candidates."""
+        from zstacklib.utils.gpu import get_all_gpu_infos_by_pci
+
+        mock_get_ids.return_value = (
+            0,
+            "Slot:\t0000:82:00.0\nClass:\t020000\nVendor:\t19e5\nDevice:\tabcd\n",
+            "",
+        )
+        mock_get_names.return_value = (
+            0,
+            "Slot:\t0000:82:00.0\nClass:\tEthernet controller\n"
+            "Vendor:\tHuawei Technologies Co., Ltd.\nDevice:\tSome NIC\n",
+            "",
+        )
+        mock_huawei = MagicMock()
+        mock_huawei.is_available.return_value = False
+        mock_huawei.VENDOR_NAME = "Huawei"
+        mock_huawei.get_pci_only_candidates.return_value = []
+        mock_get_vendors.return_value = [mock_huawei]
+
+        result = get_all_gpu_infos_by_pci()
+
+        self.assertNotIn("0000:82:00.0", result)
+
+    @patch('zstacklib.gpu.get_all_gpu_vendors')
+    @patch('zstacklib.utils.pci.get_pci_device_names')
+    @patch('zstacklib.utils.pci.get_pci_device_ids')
+    def test_supplement_skips_processing_accelerators_without_valid_device_name(
+            self, mock_get_ids, mock_get_names, mock_get_vendors):
+        """Vendor returns no candidates when device name fails validation (e.g. Huawei)."""
+        from zstacklib.utils.gpu import get_all_gpu_infos_by_pci
+
+        mock_get_ids.return_value = (
+            0,
+            "Slot:\t0000:82:00.0\nClass:\t120000\nVendor:\t19e5\nDevice:\tunknown\n",
+            "",
+        )
+        mock_get_names.return_value = (
+            0,
+            "Slot:\t0000:82:00.0\nClass:\tProcessing accelerators\n"
+            "Vendor:\tHuawei Technologies Co., Ltd.\nDevice:\tUnknown accelerator XYZ\n",
+            "",
+        )
+        mock_huawei = MagicMock()
+        mock_huawei.is_available.return_value = False
+        mock_huawei.VENDOR_NAME = "Huawei"
+        mock_huawei.get_pci_only_candidates.return_value = []
+        mock_get_vendors.return_value = [mock_huawei]
+
+        result = get_all_gpu_infos_by_pci()
+
+        self.assertNotIn("0000:82:00.0", result)
+
+    @patch('zstacklib.gpu.get_all_gpu_vendors')
+    @patch('zstacklib.utils.pci.get_pci_device_names')
+    @patch('zstacklib.utils.pci.get_pci_device_ids')
+    def test_supplement_skips_non_function_0(self, mock_get_ids, mock_get_names, mock_get_vendors):
+        """Vendor returns only function 0 in candidates (e.g. 82:00.1 not returned)."""
+        from zstacklib.utils.gpu import get_all_gpu_infos_by_pci
+
+        mock_get_ids.return_value = (
+            0,
+            "Slot:\t0000:82:00.1\nClass:\t120000\nVendor:\t19e5\nDevice:\td802\n",
+            "",
+        )
+        mock_get_names.return_value = (
+            0,
+            "Slot:\t0000:82:00.1\nClass:\tProcessing accelerators\n"
+            "Vendor:\tHuawei Technologies Co., Ltd.\nDevice:\tDevice d802\n",
+            "",
+        )
+        mock_huawei = MagicMock()
+        mock_huawei.is_available.return_value = False
+        mock_huawei.VENDOR_NAME = "Huawei"
+        mock_huawei.get_pci_only_candidates.return_value = []
+        mock_get_vendors.return_value = [mock_huawei]
+
+        result = get_all_gpu_infos_by_pci()
+
+        self.assertNotIn("0000:82:00.1", result)
 
 
 if __name__ == '__main__':

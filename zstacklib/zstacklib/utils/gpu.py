@@ -125,7 +125,32 @@ def parse_amd_gpu_output(output):
         if gpu_info_json is None:
             return gpuinfos
 
+        # Support rocm-smi card_list format: {"card_list": [{"pci_bus": "...", "memory": "..."}]}
+        card_list = gpu_info_json.get("card_list")
+        if isinstance(card_list, list):
+            for card_data in card_list:
+                if not isinstance(card_data, dict):
+                    continue
+                gpuinfo = {}
+                pci_bus = card_data.get("pci_bus") or card_data.get("PCI Bus")
+                if not pci_bus:
+                    continue
+                pci_device_address = pci_bus.lower()
+                if len(pci_device_address.split(':')[0]) == 8:
+                    pci_device_address = pci_device_address[4:].lower()
+                gpuinfo["pciAddress"] = pci_device_address
+                gpuinfo["memory"] = card_data.get("memory") or card_data.get('VRAM Total Memory (B)')
+                gpuinfo["power"] = card_data.get("power") or card_data.get(
+                    'Average Graphics Package Power (W)',
+                    card_data.get('Current Socket Graphics Package Power (W)', None))
+                gpuinfo["serialNumber"] = card_data.get("serialNumber") or card_data.get('Serial Number')
+                gpuinfos.append(gpuinfo)
+            return gpuinfos
+
+        # Legacy format: top-level dict of card_name -> card_data
         for card_name, card_data in gpu_info_json.items():
+            if not isinstance(card_data, dict):
+                continue
             gpuinfo = {}
             pci_device_address = card_data.get('PCI Bus').lower()
             if len(pci_device_address.split(':')[0]) == 8:
@@ -677,36 +702,24 @@ def post_process_enflame_gpu_device(to):
     to.virtStatus = "UNVIRTUALIZABLE"
 
 
-def _gpu_device_matcher(pci_device_to):
-    """Matcher function for GPU devices - checks if device is a GPU"""
+def _gpu_device_matcher(pci_device_to, context):
+    """
+    Matcher function for GPU devices: only treat as GPU when gpu.py has already
+    identified the device as a GPU (i.e. it is in gpu_info_map from vendor plugins).
+
+    This avoids wrongly sending non-GPU PCI devices (e.g. same vendor/class but not
+    actually a GPU) into the GPU processor, where they would get type overwritten
+    to GPU_3D_Controller when type refinement branches do not match.
+    """
     from zstacklib.utils.pci import normalize_pci_address
 
-    # Check via gpu_info_map if available in context
-    # This will be called from pci_device_probe, so we need to check differently
-    # For now, use vendor-based matching as fallback
-    if not hasattr(pci_device_to, 'vendor'):
+    if not context or not getattr(context, 'gpu_info_map', None):
         return False
-
-    from zstacklib.gpu.base import VendorEnum
-    gpu_vendors = {
-        VendorEnum.NVIDIA, VendorEnum.AMD, VendorEnum.INTEL,
-        VendorEnum.HUAWEI, VendorEnum.HAIGUANG, VendorEnum.TIANSHU,
-        VendorEnum.VASTAI, VendorEnum.ENFLAME, VendorEnum.ALIBABA,
-        VendorEnum.KUNLUNXIN
-    }
-
-    if pci_device_to.vendor in gpu_vendors:
-        return True
-
-    # Also check by PCI class
-    if hasattr(pci_device_to, 'type'):
-        gpu_classes = ['VGA compatible controller', 'Display controller',
-                       '3D controller', 'Processing accelerators', 'Co-processor']
-        for cls in gpu_classes:
-            if cls in pci_device_to.type:
-                return True
-
-    return False
+    normalized_pci = normalize_pci_address(
+        getattr(pci_device_to, 'pciDeviceAddress', None) or '')
+    if not normalized_pci:
+        return False
+    return normalized_pci in context.gpu_info_map
 
 
 def _gpu_device_processor(pci_device_to, context):
@@ -743,17 +756,26 @@ def _gpu_device_processor(pci_device_to, context):
     pci_device_mapper = context.pci_device_mapper or {}
     opaque = context.opaque
 
-    # Check if device is GPU
+    # Check if device is GPU. Matcher already restricts to gpu_info_map, so
+    # normally we only reach here for devices in the map; fallback is for
+    # key mismatch or hot-plug edge cases (get_info still uses vendor plugins).
     normalized_pci = normalize_pci_address(pci_device_to.pciDeviceAddress)
     is_gpu_device = normalized_pci and normalized_pci in gpu_info_map
 
     if not is_gpu_device:
-        # Fallback to individual query for backward compatibility
+        # Fallback: per-device get_info() when not in gpu_info_map. Purpose:
+        # (1) Hot-plug GPUs that were not present at prepare time. (2) Vendors
+        # that implement get_info() but not get_basic_info(). (3) Historical
+        # compatibility when matcher was looser. With strict matcher (only
+        # gpu_info_map), this path is normally unreachable; kept as safety net.
         vendor_name = pci_device_to.vendor if hasattr(
             pci_device_to, 'vendor') else None
         gpu_info = get_info(
             pci_device=pci_device_to, vendor_name=vendor_name)
-        is_gpu_device = gpu_info is not None
+        is_gpu_device = (
+            gpu_info is not None
+            and gpu_info.get("isDriverLoaded") is not False
+        )
 
     if not is_gpu_device:
         return False
@@ -1386,6 +1408,8 @@ def get_info(pci_address=None, pci_device=None, vendor_name=None):
                                     "Failed to get Alibaba product name: %s" % str(e))
 
                         return result
+                # Plugin ran but no matching GPU found for this PCI address
+                return None
     except Exception as e:
         logger.debug("Plugin failed for %s, fallback to legacy: %s" %
                      (pci_address, str(e)))
@@ -1431,11 +1455,11 @@ def _collect_nvidia_legacy(pci_address):
     """NVIDIA legacy collection"""
     r, o, e = bash_roe("which nvidia-smi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     r, o, e = bash_roe(get_nvidia_gpu_basic_info_cmd())
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     gpu_infos = parse_nvidia_gpu_output(o)
     for gpuinfo in gpu_infos:
@@ -1448,18 +1472,18 @@ def _collect_nvidia_legacy(pci_address):
             }
             return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_amd_legacy(pci_address):
     """AMD legacy collection"""
     r, o, e = bash_roe("which rocm-smi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     r, o, e = bash_roe(get_amd_gpu_basic_info_cmd())
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     gpu_infos = parse_amd_gpu_output(o)
     for gpuinfo in gpu_infos:
@@ -1472,18 +1496,18 @@ def _collect_amd_legacy(pci_address):
             }
             return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_haiguang_legacy(pci_address):
     """Haiguang legacy collection"""
     r, o, e = bash_roe("which hy-smi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     r, o, e = bash_roe(get_hy_gpu_basic_info_cmd())
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     gpu_infos = parse_hy_gpu_output(o)
     for gpuinfo in gpu_infos:
@@ -1496,22 +1520,22 @@ def _collect_haiguang_legacy(pci_address):
             }
             return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_huawei_legacy(pci_address):
     """Huawei legacy collection (includes special fields)"""
     r, o, e = bash_roe("which npu-smi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     r, npu_ids_out = bash_ro(get_huawei_gpu_npu_id_cmd())
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     npu_ids = get_huawei_npu_id(npu_ids_out)
     if not npu_ids:
-        return {"isDriverLoaded": False}
+        return None
 
     npu_infos = []
     npu_id_map = {}
@@ -1570,14 +1594,14 @@ def _collect_huawei_legacy(pci_address):
 
         return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_tianshu_legacy(pci_address):
     """Tianshu legacy collection"""
     r, o, e = bash_roe("which ixsmi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     if shell.run(is_tianshu_v1()) == 0:
         cmd = get_tianshu_gpu_basic_info_cmd_v1()
@@ -1586,7 +1610,7 @@ def _collect_tianshu_legacy(pci_address):
 
     r, o, e = bash_roe(cmd)
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     gpu_infos = parse_tianshu_gpu_output(o)
     for gpuinfo in gpu_infos:
@@ -1610,7 +1634,7 @@ def _collect_tianshu_legacy(pci_address):
 
             return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_vastai_legacy(pci_address):
@@ -1619,11 +1643,11 @@ def _collect_vastai_legacy(pci_address):
         from zstacklib.gpu.vendors.vastai import Vastai
         from zstacklib.utils import shell, sizeunit
     except ImportError:
-        return {"isDriverLoaded": False}
+        return None
 
     r, o, e = bash_roe("which vasmi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     gpu_type = Vastai.get_vastai_type()
     gpuinfos = []
@@ -1664,18 +1688,18 @@ def _collect_vastai_legacy(pci_address):
             }
             return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_enflame_legacy(pci_address):
     """Enflame legacy collection"""
     r, o, e = bash_roe("which efsmi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     r, o, e = bash_roe(get_enflame_gpu_info_cmd())
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     for info in parse_enflame_gpu_output(o):
         if pci_address not in info.get("pciAddress", "").lower():
@@ -1696,18 +1720,18 @@ def _collect_enflame_legacy(pci_address):
 
         return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def _collect_alibaba_legacy(pci_address):
     """Alibaba legacy collection"""
     r, o, e = bash_roe("which ppu-smi")
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     r, o, e = bash_roe(get_alibaba_ppu_basic_info_cmd())
     if r != 0:
-        return {"isDriverLoaded": False}
+        return None
 
     gpu_infos = parse_alibaba_ppu_output(o)
     for gpuinfo in gpu_infos:
@@ -1731,7 +1755,7 @@ def _collect_alibaba_legacy(pci_address):
 
             return result
 
-    return {"isDriverLoaded": False}
+    return None
 
 
 def get_all_info():
@@ -1815,7 +1839,95 @@ def get_all_gpu_infos_by_pci():
     except Exception as e:
         logger.debug("Failed to collect GPU infos via plugin: %s" % str(e))
 
+    # Fallback (degraded): for vendors without SMI, supplement map from PCI
+    # (vendor_id + class). SMI remains primary; we only add when SMI did not
+    # provide that device.
+    _supplement_gpu_info_map_from_pci(gpu_info_map)
+
     return gpu_info_map
+
+
+def _parse_lspci_output(o_id, o_name):
+    """
+    Parse lspci -Dmmnv and -Dmmv output into device_ids and device_names.
+    Format matches host_plugin._parse_pci_device_info for slot/field parsing.
+    Returns (device_ids, device_names) where each is slot -> {field: value}.
+    """
+    device_ids = {}
+    device_names = {}
+    for part in o_id.split('\n\n'):
+        slot = None
+        ids = {}
+        for line in part.split('\n'):
+            if ':' not in line:
+                continue
+            title = line.split(':', 1)[0].strip()
+            content = line.split(':', 1)[1].strip()
+            if title == 'Slot':
+                slot = content
+            elif title in ['Class', 'Vendor', 'Device', 'SVendor', 'SDevice', 'Rev']:
+                ids[title] = content
+        if slot:
+            device_ids[slot] = ids
+    for part in o_name.split('\n\n'):
+        slot = None
+        names = {}
+        for line in part.split('\n'):
+            if ':' not in line:
+                continue
+            title = line.split(':', 1)[0].strip()
+            content = line.split(':', 1)[1].strip()
+            if title == 'Slot':
+                slot = content
+            elif title in ['Class', 'Vendor', 'Device', 'SVendor', 'SDevice', 'Rev']:
+                names[title] = content
+        if slot:
+            device_names[slot] = names
+    return device_ids, device_names
+
+
+def _supplement_gpu_info_map_from_pci(gpu_info_map):
+    """
+    Fallback: for GPU vendors that are not available (no SMI), add PCI devices
+    matching vendor_id + class (and optional device name for Processing
+    accelerators) so they still get recognized as GPU. Only adds entries not
+    already in gpu_info_map (SMI is primary).
+    """
+    from zstacklib.utils.pci import get_pci_device_ids, get_pci_device_names
+
+    r_id, o_id, _ = get_pci_device_ids()
+    r_name, o_name, _ = get_pci_device_names()
+    if r_id != 0 or r_name != 0 or not o_id or not o_name:
+        return
+
+    try:
+        device_ids, device_names = _parse_lspci_output(o_id, o_name)
+    except Exception as e:
+        logger.debug("Failed to parse lspci for PCI supplement: %s" % str(e))
+        return
+
+    try:
+        from zstacklib.gpu import get_all_gpu_vendors
+        for vendor_class in get_all_gpu_vendors():
+            if vendor_class.is_available():
+                continue
+            if not getattr(vendor_class, 'get_pci_only_candidates', None):
+                continue
+            try:
+                candidates = vendor_class.get_pci_only_candidates(
+                    device_ids, device_names)
+            except Exception as e:
+                logger.debug("get_pci_only_candidates for %s: %s" %
+                             (getattr(vendor_class, 'VENDOR_NAME', ''), str(e)))
+                continue
+            for normalized, info in candidates:
+                if not normalized or normalized in gpu_info_map:
+                    continue
+                gpu_info_map[normalized] = info
+                logger.debug("PCI supplement: added %s (vendor %s, no SMI)" %
+                             (normalized, getattr(vendor_class, 'VENDOR_NAME', '')))
+    except Exception as e:
+        logger.debug("Failed to supplement gpu_info_map from PCI: %s" % str(e))
 
 
 def enrich_gpu_info_map(gpu_info_map):
