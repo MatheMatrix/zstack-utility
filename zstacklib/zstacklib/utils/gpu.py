@@ -125,7 +125,32 @@ def parse_amd_gpu_output(output):
         if gpu_info_json is None:
             return gpuinfos
 
+        # Support rocm-smi card_list format: {"card_list": [{"pci_bus": "...", "memory": "..."}]}
+        card_list = gpu_info_json.get("card_list")
+        if isinstance(card_list, list):
+            for card_data in card_list:
+                if not isinstance(card_data, dict):
+                    continue
+                gpuinfo = {}
+                pci_bus = card_data.get("pci_bus") or card_data.get("PCI Bus")
+                if not pci_bus:
+                    continue
+                pci_device_address = pci_bus.lower()
+                if len(pci_device_address.split(':')[0]) == 8:
+                    pci_device_address = pci_device_address[4:].lower()
+                gpuinfo["pciAddress"] = pci_device_address
+                gpuinfo["memory"] = card_data.get("memory") or card_data.get('VRAM Total Memory (B)')
+                gpuinfo["power"] = card_data.get("power") or card_data.get(
+                    'Average Graphics Package Power (W)',
+                    card_data.get('Current Socket Graphics Package Power (W)', None))
+                gpuinfo["serialNumber"] = card_data.get("serialNumber") or card_data.get('Serial Number')
+                gpuinfos.append(gpuinfo)
+            return gpuinfos
+
+        # Legacy format: top-level dict of card_name -> card_data
         for card_name, card_data in gpu_info_json.items():
+            if not isinstance(card_data, dict):
+                continue
             gpuinfo = {}
             pci_device_address = card_data.get('PCI Bus').lower()
             if len(pci_device_address.split(':')[0]) == 8:
@@ -1814,7 +1839,95 @@ def get_all_gpu_infos_by_pci():
     except Exception as e:
         logger.debug("Failed to collect GPU infos via plugin: %s" % str(e))
 
+    # Fallback (degraded): for vendors without SMI, supplement map from PCI
+    # (vendor_id + class). SMI remains primary; we only add when SMI did not
+    # provide that device.
+    _supplement_gpu_info_map_from_pci(gpu_info_map)
+
     return gpu_info_map
+
+
+def _parse_lspci_output(o_id, o_name):
+    """
+    Parse lspci -Dmmnv and -Dmmv output into device_ids and device_names.
+    Format matches host_plugin._parse_pci_device_info for slot/field parsing.
+    Returns (device_ids, device_names) where each is slot -> {field: value}.
+    """
+    device_ids = {}
+    device_names = {}
+    for part in o_id.split('\n\n'):
+        slot = None
+        ids = {}
+        for line in part.split('\n'):
+            if ':' not in line:
+                continue
+            title = line.split(':', 1)[0].strip()
+            content = line.split(':', 1)[1].strip()
+            if title == 'Slot':
+                slot = content
+            elif title in ['Class', 'Vendor', 'Device', 'SVendor', 'SDevice', 'Rev']:
+                ids[title] = content
+        if slot:
+            device_ids[slot] = ids
+    for part in o_name.split('\n\n'):
+        slot = None
+        names = {}
+        for line in part.split('\n'):
+            if ':' not in line:
+                continue
+            title = line.split(':', 1)[0].strip()
+            content = line.split(':', 1)[1].strip()
+            if title == 'Slot':
+                slot = content
+            elif title in ['Class', 'Vendor', 'Device', 'SVendor', 'SDevice', 'Rev']:
+                names[title] = content
+        if slot:
+            device_names[slot] = names
+    return device_ids, device_names
+
+
+def _supplement_gpu_info_map_from_pci(gpu_info_map):
+    """
+    Fallback: for GPU vendors that are not available (no SMI), add PCI devices
+    matching vendor_id + class (and optional device name for Processing
+    accelerators) so they still get recognized as GPU. Only adds entries not
+    already in gpu_info_map (SMI is primary).
+    """
+    from zstacklib.utils.pci import get_pci_device_ids, get_pci_device_names
+
+    r_id, o_id, _ = get_pci_device_ids()
+    r_name, o_name, _ = get_pci_device_names()
+    if r_id != 0 or r_name != 0 or not o_id or not o_name:
+        return
+
+    try:
+        device_ids, device_names = _parse_lspci_output(o_id, o_name)
+    except Exception as e:
+        logger.debug("Failed to parse lspci for PCI supplement: %s" % str(e))
+        return
+
+    try:
+        from zstacklib.gpu import get_all_gpu_vendors
+        for vendor_class in get_all_gpu_vendors():
+            if vendor_class.is_available():
+                continue
+            if not getattr(vendor_class, 'get_pci_only_candidates', None):
+                continue
+            try:
+                candidates = vendor_class.get_pci_only_candidates(
+                    device_ids, device_names)
+            except Exception as e:
+                logger.debug("get_pci_only_candidates for %s: %s" %
+                             (getattr(vendor_class, 'VENDOR_NAME', ''), str(e)))
+                continue
+            for normalized, info in candidates:
+                if not normalized or normalized in gpu_info_map:
+                    continue
+                gpu_info_map[normalized] = info
+                logger.debug("PCI supplement: added %s (vendor %s, no SMI)" %
+                             (normalized, getattr(vendor_class, 'VENDOR_NAME', '')))
+    except Exception as e:
+        logger.debug("Failed to supplement gpu_info_map from PCI: %s" % str(e))
 
 
 def enrich_gpu_info_map(gpu_info_map):

@@ -37,6 +37,42 @@ class Huawei(GPUBase):
     IS_GPU_VENDOR = True
 
     # ==========================================================================
+    # PCI-only fallback (no npu-smi): match by vendor_id + class + device name
+    # ==========================================================================
+
+    @classmethod
+    def get_pci_only_candidates(cls, device_ids, device_names):
+        """
+        When npu-smi is not available, identify Huawei NPU by PCI: vendor 19e5,
+        class Processing accelerators, and device name passing
+        is_valid_processing_accelerator (supplementary filter).
+        """
+        from zstacklib.utils.gpu import is_valid_processing_accelerator
+        from zstacklib.utils.pci import normalize_pci_address
+
+        result = []
+        vendor_ids_lower = {v.lower() for v in cls.VENDOR_IDS}
+        for slot in device_ids:
+            if slot not in device_names or not slot.endswith('.0'):
+                continue
+            ids = device_ids[slot]
+            names = device_names[slot]
+            vendor_id = (ids.get('Vendor') or '').strip().lower()
+            class_name = (names.get('Class') or '').strip()
+            device_name = (names.get('Device') or '').strip()
+            if vendor_id not in vendor_ids_lower:
+                continue
+            if class_name not in cls.DEVICE_TYPES:
+                continue
+            if class_name == 'Processing accelerators' and not is_valid_processing_accelerator(
+                    device_name):
+                continue
+            normalized = normalize_pci_address(slot)
+            if normalized:
+                result.append((normalized, {"isDriverLoaded": False}))
+        return result
+
+    # ==========================================================================
     # Multi-Device Enumeration
     # ==========================================================================
 

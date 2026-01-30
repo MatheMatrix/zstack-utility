@@ -92,6 +92,7 @@ _VENDOR_NAME_MAPPING = {
 _VENDOR_ID_MAPPING = {
     '1ded': 'Alibaba',  # Alibaba vendor ID
     '1e3e': 'TianShu',  # TianShu vendor ID
+    '19e5': 'Huawei',   # Huawei vendor ID (NPU, etc.)
     '2057': 'Kunlunxin',  # Kunlunxin vendor ID
 }
 
