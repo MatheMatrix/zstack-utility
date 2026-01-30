@@ -2894,7 +2894,10 @@ done
 
         # Set device info
         if 'Device' in slot_names:
-            to.device = slot_names['Device']
+            raw_device = names['Device']
+            match = re.search(r'\[(.*?)\]', raw_device)
+            device = match.group(1) if match else raw_device
+            to.device = device.replace('Device', '').strip()
             device_name = self._simplify_pci_device_name(
                 slot_names['Device'], ids.get('Device', ''))
             to.deviceId = ids.get('Device', '')
@@ -2914,8 +2917,7 @@ done
         if 'Rev' in slot_names:
             to.rev = ids.get('Rev', '')
 
-        to.name = "%s_%s" % (
-            subvendor_name if subvendor_name else vendor_name, device_name)
+        to.name = "%s_%s" % (pci.remove_prefix(vendor_name, 'Vendor'), pci.remove_prefix(device_name, 'Device'))
         to.dependentDevices = pci.collect_pci_devices_with_dependencies(
             to.pciDeviceAddress)
         to.vmPciDeviceAddress = host_mappings[to.pciDeviceAddress] if to.pciDeviceAddress in host_mappings else ""

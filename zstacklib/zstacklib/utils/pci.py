@@ -128,7 +128,9 @@ def simplify_vendor_name(name, vendor_id=None):
 
     # Fallback: clean common suffixes
     result = name.replace('Co., Ltd ', '').replace('Corporation', '').strip()
-    return result
+    match = re.search(r'\[(.*?)\]', result)
+    final_name = match.group(1) if match else result
+    return final_name
 
 
 def normalize_pci_address(pci_address):
@@ -637,3 +639,17 @@ def enrich_pci_device(pci_device_to, context):
     Enrich PCI device by finding and calling the appropriate processor (deprecated, use pci_device_probe instead).
     """
     return pci_device_probe(pci_device_to, context)
+
+
+def remove_prefix(text, prefix):
+    """
+    Remove the prefix at the beginning of the text (case-insensitive).
+    """
+    if not text or not prefix:
+        return text
+
+    prefix_len = len(prefix)
+    if len(text) >= prefix_len and text[:prefix_len].lower() == prefix.lower():
+        return text[prefix_len:].strip()
+
+    return text
