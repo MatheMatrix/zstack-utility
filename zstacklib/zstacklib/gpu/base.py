@@ -37,6 +37,25 @@ class VendorEnum:
 
 
 # =============================================================================
+# PCI Class Names and GPU Type Constants (for type refinement)
+# =============================================================================
+# PCI class strings (lspci Class); pci_device_mapper keys use these for i18n.
+PCI_CLASS_VGA = "VGA compatible controller"
+PCI_CLASS_DISPLAY = "Display controller"
+PCI_CLASS_PROCESSING_ACCEL = "Processing accelerators"
+PCI_CLASS_COPROCESSOR = "Co-processor"
+PCI_CLASS_COMMUNICATION = "Communication controller"
+PCI_CLASS_3D = "3D controller"
+
+# ZStack GPU result types (API/UI contract).
+GPU_TYPE_VIDEO_CONTROLLER = "GPU_Video_Controller"
+GPU_TYPE_PROCESSING_ACCELERATORS = "GPU_Processing_Accelerators"
+GPU_TYPE_CO_PROCESSOR = "GPU_Co_Processor"
+GPU_TYPE_COMMUNICATION_CONTROLLER = "GPU_Communication_Controller"
+GPU_TYPE_3D_CONTROLLER = "GPU_3D_Controller"
+
+
+# =============================================================================
 # Data Classes (Python 2/3 Compatible)
 # =============================================================================
 
@@ -486,6 +505,26 @@ class GPUBase(object):
             True if device should be recognized as GPU
         """
         return True
+
+    @classmethod
+    def refine_gpu_type(cls, pci_device_to, raw_type, pci_device_mapper):
+        """
+        Optionally refine GPU type for this vendor.
+
+        Override in vendor plugin to return a ZStack GPU type constant
+        (e.g. GPU_TYPE_VIDEO_CONTROLLER) when this vendor has a specific
+        mapping; return None to fall back to central type refinement table.
+
+        Args:
+            pci_device_to: PciDeviceTO object (vendor, device, etc.)
+            raw_type: Current pci_device_to.type (lspci Class, possibly localized)
+            pci_device_mapper: dict mapping PCI class names for i18n
+
+        Returns:
+            str or None: GPU type constant (e.g. GPU_TYPE_3D_CONTROLLER),
+            or None to use central table
+        """
+        return None
 
     # ==========================================================================
     # VM Guest Tool Support

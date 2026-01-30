@@ -10,7 +10,11 @@ Tests cover:
 """
 
 from zstacklib.utils.bash import bash_roe
-from zstacklib.gpu.base import VendorEnum
+from zstacklib.gpu.base import (
+    VendorEnum,
+    PCI_CLASS_VGA,
+    PCI_CLASS_PROCESSING_ACCEL,
+)
 from zstacklib.utils import gpu
 import unittest
 import sys
@@ -173,6 +177,29 @@ class TestGetInfo(unittest.TestCase):
         result = gpu._get_info_legacy("0000:08:00.0", VendorEnum.ALIBABA)
         self.assertIsNotNone(result)
         # Product name should be collected
+
+    @patch('zstacklib.utils.gpu.bash_roe')
+    def test_get_info_legacy_kunlunxin(self, mock_bash):
+        """Test get_info legacy fallback for Kunlunxin"""
+        kunlunxin_q_output = (
+            "Serial Number                         : 02K0MA0258D0007R\n"
+            "Bus Id                            : 00000000:21:00.0\n"
+            "Memory Usage\n"
+            "    Total                             : 98304 MiB\n"
+            "Enforced Power Limit              : 350.00 W\n"
+        )
+        mock_bash.side_effect = [
+            (0, "/usr/bin/xpu-smi", ""),  # which xpu-smi
+            (0, "XPU 0: 00000000:21:00.0\n", ""),  # xpu-smi -L
+            (0, kunlunxin_q_output, ""),  # xpu-smi -q --id=0
+        ]
+
+        result = gpu._get_info_legacy("0000:21:00.0", VendorEnum.KUNLUNXIN)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.get("memory"), "98304 MiB")
+        self.assertEqual(result.get("power"), "350.00 W")
+        self.assertEqual(result.get("serialNumber"), "02K0MA0258D0007R")
+        self.assertTrue(result.get("isDriverLoaded", False))
 
     def test_get_info_legacy_unknown_vendor(self):
         """Test get_info legacy returns None for unknown vendor"""
@@ -391,7 +418,7 @@ class TestGPUDeviceProcessor(unittest.TestCase):
 
         class MockTO(object):
             pciDeviceAddress = "0000:3b:00.0"
-            type = "VGA compatible controller"
+            type = PCI_CLASS_VGA
             device = "Tesla T4"
             vendor = None
 
@@ -412,7 +439,7 @@ class TestGPUDeviceProcessor(unittest.TestCase):
 
         class MockTO(object):
             pciDeviceAddress = "0000:3b:00.0"
-            type = "VGA compatible controller"
+            type = PCI_CLASS_VGA
             device = "Tesla T4"
             vendor = None
 
@@ -446,7 +473,7 @@ Device:	Device d802
         self.assertIn("0000:82:00.0", device_ids)
         self.assertIn("0000:82:00.0", device_names)
         self.assertEqual(device_ids["0000:82:00.0"].get("Vendor"), "19e5")
-        self.assertEqual(device_names["0000:82:00.0"].get("Class"), "Processing accelerators")
+        self.assertEqual(device_names["0000:82:00.0"].get("Class"), PCI_CLASS_PROCESSING_ACCEL)
         self.assertIn("Device d802", device_names["0000:82:00.0"].get("Device", ""))
 
     def test_parse_lspci_output_multiple_devices(self):
@@ -477,7 +504,7 @@ Device:	Ethernet X710
         self.assertEqual(len(device_ids), 2)
         self.assertEqual(device_ids["0000:82:00.0"].get("Vendor"), "19e5")
         self.assertEqual(device_ids["0000:01:00.0"].get("Vendor"), "8086")
-        self.assertEqual(device_names["0000:82:00.0"].get("Class"), "Processing accelerators")
+        self.assertEqual(device_names["0000:82:00.0"].get("Class"), PCI_CLASS_PROCESSING_ACCEL)
         self.assertEqual(device_names["0000:01:00.0"].get("Class"), "Ethernet controller")
 
 
@@ -540,7 +567,7 @@ class TestSupplementGpuInfoMapFromPci(unittest.TestCase):
         mock_huawei.is_available.return_value = True
         mock_huawei.VENDOR_NAME = "Huawei"
         mock_huawei.VENDOR_IDS = {"19e5"}
-        mock_huawei.DEVICE_TYPES = {"Processing accelerators"}
+        mock_huawei.DEVICE_TYPES = {PCI_CLASS_PROCESSING_ACCEL}
         mock_huawei.IS_GPU_VENDOR = True
         mock_huawei.get_basic_info.return_value = [
             GPUInfo(pci_address="0000:82:00.0", memory="8192 MB", serial_number="SN1")

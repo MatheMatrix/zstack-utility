@@ -14,6 +14,8 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from zstacklib.gpu.base import PCI_CLASS_PROCESSING_ACCEL
+
 
 class TestGPUBase(unittest.TestCase):
     """Test base class functionality"""
@@ -275,7 +277,7 @@ Power Dissipation : 150 W
         }
         device_names = {
             "0000:82:00.0": {
-                "Class": "Processing accelerators",
+                "Class": PCI_CLASS_PROCESSING_ACCEL,
                 "Vendor": "Huawei Technologies Co., Ltd.",
                 "Device": "Device d802",
             },
@@ -294,7 +296,7 @@ Power Dissipation : 150 W
         }
         device_names = {
             "0000:82:00.0": {
-                "Class": "Processing accelerators",
+                "Class": PCI_CLASS_PROCESSING_ACCEL,
                 "Vendor": "Huawei Technologies Co., Ltd.",
                 "Device": "Unknown accelerator XYZ",
             },
@@ -311,7 +313,7 @@ Power Dissipation : 150 W
         }
         device_names = {
             "0000:82:00.1": {
-                "Class": "Processing accelerators",
+                "Class": PCI_CLASS_PROCESSING_ACCEL,
                 "Vendor": "Huawei Technologies Co., Ltd.",
                 "Device": "Device d802",
             },
