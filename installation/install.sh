@@ -2049,6 +2049,22 @@ uz_upgrade_tomcat(){
     local TOMCAT_NAME_OLD=${TOMCAT_FILE_OLD%.*}
     local TOMCAT_NAME_NEW=${TOMCAT_FILE_NEW%.*}
 
+    # Check if webapp migration is needed (from zstack to cloud)
+    local NEED_WEBAPP_MIGRATION='n'
+    if [ "$OLD_WEBAPP_NAME" != "cloud" ] && [ -n "$OLD_WEBAPP_NAME" ]; then
+        NEED_WEBAPP_MIGRATION='y'
+        echo "Webapp migration needed: $OLD_WEBAPP_NAME -> cloud" >>$ZSTACK_INSTALL_LOG
+
+        # Update zstack-ctl configuration BEFORE migration (while old directory still exists)
+        echo "Pre-updating ZSTACK_HOME configuration before migration" >>$ZSTACK_INSTALL_LOG
+        zstack-ctl setenv ZSTACK_HOME=$ZSTACK_INSTALL_ROOT/apache-tomcat/webapps/cloud >>$ZSTACK_INSTALL_LOG 2>&1
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Failed to update ZSTACK_HOME in config file" >>$ZSTACK_INSTALL_LOG
+            fail "Failed to update ZSTACK_HOME configuration to cloud path"
+        fi
+        echo "Successfully updated ZSTACK_HOME to cloud in config file" >>$ZSTACK_INSTALL_LOG
+    fi
+
     cd $upgrade_folder
     if [ "$TOMCAT_NAME_OLD" != "$TOMCAT_NAME_NEW" ]; then
         /bin/cp $TOMCAT_NAME_NEW.zip $TOMCAT_PATH
@@ -2062,7 +2078,7 @@ uz_upgrade_tomcat(){
         /bin/mv $TOMCAT_NAME_OLD/logs/* $TOMCAT_NAME_NEW/logs/
         /bin/mv $TOMCAT_NAME_OLD/bin/setenv.sh $TOMCAT_NAME_NEW/bin/
         # Handle webapp migration: move old webapp name to cloud
-        if [ "$OLD_WEBAPP_NAME" != "cloud" ] && [ -d "$TOMCAT_NAME_OLD/webapps/$OLD_WEBAPP_NAME" ]; then
+        if [ "$NEED_WEBAPP_MIGRATION" = "y" ] && [ -d "$TOMCAT_NAME_OLD/webapps/$OLD_WEBAPP_NAME" ]; then
             echo "Migrating webapp from $OLD_WEBAPP_NAME to cloud" >>$ZSTACK_INSTALL_LOG
             /bin/mv $TOMCAT_NAME_OLD/webapps/$OLD_WEBAPP_NAME $TOMCAT_NAME_NEW/webapps/cloud
         else
@@ -2087,21 +2103,25 @@ uz_upgrade_tomcat(){
     fi
 
     # Handle webapp migration when Tomcat version is the same
-    if [ "$TOMCAT_NAME_OLD" = "$TOMCAT_NAME_NEW" ]; then
-        if [ "$OLD_WEBAPP_NAME" != "cloud" ] && [ -d "$TOMCAT_PATH/$TOMCAT_NAME_OLD/webapps/$OLD_WEBAPP_NAME" ]; then
+    if [ "$TOMCAT_NAME_OLD" = "$TOMCAT_NAME_NEW" ] && [ "$NEED_WEBAPP_MIGRATION" = "y" ]; then
+        if [ -d "$TOMCAT_PATH/$TOMCAT_NAME_OLD/webapps/$OLD_WEBAPP_NAME" ]; then
             echo "Migrating webapp from $OLD_WEBAPP_NAME to cloud (same Tomcat version)" >>$ZSTACK_INSTALL_LOG
             /bin/mv $TOMCAT_PATH/$TOMCAT_NAME_OLD/webapps/$OLD_WEBAPP_NAME $TOMCAT_PATH/$TOMCAT_NAME_OLD/webapps/cloud
             # Update symlinks to point to new cloud webapp
             rm -f $TOMCAT_PATH/VERSION $TOMCAT_PATH/PJNUM
             ln -sf $TOMCAT_PATH/$TOMCAT_NAME_OLD/webapps/cloud/VERSION $TOMCAT_PATH/VERSION
             ln -sf $TOMCAT_PATH/$TOMCAT_NAME_OLD/webapps/cloud/PJNUM $TOMCAT_PATH/PJNUM
+            chown -R zstack:zstack $TOMCAT_PATH/$TOMCAT_NAME_OLD/webapps/cloud
         fi
     fi
 
-    # Update ZSTACK_HOME after migration to cloud
-    if [ "$OLD_WEBAPP_NAME" != "cloud" ] && [ -n "$OLD_WEBAPP_NAME" ]; then
+    # Update ZSTACK_HOME environment variable after migration (applies to both scenarios)
+    if [ "$NEED_WEBAPP_MIGRATION" = "y" ]; then
         export ZSTACK_HOME=$ZSTACK_INSTALL_ROOT/apache-tomcat/webapps/cloud
-        echo "Updated ZSTACK_HOME to cloud after migration: $ZSTACK_HOME" >>$ZSTACK_INSTALL_LOG
+        # Also update ~/.bashrc to persist the new ZSTACK_HOME
+        sed -i "s#export ZSTACK_HOME=.*#export ZSTACK_HOME=${ZSTACK_HOME}#" ~/.bashrc
+        source ~/.bashrc >/dev/null 2>&1
+        echo "Updated ZSTACK_HOME environment variable after migration: $ZSTACK_HOME" >>$ZSTACK_INSTALL_LOG
     fi
 
     #If tomcat use the default conf update it, ensure the configuration is latest
@@ -2958,7 +2978,13 @@ cs_install_zstack_service(){
     tomcat_folder_path=$ZSTACK_INSTALL_ROOT/apache-tomcat
     sed -i "s#^TOMCAT_PATH=.*#TOMCAT_PATH=$tomcat_folder_path#" /etc/init.d/zstack-server
     [ $? -ne 0 ] && fail "failed to install ${PRODUCT_NAME} management node."
-    zstack-ctl setenv ZSTACK_HOME=$ZSTACK_HOME >> $ZSTACK_INSTALL_LOG 2>&1 
+
+    if [ x"$UPGRADE" = x'y' ]; then
+        ZSTACK_HOME_TO_SET=`zstack-ctl getenv ZSTACK_HOME | awk -F '=' '{ print $2 }'`
+    else
+        ZSTACK_HOME_TO_SET=$ZSTACK_HOME
+    fi
+    zstack-ctl setenv ZSTACK_HOME=$ZSTACK_HOME_TO_SET >> $ZSTACK_INSTALL_LOG 2>&1
     [ $? -ne 0 ] && fail "failed to set ZSTACK_HOME path by ${PRODUCT_NAME,,}-ctl"
     pass
 }
