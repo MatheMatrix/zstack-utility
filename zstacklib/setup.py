@@ -44,7 +44,8 @@ Python support library for zstack""",
           "routes==2.4.1",
           "pyudev>=0.18.0",
           "pillow==2.9.0",
-          "mock==5.0.2"
+          "mock==5.0.2",
+          "dataclasses;python_version<'3.7'"
       ],
       entry_points="""
       # -*- Entry points: -*-
