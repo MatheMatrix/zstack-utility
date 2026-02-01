@@ -39,6 +39,36 @@ class NVIDIA(GPUBase):
     IS_GPU_VENDOR = True
 
     # ==========================================================================
+    # PCI-only fallback (no nvidia-smi): match by vendor_id + class
+    # ==========================================================================
+
+    @classmethod
+    def get_pci_only_candidates(cls, device_ids, device_names):
+        """
+        When nvidia-smi is not available, identify NVIDIA GPU by PCI: vendor 10de,
+        class 3D controller or VGA compatible controller.
+        """
+        from zstacklib.utils.pci import normalize_pci_address
+
+        result = []
+        vendor_ids_lower = {v.lower() for v in cls.VENDOR_IDS}
+        for slot in device_ids:
+            if slot not in device_names or not slot.endswith('.0'):
+                continue
+            ids = device_ids[slot]
+            names = device_names[slot]
+            vendor_id = (ids.get('Vendor') or '').strip().lower()
+            class_name = (names.get('Class') or '').strip()
+            if vendor_id not in vendor_ids_lower:
+                continue
+            if class_name not in cls.DEVICE_TYPES:
+                continue
+            normalized = normalize_pci_address(slot)
+            if normalized:
+                result.append((normalized, {"isDriverLoaded": False}))
+        return result
+
+    # ==========================================================================
     # Tool Availability
     # ==========================================================================
 

@@ -159,6 +159,37 @@ class Alibaba(GPUBase):
         elif unit == 'GB':
             return int(num * 1024 * 1024 * 1024)
 
+    # PCI-only supplement: lspci candidates so management can show all Alibaba
+    # PCI devices (e.g. 16) when ppu-smi only reports fewer (e.g. 9).
+    DEVICE_TYPES = {"3D controller"}
+
+    @classmethod
+    def get_pci_only_candidates(cls, device_ids, device_names):
+        """
+        Return Alibaba PPU PCI devices from lspci (vendor 1ded, class 3D controller).
+        Used to supplement gpu_info_map so all lspci Alibaba devices appear as GPU
+        in management (e.g. 16) even when ppu-smi only lists 9.
+        """
+        from zstacklib.utils.pci import normalize_pci_address
+
+        result = []
+        vendor_ids_lower = {v.lower() for v in cls.VENDOR_IDS}
+        for slot in device_ids:
+            if slot not in device_names or not slot.endswith('.0'):
+                continue
+            ids = device_ids[slot]
+            names = device_names[slot]
+            vendor_id = (ids.get('Vendor') or '').strip().lower()
+            class_name = (names.get('Class') or '').strip()
+            if vendor_id not in vendor_ids_lower:
+                continue
+            if class_name not in cls.DEVICE_TYPES:
+                continue
+            normalized = normalize_pci_address(slot)
+            if normalized:
+                result.append((normalized, {"isDriverLoaded": False}))
+        return result
+
     @classmethod
     def is_available(cls):
         """
