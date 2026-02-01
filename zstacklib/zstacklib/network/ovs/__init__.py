@@ -20,6 +20,7 @@ Example usage:
 
 from __future__ import annotations
 
+# Pure data types (no external dependencies) - import immediately
 from .exceptions import (
     OvsError,
     OvsBridgeError,
@@ -53,40 +54,39 @@ from .config import (
     SMART_NIC_CONFIG_FILE,
 )
 
-from .utils import (
-    write_sysfs,
-    read_sysfs,
-    confirm_write_sysfs,
-    check_bdf_format,
-    is_bdf,
-    get_bdf_of_interface,
-    get_interface_of_bdf,
-    get_pci_id,
-    version_geq,
-    get_os_release_info,
-    get_numa_nodes,
-    probe_module,
-    get_offload_status,
-    get_mlnx_smart_nic_offload_status,
-)
+# Operation modules are lazily imported
+_UTILS_EXPORTS = {
+    'write_sysfs', 'read_sysfs', 'confirm_write_sysfs', 'check_bdf_format',
+    'is_bdf', 'get_bdf_of_interface', 'get_interface_of_bdf', 'get_pci_id',
+    'version_geq', 'get_os_release_info', 'get_numa_nodes', 'probe_module',
+    'get_offload_status', 'get_mlnx_smart_nic_offload_status',
+}
 
-from .bond import (
-    get_bond_from_file,
-    get_all_bonds_from_file,
-)
+_BOND_EXPORTS = {'get_bond_from_file', 'get_all_bonds_from_file'}
 
-from .venv import OvsVenv
+_CONTROLLER_EXPORTS = {'OvsBaseCtl', 'OvsKernelCtl', 'get_ovs_ctl', 'is_vm_use_openvswitch'}
 
-from .daemon import Ovs
 
-from .controller import (
-    OvsBaseCtl,
-    OvsKernelCtl,
-    get_ovs_ctl,
-    is_vm_use_openvswitch,
-)
-
-from .dpdk import OvsDpdkCtl
+def __getattr__(name: str):
+    if name in _UTILS_EXPORTS:
+        from . import utils
+        return getattr(utils, name)
+    elif name in _BOND_EXPORTS:
+        from . import bond
+        return getattr(bond, name)
+    elif name == 'OvsVenv':
+        from .venv import OvsVenv
+        return OvsVenv
+    elif name == 'Ovs':
+        from .daemon import Ovs
+        return Ovs
+    elif name in _CONTROLLER_EXPORTS:
+        from . import controller
+        return getattr(controller, name)
+    elif name == 'OvsDpdkCtl':
+        from .dpdk import OvsDpdkCtl
+        return OvsDpdkCtl
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

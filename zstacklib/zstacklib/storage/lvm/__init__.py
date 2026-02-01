@@ -27,15 +27,6 @@ from zstacklib.storage.lvm.models import (
     BlockDevice,
 )
 
-from zstacklib.storage.lvm import pv
-from zstacklib.storage.lvm import vg
-from zstacklib.storage.lvm import lv
-from zstacklib.storage.lvm import thin
-from zstacklib.storage.lvm import lock
-from zstacklib.storage.lvm import config
-from zstacklib.storage.lvm import snapshot
-from zstacklib.storage.lvm import multipath
-
 __all__ = [
     'VolumeProvisioningStrategy',
     'LvmLockType',
@@ -58,3 +49,31 @@ __all__ = [
     'snapshot',
     'multipath',
 ]
+
+
+def __getattr__(name):
+    if name == 'pv':
+        from zstacklib.storage.lvm import pv
+        return pv
+    elif name == 'vg':
+        from zstacklib.storage.lvm import vg
+        return vg
+    elif name == 'lv':
+        from zstacklib.storage.lvm import lv
+        return lv
+    elif name == 'thin':
+        from zstacklib.storage.lvm import thin
+        return thin
+    elif name == 'lock':
+        from zstacklib.storage.lvm import lock
+        return lock
+    elif name == 'config':
+        from zstacklib.storage.lvm import config
+        return config
+    elif name == 'snapshot':
+        from zstacklib.storage.lvm import snapshot
+        return snapshot
+    elif name == 'multipath':
+        from zstacklib.storage.lvm import multipath
+        return multipath
+    raise AttributeError(f"module 'zstacklib.storage.lvm' has no attribute '{name}'")
