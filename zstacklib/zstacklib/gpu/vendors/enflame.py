@@ -90,6 +90,33 @@ class Enflame(GPUBase):
     VENDOR_IDS = {"1e36"}
     PCI_NAME_KEYWORDS = {"Enflame"}
     CLI_TOOL = "efsmi"
+    DEVICE_TYPES = {"3D controller", "Processing accelerators"}
+
+    @classmethod
+    def get_pci_only_candidates(cls, device_ids, device_names):
+        """
+        When efsmi is not available, identify Enflame GPU by PCI: vendor 1e36,
+        class 3D controller or Processing accelerators.
+        """
+        from zstacklib.utils.pci import normalize_pci_address
+
+        result = []
+        vendor_ids_lower = {v.lower() for v in cls.VENDOR_IDS}
+        for slot in device_ids:
+            if slot not in device_names or not slot.endswith('.0'):
+                continue
+            ids = device_ids[slot]
+            names = device_names[slot]
+            vendor_id = (ids.get('Vendor') or '').strip().lower()
+            class_name = (names.get('Class') or '').strip()
+            if vendor_id not in vendor_ids_lower:
+                continue
+            if class_name not in cls.DEVICE_TYPES:
+                continue
+            normalized = normalize_pci_address(slot)
+            if normalized:
+                result.append((normalized, {"isDriverLoaded": False}))
+        return result
 
     @classmethod
     def get_basic_info_cmd(cls, is_windows=False):

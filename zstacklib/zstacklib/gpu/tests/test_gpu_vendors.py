@@ -214,6 +214,34 @@ class TestNVIDIA(unittest.TestCase):
         self.assertEqual(m.utilization, 45.0)
         self.assertEqual(m.memory_utilization, 62.0)
 
+    def test_get_pci_only_candidates_3d_controller(self):
+        """NVIDIA get_pci_only_candidates returns 10de + 3D controller when slot is function 0."""
+        from zstacklib.gpu.vendors.nvidia import NVIDIA
+
+        device_ids = {"0000:3b:00.0": {"Vendor": "10de", "Class": "030200", "Device": "1eb8"}}
+        device_names = {
+            "0000:3b:00.0": {
+                "Class": "3D controller",
+                "Vendor": "NVIDIA Corporation",
+                "Device": "TU104",
+            },
+        }
+        candidates = NVIDIA.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0][0], "0000:3b:00.0")
+        self.assertEqual(candidates[0][1], {"isDriverLoaded": False})
+
+    def test_get_pci_only_candidates_skips_non_function_0(self):
+        """NVIDIA get_pci_only_candidates returns only function 0 slots."""
+        from zstacklib.gpu.vendors.nvidia import NVIDIA
+
+        device_ids = {"0000:3b:00.1": {"Vendor": "10de", "Class": "030200", "Device": "1eb8"}}
+        device_names = {
+            "0000:3b:00.1": {"Class": "3D controller", "Vendor": "NVIDIA Corporation", "Device": "TU104"},
+        }
+        candidates = NVIDIA.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(candidates, [])
+
 
 class TestAMD(unittest.TestCase):
     """Test AMD vendor implementation"""
@@ -237,6 +265,34 @@ class TestAMD(unittest.TestCase):
         self.assertEqual(infos[0].pci_address, "0000:03:00.0")
         self.assertEqual(infos[0].serial_number, "ABC123")
         self.assertIn("MiB", infos[0].memory)
+
+    def test_get_pci_only_candidates(self):
+        """AMD get_pci_only_candidates returns 1002 + 3D controller when slot is function 0."""
+        from zstacklib.gpu.vendors.amd import AMD
+
+        device_ids = {"0000:03:00.0": {"Vendor": "1002", "Class": "030200", "Device": "7310"}}
+        device_names = {
+            "0000:03:00.0": {
+                "Class": "3D controller",
+                "Vendor": "Advanced Micro Devices, Inc.",
+                "Device": "Navi 10",
+            },
+        }
+        candidates = AMD.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0][0], "0000:03:00.0")
+        self.assertEqual(candidates[0][1], {"isDriverLoaded": False})
+
+    def test_get_pci_only_candidates_skips_non_function_0(self):
+        """AMD get_pci_only_candidates returns only function 0 slots."""
+        from zstacklib.gpu.vendors.amd import AMD
+
+        device_ids = {"0000:03:00.1": {"Vendor": "1002", "Class": "030200", "Device": "7310"}}
+        device_names = {
+            "0000:03:00.1": {"Class": "3D controller", "Vendor": "Advanced Micro Devices, Inc.", "Device": "Navi 10"},
+        }
+        candidates = AMD.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(candidates, [])
 
 
 class TestHuawei(unittest.TestCase):
@@ -322,6 +378,90 @@ Power Dissipation : 150 W
         self.assertEqual(candidates, [])
 
 
+class TestHaiguangGetPciOnlyCandidates(unittest.TestCase):
+    """Test Haiguang get_pci_only_candidates."""
+
+    def test_get_pci_only_candidates(self):
+        """Haiguang get_pci_only_candidates returns 1d94 + 3D controller when slot is function 0."""
+        from zstacklib.gpu.vendors.haiguang import Haiguang
+
+        device_ids = {"0000:18:00.0": {"Vendor": "1d94", "Class": "030200", "Device": "0010"}}
+        device_names = {
+            "0000:18:00.0": {"Class": "3D controller", "Vendor": "Haiguang", "Device": "DCU"},
+        }
+        candidates = Haiguang.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0][0], "0000:18:00.0")
+        self.assertEqual(candidates[0][1], {"isDriverLoaded": False})
+
+    def test_get_pci_only_candidates_skips_non_function_0(self):
+        """Haiguang get_pci_only_candidates returns only function 0 slots."""
+        from zstacklib.gpu.vendors.haiguang import Haiguang
+
+        device_ids = {"0000:18:00.1": {"Vendor": "1d94", "Class": "030200", "Device": "0010"}}
+        device_names = {"0000:18:00.1": {"Class": "3D controller", "Vendor": "Haiguang", "Device": "DCU"}}
+        candidates = Haiguang.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(candidates, [])
+
+
+class TestKunlunxinGetPciOnlyCandidates(unittest.TestCase):
+    """Test Kunlunxin get_pci_only_candidates."""
+
+    def test_get_pci_only_candidates(self):
+        """Kunlunxin get_pci_only_candidates returns 2057 + Processing accelerators when slot is function 0."""
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        device_ids = {"0000:21:00.0": {"Vendor": "2057", "Class": "120000", "Device": "a000"}}
+        device_names = {
+            "0000:21:00.0": {
+                "Class": PCI_CLASS_PROCESSING_ACCEL,
+                "Vendor": "Kunlunxin",
+                "Device": "XPU",
+            },
+        }
+        candidates = Kunlunxin.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0][0], "0000:21:00.0")
+        self.assertEqual(candidates[0][1], {"isDriverLoaded": False})
+
+    def test_get_pci_only_candidates_skips_non_function_0(self):
+        """Kunlunxin get_pci_only_candidates returns only function 0 slots."""
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        device_ids = {"0000:21:00.1": {"Vendor": "2057", "Class": "120000", "Device": "a000"}}
+        device_names = {
+            "0000:21:00.1": {"Class": PCI_CLASS_PROCESSING_ACCEL, "Vendor": "Kunlunxin", "Device": "XPU"},
+        }
+        candidates = Kunlunxin.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(candidates, [])
+
+
+class TestVastaiGetPciOnlyCandidates(unittest.TestCase):
+    """Test Vastai get_pci_only_candidates."""
+
+    def test_get_pci_only_candidates(self):
+        """Vastai get_pci_only_candidates returns 1edb + 3D controller when slot is function 0."""
+        from zstacklib.gpu.vendors.vastai import Vastai
+
+        device_ids = {"0000:17:00.0": {"Vendor": "1edb", "Class": "030200", "Device": "0001"}}
+        device_names = {
+            "0000:17:00.0": {"Class": "3D controller", "Vendor": "Vastai", "Device": "GPU"},
+        }
+        candidates = Vastai.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0][0], "0000:17:00.0")
+        self.assertEqual(candidates[0][1], {"isDriverLoaded": False})
+
+    def test_get_pci_only_candidates_skips_non_function_0(self):
+        """Vastai get_pci_only_candidates returns only function 0 slots."""
+        from zstacklib.gpu.vendors.vastai import Vastai
+
+        device_ids = {"0000:17:00.1": {"Vendor": "1edb", "Class": "030200", "Device": "0001"}}
+        device_names = {"0000:17:00.1": {"Class": "3D controller", "Vendor": "Vastai", "Device": "GPU"}}
+        candidates = Vastai.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(candidates, [])
+
+
 class TestEnflame(unittest.TestCase):
     """Test Enflame (燧原) vendor plugin; efsmi -q new driver uses Total Size."""
 
@@ -359,6 +499,54 @@ DEV ID 0
         from zstacklib.gpu.vendors.enflame import Enflame
 
         self.assertEqual(Enflame.get_basic_info_cmd(), "efsmi -q")
+
+    def test_get_pci_only_candidates(self):
+        """Enflame get_pci_only_candidates returns 1e36 + 3D controller when slot is function 0."""
+        from zstacklib.gpu.vendors.enflame import Enflame
+
+        device_ids = {"0000:17:00.0": {"Vendor": "1e36", "Class": "030200", "Device": "c035"}}
+        device_names = {
+            "0000:17:00.0": {"Class": "3D controller", "Vendor": "Enflame", "Device": "S60"},
+        }
+        candidates = Enflame.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0][0], "0000:17:00.0")
+        self.assertEqual(candidates[0][1], {"isDriverLoaded": False})
+
+    def test_get_pci_only_candidates_skips_non_function_0(self):
+        """Enflame get_pci_only_candidates returns only function 0 slots."""
+        from zstacklib.gpu.vendors.enflame import Enflame
+
+        device_ids = {"0000:17:00.1": {"Vendor": "1e36", "Class": "030200", "Device": "c035"}}
+        device_names = {"0000:17:00.1": {"Class": "3D controller", "Vendor": "Enflame", "Device": "S60"}}
+        candidates = Enflame.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(candidates, [])
+
+
+class TestTianshuGetPciOnlyCandidates(unittest.TestCase):
+    """Test Tianshu get_pci_only_candidates."""
+
+    def test_get_pci_only_candidates(self):
+        """Tianshu get_pci_only_candidates returns 1e3e + 3D controller when slot is function 0."""
+        from zstacklib.gpu.vendors.tianshu import Tianshu
+
+        device_ids = {"0000:42:00.0": {"Vendor": "1e3e", "Class": "030200", "Device": "0001"}}
+        device_names = {
+            "0000:42:00.0": {"Class": "3D controller", "Vendor": "1e3e", "Device": "Tianshu GPU"},
+        }
+        candidates = Tianshu.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0][0], "0000:42:00.0")
+        self.assertEqual(candidates[0][1], {"isDriverLoaded": False})
+
+    def test_get_pci_only_candidates_skips_non_function_0(self):
+        """Tianshu get_pci_only_candidates returns only function 0 slots."""
+        from zstacklib.gpu.vendors.tianshu import Tianshu
+
+        device_ids = {"0000:42:00.1": {"Vendor": "1e3e", "Class": "030200", "Device": "0001"}}
+        device_names = {"0000:42:00.1": {"Class": "3D controller", "Vendor": "1e3e", "Device": "Tianshu GPU"}}
+        candidates = Tianshu.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(candidates, [])
 
 
 class TestGPUInfo(unittest.TestCase):

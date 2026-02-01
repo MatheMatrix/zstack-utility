@@ -898,6 +898,13 @@ def _gpu_device_processor(pci_device_to, context):
         info = gpu_info_map[normalized_pci].copy()
         pci_device_to.addonInfo = info
 
+        # Set ramSize from gpu_info_map when present (e.g. Alibaba ppu-smi memory)
+        if info.get("memory"):
+            pci_device_to.ramSize = info.get("memory")
+        # Set maxPartNum from gpu_info_map when present (e.g. vendor SR-IOV or partition count)
+        if info.get("maxPartNum") is not None:
+            pci_device_to.maxPartNum = str(info["maxPartNum"])
+
         # Handle product name (vendor-specific)
         product_name = info.get("productName")
         if product_name:
@@ -1970,10 +1977,10 @@ def _parse_lspci_output(o_id, o_name):
 
 def _supplement_gpu_info_map_from_pci(gpu_info_map):
     """
-    Fallback: for GPU vendors that are not available (no SMI), add PCI devices
-    matching vendor_id + class (and optional device name for Processing
-    accelerators) so they still get recognized as GPU. Only adds entries not
-    already in gpu_info_map (SMI is primary).
+    Supplement gpu_info_map with PCI devices from lspci for vendors that
+    implement get_pci_only_candidates. Used when (1) vendor has no SMI, or
+    (2) vendor has SMI but lspci shows more devices (e.g. Alibaba 16 vs ppu-smi 9).
+    Only adds entries not already in gpu_info_map (SMI is primary).
     """
     from zstacklib.utils.pci import get_pci_device_ids, get_pci_device_names
 
@@ -1991,8 +1998,6 @@ def _supplement_gpu_info_map_from_pci(gpu_info_map):
     try:
         from zstacklib.gpu import get_all_gpu_vendors
         for vendor_class in get_all_gpu_vendors():
-            if vendor_class.is_available():
-                continue
             if not getattr(vendor_class, 'get_pci_only_candidates', None):
                 continue
             try:
@@ -2006,7 +2011,7 @@ def _supplement_gpu_info_map_from_pci(gpu_info_map):
                 if not normalized or normalized in gpu_info_map:
                     continue
                 gpu_info_map[normalized] = info
-                logger.debug("PCI supplement: added %s (vendor %s, no SMI)" %
+                logger.debug("PCI supplement: added %s (vendor %s)" %
                              (normalized, getattr(vendor_class, 'VENDOR_NAME', '')))
     except Exception as e:
         logger.debug("Failed to supplement gpu_info_map from PCI: %s" % str(e))
