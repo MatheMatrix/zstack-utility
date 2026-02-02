@@ -12,7 +12,7 @@ class Haiguang(GPUBase):
     VENDOR_IDS = {"1d94"}
     PCI_NAME_KEYWORDS = {"Haiguang"}
     CLI_TOOL = "hy-smi"
-    DEVICE_TYPES = {"3D controller", "VGA compatible controller", "Processing accelerators"}
+    DEVICE_TYPES = {"3D controller", "VGA compatible controller", "Co-processor"}
 
     @classmethod
     def get_pci_only_candidates(cls, device_ids, device_names):
