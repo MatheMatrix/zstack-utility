@@ -4,7 +4,10 @@
 
 @author: frank
 '''
-import mock
+try:
+    import mock
+except ImportError:
+    from unittest import mock
 import subprocess
 import time
 import unittest
@@ -60,3 +63,122 @@ class TestHostPlugin(unittest.TestCase):
     if __name__ == "__main__":
         #import sys;sys.argv = ['', 'Test.testName']
         unittest.main()
+
+
+class TestHostPluginVirtStatusFallback(unittest.TestCase):
+    """Unit tests for _apply_virt_status_fallback (ZSTAC-81834)."""
+
+    def _make_to(self, virt_status=""):
+        to = host_plugin.PciDeviceTO()
+        to.pciDeviceAddress = "0000:00:01.0"
+        to.virtStatus = virt_status
+        return to
+
+    def _make_context(self, gpu_info_map=None):
+        return type('Context', (), {'gpu_info_map': gpu_info_map})()
+
+    def test_fallback_neither_supported(self):
+        """No virtStatus, neither vfio_mdev nor sriov -> UNVIRTUALIZABLE."""
+        plugin = host_plugin.HostPlugin()
+        to = self._make_to()
+        context = self._make_context()
+        with mock.patch.object(plugin, '_get_vfio_mdev_info', return_value=False):
+            with mock.patch.object(plugin, '_get_sriov_info', return_value=False):
+                plugin._apply_virt_status_fallback([to], context)
+        self.assertEqual(to.virtStatus, "UNVIRTUALIZABLE")
+
+    def test_fallback_both_supported_virtualizable(self):
+        """No virtStatus, both supported -> VFIO_MDEV_VIRTUALIZABLE."""
+        plugin = host_plugin.HostPlugin()
+        to = self._make_to()
+
+        def vfio_mdev(to):
+            to.virtStatus = "VFIO_MDEV_VIRTUALIZABLE"
+            return True
+
+        def sriov(to, gpu_info_map=None):
+            to.virtStatus = "SRIOV_VIRTUALIZABLE"
+            return True
+
+        context = self._make_context()
+        with mock.patch.object(plugin, '_get_vfio_mdev_info', side_effect=vfio_mdev):
+            with mock.patch.object(plugin, '_get_sriov_info', side_effect=sriov):
+                plugin._apply_virt_status_fallback([to], context)
+        self.assertEqual(to.virtStatus, "VFIO_MDEV_VIRTUALIZABLE")
+
+    def test_fallback_both_supported_already_virtualized(self):
+        """Both supported but vfio_mdev_status is VFIO_MDEV_VIRTUALIZED -> keep it."""
+        plugin = host_plugin.HostPlugin()
+        to = self._make_to()
+
+        def vfio_mdev(to):
+            to.virtStatus = "VFIO_MDEV_VIRTUALIZED"
+            return True
+
+        def sriov(to, gpu_info_map=None):
+            to.virtStatus = "SRIOV_VIRTUALIZABLE"
+            return True
+
+        context = self._make_context()
+        with mock.patch.object(plugin, '_get_vfio_mdev_info', side_effect=vfio_mdev):
+            with mock.patch.object(plugin, '_get_sriov_info', side_effect=sriov):
+                plugin._apply_virt_status_fallback([to], context)
+        self.assertEqual(to.virtStatus, "SRIOV_VIRTUALIZABLE")
+
+    def test_fallback_only_sriov(self):
+        """No virtStatus, only sriov (e.g. NIC) -> keep SRIOV_* from _get_sriov_info."""
+        plugin = host_plugin.HostPlugin()
+        to = self._make_to()
+
+        def sriov(to, gpu_info_map=None):
+            to.virtStatus = "SRIOV_VIRTUALIZABLE"
+            return True
+
+        context = self._make_context()
+        with mock.patch.object(plugin, '_get_vfio_mdev_info', return_value=False):
+            with mock.patch.object(plugin, '_get_sriov_info', side_effect=sriov):
+                plugin._apply_virt_status_fallback([to], context)
+        self.assertEqual(to.virtStatus, "SRIOV_VIRTUALIZABLE")
+
+    def test_fallback_only_vfio_mdev(self):
+        """No virtStatus, only vfio_mdev -> keep value from _get_vfio_mdev_info."""
+        plugin = host_plugin.HostPlugin()
+        to = self._make_to()
+
+        def vfio_mdev(to):
+            to.virtStatus = "VFIO_MDEV_VIRTUALIZABLE"
+            return True
+
+        context = self._make_context()
+        with mock.patch.object(plugin, '_get_vfio_mdev_info', side_effect=vfio_mdev):
+            with mock.patch.object(plugin, '_get_sriov_info', return_value=False):
+                plugin._apply_virt_status_fallback([to], context)
+        self.assertEqual(to.virtStatus, "VFIO_MDEV_VIRTUALIZABLE")
+
+    def test_fallback_already_has_virt_status(self):
+        """Device already has virtStatus (e.g. from GPU ops) -> unchanged."""
+        plugin = host_plugin.HostPlugin()
+        to = self._make_to(virt_status="UNVIRTUALIZABLE")
+        context = self._make_context()
+        with mock.patch.object(plugin, '_get_vfio_mdev_info', return_value=False):
+            with mock.patch.object(plugin, '_get_sriov_info', return_value=False):
+                plugin._apply_virt_status_fallback([to], context)
+        self.assertEqual(to.virtStatus, "UNVIRTUALIZABLE")
+
+    def test_fallback_empty_after_detection_gets_unvirtualizable(self):
+        """virtStatus still empty after detection (e.g. detection didn't set it) -> UNVIRTUALIZABLE."""
+        plugin = host_plugin.HostPlugin()
+        to = self._make_to()
+
+        def vfio_mdev(to):
+            return False
+
+        def sriov(to, gpu_info_map=None):
+            return True
+            # intentionally do not set to.virtStatus to simulate edge case
+
+        context = self._make_context()
+        with mock.patch.object(plugin, '_get_vfio_mdev_info', side_effect=vfio_mdev):
+            with mock.patch.object(plugin, '_get_sriov_info', side_effect=sriov):
+                plugin._apply_virt_status_fallback([to], context)
+        self.assertEqual(to.virtStatus, "UNVIRTUALIZABLE")

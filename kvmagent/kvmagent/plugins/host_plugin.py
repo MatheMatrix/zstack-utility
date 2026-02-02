@@ -2997,6 +2997,29 @@ done
 
         return device_ids, device_names, pci_device_mapper
 
+    def _apply_virt_status_fallback(self, pci_devices_info, context):
+        """
+        For PCI devices that don't have virtStatus set by device ops (e.g.,
+        NICs), run host-level vfio_mdev and sriov detection and set virtStatus.
+        Restores behavior that previously ran for every PCI device before
+        refactor (ZSTAC-81834).
+        """
+        for to in pci_devices_info:
+            if not to.virtStatus or to.virtStatus == "":
+                gpu_info_map = getattr(context, 'gpu_info_map', None) if context else None
+                vfio_mdev_supported = self._get_vfio_mdev_info(to)
+                vfio_mdev_status = to.virtStatus
+                sriov_supported = self._get_sriov_info(to, gpu_info_map)
+                if vfio_mdev_supported and sriov_supported:
+                    if vfio_mdev_status != "VFIO_MDEV_VIRTUALIZED":
+                        to.virtStatus = "VFIO_MDEV_VIRTUALIZABLE"
+                elif not vfio_mdev_supported and not sriov_supported:
+                    to.virtStatus = "UNVIRTUALIZABLE"
+                # If only one of vfio_mdev or sriov is supported, keep the value
+                # already set by _get_sriov_info or _get_vfio_mdev_info
+            if not to.virtStatus or to.virtStatus == "":
+                to.virtStatus = "UNVIRTUALIZABLE"
+
     def _collect_format_pci_device_info(self, rsp, opaque):
         result = self._parse_pci_device_info(rsp)
         if result is None:
@@ -3065,15 +3088,11 @@ done
             # Device ops are registered via pci.pci_register_device_ops()
             pci.pci_device_probe(to, context)
 
-        # Generic fallback: Set default virtStatus for devices that don't have it set
-        # This is a generic PCI logic that applies to all devices after all
-        # device ops have run
-        for to in rsp.pciDevicesInfo:
-            if not to.virtStatus or to.virtStatus == "":
-                # Default: If no device ops set virtStatus, mark as UNVIRTUALIZABLE
-                # Device ops (e.g., GPU) should have set virtStatus based on
-                # their specific logic
-                to.virtStatus = "UNVIRTUALIZABLE"
+        # Generic fallback: For devices that don't have virtStatus set by device
+        # ops (e.g., NICs), run host-level vfio_mdev and sriov detection and set
+        # virtStatus. Restores behavior that previously ran for every PCI device
+        # before refactor (ZSTAC-81834).
+        self._apply_virt_status_fallback(rsp.pciDevicesInfo, context)
 
         pci.update_cache_devices(pci_devices_dict)
         pci.calculate_max_addressable_memory(rsp.pciDevicesInfo)
