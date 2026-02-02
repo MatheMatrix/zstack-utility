@@ -33,7 +33,7 @@ class Kunlunxin(GPUBase):
     PCI_NAME_KEYWORDS = {"2057", "Kunlunxin", "KUNLUNXIN"}
     CLI_TOOL = "xpu-smi"
 
-    DEVICE_TYPES = {"Processing accelerators", "3D controller"}
+    DEVICE_TYPES = {"Processing accelerators", "3D controller", "Communication controller"}
     IS_GPU_VENDOR = True
 
     # ==========================================================================
