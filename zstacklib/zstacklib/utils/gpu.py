@@ -982,72 +982,80 @@ def get_kunlunxin_gpu_basic_info_cmd(xpu_id, iswindows=False):
 
 def parse_kunlunxin_gpu_output_by_npu_id(output):
     """
-    Timestamp                                 : Sun Nov 30 10:46:37 2025
+    Parse xpu-smi -q --id=<xpu_id> output (single XPU block).
+    Full output sample (if driver/CLI changes, compare against this):
+    ---------------
+    ==============XPUSMI LOG==============
+
+    Timestamp                                 : Tue Feb  3 18:20:01 2026
     Driver Version                            : 5.0.21.26
     XPU-RT Version                            : 10.2
 
-    Attached XPUs                             : 1
-    XPU 00000000:21:00.0
-    Product Name                          : P800 PCIe
-    Product Brand                         : KUNLUNXIN
-    Product Architecture                  : KL3
-    Serial Number                         : 02K0MA0258D0007R
-    XPU UUID                              : GPU-8412bfa1-c3b9-50e6-86b5-065b83a1537c
-    Minor Number                          : 0
-    PCIe Id                               : 3
-    XPU Part Number                       : B00100300110211
-    Firmware Version
-        PBL Version                       : 1.0
-        PCIE Version                      : 2.14
-        SBL Version                       : 1.54
-        ALL Version                       : 1.0.2.14.1.54
-        CPLD Version                      : 2.0
-    PCI
-        Bus                               : 0x21
-        Device                            : 0x00
-        Function                          : 0x0
-        Domain                            : 0x0000
-        Device Id                         : 0x36862057
-        Bus Id                            : 00000000:21:00.0
-        Sub System Id                     : 0x00010001
-        XPU Link Info
-            PCIe Generation
-                Max                       : 4
-                Current                   : 3
-            Link Width
-                Max                       : 16x
-                Current                   : 16x
-    Memory Usage
-        Total                             : 98304 MiB
-        Reserved                          : 0 MiB
-        Used                              : 0 MiB
-        Free                              : 98304 MiB
-    L3 Usage
-        Total                             : 96 MiB
-        Reserved                          : 0 MiB
-        Used                              : 0 MiB
-        Free                              : 96 MiB
-    Utilization
-        Xpu                               : 0 %
-    Ecc Mode
-        Current                           : Enabled
-        Pending                           : Enabled
-    ECC Errors
-        Volatile
-            DRAM Correctable              : 0
-            DRAM Uncorrectable            : 0
-        Aggregate
-            DRAM Correctable              : 0
-            DRAM Uncorrectable            : 0
-    Temperature
-        XPU Current Temp                  : 40 C
-    Power Readings
-        Enforced Power Limit              : 350.00 W
-        Power Draw                        : 75.00 W
-    Clocks
-        Cluster                           : 1450 MHz
-        CDNN                               : 1450 MHz
-    Processes                             : None
+    Attached XPUs                             : 2
+    XPU 00000000:01:00.0
+        Product Name                          : P800 PCIe
+        Product Brand                         : KUNLUNXIN
+        Product Architecture                  : KL3
+        Serial Number                         : 02K0MA0258D0007R
+        XPU UUID                              : GPU-420716f2-9928-5108-a5b2-e6b7cf36b37c
+        Minor Number                          : 0
+        PCIe Id                               : 3
+        XPU Part Number                       : B00100300110211
+        Firmware Version
+            PBL Version                       : 1.0
+            PCIE Version                      : 2.14
+            SBL Version                       : 1.54
+            ALL Version                       : 1.0.2.14.1.54
+            CPLD Version                      : 2.0
+        PCI
+            Bus                               : 0x01
+            Device                            : 0x00
+            Function                          : 0x0
+            Domain                            : 0x0000
+            Device Id                         : 0x36862057
+            Bus Id                            : 00000000:01:00.0
+            Sub System Id                     : 0x00010001
+            XPU Link Info
+                PCIe Generation
+                    Max                       : 4
+                    Current                   : 3
+                Link Width
+                    Max                       : 16x
+                    Current                   : 16x
+        Memory Usage
+            Total                             : 98304 MiB
+            Reserved                          : 0 MiB
+            Used                              : 0 MiB
+            Free                              : 98304 MiB
+        L3 Usage
+            Total                             : 96 MiB
+            Reserved                          : 0 MiB
+            Used                              : 0 MiB
+            Free                              : 96 MiB
+        Utilization
+            Xpu                               : 0 %
+        Ecc Mode
+            Current                           : Enabled
+            Pending                           : Enabled
+        ECC Errors
+            Volatile
+                DRAM Correctable              : 0
+                DRAM Uncorrectable            : 0
+            Aggregate
+                DRAM Correctable              : 0
+                DRAM Uncorrectable            : 0
+        Temperature
+            XPU Current Temp                  : 46 C
+        Power Readings
+            Enforced Power Limit              : 350.00 W
+            Power Draw                        : 76.00 W
+        Clocks
+            Cluster                           : 1450 MHz
+            CDNN                              : 1450 MHz
+        Processes                             : None
+    ---------------
+    Parsed keys: Product Name, Serial Number, Bus Id, Memory Usage Total/Used,
+    Enforced Power Limit, Power Draw, XPU Current Temp, Utilization Xpu.
     """
     gpuinfos = []
     gpuinfo = {}
@@ -1060,31 +1068,35 @@ def parse_kunlunxin_gpu_output_by_npu_id(output):
             current_section = line
             continue
 
-        if "Serial Number" in line:
-            gpuinfo["serialNumber"] = line.split(":")[1].strip()
-        elif "Bus Id" in line:
-            parts = line.split(":", 1)
-            pci_device_address = parts[1].strip().lower()
+        parts = line.split(":", 1)
+        if len(parts) < 2:
+            continue
+        key = parts[0].strip()
+        value = parts[1].strip()
+
+        if key == "Product Name":
+            gpuinfo["productName"] = value
+        elif key == "Serial Number":
+            gpuinfo["serialNumber"] = value
+        elif key == "Bus Id":
+            pci_device_address = value.lower()
             if len(pci_device_address.split(':')[0]) == 8:
                 pci_device_address = pci_device_address[4:].lower()
             gpuinfo["pciAddress"] = pci_device_address
         elif current_section == "Memory Usage":
-            if "Total" in line:
-                total_memory = line.split(":")[1].strip()
-                gpuinfo["memory"] = total_memory
-            elif "Used" in line:
-                used_memory = line.split(":")[1].strip()
-                gpuinfo["memoryUsage"] = used_memory
+            if key == "Total":
+                gpuinfo["memory"] = value
+            elif key == "Used":
+                gpuinfo["memoryUsage"] = value
         elif current_section == "Utilization":
-            if "Xpu" in line and "%" in line:
-                xpu_utilization = line.split(":")[1].strip()
-                gpuinfo["xpuUtilization"] = xpu_utilization
-        elif "Enforced Power Limit" in line:
-            gpuinfo["power"] = line.split(":")[1].strip()
-        elif "Power Draw" in line:
-            gpuinfo["powerDraw"] = line.split(":")[1].strip()
-        elif "XPU Current Temp" in line:
-            gpuinfo["temperature"] = line.split(":")[1].strip()
+            if key == "Xpu" and "%" in value:
+                gpuinfo["xpuUtilization"] = value
+        elif key == "Enforced Power Limit":
+            gpuinfo["power"] = value
+        elif key == "Power Draw":
+            gpuinfo["powerDraw"] = value
+        elif key == "XPU Current Temp":
+            gpuinfo["temperature"] = value
 
     logger.info("kunlunxin gpu info: %s" % gpuinfo)
     gpuinfos.append(gpuinfo)
@@ -1840,6 +1852,7 @@ def _collect_kunlunxin_legacy(pci_address):
                     "memory": gpuinfo.get("memory"),
                     "power": gpuinfo.get("power"),
                     "serialNumber": gpuinfo.get("serialNumber"),
+                    "productName": gpuinfo.get("productName"),
                     "isDriverLoaded": True,
                 }
                 return result

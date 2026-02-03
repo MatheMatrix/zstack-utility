@@ -180,13 +180,18 @@ class TestGetInfo(unittest.TestCase):
 
     @patch('zstacklib.utils.gpu.bash_roe')
     def test_get_info_legacy_kunlunxin(self, mock_bash):
-        """Test get_info legacy fallback for Kunlunxin"""
+        """Test get_info legacy fallback for Kunlunxin (includes productName)."""
         kunlunxin_q_output = (
+            "Product Name                          : P800 PCIe\n"
             "Serial Number                         : 02K0MA0258D0007R\n"
-            "Bus Id                            : 00000000:21:00.0\n"
+            "PCI\n"
+            "    Bus Id                            : 00000000:21:00.0\n"
             "Memory Usage\n"
             "    Total                             : 98304 MiB\n"
-            "Enforced Power Limit              : 350.00 W\n"
+            "    Used                              : 0 MiB\n"
+            "Power Readings\n"
+            "    Enforced Power Limit              : 350.00 W\n"
+            "    Power Draw                        : 76.00 W\n"
         )
         mock_bash.side_effect = [
             (0, "/usr/bin/xpu-smi", ""),  # which xpu-smi
@@ -199,6 +204,7 @@ class TestGetInfo(unittest.TestCase):
         self.assertEqual(result.get("memory"), "98304 MiB")
         self.assertEqual(result.get("power"), "350.00 W")
         self.assertEqual(result.get("serialNumber"), "02K0MA0258D0007R")
+        self.assertEqual(result.get("productName"), "P800 PCIe")
         self.assertTrue(result.get("isDriverLoaded", False))
 
     def test_get_info_legacy_unknown_vendor(self):
