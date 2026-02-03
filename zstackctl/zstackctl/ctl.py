@@ -2499,6 +2499,241 @@ EOF
 
         self._report_property_updated()
 
+
+# ---------- Telemetry/Sentry block (fixed region, delimited) ----------
+TELEMETRY_BLOCK_BEGIN = '# ========== Telemetry/Sentry (configure-telemetry) =========='
+TELEMETRY_BLOCK_END = '# ========== END Telemetry/Sentry =========='
+
+
+def _read_properties_file_raw(path):
+    """Read properties file as raw text (for telemetry block)."""
+    with open(path, 'r') as f:
+        return f.read()
+
+
+def _write_properties_file_raw(path, content):
+    """Write properties file as raw text (use management node user for ownership)."""
+    with use_user_zstack():
+        with open(path, 'w') as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+
+
+def _ensure_trailing_newline(s):
+    if s and not s.endswith('\n'):
+        return s + '\n'
+    return s
+
+
+@lock.file_lock('/run/zstack.properties.lock')
+def _replace_or_append_telemetry_block(path, block_content):
+    """
+    Replace content between TELEMETRY_BLOCK_BEGIN and TELEMETRY_BLOCK_END,
+    or append the block if delimiters not found.
+    Uses same lock as PropertyFile to avoid concurrent write corruption.
+    """
+    raw = _read_properties_file_raw(path)
+    begin_idx = raw.find(TELEMETRY_BLOCK_BEGIN)
+    end_idx = raw.find(TELEMETRY_BLOCK_END)
+
+    block_with_delimiters = _ensure_trailing_newline(TELEMETRY_BLOCK_BEGIN) + block_content + _ensure_trailing_newline(TELEMETRY_BLOCK_END)
+
+    if begin_idx != -1 and end_idx != -1 and end_idx > begin_idx:
+        before = raw[:begin_idx]
+        after = raw[end_idx + len(TELEMETRY_BLOCK_END):]
+        if after.startswith('\n'):
+            after = after[1:]
+        new_content = before + block_with_delimiters + _ensure_trailing_newline(after)
+    else:
+        new_content = _ensure_trailing_newline(raw) + block_with_delimiters + '\n'
+
+    _write_properties_file_raw(path, new_content)
+
+
+def _build_telemetry_block_lines(options):
+    """Build the lines (comments + key=value) for the telemetry block."""
+    lines = [
+        '',
+        '# Telemetry DSN (error/performance reporting, Telemetry.sentryDsn)',
+        'Telemetry.sentryDsn = %s' % (options.get('Telemetry.sentryDsn') or ''),
+        '',
+        '# Enable error reporting (must be true for Platform to init)',
+        'CloudBus.sentryOn = %s' % (options.get('CloudBus.sentryOn', 'true')),
+        '',
+        '# Telemetry: enabled + exporters (sentry or otlp,sentry)',
+        'Telemetry.enabled = %s' % (options.get('Telemetry.enabled', 'true')),
+        'Telemetry.exporters = %s' % (options.get('Telemetry.exporters') or 'sentry'),
+        'Telemetry.environment = %s' % (options.get('Telemetry.environment') or 'DEV'),
+        'Telemetry.samplingRate = %s' % (options.get('Telemetry.samplingRate', '1.0')),
+        'Telemetry.sentryTracesSampleRate = %s' % (options.get('Telemetry.sentryTracesSampleRate', '1.0')),
+        'Telemetry.metricsEnabled = %s' % (options.get('Telemetry.metricsEnabled', 'true')),
+        'Telemetry.alwaysSampleErrors = %s' % (options.get('Telemetry.alwaysSampleErrors', 'true')),
+        '',
+        '# Service identity (optional)',
+        'Telemetry.serviceName = %s' % (options.get('Telemetry.serviceName') or 'management-node'),
+        'Telemetry.serviceVersion = %s' % (options.get('Telemetry.serviceVersion') or ''),
+        '',
+    ]
+    otlp_endpoint = options.get('Telemetry.otlpEndpoint')
+    if otlp_endpoint:
+        lines.extend([
+            '# If exporters include otlp, set OTLP endpoint (e.g. Jaeger)',
+            'Telemetry.otlpEndpoint = %s' % otlp_endpoint,
+            '',
+        ])
+    return '\n'.join(lines)
+
+
+class ConfigureTelemetryCmd(Command):
+    """Interactive or CLI configuration for Telemetry in properties (delimited block)."""
+
+    def __init__(self):
+        super(ConfigureTelemetryCmd, self).__init__()
+        self.name = 'configure-telemetry'
+        self.description = "interactive or CLI configuration for Telemetry/error-reporting in properties file (writes to a delimited block)"
+        ctl.register_command(self)
+        self.sensitive_args = ['--sentry-dsn', '--otlp-endpoint']
+
+    def install_argparse_arguments(self, parser):
+        parser.add_argument('--sentry-dsn', help='Telemetry DSN URL (error/performance reporting endpoint)')
+        parser.add_argument('--sentry-on', help='CloudBus.sentryOn (true/false)', default=None)
+        parser.add_argument('--telemetry-enabled', help='Telemetry.enabled (true/false)', default=None)
+        parser.add_argument('--exporters', help='Telemetry.exporters: sentry or otlp,sentry', default=None)
+        parser.add_argument('--environment', help='Telemetry.environment (e.g. DEV, PROD)', default=None)
+        parser.add_argument('--sampling-rate', help='Telemetry.samplingRate (0.0-1.0)', default=None)
+        parser.add_argument('--sentry-traces-sample-rate', help='Telemetry.sentryTracesSampleRate (0.0-1.0)', default=None)
+        parser.add_argument('--metrics-enabled', help='Telemetry.metricsEnabled (true/false)', default=None)
+        parser.add_argument('--always-sample-errors', help='Telemetry.alwaysSampleErrors (true/false)', default=None)
+        parser.add_argument('--service-name', help='Telemetry.serviceName (e.g. management-node-ppu)', default=None)
+        parser.add_argument('--service-version', help='Telemetry.serviceVersion (e.g. 5.5.0)', default=None)
+        parser.add_argument('--otlp-endpoint', help='Telemetry.otlpEndpoint (e.g. http://jaeger:4317), used when exporters include otlp')
+        parser.add_argument('--no-interactive', action='store_true', help='do not prompt; use defaults for any option not passed (for automation)')
+
+    def _prompt(self, prompt_text, default=None, help_text=None):
+        try:
+            _input = raw_input
+        except NameError:
+            _input = input
+        if help_text:
+            info(colored(help_text, 'cyan'))
+        if default is not None and default != '':
+            s = _input('%s [%s]: ' % (prompt_text, default)).strip()
+            return s if s else default
+        return _input('%s: ' % prompt_text).strip()
+
+    def _run_interactive(self, args):
+        info(colored('--- Telemetry configuration (writes to delimited block in properties) ---', 'green'))
+        info(colored('Telemetry DSN: error/performance reporting; OTLP: export traces to Jaeger etc.', 'yellow'))
+        info(colored('Use exporters=sentry for error reporting only; use otlp,sentry and --otlp-endpoint when also using Jaeger.', 'yellow'))
+        info('')
+
+        options = {}
+        options['Telemetry.sentryDsn'] = self._prompt(
+            'Telemetry DSN (required, DSN URL from error/performance reporting service)',
+            default='',
+            help_text='Provide the DSN URL from your error/performance reporting service.'
+        )
+        options['CloudBus.sentryOn'] = self._prompt('CloudBus.sentryOn (must be true to enable error reporting)', default='true')
+        options['Telemetry.enabled'] = self._prompt('Telemetry.enabled', default='true')
+        options['Telemetry.exporters'] = self._prompt(
+            'Telemetry.exporters (sentry for error reporting only; otlp,sentry when also using Jaeger)',
+            default='sentry',
+            help_text='Note: sentry = error/performance reporting; otlp = export traces to Jaeger etc.'
+        )
+        options['Telemetry.environment'] = self._prompt('Telemetry.environment (e.g. DEV/PROD)', default='DEV')
+        options['Telemetry.samplingRate'] = self._prompt('Telemetry.samplingRate (0.0-1.0)', default='1.0')
+        options['Telemetry.sentryTracesSampleRate'] = self._prompt('Telemetry.sentryTracesSampleRate (0.0-1.0)', default='1.0')
+        options['Telemetry.metricsEnabled'] = self._prompt('Telemetry.metricsEnabled', default='true')
+        options['Telemetry.alwaysSampleErrors'] = self._prompt('Telemetry.alwaysSampleErrors', default='true')
+        options['Telemetry.serviceName'] = self._prompt('Telemetry.serviceName (optional)', default='management-node')
+        options['Telemetry.serviceVersion'] = self._prompt('Telemetry.serviceVersion (optional, e.g. 5.5.0)', default='')
+        if options['Telemetry.exporters'] and 'otlp' in options['Telemetry.exporters']:
+            options['Telemetry.otlpEndpoint'] = self._prompt('Telemetry.otlpEndpoint (e.g. http://jaeger:4317)', default='')
+        else:
+            options['Telemetry.otlpEndpoint'] = ''
+
+        return options
+
+    def _options_from_args(self, args):
+        options = {}
+        if args.sentry_dsn is not None:
+            options['Telemetry.sentryDsn'] = args.sentry_dsn
+        if args.sentry_on is not None:
+            options['CloudBus.sentryOn'] = args.sentry_on
+        if args.telemetry_enabled is not None:
+            options['Telemetry.enabled'] = args.telemetry_enabled
+        if args.exporters is not None:
+            options['Telemetry.exporters'] = args.exporters
+        if args.environment is not None:
+            options['Telemetry.environment'] = args.environment
+        if args.sampling_rate is not None:
+            options['Telemetry.samplingRate'] = args.sampling_rate
+        if args.sentry_traces_sample_rate is not None:
+            options['Telemetry.sentryTracesSampleRate'] = args.sentry_traces_sample_rate
+        if args.metrics_enabled is not None:
+            options['Telemetry.metricsEnabled'] = args.metrics_enabled
+        if args.always_sample_errors is not None:
+            options['Telemetry.alwaysSampleErrors'] = args.always_sample_errors
+        if args.service_name is not None:
+            options['Telemetry.serviceName'] = args.service_name
+        if args.service_version is not None:
+            options['Telemetry.serviceVersion'] = args.service_version
+        if args.otlp_endpoint is not None:
+            options['Telemetry.otlpEndpoint'] = args.otlp_endpoint
+        return options
+
+    def _merge_with_current_block(self, path, new_options):
+        """Read existing block if present and merge; then build full block with defaults."""
+        raw = _read_properties_file_raw(path)
+        begin_idx = raw.find(TELEMETRY_BLOCK_BEGIN)
+        end_idx = raw.find(TELEMETRY_BLOCK_END)
+        defaults = {
+            'Telemetry.sentryDsn': '',
+            'CloudBus.sentryOn': 'true',
+            'Telemetry.enabled': 'true',
+            'Telemetry.exporters': 'sentry',
+            'Telemetry.environment': 'DEV',
+            'Telemetry.samplingRate': '1.0',
+            'Telemetry.sentryTracesSampleRate': '1.0',
+            'Telemetry.metricsEnabled': 'true',
+            'Telemetry.alwaysSampleErrors': 'true',
+            'Telemetry.serviceName': 'management-node',
+            'Telemetry.serviceVersion': '',
+            'Telemetry.otlpEndpoint': '',
+        }
+        if begin_idx != -1 and end_idx != -1 and end_idx > begin_idx:
+            block = raw[begin_idx + len(TELEMETRY_BLOCK_BEGIN):end_idx]
+            for line in block.splitlines():
+                line = line.strip()
+                if line and '=' in line and not line.startswith('#'):
+                    k, _, v = line.partition('=')
+                    k, v = k.strip(), v.strip()
+                    if k in defaults:
+                        defaults[k] = v
+        for k, v in new_options.items():
+            defaults[k] = v
+        return defaults
+
+    def run(self, args):
+        path = ctl.properties_file_path
+        if not os.path.isfile(path):
+            raise CtlError('cannot find %s' % path)
+
+        options_from_cli = self._options_from_args(args)
+        if options_from_cli or args.no_interactive:
+            options = self._merge_with_current_block(path, options_from_cli)
+        else:
+            options = self._run_interactive(args)
+            options = self._merge_with_current_block(path, options)
+
+        block_content = _build_telemetry_block_lines(options)
+        _replace_or_append_telemetry_block(path, block_content)
+        linux.sync_file(path)
+        info('Telemetry configuration written to delimited block in properties file.')
+        info('Locate with: grep "%s"' % TELEMETRY_BLOCK_BEGIN.strip())
+
+
 def get_management_node_pid():
     DEFAULT_PID_FILE_PATH = os.path.join(os.path.expanduser('~zstack'), "management-server.pid")
 
@@ -11985,6 +12220,7 @@ def main():
     ChangeIpCmd()
     CollectLogCmd()
     ConfigureCmd()
+    ConfigureTelemetryCmd()
     ConfiguredCollectLogCmd()
     DumpMysqlCmd()
     ChangeMysqlPasswordCmd()
