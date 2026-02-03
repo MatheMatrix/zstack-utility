@@ -1,6 +1,81 @@
 # -*- coding: utf-8 -*-
 """
 Kunlunxin XPU Vendor Implementation (Python 2/3 Compatible)
+
+xpu-smi -q full output sample (single XPU block, xpu-smi -q --id=00000000:01:00.0):
+--------
+==============XPUSMI LOG==============
+
+Timestamp                                 : Tue Feb  3 18:20:01 2026
+Driver Version                            : 5.0.21.26
+XPU-RT Version                            : 10.2
+
+Attached XPUs                             : 2
+XPU 00000000:01:00.0
+    Product Name                          : P800 PCIe
+    Product Brand                         : KUNLUNXIN
+    Product Architecture                  : KL3
+    Serial Number                         : 02K0MA0258D0007R
+    XPU UUID                              : GPU-420716f2-9928-5108-a5b2-e6b7cf36b37c
+    Minor Number                          : 0
+    PCIe Id                               : 3
+    XPU Part Number                       : B00100300110211
+    Firmware Version
+        PBL Version                       : 1.0
+        PCIE Version                      : 2.14
+        SBL Version                       : 1.54
+        ALL Version                       : 1.0.2.14.1.54
+        CPLD Version                      : 2.0
+    PCI
+        Bus                               : 0x01
+        Device                            : 0x00
+        Function                          : 0x0
+        Domain                            : 0x0000
+        Device Id                         : 0x36862057
+        Bus Id                            : 00000000:01:00.0
+        Sub System Id                     : 0x00010001
+        XPU Link Info
+            PCIe Generation
+                Max                       : 4
+                Current                   : 3
+            Link Width
+                Max                       : 16x
+                Current                   : 16x
+    Memory Usage
+        Total                             : 98304 MiB
+        Reserved                          : 0 MiB
+        Used                              : 0 MiB
+        Free                              : 98304 MiB
+    L3 Usage
+        Total                             : 96 MiB
+        Reserved                          : 0 MiB
+        Used                              : 0 MiB
+        Free                              : 96 MiB
+    Utilization
+        Xpu                               : 0 %
+    Ecc Mode
+        Current                           : Enabled
+        Pending                           : Enabled
+    ECC Errors
+        Volatile
+            DRAM Correctable              : 0
+            DRAM Uncorrectable            : 0
+        Aggregate
+            DRAM Correctable              : 0
+            DRAM Uncorrectable            : 0
+    Temperature
+        XPU Current Temp                  : 46 C
+    Power Readings
+        Enforced Power Limit              : 350.00 W
+        Power Draw                        : 76.00 W
+    Clocks
+        Cluster                           : 1450 MHz
+        CDNN                              : 1450 MHz
+    Processes                             : None
+--------
+Parse by key: value (key = line.split(":", 1)[0].strip()). Fields we use:
+Product Name, Serial Number, Bus Id (under PCI), Memory Usage Total/Used,
+Enforced Power Limit, Power Draw, XPU Current Temp.
 """
 
 import re
@@ -116,18 +191,7 @@ class Kunlunxin(GPUBase):
     def parse_basic_info(cls, output):
         """
         Parse xpu-smi -q output for a single XPU.
-
-        Output format example:
-            Serial Number                         : 02K0MA0258D0007R
-            Bus Id                            : 00000000:21:00.0
-            Memory Usage
-                Total                             : 98304 MiB
-                Used                              : 0 MiB
-            Utilization
-                Xpu                               : 0 %
-            Enforced Power Limit              : 350.00 W
-            Power Draw                        : 75.00 W
-            XPU Current Temp                  : 40 C
+        Full output sample: see module docstring at top of this file.
         """
         gpu_infos = []
         gpu_info_dict = {}
@@ -143,35 +207,42 @@ class Kunlunxin(GPUBase):
                 current_section = line
                 continue
 
-            if "Serial Number" in line:
-                gpu_info_dict["serial_number"] = line.split(":")[1].strip()
-            elif "Bus Id" in line:
-                parts = line.split(":", 1)
-                if len(parts) >= 2:
-                    pci_addr = parts[1].strip().lower()
-                    gpu_info_dict["pci_address"] = cls.normalize_pci_address(
-                        pci_addr)
+            parts = line.split(":", 1)
+            if len(parts) < 2:
+                continue
+            key = parts[0].strip()
+            value = parts[1].strip()
+
+            if key == "Product Name":
+                gpu_info_dict["product_name"] = value
+            elif key == "Serial Number":
+                gpu_info_dict["serial_number"] = value
+            elif key == "Bus Id":
+                gpu_info_dict["pci_address"] = cls.normalize_pci_address(
+                    value.lower())
             elif current_section == "Memory Usage":
-                if "Total" in line:
-                    total_memory = line.split(":")[1].strip()
-                    gpu_info_dict["memory"] = total_memory
-                elif "Used" in line:
-                    used_memory = line.split(":")[1].strip()
-                    gpu_info_dict["memoryUsage"] = used_memory
-            elif "Enforced Power Limit" in line:
-                gpu_info_dict["power"] = line.split(":")[1].strip()
-            elif "Power Draw" in line:
-                gpu_info_dict["powerDraw"] = line.split(":")[1].strip()
-            elif "XPU Current Temp" in line:
-                gpu_info_dict["temperature"] = line.split(":")[1].strip()
+                if key == "Total":
+                    gpu_info_dict["memory"] = value
+                elif key == "Used":
+                    gpu_info_dict["memoryUsage"] = value
+            elif key == "Enforced Power Limit":
+                gpu_info_dict["power"] = value
+            elif key == "Power Draw":
+                gpu_info_dict["powerDraw"] = value
+            elif key == "XPU Current Temp":
+                gpu_info_dict["temperature"] = value
 
         if gpu_info_dict.get("pci_address"):
+            extra = {}
+            if gpu_info_dict.get("product_name"):
+                extra["productName"] = gpu_info_dict["product_name"]
             gpu_info = GPUInfo(
                 pci_address=gpu_info_dict.get("pci_address", ""),
                 memory=gpu_info_dict.get("memory"),
                 power=gpu_info_dict.get(
                     "power") or gpu_info_dict.get("powerDraw"),
                 serial_number=gpu_info_dict.get("serial_number"),
+                extra=extra,
             )
             gpu_infos.append(gpu_info)
 
