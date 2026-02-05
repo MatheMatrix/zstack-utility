@@ -543,6 +543,7 @@ class StartVmCmd(kvmagent.AgentCommand):
         self.cacheVolumes = []
         self.isoPath = None
         self.nics = []
+        self.tpm = None  # type: None|dict[str]
         self.timeout = None
         self.dataIsoPaths = None
         self.addons = None
@@ -555,6 +556,8 @@ class StartVmCmd(kvmagent.AgentCommand):
         self.isApplianceVm = False
         self.systemSerialNumber = None
         self.bootMode = None
+        self.secureBoot = None  # type: None|str
+        self.edkVersion = None  # type: None|str
         self.consolePassword = None
         self.enableHa = None
         self.memBalloon = None # type:VirtualDeviceInfo
@@ -3748,7 +3751,7 @@ class Vm(object):
 
             def force_undefine():
                 try:
-                    self.domain.undefine()
+                    self.domain.undefineFlags(libvirt.VIR_DOMAIN_UNDEFINE_KEEP_NVRAM)
                 except:
                     logger.warn('cannot undefine the VM[uuid:%s]' % self.uuid)
                     pid = linux.find_process_by_cmdline(['qemu', self.uuid])
@@ -3756,9 +3759,11 @@ class Vm(object):
                         # force to kill the VM
                         linux.kill_process(pid, is_exception=False)
 
+            logger.info("TODO: save NVRAM and TPM states to storage")
+
             try:
                 flags = 0
-                for attr in [ "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA", "VIR_DOMAIN_UNDEFINE_NVRAM" ]:
+                for attr in [ "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA", "VIR_DOMAIN_UNDEFINE_KEEP_NVRAM" ]:
                     if hasattr(libvirt, attr):
                         flags |= getattr(libvirt, attr)
                 self.domain.undefineFlags(flags)
@@ -6455,6 +6460,7 @@ class Vm(object):
 
     @staticmethod
     def from_StartVmCmd(cmd):
+        # type: (StartVmCmd) -> None
         use_numa = cmd.useNuma
         numa_nodes = cmd.addons.numaNodes
         machine_type = get_machineType(cmd.machineType)
@@ -6728,17 +6734,20 @@ class Vm(object):
             host_arch = kvmagent.host_arch
 
             def on_x86_64():
-                loader_path = '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-pure-efi.fd'
-                nvram_path = '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-pure-efi.fd'
-                if cmd.bootMode == 'UEFI_WITH_CSM':
-                    loader_path = '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-with-csm.fd'
-                    nvram_path = '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-with-csm.fd'
-
                 e(os, 'type', 'hvm', attrib={'machine': machine_type})
                 # if boot mode is UEFI
-                if cmd.bootMode in ["UEFI", "UEFI_WITH_CSM"]:
-                    e(os, 'loader', loader_path, attrib={'readonly': 'yes', 'type': 'pflash'})
-                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': nvram_path})
+                if cmd.bootMode == "UEFI":
+                    releasever = kvmagent.get_host_yum_release()
+                    if releasever in ("ky10sp3", "ky10sp3.2403"):
+                        e(os, 'loader', '/usr/share/edk2/ovmf/OVMF_CODE.fd', attrib={'readonly': 'yes', 'type': 'pflash'})
+                        e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.fd'})
+                    else:
+                        e(os, 'loader', '/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd', attrib={'readonly': 'yes', 'type': 'pflash'})
+                        element = e(os, 'nvram', None, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.secboot.fd'})
+                        e(element, 'source', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid)
+                elif cmd.bootMode == "UEFI_WITH_CSM":
+                    e(os, 'loader', '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-with-csm.fd', attrib={'readonly': 'yes', 'type': 'pflash'})
+                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-with-csm.fd'})
                 elif cmd.addons['loaderRom'] is not None:
                     e(os, 'loader', cmd.addons['loaderRom'], {'type': 'rom'})
 
@@ -6769,7 +6778,8 @@ class Vm(object):
                 e(os, 'type', 'hvm', attrib={'arch': 'loongarch64', 'machine': machine_type})
                 e(os, 'loader', loader_path, attrib={'readonly': 'yes', 'type': 'rom'})
 
-            VmPlugin.clean_vm_firmware_flash(cmd.vmInstanceUuid)
+            if not cmd.secureBoot and cmd.tpm is not None:
+                VmPlugin.clean_vm_firmware_flash(cmd.vmInstanceUuid)
             eval("on_{}".format(host_arch))()
 
             if cmd.useBootMenu:
@@ -6878,6 +6888,8 @@ class Vm(object):
             if hasattr(cmd, 'pmu') and cmd.pmu is False and not is_pmu_off_unsupported_dist():
                 e(features, "pmu", attrib={'state': 'off'})
 
+            if cmd.tpm is not None:
+                e(features, "smm", attrib={'state': 'on'})
 
         def make_qemu_commandline():
             if not os.path.exists(QMP_SOCKET_PATH):
@@ -7018,6 +7030,10 @@ class Vm(object):
             else:
                 set_keyboard()
                 set_tablet()
+
+            if cmd.tpm is not None:
+                tpm_element = e(devices, 'tpm', None, {'model': 'tpm-crb'})
+                e(tpm_element, 'backend', None, {'type': 'emulator', 'version': '2.0'})
 
             elements['devices'] = devices
 
