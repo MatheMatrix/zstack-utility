@@ -114,17 +114,39 @@ class Alibaba(GPUBase):
 
     @classmethod
     def enrich_addon_info(cls, gpu_info_map, pci_addresses):
-        """Add productName for Alibaba PPUs."""
+        """Add productName for Alibaba PPUs, including passthrough'd PCI-only devices."""
         if not pci_addresses:
             return
         from zstacklib.utils.gpu import get_alibaba_ppu_product_name_cmd, get_alibaba_ppu_product_name
         r, o, e = bash_roe(get_alibaba_ppu_product_name_cmd())
-        if r == 0 and o:
-            product_name = get_alibaba_ppu_product_name(o)
-            if product_name:
-                for pci_addr in pci_addresses:
-                    if pci_addr in gpu_info_map:
-                        gpu_info_map[pci_addr]["productName"] = product_name
+        if r != 0 or not o:
+            return
+        product_name = get_alibaba_ppu_product_name(o)
+        if not product_name:
+            return
+
+        # Apply productName to ppu-smi visible devices and collect their device_ids
+        smi_device_ids = set()
+        for pci_addr in pci_addresses:
+            info = gpu_info_map.get(pci_addr)
+            if not info:
+                continue
+            if info.get('isDriverLoaded') is not False:
+                info["productName"] = product_name
+                dev_id = info.get('_deviceId')
+                if dev_id:
+                    smi_device_ids.add(dev_id)
+
+        # Propagate productName to PCI-only candidates (passthrough'd devices)
+        # only if their PCI device_id matches a ppu-smi visible device
+        if smi_device_ids:
+            for pci_addr in pci_addresses:
+                info = gpu_info_map.get(pci_addr)
+                if info and info.get('isDriverLoaded') is False \
+                        and info.get('_deviceId') in smi_device_ids:
+                    info["productName"] = product_name
+                    logger.debug("[ALIBABA PPU] Propagated productName '%s' to "
+                                 "PCI-only %s (device_id match)" % (product_name, pci_addr))
 
     @classmethod
     def _parse_ppu_throughput_to_bytes(cls, value):
@@ -187,7 +209,8 @@ class Alibaba(GPUBase):
                 continue
             normalized = normalize_pci_address(slot)
             if normalized:
-                result.append((normalized, {"isDriverLoaded": False}))
+                dev_id = (ids.get('Device') or '').strip()
+                result.append((normalized, {"isDriverLoaded": False, "_deviceId": dev_id}))
         return result
 
     @classmethod

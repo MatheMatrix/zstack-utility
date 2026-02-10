@@ -549,6 +549,242 @@ class TestTianshuGetPciOnlyCandidates(unittest.TestCase):
         self.assertEqual(candidates, [])
 
 
+class TestAlibabaGetPciOnlyCandidates(unittest.TestCase):
+    """Test Alibaba get_pci_only_candidates with _deviceId."""
+
+    def test_get_pci_only_candidates_returns_device_id(self):
+        """Alibaba get_pci_only_candidates returns _deviceId from lspci device_ids."""
+        from zstacklib.gpu.vendors.alibaba import Alibaba
+
+        device_ids = {
+            "0000:08:00.0": {"Vendor": "1ded", "Class": "030200", "Device": "6001"},
+            "0000:09:00.0": {"Vendor": "1ded", "Class": "030200", "Device": "6001"},
+        }
+        device_names = {
+            "0000:08:00.0": {"Class": "3D controller", "Vendor": "Alibaba", "Device": "PPU-ZW810E"},
+            "0000:09:00.0": {"Class": "3D controller", "Vendor": "Alibaba", "Device": "PPU-ZW810E"},
+        }
+        candidates = Alibaba.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(len(candidates), 2)
+        for normalized, info in candidates:
+            self.assertFalse(info["isDriverLoaded"])
+            self.assertEqual(info["_deviceId"], "6001")
+
+    def test_get_pci_only_candidates_skips_non_function_0(self):
+        """Alibaba get_pci_only_candidates returns only function 0 slots."""
+        from zstacklib.gpu.vendors.alibaba import Alibaba
+
+        device_ids = {"0000:08:00.1": {"Vendor": "1ded", "Class": "030200", "Device": "6001"}}
+        device_names = {
+            "0000:08:00.1": {"Class": "3D controller", "Vendor": "Alibaba", "Device": "PPU-ZW810E"},
+        }
+        candidates = Alibaba.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(candidates, [])
+
+    def test_get_pci_only_candidates_skips_wrong_vendor(self):
+        """Alibaba get_pci_only_candidates skips non-Alibaba vendors."""
+        from zstacklib.gpu.vendors.alibaba import Alibaba
+
+        device_ids = {"0000:08:00.0": {"Vendor": "10de", "Class": "030200", "Device": "1eb8"}}
+        device_names = {
+            "0000:08:00.0": {"Class": "3D controller", "Vendor": "NVIDIA", "Device": "T4"},
+        }
+        candidates = Alibaba.get_pci_only_candidates(device_ids, device_names)
+        self.assertEqual(candidates, [])
+
+
+class TestAlibabaEnrichAddonInfo(unittest.TestCase):
+    """Test Alibaba enrich_addon_info with device_id-based productName propagation."""
+
+    def _make_gpu_info_map(self):
+        """Build a gpu_info_map simulating 3 ppu-smi visible + 2 PCI-only (passthrough'd) devices."""
+        return {
+            # ppu-smi visible devices (have memory/serial, no isDriverLoaded=False)
+            "0000:08:00.0": {"memory": "32768 MiB", "serialNumber": "SN001", "_deviceId": "6001"},
+            "0000:09:00.0": {"memory": "32768 MiB", "serialNumber": "SN002", "_deviceId": "6001"},
+            "0000:0a:00.0": {"memory": "32768 MiB", "serialNumber": "SN003", "_deviceId": "6001"},
+            # PCI-only candidates (passthrough'd, isDriverLoaded=False)
+            "0000:0b:00.0": {"isDriverLoaded": False, "_deviceId": "6001", "_vendor": "Alibaba"},
+            "0000:0c:00.0": {"isDriverLoaded": False, "_deviceId": "6001", "_vendor": "Alibaba"},
+        }
+
+    def test_propagates_product_name_to_pci_only_by_device_id(self):
+        """enrich_addon_info propagates productName to PCI-only devices with matching device_id."""
+        from zstacklib.gpu.vendors.alibaba import Alibaba
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+
+        gpu_info_map = self._make_gpu_info_map()
+        all_pcis = list(gpu_info_map.keys())
+
+        with patch("zstacklib.gpu.vendors.alibaba.bash_roe",
+                   return_value=(0, "Product Name                          : PPU-ZW810E\n", "")):
+            Alibaba.enrich_addon_info(gpu_info_map, all_pcis)
+
+        # All 5 devices should have productName
+        for pci_addr in all_pcis:
+            self.assertEqual(gpu_info_map[pci_addr].get("productName"), "PPU-ZW810E",
+                             "productName missing for %s" % pci_addr)
+
+    def test_does_not_propagate_to_mismatched_device_id(self):
+        """enrich_addon_info does NOT propagate productName if device_id doesn't match."""
+        from zstacklib.gpu.vendors.alibaba import Alibaba
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+
+        gpu_info_map = {
+            "0000:08:00.0": {"memory": "32768 MiB", "_deviceId": "6001"},
+            # Different device_id — should NOT get productName
+            "0000:0b:00.0": {"isDriverLoaded": False, "_deviceId": "7002", "_vendor": "Alibaba"},
+        }
+        all_pcis = list(gpu_info_map.keys())
+
+        with patch("zstacklib.gpu.vendors.alibaba.bash_roe",
+                   return_value=(0, "Product Name                          : PPU-ZW810E\n", "")):
+            Alibaba.enrich_addon_info(gpu_info_map, all_pcis)
+
+        self.assertEqual(gpu_info_map["0000:08:00.0"]["productName"], "PPU-ZW810E")
+        self.assertNotIn("productName", gpu_info_map["0000:0b:00.0"])
+
+    def test_no_propagation_when_ppu_smi_fails(self):
+        """enrich_addon_info does nothing when ppu-smi command fails."""
+        from zstacklib.gpu.vendors.alibaba import Alibaba
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+
+        gpu_info_map = self._make_gpu_info_map()
+        all_pcis = list(gpu_info_map.keys())
+
+        with patch("zstacklib.gpu.vendors.alibaba.bash_roe",
+                   return_value=(1, "", "command not found")):
+            Alibaba.enrich_addon_info(gpu_info_map, all_pcis)
+
+        for pci_addr in all_pcis:
+            self.assertNotIn("productName", gpu_info_map[pci_addr])
+
+
+class TestEnrichGpuInfoMapPciOnlyInclusion(unittest.TestCase):
+    """Test that enrich_gpu_info_map includes PCI-only candidates in vendor dispatch."""
+
+    def test_pci_only_entries_dispatched_to_enrich_addon_info(self):
+        """PCI-only entries with _vendor tag are passed to the vendor's enrich_addon_info."""
+        try:
+            from unittest.mock import patch, MagicMock
+        except ImportError:
+            from mock import patch, MagicMock
+
+        from zstacklib.gpu import enrich_gpu_info_map, get_gpu_vendor
+
+        gpu_info_map = {
+            # PCI-only candidate with _vendor tag (no ppu-smi match)
+            "0000:0b:00.0": {"isDriverLoaded": False, "_deviceId": "6001", "_vendor": "Alibaba"},
+        }
+
+        alibaba_cls = get_gpu_vendor("Alibaba")
+        original_enrich = alibaba_cls.enrich_addon_info
+        enrich_calls = []
+
+        def mock_enrich(gmap, pcis):
+            enrich_calls.append(pcis)
+
+        with patch.object(alibaba_cls, 'enrich_addon_info', side_effect=mock_enrich):
+            with patch.object(alibaba_cls, 'is_available', return_value=False):
+                enrich_gpu_info_map(gpu_info_map)
+
+        # enrich_addon_info should be called with the PCI-only address
+        self.assertEqual(len(enrich_calls), 1)
+        self.assertIn("0000:0b:00.0", enrich_calls[0])
+
+
+class TestSupplementGpuInfoMapAnnotations(unittest.TestCase):
+    """Test _supplement_gpu_info_map_from_pci annotates _vendor and _deviceId."""
+
+    def test_pci_only_candidates_tagged_with_vendor_and_device_id(self):
+        """PCI-only candidates from _supplement get _vendor and _deviceId tags."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+
+        from zstacklib.utils.gpu import _supplement_gpu_info_map_from_pci
+
+        lspci_id_output = """Slot:\t0000:08:00.0
+Class:\t030200
+Vendor:\t1ded
+Device:\t6001
+
+Slot:\t0000:09:00.0
+Class:\t030200
+Vendor:\t1ded
+Device:\t6001
+"""
+        lspci_name_output = """Slot:\t0000:08:00.0
+Class:\t3D controller
+Vendor:\tAlibaba
+Device:\tPPU-ZW810E
+
+Slot:\t0000:09:00.0
+Class:\t3D controller
+Vendor:\tAlibaba
+Device:\tPPU-ZW810E
+"""
+        gpu_info_map = {}  # Empty — no ppu-smi entries
+
+        with patch("zstacklib.utils.pci.get_pci_device_ids",
+                   return_value=(0, lspci_id_output, "")), \
+             patch("zstacklib.utils.pci.get_pci_device_names",
+                   return_value=(0, lspci_name_output, "")):
+            _supplement_gpu_info_map_from_pci(gpu_info_map)
+
+        # Both PCI devices should be added with _vendor and _deviceId
+        self.assertIn("0000:08:00.0", gpu_info_map)
+        self.assertIn("0000:09:00.0", gpu_info_map)
+        for pci_addr in ["0000:08:00.0", "0000:09:00.0"]:
+            self.assertEqual(gpu_info_map[pci_addr]["_vendor"], "Alibaba")
+            self.assertEqual(gpu_info_map[pci_addr]["_deviceId"], "6001")
+            self.assertFalse(gpu_info_map[pci_addr]["isDriverLoaded"])
+
+    def test_existing_entries_annotated_with_device_id(self):
+        """Pre-existing gpu_info_map entries (from ppu-smi) get _deviceId from lspci."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+
+        from zstacklib.utils.gpu import _supplement_gpu_info_map_from_pci
+
+        lspci_id_output = """Slot:\t0000:08:00.0
+Class:\t030200
+Vendor:\t1ded
+Device:\t6001
+"""
+        lspci_name_output = """Slot:\t0000:08:00.0
+Class:\t3D controller
+Vendor:\tAlibaba
+Device:\tPPU-ZW810E
+"""
+        # Pre-existing entry from ppu-smi (no _deviceId yet)
+        gpu_info_map = {
+            "0000:08:00.0": {"memory": "32768 MiB", "serialNumber": "SN001"},
+        }
+
+        with patch("zstacklib.utils.pci.get_pci_device_ids",
+                   return_value=(0, lspci_id_output, "")), \
+             patch("zstacklib.utils.pci.get_pci_device_names",
+                   return_value=(0, lspci_name_output, "")):
+            _supplement_gpu_info_map_from_pci(gpu_info_map)
+
+        # Existing entry should NOT be replaced but should get _deviceId
+        self.assertEqual(gpu_info_map["0000:08:00.0"]["memory"], "32768 MiB")
+        self.assertEqual(gpu_info_map["0000:08:00.0"]["_deviceId"], "6001")
+
+
 class TestGPUInfo(unittest.TestCase):
     """Test GPUInfo dataclass"""
     

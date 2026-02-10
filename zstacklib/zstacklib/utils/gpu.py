@@ -2020,12 +2020,24 @@ def _supplement_gpu_info_map_from_pci(gpu_info_map):
                 logger.debug("get_pci_only_candidates for %s: %s" %
                              (getattr(vendor_class, 'VENDOR_NAME', ''), str(e)))
                 continue
+            vendor_name = getattr(vendor_class, 'VENDOR_NAME', '')
             for normalized, info in candidates:
                 if not normalized or normalized in gpu_info_map:
                     continue
+                info['_vendor'] = vendor_name
                 gpu_info_map[normalized] = info
                 logger.debug("PCI supplement: added %s (vendor %s)" %
-                             (normalized, getattr(vendor_class, 'VENDOR_NAME', '')))
+                             (normalized, vendor_name))
+
+        # Annotate all gpu_info_map entries with _deviceId from lspci so
+        # enrich_addon_info can propagate productName by device_id match
+        from zstacklib.utils.pci import normalize_pci_address
+        for slot, ids in device_ids.items():
+            norm = normalize_pci_address(slot)
+            if norm and norm in gpu_info_map and '_deviceId' not in gpu_info_map[norm]:
+                dev_id = (ids.get('Device') or '').strip()
+                if dev_id:
+                    gpu_info_map[norm]['_deviceId'] = dev_id
     except Exception as e:
         logger.debug("Failed to supplement gpu_info_map from PCI: %s" % str(e))
 

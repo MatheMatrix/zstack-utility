@@ -137,6 +137,12 @@ def enrich_gpu_info_map(gpu_info_map):
     for pci, vendor in pci_to_vendor.items():
         vendor_to_pcis.setdefault(vendor, []).append(pci)
 
+    # Include PCI-only candidates (passthrough'd devices tagged with _vendor
+    # by _supplement_gpu_info_map_from_pci) so they participate in enrich_addon_info
+    for pci, info in gpu_info_map.items():
+        if pci not in pci_to_vendor and isinstance(info, dict) and '_vendor' in info:
+            vendor_to_pcis.setdefault(info['_vendor'], []).append(pci)
+
     for vendor_name, pcis in vendor_to_pcis.items():
         vendor_class = get_gpu_vendor(vendor_name)
         if vendor_class and hasattr(vendor_class, 'enrich_addon_info'):
