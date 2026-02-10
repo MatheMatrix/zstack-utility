@@ -362,7 +362,15 @@ class Eip(object):
             if bash_r(EBTABLES_CMD + ' -t nat -L {{CHAIN_NAME}} > /dev/null 2>&1') != 0:
                 bash_errorout(EBTABLES_CMD + ' -t nat -N {{CHAIN_NAME}}')
 
-            create_ebtable_rule_if_needed('nat', 'PREROUTING', '-i {{NIC_NAME}} -j {{CHAIN_NAME}}')
+            # EIP PREROUTING rule must be BEFORE libvirt anti-spoofing (nwfilter) rules.
+            # Anti-spoofing chains end with ACCEPT for valid ARP, which stops PREROUTING
+            # processing and prevents the EIP arpreply from firing. Delete-and-reinsert
+            # at head to guarantee correct position after migration/reconnect.
+            VNIC_EIP_RULE = '-i {{NIC_NAME}} -j {{CHAIN_NAME}}'
+            if bash_r(EBTABLES_CMD + " -t nat -L PREROUTING | grep -- '{{VNIC_EIP_RULE}}' > /dev/null") == 0:
+                bash_errorout(EBTABLES_CMD + ' -t nat -D PREROUTING {{VNIC_EIP_RULE}}')
+            bash_errorout(EBTABLES_CMD + ' -t nat -I PREROUTING {{VNIC_EIP_RULE}}')
+
             GATEWAY_MAC = bash_o("eval {{NS}} ip link show {{PRI_IDEV}} | awk '/link\/ether/{print $2}'").strip()
             if not GATEWAY_MAC:
                 raise Exception('cannot find the device[%s] in the namespace[%s]' % (PRI_IDEV, NS_NAME))
@@ -382,7 +390,12 @@ class Eip(object):
             if bash_r(EBTABLES_CMD + ' -t nat -L {{BLOCK_CHAIN_NAME}} > /dev/null 2>&1') != 0:
                 bash_errorout(EBTABLES_CMD + ' -t nat -N {{BLOCK_CHAIN_NAME}}')
 
-            create_ebtable_rule_if_needed('nat', 'POSTROUTING', "-p ARP -o {{NIC_NAME}} -j {{BLOCK_CHAIN_NAME}}")
+            # Same as PREROUTING: ensure EIP POSTROUTING rule is before anti-spoofing
+            # rules so EIP's ARP protection is not bypassed.
+            VNIC_POST_RULE = "-p ARP -o {{NIC_NAME}} -j {{BLOCK_CHAIN_NAME}}"
+            if bash_r(EBTABLES_CMD + " -t nat -L POSTROUTING | grep -- '{{VNIC_POST_RULE}}' > /dev/null") == 0:
+                bash_errorout(EBTABLES_CMD + ' -t nat -D POSTROUTING {{VNIC_POST_RULE}}')
+            bash_errorout(EBTABLES_CMD + ' -t nat -I POSTROUTING {{VNIC_POST_RULE}}')
             create_ebtable_rule_if_needed('nat', BLOCK_CHAIN_NAME,
                                           "-p ARP -o {{NIC_NAME}} --arp-op Request --arp-ip-src {{NIC_GATEWAY}} --arp-mac-src ! {{GATEWAY_MAC}} -j DROP")
 
@@ -393,7 +406,12 @@ class Eip(object):
             if bash_r(EBTABLES_CMD + ' -t nat -L {{CHAIN_NAME}} > /dev/null 2>&1') != 0:
                 bash_errorout(EBTABLES_CMD + ' -t nat -N {{CHAIN_NAME}}')
 
-            create_ebtable_rule_if_needed('nat', 'PREROUTING', '-i {{NIC_NAME}} -j {{CHAIN_NAME}}', at_head=True)
+            # Same as IPv4: ensure EIP PREROUTING rule is before anti-spoofing
+            # rules so EIP's traffic redirection is not bypassed.
+            VNIC_EIP_RULE_V6 = '-i {{NIC_NAME}} -j {{CHAIN_NAME}}'
+            if bash_r(EBTABLES_CMD + " -t nat -L PREROUTING | grep -- '{{VNIC_EIP_RULE_V6}}' > /dev/null") == 0:
+                bash_errorout(EBTABLES_CMD + ' -t nat -D PREROUTING {{VNIC_EIP_RULE_V6}}')
+            bash_errorout(EBTABLES_CMD + ' -t nat -I PREROUTING {{VNIC_EIP_RULE_V6}}')
             GATEWAY_MAC = bash_o("eval {{NS}} ip link show {{PRI_IDEV}} | awk '/link\/ether/{print $2}'").strip()
             if not GATEWAY_MAC:
                 raise Exception('cannot find the device[%s] in the namespace[%s]' % (PRI_IDEV, NS_NAME))
