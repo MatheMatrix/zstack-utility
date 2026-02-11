@@ -49,17 +49,6 @@ class Api(object):
         rsp = jsonobject.loads(jstr)
         return rsp
 
-    def _error_code_to_string(self, error):
-        if error is None:
-            return ''
-
-        if error.elaboration is not None:
-            return "[code: %s, description: %s, details: %s, elaboration: \n%s" % \
-                   (error.code, error.description, error.details, error.elaboration)
-        else:
-            return "[code: %s, description: %s, details: %s]" % \
-                   (error.code, error.description, error.details)
-
     def _check_not_none_field(self, apicmd):
         for k, v in apicmd.__dict__.items():
             if isinstance(v, inventory.NotNoneField):
@@ -87,7 +76,7 @@ class Api(object):
         # print jsonobject.dumps(apicmd)
         (name, reply) = self.sync_call(apicmd)
         if not reply.success: raise ApiError(
-            "Cannot login as admin because %s" % self._error_code_to_string(reply.error))
+            "Cannot login as admin:\n%s" % error_code_to_string(reply.error))
         return reply.inventory.uuid
 
     def log_out(self, session_uuid):
@@ -97,7 +86,7 @@ class Api(object):
         (name, reply) = self.sync_call(apicmd)
         if not reply.success:
             logger.warn(
-                'Logout session[uuid:%s] failed because %s' % (session_uuid, self._error_code_to_string(reply.error)))
+                'Logout session[uuid:%s] failed:\n%s' % (session_uuid, error_code_to_string(reply.error)))
 
     def async_call_wait_for_complete(self, apicmd, apievent=None, exception_on_error=True, interval=500, fail_soon=False):
         # try to find event class from inventory.py for masking sensitive fields
@@ -139,7 +128,7 @@ class Api(object):
             reply = jsonobject.loads(rsp.result)
             (name, event) = (reply.__dict__.items()[0])
             if exception_on_error and not event.success:
-                raise ApiError('API call[%s] failed because %s' % (name, self._error_code_to_string(event.error)))
+                raise ApiError('API call[%s] failed:\n%s' % (name, error_code_to_string(event.error)))
             return name, event
 
         curr = 0
@@ -157,7 +146,7 @@ class Api(object):
         reply = jsonobject.loads(rsp.result)
         (name, event) = (reply.__dict__.items()[0])
         if exception_on_error and not event.success:
-            raise ApiError('API call[%s] failed because %s' % (name, self._error_code_to_string(event.error)))
+            raise ApiError('API call[%s] failed:\n%s' % (name, error_code_to_string(event.error)))
         return name, event
 
     def sync_call(self, apicmd, exception_on_error=True, fail_soon=False):
@@ -171,12 +160,51 @@ class Api(object):
         (name, r) = reply.__dict__.items()[0]
         if exception_on_error:
             if not r.success:
-                raise ApiError('API call[%s] failed because %s' % (name, self._error_code_to_string(r.error)))
+                raise ApiError('API call[%s] failed:\n%s' % (name, error_code_to_string(r.error)))
         return name, r
 
 
-def error_code_to_string(self, error):
-    return "[code: %s, description: %s, details: %s]" % (error.code, error.description, error.details)
+def error_code_to_string(error):
+    if error is None:
+        return '<Empty Message>'
+
+    builder = [] # type: list[str]
+    def get_readable_details(err, level):
+        if level > 0:
+            builder.append("\n")
+
+        if level >= 16:
+            builder.append("\n...")
+            return
+
+        for i in range(level):
+            builder.append("  ")
+        builder.append("[%s] %s" % (err.code, err.details))
+
+        opaque = getattr(err, 'opaque', None) # type: zstacklib.utils.jsonobject.JsonObject
+        if opaque:
+            for key, value in opaque.to_dict().items():
+                # ignore key: "template", "arg.*", "error.location"
+                if key.startswith('_') or key == 'template' or key.startswith('arg.') or key == 'error.location':
+                    continue
+
+                builder.append("\n")
+                for i in range(level):
+                    builder.append("  ")
+                builder.append("        * %s: %s" % (key, value))
+
+        cause = getattr(err, 'cause', None)
+        if cause:
+            get_readable_details(cause, level + 1)
+
+        causes = getattr(err, 'causes', None) # type: zstacklib.utils.jsonobject.JsonObject
+        if causes:
+            for cause_item in causes:
+                if cause_item:
+                    get_readable_details(cause_item, level + 1)
+
+    get_readable_details(error, 0)
+    return "".join(builder)
 
 
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
@@ -187,7 +215,7 @@ def async_call(apicmd, session_uuid):
     (name, event) = api.async_call_wait_for_complete(apicmd)
     if not event.success:
         raise ApiError(
-            "Async call: [%s] meets error: %s." % (apicmd.__class__.__name__, error_code_to_string(event.error)))
+            "Async call: [%s] meets error:\n%s" % (apicmd.__class__.__name__, error_code_to_string(event.error)))
     print("[Async call]: [%s] Success" % apicmd.__class__.__name__)
     return event
 
@@ -201,7 +229,7 @@ def sync_call(apicmd, session_uuid):
     (name, reply) = api.sync_call(apicmd)
     if not reply.success:
         raise ApiError(
-            "Sync call: [%s] meets error: %s." % (apicmd.__class__.__name__, error_code_to_string(reply.error)))
+            "Sync call: [%s] meets error:\n%s" % (apicmd.__class__.__name__, error_code_to_string(reply.error)))
     print("[Sync call]: [%s] Success" % apicmd.__class__.__name__)
     return reply
 
