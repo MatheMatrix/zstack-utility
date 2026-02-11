@@ -436,6 +436,133 @@ class TestKunlunxinGetPciOnlyCandidates(unittest.TestCase):
         self.assertEqual(candidates, [])
 
 
+XPU_SMI_SAMPLE_OUTPUT = """\
+==============XPUSMI LOG==============
+
+Timestamp                                 : Tue Feb  3 18:20:01 2026
+Driver Version                            : 5.0.21.26
+XPU-RT Version                            : 10.2
+
+Attached XPUs                             : 2
+XPU 00000000:01:00.0
+    Product Name                          : P800 PCIe
+    Product Brand                         : KUNLUNXIN
+    Serial Number                         : 02K0MA0258D0007R
+    PCI
+        Bus Id                            : 00000000:01:00.0
+    Memory Usage
+        Total                             : 98304 MiB
+        Used                              : 0 MiB
+    Utilization
+        Xpu                               : 0 %
+    Temperature
+        XPU Current Temp                  : 46 C
+    Power Readings
+        Enforced Power Limit              : 350.00 W
+        Power Draw                        : 76.00 W
+"""
+
+
+class TestKunlunxinParseBasicInfo(unittest.TestCase):
+    """Test Kunlunxin parse_basic_info (vendor plugin path) - ZSTAC-81958."""
+
+    def test_parse_basic_info_extracts_product_name(self):
+        """productName should appear in GPUInfo.extra after parsing xpu-smi output."""
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        infos = Kunlunxin.parse_basic_info(XPU_SMI_SAMPLE_OUTPUT)
+        self.assertEqual(len(infos), 1)
+        self.assertEqual(infos[0].extra.get("productName"), "P800 PCIe")
+
+    def test_parse_basic_info_extracts_pci_address(self):
+        """PCI address should be normalized."""
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        infos = Kunlunxin.parse_basic_info(XPU_SMI_SAMPLE_OUTPUT)
+        self.assertEqual(infos[0].pci_address, "0000:01:00.0")
+
+    def test_parse_basic_info_extracts_memory(self):
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        infos = Kunlunxin.parse_basic_info(XPU_SMI_SAMPLE_OUTPUT)
+        self.assertEqual(infos[0].memory, "98304 MiB")
+
+    def test_parse_basic_info_extracts_serial_number(self):
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        infos = Kunlunxin.parse_basic_info(XPU_SMI_SAMPLE_OUTPUT)
+        self.assertEqual(infos[0].serial_number, "02K0MA0258D0007R")
+
+    def test_parse_basic_info_extracts_power(self):
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        infos = Kunlunxin.parse_basic_info(XPU_SMI_SAMPLE_OUTPUT)
+        self.assertEqual(infos[0].power, "350.00 W")
+
+    def test_parse_basic_info_empty_output(self):
+        """Empty output should return no GPUInfo."""
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        infos = Kunlunxin.parse_basic_info("")
+        self.assertEqual(infos, [])
+
+    def test_parse_basic_info_no_product_name(self):
+        """If xpu-smi omits Product Name, extra should be empty dict."""
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        output = """\
+XPU 00000000:02:00.0
+    Serial Number                         : ABC123
+    PCI
+        Bus Id                            : 00000000:02:00.0
+    Memory Usage
+        Total                             : 32768 MiB
+"""
+        infos = Kunlunxin.parse_basic_info(output)
+        self.assertEqual(len(infos), 1)
+        self.assertEqual(infos[0].extra, {})
+
+
+class TestKunlunxinLegacyParse(unittest.TestCase):
+    """Test legacy parse_kunlunxin_gpu_output_by_npu_id (gpu.py path) - ZSTAC-81958."""
+
+    def test_legacy_parse_extracts_product_name(self):
+        """Legacy parser should put productName at top level of dict."""
+        from zstacklib.utils.gpu import parse_kunlunxin_gpu_output_by_npu_id
+
+        infos = parse_kunlunxin_gpu_output_by_npu_id(XPU_SMI_SAMPLE_OUTPUT)
+        self.assertEqual(len(infos), 1)
+        self.assertEqual(infos[0].get("productName"), "P800 PCIe")
+
+    def test_legacy_parse_extracts_all_fields(self):
+        """Legacy parser should extract pciAddress, memory, serialNumber, temperature, etc."""
+        from zstacklib.utils.gpu import parse_kunlunxin_gpu_output_by_npu_id
+
+        infos = parse_kunlunxin_gpu_output_by_npu_id(XPU_SMI_SAMPLE_OUTPUT)
+        info = infos[0]
+        self.assertEqual(info.get("pciAddress"), "0000:01:00.0")
+        self.assertEqual(info.get("memory"), "98304 MiB")
+        self.assertEqual(info.get("memoryUsage"), "0 MiB")
+        self.assertEqual(info.get("serialNumber"), "02K0MA0258D0007R")
+        self.assertEqual(info.get("temperature"), "46 C")
+        self.assertEqual(info.get("power"), "350.00 W")
+        self.assertEqual(info.get("powerDraw"), "76.00 W")
+        self.assertEqual(info.get("xpuUtilization"), "0 %")
+
+    def test_legacy_parse_no_product_name(self):
+        """If output has no Product Name line, key should be absent."""
+        from zstacklib.utils.gpu import parse_kunlunxin_gpu_output_by_npu_id
+
+        output = """\
+XPU 00000000:02:00.0
+    Serial Number                         : XYZ
+    PCI
+        Bus Id                            : 00000000:02:00.0
+"""
+        infos = parse_kunlunxin_gpu_output_by_npu_id(output)
+        self.assertNotIn("productName", infos[0])
+
+
 class TestVastaiGetPciOnlyCandidates(unittest.TestCase):
     """Test Vastai get_pci_only_candidates."""
 
