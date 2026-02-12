@@ -863,7 +863,7 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
 
         r = bash.bash_r("timeout 5 virsh list")
         if r == 0:
-            vm_uuids = find_ps_running_vm(self.ps_uuid)
+            vm_uuids = find_ps_running_vm(self.mount_path)
         else:
             _, vm_uuids = get_runnning_vm_root_volume_on_ps(self.max_attempts, self.strategy, self.mount_path, isFlushbufs=False, vm_uuid_only=True)
 
