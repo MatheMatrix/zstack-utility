@@ -905,19 +905,11 @@ def _gpu_device_processor(pci_device_to, context):
         if info.get("maxPartNum") is not None:
             pci_device_to.maxPartNum = str(info["maxPartNum"])
 
-        # Handle product name (vendor-specific)
+        # Override device/name with productName when available
         product_name = info.get("productName")
         if product_name:
-            if vendor_name == VendorEnum.HUAWEI:
-                pci_device_to.device = "-"
-                pci_device_to.name = product_name
-            elif vendor_name == VendorEnum.TIANSHU:
-                pci_device_to.device = product_name.split(
-                    " ")[1] if " " in product_name else product_name
-                pci_device_to.name = product_name
-            elif vendor_name == VendorEnum.ALIBABA:
-                pci_device_to.device = product_name
-                pci_device_to.name = product_name
+            pci_device_to.device = product_name
+            pci_device_to.name = product_name
 
     # Call vendor's post_process_pci_device hook
     if vendor_name:
