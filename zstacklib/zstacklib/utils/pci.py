@@ -1,6 +1,7 @@
 import os
 import platform
 import re
+import time
 
 from zstacklib.utils import log, linux, sizeunit
 import xml.etree.ElementTree as ET
@@ -406,9 +407,44 @@ def parse_resources(device_path):
     return resources
 
 
+def _query_pci_info_by_qmp(vm_uuid):
+    """Execute QEMU monitor command and return output."""
+    cmd = "virsh qemu-monitor-command {} --hmp \"info pci\"".format(vm_uuid)
+    return bash_roe(cmd)
+
+
+def _parse_pci_info_by_qmp_output(qemu_output, aliases, alias_to_host, mapping_builder):
+    """Parse QEMU output and build device mapping."""
+    mapping = {}
+    lines = qemu_output.strip().split('\n')
+    current_device_info = None
+    
+    for line in lines:
+        line = line.strip()
+        
+        # Match bus/device/function line
+        device_match = re.match(r'^Bus\s+(\d+),\s+device\s+(\d+),\s+function\s+(\d+):', line)
+        if device_match:
+            current_device_info = (int(device_match.group(1)), 
+                                 int(device_match.group(2)), 
+                                 int(device_match.group(3)))
+            continue
+        
+        # Match alias and build mapping
+        if current_device_info:
+            for alias in aliases:
+                if '"{}"'.format(alias) in line:
+                    key, value = mapping_builder(current_device_info, alias, alias_to_host)
+                    mapping[key] = value
+                    current_device_info = None  # Reset after successful match
+                    break
+    
+    return mapping
+
+
 def _query_vm_pci_address_mapping(vm_uuid, aliases, alias_to_host, mapping_builder):
     """
-    Query QEMU monitor and build device mapping.
+    Query QEMU monitor and build device mapping with retry mechanism.
     
     Args:
         vm_uuid: VM UUID
@@ -419,41 +455,40 @@ def _query_vm_pci_address_mapping(vm_uuid, aliases, alias_to_host, mapping_build
     Returns:
         Dict mapping VM device addresses to host device identifiers
     """
-    mapping = {}
+    max_retries = 3
+    retry_interval = 2
     
-    try:
-        cmd = "virsh qemu-monitor-command {} --hmp \"info pci\"".format(vm_uuid)
-        r, qemu_output, e = bash_roe(cmd)
-        
-        if r == 0:
-            # Parse qemu output to build mapping
-            lines = qemu_output.strip().split('\n')
-            current_device_info = None
+    for attempt in range(max_retries):
+        try:
+            r, qemu_output, e = _query_pci_info_by_qmp(vm_uuid)
             
-            for line in lines:
-                line = line.strip()
+            if r != 0:
+                logger.debug("Failed to execute qemu-monitor-command for VM {} on attempt {}: {}".format(
+                    vm_uuid, attempt + 1, e))
+            else:
+                mapping = _parse_pci_info_by_qmp_output(qemu_output, aliases, alias_to_host, mapping_builder)
+
+                if mapping:
+                    logger.debug("Successfully got PCI mapping for VM {} on attempt {}".format(
+                        vm_uuid, attempt + 1))
+                    return mapping
+                else:
+                    logger.debug("No PCI mapping found for VM {} on attempt {}, will retry".format(
+                        vm_uuid, attempt + 1))
                 
-                # Match bus/device/function line
-                device_match = re.match(r'^Bus\s+(\d+),\s+device\s+(\d+),\s+function\s+(\d+):', line)
-                if device_match:
-                    current_device_info = (int(device_match.group(1)), 
-                                         int(device_match.group(2)), 
-                                         int(device_match.group(3)))
-                    continue
-                
-                # Match alias and build mapping
-                if current_device_info:
-                    for alias in aliases:
-                        if '"{}"'.format(alias) in line:
-                            key, value = mapping_builder(current_device_info, alias, alias_to_host)
-                            mapping[key] = value
-                            # Reset current_device_info after successful match
-                            current_device_info = None
-                            break
-    except Exception as ex:
-        logger.debug("Error querying info pci for VM {}: {}".format(vm_uuid, str(ex)))
+        except Exception as ex:
+            logger.debug("Error querying info pci for VM {} on attempt {}: {}".format(
+                vm_uuid, attempt + 1, str(ex)))
+        
+        # Wait before next retry (except for last attempt)
+        if attempt < max_retries - 1:
+            logger.debug("Waiting {} seconds before retry {} for VM {}".format(
+                retry_interval, attempt + 2, vm_uuid))
+            time.sleep(retry_interval)
     
-    return mapping
+    logger.warn("Failed to get PCI mapping for VM {} after {} attempts".format(
+        vm_uuid, max_retries))
+    return {}
 
 
 def get_pci_passthrough_mapping(vm_dom):
