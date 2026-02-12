@@ -180,3 +180,9 @@ class Tianshu(GPUBase):
                 for pci_addr in pci_addresses:
                     if pci_addr in gpu_info_map:
                         gpu_info_map[pci_addr]["productName"] = product_name
+
+    @classmethod
+    def post_process_pci_device(cls, pci_device_to):
+        """Tianshu uses the second word of productName as device field."""
+        if hasattr(pci_device_to, 'name') and pci_device_to.name and ' ' in pci_device_to.name:
+            pci_device_to.device = pci_device_to.name.split(" ")[1]
