@@ -1137,6 +1137,31 @@ class HostPlugin(kvmagent.KvmAgent):
             rule = eval(rule).strip()
         return rule
 
+    @in_bash
+    def update_libvirt_listen_addr(self, cmd):
+        listen_addr = getattr(cmd, 'libvirtListenAddr', None)
+        if not listen_addr:
+            return
+
+        libvirtd_conf = '/etc/libvirt/libvirtd.conf'
+        if not os.path.exists(libvirtd_conf):
+            logger.warn('libvirtd.conf not found, skip updating listen_addr')
+            return
+
+        current = bash_o("grep -E '^\\s*listen_addr\\s*=' %s" % libvirtd_conf).strip()
+        expected = 'listen_addr = "%s"' % listen_addr
+        if expected in current:
+            logger.debug('libvirtd listen_addr already set to %s' % listen_addr)
+            return
+
+        if current:
+            bash_r("sed -i 's|^\\s*listen_addr\\s*=.*|listen_addr = \"%s\"|' %s" % (listen_addr, libvirtd_conf))
+        else:
+            bash_r("sed -i '/^\\s*listen_tcp\\s*=/a listen_addr = \"%s\"' %s" % (listen_addr, libvirtd_conf))
+
+        logger.info('updated libvirtd listen_addr to %s, restarting libvirtd' % listen_addr)
+        bash_r('systemctl restart libvirtd')
+
     @lock.file_lock('/run/xtables.lock')
     @in_bash
     def apply_iptables_rules(self, rules):
@@ -1200,6 +1225,7 @@ class HostPlugin(kvmagent.KvmAgent):
 
         vm_plugin.cleanup_stale_vnc_iptable_chains()
         self.apply_iptables_rules(cmd.iptablesRules)
+        self.update_libvirt_listen_addr(cmd)
 
         if self.host_socket is not None:
             self.host_socket.close()
