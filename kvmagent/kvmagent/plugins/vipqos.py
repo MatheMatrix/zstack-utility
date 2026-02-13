@@ -192,7 +192,14 @@ class VipQos(kvmagent.KvmAgent):
     @in_bash
     def _delete_vipqos_rule_from_nic(self, nic, ns_cmd, port):
         if port == 0:
-            self._change_vipqos_default_rule_bandwidth(nic, ns_cmd, self.VIPQOS_DEFAULT_RULE_BANDWIDTH)
+            # Check if there are per-port class rules (classid > 1:1)
+            remaining = bash_o("{{ns_cmd}} tc class show dev {{nic}} | grep -v 'classid 1:1 ' | grep 'classid 1:'")
+            if remaining.strip():
+                # Per-port rules exist, just reset default bandwidth
+                self._change_vipqos_default_rule_bandwidth(nic, ns_cmd, self.VIPQOS_DEFAULT_RULE_BANDWIDTH)
+            else:
+                # No per-port rules, remove the entire qdisc to avoid tc overhead
+                bash_r("{{ns_cmd}} tc qdisc del dev {{nic}} root")
         else:
             classid = self._find_classid_with_port(nic, ns_cmd, port)
             if classid == "":
