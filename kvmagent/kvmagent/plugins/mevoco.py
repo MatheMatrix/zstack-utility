@@ -374,8 +374,16 @@ class DhcpNameSpaceEnv(object):
         self.infra_env.prepare_dev()
         self._prepare_ip_iptables_ebtables_fdb()
 
+    def _kill_dnsmasq(self):
+        """Kill dnsmasq process running in this namespace to prevent orphaned processes."""
+        conf_file_path = os.path.join("/var/lib/zstack/dnsmasq/", self.namespace_name, 'dnsmasq.conf')
+        pid = linux.find_process_by_cmdline([conf_file_path])
+        if pid:
+            linux.kill_process(pid)
+
     def delete(self):
-        # delete ip, iptables, ebtables, etc
+        # kill dnsmasq, delete ip, iptables, ebtables, etc
+        self._kill_dnsmasq()
         self._del_bridge_fdb_entry_for_inner_dev()
         self._del_dhcp4_tables()
         self._del_dhcp6_tables()
@@ -387,7 +395,8 @@ class DhcpNameSpaceEnv(object):
         self._prepare_ip_iptables_ebtables_fdb()
 
     def disable(self):
-        # delete ip, iptables, ebtables, stop dnsmasq, etc
+        # kill dnsmasq, delete ip, iptables, ebtables, etc
+        self._kill_dnsmasq()
         self._del_bridge_fdb_entry_for_inner_dev()
         self._del_dhcp4_tables()
         self._del_dhcp6_tables()
