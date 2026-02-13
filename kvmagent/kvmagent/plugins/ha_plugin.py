@@ -248,6 +248,11 @@ class PhysicalNicFencer(AbstractHaFencer):
             return vm_use_falut_nic_pids_dict, falut_nic
         logger.debug("nics[%s] is down" % ",".join(falut_nic))
 
+        vm_in_process_uuid_list = find_vm_uuid_list_by_process()
+        if len(vm_in_process_uuid_list) == 0:
+            logger.debug("no vm processes running, skip virsh check for faulted nics")
+            return vm_use_falut_nic_pids_dict, falut_nic
+
         r = bash.bash_r("timeout 5 virsh list")
         if r == 0:
             vm_use_falut_nic_pids_dict = self.find_vm_use_falut_nic_with_virsh(falut_nic)
