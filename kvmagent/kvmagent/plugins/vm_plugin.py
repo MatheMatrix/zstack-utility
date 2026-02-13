@@ -75,6 +75,7 @@ from zstacklib.utils.jsonobject import JsonObject
 from zstacklib.utils import linux
 from zstacklib.utils.linux import is_virtual_machine
 from zstacklib.utils.ovn import delVnicFromOvsByVmUuidIfExist
+from zstacklib.utils.thread import AsyncThread
 from zstacklib.gpu.base import VendorEnum
 from zstacklib.utils.plugin import TaskManager, TaskResult
 from zstacklib.utils.qga import *
@@ -7686,8 +7687,7 @@ class VmPlugin(kvmagent.KvmAgent):
             rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo = self.get_vm_device_info(cmd.vmInstanceUuid)
             self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
             vm = get_vm_by_uuid(cmd.vmInstanceUuid)
-            rsp.pciDeviceInfos = self.collect_vm_pci_device_infos(vm.domain, cmd)
-            rsp.mdevDeviceInfos = self.collect_vm_mdev_device_infos(vm.domain, cmd)
+            self._async_collect_vm_device_mappings(vm.domain, cmd, rsp)
 
         return jsonobject.dumps(rsp)
 
@@ -7759,6 +7759,27 @@ class VmPlugin(kvmagent.KvmAgent):
         rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo = self.get_vm_device_info(cmd.vmInstanceUuid)
         self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
         return jsonobject.dumps(rsp)
+
+    @AsyncThread
+    def _async_collect_vm_device_mappings(self, vm_domain, cmd, rsp):
+        """
+        Asynchronously collect VM's PCI and MDEV device mapping information
+        Using AsyncThread decorator to achieve non-blocking execution without blocking the main process
+        """
+        try:
+            rsp.pciDeviceInfos = self.collect_vm_pci_device_infos(vm_domain, cmd)
+            logger.info("Async collected PCI device mappings for VM[uuid:%s]" % cmd.vmInstanceUuid)
+
+            rsp.mdevDeviceInfos = self.collect_vm_mdev_device_infos(vm_domain, cmd)
+            logger.info("Async collected MDEV device mappings for VM[uuid:%s]" % cmd.vmInstanceUuid)
+            
+        except Exception as e:
+            logger.warn("Failed to async collect device mappings for VM[uuid:%s]: %s" % 
+                       (cmd.vmInstanceUuid, str(e)))
+            rsp.pciDeviceInfos = {}
+            rsp.mdevDeviceInfos = {}
+
+        logger.info("Started async device mapping collection for VM[uuid:%s]" % cmd.vmInstanceUuid)
 
     def get_vm_stat_with_ps(self, uuid):
         """In case libvirtd is stopped or misbehaved"""
