@@ -518,7 +518,12 @@ def mount(url, path, options=None, fstype=None):
     if cmd.return_code == 0: raise MountError(url, '%s is occupied by another device. Details[%s]' % (path, cmd.stdout))
 
     if not os.path.exists(path):
-        os.makedirs(path, 0775)
+        try:
+            os.makedirs(path, 0775)
+        except OSError as e:
+            import errno
+            if e.errno != errno.EEXIST:
+                raise
 
     cmdstr = "mount"
 
