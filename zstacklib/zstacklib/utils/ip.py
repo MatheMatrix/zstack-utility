@@ -314,7 +314,7 @@ def find_host_physicl_nics():
         return []
 
     nic_without_sriov = [nic for nic in nic_all_physical if not is_sriovVf_nic(nic)]
-    nic_without_virtual = [nic for nic in nic_without_sriov if not any(keyword in nic for keyword in ['vnic', 'outer', 'br_'])]
+    nic_without_virtual = [nic for nic in nic_without_sriov if not any(keyword in nic for keyword in ['vnic', 'outer', 'br_', 'br-', 'ovs-', 'patch-', 'vxlan_sys_'])]
 
     smart_nic_representors = get_smart_nic_representors()
     nic_without_smart_nic_representors = [nic for nic in nic_without_virtual if nic not in smart_nic_representors]
