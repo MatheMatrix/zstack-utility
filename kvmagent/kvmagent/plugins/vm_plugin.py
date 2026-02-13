@@ -431,7 +431,7 @@ class StartVmCmd(kvmagent.AgentCommand):
         self.isApplianceVm = False
         self.systemSerialNumber = None
         self.bootMode = None
-        self.secureBoot = None  # type: None|str
+        self.secureBoot = None  # type: None|bool
         self.edkVersion = None  # type: None|str
         self.consolePassword = None
         self.memBalloon = None # type:VirtualDeviceInfo
@@ -5067,7 +5067,7 @@ class Vm(object):
         # type: (StartVmCmd) -> None
         use_numa = cmd.useNuma
         numa_nodes = cmd.addons.numaNodes
-        machine_type = get_machineType(cmd.machineType)
+        machine_type = get_machineType(cmd.machineType)  # type: str
         if HOST_ARCH == "aarch64" and cmd.bootMode == 'Legacy':
             raise kvmagent.KvmError("Aarch64 does not support legacy, please change boot mode to UEFI instead of Legacy on your VM or Image.")
         if cmd.architecture and cmd.architecture != HOST_ARCH:
@@ -5308,50 +5308,45 @@ class Vm(object):
             root = elements['root']
             os = e(root, 'os')
             host_arch = kvmagent.host_arch
-
-            def on_x86_64():
-                e(os, 'type', 'hvm', attrib={'machine': machine_type})
-                # if boot mode is UEFI
-                if cmd.bootMode == "UEFI":
-                    releasever = kvmagent.get_host_yum_release()
-                    if releasever in ("ky10sp3", "ky10sp3.2403"):
-                        e(os, 'loader', '/usr/share/edk2/ovmf/OVMF_CODE.fd', attrib={'readonly': 'yes', 'type': 'pflash'})
-                        e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.fd'})
-                    else:
-                        e(os, 'loader', '/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd', attrib={'readonly': 'yes', 'type': 'pflash'})
-                        element = e(os, 'nvram', None, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.secboot.fd'})
-                        e(element, 'source', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid)
-                elif cmd.bootMode == "UEFI_WITH_CSM":
-                    e(os, 'loader', '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-with-csm.fd', attrib={'readonly': 'yes', 'type': 'pflash'})
-                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-with-csm.fd'})
-                elif cmd.addons['loaderRom'] is not None:
-                    e(os, 'loader', cmd.addons['loaderRom'], {'type': 'rom'})
-
-            def on_aarch64():
-
-                def on_redhat():
-                    e(os, 'type', 'hvm', attrib={'arch': 'aarch64', 'machine': machine_type})
-                    e(os, 'loader', '/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw', attrib={'readonly': 'yes', 'type': 'pflash'})
-                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2/aarch64/vars-template-pflash.raw'})
-
-                def on_debian():
-                    e(os, 'type', 'hvm', attrib={'arch': 'aarch64', 'machine': machine_type})
-                    e(os, 'loader', '/usr/share/OVMF/QEMU_EFI-pflash.raw', attrib={'readonly': 'yes', 'type': 'rom'})
-                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/OVMF/vars-template-pflash.raw'})
-
-                eval("on_{}".format(kvmagent.get_host_os_type()))()
-
-            def on_mips64el():
-                e(os, 'type', 'hvm', attrib={'arch': 'mips64el', 'machine': 'loongson7a'})
-                e(os, 'loader', '/usr/share/qemu/ls3a_bios.bin', attrib={'readonly': 'yes', 'type': 'rom'})
-
-            def on_loongarch64():
-                e(os, 'type', 'hvm', attrib={'arch': 'loongarch64', 'machine': 'loongson7a'})
-                e(os, 'loader', '{}loongarch_bios.bin'.format(qemu.get_bin_dir()), attrib={'readonly': 'yes', 'type': 'rom'})
+            os_type = kvmagent.get_host_os_type()
+            yum_release = kvmagent.get_host_yum_release()
+            loader_attribute = {'readonly' : 'yes', 'type' : 'pflash'}
 
             if not cmd.secureBoot and cmd.tpm is not None:
                 VmPlugin.clean_vm_firmware_flash(cmd.vmInstanceUuid)
-            eval("on_{}".format(host_arch))()
+            
+            if cmd.secureBoot:
+                loader_attribute['secureBoot'] = 'yes'
+
+            # mips64el and loongarch64 is no longer supported, skip
+            if host_arch == "x86_64" and cmd.bootMode == "UEFI":
+                e(os, 'type', 'hvm', attrib={'machine': machine_type})
+                if yum_release in ("ky10sp3", "ky10sp3.2403"):
+                    e(os, 'loader', '/usr/share/edk2/ovmf/OVMF_CODE.fd', attrib=loader_attribute)
+                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.fd'})
+                else:
+                    e(os, 'loader', '/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd', attrib=loader_attribute)
+                    element = e(os, 'nvram', None, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.secboot.fd'})
+                    e(element, 'source', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid)
+            elif host_arch == "x86_64" and cmd.bootMode == "UEFI_WITH_CSM":
+                e(os, 'type', 'hvm', attrib={'machine': machine_type})
+                e(os, 'loader', '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-with-csm.fd', attrib=loader_attribute)
+                e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-with-csm.fd'})
+            elif host_arch == "x86_64" and cmd.addons is not None and cmd.addons['loaderRom'] is not None:
+                loader_attribute['type'] = 'rom'  # not pflash
+                e(os, 'type', 'hvm', attrib={'machine': machine_type})
+                e(os, 'loader', cmd.addons['loaderRom'], attrib=loader_attribute)
+            elif host_arch == "x86_64":
+                e(os, 'type', 'hvm', attrib={'machine': machine_type})
+            elif host_arch == "aarch64" and os_type == "redhat":
+                e(os, 'type', 'hvm', attrib={'arch': 'aarch64', 'machine': machine_type})
+                e(os, 'loader', '/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw', attrib=loader_attribute)
+                e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2/aarch64/vars-template-pflash.raw'})
+            elif host_arch == "aarch64" and os_type == "debian":
+                loader_attribute['type'] = 'rom'  # not pflash
+                e(os, 'type', 'hvm', attrib={'arch': 'aarch64', 'machine': machine_type})
+                e(os, 'loader', '/usr/share/OVMF/QEMU_EFI-pflash.raw', attrib=loader_attribute)
+                e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/OVMF/vars-template-pflash.raw'})
 
             if cmd.useBootMenu:
                 boot_menu_attrib = {'enable': 'yes'}
@@ -5426,7 +5421,7 @@ class Vm(object):
             if get_gic_version(cmd.cpuNum) == 2:
                 e(features, "gic", attrib={'version': '2'})
 
-            if cmd.tpm is not None:
+            if cmd.tpm is not None or cmd.secureBoot:
                 e(features, "smm", attrib={'state': 'on'})
 
         def make_qemu_commandline():
