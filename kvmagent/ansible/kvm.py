@@ -50,6 +50,7 @@ unittest_flag = 'false'
 isEnableKsm = 'none'
 restart_libvirtd = 'false'
 enable_spice_tls = None
+libvirt_listen_addr = ""
 
 
 # get parameter from shell
@@ -109,6 +110,12 @@ def update_libvirtd_config(host_post_info):
     copy_arg.dest =  libvirtd_conf_file
     file_changed_flag = copy(copy_arg, host_post_info)
     replace_content(libvirtd_conf_file, "regexp='#host_uuid.*' replace='host_uuid=\"%s\"'" % uuid4(), host_post_info)
+
+    # bind libvirtd listen address to management IP instead of 0.0.0.0
+    if libvirt_listen_addr:
+        replace_content(libvirtd_conf_file,
+                        "regexp='listen_addr\\s*=.*' replace='listen_addr = \"%s\"'" % libvirt_listen_addr,
+                        host_post_info)
 
     return file_changed_flag
 
