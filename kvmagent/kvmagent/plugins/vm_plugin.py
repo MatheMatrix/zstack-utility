@@ -473,6 +473,8 @@ class SyncVmDeviceInfoResponse(kvmagent.AgentResponse):
         self.virtualDeviceInfoList = []  # type:list[VirtualDeviceInfo]
         self.memBalloonInfo = None  # type:VirtualDeviceInfo
         self.virtualizerInfo = VirtualizerInfoTO()  # type:VirtualizerInfoTO
+        self.pciDeviceInfos = {}  # type:dict[str,str]
+        self.mdevDeviceInfos = {}  # type:dict[str,str]
 
 
 class VirtualDeviceInfo():
@@ -7685,48 +7687,8 @@ class VmPlugin(kvmagent.KvmAgent):
         if rsp.success == True:
             rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo = self.get_vm_device_info(cmd.vmInstanceUuid)
             self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
-            vm = get_vm_by_uuid(cmd.vmInstanceUuid)
-            rsp.pciDeviceInfos = self.collect_vm_pci_device_infos(vm.domain, cmd)
-            rsp.mdevDeviceInfos = self.collect_vm_mdev_device_infos(vm.domain, cmd)
 
         return jsonobject.dumps(rsp)
-
-    def collect_vm_pci_device_infos(self, vm_domain, cmd):
-        pciDeviceMappingInfos = {}
-        if not cmd.addons:
-            return pciDeviceMappingInfos
-
-        pciDevices = cmd.addons['pciDevice']
-        if not pciDevices:
-            return pciDeviceMappingInfos
-
-        pci_mapping = pci.get_pci_passthrough_mapping(vm_domain)
-        host_to_vm_mapping = {v: k for k, v in pci_mapping.items()}
-        for dev in pciDevices:
-            addr, spec_uuid = dev.split(',')
-            vm_addr = host_to_vm_mapping.get(addr)
-            if vm_addr:
-                pciDeviceMappingInfos[addr] = vm_addr
-                logger.info("vm[uuid:%s] mapped pci device[%s] to %s" % (cmd.vmInstanceUuid, addr, vm_addr))
-        return pciDeviceMappingInfos
-
-    def collect_vm_mdev_device_infos(self, vm_domain, cmd):
-        mdevDeviceMappingInfos = {}
-        if not cmd.addons:
-            return mdevDeviceMappingInfos
-
-        mdevDeviceUuids = cmd.addons['mdevDevice']
-        if not mdevDeviceUuids:
-            return mdevDeviceMappingInfos
-
-        mdev_device_mapping = pci.get_mdev_passthrough_mapping(vm_domain)
-        for uuid in mdevDeviceUuids:
-            mdev_addr = mdev_device_mapping.get(uuid)
-            if mdev_addr:
-                mdevDeviceMappingInfos[uuid] = mdev_addr
-                logger.info("vm[uuid:%s] mapped mdev device[%s] to %s" % (cmd.vmInstanceUuid, uuid, mdev_addr))
-
-        return mdevDeviceMappingInfos
 
     def get_vm_device_info(self, uuid):
         vm = get_vm_by_uuid(uuid)
@@ -7758,6 +7720,10 @@ class VmPlugin(kvmagent.KvmAgent):
         rsp = SyncVmDeviceInfoResponse()
         rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo = self.get_vm_device_info(cmd.vmInstanceUuid)
         self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
+        vm = get_vm_by_uuid(cmd.vmInstanceUuid)
+        pci_mapping = pci.get_pci_passthrough_mapping(vm.domain) or {}
+        rsp.pciDeviceInfos = {v: k for k, v in pci_mapping.items()}
+        rsp.mdevDeviceInfos = pci.get_mdev_passthrough_mapping(vm.domain) or {}
         return jsonobject.dumps(rsp)
 
     def get_vm_stat_with_ps(self, uuid):
