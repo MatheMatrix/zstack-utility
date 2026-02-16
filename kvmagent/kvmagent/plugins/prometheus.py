@@ -1908,10 +1908,12 @@ def collect_amd_gpu_status():
         gpu_serial = card_data['Serial Number']
         pci_device_address = card_data['PCI Bus'].lower()
         add_gpu_pci_device_address("AMD", pci_device_address, gpu_serial)
-        add_metrics('host_gpu_power_draw', card_data.get('Average Graphics Package Power (W)'), [pci_device_address, gpu_serial],
-                    metrics)
-        add_metrics('host_gpu_temperature', card_data.get('Temperature (Sensor edge) (C)'), [pci_device_address, gpu_serial],
-                    metrics)
+        add_metrics('host_gpu_power_draw', card_data.get('Average Graphics Package Power (W)',
+                    card_data.get('Current Socket Graphics Package Power (W)', None)),
+                    [pci_device_address, gpu_serial], metrics)
+        add_metrics('host_gpu_temperature', card_data.get('Temperature (Sensor edge) (C)',
+                    card_data.get('Temperature (Sensor junction) (C)', None)),
+                    [pci_device_address, gpu_serial], metrics)
         add_metrics('host_gpu_fan_speed', card_data.get('Fan speed (%)'), [pci_device_address, gpu_serial], metrics)
         add_metrics('host_gpu_utilization', card_data.get('GPU use (%)'), [pci_device_address, gpu_serial], metrics)
         add_metrics('host_gpu_memory_utilization', card_data.get('GPU Memory Allocated (VRAM%)'),
