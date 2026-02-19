@@ -101,6 +101,8 @@ GUEST_TOOLS_ISO_PATH = "/var/lib/zstack/guesttools/GuestTools.iso"
 GUEST_TOOLS_ISO_LINUX_PATH = "/var/lib/zstack/guesttools/GuestTools_linux.iso"
 
 VM_CORE_DUMP_DIR = "/var/lib/zstack/kvmcoredump"
+VM_CORE_DUMP_DIR_MAX_SIZE = 8 * 1024 * 1024 * 1024   # 8 GB total dir limit
+VM_CORE_DUMP_MIN_FREE_DISK = 10 * 1024 * 1024 * 1024  # require 10 GB free before dumping
 
 SYSTEM_VIRTIO_DRIVER_PATHS = {
     'VFD_X86' : '/var/lib/zstack/virtio-drivers/virtio-win_x86.vfd',
@@ -8390,6 +8392,18 @@ class VmPlugin(kvmagent.KvmAgent):
 
     def _dump(self, vm_instance_uuid):
         try:
+            if not os.path.exists(VM_CORE_DUMP_DIR):
+                os.makedirs(VM_CORE_DUMP_DIR)
+            free_disk = linux.get_free_disk_size(VM_CORE_DUMP_DIR)
+            if free_disk < VM_CORE_DUMP_MIN_FREE_DISK:
+                logger.warn("skip vmcore dump for vm[uuid:%s]: insufficient free disk space "
+                            "(%d bytes free, need %d bytes)" % (vm_instance_uuid, free_disk, VM_CORE_DUMP_MIN_FREE_DISK))
+                return
+            dir_size = linux.get_filesystem_folder_size(VM_CORE_DUMP_DIR)
+            if dir_size >= VM_CORE_DUMP_DIR_MAX_SIZE:
+                logger.warn("skip vmcore dump for vm[uuid:%s]: dump dir already at limit "
+                            "(%d bytes)" % (vm_instance_uuid, dir_size))
+                return
             vm = get_vm_by_uuid(vm_instance_uuid)
             vm.dump_guest_memory("%s/%s" % (VM_CORE_DUMP_DIR, vm_instance_uuid))
             logger.debug("successfully dump vm[uuid:%s] guest memory" % vm_instance_uuid)
@@ -12197,6 +12211,7 @@ host side snapshot files chian:
 
         clean_stale_vm_vnc_port_chain()
 
+        @thread.AsyncThread
         def monitor_vmcore_dump_path():
             while True:
                 try:
@@ -12205,7 +12220,7 @@ host side snapshot files chian:
                         os.makedirs(vmcore_dump_path)
 
                     dir_size = linux.get_filesystem_folder_size(vmcore_dump_path)
-                    if dir_size > 2 * 4 * 1024 * 1024 * 1024:
+                    if dir_size > VM_CORE_DUMP_DIR_MAX_SIZE:
                         logger.debug("vmcore dump path size is %s, clean up it" % dir_size)
                         linux.rm_dir_force(vmcore_dump_path)
                 except:
@@ -12213,6 +12228,8 @@ host side snapshot files chian:
                     logger.warn(content)
                 finally:
                     time.sleep(600)
+
+        monitor_vmcore_dump_path()
 
 
 
@@ -12757,14 +12774,20 @@ host side snapshot files chian:
 
             vm_uuid = dom.name()
 
+            logger.info('crashed event received from vm[uuid:%s]' % vm_uuid)
+            logger.info('detail is %s, opaque is %s' % (detail, opaque))
+
+            @thread.AsyncThread
+            def dump_on_crash():
+                self._dump(vm_uuid)
+
+            dump_on_crash()
+
             # this is an operation outside zstack, report it
             url = self.config.get(kvmagent.SEND_COMMAND_URL)
             if not url:
                 logger.warn('cannot find SEND_COMMAND_URL, unable to report crash event of vm[uuid:%s]' % vm_uuid)
                 return
-
-            logger.info('crashed event recieved from vm[uuid:%s]' % vm_uuid)
-            logger.info('detail is %s, opaque is %s' % (detail, opaque))
 
             @thread.AsyncThread
             def report_to_management_node():
