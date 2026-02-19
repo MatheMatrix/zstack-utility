@@ -1084,7 +1084,7 @@ do_check_system(){
 
         # kill zstack if it's still running
         ZSTACK_PID=`ps aux | grep 'appName=zstack' | grep -v 'grep' | awk '{ print $2 }'`
-        [ ! -z $ZSTACK_PID ] && pkill -9 $ZSTACK_PID
+        [ ! -z "$ZSTACK_PID" ] && pkill -9 $ZSTACK_PID
     elif [ ! -d $ZSTACK_INSTALL_ROOT -a ! -f $ZSTACK_INSTALL_ROOT ]; then
         fail "$ZSTACK_INSTALL_ROOT does not exist, maybe you need to install a new ${PRODUCT_NAME} instead of upgrading an old one."
     fi
@@ -4452,6 +4452,10 @@ setup_install_param
 
 #Delete old monitoring data if NEED_DROP_DB
 if [ -n "$NEED_DROP_DB" ]; then
+  # Stop mn process before dropping DB to avoid DB operation failures
+  zstack-ctl stop_node 2>/dev/null || true
+  ZSTACK_PID=`ps aux | grep 'appName=zstack' | grep -v 'grep' | awk '{ print $2 }'`
+  [ -n "$ZSTACK_PID" ] && kill -9 $ZSTACK_PID 2>/dev/null || true
   kill -9 `ps aux | grep "/var/lib/zstack/prometheus/data" | grep -v 'grep' | awk -F ' ' '{ print $2 }'` 2>/dev/null
   pkill -9 influxd 2>/dev/null
   rm -rf /var/lib/zstack/prometheus/data/*
