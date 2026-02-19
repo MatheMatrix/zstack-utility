@@ -822,6 +822,7 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
         self.fencer_triggered_callback = None
         self.try_remount_fs_callback = None
         self.created_time = None
+        self._writing_vm_uuid = False
 
     def prepare_dir(self, dir_path):
         if not self.mounted_by_zstack or linux.is_mounted(self.mount_path):
@@ -854,24 +855,31 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
     def update_heartbeat_file(self):
         if self.touch_heartbeat_file() is False:
             return False
-        self.write_vm_uuid()
+        if not self._writing_vm_uuid:
+            self.write_vm_uuid()
         return True
 
     @thread.AsyncThread
     def write_vm_uuid(self):
-        heartbeat_file_path = self.get_heartbeat_file_path()
+        if self._writing_vm_uuid:
+            return
+        self._writing_vm_uuid = True
+        try:
+            heartbeat_file_path = self.get_heartbeat_file_path()
 
-        r = bash.bash_r("timeout 5 virsh list")
-        if r == 0:
-            vm_uuids = find_ps_running_vm(self.ps_uuid)
-        else:
-            _, vm_uuids = get_runnning_vm_root_volume_on_ps(self.max_attempts, self.strategy, self.mount_path, isFlushbufs=False, vm_uuid_only=True)
+            r = bash.bash_r("timeout 5 virsh list")
+            if r == 0:
+                vm_uuids = find_ps_running_vm(self.ps_uuid)
+            else:
+                _, vm_uuids = get_runnning_vm_root_volume_on_ps(self.max_attempts, self.strategy, self.mount_path, isFlushbufs=False, vm_uuid_only=True)
 
-        content = {"heartbeat_time": time.time(),
-                   "vm_uuids": None if len(vm_uuids) == 0 else ','.join(str(x) for x in vm_uuids)}
+            content = {"heartbeat_time": time.time(),
+                       "vm_uuids": None if len(vm_uuids) == 0 else ','.join(str(x) for x in vm_uuids)}
 
-        with open(heartbeat_file_path, 'w') as f:
-            f.write(json.dumps(content))
+            with open(heartbeat_file_path, 'w') as f:
+                f.write(json.dumps(content))
+        finally:
+            self._writing_vm_uuid = False
 
     def write_fencer_heartbeat(self):
         success_heartbeat = True
