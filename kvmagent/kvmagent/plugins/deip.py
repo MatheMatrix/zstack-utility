@@ -524,6 +524,7 @@ class Eip(object):
             set_eip_rules()
             set_default_route_if_needed("ip")
             create_perf_monitor()
+            bash_r('eval {{NS}} arping -q -A -w 2 -c 3 -I {{PRI_IDEV}} {{NIC_GATEWAY}} > /dev/null')
         else:
             set_ip_to_idev_if_needed(PUB_IDEV, "ip -6", VIP, eip.vipPrefixLen)
             set_ip_to_idev_if_needed(PRI_IDEV, "ip -6", NIC_GATEWAY, eip.nicPrefixLen)
