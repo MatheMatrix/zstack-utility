@@ -13,6 +13,10 @@
 # pidfile: /var/run/zstack/kvmagent.pid
 #
 
+# Configuration files in the string are separated by spaces.
+# File paths MUST NOT contain spaces to avoid splitting errors.
+HIGH_PERF_STORAGE_CONFIG="/etc/zbs/client.conf"
+
 check_status() {
 	pidfile='/var/run/zstack/kvmagent.pid'
 	if [ ! -f $pidfile ]; then
@@ -44,10 +48,17 @@ apply_resource_settings() {
 	if [ "$n" -lt 1024 ]; then
 		sysctl -w fs.inotify.max_user_instances=1024 >> /etc/sysctl.conf || true
 	fi
-	
-	# try to avoid 'hung_task_timeout_secs' issue
-	sysctl -w vm.dirty_ratio=10 > /dev/null
-	sysctl -w vm.dirty_background_ratio=5 > /dev/null
+
+        config_exists=false
+        for file in $HIGH_PERF_STORAGE_CONFIG; do
+                [ -f "$file" ] && config_exists=true && break
+        done
+
+        if [ "$config_exists" = false ]; then
+                # try to avoid 'hung_task_timeout_secs' issue
+                sysctl -w vm.dirty_ratio=10 > /dev/null
+                sysctl -w vm.dirty_background_ratio=5 > /dev/null
+        fi
 
 	echo 0 > /sys/kernel/mm/ksm/merge_across_nodes || true
 
