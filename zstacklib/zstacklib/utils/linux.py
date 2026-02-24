@@ -519,9 +519,8 @@ def mount(url, path, options=None, fstype=None):
 
     if not os.path.exists(path):
         try:
-            os.makedirs(path, 0775)
+            os.makedirs(path, 0o775)
         except OSError as e:
-            import errno
             if e.errno != errno.EEXIST:
                 raise
 
