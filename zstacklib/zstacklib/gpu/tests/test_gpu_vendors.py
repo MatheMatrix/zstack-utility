@@ -650,6 +650,71 @@ DEV ID 0
         self.assertEqual(candidates, [])
 
 
+class TestEnflameMetrics(unittest.TestCase):
+    """Test Enflame parse_metrics including powerCap in extra dict."""
+
+    def test_parse_metrics_includes_power_cap(self):
+        """parse_metrics should expose Power Capa as extra['powerCap'] for max power display."""
+        from zstacklib.gpu.vendors.enflame import Enflame
+
+        output = """
+DEV ID 0
+    Device Info
+        Dev Name                : S60
+        Dev SN                  : A0A1650510676
+    PCIe Info
+        Domain                  : 0000
+        Bus                     : 17
+        Dev                     : 00
+        Func                    : 0
+    Power Info
+        Cur Power               : 102 W
+        Power Capa              : 300 W
+    Device Mem Info
+        Total Size              : 42976 MiB
+        Used Size               : 1024 MiB
+    GCU Info
+        GCU Temp                : 45 C
+        GCU Usage               : 30 %
+"""
+        metrics = Enflame.parse_metrics(output)
+        self.assertEqual(len(metrics), 1)
+        m = metrics[0]
+        self.assertEqual(m.pci_address, "0000:17:00.0")
+        # power_draw should be current power (Cur Power)
+        self.assertEqual(m.power_draw, 102.0)
+        # temperature
+        self.assertEqual(m.temperature, 45.0)
+        # utilization
+        self.assertEqual(m.utilization, 30.0)
+        # powerCap should be in extra dict (max power for "最大功耗")
+        self.assertIn("powerCap", m.extra)
+        self.assertEqual(m.extra["powerCap"], 300.0)
+
+    def test_parse_metrics_no_power_cap(self):
+        """parse_metrics should handle missing Power Capa gracefully."""
+        from zstacklib.gpu.vendors.enflame import Enflame
+
+        output = """
+DEV ID 0
+    PCIe Info
+        Domain                  : 0000
+        Bus                     : 17
+        Dev                     : 00
+        Func                    : 0
+    Power Info
+        Cur Power               : 50 W
+    GCU Info
+        GCU Temp                : 38 C
+"""
+        metrics = Enflame.parse_metrics(output)
+        self.assertEqual(len(metrics), 1)
+        m = metrics[0]
+        self.assertEqual(m.power_draw, 50.0)
+        # No Power Capa in output, extra should be empty
+        self.assertNotIn("powerCap", m.extra)
+
+
 class TestTianshuGetPciOnlyCandidates(unittest.TestCase):
     """Test Tianshu get_pci_only_candidates."""
 

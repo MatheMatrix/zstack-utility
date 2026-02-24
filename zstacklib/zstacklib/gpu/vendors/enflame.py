@@ -317,10 +317,14 @@ class Enflame(GPUBase):
                     domain, bus, dev_id, func))
                 serial_number = gpuinfo.get("serialNumber", "").strip()
                 
-                # Parse power (remove W unit)
+                # Parse power draw (current power, remove W unit)
                 power = gpuinfo.get("power", "").replace(" ", "").strip().rstrip("W")
                 power_value = cls._extract_number(power) if power else None
-                
+
+                # Parse power capacity (max power, remove W unit)
+                power_cap = gpuinfo.get("powerCap", "").replace(" ", "").strip().rstrip("W")
+                power_cap_value = cls._extract_number(power_cap) if power_cap else None
+
                 # Parse temperature (remove C unit and special chars)
                 temp = gpuinfo.get("temperature", "").replace(" ", "").strip()
                 # Remove degree Celsius sign and C
@@ -344,6 +348,10 @@ class Enflame(GPUBase):
                 rx_bytes = cls._extract_number(rx_throughput + " MiB/s") if rx_throughput else None
                 tx_bytes = cls._extract_number(tx_throughput + " MiB/s") if tx_throughput else None
                 
+                extra = {}
+                if power_cap_value is not None:
+                    extra["powerCap"] = power_cap_value
+
                 results.append(GPUMetrics(
                     pci_address=pci_address,
                     serial_number=serial_number,
@@ -352,7 +360,8 @@ class Enflame(GPUBase):
                     temperature=temperature_value,
                     power_draw=power_value,
                     pcie_rx_bytes=rx_bytes,
-                    pcie_tx_bytes=tx_bytes
+                    pcie_tx_bytes=tx_bytes,
+                    extra=extra
                 ))
         
         return results
