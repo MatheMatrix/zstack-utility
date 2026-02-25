@@ -10512,9 +10512,14 @@ class UpgradeDbCmd(Command):
         if not os.path.exists(flyway_path):
             raise CtlError('cannot find %s. Have you run upgrade_management_node?' % flyway_path)
 
-        upgrading_schema_dir = os.path.join(ctl.zstack_home, 'WEB-INF/classes/db/upgrade/')
-        if not os.path.exists(upgrading_schema_dir):
-            raise CtlError('cannot find %s. Have you run upgrade_management_node?' % upgrading_schema_dir)
+        upgrading_schema_dirs = [
+            os.path.join(ctl.zstack_home, 'WEB-INF/classes/db/upgrade/'),
+            os.path.join(ctl.zstack_home, 'WEB-INF/classes/db/zsv/'),
+        ]
+
+        for upgrading_schema_dir in upgrading_schema_dirs:
+            if not os.path.exists(upgrading_schema_dir):
+                raise CtlError('cannot find %s. Have you run upgrade_management_node?' % upgrading_schema_dir)
 
         ctl.check_if_management_node_has_stopped(args.force)
 
@@ -10586,14 +10591,13 @@ class UpgradeDbCmd(Command):
             # init_sql = "set wait_timeout=28800; set interactive_timeout=28800;"
 
             try:
-                schema_path = 'filesystem:%s' % upgrading_schema_dir
-
-                if db_password:
-                    shell_no_pipe('bash %s migrate -outOfOrder=true -user=%s -password=%s -url=%s -locations=%s' % (
-                    flyway_path, db_user, db_password, db_url, schema_path))
-                else:
-                    shell_no_pipe('bash %s migrate -outOfOrder=true -user=%s -url=%s -locations=%s' % (
-                    flyway_path, db_user, db_url, schema_path))
+                for upgrading_schema_dir in upgrading_schema_dirs:
+                    if db_password:
+                        shell_no_pipe('bash %s migrate -outOfOrder=true -user=%s -password=%s -url=%s -locations=filesystem:%s' % (
+                            flyway_path, db_user, db_password, db_url, upgrading_schema_dir))
+                    else:
+                        shell_no_pipe('bash %s migrate -outOfOrder=true -user=%s -url=%s -locations=filesystem:%s' % (
+                            flyway_path, db_user, db_url, upgrading_schema_dir))
             except Exception as e:
                 sql = "update schema_version set checksum = 249136114 where script = 'V3.5.0.1__schema.sql' and checksum = -1670610242"
                 execute_sql(sql)
