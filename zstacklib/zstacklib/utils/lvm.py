@@ -157,6 +157,7 @@ class RetryException(Exception):
 
 class SharedBlockCandidateStruct:
     def __init__(self):
+        self.name = None  # type: str
         self.wwid = None  # type: str
         self.vendor = None  # type: str
         self.model = None  # type: str
@@ -533,7 +534,9 @@ def lsblk_info(dev_name):
         return e.split("=")[1].strip().strip('"')
 
     for entry in o.strip().split("\n")[0].split('" '):  # type: str
-        if entry.startswith("VENDOR"):
+        if entry.startswith("NAME"):
+            s.name = get_data(entry)
+        elif entry.startswith("VENDOR"):
             s.vendor = get_data(entry)
         elif entry.startswith("MODEL"):
             s.model = get_data(entry)
@@ -1113,7 +1116,7 @@ def wipe_fs(disks, expected_vg=None, with_lock=True):
         if r == 0 and o.strip() != "":
             exists_vg = o.strip()
 
-        if expected_vg in o.strip():
+        if expected_vg and expected_vg in o.strip():
             continue
 
         backup = backup_super_block(disk)
@@ -2848,6 +2851,7 @@ def report_config_changed():
 def subcmd(cmd, timeout=lvm_cmd_timeout_with_locking):
     if cmd in ["lvs", "pvs", "vgs"]:
         return "%s --nolocking -t" % cmd
-    elif cmd in ["lvchange", "lvcreate", "lvrename", "lvresize", "lvextend", "lvremove"]:
+    elif cmd in ["lvchange", "lvcreate", "lvrename", "lvresize", "lvextend", "lvremove",
+                 "pvck", "vgck"]:
         return "timeout -s SIGKILL %s %s"% (timeout, cmd)
     return cmd
