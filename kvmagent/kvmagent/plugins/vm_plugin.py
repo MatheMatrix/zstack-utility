@@ -4259,6 +4259,7 @@ class Vm(object):
                 self.to_migrate_disks = disks
                 self.ready_disks = []
                 self.bandwidth = bandwidth  # in MiB/s
+                self.last_detail_time = None
 
             def check_bandwidth_mismatch(self):
                 ready_blocks = []
@@ -4339,8 +4340,24 @@ class Vm(object):
                             return result
 
                         if self.progress_reporter.report.detail and self.progress_reporter.report.detail.hasattr('remain'):
-                            speed = self.progress_reporter.report.detail.__getitem__('remain') - remain
-                            remaining_migration_time = (remain / speed) if speed != 0 else self.progress_reporter.report.detail.__getitem__('remaining_migration_time')
+                            current_time = time.time()
+                            previous_remain = self.progress_reporter.report.detail.__getitem__('remain')
+                            data_delta = previous_remain - remain
+
+                            # Calculate speed in bytes/second
+                            if self.last_detail_time is not None:
+                                time_delta = current_time - self.last_detail_time
+                                if time_delta > 0:
+                                    speed = max(0, data_delta / time_delta)
+                                else:
+                                    speed = 0
+                            else:
+                                # First sample, no speed available
+                                speed = 0
+
+                            self.last_detail_time = current_time
+
+                            remaining_migration_time = (remain / speed) if speed > 0 else 0
                             result.put("speed", speed)
                             result.put("remaining_migration_time", remaining_migration_time)
                         return result
