@@ -1,0 +1,17 @@
+Requirement already satisfied: pytest>=7.0 in /opt/homebrew/lib/python3.14/site-packages (9.0.2)
+Requirement already satisfied: pytest-timeout>=2.0 in /opt/homebrew/lib/python3.14/site-packages (2.4.0)
+Requirement already satisfied: pytest-mock>=3.0 in /opt/homebrew/lib/python3.14/site-packages (3.15.1)
+Requirement already satisfied: paramiko>=2.0 in /opt/homebrew/lib/python3.14/site-packages (4.0.0)
+Requirement already satisfied: coverage>=7.0 in /opt/homebrew/lib/python3.14/site-packages (7.13.4)
+Requirement already satisfied: iniconfig>=1.0.1 in /opt/homebrew/lib/python3.14/site-packages (from pytest>=7.0) (2.3.0)
+Requirement already satisfied: packaging>=22 in /opt/homebrew/lib/python3.14/site-packages (from pytest>=7.0) (26.0)
+Requirement already satisfied: pluggy<2,>=1.5 in /opt/homebrew/lib/python3.14/site-packages (from pytest>=7.0) (1.6.0)
+Requirement already satisfied: pygments>=2.7.2 in /opt/homebrew/lib/python3.14/site-packages (from pytest>=7.0) (2.19.2)
+Requirement already satisfied: bcrypt>=3.2 in /opt/homebrew/lib/python3.14/site-packages (from paramiko>=2.0) (5.0.0)
+Requirement already satisfied: cryptography>=3.3 in /opt/homebrew/lib/python3.14/site-packages (from paramiko>=2.0) (46.0.5)
+Requirement already satisfied: invoke>=2.0 in /opt/homebrew/lib/python3.14/site-packages (from paramiko>=2.0) (2.2.1)
+Requirement already satisfied: pynacl>=1.5 in /opt/homebrew/lib/python3.14/site-packages (from paramiko>=2.0) (1.6.2)
+Requirement already satisfied: cffi>=2.0.0 in /opt/homebrew/lib/python3.14/site-packages (from cryptography>=3.3->paramiko>=2.0) (2.0.0)
+Requirement already satisfied: pycparser in /opt/homebrew/lib/python3.14/site-packages (from cffi>=2.0.0->cryptography>=3.3->paramiko>=2.0) (3.0)
+9.0.2
+pytest 9.0.2

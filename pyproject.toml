@@ -1,0 +1,26 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-ra -q --strict-markers"
+markers = [
+    "unit: unit tests",
+    "integration: integration tests",
+    "system: system tests",
+    "slow: slow running tests",
+    "destructive: destructive tests",
+    "network: network-dependent tests",
+    "storage: storage-dependent tests",
+    "disk: disk-dependent tests",
+    "vm_lifecycle: VM lifecycle tests",
+    "os_ops: OS operations tests",
+    "kvmagent: KVM agent tests",
+    "zstacklib: zstacklib tests",
+    "virtualrouter: virtual router tests",
+    "apibinding: API binding tests",
+    "sftpbackupstorage: SFTP backup storage tests",
+    "ceph: Ceph storage tests",
+    "bm_instance: bare metal instance tests",
+    "appliancevm: appliance VM tests",
+]

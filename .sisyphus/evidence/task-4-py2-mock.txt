@@ -1,0 +1,59 @@
+=== QA Scenario 1: Py2 mock 层工作正常 ===
+
+Test 1: Import conftest without errors
+✓ OK
+
+Test 2: pytest --collect-only (last 15 lines)
+
+no tests collected in 0.01s
+
+Test 3: Check sys.path contains kvmagent
+✓ sys.path contains kvmagent
+
+Test 4: Check sys.path contains all subpackages
+Subpackages in sys.path:
+  - /Users/kayo/workspace/zstack-utility/kvmagent
+  - /Users/kayo/workspace/zstack-utility/virtualrouter
+  - /Users/kayo/workspace/zstack-utility/zstacklib
+
+=== Mock Modules Status ===
+✓ zstacklib.utils.log: module
+✓ zstacklib.utils.bash: module
+✓ libvirt: MagicMock
+✓ zstacklib.utils.shell: MagicMock
+✓ zstacklib.utils.linux: MagicMock
+✓ zstacklib.utils.daemon: MagicMock
+
+=== Testing Mock Functions ===
+✓ get_logger('test') returned: MagicMock
+✓ bash_roe() returned: (0, '', '')
+✓ bash_ro() returned: (0, '')
+✓ bash_r() returned: 0
+
+✓ All Py2 mocks working correctly
+
+=== sys.path Verification ===
+Total subpackages added to sys.path: 19
+  ✓ agentcli
+  ✓ apibinding
+  ✓ appbuildsystem
+  ✓ appliancevm
+  ✓ baremetalpxeserver
+  ✓ bm-instance-agent
+  ✓ buildsystem
+  ✓ cephbackupstorage
+  ✓ cephprimarystorage
+  ✓ consoleproxy
+  ✓ iscsifilesystemagent
+  ✓ kvmagent
+  ✓ setting
+  ✓ sftpbackupstorage
+  ✓ virtualrouter
+  ✓ zbsprimarystorage
+  ✓ zstackcli
+  ✓ zstackctl
+  ✓ zstacklib
+
+✓ mock_zstacklib_imports fixture found
+
+✓ Task 4 verification complete - all requirements met

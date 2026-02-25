@@ -1,0 +1,15 @@
+@pytest.mark.unit: unit tests
+@pytest.mark.unit: Unit tests - isolated components, no external dependencies
+@pytest.mark.integration: integration tests
+@pytest.mark.integration: Integration tests - multiple components working together
+@pytest.mark.system: system tests
+@pytest.mark.system: System tests - end-to-end functionality tests
+@pytest.mark.destructive: destructive tests
+@pytest.mark.destructive: Destructive tests - may modify system state (parent marker for all resource types)
+@pytest.mark.network: network-dependent tests
+@pytest.mark.network: Destructive tests affecting network resources
+@pytest.mark.storage: storage-dependent tests
+@pytest.mark.storage: Destructive tests affecting storage resources
+@pytest.mark.kvmagent: KVM agent tests
+@pytest.mark.kvmagent: Tests related to KVM agent functionality
+  --allow-destructive   Allow destructive tests to run in local mode (default:

@@ -1,0 +1,9 @@
+tests/integration/conftest.py
+tests/system/conftest.py
+tests/unit/conftest.py
+tests/fixtures/__init__.py
+tests/plugins/__init__.py
+tests/unit/kvmagent/__init__.py
+tests/unit/zstacklib/__init__.py
+      24
+Scenario 1 exit code: 0

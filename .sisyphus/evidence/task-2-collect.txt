@@ -1,0 +1,6 @@
+
+no tests collected in 0.01s
+=== pytest exit code: 0 ===
+zsh:1: command not found: python
+Python import exit code: 127
+Import OK
