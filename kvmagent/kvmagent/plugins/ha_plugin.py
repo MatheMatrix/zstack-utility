@@ -886,7 +886,7 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
             return success_heartbeat
 
         self.failure += 1
-        if self.failure == self.max_attempts:
+        if self.failure >= self.max_attempts:
             logger.warn('failed to touch the heartbeat file[%s] %s times, we lost the connection to the storage,'
                         'shutdown ourselves' % (self.get_heartbeat_file_path, self.max_attempts))
 
@@ -930,6 +930,7 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
                 clean_network_config(killed_vms.keys())
 
             self.after_kill_vm(killed_vms.keys(), on_storage_vm_uuids)
+            self.reset_failure_count()
 
             if self.mounted_by_zstack and not linux.is_mounted(self.mount_path):
                 self.try_remount_fs_callback(self.mount_path, self.ps_uuid, self.created_time, self, self.url, self.options)
@@ -1173,7 +1174,7 @@ class IscsiHeartbeatController(AbstractStorageFencer):
             return True
 
         self.failure += 1
-        if self.failure == self.max_attempts:
+        if self.failure >= self.max_attempts:
             logger.warn('failed to touch the heartbeat file[%s] %s times, we lost the connection to the storage,'
                         'shutdown ourselves' % (self.heartbeat_path, self.max_attempts))
 
@@ -1200,6 +1201,8 @@ class IscsiHeartbeatController(AbstractStorageFencer):
             if len(killed_vms) != 0:
                 self.fencer_triggered_callback([self.ps_uuid], ','.join(killed_vms.keys()))
                 clean_network_config(killed_vms.keys())
+
+            self.reset_failure_count()
 
     def is_fencer_private_args_change(self, cmd):
         pass
@@ -1283,7 +1286,7 @@ class CbdHeartbeatController(AbstractStorageFencer):
             return True
 
         self.failure += 1
-        if self.failure == self.max_attempts:
+        if self.failure >= self.max_attempts:
             logger.warn('failed to touch the heartbeat file[%s] %s times, we lost the connection to the storage,'
                         'shutdown ourselves' % (self.heartbeat_path, self.max_attempts))
 
@@ -1310,6 +1313,8 @@ class CbdHeartbeatController(AbstractStorageFencer):
             if len(killed_vms) != 0:
                 self.fencer_triggered_callback([self.ps_uuid], ','.join(killed_vms.keys()))
                 clean_network_config(killed_vms.keys())
+
+            self.reset_failure_count()
 
     def is_fencer_private_args_change(self, cmd):
         pass
