@@ -750,7 +750,7 @@ Max Concurrent: 4 (Wave 1 & Wave 3)
 
 ---
 
-- [ ] 8. pytest CLI 扩展（命令行参数统一注册）
+- [x] 8. pytest CLI 扩展（命令行参数统一注册）
 
   **What to do**:
   - 确保 `tests/conftest.py` 的 `pytest_plugins` 列表正确注册所有 plugins：

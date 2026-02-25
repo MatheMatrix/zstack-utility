@@ -1,0 +1,30 @@
+# Task 8: Pytest CLI Extension - Mode Header Display Evidence
+
+## Test 1: Local mode (no --ssh-host, no --vm-deploy)
+$ pytest tests/unit/test_mode_header.py -v 2>&1 | head -10
+
+============================= test session starts ==============================
+platform darwin -- Python 3.14.2, pytest-9.0.2, pluggy-1.6.0
+Mode: local (unit tests)
+rootdir: /Users/kayo/workspace/zstack-utility
+configfile: pyproject.toml
+plugins: mock-3.15.1, timeout-2.4.0
+collected 1 item
+
+tests/unit/test_mode_header.py .                                         [100%]
+
+
+## Test 2: Mode header in output check
+$ pytest tests/unit/test_mode_header.py --collect-only 2>&1 | grep "Mode:"
+
+
+## Test 3: All CLI options in --help
+$ pytest --help | grep -E "(ssh-host|ssh-password|ssh-key|vm-deploy|target|allow-destructive)"
+
+  --ssh-host=SSH_HOST   SSH host connection info. Format:
+  --ssh-password=SSH_PASSWORD
+                        SSH password override (used when --ssh-host omits
+  --ssh-key=SSH_KEY     SSH private key path for key-based authentication.
+  --vm-deploy           Enable VM deployment runner for system tests.
+  --target=TARGET       Target VM address in IP[:port] format (used with --vm-
+  --allow-destructive   Allow destructive tests to run in local mode (default:

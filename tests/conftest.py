@@ -106,3 +106,52 @@ from tests.fixtures.common import (
     isolated_env,
 )
 
+# ============================================================================
+# STEP 5: Pytest hooks for CLI validation and mode display
+# ============================================================================
+
+def pytest_configure(config):
+    """
+    Validate mutually exclusive CLI options at pytest startup.
+    
+    Validation rules:
+    1. --ssh-host and --vm-deploy are mutually exclusive
+    2. --vm-deploy requires --target to be specified
+    """
+    ssh_host = config.getoption("--ssh-host", default=None)
+    vm_deploy = config.getoption("--vm-deploy", default=False)
+    target = config.getoption("--target", default=None)
+    
+    # Mutual exclusion: --ssh-host and --vm-deploy cannot both be set
+    if ssh_host and vm_deploy:
+        raise pytest.UsageError(
+            "--ssh-host and --vm-deploy are mutually exclusive"
+            "(cannot use both at the same time)"
+        )
+    
+    # Requirement: --vm-deploy requires --target
+    if vm_deploy and not target:
+        raise pytest.UsageError(
+            "--vm-deploy requires --target to be specified (IP[:port] format)"
+        )
+
+
+def pytest_report_header(config):
+    """
+    Display current running mode at test output header.
+    
+    Shows which execution mode is active:
+    - local (unit tests) : Neither --ssh-host nor --vm-deploy
+    - SSH : --ssh-host is provided
+    - VM Deploy : --vm-deploy and --target are provided
+    """
+    ssh_host = config.getoption("--ssh-host", default=None)
+    vm_deploy = config.getoption("--vm-deploy", default=False)
+    target = config.getoption("--target", default=None)
+    
+    if vm_deploy and target:
+        return f"Mode: VM Deploy → {target}"
+    elif ssh_host:
+        return f"Mode: SSH → {ssh_host}"
+    else:
+        return "Mode: local (unit tests)"
