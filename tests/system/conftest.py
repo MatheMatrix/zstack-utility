@@ -21,7 +21,13 @@ def pytest_collection_modifyitems(config, items):
         config: pytest config object
         items: list of collected test items
     """
+    vm_deploy_enabled = config.getoption("--vm-deploy", default=False)
+    skip_marker = None
+    if not vm_deploy_enabled:
+        skip_marker = pytest.mark.skip(reason="系统测试需要 --vm-deploy 参数")
+
     for item in items:
-        # Only mark tests in the system/ directory
         if 'system' in str(item.fspath):
             item.add_marker(pytest.mark.system)
+            if skip_marker is not None:
+                item.add_marker(skip_marker)
