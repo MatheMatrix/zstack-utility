@@ -93,15 +93,16 @@ def mock_zstacklib_imports():
     yield
     # Mocks stay active for entire session
 
+# ============================================================================
+# STEP 4: Import shared fixtures from tests.fixtures.common
+# ============================================================================
+# Import all fixtures from common.py to make them globally available.
+# This includes: project_root, tmp_test_dir, sample_vm_xml, fake_zstack_config, isolated_env
+from tests.fixtures.common import (
+    project_root,
+    tmp_test_dir,
+    sample_vm_xml,
+    fake_zstack_config,
+    isolated_env,
+)
 
-
-@pytest.fixture(scope="session")
-def project_root():
-    """Return the root directory of the zstack-utility project."""
-    return Path(__file__).parent.parent
-
-
-@pytest.fixture
-def tmp_test_dir(tmp_path):
-    """Provide a temporary test directory that cleans up after tests."""
-    return tmp_path

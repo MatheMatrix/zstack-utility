@@ -520,7 +520,7 @@ Max Concurrent: 4 (Wave 1 & Wave 3)
 
 ### Wave 2 — Core Plugins (depends on Wave 1)
 
-- [ ] 5. SSH Runner Plugin
+- [x] 5. SSH Runner Plugin
 
   **What to do**:
   - 创建 `tests/plugins/ssh_plugin.py`，实现 pytest plugin：
@@ -692,7 +692,7 @@ Max Concurrent: 4 (Wave 1 & Wave 3)
 
 ---
 
-- [ ] 7. 共享 Fixtures 库
+- [x] 7. 共享 Fixtures 库
 
   **What to do**:
   - 创建 `tests/fixtures/common.py`，提供跨模块复用的 fixtures：

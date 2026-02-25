@@ -228,3 +228,139 @@ Key hook: `pytest_collection_modifyitems(session, config, items)` with `@pytest.
 - ✓ Safety mechanism is explicit and easy to understand
 - ✓ Chinese user messages for consistency with project
 - ✓ No external dependencies required (uses pytest built-ins only)
+
+## [2026-02-25 18:50] Task 5: SSH Runner Plugin
+
+### Findings:
+- Paramiko patterns: SSHClient with AutoAddPolicy, connect() supports key_filename/password; exec_command + recv_exit_status yields return code, open_sftp().
+- Host string parsing: user[:password]@host[:port] with default port 22 aligns with zstackctl check_host_info_format.
+- Integration skip: use config.getoption("--ssh-host", default=None) and add pytest.mark.skip with Chinese reason.
+- Session fixtures: yield-based cleanup closes SSH client; SFTP uses open_sftp() per transfer.
+
+## [2026-02-25 18:50] Task 7: Shared Fixtures Library
+
+**Implementation Summary:**
+Created `tests/fixtures/common.py` with 5 reusable pytest fixtures for cross-module testing:
+
+1. **project_root** (session scope)
+   - Returns monorepo root as Path object
+   - Uses `Path(__file__).parent.parent.parent` pattern
+   - Session scope - shared across all tests for performance
+
+2. **tmp_test_dir** (function scope)
+   - Wraps pytest's built-in `tmp_path` fixture
+   - Automatic cleanup via pytest's tmp_path mechanism
+   - Per-test isolation (function scope)
+
+3. **sample_vm_xml** (session scope)
+   - Minimal but valid libvirt domain XML template
+   - Based on patterns from kvmagent/kvmagent/test/libvirt_testsuite/libvirt_xml_4.9.0.xml
+   - Includes: domain metadata, memory, vcpu, os, features, clock, devices (disk, interface, console)
+   - Session scope - XML template is immutable, can be shared
+   - Tests can parse and modify copies as needed
+
+4. **fake_zstack_config** (function scope)
+   - Mock ZStack configuration dictionary
+   - Based on patterns from kvmagent test stubs (PrepareOS class)
+   - Keys: log_dir, data_dir, var_lib_dir, usr_local_dir, properties, agent_type, debug_mode
+   - Function scope - allows per-test modifications without pollution
+
+5. **isolated_env** (function scope)
+   - Environment variable isolation fixture
+   - Saves os.environ state, yields for modifications, restores original
+   - Prevents env pollution between tests
+   - Pattern: `original = os.environ.copy()` → yield → `os.environ.clear()` → `os.environ.update(original)`
+
+**Key Architectural Decisions:**
+
+1. **Fixture Migration from conftest.py:**
+   - Migrated existing `project_root` and `tmp_test_dir` from tests/conftest.py (lines 98-107)
+   - Updated conftest.py to import from `tests.fixtures.common`
+   - Centralized fixture definitions in common.py, exposed via conftest imports
+
+2. **Scope Selection Rationale:**
+   - **Session scope** for immutable/expensive resources: project_root, sample_vm_xml
+   - **Function scope** for mutable/per-test state: tmp_test_dir, fake_zstack_config, isolated_env
+   - Session scope fixtures created once per pytest run, function scope created per test
+
+3. **Cleanup Patterns:**
+   - tmp_test_dir: Leverage pytest's tmp_path auto-cleanup (no manual cleanup needed)
+   - isolated_env: Manual restore via `os.environ.clear() + update(original)`
+   - No cleanup needed for session-scoped immutable data (project_root, sample_vm_xml)
+
+4. **Documentation Quality:**
+   - Every fixture has comprehensive docstring with:
+     - One-line summary
+     - Scope declaration
+     - Usage example (code snippet)
+     - Return type description
+   - Docstrings follow pytest best practices for `--fixtures` output
+
+**Technical Patterns Discovered:**
+
+1. **Libvirt XML Template Structure:**
+   - Minimal valid XML needs: domain[@type], name, uuid, memory, vcpu, os, devices
+   - Devices section requires: emulator, at least one disk, network interface
+   - Metadata sections (zstack namespace) are optional but present in real tests
+
+2. **ZStack Config Structure:**
+   - Common keys across agent types: log_dir, data_dir, var_lib_dir, usr_local_dir
+   - Nested 'properties' dict for runtime config: host_uuid, management_ip, api_port
+   - Agent-specific keys: agent_type, debug_mode
+
+3. **Environment Isolation Pattern:**
+   - Use `os.environ.copy()` for snapshot (shallow copy sufficient for env vars)
+   - `os.environ.clear()` removes all variables (not just test additions)
+   - `update()` restores from snapshot atomically
+   - Prevents leakage between tests that modify env vars
+
+**Integration with Existing Infrastructure:**
+
+- Updated tests/conftest.py STEP 4 section to import fixtures
+- Removed duplicate fixture definitions (lines 97-107 in conftest.py)
+- Fixtures now globally available via conftest.py imports
+- pytest_plugins still active (ssh_plugin, vm_deploy_plugin, markers)
+- Py2 mock layer unaffected (Step 1-3 in conftest.py remain intact)
+
+**Verification Results:**
+
+✓ Import test: `python3 -c "from tests.fixtures.common import *"` → success
+✓ Fixture discovery: `pytest --fixtures tests/` shows all 5 fixtures with correct scopes
+✓ Test collection: `pytest --collect-only tests/` → no errors (0.01s)
+✓ File structure: tests/fixtures/common.py (5663 bytes), __init__.py present
+✓ All fixtures have docstrings visible in pytest --fixtures output
+
+**Dependencies Unlocked:**
+
+This task unblocks Wave 2 downstream tasks:
+- Task 9: kvmagent example tests (can use sample_vm_xml, fake_zstack_config)
+- Task 10: zstacklib example tests (can use project_root, tmp_test_dir)
+- Task 11-13: Other module example tests (all fixtures available)
+
+**Lessons Learned:**
+
+1. **Fixture scope is critical for performance:**
+   - Session-scoped fixtures avoid repeated expensive operations
+   - But function-scoped fixtures prevent state pollution between tests
+   - Choose based on mutability, not just cost
+
+2. **Leverage pytest's built-in fixtures:**
+   - tmp_path provides robust temp directory handling (cross-platform, auto-cleanup)
+   - Don't reinvent cleanup mechanisms pytest already provides
+
+3. **Comprehensive docstrings are essential:**
+   - `pytest --fixtures` output is the primary discovery mechanism
+   - Include scope, usage example, and return type in every fixture docstring
+   - Good docs reduce confusion for downstream test authors
+
+4. **Migration strategy for existing fixtures:**
+   - Centralize in common.py first
+   - Import back in conftest.py to maintain backward compatibility
+   - Remove duplicates only after imports confirmed working
+
+**Next Steps for Future Tasks:**
+
+- Task 9+ will reference these fixtures in example tests
+- Consider adding more fixtures as patterns emerge (but avoid YAGNI)
+- Monitor fixture usage to identify candidates for session vs function scope optimization
+
