@@ -3020,11 +3020,14 @@ done
             if not to.virtStatus or to.virtStatus == "":
                 to.virtStatus = "UNVIRTUALIZABLE"
 
-    def _collect_format_pci_device_info(self, rsp, opaque):
+    def _collect_format_pci_device_info(self, rsp, opaque, pci_device_addresses=None):
         result = self._parse_pci_device_info(rsp)
         if result is None:
             return
         device_ids, device_names, pci_device_mapper = result
+
+        if pci_device_addresses:
+            device_ids = {slot: info for slot, info in device_ids.items() if slot in pci_device_addresses}
 
         pci_devices_dict = {}
 
@@ -3192,7 +3195,7 @@ done
 
         if cmd.skipGrubConfig:
             rsp.hostIommuStatus = True
-            self._collect_format_pci_device_info(rsp, cmd.opaque)
+            self._collect_format_pci_device_info(rsp, cmd.opaque, cmd.pciDeviceAddresses)
             return jsonobject.dumps(rsp)
 
         # update grub to enable/disable iommu in host
@@ -3218,7 +3221,7 @@ done
             rsp.hostIommuStatus = False
 
         # get pci device info
-        self._collect_format_pci_device_info(rsp, cmd.opaque)
+        self._collect_format_pci_device_info(rsp, cmd.opaque, cmd.pciDeviceAddresses)
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
