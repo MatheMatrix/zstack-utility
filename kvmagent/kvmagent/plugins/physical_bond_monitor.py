@@ -11,10 +11,6 @@ from zstacklib.utils import linux
 from zstacklib.utils import bash
 from zstacklib.utils import thread
 
-try:
-    unicode
-except NameError:
-    unicode = str
 
 log.configure_log('/var/log/zstack/zstack-kvmagent.log')
 logger = log.get_logger(__name__)
@@ -368,7 +364,7 @@ class PhysicalBondMonitor(kvmagent.KvmAgent):
                 self._bond_settings = bond_settings
 
             if whitelist is not None:
-                if isinstance(whitelist, (str, unicode)):
+                if isinstance(whitelist, str):
                     whitelist = [whitelist]
                 cleaned = [name for name in whitelist if name]
                 self._bond_whitelist = set(cleaned) if cleaned else None
