@@ -1827,12 +1827,12 @@ class HostPlugin(kvmagent.KvmAgent):
 
     @lock.file_lock('/run/usb_rules.lock')
     def handle_usb_device_events(self):
-        bash_str = """#!/usr/bin/env python
-import urllib2
+        bash_str = """#!/usr/bin/env python3
+import urllib.request
 def post_msg(data, post_url):
     headers = {"content-type": "application/json", "commandpath": "/host/reportdeviceevent"}
-    req = urllib2.Request(post_url, data, headers)
-    response = urllib2.urlopen(req)
+    req = urllib.request.Request(post_url, data.encode(), headers)
+    response = urllib.request.urlopen(req)
     response.close()
 
 if __name__ == "__main__":

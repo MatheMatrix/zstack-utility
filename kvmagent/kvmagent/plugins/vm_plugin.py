@@ -2118,8 +2118,8 @@ class VmVolumesRecoveryTask(plugin.TaskDaemon):
         self.cancelled = True
 
     def update_progress(self, cur, end):
-        base = self.idx * 100 / self.total
-        curr = cur * 100 / end / self.total if end > 0 else 0
+        base = self.idx * 100 // self.total
+        curr = cur * 100 // end // self.total if end > 0 else 0
         self.percent = int(base + curr)
 
     def wait_and_pivot(self, bdev):
@@ -2730,7 +2730,7 @@ class Vm(object):
     def get_cpu_speed(self):
         cputune = self.domain_xmlobject.get_child_node('cputune')
         if cputune:
-            return int(cputune.shares.text_) / self.get_cpu_num()
+            return int(cputune.shares.text_) // self.get_cpu_num()
         else:
             # TODO: return system cpu capacity
             return 512
@@ -8446,7 +8446,7 @@ class VmPlugin(kvmagent.KvmAgent):
             if strategy == "cold" or strategy == "force":
                 vm.stop(strategy=strategy)
             else:
-                vm.stop(timeout=cmd.timeout / 2)
+                vm.stop(timeout=cmd.timeout // 2)
 
             delVnicFromOvsByVmUuidIfExist(vmUuid)
             if vmUseOpenvSwitch:
