@@ -44,6 +44,16 @@ import pytest
 # Import SSH utilities from ssh_plugin
 from tests.plugins.ssh_plugin import _build_ssh_client, parse_ssh_host
 
+# Import HTTP test fixtures so pytest can discover them
+from tests.http.fixtures.agent_client import (  # noqa: F401
+    kvmagent_client,
+    virtualrouter_client,
+    appliancevm_client,
+    cephbackup_client,
+    cephprimary_client,
+)
+from tests.http.fixtures.async_helper import async_callback  # noqa: F401
+
 
 # ============================================================================
 # Agent Port Mapping - Defines which local ports forward to which agents
