@@ -452,7 +452,7 @@ Max Concurrent: 4 (Waves 2 & 3)
 
 ---
 
-- [ ] 4. kvmagent Host Plugin Tests
+- [x] 4. kvmagent Host Plugin Tests
 
   **What to do**:
   - Create `tests/http/kvmagent/test_host_plugin.py`
@@ -521,7 +521,7 @@ Max Concurrent: 4 (Waves 2 & 3)
 
 ---
 
-- [ ] 5. kvmagent VM Plugin Tests
+- [x] 5. kvmagent VM Plugin Tests
 
   **What to do**:
   - Create `tests/http/kvmagent/test_vm_plugin.py`
@@ -569,7 +569,7 @@ Max Concurrent: 4 (Waves 2 & 3)
 
 ---
 
-- [ ] 6. kvmagent Network Plugin Tests
+- [x] 6. kvmagent Network Plugin Tests
 
   **What to do**:
   - Create `tests/http/kvmagent/test_network_plugin.py`
@@ -617,7 +617,7 @@ Max Concurrent: 4 (Waves 2 & 3)
 
 ---
 
-- [ ] 7. kvmagent Storage Plugin Tests
+- [x] 7. kvmagent Storage Plugin Tests
 
   **What to do**:
   - Create `tests/http/kvmagent/test_storage_plugins.py`
