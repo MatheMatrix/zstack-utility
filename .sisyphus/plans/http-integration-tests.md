@@ -667,7 +667,7 @@ Max Concurrent: 4 (Waves 2 & 3)
 
 ---
 
-- [ ] 8. VirtualRouter Handler Tests
+- [x] 8. VirtualRouter Handler Tests
 
   **What to do**:
   - Create `tests/http/virtualrouter/test_vr_handlers.py`
@@ -715,7 +715,7 @@ Max Concurrent: 4 (Waves 2 & 3)
 
 ---
 
-- [ ] 9. ApplianceVM Handler Tests
+- [x] 9. ApplianceVM Handler Tests
 
   **What to do**:
   - Create `tests/http/appliancevm/test_appliance_handlers.py`
@@ -760,7 +760,7 @@ Max Concurrent: 4 (Waves 2 & 3)
 
 ---
 
-- [ ] 10. Ceph Backup Storage Handler Tests
+- [x] 10. Ceph Backup Storage Handler Tests
 
   **What to do**:
   - Create `tests/http/ceph/test_backup_handlers.py`
@@ -806,7 +806,7 @@ Max Concurrent: 4 (Waves 2 & 3)
 
 ---
 
-- [ ] 11. Ceph Primary Storage Handler Tests
+- [x] 11. Ceph Primary Storage Handler Tests
 
   **What to do**:
   - Create `tests/http/ceph/test_primary_handlers.py`
