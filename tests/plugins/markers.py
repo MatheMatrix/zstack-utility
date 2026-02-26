@@ -44,6 +44,7 @@ MARKERS = {
     "ceph": "Tests related to Ceph storage",
     "bm_instance": "Tests related to bare metal instances",
     "appliancevm": "Tests related to appliance VMs",
+    "http": "HTTP integration tests - agent API via requests library",
 }
 
 
