@@ -51,3 +51,4 @@ apibinding/apibinding/inventory.py
 .DS_Store
 
 docs/modules/zstackctl/examples/zstack-ctl
+.sisyphus
