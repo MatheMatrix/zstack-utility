@@ -55,6 +55,7 @@ from kvmagent.plugins import vm_artifact
 from kvmagent.plugins import zbs_vhost_target
 from kvmagent.plugins.imagestore import ImageStoreClient
 from kvmagent.plugins.shared_block_plugin import MAX_ACTUAL_SIZE_FACTOR
+from kvmagent.plugins.nvram import nvram_local
 from zstacklib.utils import bash, plugin, iscsi, gpu, traceable_shell
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import http
@@ -544,6 +545,7 @@ class StartVmCmd(kvmagent.AgentCommand):
         self.isoPath = None
         self.nics = []
         self.tpm = None  # type: None|dict[str]
+        self.nvRam = None  # type: None|dict[str]
         self.timeout = None
         self.dataIsoPaths = None
         self.addons = None
@@ -6736,25 +6738,23 @@ class Vm(object):
             yum_release = kvmagent.get_host_yum_release()
             loader_attribute = {'readonly' : 'yes', 'type' : 'pflash'}
 
-            if not cmd.secureBoot and cmd.tpm is not None:
-                VmPlugin.clean_vm_firmware_flash(cmd.vmInstanceUuid)
-
             if cmd.secureBoot:
                 loader_attribute['secureBoot'] = 'yes'
 
+            nvram_fd_path = nvram_local.build_nvram_fd_path(cmd.vmInstanceUuid)
             if host_arch == "x86_64" and cmd.bootMode == "UEFI":
                 e(os, 'type', 'hvm', attrib={'machine': machine_type})
                 if yum_release in ("ky10sp3", "ky10sp3.2403"):
                     e(os, 'loader', '/usr/share/edk2/ovmf/OVMF_CODE.fd', attrib=loader_attribute)
-                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.fd'})
+                    e(os, 'nvram', nvram_fd_path, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.fd'})
                 else:
                     e(os, 'loader', '/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd', attrib=loader_attribute)
                     element = e(os, 'nvram', None, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.secboot.fd'})
-                    e(element, 'source', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid)
+                    e(element, 'source', nvram_fd_path)
             elif host_arch == "x86_64" and cmd.bootMode == "UEFI_WITH_CSM":
                 e(os, 'type', 'hvm', attrib={'machine': machine_type})
                 e(os, 'loader', '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-with-csm.fd', attrib=loader_attribute)
-                e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-with-csm.fd'})
+                e(os, 'nvram', nvram_fd_path, attrib={'template': '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-with-csm.fd'})
             elif host_arch == "x86_64" and cmd.addons is not None and cmd.addons['loaderRom'] is not None:
                 loader_attribute['type'] = 'rom'  # not pflash
                 e(os, 'type', 'hvm', attrib={'machine': machine_type})
@@ -6764,12 +6764,12 @@ class Vm(object):
             elif host_arch == "aarch64" and os_type == "redhat":
                 e(os, 'type', 'hvm', attrib={'arch': 'aarch64', 'machine': machine_type})
                 e(os, 'loader', '/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw', attrib=loader_attribute)
-                e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2/aarch64/vars-template-pflash.raw'})
+                e(os, 'nvram', nvram_fd_path, attrib={'template': '/usr/share/edk2/aarch64/vars-template-pflash.raw'})
             elif host_arch == "aarch64" and os_type == "debian":
                 loader_attribute['type'] = 'rom'  # not pflash
                 e(os, 'type', 'hvm', attrib={'arch': 'aarch64', 'machine': machine_type})
                 e(os, 'loader', '/usr/share/OVMF/QEMU_EFI-pflash.raw', attrib=loader_attribute)
-                e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/OVMF/vars-template-pflash.raw'})
+                e(os, 'nvram', nvram_fd_path, attrib={'template': '/usr/share/OVMF/vars-template-pflash.raw'})
             elif host_arch == "mips64el":
                 e(os, 'type', 'hvm', attrib={'arch': 'mips64el', 'machine': 'loongson7a'})
                 e(os, 'loader', '/usr/share/qemu/ls3a_bios.bin', attrib={'readonly': 'yes', 'type': 'rom'})
@@ -8102,6 +8102,18 @@ class Vm(object):
                 e(qcmd, "qemu:arg", attrib={"value": "-cpu"})
                 e(qcmd, "qemu:arg", attrib={"value": "{},vendor={}".format(cpuFlags, cmd.vmCpuVendorId)})
 
+        def prepare_nvram():
+            extension = nvram_local.LocalNvRamVmExtensions()
+            extension.vm_uuid = cmd.vmInstanceUuid
+
+            if cmd.nvRam is None:
+                extension.cleanup_nvram_after_vm_stop()
+                return
+
+            extension.nvram_volume = cmd.nvRam
+            extension.prepare_nvram_before_vm_start()
+
+        prepare_nvram()
         make_root()
         make_meta()
         make_cpu()
@@ -12509,11 +12521,6 @@ host side snapshot files chian:
 
         return jsonobject.dumps(rsp)
 
-    @staticmethod
-    def clean_vm_firmware_flash(vm_uuid):
-        fpath = "/var/lib/libvirt/qemu/nvram/{}.fd".format(vm_uuid)
-        linux.rm_file_checked(fpath)
-
     @kvmagent.replyerror
     def clean_firmware_flash(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -12521,7 +12528,9 @@ host side snapshot files chian:
 
         vm_uuid = cmd.vmUuid
         if not get_vm_by_uuid_no_retry(vm_uuid, False):
-            self.clean_vm_firmware_flash(vm_uuid)
+            extension = nvram_local.LocalNvRamVmExtensions()
+            extension.vm_uuid = vm_uuid
+            extension.cleanup_nvram_after_vm_stop()
 
         return jsonobject.dumps(rsp)
 
@@ -14147,6 +14156,17 @@ host side snapshot files chian:
             logger.warn("traceback: %s" % content)
 
     @bash.in_bash
+    def _deactivate_nvram(self, conn, dom, event, detail, opaque):
+        event_str = LibvirtEventManager.event_to_string(event)
+        if event_str not in (LibvirtEventManager.EVENT_STOPPED,):
+            return
+
+        vm_uuid = dom.name()
+        extension = nvram_local.LocalNvRamVmExtensions()
+        extension.vm_uuid = vm_uuid
+        extension.cleanup_nvram_after_vm_stop()
+
+    @bash.in_bash
     def _release_sharedblocks(self, conn, dom, event, detail, opaque):
         logger.debug("got event from libvirt, %s %s" % (dom.name(), LibvirtEventManager.event_to_string(event)))
 
@@ -14442,6 +14462,7 @@ host side snapshot files chian:
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_crashed_event)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._release_sharedblocks)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._deactivate_drbd)
+        LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._deactivate_nvram)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._clean_colo_heartbeat)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._extend_sharedblock)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._delete_pushgateway_metric)
