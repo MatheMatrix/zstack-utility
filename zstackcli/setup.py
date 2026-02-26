@@ -23,5 +23,6 @@ zstack cli console""",
       entry_points="""
       # -*- Entry points: -*-
       """,
+      scripts=['zstack-cli'],
       data_files=[('/usr/bin', ['zstack-cli'])]
       )
