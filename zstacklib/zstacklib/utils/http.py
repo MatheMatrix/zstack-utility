@@ -305,7 +305,7 @@ class HttpServer(object):
         site_config = {}
         site_config['server.socket_host'] = '0.0.0.0'
         site_config['server.socket_port'] = self.port
-        site_config['server.thread_pool'] = int(os.getenv('POOLSIZE', '10'))
+        site_config['server.thread_pool'] = int(os.getenv('POOLSIZE', '50'))
 
         # Set the socket connect timeout to 15 seconds, keeping it consistent with the default value of the control plane.
         site_config['server.socket_timeout'] = 15
