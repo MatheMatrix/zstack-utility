@@ -325,7 +325,7 @@ def find_host_physicl_nics():
     return nic_without_smart_nic_representors
 
 def get_prefix_len_by_netmask(netmask):
-    ip_int = int(socket.inet_aton(netmask).encode('hex'), 16)
+    ip_int = int.from_bytes(socket.inet_aton(netmask), 'big')
     i = 1
     prefix = 0
     while not ip_int & i:
