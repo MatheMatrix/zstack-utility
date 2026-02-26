@@ -67,6 +67,37 @@ This mode automatically synchronizes the local repository to a target VM, instal
 pytest tests/system/ --vm-deploy --target=192.168.1.101 --ssh-password=password -v
 ```
 
+### 4. HTTP Agent Mode (Integration Tests)
+This mode uses SSH tunneling to directly test agent HTTP handlers on a remote host. It bypasses the ZStack management node and communicates with agents (kvmagent, virtualrouter, etc.) via their respective ports (e.g., 7070, 7272).
+
+#### SSH Tunnel Architecture
+The framework uses `paramiko` to establish a direct-tcpip tunnel from your local machine to the remote agent ports. This allows tests running on macOS or other development environments to reach agents restricted to the remote host's loopback or internal network.
+- **Local 7070** -> **Remote 7070** (kvmagent)
+- **Local 7272** -> **Remote 7272** (virtualrouter)
+- **Local 7759** -> **Remote 7759** (appliancevm)
+- **Local 7761** -> **Remote 7761** (ceph-backup)
+- **Local 7762** -> **Remote 7762** (ceph-primary)
+
+#### Running HTTP Tests
+To run HTTP integration tests, provide the remote host details via `--ssh-host`:
+
+```bash
+pytest tests/http/ --ssh-host=root:password@192.168.1.100 -v
+```
+
+#### Coverage Details
+The HTTP test suite covers the following agents and handlers:
+
+| Agent | Tests | Handlers Covered | Examples |
+| :--- | :--- | :--- | :--- |
+| `kvmagent` | 14 | 11 | host, VM, network, storage plugins |
+| `virtualrouter` | 3 | 3 | `/init`, `/ping`, `/echo` |
+| `appliancevm` | 1 | 1 | `/appliancevm/echo` |
+| `ceph backup` | 2 | 2 | `/ceph/backupstorage/echo`, `/ping` |
+| `ceph primary` | 2 | 2 | `/ceph/primarystorage/echo`, `/ping` |
+
+These tests use the `requests` library directly and contain zero dependencies on `zstacklib`, ensuring they can run in isolated Python 3 environments.
+
 ## Destructive Test Safety System
 
 To prevent accidental damage to the development environment, the framework includes a safety mechanism for destructive tests.

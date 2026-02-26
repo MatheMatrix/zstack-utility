@@ -47,3 +47,14 @@
 - Same structure as kvmagent tests
 - Same error handling strategy (Ceph might not be configured)
 - Same fixture pattern (agent_client)
+
+### Wave 4: Documentation Completion
+- Completed tests/README.md documentation for HTTP integration tests.
+- Verified zero zstacklib imports in tests/http/ to ensure portability.
+- Documented coverage:
+  - kvmagent: 14 tests, 11 handlers.
+  - virtualrouter: 3 tests, 3 handlers.
+  - appliancevm: 1 test, 1 handler.
+  - ceph backup: 2 tests, 2 handlers.
+  - ceph primary: 2 tests, 2 handlers.
+- Recorded SSH tunnel port mapping for troubleshooting.
