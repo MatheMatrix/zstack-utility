@@ -50,7 +50,8 @@ class TestVmMaxVcpu(TestCase, vm_utils.VmPluginTestStub):
         vm.emulateHyperV = True
         vm.hypervClock = True
         vm.clock = 'localtime'
-        vm_utils.create_vm(vm)
+        # Note: Unsupported property format: hv-time in arm ky10 cases env
+        vm_utils.create_vm_and_ignore_error(vm)
 
         for feature in hv_features:
             r, o = bash.bash_ro(
