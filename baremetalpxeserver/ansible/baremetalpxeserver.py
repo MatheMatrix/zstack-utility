@@ -98,7 +98,7 @@ if host_info.distro in RPM_BASED_OS:
         dep_pkg = "{} syslinux".format(dep_pkg)
     else:
         dep_pkg = "{} net-tools".format(dep_pkg)
-    if releasever in ['h84r', 'oe2403sp1']:
+    if releasever in ['h84r', 'oe2403sp1', 'ky10sp3', 'ky10sp3.2403']:
         dep_pkg += py3_rpms
     if zstack_repo != 'false':
         command = ("pkg_list=`rpm -q %s | grep \"not installed\" | awk '{ print $2 }'` && for pkg in %s; do yum --disablerepo=* --enablerepo=%s install -y $pkg; done;") % \
