@@ -229,6 +229,43 @@ class SSHTunnelManager:
             thread.join(timeout=2.0)
 
 
+def _wait_for_tunnels_ready(ports: Dict[str, int], timeout: float = 5.0):
+    """
+    Wait for all tunnel ports to be ready by attempting socket connections.
+    
+    Args:
+        ports: Dict mapping agent names to port numbers
+        timeout: Maximum time to wait in seconds
+    
+    Raises:
+        RuntimeError: If tunnels are not ready within timeout
+    """
+    import time
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        all_ready = True
+        for agent_name, port in ports.items():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.1)
+            try:
+                result = sock.connect_ex(('127.0.0.1', port))
+                if result != 0:
+                    all_ready = False
+            except Exception:
+                all_ready = False
+            finally:
+                sock.close()
+        
+        if all_ready:
+            return
+        
+        time.sleep(0.1)  # Brief pause between connection attempts
+    
+    raise RuntimeError(
+        f"SSH tunnels not ready within {timeout}s. Check agent connectivity."
+    )
+
 @pytest.fixture(scope="session")
 def ssh_tunnel(request) -> Optional[SSHTunnelManager]:
     """
@@ -305,8 +342,8 @@ def ssh_tunnel(request) -> Optional[SSHTunnelManager]:
         client.close()
         raise
     
-    # Wait briefly for tunnels to initialize
-    time.sleep(0.5)
+    # Verify tunnels are ready by checking socket connectivity
+    _wait_for_tunnels_ready(AGENT_PORTS, timeout=5.0)
     
     # Yield tunnel for test use
     yield tunnel
