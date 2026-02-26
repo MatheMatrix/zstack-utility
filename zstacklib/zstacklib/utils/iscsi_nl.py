@@ -218,7 +218,7 @@ def send_netlink_message(sock, event_type, payload):
                          resp_nlmsg_type, resp_nlmsg_seq, resp_nlmsg_pid, len(resp_payload))
 
             # Dump raw payload in hex for debugging
-            logger.debug("Received payload in hex: %s", resp_payload.encode('hex'))
+            logger.debug("Received payload in hex: %s", resp_payload.hex())
 
             # Check sequence number
             if resp_nlmsg_seq != seq:

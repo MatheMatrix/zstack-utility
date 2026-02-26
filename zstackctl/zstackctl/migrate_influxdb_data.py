@@ -356,7 +356,7 @@ class EventRecordsVO:
 
         for columns in mysql_columns:
             create_time = columns[self.column.index('createTime')]
-            hour = create_time / 3600000 * 3600
+            hour = create_time // 3600000 * 3600
             columns.append(hour)
 
 
@@ -403,7 +403,7 @@ class AlarmRecordsVO:
     def process_mysql_data(self, mysql_columns):
         for columns in mysql_columns:
             create_time = columns[0]
-            hour = create_time / 3600000 * 3600
+            hour = create_time // 3600000 * 3600
             columns.append(hour)
 
 
@@ -691,7 +691,7 @@ def get_migrate_time(size):
     if len(count_list) > 0:
         max_table_count = max(count_list)
         print_green("本次迁移任务最大记录: %d " % max_table_count)
-        print_green("指定单次迁移 %d 条，预估迁移时间: %d 秒" % (size, 1 if (max_table_count / size) < 10 else (max_table_count / size)))
+        print_green("指定单次迁移 %d 条，预估迁移时间: %d 秒" % (size, 1 if (max_table_count // size) < 10 else (max_table_count // size)))
 
 
 def check_db_status():
@@ -741,8 +741,8 @@ def check():
         if len(count_list) > 0:
             max_table_count = max(count_list)
             print_green("本次迁移任务最大记录: %d " % max_table_count)
-            print_green("当指定单次迁移1000条时候，预估迁移时间: %d 秒" % (max_table_count / 1000))
-            print_green("当指定单次迁移5000条时候，预估迁移时间: %d 秒" % (max_table_count / 5000))
+            print_green("当指定单次迁移1000条时候，预估迁移时间: %d 秒" % (max_table_count // 1000))
+            print_green("当指定单次迁移5000条时候，预估迁移时间: %d 秒" % (max_table_count // 5000))
         else:
             try:
                 migrate_total_time = float(influxdb_data_size) / 3 * 0.001

@@ -463,7 +463,7 @@ class SftpBackupStorageAgent(object):
                     pass
 
                 def _get_percent(self):
-                    return os.stat(install_path).st_size / (total_size / 100) if os.path.exists(install_path) else 0
+                    return os.stat(install_path).st_size * 100 // total_size if os.path.exists(install_path) else 0
 
                 def _exit(self, exc_type, exc_val, exc_tb):
                     if ssh_pass_file:
