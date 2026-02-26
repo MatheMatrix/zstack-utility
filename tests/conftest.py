@@ -34,6 +34,7 @@ for _child in sorted(_repo_root.iterdir()):
 # Mock log module (used by many modules)
 _mock_log = types.ModuleType('zstacklib.utils.log')
 _mock_log.get_logger = lambda name: MagicMock()
+_mock_log.get_logfile_path = lambda: '/dev/null'
 sys.modules['log'] = _mock_log  # bare `import log` in thread.py etc.
 sys.modules['zstacklib.utils.log'] = _mock_log
 
@@ -44,6 +45,16 @@ _mock_bash.bash_roe = lambda *a, **kw: (0, '', '')
 _mock_bash.bash_ro = lambda *a, **kw: (0, '')
 _mock_bash.bash_r = lambda *a, **kw: 0
 sys.modules['zstacklib.utils.bash'] = _mock_bash
+
+# Ensure zstacklib.utils is in sys.modules as a package mock.
+# Without this, `import zstacklib.utils.X as X` fails when zstacklib is on
+# sys.path because Python resolves the real package but can't load Py2 code.
+# Must be a proper ModuleType with __path__ so Python treats it as a package.
+if 'zstacklib.utils' not in sys.modules:
+    _mock_utils_pkg = types.ModuleType('zstacklib.utils')
+    _mock_utils_pkg.__path__ = []
+    _mock_utils_pkg.__package__ = 'zstacklib.utils'
+    sys.modules['zstacklib.utils'] = _mock_utils_pkg
 
 # Mock remaining Py2-only / unavailable modules
 _SIMPLE_MOCKS = [
@@ -59,9 +70,32 @@ _SIMPLE_MOCKS = [
     'zstacklib.utils.sizeunit',
     'zstacklib.utils.thread',
     'zstacklib.utils.qga',
+    'zstacklib.utils.iptables',
+    'zstacklib.utils.plugin',
+    'zstacklib.utils.jsonobject',
 ]
 for _mod_name in _SIMPLE_MOCKS:
     sys.modules[_mod_name] = MagicMock()
+
+# Mock simplejson (not installed; needed by zstacklib.utils.jsonobject)
+_mock_simplejson = MagicMock()
+_mock_simplejson.dumps = lambda obj, **kw: str(vars(obj) if hasattr(obj, '__dict__') else obj)
+_mock_simplejson.loads = lambda s, **kw: {}
+sys.modules['simplejson'] = _mock_simplejson
+
+# Mock imp (removed in Python 3.12+; needed by zstacklib.utils.plugin)
+sys.modules['imp'] = MagicMock()
+
+# Mock http module with functional build_url (used by 12+ agent modules)
+_mock_http = types.ModuleType('zstacklib.utils.http')
+_mock_http.build_url = lambda parts: 'http://%s:%s%s' % (parts[1], parts[2], parts[3])
+_mock_http.HttpServer = MagicMock()
+sys.modules['zstacklib.utils.http'] = _mock_http
+
+# Mock inventory module (used by apibinding.api)
+_mock_inventory = types.ModuleType('inventory')
+_mock_inventory.Session = type('Session', (), {'uuid': None})
+sys.modules['inventory'] = _mock_inventory
 
 # ============================================================================
 # STEP 3: pytest configuration and plugins
