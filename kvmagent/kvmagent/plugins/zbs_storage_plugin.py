@@ -67,5 +67,7 @@ class ZbsStoragePlugin(kvmagent.KvmAgent):
     def stop(self):
         pass
 
-    def configure(self, config):
+    def configure(self, config=None):
+        if config is None:
+            config = {}
         self.config = config

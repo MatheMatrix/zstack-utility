@@ -302,9 +302,9 @@ def get_bars_max_addressable_memory():
         return "%sG" % sizeunit.Byte.toGigaByte(calc_next_power_of_2(max_addressable_memory_64bit))
 
     if max_addressable_memory_64bit < DEFAULT_PCDPCIMMIO64SIZE_MIN_SIZE:
-        return DEFAULT_PCDPCIMMIO64SIZE_MIN_SIZE / 1024 / 1024
+        return DEFAULT_PCDPCIMMIO64SIZE_MIN_SIZE // 1024 // 1024
 
-    return max_addressable_memory_64bit / 1024 / 1024
+    return max_addressable_memory_64bit // 1024 // 1024
 
 
 def calculate_max_addressable_memory(pci_devices):
@@ -362,7 +362,7 @@ def get_total_addressable_memory(resources):
     mem_size_32bit = 0
     mem_size_64bit = 0
 
-    for key in resources.keys():
+    for key in list(resources.keys()):
         # The PCIe spec only defines 5 BARs per device, we're
         # discarding everything after the 5th entry of the resources
         # file, see lspci.c
@@ -391,8 +391,7 @@ def parse_resources(device_path):
     try:
         with open(os.path.join(device_path, "resource"), "r") as f:
             for i, line in enumerate(f):
-                start, end, flags = map(
-                    lambda x: int(x, 16), line.strip().split())
+                start, end, flags = [int(x, 16) for x in line.strip().split()]
                 if start != 0 or end != 0:
                     resources[i] = MemoryResource(
                         start, end, flags, os.path.join(device_path, "resource"))
@@ -406,53 +405,125 @@ def parse_resources(device_path):
     return resources
 
 
+def _query_vm_pci_address_mapping(vm_uuid, aliases, alias_to_host, mapping_builder):
+    """
+    Query QEMU monitor and build device mapping.
+    
+    Args:
+        vm_uuid: VM UUID
+        aliases: List of device aliases
+        alias_to_host: Dict mapping alias to host device identifier
+        mapping_builder: Function to build mapping entry (current_device_info, alias, alias_to_host) -> (key, value)
+    
+    Returns:
+        Dict mapping VM device addresses to host device identifiers
+    """
+    mapping = {}
+    
+    try:
+        cmd = "virsh qemu-monitor-command {} --hmp \"info pci\"".format(vm_uuid)
+        r, qemu_output, e = bash_roe(cmd)
+        
+        if r == 0:
+            # Parse qemu output to build mapping
+            lines = qemu_output.strip().split('\n')
+            current_device_info = None
+            
+            for line in lines:
+                line = line.strip()
+                
+                # Match bus/device/function line
+                device_match = re.match(r'^Bus\s+(\d+),\s+device\s+(\d+),\s+function\s+(\d+):', line)
+                if device_match:
+                    current_device_info = (int(device_match.group(1)), 
+                                         int(device_match.group(2)), 
+                                         int(device_match.group(3)))
+                    continue
+                
+                # Match alias and build mapping
+                if current_device_info:
+                    for alias in aliases:
+                        if '"{}"'.format(alias) in line:
+                            key, value = mapping_builder(current_device_info, alias, alias_to_host)
+                            mapping[key] = value
+                            # Reset current_device_info after successful match
+                            current_device_info = None
+                            break
+    except Exception as ex:
+        logger.debug("Error querying info pci for VM {}: {}".format(vm_uuid, str(ex)))
+    
+    return mapping
+
+
 def get_pci_passthrough_mapping(vm_dom):
-    pci_mapping = {}
+    vm_uuid = vm_dom.UUIDString()
     xml_tree = ET.fromstring(vm_dom.XMLDesc())
+    
+    # Collect alias to host PCI mapping in one pass
+    alias_to_host = {}
+    aliases = []
+    
     for hostdev in xml_tree.find('devices').findall('hostdev'):
         if hostdev.get('type') != 'pci':
             continue
-
-        source_address = hostdev.find('source/address')
-        host_domain = source_address.get('domain').replace('0x', '')
-        host_bus = source_address.get('bus').replace('0x', '')
-        host_slot = source_address.get('slot').replace('0x', '')
-        host_function = source_address.get('function').replace('0x', '')
-        host_pci_address = "{}:{}:{}.{}".format(
-            host_domain, host_bus, host_slot, host_function)
-
-        vm_address = hostdev.find('address')
-        vm_domain = vm_address.get('domain').replace('0x', '')
-        vm_bus = vm_address.get('bus').replace('0x', '')
-        vm_slot = vm_address.get('slot').replace('0x', '')
-        vm_function = vm_address.get('function').replace('0x', '')
-        vm_pci_address = "{}:{}:{}.{}".format(
-            vm_domain, vm_bus, vm_slot, vm_function)
-        pci_mapping[vm_pci_address] = host_pci_address
-
-    return pci_mapping
+            
+        alias_elem = hostdev.find('alias')
+        if alias_elem is not None:
+            alias_name = alias_elem.get('name')
+            aliases.append(alias_name)
+            
+            # Get host PCI address
+            source_address = hostdev.find('source/address')
+            host_domain = source_address.get('domain').replace('0x', '')
+            host_bus = source_address.get('bus').replace('0x', '')
+            host_slot = source_address.get('slot').replace('0x', '')
+            host_function = source_address.get('function').replace('0x', '')
+            host_pci_address = "{}:{}:{}.{}".format(
+                host_domain, host_bus, host_slot, host_function)
+            alias_to_host[alias_name] = host_pci_address
+    
+    # Query actual PCI addresses inside VM
+    def build_pci_mapping(current_device_info, alias, alias_to_host):
+        bus, device, function = current_device_info
+        vm_pci_address = "{:04x}:{:02x}:{:02x}.{:x}".format(0, bus, device, function)
+        host_pci_address = alias_to_host[alias]
+        return vm_pci_address, host_pci_address
+    
+    return _query_vm_pci_address_mapping(
+        vm_uuid, aliases, alias_to_host, build_pci_mapping)
 
 
 def get_mdev_passthrough_mapping(vm_dom):
-    mdev_mapping = {}
+    vm_uuid = vm_dom.UUIDString()
     xml_tree = ET.fromstring(vm_dom.XMLDesc())
+
+    # Collect alias to host mdev mapping in one pass
+    alias_to_host = {}
+    aliases = []
+
     for hostdev in xml_tree.find('devices').findall('hostdev'):
         if hostdev.get('type') != 'mdev':
             continue
 
-        source_uuid = hostdev.find('source/address')
-        mdev_uuid = source_uuid.get('uuid').replace('-', '')
+        alias_elem = hostdev.find('alias')
+        if alias_elem is not None:
+            alias_name = alias_elem.get('name')
+            aliases.append(alias_name)
 
-        vm_address = hostdev.find('address')
-        vm_domain = vm_address.get('domain').replace('0x', '')
-        vm_bus = vm_address.get('bus').replace('0x', '')
-        vm_slot = vm_address.get('slot').replace('0x', '')
-        vm_function = vm_address.get('function').replace('0x', '')
-        vm_mdev_address = "{}:{}:{}.{}".format(
-            vm_domain, vm_bus, vm_slot, vm_function)
-        mdev_mapping[mdev_uuid] = vm_mdev_address
+            # Get host mdev UUID
+            source_address = hostdev.find('source/address')
+            mdev_uuid = source_address.get('uuid').replace('-', '')
+            alias_to_host[alias_name] = mdev_uuid
 
-    return mdev_mapping
+    # Query actual mdev addresses inside VM
+    def build_mdev_mapping(current_device_info, alias, alias_to_host):
+        bus, device, function = current_device_info
+        vm_mdev_address = "{:04x}:{:02x}:{:02x}.{:x}".format(0, bus, device, function)
+        host_mdev_uuid = alias_to_host[alias]
+        return host_mdev_uuid, vm_mdev_address
+    
+    return _query_vm_pci_address_mapping(
+        vm_uuid, aliases, alias_to_host, build_mdev_mapping)
 
 
 def get_vm_pci_device_address_by_host_address(vm_dom, host_address):

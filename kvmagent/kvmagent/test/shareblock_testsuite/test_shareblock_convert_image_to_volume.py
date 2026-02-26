@@ -53,7 +53,7 @@ class TestSharedBlockPlugin(TestCase,SharedBlockPluginTestStub):
         global vgUuid
         vgUuid = misc.uuid()
         # get block uuid
-        r, o = bash.bash_ro("ls /dev/disk/by-id | grep scsi|awk -F '-' '{print $2}'")
+        r, o = bash.bash_ro("ls /dev/disk/by-id | grep scsi-3 | awk -F '-' '{print $2}'")
         blockUuid = o.strip().replace(' ', '').replace('\n', '').replace('\r', '')
         print(blockUuid)
         rsp = sharedblock_utils.shareblock_connect(

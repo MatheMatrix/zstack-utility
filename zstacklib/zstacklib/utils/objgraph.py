@@ -53,10 +53,10 @@ __date__ = "2016-04-13"
 
 
 try:
-    basestring
+    str
 except NameError:
     # Python 3.x compatibility
-    basestring = str
+    str = str
 
 try:
     iteritems = dict.iteritems
@@ -185,7 +185,7 @@ def most_common_types(limit=10, objects=None, shortnames=True):
        New parameter: ``shortnames``.
 
     """
-    stats = sorted(typestats(objects, shortnames=shortnames).items(),
+    stats = sorted(list(typestats(objects, shortnames=shortnames).items()),
                    key=operator.itemgetter(1), reverse=True)
     if limit:
         stats = stats[:limit]
@@ -265,7 +265,7 @@ def show_growth(limit=10, peak_stats={}, shortnames=True, file=sys.stdout):
         if count > old_count:
             deltas[name] = count - old_count
             peak_stats[name] = count
-    deltas = sorted(deltas.items(), key=operator.itemgetter(1),
+    deltas = sorted(list(deltas.items()), key=operator.itemgetter(1),
                     reverse=True)
     if limit:
         deltas = deltas[:limit]
@@ -575,7 +575,7 @@ def show_chain(*chains, **kw):
 
     def in_chains(x, ids=set(map(id, itertools.chain(*chains)))):
         return id(x) in ids
-    max_depth = max(map(len, chains)) - 1
+    max_depth = max(list(map(len, chains))) - 1
     if backrefs:
         show_backrefs([chain[-1] for chain in chains], max_depth=max_depth,
                       filter=in_chains, **kw)
@@ -768,7 +768,7 @@ def _show_graph(objs, edge_func, swap_source_target,
     # The file should only be closed if this function was in charge of opening
     # the file.
     f.close()
-    print("Graph written to %s (%d nodes)" % (dot_filename, nodes))
+    print(("Graph written to %s (%d nodes)" % (dot_filename, nodes)))
     _present_graph(dot_filename, filename)
 
 
@@ -798,10 +798,10 @@ def _present_graph(dot_filename, filename=None):
         dot.wait()
         if dot.returncode != 0:
             # XXX: shouldn't this go to stderr or a log?
-            print('dot failed (exit code %d) while executing "%s"'
-                  % (dot.returncode, ' '.join(cmd)))
+            print(('dot failed (exit code %d) while executing "%s"'
+                  % (dot.returncode, ' '.join(cmd))))
         else:
-            print("Image generated as %s" % filename)
+            print(("Image generated as %s" % filename))
     else:
         if not filename:
             print("Graph viewer (xdot) and image renderer (dot) not found,"
@@ -873,7 +873,7 @@ def _name_or_repr(value):
     except AttributeError:
         result = repr(value)[:40]
 
-    if _isinstance(result, basestring):
+    if _isinstance(result, str):
         return result
     else:
         return repr(value)[:40]
@@ -926,9 +926,9 @@ def _edge_label(source, target, shortnames=True):
                 return ' [label="__func__",weight=10]'
         except AttributeError:  # pragma: nocover
             # Python < 2.6 compatibility
-            if target is source.im_self:
+            if target is source.__self__:
                 return ' [label="im_self",weight=10]'
-            if target is source.im_func:
+            if target is source.__func__:
                 return ' [label="im_func",weight=10]'
     if _isinstance(source, types.FunctionType):
         for k in dir(source):
@@ -937,7 +937,7 @@ def _edge_label(source, target, shortnames=True):
     if _isinstance(source, dict):
         for k, v in iteritems(source):
             if v is target:
-                if _isinstance(k, basestring) and _is_identifier(k):
+                if _isinstance(k, str) and _is_identifier(k):
                     return ' [label="%s",weight=2]' % _quote(k)
                 else:
                     if shortnames:

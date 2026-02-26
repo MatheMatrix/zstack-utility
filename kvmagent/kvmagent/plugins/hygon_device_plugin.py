@@ -111,7 +111,9 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
         self.config = None
         self.tools_available = False
 
-    def configure(self, config):
+    def configure(self, config=None):
+        if config is None:
+            config = {}
         self.config = config
 
     def start(self):

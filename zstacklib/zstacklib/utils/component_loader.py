@@ -6,9 +6,9 @@
 import os
 import sys
 import imp
-import log
+from . import log
 import imp
-import linux
+from . import linux
 
 PLUGIN_CONFIG_SECTION_NAME = 'plugins'
 

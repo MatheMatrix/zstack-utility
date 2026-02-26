@@ -48,8 +48,9 @@ class TestBridgeApi(TestCase):
         network_plugin_utils.delete_novlan_bridge(bridgeName=br_name, physicalInterfaceName=interF)
 
     @pytest_utils.ztest_decorater
-    def test_add_if_to_bridge(self):
-        r, o = bash.bash_ro("ip a| grep BROADCAST|grep -v virbr | awk -F ':' 'NR==2{print $2}' | sed 's/ //g'")
+    # make sure run this case after test_create_bridge
+    def test_d_add_if_to_bridge(self):
+        _, o = bash.bash_ro("ip a| grep BROADCAST|grep -v virbr | awk -F ':' 'NR==1{print $2}' | sed 's/ //g'")
         interF = o.strip().replace(' ', '').replace('\n', '').replace('\r', '')
         # physical interface from configuration
         rsp = network_plugin_utils.add_interface_to_bridge(
@@ -59,7 +60,6 @@ class TestBridgeApi(TestCase):
         self.assertEqual(True, rspO.success, "Error happen when check physical network interface")
 
     @pytest_utils.ztest_decorater
-
     def test_create_vlan_bridge(self):
         r, o = bash.bash_ro("ip a| grep BROADCAST|grep -v virbr | awk -F ':' 'NR==1{print $2}' | sed 's/ //g'")
         interF = o.strip().replace(' ', '').replace('\n', '').replace('\r', '')

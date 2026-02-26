@@ -24,7 +24,9 @@ class GpuServiceManager(kvmagent.KvmAgent):
             gpu.VendorEnum.NVIDIA: gpu.watch_and_ensure_nvidia_persistenced,
         }
 
-    def configure(self, config):
+    def configure(self, config=None):
+        if config is None:
+            config = {}
         self.config = config
 
     def start(self):
