@@ -1098,7 +1098,7 @@ def pip_install_package(pip_install_arg, host_post_info):
     runner_args.host_post_info = host_post_info
     runner_args.module_name = 'pip'
     runner_args.module_args = option
-    runner_args.ansible_vars = {'ansible_python_interpreter': '/usr/bin/python2'}
+    runner_args.ansible_vars = {'ansible_python_interpreter': '/usr/bin/python3.11'}
 
     zstack_runner = ZstackRunner(runner_args)
     result = zstack_runner.run()
@@ -1617,9 +1617,10 @@ def get_remote_host_info_obj(host_post_info):
         facts = ret['ansible_facts']
         host_info.distro = facts['ansible_distribution'].split()[0].lower()
         host_info.major_version_str = \
-            facts['ansible_distribution_major_version']
+            re.sub(r'[^0-9]', '', str(facts['ansible_distribution_major_version']))
         host_info.distro_release = facts['ansible_distribution_release']
-        host_info.distro_version = facts['ansible_distribution_version']
+        host_info.distro_version = \
+            re.sub(r'[^0-9.]', '', str(facts['ansible_distribution_version']))
         host_info.cpu_info = cpu_info_output.lower()
         host_info.host_arch = facts['ansible_machine']
         host_info.kernel_version = facts['ansible_kernel']
@@ -2386,12 +2387,12 @@ class ZstackLib(object):
 
     def _python_rpm_set(self):
         python_requirement_set = {
-            "python3-devel",
-            "python3-setuptools",
+            "python3.11-devel",
+            "python3.11-setuptools",
         }
 
         if self.distro == 'nfs' or self.distro_version >= 7:
-            python_requirement_set.add("python3-pip")
+            python_requirement_set.add("python3.11-pip")
         else:
             python_requirement_set.add("python-pip")
 
@@ -2407,6 +2408,8 @@ class ZstackLib(object):
         if self.distro in KYLIN_DISTRO:
             basic.add("chrony")
             basic.add("iptables")
+            # TODO: python3.11-libselinux is not available on most distros,
+            #  need to build or find a package for python3.11 when SELinux is enabled
             basic.add("python3-libselinux")
             return basic
 

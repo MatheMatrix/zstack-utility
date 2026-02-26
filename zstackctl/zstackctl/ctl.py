@@ -3578,13 +3578,17 @@ class InstallDbCmd(Command):
       root_password: $root_password
       login_password: $login_password
       yum_repo: "$yum_repo"
-      ansible_python_interpreter: /usr/bin/python2
+      ansible_python_interpreter: /usr/bin/python3.11
 
   tasks:
     - name: set ansible_distribution_major_version
       set_fact:
         ansible_distribution_major_version: "{{ item }}"
-      loop: "{{ [ansible_distribution_major_version | int] }}"
+      loop: "{{ [ansible_distribution_major_version | regex_replace('[^0-9]', '') | int] }}"
+
+    - name: set ansible_distribution_version
+      set_fact:
+        ansible_distribution_version: "{{ ansible_distribution_version | regex_replace('[^0-9.]', '') }}"
 
     - name: pre-install script
       script: $pre_install_script
@@ -3732,12 +3736,16 @@ class InstallDbCmd(Command):
       root_password: $root_password
       login_password: $login_password
       yum_repo: "$yum_repo"
-      ansible_python_interpreter: /usr/bin/python2
+      ansible_python_interpreter: /usr/bin/python3.11
 
   tasks:
     - name: ansible_distribution_major_version
       set_fact:
-        ansible_distribution_major_version: "{{ ansible_distribution_major_version | int }}"
+        ansible_distribution_major_version: "{{ ansible_distribution_major_version | regex_replace('[^0-9]', '') | int }}"
+
+    - name: set ansible_distribution_version
+      set_fact:
+        ansible_distribution_version: "{{ ansible_distribution_version | regex_replace('[^0-9.]', '') }}"
 
     - name: pre install script
       script: $pre_install_script
