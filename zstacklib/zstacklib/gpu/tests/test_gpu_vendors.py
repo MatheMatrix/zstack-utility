@@ -977,6 +977,299 @@ Device:\tPPU-ZW810E
         self.assertEqual(gpu_info_map["0000:08:00.0"]["_deviceId"], "6001")
 
 
+# =============================================================================
+# Huawei NPU Isolation Detection Tests (ZSTAC-79981)
+# =============================================================================
+
+# Real npu-smi output samples captured from 172.30.8.31 (Ascend 910B, driver 25.3.rc1)
+
+HCCS_OUTPUT_PARTIAL_ISOLATED_NOK = """\
+        hccs health status              : NOK
+        hccs link num in used           : 0
+        hccs total bandwidth(GB/s)      : 0
+        hccs used bandwidth(GB/s)       : 0
+        HCCS lane detail info
+                lane 0                  : 0
+                lane 1                  : 0
+                lane 2                  : 0
+"""
+
+HCCS_OUTPUT_HEALTHY_OK = """\
+        hccs health status              : OK
+        hccs link num in used           : 3
+        hccs total bandwidth(GB/s)      : 89.4
+        hccs used bandwidth(GB/s)       : 0
+        HCCS lane detail info
+                lane 0                  : 1
+                lane 1                  : 1
+                lane 2                  : 1
+"""
+
+HCCS_OUTPUT_FULL_ISOLATED_NOK = """\
+        hccs health status              : NOK
+        hccs link num in used           : 0
+        hccs total bandwidth(GB/s)      : 0
+        hccs used bandwidth(GB/s)       : 0
+        HCCS lane detail info
+                lane 0                  : 0
+                lane 1                  : 0
+                lane 2                  : 0
+"""
+
+TOPO_OUTPUT_NORMAL = """\
+         NPU0   NPU1   NPU2   NPU3   NPU4   NPU5   NPU6   NPU7   CPU Affinity
+NPU0      X     HCCS   HCCS   HCCS   SYS    SYS    SYS    SYS    0-23
+NPU1     HCCS    X     HCCS   HCCS   SYS    SYS    SYS    SYS    0-23
+NPU2     HCCS   HCCS    X     HCCS   SYS    SYS    SYS    SYS    0-23
+NPU3     HCCS   HCCS   HCCS    X     SYS    SYS    SYS    SYS    0-23
+NPU4      SYS    SYS    SYS    SYS    X     HCCS   HCCS   HCCS   24-47
+NPU5      SYS    SYS    SYS    SYS   HCCS    X     HCCS   HCCS   24-47
+NPU6      SYS    SYS    SYS    SYS   HCCS   HCCS    X     HCCS   24-47
+NPU7      SYS    SYS    SYS    SYS   HCCS   HCCS   HCCS    X     24-47
+"""
+
+TOPO_OUTPUT_FULLY_ISOLATED = """\
+         NPU0   NPU1   NPU2   NPU3   NPU4   NPU5   NPU6   NPU7   CPU Affinity
+NPU0      X      SYS    SYS    SYS    SYS    SYS    SYS    SYS    0-23
+NPU1      SYS    X      SYS    SYS    SYS    SYS    SYS    SYS    0-23
+NPU2      SYS    SYS    X      SYS    SYS    SYS    SYS    SYS    0-23
+NPU3      SYS    SYS    SYS    X      SYS    SYS    SYS    SYS    0-23
+NPU4      SYS    SYS    SYS    SYS    X      SYS    SYS    SYS    24-47
+NPU5      SYS    SYS    SYS    SYS    SYS    X      SYS    SYS    24-47
+NPU6      SYS    SYS    SYS    SYS    SYS    SYS    X      SYS    24-47
+NPU7      SYS    SYS    SYS    SYS    SYS    SYS    SYS    X      24-47
+"""
+
+TOPO_OUTPUT_PARTIAL_ISOLATED = """\
+         NPU0   NPU1   NPU2   NPU3   NPU4   NPU5   NPU6   NPU7   CPU Affinity
+NPU5      SYS    SYS    SYS    SYS    SYS    X      SYS    SYS    24-47
+"""
+
+
+class TestHuaweiNpuIsolation(unittest.TestCase):
+    """Test Huawei NPU isolation detection (ZSTAC-79981).
+
+    Scenarios verified on real hardware (172.30.8.31, Ascend 910B, driver 25.3.rc1):
+      - Partial isolation: NPU 5,7 isolated via BMC → hccs NOK, topo shows 0 HCCS
+      - Full isolation: all 8 NPUs isolated → hccs NOK for all, topo all SYS
+      - Normal: all NPUs healthy → hccs OK, topo shows HCCS connections
+    """
+
+    def test_hccs_detects_isolated_npu(self):
+        """Primary detection: hccs health NOK → isolated=True."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        with patch("zstacklib.gpu.vendors.huawei.bash_roe",
+                   return_value=(0, HCCS_OUTPUT_PARTIAL_ISOLATED_NOK, "")):
+            result = Huawei.check_npu_isolation("5", ["0", "1", "2", "3", "4", "5", "6", "7"])
+        self.assertTrue(result)
+
+    def test_hccs_detects_healthy_npu(self):
+        """Primary detection: hccs health OK → isolated=False."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        with patch("zstacklib.gpu.vendors.huawei.bash_roe",
+                   return_value=(0, HCCS_OUTPUT_HEALTHY_OK, "")):
+            result = Huawei.check_npu_isolation("0", ["0", "1", "2", "3"])
+        self.assertFalse(result)
+
+    def test_hccs_detects_full_isolation(self):
+        """Full isolation: all NPUs hccs NOK → each returns isolated=True."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        all_ids = ["0", "1", "2", "3", "4", "5", "6", "7"]
+        with patch("zstacklib.gpu.vendors.huawei.bash_roe",
+                   return_value=(0, HCCS_OUTPUT_FULL_ISOLATED_NOK, "")):
+            for npu_id in all_ids:
+                result = Huawei.check_npu_isolation(npu_id, all_ids)
+                self.assertTrue(result, "NPU %s should be isolated" % npu_id)
+
+    def test_single_npu_never_isolated(self):
+        """Single NPU host (len <= 1) always returns False."""
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        self.assertFalse(Huawei.check_npu_isolation("0", ["0"]))
+        self.assertFalse(Huawei.check_npu_isolation("0", []))
+        self.assertFalse(Huawei.check_npu_isolation(None, ["0", "1"]))
+
+    def test_npu_smi_failure_returns_false(self):
+        """When npu-smi fails (e.g. dcmi init error), falls back to topo."""
+        try:
+            from unittest.mock import patch, call
+        except ImportError:
+            from mock import patch, call
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        # Both hccs and topo fail → returns False
+        with patch("zstacklib.gpu.vendors.huawei.bash_roe",
+                   return_value=(1, "", "dcmi module initialize failed")):
+            result = Huawei.check_npu_isolation("0", ["0", "1"])
+        self.assertFalse(result)
+
+    def test_topo_fallback_detects_isolated_npu(self):
+        """When hccs output lacks health line, topo fallback detects isolation."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        hccs_no_health_line = "some unrelated output\nno health status here\n"
+
+        def mock_bash_roe(cmd):
+            if "-t hccs" in cmd:
+                return (0, hccs_no_health_line, "")
+            if "-t topo" in cmd:
+                return (0, TOPO_OUTPUT_PARTIAL_ISOLATED, "")
+            return (1, "", "unknown command")
+
+        with patch("zstacklib.gpu.vendors.huawei.bash_roe", side_effect=mock_bash_roe):
+            result = Huawei.check_npu_isolation("5", ["0", "1", "2", "3", "4", "5", "6", "7"])
+        self.assertTrue(result)
+
+    def test_topo_fallback_detects_healthy_npu(self):
+        """When hccs output lacks health line, topo with HCCS links → not isolated."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        hccs_no_health_line = "some unrelated output\n"
+
+        def mock_bash_roe(cmd):
+            if "-t hccs" in cmd:
+                return (0, hccs_no_health_line, "")
+            if "-t topo" in cmd:
+                return (0, TOPO_OUTPUT_NORMAL, "")
+            return (1, "", "")
+
+        with patch("zstacklib.gpu.vendors.huawei.bash_roe", side_effect=mock_bash_roe):
+            result = Huawei.check_npu_isolation("0", ["0", "1"])
+        self.assertFalse(result)
+
+    def test_topo_full_isolation_all_sys(self):
+        """Topo fallback: all SYS/no HCCS → isolated."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        with patch("zstacklib.gpu.vendors.huawei.bash_roe",
+                   return_value=(0, TOPO_OUTPUT_FULLY_ISOLATED, "")):
+            result = Huawei._check_isolation_by_topo("0")
+        self.assertTrue(result)
+
+    def test_topo_normal_has_hccs_links(self):
+        """Topo: NPU with HCCS connections → not isolated."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        with patch("zstacklib.gpu.vendors.huawei.bash_roe",
+                   return_value=(0, TOPO_OUTPUT_NORMAL, "")):
+            result = Huawei._check_isolation_by_topo("0")
+        self.assertFalse(result)
+
+
+class TestLegacyNpuIsolation(unittest.TestCase):
+    """Test legacy gpu.py check_huawei_npu_is_isolated with topo fallback (ZSTAC-79981)."""
+
+    def test_hccs_detects_isolated(self):
+        """Legacy path: hccs NOK → isolated."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.utils.gpu import check_huawei_npu_is_isolated
+
+        def mock_bash_roe(cmd):
+            if "which npu-smi" in cmd:
+                return (0, "/usr/bin/npu-smi", "")
+            if "-t hccs" in cmd:
+                return (0, HCCS_OUTPUT_PARTIAL_ISOLATED_NOK, "")
+            return (1, "", "")
+
+        with patch("zstacklib.utils.gpu.bash_roe", side_effect=mock_bash_roe):
+            result = check_huawei_npu_is_isolated("5", ["0", "1", "2", "3", "4", "5", "6", "7"])
+        self.assertTrue(result)
+
+    def test_hccs_detects_healthy(self):
+        """Legacy path: hccs OK → not isolated."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.utils.gpu import check_huawei_npu_is_isolated
+
+        def mock_bash_roe(cmd):
+            if "which npu-smi" in cmd:
+                return (0, "/usr/bin/npu-smi", "")
+            if "-t hccs" in cmd:
+                return (0, HCCS_OUTPUT_HEALTHY_OK, "")
+            return (1, "", "")
+
+        with patch("zstacklib.utils.gpu.bash_roe", side_effect=mock_bash_roe):
+            result = check_huawei_npu_is_isolated("0", ["0", "1", "2", "3"])
+        self.assertFalse(result)
+
+    def test_topo_fallback_when_hccs_missing_health(self):
+        """Legacy path: hccs no health line → topo fallback detects isolation."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.utils.gpu import check_huawei_npu_is_isolated
+
+        def mock_bash_roe(cmd):
+            if "which npu-smi" in cmd:
+                return (0, "/usr/bin/npu-smi", "")
+            if "-t hccs" in cmd:
+                return (0, "no health line here\n", "")
+            if "-t topo" in cmd:
+                return (0, TOPO_OUTPUT_FULLY_ISOLATED, "")
+            return (1, "", "")
+
+        with patch("zstacklib.utils.gpu.bash_roe", side_effect=mock_bash_roe):
+            result = check_huawei_npu_is_isolated("0", ["0", "1", "2", "3", "4", "5", "6", "7"])
+        self.assertTrue(result)
+
+    def test_single_npu_never_isolated(self):
+        """Legacy path: single NPU → False."""
+        from zstacklib.utils.gpu import check_huawei_npu_is_isolated
+
+        self.assertFalse(check_huawei_npu_is_isolated("0", ["0"]))
+        self.assertFalse(check_huawei_npu_is_isolated("0", []))
+
+    def test_npu_smi_not_found(self):
+        """Legacy path: npu-smi not installed → False."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.utils.gpu import check_huawei_npu_is_isolated
+
+        with patch("zstacklib.utils.gpu.bash_roe",
+                   return_value=(1, "", "command not found")):
+            result = check_huawei_npu_is_isolated("0", ["0", "1"])
+        self.assertFalse(result)
+
+
 class TestGPUInfo(unittest.TestCase):
     """Test GPUInfo dataclass"""
     

@@ -434,31 +434,70 @@ class Huawei(GPUBase):
     @classmethod
     def check_npu_isolation(cls, npu_id, all_npu_ids):
         """
-        Check if NPU is isolated using hccs health status.
+        Check if NPU is isolated using hccs health status, with topo-based
+        fallback when hccs health line is missing from output.
 
         An isolated NPU should not be used for computation.
+        Detection methods:
+          1. Primary: `npu-smi info -t hccs` — health status != OK means isolated
+          2. Fallback: `npu-smi info -t topo` — zero HCCS connections means isolated
         """
         if not npu_id or not all_npu_ids or len(all_npu_ids) <= 1:
             return False
 
+        # Primary: hccs health status
         cmd = "npu-smi info -t hccs -i %s -c 0" % npu_id
         r, o, e = bash_roe(cmd)
 
+        if r == 0 and o:
+            for line in o.splitlines():
+                line = line.strip().lower()
+                if "hccs health status" in line:
+                    parts = line.split(":", 1)
+                    status = parts[1].strip().upper() if len(parts) > 1 else ""
+                    if status != "OK":
+                        logger.debug("NPU %s health status: %s (isolated)" %
+                                     (npu_id, status))
+                        return True
+                    return False
+
+        # Fallback: topo matrix — count HCCS connections for this NPU
+        logger.debug("hccs health not available for NPU %s, trying topo fallback" % npu_id)
+        return cls._check_isolation_by_topo(npu_id)
+
+    @classmethod
+    def _check_isolation_by_topo(cls, npu_id):
+        """
+        Fallback isolation detection via topo matrix.
+        An isolated NPU has zero HCCS connections (all links show SYS or PHB).
+        """
+        cmd = "npu-smi info -t topo -i %s" % npu_id
+        r, o, e = bash_roe(cmd)
+
         if r != 0 or not o:
-            logger.debug("Failed to check isolation for NPU %s: %s" %
-                         (npu_id, e))
+            logger.debug("Failed to get topo for NPU %s: %s" % (npu_id, e))
             return False
 
+        target_prefix = ("NPU%s" % npu_id).upper()
+        hccs_count = None
         for line in o.splitlines():
-            line = line.strip().lower()
-            if "hccs health status" in line:
-                parts = line.split(":", 1)
-                status = parts[1].strip().upper() if len(parts) > 1 else ""
-                if status != "OK":
-                    logger.debug("NPU %s health status: %s (isolated)" %
-                                 (npu_id, status))
-                    return True
-                return False
+            # Data rows start with NPU<id> at column 0 (no leading whitespace).
+            # The header line is indented, so we check the raw (unstripped) line.
+            if not line.startswith(target_prefix):
+                continue
+            parts = line.split()
+            if not parts or parts[0].upper() != target_prefix:
+                continue
+            hccs_count = sum(1 for part in parts[1:] if part.upper() == "HCCS")
+            break
+
+        if hccs_count is None:
+            logger.debug("NPU %s row not found in topo output" % npu_id)
+            return False
+
+        if hccs_count == 0:
+            logger.debug("NPU %s has 0 HCCS connections in topo (isolated)" % npu_id)
+            return True
 
         return False
 

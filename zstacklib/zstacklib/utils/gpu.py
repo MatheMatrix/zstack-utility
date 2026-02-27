@@ -640,8 +640,12 @@ def get_huawei_gpu_aios_rank_table_dict(npu_ids, iswindows=False):
 
 def check_huawei_npu_is_isolated(npu_id, all_npu_ids, iswindows=False):
     """
-    Check whether a Huawei NPU is isolated using `npu-smi info -t hccs`.
-    Return True when health status is not OK. Do not inspect lane majority.
+    Check whether a Huawei NPU is isolated using `npu-smi info -t hccs`,
+    with topo-based fallback when hccs health line is missing.
+
+    Detection methods:
+      1. Primary: hccs health status != OK means isolated
+      2. Fallback: topo matrix with zero HCCS connections means isolated
     """
     if not npu_id or not all_npu_ids or len(all_npu_ids) <= 1:
         return False
@@ -657,32 +661,60 @@ def check_huawei_npu_is_isolated(npu_id, all_npu_ids, iswindows=False):
             cmd = cmd.replace(" ", "|")
 
         r, o, e = bash_roe(cmd)
-        if r != 0 or not o:
-            logger.warning("failed to run '%s' for NPU %s: %s" %
-                           (cmd, npu_id, e))
-            return False
+        if r == 0 and o:
+            for line in o.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if line.lower().startswith("hccs health status"):
+                    parts = line.split(":", 1)
+                    status = parts[1].strip().upper() if len(parts) > 1 else ""
+                    if status != "OK":
+                        logger.debug(
+                            "NPU %s health status is %s, treating as isolated" % (npu_id, status))
+                        return True
+                    return False
 
-        for line in o.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if line.lower().startswith("hccs health status"):
-                parts = line.split(":", 1)
-                status = parts[1].strip().upper() if len(parts) > 1 else ""
-                if status != "OK":
-                    logger.debug(
-                        "NPU %s health status is %s, treating as isolated" % (npu_id, status))
-                    return True
-                return False
-
+        # Fallback: topo matrix
         logger.debug(
-            "NPU %s health status not found in output, treating as not isolated" % npu_id)
-        return False
+            "hccs health not available for NPU %s, trying topo fallback" % npu_id)
+        return _check_npu_isolation_by_topo(npu_id, iswindows)
 
     except Exception as ex:
         logger.warning("failed to check NPU %s isolation status: %s" %
                        (npu_id, str(ex)))
         return False
+
+
+def _check_npu_isolation_by_topo(npu_id, iswindows=False):
+    """
+    Fallback isolation detection via topo matrix.
+    An isolated NPU has zero HCCS connections (all links show SYS or PHB).
+    """
+    cmd = "npu-smi info -t topo -i {0}".format(npu_id)
+    if iswindows:
+        cmd = cmd.replace(" ", "|")
+
+    r, o, e = bash_roe(cmd)
+    if r != 0 or not o:
+        logger.debug("failed to get topo for NPU %s: %s" % (npu_id, e))
+        return False
+
+    hccs_count = 0
+    for line in o.splitlines():
+        stripped = line.strip()
+        if not stripped.upper().startswith("NPU"):
+            continue
+        parts = stripped.split()
+        for part in parts[1:]:
+            if part.upper() == "HCCS":
+                hccs_count += 1
+
+    if hccs_count == 0:
+        logger.debug("NPU %s has 0 HCCS connections in topo (isolated)" % npu_id)
+        return True
+
+    return False
 
 
 def is_valid_video_controller(device):
