@@ -2825,6 +2825,7 @@ cs_install_mysql(){
     echo_subtitle "Install Mysql Server"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     rsa_key_file=$1/id_rsa
+
     if [ -z $ZSTACK_YUM_REPOS ];then
         if [ -z $MYSQL_ROOT_PASSWORD ]; then
             zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --root-password="$MYSQL_NEW_ROOT_PASSWORD" --choose-database="$CHOOSE_DATABASE" --debug >>$ZSTACK_INSTALL_LOG 2>&1
@@ -2832,10 +2833,14 @@ cs_install_mysql(){
             zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --choose-database="$CHOOSE_DATABASE" --debug >>$ZSTACK_INSTALL_LOG 2>&1
         fi
     else
+        local db_yum_repos="$ZSTACK_YUM_REPOS"
+        if [ "$CHOOSE_DATABASE" = "GreatDB" ]; then
+            db_yum_repos="$db_yum_repos,zstack-local-greatdb"
+        fi
         if [ -z $MYSQL_ROOT_PASSWORD ]; then
-            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS,zstack-local-greatdb --root-password="$MYSQL_NEW_ROOT_PASSWORD" >>$ZSTACK_INSTALL_LOG --choose-database="$CHOOSE_DATABASE" --debug 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --yum=$db_yum_repos --root-password="$MYSQL_NEW_ROOT_PASSWORD" >>$ZSTACK_INSTALL_LOG --choose-database="$CHOOSE_DATABASE" --debug 2>&1
         else
-            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS,zstack-local-greatdb --debug --choose-database="$CHOOSE_DATABASE" >>$ZSTACK_INSTALL_LOG 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --yum=$db_yum_repos --debug --choose-database="$CHOOSE_DATABASE" >>$ZSTACK_INSTALL_LOG 2>&1
         fi
     fi
     if [ $? -ne 0 ];then
