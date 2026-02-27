@@ -303,6 +303,13 @@ def create_startvm_body_jsonobject_with_virtio_scsi_volume_iothread(vol_uuid, vo
 
 
 def create_vm(startvm_body):
+    rsp_str = VM_PLUGIN.start_vm(misc.make_a_request(startvm_body))
+    rsp = jsonobject.loads(rsp_str)
+    assert rsp.success, 'failed to create VM: %s' % (rsp.error)
+    return rsp_str
+
+
+def create_vm_and_ignore_error(startvm_body):
     return VM_PLUGIN.start_vm(misc.make_a_request(startvm_body))
 
 
