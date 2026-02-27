@@ -2,20 +2,35 @@ import functools
 import os
 import yaml
 
-from zstacklib.utils import log, jsonobject
+# Dual-mode support:
+#   VM-internal mode (ZTEST_LOCAL_MODE=1): reads /root/.zguest/envconfig.yaml (zguest-injected)
+#   Local mode (default): uses lazy loading with safe defaults so local tests don't crash
+_VM_INTERNAL_MODE = os.environ.get('ZTEST_LOCAL_MODE') == '1'
 
-logger = log.get_logger(__name__)
+if _VM_INTERNAL_MODE:
+    envFile = "/root/.zguest/envconfig.yaml"
+else:
+    envFile = os.path.expanduser("~/.zstack-test/env.yaml")
 
-envFile = "/root/.zguest/envconfig.yaml"
+# Try to import real modules; fall back to no-ops for local mode
+try:
+    from zstacklib.utils import log, jsonobject
+    logger = log.get_logger(__name__)
+except Exception:
+    import logging
+    logger = logging.getLogger(__name__)
+    jsonobject = None
 
 
 def init_env():
+    if not os.path.exists(envFile):
+        return {}
     with open(envFile, "r") as f:
         try:
             env = yaml.load(f.read(), Loader=yaml.FullLoader)
-        except:
+        except Exception:
             env = yaml.load(f.read())
-    return env
+    return env if env else {}
 
 
 class EnvVariable(object):
@@ -24,7 +39,13 @@ class EnvVariable(object):
         self.type = variable_type
         self.default = default
         self.required = required
-        self.env = init_env()
+        self._env = None
+
+    @property
+    def env(self):
+        if self._env is None:
+            self._env = init_env()
+        return self._env
 
     def set(self, value):
         self.env[self.name] = value
@@ -37,64 +58,146 @@ class EnvVariable(object):
             if v is not None:
                 return self.type(v)
             elif v is None and self.required:
-                raise ValueError('the required environment variable[%s] is not defined' % self.name)
+                if _VM_INTERNAL_MODE:
+                    raise ValueError('the required environment variable[%s] is not defined' % self.name)
+                # In local mode, return a safe default instead of crashing
+                return self.type(self.default) if self.default is not None else self._safe_default()
             else:
-                return self.type(self.default)
+                return self.type(self.default) if self.default is not None else self._safe_default()
         except TypeError as ex:
-            raise Exception('environment[%s] is defined as type[%s] but get %s. %s' %
-                            (self.name, self.type, type(v), str(ex)))
+            if _VM_INTERNAL_MODE:
+                raise Exception('environment[%s] is defined as type[%s] but get %s. %s' %
+                                (self.name, self.type, type(v), str(ex)))
+            return self._safe_default()
+
+    def _safe_default(self):
+        """Return a type-appropriate safe default for local mode."""
+        if self.type == str:
+            return ''
+        elif self.type == bool:
+            return False
+        elif self.type in (int, float):
+            return 0
+        return None
 
 
 def env_var(name, the_type, default=None, required=True):
     # type: (str, typing.Type, typing.Any, bool) -> EnvVariable
-
     return EnvVariable(name=name, variable_type=the_type, default=default, required=required)
 
 
-VM_IMAGE_PATH = env_var('caseImagePath', str).value()
-DEFAULT_ETH_INTERFACE_NAME = env_var('defaultEthName', str).value()
-TEST_ROOT = env_var('testRoot', str).value()
-VOLUME_DIR = env_var('volumePath', str).value()
-SNAPSHOT_DIR = env_var('snapShotPath', str).value()
-CASE_PATH = env_var('casePath', str).value()
-ZSTACK_UTILITY_SOURCE_DIR = env_var('projectSourceDir', str).value()
-DRY_RUN = env_var('dryRun', bool, default=False, required=False).value()
-TEST_FOR_OUTPUT_DIR = env_var('outPutDir', str, default='/root/ztest-test-for', required=False).value()
-SSH_PRIVATE_KEY = env_var('privateKey', str).value()
-COVERAGE = env_var('coverage', bool, default=False, required=False).value()
+# Lazy-evaluated module-level variables via descriptor pattern.
+# In VM-internal mode, these read from envconfig.yaml as before.
+# In local mode, they return safe defaults without crashing.
+class _LazyEnvVar(object):
+    """Descriptor that lazily evaluates an EnvVariable on first access."""
+    def __init__(self, name, the_type, default=None, required=True):
+        self._env_var = env_var(name, the_type, default=default, required=required)
+        self._value = None
+        self._resolved = False
+
+    def __set_name__(self, owner, name):
+        self._attr = name
+
+    def resolve(self):
+        if not self._resolved:
+            self._value = self._env_var.value()
+            self._resolved = True
+        return self._value
+
+
+class _EnvVars(object):
+    """Container for lazy environment variables, accessed as module-level names."""
+    _vars = {}
+
+    @classmethod
+    def register(cls, name, the_type, default=None, required=True):
+        lazy = _LazyEnvVar(name, the_type, default=default, required=required)
+        cls._vars[name] = lazy
+        return lazy
+
+    @classmethod
+    def get(cls, name):
+        lazy = cls._vars.get(name)
+        if lazy is None:
+            raise AttributeError("No env var registered: %s" % name)
+        return lazy.resolve()
+
+
+# Register all environment variables (lazy - not evaluated at import time)
+_env_vars_registry = {
+    'VM_IMAGE_PATH': ('caseImagePath', str),
+    'DEFAULT_ETH_INTERFACE_NAME': ('defaultEthName', str),
+    'TEST_ROOT': ('testRoot', str),
+    'VOLUME_DIR': ('volumePath', str),
+    'SNAPSHOT_DIR': ('snapShotPath', str),
+    'CASE_PATH': ('casePath', str),
+    'ZSTACK_UTILITY_SOURCE_DIR': ('projectSourceDir', str),
+    'DRY_RUN': ('dryRun', bool, False, False),
+    'TEST_FOR_OUTPUT_DIR': ('outPutDir', str, '/root/ztest-test-for', False),
+    'SSH_PRIVATE_KEY': ('privateKey', str),
+    'COVERAGE': ('coverage', bool, False, False),
+}
+
+_lazy_vars = {}
+for _var_name, _spec in _env_vars_registry.items():
+    if len(_spec) == 2:
+        _lazy_vars[_var_name] = _EnvVars.register(_spec[0], _spec[1])
+    elif len(_spec) == 4:
+        _lazy_vars[_var_name] = _EnvVars.register(_spec[0], _spec[1], default=_spec[2], required=_spec[3])
+
+
+# Module-level attribute access: import env; env.VM_IMAGE_PATH
+# Uses __getattr__ (Python 3.7+) for lazy resolution
+def __getattr__(name):
+    if name in _lazy_vars:
+        return _lazy_vars[name].resolve()
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
+
+
+# For backwards compatibility in VM-internal mode, also expose as real attributes
+# so `from env import VM_IMAGE_PATH` works inside the VM
+if _VM_INTERNAL_MODE:
+    VM_IMAGE_PATH = env_var('caseImagePath', str).value()
+    DEFAULT_ETH_INTERFACE_NAME = env_var('defaultEthName', str).value()
+    TEST_ROOT = env_var('testRoot', str).value()
+    VOLUME_DIR = env_var('volumePath', str).value()
+    SNAPSHOT_DIR = env_var('snapShotPath', str).value()
+    CASE_PATH = env_var('casePath', str).value()
+    ZSTACK_UTILITY_SOURCE_DIR = env_var('projectSourceDir', str).value()
+    DRY_RUN = env_var('dryRun', bool, default=False, required=False).value()
+    TEST_FOR_OUTPUT_DIR = env_var('outPutDir', str, default='/root/ztest-test-for', required=False).value()
+    SSH_PRIVATE_KEY = env_var('privateKey', str).value()
+    COVERAGE = env_var('coverage', bool, default=False, required=False).value()
 
 
 def log_env_variables():
-    logger.debug('environment variables: %s' % jsonobject.dumps(os.environ))
+    try:
+        if jsonobject is not None:
+            logger.debug('environment variables: %s' % jsonobject.dumps(os.environ))
+        else:
+            logger.debug('environment variables: %s' % dict(os.environ))
+    except Exception:
+        pass
 
 
-log_env_variables()
+if _VM_INTERNAL_MODE:
+    log_env_variables()
 
 
 def get_test_environment_metadata():
-    with open(envFile, "r") as f:
-        try:
-            env = yaml.load(f.read(), Loader=yaml.FullLoader)
-        except:
-            env = yaml.load(f.read())
-        return dict2obj(env["self"])
+    env = init_env()
+    return dict2obj(env.get("self", {}))
+
 
 def get_private_key():
-    with open(envFile, "r") as f:
-        try:
-            env = yaml.load(f.read(), Loader=yaml.FullLoader)
-        except:
-            env = yaml.load(f.read())
-        return env["privateKey"]
+    env = init_env()
+    return env.get("privateKey", "")
 
 
 def get_vm_metadata(vm_name):
-    with open(envFile, "r") as f:
-        try:
-            env = yaml.load(f.read(), Loader=yaml.FullLoader)
-        except:
-            env = yaml.load(f.read())
-        return dict2obj(env[vm_name])
+    env = init_env()
+    return dict2obj(env.get(vm_name, {}))
 
 
 class Dict(dict):
@@ -111,7 +214,6 @@ def dict2obj(dictObj):
     return d
 
 
-
 def _write_test_for_info(handlers, case_info):
     cc = case_info.split('::')
     case_name = cc[0]
@@ -125,7 +227,7 @@ def _write_test_for_info(handlers, case_info):
         logger.warn('%s has empty handler' % case_info)
         return
 
-    output_dir = os.path.abspath(TEST_FOR_OUTPUT_DIR)
+    output_dir = os.path.abspath(__getattr__('TEST_FOR_OUTPUT_DIR'))
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir)
 
@@ -155,7 +257,8 @@ def test_for(handlers):
     def wrap(f):
         @functools.wraps(f)
         def inner(*args, **kwargs):
-            if DRY_RUN:
+            dry_run = __getattr__('DRY_RUN') if not _VM_INTERNAL_MODE else DRY_RUN
+            if dry_run:
                 _write_test_for_info(handlers, os.environ.get('PYTEST_CURRENT_TEST'))
             else:
                 return f(*args, **kwargs)

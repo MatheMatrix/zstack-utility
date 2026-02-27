@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 # ---- Step 1: Create mock log module (used by many modules) ----------------
 _mock_log = types.ModuleType('zstacklib.utils.log')
 _mock_log.get_logger = lambda name: MagicMock()
+_mock_log.LogConfig = MagicMock()  # used by zstacklib.test.utils.__init__
 sys.modules['log'] = _mock_log  # bare `import log` in thread.py etc.
 sys.modules['zstacklib.utils.log'] = _mock_log
 
