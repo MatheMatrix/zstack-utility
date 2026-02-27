@@ -3584,7 +3584,7 @@ class InstallDbCmd(Command):
     - name: set ansible_distribution_major_version
       set_fact:
         ansible_distribution_major_version: "{{ item }}"
-      loop: "{{ [ansible_distribution_major_version | int] }}"
+      loop: "{{ [ansible_distribution_major_version | regex_replace('[^0-9]', '') | int] }}"
 
     - name: pre-install script
       script: $pre_install_script
@@ -3737,7 +3737,7 @@ class InstallDbCmd(Command):
   tasks:
     - name: ansible_distribution_major_version
       set_fact:
-        ansible_distribution_major_version: "{{ ansible_distribution_major_version | int }}"
+        ansible_distribution_major_version: "{{ ansible_distribution_major_version | regex_replace('[^0-9]', '') | int }}"
 
     - name: pre install script
       script: $pre_install_script
