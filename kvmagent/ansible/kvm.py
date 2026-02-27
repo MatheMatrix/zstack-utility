@@ -202,7 +202,7 @@ def install_kvm_pkg():
 
         distro_mapping = {
             'centos': 'vconfig iscsi-initiator-utils OpenIPMI-modalias OVMF mcelog MegaCli Arcconf python-pyudev kernel-devel libicu edac-utils',
-            'kylin': 'vconfig open-iscsi python2-pyudev collectd-disk OpenIPMI libselinux-devel nettle tuned qemu-kvm libicu edac-utils lldpd freeipmi',
+            'kylin': 'vconfig open-iscsi python2-pyudev collectd-disk OpenIPMI libselinux-devel nettle tuned qemu-kvm libicu edac-utils lldpd freeipmi key-manager',
             'uniontech': 'vconfig iscsi-initiator-utils OpenIPMI nettle qemu-kvm python-pyudev collectd-disk',
             'rocky': 'iscsi-initiator-utils OpenIPMI-modalias mcelog MegaCli Arcconf python-pyudev kernel-devel collectd-disk edac-utils',
         }
@@ -220,7 +220,7 @@ def install_kvm_pkg():
             'h79c': ('%s qemu-kvm libvirt-admin seabios-bin nping freeipmi '
                      'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
             'h84r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm freeipmi '
-                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd') % helix_rhel_rpms,
+                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd key-manager') % helix_rhel_rpms,
             'rl84': 'qemu-kvm libvirt-daemon libvirt-daemon-kvm seabios-bin elfutils-libelf-devel lldpd',
             'euler20': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
             'oe2203sp1': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
@@ -906,6 +906,12 @@ def set_gpu_blacklist():
         || echo \"blacklist ${gpu_name}\" >> /etc/modprobe.d/${gpu_name}-blacklist.conf; done" % gpu_name_list
     run_remote_command(command, host_post_info)
 
+def start_key_agent():
+    command = "systemctl enable key-agent && systemctl start key-agent"
+    host_post_info.post_label = "ansible.shell.start.key_agent"
+    host_post_info.post_label_param = None
+    run_remote_command(command, host_post_info)
+
 
 check_nested_kvm(host_post_info)
 install_kvm_pkg()
@@ -936,6 +942,7 @@ modprobe_usb_module()
 modprobe_mpci_module()
 modprobe_nvme_module()
 set_gpu_blacklist()
+start_key_agent()
 start_kvmagent()
 
 host_post_info.start_time = start_time
