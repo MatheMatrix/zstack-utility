@@ -2689,7 +2689,11 @@ done
                 to.mdevSpecifications[-1][title] = content
 
         if legacy_mdev_dir_exists:
-            self._legacy_mdev(to)
+            rc, _, _ = bash_roe("nvidia-smi vgpu -i %s -c" % addr)
+            if rc != 0:
+                to.virtStatus = 'VFIO_MDEV_VIRTUALIZABLE'
+            else:
+                self._legacy_mdev(to)
         elif virt_function_dir_exits:
             self._virt_function(to)
         else:

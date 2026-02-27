@@ -476,14 +476,18 @@ class NVIDIA(GPUBase):
         # Determine virtStatus based on mdev directory structure
         if legacy_mdev_dir_exists:
             # Legacy mdev: check if supported specs != creatable specs
-            _, support, _ = bash_roe("nvidia-smi vgpu -i %s -s | grep -v %s" %
-                                     (addr, addr))
-            _, creatable, _ = bash_roe(
+            rs, support, _ = bash_roe("nvidia-smi vgpu -i %s -s | grep -v %s" %
+                                      (addr, addr))
+            rc, creatable, _ = bash_roe(
                 "nvidia-smi vgpu -i %s -c | grep -v %s" % (addr, addr))
-            if support != creatable:
-                capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZED"
-            else:
+            if rs != 0:
+                return False, {}
+            if rc != 0:
                 capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
+            else:
+                capability_info['virtStatus'] = ("VFIO_MDEV_VIRTUALIZED"
+                                                 if support != creatable
+                                                 else "VFIO_MDEV_VIRTUALIZABLE")
         elif virt_function_dir_exits:
             # Virt function: check virtfn and mdev devices
             r, o, e = bash_roe(
