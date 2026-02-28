@@ -2387,12 +2387,12 @@ class ZstackLib(object):
 
     def _python_rpm_set(self):
         python_requirement_set = {
-            "python3-devel",
-            "python3-setuptools",
+            "python3.11-devel",
+            "python3.11-setuptools",
         }
 
         if self.distro == 'nfs' or self.distro_version >= 7:
-            python_requirement_set.add("python3-pip")
+            python_requirement_set.add("python3.11-pip")
         else:
             python_requirement_set.add("python-pip")
 
@@ -2408,6 +2408,8 @@ class ZstackLib(object):
         if self.distro in KYLIN_DISTRO:
             basic.add("chrony")
             basic.add("iptables")
+            # TODO: python3.11-libselinux is not available on most distros,
+            #  need to build or find a package for python3.11 when SELinux is enabled
             basic.add("python3-libselinux")
             return basic
 
