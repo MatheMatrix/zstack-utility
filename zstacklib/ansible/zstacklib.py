@@ -1098,7 +1098,7 @@ def pip_install_package(pip_install_arg, host_post_info):
     runner_args.host_post_info = host_post_info
     runner_args.module_name = 'pip'
     runner_args.module_args = option
-    runner_args.ansible_vars = {'ansible_python_interpreter': '/usr/bin/python2'}
+    runner_args.ansible_vars = {'ansible_python_interpreter': '/usr/bin/python3.11'}
 
     zstack_runner = ZstackRunner(runner_args)
     result = zstack_runner.run()
@@ -1617,9 +1617,10 @@ def get_remote_host_info_obj(host_post_info):
         facts = ret['ansible_facts']
         host_info.distro = facts['ansible_distribution'].split()[0].lower()
         host_info.major_version_str = \
-            facts['ansible_distribution_major_version']
+            re.sub(r'[^0-9]', '', str(facts['ansible_distribution_major_version']))
         host_info.distro_release = facts['ansible_distribution_release']
-        host_info.distro_version = facts['ansible_distribution_version']
+        host_info.distro_version = \
+            re.sub(r'[^0-9.]', '', str(facts['ansible_distribution_version']))
         host_info.cpu_info = cpu_info_output.lower()
         host_info.host_arch = facts['ansible_machine']
         host_info.kernel_version = facts['ansible_kernel']
