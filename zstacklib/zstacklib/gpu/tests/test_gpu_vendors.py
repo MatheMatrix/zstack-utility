@@ -242,6 +242,68 @@ class TestNVIDIA(unittest.TestCase):
         candidates = NVIDIA.get_pci_only_candidates(device_ids, device_names)
         self.assertEqual(candidates, [])
 
+    def test_detect_vfio_mdev_capability_creatable_fails_supported_also_fails(self):
+        """When both -v -c and -s fail, card does not support vGPU."""
+        from unittest.mock import patch, MagicMock
+        from zstacklib.gpu.vendors.nvidia import NVIDIA
+
+        pci_to = MagicMock()
+        pci_to.pciDeviceAddress = "0000:3b:00.0"
+
+        def fake_bash_roe(cmd):
+            # both nvidia-smi vgpu queries fail
+            return 1, '', 'error'
+
+        with patch('zstacklib.gpu.vendors.nvidia.bash_roe', side_effect=fake_bash_roe), \
+             patch('os.path.isdir', return_value=False):
+            supported, info = NVIDIA.detect_vfio_mdev_capability(pci_to)
+
+        self.assertFalse(supported)
+        self.assertEqual(info, {})
+
+    def test_detect_vfio_mdev_capability_sriov_vgpu_card_no_vfs(self):
+        """SR-IOV backed vGPU card (L20/RTX8000): -v -c fails, -s succeeds,
+        no sysfs dirs yet (VFs not created) -> VFIO_MDEV_VIRTUALIZABLE."""
+        from unittest.mock import patch, MagicMock
+        from zstacklib.gpu.vendors.nvidia import NVIDIA
+
+        pci_to = MagicMock()
+        pci_to.pciDeviceAddress = "0000:3b:00.0"
+
+        def fake_bash_roe(cmd):
+            if '-v -c' in cmd:
+                return 1, '', 'no creatable instances'
+            if ' -s' in cmd:
+                return 0, 'vGPU Type ID : 239\n  Name : GRID L20-4Q\n', ''
+            return 0, '', ''
+
+        with patch('zstacklib.gpu.vendors.nvidia.bash_roe', side_effect=fake_bash_roe), \
+             patch('os.path.isdir', return_value=False):
+            supported, info = NVIDIA.detect_vfio_mdev_capability(pci_to)
+
+        self.assertTrue(supported)
+        self.assertEqual(info.get('virtStatus'), 'VFIO_MDEV_VIRTUALIZABLE')
+
+    def test_detect_vfio_mdev_capability_normal_card_creatable_succeeds(self):
+        """Normal vGPU card: -v -c succeeds, no sysfs dirs -> VFIO_MDEV_VIRTUALIZABLE."""
+        from unittest.mock import patch, MagicMock
+        from zstacklib.gpu.vendors.nvidia import NVIDIA
+
+        pci_to = MagicMock()
+        pci_to.pciDeviceAddress = "0000:3b:00.0"
+
+        def fake_bash_roe(cmd):
+            if '-v -c' in cmd:
+                return 0, 'vGPU Type ID : 239\n  Name : GRID L20-4Q\n', ''
+            return 0, '', ''
+
+        with patch('zstacklib.gpu.vendors.nvidia.bash_roe', side_effect=fake_bash_roe), \
+             patch('os.path.isdir', return_value=False):
+            supported, info = NVIDIA.detect_vfio_mdev_capability(pci_to)
+
+        self.assertTrue(supported)
+        self.assertEqual(info.get('virtStatus'), 'VFIO_MDEV_VIRTUALIZABLE')
+
 
 class TestAMD(unittest.TestCase):
     """Test AMD vendor implementation"""
