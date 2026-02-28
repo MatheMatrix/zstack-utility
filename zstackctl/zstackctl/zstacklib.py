@@ -1163,9 +1163,9 @@ def get_remote_host_info(host_post_info):
             facts = ret['ansible_facts']
             (distro, major_version, release, distro_version) = [
                 facts['ansible_distribution'].split()[0].lower(),
-                int(facts['ansible_distribution_major_version']),
+                int(re.sub(r'[^0-9]', '', str(facts['ansible_distribution_major_version']))),
                 facts['ansible_distribution_release'],
-                facts['ansible_distribution_version']]
+                re.sub(r'[^0-9.]', '', str(facts['ansible_distribution_version']))]
             handle_ansible_info(
                 "SUCC: Get remote host %s info successful" % host,
                 host_post_info,
