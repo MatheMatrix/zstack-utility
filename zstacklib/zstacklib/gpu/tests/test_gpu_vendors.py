@@ -1110,5 +1110,30 @@ class TestIdentifyVendor(unittest.TestCase):
         self.assertEqual(result, "NVIDIA")
 
 
+class TestVmGpuStatus(unittest.TestCase):
+    """Characterization tests for VmGpuStatus enum migration to gpu.base"""
+
+    def test_vm_gpu_status_importable_from_gpu_base(self):
+        from zstacklib.gpu.base import VmGpuStatus
+        self.assertIsNotNone(VmGpuStatus)
+
+    def test_vm_gpu_status_not_exist_value(self):
+        from zstacklib.gpu.base import VmGpuStatus
+        self.assertEqual(VmGpuStatus.NOT_EXIST.value, "not_exist")
+
+    def test_vm_gpu_status_critical_fault_value(self):
+        from zstacklib.gpu.base import VmGpuStatus
+        self.assertEqual(VmGpuStatus.CRITICAL_FAULT.value, "critical")
+
+    def test_vm_gpu_status_nominal_value(self):
+        from zstacklib.gpu.base import VmGpuStatus
+        self.assertEqual(VmGpuStatus.NOMINAL.value, "nominal")
+
+    def test_utils_gpu_still_exports_vm_gpu_status(self):
+        """Backward compat: utils/gpu.py must still export VmGpuStatus"""
+        from zstacklib.utils.gpu import VmGpuStatus
+        self.assertEqual(VmGpuStatus.NOMINAL.value, "nominal")
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

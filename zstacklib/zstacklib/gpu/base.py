@@ -6,6 +6,7 @@ GPU Base Class and Registry (Python 2/3 Compatible)
 import abc
 import re
 import threading
+from enum import Enum
 
 from zstacklib.utils import log
 from zstacklib.utils.bash import bash_roe, bash_ro
@@ -34,6 +35,16 @@ class VendorEnum:
     ENFLAME = "Enflame"
     ALIBABA = "Alibaba"
     KUNLUNXIN = "Kunlunxin"
+
+
+# =============================================================================
+# VmGpuStatus - GPU status as seen from inside the VM (via QGA)
+# =============================================================================
+
+class VmGpuStatus(Enum):
+    NOT_EXIST = "not_exist"
+    CRITICAL_FAULT = "critical"
+    NOMINAL = "nominal"
 
 
 # =============================================================================
