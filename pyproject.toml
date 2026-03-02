@@ -24,3 +24,20 @@ markers = [
     "bm_instance: bare metal instance tests",
     "appliancevm: appliance VM tests",
 ]
+
+
+[tool.coverage.run]
+source = ["kvmagent/kvmagent"]
+omit = [
+    "*/kvmagent/test/*",
+    "*/kvmagent/test/**/*",
+    "*/setup.py",
+    "tests/*",
+    "zstacklib/*",
+]
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "pass",
+]
