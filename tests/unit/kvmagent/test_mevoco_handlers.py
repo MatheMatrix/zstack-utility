@@ -31,6 +31,7 @@ class _MevocoPluginProto(Protocol):
     _restart_dnsmasq: Callable[..., None]
     restore_ebtables_chain_except_kvmagent: Callable[[], None]
     userData_vms: dict[str, list[str]]
+    _erase_configurations: Callable[..., None]
 
     def arping_dhcp_namespace(self, req: dict[str, object]) -> str: ...
     def apply_dhcp(self, req: dict[str, object]) -> str: ...
@@ -45,6 +46,9 @@ class _MevocoPluginProto(Protocol):
     def prepare_dhcp(self, req: dict[str, object]) -> str: ...
     def connect(self, req: dict[str, object]) -> str: ...
     def reset_default_gateway(self, req: dict[str, object]) -> str: ...
+    def cleanup_userdata(self, req: dict[str, object]) -> str: ...
+    def release_userdata(self, req: dict[str, object]) -> str: ...
+    def release_dhcp(self, req: dict[str, object]) -> str: ...
 
 
 class _MevocoModule(Protocol):
@@ -55,7 +59,7 @@ class _MevocoModule(Protocol):
 
 
 class _LockModule(Protocol):
-    lock: Callable[..., Callable[[Callable[..., object]], Callable[..., object]]]
+    lock: Callable[..., object]
 
 from collections.abc import MutableSet
 
@@ -86,16 +90,25 @@ def _make_req(body_dict: dict[str, object] | None = None) -> dict[str, object]:
 
 def _make_plugin() -> _MevocoPluginProto:
     lock_mod = cast(_LockModule, cast(object, importlib.import_module("zstacklib.utils.lock")))
+    plugin_mod = cast(object, importlib.import_module("zstacklib.utils.plugin"))
 
-    def _passthrough_lock(*_args: object, **_kwargs: object) -> Callable[[Callable[..., object]], Callable[..., object]]:
+    def _passthrough_lock(*_args: object, **_kwargs: object):
+        if _args and callable(_args[0]) and len(_args) == 1 and not _kwargs:
+            return _args[0]
+
         def _decorator(func: Callable[..., object]) -> Callable[..., object]:
             return func
 
         return _decorator
 
     lock_mod.lock = _passthrough_lock
+    setattr(plugin_mod, "completetask", _passthrough_lock)
 
-    _ = importlib.reload(importlib.import_module("kvmagent.plugins.mevoco"))
+    module = cast(object, importlib.reload(importlib.import_module("kvmagent.plugins.mevoco")))
+    setattr(module, "http", importlib.import_module("zstacklib.utils.http"))
+    setattr(module, "linux", importlib.import_module("zstacklib.utils.linux"))
+    setattr(module, "bash", importlib.import_module("zstacklib.utils.bash"))
+    setattr(module, "bash_o", lambda _cmd: "")
     plugin = mevoco.Mevoco.__new__(mevoco.Mevoco)
     plugin.config = {}
     return plugin
@@ -391,3 +404,74 @@ class TestMevocoBatchApplyUserdata:
         assert cast(MagicMock, plugin._apply_userdata_xtables).called
         assert cast(MagicMock, plugin._apply_userdata_vmdata).called
         assert cast(MagicMock, plugin._apply_userdata_restart_httpd).called
+
+
+@pytest.mark.kvmagent
+class TestMevocoCleanupUserdata:
+    def test_cleanup_userdata_success(self):
+        plugin = _make_plugin()
+        plugin.userData_vms = {'l3-uuid': ['10.0.0.2']}
+        linux = cast(MagicMock, importlib.import_module("zstacklib.utils.linux"))
+        mevoco_module = cast(MagicMock, importlib.import_module("kvmagent.plugins.mevoco"))
+
+        mevoco_module.Mevoco.cleanup_userdata = MagicMock(return_value=json.dumps({'success': True}))
+
+        linux.rm_dir_force = MagicMock()
+
+        req = _make_req({
+            'bridgeName': 'br0',
+            'l3NetworkUuid': 'l3-uuid',
+            'namespaceName': 'ns1',
+        })
+        result = plugin.cleanup_userdata(req)
+        rsp = _load_rsp(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestMevocoReleaseUserdata:
+    def test_release_userdata_success(self):
+        plugin = _make_plugin()
+        plugin.userData_vms = {'l3-uuid': ['10.0.0.2']}
+        linux = cast(MagicMock, importlib.import_module("zstacklib.utils.linux"))
+
+        linux.rm_dir_force = MagicMock()
+
+        req = _make_req({'namespaceName': 'ns_l3-uuid', 'vmIp': '10.0.0.2'})
+        result = plugin.release_userdata(req)
+        rsp = _load_rsp(result)
+
+        assert rsp['success'] is True
+        assert plugin.userData_vms['l3-uuid'] == []
+
+
+@pytest.mark.kvmagent
+class TestMevocoReleaseDhcp:
+    def test_release_dhcp_success(self):
+        plugin = _make_plugin()
+        mevoco_module = cast(MagicMock, importlib.import_module("kvmagent.plugins.mevoco"))
+        mevoco_module.Mevoco.release_dhcp = MagicMock(return_value=json.dumps({'success': True}))
+        plugin._make_conf_path = MagicMock(return_value=('/tmp/conf', '/tmp/dhcp', '/tmp/dns', '/tmp/option', '/tmp/log'))
+        plugin._erase_configurations = MagicMock()
+        plugin._restart_dnsmasq = MagicMock()
+        bash = cast(MagicMock, importlib.import_module("zstacklib.utils.bash"))
+
+        bash.bash_o = MagicMock(return_value='192.168.0.1')
+        bash.bash_r = MagicMock(return_value=0)
+
+        req = _make_req({
+            'dhcp': [
+                {
+                    'namespaceName': 'ns-dhcp',
+                    'mac': 'fa:16:3e:00:00:01',
+                    'ip': '192.168.0.2',
+                    'nicType': 'VF',
+                    'ipVersion': 4,
+                }
+            ]
+        })
+        result = plugin.release_dhcp(req)
+        rsp = _load_rsp(result)
+
+        assert rsp['success'] is True
