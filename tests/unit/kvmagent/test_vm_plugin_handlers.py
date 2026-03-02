@@ -10,8 +10,12 @@
 # pyright: reportAttributeAccessIssue=false
 """Handler-level unit tests for kvmagent.plugins.vm_plugin."""
 import json
+import tempfile
+from collections.abc import Iterator
+from typing import Callable
 import pytest
 from unittest.mock import patch, MagicMock
+from xml.etree import ElementTree as ET
 
 from zstacklib.utils import http, jsonobject
 from kvmagent.plugins import vm_plugin
@@ -1187,15 +1191,15 @@ class TestVolumeSyncHandler:
 class TestRollbackQuorumConfigHandler:
     def test_rollback_quorum_config(self):
         plugin = _make_vm_plugin()
-        vm_plugin.xrange = range
         mock_vm = MagicMock()
         mock_vm._get_all_volume_alias_names = MagicMock(return_value=['drive0'])
         vm_plugin.get_vm_by_uuid_no_retry = MagicMock(return_value=mock_vm)
         vm_plugin.qmp.execute_qmp_command = MagicMock()
 
-        req = _make_req({'vmInstanceUuid': 'vm-uuid', 'volumes': [], 'nicNumber': 0})
-        result = plugin.rollback_quorum_config(req)
-        rsp = json.loads(result)
+        with patch.object(vm_plugin, 'xrange', range, create=True):
+            req = _make_req({'vmInstanceUuid': 'vm-uuid', 'volumes': [], 'nicNumber': 0})
+            result = plugin.rollback_quorum_config(req)
+            rsp = json.loads(result)
 
         assert rsp['success'] is True
         vm_plugin.qmp.execute_qmp_command.assert_called()
@@ -1553,11 +1557,11 @@ class TestHotPlugMdevDeviceHandler:
         mock_vm = MagicMock()
         vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
         vm_plugin.pci.get_mdev_passthrough_mapping = MagicMock(return_value={'11111111-1111-1111-1111-111111111111': 'mdev-addr'})
-        vm_plugin.uuid.UUID = MagicMock(side_effect=lambda value: value)
 
-        req = _make_req({'vmUuid': 'vm-uuid', 'MdevDeviceUuid': '11111111-1111-1111-1111-111111111111'})
-        result = plugin.hot_plug_mdev_device(req)
-        rsp = json.loads(result)
+        with patch.object(vm_plugin.uuid, 'UUID', side_effect=lambda value: value):
+            req = _make_req({'vmUuid': 'vm-uuid', 'MdevDeviceUuid': '11111111-1111-1111-1111-111111111111'})
+            result = plugin.hot_plug_mdev_device(req)
+            rsp = json.loads(result)
 
         assert rsp['success'] is True
 
@@ -1586,13 +1590,13 @@ class TestHotUnplugMdevDeviceHandler:
     def test_hot_unplug_mdev_device(self):
         plugin = _make_vm_plugin()
         vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
-        vm_plugin.uuid.UUID = MagicMock(side_effect=lambda value: value)
         vm_plugin.linux.wait_callback_success = MagicMock(return_value=True)
         vm_plugin.linux.write_to_temp_file = MagicMock(return_value='/tmp/mdev.xml')
 
-        req = _make_req({'vmUuid': 'vm-uuid', 'MdevDeviceUuid': '11111111-1111-1111-1111-111111111111'})
-        result = plugin.hot_unplug_mdev_device(req)
-        rsp = json.loads(result)
+        with patch.object(vm_plugin.uuid, 'UUID', side_effect=lambda value: value):
+            req = _make_req({'vmUuid': 'vm-uuid', 'MdevDeviceUuid': '11111111-1111-1111-1111-111111111111'})
+            result = plugin.hot_unplug_mdev_device(req)
+            rsp = json.loads(result)
 
         assert rsp['success'] is True
 
@@ -1886,21 +1890,22 @@ class TestStartColoSyncHandler:
         vm_plugin.qmp.execute_qmp_command = MagicMock(return_value={'status': 'colo'})
         vm_plugin.execute_qmp_command = MagicMock()
 
-        req = _make_req({
-            'vmInstanceUuid': 'vm-uuid',
-            'volumes': [],
-            'nics': [],
-            'fullSync': False,
-            'secondaryVmHostIp': '10.0.0.2',
-            'nbdServerPort': 6000,
-            'blockReplicationPort': 7000,
-            'checkpointDelay': 10,
-            'nicNumber': 0,
-        })
-        result = plugin.start_colo_sync(req)
-        rsp = json.loads(result)
+        with patch.object(vm_plugin, 'xrange', range, create=True):
+            req = _make_req({
+                'vmInstanceUuid': 'vm-uuid',
+                'volumes': [],
+                'nics': [],
+                'fullSync': False,
+                'secondaryVmHostIp': '10.0.0.2',
+                'nbdServerPort': 6000,
+                'blockReplicationPort': 7000,
+                'checkpointDelay': 10,
+                'nicNumber': 0,
+            })
+            result = plugin.start_colo_sync(req)
+            rsp = json.loads(result)
 
-        assert rsp['success'] is True
+        assert rsp['success'] is True, rsp.get('error', 'no error field')
 
 
 @pytest.mark.kvmagent
@@ -2175,3 +2180,912 @@ class TestWaitSecondaryVmReadyHandler:
         rsp = json.loads(result)
 
         assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestVmStartCmdXmlBuild:
+    class _RangeCompat:
+        def __init__(self, *args):
+            self._iter: Iterator[int] = iter(range(*args))
+        def __iter__(self):
+            return self
+        def __next__(self):
+            return next(self._iter)
+        def next(self):
+            return next(self._iter)
+
+    def _build_start_cmd(self, use_numa=False):
+        cmd_dict: dict[str, object] = {
+            'vmInstanceUuid': 'vm-uuid',
+            'vmName': 'vm-name',
+            'accountUuid': 'acct-uuid',
+            'vmInternalId': 101,
+            'hostManagementIp': '10.0.0.1',
+            'useNuma': use_numa,
+            'machineType': 'q35',
+            'bootMode': 'UEFI',
+            'imagePlatform': 'other',
+            'architecture': None,
+            'memory': 1024 * 1024,
+            'cpuNum': 4,
+            'maxVcpuNum': 8,
+            'socketNum': 2,
+            'cpuOnSocket': 2,
+            'threadsPerCore': 1,
+            'nestedVirtualization': 'host-model',
+            'vmCpuModel': 'Icelake-Server',
+            'vmCpuVendorId': 'GenuineIntel',
+            'vmCpuVendorId': 'GenuineIntel',
+            'cpuHypervisorFeature': False,
+            'x2apic': False,
+            'kvmHiddenState': True,
+            'vmPortOff': True,
+            'emulateHyperV': True,
+            'hypervClock': True,
+            'vendorId': 'zstack',
+            'MemAccess': 'shared',
+            'useHugePage': True,
+            'noSharePages': True,
+            'useBootMenu': True,
+            'bootMenuSplashTimeout': 5,
+            'systemSerialNumber': 'SERIAL',
+            'chassisAssetTag': 'ASSET',
+            'oemStrings': ['oem1', 'oem2'],
+            'clock': 'localtime',
+            'clockTrack': None,
+            'consolePassword': 'secret',
+            'consoleMode': 'spice',
+            'spiceChannels': ['main'],
+            'spiceStreamingMode': 'filter',
+            'videoType': 'qxl',
+            'VDIMonitorNumber': 2,
+            'qxlMemory': {'ram': 65536, 'vram': 65536, 'vgamem': 16384},
+            'soundType': None,
+            'suspendToDisk': True,
+            'suspendToRam': False,
+            'additionalQmp': True,
+            'qemu64BitPciMmioSetup': True,
+            'useColoBinary': False,
+            'coloPrimary': False,
+            'coloSecondary': False,
+            'isApplianceVm': False,
+            'pciePortNums': 2,
+            'predefinedPciBridgeNum': 1,
+            'memBalloon': {
+                'deviceAddress': {
+                    'domain': '0x0000',
+                    'bus': '0x00',
+                    'slot': '0x04',
+                    'function': '0x0',
+                }
+            },
+            'rootVolume': {
+                'deviceId': 0,
+                'deviceType': 'file',
+                'installPath': '/path/root.qcow2',
+                'cacheMode': 'none',
+                'useVirtio': True,
+                'useVirtioSCSI': False,
+                'volumeUuid': 'vol-root',
+                'wwn': 'wwn-root',
+                'shareable': False,
+                'multiQueues': 4,
+                'ioThreadId': 2,
+                'bootOrder': 1,
+            },
+            'dataVolumes': [
+                {
+                    'deviceId': 1,
+                    'deviceType': 'file',
+                    'installPath': '/path/data1.qcow2',
+                    'cacheMode': 'none',
+                    'useVirtio': False,
+                    'useVirtioSCSI': False,
+                    'volumeUuid': 'vol-data1',
+                    'shareable': True,
+                },
+                {
+                    'deviceId': 2,
+                    'deviceType': 'ceph',
+                    'installPath': 'ceph://pool/vol2',
+                    'useVirtio': True,
+                    'useVirtioSCSI': True,
+                    'volumeUuid': 'vol-data2',
+                    'wwn': 'wwn-data2',
+                    'secretUuid': 'ceph-secret',
+                    'monInfo': [{'hostname': '10.0.0.2', 'port': 6789}],
+                    'physicalBlockSize': 4096,
+                    'shareable': True,
+                },
+                {
+                    'deviceId': 3,
+                    'deviceType': 'block',
+                    'installPath': '/dev/sdb',
+                    'useVirtio': True,
+                    'useVirtioSCSI': False,
+                    'volumeUuid': 'vol-data3',
+                    'cacheMode': 'none',
+                },
+            ],
+            'cacheVolumes': [],
+            'cdRoms': [
+                {
+                    'deviceId': 0,
+                    'isEmpty': True,
+                    'bootOrder': 1,
+                    'resourceUuid': 'cdrom-0',
+                    'path': '',
+                },
+                {
+                    'deviceId': 1,
+                    'isEmpty': False,
+                    'path': 'ceph://pool/iso',
+                    'resourceUuid': 'cdrom-1',
+                    'secretUuid': 'iso-secret',
+                    'monInfo': [{'hostname': '10.0.0.3', 'port': 6789}],
+                },
+                {
+                    'deviceId': 2,
+                    'isEmpty': False,
+                    'protocol': 'vhost',
+                    'path': '/var/run/vhost.iso',
+                    'resourceUuid': 'cdrom-2',
+                },
+            ],
+            'nics': [
+                {
+                    'uuid': 'nic-1',
+                    'type': 'VNIC',
+                    'mac': '00:11:22:33:44:55',
+                    'mtu': 1500,
+                    'bridgeName': 'br0',
+                    'nicInternalName': 'tap0',
+                    'cleanTraffic': True,
+                    'ips': ['192.168.0.10'],
+                    'useVirtio': True,
+                    'driverType': 'virtio',
+                    'vHostAddOn': {'queueNum': 2, 'rxBufferSize': 512, 'txBufferSize': 256},
+                    'bootOrder': 1,
+                    'state': 'disable',
+                    'pci': {'type': 'pci', 'domain': '0x0000', 'bus': '0x00', 'slot': '0x03', 'function': '0x0'},
+                },
+                {
+                    'uuid': 'nic-2',
+                    'type': 'VF',
+                    'mac': '00:11:22:33:44:66',
+                    'mtu': 1500,
+                    'bridgeName': 'br1',
+                    'nicInternalName': 'tap1',
+                    'useVirtio': False,
+                    'vHostAddOn': {'queueNum': 1, 'rxBufferSize': 1024, 'txBufferSize': 1024},
+                    'pciDeviceAddress': '0000:00:05.0',
+                    'extraPciDeviceAddresses': ['0000:00:05.1'],
+                },
+                {
+                    'uuid': 'nic-3',
+                    'type': 'TFVNIC',
+                    'mac': '00:11:22:33:44:77',
+                    'mtu': 1500,
+                    'nicInternalName': 'tap2',
+                    'l2NetworkUuid': 'l2-uuid',
+                    'ipForTf': '10.0.0.10',
+                },
+            ],
+            'addons': {
+                'noConsole': False,
+                'onCrash': 'preserve',
+                'ioThreadNum': 1,
+                'ioThreadPins': [{'ioThreadId': 1, 'pin': '0-3'}],
+                'cpuPinning': [{'vCpu': 0, 'pCpuSet': '0'}],
+                'emulatorPinning': '0-3',
+                'qemuCommandLine': ['-smp', '2'],
+                'qemuPath': None,
+                'vhostSrcPath': None,
+                'brMode': None,
+                'useDataPlane': True,
+                'VolumeQos': {'vol-root': {'totalBandwidth': 1024, 'totalIops': 100}},
+                'NativeAio': False,
+                'NicQos': {'nic-1': {'outboundBandwidth': 1024 * 8 * 1024, 'inboundBandwidth': 2048 * 8 * 1024}},
+                'channel': {'socketPath': '/tmp/chan.sock', 'targetName': 'org.zstack.channel.0'},
+                'channel_vr': {'socketPath': '/tmp/chan-vr.sock', 'targetName': 'org.zstack.vr.0'},
+                'ceph_secret_key': None,
+                'ceph_secret_uuid': None,
+                'pciDevice': ['0000:00:01.0,'],
+                'mdevDevice': ['11111111-1111-1111-1111-111111111111'],
+                'storageDevice': [],
+                'usbDevice': ['1:2:1d6b:0002:2.0:PassThrough:1234:127.0.0.1'],
+                'panicIsa': True,
+                'panicHyperv': True,
+                'systemVirtioDriverDeviceType': None,
+                'FIXED_CDROMS': None,
+                'loaderRom': None,
+                'userDefinedXmlHookScript': None,
+                'userDefinedXml': None,
+                'hygonMdevDevice': None,
+                'l3mapping': None,
+            },
+        }
+        addons = cmd_dict['addons']
+        if use_numa:
+            if isinstance(addons, dict):
+                addons['numaNodes'] = []
+        else:
+            if isinstance(addons, dict):
+                addons['numaNodes'] = [
+                    {'nodeID': 0, 'hostNodeID': 0, 'cpus': '0-3', 'memorySize': 1024 * 1024, 'distance': [10, 20]}
+                ]
+        return jsonobject.loads(json.dumps(cmd_dict))
+
+    def test_from_start_vm_cmd_builds_xml_with_features(self):
+        vm_plugin.ovs.OvsDpdkSupportVnic = []
+        vm_plugin.pci.need_config_pcimmio = MagicMock(return_value=True)
+        vm_plugin.pci.get_bars_max_addressable_memory = MagicMock(return_value=256)
+        vm_plugin.linux.get_cpu_model = MagicMock(return_value=('GenuineIntel', 'Intel'))
+        vm_plugin.is_hv_freq_supported = MagicMock(return_value=True)
+        vm_plugin.is_hv_synic_supported = MagicMock(return_value=True)
+        vm_plugin.is_ioapic_supported = MagicMock(return_value=True)
+        vm_plugin.is_spice_tls = MagicMock(return_value=0)
+        vm_plugin.is_spiceport_driver_supported = MagicMock(return_value=True)
+        vm_plugin.notify_vrouter = MagicMock()
+        vm_plugin.VmPlugin.clean_vm_firmware_flash = MagicMock()
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        vm_plugin.linux.VmUsbManager = MagicMock(return_value=MagicMock(request_slot=MagicMock(return_value=1)))
+        vm_plugin.netaddr.IPAddress = MagicMock(side_effect=lambda addr: MagicMock(version=4))
+        vm_plugin.uuidhelper.to_full_uuid = MagicMock(side_effect=lambda value: value)
+        def _real_parse_url(uri):
+            normalized = vm_plugin.re.sub(r'^([a-zA-Z]+:)(?!/{2})', r'\1//', uri, count=1)
+            return vm_plugin.urlparse.urlparse(normalized)
+
+        def _e_with_text(parent, tag, value=None, attrib=None, usenamesapce=False):
+            _ = usenamesapce
+            if attrib is None:
+                attrib = {}
+            attrib = {k: str(v) for k, v in attrib.items()}
+            elem = vm_plugin.etree.SubElement(parent, tag, attrib)
+            if value:
+                elem.text = str(value)
+            return elem
+
+        orig_tostring = vm_plugin.etree.tostring
+        with patch('os.path.exists', return_value=True), \
+                patch.object(vm_plugin, 'parse_url', side_effect=_real_parse_url), \
+                patch.object(vm_plugin, 'xrange', range, create=True), \
+                patch.object(vm_plugin, 'range', self._RangeCompat), \
+                patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
+                patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
+            cmd = self._build_start_cmd(use_numa=False)
+            vm = vm_plugin.Vm.from_StartVmCmd(cmd)
+        xml_str = vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
+        assert '<memoryBacking>' in xml_str
+        assert '<hyperv>' in xml_str
+        assert 'qemu:commandline' in xml_str
+        assert '-qmp' in xml_str
+        assert 'fw_cfg' in xml_str
+        assert 'org.spice-space.webdav.0' in xml_str
+        assert 'protocol="rbd"' in xml_str
+        assert 'clean-traffic' in xml_str
+        assert 'net0-slave1' in xml_str
+
+    def test_from_start_vm_cmd_builds_xml_with_numa(self):
+        vm_plugin.ovs.OvsDpdkSupportVnic = []
+        vm_plugin.linux.get_cpu_model = MagicMock(return_value=('GenuineIntel', 'Intel'))
+        vm_plugin.is_ioapic_supported = MagicMock(return_value=True)
+        vm_plugin.is_spice_tls = MagicMock(return_value=0)
+        vm_plugin.VmPlugin.clean_vm_firmware_flash = MagicMock()
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        vm_plugin.linux.VmUsbManager = MagicMock(return_value=MagicMock(request_slot=MagicMock(return_value=1)))
+        vm_plugin.netaddr.IPAddress = MagicMock(side_effect=lambda addr: MagicMock(version=4))
+        vm_plugin.uuidhelper.to_full_uuid = MagicMock(side_effect=lambda value: value)
+        def _real_parse_url(uri):
+            normalized = vm_plugin.re.sub(r'^([a-zA-Z]+:)(?!/{2})', r'\1//', uri, count=1)
+            return vm_plugin.urlparse.urlparse(normalized)
+
+        def _e_with_text(parent, tag, value=None, attrib=None, usenamesapce=False):
+            _ = usenamesapce
+            if attrib is None:
+                attrib = {}
+            attrib = {k: str(v) for k, v in attrib.items()}
+            elem = vm_plugin.etree.SubElement(parent, tag, attrib)
+            if value:
+                elem.text = str(value)
+            return elem
+
+        orig_tostring = vm_plugin.etree.tostring
+        with patch('os.path.exists', return_value=True), \
+                patch.object(vm_plugin, 'parse_url', side_effect=_real_parse_url), \
+                patch.object(vm_plugin, 'xrange', range, create=True), \
+                patch.object(vm_plugin, 'cmp', lambda a, b: (a > b) - (a < b), create=True), \
+                patch.object(vm_plugin, 'is_hv_freq_supported', return_value=False), \
+                patch.object(vm_plugin, 'is_hv_synic_supported', return_value=False), \
+                patch.object(vm_plugin, 'range', self._RangeCompat), \
+                patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
+                patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
+            cmd = self._build_start_cmd(use_numa=True)
+            cmd.nics = []
+            cmd.cdRoms = []
+            cmd.consoleMode = 'vnc'
+            vm = vm_plugin.Vm.from_StartVmCmd(cmd)
+        xml_str = vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
+        assert '<vcpu' in xml_str
+        assert 'numa' in xml_str
+
+
+@pytest.mark.kvmagent
+class TestVmPluginDiskXmlHelpers:
+    _orig_fromstring: Callable[..., object] | None = None
+    _orig_parse: Callable[..., object] | None = None
+    _orig_tostring: Callable[..., object] | None = None
+
+    def _build_parser(self):
+        class _CompatElement(ET.Element):
+            def getchildren(self):
+                return list(self)
+
+        return vm_plugin.etree.XMLParser(target=vm_plugin.etree.TreeBuilder(element_factory=_CompatElement))
+
+    def _parse_with_getchildren(self, xml_str):
+        parser = self._build_parser()
+        if self._orig_fromstring is None:
+            raise AssertionError("_orig_fromstring not set")
+        return self._orig_fromstring(xml_str, parser=parser)
+
+    def _parse_file_with_getchildren(self, file_path, **_kwargs):
+        parser = self._build_parser()
+        if self._orig_parse is None:
+            raise AssertionError("_orig_parse not set")
+        return self._orig_parse(file_path, parser=parser)
+
+    def _write_temp_file(self, content):
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            data = content.encode() if isinstance(content, str) else content
+            _ = tmp.write(data)
+            return tmp.name
+
+    def test_get_new_disk_updates_block_source(self):
+        disk_xml = (
+            "<disk type='file' device='disk'>"
+            "<driver name='qemu' type='qcow2'/>"
+            "<source file='/dev/vol0'/>"
+            "<target dev='vda' bus='virtio'/>"
+            "<alias name='virtio-disk0'/>"
+            "<serial>vol0</serial>"
+            "<wwn>wwn0</wwn>"
+            "<address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/>"
+            "</disk>"
+        )
+        vm_plugin.block_device_use_block_type = MagicMock(return_value=True)
+        self._orig_fromstring = vm_plugin.etree.fromstring
+        old_disk = self._parse_with_getchildren(disk_xml)
+        orig_tostring = vm_plugin.etree.tostring
+        with patch.object(vm_plugin.etree, 'tostring', return_value='disk-xml'), \
+                patch.object(vm_plugin, 'logger', MagicMock()):
+            new_disk = vm_plugin.VmPlugin._get_new_disk(old_disk)
+        new_xml = orig_tostring(new_disk).decode()
+        assert 'type="block"' in new_xml
+        assert 'source dev="/dev/vol0"' in new_xml
+        assert 'alias name="virtio-disk0"' in new_xml
+        assert '<serial>' in new_xml
+        assert '<wwn>' in new_xml
+
+    def test_build_domain_new_xml_and_dest_disk_xml(self):
+        plugin = _make_vm_plugin()
+        vm = MagicMock()
+        vm.domain_xml = (
+            "<domain>"
+            "<devices>"
+            "<disk type='file' device='disk'>"
+            "<driver name='qemu' type='qcow2'/>"
+            "<source file='/dev/old'/>"
+            "<target dev='vda' bus='virtio'/>"
+            "<alias name='virtio-disk0'/>"
+            "</disk>"
+            "</devices>"
+            "</domain>"
+        )
+        vm._get_target_disk_by_path = MagicMock(return_value=(None, 'vda'))
+        vm_plugin.block_device_use_block_type = MagicMock(return_value=True)
+        self._orig_parse = vm_plugin.etree.parse
+        self._orig_fromstring = vm_plugin.etree.fromstring
+        self._orig_tostring = vm_plugin.etree.tostring
+        with patch.object(vm_plugin.linux, 'write_to_temp_file', side_effect=self._write_temp_file), \
+                patch.object(vm_plugin.etree, 'parse', side_effect=self._parse_file_with_getchildren), \
+                patch.object(vm_plugin.etree, 'fromstring', side_effect=self._parse_with_getchildren), \
+                patch.object(vm_plugin.etree, 'tostring', return_value='disk-xml'), \
+                patch.object(vm_plugin, 'logger', MagicMock()):
+            volume = jsonobject.loads(json.dumps({
+                'deviceType': 'file',
+                'installPath': '/dev/new',
+                'cacheMode': 'none',
+                'useVirtio': True,
+                'useVirtioSCSI': False,
+                'volumeUuid': 'vol-uuid',
+                'deviceId': 0,
+            }))
+            disks, fpath = plugin._build_domain_new_xml(vm, {'/dev/old': volume})
+            assert 'vda' in list(disks)
+            with open(fpath, 'r', encoding='utf-8') as f:
+                updated = f.read()
+            assert 'type="block"' in updated
+            assert 'source dev="/dev/new"' in updated
+            dev, disk_xml_path = plugin._build_dest_disk_xml(vm, '/dev/old', volume)
+            assert dev == 'vda'
+            with open(disk_xml_path, 'r', encoding='utf-8') as f:
+                disk_xml = f.read()
+            assert disk_xml == 'disk-xml'
+
+
+@pytest.mark.kvmagent
+class TestUsbLibvirtHelpers:
+    def test_attach_and_detach_usb_by_libvirt(self):
+        import importlib
+        from zstacklib.utils import linux
+
+        def _identity_retry(*_args, **_kwargs):
+            def _decorator(func):
+                return func
+            return _decorator
+
+        linux.retry = _identity_retry
+        reloaded = importlib.reload(vm_plugin)
+        reloaded.http = http
+        reloaded.jsonobject = jsonobject
+        plugin = reloaded.VmPlugin.__new__(reloaded.VmPlugin)
+        plugin.config = {}
+        vm = MagicMock()
+        vm.domain.XMLDesc = MagicMock(return_value=(
+            "<domain><devices>"
+            "<hostdev type='usb'><address type='usb' bus='0' port='1'/></hostdev>"
+            "<redirdev type='tcp'><address type='usb' bus='0' port='2'/></redirdev>"
+            "</devices></domain>"
+        ))
+        vm.domain.attachDeviceFlags = MagicMock()
+        vm.domain.detachDeviceFlags = MagicMock()
+        reloaded.get_vm_by_uuid = MagicMock(return_value=vm)
+        cmd = MagicMock(
+            vmUuid='vm-uuid',
+            attachType='PassThrough',
+            idVendor='1d6b',
+            idProduct='0002',
+            busNum='001',
+            devNum='002',
+            vmBusNum=0,
+            ip='127.0.0.1',
+            port=1234,
+        )
+        ok, err = plugin._attach_usb_by_libvirt(cmd)
+        assert ok is True
+        assert err is None
+        assert vm.domain.attachDeviceFlags.called
+
+        class _LibvirtError(Exception):
+            pass
+
+        reloaded.libvirt.libvirtError = _LibvirtError
+        vm.domain.detachDeviceFlags = MagicMock(side_effect=_LibvirtError('redirdev was not found'))
+        cmd.attachType = 'Redirect'
+        assert plugin._detach_usb_by_libvirt(cmd) is True
+
+
+@pytest.mark.kvmagent
+class TestVmAttachDetachDataVolume:
+    def _identity_retry(self, *_args, **_kwargs):
+        def _decorator(func):
+            return func
+        return _decorator
+
+    def test_attach_data_volume_builds_xml_with_qos_and_iothread(self):
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.uuid = 'vm-uuid'
+        vm.domain = MagicMock()
+        vm.domain.attachDeviceFlags = MagicMock()
+        vm.domain_xmlobject = MagicMock()
+        vm.domain_xmlobject.os.type.machine_ = 'q35'
+
+        volume = jsonobject.loads(json.dumps({
+            'deviceId': 1,
+            'deviceType': 'file',
+            'installPath': '/path/data.qcow2',
+            'cacheMode': 'none',
+            'useVirtio': True,
+            'useVirtioSCSI': True,
+            'volumeUuid': 'vol-data',
+            'wwn': 'wwn-data',
+            'shareable': True,
+            'multiQueues': 2,
+            'ioThreadId': 2,
+            'ioThreadPin': '0-3',
+        }))
+
+        addons = jsonobject.loads(json.dumps({
+            'NativeAio': False,
+            'VolumeQos': {
+                'vol-data': {
+                    'readBandwidth': 1024,
+                    'writeBandwidth': 2048,
+                    'totalBandwidth': 3072,
+                    'readIOPS': 100,
+                    'writeIOPS': 200,
+                    'totalIOPS': 300,
+                }
+            },
+            'attachedDataVolumes': [],
+        }))
+
+        vm_plugin.linux.get_img_fmt = MagicMock(return_value='qcow2')
+        vm_plugin.linux.retry = self._identity_retry
+        vm_plugin.linux.wait_callback_success = MagicMock(return_value=True)
+        vm_plugin.VmPlugin.get_iothread_info = MagicMock(return_value=[('1', '0-3')])
+        vm_plugin.VmPlugin.add_io_thread = MagicMock(return_value=None)
+        vm_plugin.VmPlugin.pin_io_thread = MagicMock(return_value=None)
+        vm_plugin.VmPlugin.add_scsi_controller = MagicMock(return_value=1)
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=MagicMock(get_occupied_disk_address_units=MagicMock(return_value=[0])))
+
+        def _e_with_text(parent, tag, value=None, attrib=None, usenamesapce=False):
+            _ = usenamesapce
+            if attrib is None:
+                attrib = {}
+            attrib = {k: str(v) for k, v in attrib.items()}
+            elem = vm_plugin.etree.SubElement(parent, tag, attrib)
+            if value:
+                elem.text = str(value)
+            return elem
+
+        orig_tostring = vm_plugin.etree.tostring
+        with patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
+                patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
+            vm._attach_data_volume(volume, addons)
+
+        assert vm.domain.attachDeviceFlags.called
+        xml = vm.domain.attachDeviceFlags.call_args[0][0]
+        assert b'iotune' in xml
+        assert b'read_bytes_sec' in xml
+        assert b'write_iops_sec' in xml
+        assert b'serial' in xml
+
+    def test_detach_data_volume_logs_out_iscsi(self):
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.uuid = 'vm-uuid'
+        vm.domain = MagicMock()
+        vm.domain.detachDeviceFlags = MagicMock()
+        vm.domain_xml = (
+            "<domain><devices>"
+            "<disk type='block' device='disk'>"
+            "<driver name='qemu' type='raw'/>"
+            "<source dev='/dev/iscsi/vol-uuid'/>"
+            "<target dev='vdb' bus='virtio'/>"
+            "</disk>"
+            "</devices></domain>"
+        )
+        vm.domain_xmlobject = vm_plugin.xmlobject.loads(vm.domain_xml)
+
+        volume = jsonobject.loads(json.dumps({
+            'deviceId': 1,
+            'deviceType': 'iscsi',
+            'installPath': 'iscsi://127.0.0.1:3260/iqn/1',
+            'volumeUuid': 'vol-uuid',
+            'useVirtio': False,
+        }))
+
+        vm_plugin.linux.retry = self._identity_retry
+        vm_plugin.linux.wait_callback_success = MagicMock(return_value=True)
+        vm_plugin.is_libvirt_support_blockdev = MagicMock(return_value=True)
+        vm_plugin.BlkIscsi.logout_portal = MagicMock()
+
+        vm._get_target_disk = MagicMock(return_value=(MagicMock(source=MagicMock(dev_='/dev/iscsi/vol-uuid')), 'vdb'))
+
+        vm_plugin.Vm.timeout_detached_vol.add(volume.installPath + '-' + vm.uuid)
+        vm._detach_data_volume(volume)
+
+        assert vm.domain.detachDeviceFlags.called
+        vm_plugin.BlkIscsi.logout_portal.assert_called_once_with('/dev/iscsi/vol-uuid')
+        assert volume.installPath + '-' + vm.uuid not in vm_plugin.Vm.timeout_detached_vol
+
+
+@pytest.mark.kvmagent
+class TestTakeVolumeSnapshotOnlineHandler:
+    def test_take_volume_snapshot_online_running_vm(self):
+        plugin = _make_vm_plugin()
+        vm = MagicMock()
+        vm.state = vm_plugin.Vm.VM_STATE_RUNNING
+        vm.VM_STATE_RUNNING = vm_plugin.Vm.VM_STATE_RUNNING
+        vm.VM_STATE_PAUSED = vm_plugin.Vm.VM_STATE_PAUSED
+        vm.take_volume_snapshot = MagicMock(return_value=('/path/snap', '/path/new'))
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=vm)
+        cmd = MagicMock(
+            vmUuid='vm-uuid',
+            volumeUuid='vol-uuid',
+            volume=MagicMock(deviceId=0),
+            installPath='/path/snap',
+            volumeInstallPath='/path/vol',
+            newVolumeInstallPath='/path/new',
+            fullSnapshot=False,
+            online=True,
+            isBaremetal2InstanceOnlineSnapshot=False,
+        )
+        vm_plugin.Vm.SNAPSHOT_VM_STATE_DICT = {
+            vm_plugin.LIVE_SNAPSHOT: (vm_plugin.Vm.VM_STATE_RUNNING,),
+            vm_plugin.OFFLINE_SNAPSHOT: (vm_plugin.Vm.VM_STATE_SHUTDOWN,),
+        }
+        vm_plugin.Vm.ensure_no_internal_snapshot = MagicMock()
+        vm_plugin.linux.sync_file = MagicMock()
+        vm_plugin.VmPlugin._get_snapshot_size = MagicMock(return_value=321)
+        vm_plugin.touchQmpSocketWhenExists = MagicMock()
+
+        with patch.object(vm_plugin.jsonobject, 'loads', return_value=cmd), \
+                patch.object(vm_plugin.jsonobject, 'dumps',
+                             side_effect=lambda obj: json.dumps(obj.__dict__)):
+            req = _make_req({})
+            result = plugin.take_volume_snapshot(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert rsp['size'] == 321
+        vm.take_volume_snapshot.assert_called_once_with(cmd, cmd.volume, cmd.installPath, cmd.fullSnapshot)
+
+
+@pytest.mark.kvmagent
+class TestVmDiskHelpers:
+    def test_get_all_disk_backing_chain_parses_xml(self):
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.domain_xml = (
+            "<domain><devices>"
+            "<disk type='file' device='disk'>"
+            "<source file='/tmp/pull4.qcow2'/>"
+            "<backingStore type='file'>"
+            "<source file='/tmp/pull3.qcow2'/>"
+            "<backingStore type='file'>"
+            "<source file='/tmp/pull2.qcow2'/>"
+            "<backingStore/>"
+            "</backingStore>"
+            "</backingStore>"
+            "<target dev='vda' bus='virtio'/>"
+            "</disk>"
+            "</devices></domain>"
+        )
+        orig_tostring = vm_plugin.etree.tostring
+        with patch.object(vm_plugin.etree, 'tostring', side_effect=lambda elem: orig_tostring(elem).decode()):
+            chains = vm.get_all_disk_backing_chain()
+        assert chains == [['/tmp/pull4.qcow2', '/tmp/pull3.qcow2', '/tmp/pull2.qcow2']]
+
+    def test_get_source_file_and_index(self):
+        disk = MagicMock()
+        disk.type_ = 'file'
+        disk.source.file__ = True
+        disk.source.file_ = '/tmp/vol.qcow2'
+        disk.source.index__ = True
+        disk.source.index_ = '2'
+        assert vm_plugin.VmPlugin.get_source_file_by_disk(disk) == '/tmp/vol.qcow2'
+        assert vm_plugin.VmPlugin.get_source_index_by_disk(disk) == '2'
+
+
+@pytest.mark.kvmagent
+class TestVmMigrateBitmapChecks:
+    def test_is_vm_migrate_without_dirty_bitmap_returns_true_when_qemu_missing(self):
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.uuid = 'vm-uuid'
+        vm.domain_xmlobject = MagicMock()
+        vm.domain_xmlobject.devices.get_child_node_as_list = MagicMock(return_value=[])
+        vm_plugin.qemu.get_running_version = MagicMock(return_value='')
+        vm_plugin.is_qemu_support_migrate_with_bitmap = MagicMock(return_value=False)
+        vm_plugin.linux.get_libvirt_version = MagicMock(return_value='8.0.0')
+        vm_plugin.is_libvirt_support_migrate_with_bitmap = MagicMock(return_value=True)
+        vm_plugin.qmp.execute_qmp_command = MagicMock(return_value=[{'name': 'node'}])
+        vm_plugin.linux.find_process_by_cmdline = MagicMock(return_value=None)
+
+        assert vm._is_vm_migrate_without_dirty_bitmap() is True
+
+
+@pytest.mark.kvmagent
+class TestMirrorJobHelpers:
+    def test_check_mirror_jobs_sets_caps_when_needed(self):
+        vm_plugin.ImageStoreClient = MagicMock(return_value=MagicMock(stop_backup_jobs=MagicMock()))
+        vm_plugin.get_vm_migration_caps = MagicMock(return_value=True)
+        vm_plugin.qmp.execute_qmp_command = MagicMock()
+
+        vm_plugin.check_mirror_jobs('vm-uuid', True)
+
+        vm_plugin.qmp.execute_qmp_command.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestLiveVolumeSnapshots:
+    def _identity_retry(self, *_args, **_kwargs):
+        def _decorator(func):
+            return func
+        return _decorator
+
+    def test_take_live_volumes_delta_snapshots_success(self):
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.uuid = 'vm-uuid'
+        vm.domain = MagicMock()
+        vm.domain.snapshotCreateXML = MagicMock()
+        vm.refresh = MagicMock()
+        vm.rollback_memory_snapshot = MagicMock()
+        vm.dump_vm_xml_to_log = MagicMock()
+        vm.domain_xmlobject = MagicMock()
+        vm.domain_xmlobject.devices.get_child_node_as_list = MagicMock(return_value=[])
+
+        volume = jsonobject.loads(json.dumps({
+            'deviceId': 0,
+            'deviceType': 'file',
+            'installPath': '/path/root.qcow2',
+        }))
+        vs_struct = MagicMock(
+            live=True,
+            full=False,
+            memory=False,
+            installPath='/path/snap1',
+            volume=volume,
+            volumeUuid='vol-1',
+        )
+
+        vm._get_target_disk = MagicMock(return_value=(MagicMock(type_='file', target=MagicMock(dev_='vda')), 'vda'))
+        vm_plugin.VmPlugin.get_source_file_by_disk = MagicMock(return_value='/path/root.qcow2')
+        vm_plugin.VmPlugin._get_snapshot_size = MagicMock(return_value=100)
+        vm_plugin.VmPlugin.active_volume_if_need = MagicMock()
+        vm_plugin.linux.retry = self._identity_retry
+        vm_plugin.linux.wait_callback_success = MagicMock(return_value=True)
+
+        with patch('os.path.exists', return_value=True):
+            result = vm.take_live_volumes_delta_snapshots([vs_struct])
+
+        assert len(result) == 1
+        assert result[0].installPath == '/path/snap1'
+
+
+@pytest.mark.kvmagent
+class TestBaremetalOnlineSnapshotHandler:
+    def test_take_volume_snapshot_bm_online_rollback(self):
+        plugin = _make_vm_plugin()
+        cmd = MagicMock(
+            vmUuid='vm-uuid',
+            volumeUuid='vol-uuid',
+            volume=MagicMock(deviceId=0),
+            installPath='/path/snap',
+            volumeInstallPath='/path/vol',
+            newVolumeInstallPath='/path/new',
+            fullSnapshot=False,
+            online=True,
+            isBaremetal2InstanceOnlineSnapshot=True,
+        )
+        vm_plugin.Vm.ensure_no_internal_snapshot = MagicMock()
+        vm_plugin.bm_utils.NamedLock = MagicMock()
+        vm_plugin.BmV2GwAgent.pre_take_volume_snapshot = MagicMock(return_value=('src', 'dst'))
+        vm_plugin.BmV2GwAgent.rollback_volume_snapshot = MagicMock()
+        vm_plugin.linux.qcow2_clone_with_cmd = MagicMock(side_effect=Exception('clone failed'))
+        vm_plugin.VmPlugin._get_snapshot_size = MagicMock(return_value=1)
+        vm_plugin.linux.sync_file = MagicMock()
+
+        with patch.object(vm_plugin.jsonobject, 'loads', return_value=cmd), \
+                patch.object(vm_plugin.jsonobject, 'dumps',
+                             side_effect=lambda obj: json.dumps(obj.__dict__)):
+            req = _make_req({})
+            result = plugin.take_volume_snapshot(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is False
+        vm_plugin.BmV2GwAgent.rollback_volume_snapshot.assert_called_once()
+
+@pytest.mark.kvmagent
+class TestVmAttachVolumeVariants:
+    def _identity_retry(self, *_args, **_kwargs):
+        def _decorator(func):
+            return func
+        return _decorator
+
+    def test_attach_data_volume_multiple_device_types(self):
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.uuid = 'vm-uuid'
+        vm.domain = MagicMock()
+        vm.domain.attachDeviceFlags = MagicMock()
+        vm.domain_xmlobject = MagicMock()
+        vm.domain_xmlobject.os.type.machine_ = 'q35'
+        vm.domain_xmlobject.has_element = MagicMock(return_value=True)
+        vm.domain_xmlobject.memoryBacking = MagicMock()
+        vm.domain_xmlobject.memoryBacking.has_element = MagicMock(return_value=True)
+        vm.domain_xmlobject.memoryBacking.access.mode_ = 'shared'
+
+        vm_plugin.linux.get_img_fmt = MagicMock(return_value='qcow2')
+        vm_plugin.linux.retry = self._identity_retry
+        vm_plugin.linux.wait_callback_success = MagicMock(return_value=True)
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=MagicMock(get_occupied_disk_address_units=MagicMock(return_value=[])))
+        vm_plugin.get_sgio_value = MagicMock(return_value='filtered')
+
+        def _e_with_text(parent, tag, value=None, attrib=None, usenamesapce=False):
+            _ = usenamesapce
+            if attrib is None:
+                attrib = {}
+            attrib = {k: str(v) for k, v in attrib.items()}
+            elem = vm_plugin.etree.SubElement(parent, tag, attrib)
+            if value:
+                elem.text = str(value)
+            return elem
+
+        orig_tostring = vm_plugin.etree.tostring
+        with patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
+                patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring), \
+                patch('os.path.exists', return_value=True):
+            volumes = [
+                {
+                    'deviceId': 1,
+                    'deviceType': 'ceph',
+                    'installPath': 'ceph://pool/vol1',
+                    'useVirtio': False,
+                    'useVirtioSCSI': False,
+                    'volumeUuid': 'vol-ceph-1',
+                    'secretUuid': 'sec-1',
+                    'monInfo': [{'hostname': '10.0.0.2', 'port': 6789}],
+                },
+                {
+                    'deviceId': 2,
+                    'deviceType': 'ceph',
+                    'installPath': 'ceph://pool/vol2',
+                    'useVirtio': True,
+                    'useVirtioSCSI': True,
+                    'volumeUuid': 'vol-ceph-2',
+                    'secretUuid': 'sec-2',
+                    'monInfo': [{'hostname': '10.0.0.3', 'port': 6789}],
+                    'wwn': 'wwn-ceph-2',
+                },
+                {
+                    'deviceId': 3,
+                    'deviceType': 'block',
+                    'installPath': '/dev/sdb',
+                    'useVirtio': True,
+                    'useVirtioSCSI': False,
+                    'volumeUuid': 'vol-block',
+                    'cacheMode': 'none',
+                },
+                {
+                    'deviceId': 4,
+                    'deviceType': 'cbd',
+                    'installPath': 'cbd://pool/vol4',
+                    'useVirtio': True,
+                    'useVirtioSCSI': False,
+                    'volumeUuid': 'vol-cbd',
+                    'physicalBlockSize': 4096,
+                },
+                {
+                    'deviceId': 5,
+                    'deviceType': 'vhost',
+                    'installPath': '/var/run/vhost.sock',
+                    'useVirtio': True,
+                    'useVirtioSCSI': False,
+                    'volumeUuid': 'vol-vhost',
+                    'format': 'raw',
+                },
+                {
+                    'deviceId': 6,
+                    'deviceType': 'iscsi',
+                    'installPath': 'iscsi://127.0.0.1:3260/iqn.2004-01.example/0',
+                    'useVirtio': True,
+                    'volumeUuid': 'vol-iscsi-virtio',
+                    'chapUsername': None,
+                    'chapPassword': None,
+                },
+                {
+                    'deviceId': 7,
+                    'deviceType': 'iscsi',
+                    'installPath': 'iscsi://127.0.0.1:3260/iqn.2004-02.example/0',
+                    'useVirtio': False,
+                    'volumeUuid': 'vol-iscsi-blk',
+                    'chapUsername': None,
+                    'chapPassword': None,
+                },
+                {
+                    'deviceId': 8,
+                    'deviceType': 'scsilun',
+                    'installPath': '/dev/sg1',
+                    'useVirtio': True,
+                    'useVirtioSCSI': True,
+                    'volumeUuid': 'vol-scsilun',
+                },
+            ]
+
+            addons = jsonobject.loads(json.dumps({'NativeAio': False, 'VolumeQos': None, 'attachedDataVolumes': []}))
+            addons.__getitem__ = lambda _self, _key: False
+            for vol in volumes:
+                volume = jsonobject.loads(json.dumps(vol))
+                volume.deviceId = vol['deviceId']
+                volume.deviceType = vol['deviceType']
+                vm._attach_data_volume(volume, addons)
