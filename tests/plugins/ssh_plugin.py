@@ -29,6 +29,16 @@ def pytest_addoption(parser):
         default=None,
         help="SSH private key path for key-based authentication.",
     )
+    parser.addoption(
+        "--direct-host",
+        action="store",
+        default=None,
+        help=(
+            "Direct host IP for HTTP integration tests (bypasses SSH tunnel). "
+            "Use when VPN provides direct network access to agent host. "
+            "Format: IP or hostname (e.g., 172.24.194.116)"
+        ),
+    )
 
 
 def parse_ssh_host(host_string: str) -> Tuple[str, Optional[str], str, int]:

@@ -24,7 +24,7 @@ class AgentClient:
     HTTP client for agent API requests.
     
     Uses requests.Session for connection pooling and persistence.
-    All requests go through SSH tunnel (localhost forwarding).
+    Connects via SSH tunnel (localhost) or directly to remote host.
     """
     
     def __init__(self, base_url: str):
@@ -72,61 +72,45 @@ class AgentClient:
 # Agent client fixtures (one per agent)
 
 @pytest.fixture
-def kvmagent_client(ssh_tunnel):
+def kvmagent_client(ssh_tunnel, agent_host):
     """
     HTTP client for kvmagent.
     
-    Requires ssh_tunnel fixture (ensures port forwarding is active).
-    Connects to localhost:7070 which is forwarded to remote kvmagent:7070.
+    Depends on ssh_tunnel (for tunnel mode) and agent_host (for URL routing).
+    In direct mode, agent_host is the remote IP; in tunnel mode, it's 127.0.0.1.
     """
-    client = AgentClient(f"http://127.0.0.1:{AGENT_PORTS['kvmagent']}")
+    client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['kvmagent']}")
     yield client
     client.close()
 
 
 @pytest.fixture
-def virtualrouter_client(ssh_tunnel):
-    """
-    HTTP client for virtualrouter agent.
-    
-    Connects to localhost:7272 (forwarded to remote virtualrouter:7272).
-    """
-    client = AgentClient(f"http://127.0.0.1:{AGENT_PORTS['virtualrouter']}")
+def virtualrouter_client(ssh_tunnel, agent_host):
+    """HTTP client for virtualrouter agent."""
+    client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['virtualrouter']}")
     yield client
     client.close()
 
 
 @pytest.fixture
-def appliancevm_client(ssh_tunnel):
-    """
-    HTTP client for appliancevm agent.
-    
-    Connects to localhost:7759 (forwarded to remote appliancevm:7759).
-    """
-    client = AgentClient(f"http://127.0.0.1:{AGENT_PORTS['appliancevm']}")
+def appliancevm_client(ssh_tunnel, agent_host):
+    """HTTP client for appliancevm agent."""
+    client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['appliancevm']}")
     yield client
     client.close()
 
 
 @pytest.fixture
-def cephbackup_client(ssh_tunnel):
-    """
-    HTTP client for ceph backup storage agent.
-    
-    Connects to localhost:7761 (forwarded to remote cephbackup:7761).
-    """
-    client = AgentClient(f"http://127.0.0.1:{AGENT_PORTS['cephbackup']}")
+def cephbackup_client(ssh_tunnel, agent_host):
+    """HTTP client for ceph backup storage agent."""
+    client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['cephbackup']}")
     yield client
     client.close()
 
 
 @pytest.fixture
-def cephprimary_client(ssh_tunnel):
-    """
-    HTTP client for ceph primary storage agent.
-    
-    Connects to localhost:7762 (forwarded to remote cephprimary:7762).
-    """
-    client = AgentClient(f"http://127.0.0.1:{AGENT_PORTS['cephprimary']}")
+def cephprimary_client(ssh_tunnel, agent_host):
+    """HTTP client for ceph primary storage agent."""
+    client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['cephprimary']}")
     yield client
     client.close()

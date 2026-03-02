@@ -281,44 +281,32 @@ def ssh_tunnel(request) -> Optional[SSHTunnelManager]:
     """
     Create and manage SSH tunnel for HTTP integration tests.
     
-    This fixture:
-    1. Checks for --ssh-host option (required for HTTP tests)
-    2. Parses SSH connection info using parse_ssh_host()
-    3. Builds SSH client using _build_ssh_client()
-    4. Creates SSHTunnelManager with all agent ports
-    5. Starts port forwarding threads
-    6. Yields tunnel manager for test use
-    7. Cleans up and closes SSH connection on teardown
+    Supports two modes:
+    1. SSH tunnel mode (--ssh-host): Creates SSH port forwarding to remote agents
+    2. Direct mode (--direct-host): No tunnel needed, tests connect directly via VPN
     
-    The fixture has session scope, so it creates ONE tunnel for the entire
-    test session. All HTTP tests in the session reuse the same tunnel.
+    In direct mode, this fixture yields None (no tunnel) and agent clients
+    connect to the remote host directly using the IP from --direct-host.
     
     Behavior:
-        - If --ssh-host is not provided: pytest.skip() the test
-        - If SSH connection fails: raises RuntimeError
-        - If port binding fails: raises RuntimeError
-    
-    Returns:
-        SSHTunnelManager: Active tunnel manager with all ports forwarded
-    
-    Raises:
-        pytest.skip.Exception: If --ssh-host not provided
-        RuntimeError: If SSH connection or port binding fails
-    
-    Example:
-        @pytest.mark.http
-        def test_kvmagent_api(ssh_tunnel):
-            # ssh_tunnel is active, ports are forwarded
-            response = requests.get("http://localhost:7070/api/...")
-            assert response.status_code == 200
+        - If --direct-host is provided: yield None (no tunnel needed)
+        - If --ssh-host is provided: create SSH tunnel
+        - If neither is provided: pytest.skip() the test
     """
     
-    # Check if --ssh-host option is provided
+    # Direct host mode: no tunnel needed, VPN provides direct access
+    direct_host = request.config.getoption("--direct-host", default=None)
+    if direct_host:
+        yield None
+        return
+    
+    # SSH tunnel mode: requires --ssh-host
     ssh_host = request.config.getoption("--ssh-host", default=None)
     if not ssh_host:
         pytest.skip(
-            "HTTP integration tests require --ssh-host option. "
-            "Usage: pytest tests/http/ --ssh-host=user:pass@192.168.1.100"
+            "HTTP integration tests require --ssh-host or --direct-host option. "
+            "Usage: pytest tests/http/ --ssh-host=user:pass@host "
+            "or: pytest tests/http/ --direct-host=172.24.194.116"
         )
     
     # Get SSH authentication options
@@ -364,22 +352,31 @@ def ssh_tunnel(request) -> Optional[SSHTunnelManager]:
 
 
 @pytest.fixture(scope="session")
-def agent_base_urls() -> Dict[str, str]:
+def agent_host(request) -> str:
+    """
+    Return the target host for agent HTTP connections.
+    
+    In direct mode: returns the --direct-host IP (agents are accessed directly).
+    In SSH tunnel mode: returns '127.0.0.1' (agents accessed via tunnel).
+    """
+    direct_host = request.config.getoption("--direct-host", default=None)
+    if direct_host:
+        return direct_host
+    return "127.0.0.1"
+
+
+@pytest.fixture(scope="session")
+def agent_base_urls(agent_host) -> Dict[str, str]:
     """
     Provide base URLs for agent HTTP APIs.
     
-    Returns a dictionary mapping agent names to their base URLs.
-    These URLs assume ssh_tunnel fixture is active and forwarding ports.
+    Uses agent_host fixture to determine target (localhost for tunnel,
+    remote IP for direct mode).
     
     Returns:
-        Dict mapping agent names to http://localhost:<port> URLs
-    
-    Example:
-        def test_agent_api(agent_base_urls):
-            kvmagent_url = agent_base_urls["kvmagent"]  # http://localhost:7070
-            response = requests.get(f"{kvmagent_url}/api/...")
+        Dict mapping agent names to http://<host>:<port> URLs
     """
     return {
-        agent_name: f"http://localhost:{port}"
+        agent_name: f"http://{agent_host}:{port}"
         for agent_name, port in AGENT_PORTS.items()
     }
