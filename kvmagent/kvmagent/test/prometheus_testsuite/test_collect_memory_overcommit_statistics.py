@@ -4,7 +4,7 @@ from unittest import TestCase
 
 init_kvmagent()
 
-from kvmagent.plugins import prometheus
+from kvmagent.plugins.services import prometheus
 
 __ENV_SETUP__ = {
     'self': {}
