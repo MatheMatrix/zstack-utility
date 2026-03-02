@@ -238,13 +238,13 @@ class OvsBaseCtl:
     @linux.retry(times=3, sleep_time=1)
     def config_lacp_fallback_ab_for_ovs(self) -> None:
         """Configure LACP fallback for OVS."""
-        shell.run(CTL_BIN + '--no-wait set Open_vSwitch . other-config:lacp-fallback-ab=true')
+        shell.run(CTL_BIN + '--no-wait set Open_vSwitch . other_config:lacp-fallback-ab=true')
         if not self.ovs.check_ovs_configuration('lacp-fallback-ab', 'true'):
             raise OvsError('Config lacp fallback ab for ovs failed.')
 
     def clear_ovs_config(self) -> None:
         """Clear OVS configuration."""
-        shell.run(CTL_BIN + '--no-wait clear Open_vSwitch . other-config')
+        shell.run(CTL_BIN + '--no-wait clear Open_vSwitch . other_config')
 
     def add_normal_if_to_br(self, interface: str, bridge_name: str) -> None:
         """Add a normal interface to bridge."""
@@ -301,12 +301,14 @@ class OvsBaseCtl:
     @_check_ovs
     def add_bridge(self, interface: str, bridge_name: str) -> None:
         """Add a bridge with an interface."""
+        created_by_me = bridge_name not in self.list_bridges()
         try:
             self.create_bridge(bridge_name)
             self._add_interface_to_bridge(interface, bridge_name)
             self.ovs.restart_switch()
         except OvsError:
-            self.delete_bridge(bridge_name)
+            if created_by_me:
+                self.delete_bridge(bridge_name)
             raise
 
     def _nic_backend_gc(self) -> None:
@@ -493,6 +495,9 @@ def get_ovs_ctl(with_dpdk: bool | None = None) -> OvsBaseCtl:
 
 def is_vm_use_openvswitch(vm_uuid: str) -> bool:
     """Check if a VM is using Open vSwitch."""
+    import re as _re
+    if not _re.match(r'^[0-9a-fA-F-]+$', vm_uuid):
+        raise OvsError(f'Invalid vm_uuid: {vm_uuid}')
     try:
         vm_interface_list = shell.call(f'virsh domiflist {vm_uuid}').strip()
         if 'vhostuser' in vm_interface_list:

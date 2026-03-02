@@ -186,8 +186,7 @@ class NbdRemoteStorage(remoteStorage.RemoteStorage):
         if not os.path.isdir(self.mount_path):
             linux.mkdir(self.mount_path)
         
-        fstype = get_fs_type(self.mount_path)
-        return self.do_mount(fstype)
+        return self.do_mount()
     
     def umount(self):
         # type: () -> None

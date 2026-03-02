@@ -478,5 +478,9 @@ def from_iptables_save() -> IPTables:
 
 def insert_single_rule_to_filter_table(rule: str) -> None:
     """Insert a single rule to filter table if not exists."""
-    insert_rule = rule.replace('-A', '-I')
-    shell.call("/sbin/iptables-save | grep -- '{0}' > /dev/null || iptables {1}".format(rule, insert_rule))
+    if not rule.startswith('-A '):
+        raise IPTablesError("rule must start with '-A '")
+    if any(ch in rule for ch in ["'", '"', ';', '|', '&', '`', '$', '\n', '\r']):
+        raise IPTablesError('unsafe characters in rule')
+    insert_rule = rule.replace('-A ', '-I ', 1)
+    shell.call("/sbin/iptables-save | grep -F -- '{0}' > /dev/null || iptables {1}".format(rule, insert_rule))

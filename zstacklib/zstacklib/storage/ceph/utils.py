@@ -77,16 +77,16 @@ def get_mon_addr(monmap, route_protocol=None):
     import zstacklib.utils.jsonobject as jsonobject
     
     for mon in jsonobject.loads(monmap).mons:
-        ADDR = mon.addr.split(':')[0]
+        addr = mon.addr.split(':')[0]
         cmd = ''
         if route_protocol is None:
-            cmd = 'ip route | grep -w {{ADDR}} > /dev/null'
+            cmd = 'ip route | grep -w %s > /dev/null' % addr
         elif route_protocol == "kernel":
-            cmd = 'ip route | grep -w "proto kernel" | grep -w {{ADDR}} > /dev/null'
+            cmd = 'ip route | grep -w "proto kernel" | grep -w %s > /dev/null' % addr
         if cmd == '':
             return None
         if bash_r(cmd) == 0:
-            return ADDR
+            return addr
     return None
 
 

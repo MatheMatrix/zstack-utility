@@ -34,7 +34,7 @@ class Node:
 
     def insert_child_before(self, n1: 'Node', n2: 'Node') -> None:
         pos = self.children.index(n1)
-        self.children.insert(pos - 1, n2)
+        self.children.insert(pos, n2)
         n2.parent = self
 
     def insert_child_after(self, n1: 'Node', n2: 'Node') -> None:

@@ -155,6 +155,9 @@ class IPSetManager:
 
         execns = ''
         if self.namespace:
+            import re as _re
+            if not _re.match(r'^[A-Za-z0-9_.-]+$', self.namespace):
+                raise IPSetError('invalid namespace: %s' % self.namespace)
             execns = 'ip netns exec %s ' % self.namespace
 
         o = shell.ShellCmd(execns + 'ipset restore -f %s' % tmp_path)
