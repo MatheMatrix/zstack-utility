@@ -7,8 +7,10 @@ Each test imports the REAL handler code, constructs a request dict,
 calls the handler method, and asserts on the JSON response.
 System dependencies (shell, linux, libvirt) are mocked.
 """
+import io
 import json
 import os
+import uuid
 import pytest
 from unittest.mock import patch, MagicMock, mock_open
 
@@ -558,6 +560,40 @@ class TestHostPluginEnableZerocopy:
 
 
 @pytest.mark.kvmagent
+class TestHostPluginHugepageDeep:
+    def test_disable_hugepage_runs_script(self):
+        plugin = _make_plugin()
+
+        from zstacklib.utils import linux, shell
+
+        linux.create_temp_file = MagicMock(return_value='/tmp/disable_hugepage.sh')
+        cmd_obj = MagicMock(return_code=0, stdout='ok')
+        cmd_obj.__call__ = MagicMock()
+        shell.ShellCmd = MagicMock(return_value=cmd_obj)
+
+        with patch('builtins.open', mock_open()), \
+                patch('kvmagent.plugins.host_plugin.os.remove'):
+            result = plugin.disable_hugepage(_make_req({}))
+
+        rsp = json.loads(result)
+        assert rsp['success'] is True
+
+    def test_enable_hugepage_rejects_over_reserve(self):
+        plugin = _make_plugin()
+
+        from zstacklib.utils import shell
+
+        shell.ShellCmd = MagicMock(return_value=MagicMock(__call__=MagicMock(return_value='512')))
+
+        req = _make_req({'pageSize': 2, 'reserveSize': 1024 * 1024 * 1024})
+        result = plugin.enable_hugepage(req)
+
+        rsp = json.loads(result)
+        assert rsp['success'] is False
+        assert 'reserve size' in rsp['error']
+
+
+@pytest.mark.kvmagent
 class TestHostPluginDisableZerocopy:
     """Test host_plugin.disable_zerocopy handler."""
 
@@ -568,6 +604,42 @@ class TestHostPluginDisableZerocopy:
 
         req = _make_req()
         result = plugin.disable_zerocopy(req)
+        rsp = json.loads(result)
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestHostPluginZerocopyDeep:
+    def test_enable_zerocopy_updates_config_and_reloads(self):
+        plugin = _make_plugin()
+
+        from zstacklib.utils import linux, shell
+
+        cmd_obj = MagicMock(return_code=0)
+        cmd_obj.__call__ = MagicMock()
+        shell.ShellCmd = MagicMock(return_value=cmd_obj)
+        shell.run = MagicMock(return_value=0)
+        linux.read_file = MagicMock(return_value='options vhost_net experimental_zcopytx=0')
+
+        with patch('kvmagent.plugins.host_plugin.os.path.exists', return_value=True):
+            result = plugin.enable_zerocopy(_make_req({}))
+
+        rsp = json.loads(result)
+        assert rsp['success'] is True
+
+    def test_disable_zerocopy_creates_config_when_missing(self):
+        plugin = _make_plugin()
+
+        from zstacklib.utils import linux, shell
+
+        cmd_obj = MagicMock(return_code=0)
+        cmd_obj.__call__ = MagicMock()
+        shell.ShellCmd = MagicMock(return_value=cmd_obj)
+        shell.run = MagicMock(return_value=0)
+
+        with patch('kvmagent.plugins.host_plugin.os.path.exists', return_value=False):
+            result = plugin.disable_zerocopy(_make_req({}))
+
         rsp = json.loads(result)
         assert rsp['success'] is True
 
@@ -913,6 +985,80 @@ class TestHostPluginGetInterfaceName:
 
 
 @pytest.mark.kvmagent
+class TestHostPluginNetworkInventoryDeep:
+    def test_get_host_networking_interfaces_collects_inventory(self):
+        plugin = _make_plugin()
+
+        from zstacklib.utils import ip, linux, ovs, iproute
+
+        ip.get_host_physicl_nics = MagicMock(return_value=['eth0'])
+        linux.get_interface_ip_addresses = MagicMock(return_value=['192.168.1.10/24'])
+        linux.get_interface_master_device = MagicMock(return_value=None)
+        linux.read_file_strip = MagicMock(return_value='0')
+        linux.read_file = MagicMock(side_effect=lambda path: '1' if path.endswith('/carrier') else '')
+        iproute.query_addresses = MagicMock(return_value=[])
+        ovs.getAllBondFromFile = MagicMock(return_value=None)
+        ovs.getOffloadStatus = MagicMock(return_value='on')
+
+        def exists_side_effect(path):
+            if path.endswith('/physfn'):
+                return False
+            return False
+
+        class _ThreadStub:
+            def __init__(self, fn, args):
+                self._fn = fn
+                self._args = args
+
+            def join(self):
+                self._fn(*self._args)
+
+        thread_facade = MagicMock()
+        thread_facade.run_in_thread = MagicMock(side_effect=lambda fn, args: _ThreadStub(fn, args))
+
+        with patch('kvmagent.plugins.host_plugin.os.readlink', return_value='../../../0000:00:10.0'), \
+                patch('kvmagent.plugins.host_plugin.os.path.exists', side_effect=exists_side_effect), \
+                patch.object(host_plugin, 'bash_roe', return_value=(0, 'Vendor: Intel\nDevice: X520\n', '')), \
+                patch.object(host_plugin, 'bash_o', return_value=''), \
+                patch.object(host_plugin.thread, 'ThreadFacade', thread_facade), \
+                patch.object(host_plugin.subprocess, 'check_output', return_value=b'src 10.0.0.1'):
+            nics = plugin.get_host_networking_interfaces('10.0.0.1')
+
+        assert nics
+        assert nics[0].interfaceName == 'eth0'
+        assert nics[0].interfaceModel is not None
+
+    def test_get_host_networking_bonds_parses_linux_bond(self):
+        from zstacklib.utils import linux, iproute
+
+        def read_file_side_effect(path):
+            mapping = {
+                '/sys/class/net/bonding_masters': 'bond0',
+                '/sys/class/net/bond0/bonding/mode': 'active-backup',
+                '/sys/class/net/bond0/bonding/xmit_hash_policy': 'layer2',
+                '/sys/class/net/bond0/bonding/mii_status': 'up',
+                '/sys/class/net/bond0/address': 'aa:bb:cc:dd:ee:ff',
+                '/sys/class/net/bond0/bonding/miimon': '100',
+                '/sys/class/net/bond0/bonding/all_slaves_active': '0',
+                '/sys/class/net/bond0/bonding/slaves': 'eth0',
+                '/sys/class/net/eth0/address': 'aa:bb:cc:dd:ee:11',
+            }
+            return mapping.get(path, '')
+
+        linux.read_file = MagicMock(side_effect=read_file_side_effect)
+        linux.read_file_strip = MagicMock(side_effect=lambda path: read_file_side_effect(path))
+        iproute.query_addresses = MagicMock(return_value=[])
+
+        with patch('kvmagent.plugins.host_plugin.os.path.exists', return_value=False), \
+                patch.object(host_plugin, 'bash_o', return_value=''), \
+                patch.object(host_plugin.subprocess, 'check_output', return_value=b''):
+            bonds = host_plugin.HostPlugin.get_host_networking_bonds('10.0.0.1')
+
+        assert bonds
+        assert bonds[0].bondingName == 'bond0'
+
+
+@pytest.mark.kvmagent
 class TestHostPluginGetPciInfo:
     def test_get_pci_info_skip_grub(self):
         plugin = _make_plugin()
@@ -1021,3 +1167,478 @@ class TestHostPluginUpdateVmConsolePasswordLive:
             result = plugin.update_vm_console_password_live(req)
         rsp = json.loads(result)
         assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestHostPluginGetPciInfoDeep:
+    def test_get_pci_info_runs_iommu_update_and_collects_devices(self):
+        plugin = _make_plugin()
+
+        for attr in ('HUAWEI', 'HAIGUANG', 'TIANSHU', 'VASTAI', 'ENFLAME', 'ALIBABA', 'KUNLUNXIN'):
+            if not hasattr(host_plugin.VendorEnum, attr):
+                setattr(host_plugin.VendorEnum, attr, attr.lower())
+
+        from zstacklib.utils import linux, pci as pci_mod
+
+        pci_mod.get_pci_device_ids = MagicMock(return_value=(
+            0,
+            "\n".join([
+                "Slot: 0000:00:10.0",
+                "Class: Ethernet controller",
+                "Vendor: 8086",
+                "Device: 100e",
+                "SVendor: 8086",
+                "SDevice: 001e",
+                "Rev: 02",
+            ]),
+            "",
+        ))
+        pci_mod.get_pci_device_names = MagicMock(return_value=(
+            0,
+            "\n".join([
+                "Slot: 0000:00:10.0",
+                "Class: Ethernet controller",
+                "Vendor: Intel Corporation",
+                "Device: 82540EM Gigabit Ethernet Controller",
+                "SVendor: Intel Corporation",
+                "SDevice: PRO/1000 MT Desktop Adapter",
+                "Rev: 02",
+            ]),
+            "",
+        ))
+        pci_mod.collect_pci_devices_with_dependencies = MagicMock(return_value=[])
+        pci_mod.simplify_vendor_name = MagicMock(return_value='Intel')
+        pci_mod.normalize_pci_address = MagicMock(side_effect=lambda addr: addr)
+        pci_mod.pci_device_prepare_chain = MagicMock(return_value=[])
+        pci_mod.pci_device_probe = MagicMock()
+        pci_mod.update_cache_devices = MagicMock()
+        pci_mod.calculate_max_addressable_memory = MagicMock()
+
+        class _Context:
+            def __init__(self, pci_device_mapper=None, opaque=None):
+                self.pci_device_mapper = pci_device_mapper or {}
+                self.opaque = opaque
+                self.gpu_info_map = None
+
+        pci_mod.PciDeviceProcessingContext = _Context
+
+        linux.read_file_lines = MagicMock(
+            return_value=["Ethernet controller:Ethernet controller"]
+        )
+        linux.read_file = MagicMock(return_value='GRUB_CMDLINE_LINUX="quiet"\n')
+        linux.write_file = MagicMock()
+
+        def bash_roe_side_effect(cmd, *_args, **_kwargs):
+            if "virsh list --uuid" in cmd:
+                return (1, "", "error")
+            if "grep -E 'intel_iommu" in cmd:
+                return (1, "", "")
+            if "grep -E 'modprobe.blacklist" in cmd:
+                return (1, "", "")
+            if "sed -i" in cmd:
+                return (0, "", "")
+            if "grep 'intel_iommu=on'" in cmd:
+                return (0, "", "")
+            return (0, "", "")
+
+        def exists_side_effect(path):
+            if path in ("/etc/default/grub", "/boot/grub2/grub.cfg"):
+                return True
+            if path == "/etc/modprobe.d/iommu_unsafe_interrupts.conf":
+                return False
+            if path == "/dev/vfio/vfio":
+                return False
+            if "sriov_totalvfs" in path or "sriov_numvfs" in path or "physfn" in path:
+                return False
+            return False
+
+        with patch.object(host_plugin, 'bash_roe', side_effect=bash_roe_side_effect), \
+                patch('kvmagent.plugins.host_plugin.os.path.exists', side_effect=exists_side_effect), \
+                patch('kvmagent.plugins.host_plugin.os.path.isdir', return_value=True), \
+                patch('kvmagent.plugins.host_plugin.os.listdir', return_value=['iommu0']), \
+                patch('builtins.open', mock_open(read_data='')):
+            req = _make_req({
+                'skipGrubConfig': False,
+                'enableIommu': True,
+                'opaque': False,
+                'pciDeviceAddresses': [],
+            })
+            result = plugin.get_pci_info(req)
+
+        rsp = json.loads(result)
+        assert rsp['error'] == ''
+        assert rsp['hostIommuStatus'] is True
+        assert rsp['pciDevicesInfo'][0]['type'] == 'Ethernet_Controller'
+
+    def test_get_pci_info_reports_nvidia_vfio_mdev_virtualizable(self):
+        plugin = _make_plugin()
+
+        for attr in ('HUAWEI', 'HAIGUANG', 'TIANSHU', 'VASTAI', 'ENFLAME', 'ALIBABA', 'KUNLUNXIN'):
+            if not hasattr(host_plugin.VendorEnum, attr):
+                setattr(host_plugin.VendorEnum, attr, attr.lower())
+
+        from zstacklib.utils import linux, pci as pci_mod
+
+        pci_mod.get_pci_device_ids = MagicMock(return_value=(
+            0,
+            "\n".join([
+                "Slot: 0000:65:00.0",
+                "Class: 3D controller",
+                "Vendor: 10de",
+                "Device: 1db6",
+                "SVendor: 10de",
+                "SDevice: 12a2",
+                "Rev: a1",
+            ]),
+            "",
+        ))
+        pci_mod.get_pci_device_names = MagicMock(return_value=(
+            0,
+            "\n".join([
+                "Slot: 0000:65:00.0",
+                "Class: 3D controller",
+                "Vendor: NVIDIA Corporation",
+                "Device: Tesla",
+                "SVendor: NVIDIA Corporation",
+                "SDevice: Tesla",
+                "Rev: a1",
+            ]),
+            "",
+        ))
+        pci_mod.collect_pci_devices_with_dependencies = MagicMock(return_value=[])
+        pci_mod.simplify_vendor_name = MagicMock(return_value='NVIDIA')
+        pci_mod.normalize_pci_address = MagicMock(side_effect=lambda addr: addr)
+        pci_mod.pci_device_prepare_chain = MagicMock(return_value=[])
+        pci_mod.pci_device_probe = MagicMock()
+        pci_mod.update_cache_devices = MagicMock()
+        pci_mod.calculate_max_addressable_memory = MagicMock()
+
+        class _Context:
+            def __init__(self, pci_device_mapper=None, opaque=None):
+                self.pci_device_mapper = pci_device_mapper or {}
+                self.opaque = opaque
+                self.gpu_info_map = None
+
+        pci_mod.PciDeviceProcessingContext = _Context
+
+        linux.read_file_lines = MagicMock(return_value=[])
+
+        def bash_roe_side_effect(cmd, *_args, **_kwargs):
+            if "nvidia-smi vgpu -i" in cmd:
+                return (0, """index : 0
+vGPU Type ID : 25
+Framebuffer : 1024 MB
+""", "")
+            if "ls /sys/bus/pci/devices/0000:65:00.0/ | grep virtfn" in cmd:
+                return (0, "virtfn0\n", "")
+            if "ls /sys/bus/mdev/devices/" in cmd:
+                return (0, "", "")
+            if "virsh list --uuid" in cmd:
+                return (1, "", "")
+            return (0, "", "")
+
+        def exists_side_effect(path):
+            if path.endswith('/mdev_supported_types'):
+                return False
+            if path.endswith('/virtfn0/mdev_supported_types'):
+                return True
+            if "sriov_totalvfs" in path or "sriov_numvfs" in path or "physfn" in path:
+                return False
+            return False
+
+        def isdir_side_effect(path):
+            if path.endswith('/mdev_supported_types'):
+                return False
+            if path.endswith('/virtfn0/mdev_supported_types'):
+                return True
+            return False
+
+        def listdir_side_effect(path):
+            if path.endswith('/mdev_supported_types'):
+                return ['nvidia-1']
+            return []
+
+        def open_side_effect(path, _mode='r', *_args, **_kwargs):
+            if path.endswith('available_instances'):
+                return io.StringIO('1')
+            return io.StringIO()
+
+        with patch.object(host_plugin, 'bash_roe', side_effect=bash_roe_side_effect), \
+                patch('kvmagent.plugins.host_plugin.os.path.exists', side_effect=exists_side_effect), \
+                patch('kvmagent.plugins.host_plugin.os.path.isdir', side_effect=isdir_side_effect), \
+                patch('kvmagent.plugins.host_plugin.os.listdir', side_effect=listdir_side_effect), \
+                patch('builtins.open', side_effect=open_side_effect):
+            req = _make_req({
+                'skipGrubConfig': True,
+                'enableIommu': True,
+                'opaque': False,
+                'pciDeviceAddresses': [],
+            })
+            result = plugin.get_pci_info(req)
+
+        rsp = json.loads(result)
+        assert rsp['error'] == ''
+        assert rsp['pciDevicesInfo'][0]['virtStatus'] == 'VFIO_MDEV_VIRTUALIZABLE'
+
+
+@pytest.mark.kvmagent
+class TestHostPluginSriovHandlersDeep:
+    def test_generate_sriov_pci_devices_for_ethernet(self):
+        plugin = _make_plugin()
+
+        from zstacklib.utils import gpu, pci as pci_mod
+
+        gpu.get_all_gpu_infos_by_pci = MagicMock(return_value={})
+        pci_mod.normalize_pci_address = MagicMock(side_effect=lambda addr: addr)
+
+        def exists_side_effect(path):
+            if path.endswith('sriov_numvfs'):
+                return True
+            if path.startswith('/dev/shm/pci_sriov_gim'):
+                return False
+            return False
+
+        with patch('kvmagent.plugins.host_plugin.os.path.exists', side_effect=exists_side_effect), \
+                patch.object(host_plugin, 'bash_roe', return_value=(0, '', '')), \
+                patch.object(host_plugin, 'bash_r', return_value=0), \
+                patch('builtins.open', side_effect=lambda *a, **k: io.StringIO()):
+            req = _make_req({
+                'pciDeviceType': 'Ethernet_Controller',
+                'pciDeviceAddress': '0000:00:10.0',
+                'virtPartNum': 2,
+                'interfaceName': 'eth0',
+                'reSplite': False,
+            })
+            result = plugin.generate_sriov_pci_devices(req)
+
+        rsp = json.loads(result)
+        assert rsp['success'] is True
+
+    def test_ungenerate_sriov_pci_devices_for_ethernet(self):
+        plugin = _make_plugin()
+
+        from zstacklib.utils import gpu, pci as pci_mod
+
+        gpu.get_all_gpu_infos_by_pci = MagicMock(return_value={})
+        pci_mod.normalize_pci_address = MagicMock(side_effect=lambda addr: addr)
+
+        def bash_roe_side_effect(cmd, *_args, **_kwargs):
+            if "virsh nodedev-dumpxml pci_0000_00_10_0" in cmd:
+                return (0, "address domain='0x0000' bus='0x00' slot='0x10' function='0x1'", "")
+            if "virsh nodedev-dumpxml pci_0000_00_10_1" in cmd:
+                return (1, "", "")
+            if "lspci >/dev/null" in cmd:
+                return (0, "", "")
+            return (0, "", "")
+
+        def exists_side_effect(path):
+            if path.endswith('sriov_numvfs'):
+                return True
+            return False
+
+        with patch('kvmagent.plugins.host_plugin.os.path.exists', side_effect=exists_side_effect), \
+                patch.object(host_plugin, 'bash_roe', side_effect=bash_roe_side_effect):
+            req = _make_req({
+                'pciDeviceType': 'Ethernet_Controller',
+                'pciDeviceAddress': '0000:00:10.0',
+                'virtPartNum': 2,
+                'interfaceName': 'eth0',
+                'reSplite': False,
+            })
+            result = plugin.ungenerate_sriov_pci_devices(req)
+
+        rsp = json.loads(result)
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestHostPluginVfioMdevHandlersDeep:
+    def test_generate_vfio_mdev_devices_nvidia_legacy(self):
+        plugin = _make_plugin()
+
+        def exists_side_effect(path):
+            if path.endswith('/mdev_supported_types/nvidia-1'):
+                return True
+            if path.endswith('/virtfn0/mdev_supported_types/nvidia-1'):
+                return False
+            if path.startswith('/dev/shm/pci-'):
+                return False
+            if path == '/usr/lib/nvidia/sriov-manage':
+                return False
+            return False
+
+        def open_side_effect(path, _mode='r', *_args, **_kwargs):
+            if path.endswith('available_instances'):
+                return io.StringIO('2')
+            return io.StringIO()
+
+        with patch('kvmagent.plugins.host_plugin.os.path.exists', side_effect=exists_side_effect), \
+                patch('builtins.open', side_effect=open_side_effect):
+            req = _make_req({
+                'vendor': host_plugin.VendorEnum.NVIDIA,
+                'pciDeviceAddress': '0000:65:00.0',
+                'mdevSpecTypeId': '0x1',
+                'mdevUuids': [],
+            })
+            result = plugin.generate_vfio_mdev_devices(req)
+
+        rsp = json.loads(result)
+        assert rsp['success'] is True
+        assert len(rsp['mdevUuids']) == 2
+
+    def test_ungenerate_vfio_mdev_devices_nvidia_legacy(self):
+        plugin = _make_plugin()
+
+        def exists_side_effect(path):
+            if path.endswith('/mdev_supported_types/nvidia-1/devices'):
+                return True
+            if path.endswith('/virtfn0/mdev_supported_types/nvidia-1/devices'):
+                return False
+            return False
+
+        def listdir_side_effect(path):
+            if path.endswith('/mdev_supported_types/nvidia-1/devices'):
+                return ['11111111-1111-1111-1111-111111111111']
+            return []
+
+        def bash_roe_side_effect(cmd, *_args, **_kwargs):
+            if "nvidia-smi vgpu -i" in cmd and " -s " in cmd:
+                return (0, "profile", "")
+            if "nvidia-smi vgpu -i" in cmd and " -c " in cmd:
+                return (0, "profile", "")
+            return (0, "", "")
+
+        with patch('kvmagent.plugins.host_plugin.os.path.exists', side_effect=exists_side_effect), \
+                patch('kvmagent.plugins.host_plugin.os.listdir', side_effect=listdir_side_effect), \
+                patch('builtins.open', side_effect=lambda *a, **k: io.StringIO()), \
+                patch.object(host_plugin, 'bash_roe', side_effect=bash_roe_side_effect), \
+                patch.object(host_plugin.uuid, 'UUID', side_effect=lambda v: v):
+            req = _make_req({
+                'vendor': host_plugin.VendorEnum.NVIDIA,
+                'pciDeviceAddress': '0000:65:00.0',
+                'mdevSpecTypeId': '0x1',
+            })
+            result = plugin.ungenerate_vfio_mdev_devices(req)
+
+        rsp = json.loads(result)
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestHostPluginSeMdevHandlersDeep:
+    def test_generate_and_ungenerate_se_vfio_mdev_devices(self):
+        plugin = _make_plugin()
+        mtty_uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        mdev_uuid = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+
+        def exists_side_effect(path):
+            if path.endswith('/mtty-2/'):
+                return True
+            if path.endswith('/mtty-2/devices'):
+                return True
+            if path.startswith('/dev/shm/mtty-'):
+                return False
+            return False
+
+        def listdir_side_effect(path):
+            if path.endswith('/mtty-2/devices'):
+                return [mdev_uuid]
+            return []
+
+        with patch('kvmagent.plugins.host_plugin.os.path.exists', side_effect=exists_side_effect), \
+                patch('kvmagent.plugins.host_plugin.os.listdir', side_effect=listdir_side_effect), \
+                patch('builtins.open', side_effect=lambda *a, **k: io.StringIO()), \
+                patch.object(host_plugin.uuid, 'UUID', side_effect=lambda v: v):
+            req = _make_req({
+                'mttyDeviceUuid': mtty_uuid,
+                'mdevUuids': [mdev_uuid],
+                'reSplite': False,
+            })
+            result = plugin.generate_se_vfio_mdev_devices(req)
+
+            rsp = json.loads(result)
+            assert rsp['success'] is True
+            assert rsp['mdevUuids'] == [mdev_uuid]
+
+            result = plugin.ungenerate_se_vfio_mdev_devices(_make_req({
+                'mttyDeviceUuid': mtty_uuid,
+            }))
+
+        rsp = json.loads(result)
+        assert rsp['success'] is True
+
+    def test_delete_vfio_mdev_device(self):
+        plugin = _make_plugin()
+        mdev_uuid = str(uuid.uuid4())
+
+        with patch('kvmagent.plugins.host_plugin.os.path.exists', return_value=True), \
+                patch('builtins.open', side_effect=lambda *a, **k: io.StringIO()), \
+                patch.object(host_plugin.uuid, 'UUID', side_effect=lambda v: v):
+            result = plugin.delete_vfio_mdev_device(_make_req({
+                'MdevDeviceUuid': mdev_uuid,
+            }))
+
+        rsp = json.loads(result)
+        assert 'error' not in rsp
+
+
+@pytest.mark.kvmagent
+class TestHostPluginMttyInfoDeep:
+    def test_get_mtty_info_parses_virtualizable(self):
+        plugin = _make_plugin()
+
+        def bash_roe_side_effect(cmd, *_args, **_kwargs):
+            if cmd.startswith("ls /dev/wst-se"):
+                return (0, "", "")
+            if "grep -w 12" in cmd:
+                return (0, "12", "")
+            return (0, "", "")
+
+        with patch.object(host_plugin, 'bash_roe', side_effect=bash_roe_side_effect), \
+                patch('kvmagent.plugins.host_plugin.os.path.isdir', return_value=True), \
+                patch('kvmagent.plugins.host_plugin.os.path.isfile', return_value=True):
+            result = plugin.get_mtty_info(_make_req({}))
+
+        rsp = json.loads(result)
+        assert rsp['success'] is True
+        assert rsp['mttyDeviceInfo']['virtStatus'] == 'VFIO_MDEV_VIRTUALIZABLE'
+
+
+@pytest.mark.kvmagent
+class TestHostPluginNumaTopologyDeep:
+    def test_get_numa_topology_parses_nodes(self):
+        plugin = _make_plugin()
+
+        cpulist = "0-3,^2"
+        meminfo = "Node 0 MemTotal: 2048 kB\nNode 0 MemFree: 1024 kB\n"
+        distance = "10 20\n"
+
+        def open_side_effect(path, _mode='r', *_args, **_kwargs):
+            if path.endswith('/cpulist'):
+                return io.StringIO(cpulist)
+            if path.endswith('/meminfo'):
+                return io.StringIO(meminfo)
+            if path.endswith('/distance'):
+                return io.StringIO(distance)
+            return io.StringIO()
+
+        def isdir_side_effect(path):
+            if path.endswith('/node0'):
+                return True
+            if path.endswith('/node1'):
+                return False
+            return False
+
+        def filter_side_effect(func, iterable):
+            return [item for item in iterable if func(item)]
+
+        with patch('kvmagent.plugins.host_plugin.os.path.isdir', side_effect=isdir_side_effect), \
+                patch('builtins.open', side_effect=open_side_effect), \
+                patch('builtins.filter', side_effect=filter_side_effect):
+            result = plugin.get_numa_topology(_make_req({}))
+
+        rsp = json.loads(result)
+        assert rsp['success'] is True
+        assert rsp['topology']['0']['cpus'] == ['0', '1', '3']
+        assert rsp['topology']['0']['size'] == 2048 * 1024
+        assert rsp['topology']['0']['free'] == 1024 * 1024
