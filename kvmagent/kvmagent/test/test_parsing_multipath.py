@@ -6,6 +6,7 @@ import difflib
 from zstacklib.utils import multipath, linux
 
 
+# TODO(py3) test
 class TestMultiPathConf(unittest.TestCase):
     def test(self):
         test_write_conf()

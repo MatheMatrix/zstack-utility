@@ -37,7 +37,7 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
         self.assertEqual(rsp.success, True, "iscsiadm login failed")
 
         # test connect shareblock
-        r, o = bash.bash_ro("ls /dev/disk/by-id | grep scsi|awk -F '-' '{print $2}'")
+        r, o = bash.bash_ro("ls /dev/disk/by-id | grep scsi-3 | awk -F '-' '{print $2}'")
         blockUuids = o.strip().splitlines()
 
         rsp = self.connect([blockUuids[0]], [blockUuids[0]], vgUuid, hostUuid, hostId, forceWipe=True)

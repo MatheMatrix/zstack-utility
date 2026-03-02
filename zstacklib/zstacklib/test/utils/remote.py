@@ -2,7 +2,7 @@ import os
 import tempfile
 import paramiko
 import jinja2
-import env
+from . import env
 from zstacklib.utils import log
 
 logger = log.get_logger(__name__)
@@ -54,7 +54,7 @@ class SetupRemoteMachine(object):
 
     def _collect_ztest_env_vars(self):
         env_vars = {}
-        for k, v in os.environ.iteritems():
+        for k, v in os.environ.items():
             if k.startswith('ZTEST_'):
                 env_vars[k] = v
 
@@ -74,7 +74,7 @@ from {{pkg}} import {{entry_point}}
             'entry_point': self.entrypoint_name
         })
 
-        fd, filename = tempfile.mkstemp()
+        fd, filename = tempfile.mkstemp(text=True)
         os.write(fd, script)
         os.close(fd)
 

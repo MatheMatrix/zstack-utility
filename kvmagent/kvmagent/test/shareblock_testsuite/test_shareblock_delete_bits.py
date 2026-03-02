@@ -36,7 +36,7 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
         )
         self.assertEqual(rsp.success, True, "iscsiadm login failed")
 
-        r, o = bash.bash_ro("ls /dev/disk/by-id | grep scsi|awk -F '-' '{print $2}'")
+        r, o = bash.bash_ro("ls /dev/disk/by-id | grep scsi-3 | awk -F '-' '{print $2}'")
         blockUuid = o.strip().replace(' ', '').replace('\n', '').replace('\r', '')
         rsp = self.connect([blockUuid], [blockUuid], vgUuid, hostUuid, hostId, forceWipe=True)
         self.assertEqual(True, rsp.success, rsp.error)
@@ -44,7 +44,7 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
         imageUuid=misc.uuid()
         # download image to shareblock
         print("debug")
-        print ('lvcreate -ay --wipesignatures y --addtag zs::sharedblock::image --size 7995392b --name {} {}'.format(imageUuid, vgUuid))
+        print(('lvcreate -ay --wipesignatures y --addtag zs::sharedblock::image --size 7995392b --name {} {}'.format(imageUuid, vgUuid)))
         r,o = bash.bash_ro('lvcreate -asy --wipesignatures y --addtag zs::sharedblock::image --size 7995392b --name {} {}'.format(imageUuid, vgUuid))
         self.assertEqual(0, r, "create lv failed, because {}".format(o))
         r,o = bash.bash_ro('lvcreate -asy --wipesignatures y --size 4M --name {}_meta {}'.format(imageUuid, vgUuid))

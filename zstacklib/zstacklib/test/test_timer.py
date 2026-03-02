@@ -8,14 +8,14 @@ import threading
 import sys
 
 def hello(name, name2):
-    print name
-    print name2
+    print(name)
+    print(name2)
     return True
 
 @thread.AsyncThread
 def th():
     while True:
-        print 'xxx'
+        print('xxx')
         time.sleep(1)
         
 if __name__ == '__main__':

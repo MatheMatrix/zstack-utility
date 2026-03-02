@@ -98,7 +98,7 @@ IS_MIPS64EL = host_info.host_arch == 'mips64el'
 IS_LOONGARCH64 = host_info.host_arch == 'loongarch64'
 
 repo_dir = "/opt/zstack-dvd/{}".format(host_info.host_arch)
-if not os.path.isdir(repo_dir):
+if unittest_flag != 'true' and not os.path.isdir(repo_dir):
     error("Missing directory '{}', please try 'zstack-upgrade -a {}_iso'".format(repo_dir, host_info.host_arch))
 
 
@@ -198,7 +198,7 @@ run_remote_command("rm -rf {}/*; mkdir -p /usr/local/zstack/ || true".format(kvm
 def install_kvm_pkg():
     def rpm_based_install():
         os_base_dep = "bridge-utils chrony conntrack-tools cyrus-sasl-md5 device-mapper-multipath expect ipmitool iproute ipset \
-                        usbredir-server iputils libvirt libvirt-client libvirt-python lighttpd lsof net-tools nfs-utils nmap openssh-clients \
+                        usbredir-server iputils libvirt libvirt-client lighttpd lsof net-tools nfs-utils nmap openssh-clients \
                         smartmontools sshpass usbutils wget audit collectd-virt storcli nvme-cli pv rsync sed pciutils tar"
 
         distro_mapping = {
@@ -209,8 +209,10 @@ def install_kvm_pkg():
         }
 
         helix_rhel_rpms = ('iscsi-initiator-utils OpenIPMI-modalias mcelog '
-                           'MegaCli Arcconf python-pyudev kernel-devel '
+                           'MegaCli Arcconf kernel-devel '
                            'edac-utils')
+
+        py3_rpms = 'python3.11 python3.11-devel python3.11-pip libvirt-devel libffi-devel openssl-devel'
 
         releasever_mapping = {
             'c74': 'qemu-kvm',
@@ -221,12 +223,15 @@ def install_kvm_pkg():
             'h79c': ('%s qemu-kvm libvirt-admin seabios-bin nping freeipmi '
                      'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
             'h84r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm freeipmi '
-                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump') % helix_rhel_rpms,
+                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump %s') % (helix_rhel_rpms, py3_rpms),
             'uos20r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm freeipmi '
-                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump') % helix_rhel_rpms,
+                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump %s') % (helix_rhel_rpms, py3_rpms),
             'rl84': 'qemu-kvm libvirt-daemon libvirt-daemon-kvm seabios-bin elfutils-libelf-devel lldpd',
             'euler20': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
             'oe2203sp1': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk edac-utils lldpd tcpdump',
+            'oe2403sp1': 'vconfig open-iscsi qemu collectd-disk tcpdump %s' % py3_rpms,
+            'ky10sp3': py3_rpms,
+            'ky10sp3.2403': py3_rpms,
             'h2203sp1o': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk edac-utils freeipmi lldpd tcpdump',
             'nfs4': 'vconfig iscsi-initiator-utils OpenIPMI nettle libselinux-devel iptables iptables-services qemu-kvm python2-pyudev collectd-disk'
         }
@@ -238,6 +243,10 @@ def install_kvm_pkg():
         
         arch_exclude_mapping = {
             'loongarch64': 'edac-utils freeipmi lldpd libcbd'
+        }
+
+        arch_release_mapping = {
+            'loongarch64_oe2403sp1': 'edk2-ovmf-loongarch64'
         }
 
         cube_distro_mapping = {
@@ -254,11 +263,13 @@ def install_kvm_pkg():
         # handle zstack_repo
         if zstack_repo != 'false':
             distro_head = host_info.distro.split("_")[0] if releasever in kylin or releasever in uos else host_info.distro
-            common_dep_list = "%s %s %s %s" % (
+            arch_release = "%s_%s" % (host_info.host_arch, releasever)
+            common_dep_list = "%s %s %s %s %s" % (
                 os_base_dep,
                 distro_mapping.get(distro_head, ''),
                 releasever_mapping.get(releasever, ''),
-                edk2_mapping.get(host_info.host_arch, ''))
+                edk2_mapping.get(host_info.host_arch, ''),
+                arch_release_mapping.get(arch_release, ''))
             # common kvmagent deps of x86 and arm that need to update
             common_update_list = ("sanlock sysfsutils hwdata sg3_utils lvm2"
                                   " lvm2-libs lvm2-lockd systemd openssh"
@@ -281,15 +292,18 @@ def install_kvm_pkg():
             host_post_info.post_label_param = "libvirt"
             (status, output) = run_remote_command(command, host_post_info, True, True)
             if output:
-            	# libvirt-python installation does not affect the libvirt installation
-            	command = ("yum --disablerepo=* --enablerepo={0} --assumeno install libvirt-python |awk '{{print $1}}' | grep -Ew '^\s*libvirt\s*$'").format(zstack_repo)
-            	host_post_info.post_label = "ansible.shell.install.pkg"
-            	host_post_info.post_label_param = "libvirt-python"
-            	(status, output) = run_remote_command(command, host_post_info, True, True)
-            	if status is True:
-                    dep_list = ' '.join([pkg for pkg in dep_list.split() if not pkg.startswith("libvirt")])
+                # python3-libvirt installation does not affect the libvirt installation
+                command = (
+                    "yum --disablerepo=* --enablerepo={0} --assumeno install python3-libvirt |awk '{{print $1}}' | grep -Ew '^\s*libvirt\s*$'").format(
+                    zstack_repo)
+                host_post_info.post_label = "ansible.shell.install.pkg"
+                host_post_info.post_label_param = "python3-libvirt"
+                (status, output) = run_remote_command(command, host_post_info, True, True)
+                is_libvirt = lambda x: x.startswith("libvirt") and not x.startswith("libvirt-devel")
+                if status is True:
+                    dep_list = ' '.join([pkg for pkg in dep_list.split() if not is_libvirt(pkg)])
                 else:
-                    dep_list = ' '.join([pkg for pkg in dep_list.split() if pkg == 'libvirt-python' or not pkg.startswith("libvirt")])
+                    dep_list = ' '.join([pkg for pkg in dep_list.split() if pkg == 'python3-libvirt' or not is_libvirt(pkg)])
 
             # add extra package
             if extra_packages != '':
@@ -321,7 +335,7 @@ def install_kvm_pkg():
                 run_remote_command(command, host_post_info)
         else:
             # name: install kvm related packages on RedHat based OS from online
-            for pkg in ['zstack-release', 'openssh-clients', 'bridge-utils', 'wget', 'chrony', 'sed', 'libvirt-python', 'libvirt', 'nfs-utils', 'vconfig',
+            for pkg in ['zstack-release', 'openssh-clients', 'bridge-utils', 'wget', 'chrony', 'sed', 'libvirt', 'libvirt-devel', 'nfs-utils', 'vconfig',
                         'libvirt-client', 'net-tools', 'iscsi-initiator-utils', 'lighttpd', 'iproute', 'sshpass',
                         'libguestfs-winsupport', 'libguestfs-tools', 'pv', 'rsync', 'nmap', 'ipset', 'usbutils', 'pciutils', 'expect',
                         'lvm2', 'lvm2-lockd', 'sanlock', 'sysfsutils', 'smartmontools', 'device-mapper-multipath', 'hwdata', 'sg3_utils']:
@@ -433,7 +447,7 @@ def install_kvm_pkg():
 
     def deb_based_install():
         # name: install kvm related packages on Debian based OS
-        install_pkg_list = ['curl', 'qemu', 'qemu-system', 'bridge-utils', 'wget', 'qemu-utils', 'python-libvirt',
+        install_pkg_list = ['curl', 'qemu', 'qemu-system', 'bridge-utils', 'wget', 'qemu-utils', 'python3-libvirt',
                             'libvirt-daemon-system', 'libfdt-dev', 'libvirt-dev', 'libvirt-clients', 'chrony','vlan',
                             'libguestfs-tools', 'sed', 'nfs-common', 'open-iscsi','ebtables', 'pv', 'usbutils',
                             'pciutils', 'expect', 'lighttpd', 'sshpass', 'rsync', 'iputils-arping', 'nmap', 'collectd',
@@ -453,7 +467,7 @@ def install_kvm_pkg():
         host_post_info.post_label = "ansible.shell.enable.module"
         host_post_info.post_label_param = "br_netfilter"
         run_remote_command(command, host_post_info)
-        update_pkg_list = ['ebtables', 'python-libvirt', 'qemu-system-arm']
+        update_pkg_list = ['ebtables', 'python3-libvirt', 'qemu-system-arm']
         apt_update_packages(update_pkg_list, host_post_info)
         libvirtd_conf_status = update_libvirtd_config(host_post_info)
         if chroot_env == 'false':
@@ -491,11 +505,15 @@ def install_kvm_pkg():
 
 def copy_tools():
     """copy binary tools"""
-    tool_list = ['collectd_exporter', 'node_exporter', 'ipmi_exporter', 'dnsmasq', 'zwatch-vm-agent', 'zwatch-vm-agent_freebsd_amd64', 'pushgateway', 'sas3ircu', 'zs-raid-heartbeat']
+    tool_list = ['collectd_exporter', 'node_exporter', 'ipmi_exporter', 'dnsmasq', 'pushgateway', 'sas3ircu', 'zs-raid-heartbeat']
+
     for tool in tool_list:
         arch_lable = '' if host_info.host_arch == 'x86_64' else '_' + host_info.host_arch
         real_name = tool + arch_lable
+        if releasever == "oe2403sp1":
+            real_name = real_name + '_abi2'
         pkg_path = os.path.join(file_root, real_name)
+
         if tool == "dnsmasq":
             pkg_dest_path = "/usr/local/zstack/dnsmasq"
         elif tool == "sas3ircu":
@@ -775,28 +793,22 @@ def copy_spice_certificates_to_host():
 def install_virtualenv():
     """install virtualenv"""
 
-    virtual_env_status = check_and_install_virtual_env(virtualenv_version, trusted_host, pip_url, host_post_info)
-    if virtual_env_status is False:
-        command = "rm -rf %s && rm -rf %s" % (virtenv_path, kvm_root)
+    py_version = get_virtualenv_python_version(virtenv_path, host_post_info)
+    if py_version and not py_version.startswith("3.11"):
+        command = "rm -rf %s" % virtenv_path
         host_post_info.post_label = "ansible.shell.remove.file"
         host_post_info.post_label_param = "%s, %s" % (virtenv_path, kvm_root)
         run_remote_command(command, host_post_info)
-        sys.exit(1)
-    # name: make sure virtualenv has been setup
-    virtenv_flag = "--system-site-packages"
-    # virtenv_flag = "" if unittest_flag == 'true' else "--system-site-packages"
-    command = "[ -f %s/bin/python ] || virtualenv-2.7 %s %s " % (virtenv_path, virtenv_flag, virtenv_path)
-    host_post_info.post_label = "ansible.shell.check.virtualenv"
-    host_post_info.post_label_param = None
-    run_remote_command(command, host_post_info)
+        py_version = None
 
-def install_python_pkg():
-    extra_args = "\"--trusted-host %s -i %s \"" % (trusted_host, pip_url)
-    pip_install_arg = PipInstallArg()
-    pip_install_arg.extra_args = extra_args
-    pip_install_arg.name = "python-cephlibs"
-    pip_install_arg.virtualenv = virtenv_path
-    pip_install_package(pip_install_arg, host_post_info)
+    if not py_version:
+        # name: make sure virtualenv has been setup
+        virtenv_flag = "--system-site-packages"
+        # virtenv_flag = "" if unittest_flag == 'true' else "--system-site-packages"
+        command = "python3.11 -m venv %s %s " % (virtenv_path, virtenv_flag)
+        host_post_info.post_label = "ansible.shell.check.virtualenv"
+        host_post_info.post_label_param = None
+        run_remote_command(command, host_post_info)
 
 def install_agent_pkg():
     """install zstacklib and kvmagent on host"""
@@ -987,7 +999,6 @@ do_libvirt_qemu_config()
 do_network_config()
 copy_spice_certificates_to_host()
 install_virtualenv()
-install_python_pkg()
 set_legacy_iptables_ebtables()
 install_agent_pkg()
 do_auditd_config()
