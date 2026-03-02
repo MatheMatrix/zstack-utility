@@ -353,8 +353,11 @@ def has_lv_tag(path: str, tag: str) -> bool:
     if tag == "":
         logger.debug("check tag is empty, return false")
         return False
-    o = shell.call(f"lvs -Stags={{{tag}}} {path} --nolocking -t --noheadings 2>/dev/null | wc -l")
-    return o.strip() == '1'
+    import shlex as _shlex
+    tags_raw = shell.call(
+        "lvs %s -otags --nolocking -t --noheadings 2>/dev/null" % _shlex.quote(path)
+    ).strip()
+    return tag in [t.strip() for t in tags_raw.split(',')]
 
 
 def has_one_lv_tag_sub_string(path: str, tags: Optional[List[str]]) -> bool:

@@ -222,9 +222,9 @@ class OvsDpdkCtl(OvsBaseCtl):
         if pci_id not in self.venv.offload_status:
             raise OvsError(f'Device:{pci_id} not in support vf lag list.')
 
-        for i in interfaces:
-            self._change_devlink_mode(i)
-            self._config_dpdk_extra_for_ovs(i)
+        for bdf in interface_bdfs:
+            self._change_devlink_mode(bdf)
+            self._config_dpdk_extra_for_ovs(bdf)
 
         if bridge_name not in self.list_bridges():
             raise OvsBridgeError(bridge_name, 'Can not find bridge in ovs.')
@@ -232,7 +232,7 @@ class OvsDpdkCtl(OvsBaseCtl):
         if bond_name not in self.list_ports(bridge_name):
             self.add_port(
                 bridge_name, bond_name, 'dpdk',
-                f'dpdk-devargs={interfaces[0]}',
+                f'dpdk-devargs={interface_bdfs[0]}',
                 'dpdklsc-interrupt=true'
             )
 

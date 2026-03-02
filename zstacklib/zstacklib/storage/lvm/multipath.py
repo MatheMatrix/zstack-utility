@@ -2,11 +2,18 @@
 
 
 import os
+import re as _re
 from typing import List, Optional
 
 from zstacklib.utils import bash, linux, log
 
 logger = log.get_logger(__name__)
+
+
+def _validate_dev_name(dev_name):
+    # type: (str) -> None
+    if not _re.match(r'^[A-Za-z0-9._-]+$', dev_name):
+        raise ValueError('invalid device name: %s' % dev_name)
 
 
 @bash.in_bash
@@ -57,10 +64,11 @@ def is_multipath(dev_name: str) -> bool:
 
 def get_multipath_dmname(dev_name: str) -> Optional[str]:
     """Get multipath device-mapper name for a device.
-    
+
     Returns:
         dm-* name if multipath, None otherwise
     """
+    _validate_dev_name(dev_name)
     slaves = linux.listdir(f"/sys/class/block/{dev_name}/slaves/")
     if slaves is not None and len(slaves) > 0 and slaves[0].strip() != "":
         return dev_name
@@ -75,6 +83,7 @@ def get_multipath_dmname(dev_name: str) -> Optional[str]:
 
 def get_multipath_name(dev_name: str) -> str:
     """Get multipath device name."""
+    _validate_dev_name(dev_name)
     return bash.bash_o(f"multipath /dev/{dev_name} -l -v1").strip()
 
 

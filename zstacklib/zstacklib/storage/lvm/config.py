@@ -66,11 +66,16 @@ def config_lvm_by_sed(keyword: str, entry: str, files: List[str]) -> None:
     if not os.path.exists(LVM_CONFIG_PATH):
         raise Exception(f"can not find lvm config path: {LVM_CONFIG_PATH}, config lvm failed")
 
+    import re as _re
     for f in files:
-        cmd = shell.ShellCmd(
-            f"sed -i 's/.*\\b{keyword}\\b.*/{entry}/g' {LVM_CONFIG_PATH}/{f}"
-        )
-        cmd(is_exception=False)
+        fpath = os.path.join(LVM_CONFIG_PATH, f)
+        if not os.path.exists(fpath):
+            continue
+        with open(fpath, 'r') as fp:
+            content = fp.read()
+        new_content = _re.sub(r'[^\n]*\b' + _re.escape(keyword) + r'\b[^\n]*', entry, content)
+        with open(fpath, 'w') as fp:
+            fp.write(new_content)
     logger.debug(bash.bash_o("lvmconfig --type diff"))
 
 
@@ -129,15 +134,15 @@ def config_lvmlocal_conf(node: str, value: str) -> None:
     cmd(is_exception=True)
 
 
-@bash.in_bash
 def clean_lvm_archive_files(vg_uuid: str) -> None:
     """Clean old archive files for a volume group."""
     if not os.path.exists(LVM_CONFIG_ARCHIVE_PATH):
         logger.warn(f"can not find lvm archive path {LVM_CONFIG_ARCHIVE_PATH}")
         return
-    archive_files = len([f for f in os.listdir(LVM_CONFIG_ARCHIVE_PATH) if vg_uuid in f])
-    if archive_files > 10:
-        bash.bash_r(
-            f"ls -rt {LVM_CONFIG_ARCHIVE_PATH} | grep {vg_uuid} | head -n {archive_files-10} | "
-            f"xargs -i rm -rf {LVM_CONFIG_ARCHIVE_PATH}/{{}}"
-        )
+    matched = sorted(
+        [fn for fn in os.listdir(LVM_CONFIG_ARCHIVE_PATH) if vg_uuid in fn],
+        key=lambda fn: os.path.getmtime(os.path.join(LVM_CONFIG_ARCHIVE_PATH, fn))
+    )
+    if len(matched) > 10:
+        for fname in matched[:len(matched) - 10]:
+            os.remove(os.path.join(LVM_CONFIG_ARCHIVE_PATH, fname))
