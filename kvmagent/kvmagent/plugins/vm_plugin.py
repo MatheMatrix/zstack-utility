@@ -32,7 +32,10 @@ import warnings
 import libvirt
 import xml.dom.minidom as minidom
 #from typing import List, Any, Union
-from distutils.version import LooseVersion
+try:
+    from distutils.version import LooseVersion
+except ImportError:
+    from packaging.version import Version as LooseVersion
 from collections import Counter
 from collections import deque
 
@@ -7391,7 +7394,10 @@ class VmPlugin(kvmagent.KvmAgent):
     vm_heartbeat = {}
 
     if not os.path.exists(QMP_SOCKET_PATH):
-        os.mkdir(QMP_SOCKET_PATH)
+        try:
+            os.mkdir(QMP_SOCKET_PATH)
+        except OSError:
+            pass
 
     def _record_operation(self, uuid, op):
         j = VmOperationJudger(op)
