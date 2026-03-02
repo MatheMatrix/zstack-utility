@@ -169,14 +169,28 @@ class TestPrometheusPluginConfigure(unittest.TestCase):
         self.assertEqual(cfg, _mock_debug.CONFIG)
 
     def test_configure_copies_kvmagent_send_url_to_debug(self):
+        """Falls back to kvmagent.SEND_COMMAND_URL when not in config."""
         p = self._make_plugin()
         p.configure({})
         self.assertEqual('http://mn/api', _mock_debug.SEND_COMMAND_URL)
 
     def test_configure_copies_kvmagent_host_uuid_to_debug(self):
+        """Falls back to kvmagent.HOST_UUID when not in config."""
         p = self._make_plugin()
         p.configure({})
         self.assertEqual('test-host-uuid', _mock_debug.HOST_UUID)
+
+    def test_configure_accepts_send_command_url_from_config(self):
+        """Config dict overrides kvmagent constant — enables standalone mode."""
+        p = self._make_plugin()
+        p.configure({'sendCommandUrl': 'http://standalone/send'})
+        self.assertEqual('http://standalone/send', _mock_debug.SEND_COMMAND_URL)
+
+    def test_configure_accepts_host_uuid_from_config(self):
+        """Config dict overrides kvmagent constant — enables standalone mode."""
+        p = self._make_plugin()
+        p.configure({'hostUuid': 'standalone-host-uuid'})
+        self.assertEqual('standalone-host-uuid', _mock_debug.HOST_UUID)
 
 
 class TestGpuStatusAbnormalFlag(unittest.TestCase):

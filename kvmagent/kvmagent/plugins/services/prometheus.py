@@ -2583,5 +2583,8 @@ modules:
         global ALARM_CONFIG
         ALARM_CONFIG = config
         debug.CONFIG = config
-        debug.SEND_COMMAND_URL = kvmagent.SEND_COMMAND_URL
-        debug.HOST_UUID = kvmagent.HOST_UUID
+        # Accept sendCommandUrl / hostUuid from the config dict so this plugin
+        # can run standalone (systemd service) without kvmagent global state.
+        # Fall back to kvmagent constants when running embedded in kvmagent.
+        debug.SEND_COMMAND_URL = config.get('sendCommandUrl') or kvmagent.SEND_COMMAND_URL
+        debug.HOST_UUID = config.get('hostUuid') or kvmagent.HOST_UUID
