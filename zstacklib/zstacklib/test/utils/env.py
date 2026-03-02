@@ -3,14 +3,14 @@ import os
 import yaml
 
 # Dual-mode support:
-#   VM-internal mode (ZTEST_LOCAL_MODE=1): reads /root/.zguest/envconfig.yaml (zguest-injected)
-#   Local mode (default): uses lazy loading with safe defaults so local tests don't crash
-_VM_INTERNAL_MODE = os.environ.get('ZTEST_LOCAL_MODE') == '1'
+#   CI/VM mode (default): reads /root/.zguest/envconfig.yaml (zguest-injected by ztest)
+#   Local mode (ZTEST_LOCAL_MODE=1): uses safe defaults so unit tests run without a VM
+_LOCAL_MODE = os.environ.get('ZTEST_LOCAL_MODE') == '1'
 
-if _VM_INTERNAL_MODE:
-    envFile = "/root/.zguest/envconfig.yaml"
-else:
+if _LOCAL_MODE:
     envFile = os.path.expanduser("~/.zstack-test/env.yaml")
+else:
+    envFile = "/root/.zguest/envconfig.yaml"
 
 # Try to import real modules; fall back to no-ops for local mode
 try:
@@ -58,14 +58,14 @@ class EnvVariable(object):
             if v is not None:
                 return self.type(v)
             elif v is None and self.required:
-                if _VM_INTERNAL_MODE:
+                if not _LOCAL_MODE:
                     raise ValueError('the required environment variable[%s] is not defined' % self.name)
                 # In local mode, return a safe default instead of crashing
                 return self.type(self.default) if self.default is not None else self._safe_default()
             else:
                 return self.type(self.default) if self.default is not None else self._safe_default()
         except TypeError as ex:
-            if _VM_INTERNAL_MODE:
+            if not _LOCAL_MODE:
                 raise Exception('environment[%s] is defined as type[%s] but get %s. %s' %
                                 (self.name, self.type, type(v), str(ex)))
             return self._safe_default()
@@ -155,9 +155,9 @@ def __getattr__(name):
     raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 
-# For backwards compatibility in VM-internal mode, also expose as real attributes
+# For backwards compatibility in CI/VM mode, also expose as real attributes
 # so `from env import VM_IMAGE_PATH` works inside the VM
-if _VM_INTERNAL_MODE:
+if not _LOCAL_MODE:
     VM_IMAGE_PATH = env_var('caseImagePath', str).value()
     DEFAULT_ETH_INTERFACE_NAME = env_var('defaultEthName', str).value()
     TEST_ROOT = env_var('testRoot', str).value()
@@ -181,7 +181,7 @@ def log_env_variables():
         pass
 
 
-if _VM_INTERNAL_MODE:
+if not _LOCAL_MODE:
     log_env_variables()
 
 
@@ -257,7 +257,7 @@ def test_for(handlers):
     def wrap(f):
         @functools.wraps(f)
         def inner(*args, **kwargs):
-            dry_run = __getattr__('DRY_RUN') if not _VM_INTERNAL_MODE else DRY_RUN
+            dry_run = __getattr__('DRY_RUN') if _LOCAL_MODE else DRY_RUN
             if dry_run:
                 _write_test_for_info(handlers, os.environ.get('PYTEST_CURRENT_TEST'))
             else:
