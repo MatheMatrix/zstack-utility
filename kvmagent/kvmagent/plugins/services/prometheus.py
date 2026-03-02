@@ -35,7 +35,7 @@ collectd_dir = "/var/lib/zstack/collectd/"
 latest_collect_result = {}
 collectResultLock = threading.RLock()
 asyncDataCollectorLock = threading.RLock()
-QEMU_CMD = os.path.basename(kvmagent.get_qemu_path())
+QEMU_CMD = None  # lazily initialized in PrometheusPlugin.start()
 ALARM_CONFIG = None
 PAGE_SIZE = None
 disk_list_record = None
@@ -2011,36 +2011,6 @@ def collect_kvmagent_memory_statistics():
     return list(metrics.values())
 
 
-kvmagent.register_prometheus_collector(collect_host_network_statistics)
-kvmagent.register_prometheus_collector(collect_host_capacity_statistics)
-kvmagent.register_prometheus_collector(collect_vm_statistics)
-kvmagent.register_prometheus_collector(collect_vm_pvpanic_enable_in_domain_xml)
-kvmagent.register_prometheus_collector(collect_node_disk_wwid)
-kvmagent.register_prometheus_collector(collect_host_conntrack_statistics)
-kvmagent.register_prometheus_collector(
-    collect_physical_network_interface_state)
-kvmagent.register_prometheus_collector(collect_memory_overcommit_statistics)
-
-if misc.isMiniHost():
-    kvmagent.register_prometheus_collector(collect_lvm_capacity_statistics)
-    kvmagent.register_prometheus_collector(collect_mini_raid_state)
-    kvmagent.register_prometheus_collector(collect_equipment_state)
-
-if misc.isHyperConvergedHost():
-    kvmagent.register_prometheus_collector(collect_ipmi_state)
-elif is_support_bmc():
-    kvmagent.register_prometheus_collector(collect_equipment_state_from_ipmi)
-
-kvmagent.register_prometheus_collector(collect_raid_state)
-kvmagent.register_prometheus_collector(collect_ssd_state)
-
-# GPU metrics collector (using plugin system)
-kvmagent.register_prometheus_collector(collect_gpu_metrics_via_plugin)
-kvmagent.register_prometheus_collector(collect_hba_port_device_state)
-kvmagent.register_prometheus_collector(collect_disk_stat)
-kvmagent.register_prometheus_collector(collect_kvmagent_memory_statistics)
-
-
 class SetServiceTypeOnHostNetworkInterfaceRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(SetServiceTypeOnHostNetworkInterfaceRsp, self).__init__()
@@ -2564,6 +2534,35 @@ modules:
         return jsonobject.dumps(rsp)
 
     def start(self):
+        global QEMU_CMD
+        QEMU_CMD = os.path.basename(kvmagent.get_qemu_path())
+
+        kvmagent.register_prometheus_collector(collect_host_network_statistics)
+        kvmagent.register_prometheus_collector(collect_host_capacity_statistics)
+        kvmagent.register_prometheus_collector(collect_vm_statistics)
+        kvmagent.register_prometheus_collector(collect_vm_pvpanic_enable_in_domain_xml)
+        kvmagent.register_prometheus_collector(collect_node_disk_wwid)
+        kvmagent.register_prometheus_collector(collect_host_conntrack_statistics)
+        kvmagent.register_prometheus_collector(collect_physical_network_interface_state)
+        kvmagent.register_prometheus_collector(collect_memory_overcommit_statistics)
+
+        if misc.isMiniHost():
+            kvmagent.register_prometheus_collector(collect_lvm_capacity_statistics)
+            kvmagent.register_prometheus_collector(collect_mini_raid_state)
+            kvmagent.register_prometheus_collector(collect_equipment_state)
+
+        if misc.isHyperConvergedHost():
+            kvmagent.register_prometheus_collector(collect_ipmi_state)
+        elif is_support_bmc():
+            kvmagent.register_prometheus_collector(collect_equipment_state_from_ipmi)
+
+        kvmagent.register_prometheus_collector(collect_raid_state)
+        kvmagent.register_prometheus_collector(collect_ssd_state)
+        kvmagent.register_prometheus_collector(collect_gpu_metrics_via_plugin)
+        kvmagent.register_prometheus_collector(collect_hba_port_device_state)
+        kvmagent.register_prometheus_collector(collect_disk_stat)
+        kvmagent.register_prometheus_collector(collect_kvmagent_memory_statistics)
+
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(
             self.COLLECTD_PATH, self.start_prometheus_exporter)

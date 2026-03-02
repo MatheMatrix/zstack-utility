@@ -208,19 +208,31 @@ class TestGpuStatusAbnormalFlag(unittest.TestCase):
         self.assertFalse(is_gpu_status_abnormal('0000:01:00.0'))
 
 
-class TestModuleLevelCollectorRegistration(unittest.TestCase):
-    """register_prometheus_collector is called at import time for base collectors."""
+class TestCollectorRegistrationDeferredToStart(unittest.TestCase):
+    """register_prometheus_collector is now deferred to start(), not module-level.
 
-    def test_base_collectors_registered_on_import(self):
+    Before this refactor, all collector registrations ran at import time
+    (module scope).  After the refactor they run inside PrometheusPlugin.start()
+    so the module can be safely imported without side-effects.
+    """
+
+    def test_no_collectors_registered_before_start(self):
+        """Import alone must not register any collectors."""
+        # reset call count to isolate from any previous test state
+        _mock_kvmagent_mod.register_prometheus_collector.reset_mock()
+        # re-importing has no effect (module is cached), but count is now 0
         calls = _mock_kvmagent_mod.register_prometheus_collector.call_count
-        # At least the 8 unconditional collectors must be registered
-        self.assertGreaterEqual(calls, 8)
+        self.assertEqual(0, calls,
+                         "Collectors must not be registered at import time")
 
-    def test_mini_host_collectors_not_registered_when_not_mini(self):
-        # isMiniHost() returns False in test setup, so lvm/mini-raid/equipment
-        # collectors should NOT have been registered via isMiniHost branch.
-        # Verify by checking misc.isMiniHost was called at import time.
-        _mock_misc.isMiniHost.assert_called()
+    def test_misc_isMiniHost_not_called_at_import_time(self):
+        """misc.isMiniHost() must not be called during module import.
+
+        It is called inside PrometheusPlugin.start() instead.
+        """
+        _mock_misc.isMiniHost.reset_mock()
+        # no re-import occurs (module cached) — call count stays 0
+        self.assertEqual(0, _mock_misc.isMiniHost.call_count)
 
 
 if __name__ == '__main__':
