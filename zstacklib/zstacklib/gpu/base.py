@@ -6,11 +6,27 @@ GPU Base Class and Registry (Python 2/3 Compatible)
 import abc
 import re
 import threading
+from enum import Enum
 
 from zstacklib.utils import log
 from zstacklib.utils.bash import bash_roe, bash_ro
 
 logger = log.get_logger(__name__)
+
+
+# =============================================================================
+# VmGpuStatus - VM GPU health state
+# =============================================================================
+
+class VmGpuStatus(Enum):
+    """Health state of a GPU device attached to a VM.
+
+    Migrated here from zstacklib.utils.gpu; that module re-exports this
+    name for backward compatibility.
+    """
+    NOT_EXIST = "not_exist"
+    CRITICAL_FAULT = "critical"
+    NOMINAL = "nominal"
 
 
 # =============================================================================

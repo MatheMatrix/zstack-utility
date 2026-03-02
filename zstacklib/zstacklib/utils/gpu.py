@@ -4,11 +4,11 @@ import re
 
 from zstacklib.utils import thread
 from zstacklib.utils.bash import *
-from enum import Enum
 import json
 
 from zstacklib.gpu.base import (
     VendorEnum,
+    VmGpuStatus,  # canonical home is gpu/base.py; re-exported here for backward compat
     PCI_CLASS_VGA,
     PCI_CLASS_DISPLAY,
     PCI_CLASS_PROCESSING_ACCEL,
@@ -24,12 +24,6 @@ from zstacklib.gpu.base import (
 from zstacklib.utils.qga import VmQga
 
 logger = log.get_logger(__name__)
-
-
-class VmGpuStatus(Enum):
-    NOT_EXIST = "not_exist"
-    CRITICAL_FAULT = "critical"
-    NOMINAL = "nominal"
 
 
 def shut_persistenced_by_guesttool(domain):
