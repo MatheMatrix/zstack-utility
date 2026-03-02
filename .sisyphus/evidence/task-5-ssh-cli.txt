@@ -1,2 +1,0 @@
-  --ssh-host=SSH_HOST   SSH host connection info. Format:
-                        SSH password override (used when --ssh-host omits
