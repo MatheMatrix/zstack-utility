@@ -23,11 +23,13 @@ markers = [
     "ceph: Ceph storage tests",
     "bm_instance: bare metal instance tests",
     "appliancevm: appliance VM tests",
+    "consoleproxy: console proxy tests",
+    "baremetalpxeserver: bare metal PXE server tests",
 ]
 
 
 [tool.coverage.run]
-source = ["kvmagent/kvmagent"]
+source = ["kvmagent/kvmagent", "virtualrouter/virtualrouter", "consoleproxy/consoleproxy", "sftpbackupstorage/sftpbackupstorage", "cephprimarystorage/cephprimarystorage", "cephbackupstorage/cephbackupstorage", "baremetalpxeserver/baremetalpxeserver"]
 omit = [
     "*/kvmagent/test/*",
     "*/kvmagent/test/**/*",

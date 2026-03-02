@@ -44,6 +44,8 @@ MARKERS = {
     "ceph": "Tests related to Ceph storage",
     "bm_instance": "Tests related to bare metal instances",
     "appliancevm": "Tests related to appliance VMs",
+    "consoleproxy": "Tests related to console proxy agent",
+    "baremetalpxeserver": "Tests related to bare metal PXE server agent",
     "http": "HTTP integration tests - agent API via requests library",
 }
 

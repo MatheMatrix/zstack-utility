@@ -134,6 +134,9 @@ if 'distutils.version' not in sys.modules:
 _THIRD_PARTY_MOCKS = [
     'netaddr', 'jinja2', 'psutil', 'pyudev', 'rados', 'rbd',
     'prometheus_client', 'prometheus_client.core',
+    'xxhash',  # cephbackupstorage
+    'cherrypy', 'cherrypy.lib', 'cherrypy.lib.static',  # cephbackupstorage
+    'cherrypy._cpreqbody', 'cherrypy._cprequest',  # cephbackupstorage
 ]
 for _mod_name in _THIRD_PARTY_MOCKS:
     if _mod_name not in sys.modules:
@@ -156,6 +159,7 @@ _mock_logger = MagicMock()
 _mock_log = types.ModuleType('zstacklib.utils.log')
 _mock_log.get_logger = lambda name: _mock_logger
 _mock_log.get_logfile_path = lambda: '/dev/null'
+_mock_log.configure_log = lambda *a, **kw: None  # ceph agents call this at module level
 _mock_log.sensitive_fields = lambda *fields: (lambda cls: cls)  # decorator passthrough
 sys.modules['log'] = _mock_log
 sys.modules['zstacklib.utils.log'] = _mock_log
@@ -171,9 +175,11 @@ _mock_bash.bash_r = lambda *a, **kw: 0
 _mock_bash.bash_o = lambda *a, **kw: ''
 _mock_bash.bash_errorout = lambda *a, **kw: ''
 _mock_bash.bash = lambda *a, **kw: 0
+import functools as _functools
+_mock_bash.functools = _functools  # agents use `from bash import *` then `functools.wraps`
 _mock_bash.in_bash = lambda f: f  # decorator passthrough
 _mock_bash.__all__ = ['log', 'bash_roe', 'bash_ro', 'bash_r', 'bash_o',
-                       'bash_errorout', 'bash', 'in_bash']
+                       'bash_errorout', 'bash', 'in_bash', 'functools', 'linux']
 sys.modules['zstacklib.utils.bash'] = _mock_bash
 
 # ============================================================================
@@ -219,6 +225,9 @@ _mock_linux.rm_file_force = MagicMock()
 _mock_linux.rmdir_if_empty = MagicMock()
 _mock_linux.write_file = MagicMock()
 sys.modules['zstacklib.utils.linux'] = _mock_linux
+# real bash.py does `from zstacklib.utils import linux`, so agents using
+# `from zstacklib.utils.bash import *` get `linux` in their namespace
+_mock_bash.linux = _mock_linux
 
 # --- Functional mock for http module ---
 _mock_http = types.ModuleType('zstacklib.utils.http')
@@ -286,6 +295,11 @@ _SIMPLE_MOCKS = [
     'kvmagent.plugins.bmv2_gateway_agent',
     'kvmagent.plugins.bmv2_gateway_agent.utils',
     'kvmagent.plugins.imagestore',
+    # --- new agent dependencies ---
+    'zstacklib.utils.secret',
+    'zstacklib.utils.remotetarget',
+    'zstacklib.utils.nbd_client',
+    'zstacklib.utils.rangeset',
 ]
 for _mod_name in _SIMPLE_MOCKS:
     if _mod_name not in sys.modules:
@@ -328,11 +342,18 @@ _mock_qga.__all__ = ['log']
 
 _mock_report = sys.modules['zstacklib.utils.report']
 _mock_report.log = _mock_log
-_mock_report.__all__ = ['log', 'Report']
+_mock_report.http = sys.modules['zstacklib.utils.http']  # agents get `http` via `from report import *`
+_mock_report.__all__ = ['log', 'Report', 'http']
 _mock_report.Report = MagicMock()
 
 # plugin module needs TaskManager and TaskResult for vm_plugin
-_mock_plugin.TaskManager = MagicMock()
+class _TaskManagerBase:
+    CANCEL_JOB = "/job/cancel"
+    def __init__(self):
+        import threading
+        self.mapper_lock = threading.RLock()
+        self.longjob_progress_mapper = {}
+_mock_plugin.TaskManager = _TaskManagerBase
 _mock_plugin.TaskResult = MagicMock()
 
 # libvirt_singleton needs LibvirtEventManager classes
@@ -362,6 +383,99 @@ _mock_imagestore = sys.modules.get('kvmagent.plugins.imagestore')
 if _mock_imagestore is not None:
     _mock_imagestore.ImageStoreClient = MagicMock()
 
+# --- New agent mocks (rollback, traceable_shell, Queue, imagestore, ceph drivers) ---
+
+# Queue — Py2 module, Py3 uses `queue` (cephprimarystorage: `import Queue`)
+if 'Queue' not in sys.modules:
+    import queue as _queue
+    sys.modules['Queue'] = _queue
+
+# rollback — needs callable decorators (ceph agents: `from zstacklib.utils.rollback import rollback, rollbackable`)
+_mock_rollback = types.ModuleType('zstacklib.utils.rollback')
+_mock_rollback.rollback = lambda f: f  # decorator passthrough
+_mock_rollback.rollbackable = lambda f: f  # decorator passthrough
+sys.modules['zstacklib.utils.rollback'] = _mock_rollback
+
+# traceable_shell — needs get_shell() returning a mock (ceph agents: `from zstacklib.utils import traceable_shell`)
+_mock_traceable_shell = types.ModuleType('zstacklib.utils.traceable_shell')
+_mock_traceable_shell.get_shell = lambda: MagicMock()
+sys.modules['zstacklib.utils.traceable_shell'] = _mock_traceable_shell
+
+# imagestore — standalone module for ceph/baremetal: `from imagestore import ImageStoreClient`
+if 'imagestore' not in sys.modules:
+    _mock_imagestore_mod = types.ModuleType('imagestore')
+    _mock_imagestore_mod.ImageStoreClient = MagicMock()
+    sys.modules['imagestore'] = _mock_imagestore_mod
+
+# cephdriver / thirdpartycephdriver — relative imports in cephprimarystorage
+if 'cephdriver' not in sys.modules:
+    _mock_cephdriver = types.ModuleType('cephdriver')
+    _mock_cephdriver.CephDriver = MagicMock()
+    sys.modules['cephdriver'] = _mock_cephdriver
+if 'thirdpartycephdriver' not in sys.modules:
+    _mock_thirdpartycephdriver = types.ModuleType('thirdpartycephdriver')
+    _mock_thirdpartycephdriver.ThirdpartyCephDriver = MagicMock()
+    sys.modules['thirdpartycephdriver'] = _mock_thirdpartycephdriver
+
+# report needs get_exact_percent (cephbackupstorage: `from zstacklib.utils.report import Report, get_exact_percent`)
+_mock_report.get_exact_percent = lambda *a: 0
+_mock_report.__all__ = ['log', 'Report', 'get_exact_percent', 'http']
+
+# plugin needs completetask (cephprimarystorage: `from zstacklib.utils.plugin import completetask`)
+_mock_plugin.completetask = lambda f: f  # decorator passthrough
+
+# rangeset needs RangeSet class (cephbackupstorage: `from zstacklib.utils.rangeset import RangeSet`)
+sys.modules['zstacklib.utils.rangeset'].RangeSet = MagicMock()
+
+# thread needs AsyncThread (cephbackupstorage: `from zstacklib.utils.thread import AsyncThread`)
+_mock_thread.AsyncThread = MagicMock()
+
+# ceph needs get_mon_addr (both ceph agents: `from zstacklib.utils.ceph import get_mon_addr`)
+sys.modules['zstacklib.utils.ceph'].get_mon_addr = MagicMock(return_value='127.0.0.1')
+
+# linux needs remote_shell_quote (cephprimarystorage: `from zstacklib.utils.linux import remote_shell_quote`)
+sys.modules['zstacklib.utils.linux'].remote_shell_quote = MagicMock(return_value='')
+
+# misc needs IgnoreError (cephprimarystorage: `from zstacklib.utils.misc import IgnoreError`)
+sys.modules['zstacklib.utils.misc'].IgnoreError = lambda: MagicMock()
+
+# --- sftpbackupstorage Py2 octal workaround ---
+# sftpbackupstorage.py uses `0777` (Py2 octal) which causes SyntaxError in Py3.
+# We pre-process the source, replacing `0777` with `0o777`, and load the module manually.
+import importlib
+import importlib.util
+import re as _re
+
+def _import_with_octal_fix(module_name, file_path):
+    """Import a Py2 module that uses old-style octal literals (e.g., 0777 -> 0o777)."""
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    source = Path(file_path).read_text()
+    # Replace Py2 octal literals: 0777 -> 0o777 (but not 0x... or 0b... or 0o...)
+    fixed_source = _re.sub(r'\b(0)([0-7]{3,})\b', r'\g<1>o\2', source)
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod
+    code = compile(fixed_source, file_path, 'exec')
+    exec(code, mod.__dict__)
+    return mod
+
+# --- virtualrouter configure_nic.py Py2 workaround ---
+# configure_nic.py uses `dict.has_key()` (Py2-only, removed in Py3).
+# We pre-process the source, replacing `.has_key(x)` with `x in `.
+def _import_with_haskey_fix(module_name, file_path):
+    """Import a Py2 module that uses dict.has_key()."""
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    source = Path(file_path).read_text()
+    # Replace `obj.has_key(key)` with `(key in obj)`
+    fixed_source = _re.sub(r'(\w+)\.has_key\(([^)]+)\)', r'(\2 in \1)', source)
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod
+    code = compile(fixed_source, file_path, 'exec')
+    exec(code, mod.__dict__)
+    return mod
 # libvirt_singleton conn must return valid XML for getCapabilities()
 # (vm_plugin.LibvirtAutoReconnect calls conn.getCapabilities() at class definition time)
 _MINIMAL_LIBVIRT_CAPS = '''<capabilities>
