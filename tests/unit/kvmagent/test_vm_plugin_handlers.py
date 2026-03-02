@@ -1213,3 +1213,965 @@ class TestCheckMountDomainHandler:
 
         assert rsp['success'] is True
         assert rsp['active'] is True
+
+
+@pytest.mark.kvmagent
+class TestAttachGuestToolsIsoToVmHandler:
+    def test_attach_guest_tools_iso_to_vm(self):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        with patch('os.path.exists', return_value=True):
+            req = _make_req({'vmInstanceUuid': 'vm-uuid', 'platform': 'Linux', 'needTempDisk': False})
+            result = plugin.attach_guest_tools_iso_to_vm(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        mock_vm.detach_iso.assert_called_once()
+        mock_vm.attach_iso.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestDetachGuestToolsIsoFromVmHandler:
+    def test_detach_guest_tools_iso_from_vm(self):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm.domain_xml = 'prefix-%s' % vm_plugin.GUEST_TOOLS_ISO_LINUX_PATH
+        mock_vm._check_target_disk_existing_by_path = MagicMock(return_value=False)
+        vm_plugin.get_vm_by_uuid_no_retry = MagicMock(return_value=mock_vm)
+        vm_plugin.linux.rm_file_force = MagicMock()
+        with patch('os.path.exists', return_value=False):
+            req = _make_req({'vmInstanceUuid': 'vm-uuid', 'platform': 'Linux'})
+            result = plugin.detach_guest_tools_iso_from_vm(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        mock_vm.detach_iso.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestAttachPciDeviceToHostHandler:
+    def test_attach_pci_device_to_host(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        with patch('os.path.exists', return_value=False):
+            req = _make_req({'pciDeviceAddress': '0000:00:01.0'})
+            result = plugin.attach_pci_device_to_host(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestDetachPciDeviceFromHostHandler:
+    def test_detach_pci_device_from_host(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        with patch('os.path.exists', return_value=False):
+            req = _make_req({'pciDeviceAddress': '0000:00:01.0'})
+            result = plugin.detach_pci_device_from_host(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestBlockMigrateHandler:
+    def test_block_migrate(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=MagicMock())
+        plugin._record_operation = MagicMock()
+        plugin._build_dest_disk_xml = MagicMock(return_value=('vda', '/tmp/disk.xml'))
+        plugin._do_block_copy = MagicMock(return_value=(True, None))
+        vm_plugin.os.remove = MagicMock()
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'oldVolumePath': '/path/old', 'newVolume': {}})
+        result = plugin.block_migrate(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        plugin._record_operation.assert_called_once()
+        vm_plugin.os.remove.assert_called_once_with('/tmp/disk.xml')
+
+
+@pytest.mark.kvmagent
+class TestCancelBackupJobsHandler:
+    def test_cancel_backup_jobs(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=MagicMock())
+        plugin.do_cancel_vm_backup_jobs = MagicMock()
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'force': False})
+        result = plugin.cancel_backup_jobs(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        plugin.do_cancel_vm_backup_jobs.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestCancelBackupJobHandler:
+    def test_cancel_backup_job(self):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm._get_target_disk = MagicMock(return_value=(MagicMock(), None))
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        plugin.get_disk_device_name = MagicMock(return_value='drive-0')
+        plugin.do_cancel_volume_backup_job = MagicMock()
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'volume': {'volumeUuid': 'vol-uuid'}, 'force': False})
+        result = plugin.cancel_backup_job(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        plugin.do_cancel_volume_backup_job.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestCancelVolumeCbtBackupHandler:
+    def test_cancel_volume_cbt_backup(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=MagicMock())
+        client = MagicMock()
+        client.stop_vm_cbt_backup_jobs = MagicMock()
+        vm_plugin.ImageStoreClient = MagicMock(return_value=client)
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'records': []})
+        result = plugin.cancel_volume_cbt_backup(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        client.stop_vm_cbt_backup_jobs.assert_called_once_with('vm-uuid', [])
+
+
+@pytest.mark.kvmagent
+class TestCancelVolumeMirrorHandler:
+    def test_cancel_volume_mirror(self):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm._get_target_disk = MagicMock(return_value=(MagicMock(), None))
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        plugin.get_disk_device_name = MagicMock(return_value='drive-0')
+        client = MagicMock()
+        client.stop_mirror = MagicMock()
+        vm_plugin.ImageStoreClient = MagicMock(return_value=client)
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'volume': {}, 'complete': False, 'force': False})
+        result = plugin.cancel_volume_mirror(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        client.stop_mirror.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestCheckColoVmStateHandler:
+    def test_check_colo_vm_state(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.get_all_vm_states = MagicMock(return_value={'vm-uuid': vm_plugin.Vm.VM_STATE_RUNNING})
+
+        req = _make_req({'vmInstanceUuid': 'vm-uuid'})
+        result = plugin.check_colo_vm_state(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert rsp['state'] == vm_plugin.Vm.VM_STATE_RUNNING
+
+
+@pytest.mark.kvmagent
+class TestCheckVolumeSnapshotHandler:
+    def test_check_volume_snapshot(self):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm.state = vm_plugin.Vm.VM_STATE_RUNNING
+        mock_vm.VM_STATE_RUNNING = vm_plugin.Vm.VM_STATE_RUNNING
+        mock_vm.VM_STATE_SHUTDOWN = vm_plugin.Vm.VM_STATE_SHUTDOWN
+        mock_vm.VM_STATE_PAUSED = vm_plugin.Vm.VM_STATE_PAUSED
+        mock_vm._get_target_disk_by_path = MagicMock(return_value=(MagicMock(), 'vda'))
+        mock_vm._get_backfile_chain = MagicMock(return_value=[])
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        vm_plugin.difflib.context_diff = MagicMock(return_value=[])
+        mock_vm.domain_xmlobject.devices.get_child_node_as_list = MagicMock(return_value=[])
+
+        cmd = MagicMock(
+            vmUuid='vm-uuid',
+            volumeUuid='vol-uuid',
+            currentInstallPath='/path1',
+            volumeChainToCheck={'/path1': 1},
+            volume=MagicMock(deviceId=0),
+            excludeInstallPaths=None,
+        )
+        from builtins import map as builtin_map
+        with patch.object(vm_plugin.jsonobject, 'loads', return_value=cmd), \
+                patch('builtins.map', side_effect=lambda *args, **kwargs: list(builtin_map(*args, **kwargs))):
+            req = _make_req({})
+            result = plugin.check_volume_snapshot(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestDetachVirtioDriverHandler:
+    def test_detach_virtio_driver(self):
+        plugin = _make_vm_plugin()
+        plugin.eject_floppy = MagicMock()
+
+        req = _make_req({'vmInstanceUuid': 'vm-uuid', 'driverFormat': 'VFD'})
+        result = plugin.detach_virtio_driver(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        plugin.eject_floppy.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestExportNbdVolumesHandler:
+    def test_export_nbd_volumes(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.linux.parse_port_range = MagicMock(return_value=(6000, 6001))
+        lock = MagicMock()
+        vm_plugin.linux.find_free_port_with_locking = MagicMock(return_value=(6000, lock))
+        plugin.get_cbt_volume_actual_install_path = MagicMock(return_value='/path/vol')
+        plugin.active_volume_if_need = MagicMock()
+        vm_plugin.qemu_nbd.export = MagicMock(return_value=MagicMock())
+        vm_plugin.linux.check_socket_available = MagicMock(return_value=True)
+
+        req = _make_req({
+            'portRange': '6000-6001',
+            'volumeInfos': [{'volume': {'format': 'qcow2', 'installPath': '/path/vol', 'volumeUuid': 'vol-uuid'}}],
+        })
+        result = plugin.export_nbd_volumes(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert len(rsp['volumeInfos']) == 1
+
+
+@pytest.mark.kvmagent
+class TestFailColoPvmHandler:
+    def test_fail_colo_pvm(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.linux.sshpass_run = MagicMock(return_value=(0, '', ''))
+
+        req = _make_req({
+            'vmInstanceUuid': 'vm-uuid',
+            'targetHostIp': '10.0.0.1',
+            'targetHostPassword': 'password',
+            'targetHostPort': 22,
+        })
+        result = plugin.fail_colo_pvm(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestGetVmGuestToolsInfoHandler:
+    def test_get_vm_guest_tools_info(self):
+        plugin = _make_vm_plugin()
+        plugin.get_linux_vm_guest_tools_info = MagicMock(return_value=(vm_plugin.VmPlugin.GUESTTOOLS_STATE_RUNNING, '1.0'))
+
+        req = _make_req({'vmInstanceUuid': 'vm-uuid', 'platform': 'linux'})
+        result = plugin.get_vm_guest_tools_info(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestGetVmMetricsRoutingStatusHandler:
+    def test_get_vm_metrics_routing_status(self):
+        plugin = _make_vm_plugin()
+        plugin.get_lighttpd_status_for_vm = MagicMock()
+        plugin.get_push_gateway_routing_for_vm = MagicMock()
+
+        cmd = MagicMock(vmInstanceUuid='vm-uuid', items=['lighttpd', 'pushgateway'])
+        with patch.object(vm_plugin.jsonobject, 'loads', return_value=cmd):
+            req = _make_req({})
+            result = plugin.get_vm_metrics_routing_status(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        plugin.get_lighttpd_status_for_vm.assert_called_once()
+        plugin.get_push_gateway_routing_for_vm.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestGetVolumeMirrorModeHandler:
+    def test_get_volume_mirror_mode(self):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm._get_target_disk = MagicMock(return_value=(MagicMock(), None))
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        plugin.get_disk_device_name = MagicMock(return_value='drive-0')
+        client = MagicMock()
+        client.get_mirror_mode = MagicMock(return_value='full')
+        vm_plugin.ImageStoreClient = MagicMock(return_value=client)
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'volume': {'installPath': '/path/vol'},
+            'lastMirrorVolume': 'last',
+        })
+        result = plugin.get_volume_mirror_mode(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert rsp['mode'] == 'full'
+
+
+@pytest.mark.kvmagent
+class TestGetVolumesCbtBitmapsHandler:
+    def test_get_volumes_cbt_bitmaps(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.qemu.get_data_bitmap = MagicMock(return_value={0: 1})
+        vm_plugin.qemu.compress_and_encode_bitmap = MagicMock(return_value='encoded')
+        cmd = MagicMock()
+        volume_info = MagicMock()
+        volume_info.mode = 'incremental'
+        volume_info.scratchNodeName = 'node'
+        volume_info.nbdServer = '127.0.0.1'
+        volume_info.nbdPort = 10809
+        cmd.bitmapTimestamp = 'ts'
+        cmd.volumeInfos = [volume_info]
+        with patch.object(vm_plugin.jsonobject, 'loads', return_value=cmd):
+            req = _make_req({})
+            result = plugin.get_volumes_cbt_bitmaps(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert len(rsp['volumeInfos']) == 1
+
+
+@pytest.mark.kvmagent
+class TestHotPlugMdevDeviceHandler:
+    def test_hot_plug_mdev_device(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.linux.write_to_temp_file = MagicMock(return_value='/tmp/mdev.xml')
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        mock_vm = MagicMock()
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        vm_plugin.pci.get_mdev_passthrough_mapping = MagicMock(return_value={'11111111-1111-1111-1111-111111111111': 'mdev-addr'})
+        vm_plugin.uuid.UUID = MagicMock(side_effect=lambda value: value)
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'MdevDeviceUuid': '11111111-1111-1111-1111-111111111111'})
+        result = plugin.hot_plug_mdev_device(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestHotPlugPciDeviceHandler:
+    def test_hot_plug_pci_device(self):
+        plugin = _make_vm_plugin()
+        plugin.timeout_object = MagicMock()
+        vm_plugin.linux.write_to_temp_file = MagicMock(return_value='/tmp/pci.xml')
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        mock_vm = MagicMock()
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        vm_plugin.pci.get_vm_pci_device_address_by_host_address = MagicMock(return_value='0000:00:00.0')
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'pciDeviceAddress': '0000:00:01.0'})
+        result = plugin.hot_plug_pci_device(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert rsp['vmPciDeviceAddress'] == '0000:00:00.0'
+
+
+@pytest.mark.kvmagent
+class TestHotUnplugMdevDeviceHandler:
+    def test_hot_unplug_mdev_device(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        vm_plugin.uuid.UUID = MagicMock(side_effect=lambda value: value)
+        vm_plugin.linux.wait_callback_success = MagicMock(return_value=True)
+        vm_plugin.linux.write_to_temp_file = MagicMock(return_value='/tmp/mdev.xml')
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'MdevDeviceUuid': '11111111-1111-1111-1111-111111111111'})
+        result = plugin.hot_unplug_mdev_device(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestHotUnplugPciDeviceHandler:
+    def test_hot_unplug_pci_device(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=MagicMock())
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'pciDeviceAddress': '0000:00:01.0'})
+        result = plugin.hot_unplug_pci_device(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestKvmAttachUsbDeviceHandler:
+    def test_kvm_attach_usb_device(self):
+        plugin = _make_vm_plugin()
+        plugin._attach_usb_by_libvirt = MagicMock(return_value=(True, None))
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'attachType': 'PassThrough'})
+        result = plugin.kvm_attach_usb_device(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestKvmDetachUsbDeviceHandler:
+    def test_kvm_detach_usb_device(self):
+        plugin = _make_vm_plugin()
+        plugin._detach_usb_by_libvirt = MagicMock()
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'attachType': 'PassThrough'})
+        result = plugin.kvm_detach_usb_device(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestListExportedVolumesHandler:
+    def test_list_exported_volumes(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.qemu_nbd.find_qemu_nbd_process = MagicMock(side_effect=[0, 1])
+        volume_one = MagicMock(volumeUuid='vol-1', installPath='/path/vol1')
+        volume_two = MagicMock(volumeUuid='vol-2', installPath='/path/vol2')
+        cmd = MagicMock(volumes=[volume_one, volume_two])
+        with patch.object(vm_plugin.jsonobject, 'loads', return_value=cmd):
+            req = _make_req({})
+            result = plugin.list_exported_volumes(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert rsp['volumeExportInfos']['vol-1'] is True
+        assert rsp['volumeExportInfos']['vol-2'] is False
+
+
+@pytest.mark.kvmagent
+class TestMigrateVmHandler:
+    def test_migrate_vm(self):
+        plugin = _make_vm_plugin()
+        plugin._record_operation = MagicMock()
+        mock_vm = MagicMock()
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        cmd = MagicMock(vmUuid='vm-uuid', reload=False, migrateFromDestination=False)
+        with patch.object(vm_plugin.jsonobject, 'loads', return_value=cmd):
+            req = _make_req({})
+            result = plugin.migrate_vm(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        mock_vm.migrate.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestQueryVmMirrorLatenciesBoundaryHandler:
+    def test_query_vm_mirror_latencies_boundary(self):
+        plugin = _make_vm_plugin()
+        thread_obj = MagicMock()
+        thread_obj.getResult = MagicMock(return_value=('vm-uuid', {'max': 1}, {'min': 2}))
+        vm_plugin.QueryVmLatenciesThread = MagicMock(return_value=thread_obj)
+
+        req = _make_req({'vmUuids': ['vm-uuid'], 'times': [1]})
+        result = plugin.query_vm_mirror_latencies_boundary(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestQueryVolumeMirrorHandler:
+    def test_query_volume_mirror(self):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        target_disk = MagicMock()
+        target_disk.alias.name_ = 'virtio-disk0'
+        mock_vm._get_target_disk = MagicMock(return_value=(target_disk, None))
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        plugin.get_disk_device_name = MagicMock(return_value='drive-virtio-disk0')
+        vm_plugin.get_block_node_name_by_disk_name = MagicMock(return_value='node-0')
+        client = MagicMock()
+        client.query_mirror_volumes = MagicMock(return_value={'drive-virtio-disk0': True})
+        vm_plugin.ImageStoreClient = MagicMock(return_value=client)
+
+        volume = MagicMock(volumeUuid='vol-uuid')
+        cmd = MagicMock(vmUuid='vm-uuid', volumes=[volume], stopExtra=False)
+        with patch.object(vm_plugin.jsonobject, 'loads', return_value=cmd):
+            req = _make_req({})
+            result = plugin.query_volume_mirror(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert rsp['mirrorVolumes'] == ['vol-uuid']
+
+
+@pytest.mark.kvmagent
+class TestRecoverVolumesHandler:
+    def test_recover_volumes(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.VM_RECOVER_DICT = {'vm-uuid': MagicMock()}
+        vm_plugin.VM_RECOVER_TASKS = {}
+        vm_plugin.parse_url = MagicMock(return_value=MagicMock(scheme=None))
+        task = MagicMock()
+        task.__enter__.return_value = task
+        task.__exit__.return_value = None
+        task.recover_vm_volumes = MagicMock()
+        vm_plugin.VmVolumesRecoveryTask = MagicMock(return_value=task)
+        vm_plugin.linux.wait_callback_success = MagicMock(return_value=True)
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=MagicMock())
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'volumes': [{'installPath': '/path/vol'}]})
+        result = plugin.recover_volumes(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        task.recover_vm_volumes.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestRegisterPrimaryVmHeartbeatHandler:
+    def test_register_primary_vm_heartbeat(self):
+        plugin = _make_vm_plugin()
+        plugin.vm_heartbeat = {}
+        thread_obj = MagicMock()
+        thread_obj.is_alive = MagicMock(return_value=True)
+        vm_plugin.thread = MagicMock()
+        vm_plugin.thread.ThreadFacade.run_in_thread = MagicMock(return_value=thread_obj)
+
+        with patch('socket.socket') as mock_socket:
+            sock = MagicMock()
+            mock_socket.return_value = sock
+            req = _make_req({'vmInstanceUuid': 'vm-uuid', 'targetHostIp': '10.0.0.1', 'heartbeatPort': 1234})
+            result = plugin.register_primary_vm_heartbeat(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        vm_plugin.thread.ThreadFacade.run_in_thread.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestReloadRedirectUsbHandler:
+    def test_reload_redirect_usb(self):
+        plugin = _make_vm_plugin()
+        plugin._detach_usb_by_libvirt = MagicMock()
+        plugin._attach_usb_by_libvirt = MagicMock(return_value=(True, None))
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'attachType': 'Redirect', 'usbVersion': '2.0'})
+        result = plugin.reload_redirect_usb(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        plugin._detach_usb_by_libvirt.assert_called_once()
+        plugin._attach_usb_by_libvirt.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestScriptExecOnVmHandler:
+    def test_script_exec_on_vm(self):
+        plugin = _make_vm_plugin()
+        qga = MagicMock()
+        qga.guest_exec_bash = MagicMock(side_effect=[(0, '', ''), (0, '', ''), (0, 'stdout', '')])
+        qga.guest_file_is_exist = MagicMock(return_value=False)
+        vm_plugin.VmQga = MagicMock(return_value=qga)
+        def _fake_reconnect(_func):
+            def _wrapper(*_args, **_kwargs):
+                return MagicMock()
+            return _wrapper
+        vm_plugin.LibvirtAutoReconnect = _fake_reconnect
+
+        cmd = MagicMock(vmUuid='vm-uuid', scriptType='Shell', scriptTimeout=1, logPath=None)
+        with patch.object(vm_plugin.jsonobject, 'loads', return_value=cmd):
+            req = _make_req({})
+            result = plugin.script_exec_on_vm(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert rsp['exitCode'] == 0
+
+
+@pytest.mark.kvmagent
+class TestSetSyncVmClockTaskHandler:
+    def test_set_sync_vm_clock_task(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+
+        class _SyncMap(dict[int, str]):
+            def has_key(self, key):
+                return key in self
+
+        plugin.sync_clock_cron_exp_map = _SyncMap({60: '*/1 * * * *'})
+
+        from unittest.mock import mock_open
+        class _IntervalMap(dict[int, str]):
+            def has_key(self, key):
+                return key in self
+
+        with patch('os.path.exists', return_value=True), \
+                patch('builtins.open', mock_open()), \
+                patch('tempfile.mktemp', return_value='/tmp/cron'), \
+                patch('os.chmod'), \
+                patch('os.remove'):
+            cmd = MagicMock(intervalMap=_IntervalMap())
+            with patch.object(vm_plugin.jsonobject, 'loads', return_value=cmd):
+                req = _make_req({})
+                result = plugin.set_sync_vm_clock_task(req)
+                rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestSetVfNicMacHandler:
+    def test_set_vf_nic_mac(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.linux.get_pf_name_by_vf_pci_address = MagicMock(return_value='pf0')
+        vm_plugin.linux.get_vf_index_by_pci_address = MagicMock(return_value=1)
+        vm_plugin.normalize_pci_address = MagicMock(return_value='0000:00:01.0')
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+
+        req = _make_req({'nics': [{'mac': '00:11:22:33:44:55', 'pciDeviceAddress': '0000:00:01.0'}]})
+        result = plugin.set_vf_nic_mac(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        vm_plugin.bash.bash_roe.assert_called()
+
+
+@pytest.mark.kvmagent
+class TestSetVfNicStateHandler:
+    def test_set_vf_nic_state(self):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm.state = vm_plugin.Vm.VM_STATE_RUNNING
+        mock_vm.domain_xmlobject.devices.get_child_node_as_list = MagicMock(return_value=[])
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        plugin.set_domain_network_device = MagicMock()
+        plugin.set_domain_iflink_state = MagicMock()
+        vm_plugin.normalize_pci_address = MagicMock(return_value='0000:00:01.0')
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'haState': 'Enabled',
+            'nic': {
+                'mac': '00:11:22:33:44:55',
+                'mtu': 1500,
+                'bridgeName': 'br0',
+                'nicInternalName': 'eth0',
+                'vHostAddOn': {'queueNum': 1, 'rxBufferSize': 1024, 'txBufferSize': 1024},
+            }
+        })
+        result = plugin.set_vf_nic_state(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        plugin.set_domain_network_device.assert_called()
+
+
+@pytest.mark.kvmagent
+class TestStartColoSyncHandler:
+    def test_start_colo_sync(self):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm._get_all_volume_alias_names = MagicMock(return_value=[])
+        mock_vm.domain.XMLDesc = MagicMock(return_value='')
+        vm_plugin.get_vm_by_uuid_no_retry = MagicMock(return_value=mock_vm)
+        vm_plugin.qmp.execute_qmp_command = MagicMock(return_value={'status': 'colo'})
+        vm_plugin.execute_qmp_command = MagicMock()
+
+        req = _make_req({
+            'vmInstanceUuid': 'vm-uuid',
+            'volumes': [],
+            'nics': [],
+            'fullSync': False,
+            'secondaryVmHostIp': '10.0.0.2',
+            'nbdServerPort': 6000,
+            'blockReplicationPort': 7000,
+            'checkpointDelay': 10,
+            'nicNumber': 0,
+        })
+        result = plugin.start_colo_sync(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestStartVmHandler:
+    def test_start_vm(self):
+        plugin = _make_vm_plugin()
+        plugin._record_operation = MagicMock()
+        plugin._start_vm = MagicMock()
+        plugin.get_vm_device_info = MagicMock(return_value=([], [], None))
+        plugin.collect_vm_virtualizer_info = MagicMock()
+        vm_plugin.linux.find_vm_pid_by_uuid = MagicMock(return_value=123)
+        vm_plugin.linux.enable_process_coredump = MagicMock()
+        vm_plugin.linux.set_vm_priority = MagicMock()
+
+        req = _make_req({'vmInstanceUuid': 'vm-uuid', 'vmName': 'vm', 'priorityConfigStruct': {}})
+        result = plugin.start_vm(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        plugin._start_vm.assert_called_once()
+        vm_plugin.linux.set_vm_priority.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestTakeVolumeBackupHandler:
+    def test_take_volume_backup(self):
+        plugin = _make_vm_plugin()
+        storage = MagicMock()
+        storage.worktarget = MagicMock(return_value='/tmp/backup.qcow2')
+        vm_plugin.RemoteStorageFactory.get_remote_storage = MagicMock(return_value=storage)
+        mock_vm = MagicMock()
+        disk = MagicMock()
+        disk.driver.type_ = 'qcow2'
+        mock_vm._get_target_disk = MagicMock(return_value=(disk, None))
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        plugin.get_disk_device_name = MagicMock(return_value='drive-0')
+        plugin.get_source_file_by_disk = MagicMock(return_value='/path/vol')
+        plugin.do_take_volume_backup = MagicMock(return_value=('bitmap', 'parent'))
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'volume': {},
+            'uploadDir': '/tmp',
+            'backupPath': '/tmp/backup.qcow2',
+            'threadContext': {'api': 'api'},
+            'parent': 'parent',
+        })
+        result = plugin.take_volume_backup(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestTakeVolumeCbtBackupHandler:
+    def test_take_volume_cbt_backup(self):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm.domain.jobStats = MagicMock(return_value={})
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        client = MagicMock()
+        client.query_mirror_volumes = MagicMock(return_value=None)
+        client.cbt_backup_volume = MagicMock(return_value=['info'])
+        vm_plugin.ImageStoreClient = MagicMock(return_value=client)
+        vm_plugin.execute_qmp_command = MagicMock()
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'volumeInfos': [],
+            'bitmapTimestamp': '',
+            'portRange': '6000-6001',
+        })
+        result = plugin.take_volume_cbt_backup(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert rsp['volumeInfos'] == ['info']
+
+
+@pytest.mark.kvmagent
+class TestTakeVolumeMirrorHandler:
+    def test_take_volume_mirror(self):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm.domain.jobStats = MagicMock(return_value={})
+        target_disk = MagicMock()
+        target_disk.alias.name_ = 'virtio-disk0'
+        mock_vm._get_target_disk = MagicMock(return_value=(target_disk, None))
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        plugin.get_disk_device_name = MagicMock(return_value='drive-0')
+        client = MagicMock()
+        client.query_mirror_volumes = MagicMock(return_value={})
+        client.mirror_volume = MagicMock()
+        vm_plugin.ImageStoreClient = MagicMock(return_value=client)
+        vm_plugin.qmp.execute_qmp_command = MagicMock()
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'volume': {'installPath': '/path/vol'},
+            'mirrorTarget': 'target',
+            'lastMirrorVolume': 'last',
+            'mode': 'full',
+            'speed': 0,
+        })
+        result = plugin.take_volume_mirror(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        client.mirror_volume.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestTakeVolumeSnapshotHandler:
+    def test_take_volume_snapshot(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.Vm.ensure_no_internal_snapshot = MagicMock()
+        vm_plugin.Vm.ensure_delta_snapshot_not_exceed = MagicMock()
+        vm_plugin.linux.qcow2_clone_with_cmd = MagicMock()
+        vm_plugin.linux.sync_file = MagicMock()
+        vm_plugin.VmPlugin._get_snapshot_size = MagicMock(return_value=123)
+        vm_plugin.touchQmpSocketWhenExists = MagicMock()
+        vm_plugin.uuidhelper.uuid = MagicMock(return_value='snap-uuid')
+        with patch('os.path.exists', return_value=True):
+            req = _make_req({
+                'vmUuid': None,
+                'volumeUuid': 'vol-uuid',
+                'volume': {},
+                'installPath': '/path/snap',
+                'volumeInstallPath': '/path/vol',
+                'newVolumeInstallPath': '/path/new',
+                'fullSnapshot': False,
+                'online': False,
+                'isBaremetal2InstanceOnlineSnapshot': False,
+            })
+            result = plugin.take_volume_snapshot(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert rsp['size'] == 123
+
+
+@pytest.mark.kvmagent
+class TestTakeVolumesBackupsHandler:
+    def test_take_volumes_backups(self):
+        plugin = _make_vm_plugin()
+        storage = MagicMock()
+        storage.workspace = MagicMock(return_value='/tmp/work')
+        vm_plugin.RemoteStorageFactory.get_remote_storage = MagicMock(return_value=storage)
+        mock_vm = MagicMock()
+        disk = MagicMock()
+        mock_vm._get_target_disk = MagicMock(return_value=(disk, None))
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+
+        class _BackupInfo(object):
+            def __init__(self, device_id, backup_file):
+                self.deviceId: int = device_id
+                self.backupFile: str = backup_file
+
+        plugin.getBitmap = MagicMock(return_value=None)
+        plugin.do_take_volumes_backup = MagicMock(return_value=[
+            _BackupInfo(1, 'file1'),
+            _BackupInfo(2, 'file2'),
+        ])
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'volumes': [{'deviceId': 1}, {'deviceId': 2}],
+            'backupInfos': [],
+            'backupPaths': ['fallback1', 'fallback2'],
+            'uploadDir': '/tmp',
+        })
+        result = plugin.take_volumes_backups(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert len(rsp['backupInfos']) == 2
+
+
+@pytest.mark.kvmagent
+class TestTakeVolumesSnapshotsHandler:
+    def test_take_volumes_snapshots(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.Vm.ensure_no_internal_snapshot = MagicMock()
+        vm_plugin.Vm.ensure_delta_snapshot_not_exceed = MagicMock()
+        vm_plugin.linux.qcow2_clone_with_cmd = MagicMock()
+        vm_plugin.VmPlugin._get_snapshot_size = MagicMock(return_value=123)
+        vm_plugin.touchQmpSocketWhenExists = MagicMock()
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=None)
+        with patch('os.path.exists', return_value=True):
+            vm_plugin.uuidhelper.uuid = MagicMock(return_value='uuid')
+            req = _make_req({
+                'snapshotJobs': [{
+                    'vmInstanceUuid': 'vm-uuid',
+                    'live': False,
+                    'full': False,
+                    'memory': False,
+                    'previousInstallPath': '/path/prev',
+                    'installPath': '/path/snap',
+                    'newVolumeInstallPath': '/path/new',
+                    'volumeUuid': 'vol-uuid',
+                    'deviceId': 0,
+                    'volume': {'installPath': '/path/vol'},
+                }]
+            })
+            result = plugin.take_volumes_snapshots(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert len(rsp['snapshots']) == 1
+
+
+@pytest.mark.kvmagent
+class TestUnexportNbdVolumesHandler:
+    def test_unexport_nbd_volumes(self):
+        plugin = _make_vm_plugin()
+        plugin.get_cbt_volume_actual_install_path = MagicMock(return_value='/path/vol')
+        vm_plugin.qemu_nbd.kill_nbd_process_by_flag = MagicMock()
+        plugin.deactive_volume_if_need = MagicMock()
+
+        volume = MagicMock(installPath='/path/vol')
+        cmd = MagicMock(volumes=[volume])
+        with patch.object(vm_plugin.jsonobject, 'loads', return_value=cmd):
+            req = _make_req({})
+            result = plugin.unexport_nbd_volumes(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        vm_plugin.qemu_nbd.kill_nbd_process_by_flag.assert_called_once_with('/path/vol')
+
+
+@pytest.mark.kvmagent
+class TestUploadVmFileHandler:
+    def test_upload_vm_file(self):
+        plugin = _make_vm_plugin()
+        qga = MagicMock()
+        qga.os = 'linux'
+        qga.guest_exec_bash = MagicMock(return_value=(0, '', ''))
+        qga.guest_file_open = MagicMock(return_value=1)
+        qga.call_qga_command = MagicMock(return_value={'count': 3})
+        qga.guest_file_close = MagicMock()
+        vm_plugin.VmQga = MagicMock(return_value=qga)
+        def _fake_reconnect(_func):
+            def _wrapper(*_args, **_kwargs):
+                return MagicMock()
+            return _wrapper
+        vm_plugin.LibvirtAutoReconnect = _fake_reconnect
+
+        cmd = MagicMock(
+            vmUuid='vm-uuid',
+            fileType='Script',
+            scriptType='Shell',
+            fileContent='echo',
+            dstPath='/tmp/file',
+            param='',
+        )
+        with patch.object(vm_plugin.jsonobject, 'loads', return_value=cmd):
+            req = _make_req({})
+            result = plugin.upload_vm_file(req)
+            rsp = json.loads(result)
+
+        assert rsp['success'] is True
+
+
+@pytest.mark.kvmagent
+class TestWaitSecondaryVmReadyHandler:
+    def test_wait_secondary_vm_ready(self):
+        plugin = _make_vm_plugin()
+        vm_plugin.linux.wait_callback_success = MagicMock(return_value=True)
+
+        req = _make_req({'vmInstanceUuid': 'vm-uuid', 'coloCheckTimeout': 10})
+        result = plugin.wait_secondary_vm_ready(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
