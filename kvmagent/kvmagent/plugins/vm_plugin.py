@@ -47,7 +47,7 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.imagestore import ImageStoreClient
-from kvmagent.plugins.nvram import nvram_local
+from kvmagent.plugins.nvram import nvram
 from zstacklib.utils import bash, plugin, iscsi, qemu_nbd
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import lvm
@@ -5318,7 +5318,7 @@ class Vm(object):
                 loader_attribute['secureBoot'] = 'yes'
 
             # mips64el and loongarch64 is no longer supported, skip
-            nvram_fd_path = nvram_local.build_nvram_fd_path(cmd.vmInstanceUuid)
+            nvram_fd_path = nvram.build_nvram_fd_path(cmd.vmInstanceUuid)
             if host_arch == "x86_64" and cmd.bootMode == "UEFI":
                 e(os, 'type', 'hvm', attrib={'machine': machine_type})
                 if yum_release in ("ky10sp3", "ky10sp3.2403"):
@@ -6698,15 +6698,15 @@ class Vm(object):
                 children[pos] = ordered_disk_elements[i]
 
         def prepare_nvram():
-            extension = nvram_local.LocalNvRamVmExtensions()
+            extension = nvram.NvRamVmExtensions()
             extension.vm_uuid = cmd.vmInstanceUuid
 
             if cmd.nvRam is None:
-                extension.cleanup_nvram_after_vm_stop()
+                extension.cleanup()
                 return
 
             extension.nvram_volume = cmd.nvRam
-            extension.prepare_nvram_before_vm_start()
+            extension.prepare()
 
         prepare_nvram()
         make_root()
@@ -10590,9 +10590,9 @@ host side snapshot files chian:
 
         vm_uuid = cmd.vmUuid
         if not get_vm_by_uuid_no_retry(vm_uuid, False):
-            extension = nvram_local.LocalNvRamVmExtensions()
+            extension = nvram.NvRamVmExtensions()
             extension.vm_uuid = vm_uuid
-            extension.cleanup_nvram_after_vm_stop()
+            extension.cleanup()
 
         return jsonobject.dumps(rsp)
 
@@ -12019,9 +12019,9 @@ host side snapshot files chian:
             return
 
         vm_uuid = dom.name()
-        extension = nvram_local.LocalNvRamVmExtensions()
+        extension = nvram.NvRamVmExtensions()
         extension.vm_uuid = vm_uuid
-        extension.cleanup_nvram_after_vm_stop()
+        extension.cleanup()
 
     @bash.in_bash
     def _release_sharedblocks(self, conn, dom, event, detail, opaque):
@@ -12104,6 +12104,8 @@ host side snapshot files chian:
                     volume = DomainVolume.from_xmlobject(disk)
                     if volume.source.startswith("/dev/"):
                         deactivate_volume(event_str, volume.source, vm_uuid)
+
+                # Note: nvram volume deactivation is in nvram_sblk.py
 
             out = bash.bash_o('virsh dumpxml %s | grep -E "(active|hidden) file="' % vm_uuid).strip().splitlines()
             if len(out) != 0:
