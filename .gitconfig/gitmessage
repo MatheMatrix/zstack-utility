@@ -12,4 +12,6 @@
 
 [footer(s)]
 
+APIImpact/GlobalConfigImpact/GlobalPropertyImpact/DBImpact/ZQLImpact
+
 Resolves/Related: ZSTAC-XXXX
