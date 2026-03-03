@@ -1407,10 +1407,9 @@ upgrade_zstack(){
         return
     fi
     #rerun install system libs, upgrade might need new libs
-    is_install_system_libs
+    install_system_libs
     do_config_ansible
     do_config_systemd
-    show_spinner is_enable_chronyd
     show_spinner uz_stop_zstack
     show_spinner prepare_zops_user_and_db
     show_spinner uz_upgrade_zstack
@@ -1838,7 +1837,7 @@ install_system_libs(){
     show_spinner is_enable_chronyd
 
     if [[ $REDHAT_OS =~ $OS ]]; then
-        show_spinner ia_disable_selinux
+        [ x"$UPGRADE" != x'y' ] && show_spinner ia_disable_selinux
         show_spinner ia_install_python_gcc_rh
     elif [[ $DEBIAN_OS =~ $OS ]]; then
         #if [ -z $ZSTACK_PKG_MIRROR ]; then
