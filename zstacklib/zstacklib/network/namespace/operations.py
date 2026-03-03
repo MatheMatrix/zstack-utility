@@ -12,10 +12,12 @@ NETNS_RUN_DIR = "/var/run/netns"
 
 
 def namespace_exists(name: str) -> bool:
+    """Namespace exists."""
     return os.path.exists(os.path.join(NETNS_RUN_DIR, name))
 
 
 def list_namespaces() -> list[str]:
+    """List namespaces."""
     result = subprocess.run(
         ["ip", "netns", "list"],
         capture_output=True, text=True, check=False
@@ -33,6 +35,7 @@ def list_namespaces() -> list[str]:
 
 
 def create_namespace(name: str) -> None:
+    """Create namespace."""
     if namespace_exists(name):
         raise NamespaceExistsError(name)
     
@@ -45,6 +48,7 @@ def create_namespace(name: str) -> None:
 
 
 def delete_namespace(name: str) -> None:
+    """Delete namespace."""
     if not namespace_exists(name):
         return
     
@@ -62,6 +66,7 @@ def exec_in_namespace(
     timeout: int | None = None,
     check: bool = True
 ) -> subprocess.CompletedProcess:
+    """Exec in namespace."""
     if not namespace_exists(namespace):
         raise NamespaceNotFoundError(namespace)
     
@@ -88,6 +93,7 @@ def exec_in_namespace(
 
 
 def get_namespace_info(name: str) -> NamespaceInfo | None:
+    """Get namespace info."""
     if not namespace_exists(name):
         return None
     
@@ -126,6 +132,7 @@ def create_veth_pair(
     host_ip: str | None = None,
     ns_ip: str | None = None
 ) -> VethPair:
+    """Create veth pair."""
     if not namespace_exists(namespace):
         raise NamespaceNotFoundError(namespace)
     
@@ -163,6 +170,7 @@ def create_veth_pair(
 
 
 def move_interface_to_namespace(interface: str, namespace: str) -> None:
+    """Move interface to namespace."""
     if not namespace_exists(namespace):
         raise NamespaceNotFoundError(namespace)
     
@@ -175,6 +183,7 @@ def move_interface_to_namespace(interface: str, namespace: str) -> None:
 
 
 def set_namespace_loopback_up(namespace: str) -> None:
+    """Set namespace loopback up."""
     if not namespace_exists(namespace):
         raise NamespaceNotFoundError(namespace)
     

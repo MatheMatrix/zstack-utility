@@ -14,6 +14,7 @@ class NoSuchNamespace(RuntimeError):
     """Raised when a network namespace does not exist."""
     
     def __init__(self, namespace):
+        """Init."""
         # type: (str) -> None
         super(NoSuchNamespace, self).__init__(
             "Network namespace: %(namespace)s could not be found." % {'namespace': namespace}
@@ -25,6 +26,7 @@ class NamespaceAlreadyExists(RuntimeError):
     """Raised when trying to create a namespace that already exists."""
     
     def __init__(self, namespace):
+        """Init."""
         # type: (str) -> None
         super(NamespaceAlreadyExists, self).__init__(
             "Network namespace: %(namespace)s already exists." % {'namespace': namespace}
@@ -36,6 +38,7 @@ class InvalidScope(RuntimeError):
     """Raised when an invalid scope value is provided."""
     
     def __init__(self, scope):
+        """Init."""
         # type: (object) -> None
         super(InvalidScope, self).__init__(
             "Scope: %(scope)s is invalid." % {'scope': scope}
@@ -47,6 +50,7 @@ class InvalidIpVersion(RuntimeError):
     """Raised when an invalid IP version is provided (must be 4 or 6)."""
     
     def __init__(self, ip_version):
+        """Init."""
         # type: (object) -> None
         super(InvalidIpVersion, self).__init__(
             "IP version: %(ip_version)s is invalid. Must be 4 or 6." % {'ip_version': ip_version}
@@ -58,6 +62,7 @@ class NoSuchLinkDevice(RuntimeError):
     """Raised when a network link device does not exist."""
     
     def __init__(self, ifname=None, index=None, cause=None):
+        """Init."""
         # type: (Optional[str], Optional[int], Optional[str]) -> None
         message = "Link device(s):"
         if ifname is not None:
@@ -78,6 +83,7 @@ class InvalidIpAddress(ValueError):
     """Raised when an invalid IP address format is provided."""
     
     def __init__(self, ip, reason=None):
+        """Init."""
         # type: (str, Optional[str]) -> None
         message = "Invalid IP address: %s" % ip
         if reason:
@@ -91,6 +97,7 @@ class IpRouteError(RuntimeError):
     """Base exception for IP route operations."""
     
     def __init__(self, message, operation=None):
+        """Init."""
         # type: (str, Optional[str]) -> None
         if operation:
             message = "[%s] %s" % (operation, message)

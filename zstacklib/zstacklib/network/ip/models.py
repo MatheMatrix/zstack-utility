@@ -117,6 +117,7 @@ class IpAddr(object):
                 pass
     
     def __repr__(self):
+        """Repr."""
         # type: () -> str
         return "IpAddr(%s/%s on %s)" % (self.address, self.prefixlen, self.ifname)
 
@@ -174,6 +175,7 @@ class IpLink(object):
             self.allmulticast = False  # type: bool
     
     def __repr__(self):
+        """Repr."""
         # type: () -> str
         return "IpLink(%s, index=%s, mac=%s)" % (self.ifname, self.index, self.mac)
 
@@ -247,6 +249,7 @@ class IpRoute(object):
         return query_link(self.device_index, namespace)
     
     def __repr__(self):
+        """Repr."""
         # type: () -> str
         dst = "%s/%s" % (self.dst_ip or 'default', self.dst_len) if self.dst_ip or self.dst_len else 'default'
         return "IpRoute(%s via %s dev %s)" % (dst, self.via_ip or 'direct', self.device_index)

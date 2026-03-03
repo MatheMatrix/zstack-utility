@@ -13,6 +13,7 @@ class CephError(Exception):
     """Base exception for all Ceph errors."""
     
     def __init__(self, message, pool_name=None, return_code=None):
+        """Init."""
         # type: (str, Optional[str], Optional[int]) -> None
         super(CephError, self).__init__(message)
         self.pool_name = pool_name

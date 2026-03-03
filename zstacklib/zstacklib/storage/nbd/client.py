@@ -47,6 +47,7 @@ class NbdClient:
         unix_socket: str | None = None,
         export_name: str | None = None,
     ) -> None:
+        """Init."""
         if host is None and unix_socket is None:
             raise ValueError("Either host or unix_socket must be specified")
 
@@ -66,6 +67,7 @@ class NbdClient:
         unix_socket: str | None = None,
         export_name: str | None = None,
     ) -> None:
+        """Connect."""
         _host = host or self.host
         _port = port or self.port
         _unix_socket = unix_socket or self.unix_socket
@@ -99,6 +101,7 @@ class NbdClient:
         port: int | None,
         unix_socket: str | None,
     ) -> socket.socket:
+        """Create socket."""
         if unix_socket is not None:
             return socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 
@@ -119,6 +122,7 @@ class NbdClient:
         port: int | None,
         unix_socket: str | None,
     ) -> str | tuple[str, int]:
+        """Get address."""
         if unix_socket is not None:
             return unix_socket
         if host is not None:
@@ -126,6 +130,7 @@ class NbdClient:
         raise ValueError("Either host/port or unix_socket must be specified")
 
     def _negotiate(self, sock: socket.socket, name: str | None = None) -> None:
+        """Negotiate."""
         passwd_size = struct.calcsize('>8s')
         passwd_data = sock.recv(passwd_size)
         if len(passwd_data) < passwd_size:
@@ -150,6 +155,7 @@ class NbdClient:
             self._negotiate_new_style(sock, name)
 
     def _negotiate_old_style(self, sock: socket.socket) -> None:
+        """Negotiate old style."""
         LOG.info(f"Using old-style negotiation for {self.export_name}")
         info_size = struct.calcsize('>Q128s')
         info_data = sock.recv(info_size)
@@ -159,6 +165,7 @@ class NbdClient:
         self.export_size = info[0]
 
     def _negotiate_new_style(self, sock: socket.socket, name: str | None) -> None:
+        """Negotiate new style."""
         if name is None:
             raise NbdNegotiationError(
                 "Export name is required for new-style negotiation"
@@ -182,6 +189,7 @@ class NbdClient:
         self.export_size = self._select_export(sock, name)
 
     def _select_export(self, sock: socket.socket, name: str) -> int:
+        """Select export."""
         name_bytes = name.encode('ascii') if isinstance(name, str) else name
 
         magic = struct.pack('>Q', NBD_OPTS_MAGIC)
@@ -201,9 +209,11 @@ class NbdClient:
         return decoded[0]
 
     def get_block_size(self) -> int | None:
+        """Get block size."""
         return self.export_size
 
     def close(self) -> None:
+        """Close."""
         if self._sock is None:
             return
 
@@ -280,13 +290,16 @@ class NbdClient:
         return data
 
     def __enter__(self) -> 'NbdClient':
+        """Enter."""
         self.connect()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit."""
         self.close()
 
     def __repr__(self) -> str:
+        """Repr."""
         if self.unix_socket:
             return f"NbdClient(unix_socket={self.unix_socket!r}, export_name={self.export_name!r})"
         return f"NbdClient(host={self.host!r}, port={self.port}, export_name={self.export_name!r})"

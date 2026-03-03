@@ -91,6 +91,7 @@ __all__ = [
 
 
 def __getattr__(name):
+    """Getattr."""
     if name in ('discover_targets', 'discover_targets_safe', 'parse_discovery_output',
                 'get_discovered_iqns', 'find_target_by_iqn'):
         from . import discovery

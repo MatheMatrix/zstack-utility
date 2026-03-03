@@ -24,6 +24,7 @@ class ThinPoolInfo:
     """Information about a thin pool."""
     
     def __init__(self, path: str):
+        """Init."""
         o = bash.bash_o(
             f"lvs --nolocking -t {path} --separator ' ' -oname,data_percent,lv_size,pool_lv --noheading --unit B"
         ).strip()

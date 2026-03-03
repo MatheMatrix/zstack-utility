@@ -31,6 +31,7 @@ class PciDevice:
 
 
 def _simplify_vendor_name(name: str) -> str:
+    """Simplify vendor name."""
     if "Intel Corporation" in name:
         return "Intel"
     if "Advanced Micro Devices" in name:
@@ -41,6 +42,7 @@ def _simplify_vendor_name(name: str) -> str:
 
 
 def _infer_device_type(description: str, class_name: str) -> str:
+    """Infer device type."""
     gpu_vendors = ["NVIDIA", "AMD"]
     if any(vendor in description for vendor in gpu_vendors) and "VGA compatible controller" in class_name:
         return "GPU_Video_Controller"
@@ -70,6 +72,7 @@ def _infer_device_type(description: str, class_name: str) -> str:
 
 
 def _normalize_address(address: str) -> str:
+    """Normalize address."""
     domain, bus, slot, function = parse_pci_address(address)
     return fmt_pci_address({
         "domain": int(domain, 16),

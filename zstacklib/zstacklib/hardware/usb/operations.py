@@ -10,6 +10,7 @@ from .models import UsbAttachSpec, UsbDevice
 
 
 def _usb_device_xml(vendor_id: str, product_id: str, bus: str, dev: str) -> str:
+    """Usb device xml."""
     return (
         "<hostdev mode='subsystem' type='usb' managed='yes'>\n"
         "  <source>\n"
@@ -25,6 +26,7 @@ USB_RE = re.compile(r"^Bus\s+(\d+)\s+Device\s+(\d+):\s+ID\s+([0-9a-fA-F]{4}):([0
 
 
 def _parse_lsusb(output: str) -> list[UsbDevice]:
+    """Parse lsusb."""
     devices: list[UsbDevice] = []
     for line in output.splitlines():
         match = USB_RE.match(line.strip())
@@ -44,6 +46,7 @@ def _parse_lsusb(output: str) -> list[UsbDevice]:
 
 
 def list_usb_devices() -> list[UsbDevice]:
+    """List usb devices."""
     result = subprocess.run(["lsusb"], capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise UsbOperationError("host", "list", result.stderr.strip())
@@ -51,6 +54,7 @@ def list_usb_devices() -> list[UsbDevice]:
 
 
 def find_usb_device(vendor_id: str, product_id: str) -> UsbDevice | None:
+    """Find usb device."""
     vendor_id = vendor_id.lower()
     product_id = product_id.lower()
     for device in list_usb_devices():
@@ -60,6 +64,7 @@ def find_usb_device(vendor_id: str, product_id: str) -> UsbDevice | None:
 
 
 def attach_usb_device(spec: UsbAttachSpec) -> None:
+    """Attach usb device."""
     device = find_usb_device(spec.vendor_id, spec.product_id)
     if device is None:
         raise UsbNotFoundError(f"{spec.vendor_id}:{spec.product_id}")
@@ -80,6 +85,7 @@ def attach_usb_device(spec: UsbAttachSpec) -> None:
 
 
 def detach_usb_device(spec: UsbAttachSpec) -> None:
+    """Detach usb device."""
     device = find_usb_device(spec.vendor_id, spec.product_id)
     if device is None:
         raise UsbNotFoundError(f"{spec.vendor_id}:{spec.product_id}")

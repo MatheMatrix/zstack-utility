@@ -16,6 +16,7 @@ _PCI_DEVICES_PATH = "/sys/bus/pci/devices"
 
 
 def _read_sysfs(path: str) -> Optional[str]:
+    """Read sysfs."""
     try:
         with open(path, "r") as fd:
             return fd.read().strip()
@@ -25,6 +26,7 @@ def _read_sysfs(path: str) -> Optional[str]:
 
 
 def _write_sysfs(path: str, content: str) -> None:
+    """Write sysfs."""
     try:
         with open(path, "w") as fd:
             fd.write(content)
@@ -33,6 +35,7 @@ def _write_sysfs(path: str, content: str) -> None:
 
 
 def _resolve_device_path(address: str) -> Optional[str]:
+    """Resolve device path."""
     if not address:
         return None
     device_path = os.path.join(_PCI_DEVICES_PATH, address)
@@ -49,6 +52,7 @@ def _resolve_device_path(address: str) -> Optional[str]:
 
 
 def _get_driver_name(device_path: str) -> Optional[str]:
+    """Get driver name."""
     driver_link = os.path.join(device_path, "driver")
     if os.path.islink(driver_link):
         return os.path.basename(os.path.realpath(driver_link))
@@ -56,6 +60,7 @@ def _get_driver_name(device_path: str) -> Optional[str]:
 
 
 def _list_vf_entries(device_path: str) -> List[Tuple[int, str]]:
+    """List vf entries."""
     vf_entries: List[Tuple[int, str]] = []
     if not os.path.isdir(device_path):
         return vf_entries
@@ -75,6 +80,7 @@ def _list_vf_entries(device_path: str) -> List[Tuple[int, str]]:
 
 
 def _find_vf_index(pf_path: str, vf_address: str) -> int:
+    """Find vf index."""
     for index, address in _list_vf_entries(pf_path):
         if address == vf_address:
             return index
@@ -82,6 +88,7 @@ def _find_vf_index(pf_path: str, vf_address: str) -> int:
 
 
 def _build_nodedev_name(address: str) -> Optional[str]:
+    """Build nodedev name."""
     addr = address
     if len(addr.split(":")) != 3:
         addr = "0000:" + addr
@@ -92,6 +99,7 @@ def _build_nodedev_name(address: str) -> Optional[str]:
 
 
 def _check_allocated_virtual_functions(pf_address: str) -> Optional[str]:
+    """Check allocated virtual functions."""
     pf_node = _build_nodedev_name(pf_address)
     if not pf_node:
         return "invalid pci address for PF: %s" % pf_address
@@ -114,6 +122,7 @@ def _check_allocated_virtual_functions(pf_address: str) -> Optional[str]:
 
 
 def enable_sriov(pf_address: str, num_vfs: int) -> List[VirtualFunction]:
+    """Enable sriov."""
     device_path = _resolve_device_path(pf_address)
     if not device_path:
         raise SriovError("pci device not found: %s" % pf_address)
@@ -125,6 +134,7 @@ def enable_sriov(pf_address: str, num_vfs: int) -> List[VirtualFunction]:
 
 
 def disable_sriov(pf_address: str) -> None:
+    """Disable sriov."""
     device_path = _resolve_device_path(pf_address)
     if not device_path:
         raise SriovError("pci device not found: %s" % pf_address)
@@ -140,6 +150,7 @@ def disable_sriov(pf_address: str) -> None:
 
 
 def list_vfs(pf_address: str) -> List[VirtualFunction]:
+    """List vfs."""
     device_path = _resolve_device_path(pf_address)
     if not device_path:
         return []
@@ -163,6 +174,7 @@ def list_vfs(pf_address: str) -> List[VirtualFunction]:
 
 
 def get_vf_info(vf_address: str) -> Optional[VirtualFunction]:
+    """Get vf info."""
     vf_path = _resolve_device_path(vf_address)
     if not vf_path:
         return None
@@ -186,6 +198,7 @@ def get_vf_info(vf_address: str) -> Optional[VirtualFunction]:
 
 
 def bind_vf_to_vfio(vf_address: str) -> None:
+    """Bind vf to vfio."""
     try:
         bind_device_to_vfio(vf_address)
     except Exception as exc:
@@ -193,6 +206,7 @@ def bind_vf_to_vfio(vf_address: str) -> None:
 
 
 def unbind_vf_from_vfio(vf_address: str) -> None:
+    """Unbind vf from vfio."""
     try:
         unbind_device_from_vfio(vf_address)
     except Exception as exc:

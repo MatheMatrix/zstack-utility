@@ -49,6 +49,7 @@ class OvsVenv:
     __cache__: list = []  # [timestamp, OvsVenv instance]
 
     def __new__(cls):
+        """New."""
         # Return cached instance if less than 60 seconds old
         if len(cls.__cache__) == 2 and (time.time() - cls.__cache__[0]) <= 60:
             cls.__cache__[0] = time.time()

@@ -3,15 +3,18 @@ from dataclasses import dataclass
 
 
 class GpuError(Exception):
+    """Gpuerror."""
     pass
 
 
 class MdevError(GpuError):
+    """Mdeverror."""
     pass
 
 
 @dataclass
 class VgpuType:
+    """Vgputype."""
     type_id: str
     name: str
     max_instances: int
@@ -20,6 +23,7 @@ class VgpuType:
 
 @dataclass
 class MdevType:
+    """Mdevtype."""
     type_id: str
     name: str
     available_instances: int
@@ -28,6 +32,7 @@ class MdevType:
 
 @dataclass
 class MdevDevice:
+    """Mdevdevice."""
     uuid: str
     type_id: str
     pci_address: str

@@ -9,6 +9,7 @@ from .models import SSHConfig, RemoteResult
 
 
 def _build_ssh_options(config: SSHConfig) -> list[str]:
+    """Build ssh options."""
     options = [
         "-o", f"ConnectTimeout={config.connect_timeout}",
         "-o", f"StrictHostKeyChecking={'yes' if config.strict_host_key_checking else 'no'}",
@@ -29,6 +30,7 @@ def remote_execute(
     timeout: int | None = None,
     check: bool = True
 ) -> RemoteResult:
+    """Remote execute."""
     ssh_options = _build_ssh_options(config)
     
     if isinstance(command, list):
@@ -77,6 +79,7 @@ def remote_copy(
     recursive: bool = False,
     timeout: int | None = None
 ) -> None:
+    """Remote copy."""
     scp_options = [
         "-o", f"ConnectTimeout={config.connect_timeout}",
         "-o", f"StrictHostKeyChecking={'yes' if config.strict_host_key_checking else 'no'}",
@@ -118,6 +121,7 @@ def remote_copy(
 
 
 def check_ssh_connectivity(config: SSHConfig) -> bool:
+    """Check ssh connectivity."""
     try:
         result = remote_execute(config, "echo ok", timeout=config.connect_timeout, check=False)
         return result.returncode == 0 and "ok" in result.stdout
@@ -126,15 +130,18 @@ def check_ssh_connectivity(config: SSHConfig) -> bool:
 
 
 def get_remote_file_content(config: SSHConfig, path: str) -> str:
+    """Get remote file content."""
     result = remote_execute(config, f"cat {shlex.quote(path)}")
     return result.stdout
 
 
 def remote_file_exists(config: SSHConfig, path: str) -> bool:
+    """Remote file exists."""
     result = remote_execute(config, f"test -e {shlex.quote(path)}", check=False)
     return result.returncode == 0
 
 
 def remote_mkdir(config: SSHConfig, path: str, parents: bool = True) -> None:
+    """Remote mkdir."""
     flag = "-p" if parents else ""
     remote_execute(config, f"mkdir {flag} {shlex.quote(path)}")

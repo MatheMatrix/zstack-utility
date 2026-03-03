@@ -13,10 +13,12 @@ PCI_ADDRESS_PATTERN = re.compile(
 
 
 class PciError(Exception):
+    """Pcierror."""
     pass
 
 
 def _to_int(value: Union[str, int]) -> int:
+    """To int."""
     if isinstance(value, int):
         return value
     if value is None:

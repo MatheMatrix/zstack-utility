@@ -19,6 +19,7 @@ class IPSet:
     """
     
     def __init__(self, name: str, set_type: str, ip_version: str):
+        """Init."""
         self.name = name
         self.ip_version = ip_version
         self.type = set_type
@@ -26,46 +27,57 @@ class IPSet:
         self.nomatch_ip: List[str] = []
 
     def set_match_ip(self, ips: Optional[List[str]]) -> None:
+        """Set match ip."""
         if ips:
             self.match_ip = ips
 
     def set_nomatch_ip(self, ips: Optional[List[str]]) -> None:
+        """Set nomatch ip."""
         if ips:
             self.nomatch_ip = ips
 
     def add_match_ip(self, ip: str) -> None:
+        """Add match ip."""
         if ip not in self.match_ip:
             self.match_ip.append(ip)
 
     def add_nomatch_ip(self, ip: str) -> None:
+        """Add nomatch ip."""
         if ip not in self.nomatch_ip:
             self.nomatch_ip.append(ip)
 
     def del_match_ip(self, ip: str) -> None:
+        """Del match ip."""
         if ip in self.match_ip:
             self.match_ip.remove(ip)
 
     def del_nomatch_ip(self, ip: str) -> None:
+        """Del nomatch ip."""
         if ip in self.nomatch_ip:
             self.nomatch_ip.remove(ip)
 
     def clear_match_ip(self) -> None:
+        """Clear match ip."""
         self.match_ip = []
 
     def clear_nomatch_ip(self) -> None:
+        """Clear nomatch ip."""
         self.nomatch_ip = []
 
     def transform_cmd(self, is_exist: bool = True) -> str:
+        """Transform cmd."""
         create_cmd = self._create_set_cmd(is_exist)
         flush_cmd = 'flush %s' % self.name
         ip_cmds = '\n'.join(self._add_ip_cmd_list(is_exist))
         return '%s\n%s\n%s\n' % (create_cmd, flush_cmd, ip_cmds)
 
     def _create_set_cmd(self, is_exist: bool = True) -> str:
+        """Create set cmd."""
         option = '--exist' if is_exist else ''
         return 'create %s %s family %s %s' % (self.name, self.type, self.ip_version, option)
 
     def _add_ip_cmd_list(self, is_exist: bool = True) -> List[str]:
+        """Add ip cmd list."""
         option = '--exist' if is_exist else ''
         match_cmds = ['add %s %s %s' % (self.name, ip, option) for ip in self.match_ip]
         nomatch_cmds = ['add %s %s %s nomatch' % (self.name, ip, option) for ip in self.nomatch_ip]
@@ -93,6 +105,7 @@ class IPSetManager:
     DEFAULT_IP_VERSION = 'inet'
 
     def __init__(self, namespace: Optional[str] = None):
+        """Init."""
         self.namespace = namespace
         self.sets: Dict[str, IPSet] = {}
         self._parser = None
@@ -105,26 +118,32 @@ class IPSetManager:
         set_type: str = DEFAULT_TYPE,
         ip_version: str = DEFAULT_IP_VERSION
     ) -> None:
+        """Create set."""
         self.sets[name] = IPSet(name, set_type, ip_version)
         self.sets[name].set_match_ip(match_ips)
         self.sets[name].set_nomatch_ip(nomatch_ips)
 
     def destroy_set(self, name: str) -> None:
+        """Destroy set."""
         del self.sets[name]
 
     def flush_sets(self, name: str) -> None:
+        """Flush sets."""
         self.sets[name].clear_match_ip()
         self.sets[name].clear_nomatch_ip()
 
     def reset(self) -> None:
+        """Reset."""
         self.sets.clear()
         self.namespace = None
 
     def ipset_save(self) -> None:
+        """Ipset save."""
         o = shell.call('ipset save')
         self._from_ipset_save(o)
 
     def cleanup_other_ipset(self, validate, used_ipset: Optional[List[str]] = None) -> None:
+        """Cleanup other ipset."""
         if used_ipset:
             used_sets = used_ipset
         else:
@@ -137,6 +156,7 @@ class IPSetManager:
 
     @staticmethod
     def clean_ipsets(ipset_names: List[str]) -> None:
+        """Clean ipsets."""
         destroy_cmds = ['destroy %s' % set_name for set_name in ipset_names]
         tmp = linux.write_to_temp_file('\n'.join(destroy_cmds))
         o = shell.ShellCmd('ipset restore -f %s' % tmp)
@@ -148,6 +168,7 @@ class IPSetManager:
         os.remove(tmp)
 
     def refresh_my_ipsets(self) -> None:
+        """Refresh my ipsets."""
         tmp_fd, tmp_path = tempfile.mkstemp()
         with os.fdopen(tmp_fd, 'w') as f:
             for name, ipset in self.sets.items():
@@ -168,12 +189,14 @@ class IPSetManager:
         logger.debug('success restore ipset')
 
     def _parse_set_action(self, tokens) -> None:
+        """Parse set action."""
         set_name = tokens[1]
         set_type = '%s:%s' % (tokens[2], tokens[4])
         ip_version = tokens[6]
         self.create_set(name=set_name, set_type=set_type, ip_version=ip_version)
 
     def _parse_entry_action(self, tokens) -> None:
+        """Parse entry action."""
         set_name = tokens[1]
         ip = tokens[2]
         if set_name not in self.sets:
@@ -181,6 +204,7 @@ class IPSetManager:
         self.sets[set_name].add_match_ip(ip)
 
     def _construct_pyparsing(self) -> None:
+        """Construct pyparsing."""
         if self._parser:
             return
 
@@ -196,6 +220,7 @@ class IPSetManager:
         self._parser = sets | entry
 
     def _from_ipset_save(self, txt: str) -> None:
+        """From ipset save."""
         self.reset()
         self._construct_pyparsing()
         for l in txt.splitlines():

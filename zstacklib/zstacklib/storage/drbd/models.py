@@ -65,6 +65,7 @@ class DrbdHostStruct(DrbdStruct):
     """
     
     def __init__(self, name):
+        """Init."""
         # type: (str) -> None
         super(DrbdHostStruct, self).__init__()
         self.hostname = None  # type: Optional[str]
@@ -88,6 +89,7 @@ class DrbdNetStruct(DrbdStruct):
     """
     
     def __init__(self):
+        """Init."""
         # type: () -> None
         super(DrbdNetStruct, self).__init__()
         self.csums_alg = 'crc32'

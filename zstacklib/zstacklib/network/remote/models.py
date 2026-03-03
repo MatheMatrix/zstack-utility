@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class SSHConfig:
+    """Sshconfig."""
     host: str
     user: str = "root"
     port: int = 22
@@ -17,6 +18,7 @@ class SSHConfig:
 
 @dataclass
 class RemoteResult:
+    """Remoteresult."""
     returncode: int
     stdout: str
     stderr: str
@@ -25,4 +27,5 @@ class RemoteResult:
 
     @property
     def success(self) -> bool:
+        """Success."""
         return self.returncode == 0

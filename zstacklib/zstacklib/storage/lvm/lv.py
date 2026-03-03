@@ -148,6 +148,7 @@ def create_lv_from_absolute_path(
 @bash.in_bash
 @linux.retry(times=10, sleep_time=2)
 def _active_lv(path: str, shared: bool = False) -> None:
+    """Active lv."""
     flag = "-asy" if shared else "-ay"
     bash.bash_errorout(f"lvchange {flag} {path}")
     if not lv_is_active(path):
@@ -157,6 +158,7 @@ def _active_lv(path: str, shared: bool = False) -> None:
 @bash.in_bash
 @linux.retry(times=3, sleep_time=2)
 def _deactive_lv(path: str, raise_exception: bool = True) -> None:
+    """Deactive lv."""
     if not lv_exists(path):
         return
     if not lv_is_active(path):

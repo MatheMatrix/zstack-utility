@@ -10,12 +10,14 @@ from .models import LockBackend, LockHandle, LockResource
 
 
 def _ensure_parent(path: str) -> None:
+    """Ensure parent."""
     parent = os.path.dirname(path)
     if parent and not os.path.exists(parent):
         os.makedirs(parent, 0o755, exist_ok=True)
 
 
 def acquire_lock(resource: LockResource, timeout: int = 30) -> LockHandle:
+    """Acquire lock."""
     token = str(uuid.uuid4())
     if resource.backend == LockBackend.SANLOCK:
         cmd = f"sanlock direct acquire -r {resource.name}:{resource.path}:{resource.host_id}:{resource.version}"
@@ -35,6 +37,7 @@ def acquire_lock(resource: LockResource, timeout: int = 30) -> LockHandle:
 
 
 def release_lock(handle: LockHandle) -> None:
+    """Release lock."""
     if not handle.held:
         raise LockNotHeldError(handle.resource.name)
 
@@ -53,4 +56,5 @@ def release_lock(handle: LockHandle) -> None:
 
 
 def is_lock_held(handle: LockHandle) -> bool:
+    """Check is lock held."""
     return handle.held

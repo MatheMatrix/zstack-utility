@@ -15,12 +15,14 @@ _local = threading.local()
 
 
 def _get_defer_stack() -> list[list[Callable[[], None]]]:
+    """Get defer stack."""
     if not hasattr(_local, 'defer_stack'):
         _local.defer_stack = []
     return _local.defer_stack
 
 
 def defer(f: Callable[[], None]) -> None:
+    """Defer."""
     stack = _get_defer_stack()
     if not stack:
         raise RuntimeError(
@@ -30,8 +32,10 @@ def defer(f: Callable[[], None]) -> None:
 
 
 def protect(f: Callable[P, T]) -> Callable[P, T]:
+    """Protect."""
     @functools.wraps(f)
     def inner(*args: P.args, **kwargs: P.kwargs) -> T:
+        """Inner."""
         stack = _get_defer_stack()
         stack.append([])
         

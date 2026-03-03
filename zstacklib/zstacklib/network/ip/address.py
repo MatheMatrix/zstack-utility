@@ -69,40 +69,49 @@ class IpAddress(object):
         return 0
     
     def __gt__(self, other):
+        """Gt."""
         # type: (IpAddress) -> bool
         return self._compare(other) > 0
     
     def __lt__(self, other):
+        """Lt."""
         # type: (IpAddress) -> bool
         return self._compare(other) < 0
     
     def __eq__(self, other):
+        """Eq."""
         # type: (object) -> bool
         if not isinstance(other, IpAddress):
             return False
         return self._compare(other) == 0
     
     def __le__(self, other):
+        """Le."""
         # type: (IpAddress) -> bool
         return self._compare(other) <= 0
     
     def __ge__(self, other):
+        """Ge."""
         # type: (IpAddress) -> bool
         return self._compare(other) >= 0
     
     def __ne__(self, other):
+        """Ne."""
         # type: (object) -> bool
         return not self.__eq__(other)
     
     def __str__(self):
+        """Str."""
         # type: () -> str
         return '.'.join(self.ip_list)
     
     def __repr__(self):
+        """Repr."""
         # type: () -> str
         return self.__str__()
     
     def __hash__(self):
+        """Hash."""
         # type: () -> int
         return hash(self.toInt32())
     
@@ -226,10 +235,12 @@ class Ipv6Address(object):
         return ":".join(temp) + "::/" + str(prefixlen)
     
     def __str__(self):
+        """Str."""
         # type: () -> str
         return ":".join(self.ips)
     
     def __repr__(self):
+        """Repr."""
         # type: () -> str
         return self.__str__()
 

@@ -105,12 +105,14 @@ def _fill_crush_osds(pools):
         return
     
     def find_node_by_id(node_id):
+        """Find node by id."""
         for node in tree.nodes:
             if node.id == node_id:
                 return node
         return None
     
     def find_all_childs(node):
+        """Find all childs."""
         childs = []
         if not node.children:
             return childs

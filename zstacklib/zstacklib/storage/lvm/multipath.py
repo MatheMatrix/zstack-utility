@@ -11,6 +11,7 @@ logger = log.get_logger(__name__)
 
 
 def _validate_dev_name(dev_name):
+    """Validate dev name."""
     # type: (str) -> None
     if not _re.match(r'^[A-Za-z0-9._-]+$', dev_name):
         raise ValueError('invalid device name: %s' % dev_name)

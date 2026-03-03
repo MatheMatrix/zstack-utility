@@ -172,6 +172,7 @@ def upload_chain_to_filesystem(converter, first_node_path, dst_vol_dir, overwrit
     from zstacklib.utils.linux import rm_file_force
     
     def upload(src_path):
+        """Upload."""
         dst_path = os.path.join(dst_vol_dir, os.path.basename(src_path))
         if os.path.exists(dst_path):
             if overwrite:
@@ -213,6 +214,7 @@ def download_chain_from_filesystem(converter, first_node_path, dst_vol_dir, over
     downloaded_chain = []  # type: List[Tuple[str, int]]
     
     def download(src_path, backing_file, backing_fmt):
+        """Download."""
         dst_path = os.path.join(dst_vol_dir, os.path.basename(src_path))
         if converter.exists(dst_path):
             if overwrite:

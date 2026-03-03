@@ -14,6 +14,7 @@ class Qcow2FormatError(Qcow2Error):
     """Raised when an image has an invalid or unsupported format."""
     
     def __init__(self, path, fmt=None, msg=None):
+        """Init."""
         # type: (str, str, str) -> None
         self.path = path
         self.format = fmt
@@ -27,6 +28,7 @@ class Qcow2InfoError(Qcow2Error):
     """Raised when image info cannot be retrieved."""
     
     def __init__(self, path, msg=None):
+        """Init."""
         # type: (str, str) -> None
         self.path = path
         message = msg or 'Cannot get info for image [{}]'.format(path)
@@ -37,6 +39,7 @@ class Qcow2CreateError(Qcow2Error):
     """Raised when image creation fails."""
     
     def __init__(self, path, msg=None):
+        """Init."""
         # type: (str, str) -> None
         self.path = path
         message = msg or 'Failed to create image [{}]'.format(path)
@@ -47,6 +50,7 @@ class Qcow2ConvertError(Qcow2Error):
     """Raised when image conversion fails."""
     
     def __init__(self, src, dst, msg=None):
+        """Init."""
         # type: (str, str, str) -> None
         self.src = src
         self.dst = dst
@@ -58,6 +62,7 @@ class Qcow2ChainError(Qcow2Error):
     """Raised when backing file chain operations fail."""
     
     def __init__(self, path, msg=None):
+        """Init."""
         # type: (str, str) -> None
         self.path = path
         message = msg or 'Backing file chain error for [{}]'.format(path)

@@ -137,6 +137,7 @@ class DrbdResource:
         @bash.in_bash
         @linux.retry(times=retry, sleep_time=sleep)
         def do_promote():
+            """Do promote."""
             f = " --force" if force else ""
             r, o, e = bash.bash_roe("drbdadm primary %s %s" % (self.name, f))
             if self.get_role() != DrbdRole.Primary:
@@ -161,6 +162,7 @@ class DrbdResource:
         @bash.in_bash
         @linux.retry(times=30, sleep_time=2)
         def do_demote():
+            """Do demote."""
             bash.bash_errorout("drbdadm secondary %s" % self.name)
         
         do_demote()

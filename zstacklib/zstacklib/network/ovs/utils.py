@@ -85,6 +85,7 @@ def confirm_write_sysfs(path: str, value: str, retries: int = 10, sleep_time: fl
 
     @linux_retry(times=retries, sleep_time=sleep_time)
     def _do_write():
+        """Do write."""
         write_sysfs(path, value)
         if read_sysfs(path) != value:
             raise OvsError('write sysfs failed')

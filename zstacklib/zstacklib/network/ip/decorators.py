@@ -32,9 +32,11 @@ def log_iproute_call(text):
         ...     pass
     """
     def wrap(func):
+        """Wrap."""
         # type: (F) -> F
         @wraps(func)
         def inner(*args, **kwargs):
+            """Inner."""
             # type: (*Any, **Any) -> Any
             cmd = '%s: args=%s, kwargs=%s' % (text, args, kwargs)
             try:
@@ -74,6 +76,7 @@ def no_error_do(func):
     """
     @wraps(func)
     def aim_to_do(*args, **kwargs):
+        """Aim to do."""
         # type: (*Any, **Any) -> bool
         try:
             func(*args, **kwargs)

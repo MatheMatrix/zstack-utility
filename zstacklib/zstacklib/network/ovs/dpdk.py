@@ -41,6 +41,7 @@ class OvsDpdkCtl(OvsBaseCtl):
     """
 
     def __init__(self):
+        """Init."""
         super().__init__()
         self.dpdk_open = True
         self._init_dpdk()

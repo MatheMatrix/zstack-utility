@@ -20,6 +20,7 @@ class IscsiError(Exception):
     
     def __init__(self, message: str, portal: Optional[str] = None, 
                  target: Optional[str] = None, return_code: Optional[int] = None):
+        """Init."""
         self.message = message
         self.portal = portal
         self.target = target
@@ -27,6 +28,7 @@ class IscsiError(Exception):
         super(IscsiError, self).__init__(self._format_message())
     
     def _format_message(self) -> str:
+        """Format message."""
         parts = [self.message]
         if self.portal:
             parts.append("portal={}".format(self.portal))
@@ -42,6 +44,7 @@ class DiscoveryError(IscsiError):
     
     def __init__(self, portal: str, message: Optional[str] = None,
                  return_code: Optional[int] = None):
+        """Init."""
         super(DiscoveryError, self).__init__(
             message=message or "Failed to discover iSCSI targets",
             portal=portal,
@@ -54,6 +57,7 @@ class LoginError(IscsiError):
     
     def __init__(self, portal: str, target: str, message: Optional[str] = None,
                  return_code: Optional[int] = None):
+        """Init."""
         super(LoginError, self).__init__(
             message=message or "Failed to login to iSCSI target",
             portal=portal,
@@ -67,6 +71,7 @@ class LogoutError(IscsiError):
     
     def __init__(self, portal: str, target: str, message: Optional[str] = None,
                  return_code: Optional[int] = None):
+        """Init."""
         super(LogoutError, self).__init__(
             message=message or "Failed to logout from iSCSI target",
             portal=portal,
@@ -79,6 +84,7 @@ class SessionNotFoundError(IscsiError):
     """iSCSI session does not exist."""
     
     def __init__(self, portal: str, target: str, message: Optional[str] = None):
+        """Init."""
         super(SessionNotFoundError, self).__init__(
             message=message or "iSCSI session not found",
             portal=portal,
@@ -91,6 +97,7 @@ class TargetNotFoundError(IscsiError):
     
     def __init__(self, portal: str, target: Optional[str] = None,
                  message: Optional[str] = None):
+        """Init."""
         super(TargetNotFoundError, self).__init__(
             message=message or "iSCSI target not found",
             portal=portal,
@@ -103,6 +110,7 @@ class ChapAuthError(IscsiError):
     
     def __init__(self, portal: str, target: str, message: Optional[str] = None,
                  return_code: Optional[int] = None):
+        """Init."""
         super(ChapAuthError, self).__init__(
             message=message or "Failed to configure CHAP authentication",
             portal=portal,
@@ -116,6 +124,7 @@ class TimeoutError(IscsiError):
     
     def __init__(self, operation: str, timeout: int, portal: Optional[str] = None,
                  target: Optional[str] = None):
+        """Init."""
         super(TimeoutError, self).__init__(
             message="iSCSI {} timed out after {}s".format(operation, timeout),
             portal=portal,
@@ -130,6 +139,7 @@ class RescanError(IscsiError):
     
     def __init__(self, session_id: str, message: Optional[str] = None,
                  return_code: Optional[int] = None):
+        """Init."""
         super(RescanError, self).__init__(
             message=message or "Failed to rescan iSCSI session",
             return_code=return_code
@@ -142,6 +152,7 @@ class NodeDeleteError(IscsiError):
     
     def __init__(self, portal: str, target: str, message: Optional[str] = None,
                  return_code: Optional[int] = None):
+        """Init."""
         super(NodeDeleteError, self).__init__(
             message=message or "Failed to delete iSCSI node",
             portal=portal,

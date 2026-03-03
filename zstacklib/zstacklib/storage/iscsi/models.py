@@ -25,6 +25,7 @@ class IscsiPortal:
     port: int = 3260
     
     def __str__(self) -> str:
+        """Str."""
         return "{}:{}".format(self.ip, self.port)
     
     @classmethod

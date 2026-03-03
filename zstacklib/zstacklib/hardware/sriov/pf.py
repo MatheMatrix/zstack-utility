@@ -13,6 +13,7 @@ _PCI_DEVICES_PATH = "/sys/bus/pci/devices"
 
 
 def _read_sysfs(path: str) -> Optional[str]:
+    """Read sysfs."""
     try:
         with open(path, "r") as fd:
             return fd.read().strip()
@@ -22,6 +23,7 @@ def _read_sysfs(path: str) -> Optional[str]:
 
 
 def _read_int(path: str) -> int:
+    """Read int."""
     content = _read_sysfs(path)
     if not content:
         return 0
@@ -30,6 +32,7 @@ def _read_int(path: str) -> int:
 
 
 def _resolve_device_path(address: str) -> Optional[str]:
+    """Resolve device path."""
     if not address:
         return None
     device_path = os.path.join(_PCI_DEVICES_PATH, address)
@@ -46,6 +49,7 @@ def _resolve_device_path(address: str) -> Optional[str]:
 
 
 def _get_driver_name(device_path: str) -> Optional[str]:
+    """Get driver name."""
     driver_link = os.path.join(device_path, "driver")
     if os.path.islink(driver_link):
         return os.path.basename(os.path.realpath(driver_link))
@@ -53,6 +57,7 @@ def _get_driver_name(device_path: str) -> Optional[str]:
 
 
 def _list_vf_entries(device_path: str) -> List[Tuple[int, str]]:
+    """List vf entries."""
     vf_entries: List[Tuple[int, str]] = []
     if not os.path.isdir(device_path):
         return vf_entries
@@ -72,6 +77,7 @@ def _list_vf_entries(device_path: str) -> List[Tuple[int, str]]:
 
 
 def is_sriov_capable(pf_address: str) -> bool:
+    """Check is sriov capable."""
     device_path = _resolve_device_path(pf_address)
     if not device_path:
         return False
@@ -82,6 +88,7 @@ def is_sriov_capable(pf_address: str) -> bool:
 
 
 def get_total_vfs(pf_address: str) -> int:
+    """Get total vfs."""
     device_path = _resolve_device_path(pf_address)
     if not device_path:
         return 0
@@ -89,6 +96,7 @@ def get_total_vfs(pf_address: str) -> int:
 
 
 def get_num_vfs(pf_address: str) -> int:
+    """Get num vfs."""
     device_path = _resolve_device_path(pf_address)
     if not device_path:
         return 0
@@ -96,6 +104,7 @@ def get_num_vfs(pf_address: str) -> int:
 
 
 def get_pf_info(pf_address: str) -> Optional[SriovDevice]:
+    """Get pf info."""
     device_path = _resolve_device_path(pf_address)
     if not device_path:
         return None
@@ -118,6 +127,7 @@ def get_pf_info(pf_address: str) -> Optional[SriovDevice]:
 
 
 def list_sriov_devices() -> List[SriovDevice]:
+    """List sriov devices."""
     devices: List[SriovDevice] = []
     if not os.path.isdir(_PCI_DEVICES_PATH):
         return devices

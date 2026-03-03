@@ -28,6 +28,7 @@ class LvmlockdLockType:
 
     @staticmethod
     def from_abbr(abbr: str, raise_exception: bool = False) -> int:
+        """From abbr."""
         abbr = abbr.strip()
         if abbr == "sh":
             return LvmlockdLockType.SHARE
@@ -52,6 +53,7 @@ def get_lv_locking_type(path: str) -> int:
     
     @linux.retry(times=5, sleep_time=2)
     def _get_lv_locking_type(path: str) -> int:
+        """Get lv locking type."""
         output = bash.bash_o(f"lvmlockctl -i | grep {lv_uuid(path)} | head -n1 | awk '{{print $3}}'")
         return LvmlockdLockType.from_abbr(output.strip(), raise_exception=True)
 
@@ -80,18 +82,21 @@ class LvLockOperator:
     """Manages lock reference counting for logical volumes."""
     
     def __init__(self, abs_path: str):
+        """Init."""
         self.op_lock = threading.Lock()
         self.inited = False
         self.abs_path = abs_path
         self.exists_locks: List[int] = []
 
     def _init(self) -> None:
+        """Init."""
         exists_lock = get_lv_locking_type(self.abs_path)
         self.exists_locks = [] if exists_lock == LvmlockdLockType.NULL else [exists_lock]
         self.inited = True
         logger.debug(f"lv [path:{self.abs_path}] lock operator inited, existing lock: {exists_lock}")
 
     def lock(self, target_lock: int) -> None:
+        """Lock."""
         from zstacklib.storage.lvm.lv import _active_lv
         
         with self.op_lock:
@@ -104,6 +109,7 @@ class LvLockOperator:
             logger.debug(f"lv [path:{self.abs_path}] add lock {target_lock}, existing locks: {self.exists_locks}")
 
     def force_lock(self, target_lock: int) -> None:
+        """Force lock."""
         from zstacklib.storage.lvm.lv import _active_lv
         
         with self.op_lock:
@@ -113,6 +119,7 @@ class LvLockOperator:
             logger.debug(f"lv [path:{self.abs_path}] force lock to {target_lock}, existing locks: {self.exists_locks}")
 
     def unlock(self, target_lock: int) -> None:
+        """Unlock."""
         from zstacklib.storage.lvm.lv import _active_lv, _deactive_lv
         
         with self.op_lock:
@@ -132,6 +139,7 @@ class LvLockOperator:
             )
 
     def force_unlock(self, raise_exception: bool = True) -> None:
+        """Force unlock."""
         from zstacklib.storage.lvm.lv import _deactive_lv
         
         with self.op_lock:
@@ -141,6 +149,7 @@ class LvLockOperator:
 
     @staticmethod
     def get_lock_cnt(abs_path: str) -> 'LvLockOperator':
+        """Get lock cnt."""
         global _lv_locks, _internal_lock
         with _internal_lock:
             lock_cnt = _lv_locks.get(abs_path, LvLockOperator(abs_path))
@@ -150,6 +159,7 @@ class LvLockOperator:
 
     @staticmethod
     def get_lock_cnt_or_else_none(abs_path: str) -> Optional['LvLockOperator']:
+        """Get lock cnt or else none."""
         global _lv_locks, _internal_lock
         with _internal_lock:
             return _lv_locks.get(abs_path)
@@ -159,15 +169,18 @@ class OperateLv:
     """Context manager for LV lock acquisition."""
     
     def __init__(self, abs_path: str, shared: bool = False, delete_when_exception: bool = False):
+        """Init."""
         self.abs_path = abs_path
         self.lock_ref_cnt = LvLockOperator.get_lock_cnt(abs_path)
         self.target_lock = LvmlockdLockType.SHARE if shared else LvmlockdLockType.EXCLUSIVE
         self.delete_when_exception = delete_when_exception
 
     def __enter__(self) -> None:
+        """Enter."""
         self.lock_ref_cnt.lock(self.target_lock)
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit."""
         from zstacklib.storage.lvm.lv import delete_lv
         
         if exc_val is not None and self.delete_when_exception:
@@ -187,6 +200,7 @@ class RecursiveOperateLv:
         skip_deactivate_tags: Optional[List[str]] = None,
         delete_when_exception: bool = False
     ):
+        """Init."""
         self.abs_path = abs_path
         self.shared = shared
         self.lock_ref_cnt = LvLockOperator.get_lock_cnt(abs_path)
@@ -196,6 +210,7 @@ class RecursiveOperateLv:
         self.skip_deactivate_tags = skip_deactivate_tags
 
     def __enter__(self) -> None:
+        """Enter."""
         self.lock_ref_cnt.lock(self.target_lock)
         backing_file = linux.qcow2_get_backing_file(self.abs_path)
         if backing_file != "":
@@ -207,6 +222,7 @@ class RecursiveOperateLv:
             self.backing.__enter__()
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit."""
         from zstacklib.storage.lvm.lv import delete_lv, has_one_lv_tag_sub_string
         
         if self.backing is not None:
@@ -227,8 +243,10 @@ class RecursiveOperateLv:
 def lv_operate(abs_path: str, shared: bool = False):
     """Decorator for functions that need LV lock during execution."""
     def wrap(f):
+        """Wrap."""
         @functools.wraps(f)
         def inner(*args, **kwargs):
+            """Inner."""
             with OperateLv(abs_path, shared):
                 retval = f(*args, **kwargs)
             return retval
@@ -239,8 +257,10 @@ def lv_operate(abs_path: str, shared: bool = False):
 def qcow2_lv_recursive_operate(abs_path: str, shared: bool = False):
     """Decorator for functions that need recursive LV lock."""
     def wrap(f):
+        """Wrap."""
         @functools.wraps(f)
         def inner(*args, **kwargs):
+            """Inner."""
             with RecursiveOperateLv(abs_path, shared):
                 retval = f(*args, **kwargs)
             return retval
@@ -253,6 +273,7 @@ def check_stuck_vglk() -> None:
     """Check for and release stuck VGLK locks."""
     @linux.retry(3, 1)
     def is_stuck_vglk():
+        """Check is stuck vglk."""
         r, o, e = bash.bash_roe("sanlock client status | grep ':VGLK:'")
         if r != 0:
             return
@@ -320,6 +341,7 @@ def get_lockspace(vg_uuid: str) -> str:
     """Get sanlock lockspace for a VG."""
     @linux.retry(times=3, sleep_time=1)
     def _do_get_lockspace(vg_uuid: str) -> str:
+        """Do get lockspace."""
         o = bash.bash_o(f"sanlock client gets | awk '{{print $2}}' | grep {vg_uuid}").strip()
         if o == "":
             raise RetryException("lockspace not found")

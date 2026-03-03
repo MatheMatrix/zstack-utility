@@ -79,6 +79,7 @@ def get_new_snapshot_name(absolute_path: str, remove_oldest: bool = True) -> str
     @bash.in_bash
     @lock_utils.file_lock(absolute_path)
     def do_get_new_snapshot_name(name: str) -> str:
+        """Do get new snapshot name."""
         all_snaps = bash.bash_o(
             f"lvs -oname -Sorigin={name} --nolocking -t --noheadings | grep _snap_"
         ).strip().splitlines()
@@ -104,6 +105,7 @@ def delete_image(path: str, tag: str, deactive: bool = True) -> None:
     from zstacklib.storage.lvm.lock import OperateLv
     
     def activate_and_remove(f: str, deactive: bool) -> Optional[str]:
+        """Activate and remove."""
         if deactive:
             from zstacklib.storage.lvm.lv import _active_lv
             _active_lv(f, shared=False)

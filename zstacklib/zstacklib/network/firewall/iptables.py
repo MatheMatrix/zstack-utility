@@ -36,6 +36,7 @@ class IPTableTable(Node):
     """Represents an iptables table (filter, nat, mangle, etc.)."""
     
     def __str__(self) -> str:
+        """Str."""
         lst = ['%s' % self.identity]
         for chain in self.children:
             lst.append(chain.counter_str)
@@ -52,13 +53,16 @@ class IPTableChain(Node):
     """Represents an iptables chain (INPUT, OUTPUT, FORWARD, etc.)."""
     
     def __init__(self):
+        """Init."""
         super().__init__()
         self.counter_str: Optional[str] = None
 
     def delete_all_rules(self) -> None:
+        """Delete all rules."""
         self.children = []
 
     def __str__(self) -> str:
+        """Str."""
         if not self.children:
             return ''
 
@@ -73,10 +77,12 @@ class IPTableRule(Node):
     """Represents a single iptables rule."""
     
     def __init__(self):
+        """Init."""
         super().__init__()
         self.order: int = 0
 
     def __str__(self) -> str:
+        """Str."""
         return self.identity or ''
 
 
@@ -93,6 +99,7 @@ class IPTables(Node):
     RAW_TABLE_NAME = 'raw'
 
     def __init__(self):
+        """Init."""
         super().__init__()
         self._parser = None
         self._current_table: Optional[IPTableTable] = None
@@ -103,15 +110,18 @@ class IPTables(Node):
         self._security_table: Optional[IPTableTable] = None
 
     def get_table(self, table_name: str = FILTER_TABLE_NAME) -> Optional[Node]:
+        """Get table."""
         return self.get_child_by_name(table_name)
 
     def get_chain(self, chain_name: str, table_name: str = FILTER_TABLE_NAME) -> Optional[Node]:
+        """Get chain."""
         tbl = self.get_child_by_name(table_name)
         if not tbl:
             return None
         return tbl.get_child_by_name(chain_name)
 
     def _create_table_if_not_exists(self, table_name: str) -> None:
+        """Create table if not exists."""
         table_name = table_name.strip()
         table_identity = '*%s' % table_name
         table = self.get_child_by_identity(table_identity)
@@ -137,13 +147,16 @@ class IPTables(Node):
             assert 0, 'unknown table name: %s' % table_name
 
     def _parse_table_action(self, tokens) -> None:
+        """Parse table action."""
         table_name = tokens[1]
         self._create_table_if_not_exists(table_name)
 
     def _parse_commit_action(self, tokens) -> None:
+        """Parse commit action."""
         self._current_table = None
 
     def _create_chain_if_not_exists(self, chain_name: str, counter_str: Optional[str] = None) -> IPTableChain:
+        """Create chain if not exists."""
         chain = self._current_table.get_child_by_name(chain_name)
         if not chain:
             chain = IPTableChain()
@@ -157,6 +170,7 @@ class IPTables(Node):
         return chain
 
     def _parse_counter_action(self, tokens) -> None:
+        """Parse counter action."""
         chain_name = tokens[1]
         prefix = ':%s' % chain_name
         lst = [prefix]
@@ -165,6 +179,7 @@ class IPTables(Node):
         self._create_chain_if_not_exists(chain_name, counter_str)
 
     def _add_rule(self, chain_name: str, rule_identity: str, order: int = 0) -> None:
+        """Add rule."""
         chain = self._create_chain_if_not_exists(chain_name)
         rule = IPTableRule()
         rule_identity = self._normalize_rule(rule_identity)
@@ -175,10 +190,12 @@ class IPTables(Node):
         chain.add_child(rule)
 
     def _parse_rule_action(self, tokens) -> None:
+        """Parse rule action."""
         chain_name = tokens[1]
         self._add_rule(chain_name, ' '.join(tokens))
 
     def _construct_pyparsing(self) -> None:
+        """Construct pyparsing."""
         if self._parser:
             return
 
@@ -202,6 +219,7 @@ class IPTables(Node):
 
     @staticmethod
     def find_target_in_rule(rule) -> Optional[str]:
+        """Find target in rule."""
         if isinstance(rule, IPTableRule):
             rs = str(rule).split()
         else:
@@ -214,6 +232,7 @@ class IPTables(Node):
 
     @staticmethod
     def find_ipset_in_rule(rule) -> Optional[str]:
+        """Find ipset in rule."""
         if isinstance(rule, IPTableRule):
             rs = str(rule).split()
         else:
@@ -226,17 +245,20 @@ class IPTables(Node):
 
     @staticmethod
     def is_target_in_rule(rule, target: str) -> bool:
+        """Check is target in rule."""
         ret = IPTables.find_target_in_rule(rule)
         return target == ret
 
     @staticmethod
     def find_target_chain_name_in_rule(rule) -> Optional[str]:
+        """Find target chain name in rule."""
         target = IPTables.find_target_in_rule(rule)
         if target and target.isupper():
             target = None
         return target
 
     def list_used_ipset_name(self) -> List[str]:
+        """List used ipset name."""
         sets_name = []
         rules = self.list_reference_ipset_rules(None)
         for r in rules:
@@ -246,7 +268,9 @@ class IPTables(Node):
         return sets_name
 
     def list_reference_ipset_rules(self, ipsets: Optional[List[str]] = None) -> List[Node]:
+        """List reference ipset rules."""
         def walker(rule, data) -> bool:
+            """Walker."""
             if not isinstance(rule, IPTableRule):
                 return False
             ipset = self.find_ipset_in_rule(rule)
@@ -256,6 +280,7 @@ class IPTables(Node):
         return self.walk_all(walker, None)
 
     def _reset(self) -> None:
+        """Reset."""
         self.children = []
         self._current_table = None
         self._nat_table = None
@@ -263,6 +288,7 @@ class IPTables(Node):
         self._mangle_table = None
 
     def _from_iptables_save(self, txt: str) -> None:
+        """From iptables save."""
         self._reset()
         self._construct_pyparsing()
         for l in txt.split('\n'):
@@ -272,10 +298,12 @@ class IPTables(Node):
             self._parser.parseString(l)
 
     def iptables_save(self) -> None:
+        """Iptables save."""
         out = shell.call('/sbin/iptables-save')
         self._from_iptables_save(out)
 
     def __str__(self) -> str:
+        """Str."""
         lst = []
         for table in self.children:
             lst.append(str(table))
@@ -283,7 +311,9 @@ class IPTables(Node):
         return '\n'.join(lst)
 
     def _cleanup_empty_chain(self) -> None:
+        """Cleanup empty chain."""
         def _is_chain_not_targeted(chain, table) -> bool:
+            """Check is chain not targeted."""
             for chain2 in table.children:
                 if chain2.children:
                     for rule1 in chain2.children:
@@ -292,6 +322,7 @@ class IPTables(Node):
             return True
 
         def _clean_chain_having_no_rules() -> List[str]:
+            """Clean chain having no rules."""
             chains_to_delete = []
             for t in self.children:
                 for c in t.children:
@@ -307,12 +338,14 @@ class IPTables(Node):
             return empty_chain_names
 
         def _clean_rule_having_stale_target_chain() -> List[Node]:
+            """Clean rule having stale target chain."""
             alive_chain_names = []
             for t in self.children:
                 for c in t.children:
                     alive_chain_names.append(c.name)
 
             def walker(rule, data) -> bool:
+                """Walker."""
                 if not isinstance(rule, IPTableRule):
                     return False
                 chain_name = self.find_target_chain_name_in_rule(rule.identity)
@@ -327,6 +360,7 @@ class IPTables(Node):
             r.delete()
 
     def _sort_chains(self, sys_chain_names: List[str], chains: List, sort_func: Callable) -> List:
+        """Sort chains."""
         all_chains = []
         user_chains = []
         for chain in chains:
@@ -339,6 +373,7 @@ class IPTables(Node):
         return all_chains
 
     def _sort_chain_in_filter_table(self, sort_func: Callable) -> None:
+        """Sort chain in filter table."""
         if self._filter_table is None:
             return
         self._filter_table.children = self._sort_chains(
@@ -346,6 +381,7 @@ class IPTables(Node):
         )
 
     def _sort_chain_in_nat_table(self, sort_func: Callable) -> None:
+        """Sort chain in nat table."""
         if self._nat_table is None:
             return
         self._nat_table.children = self._sort_chains(
@@ -353,6 +389,7 @@ class IPTables(Node):
         )
 
     def _sort_chain_in_mangle_table(self, sort_func: Callable) -> None:
+        """Sort chain in mangle table."""
         if self._mangle_table is None:
             return
         self._mangle_table.children = self._sort_chains(
@@ -361,6 +398,7 @@ class IPTables(Node):
         )
 
     def cleanup_unused_chain(self, is_cleanup: Callable, table_name: str = FILTER_TABLE_NAME, data: Any = None) -> None:
+        """Cleanup unused chain."""
         table = self.get_child_by_name(table_name)
         if not table:
             return
@@ -383,6 +421,7 @@ class IPTables(Node):
         sort_filter_func: Optional[Callable] = None,
         sort_mangle_func: Optional[Callable] = None
     ) -> str:
+        """To iptables string."""
         self._cleanup_empty_chain()
 
         if sort_filter_func:
@@ -393,6 +432,7 @@ class IPTables(Node):
             self._sort_chain_in_nat_table(sort_nat_func)
 
         def make_reject_rule_last(r1, r2) -> int:
+            """Make reject rule last."""
             if self.is_target_in_rule(r1, 'REJECT'):
                 return 1
             if self.is_target_in_rule(r2, 'REJECT'):
@@ -415,6 +455,7 @@ class IPTables(Node):
         sort_filter_func: Optional[Callable] = None,
         sort_mangle_func: Optional[Callable] = None
     ) -> None:
+        """Iptable restore."""
         content = self._to_iptables_string(marshall_func, sort_nat_func, sort_filter_func, sort_mangle_func)
         f = linux.write_to_temp_file(content)
         try:
@@ -435,14 +476,17 @@ iptable rules:
 
     @staticmethod
     def from_iptables_save() -> 'IPTables':
+        """From iptables save."""
         ipt = IPTables()
         ipt.iptables_save()
         return ipt
 
     def _normalize_rule(self, rule: str) -> str:
+        """Normalize rule."""
         return ' '.join(rule.strip().split())
 
     def add_rule(self, rule: str, table_name: str = FILTER_TABLE_NAME, order: int = 0) -> None:
+        """Add rule."""
         if table_name not in [self.FILTER_TABLE_NAME, self.NAT_TABLE_NAME, self.MANGLE_TABLE_NAME]:
             raise IPTablesError('unknown table name[%s]' % table_name)
 
@@ -453,18 +497,22 @@ iptable rules:
         self._add_rule(res[1], rule, order)
 
     def remove_rule(self, rule_str: str) -> None:
+        """Remove rule."""
         rule_str = self._normalize_rule(rule_str)
         self.delete_all_by_identity(rule_str)
 
     def search_all_rule(self, rule_str: str) -> List[Node]:
+        """Search all rule."""
         rule_str = self._normalize_rule(rule_str)
         return self.search_all_by_identity(rule_str)
 
     def search_rule(self, rule_str: str) -> Optional[Node]:
+        """Search rule."""
         rule_str = self._normalize_rule(rule_str)
         return self.search_by_identity(rule_str)
 
     def delete_chain(self, chain_name: str, table_name: str = FILTER_TABLE_NAME) -> None:
+        """Delete chain."""
         table = self.get_child_by_name(table_name)
         if not table:
             return

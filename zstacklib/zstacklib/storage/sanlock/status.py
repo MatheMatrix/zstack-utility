@@ -15,6 +15,7 @@ LOG = logging.getLogger(__name__)
 
 @dataclass
 class HostStatus:
+    """Hoststatus."""
     host_id: int
     timestamp: int
     io_timeout: int
@@ -23,6 +24,7 @@ class HostStatus:
 
     @classmethod
     def from_record(cls, record: str) -> 'HostStatus':
+        """From record."""
         lines = record.strip().splitlines()
         parts = lines[0].split()
         if len(parts) < 3 or parts[1] != 'timestamp':
@@ -59,12 +61,14 @@ class HostStatus:
         )
 
     def is_timed_out(self) -> bool:
+        """Check is timed out."""
         return (
             self.timestamp == 0 or
             self.last_check - self.last_live > 10 * self.io_timeout
         )
 
     def is_alive(self) -> bool:
+        """Check is alive."""
         return (
             self.timestamp != 0 and
             self.last_check - self.last_live < 2 * self.io_timeout
@@ -72,10 +76,13 @@ class HostStatus:
 
 
 class HostStatusParser:
+    """Hoststatusparser."""
     def __init__(self, status: str) -> None:
+        """Init."""
         self._status = status
 
     def get_host_status(self, host_id: int) -> HostStatus | None:
+        """Get host status."""
         pattern = rf"^{host_id}\b"
         match = re.search(pattern, self._status, re.M)
         if not match:
@@ -87,12 +94,14 @@ class HostStatusParser:
         return HostStatus.from_record(str(host_id) + remainder)
 
     def is_timed_out(self, host_id: int) -> bool | None:
+        """Check is timed out."""
         status = self.get_host_status(host_id)
         if status is None:
             return None
         return status.is_timed_out()
 
     def is_alive(self, host_id: int) -> bool | None:
+        """Check is alive."""
         status = self.get_host_status(host_id)
         if status is None:
             return None
@@ -101,6 +110,7 @@ class HostStatusParser:
 
 @dataclass
 class ClientStatus:
+    """Clientstatus."""
     lockspace: str
     is_adding: bool
     renewal_last_result: int
@@ -109,6 +119,7 @@ class ClientStatus:
 
     @classmethod
     def from_lines(cls, lines: list[str]) -> 'ClientStatus':
+        """From lines."""
         lockspace = lines[0].split()[1]
         is_adding = ':0 ADD' in lines[0]
 
@@ -138,22 +149,27 @@ class ClientStatus:
 
 
 class ClientStatusParser:
+    """Clientstatusparser."""
     def __init__(self, status: str) -> None:
+        """Init."""
         self._status = status
         self._records: list[ClientStatus] | None = None
 
     def get_all_lockspaces(self) -> list[ClientStatus]:
+        """Get all lockspaces."""
         if self._records is None:
             self._records = self._parse_records()
         return self._records
 
     def get_lockspace(self, needle: str) -> ClientStatus | None:
+        """Get lockspace."""
         for record in self.get_all_lockspaces():
             if needle in record.lockspace:
                 return record
         return None
 
     def _parse_records(self) -> list[ClientStatus]:
+        """Parse records."""
         records: list[ClientStatus] = []
         current_lines: list[str] = []
 

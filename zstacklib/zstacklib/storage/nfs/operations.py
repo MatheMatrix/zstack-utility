@@ -20,6 +20,7 @@ MOUNT_TIMEOUT = 180
 
 
 def is_mounted(path: str | None = None, url: str | None = None) -> bool:
+    """Check is mounted."""
     if url:
         url = re.sub(r'/{2,}', '/', url.rstrip('/'))
 
@@ -36,6 +37,7 @@ def is_mounted(path: str | None = None, url: str | None = None) -> bool:
 
 
 def is_mounted_with_alternate_format(path: str | None = None, url: str | None = None) -> bool:
+    """Check is mounted with alternate format."""
     mounted = is_mounted(path, url)
     if not url:
         return mounted
@@ -47,6 +49,7 @@ def is_mounted_with_alternate_format(path: str | None = None, url: str | None = 
 
 
 def validate_nfs_url(url: str) -> bool:
+    """Validate nfs url."""
     ts = url.split(':')
     if len(ts) != 2:
         raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
@@ -66,6 +69,7 @@ def validate_nfs_url(url: str) -> bool:
 
 
 def check_mount_status(url: str, path: str, info: str | None = None) -> None:
+    """Check mount status."""
     if not url or not path:
         raise ValueError('url and path are required')
 
@@ -94,6 +98,7 @@ def mount(
     fstype: str | None = None,
     timeout: int = MOUNT_TIMEOUT
 ) -> None:
+    """Mount."""
     cmd = shell.ShellCmd(f"mount | grep '{path}'")
     cmd(is_exception=False)
     if cmd.return_code == 0:
@@ -124,6 +129,7 @@ def mount(
 
 
 def umount(path: str, raise_on_error: bool = True) -> bool:
+    """Umount."""
     cmd = shell.ShellCmd(f'umount -f -l {path}')
     cmd(is_exception=raise_on_error)
     return cmd.return_code == 0
@@ -135,6 +141,7 @@ def remount(
     options: str | None = None,
     timeout: int = MOUNT_TIMEOUT
 ) -> None:
+    """Remount."""
     if not is_mounted(path, url):
         mount(url, path, options)
         return
@@ -148,6 +155,7 @@ def remount(
 
 
 def get_mount_url(path: str) -> str | None:
+    """Get mount url."""
     cmdstr = f"findmnt {path} | tail -1"
     cmd = shell.ShellCmd(cmdstr)
     out = cmd(is_exception=False)
@@ -159,6 +167,7 @@ def get_mount_url(path: str) -> str | None:
 
 
 def get_mounted_url_by_path(path: str) -> list[str]:
+    """Get mounted url by path."""
     paths = []
     cmdstr = f"mount | grep '{path}'"
     cmd = shell.ShellCmd(cmdstr)
@@ -173,6 +182,7 @@ def get_mounted_url_by_path(path: str) -> list[str]:
 
 
 def get_mounted_paths_by_url(url: str) -> list[str]:
+    """Get mounted paths by url."""
     paths = []
     if not is_mounted(url=url):
         return paths
@@ -189,18 +199,21 @@ def get_mounted_paths_by_url(url: str) -> list[str]:
 
 
 def umount_by_url(url: str) -> None:
+    """Umount by url."""
     paths = get_mounted_paths_by_url(url)
     for p in paths:
         umount(p, raise_on_error=False)
 
 
 def umount_by_path(path: str) -> None:
+    """Umount by path."""
     paths = get_mounted_url_by_path(path)
     for p in paths:
         umount(p, raise_on_error=False)
 
 
 def create_common_path(path: str, basepath: str) -> None:
+    """Create common path."""
     if not path.startswith(basepath):
         raise ValueError(f'path [{path}] is not subdir of basepath [{basepath}]')
 
@@ -212,6 +225,7 @@ def create_common_path(path: str, basepath: str) -> None:
 
 
 def get_mount_info(url: str) -> list[str]:
+    """Get mount info."""
     if not url:
         raise ValueError('url is required')
 

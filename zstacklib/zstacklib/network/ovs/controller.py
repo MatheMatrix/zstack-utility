@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 def _check_ovs(func):
     """Decorator to ensure OVS is running before operations."""
     def wrapper(self, *args, **kw):
+        """Wrapper."""
         if not self.ovs.is_ovs_proc_running():
             self.ovs.restart()
         return func(self, *args, **kw)
@@ -44,6 +45,7 @@ class OvsBaseCtl:
     """Base OVS controller with common bridge/port operations."""
 
     def __init__(self):
+        """Init."""
         self.ovs = Ovs()
         self.venv = self.ovs.venv
         self.dpdk_sup = self.venv.is_dpdk_support()
@@ -407,6 +409,7 @@ class OvsKernelCtl(OvsBaseCtl):
     """OVS controller for kernel-mode operations."""
 
     def __init__(self):
+        """Init."""
         super().__init__()
 
     def add_normal_if_to_br(self, interface: str, bridge_name: str) -> None:

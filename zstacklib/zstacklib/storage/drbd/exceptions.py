@@ -13,6 +13,7 @@ class DrbdError(Exception):
     """Base exception for all DRBD errors."""
     
     def __init__(self, message, resource_name=None, return_code=None, stdout=None, stderr=None):
+        """Init."""
         # type: (str, Optional[str], Optional[int], Optional[str], Optional[str]) -> None
         super(DrbdError, self).__init__(message)
         self.resource_name = resource_name

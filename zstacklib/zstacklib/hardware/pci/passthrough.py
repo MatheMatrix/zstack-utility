@@ -118,11 +118,13 @@ def load_vfio_modules() -> None:
 
 
 def _normalize_address(address: str) -> str:
+    """Normalize address."""
     domain, bus, slot, function = parse_pci_address(address)
     return "%s:%s:%s.%s" % (domain, bus, slot, function)
 
 
 def _write_sysfs(path: str, content: str) -> None:
+    """Write sysfs."""
     try:
         with open(path, "w") as fd:
             fd.write(content)

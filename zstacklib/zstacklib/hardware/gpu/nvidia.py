@@ -13,6 +13,7 @@ logger = get_logger(__name__)
 
 
 def _parse_nvidia_smi_output(output: str) -> List[VgpuType]:
+    """Parse nvidia smi output."""
     entries: List[Dict[str, str]] = []
     current: Dict[str, str] = {}
 
@@ -35,6 +36,7 @@ def _parse_nvidia_smi_output(output: str) -> List[VgpuType]:
         entries.append(current)
 
     def _parse_int(value: str) -> int:
+        """Parse int."""
         if not value:
             return 0
         match = re.search(r"(\d+)", value)
@@ -58,12 +60,15 @@ def _parse_nvidia_smi_output(output: str) -> List[VgpuType]:
 
 
 class NvidiaGpuAdapter(GpuAdapter):
+    """Nvidiagpuadapter."""
     VENDOR_ID = "10de"
 
     def _has_nvidia_smi(self) -> bool:
+        """Check has nvidia smi."""
         return bool(bash_o("which nvidia-smi").strip())
 
     def _normalize_type_id(self, type_id: str) -> str:
+        """Normalize type id."""
         if type_id.startswith("nvidia-"):
             return type_id
         if type_id.isdigit():
@@ -71,6 +76,7 @@ class NvidiaGpuAdapter(GpuAdapter):
         return type_id
 
     def get_driver_version(self) -> str:
+        """Get driver version."""
         if not self._has_nvidia_smi():
             return ""
         r, o, e = bash_roe(
@@ -82,6 +88,7 @@ class NvidiaGpuAdapter(GpuAdapter):
         return o.strip().splitlines()[0] if o.strip() else ""
 
     def get_vgpu_types(self) -> List[VgpuType]:
+        """Get vgpu types."""
         if not self._has_nvidia_smi():
             return []
         r, o, e = bash_roe("nvidia-smi vgpu -i %s -v -c" % self.pci_address)
@@ -91,11 +98,14 @@ class NvidiaGpuAdapter(GpuAdapter):
         return _parse_nvidia_smi_output(o)
 
     def get_mdev_supported_types(self) -> List[MdevType]:
+        """Get mdev supported types."""
         return scan_mdev_types(self.pci_address)
 
     def create_mdev(self, type_id: str, uuid: str) -> MdevDevice:
+        """Create mdev."""
         normalized = self._normalize_type_id(type_id)
         return create_mdev_device(self.pci_address, normalized, uuid)
 
     def destroy_mdev(self, uuid: str) -> None:
+        """Destroy mdev."""
         destroy_mdev_device(uuid)

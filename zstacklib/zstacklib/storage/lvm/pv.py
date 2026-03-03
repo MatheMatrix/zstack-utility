@@ -122,6 +122,7 @@ def check_pv_status(vg_uuid: str, timeout: int = 10) -> tuple[bool, str]:
 
 
 def _validate_vg_attributes(vg_uuid: str, timeout: int) -> tuple[bool, str]:
+    """Validate vg attributes."""
     vg_timeout = max(10, timeout)
     health = bash.bash_o(
         f'timeout -s SIGKILL {vg_timeout} vgs -oattr --nolocking -t --noheadings --shared {vg_uuid}'

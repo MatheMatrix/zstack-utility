@@ -9,6 +9,7 @@ from .models import ConfigData, ConfigFormat, ConfigSource
 
 
 def _read_file(path: str) -> str:
+    """Read file."""
     try:
         with open(path, "r", encoding="utf-8") as stream:
             return stream.read()
@@ -17,6 +18,7 @@ def _read_file(path: str) -> str:
 
 
 def _load_yaml(content: str, path: str) -> dict[str, Any]:
+    """Load yaml."""
     try:
         import yaml
     except Exception as exc:
@@ -33,6 +35,7 @@ def _load_yaml(content: str, path: str) -> dict[str, Any]:
 
 
 def _load_json(content: str, path: str) -> dict[str, Any]:
+    """Load json."""
     try:
         data = json.loads(content or "{}")
     except json.JSONDecodeError as exc:
@@ -43,6 +46,7 @@ def _load_json(content: str, path: str) -> dict[str, Any]:
 
 
 def detect_format(path: str) -> ConfigFormat:
+    """Detect format."""
     lowered = path.lower()
     if lowered.endswith(".json"):
         return ConfigFormat.JSON
@@ -52,6 +56,7 @@ def detect_format(path: str) -> ConfigFormat:
 
 
 def load_config(path: str, required: bool = True) -> ConfigData:
+    """Load config."""
     if not os.path.exists(path):
         if required:
             raise ConfigLoadError(path, "file not found")
@@ -69,6 +74,7 @@ def load_config(path: str, required: bool = True) -> ConfigData:
 
 
 def validate_required_fields(config: ConfigData, fields: list[str]) -> None:
+    """Validate required fields."""
     missing = [field for field in fields if field not in config.data]
     if missing:
         raise ConfigValidationError(config.source.path, f"missing required fields: {', '.join(missing)}")

@@ -14,6 +14,7 @@ _MDEV_DEVICES_PATH = "/sys/bus/mdev/devices"
 
 
 def _read_sysfs(path: str) -> Optional[str]:
+    """Read sysfs."""
     try:
         with open(path, "r") as fd:
             return fd.read().strip()
@@ -23,6 +24,7 @@ def _read_sysfs(path: str) -> Optional[str]:
 
 
 def _write_sysfs(path: str, content: str) -> None:
+    """Write sysfs."""
     try:
         with open(path, "w") as fd:
             fd.write(content)
@@ -31,6 +33,7 @@ def _write_sysfs(path: str, content: str) -> None:
 
 
 def _parse_int(value: Optional[str]) -> int:
+    """Parse int."""
     if not value:
         return 0
     match = re.search(r"(\d+)", value)
@@ -38,6 +41,7 @@ def _parse_int(value: Optional[str]) -> int:
 
 
 def scan_mdev_types(pci_address: str) -> List[MdevType]:
+    """Scan mdev types."""
     supported_path = os.path.join(_PCI_DEVICES_PATH, pci_address, "mdev_supported_types")
     if not os.path.isdir(supported_path):
         return []
@@ -62,6 +66,7 @@ def scan_mdev_types(pci_address: str) -> List[MdevType]:
 
 
 def _resolve_mdev_type(device_path: str) -> str:
+    """Resolve mdev type."""
     type_link = os.path.join(device_path, "mdev_type")
     if os.path.islink(type_link):
         return os.path.basename(os.path.realpath(type_link))
@@ -74,6 +79,7 @@ def _resolve_mdev_type(device_path: str) -> str:
 
 
 def _resolve_mdev_parent(device_path: str) -> str:
+    """Resolve mdev parent."""
     parent_link = os.path.join(device_path, "device")
     if os.path.islink(parent_link) or os.path.exists(parent_link):
         return os.path.basename(os.path.realpath(parent_link))
@@ -84,6 +90,7 @@ def _resolve_mdev_parent(device_path: str) -> str:
 
 
 def get_mdev_device(uuid: str) -> Optional[MdevDevice]:
+    """Get mdev device."""
     device_path = os.path.join(_MDEV_DEVICES_PATH, uuid)
     if not os.path.isdir(device_path):
         return None
@@ -95,6 +102,7 @@ def get_mdev_device(uuid: str) -> Optional[MdevDevice]:
 
 
 def list_mdev_devices(pci_address: str = None) -> List[MdevDevice]:
+    """List mdev devices."""
     if not os.path.isdir(_MDEV_DEVICES_PATH):
         return []
 
@@ -110,6 +118,7 @@ def list_mdev_devices(pci_address: str = None) -> List[MdevDevice]:
 
 
 def create_mdev_device(pci_address: str, type_id: str, uuid: str) -> MdevDevice:
+    """Create mdev device."""
     type_path = os.path.join(_PCI_DEVICES_PATH, pci_address, "mdev_supported_types", type_id)
     create_path = os.path.join(type_path, "create")
     if not os.path.exists(create_path):
@@ -123,6 +132,7 @@ def create_mdev_device(pci_address: str, type_id: str, uuid: str) -> MdevDevice:
 
 
 def destroy_mdev_device(uuid: str) -> None:
+    """Destroy mdev device."""
     remove_path = os.path.join(_MDEV_DEVICES_PATH, uuid, "remove")
     if not os.path.exists(remove_path):
         raise MdevError("mdev device not found: %s" % uuid)

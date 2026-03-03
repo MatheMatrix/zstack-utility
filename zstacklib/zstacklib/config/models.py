@@ -6,12 +6,14 @@ from typing import Any
 
 
 class ConfigFormat(Enum):
+    """Configformat."""
     JSON = "json"
     YAML = "yaml"
 
 
 @dataclass
 class ConfigSource:
+    """Configsource."""
     path: str
     format: ConfigFormat
     required: bool = True
@@ -19,5 +21,6 @@ class ConfigSource:
 
 @dataclass
 class ConfigData:
+    """Configdata."""
     source: ConfigSource
     data: dict[str, Any] = field(default_factory=dict)

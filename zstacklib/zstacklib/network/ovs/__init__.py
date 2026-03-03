@@ -68,6 +68,7 @@ _CONTROLLER_EXPORTS = {'OvsBaseCtl', 'OvsKernelCtl', 'get_ovs_ctl', 'is_vm_use_o
 
 
 def __getattr__(name: str):
+    """Getattr."""
     if name in _UTILS_EXPORTS:
         from . import utils
         return getattr(utils, name)

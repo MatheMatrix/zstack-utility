@@ -52,6 +52,7 @@ __all__ = [
 
 
 def __getattr__(name):
+    """Getattr."""
     if name == 'pv':
         from zstacklib.storage.lvm import pv
         return pv

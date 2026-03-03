@@ -84,6 +84,7 @@ class DrbdConfigStruct(DrbdStruct):
     """
     
     def __init__(self, name):
+        """Init."""
         # type: (str) -> None
         super(DrbdConfigStruct, self).__init__()
         self.path = None  # type: Optional[str]

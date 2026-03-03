@@ -65,6 +65,7 @@ class PhysicalVolume:
     
     @property
     def used(self) -> int:
+        """Used."""
         return self.size - self.free
 
 
@@ -83,6 +84,7 @@ class VolumeGroup:
     
     @property
     def used(self) -> int:
+        """Used."""
         return self.size - self.free
 
 
@@ -101,14 +103,17 @@ class LogicalVolume:
     
     @property
     def is_active(self) -> bool:
+        """Check is active."""
         return len(self.attrs) > 4 and self.attrs[4] == 'a'
     
     @property
     def is_thin(self) -> bool:
+        """Check is thin."""
         return len(self.attrs) > 0 and self.attrs[0] == 'V'
     
     @property
     def is_snapshot(self) -> bool:
+        """Check is snapshot."""
         return len(self.attrs) > 0 and self.attrs[0] in ('s', 'S')
 
 
@@ -123,14 +128,17 @@ class ThinPool:
     
     @property
     def path(self) -> str:
+        """Path."""
         return f"/dev/{self.vg_name}/{self.name}"
     
     @property
     def used(self) -> int:
+        """Used."""
         return int(self.size * self.data_percent / 100)
     
     @property
     def free(self) -> int:
+        """Free."""
         return self.size - self.used
 
 

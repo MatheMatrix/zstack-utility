@@ -42,6 +42,7 @@ class Ovs:
     """
 
     def __init__(self):
+        """Init."""
         self.venv = OvsVenv()
         self.ovs_schema = self._get_ovs_schema()
 

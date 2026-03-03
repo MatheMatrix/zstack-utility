@@ -20,40 +20,52 @@ logger = get_logger(__name__)
 
 
 class AmdGpuAdapter(GpuAdapter):
+    """Amdgpuadapter."""
     VENDOR_ID = "1002"
 
     def get_driver_version(self) -> str:
+        """Get driver version."""
         raise NotImplementedError
 
     def get_vgpu_types(self) -> List[VgpuType]:
+        """Get vgpu types."""
         raise NotImplementedError
 
     def get_mdev_supported_types(self) -> List[MdevType]:
+        """Get mdev supported types."""
         raise NotImplementedError
 
     def create_mdev(self, type_id: str, uuid: str) -> MdevDevice:
+        """Create mdev."""
         raise NotImplementedError
 
     def destroy_mdev(self, uuid: str) -> None:
+        """Destroy mdev."""
         raise NotImplementedError
 
 
 class IntelGpuAdapter(GpuAdapter):
+    """Intelgpuadapter."""
     VENDOR_ID = "8086"
 
     def get_driver_version(self) -> str:
+        """Get driver version."""
         raise NotImplementedError
 
     def get_vgpu_types(self) -> List[VgpuType]:
+        """Get vgpu types."""
         raise NotImplementedError
 
     def get_mdev_supported_types(self) -> List[MdevType]:
+        """Get mdev supported types."""
         raise NotImplementedError
 
     def create_mdev(self, type_id: str, uuid: str) -> MdevDevice:
+        """Create mdev."""
         raise NotImplementedError
 
     def destroy_mdev(self, uuid: str) -> None:
+        """Destroy mdev."""
         raise NotImplementedError
 
 
@@ -65,16 +77,19 @@ _ADAPTERS: Dict[str, Type[GpuAdapter]] = {
 
 
 def _is_gpu_device(device: PciDevice) -> bool:
+    """Check is gpu device."""
     return device.device_type.startswith("GPU_")
 
 
 def _match_address(device_address: str, target_address: str) -> bool:
+    """Match address."""
     if device_address == target_address:
         return True
     return device_address.endswith(target_address)
 
 
 def _select_adapter(device: PciDevice) -> Optional[GpuAdapter]:
+    """Select adapter."""
     vendor_id = device.vendor_id.strip().lower()
     adapter_cls = _ADAPTERS.get(vendor_id)
     if not adapter_cls:
@@ -83,6 +98,7 @@ def _select_adapter(device: PciDevice) -> Optional[GpuAdapter]:
 
 
 def get_gpu_adapter(pci_address: str) -> Optional[GpuAdapter]:
+    """Get gpu adapter."""
     for device in scan_devices():
         if _match_address(device.address, pci_address):
             if not _is_gpu_device(device):
@@ -92,6 +108,7 @@ def get_gpu_adapter(pci_address: str) -> Optional[GpuAdapter]:
 
 
 def scan_gpus() -> List[GpuAdapter]:
+    """Scan gpus."""
     adapters: List[GpuAdapter] = []
     for device in scan_devices():
         if not _is_gpu_device(device):

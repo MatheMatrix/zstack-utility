@@ -5,6 +5,7 @@ from typing import List, Optional
 
 @dataclass
 class SriovDevice:
+    """Sriovdevice."""
     pf_address: str
     total_vfs: int
     num_vfs: int
@@ -14,6 +15,7 @@ class SriovDevice:
 
 @dataclass
 class VirtualFunction:
+    """Virtualfunction."""
     address: str
     pf_address: str
     vf_index: int
@@ -22,4 +24,5 @@ class VirtualFunction:
 
 
 class SriovError(Exception):
+    """Srioverror."""
     pass
