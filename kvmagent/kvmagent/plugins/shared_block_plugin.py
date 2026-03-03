@@ -20,6 +20,7 @@ from zstacklib.utils.plugin import completetask
 import zstacklib.utils.uuidhelper as uuidhelper
 from zstacklib.utils import secret
 from zstacklib.utils.misc import IgnoreError
+from kvmagent.plugins import vm_metadata
 
 logger = log.get_logger(__name__)
 LOCK_FILE = "/var/run/zstack/sharedblock.lock"
@@ -143,6 +144,31 @@ class RetryException(Exception):
 
 class SharedBlockConnectException(Exception):
     pass
+
+
+class WriteVmInstanceMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(WriteVmInstanceMetadataRsp, self).__init__()
+
+
+class ReadVmInstanceMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(ReadVmInstanceMetadataRsp, self).__init__()
+        self.metadata = None
+
+
+class ScanVmMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(ScanVmMetadataRsp, self).__init__()
+        self.metadataEntries = []
+
+
+class CleanupVmMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(CleanupVmMetadataRsp, self).__init__()
+        self.totalCleaned = 0
+        self.totalFailed = 0
+        self.failedVmUuids = []
 
 
 class GetBlockDevicesRsp(AgentRsp):
@@ -367,6 +393,10 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     SHRINK_SNAPSHOT_PATH = "/sharedblock/snapshot/shrink"
     GET_QCOW2_HASH_VALUE_PATH = "/sharedblock/getqcow2hash"
     CHECK_STATE_PATH = "/sharedblock/vgstate/check"
+    WRITE_VM_METADATA_PATH = "/vm/metadata/write"
+    READ_VM_METADATA_PATH = "/vm/metadata/read"
+    SCAN_VM_METADATA_PATH = "/sharedblock/vm/metadata/scan"
+    CLEANUP_VM_METADATA_PATH = "/sharedblock/vm/metadata/cleanup"
 
     vgs_in_progress = set()
     vg_size = {}
@@ -419,6 +449,10 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.SHRINK_SNAPSHOT_PATH, self.shrink_snapshot)
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
         http_server.register_async_uri(self.CHECK_STATE_PATH, self.check_vg_state)
+        http_server.register_async_uri(self.WRITE_VM_METADATA_PATH, self.write_vm_metadata)
+        http_server.register_async_uri(self.READ_VM_METADATA_PATH, self.read_vm_metadata)
+        http_server.register_async_uri(self.SCAN_VM_METADATA_PATH, self.scan_vm_metadata)
+        http_server.register_async_uri(self.CLEANUP_VM_METADATA_PATH, self.cleanup_vm_metadata)
 
         self.imagestore_client = ImageStoreClient()
 
@@ -1785,4 +1819,178 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             if error:
                 rsp.failedVgs.update({vg_uuid: error})
 
+        return jsonobject.dumps(rsp)
+
+    # ===================================================================
+    # VM Instance Metadata  (AB Dual-Slot binary protocol on sblk LV)
+    # ===================================================================
+
+    @staticmethod
+    def _ensure_metadata_lv(metadata_path):
+        """Create the metadata LV if it does not exist yet.
+
+        The LV is created at INITIAL_LV_SIZE (4 MB) and initialised with
+        an empty header + Slot A (payload = ``b'{}'``).
+        """
+        if lvm.lv_exists(metadata_path):
+            return
+
+        lvm.create_lv_from_absolute_path(
+            metadata_path,
+            vm_metadata.INITIAL_LV_SIZE,
+            tag=vm_metadata.LV_METADATA_TAG,
+            lock=False,
+            exact_size=True,
+        )
+        vm_metadata.initialize_metadata_lv(
+            metadata_path, vm_metadata.INITIAL_LV_SIZE)
+        logger.info("created and initialized metadata LV %s", metadata_path)
+
+    @kvmagent.replyerror
+    def write_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = WriteVmInstanceMetadataRsp()
+
+        metadata_path = cmd.metadataPath
+        self._ensure_metadata_lv(metadata_path)
+
+        def _get_lv_size():
+            return int(lvm.get_lv_size(metadata_path))
+
+        def _extend_lv(new_size):
+            lvm.extend_lv(metadata_path, new_size)
+
+        with lvm.OperateLv(metadata_path, shared=False):
+            vm_metadata.write_metadata(
+                lv_path=metadata_path,
+                payload=cmd.metadata,
+                lv_size_getter=_get_lv_size,
+                lv_extend_func=_extend_lv,
+            )
+
+        logger.debug("successfully wrote vm metadata to %s", metadata_path)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def read_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ReadVmInstanceMetadataRsp()
+
+        metadata_path = cmd.metadataPath
+
+        if not lvm.lv_exists(metadata_path):
+            rsp.metadata = None
+            return jsonobject.dumps(rsp)
+
+        with lvm.OperateLv(metadata_path, shared=True):
+            lv_size = int(lvm.get_lv_size(metadata_path))
+            result = vm_metadata.read_metadata(metadata_path, lv_size)
+
+        if result.is_usable():
+            rsp.metadata = result.payload.decode('utf-8') \
+                if isinstance(result.payload, bytes) else result.payload
+        else:
+            raise Exception(
+                "read vm metadata from %s failed: status=%s, message=%s"
+                % (metadata_path, result.status, result.error))
+
+        logger.debug("successfully read vm metadata from %s (status=%s)",
+                     metadata_path, result.status)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def scan_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ScanVmMetadataRsp()
+
+        vg_uuid = cmd.vgUuid
+        filter_vm_uuids = set(cmd.vmUuids) if cmd.vmUuids else None
+
+        @bash.in_bash
+        def _lv_list_func(vg):
+            """Return list of (lv_name, lv_path, lv_size) tuples for all LVs in VG."""
+            r, o = bash.bash_ro(
+                "lvs --nolocking -t %s --noheadings -o lv_name,lv_path,lv_size"
+                " --units b --nosuffix --separator '|'" % vg
+            )
+            result = []
+            for line in o.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("|")
+                if len(parts) != 3:
+                    continue
+                lv_name = parts[0].strip()
+                lv_path = parts[1].strip()
+                lv_size = int(parts[2].strip())
+                result.append((lv_name, lv_path, lv_size))
+            return result
+
+        metadata_lvs = vm_metadata.scan_metadata_lvs(vg_uuid, _lv_list_func)
+
+        entries = []
+        for item in metadata_lvs:
+            vm_uuid = item['vm_uuid']
+            if filter_vm_uuids and vm_uuid not in filter_vm_uuids:
+                continue
+
+            lv_path = item['lv_path']
+            lv_size = item['lv_size']
+
+            entry = {
+                'vmUuid': vm_uuid,
+                'metadataPath': lv_path,
+                'sizeBytes': lv_size,
+            }
+
+            try:
+                with lvm.OperateLv(lv_path, shared=True):
+                    status = vm_metadata.get_metadata_status(lv_path, lv_size)
+                if status.get('valid'):
+                    entry['schemaVersion'] = status.get('schema_version', 0)
+                    entry['lastUpdateTime'] = status.get('last_update_time', 0)
+                    # vmName and vmCategory require reading full payload — too expensive for scan
+                    # Java side will fill these from the payload when needed
+            except Exception as e:
+                logger.warn("failed to read metadata status for %s: %s", lv_path, e)
+
+            entries.append(entry)
+
+        rsp.metadataEntries = entries
+        logger.debug("scan_vm_metadata on vg %s: found %d metadata LVs, returned %d entries",
+                     vg_uuid, len(metadata_lvs), len(entries))
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def cleanup_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CleanupVmMetadataRsp()
+
+        vg_uuid = cmd.vgUuid
+        vm_uuids = cmd.vmUuids
+
+        total_cleaned = 0
+        total_failed = 0
+        failed_vm_uuids = []
+
+        for vm_uuid in vm_uuids:
+            lv_path = vm_metadata.metadata_lv_path(vg_uuid, vm_uuid)
+            try:
+                if lvm.lv_exists(lv_path):
+                    vm_metadata.delete_metadata_lv(lv_path, lvm.delete_lv)
+                    total_cleaned += 1
+                else:
+                    logger.debug("metadata LV %s does not exist, skip cleanup", lv_path)
+                    total_cleaned += 1  # count as cleaned (already gone)
+            except Exception as e:
+                logger.warn("failed to cleanup metadata LV %s: %s", lv_path, e)
+                total_failed += 1
+                failed_vm_uuids.append(vm_uuid)
+
+        rsp.totalCleaned = total_cleaned
+        rsp.totalFailed = total_failed
+        rsp.failedVmUuids = failed_vm_uuids
+        logger.debug("cleanup_vm_metadata on vg %s: cleaned=%d, failed=%d",
+                     vg_uuid, total_cleaned, total_failed)
         return jsonobject.dumps(rsp)
