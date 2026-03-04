@@ -7391,7 +7391,12 @@ class VmPlugin(kvmagent.KvmAgent):
     vm_heartbeat = {}
 
     if not os.path.exists(QMP_SOCKET_PATH):
-        os.mkdir(QMP_SOCKET_PATH)
+        try:
+            os.mkdir(QMP_SOCKET_PATH)
+        except OSError as e:
+            import errno
+            if e.errno not in (errno.EEXIST, errno.ENOENT):
+                raise
 
     def _record_operation(self, uuid, op):
         j = VmOperationJudger(op)

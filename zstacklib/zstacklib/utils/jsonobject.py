@@ -1,7 +1,44 @@
 import io
 
 import simplejson
+
 import types
+import sys
+
+# Python 2/3 type compatibility shims
+_PY3 = sys.version_info[0] >= 3
+
+if _PY3:
+    _dict_types = (dict,)
+    _list_types = (list,)
+    _str_types = (str, bytes)
+    _int_types = (int,)
+    _float_types = (float,)
+    _bool_types = (bool,)
+    _primitive_types = (bool, int, float, str, bytes)
+    _unsupported_types = (
+        complex, tuple, types.FunctionType, types.LambdaType,
+        types.GeneratorType, types.MethodType, types.BuiltinFunctionType,
+        types.BuiltinMethodType, types.TracebackType, types.FrameType,
+        types.GetSetDescriptorType, types.MemberDescriptorType,
+    )
+else:
+    _dict_types = (types.DictType, types.DictionaryType)
+    _list_types = (types.ListType,)
+    _str_types = (types.StringType, types.UnicodeType)
+    _int_types = (types.IntType, types.LongType)
+    _float_types = (types.FloatType,)
+    _bool_types = (types.BooleanType,)
+    _primitive_types = (types.BooleanType, types.LongType, types.IntType,
+                        types.FloatType, types.StringType, types.UnicodeType)
+    _unsupported_types = (
+        types.ComplexType, types.TupleType, types.FunctionType, types.LambdaType,
+        types.GeneratorType, types.MethodType, types.UnboundMethodType,
+        types.BuiltinFunctionType, types.BuiltinMethodType, types.FileType,
+        types.XRangeType, types.TracebackType, types.FrameType, types.DictProxyType,
+        types.NotImplementedType, types.GetSetDescriptorType,
+        types.MemberDescriptorType,
+    )
 
 
 class NoneSupportedTypeError(Exception):
@@ -140,16 +177,11 @@ def nj():
 
 
 def _is_unsupported_type(obj):
-    return isinstance(obj, (complex, tuple, types.FunctionType, types.LambdaType,
-                            types.GeneratorType, types.MethodType, types.BuiltinFunctionType,
-                            types.BuiltinMethodType, io.IOBase,
-                            range, types.TracebackType, types.FrameType, types.MappingProxyType,
-                            type(NotImplemented), types.GetSetDescriptorType,
-                            types.MemberDescriptorType))
+    return isinstance(obj, _unsupported_types)
 
 
 def _is_primitive_types(obj):
-    return isinstance(obj, (bool, int, float, bytes, str))
+    return isinstance(obj, _primitive_types)
 
 
 def _dump_list(lst):

@@ -1,0 +1,4 @@
+# TODO: Add real unit tests that import and exercise zstacklib.utils.bash
+# and zstacklib.utils.linux modules. Previous test files (test_bash_utils.py,
+# test_linux_utils.py) were removed because they re-implemented logic locally
+# instead of importing the actual modules, providing zero real coverage.
