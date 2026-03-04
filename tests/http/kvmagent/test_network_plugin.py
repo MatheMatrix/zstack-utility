@@ -25,15 +25,10 @@ class TestNetworkPlugin:
 
     def test_lldp_get(self, kvmagent_client):
         """Test /network/lldp/get - get LLDP information."""
-        # Test with minimal data - handler gets LLDP info for interface
-        # Accept 200 (success) or 4xx/5xx (missing interface or LLDP not configured)
         response = kvmagent_client.post('/network/lldp/get', data={})
-        
-        # Handler may return various status codes
+        # Accept 200 (async empty body) or 4xx/5xx
         assert response.status_code in [200, 400, 500]
-        
-        # If successful response, verify structure
-        if response.status_code == 200:
+        # Only parse JSON if response has content (async handlers return empty body)
+        if response.status_code == 200 and response.text:
             data = response.json()
             assert 'success' in data
-            # Response has lldpInfo field (may be empty/null)

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Optional
 
 import pytest
@@ -57,10 +58,14 @@ class AgentClient:
             requests.Response object
         """
         url = f"{self.base_url}{path}"
+        # kvmagent requires taskUuid header on all requests
+        merged_headers = {'taskUuid': str(uuid.uuid4())}
+        if headers:
+            merged_headers.update(headers)
         return self.session.post(
             url,
             json=data or {},
-            headers=headers or {},
+            headers=merged_headers,
             timeout=timeout
         )
     

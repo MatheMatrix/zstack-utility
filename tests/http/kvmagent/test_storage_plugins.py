@@ -10,32 +10,24 @@ class TestStoragePlugins:
 
     def test_localstorage_getphysicalcapacity(self, kvmagent_client):
         """Test /localstorage/getphysicalcapacity - get local storage capacity."""
-        # Handler expects storagePath parameter
         response = kvmagent_client.post('/localstorage/getphysicalcapacity', data={
             'storagePath': '/tmp'
         })
-
-        # Should return 200 with capacity info or 4xx if path invalid
         assert response.status_code in [200, 400, 404]
-
-        if response.status_code == 200:
+        # Only parse JSON if response has content (async handlers return empty body)
+        if response.status_code == 200 and response.text:
             data = response.json()
-            # Response should have totalCapacity and availableCapacity
             assert 'totalCapacity' in data or 'success' in data
 
     def test_localstorage_checkbits(self, kvmagent_client):
         """Test /localstorage/checkbits - check if bits exist."""
-        # Handler expects path parameter
         response = kvmagent_client.post('/localstorage/checkbits', data={
             'path': '/nonexistent/test/path'
         })
-
-        # Should return 200 or 4xx
         assert response.status_code in [200, 400, 404]
-
-        if response.status_code == 200:
+        # Only parse JSON if response has content (async handlers return empty body)
+        if response.status_code == 200 and response.text:
             data = response.json()
-            # Response should have existing flag
             assert 'existing' in data or 'success' in data
 
     def test_nfsprimarystorage_ping(self, kvmagent_client):
