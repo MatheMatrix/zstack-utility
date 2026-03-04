@@ -1702,7 +1702,14 @@ def get_virtualenv_python_version(venv, host_post_info):
                         "reply is below:\n %s") % result)
         raise Exception(result)
 
-    return ret['stdout'].strip().split()[1] if ret['rc'] == 0 else None
+    if ret['rc'] != 0:
+        return None
+    # Python 2 outputs version to stderr, Python 3 outputs to stdout
+    version_output = ret.get('stdout', '').strip() or ret.get('stderr', '').strip()
+    parts = version_output.split() if version_output else []
+    if len(parts) < 2:
+        raise Exception("failed to get python version from %s, output: %s" % (venv, version_output))
+    return parts[1]
 
 
 
