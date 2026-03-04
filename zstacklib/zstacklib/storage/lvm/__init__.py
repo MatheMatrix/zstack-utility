@@ -52,29 +52,16 @@ __all__ = [
 
 
 def __getattr__(name):
-    """Getattr."""
-    if name == 'pv':
-        from zstacklib.storage.lvm import pv
-        return pv
-    elif name == 'vg':
-        from zstacklib.storage.lvm import vg
-        return vg
-    elif name == 'lv':
-        from zstacklib.storage.lvm import lv
-        return lv
-    elif name == 'thin':
-        from zstacklib.storage.lvm import thin
-        return thin
-    elif name == 'lock':
-        from zstacklib.storage.lvm import lock
-        return lock
-    elif name == 'config':
-        from zstacklib.storage.lvm import config
-        return config
-    elif name == 'snapshot':
-        from zstacklib.storage.lvm import snapshot
-        return snapshot
-    elif name == 'multipath':
-        from zstacklib.storage.lvm import multipath
-        return multipath
+    """Lazy-load submodules on first access (PEP 562).
+
+    Results are cached in globals() so __getattr__ runs only once per name.
+    """
+    _submodules = {
+        'pv', 'vg', 'lv', 'thin', 'lock', 'config', 'snapshot', 'multipath',
+    }
+    if name in _submodules:
+        import importlib
+        mod = importlib.import_module(f'.{name}', __name__)
+        globals()[name] = mod
+        return mod
     raise AttributeError(f"module 'zstacklib.storage.lvm' has no attribute '{name}'")
