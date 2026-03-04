@@ -173,6 +173,49 @@ def _ensure_http() -> None:
     setattr(mevoco, "http", importlib.import_module("zstacklib.utils.http"))
 
 
+def _snapshot_modules(*modules: object) -> list[tuple[object, dict[str, object]]]:
+    """Capture module __dict__ for later restoration.
+
+    MagicMock modules (injected by conftest) are skipped because their
+    internal ``_mock_children`` dict cannot be safely restored via setattr.
+    """
+    return [
+        (m, dict(vars(m)))
+        for m in modules
+        if m is not None and not isinstance(m, MagicMock)
+    ]
+
+
+def _restore_modules(snapshots: list[tuple[object, dict[str, object]]]) -> None:
+    """Restore module attributes to their snapshotted state."""
+    for mod, snap in snapshots:
+        for key in set(vars(mod)) - set(snap):
+            try:
+                delattr(mod, key)
+            except (AttributeError, TypeError):
+                pass
+        for key, val in snap.items():
+            if vars(mod).get(key) is not val:
+                try:
+                    setattr(mod, key, val)
+                except (AttributeError, TypeError):
+                    pass
+
+
+@pytest.fixture(autouse=True)
+def _isolate_shared_modules():
+    """Snapshot/restore shared module attrs to prevent test-to-test leakage."""
+    mevoco_mod = sys.modules.get("kvmagent.plugins.mevoco")
+    snapshots = _snapshot_modules(
+        importlib.import_module("zstacklib.utils.linux"),
+        importlib.import_module("zstacklib.utils.shell"),
+        importlib.import_module("zstacklib.utils.iproute"),
+        mevoco_mod,
+    )
+    yield
+    _restore_modules(snapshots)
+
+
 @pytest.mark.kvmagent
 class TestMevocoSetupDnsForward:
     def test_setup_dns_forward_success(self):
@@ -794,6 +837,21 @@ class TestMevocoReleaseUserdataMissingL3:
 @pytest.mark.kvmagent
 class TestMevocoReleaseDhcp:
     def test_release_dhcp_success(self):
+        """Test the release-DHCP flow including VF-NIC ebtable rule cleanup.
+
+        NOTE: This test uses an inline stub for ``release_dhcp`` instead of
+        calling the production method directly.  The production method is
+        decorated with ``@in_bash`` which processes Jinja-like bash templates
+        (``{{VAR}}``) at *class-definition time* during import.  Because the
+        ``bash`` legacy module is a MagicMock at import time, the decorator
+        replaces the real function body with a MagicMock, making the original
+        unreachable.  Re-importing with a pass-through ``in_bash`` is not
+        viable because inner helper functions (``_remove_ebtable_rules_for_vfnics``,
+        ``release``) also carry ``@in_bash`` / ``@lock.file_lock`` decorators
+        that would need identical treatment.
+        The stub faithfully mirrors the production grouping + ebtable logic so
+        that the surrounding mock assertions remain meaningful.
+        """
         plugin = _make_plugin()
         _ensure_http()
         plugin._make_conf_path = MagicMock(return_value=('/tmp/conf', '/tmp/dhcp', '/tmp/dns', '/tmp/option', '/tmp/log'))

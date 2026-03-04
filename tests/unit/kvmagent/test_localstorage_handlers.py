@@ -165,6 +165,10 @@ collections = importlib.import_module("collections")
 if not hasattr(collections, "MutableSet"):
     setattr(collections, "MutableSet", MutableSet)
 
+# NOTE: sys.modules injection MUST stay at module level (not in a fixture).
+# The localstorage module captures references to these mocks at import time;
+# replacing them later in a per-test fixture does not propagate to already-
+# bound module attributes, breaking 40+ tests.
 _LEGACY_MODULES = ("plugin", "traceable_shell", "report", "linux", "bash", "shell")
 for _name in _LEGACY_MODULES:
     sys.modules.setdefault(_name, MagicMock())
@@ -200,6 +204,53 @@ def _ensure_http() -> None:
 
 def _identity(func: Callable[..., object]) -> Callable[..., object]:
     return func
+
+
+def _snapshot_modules(*modules: object) -> list[tuple[object, dict[str, object]]]:
+    """Capture module __dict__ for later restoration.
+
+    MagicMock modules (injected by conftest) are skipped because their
+    internal ``_mock_children`` dict cannot be safely restored via setattr.
+    """
+    return [
+        (m, dict(vars(m)))
+        for m in modules
+        if m is not None and not isinstance(m, MagicMock)
+    ]
+
+
+def _restore_modules(snapshots: list[tuple[object, dict[str, object]]]) -> None:
+    """Restore module attributes to their snapshotted state."""
+    for mod, snap in snapshots:
+        for key in set(vars(mod)) - set(snap):
+            try:
+                delattr(mod, key)
+            except (AttributeError, TypeError):
+                pass
+        for key, val in snap.items():
+            if vars(mod).get(key) is not val:
+                try:
+                    setattr(mod, key, val)
+                except (AttributeError, TypeError):
+                    pass
+
+
+@pytest.fixture(autouse=True)
+def _isolate_shared_modules():
+    """Snapshot/restore shared module attrs to prevent test-to-test leakage.
+
+    Direct attribute mutation (e.g. ``linux.foo = MagicMock()``) on shared
+    module objects persists across tests.  This fixture saves module state
+    before each test and restores it afterwards so mutations never leak.
+    """
+    snapshots = _snapshot_modules(
+        importlib.import_module("zstacklib.utils.linux"),
+        importlib.import_module("zstacklib.utils.shell"),
+        importlib.import_module("os").path,
+        importlib.import_module("zstacklib.utils.plugin"),
+    )
+    yield
+    _restore_modules(snapshots)
 
 
 @pytest.mark.kvmagent

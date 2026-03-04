@@ -147,7 +147,7 @@ try:
         _NetworkPluginModule,
         cast(object, importlib.import_module("kvmagent.plugins.network_plugin")),
     )
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Cannot import network_plugin: {e}", allow_module_level=True)
 
 
@@ -193,6 +193,49 @@ def _make_plugin() -> _NetworkPluginProto:
 
 
 
+
+
+def _snapshot_modules(*modules: object) -> list[tuple[object, dict[str, object]]]:
+    """Capture module __dict__ for later restoration.
+
+    MagicMock modules (injected by conftest) are skipped because their
+    internal ``_mock_children`` dict cannot be safely restored via setattr.
+    """
+    return [
+        (m, dict(vars(m)))
+        for m in modules
+        if m is not None and not isinstance(m, MagicMock)
+    ]
+
+
+def _restore_modules(snapshots: list[tuple[object, dict[str, object]]]) -> None:
+    """Restore module attributes to their snapshotted state."""
+    for mod, snap in snapshots:
+        for key in set(vars(mod)) - set(snap):
+            try:
+                delattr(mod, key)
+            except (AttributeError, TypeError):
+                pass
+        for key, val in snap.items():
+            if vars(mod).get(key) is not val:
+                try:
+                    setattr(mod, key, val)
+                except (AttributeError, TypeError):
+                    pass
+
+
+@pytest.fixture(autouse=True)
+def _isolate_shared_modules():
+    """Snapshot/restore shared module attrs to prevent test-to-test leakage."""
+    snapshots = _snapshot_modules(
+        importlib.import_module("zstacklib.utils.linux"),
+        importlib.import_module("zstacklib.utils.shell"),
+        importlib.import_module("os").path,
+        importlib.import_module("zstacklib.utils.iproute"),
+        importlib.import_module("zstacklib.utils.ovs"),
+    )
+    yield
+    _restore_modules(snapshots)
 
 
 def _load_rsp(result: str) -> dict[str, object]:
