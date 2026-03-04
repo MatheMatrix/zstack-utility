@@ -206,22 +206,13 @@ class TestNfsUploadToImagestore:
     def test_upload_to_imagestore_success(self):
         plugin = _make_plugin()
         plugin.imagestore_client.upload_to_imagestore = MagicMock(
-            return_value="{}"
+            return_value='{"success": true}'
         )
 
         req = _make_req({'primaryStorageInstallPath': '/ps/path'})
         result = plugin.upload_to_imagestore(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        rsp['success'] = True
-        rsp['success'] = True
-        rsp['success'] = True
-        rsp['success'] = True
-        rsp['success'] = True
-        rsp['success'] = True
-        rsp['success'] = True
-        rsp['success'] = True
         assert rsp['success'] is True
 
 
@@ -230,13 +221,12 @@ class TestNfsCommitToImagestore:
     def test_commit_to_imagestore_success(self):
         plugin = _make_plugin()
         plugin.imagestore_client.commit_to_imagestore = MagicMock(
-            return_value="{}"
+            return_value='{"success": true}'
         )
 
         req = _make_req({'primaryStorageInstallPath': '/ps/path'})
         result = plugin.commit_to_imagestore(req)
         rsp = _load_rsp(result)
-        rsp['success'] = True
         assert rsp['success'] is True
 
 
@@ -250,7 +240,6 @@ class TestNfsCheckBits:
         req = _make_req({'installPath': '/ps/vol'})
         result = plugin.check_bits(req)
         rsp = _load_rsp(result)
-        rsp['success'] = True
         assert rsp['success'] is True
 
 
@@ -272,7 +261,6 @@ class TestNfsPing:
         result = plugin.ping(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
         assert rsp['success'] is True
 
 
@@ -287,7 +275,6 @@ class TestNfsGetVolumeSize:
         result = plugin.get_volume_size(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
         assert rsp['success'] is True
 
 
@@ -302,7 +289,6 @@ class TestNfsBatchGetVolumeSize:
         result = plugin.batch_get_volume_size(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
         assert rsp['success'] is True
 
 
@@ -318,7 +304,6 @@ class TestNfsGetBackingChain:
         result = plugin.get_backing_chain(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
         assert rsp['success'] is True
 
 
@@ -337,9 +322,6 @@ class TestNfsMoveBits:
         result = plugin.move_bits(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        rsp['success'] = True
         assert rsp['success'] is True
 
 
@@ -353,9 +335,6 @@ class TestNfsCleanImageMeta:
         result = plugin.clean_image_meta(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        rsp['success'] = True
         assert rsp['success'] is True
 
 
@@ -369,9 +348,6 @@ class TestNfsGetCapacity:
         result = plugin.get_capacity(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        rsp['success'] = True
         assert rsp['success'] is True
 
 
@@ -388,9 +364,6 @@ class TestNfsCreateFolder:
         result = plugin.create_folder(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        rsp['success'] = True
         assert rsp['success'] is True
 
 
