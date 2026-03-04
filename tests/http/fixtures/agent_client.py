@@ -43,31 +43,39 @@ class AgentClient:
         path: str,
         data: Optional[dict] = None,
         headers: Optional[dict] = None,
-        timeout: float = 10.0
+        timeout: float = 10.0,
+        callback_url: Optional[str] = None,
     ) -> requests.Response:
         """
         Send POST request to agent endpoint.
-        
+
         Args:
             path: API path (e.g., /host/ping)
             data: JSON request body
             headers: Additional HTTP headers
             timeout: Request timeout in seconds
-        
+            callback_url: Optional async callback URL (sent via callbackurl header)
+
         Returns:
             requests.Response object
         """
         url = f"{self.base_url}{path}"
         # kvmagent requires taskUuid header on all requests
-        merged_headers = {'taskUuid': str(uuid.uuid4())}
+        task_uuid = str(uuid.uuid4())
+        merged_headers = {'taskUuid': task_uuid}
+        if callback_url:
+            merged_headers['callbackurl'] = callback_url
         if headers:
             merged_headers.update(headers)
-        return self.session.post(
+        resp = self.session.post(
             url,
             json=data or {},
             headers=merged_headers,
             timeout=timeout
         )
+        # Attach taskUuid so callers can wait for async callbacks
+        resp.task_uuid = task_uuid
+        return resp
     
     def is_reachable(self, timeout=2.0):
         """Check if the agent is reachable by sending a quick request."""

@@ -25,6 +25,7 @@ class AsyncCallbackHelper:
             def log_message(self, format, *args):
                 pass
         self.server = HTTPServer(('127.0.0.1', port), Handler)
+        self.server.socket.setsockopt(__import__('socket').SOL_SOCKET, __import__('socket').SO_REUSEADDR, 1)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
     def wait(self, taskuuid: str, timeout: float = 10.0) -> Dict[str, Any]:
