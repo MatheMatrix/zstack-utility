@@ -154,8 +154,8 @@ def _set_chap_auth(
         ChapAuthError: If CHAP configuration fails
     """
     portal_str = "{}:{}".format(ip, port)
-    base_cmd = 'iscsiadm --mode node --targetname "{}" -p {} --op=update'.format(
-        iqn, portal_str
+    base_cmd = 'iscsiadm --mode node --targetname {} -p {} --op=update'.format(
+        linux.shellquote(iqn), portal_str
     )
     
     # Set auth method to CHAP
@@ -171,7 +171,7 @@ def _set_chap_auth(
     
     # Set username
     r, o, e = bash.bash_roe(
-        '{} --name node.session.auth.username --value={}'.format(base_cmd, username)
+        '{} --name node.session.auth.username --value={}'.format(base_cmd, linux.shellquote(username))
     )
     if r != 0:
         raise ChapAuthError(
@@ -247,8 +247,8 @@ def login(
         _set_chap_auth(ip, iqn, chap_username, chap_password, port)
     
     # Perform login
-    cmd = 'timeout {} iscsiadm --mode node --targetname "{}" -p {} --login'.format(
-        timeout, iqn, portal_str
+    cmd = 'timeout {} iscsiadm --mode node --targetname {} -p {} --login'.format(
+        timeout, linux.shellquote(iqn), portal_str
     )
     r, o, e = bash.bash_roe(cmd)
     
@@ -321,8 +321,8 @@ def logout(
     logger.info("Logging out from iSCSI target %s on %s", iqn, portal_str)
     
     # Perform logout
-    cmd = 'timeout {} iscsiadm --mode node --targetname "{}" -p {} --logout'.format(
-        timeout, iqn, portal_str
+    cmd = 'timeout {} iscsiadm --mode node --targetname {} -p {} --logout'.format(
+        timeout, linux.shellquote(iqn), portal_str
     )
     r, o, e = bash.bash_roe(cmd)
     
@@ -372,8 +372,8 @@ def _delete_node(
     """
     portal_str = "{}:{}".format(ip, port)
     
-    cmd = 'timeout {} iscsiadm -m node -o delete -T "{}" -p {}'.format(
-        timeout, iqn, portal_str
+    cmd = 'timeout {} iscsiadm -m node -o delete -T {} -p {}'.format(
+        timeout, linux.shellquote(iqn), portal_str
     )
     r, o, e = bash.bash_roe(cmd)
     
