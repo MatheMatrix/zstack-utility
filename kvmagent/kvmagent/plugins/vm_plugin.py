@@ -32,10 +32,7 @@ import warnings
 import libvirt
 import xml.dom.minidom as minidom
 #from typing import List, Any, Union
-try:
-    from distutils.version import LooseVersion
-except ImportError:
-    from packaging.version import Version as LooseVersion
+from distutils.version import LooseVersion
 from collections import Counter
 from collections import deque
 
