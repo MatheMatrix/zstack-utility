@@ -9,27 +9,27 @@ from .models import BridgeInfo, BridgePort
 
 
 def is_bridge(name: str) -> bool:
-    """Check is bridge."""
+    """Check if the interface is a bridge."""
     return os.path.exists(f"/sys/class/net/{name}/bridge")
 
 
 def is_bridge_slave(interface: str) -> bool:
-    """Check is bridge slave."""
+    """Check if the interface is a bridge port."""
     return os.path.exists(f"/sys/class/net/{interface}/brport")
 
 
 def bridge_exists(name: str) -> bool:
-    """Bridge exists."""
+    """Check if bridge exists."""
     return is_bridge(name)
 
 
 def interface_exists(name: str) -> bool:
-    """Interface exists."""
+    """Check if network interface exists."""
     return os.path.exists(f"/sys/class/net/{name}")
 
 
 def get_bridge_interfaces(bridge: str) -> list[str]:
-    """Get bridge interfaces."""
+    """Get list of interfaces attached to a bridge."""
     result = subprocess.run(
         ["brctl", "show", bridge],
         capture_output=True, text=True, check=False
@@ -49,12 +49,12 @@ def get_bridge_interfaces(bridge: str) -> list[str]:
 
 
 def is_interface_on_bridge(bridge: str, interface: str) -> bool:
-    """Check is interface on bridge."""
+    """Check if an interface is attached to a bridge."""
     return interface in get_bridge_interfaces(bridge)
 
 
 def get_interface_master(interface: str) -> str | None:
-    """Get interface master."""
+    """Get the master bridge of an interface."""
     uevent_path = f"/sys/class/net/{interface}/master/uevent"
     if not os.path.exists(uevent_path):
         return None
@@ -76,7 +76,7 @@ def create_bridge(
     forward_delay: int = 0,
     move_route: bool = True
 ) -> None:
-    """Create bridge."""
+    """Create a bridge device."""
     if interface and not interface_exists(interface):
         raise BridgeError(f"Interface '{interface}' does not exist")
     
@@ -108,7 +108,7 @@ def create_bridge(
 
 
 def delete_bridge(name: str) -> None:
-    """Delete bridge."""
+    """Delete a bridge device."""
     if not is_bridge(name):
         return
     
@@ -121,7 +121,7 @@ def delete_bridge(name: str) -> None:
 
 
 def add_interface(bridge: str, interface: str) -> None:
-    """Add interface."""
+    """Add an interface to a bridge."""
     if not is_bridge(bridge):
         raise BridgeNotFoundError(bridge)
     
@@ -144,7 +144,7 @@ def add_interface(bridge: str, interface: str) -> None:
 
 
 def remove_interface(bridge: str, interface: str) -> None:
-    """Remove interface."""
+    """Remove an interface from a bridge."""
     if not is_bridge(bridge):
         raise BridgeNotFoundError(bridge)
     
@@ -160,7 +160,7 @@ def remove_interface(bridge: str, interface: str) -> None:
 
 
 def get_bridge_info(name: str) -> BridgeInfo | None:
-    """Get bridge info."""
+    """Get bridge device information."""
     if not is_bridge(name):
         return None
     
@@ -223,7 +223,7 @@ def get_bridge_info(name: str) -> BridgeInfo | None:
 
 
 def list_bridges() -> list[str]:
-    """List bridges."""
+    """List all bridge devices on the system."""
     bridges = []
     net_dir = "/sys/class/net"
     if os.path.isdir(net_dir):

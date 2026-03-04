@@ -2,12 +2,12 @@ from __future__ import annotations
 
 
 class UsbError(Exception):
-    """Usberror."""
+    """Base exception for USB-related errors."""
     pass
 
 
 class UsbNotFoundError(UsbError):
-    """Usbnotfounderror."""
+    """Raised when a USB device is not found."""
     def __init__(self, device_id: str):
         """Init."""
         self.device_id = device_id
@@ -15,7 +15,7 @@ class UsbNotFoundError(UsbError):
 
 
 class UsbOperationError(UsbError):
-    """Usboperationerror."""
+    """Raised when a USB device operation fails."""
     def __init__(self, device_id: str, operation: str, message: str):
         """Init."""
         self.device_id = device_id

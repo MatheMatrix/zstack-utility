@@ -4,7 +4,7 @@ This module defines data classes for multipath objects:
 
 - MultipathDevice: Multipath device information
 - MultipathPath: Individual path in a multipath device
-- MultipathConfig: Configuration section model
+- DeviceConfig: Device configuration section model
 """
 
 from dataclasses import dataclass, field

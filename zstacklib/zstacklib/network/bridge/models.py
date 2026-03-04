@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class BridgeInfo:
-    """Bridgeinfo."""
+    """Bridge device metadata."""
     name: str
     interfaces: list[str] = field(default_factory=list)
     stp_enabled: bool = False
@@ -17,7 +17,7 @@ class BridgeInfo:
 
 @dataclass
 class BridgePort:
-    """Bridgeport."""
+    """Bridge port metadata."""
     name: str
     bridge: str
     state: str = ""

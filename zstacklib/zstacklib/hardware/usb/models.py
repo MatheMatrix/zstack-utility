@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass
 class UsbDevice:
-    """Usbdevice."""
+    """USB device information."""
     bus: str
     device: str
     vendor_id: str
@@ -20,7 +20,7 @@ class UsbDevice:
 
 @dataclass
 class UsbAttachSpec:
-    """Usbattachspec."""
+    """Specification for attaching a USB device to a VM."""
     vm_id: str
     vendor_id: str
     product_id: str

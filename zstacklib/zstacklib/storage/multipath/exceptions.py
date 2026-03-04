@@ -48,7 +48,7 @@ class MultipathConfigError(MultipathError):
     def __init__(self, path: str, message: Optional[str] = None):
         """Init."""
         super(MultipathConfigError, self).__init__(
-            message=message or "Invalid multipath configuration"
+            message=message or "Invalid multipath configuration: {}".format(path)
         )
         self.path = path
 

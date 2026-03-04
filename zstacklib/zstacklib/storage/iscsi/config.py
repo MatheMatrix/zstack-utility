@@ -75,7 +75,6 @@ def clean_cache(
     if not os.path.exists(nodes_path):
         return 0
     
-    portal_pattern = "{},{}".format(ip, port)
     removed_count = 0
     
     # Find and remove cache entries matching the portal

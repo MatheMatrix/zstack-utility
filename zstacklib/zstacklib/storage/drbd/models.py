@@ -78,6 +78,8 @@ class DrbdHostStruct(DrbdStruct):
     def get_drbd_device(self):
         # type: () -> str
         """Get the DRBD device path based on minor number."""
+        if self.minor is None:
+            raise ValueError("minor number is not set for DRBD host %s" % self.hostname)
         return "/dev/drbd%s" % self.minor
 
 

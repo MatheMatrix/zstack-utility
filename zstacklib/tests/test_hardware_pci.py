@@ -83,7 +83,7 @@ class TestParsePciAddress:
         assert function == "0"
 
     def test_parse_with_whitespace(self):
-        domain, bus, slot, function = parse_pci_address("  0000:1f:00.0  ")
+        domain, bus, _, _ = parse_pci_address("  0000:1f:00.0  ")
         assert domain == "0000"
         assert bus == "1f"
 

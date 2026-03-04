@@ -4,12 +4,12 @@ from __future__ import annotations
 
 
 class NfsError(Exception):
-    """Nfserror."""
+    """Base class for NFS-related errors."""
     pass
 
 
 class InvalidNfsUrlError(NfsError):
-    """Invalidnfsurlerror."""
+    """Raised when an NFS URL is invalid."""
 
     def __init__(self, url: str, msg: str | None = None):
         """Init."""
@@ -19,7 +19,7 @@ class InvalidNfsUrlError(NfsError):
 
 
 class MountError(NfsError):
-    """Mounterror."""
+    """Raised when mounting an NFS URL fails."""
 
     def __init__(self, url: str, msg: str | None = None):
         """Init."""
@@ -29,7 +29,7 @@ class MountError(NfsError):
 
 
 class InvalidMountDomainError(NfsError):
-    """Invalidmountdomainerror."""
+    """Raised when the mount domain is invalid."""
 
     def __init__(self, url: str, msg: str | None = None):
         """Init."""
@@ -39,7 +39,7 @@ class InvalidMountDomainError(NfsError):
 
 
 class InvalidMountPathError(NfsError):
-    """Invalidmountpatherror."""
+    """Raised when the local mount path is invalid."""
 
     def __init__(self, path: str, msg: str | None = None):
         """Init."""

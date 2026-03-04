@@ -3,18 +3,18 @@ from dataclasses import dataclass
 
 
 class GpuError(Exception):
-    """Gpuerror."""
+    """Base exception for GPU errors."""
     pass
 
 
 class MdevError(GpuError):
-    """Mdeverror."""
+    """Raised when a mediated device operation fails."""
     pass
 
 
 @dataclass
 class VgpuType:
-    """Vgputype."""
+    """Virtual GPU type metadata."""
     type_id: str
     name: str
     max_instances: int
@@ -23,7 +23,7 @@ class VgpuType:
 
 @dataclass
 class MdevType:
-    """Mdevtype."""
+    """Mediated device type metadata."""
     type_id: str
     name: str
     available_instances: int
@@ -32,7 +32,7 @@ class MdevType:
 
 @dataclass
 class MdevDevice:
-    """Mdevdevice."""
+    """Mediated device instance."""
     uuid: str
     type_id: str
     pci_address: str

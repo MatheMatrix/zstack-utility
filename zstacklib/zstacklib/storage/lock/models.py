@@ -5,14 +5,14 @@ from enum import Enum
 
 
 class LockBackend(Enum):
-    """Lockbackend."""
+    """Available lock backend implementations."""
     SANLOCK = "sanlock"
     FILE = "file"
 
 
 @dataclass
 class LockResource:
-    """Lockresource."""
+    """A lockable storage resource."""
     name: str
     path: str
     backend: LockBackend = LockBackend.FILE
@@ -22,7 +22,7 @@ class LockResource:
 
 @dataclass
 class LockHandle:
-    """Lockhandle."""
+    """Handle to an acquired lock."""
     resource: LockResource
     token: str
     held: bool = True

@@ -101,4 +101,5 @@ def normalize_install_path(path):
     Returns:
         Normalized path without prefix.
     """
-    return path.replace('ceph://', '')
+    prefix = 'ceph://'
+    return path[len(prefix):] if path.startswith(prefix) else path

@@ -175,8 +175,7 @@ def is_multipath_device(devpath: str) -> bool:
         return False
     
     real_path = os.path.realpath(devpath)
-    dev_name = os.path.basename(real_path)
-    
+
     # Check if device is listed as a multipath path
     r, o = bash.bash_ro("multipath -l -v1 {}".format(real_path))
     return r == 0 and o.strip() != ""

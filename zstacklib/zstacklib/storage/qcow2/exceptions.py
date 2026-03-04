@@ -18,9 +18,12 @@ class Qcow2FormatError(Qcow2Error):
         # type: (str, str, str) -> None
         self.path = path
         self.format = fmt
-        message = msg or 'Invalid or unsupported format'
-        if fmt:
+        if msg:
+            message = msg
+        elif fmt:
             message = 'Unknown format [{}] of image file [{}]'.format(fmt, path)
+        else:
+            message = 'Invalid or unsupported format'
         super(Qcow2FormatError, self).__init__(message)
 
 

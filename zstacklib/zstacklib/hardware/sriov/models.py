@@ -5,7 +5,7 @@ from typing import List, Optional
 
 @dataclass
 class SriovDevice:
-    """Sriovdevice."""
+    """SR-IOV physical function device information."""
     pf_address: str
     total_vfs: int
     num_vfs: int
@@ -15,7 +15,7 @@ class SriovDevice:
 
 @dataclass
 class VirtualFunction:
-    """Virtualfunction."""
+    """SR-IOV virtual function information."""
     address: str
     pf_address: str
     vf_index: int
@@ -24,5 +24,5 @@ class VirtualFunction:
 
 
 class SriovError(Exception):
-    """Srioverror."""
+    """Base exception for SR-IOV errors."""
     pass

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 
 class BridgeError(Exception):
-    """Bridgeerror."""
+    """Base exception for bridge-related failures."""
     pass
 
 
 class BridgeNotFoundError(BridgeError):
-    """Bridgenotfounderror."""
+    """Raised when a bridge device is not found."""
     def __init__(self, name: str):
         """Init."""
         self.name = name
@@ -15,7 +15,7 @@ class BridgeNotFoundError(BridgeError):
 
 
 class BridgeExistsError(BridgeError):
-    """Bridgeexistserror."""
+    """Raised when a bridge already exists."""
     def __init__(self, name: str):
         """Init."""
         self.name = name
@@ -23,7 +23,7 @@ class BridgeExistsError(BridgeError):
 
 
 class InterfaceOccupiedError(BridgeError):
-    """Interfaceoccupiederror."""
+    """Raised when an interface is already attached to another bridge."""
     def __init__(self, interface: str, bridge: str):
         """Init."""
         self.interface = interface

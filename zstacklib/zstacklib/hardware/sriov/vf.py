@@ -186,7 +186,7 @@ def get_vf_info(vf_address: str) -> Optional[VirtualFunction]:
     vf_index = _find_vf_index(pf_path, os.path.basename(vf_path))
     if vf_index < 0:
         logger.debug("cannot resolve vf index for %s under %s", vf_address, pf_address)
-        vf_index = 0
+        vf_index = -1
     driver = _get_driver_name(vf_path)
     return VirtualFunction(
         address=os.path.basename(vf_path),

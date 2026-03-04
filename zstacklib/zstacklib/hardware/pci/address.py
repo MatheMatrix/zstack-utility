@@ -13,12 +13,12 @@ PCI_ADDRESS_PATTERN = re.compile(
 
 
 class PciError(Exception):
-    """Pcierror."""
+    """Base exception for PCI address errors."""
     pass
 
 
-def _to_int(value: Union[str, int]) -> int:
-    """To int."""
+def _to_int(value: Union[str, int, None]) -> int:
+    """Convert a string or int to int, treating hex-like strings as base-16."""
     if isinstance(value, int):
         return value
     if value is None:

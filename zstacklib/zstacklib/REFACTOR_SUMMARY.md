@@ -12,7 +12,7 @@ This refactoring reorganizes zstacklib code by hardware management functional do
 
 ## Module Structure
 
-```
+```text
 zstacklib/
 ├── hardware/           # Hardware device management
 │   ├── pci/            # PCI device operations
@@ -67,7 +67,7 @@ zstacklib/
 
 Each module follows a consistent structure:
 
-```
+```text
 module/
 ├── __init__.py       # Public exports
 ├── exceptions.py     # Module-specific exceptions

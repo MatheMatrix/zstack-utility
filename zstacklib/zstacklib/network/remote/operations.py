@@ -40,8 +40,8 @@ def remote_execute(
     
     cmd = ["ssh"] + ssh_options + [f"{config.user}@{config.host}", cmd_str]
     
-    effective_timeout = timeout or config.timeout
-    
+    effective_timeout = config.timeout if timeout is None else timeout
+
     try:
         result = subprocess.run(
             cmd,
@@ -49,7 +49,7 @@ def remote_execute(
             text=True,
             timeout=effective_timeout
         )
-        
+
         remote_result = RemoteResult(
             returncode=result.returncode,
             stdout=result.stdout,
@@ -101,8 +101,8 @@ def remote_copy(
         remote_path = f"{config.user}@{config.host}:{source}"
         cmd = ["scp"] + scp_options + [remote_path, dest]
     
-    effective_timeout = timeout or config.timeout
-    
+    effective_timeout = config.timeout if timeout is None else timeout
+
     try:
         result = subprocess.run(
             cmd,
@@ -110,7 +110,7 @@ def remote_copy(
             text=True,
             timeout=effective_timeout
         )
-        
+
         if result.returncode != 0:
             raise SCPError(source, dest, result.stderr)
             

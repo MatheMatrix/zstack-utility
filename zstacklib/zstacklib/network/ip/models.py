@@ -113,7 +113,7 @@ class IpAddr(object):
             try:
                 link = iproute.get_links(self.index)[0]
                 self.ifname = link.get_attr('IFA_LABEL') or link.get_attr('IFLA_IFNAME')
-            except Exception:
+            except (IndexError, KeyError, OSError):
                 pass
     
     def __repr__(self):

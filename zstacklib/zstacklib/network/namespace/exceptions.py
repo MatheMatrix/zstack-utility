@@ -2,12 +2,12 @@ from __future__ import annotations
 
 
 class NamespaceError(Exception):
-    """Namespaceerror."""
+    """Base exception for namespace-related errors."""
     pass
 
 
 class NamespaceNotFoundError(NamespaceError):
-    """Namespacenotfounderror."""
+    """Raised when a network namespace is not found."""
     def __init__(self, name: str):
         """Init."""
         self.name = name
@@ -15,7 +15,7 @@ class NamespaceNotFoundError(NamespaceError):
 
 
 class NamespaceExistsError(NamespaceError):
-    """Namespaceexistserror."""
+    """Raised when a network namespace already exists."""
     def __init__(self, name: str):
         """Init."""
         self.name = name
@@ -23,7 +23,7 @@ class NamespaceExistsError(NamespaceError):
 
 
 class NamespaceExecError(NamespaceError):
-    """Namespaceexecerror."""
+    """Raised when command execution in a namespace fails."""
     def __init__(self, namespace: str, command: str, message: str):
         """Init."""
         self.namespace = namespace

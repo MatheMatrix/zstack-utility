@@ -144,7 +144,7 @@ class IPTables(Node):
         elif table_name == self.RAW_TABLE_NAME:
             self._raw_table = table
         else:
-            assert 0, 'unknown table name: %s' % table_name
+            raise IPTablesError('unknown table name: %s' % table_name)
 
     def _parse_table_action(self, tokens) -> None:
         """Parse table action."""
@@ -286,6 +286,8 @@ class IPTables(Node):
         self._nat_table = None
         self._filter_table = None
         self._mangle_table = None
+        self._raw_table = None
+        self._security_table = None
 
     def _from_iptables_save(self, txt: str) -> None:
         """From iptables save."""

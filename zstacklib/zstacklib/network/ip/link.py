@@ -41,7 +41,10 @@ def query_link(ifname_or_index, namespace=None):
         >>> link = query_link('eth0')
         >>> print(link.mac, link.state)
     """
-    return query_links_use_namespace(namespace, ifname_or_index)[0]
+    results = query_links_use_namespace(namespace, ifname_or_index)
+    if not results:
+        raise Exception("device %s not found" % ifname_or_index)
+    return results[0]
 
 
 def query_links(*argv):
