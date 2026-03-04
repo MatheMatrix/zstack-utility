@@ -367,7 +367,8 @@ def has_one_lv_tag_sub_string(path: str, tags: Optional[List[str]]) -> bool:
     if not tags or len(tags) == 0:
         logger.debug("check tag is empty, return false")
         return False
-    exists_tags = set(shell.call(f"lvs {path} -otags --nolocking -t --noheadings").strip().split(","))
+    import shlex as _shlex
+    exists_tags = set(shell.call("lvs %s -otags --nolocking -t --noheadings" % _shlex.quote(path)).strip().split(","))
     for tag in tags:
         for exists_tag in exists_tags:
             if tag in exists_tag:
@@ -377,11 +378,13 @@ def has_one_lv_tag_sub_string(path: str, tags: Optional[List[str]]) -> bool:
 
 def clean_lv_tag(path: str, tag: str) -> None:
     """Remove a tag from an LV if it exists."""
+    import shlex as _shlex
     if has_lv_tag(path, tag):
-        shell.run(f'lvchange --deltag {tag} {path}')
+        shell.run('lvchange --deltag %s %s' % (_shlex.quote(tag), _shlex.quote(path)))
 
 
 def add_lv_tag(path: str, tag: str) -> None:
     """Add a tag to an LV if it doesn't exist."""
+    import shlex as _shlex
     if not has_lv_tag(path, tag):
-        shell.run(f'lvchange --addtag {tag} {path}')
+        shell.run('lvchange --addtag %s %s' % (_shlex.quote(tag), _shlex.quote(path)))

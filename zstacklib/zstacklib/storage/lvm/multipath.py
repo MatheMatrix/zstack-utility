@@ -32,6 +32,7 @@ def is_slave_of_multipath(dev_path: str) -> bool:
     """Check if a device is a slave of a multipath device."""
     if not is_multipath_running():
         return False
+    _validate_dev_name(dev_path.split('/')[-1])
     r = bash.bash_r(f"multipath -c {dev_path}")
     return r == 0
 
@@ -51,6 +52,7 @@ def is_multipath(dev_name: str) -> bool:
     """Check if a device is a multipath device."""
     if not is_multipath_running():
         return False
+    _validate_dev_name(dev_name)
     r = bash.bash_r(f"multipath /dev/{dev_name} -l | grep policy")
     if r == 0:
         return True
