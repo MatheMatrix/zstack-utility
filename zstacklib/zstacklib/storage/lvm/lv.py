@@ -10,6 +10,7 @@ This module provides functions for managing LVM logical volumes including:
 
 import os
 import random
+import shlex
 from typing import Optional, List
 
 from zstacklib.utils import bash, shell, linux, log
@@ -132,7 +133,8 @@ def create_lv_from_absolute_path(
     final_size = round_to(size, 512) if exact_size else round_to(calc_lv_reserved_size(size), 512)
     
     r, o, e = bash.bash_roe(
-        f"lvcreate -ay --wipesignatures y --addtag {tag} --size {final_size}b --name {lv_name} {vg_name} {pe_range}"
+        f"lvcreate -ay --wipesignatures y --addtag {shlex.quote(tag)} --size {final_size}b"
+        f" --name {shlex.quote(lv_name)} {shlex.quote(vg_name)} {pe_range}"
     )
 
     if not lv_exists(path):

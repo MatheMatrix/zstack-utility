@@ -12,6 +12,7 @@ This module provides functions for multipath device operations:
 
 import logging
 import os
+import shlex
 from typing import Optional, List
 
 from zstacklib.utils import bash, linux, shell
@@ -58,7 +59,7 @@ def is_slave_of_multipath(dev_path: str) -> bool:
     if not is_multipath_running():
         return False
     
-    r = bash.bash_r("multipath -c {} 2>/dev/null".format(dev_path))
+    r = bash.bash_r("multipath -c {} 2>/dev/null".format(shlex.quote(dev_path)))
     return r == 0
 
 
@@ -118,10 +119,10 @@ def is_multipath_device(dev_name: str) -> bool:
         return False
     
     # Check with multipath command
-    r = bash.bash_r("multipath /dev/{} -l 2>/dev/null | grep -q policy".format(dev_name))
+    r = bash.bash_r("multipath /dev/{} -l 2>/dev/null | grep -q policy".format(shlex.quote(dev_name)))
     if r == 0:
         return True
-    
+
     # Check for slaves (multipath devices have paths as slaves)
     slaves_path = "/sys/class/block/{}/slaves/".format(dev_name)
     slaves = linux.listdir(slaves_path)
@@ -162,13 +163,13 @@ def get_multipath_dmname(dev_name: str) -> Optional[str]:
             return dev_name
     
     # Check if it's a path of a multipath device
-    r = bash.bash_r("multipath /dev/{} -l 2>/dev/null | grep -q policy".format(dev_name))
+    r = bash.bash_r("multipath /dev/{} -l 2>/dev/null | grep -q policy".format(shlex.quote(dev_name)))
     if r != 0:
         return None
-    
+
     # Get the DM device
     dm = bash.bash_o(
-        "multipath -l /dev/{} 2>/dev/null | head -n1 | grep -Eo 'dm-[0-9]+'".format(dev_name)
+        "multipath -l /dev/{} 2>/dev/null | head -n1 | grep -Eo 'dm-[0-9]+'".format(shlex.quote(dev_name))
     ).strip()
     
     return dm if dm else None
@@ -187,7 +188,7 @@ def get_multipath_name(dev_name: str) -> Optional[str]:
         >>> get_multipath_name('sdb')
         'mpath0'
     """
-    name = bash.bash_o("multipath /dev/{} -l -v1 2>/dev/null".format(dev_name)).strip()
+    name = bash.bash_o("multipath /dev/{} -l -v1 2>/dev/null".format(shlex.quote(dev_name))).strip()
     return name if name else None
 
 
@@ -205,7 +206,7 @@ def get_dm_wwid(dm: str) -> Optional[str]:
         '360000000000000001'
     """
     try:
-        cmd = "udevadm info -n {} 2>/dev/null | grep -o 'dm-uuid-mpath-\\S*' | awk -F '-' '{{print $NF; exit}}'".format(dm)
+        cmd = "udevadm info -n {} 2>/dev/null | grep -o 'dm-uuid-mpath-\\S*' | awk -F '-' '{{print $NF; exit}}'".format(shlex.quote(dm))
         output = shell.call("set -o pipefail; " + cmd).strip().strip("()")
         return output if output else None
     except Exception as e:
@@ -226,7 +227,7 @@ def resize_map(mpath_name: str) -> bool:
         >>> resize_map('mpath0')
         True
     """
-    r = bash.bash_r("multipathd resize map {} 2>/dev/null".format(mpath_name))
+    r = bash.bash_r("multipathd resize map {} 2>/dev/null".format(shlex.quote(mpath_name)))
     if r == 0:
         logger.debug("Resized multipath map: %s", mpath_name)
         return True
@@ -259,7 +260,7 @@ def flush_device(dev_name: str) -> bool:
     Returns:
         True if successful
     """
-    r = bash.bash_r("multipath -f {} 2>/dev/null".format(dev_name))
+    r = bash.bash_r("multipath -f {} 2>/dev/null".format(shlex.quote(dev_name)))
     if r == 0:
         logger.debug("Flushed multipath device: %s", dev_name)
         return True

@@ -159,8 +159,11 @@ def bind_device_to_vfio(address: str) -> None:
     _write_sysfs("/sys/bus/pci/drivers/vfio-pci/bind", normalized)
 
     device = get_device(normalized)
-    if device and device.driver != "vfio-pci":
+    if device and device.driver == "vfio-pci":
         logger.debug("pci device %s bound to vfio-pci", normalized)
+    else:
+        logger.warning("pci device %s failed to bind to vfio-pci (driver=%s)",
+                        normalized, device.driver if device else "unknown")
 
 
 def unbind_device_from_vfio(address: str) -> None:

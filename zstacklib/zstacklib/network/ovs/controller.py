@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import shlex
 
 from zstacklib.utils import iproute
 from zstacklib.utils import linux
@@ -29,6 +31,26 @@ from .venv import OvsVenv
 
 
 logger = logging.getLogger(__name__)
+
+_SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_.\-]+$')
+
+
+def _validate_name(name: str, kind: str = "name") -> str:
+    """Validate that a bridge/port/interface name contains only safe characters.
+
+    Args:
+        name: The name to validate.
+        kind: Description of the name for error messages.
+
+    Returns:
+        The validated name.
+
+    Raises:
+        OvsError: If the name contains unsafe characters.
+    """
+    if not _SAFE_NAME_RE.match(name):
+        raise OvsError(f"Invalid {kind}: {name!r} contains unsafe characters")
+    return name
 
 
 def _check_ovs(func):
@@ -63,6 +85,7 @@ class OvsBaseCtl:
 
     def create_bridge(self, br_name: str) -> None:
         """Create an OVS bridge."""
+        _validate_name(br_name, "bridge name")
         brs = self.list_bridges()
         if br_name in brs:
             logger.debug(f'Bridge {br_name} already created')
@@ -78,6 +101,8 @@ class OvsBaseCtl:
 
     def delete_bridge(self, *br_names: str) -> None:
         """Delete one or more OVS bridges."""
+        for br_name in br_names:
+            _validate_name(br_name, "bridge name")
         try:
             brs = self.list_bridges()
             for br_name in br_names:
@@ -99,6 +124,7 @@ class OvsBaseCtl:
 
     def list_interfaces(self, br_name: str) -> list[str]:
         """List interfaces on a bridge."""
+        _validate_name(br_name, "bridge name")
         try:
             ret = shell.call(CTL_BIN + f'--timeout=5 list-ifaces {br_name}')
         except Exception as err:
@@ -109,6 +135,7 @@ class OvsBaseCtl:
 
     def list_ports(self, br_name: str) -> list[str]:
         """List ports on a bridge."""
+        _validate_name(br_name, "bridge name")
         try:
             ret = shell.call(CTL_BIN + f'--timeout=5 list-ports {br_name}')
         except Exception as err:
@@ -119,6 +146,8 @@ class OvsBaseCtl:
 
     def add_port(self, br_name: str, port_name: str, port_type: str | None = None, *options: str) -> None:
         """Add a port to a bridge."""
+        _validate_name(br_name, "bridge name")
+        _validate_name(port_name, "port name")
         try:
             if port_type:
                 cmd = CTL_BIN + f'add-port {br_name} {port_name} -- set Interface {port_name} type={port_type} '
@@ -134,6 +163,8 @@ class OvsBaseCtl:
 
     def del_port(self, br_name: str, port_name: str) -> None:
         """Delete a port from a bridge."""
+        _validate_name(br_name, "bridge name")
+        _validate_name(port_name, "port name")
         try:
             shell.call(CTL_BIN + f'del-port {br_name} {port_name}')
         except Exception as err:
@@ -142,6 +173,8 @@ class OvsBaseCtl:
 
     def del_port_no_wait(self, br_name: str, port_name: str) -> None:
         """Delete a port without waiting."""
+        _validate_name(br_name, "bridge name")
+        _validate_name(port_name, "port name")
         try:
             shell.call(CTL_BIN + f'--no-wait del-port {br_name} {port_name}')
         except Exception as err:
@@ -150,6 +183,7 @@ class OvsBaseCtl:
 
     def set_port(self, port_name: str, tag: int) -> None:
         """Set VLAN tag on a port."""
+        _validate_name(port_name, "port name")
         try:
             shell.call(CTL_BIN + f'set Port {port_name} tag={tag} ')
         except Exception as err:
@@ -158,6 +192,7 @@ class OvsBaseCtl:
 
     def set_interface(self, if_name: str, *options: str) -> None:
         """Set interface options."""
+        _validate_name(if_name, "interface name")
         try:
             cmd = CTL_BIN + f'set Interface {if_name} '
             for opt in options:
@@ -315,24 +350,25 @@ class OvsBaseCtl:
 
     def _nic_backend_gc(self) -> None:
         """Garbage collect NIC backends for non-existent VMs."""
+        import json as _json
         try:
             raw_string = shell.call(
-                CTL_BIN + " --columns=name,external_ids find interface external_ids!={}"
+                CTL_BIN + " --format=json --columns=name,external_ids find interface external_ids!={}"
             )
-            raw_data = (raw_string + '\n').splitlines()
-            tmp = {}
+            parsed = _json.loads(raw_string)
             nic_and_vm_uuid = {}
-
-            for row in raw_data:
-                if len(row) == 0:
-                    if 'name' not in tmp or 'external_ids' not in tmp:
-                        tmp = {}
-                        continue
-                    nic_and_vm_uuid[tmp['name']] = tmp['external_ids'].lstrip('{').rstrip('}').split('=')[1].strip('"')
-                    tmp = {}
-                else:
-                    name, value = row.split(':')
-                    tmp[name.strip()] = value.strip()
+            for row in parsed.get("data", []):
+                # OVS JSON format: each row is a list of column values
+                # name is a string, external_ids is ["map", [[key, val], ...]]
+                if len(row) < 2:
+                    continue
+                name = row[0]
+                ext_ids = row[1]
+                if isinstance(ext_ids, list) and len(ext_ids) == 2 and ext_ids[0] == "map":
+                    for pair in ext_ids[1]:
+                        if len(pair) == 2:
+                            nic_and_vm_uuid[name] = pair[1]
+                            break
 
             files = os.listdir('/var/run/libvirt/qemu/')
             running_vm_list = set(vm.split('.')[0] for vm in files)
@@ -342,7 +378,7 @@ class OvsBaseCtl:
                     self.destroy_nic_backend_no_wait(nic_and_vm_uuid[d])
         except shell.ShellError as err:
             raise OvsError(str(err))
-        except OSError:
+        except (OSError, _json.JSONDecodeError):
             pass
 
     def reconfig_ovs_bridge(self) -> None:

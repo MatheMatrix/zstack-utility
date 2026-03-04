@@ -9,7 +9,9 @@ _EXECUTOR_EXPORTS = {"ShellExecutor", "call", "run", "check_run"}
 def __getattr__(name: str):
     if name in _EXECUTOR_EXPORTS:
         from . import executor
-        return getattr(executor, name)
+        val = getattr(executor, name)
+        globals()[name] = val
+        return val
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

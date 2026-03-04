@@ -11,6 +11,7 @@ This module provides functions for managing iSCSI sessions:
 """
 
 import logging
+import shlex
 from typing import List, Optional
 
 from zstacklib.utils import bash, lock, linux
@@ -83,8 +84,11 @@ def get_session(
         >>> if session:
         ...     print(f"Connected with session {session.session_id}")
     """
+    port = int(port)
     # Use grep to find specific session
-    cmd = "iscsiadm -m session | grep {}:{} | grep {}".format(ip, port, iqn)
+    cmd = "iscsiadm -m session | grep {}:{} | grep {}".format(
+        shlex.quote(ip), port, shlex.quote(iqn)
+    )
     r, o, e = bash.bash_roe(cmd)
     
     if r != 0 or not o.strip():
@@ -403,6 +407,8 @@ def rescan_session(session_id: str, timeout: int = DEFAULT_RESCAN_TIMEOUT) -> No
         >>> session = login('192.168.1.100', 'iqn.2020-01.com.example:storage')
         >>> rescan_session(session.session_id)
     """
+    if not str(session_id).isdigit():
+        raise ValueError(f"Invalid session_id: {session_id!r}, must be numeric")
     cmd = "timeout {} iscsiadm -m session -r {} --rescan".format(timeout, session_id)
     r, o, e = bash.bash_roe(cmd)
     
@@ -440,6 +446,8 @@ def get_host_number(session_id: str) -> Optional[int]:
     Returns:
         Host number if found, None otherwise
     """
+    if not str(session_id).isdigit():
+        raise ValueError(f"Invalid session_id: {session_id!r}, must be numeric")
     cmd = "iscsiadm -m session -P 3 --sid={} | grep 'Host Number:' | awk '{{print $3}}'".format(
         session_id
     )
@@ -463,6 +471,8 @@ def get_session_luns(session_id: str) -> List[str]:
     Returns:
         List of LUN lines from iscsiadm output
     """
+    if not str(session_id).isdigit():
+        raise ValueError(f"Invalid session_id: {session_id!r}, must be numeric")
     cmd = "iscsiadm -m session -P 3 --sid={} | grep Lun".format(session_id)
     r, o, e = bash.bash_roe(cmd)
     

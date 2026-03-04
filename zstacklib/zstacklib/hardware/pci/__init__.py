@@ -17,10 +17,14 @@ def __getattr__(name: str):
 
     if name in _device_exports:
         from . import device
-        return getattr(device, name)
+        val = getattr(device, name)
+        globals()[name] = val
+        return val
     elif name in _passthrough_exports:
         from . import passthrough
-        return getattr(passthrough, name)
+        val = getattr(passthrough, name)
+        globals()[name] = val
+        return val
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

@@ -21,14 +21,23 @@ class RetryException(Exception):
 
 
 class LvmlockdLockType:
-    """Lock type constants for lvmlockd."""
-    NULL = 0
-    SHARE = 1
-    EXCLUSIVE = 2
+    """Lock type constants for lvmlockd.
+
+    Backward-compatible wrapper around :class:`LvmLockType` enum from
+    ``models.py``.  New code should prefer ``LvmLockType`` directly.
+    """
+    NULL = LvmLockType.NULL.value
+    SHARE = LvmLockType.SHARE.value
+    EXCLUSIVE = LvmLockType.EXCLUSIVE.value
 
     @staticmethod
     def from_abbr(abbr: str, raise_exception: bool = False) -> int:
-        """From abbr."""
+        """Parse lock type from lvmlockd abbreviation.
+
+        Unlike ``LvmLockType.from_abbr``, this variant supports a
+        *raise_exception* flag for empty abbreviations (active LV
+        without lvmlock info).
+        """
         abbr = abbr.strip()
         if abbr == "sh":
             return LvmlockdLockType.SHARE

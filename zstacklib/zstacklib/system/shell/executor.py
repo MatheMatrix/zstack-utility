@@ -24,7 +24,14 @@ class ShellExecutor:
         workdir: str | None = None,
         env: dict[str, str] | None = None,
     ) -> CommandResult:
-        """Run a shell command and return the result."""
+        """Run a shell command and return the result.
+
+        Security warning: This method always executes commands with
+        ``shell=True``. Callers MUST sanitize any user-supplied input
+        using ``shlex.quote()`` before interpolating it into the
+        *command* string, otherwise the call is vulnerable to shell
+        injection attacks.
+        """
         effective_timeout = timeout or self.context.timeout
         effective_workdir = workdir or self.context.workdir
 
@@ -85,10 +92,13 @@ class ShellExecutor:
         result = self.run(command, check=True, **kwargs)
         return result.stdout
 
-    def check_run(self, command: str, **kwargs) -> int:
-        """Run command and return exit code. Raises on non-zero exit."""
-        result = self.run(command, check=True, **kwargs)
-        return result.return_code
+    def check_run(self, command: str, **kwargs) -> None:
+        """Run command, raising on non-zero exit.
+
+        Since this always raises :class:`ShellError` on failure, the
+        return value is always ``None`` (success).
+        """
+        self.run(command, check=True, **kwargs)
 
     def run_silent(self, command: str, **kwargs) -> int:
         """Run command and return exit code without raising."""
@@ -110,8 +120,11 @@ def run(command: str, workdir: str | None = None) -> int:
     return result.return_code
 
 
-def check_run(command: str, workdir: str | None = None) -> int:
-    """Convenience function to run a command, raise on failure, return exit code."""
+def check_run(command: str, workdir: str | None = None) -> None:
+    """Convenience function to run a command, raising on failure.
+
+    Since this always raises :class:`ShellError` on failure, the return
+    value is always ``None`` (success).
+    """
     executor = ShellExecutor()
-    result = executor.run(command, check=True, workdir=workdir)
-    return result.return_code
+    executor.run(command, check=True, workdir=workdir)

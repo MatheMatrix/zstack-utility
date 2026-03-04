@@ -118,13 +118,13 @@ def _lookup_domain(conn: libvirt.virConnect, name_or_uuid: str) -> libvirt.virDo
 
 
 def get_vm_info(name_or_uuid: str) -> VmInfo:
-    conn = get_connection()
+    conn = get_connection().connection
     domain = _lookup_domain(conn, name_or_uuid)
     return _domain_to_info(domain)
 
 
 def list_vms() -> list[VmInfo]:
-    conn = get_connection()
+    conn = get_connection().connection
     domains: list[libvirt.virDomain] = []
     try:
         domains.extend(conn.listAllDomains())
@@ -137,7 +137,7 @@ def list_vms() -> list[VmInfo]:
 
 
 def start_vm(name_or_uuid: str) -> None:
-    conn = get_connection()
+    conn = get_connection().connection
     domain = _lookup_domain(conn, name_or_uuid)
     try:
         domain.create()
@@ -146,7 +146,7 @@ def start_vm(name_or_uuid: str) -> None:
 
 
 def stop_vm(name_or_uuid: str, force: bool = False) -> None:
-    conn = get_connection()
+    conn = get_connection().connection
     domain = _lookup_domain(conn, name_or_uuid)
     try:
         if force:
@@ -158,7 +158,7 @@ def stop_vm(name_or_uuid: str, force: bool = False) -> None:
 
 
 def reboot_vm(name_or_uuid: str) -> None:
-    conn = get_connection()
+    conn = get_connection().connection
     domain = _lookup_domain(conn, name_or_uuid)
     try:
         domain.reboot(0)
@@ -167,7 +167,7 @@ def reboot_vm(name_or_uuid: str) -> None:
 
 
 def destroy_vm(name_or_uuid: str) -> None:
-    conn = get_connection()
+    conn = get_connection().connection
     domain = _lookup_domain(conn, name_or_uuid)
     try:
         domain.destroy()
@@ -176,7 +176,7 @@ def destroy_vm(name_or_uuid: str) -> None:
 
 
 def define_vm(xml: str) -> VmInfo:
-    conn = get_connection()
+    conn = get_connection().connection
     try:
         domain = conn.defineXML(xml)
     except libvirt.libvirtError as exc:
@@ -185,7 +185,7 @@ def define_vm(xml: str) -> VmInfo:
 
 
 def undefine_vm(name_or_uuid: str) -> None:
-    conn = get_connection()
+    conn = get_connection().connection
     domain = _lookup_domain(conn, name_or_uuid)
     try:
         domain.undefine()

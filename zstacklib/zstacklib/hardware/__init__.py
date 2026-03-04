@@ -16,12 +16,15 @@ def __getattr__(name: str):
     """Lazy import submodules on first access."""
     if name == "pci":
         from . import pci as _pci
+        globals()[name] = _pci
         return _pci
     elif name == "gpu":
         from . import gpu as _gpu
+        globals()[name] = _gpu
         return _gpu
     elif name == "sriov":
         from . import sriov as _sriov
+        globals()[name] = _sriov
         return _sriov
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

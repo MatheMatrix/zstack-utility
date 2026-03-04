@@ -15,7 +15,7 @@ class VmState(Enum):
     PMSUSPENDED = 7
     
     @classmethod
-    def from_libvirt(cls, state: int) -> "VmState":
+    def from_libvirt(cls, state: int) -> VmState:
         try:
             return cls(state)
         except ValueError:

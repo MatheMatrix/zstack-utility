@@ -9,6 +9,8 @@ This module defines data classes for iSCSI objects:
 - ChapCredentials: CHAP authentication credentials
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Optional, List
 

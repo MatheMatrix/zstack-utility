@@ -71,21 +71,30 @@ def __getattr__(name: str):
     """Getattr."""
     if name in _UTILS_EXPORTS:
         from . import utils
-        return getattr(utils, name)
+        val = getattr(utils, name)
+        globals()[name] = val
+        return val
     elif name in _BOND_EXPORTS:
         from . import bond
-        return getattr(bond, name)
+        val = getattr(bond, name)
+        globals()[name] = val
+        return val
     elif name == 'OvsVenv':
         from .venv import OvsVenv
+        globals()[name] = OvsVenv
         return OvsVenv
     elif name == 'Ovs':
         from .daemon import Ovs
+        globals()[name] = Ovs
         return Ovs
     elif name in _CONTROLLER_EXPORTS:
         from . import controller
-        return getattr(controller, name)
+        val = getattr(controller, name)
+        globals()[name] = val
+        return val
     elif name == 'OvsDpdkCtl':
         from .dpdk import OvsDpdkCtl
+        globals()[name] = OvsDpdkCtl
         return OvsDpdkCtl
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
