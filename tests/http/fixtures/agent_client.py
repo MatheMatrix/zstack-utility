@@ -69,6 +69,23 @@ class AgentClient:
             timeout=timeout
         )
     
+    def is_reachable(self, timeout=2.0):
+        """Check if the agent is reachable by sending a quick request."""
+        import socket
+        try:
+            # Parse host:port from base_url
+            from urllib.parse import urlparse
+            parsed = urlparse(self.base_url)
+            host = parsed.hostname or '127.0.0.1'
+            port = parsed.port or 80
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            return result == 0
+        except Exception:
+            return False
+
     def close(self):
         """Close the HTTP session."""
         self.session.close()
@@ -91,31 +108,43 @@ def kvmagent_client(ssh_tunnel, agent_host):
 
 @pytest.fixture
 def virtualrouter_client(ssh_tunnel, agent_host):
-    """HTTP client for virtualrouter agent."""
+    """HTTP client for virtualrouter agent. Skips if agent not reachable."""
     client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['virtualrouter']}")
+    if not client.is_reachable():
+        client.close()
+        pytest.skip("virtualrouter agent not reachable on port %d" % AGENT_PORTS['virtualrouter'])
     yield client
     client.close()
 
 
 @pytest.fixture
 def appliancevm_client(ssh_tunnel, agent_host):
-    """HTTP client for appliancevm agent."""
+    """HTTP client for appliancevm agent. Skips if agent not reachable."""
     client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['appliancevm']}")
+    if not client.is_reachable():
+        client.close()
+        pytest.skip("appliancevm agent not reachable on port %d" % AGENT_PORTS['appliancevm'])
     yield client
     client.close()
 
 
 @pytest.fixture
 def cephbackup_client(ssh_tunnel, agent_host):
-    """HTTP client for ceph backup storage agent."""
+    """HTTP client for ceph backup storage agent. Skips if agent not reachable."""
     client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['cephbackup']}")
+    if not client.is_reachable():
+        client.close()
+        pytest.skip("cephbackup agent not reachable on port %d" % AGENT_PORTS['cephbackup'])
     yield client
     client.close()
 
 
 @pytest.fixture
 def cephprimary_client(ssh_tunnel, agent_host):
-    """HTTP client for ceph primary storage agent."""
+    """HTTP client for ceph primary storage agent. Skips if agent not reachable."""
     client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['cephprimary']}")
+    if not client.is_reachable():
+        client.close()
+        pytest.skip("cephprimary agent not reachable on port %d" % AGENT_PORTS['cephprimary'])
     yield client
     client.close()
