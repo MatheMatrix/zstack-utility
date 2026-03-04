@@ -33,6 +33,10 @@ from .venv import OvsVenv
 logger = logging.getLogger(__name__)
 
 _SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_.\-]+$')
+_VALID_BOND_MODES = frozenset([
+    'active-backup', 'balance-slb', 'balance-tcp',
+])
+_VALID_LACP_VALUES = frozenset(['off', 'active', 'passive'])
 
 
 def _validate_name(name: str, kind: str = "name") -> str:
@@ -198,7 +202,7 @@ class OvsBaseCtl:
         try:
             cmd = CTL_BIN + f'set Interface {if_name} '
             for opt in options:
-                cmd += f'{opt} '
+                cmd += shlex.quote(opt) + ' '
             shell.call(cmd)
         except Exception as err:
             logger.error(f'Set interface {if_name} failed. {err}')
@@ -389,6 +393,9 @@ class OvsBaseCtl:
         for b in brs:
             if b == '':
                 continue
+            if not b.startswith('br-') or len(b) <= 3:
+                logger.warning("Skipping bridge %r: does not match 'br-<iface>' naming", b)
+                continue
             self._add_interface_to_bridge(b[3:], b)
 
         if len(brs) == 0:
@@ -495,13 +502,23 @@ class OvsKernelCtl(OvsBaseCtl):
         if bond.name in self.list_ports(bridge_name):
             return
 
+        for slave in slaves:
+            _validate_name(slave, "bond slave")
+        _validate_name(bond.name, "bond name")
+        bond_mode = str(bond.mode)
+        if bond_mode not in _VALID_BOND_MODES:
+            raise OvsError(f'Invalid bond mode: {bond_mode!r}')
+
         cmd = CTL_BIN + f'--no-wait add-bond {bridge_name} {bond.name} '
         pf_name = ' '.join(slave for slave in slaves)
 
         cmd += pf_name
-        cmd += f' bond_mode={bond.mode} '
-        if bond.mode == 'balance-tcp':
-            cmd += f'lacp={bond.lacp} '
+        cmd += f' bond_mode={bond_mode} '
+        if bond_mode == 'balance-tcp':
+            lacp = str(bond.lacp)
+            if lacp not in _VALID_LACP_VALUES:
+                raise OvsError(f'Invalid LACP value: {lacp!r}')
+            cmd += f'lacp={lacp} '
 
         shell.call(cmd)
 

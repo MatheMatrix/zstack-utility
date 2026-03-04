@@ -12,7 +12,10 @@ from .device import get_device
 
 logger = get_logger(__name__)
 
-_IOMMU_BLACKLIST = "modprobe.blacklist=snd_hda_intel,amd76x_edac,vga16fb,nouveau,rivafb,nvidiafb,rivatv,amdgpu,radeon"
+_IOMMU_BLACKLIST_MODULES = frozenset([
+    "snd_hda_intel", "amd76x_edac", "vga16fb", "nouveau",
+    "rivafb", "nvidiafb", "rivatv", "amdgpu", "radeon",
+])
 
 
 def get_iommu_type() -> str:
@@ -62,13 +65,21 @@ def enable_iommu_in_grub(grub_file: str = "/etc/default/grub") -> bool:
     for line in content.splitlines(True):
         if line.strip().startswith("GRUB_CMDLINE_LINUX"):
             matched_cmdline = True
+            # Extract existing blacklist modules before removing the parameter
+            existing_bl = set()
+            bl_match = re.search(r"\bmodprobe\.blacklist\s*=\s*(\S+)", line)
+            if bl_match:
+                existing_bl = set(bl_match.group(1).split(","))
+            merged_bl = sorted(existing_bl | _IOMMU_BLACKLIST_MODULES)
+            blacklist_param = "modprobe.blacklist=%s" % ",".join(merged_bl)
+
             line = re.sub(r"\b%s\s*=\s*(on|off)\b" % iommu_type, "", line)
             line = re.sub(r"\bmodprobe\.blacklist\s*=\s*\S+", "", line)
             match = re.match(r'(\s*GRUB_CMDLINE_LINUX\s*=\s*")(.*)("\s*)', line)
             if match:
                 prefix, cmdline, suffix = match.groups()
                 cmdline = cmdline.strip()
-                extra = "%s=on %s" % (iommu_type, _IOMMU_BLACKLIST)
+                extra = "%s=on %s" % (iommu_type, blacklist_param)
                 if extra not in cmdline:
                     cmdline = (cmdline + " " + extra).strip() if cmdline else extra
                 line = prefix + cmdline + suffix
@@ -77,7 +88,8 @@ def enable_iommu_in_grub(grub_file: str = "/etc/default/grub") -> bool:
             updated_lines.append(line)
 
     if not matched_cmdline:
-        updated_lines.append("GRUB_CMDLINE_LINUX=\"%s=on %s\"\n" % (iommu_type, _IOMMU_BLACKLIST))
+        blacklist_param = "modprobe.blacklist=%s" % ",".join(sorted(_IOMMU_BLACKLIST_MODULES))
+        updated_lines.append("GRUB_CMDLINE_LINUX=\"%s=on %s\"\n" % (iommu_type, blacklist_param))
 
     new_content = "".join(updated_lines)
     if new_content != content:
@@ -161,9 +173,9 @@ def bind_device_to_vfio(address: str) -> None:
     device = get_device(normalized)
     if device and device.driver == "vfio-pci":
         logger.debug("pci device %s bound to vfio-pci", normalized)
-    else:
-        logger.warning("pci device %s failed to bind to vfio-pci (driver=%s)",
-                        normalized, device.driver if device else "unknown")
+        return
+    raise PciError("pci device %s failed to bind to vfio-pci (driver=%s)"
+                    % (normalized, device.driver if device else "unknown"))
 
 
 def unbind_device_from_vfio(address: str) -> None:

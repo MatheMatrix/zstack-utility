@@ -19,7 +19,7 @@ from zstacklib.utils import shell
 
 from .bond import get_bond_from_file
 from .config import CONF_PATH, CTL_BIN, SOCK_PATH
-from .controller import OvsBaseCtl, _check_ovs
+from .controller import OvsBaseCtl, _check_ovs, _validate_name, _VALID_BOND_MODES, _VALID_LACP_VALUES
 from .exceptions import OvsError, OvsBridgeError, OvsDpdkError
 from .utils import (
     get_bdf_of_interface, get_interface_of_bdf, get_pci_id, is_bdf,
@@ -349,6 +349,11 @@ class OvsDpdkCtl(OvsBaseCtl):
         if bond.name in self.list_ports(bridge_name):
             return
 
+        _validate_name(bond.name, "bond name")
+        bond_mode = str(bond.mode)
+        if bond_mode not in _VALID_BOND_MODES:
+            raise OvsError(f'Invalid bond mode: {bond_mode!r}')
+
         # Build command
         cmd = CTL_BIN + f'--no-wait add-bond {bridge_name} {bond.name} '
 
@@ -361,9 +366,12 @@ class OvsDpdkCtl(OvsBaseCtl):
             count += 1
 
         cmd += pf_name
-        cmd += f'bond_mode={bond.mode} '
-        if bond.mode == 'balance-tcp':
-            cmd += f'lacp={bond.lacp} '
+        cmd += f'bond_mode={bond_mode} '
+        if bond_mode == 'balance-tcp':
+            lacp = str(bond.lacp)
+            if lacp not in _VALID_LACP_VALUES:
+                raise OvsError(f'Invalid LACP value: {lacp!r}')
+            cmd += f'lacp={lacp} '
         cmd += ifce_set
 
         shell.call(cmd)
