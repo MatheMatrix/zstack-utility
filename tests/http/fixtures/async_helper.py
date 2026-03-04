@@ -30,10 +30,16 @@ class AsyncCallbackHelper:
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
     def wait(self, taskuuid: str, timeout: float = 10.0) -> Dict[str, Any]:
         """Wait for callback. Raises TimeoutError if not received."""
+        # Check if result already arrived (race: callback before wait)
+        if taskuuid in self.results:
+            return self.results[taskuuid]
         event = threading.Event()
         self.events[taskuuid] = event
+        # Double-check after registering event
+        if taskuuid in self.results:
+            return self.results[taskuuid]
         if not event.wait(timeout):
-            raise TimeoutError(f"Callback for {taskuuid} not received in {timeout}s")
+            raise TimeoutError("Callback for %s not received in %ss" % (taskuuid, timeout))
         return self.results.get(taskuuid, {})
     def get_callback_url(self) -> str:
         return f"http://127.0.0.1:{self.port}/callback"
