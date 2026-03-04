@@ -17,7 +17,10 @@ class AsyncCallbackHelper:
                 content_len = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_len)
                 taskuuid = self.headers.get('taskuuid', 'unknown')
-                helper.results[taskuuid] = json.loads(body) if body else {}
+                try:
+                    helper.results[taskuuid] = json.loads(body) if body else {}
+                except (json.JSONDecodeError, ValueError):
+                    helper.results[taskuuid] = {'_raw': body.decode('utf-8', errors='replace')}
                 if taskuuid in helper.events:
                     helper.events[taskuuid].set()
                 self.send_response(200)
