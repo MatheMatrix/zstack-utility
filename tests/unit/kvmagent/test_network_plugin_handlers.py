@@ -339,7 +339,6 @@ class TestNetworkPluginCheckBridgeMissing:
         result = plugin.check_bridge(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = False
         assert rsp['success'] is False
 
 
@@ -382,7 +381,6 @@ class TestNetworkPluginCheckMacvlanVlanEth:
         result = plugin.check_macvlan_vlan_eth(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = False
         assert rsp['success'] is False
 
     def test_check_macvlan_vlan_eth_success(self):
@@ -488,7 +486,6 @@ class TestNetworkPluginCreateVxlanBridge:
         result = plugin.create_vxlan_bridge(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = False
         assert rsp['success'] is False
 
     def test_create_vxlan_bridge_runs_internal(self):

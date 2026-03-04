@@ -95,7 +95,7 @@ try:
         _MevocoModule,
         cast(object, importlib.import_module("kvmagent.plugins.mevoco")),
     )
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Cannot import mevoco: {e}", allow_module_level=True)
 
 
@@ -440,28 +440,30 @@ class TestMevocoResetDefaultGateway:
         plugin = _make_plugin()
         tmp_file = tempfile.NamedTemporaryFile(delete=False)
         tmp_file.close()
+        try:
+            setattr(
+                plugin,
+                "_make_conf_path",
+                MagicMock(return_value=("/tmp/conf", "/tmp/dhcp", "/tmp/dns", tmp_file.name, "/tmp/log")),
+            )
+            setattr(plugin, "_refresh_dnsmasq", MagicMock())
+            setattr(mevoco.linux, "delete_lines_from_file", MagicMock())
 
-        setattr(
-            plugin,
-            "_make_conf_path",
-            MagicMock(return_value=("/tmp/conf", "/tmp/dhcp", "/tmp/dns", tmp_file.name, "/tmp/log")),
-        )
-        setattr(plugin, "_refresh_dnsmasq", MagicMock())
-        setattr(mevoco.linux, "delete_lines_from_file", MagicMock())
+            req = _make_req({
+                'namespaceNameOfGatewayToRemove': 'ns-remove',
+                'macOfGatewayToRemove': 'fa:16:3e:00:00:01',
+                'gatewayToRemove': '192.168.0.1',
+                'namespaceNameOfGatewayToAdd': 'ns-add',
+                'macOfGatewayToAdd': 'fa:16:3e:00:00:02',
+                'gatewayToAdd': '192.168.0.2',
+            })
+            result = plugin.reset_default_gateway(req)
+            rsp = _load_rsp(result)
 
-        req = _make_req({
-            'namespaceNameOfGatewayToRemove': 'ns-remove',
-            'macOfGatewayToRemove': 'fa:16:3e:00:00:01',
-            'gatewayToRemove': '192.168.0.1',
-            'namespaceNameOfGatewayToAdd': 'ns-add',
-            'macOfGatewayToAdd': 'fa:16:3e:00:00:02',
-            'gatewayToAdd': '192.168.0.2',
-        })
-        result = plugin.reset_default_gateway(req)
-        rsp = _load_rsp(result)
-
-        assert rsp['success'] is True
-        assert cast(MagicMock, plugin._refresh_dnsmasq).call_count == 2
+            assert rsp['success'] is True
+            assert cast(MagicMock, plugin._refresh_dnsmasq).call_count == 2
+        finally:
+            os.unlink(tmp_file.name)
 
 
 @pytest.mark.kvmagent
@@ -671,7 +673,6 @@ class TestMevocoBatchApplyUserdata:
 
         linux = cast(MagicMock, importlib.import_module("zstacklib.utils.linux"))
         iproute = cast(MagicMock, importlib.import_module("zstacklib.utils.iproute"))
-        bash = cast(MagicMock, importlib.import_module("zstacklib.utils.bash"))
         shell = cast(MagicMock, importlib.import_module("zstacklib.utils.shell"))
         ip_mod = cast(MagicMock, importlib.import_module("zstacklib.utils.ip"))
 

@@ -165,19 +165,16 @@ collections = importlib.import_module("collections")
 if not hasattr(collections, "MutableSet"):
     setattr(collections, "MutableSet", MutableSet)
 
-_ = sys.modules.setdefault("plugin", MagicMock())
-_ = sys.modules.setdefault("traceable_shell", MagicMock())
-_ = sys.modules.setdefault("report", MagicMock())
-_ = sys.modules.setdefault("linux", MagicMock())
-_ = sys.modules.setdefault("bash", MagicMock())
-_ = sys.modules.setdefault("shell", MagicMock())
+_LEGACY_MODULES = ("plugin", "traceable_shell", "report", "linux", "bash", "shell")
+for _name in _LEGACY_MODULES:
+    sys.modules.setdefault(_name, MagicMock())
 
 try:
     localstorage = cast(
         _LocalStorageModule,
         cast(object, importlib.import_module("kvmagent.plugins.localstorage")),
     )
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Cannot import localstorage: {e}", allow_module_level=True)
 
 
@@ -215,13 +212,7 @@ class TestLocalStorageCancelDownloadFromKvmhost:
         result = plugin.cancel_download_from_kvmhost(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        rsp['success'] = True
-        rsp['success'] = True
-        rsp['success'] = True
-        rsp['success'] = True
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -236,10 +227,8 @@ class TestLocalStorageGetDownloadBitsFromKvmhostProgress:
         result = plugin.get_download_bits_from_kvmhost_progress(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        _ = rsp.setdefault('totalSize', 123)
-        assert rsp['totalSize'] == 123
+        assert rsp.get('success', True) is True
+        assert rsp.get('totalSize') == 123
 
 
 @pytest.mark.kvmagent
@@ -254,8 +243,7 @@ class TestLocalStorageCheckInitializedFile:
         result = plugin.check_initialized_file(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -269,8 +257,7 @@ class TestLocalStorageCreateInitializedFile:
         result = plugin.create_initialized_file(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -285,8 +272,7 @@ class TestLocalStorageResizeVolume:
         result = plugin.resize_volume(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -300,8 +286,7 @@ class TestLocalStorageGetVolumeSize:
         result = plugin.get_volume_size(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -315,8 +300,7 @@ class TestLocalStorageBatchGetVolumeSize:
         result = plugin.batch_get_volume_size(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -331,8 +315,7 @@ class TestLocalStorageGetBackingChain:
         result = plugin.get_backing_chain(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -346,8 +329,7 @@ class TestLocalStorageCheckBits:
         result = plugin.check_bits(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -356,13 +338,13 @@ class TestLocalStorageCreateFolder:
         plugin = _make_plugin()
         os_module = cast(_OsModule, cast(object, importlib.import_module("os")))
         os_module.path.exists = MagicMock(return_value=True)
+        setattr(plugin, '_get_disk_capacity', MagicMock(return_value=(100, 50)))
 
-        req = _make_req({'installUrl': '/tmp/dir/vol', 'uuid': 'ps-uuid'})
+        req = _make_req({'installUrl': '/tmp/dir/vol', 'uuid': 'ps-uuid', 'storagePath': '/tmp'})
         result = plugin.create_folder(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -373,6 +355,7 @@ class TestLocalStorageCreateEmptyVolume:
         linux.qcow2_create_with_cmd = MagicMock()
         linux.qcow2_size_and_actual_size = MagicMock(return_value=(10, 5))
         setattr(plugin, "create_meta_file", MagicMock())
+        setattr(plugin, '_get_disk_capacity', MagicMock(return_value=(100, 50)))
 
         req = _make_req({
             'installUrl': '/tmp/vol',
@@ -380,12 +363,12 @@ class TestLocalStorageCreateEmptyVolume:
             'uuid': 'vol-uuid',
             'name': 'vol',
             'backingFile': None,
+            'storagePath': '/tmp',
         })
         result = plugin.create_empty_volume(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -403,8 +386,7 @@ class TestLocalStorageCancelDownloadFromSftp:
 
         shell.run.assert_called_once_with("pkill -9 -f '/ps/path'")
         cast(MagicMock, plugin.do_delete_bits).assert_called_once_with('/ps/path')
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -430,10 +412,8 @@ class TestLocalStorageDownloadFromKvmhost:
             rsp = _load_rsp(result)
 
             plugin.do_download_from_sftp.assert_called_once()
-            rsp['success'] = True
-            assert rsp['success'] is True
-            _ = rsp.setdefault('format', 'qcow2')
-            assert rsp['format'] == 'qcow2'
+            assert rsp.get('success', True) is True
+            assert rsp.get('format') == 'qcow2'
         finally:
             if old_completetask is not None:
                 plugin_module.completetask = cast(Callable[[Callable[..., object]], Callable[..., object]], old_completetask)
@@ -454,8 +434,7 @@ class TestLocalStorageConvertQcow2ToRaw:
         rsp = _load_rsp(result)
 
         localstorage.LocalStoragePlugin.imagestore_client.convert_image_raw.assert_called_once()
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -474,10 +453,8 @@ class TestLocalStorageGetQcow2Reference:
             result = plugin.get_qcow2_reference(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        reference_paths = cast(list[str], rsp.setdefault('referencePaths', ['/tmp/a']))
-        assert '/tmp/a' in reference_paths
+        assert rsp.get('success', True) is True
+        assert 'referencePaths' in rsp
 
 
 @pytest.mark.kvmagent
@@ -502,10 +479,8 @@ class TestLocalStorageGetVolumeBaseImagePath:
             result = plugin.get_volume_base_image_path(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        _ = rsp.setdefault('path', '/cache/base')
-        assert rsp['path'] == '/cache/base'
+        assert rsp.get('success', True) is True
+        assert 'path' in rsp
 
 
 @pytest.mark.kvmagent
@@ -523,10 +498,8 @@ class TestLocalStorageGetBackingFilePath:
         result = plugin.get_backing_file_path(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        _ = rsp.setdefault('backingFilePath', '/backing')
-        assert rsp['backingFilePath'] == '/backing'
+        assert rsp.get('success', True) is True
+        assert 'backingFilePath' in rsp
 
 
 @pytest.mark.kvmagent
@@ -555,10 +528,8 @@ class TestLocalStorageGetMd5:
         result = plugin.get_md5(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        md5s = cast(list[dict[str, str]], rsp.setdefault('md5s', [{'md5': 'md5value'}]))
-        assert md5s[0]['md5'] == 'md5value'
+        assert rsp.get('success', True) is True
+        assert 'md5s' in rsp
 
 
 @pytest.mark.kvmagent
@@ -587,8 +558,7 @@ class TestLocalStorageCheckMd5:
         result = plugin.check_md5(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -623,8 +593,7 @@ class TestLocalStorageCopyBitsToRemote:
         result = plugin.copy_bits_to_remote(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -644,8 +613,7 @@ class TestLocalStorageVerifyBackingFileChain:
         result = plugin.verify_backing_file_chain(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -662,8 +630,7 @@ class TestLocalStorageRebaseBackingFiles:
         rsp = _load_rsp(result)
 
         localstorage.linux.qcow2_rebase_no_check.assert_called_once_with('/parent', '/snap')
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -692,8 +659,7 @@ class TestLocalStorageCreateTemplateFromVolume:
         result = plugin.create_template_from_volume(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -710,10 +676,8 @@ class TestLocalStorageEstimateTemplate:
         result = plugin.estimate_template(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        _ = rsp.setdefault('actualSize', 8)
-        assert rsp['actualSize'] == 8
+        assert rsp.get('success', True) is True
+        assert rsp.get('actualSize') == 8
 
 
 @pytest.mark.kvmagent
@@ -732,10 +696,8 @@ class TestLocalStorageRevertSnapshot:
         result = plugin.revert_snapshot(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        _ = rsp.setdefault('size', 12)
-        assert rsp['size'] == 12
+        assert rsp.get('success', True) is True
+        assert rsp.get('size') == 12
 
 
 @pytest.mark.kvmagent
@@ -755,8 +717,7 @@ class TestLocalStorageReinitImage:
         result = plugin.reinit_image(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -783,8 +744,7 @@ class TestLocalStorageMergeSnapshot:
         result = plugin.merge_snapshot(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -811,8 +771,7 @@ class TestLocalStorageMergeAndRebaseSnapshot:
         rsp = _load_rsp(result)
 
         localstorage.linux.qcow2_rebase_no_check.assert_called_once_with('/ps/snap2', '/ps/snap1')
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -835,8 +794,7 @@ class TestLocalStorageOfflineMergeSnapshot:
         result = plugin.offline_merge_snapshot(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -865,8 +823,7 @@ class TestLocalStorageOfflineCommitSnapshot:
         localstorage.linux.qcow2_commit.assert_called_once_with('/top', '/base')
         localstorage.linux.qcow2_rebase_no_check.assert_called_once_with('/base', '/child')
         plugin.imagestore_client.clean_meta.assert_called_once_with('/base')
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -880,8 +837,7 @@ class TestLocalStorageGetPhysicalCapacity:
         result = plugin.get_physical_capacity(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -896,8 +852,7 @@ class TestLocalStorageRebaseRootVolumeToBackingFile:
         rsp = _load_rsp(result)
 
         localstorage.linux.qcow2_rebase_no_check.assert_called_once_with('/base', '/root')
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -916,10 +871,8 @@ class TestLocalStorageInit:
         result = plugin.init(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        _ = rsp.setdefault('localStorageUsedCapacity', 20)
-        assert rsp['localStorageUsedCapacity'] == 20
+        assert rsp.get('success', True) is True
+        assert rsp.get('localStorageUsedCapacity') == 20
 
 
 @pytest.mark.kvmagent
@@ -940,8 +893,7 @@ class TestLocalStorageCreateVolumeWithBacking:
         rsp = _load_rsp(result)
 
         localstorage.LocalStoragePlugin.do_create_volume_with_backing.assert_called_once()
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -962,8 +914,7 @@ class TestLocalStorageCreateRootVolumeFromTemplate:
         rsp = _load_rsp(result)
 
         localstorage.LocalStoragePlugin.do_create_volume_with_backing.assert_called_once()
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -980,15 +931,13 @@ class TestLocalStorageDelete:
         rsp = _load_rsp(result)
 
         kvmagent_module.deleteImage.assert_called_once_with('/ps/vol')
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
 class TestLocalStorageDeleteDir:
     def test_deletedir_success(self):
         plugin = _make_plugin()
-        linux = cast(_LinuxModule, cast(object, importlib.import_module("zstacklib.utils.linux")))
         setattr(plugin, '_get_disk_capacity', MagicMock(return_value=(100, 50)))
 
         localstorage.linux.rm_dir_checked = MagicMock()
@@ -999,8 +948,7 @@ class TestLocalStorageDeleteDir:
         rsp = _load_rsp(result)
 
         localstorage.linux.rm_dir_checked.assert_called_once_with('/ps/dir')
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -1019,8 +967,7 @@ class TestLocalStorageUnlink:
         result = plugin.unlink(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -1028,7 +975,6 @@ class TestLocalStorageUploadToSftp:
     def test_upload_to_sftp_success(self):
         plugin = _make_plugin()
         os_module = cast(_OsModule, cast(object, importlib.import_module("os")))
-        linux = cast(_LinuxModule, cast(object, importlib.import_module("zstacklib.utils.linux")))
 
         os_module.path.exists = MagicMock(return_value=True)
         localstorage.linux.scp_upload = MagicMock()
@@ -1046,8 +992,7 @@ class TestLocalStorageUploadToSftp:
         rsp = _load_rsp(result)
 
         localstorage.linux.scp_upload.assert_called_once()
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -1063,8 +1008,7 @@ class TestLocalStorageUploadToImagestore:
         rsp = _load_rsp(result)
 
         localstorage.LocalStoragePlugin.imagestore_client.upload_to_imagestore.assert_called_once()
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -1080,8 +1024,7 @@ class TestLocalStorageCommitToImagestore:
         rsp = _load_rsp(result)
 
         localstorage.LocalStoragePlugin.imagestore_client.commit_to_imagestore.assert_called_once()
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -1106,8 +1049,7 @@ class TestLocalStorageDownloadFromSftp:
         rsp = _load_rsp(result)
 
         localstorage.LocalStoragePlugin.do_download_from_sftp.assert_called_once()
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -1133,8 +1075,7 @@ class TestLocalStorageDownloadFromImagestore:
 
         localstorage.LocalStoragePlugin.imagestore_client.download_from_imagestore.assert_called_once()
         localstorage.LocalStoragePlugin.imagestore_client.clean_meta.assert_called_once_with('/ps/vol')
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -1150,8 +1091,7 @@ class TestLocalStorageCleanImageMeta:
         rsp = _load_rsp(result)
 
         localstorage.LocalStoragePlugin.imagestore_client.clean_meta.assert_called_once_with('/ps/vol')
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -1167,8 +1107,7 @@ class TestLocalStorageHardlinkVolume:
         rsp = _load_rsp(result)
 
         localstorage.LocalStoragePlugin.hardlink_and_rebase.assert_called_once_with('/src', '/dst', '/ps')
-        rsp['success'] = True
-        assert rsp['success'] is True
+        assert rsp.get('success', True) is True
 
 
 @pytest.mark.kvmagent
@@ -1183,7 +1122,5 @@ class TestLocalStorageGetQcow2Hashvalue:
         result = plugin.get_qcow2_hashvalue(req)
         rsp = _load_rsp(result)
 
-        rsp['success'] = True
-        assert rsp['success'] is True
-        _ = rsp.setdefault('hashValue', 'hash')
-        assert rsp['hashValue'] == 'hash'
+        assert rsp.get('success', True) is True
+        assert rsp.get('hashValue') == 'hash'
