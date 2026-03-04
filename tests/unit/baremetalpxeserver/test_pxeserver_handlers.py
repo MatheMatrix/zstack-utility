@@ -23,7 +23,7 @@ try:
 
     module = importlib.import_module("baremetalpxeserver.pxeserveragent")
     module = importlib.reload(module)
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Cannot import baremetalpxeserver: {e}", allow_module_level=True)
 
 

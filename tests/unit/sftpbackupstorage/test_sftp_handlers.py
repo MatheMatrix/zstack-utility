@@ -18,7 +18,7 @@ try:
         "sftpbackupstorage", "sftpbackupstorage", "sftpbackupstorage.py",
     ))
     module = _import_with_octal_fix("sftpbackupstorage.sftpbackupstorage", _src_path)
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Cannot import sftpbackupstorage: {e}", allow_module_level=True)
 
 

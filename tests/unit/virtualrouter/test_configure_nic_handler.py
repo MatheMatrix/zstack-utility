@@ -29,7 +29,7 @@ try:
     )
     _src_path = os.path.normpath(_src_path)
     module = _import_with_haskey_fix("virtualrouter.plugins.configure_nic", _src_path)
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Cannot import configure_nic: {e}", allow_module_level=True)
 
 
@@ -141,7 +141,6 @@ class TestConfigureNic:
 
         shell_mod = sys.modules["zstacklib.utils.shell"]
         shell_cmd_instance = MagicMock(return_value=ip_link_output)
-        shell_mod.ShellCmd.return_value = shell_cmd_instance
         shell_mod.ShellCmd.return_value = shell_cmd_instance
 
         with pytest.raises(vr_mod.VirtualRouterError, match="same mac address"):

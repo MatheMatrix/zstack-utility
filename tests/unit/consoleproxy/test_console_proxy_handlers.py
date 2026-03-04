@@ -40,7 +40,7 @@ try:
         _ConsoleProxyModule,
         cast(object, importlib.reload(importlib.import_module("consoleproxy.console_proxy_agent"))),
     )
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Cannot import console_proxy_agent: {e}", allow_module_level=True)
 
 

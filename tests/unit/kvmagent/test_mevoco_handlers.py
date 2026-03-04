@@ -111,10 +111,19 @@ def _make_plugin() -> _MevocoPluginProto:
 
     from tests.conftest import passthrough_lock
 
+    _orig_lock = getattr(lock_mod, "lock", None)
+    _orig_completetask = getattr(plugin_mod, "completetask", None)
     lock_mod.lock = passthrough_lock
     setattr(plugin_mod, "completetask", passthrough_lock)
 
     module = cast(object, importlib.reload(importlib.import_module("kvmagent.plugins.mevoco")))
+
+    # Restore originals so module-level attrs don't leak across tests
+    if _orig_lock is not None:
+        lock_mod.lock = _orig_lock
+    if _orig_completetask is not None:
+        setattr(plugin_mod, "completetask", _orig_completetask)
+
     setattr(module, "http", importlib.import_module("zstacklib.utils.http"))
     setattr(module, "linux", importlib.import_module("zstacklib.utils.linux"))
     setattr(module, "bash", importlib.import_module("zstacklib.utils.bash"))
@@ -203,6 +212,9 @@ def _isolate_shared_modules():
         importlib.import_module("zstacklib.utils.linux"),
         importlib.import_module("zstacklib.utils.shell"),
         importlib.import_module("zstacklib.utils.iproute"),
+        importlib.import_module("zstacklib.utils.ip"),
+        importlib.import_module("zstacklib.utils.ovs"),
+        importlib.import_module("zstacklib.utils.thread"),
         mevoco_mod,
     )
     yield

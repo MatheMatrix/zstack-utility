@@ -153,7 +153,7 @@ try:
         _NfsPluginModule,
         cast(object, importlib.import_module("kvmagent.plugins.nfs_primarystorage_plugin")),
     )
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Cannot import nfs_primarystorage_plugin: {e}", allow_module_level=True)
 
 
@@ -178,6 +178,9 @@ def _reload_nfs_plugin() -> _NfsPluginModule:
 
     from tests.conftest import passthrough_lock
 
+    _orig_lock = getattr(lock_mod, "lock", None)
+    _orig_completetask = getattr(plugin_mod, "completetask", None)
+
     setattr(lock_mod, "lock", passthrough_lock)
     setattr(plugin_mod, "completetask", passthrough_lock)
 
@@ -185,6 +188,13 @@ def _reload_nfs_plugin() -> _NfsPluginModule:
         _NfsPluginModule,
         cast(object, importlib.reload(importlib.import_module("kvmagent.plugins.nfs_primarystorage_plugin"))),
     )
+
+    # Restore originals so module-level attrs don't leak across tests
+    if _orig_lock is not None:
+        setattr(lock_mod, "lock", _orig_lock)
+    if _orig_completetask is not None:
+        setattr(plugin_mod, "completetask", _orig_completetask)
+
     setattr(module, "http", importlib.import_module("zstacklib.utils.http"))
     setattr(module, "linux", importlib.import_module("zstacklib.utils.linux"))
     setattr(module, "shell", importlib.import_module("zstacklib.utils.shell"))

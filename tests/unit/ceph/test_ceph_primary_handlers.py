@@ -23,7 +23,7 @@ try:
 
     module = importlib.import_module("cephprimarystorage.cephagent")
     module = importlib.reload(module)
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Cannot import cephprimarystorage: {e}", allow_module_level=True)
 
 

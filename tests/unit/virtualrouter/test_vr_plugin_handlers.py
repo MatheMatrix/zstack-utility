@@ -35,7 +35,7 @@ try:
     pf_module = cast(object, importlib.reload(importlib.import_module("virtualrouter.plugins.port_forwarding")))
     lb_module = cast(object, importlib.reload(importlib.import_module("virtualrouter.plugins.lb")))
     dnsmasq_module = cast(object, importlib.reload(importlib.import_module("virtualrouter.plugins.dnsmasq")))
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Cannot import virtualrouter modules: {e}", allow_module_level=True)
 
 
@@ -152,7 +152,6 @@ class TestSetDns:
         plugin = dns_module.Dns.__new__(dns_module.Dns)
         linux = sys.modules["zstacklib.utils.linux"]
         linux.get_pid_by_process_name.return_value = "1234"
-        shell = sys.modules["zstacklib.utils.shell"]
 
         with patch("os.path.exists", return_value=True), \
              patch("builtins.open", mock_open(read_data="nameserver 8.8.8.8\n")):
@@ -554,8 +553,6 @@ class TestAddDhcpEntry:
         linux.get_pid_by_process_name.return_value = "1234"
         linux.is_systemd_enabled.return_value = True
         linux.sync_file.return_value = None
-
-        shell = sys.modules["zstacklib.utils.shell"]
 
         with patch("os.path.exists", return_value=True), \
              patch("builtins.open", mock_open(read_data="")):

@@ -5,7 +5,7 @@ import json
 import pytest
 import sys
 from typing import Callable, Protocol, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 class _HttpModule(Protocol):
@@ -94,7 +94,7 @@ try:
         _SecurityGroupModule,
         cast(object, importlib.import_module("kvmagent.plugins.securitygroup_plugin")),
     )
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Cannot import securitygroup_plugin: {e}", allow_module_level=True)
 
 
@@ -198,11 +198,21 @@ def _make_plugin() -> _SecurityGroupPluginProto:
     def _passthrough_ignoreerror(func: Callable[..., object]) -> Callable[..., object]:
         return func
 
+    _orig_file_lock = getattr(lock_mod, "file_lock", None)
+    _orig_ignoreerror = getattr(misc_mod, "ignoreerror", None)
+
     lock_mod.file_lock = passthrough_lock
     misc_mod.ignoreerror = _passthrough_ignoreerror
 
     plugin_mod = importlib.import_module("kvmagent.plugins.securitygroup_plugin")
     _ = importlib.reload(plugin_mod)
+
+    # Restore originals so module-level attrs don't leak across tests
+    if _orig_file_lock is not None:
+        lock_mod.file_lock = _orig_file_lock
+    if _orig_ignoreerror is not None:
+        misc_mod.ignoreerror = _orig_ignoreerror
+
     plugin = securitygroup_plugin.SecurityGroupPlugin.__new__(
         securitygroup_plugin.SecurityGroupPlugin
     )
@@ -414,7 +424,6 @@ class TestSecurityGroupUpdateGroupMemberDelete:
     def test_update_group_member_delete_success(self):
         plugin = _make_plugin()
         ipset_manager = _FakeIpSetManager()
-        setattr(securitygroup_plugin, "ipset", MagicMock(IPSetManager=MagicMock(return_value=ipset_manager)))
         chain4 = _FakeChain("sg-chain")
         chain4.user_defined_rules = [_FakeRule("r1", "zstack-sg-sg-uuid"), _FakeRule("r2", "other")]
         chain6 = _FakeChain("sg6-chain")
@@ -426,17 +435,18 @@ class TestSecurityGroupUpdateGroupMemberDelete:
 
         securitygroup_plugin.iptables.from_iptables_save = MagicMock(side_effect=_from_iptables_save)
 
-        req = _make_req({
-            'updateGroupTOs': [
-                {
-                    'actionCode': cast(_SecurityGroupPluginType, cast(object, securitygroup_plugin.SecurityGroupPlugin)).ACTION_CODE_DELETE_GROUP,
-                    'securityGroupUuid': 'sg-uuid',
-                    'securityGroupVmIps': [],
-                    'securityGroupVmIp6s': [],
-                }
-            ]
-        })
-        result = plugin.update_group_member(req)
+        with patch.object(securitygroup_plugin, "ipset", MagicMock(IPSetManager=MagicMock(return_value=ipset_manager))):
+            req = _make_req({
+                'updateGroupTOs': [
+                    {
+                        'actionCode': cast(_SecurityGroupPluginType, cast(object, securitygroup_plugin.SecurityGroupPlugin)).ACTION_CODE_DELETE_GROUP,
+                        'securityGroupUuid': 'sg-uuid',
+                        'securityGroupVmIps': [],
+                        'securityGroupVmIp6s': [],
+                    }
+                ]
+            })
+            result = plugin.update_group_member(req)
         rsp = _load_rsp(result)
         assert rsp['success'] is True
         assert chain4.deleted_rules == ["r1"]
@@ -449,19 +459,19 @@ class TestSecurityGroupUpdateGroupMemberUpdate:
     def test_update_group_member_update_success(self):
         plugin = _make_plugin()
         ipset_manager = _FakeIpSetManager()
-        setattr(securitygroup_plugin, "ipset", MagicMock(IPSetManager=MagicMock(return_value=ipset_manager)))
 
-        req = _make_req({
-            'updateGroupTOs': [
-                {
-                    'actionCode': cast(_SecurityGroupPluginType, cast(object, securitygroup_plugin.SecurityGroupPlugin)).ACTION_CODE_UPDATE_GROUP_MEMBER,
-                    'securityGroupUuid': 'sg-uuid',
-                    'securityGroupVmIps': ['10.0.0.2'],
-                    'securityGroupVmIp6s': ['fd00::2'],
-                }
-            ]
-        })
-        result = plugin.update_group_member(req)
+        with patch.object(securitygroup_plugin, "ipset", MagicMock(IPSetManager=MagicMock(return_value=ipset_manager))):
+            req = _make_req({
+                'updateGroupTOs': [
+                    {
+                        'actionCode': cast(_SecurityGroupPluginType, cast(object, securitygroup_plugin.SecurityGroupPlugin)).ACTION_CODE_UPDATE_GROUP_MEMBER,
+                        'securityGroupUuid': 'sg-uuid',
+                        'securityGroupVmIps': ['10.0.0.2'],
+                        'securityGroupVmIp6s': ['fd00::2'],
+                    }
+                ]
+            })
+            result = plugin.update_group_member(req)
         rsp = _load_rsp(result)
         assert rsp['success'] is True
         assert len(ipset_manager.created_sets) == 2
