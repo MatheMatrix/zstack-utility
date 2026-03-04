@@ -1406,8 +1406,7 @@ upgrade_zstack(){
     if [ ! -z $ONLY_UPGRADE_CTL ]; then
         return
     fi
-    #rerun install system libs, upgrade might need new libs
-    install_system_libs
+
     do_config_ansible
     do_config_systemd
     show_spinner uz_stop_zstack
@@ -4546,6 +4545,9 @@ if [ x"$UPGRADE" = x'y' ]; then
     install_keycloak_server
 
     install_morph_server
+
+    #rerun install system libs, upgrade might need new libs
+    install_system_libs
 
     #only upgrade zstack
     upgrade_zstack
