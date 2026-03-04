@@ -28,19 +28,10 @@ class _ConsoleProxyModule(Protocol):
 
 def _setup_lock_passthrough():
     """Make lock.lock a passthrough decorator so decorated methods work."""
+    from tests.conftest import passthrough_lock
     lock_mod = cast(object, importlib.import_module("zstacklib.utils.lock"))
-
-    def _passthrough_lock(*_args, **_kwargs):
-        if _args and callable(_args[0]) and len(_args) == 1 and not _kwargs:
-            return _args[0]
-
-        def _decorator(func):
-            return func
-
-        return _decorator
-
-    setattr(lock_mod, "lock", _passthrough_lock)
-    setattr(lock_mod, "file_lock", _passthrough_lock)
+    setattr(lock_mod, "lock", passthrough_lock)
+    setattr(lock_mod, "file_lock", passthrough_lock)
 
 
 try:

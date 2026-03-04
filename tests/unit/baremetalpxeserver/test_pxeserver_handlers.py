@@ -15,22 +15,27 @@ from unittest.mock import MagicMock, patch, mock_open, call
 try:
     import tests.conftest  # noqa: F401
 
+    from tests.conftest import passthrough_lock
     lock_mod = cast(object, importlib.import_module("zstacklib.utils.lock"))
 
-    def _passthrough_lock(*_args, **_kwargs):
-        if _args and callable(_args[0]) and len(_args) == 1 and not _kwargs:
-            return _args[0]
-        def _decorator(func):
-            return func
-        return _decorator
-
-    setattr(lock_mod, "lock", _passthrough_lock)
-    setattr(lock_mod, "file_lock", _passthrough_lock)
+    setattr(lock_mod, "lock", passthrough_lock)
+    setattr(lock_mod, "file_lock", passthrough_lock)
 
     module = importlib.import_module("baremetalpxeserver.pxeserveragent")
     module = importlib.reload(module)
 except Exception as e:
     pytest.skip(f"Cannot import baremetalpxeserver: {e}", allow_module_level=True)
+
+
+_orig_module_os = getattr(module, 'os', None)
+
+
+@pytest.fixture(autouse=True)
+def _restore_module_os():
+    """Restore module.os after each test to prevent cross-test pollution."""
+    yield
+    if _orig_module_os is not None:
+        module.os = _orig_module_os
 
 
 def _make_req(body_dict=None):

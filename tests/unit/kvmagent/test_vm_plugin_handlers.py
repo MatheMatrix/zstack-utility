@@ -8,6 +8,7 @@
 # pyright: reportUnknownArgumentType=false
 # pyright: reportUnknownLambdaType=false
 # pyright: reportAttributeAccessIssue=false
+from __future__ import annotations
 """Handler-level unit tests for kvmagent.plugins.vm_plugin."""
 import json
 import tempfile

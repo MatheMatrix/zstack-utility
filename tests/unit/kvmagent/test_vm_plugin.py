@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
 """
 Unit tests for kvmagent VM plugin functionality.
 
@@ -214,4 +215,4 @@ def test_vm_memory_configuration_update(sample_vm_xml):
     
     # Verify XML can be serialized back
     updated_xml = ET.tostring(root, encoding='unicode')
-    assert f'<memory unit="KiB">{new_memory_kb}</memory>' in updated_xml
+    assert '<memory unit="KiB">{}</memory>'.format(new_memory_kb) in updated_xml

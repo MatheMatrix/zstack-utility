@@ -177,16 +177,11 @@ def nj():
 
 
 def _is_unsupported_type(obj):
-    return isinstance(obj, (complex, tuple, types.FunctionType, types.LambdaType,
-                            types.GeneratorType, types.MethodType, types.BuiltinFunctionType,
-                            types.BuiltinMethodType, io.IOBase,
-                            range, types.TracebackType, types.FrameType, types.MappingProxyType,
-                            type(NotImplemented), types.GetSetDescriptorType,
-                            types.MemberDescriptorType))
+    return isinstance(obj, _unsupported_types)
 
 
 def _is_primitive_types(obj):
-    return isinstance(obj, (bool, int, float, bytes, str))
+    return isinstance(obj, _primitive_types)
 
 
 def _dump_list(lst):

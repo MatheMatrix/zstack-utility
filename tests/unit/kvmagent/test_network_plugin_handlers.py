@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import importlib
 import json
 import pytest
@@ -161,17 +163,10 @@ def _reload_network_plugin() -> _NetworkPluginModule:
     lock_mod = cast(object, importlib.import_module("zstacklib.utils.lock"))
     plugin_mod = cast(object, importlib.import_module("zstacklib.utils.plugin"))
 
-    def _passthrough_lock(*_args: object, **_kwargs: object):
-        if _args and callable(_args[0]) and len(_args) == 1 and not _kwargs:
-            return _args[0]
+    from tests.conftest import passthrough_lock
 
-        def _decorator(func: Callable[..., object]) -> Callable[..., object]:
-            return func
-
-        return _decorator
-
-    setattr(lock_mod, "lock", _passthrough_lock)
-    setattr(plugin_mod, "completetask", _passthrough_lock)
+    setattr(lock_mod, "lock", passthrough_lock)
+    setattr(plugin_mod, "completetask", passthrough_lock)
 
     module = cast(
         _NetworkPluginModule,

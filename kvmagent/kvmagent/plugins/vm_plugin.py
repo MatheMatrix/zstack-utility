@@ -7393,8 +7393,10 @@ class VmPlugin(kvmagent.KvmAgent):
     if not os.path.exists(QMP_SOCKET_PATH):
         try:
             os.mkdir(QMP_SOCKET_PATH)
-        except OSError:
-            pass
+        except OSError as e:
+            import errno
+            if e.errno not in (errno.EEXIST, errno.ENOENT):
+                raise
 
     def _record_operation(self, uuid, op):
         j = VmOperationJudger(op)

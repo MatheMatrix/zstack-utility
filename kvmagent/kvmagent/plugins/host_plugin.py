@@ -15,7 +15,10 @@ import string
 import socket
 import yaml
 import subprocess
-import shlex
+try:
+    from shlex import quote as shell_quote
+except ImportError:
+    from pipes import quote as shell_quote
 
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
@@ -4273,7 +4276,7 @@ done
         errors = []
         if 'vnc' in console_modes:
             hmp_cmd = "set_password vnc %s" % cmd.password
-            safe_hmp_arg = shlex.quote(hmp_cmd)
+            safe_hmp_arg = shell_quote(hmp_cmd)
             command = "virsh qemu-monitor-command %s --hmp %s" % (
                 cmd.vmUuid, safe_hmp_arg)
             r, o, e = bash_roe(command)
@@ -4285,7 +4288,7 @@ done
 
         if 'spice' in console_modes:
             hmp_cmd = "set_password spice %s" % cmd.password
-            safe_hmp_arg = shlex.quote(hmp_cmd)
+            safe_hmp_arg = shell_quote(hmp_cmd)
             command = "virsh qemu-monitor-command %s --hmp %s" % (
                 cmd.vmUuid, safe_hmp_arg)
             r, o, e = bash_roe(command)

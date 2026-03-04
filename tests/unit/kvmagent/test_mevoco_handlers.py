@@ -109,17 +109,10 @@ def _make_plugin() -> _MevocoPluginProto:
     lock_mod = cast(_LockModule, cast(object, importlib.import_module("zstacklib.utils.lock")))
     plugin_mod = cast(object, importlib.import_module("zstacklib.utils.plugin"))
 
-    def _passthrough_lock(*_args: object, **_kwargs: object):
-        if _args and callable(_args[0]) and len(_args) == 1 and not _kwargs:
-            return _args[0]
+    from tests.conftest import passthrough_lock
 
-        def _decorator(func: Callable[..., object]) -> Callable[..., object]:
-            return func
-
-        return _decorator
-
-    lock_mod.lock = _passthrough_lock
-    setattr(plugin_mod, "completetask", _passthrough_lock)
+    lock_mod.lock = passthrough_lock
+    setattr(plugin_mod, "completetask", passthrough_lock)
 
     module = cast(object, importlib.reload(importlib.import_module("kvmagent.plugins.mevoco")))
     setattr(module, "http", importlib.import_module("zstacklib.utils.http"))

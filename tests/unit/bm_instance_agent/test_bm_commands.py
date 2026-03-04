@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
 """
 Unit tests for bm-instance-agent data models and exception handling.
 

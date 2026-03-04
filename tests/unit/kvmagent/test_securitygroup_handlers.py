@@ -193,16 +193,12 @@ def _make_plugin() -> _SecurityGroupPluginProto:
     lock_mod = cast(_LockModule, cast(object, importlib.import_module("zstacklib.utils.lock")))
     misc_mod = cast(_MiscModule, cast(object, importlib.import_module("zstacklib.utils.misc")))
 
-    def _passthrough_lock(*_args: object, **_kwargs: object) -> Callable[[Callable[..., object]], Callable[..., object]]:
-        def _decorator(func: Callable[..., object]) -> Callable[..., object]:
-            return func
-
-        return _decorator
+    from tests.conftest import passthrough_lock
 
     def _passthrough_ignoreerror(func: Callable[..., object]) -> Callable[..., object]:
         return func
 
-    lock_mod.file_lock = _passthrough_lock
+    lock_mod.file_lock = passthrough_lock
     misc_mod.ignoreerror = _passthrough_ignoreerror
 
     plugin_mod = importlib.import_module("kvmagent.plugins.securitygroup_plugin")

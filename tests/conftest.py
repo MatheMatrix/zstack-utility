@@ -13,6 +13,7 @@ application-level code (jsonobject, kvmagent, plugins) import for REAL.
 This enables handler code to execute locally for coverage measurement.
 """
 import builtins
+import re
 import sys
 import types
 import json
@@ -120,13 +121,16 @@ if 'distutils' not in sys.modules:
 if 'distutils.version' not in sys.modules:
     _mock_dv = types.ModuleType('distutils.version')
     class _LooseVersion:
-        def __init__(self, v='0'): self.version = str(v)
-        def __lt__(self, o): return str(self.version) < str(getattr(o, 'version', o))
-        def __le__(self, o): return str(self.version) <= str(getattr(o, 'version', o))
-        def __gt__(self, o): return str(self.version) > str(getattr(o, 'version', o))
-        def __ge__(self, o): return str(self.version) >= str(getattr(o, 'version', o))
-        def __eq__(self, o): return str(self.version) == str(getattr(o, 'version', o))
-        def __repr__(self): return 'LooseVersion(%r)' % self.version
+        def __init__(self, v='0'):
+            self.vstring = str(v)
+            self.version = [int(x) if x.isdigit() else x for x in re.split(r'[.\-]', self.vstring)]
+        def __lt__(self, o): return self.version < getattr(o, 'version', [])
+        def __le__(self, o): return self == o or self < o
+        def __gt__(self, o): return not self <= o
+        def __ge__(self, o): return not self < o
+        def __eq__(self, o): return self.version == getattr(o, 'version', [])
+        def __ne__(self, o): return not self == o
+        def __repr__(self): return 'LooseVersion(%r)' % self.vstring
     _mock_dv.LooseVersion = _LooseVersion
     sys.modules['distutils.version'] = _mock_dv
 
@@ -143,8 +147,11 @@ for _mod_name in _THIRD_PARTY_MOCKS:
         sys.modules[_mod_name] = MagicMock()
 
 
-# platform.machine() returns 'arm64' on macOS ARM but kvmagent expects Linux arch names
+# platform.machine() returns 'arm64' on macOS ARM but kvmagent expects Linux arch names.
+# This override is intentionally permanent for the test session because kvmagent modules
+# check platform.machine() at import time and would fail with unsupported arch names.
 import platform as _platform
+_orig_platform_machine = _platform.machine
 if _platform.machine() not in ('x86_64', 'aarch64', 'mips64el', 'loongarch64'):
     _platform.machine = lambda: 'x86_64'
 
@@ -587,8 +594,25 @@ def pytest_report_header(config):
     target = config.getoption("--target", default=None)
     
     if vm_deploy and target:
-        return f"Mode: VM Deploy → {target}"
+        return "Mode: VM Deploy -> {}".format(target)
     elif ssh_host:
-        return f"Mode: SSH → {ssh_host}"
+        return "Mode: SSH -> {}".format(ssh_host)
     else:
         return "Mode: local (unit tests)"
+
+
+# ============================================================================
+# Shared test helpers
+# ============================================================================
+
+def passthrough_lock(*_args, **_kwargs):
+    """No-op decorator that replaces lock.lock / lock.file_lock in tests.
+
+    Handles both ``@lock(...)`` (with arguments) and bare ``@lock``
+    (without arguments) usage patterns.
+    """
+    if _args and callable(_args[0]) and len(_args) == 1 and not _kwargs:
+        return _args[0]
+    def _decorator(func):
+        return func
+    return _decorator

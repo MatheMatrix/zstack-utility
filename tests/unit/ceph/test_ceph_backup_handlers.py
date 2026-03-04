@@ -15,17 +15,11 @@ try:
     # Ensure lock decorators are passthroughs before importing
     import tests.conftest  # noqa: F401
 
+    from tests.conftest import passthrough_lock
     lock_mod = cast(object, importlib.import_module("zstacklib.utils.lock"))
 
-    def _passthrough_lock(*_args, **_kwargs):
-        if _args and callable(_args[0]) and len(_args) == 1 and not _kwargs:
-            return _args[0]
-        def _decorator(func):
-            return func
-        return _decorator
-
-    setattr(lock_mod, "lock", _passthrough_lock)
-    setattr(lock_mod, "file_lock", _passthrough_lock)
+    setattr(lock_mod, "lock", passthrough_lock)
+    setattr(lock_mod, "file_lock", passthrough_lock)
 
     module = importlib.import_module("cephbackupstorage.cephagent")
     module = importlib.reload(module)

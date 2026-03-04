@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # pyright: reportMissingImports=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportMissingParameterType=false, reportUnusedImport=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnannotatedClassAttribute=false, reportAny=false, reportAttributeAccessIssue=false
+from __future__ import annotations
 """
 Handler-level unit tests for kvmagent.plugins.host_plugin.
 

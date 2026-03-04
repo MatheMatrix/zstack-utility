@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
 """
 Unit tests for apibinding model serialization and deserialization.
 
 Tests for API request building and response parsing.
 """
 import pytest
-
-from apibinding import api
 
 from apibinding import api
 
