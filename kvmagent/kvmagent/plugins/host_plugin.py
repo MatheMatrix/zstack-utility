@@ -50,6 +50,14 @@ import zstacklib.utils.plugin as plugin
 from kvmagent.plugins.prometheus import get_service_type_map, register_service_type
 from zstacklib.utils.upload_task import UploadTasks, UploadTask, StorageObject, UploadHandler
 
+try:
+    import grpc
+    from kvmagent.key_agent import key_agent_pb2
+    from kvmagent.key_agent import key_agent_pb2_grpc
+    KEY_AGENT_GRPC_AVAILABLE = True
+except Exception:
+    KEY_AGENT_GRPC_AVAILABLE = False
+
 host_arch = platform.machine()
 IS_AARCH64 = host_arch == 'aarch64'
 IS_MIPS64EL = host_arch == 'mips64el'
@@ -66,6 +74,15 @@ HOST_TAKEOVER_FLAG_PATH = 'var/run/zstack/takeOver'
 NODE_INFO_PATH = '/sys/devices/system/node/'
 ISCSI_INITIATOR_NAME_PATH = '/etc/iscsi/initiatorname.iscsi'
 HOST_NQN_PATH = '/etc/nvme/hostnqn'
+
+KEY_AGENT_UNIX_SOCKET = 'unix:///var/run/key-agent/key-agent.sock'
+CREATE_ENVELOPE_KEY_PATH = '/host/key/envelope/createEnvelopeKey'
+ROTATE_ENVELOPE_KEY_PATH = '/host/key/envelope/rotateEnvelopeKey'
+GET_ENVELOPE_PUBLIC_KEY_PATH = '/host/key/envelope/getEnvelopePublicKey'
+ENSURE_SECRET_PATH = '/host/key/envelope/ensureSecret'
+# key-agent gRPC details 中的错误标识，匹配后原样作为 errorCode 返回给 MN
+KEY_AGENT_ERR_KEYS_NOT_ON_DISK = 'KEY_AGENT_KEYS_NOT_ON_DISK'
+KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH = 'KEY_AGENT_KEY_FILES_INTEGRITY_MISMATCH'
 
 BOND_MODE_ACTIVE_0 = "balance-rr"
 BOND_MODE_ACTIVE_1 = "active-backup"
@@ -1225,6 +1242,118 @@ class HostPlugin(kvmagent.KvmAgent):
                     raise Exception('check iptables rule: %s failed' % rule)
         return True
 
+    def _create_key_via_key_agent(self):
+        """调用 key-agent CreateEnvelopeKey，返回 (success, err_code, err_msg)。与 _rotate_key_via_key_agent 一致便于 MN 根据 errorCode 处理。"""
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            return (False, None, None)
+        try:
+            if not os.path.exists('/var/run/key-agent/key-agent.sock'):
+                logger.debug('key-agent unix socket not found, skip create key')
+                return (False, None, None)
+            channel = grpc.insecure_channel(KEY_AGENT_UNIX_SOCKET)
+            stub = key_agent_pb2_grpc.KeyAgentStub(channel)
+            req = key_agent_pb2.CreateEnvelopeKeyRequest()
+            stub.CreateEnvelopeKey(req, timeout=10)
+            return (True, None, None)
+        except grpc.RpcError as e:
+            details = e.details() if hasattr(e, 'details') and callable(getattr(e, 'details')) else str(e)
+            logger.debug('key-agent CreateEnvelopeKey gRPC error: %s' % details)
+            if KEY_AGENT_ERR_KEYS_NOT_ON_DISK in details:
+                return (False, KEY_AGENT_ERR_KEYS_NOT_ON_DISK, details)
+            if KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH in details:
+                return (False, KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH, details)
+            return (False, None, details or str(e))
+        except Exception as e:
+            logger.debug('key-agent CreateEnvelopeKey failed: %s' % e)
+            return (False, None, None)
+
+    def _rotate_key_via_key_agent(self):
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            return (False, None, None)
+        try:
+            if not os.path.exists('/var/run/key-agent/key-agent.sock'):
+                logger.debug('key-agent unix socket not found, skip rotate key')
+                return (False, None, None)
+            channel = grpc.insecure_channel(KEY_AGENT_UNIX_SOCKET)
+            stub = key_agent_pb2_grpc.KeyAgentStub(channel)
+            req = key_agent_pb2.RotateEnvelopeKeyRequest()
+            stub.RotateEnvelopeKey(req, timeout=10)
+            return (True, None, None)
+        except grpc.RpcError as e:
+            details = e.details() if hasattr(e, 'details') and callable(getattr(e, 'details')) else str(e)
+            logger.debug('key-agent RotateEnvelopeKey gRPC error: %s' % details)
+            if KEY_AGENT_ERR_KEYS_NOT_ON_DISK in details:
+                return (False, KEY_AGENT_ERR_KEYS_NOT_ON_DISK, details)
+            if KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH in details:
+                return (False, KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH, details)
+            return (False, None, details or str(e))
+        except Exception as e:
+            logger.debug('key-agent RotateKey failed: %s' % e)
+            return (False, None, None)
+
+    def _get_public_key_from_key_agent(self):
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            return (None, None, None)
+        try:
+            if not os.path.exists('/var/run/key-agent/key-agent.sock'):
+                logger.debug('key-agent unix socket not found, skip get public key')
+                return (None, None, None)
+            channel = grpc.insecure_channel(KEY_AGENT_UNIX_SOCKET)
+            stub = key_agent_pb2_grpc.KeyAgentStub(channel)
+            req = key_agent_pb2.GetPublicKeyRequest()
+            resp = stub.GetPublicKey(req, timeout=5)
+            if resp and getattr(resp, 'public_key', None):
+                pk = resp.public_key
+                # Go key-agent 返回 bytes，转为 base64 字符串便于 JSON 上报
+                if isinstance(pk, bytes):
+                    pk = base64.b64encode(pk).decode('ascii')
+                return (pk, None, None)
+            return (None, None, None)
+        except grpc.RpcError as e:
+            details = e.details() if hasattr(e, 'details') and callable(getattr(e, 'details')) else str(e)
+            logger.debug('key-agent GetPublicKey gRPC error: %s' % details)
+            if KEY_AGENT_ERR_KEYS_NOT_ON_DISK in details:
+                return (None, KEY_AGENT_ERR_KEYS_NOT_ON_DISK, details)
+            if KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH in details:
+                return (None, KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH, details)
+            return (None, None, details or str(e))
+        except Exception as e:
+            logger.debug('key-agent GetPublicKey failed: %s' % e)
+            return (None, None, None)
+
+    def _ensure_secret_via_key_agent(self, encrypted_dek, vm_uuid, purpose, provider_name, description=None):
+        """调用 key-agent EnsureSecret：解密 DEK、写入 libvirt secret，返回 secret_uuid。encrypted_dek 为 bytes。"""
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            return (None, None, 'key_agent grpc not available')
+        try:
+            if not os.path.exists('/var/run/key-agent/key-agent.sock'):
+                logger.debug('key-agent unix socket not found, skip ensure secret')
+                return (None, None, 'key-agent socket not found')
+            channel = grpc.insecure_channel(KEY_AGENT_UNIX_SOCKET)
+            stub = key_agent_pb2_grpc.KeyAgentStub(channel)
+            req = key_agent_pb2.EnsureSecretRequest(
+                encrypted_dek=encrypted_dek,
+                description=description or '',
+                vm_uuid=vm_uuid,
+                purpose=purpose,
+                provider_name=provider_name,
+            )
+            resp = stub.EnsureSecret(req, timeout=15)
+            if resp and getattr(resp, 'secret_uuid', None):
+                return (resp.secret_uuid, None, None)
+            return (None, None, 'key-agent EnsureSecret returned no secret_uuid')
+        except grpc.RpcError as e:
+            details = e.details() if hasattr(e, 'details') and callable(getattr(e, 'details')) else str(e)
+            logger.debug('key-agent EnsureSecret gRPC error: %s' % details)
+            if KEY_AGENT_ERR_KEYS_NOT_ON_DISK in details:
+                return (None, KEY_AGENT_ERR_KEYS_NOT_ON_DISK, details)
+            if KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH in details:
+                return (None, KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH, details)
+            return (None, None, details or str(e))
+        except Exception as e:
+            logger.debug('key-agent EnsureSecret failed: %s' % e)
+            return (None, None, str(e))
+
     @kvmagent.replyerror
     def connect(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -1281,6 +1410,7 @@ class HostPlugin(kvmagent.KvmAgent):
         bash_r(EBTABLES_CMD + ' -D FORWARD -j ZSTACK-VF-NICS')
         bash_r(EBTABLES_CMD + ' -X ZSTACK-VF-NICS')
 
+        # 公钥由 MN 在 connect 后主动调 createEnvelopeKey + getEnvelopePublicKey，不再异步上报
         return jsonobject.dumps(rsp)
 
     @thread.AsyncThread
@@ -1329,6 +1459,114 @@ class HostPlugin(kvmagent.KvmAgent):
                 except IOError as err:
                     logger.debug('can not open file %s because IOError: %s' % (file_path, str(err)))
                     pass
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def create_envelope_key(self, req):
+        """信封密钥：MN 调用 kvm-agent 创建信封密钥（如 connect 后先调此接口再 getEnvelopePublicKey）。若 key-agent 返回 KEYS_NOT_ON_DISK / KEY_FILES_INTEGRITY_MISMATCH 则带 errorCode 返回。"""
+        rsp = kvmagent.AgentResponse()
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            rsp.success = False
+            rsp.error = 'key_agent grpc not available'
+            return jsonobject.dumps(rsp)
+        success, err_code, err_msg = self._create_key_via_key_agent()
+        if err_code:
+            rsp.success = False
+            rsp.errorCode = err_code
+            rsp.error = err_msg or err_code
+            return jsonobject.dumps(rsp)
+        if success:
+            rsp.success = True
+        else:
+            rsp.success = False
+            rsp.error = 'key-agent CreateEnvelopeKey failed or key-agent not running'
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def rotate_envelope_key(self, req):
+        """信封密钥：MN 调用 kvm-agent，kvm-agent 调用 key-agent RotateKey 轮转信封密钥（密钥损坏时 MN 先调此接口再 getEnvelopePublicKey）。"""
+        rsp = kvmagent.AgentResponse()
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            rsp.success = False
+            rsp.error = 'key_agent grpc not available'
+            return jsonobject.dumps(rsp)
+        success, err_code, err_msg = self._rotate_key_via_key_agent()
+        if err_code:
+            rsp.success = False
+            rsp.errorCode = err_code
+            rsp.error = err_msg or err_code
+            return jsonobject.dumps(rsp)
+        if success:
+            rsp.success = True
+        else:
+            rsp.success = False
+            rsp.error = 'key-agent RotateKey failed or key-agent not running'
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def get_envelope_public_key(self, req):
+        """信封密钥：MN 调用 kvm-agent，kvm-agent 调用 key-agent GetPublicKey，将信封公钥返回给 MN。若 key-agent 返回 KEYS_NOT_ON_DISK / KEY_FILES_INTEGRITY_MISMATCH，则原样带 errorCode 返回给 MN 以便调创建或轮转。"""
+        rsp = kvmagent.AgentResponse()
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            rsp.success = False
+            rsp.error = 'key_agent grpc not available'
+            return jsonobject.dumps(rsp)
+        public_key, err_code, err_msg = self._get_public_key_from_key_agent()
+        if err_code:
+            rsp.success = False
+            rsp.errorCode = err_code
+            rsp.error = err_msg or err_code
+            return jsonobject.dumps(rsp)
+        if public_key is not None:
+            rsp.success = True
+            rsp.publicKey = public_key
+        else:
+            rsp.success = False
+            rsp.error = 'key-agent GetPublicKey failed or no public key'
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def ensure_secret(self, req):
+        """信封密钥：MN 调用 kvm-agent 写入 libvirt secret。请求体含 encrypted_dek（base64）、vm_uuid、purpose、provider_name、可选 description。若 key-agent 返回 KEYS_NOT_ON_DISK / KEY_FILES_INTEGRITY_MISMATCH，则带 errorCode 返回。"""
+        rsp = kvmagent.AgentResponse()
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            rsp.success = False
+            rsp.error = 'key_agent grpc not available'
+            return jsonobject.dumps(rsp)
+        try:
+            cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        except Exception as e:
+            rsp.success = False
+            rsp.error = 'invalid request body: %s' % e
+            return jsonobject.dumps(rsp)
+        encrypted_dek_b64 = getattr(cmd, 'encryptedDek', None) or getattr(cmd, 'encrypted_dek', None)
+        vm_uuid = getattr(cmd, 'vmUuid', None) or getattr(cmd, 'vm_uuid', None) or ''
+        purpose = getattr(cmd, 'purpose', None) or ''
+        provider_name = getattr(cmd, 'providerName', None) or getattr(cmd, 'provider_name', None) or ''
+        description = getattr(cmd, 'description', None) or ''
+        if not encrypted_dek_b64 or not vm_uuid or not purpose or not provider_name:
+            rsp.success = False
+            rsp.error = 'missing encryptedDek, vmUuid, purpose or providerName'
+            return jsonobject.dumps(rsp)
+        try:
+            encrypted_dek = base64.b64decode(encrypted_dek_b64)
+        except Exception as e:
+            rsp.success = False
+            rsp.error = 'encryptedDek must be base64: %s' % e
+            return jsonobject.dumps(rsp)
+        secret_uuid, err_code, err_msg = self._ensure_secret_via_key_agent(
+            encrypted_dek, vm_uuid, purpose, provider_name, description,
+        )
+        if secret_uuid:
+            rsp.success = True
+            rsp.secretUuid = secret_uuid
+        else:
+            rsp.success = False
+            if err_code:
+                rsp.errorCode = err_code
+                rsp.error = err_msg or err_code
+            else:
+                rsp.error = err_msg or 'key-agent EnsureSecret failed or no secret_uuid'
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -4116,6 +4354,10 @@ done
 
         http_server = kvmagent.get_http_server()
         http_server.register_sync_uri(self.CONNECT_PATH, self.connect)
+        http_server.register_async_uri(self.CREATE_ENVELOPE_KEY_PATH, self.create_envelope_key)
+        http_server.register_async_uri(self.ROTATE_ENVELOPE_KEY_PATH, self.rotate_envelope_key)
+        http_server.register_async_uri(self.GET_ENVELOPE_PUBLIC_KEY_PATH, self.get_envelope_public_key)
+        http_server.register_async_uri(self.ENSURE_SECRET_PATH, self.ensure_secret)
         http_server.register_async_uri(self.PING_PATH, self.ping)
         http_server.register_async_uri(self.CHECK_FILE_ON_HOST_PATH, self.check_file_on_host)
         http_server.register_async_uri(self.CAPACITY_PATH, self.capacity)

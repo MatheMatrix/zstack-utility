@@ -1788,17 +1788,13 @@ install_key_manager(){
         yum --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS clean metadata >/dev/null 2>&1
         echo yum install --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y key-manager >>$ZSTACK_INSTALL_LOG
         yum install --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y key-manager >>$ZSTACK_INSTALL_LOG 2>&1
-    else
-        yum clean metadata >/dev/null 2>&1
-        echo "yum install -y key-manager" >>$ZSTACK_INSTALL_LOG
-        yum install -y key-manager >>$ZSTACK_INSTALL_LOG 2>&1
     fi
 
-    if [ -f "/lib/systemd/system/crypto-daemon.service" ]; then
+    if [ -f "/usr/lib/systemd/system/crypto-daemon.service" ]; then
         systemctl enable crypto-daemon.service >>$ZSTACK_INSTALL_LOG 2>&1
         systemctl start crypto-daemon.service >>$ZSTACK_INSTALL_LOG 2>&1
     fi
-    if [ -f "/lib/systemd/system/key-tool.service" ]; then
+    if [ -f "/usr/lib/systemd/system/key-tool.service" ]; then
         systemctl enable key-tool.service >>$ZSTACK_INSTALL_LOG 2>&1
         systemctl start key-tool.service >>$ZSTACK_INSTALL_LOG 2>&1
     fi

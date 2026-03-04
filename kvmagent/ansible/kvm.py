@@ -907,9 +907,12 @@ def set_gpu_blacklist():
     run_remote_command(command, host_post_info)
 
 def start_key_agent():
-    command = "systemctl enable key-agent && systemctl start key-agent"
+    """计算节点：enable 并 start key-agent 服务（已由 RPM 安装，此处仅拉起）"""
+    if chroot_env != 'false':
+        return
+    command = "systemctl enable zstack-key-agent && systemctl start zstack-key-agent"
     host_post_info.post_label = "ansible.shell.start.key_agent"
-    host_post_info.post_label_param = None
+    host_post_info.post_label_param = "zstack-key-agent"
     run_remote_command(command, host_post_info)
 
 
