@@ -8,6 +8,7 @@ including lifecycle operations (up/down), role management (promote/demote),
 and data operations.
 """
 
+import shlex
 import time
 from typing import Optional, Any
 
@@ -290,7 +291,7 @@ class DrbdResource:
             backing: Optional backing file path.
             skip_clear_bits: Skip clearing dirty bitmap.
         """
-        bash.bash_errorout("echo yes | drbdadm create-md %s --force" % self.name)
+        bash.bash_errorout("echo yes | drbdadm create-md %s --force" % shlex.quote(self.name))
         self.up()
         if skip_clear_bits:
             return
@@ -303,13 +304,13 @@ class DrbdResource:
             self.demote()
         elif not self.wait_remote_dstate('UpToDate'):
             self.clear_bits()
-    
+
     @bash.in_bash
     def initialize_with_file(self, primary, src_path, backing=None, backing_fmt=None, skip_clear_bits=False):
         # type: (bool, str, Optional[str], Optional[str], bool) -> None
         """
         Initialize the DRBD resource from a source file.
-        
+
         Args:
             primary: Whether this node should be primary during init.
             src_path: Source file to copy to DRBD device.
@@ -317,13 +318,13 @@ class DrbdResource:
             backing_fmt: Backing file format.
             skip_clear_bits: Skip clearing dirty bitmap.
         """
-        bash.bash_errorout("echo yes | drbdadm create-md %s --force" % self.name)
+        bash.bash_errorout("echo yes | drbdadm create-md %s --force" % shlex.quote(self.name))
         self.up()
         if skip_clear_bits:
             return
         if primary:
             self.promote()
-            bash.bash_errorout('dd if=%s of=%s bs=1M oflag=direct' % (src_path, self.get_dev_path()))
+            bash.bash_errorout('dd if=%s of=%s bs=1M oflag=direct' % (shlex.quote(src_path), shlex.quote(self.get_dev_path())))
             if backing:
                 linux.qcow2_rebase_no_check(backing, self.get_dev_path(), backing_fmt=backing_fmt)
             self.demote()
@@ -370,7 +371,7 @@ class DrbdResource:
         need_promote_first and self.promote()
         try:
             bash.bash_errorout('dd if=%s of=%s bs=1M %s' % (
-                self.get_dev_path(), dst_path, 'conv=sparse' if sparse else ''
+                shlex.quote(self.get_dev_path()), shlex.quote(dst_path), 'conv=sparse' if sparse else ''
             ))
         finally:
             need_promote_first and self.demote()

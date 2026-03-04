@@ -12,6 +12,7 @@ import glob
 import logging
 import os
 import re
+import shlex
 import yaml
 
 from zstacklib.utils import shell
@@ -260,7 +261,9 @@ def probe_module(module_name: str) -> None:
     Raises:
         OvsError: If module cannot be loaded.
     """
-    ret = shell.run(f'modprobe {module_name}')
+    if not re.fullmatch(r'[A-Za-z0-9_.\-]+', module_name):
+        raise OvsError(f'Invalid module name: {module_name!r}')
+    ret = shell.run(f'modprobe {shlex.quote(module_name)}')
     if ret != 0:
         raise OvsError(f'Can not find module:{module_name}.')
 

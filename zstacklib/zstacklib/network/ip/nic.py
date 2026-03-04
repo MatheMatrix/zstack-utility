@@ -8,6 +8,7 @@ SmartNIC representors, and other hardware-related functionality.
 """
 
 import os
+import shlex
 from typing import List, Optional
 
 from zstacklib.utils import bash
@@ -48,7 +49,7 @@ def get_nic_supported_max_speed(nic):
     
     import re
     
-    r, o = bash.bash_ro("ethtool %s" % nic)
+    r, o = bash.bash_ro("ethtool %s" % shlex.quote(nic))
     if r != 0:
         return 0
     
@@ -95,7 +96,7 @@ def get_nic_driver_type(nic):
     Returns:
         Driver name (e.g., 'virtio_net', 'ixgbe'), or empty string if not determinable
     """
-    r, o = bash.bash_ro("ethtool -i %s" % nic)
+    r, o = bash.bash_ro("ethtool -i %s" % shlex.quote(nic))
     if r != 0:
         return ""
     

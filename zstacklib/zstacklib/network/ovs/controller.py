@@ -150,8 +150,10 @@ class OvsBaseCtl:
         _validate_name(port_name, "port name")
         try:
             if port_type:
+                _validate_name(port_type, "port type")
                 cmd = CTL_BIN + f'add-port {br_name} {port_name} -- set Interface {port_name} type={port_type} '
                 for opt in options:
+                    _validate_name(opt.split('=')[0] if '=' in opt else opt, "option")
                     cmd += f'options:{opt} '
             else:
                 cmd = CTL_BIN + f'add-port {br_name} {port_name}'
@@ -538,7 +540,7 @@ def is_vm_use_openvswitch(vm_uuid: str) -> bool:
     if not _re.match(r'^[0-9a-fA-F-]+$', vm_uuid):
         raise OvsError(f'Invalid vm_uuid: {vm_uuid}')
     try:
-        vm_interface_list = shell.call(f'virsh domiflist {vm_uuid}').strip()
+        vm_interface_list = shell.call(f'virsh domiflist {shlex.quote(vm_uuid)}').strip()
         if 'vhostuser' in vm_interface_list:
             return True
         return False

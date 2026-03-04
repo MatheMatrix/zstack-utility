@@ -85,21 +85,14 @@ def get_session(
         ...     print(f"Connected with session {session.session_id}")
     """
     port = int(port)
-    # Use grep to find specific session
-    cmd = "iscsiadm -m session | grep {}:{} | grep {}".format(
-        shlex.quote(ip), port, shlex.quote(iqn)
-    )
-    r, o, e = bash.bash_roe(cmd)
-    
-    if r != 0 or not o.strip():
-        return None
-    
-    # Parse first matching line
-    for line in o.strip().splitlines():
-        session = IscsiSession.from_session_line(line)
-        if session and session.target_iqn == iqn:
+    # Use list_sessions() + Python filtering instead of grep-based shell command
+    for session in list_sessions():
+        if (session.target_iqn == iqn
+                and session.portal
+                and session.portal.ip == ip
+                and session.portal.port == port):
             return session
-    
+
     return None
 
 
@@ -159,7 +152,7 @@ def _set_chap_auth(
     """
     portal_str = "{}:{}".format(ip, port)
     base_cmd = 'iscsiadm --mode node --targetname {} -p {} --op=update'.format(
-        linux.shellquote(iqn), portal_str
+        linux.shellquote(iqn), shlex.quote(portal_str)
     )
     
     # Set auth method to CHAP
@@ -252,7 +245,7 @@ def login(
     
     # Perform login
     cmd = 'timeout {} iscsiadm --mode node --targetname {} -p {} --login'.format(
-        timeout, linux.shellquote(iqn), portal_str
+        int(timeout), linux.shellquote(iqn), shlex.quote(portal_str)
     )
     r, o, e = bash.bash_roe(cmd)
     
@@ -326,7 +319,7 @@ def logout(
     
     # Perform logout
     cmd = 'timeout {} iscsiadm --mode node --targetname {} -p {} --logout'.format(
-        timeout, linux.shellquote(iqn), portal_str
+        int(timeout), linux.shellquote(iqn), shlex.quote(portal_str)
     )
     r, o, e = bash.bash_roe(cmd)
     
@@ -377,7 +370,7 @@ def _delete_node(
     portal_str = "{}:{}".format(ip, port)
     
     cmd = 'timeout {} iscsiadm -m node -o delete -T {} -p {}'.format(
-        timeout, linux.shellquote(iqn), portal_str
+        int(timeout), linux.shellquote(iqn), shlex.quote(portal_str)
     )
     r, o, e = bash.bash_roe(cmd)
     
@@ -409,7 +402,7 @@ def rescan_session(session_id: str, timeout: int = DEFAULT_RESCAN_TIMEOUT) -> No
     """
     if not str(session_id).isdigit():
         raise ValueError(f"Invalid session_id: {session_id!r}, must be numeric")
-    cmd = "timeout {} iscsiadm -m session -r {} --rescan".format(timeout, session_id)
+    cmd = "timeout {} iscsiadm -m session -r {} --rescan".format(int(timeout), session_id)
     r, o, e = bash.bash_roe(cmd)
     
     if r != 0:
@@ -428,7 +421,7 @@ def rescan_all_sessions(timeout: int = DEFAULT_RESCAN_TIMEOUT) -> None:
     Args:
         timeout: Command timeout in seconds (default 30)
     """
-    cmd = "timeout {} iscsiadm -m session -R".format(timeout)
+    cmd = "timeout {} iscsiadm -m session -R".format(int(timeout))
     r, o, e = bash.bash_roe(cmd)
     
     if r != 0:

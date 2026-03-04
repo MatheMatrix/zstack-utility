@@ -7,6 +7,7 @@ This module handles reading and writing DRBD resource configuration files.
 """
 
 import os
+import shlex
 from typing import Dict, Any, Optional
 
 from zstacklib.utils import bash
@@ -186,7 +187,7 @@ class DrbdConfigStruct(DrbdStruct):
         
         # Check for minor conflict
         # TODO(weiw): this assumes minor will always be same on local and remote
-        r, o = bash.bash_ro("grep ' minor %s;' /etc/drbd.d/*" % self.local_host.minor)
+        r, o = bash.bash_ro("grep ' minor %s;' /etc/drbd.d/*" % shlex.quote(str(self.local_host.minor)))
         if r == 0:
             raise DrbdMinorConflictError(
                 "minor %s has already been defined: %s" % (self.local_host.minor, o),
@@ -231,7 +232,7 @@ def get_config_path_from_disk(disk_path, raise_exception=True):
         Path to the configuration file.
     """
     return bash.bash_o(
-        "grep -E 'disk.*%s' /etc/drbd.d/ -r | head -n1 | awk '{print $1}' | cut -d ':' -f1" % disk_path,
+        "grep -E 'disk.*%s' /etc/drbd.d/ -r | head -n1 | awk '{print $1}' | cut -d ':' -f1" % shlex.quote(disk_path),
         raise_exception
     ).strip()
 
@@ -251,8 +252,8 @@ def get_config_path_from_name(name):
     Raises:
         DrbdConfigError: If resource cannot be found.
     """
-    if bash.bash_r("drbdadm dump %s" % name) == 0:
-        return bash.bash_o("drbdadm dump %s | grep 'defined at' | awk '{print $4}'" % name).split(":")[0]
+    if bash.bash_r("drbdadm dump %s" % shlex.quote(name)) == 0:
+        return bash.bash_o("drbdadm dump %s | grep 'defined at' | awk '{print $4}'" % shlex.quote(name)).split(":")[0]
     
     default_path = "%s/%s.res" % (DRBD_CONFIG_DIR, name)
     if os.path.exists(default_path):
@@ -273,7 +274,7 @@ def get_name_from_config_path(config_path):
     Returns:
         Resource name.
     """
-    if bash.bash_r("head -n 1 %s" % config_path) == 0:
-        return bash.bash_o("head -n 1 %s | awk '{print $2}'" % config_path).strip()
+    if bash.bash_r("head -n 1 %s" % shlex.quote(config_path)) == 0:
+        return bash.bash_o("head -n 1 %s | awk '{print $2}'" % shlex.quote(config_path)).strip()
     else:
         return config_path.split("/")[-1].split(".")[0]

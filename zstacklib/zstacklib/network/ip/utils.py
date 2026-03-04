@@ -261,9 +261,11 @@ def get_prefix_len_by_netmask(netmask):
     
     i = 1
     prefix = 0
-    while not ip_int & i:
+    while prefix < 32 and not (ip_int & i):
         i = i << 1
         prefix += 1
+    if prefix == 32:
+        return 0
     return 32 - prefix
 
 

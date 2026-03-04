@@ -10,6 +10,7 @@ This module provides functions for managing iSCSI configuration:
 
 import logging
 import os
+import shlex
 import shutil
 from typing import Optional
 
@@ -78,22 +79,23 @@ def clean_cache(
     removed_count = 0
     
     # Find and remove cache entries matching the portal
+    port = int(port)
     cmd = "ls {}/*/ 2>/dev/null | grep {} | grep {}".format(
-        nodes_path, ip, port
+        shlex.quote(nodes_path), shlex.quote(ip), port
     )
     r, o, e = bash.bash_roe(cmd)
-    
+
     if r != 0 or not o.strip():
         return 0
-    
+
     results = o.strip().splitlines()
     for result in results:
         result = result.strip()
         if not result:
             continue
-        
+
         # Find directories containing this cache file
-        cmd = "dirname {}/*/{} 2>/dev/null".format(nodes_path, result)
+        cmd = "dirname {}/*/{} 2>/dev/null".format(shlex.quote(nodes_path), shlex.quote(result))
         r, dpaths, e = bash.bash_roe(cmd)
         
         if r != 0 or not dpaths.strip():
@@ -176,9 +178,10 @@ def get_node_config(
     Returns:
         Node configuration output, or None if not found
     """
+    port = int(port)
     portal_str = "{}:{}".format(ip, port)
-    cmd = 'iscsiadm -m node -T "{}" -p {} 2>/dev/null'.format(iqn, portal_str)
-    
+    cmd = 'iscsiadm -m node -T {} -p {} 2>/dev/null'.format(shlex.quote(iqn), shlex.quote(portal_str))
+
     r, o, e = bash.bash_roe(cmd)
     if r != 0:
         return None
@@ -210,11 +213,12 @@ def set_node_param(
         ...                'node.startup', 'automatic')
         True
     """
+    port = int(port)
     portal_str = "{}:{}".format(ip, port)
-    cmd = 'iscsiadm -m node -T "{}" -p {} -o update -n {} -v {}'.format(
-        iqn, portal_str, param_name, param_value
+    cmd = 'iscsiadm -m node -T {} -p {} -o update -n {} -v {}'.format(
+        shlex.quote(iqn), shlex.quote(portal_str), shlex.quote(param_name), shlex.quote(param_value)
     )
-    
+
     r, o, e = bash.bash_roe(cmd)
     if r != 0:
         logger.error("Failed to set node param %s=%s: %s", param_name, param_value, e)

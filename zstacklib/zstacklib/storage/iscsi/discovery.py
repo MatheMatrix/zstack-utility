@@ -8,6 +8,7 @@ This module provides functions for discovering iSCSI targets:
 """
 
 import logging
+import shlex
 from typing import List, Optional, Tuple
 
 from zstacklib.utils import bash, lock
@@ -56,7 +57,7 @@ def discover_targets(
     logger.debug("Discovering iSCSI targets on portal %s", portal_str)
     
     cmd = "timeout {} iscsiadm -m discovery --type sendtargets --portal {}".format(
-        timeout, portal_str
+        int(timeout), shlex.quote(portal_str)
     )
     r, o, e = bash.bash_roe(cmd)
     
