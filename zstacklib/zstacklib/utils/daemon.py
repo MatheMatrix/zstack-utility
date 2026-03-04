@@ -277,6 +277,7 @@ class ZStackDaemon(object):
 
     def start(self):
         """Install signal handlers then call run()."""
+        self._healthy = True
         self._install_signal_handlers()
         self._running = True
         logger.info('[%s] starting' % self._service_name)

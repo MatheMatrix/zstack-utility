@@ -27,14 +27,30 @@ if _zstacklib_root not in sys.path:
 # pop that stub *before* importing the real module here.
 import types as _types
 
+_ORIGINAL_MODULES = {}
+
+def _patch_module(name, value):
+    if name not in _ORIGINAL_MODULES:
+        _ORIGINAL_MODULES[name] = sys.modules.get(name)
+    sys.modules[name] = value
+
 _mock_log = _types.ModuleType('zstacklib.utils.log')
-_mock_log.get_logger = lambda name: mock.MagicMock()
-sys.modules['zstacklib.utils.log'] = _mock_log
-sys.modules['log'] = _mock_log
-sys.modules['zstacklib.utils.linux'] = mock.MagicMock()
+_mock_log.get_logger = lambda _name: mock.MagicMock()
+_patch_module('zstacklib.utils.log', _mock_log)
+_patch_module('log', _mock_log)
+_patch_module('zstacklib.utils.linux', mock.MagicMock())
+_ORIGINAL_MODULES.setdefault('zstacklib.utils.daemon', sys.modules.get('zstacklib.utils.daemon'))
 sys.modules.pop('zstacklib.utils.daemon', None)  # clear conftest stub
 
 from zstacklib.utils.daemon import ZStackDaemon  # noqa: E402
+
+
+def tearDownModule():
+    for name, old in _ORIGINAL_MODULES.items():
+        if old is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = old
 
 
 # ---------------------------------------------------------------------------

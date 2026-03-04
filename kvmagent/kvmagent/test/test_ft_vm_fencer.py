@@ -34,10 +34,17 @@ for _p in (_kvmagent_root, _zstacklib_root):
 #    Order matters: log → bash → everything else.
 # ---------------------------------------------------------------------------
 
+_ORIGINAL_MODULES = {}
+
+def _patch_module(name, value):
+    if name not in _ORIGINAL_MODULES:
+        _ORIGINAL_MODULES[name] = sys.modules.get(name)
+    sys.modules[name] = value
+
 _mock_log = types.ModuleType('zstacklib.utils.log')
-_mock_log.get_logger = lambda name: mock.MagicMock()
-sys.modules['zstacklib.utils.log'] = _mock_log
-sys.modules['log'] = _mock_log
+_mock_log.get_logger = lambda _name: mock.MagicMock()
+_patch_module('zstacklib.utils.log', _mock_log)
+_patch_module('log', _mock_log)
 
 # bash star-import exposes: bash_roe, bash_ro, bash_r, bash_o, in_bash, json
 _mock_bash = types.ModuleType('zstacklib.utils.bash')
@@ -48,7 +55,7 @@ _mock_bash.bash_r = mock.MagicMock(return_value=0)
 _mock_bash.bash_o = mock.MagicMock(return_value='')
 _mock_bash.in_bash = staticmethod(lambda f: f)   # identity decorator
 _mock_bash.json = json                            # ft_vm_fencer uses json.loads
-sys.modules['zstacklib.utils.bash'] = _mock_bash
+_patch_module('zstacklib.utils.bash', _mock_bash)
 
 for _mod in [
     'zstacklib.utils.shell',
@@ -61,7 +68,7 @@ for _mod in [
     'zstacklib.utils.http',
     'zstacklib.utils.ovn',
 ]:
-    sys.modules[_mod] = mock.MagicMock()
+    _patch_module(_mod, mock.MagicMock())
 
 # Mock kvmagent.kvmagent (the inner module with KvmAgent, replyerror, etc.)
 # We use the REAL kvmagent package structure (from sys.path), but intercept
@@ -86,7 +93,15 @@ _mock_kvmagent_mod.replyerror = staticmethod(lambda f: f)
 _mock_kvmagent_mod.get_http_server = mock.MagicMock()
 _mock_kvmagent_mod.SEND_COMMAND_URL = 'send_command_url'
 _mock_kvmagent_mod.HOST_UUID = 'host_uuid'
-sys.modules['kvmagent.kvmagent'] = _mock_kvmagent_mod
+_patch_module('kvmagent.kvmagent', _mock_kvmagent_mod)
+
+
+def tearDownModule():
+    for name, old in _ORIGINAL_MODULES.items():
+        if old is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = old
 
 # ---------------------------------------------------------------------------
 # 3. Import the module under test
