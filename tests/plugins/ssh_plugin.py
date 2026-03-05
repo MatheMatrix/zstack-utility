@@ -39,6 +39,16 @@ def pytest_addoption(parser):
             "Format: IP or hostname (e.g., 172.24.194.116)"
         ),
     )
+    parser.addoption(
+        "--callback-url",
+        action="store",
+        default=None,
+        help=(
+            "Override callback URL for async tests. Use when kvmagent "
+            "cannot reach the test machine directly. "
+            "Format: http://relay-host:port/callback"
+        ),
+    )
 
 
 def parse_ssh_host(host_string: str) -> Tuple[str, Optional[str], str, int]:

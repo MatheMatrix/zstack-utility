@@ -60,13 +60,12 @@ class AgentClient:
             requests.Response object
         """
         url = f"{self.base_url}{path}"
-        # kvmagent requires taskUuid header on all requests
         task_uuid = str(uuid.uuid4())
         merged_headers = dict(headers or {})
         if callback_url:
+            # Async endpoints require both callbackurl and taskUuid
             merged_headers['callbackurl'] = callback_url
-        # Enforce auto-generated taskUuid (cannot be overridden)
-        merged_headers['taskUuid'] = task_uuid
+            merged_headers['taskUuid'] = task_uuid
         resp = self.session.post(
             url,
             json=data or {},

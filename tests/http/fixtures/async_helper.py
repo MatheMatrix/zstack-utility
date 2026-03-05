@@ -3,14 +3,15 @@
 from __future__ import annotations
 import json, threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 import pytest
 
 class AsyncCallbackHelper:
     """HTTP callback receiver with Event-based synchronization."""
-    def __init__(self, port: int = 0):
+    def __init__(self, port: int = 0, callback_url: Optional[str] = None):
         self.results: Dict[str, Any] = {}
         self.events: Dict[str, threading.Event] = {}
+        self._callback_url = callback_url
         helper = self
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
@@ -27,19 +28,19 @@ class AsyncCallbackHelper:
                 self.end_headers()
             def log_message(self, format, *args):
                 pass
-        self.server = HTTPServer(('127.0.0.1', port), Handler)
-        self.server.socket.setsockopt(__import__('socket').SOL_SOCKET, __import__('socket').SO_REUSEADDR, 1)
+        class ReuseHTTPServer(HTTPServer):
+            allow_reuse_address = True
+            allow_reuse_port = True
+        self.server = ReuseHTTPServer(('127.0.0.1', port), Handler)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
     def wait(self, taskuuid: str, timeout: float = 10.0) -> Dict[str, Any]:
         """Wait for callback. Raises TimeoutError if not received."""
-        # Check if result already arrived (race: callback before wait)
         if taskuuid in self.results:
             return self.results[taskuuid]
         event = threading.Event()
         self.events[taskuuid] = event
         try:
-            # Double-check after registering event
             if taskuuid in self.results:
                 return self.results[taskuuid]
             if not event.wait(timeout):
@@ -48,13 +49,28 @@ class AsyncCallbackHelper:
         finally:
             self.events.pop(taskuuid, None)
     def get_callback_url(self) -> str:
-        return f"http://127.0.0.1:{self.port}/callback"
+        if self._callback_url:
+            return self._callback_url
+        return "http://127.0.0.1:%d/callback" % self.port
     def cleanup(self):
         if hasattr(self, 'server'):
             self.server.shutdown()
 
 @pytest.fixture
-def async_callback():
-    helper = AsyncCallbackHelper()
+def async_callback(request):
+    """Async callback helper with optional relay URL override.
+
+    Modes:
+    1. --callback-url: Use pre-configured relay. Binds to port 18080.
+    2. Default: callback server on random port, URL is local.
+    """
+    callback_url = request.config.getoption("--callback-url", default=None)
+
+    if callback_url:
+        helper = AsyncCallbackHelper(port=18080, callback_url=callback_url)
+    else:
+        helper = AsyncCallbackHelper()
+
     yield helper
+
     helper.cleanup()
