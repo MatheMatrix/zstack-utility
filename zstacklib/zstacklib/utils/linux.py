@@ -3079,7 +3079,7 @@ def tail_1(path, split=b"\n"):
         f.seek(-2, os.SEEK_END)
         while f.tell() > 0 and f.read(1) != split:
             f.seek(-2, os.SEEK_CUR)
-        return f.readline()
+        return f.readline().decode('utf-8', errors='replace')
 
 
 # check if file 'fpath' contains .conf style configurations
