@@ -3,7 +3,7 @@
 @author: zaifeng.wang
 '''
 
-import mock
+from unittest import mock
 import unittest
 import zstacklib
 from zstacklib.utils import lvm
@@ -17,11 +17,16 @@ class Test(unittest.TestCase):
             is_bad_volume = lvm.is_bad_vm_root_volume("/dev/0af3ac2a9388489d8dcb0f3bf89f1af1/84c16257085b40de9823dc79d8de18f7")
             self.assertEqual(is_bad_volume, expect_is_bad_volume)
 
-        lv_bad_output = [all_dep_missing_one_mpath_pv_lv, all_dep_offline_one_mpath_pv_lv, one_pv_blocked_one_pv_lv,
-                         some_dep_offline_one_mpath_pv_lv, some_dep_offline_two_mpath_pv_lv,
-                         one_pv_offline_two_mpath_pv_lv, one_pv_offline_two_pv_lv]
+        # Volumes are bad only when NO disk path is running.
+        # Multipath with at least one running path can still do IO.
+        lv_bad_output = [all_dep_missing_one_mpath_pv_lv, all_dep_offline_one_mpath_pv_lv, one_pv_blocked_one_pv_lv]
 
-        lv_good_output = [all_dep_running_one_mpath_pv_lv]
+        # ZSTAC-66266: partial link failure with at least one running disk is NOT bad
+        lv_good_output = [all_dep_running_one_mpath_pv_lv,
+                          some_dep_offline_one_mpath_pv_lv,
+                          some_dep_offline_two_mpath_pv_lv,
+                          one_pv_offline_two_mpath_pv_lv,
+                          one_pv_offline_two_pv_lv]
 
         for o in lv_bad_output:
             bash.bash_ro = mock.Mock(return_value=(0, o))
