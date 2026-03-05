@@ -2518,8 +2518,9 @@ def is_bad_vm_root_volume(vm_root_volume):
 
     dep_devices = form.load(o)
     has_running_disk = any(dep_dev["TYPE"] == "disk" and dep_dev["STATE"] == "running" for dep_dev in dep_devices)
-    has_not_running_disk = any(dep_dev["TYPE"] == "disk" and dep_dev["STATE"] != "running" for dep_dev in dep_devices)
-    return has_not_running_disk or not has_running_disk
+    # In multipath environments, as long as at least one path is running,
+    # IO can still succeed. Only mark as bad when NO path is running.
+    return not has_running_disk
 
 @bash.in_bash
 def get_running_vm_root_volume_on_pv(vgUuid, pvUuids, checkIo=True):
