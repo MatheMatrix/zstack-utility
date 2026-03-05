@@ -22,7 +22,7 @@ ZStack KVM agent REST service""",
             "prometheus_client",
             "typing",
             "future",
-            "grpcio"
+            "grpcio==1.27.2",
       ],
       entry_points="""
       # -*- Entry points: -*-

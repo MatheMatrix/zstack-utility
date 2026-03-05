@@ -1,11 +1,13 @@
 syntax = "proto3";
+package kvmagent.kvmagent.keyagent;
 
-package keyagent.v1;
+option go_package = "key-manager/api/gen/v1/key-agent;keyagentv1";
 
 service KeyAgentService {
   rpc CreateEnvelopeKey(CreateEnvelopeKeyRequest) returns (CreateEnvelopeKeyResponse);
   rpc RotateEnvelopeKey(RotateEnvelopeKeyRequest) returns (RotateEnvelopeKeyResponse);
   rpc GetPublicKey(GetPublicKeyRequest) returns (GetPublicKeyResponse);
+  rpc CheckEnvelopeKey(CheckEnvelopeKeyRequest) returns (CheckEnvelopeKeyResponse);
   rpc EnsureSecret(EnsureSecretRequest) returns (EnsureSecretResponse);
 }
 
@@ -24,6 +26,10 @@ message GetPublicKeyRequest {}
 message GetPublicKeyResponse {
   bytes public_key = 1;
 }
+
+message CheckEnvelopeKeyRequest {}
+
+message CheckEnvelopeKeyResponse {}
 
 message EnsureSecretRequest {
   bytes encrypted_dek = 1;

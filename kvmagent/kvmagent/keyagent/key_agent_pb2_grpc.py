@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# 与 Go key-manager key-agent 一致：KeyAgentService, CreateEnvelopeKey, RotateEnvelopeKey, GetPublicKey, EnsureSecret
 
 import grpc
 from . import key_agent_pb2 as key_agent_dot_key__agent__pb2
@@ -24,6 +23,11 @@ class KeyAgentServiceStub(object):
             request_serializer=key_agent_dot_key__agent__pb2.GetPublicKeyRequest.SerializeToString,
             response_deserializer=key_agent_dot_key__agent__pb2.GetPublicKeyResponse.FromString,
         )
+        self.CheckEnvelopeKey = channel.unary_unary(
+            '/keyagent.v1.KeyAgentService/CheckEnvelopeKey',
+            request_serializer=key_agent_dot_key__agent__pb2.CheckEnvelopeKeyRequest.SerializeToString,
+            response_deserializer=key_agent_dot_key__agent__pb2.CheckEnvelopeKeyResponse.FromString,
+        )
         self.EnsureSecret = channel.unary_unary(
             '/keyagent.v1.KeyAgentService/EnsureSecret',
             request_serializer=key_agent_dot_key__agent__pb2.EnsureSecretRequest.SerializeToString,
@@ -31,7 +35,6 @@ class KeyAgentServiceStub(object):
         )
 
 
-# 兼容旧代码：host_plugin 里可能用 KeyAgentStub
 KeyAgentStub = KeyAgentServiceStub
 
 
@@ -47,6 +50,11 @@ class KeyAgentServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def GetPublicKey(self, request, context):
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CheckEnvelopeKey(self, request, context):
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -73,6 +81,11 @@ def add_KeyAgentServiceServicer_to_server(servicer, server):
             servicer.GetPublicKey,
             request_deserializer=key_agent_dot_key__agent__pb2.GetPublicKeyRequest.FromString,
             response_serializer=key_agent_dot_key__agent__pb2.GetPublicKeyResponse.SerializeToString,
+        ),
+        'CheckEnvelopeKey': grpc.unary_unary_rpc_method_handler(
+            servicer.CheckEnvelopeKey,
+            request_deserializer=key_agent_dot_key__agent__pb2.CheckEnvelopeKeyRequest.FromString,
+            response_serializer=key_agent_dot_key__agent__pb2.CheckEnvelopeKeyResponse.SerializeToString,
         ),
         'EnsureSecret': grpc.unary_unary_rpc_method_handler(
             servicer.EnsureSecret,
@@ -113,6 +126,16 @@ class KeyAgent(object):
             '/keyagent.v1.KeyAgentService/GetPublicKey',
             key_agent_dot_key__agent__pb2.GetPublicKeyRequest.SerializeToString,
             key_agent_dot_key__agent__pb2.GetPublicKeyResponse.FromString,
+            options, channel_credentials, call_credentials, wait_for_ready, timeout, metadata, compression,
+        )
+
+    @staticmethod
+    def CheckEnvelopeKey(request, target, options=(), channel_credentials=None, call_credentials=None, compression=None, wait_for_ready=None, timeout=None, metadata=None):
+        return grpc.experimental.unary_unary(
+            request, target,
+            '/keyagent.v1.KeyAgentService/CheckEnvelopeKey',
+            key_agent_dot_key__agent__pb2.CheckEnvelopeKeyRequest.SerializeToString,
+            key_agent_dot_key__agent__pb2.CheckEnvelopeKeyResponse.FromString,
             options, channel_credentials, call_credentials, wait_for_ready, timeout, metadata, compression,
         )
 
