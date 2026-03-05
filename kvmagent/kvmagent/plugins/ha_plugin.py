@@ -15,7 +15,7 @@ from zstacklib.utils import xmlobject
 from zstacklib.utils import jsonobject
 from zstacklib.utils import iscsi
 from zstacklib.utils import lock
-from kvmagent.plugins.vm_plugin import get_vm_by_uuid
+from kvmagent.plugins.vm_plugin import get_vm_by_uuid, find_zstack_metadata_node, find_child_node_by_name, ZS_XML_NAMESPACE
 from zstacklib.utils.ovn import delVnicFromOvsByVmUuidIfExist
 import os.path
 import time
@@ -31,10 +31,17 @@ import functools
 import pprint
 import inspect
 import random
+import xml.etree.ElementTree as etree
 from zstacklib.utils import iproute
 import zstacklib.utils.ip as ipUtils
+from zstacklib.utils.report import Report
 
 logger = log.get_logger(__name__)
+
+try:
+    string_types = (basestring,)
+except NameError:
+    string_types = (str,)
 
 EOF = "this_is_end"
 
@@ -114,6 +121,12 @@ class ReportSelfFencerCmd(object):
         self.psUuids = None
         self.reason = None
         self.fencerFailure = None
+
+
+class ReportHaNetworkGroupStatusCmd(object):
+    def __init__(self):
+        self.hostUuid = None
+        self.networkGroupStatus = None
 
 
 class FencerStateRsp(AgentRsp):
@@ -233,10 +246,60 @@ class PhysicalNicFencer(AbstractHaFencer):
     def get_ha_fencer_name(self):
         return "hostBusinessNic"
 
-    def skip_vm_bussiness_nic_check(self, vm_uuid):
+    def _parse_enable_ha_from_xml(self, xml, vm_uuid):
+        if not xml:
+            return None
+
+        try:
+            root = etree.fromstring(xml)
+        except Exception as e:
+            logger.debug('failed to parse vm %s xml when checking enableHa, %s' % (vm_uuid, e))
+            return None
+
+        enable_ha_node = find_zstack_metadata_node(root, 'enableHa')
+        if enable_ha_node is None:
+            if root.tag == 'zstack' or root.tag.endswith('}zstack'):
+                zstack_node = root
+            else:
+                metadata_node = root.find('metadata')
+                zstack_node = find_child_node_by_name(metadata_node, 'zstack')
+            enable_ha_node = find_child_node_by_name(zstack_node, 'enableHa')
+
+        if enable_ha_node is None or enable_ha_node.text is None:
+            return None
+
+        return enable_ha_node.text.strip().lower() == 'true'
+
+    def get_vm_enable_ha(self, vm_uuid, xml=None):
+        r, metadata_xml, stderr = bash.bash_roe("timeout 5 virsh metadata %s --uri %s --key zstack" % (vm_uuid, ZS_XML_NAMESPACE))
+        if r == 0:
+            enable_ha = self._parse_enable_ha_from_xml(metadata_xml, vm_uuid)
+            if enable_ha is not None:
+                return enable_ha
+        else:
+            logger.debug('failed to read vm %s zstack metadata from virsh, %s' % (vm_uuid, stderr))
+
+        if not xml:
+            file_name = '%s.xml' % vm_uuid
+            xml = linux.read_file(os.path.join(LIVE_LIBVIRT_XML_DIR, file_name))
+            if not xml:
+                xml = bash.bash_o('timeout 5 virsh dumpxml %s' % vm_uuid)
+
+        enable_ha = self._parse_enable_ha_from_xml(xml, vm_uuid)
+        if enable_ha is None:
+            logger.debug('cannot find enableHa metadata for vm %s, default to false' % vm_uuid)
+            return False
+
+        return enable_ha
+
+    def skip_vm_bussiness_nic_check(self, vm_uuid, xml=None):
         # block storage skip fencer due to not supported
         if is_block_fencer(self.get_ha_fencer_name(), vm_uuid):
-            logger.debug("skip vm %s nic fencer, not supported on block storage" % vm_uuid)
+            logger.debug('skip vm %s nic fencer, not supported on block storage' % vm_uuid)
+            return True
+
+        if not self.get_vm_enable_ha(vm_uuid, xml):
+            logger.debug('skip vm %s nic fencer, enableHa is false' % vm_uuid)
             return True
 
         return False
@@ -281,13 +344,13 @@ class PhysicalNicFencer(AbstractHaFencer):
         vm_use_falut_nic_pids_dict = {}
         vm_in_process_uuid_list = find_vm_uuid_list_by_process()
         for vm_uuid in vm_in_process_uuid_list:
-            if self.skip_vm_bussiness_nic_check(vm_uuid):
-                continue
-
-            file_name = "%s.xml" % vm_uuid
+            file_name = '%s.xml' % vm_uuid
             xml = linux.read_file(os.path.join(LIVE_LIBVIRT_XML_DIR, file_name))
             if not xml:
-                logger.warn("cannot read xml file %s" % file_name)
+                logger.warn('cannot read xml file %s' % file_name)
+                continue
+
+            if self.skip_vm_bussiness_nic_check(vm_uuid, xml):
                 continue
 
             vm = linux.VmStruct()
@@ -314,7 +377,9 @@ class PhysicalNicFencer(AbstractHaFencer):
         vm_use_falut_nic_pids_dict = {}
         vm_in_process_uuid_list = find_vm_uuid_list_by_virsh()
         for vm_uuid in vm_in_process_uuid_list:
-            if self.skip_vm_bussiness_nic_check(vm_uuid):
+            file_name = '%s.xml' % vm_uuid
+            xml = linux.read_file(os.path.join(LIVE_LIBVIRT_XML_DIR, file_name))
+            if self.skip_vm_bussiness_nic_check(vm_uuid, xml):
                 continue
 
             bridge_nics = shell.call("virsh domiflist %s | grep bridge | awk '{print $3}'" % vm_uuid)
@@ -1782,8 +1847,12 @@ class HaPlugin(kvmagent.KvmAgent):
     SETUP_CBD_SELF_FENCER_PATH = "/ha/cbd/setupselffencer"
     CANCEL_CBD_SELF_FENCER_PATH = "/ha/cbd/cancelselffencer"
     CBD_CHECK_VMSTATE_PATH = "/cbd/check/vmstate"
+    SYNC_HA_NETWORK_GROUP_CONFIG_PATH = "/ha/networkgroup/sync"
+    REPORT_HA_NETWORK_GROUP_STATUS_PATH = "/ha/networkgroup/report"
 
     FENCER_STATE_PATH = "/ha/selffencer/state"
+
+    NETWORK_GROUP_DEBUG_DUMP_PATH = "/var/log/zstack/NetworkHAGroup.json"
 
     RET_SUCCESS = "success"
     RET_FAILURE = "failure"
@@ -1805,6 +1874,19 @@ class HaPlugin(kvmagent.KvmAgent):
         self.vpc_lock = threading.RLock()
 
         self.fencer_storage_list = set()
+
+        self.ha_network_group_lock = threading.RLock()
+        self.ha_network_group_config_version = -1
+        self.ha_network_group_monitors = []
+        self.ha_network_group_vm_rules = {}
+        self.ha_network_groups = {}
+        self.ha_network_group_monitor_failures = {}
+        self.ha_network_group_last_status = {}
+        self.ha_network_group_monitor_running = False
+        self.ha_network_group_monitor_thread_started = False
+        self.ha_network_group_monitor_thread = None
+        self.ha_network_group_interval = None
+        self.ha_network_group_max_attempts = None
 
     @kvmagent.replyerror
     def cancel_ceph_self_fencer(self, req):
@@ -2130,9 +2212,21 @@ class HaPlugin(kvmagent.KvmAgent):
             remove_shareblock_vm_ha_params()
         return jsonobject.dumps(AgentRsp())
 
+    def _get_report_url_and_host_uuid(self):
+        url = Report.url
+        host_uuid = Report.serverUuid
+
+        if (not url or not host_uuid) and hasattr(self, 'config') and self.config is not None:
+            if not url:
+                url = self.config.get(kvmagent.SEND_COMMAND_URL)
+            if not host_uuid:
+                host_uuid = self.config.get(kvmagent.HOST_UUID)
+
+        return url, host_uuid
+
     def report_self_fencer_state_changed_to_mn(self, ps_uuids, retry_times=12, sleep_times=3):
-        url = self.config.get(kvmagent.SEND_COMMAND_URL)
-        host_uuid = self.config.get(kvmagent.HOST_UUID)
+
+        url, host_uuid = self._get_report_url_and_host_uuid()
         if not url or not host_uuid:
             raise Exception('cannot find SEND_COMMAND_URL or HOST_UUID, unable to report self fencer status[psList:%s]' % ps_uuids)
 
@@ -2753,6 +2847,438 @@ class HaPlugin(kvmagent.KvmAgent):
         rsp.blockRules = global_block_fencer_rule
         return jsonobject.dumps(rsp)
 
+    def _normalize_ha_network_group_vm_rules(self, vm_rules):
+        if not isinstance(vm_rules, dict):
+            return {}
+
+        normalized = {}
+        for vm_uuid, vm_cfg in vm_rules.items():
+            if not isinstance(vm_uuid, string_types) or not isinstance(vm_cfg, dict):
+                continue
+
+            try:
+                min_score = int(vm_cfg.get('minScore', 1))
+            except Exception:
+                min_score = 1
+
+            raw_rules = vm_cfg.get('rules') or []
+            if not isinstance(raw_rules, list):
+                continue
+
+            rules = []
+            for rule in raw_rules:
+                if not isinstance(rule, dict):
+                    continue
+
+                resource = rule.get('resource')
+                if not resource:
+                    continue
+
+                try:
+                    weight = int(rule.get('weight', 0))
+                except Exception:
+                    weight = 0
+
+                if weight <= 0:
+                    continue
+
+                rules.append({'resource': resource, 'weight': weight})
+
+            if not rules:
+                continue
+
+            normalized[vm_uuid] = {
+                'minScore': max(min_score, 1),
+                'rules': rules
+            }
+
+        return normalized
+
+    def _normalize_ha_network_groups(self, network_groups):
+        if not isinstance(network_groups, dict):
+            return {}
+
+        normalized = {}
+        for group_uuid, group_cfg in network_groups.items():
+            if not isinstance(group_uuid, string_types) or not isinstance(group_cfg, dict):
+                continue
+
+            resources = group_cfg.get('resources') or []
+            if not isinstance(resources, list):
+                resources = []
+
+            cleaned_resources = sorted(set([res for res in resources if isinstance(res, string_types) and res]))
+            try:
+                min_available = int(group_cfg.get('minAvailableCount', 1))
+            except Exception:
+                min_available = 1
+
+            normalized[group_uuid] = {
+                'resources': cleaned_resources,
+                'minAvailableCount': max(min_available, 1)
+            }
+
+        return normalized
+
+    def _build_ha_network_group_snapshot(self):
+        with self.ha_network_group_lock:
+            return {
+                'configVersion': self.ha_network_group_config_version,
+                'monitors': list(self.ha_network_group_monitors),
+                'vmRules': json.loads(json.dumps(self.ha_network_group_vm_rules)),
+                'networkGroups': json.loads(json.dumps(self.ha_network_groups))
+            }
+
+    def _interface_is_down(self, interface):
+        try:
+            links = iproute.query_links(interface)
+            if not links:
+                return True
+
+            state = (links[0].state or '').upper()
+            return state != 'UP'
+        except Exception as e:
+            logger.warn('failed to query nic[%s] state, treat as down, %s' % (interface, e))
+            return True
+
+    def _parse_enable_ha_from_xml(self, xml, vm_uuid):
+        if not xml:
+            return None
+
+        try:
+            root = etree.fromstring(xml)
+        except Exception as e:
+            logger.debug('failed to parse vm %s xml when checking enableHa in network group fencer, %s' % (vm_uuid, e))
+            return None
+
+        enable_ha_node = find_zstack_metadata_node(root, 'enableHa')
+        if enable_ha_node is None:
+            if root.tag == 'zstack' or root.tag.endswith('}zstack'):
+                zstack_node = root
+            else:
+                metadata_node = root.find('metadata')
+                zstack_node = find_child_node_by_name(metadata_node, 'zstack')
+            enable_ha_node = find_child_node_by_name(zstack_node, 'enableHa')
+
+        if enable_ha_node is None or enable_ha_node.text is None:
+            return None
+
+        return enable_ha_node.text.strip().lower() == 'true'
+
+    def _get_vm_enable_ha(self, vm_uuid):
+        r, metadata_xml, stderr = bash.bash_roe('timeout 5 virsh metadata %s --uri %s --key zstack' % (vm_uuid, ZS_XML_NAMESPACE))
+        if r == 0:
+            enable_ha = self._parse_enable_ha_from_xml(metadata_xml, vm_uuid)
+            if enable_ha is not None:
+                return enable_ha
+        else:
+            logger.debug('failed to read vm %s zstack metadata from virsh in network group fencer, %s' % (vm_uuid, stderr))
+
+        file_name = '%s.xml' % vm_uuid
+        xml = linux.read_file(os.path.join(LIVE_LIBVIRT_XML_DIR, file_name))
+        if not xml:
+            xml = bash.bash_o('timeout 5 virsh dumpxml %s' % vm_uuid)
+
+        enable_ha = self._parse_enable_ha_from_xml(xml, vm_uuid)
+        if enable_ha is None:
+            logger.debug('cannot find enableHa metadata for vm %s in network group fencer, default to false' % vm_uuid)
+            return False
+
+        return enable_ha
+
+    def _get_down_monitors(self, monitors, max_attempts):
+        down_monitors = set()
+        if not monitors:
+            return down_monitors
+
+        with self.ha_network_group_lock:
+            stale_monitors = [nic for nic in self.ha_network_group_monitor_failures if nic not in monitors]
+            for nic in stale_monitors:
+                self.ha_network_group_monitor_failures.pop(nic, None)
+
+            for nic in monitors:
+                failures = self.ha_network_group_monitor_failures.get(nic, 0)
+                if self._interface_is_down(nic):
+                    failures += 1
+                else:
+                    failures = 0
+
+                self.ha_network_group_monitor_failures[nic] = failures
+                if failures >= max_attempts:
+                    down_monitors.add(nic)
+
+        return down_monitors
+
+    @staticmethod
+    def _calculate_vm_score(vm_cfg, down_monitors):
+        score = 0
+        for rule in vm_cfg.get('rules', []):
+            if rule.get('resource') not in down_monitors:
+                score += int(rule.get('weight', 0))
+
+        return score
+
+    def _kill_vms_by_network_group_rule(self, vm_rules, down_monitors):
+        if not vm_rules:
+            return []
+
+        killed_vms = []
+        down_str = ','.join(sorted(list(down_monitors))) if down_monitors else 'none'
+
+        for vm_uuid, vm_cfg in vm_rules.items():
+            try:
+                min_score = int(vm_cfg.get('minScore', 1))
+            except Exception:
+                min_score = 1
+
+            score = self._calculate_vm_score(vm_cfg, down_monitors)
+            if score >= min_score:
+                continue
+
+            vm_pid = linux.find_vm_pid_by_uuid(vm_uuid)
+            if not vm_pid:
+                continue
+
+            if not self._get_vm_enable_ha(vm_uuid):
+                logger.debug('skip vm %s network group fencer, enableHa is false' % vm_uuid)
+                continue
+
+            reason = 'because vm network score[%s] is lower than minScore[%s], down resources[%s]' % (
+                score, min_score, down_str
+            )
+            kill_vm_use_pid({vm_uuid: vm_pid}, reason)
+            killed_vms.append(vm_uuid)
+            logger.warn('ha network group fencer killed vm[uuid:%s], score:%s, minScore:%s, down:%s' % (
+                vm_uuid, score, min_score, down_str
+            ))
+
+        return killed_vms
+
+    def _calculate_network_group_status(self, network_groups, down_monitors):
+        if not network_groups:
+            return {}
+
+        status = {}
+        for group_uuid, group_cfg in network_groups.items():
+            resources = group_cfg.get('resources') or []
+            try:
+                min_available = int(group_cfg.get('minAvailableCount', 1))
+            except Exception:
+                min_available = 1
+
+            if not resources:
+                status[group_uuid] = 'Down'
+                continue
+
+            available_count = 0
+            for resource in resources:
+                if resource not in down_monitors:
+                    available_count += 1
+
+            if available_count <= 0:
+                status[group_uuid] = 'Down'
+            elif available_count < min_available:
+                status[group_uuid] = 'Degrade'
+            else:
+                status[group_uuid] = 'Available'
+
+        return status
+
+    def _dump_ha_network_group_debug(self, stage, down_monitors=None, network_group_status=None):
+        try:
+            with self.ha_network_group_lock:
+                content = {
+                    'stage': stage,
+                    'timestamp': int(time.time()),
+                    'configVersion': self.ha_network_group_config_version,
+                    'monitors': list(self.ha_network_group_monitors),
+                    'monitorFailures': dict(self.ha_network_group_monitor_failures),
+                    'vms': self.ha_network_group_vm_rules,
+                    'networkGroups': self.ha_network_groups,
+                    'lastReportedStatus': self.ha_network_group_last_status
+                }
+
+            if down_monitors is not None:
+                content['downMonitors'] = sorted(list(down_monitors))
+            if network_group_status is not None:
+                content['networkGroupStatus'] = network_group_status
+
+            dump_dir = os.path.dirname(self.NETWORK_GROUP_DEBUG_DUMP_PATH)
+            if dump_dir and not os.path.isdir(dump_dir):
+                os.makedirs(dump_dir)
+
+            tmp_path = '%s.tmp' % self.NETWORK_GROUP_DEBUG_DUMP_PATH
+            with open(tmp_path, 'w') as fd:
+                fd.write(json.dumps(content, sort_keys=True, indent=2))
+
+            os.rename(tmp_path, self.NETWORK_GROUP_DEBUG_DUMP_PATH)
+        except Exception as e:
+            logger.debug('failed to dump ha network group debug file, %s' % e)
+
+    def _report_ha_network_group_status(self, network_group_status):
+        if not network_group_status:
+            with self.ha_network_group_lock:
+                self.ha_network_group_last_status = {}
+            return
+
+        with self.ha_network_group_lock:
+            if network_group_status == self.ha_network_group_last_status:
+                return
+
+        url, host_uuid = self._get_report_url_and_host_uuid()
+        if not url:
+            logger.warn('cannot find SEND_COMMAND_URL, unable to report ha network group status')
+            return
+
+        if not host_uuid:
+            logger.warn('cannot find HOST_UUID, unable to report ha network group status')
+            return
+
+        cmd = ReportHaNetworkGroupStatusCmd()
+        cmd.hostUuid = host_uuid
+        cmd.networkGroupStatus = network_group_status
+
+        try:
+            http.json_dump_post(url, cmd, {'commandpath': self.REPORT_HA_NETWORK_GROUP_STATUS_PATH})
+            with self.ha_network_group_lock:
+                self.ha_network_group_last_status = dict(network_group_status)
+            logger.debug('reported ha network group status for host[%s], status:%s' % (host_uuid, network_group_status))
+            self._dump_ha_network_group_debug('report-status', network_group_status=network_group_status)
+        except Exception as e:
+            logger.warn('failed to report ha network group status to management node, %s' % e)
+
+    def _ha_network_group_monitor_loop(self):
+        while True:
+            with self.ha_network_group_lock:
+                if not self.ha_network_group_monitor_running:
+                    break
+                interval = self.ha_network_group_interval
+                max_attempts = self.ha_network_group_max_attempts
+
+            if interval is None or max_attempts is None:
+                time.sleep(1)
+                continue
+
+            try:
+                snapshot = self._build_ha_network_group_snapshot()
+                monitors = snapshot.get('monitors') or []
+                vm_rules = snapshot.get('vmRules') or {}
+                network_groups = snapshot.get('networkGroups') or {}
+
+                if not monitors and not vm_rules and not network_groups:
+                    time.sleep(interval)
+                    continue
+
+                down_monitors = self._get_down_monitors(monitors, max_attempts)
+                killed_vms = self._kill_vms_by_network_group_rule(vm_rules, down_monitors)
+                network_group_status = self._calculate_network_group_status(network_groups, down_monitors)
+                self._report_ha_network_group_status(network_group_status)
+
+                if killed_vms:
+                    logger.warn('ha network group monitor killed vms: %s' % ','.join(killed_vms))
+                    self._dump_ha_network_group_debug('kill-vm', down_monitors, network_group_status)
+            except Exception as e:
+                logger.warn('ha network group monitor loop hit exception, %s' % e)
+                logger.debug(traceback.format_exc())
+
+            time.sleep(interval)
+
+        with self.ha_network_group_lock:
+            if self.ha_network_group_monitor_thread is threading.current_thread():
+                self.ha_network_group_monitor_running = False
+                self.ha_network_group_monitor_thread_started = False
+                self.ha_network_group_monitor_thread = None
+
+        logger.debug('ha network group monitor loop stopped')
+
+    def _start_ha_network_group_monitor_thread(self):
+        with self.ha_network_group_lock:
+            if self.ha_network_group_monitor_thread_started:
+                monitor_thread = self.ha_network_group_monitor_thread
+                if monitor_thread is not None and monitor_thread.is_alive():
+                    return
+
+                self.ha_network_group_monitor_thread_started = False
+                self.ha_network_group_monitor_thread = None
+
+            self.ha_network_group_monitor_running = True
+            self.ha_network_group_monitor_thread_started = True
+
+        try:
+            monitor_thread = thread.ThreadFacade.run_in_thread(self._ha_network_group_monitor_loop)
+        except Exception:
+            with self.ha_network_group_lock:
+                self.ha_network_group_monitor_running = False
+                self.ha_network_group_monitor_thread_started = False
+                self.ha_network_group_monitor_thread = None
+            raise
+
+        with self.ha_network_group_lock:
+            self.ha_network_group_monitor_thread = monitor_thread
+
+        logger.debug('ha network group monitor thread started')
+
+    @kvmagent.replyerror
+    def sync_ha_network_group_config(self, req):
+        rsp = AgentRsp()
+        raw = req.get(http.REQUEST_BODY, '{}')
+        cmd = json.loads(raw)
+
+        incoming_config_version = cmd.get('configVersion')
+        if incoming_config_version is not None:
+            try:
+                incoming_config_version = int(incoming_config_version)
+            except Exception:
+                incoming_config_version = None
+
+        monitors = cmd.get('monitors') or []
+        if not isinstance(monitors, list):
+            monitors = []
+
+        vm_rules = self._normalize_ha_network_group_vm_rules(cmd.get('vms') or {})
+        network_groups = self._normalize_ha_network_groups(cmd.get('networkGroups') or {})
+        try:
+            interval = int(cmd.get('interval'))
+        except Exception:
+            interval = 1
+        try:
+            max_attempts = int(cmd.get('maxAttempts'))
+        except Exception:
+            max_attempts = 1
+        interval = max(interval, 1)
+        max_attempts = max(max_attempts, 1)
+
+        with self.ha_network_group_lock:
+            current_version = self.ha_network_group_config_version
+            if incoming_config_version is not None and incoming_config_version <= current_version:
+                logger.debug('ignore stale ha network group config, incoming:%s current:%s' % (
+                    incoming_config_version, current_version
+                ))
+                return jsonobject.dumps(rsp)
+
+            if incoming_config_version is not None:
+                self.ha_network_group_config_version = incoming_config_version
+
+            effective_version = self.ha_network_group_config_version
+            self.ha_network_group_monitors = sorted(set([nic for nic in monitors if isinstance(nic, string_types) and nic]))
+            self.ha_network_group_vm_rules = vm_rules
+            self.ha_network_groups = network_groups
+            self.ha_network_group_interval = interval
+            self.ha_network_group_max_attempts = max_attempts
+            self.ha_network_group_monitor_failures = {
+                nic: self.ha_network_group_monitor_failures.get(nic, 0)
+                for nic in self.ha_network_group_monitors
+            }
+            self.ha_network_group_last_status = {}
+
+        logger.info('received ha network group config, version:%s monitors:%s vmRules:%s groups:%s' % (
+            effective_version,
+            len(self.ha_network_group_monitors),
+            len(vm_rules),
+            len(network_groups)
+        ))
+        self._dump_ha_network_group_debug('sync-config')
+        return jsonobject.dumps(rsp)
 
     def start(self):
         http_server = kvmagent.get_http_server()
@@ -2780,12 +3306,34 @@ class HaPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.SETUP_CBD_SELF_FENCER_PATH, self.setup_cbd_self_fencer)
         http_server.register_async_uri(self.CANCEL_CBD_SELF_FENCER_PATH, self.cancel_cbd_self_fencer)
         http_server.register_async_uri(self.CBD_CHECK_VMSTATE_PATH, self.cbd_check_vmstate)
+        http_server.register_async_uri(self.SYNC_HA_NETWORK_GROUP_CONFIG_PATH, self.sync_ha_network_group_config)
 
 
         http_server.register_async_uri(self.FENCER_STATE_PATH, self.get_fencer_state)
+        self._start_ha_network_group_monitor_thread()
 
     def stop(self):
-        pass
+        monitor_thread = None
+        join_timeout = 1
+
+        with self.ha_network_group_lock:
+            self.ha_network_group_monitor_running = False
+            monitor_thread = self.ha_network_group_monitor_thread
+
+            if isinstance(self.ha_network_group_interval, (int, float)) and self.ha_network_group_interval > 0:
+                join_timeout = max(join_timeout, int(self.ha_network_group_interval) + 1)
+
+        if monitor_thread is not None and monitor_thread is not threading.current_thread() and monitor_thread.is_alive():
+            monitor_thread.join(join_timeout)
+
+            if monitor_thread.is_alive():
+                logger.warn('ha network group monitor thread is still running after stop timeout[%ss]' % join_timeout)
+                return
+
+        with self.ha_network_group_lock:
+            if self.ha_network_group_monitor_thread is monitor_thread:
+                self.ha_network_group_monitor_thread = None
+                self.ha_network_group_monitor_thread_started = False
 
     def configure(self, config):
         self.config = config
@@ -2793,12 +3341,11 @@ class HaPlugin(kvmagent.KvmAgent):
 
     @thread.AsyncThread
     def report_self_fencer_triggered(self, ps_uuids, vm_uuids_string=None):
-        url = self.config.get(kvmagent.SEND_COMMAND_URL)
+        url, host_uuid = self._get_report_url_and_host_uuid()
         if not url:
             logger.warn('cannot find SEND_COMMAND_URL, unable to report self fencer triggered on [psList:%s]' % ps_uuids)
             return
 
-        host_uuid = self.config.get(kvmagent.HOST_UUID)
         if not host_uuid:
             logger.warn(
                 'cannot find HOST_UUID, unable to report self fencer triggered on [psList:%s]' % ps_uuids)
@@ -2822,13 +3369,12 @@ class HaPlugin(kvmagent.KvmAgent):
 
     @thread.AsyncThread
     def report_storage_status(self, ps_uuids, ps_status, reason="", retry_times=1, sleep_time=10):
-        url = self.config.get(kvmagent.SEND_COMMAND_URL)
+        url, host_uuid = self._get_report_url_and_host_uuid()
         if not url:
             logger.warn('cannot find SEND_COMMAND_URL, unable to report storages status[psList:%s, status:%s]' % (
                 ps_uuids, ps_status))
             return
 
-        host_uuid = self.config.get(kvmagent.HOST_UUID)
         if not host_uuid:
             logger.warn(
                 'cannot find HOST_UUID, unable to report storages status[psList:%s, status:%s]' % (ps_uuids, ps_status))

@@ -447,6 +447,7 @@ class StartVmCmd(kvmagent.AgentCommand):
         self.systemSerialNumber = None
         self.bootMode = None
         self.consolePassword = None
+        self.enableHa = None
         self.memBalloon = None # type:VirtualDeviceInfo
         self.suspendToRam = None
         self.suspendToDisk = None
@@ -1374,12 +1375,60 @@ def find_namespace_node(root, path, name):
 
     return cnode.find('zs:%s' % name, ns)
 
+
+def find_child_node_by_name(parent, node_name):
+    if parent is None:
+        return None
+
+    child = parent.find(node_name)
+    if child is not None:
+        return child
+
+    for n in list(parent):
+        if n.tag.endswith('}%s' % node_name):
+            return n
+
+    return None
+
 def find_zstack_metadata_node(root, name):
     zs = find_namespace_node(root, 'metadata', 'zstack')
     if zs is None:
         return None
 
-    return zs.find(name)
+    return find_child_node_by_name(zs, name)
+
+
+def set_zstack_metadata_live(vm_uuid, metadata_key, metadata_value):
+    with lock.NamedLock('vm-zstack-metadata-live-%s' % vm_uuid):
+        vm = get_vm_by_uuid(vm_uuid, exception_if_not_existing=False)
+        if vm is None:
+            return False, None, 'vmNotFound'
+
+        if vm.state not in [Vm.VM_STATE_RUNNING, Vm.VM_STATE_PAUSED]:
+            return False, None, 'vmStateNotSupport'
+
+        domain_xml = vm.domain.XMLDesc(0)
+        root = etree.fromstring(domain_xml)
+        zstack_node = find_namespace_node(root, 'metadata', 'zstack')
+        if zstack_node is None:
+            zstack_node = etree.Element('{%s}zstack' % ZS_XML_NAMESPACE)
+
+        metadata_node = find_child_node_by_name(zstack_node, metadata_key)
+        old_metadata_value = None
+        if metadata_node is not None and metadata_node.text:
+            old_metadata_value = metadata_node.text.strip()
+
+        if old_metadata_value is not None and old_metadata_value.lower() == metadata_value.lower():
+            return False, old_metadata_value, 'unchanged'
+
+        if metadata_node is None:
+            metadata_node = etree.SubElement(zstack_node, metadata_key)
+
+        metadata_node.text = metadata_value
+        metadata_xml = etree.tostring(zstack_node, encoding='unicode')
+        vm.domain.setMetadata(libvirt.VIR_DOMAIN_METADATA_ELEMENT, metadata_xml,
+                              'zstack', ZS_XML_NAMESPACE, libvirt.VIR_DOMAIN_AFFECT_LIVE)
+        return True, old_metadata_value, 'updated'
 
 def find_domain_cdrom_address(domain_xml, target_dev):
     domain_xmlobject = xmlobject.loads(domain_xml)
@@ -6462,6 +6511,9 @@ class Vm(object):
             zs = e(meta, 'zstack', usenamesapce=True)
             e(zs, 'internalId', str(cmd.vmInternalId))
             e(zs, 'hostManagementIp', str(cmd.hostManagementIp))
+            enable_ha = cmd.enableHa
+            if enable_ha is not None:
+                e(zs, 'enableHa', 'true' if enable_ha else 'false')
             # <clock offset="utc" />
             clock = e(root, 'clock', None, {'offset': cmd.clock})
             # <rom bar='off'/>
