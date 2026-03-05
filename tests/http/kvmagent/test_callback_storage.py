@@ -66,11 +66,11 @@ class TestLocalStorageCallbacks:
         """Test /localstorage/volume/getbaseimage returns base image info."""
         callback_url = async_callback.get_callback_url()
         response = kvmagent_client.post(
-            '/localstorage/volume/getbaseimage',
+            '/localstorage/volume/getbaseimagepath',
             data={'volumePath': '/nonexistent'},
             callback_url=callback_url,
         )
-        _skip_if_not_loaded(response, '/localstorage/volume/getbaseimage')
+        _skip_if_not_loaded(response, '/localstorage/volume/getbaseimagepath')
         assert response.status_code in [200, 403, 404]
 
         try:

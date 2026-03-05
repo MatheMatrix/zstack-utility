@@ -33,7 +33,7 @@ with async callback verification, on real kvmagent environments.
 ### Round 3: kvmagent smoke tests — storage plugins
 - localstorage_plugin (all endpoints)
 - nfs_primarystorage_plugin (all endpoints)
-- shareblock_plugin, smp_plugin
+- shared_block_plugin, smp_plugin
 - Target: 20+ new test cases
 
 ### Round 4: kvmagent smoke tests — remaining plugins

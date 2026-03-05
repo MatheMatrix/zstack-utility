@@ -107,7 +107,7 @@ class TestNetworkCallbacks:
             result = async_callback.wait(response.task_uuid, timeout=15.0)
         except TimeoutError:
             pytest.skip("callback timeout (agent cannot reach test server)")
-        assert 'success' in result
+        assert result.get('success') is True, "callback should report success"
 
     def test_get_ipv6_address_callback(self, kvmagent_client, async_callback):
         """Test /network/ipv6/address returns address info via callback."""
@@ -124,7 +124,7 @@ class TestNetworkCallbacks:
             result = async_callback.wait(response.task_uuid, timeout=15.0)
         except TimeoutError:
             pytest.skip("callback timeout (agent cannot reach test server)")
-        assert 'success' in result
+        assert result.get('success') is True, "callback should report success"
 
 
 @pytest.mark.http
@@ -146,7 +146,7 @@ class TestStorageCapacityCallbacks:
             result = async_callback.wait(response.task_uuid, timeout=15.0)
         except TimeoutError:
             pytest.skip("callback timeout (agent cannot reach test server)")
-        assert 'success' in result
+        assert result.get('success') is True, "callback should report success"
 
     def test_nfs_ping_callback(self, kvmagent_client, async_callback):
         """Test /nfsprimarystorage/ping returns mount status via callback."""
@@ -163,7 +163,7 @@ class TestStorageCapacityCallbacks:
             result = async_callback.wait(response.task_uuid, timeout=15.0)
         except TimeoutError:
             pytest.skip("callback timeout (agent cannot reach test server)")
-        assert 'success' in result
+        assert result.get('success') is True, "callback should report success"
 
 
 @pytest.mark.http
@@ -185,7 +185,7 @@ class TestVMQueryCallbacks:
             result = async_callback.wait(response.task_uuid, timeout=15.0)
         except TimeoutError:
             pytest.skip("callback timeout (agent cannot reach test server)")
-        assert 'success' in result
+        assert result.get('success') is True, "callback should report success"
 
     def test_host_getvirtualizerstatus_callback(self, kvmagent_client, async_callback):
         """Test /host/virtualizerstatus returns virtualizer info via callback."""
@@ -202,7 +202,7 @@ class TestVMQueryCallbacks:
             result = async_callback.wait(response.task_uuid, timeout=15.0)
         except TimeoutError:
             pytest.skip("callback timeout (agent cannot reach test server)")
-        assert 'success' in result
+        assert result.get('success') is True, "callback should report success"
 
     def test_host_getwebconsoleurl_callback(self, kvmagent_client, async_callback):
         """Test /host/getwebconsoleurl returns URL info via callback."""
@@ -219,4 +219,4 @@ class TestVMQueryCallbacks:
             result = async_callback.wait(response.task_uuid, timeout=15.0)
         except TimeoutError:
             pytest.skip("callback timeout (agent cannot reach test server)")
-        assert 'success' in result
+        assert result.get('success') is True, "callback should report success"

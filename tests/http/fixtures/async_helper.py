@@ -38,12 +38,15 @@ class AsyncCallbackHelper:
             return self.results[taskuuid]
         event = threading.Event()
         self.events[taskuuid] = event
-        # Double-check after registering event
-        if taskuuid in self.results:
-            return self.results[taskuuid]
-        if not event.wait(timeout):
-            raise TimeoutError("Callback for %s not received in %ss" % (taskuuid, timeout))
-        return self.results.get(taskuuid, {})
+        try:
+            # Double-check after registering event
+            if taskuuid in self.results:
+                return self.results[taskuuid]
+            if not event.wait(timeout):
+                raise TimeoutError("Callback for %s not received in %ss" % (taskuuid, timeout))
+            return self.results.get(taskuuid, {})
+        finally:
+            self.events.pop(taskuuid, None)
     def get_callback_url(self) -> str:
         return f"http://127.0.0.1:{self.port}/callback"
     def cleanup(self):

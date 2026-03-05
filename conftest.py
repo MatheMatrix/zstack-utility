@@ -70,7 +70,12 @@ def pytest_make_collect_report(collector):
     # collection of a test file indicates a Py2-incompatible module.
     if rep.longrepr:
         longrepr_str = str(rep.longrepr)
-        if "SyntaxError:" in longrepr_str or "ModuleNotFoundError:" in longrepr_str:
+        # Only skip Py2 compat errors for non-HTTP test files
+        test_file = rep.nodeid.split("::")[0] if rep.nodeid else ""
+        is_http_test = "tests/http/" in test_file
+        if not is_http_test and (
+            "SyntaxError:" in longrepr_str or "ModuleNotFoundError:" in longrepr_str
+        ):
             # Extract a short reason from the error
             for line in longrepr_str.splitlines():
                 line = line.strip()
@@ -130,9 +135,16 @@ def pytest_addoption(parser):
     )
     group.addoption(
         "--keep-vm-on-failure",
+        dest="keep_vm_on_failure",
         action="store_true",
         default=True,
         help="Keep VM alive on test failure for debugging (default: True).",
+    )
+    group.addoption(
+        "--no-keep-vm-on-failure",
+        dest="keep_vm_on_failure",
+        action="store_false",
+        help="Destroy VM on test failure.",
     )
     group.addoption(
         "--vm-rsync-path",
