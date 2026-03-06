@@ -1,3 +1,5 @@
+from __future__ import absolute_import
+
 import sys,os,os.path
 from zstacklib.utils import log
 from zstacklib.utils import linux
@@ -6,12 +8,12 @@ import zstacklib.utils.iptables as iptables
 log.configure_log('/var/log/zstack/zstack-appliancevm.log')
 logger = log.get_logger(__name__)
 
-import appliancevm
+from . import appliancevm
 
 def main():
     usage = 'usage: python -c "from appliancevm import daemon; daemon.main()" start|stop|restart'
     if len(sys.argv) != 2 or not sys.argv[1] in ['start', 'stop', 'restart']:
-        print usage
+        print(usage)
         sys.exit(1)
         
     pidfile = '/var/run/zstack/appliancevm.pid'

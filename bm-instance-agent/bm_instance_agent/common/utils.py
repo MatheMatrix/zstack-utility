@@ -86,6 +86,8 @@ def query_link(iface):
         if_index = None
         if isinstance(iface, int):
             if_index = iface
+        # TODO: -> python3:
+        # elif isinstance(iface, str):
         elif isinstance(iface, (str, unicode)):
             if_index = _query_index_by_ifname(iface, ipr)
 
@@ -265,7 +267,7 @@ def camel_obj_to_snake(camel):
 
     if isinstance(camel, dict):
         new_dict = {}
-        for k, v in camel.items():
+        for k, v in list(camel.items()):
             new_k = camel_string_to_snake(k)
             new_dict[new_k] = camel_obj_to_snake(v)
         return new_dict
