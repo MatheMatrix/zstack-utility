@@ -3,13 +3,11 @@
 @author: frank
 '''
 import os
-import inspect
-import types
 import time
 from zstacklib.utils import jsonobject
 from zstacklib.utils import log
 from zstacklib.utils import http
-import inventory
+from . import inventory
 
 logger = log.get_logger(__name__)
 
@@ -50,7 +48,7 @@ class Api(object):
         return rsp
 
     def _check_not_none_field(self, apicmd):
-        for k, v in apicmd.__dict__.items():
+        for k, v in list(apicmd.__dict__.items()):
             if isinstance(v, inventory.NotNoneField):
                 err = 'field[%s] of %s cannot be None' % (k, apicmd.FULL_NAME)
                 raise ApiError(err)
@@ -126,7 +124,7 @@ class Api(object):
         if rsp.state == 'Done':
             logger.debug("async call[url: %s, response: %s]" % (self.api_url, mask_result(apievent, rsp.result)))
             reply = jsonobject.loads(rsp.result)
-            (name, event) = (reply.__dict__.items()[0])
+            (name, event) = (list(reply.__dict__.items())[0])
             if exception_on_error and not event.success:
                 raise ApiError('API call[%s] failed:\n%s' % (name, error_code_to_string(event.error)))
             return name, event
@@ -144,7 +142,7 @@ class Api(object):
 
         logger.debug("async call[url: %s, response: %s] after %dms" % (self.api_url, mask_result(apievent, rsp.result), curr))
         reply = jsonobject.loads(rsp.result)
-        (name, event) = (reply.__dict__.items()[0])
+        (name, event) = (list(reply.__dict__.items())[0])
         if exception_on_error and not event.success:
             raise ApiError('API call[%s] failed:\n%s' % (name, error_code_to_string(event.error)))
         return name, event
@@ -157,7 +155,7 @@ class Api(object):
         logger.debug("sync_call[url: %s, response: %s]" % (self.api_url, jstr))
         rsp = jsonobject.loads(jstr)
         reply = jsonobject.loads(rsp.result)
-        (name, r) = reply.__dict__.items()[0]
+        (name, r) = list(reply.__dict__.items())[0]
         if exception_on_error:
             if not r.success:
                 raise ApiError('API call[%s] failed:\n%s' % (name, error_code_to_string(r.error)))
@@ -206,11 +204,19 @@ def error_code_to_string(error):
     get_readable_details(error, 0)
     return "".join(builder)
 
+def _get_builtin_http_server_port():
+    raw_port = os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT')
+    if raw_port in (None, ''):
+        return 8080
+    try:
+        return int(raw_port)
+    except (TypeError, ValueError):
+        raise ApiError('Invalid ZSTACK_BUILT_IN_HTTP_SERVER_PORT: %s' % raw_port)
 
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def async_call(apicmd, session_uuid):
     api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+              port=_get_builtin_http_server_port())
     api.set_session_to_api_message(apicmd, session_uuid)
     (name, event) = api.async_call_wait_for_complete(apicmd)
     if not event.success:
@@ -223,7 +229,7 @@ def async_call(apicmd, session_uuid):
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def sync_call(apicmd, session_uuid):
     api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+              port=_get_builtin_http_server_port())
     if session_uuid:
         api.set_session_to_api_message(apicmd, session_uuid)
     (name, reply) = api.sync_call(apicmd)
@@ -237,12 +243,12 @@ def sync_call(apicmd, session_uuid):
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def login_as_admin():
     api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+              port=_get_builtin_http_server_port())
     return api.login_as_admin()
 
 
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def logout(session_uuid):
     api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+              port=_get_builtin_http_server_port())
     api.log_out(session_uuid)

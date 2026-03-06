@@ -83,13 +83,13 @@ class CephToCephMigrateImageCmd(AgentCommand):
     def __init__(self):
         super(CephToCephMigrateImageCmd, self).__init__()
         self.imageUuid = None
-        self.imageSize = None  # type:long
+        self.imageSize = None  # type: int
         self.srcInstallPath = None
         self.dstInstallPath = None
         self.dstMonHostname = None
         self.dstMonSshUsername = None
         self.dstMonSshPassword = None
-        self.dstMonSshPort = None  # type:int
+        self.dstMonSshPort = None  # type: int
 
 
 class UploadProgressRsp(AgentResponse):

@@ -1,10 +1,12 @@
+from __future__ import absolute_import
+
 from oslo_concurrency import processutils
 from oslo_log import log as logging
 
 from bm_instance_agent.common import utils as agent_utils
 from bm_instance_agent.systems.linux import driver as linux_driver
 from bm_instance_agent import objects
-from centos_network_config import CentOSNetworkConfig as config
+from .centos_network_config import CentOSNetworkConfig as config
 
 LOG = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ class CentOSDriver(linux_driver.LinuxDriver):
         # file, generate required configuration file if the conf not exist.
         if instance_obj.nics is None:
             return
-        for nic in instance_obj.nics:
+        for nic in list(instance_obj.nics):
             rectify = config.network_config_rectify(nic)
             if rectify:
                 LOG.info('rectify network config of port {}'.format(nic.iface_name))
