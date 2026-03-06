@@ -50,6 +50,12 @@ def pytest_addoption(parser):
         ),
     )
     parser.addoption(
+        "--direct-port",
+        action="store",
+        default=None,
+        help="Override agent port (default: per-agent, e.g. 7070 for kvmagent).",
+    )
+    parser.addoption(
         "--callback-ssh-host",
         action="store",
         default=None,

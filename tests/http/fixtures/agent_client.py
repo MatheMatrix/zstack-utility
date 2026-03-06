@@ -103,14 +103,16 @@ class AgentClient:
 # Agent client fixtures (one per agent)
 
 @pytest.fixture
-def kvmagent_client(ssh_tunnel, agent_host):
+def kvmagent_client(ssh_tunnel, agent_host, request):
     """
     HTTP client for kvmagent.
-    
+
     Depends on ssh_tunnel (for tunnel mode) and agent_host (for URL routing).
     In direct mode, agent_host is the remote IP; in tunnel mode, it's 127.0.0.1.
     """
-    client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['kvmagent']}")
+    port = request.config.getoption("--direct-port", default=None)
+    port = int(port) if port else AGENT_PORTS['kvmagent']
+    client = AgentClient(f"http://{agent_host}:{port}")
     yield client
     client.close()
 
