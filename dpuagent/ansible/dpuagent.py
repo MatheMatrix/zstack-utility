@@ -90,7 +90,7 @@ copy(copy_arg, host_post_info)
 copy_arg = CopyArg()
 copy_arg.src = "%s/dpu-iptables" % file_root
 copy_arg.dest = "%s/dpu-iptables" % dpuagent_root
-copy_arg.args = "force=yes"
+copy_arg.args = "force=false"
 copy(copy_arg, host_post_info)
 
 
