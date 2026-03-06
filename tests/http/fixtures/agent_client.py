@@ -62,6 +62,8 @@ class AgentClient:
         url = f"{self.base_url}{path}"
         task_uuid = str(uuid.uuid4())
         merged_headers = dict(headers or {})
+        # kvmagent requires commandpath header for non-localhost requests
+        merged_headers.setdefault('commandpath', path)
         if callback_url:
             # Async endpoints require both callbackurl and taskUuid
             merged_headers['callbackurl'] = callback_url

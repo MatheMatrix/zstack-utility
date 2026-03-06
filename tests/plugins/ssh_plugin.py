@@ -49,6 +49,25 @@ def pytest_addoption(parser):
             "Format: http://relay-host:port/callback"
         ),
     )
+    parser.addoption(
+        "--callback-ssh-host",
+        action="store",
+        default=None,
+        help=(
+            "Compute host IP for SSH-poll callback mode. "
+            "A callback_collector.py must be running on this host. "
+            "wait() reads /tmp/callbacks/<uuid>.json via SSH."
+        ),
+    )
+    parser.addoption(
+        "--callback-ssh-jump",
+        action="store",
+        default=None,
+        help=(
+            "SSH jump host (woodpecker) for reaching compute host. "
+            "Format: IP (uses root@IP with sshpass)."
+        ),
+    )
 
 
 def parse_ssh_host(host_string: str) -> Tuple[str, Optional[str], str, int]:
