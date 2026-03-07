@@ -12153,7 +12153,13 @@ host side snapshot files chian:
         http_server.register_async_uri(self.SET_VM_VF_NIC_STATE, self.set_vf_nic_state)
         http_server.register_async_uri(self.SET_VF_NIC_MAC_PATH, self.set_vf_nic_mac)
 
-        self.clean_old_sshfs_mount_points()
+        # run sshfs cleanup in background to avoid blocking the startup thread
+        # (fusermount can block for up to 2s per stale mount point)
+        @thread.AsyncThread
+        def _cleanup_old_sshfs():
+            self.clean_old_sshfs_mount_points()
+        _cleanup_old_sshfs()
+
         self.register_libvirt_event()
         self.register_qemu_log_cleaner()
         self.register_vm_console_logrotate_conf()
