@@ -15,27 +15,27 @@ class KeyAgentServiceStub(object):
       channel: A grpc.Channel.
     """
     self.CreateEnvelopeKey = channel.unary_unary(
-        '/kvmagent.kvmagent.keyagent.KeyAgentService/CreateEnvelopeKey',
+        '/keyagent.v1.KeyAgentService/CreateEnvelopeKey',
         request_serializer=key__agent__pb2.CreateEnvelopeKeyRequest.SerializeToString,
         response_deserializer=key__agent__pb2.CreateEnvelopeKeyResponse.FromString,
         )
     self.RotateEnvelopeKey = channel.unary_unary(
-        '/kvmagent.kvmagent.keyagent.KeyAgentService/RotateEnvelopeKey',
+        '/keyagent.v1.KeyAgentService/RotateEnvelopeKey',
         request_serializer=key__agent__pb2.RotateEnvelopeKeyRequest.SerializeToString,
         response_deserializer=key__agent__pb2.RotateEnvelopeKeyResponse.FromString,
         )
     self.GetPublicKey = channel.unary_unary(
-        '/kvmagent.kvmagent.keyagent.KeyAgentService/GetPublicKey',
+        '/keyagent.v1.KeyAgentService/GetPublicKey',
         request_serializer=key__agent__pb2.GetPublicKeyRequest.SerializeToString,
         response_deserializer=key__agent__pb2.GetPublicKeyResponse.FromString,
         )
     self.CheckEnvelopeKey = channel.unary_unary(
-        '/kvmagent.kvmagent.keyagent.KeyAgentService/CheckEnvelopeKey',
+        '/keyagent.v1.KeyAgentService/CheckEnvelopeKey',
         request_serializer=key__agent__pb2.CheckEnvelopeKeyRequest.SerializeToString,
         response_deserializer=key__agent__pb2.CheckEnvelopeKeyResponse.FromString,
         )
     self.EnsureSecret = channel.unary_unary(
-        '/kvmagent.kvmagent.keyagent.KeyAgentService/EnsureSecret',
+        '/keyagent.v1.KeyAgentService/EnsureSecret',
         request_serializer=key__agent__pb2.EnsureSecretRequest.SerializeToString,
         response_deserializer=key__agent__pb2.EnsureSecretResponse.FromString,
         )
@@ -110,5 +110,5 @@ def add_KeyAgentServiceServicer_to_server(servicer, server):
       ),
   }
   generic_handler = grpc.method_handlers_generic_handler(
-      'kvmagent.kvmagent.keyagent.KeyAgentService', rpc_method_handlers)
+      'keyagent.v1.KeyAgentService', rpc_method_handlers)
   server.add_generic_rpc_handlers((generic_handler,))
