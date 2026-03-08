@@ -15,10 +15,10 @@ _sym_db = _symbol_database.Default()
 
 DESCRIPTOR = _descriptor.FileDescriptor(
   name='key_agent.proto',
-  package='kvmagent.kvmagent.keyagent',
+  package='keyagent.v1',
   syntax='proto3',
-  serialized_options=b'Z+key-manager/api/gen/v1/key-agent;keyagentv1',
-  serialized_pb=b'\n\x0fkey_agent.proto\x12\x1akvmagent.kvmagent.keyagent\"\x1a\n\x18\x43reateEnvelopeKeyRequest\",\n\x19\x43reateEnvelopeKeyResponse\x12\x0f\n\x07\x63reated\x18\x01 \x01(\x08\"\x1a\n\x18RotateEnvelopeKeyRequest\"\x1b\n\x19RotateEnvelopeKeyResponse\"\x15\n\x13GetPublicKeyRequest\"*\n\x14GetPublicKeyResponse\x12\x12\n\npublic_key\x18\x01 \x01(\x0c\"\x19\n\x17\x43heckEnvelopeKeyRequest\"\x1a\n\x18\x43heckEnvelopeKeyResponse\"z\n\x13\x45nsureSecretRequest\x12\x15\n\rencrypted_dek\x18\x01 \x01(\x0c\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x0f\n\x07vm_uuid\x18\x03 \x01(\t\x12\x0f\n\x07purpose\x18\x04 \x01(\t\x12\x15\n\rprovider_name\x18\x05 \x01(\t\"+\n\x14\x45nsureSecretResponse\x12\x13\n\x0bsecret_uuid\x18\x01 \x01(\t2\xfc\x04\n\x0fKeyAgentService\x12\x80\x01\n\x11\x43reateEnvelopeKey\x12\x34.kvmagent.kvmagent.keyagent.CreateEnvelopeKeyRequest\x1a\x35.kvmagent.kvmagent.keyagent.CreateEnvelopeKeyResponse\x12\x80\x01\n\x11RotateEnvelopeKey\x12\x34.kvmagent.kvmagent.keyagent.RotateEnvelopeKeyRequest\x1a\x35.kvmagent.kvmagent.keyagent.RotateEnvelopeKeyResponse\x12q\n\x0cGetPublicKey\x12/.kvmagent.kvmagent.keyagent.GetPublicKeyRequest\x1a\x30.kvmagent.kvmagent.keyagent.GetPublicKeyResponse\x12}\n\x10\x43heckEnvelopeKey\x12\x33.kvmagent.kvmagent.keyagent.CheckEnvelopeKeyRequest\x1a\x34.kvmagent.kvmagent.keyagent.CheckEnvelopeKeyResponse\x12q\n\x0c\x45nsureSecret\x12/.kvmagent.kvmagent.keyagent.EnsureSecretRequest\x1a\x30.kvmagent.kvmagent.keyagent.EnsureSecretResponseB-Z+key-manager/api/gen/v1/key-agent;keyagentv1b\x06proto3'
+  serialized_options=None,
+  serialized_pb=b'\n\x0fkey_agent.proto\x12\x0bkeyagent.v1\"\x1a\n\x18\x43reateEnvelopeKeyRequest\",\n\x19\x43reateEnvelopeKeyResponse\x12\x0f\n\x07\x63reated\x18\x01 \x01(\x08\"\x1a\n\x18RotateEnvelopeKeyRequest\"\x1b\n\x19RotateEnvelopeKeyResponse\"\x15\n\x13GetPublicKeyRequest\"*\n\x14GetPublicKeyResponse\x12\x12\n\npublic_key\x18\x01 \x01(\x0c\"\x19\n\x17\x43heckEnvelopeKeyRequest\"\x1a\n\x18\x43heckEnvelopeKeyResponse\"z\n\x13\x45nsureSecretRequest\x12\x15\n\rencrypted_dek\x18\x01 \x01(\x0c\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x0f\n\x07vm_uuid\x18\x03 \x01(\t\x12\x0f\n\x07purpose\x18\x04 \x01(\t\x12\x15\n\rprovider_name\x18\x05 \x01(\t\"+\n\x14\x45nsureSecretResponse\x12\x13\n\x0bsecret_uuid\x18\x01 \x01(\t2\xe4\x03\n\x0fKeyAgentService\x12\x62\n\x11\x43reateEnvelopeKey\x12%.keyagent.v1.CreateEnvelopeKeyRequest\x1a&.keyagent.v1.CreateEnvelopeKeyResponse\x12\x62\n\x11RotateEnvelopeKey\x12%.keyagent.v1.RotateEnvelopeKeyRequest\x1a&.keyagent.v1.RotateEnvelopeKeyResponse\x12S\n\x0cGetPublicKey\x12 .keyagent.v1.GetPublicKeyRequest\x1a!.keyagent.v1.GetPublicKeyResponse\x12_\n\x10\x43heckEnvelopeKey\x12$.keyagent.v1.CheckEnvelopeKeyRequest\x1a%.keyagent.v1.CheckEnvelopeKeyResponse\x12S\n\x0c\x45nsureSecret\x12 .keyagent.v1.EnsureSecretRequest\x1a!.keyagent.v1.EnsureSecretResponseb\x06proto3'
 )
 
 
@@ -26,7 +26,7 @@ DESCRIPTOR = _descriptor.FileDescriptor(
 
 _CREATEENVELOPEKEYREQUEST = _descriptor.Descriptor(
   name='CreateEnvelopeKeyRequest',
-  full_name='kvmagent.kvmagent.keyagent.CreateEnvelopeKeyRequest',
+  full_name='keyagent.v1.CreateEnvelopeKeyRequest',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
@@ -43,20 +43,20 @@ _CREATEENVELOPEKEYREQUEST = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=47,
-  serialized_end=73,
+  serialized_start=32,
+  serialized_end=58,
 )
 
 
 _CREATEENVELOPEKEYRESPONSE = _descriptor.Descriptor(
   name='CreateEnvelopeKeyResponse',
-  full_name='kvmagent.kvmagent.keyagent.CreateEnvelopeKeyResponse',
+  full_name='keyagent.v1.CreateEnvelopeKeyResponse',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
   fields=[
     _descriptor.FieldDescriptor(
-      name='created', full_name='kvmagent.kvmagent.keyagent.CreateEnvelopeKeyResponse.created', index=0,
+      name='created', full_name='keyagent.v1.CreateEnvelopeKeyResponse.created', index=0,
       number=1, type=8, cpp_type=7, label=1,
       has_default_value=False, default_value=False,
       message_type=None, enum_type=None, containing_type=None,
@@ -74,14 +74,14 @@ _CREATEENVELOPEKEYRESPONSE = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=75,
-  serialized_end=119,
+  serialized_start=60,
+  serialized_end=104,
 )
 
 
 _ROTATEENVELOPEKEYREQUEST = _descriptor.Descriptor(
   name='RotateEnvelopeKeyRequest',
-  full_name='kvmagent.kvmagent.keyagent.RotateEnvelopeKeyRequest',
+  full_name='keyagent.v1.RotateEnvelopeKeyRequest',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
@@ -98,14 +98,14 @@ _ROTATEENVELOPEKEYREQUEST = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=121,
-  serialized_end=147,
+  serialized_start=106,
+  serialized_end=132,
 )
 
 
 _ROTATEENVELOPEKEYRESPONSE = _descriptor.Descriptor(
   name='RotateEnvelopeKeyResponse',
-  full_name='kvmagent.kvmagent.keyagent.RotateEnvelopeKeyResponse',
+  full_name='keyagent.v1.RotateEnvelopeKeyResponse',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
@@ -122,14 +122,14 @@ _ROTATEENVELOPEKEYRESPONSE = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=149,
-  serialized_end=176,
+  serialized_start=134,
+  serialized_end=161,
 )
 
 
 _GETPUBLICKEYREQUEST = _descriptor.Descriptor(
   name='GetPublicKeyRequest',
-  full_name='kvmagent.kvmagent.keyagent.GetPublicKeyRequest',
+  full_name='keyagent.v1.GetPublicKeyRequest',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
@@ -146,20 +146,20 @@ _GETPUBLICKEYREQUEST = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=178,
-  serialized_end=199,
+  serialized_start=163,
+  serialized_end=184,
 )
 
 
 _GETPUBLICKEYRESPONSE = _descriptor.Descriptor(
   name='GetPublicKeyResponse',
-  full_name='kvmagent.kvmagent.keyagent.GetPublicKeyResponse',
+  full_name='keyagent.v1.GetPublicKeyResponse',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
   fields=[
     _descriptor.FieldDescriptor(
-      name='public_key', full_name='kvmagent.kvmagent.keyagent.GetPublicKeyResponse.public_key', index=0,
+      name='public_key', full_name='keyagent.v1.GetPublicKeyResponse.public_key', index=0,
       number=1, type=12, cpp_type=9, label=1,
       has_default_value=False, default_value=b"",
       message_type=None, enum_type=None, containing_type=None,
@@ -177,14 +177,14 @@ _GETPUBLICKEYRESPONSE = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=201,
-  serialized_end=243,
+  serialized_start=186,
+  serialized_end=228,
 )
 
 
 _CHECKENVELOPEKEYREQUEST = _descriptor.Descriptor(
   name='CheckEnvelopeKeyRequest',
-  full_name='kvmagent.kvmagent.keyagent.CheckEnvelopeKeyRequest',
+  full_name='keyagent.v1.CheckEnvelopeKeyRequest',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
@@ -201,14 +201,14 @@ _CHECKENVELOPEKEYREQUEST = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=245,
-  serialized_end=270,
+  serialized_start=230,
+  serialized_end=255,
 )
 
 
 _CHECKENVELOPEKEYRESPONSE = _descriptor.Descriptor(
   name='CheckEnvelopeKeyResponse',
-  full_name='kvmagent.kvmagent.keyagent.CheckEnvelopeKeyResponse',
+  full_name='keyagent.v1.CheckEnvelopeKeyResponse',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
@@ -225,48 +225,48 @@ _CHECKENVELOPEKEYRESPONSE = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=272,
-  serialized_end=298,
+  serialized_start=257,
+  serialized_end=283,
 )
 
 
 _ENSURESECRETREQUEST = _descriptor.Descriptor(
   name='EnsureSecretRequest',
-  full_name='kvmagent.kvmagent.keyagent.EnsureSecretRequest',
+  full_name='keyagent.v1.EnsureSecretRequest',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
   fields=[
     _descriptor.FieldDescriptor(
-      name='encrypted_dek', full_name='kvmagent.kvmagent.keyagent.EnsureSecretRequest.encrypted_dek', index=0,
+      name='encrypted_dek', full_name='keyagent.v1.EnsureSecretRequest.encrypted_dek', index=0,
       number=1, type=12, cpp_type=9, label=1,
       has_default_value=False, default_value=b"",
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
-      name='description', full_name='kvmagent.kvmagent.keyagent.EnsureSecretRequest.description', index=1,
+      name='description', full_name='keyagent.v1.EnsureSecretRequest.description', index=1,
       number=2, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
-      name='vm_uuid', full_name='kvmagent.kvmagent.keyagent.EnsureSecretRequest.vm_uuid', index=2,
+      name='vm_uuid', full_name='keyagent.v1.EnsureSecretRequest.vm_uuid', index=2,
       number=3, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
-      name='purpose', full_name='kvmagent.kvmagent.keyagent.EnsureSecretRequest.purpose', index=3,
+      name='purpose', full_name='keyagent.v1.EnsureSecretRequest.purpose', index=3,
       number=4, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
-      name='provider_name', full_name='kvmagent.kvmagent.keyagent.EnsureSecretRequest.provider_name', index=4,
+      name='provider_name', full_name='keyagent.v1.EnsureSecretRequest.provider_name', index=4,
       number=5, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
@@ -284,20 +284,20 @@ _ENSURESECRETREQUEST = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=300,
-  serialized_end=422,
+  serialized_start=285,
+  serialized_end=407,
 )
 
 
 _ENSURESECRETRESPONSE = _descriptor.Descriptor(
   name='EnsureSecretResponse',
-  full_name='kvmagent.kvmagent.keyagent.EnsureSecretResponse',
+  full_name='keyagent.v1.EnsureSecretResponse',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
   fields=[
     _descriptor.FieldDescriptor(
-      name='secret_uuid', full_name='kvmagent.kvmagent.keyagent.EnsureSecretResponse.secret_uuid', index=0,
+      name='secret_uuid', full_name='keyagent.v1.EnsureSecretResponse.secret_uuid', index=0,
       number=1, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
@@ -315,8 +315,8 @@ _ENSURESECRETRESPONSE = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=424,
-  serialized_end=467,
+  serialized_start=409,
+  serialized_end=452,
 )
 
 DESCRIPTOR.message_types_by_name['CreateEnvelopeKeyRequest'] = _CREATEENVELOPEKEYREQUEST
@@ -334,88 +334,87 @@ _sym_db.RegisterFileDescriptor(DESCRIPTOR)
 CreateEnvelopeKeyRequest = _reflection.GeneratedProtocolMessageType('CreateEnvelopeKeyRequest', (_message.Message,), {
   'DESCRIPTOR' : _CREATEENVELOPEKEYREQUEST,
   '__module__' : 'key_agent_pb2'
-  # @@protoc_insertion_point(class_scope:kvmagent.kvmagent.keyagent.CreateEnvelopeKeyRequest)
+  # @@protoc_insertion_point(class_scope:keyagent.v1.CreateEnvelopeKeyRequest)
   })
 _sym_db.RegisterMessage(CreateEnvelopeKeyRequest)
 
 CreateEnvelopeKeyResponse = _reflection.GeneratedProtocolMessageType('CreateEnvelopeKeyResponse', (_message.Message,), {
   'DESCRIPTOR' : _CREATEENVELOPEKEYRESPONSE,
   '__module__' : 'key_agent_pb2'
-  # @@protoc_insertion_point(class_scope:kvmagent.kvmagent.keyagent.CreateEnvelopeKeyResponse)
+  # @@protoc_insertion_point(class_scope:keyagent.v1.CreateEnvelopeKeyResponse)
   })
 _sym_db.RegisterMessage(CreateEnvelopeKeyResponse)
 
 RotateEnvelopeKeyRequest = _reflection.GeneratedProtocolMessageType('RotateEnvelopeKeyRequest', (_message.Message,), {
   'DESCRIPTOR' : _ROTATEENVELOPEKEYREQUEST,
   '__module__' : 'key_agent_pb2'
-  # @@protoc_insertion_point(class_scope:kvmagent.kvmagent.keyagent.RotateEnvelopeKeyRequest)
+  # @@protoc_insertion_point(class_scope:keyagent.v1.RotateEnvelopeKeyRequest)
   })
 _sym_db.RegisterMessage(RotateEnvelopeKeyRequest)
 
 RotateEnvelopeKeyResponse = _reflection.GeneratedProtocolMessageType('RotateEnvelopeKeyResponse', (_message.Message,), {
   'DESCRIPTOR' : _ROTATEENVELOPEKEYRESPONSE,
   '__module__' : 'key_agent_pb2'
-  # @@protoc_insertion_point(class_scope:kvmagent.kvmagent.keyagent.RotateEnvelopeKeyResponse)
+  # @@protoc_insertion_point(class_scope:keyagent.v1.RotateEnvelopeKeyResponse)
   })
 _sym_db.RegisterMessage(RotateEnvelopeKeyResponse)
 
 GetPublicKeyRequest = _reflection.GeneratedProtocolMessageType('GetPublicKeyRequest', (_message.Message,), {
   'DESCRIPTOR' : _GETPUBLICKEYREQUEST,
   '__module__' : 'key_agent_pb2'
-  # @@protoc_insertion_point(class_scope:kvmagent.kvmagent.keyagent.GetPublicKeyRequest)
+  # @@protoc_insertion_point(class_scope:keyagent.v1.GetPublicKeyRequest)
   })
 _sym_db.RegisterMessage(GetPublicKeyRequest)
 
 GetPublicKeyResponse = _reflection.GeneratedProtocolMessageType('GetPublicKeyResponse', (_message.Message,), {
   'DESCRIPTOR' : _GETPUBLICKEYRESPONSE,
   '__module__' : 'key_agent_pb2'
-  # @@protoc_insertion_point(class_scope:kvmagent.kvmagent.keyagent.GetPublicKeyResponse)
+  # @@protoc_insertion_point(class_scope:keyagent.v1.GetPublicKeyResponse)
   })
 _sym_db.RegisterMessage(GetPublicKeyResponse)
 
 CheckEnvelopeKeyRequest = _reflection.GeneratedProtocolMessageType('CheckEnvelopeKeyRequest', (_message.Message,), {
   'DESCRIPTOR' : _CHECKENVELOPEKEYREQUEST,
   '__module__' : 'key_agent_pb2'
-  # @@protoc_insertion_point(class_scope:kvmagent.kvmagent.keyagent.CheckEnvelopeKeyRequest)
+  # @@protoc_insertion_point(class_scope:keyagent.v1.CheckEnvelopeKeyRequest)
   })
 _sym_db.RegisterMessage(CheckEnvelopeKeyRequest)
 
 CheckEnvelopeKeyResponse = _reflection.GeneratedProtocolMessageType('CheckEnvelopeKeyResponse', (_message.Message,), {
   'DESCRIPTOR' : _CHECKENVELOPEKEYRESPONSE,
   '__module__' : 'key_agent_pb2'
-  # @@protoc_insertion_point(class_scope:kvmagent.kvmagent.keyagent.CheckEnvelopeKeyResponse)
+  # @@protoc_insertion_point(class_scope:keyagent.v1.CheckEnvelopeKeyResponse)
   })
 _sym_db.RegisterMessage(CheckEnvelopeKeyResponse)
 
 EnsureSecretRequest = _reflection.GeneratedProtocolMessageType('EnsureSecretRequest', (_message.Message,), {
   'DESCRIPTOR' : _ENSURESECRETREQUEST,
   '__module__' : 'key_agent_pb2'
-  # @@protoc_insertion_point(class_scope:kvmagent.kvmagent.keyagent.EnsureSecretRequest)
+  # @@protoc_insertion_point(class_scope:keyagent.v1.EnsureSecretRequest)
   })
 _sym_db.RegisterMessage(EnsureSecretRequest)
 
 EnsureSecretResponse = _reflection.GeneratedProtocolMessageType('EnsureSecretResponse', (_message.Message,), {
   'DESCRIPTOR' : _ENSURESECRETRESPONSE,
   '__module__' : 'key_agent_pb2'
-  # @@protoc_insertion_point(class_scope:kvmagent.kvmagent.keyagent.EnsureSecretResponse)
+  # @@protoc_insertion_point(class_scope:keyagent.v1.EnsureSecretResponse)
   })
 _sym_db.RegisterMessage(EnsureSecretResponse)
 
 
-DESCRIPTOR._options = None
 
 _KEYAGENTSERVICE = _descriptor.ServiceDescriptor(
   name='KeyAgentService',
-  full_name='kvmagent.kvmagent.keyagent.KeyAgentService',
+  full_name='keyagent.v1.KeyAgentService',
   file=DESCRIPTOR,
   index=0,
   serialized_options=None,
-  serialized_start=470,
-  serialized_end=1106,
+  serialized_start=455,
+  serialized_end=939,
   methods=[
   _descriptor.MethodDescriptor(
     name='CreateEnvelopeKey',
-    full_name='kvmagent.kvmagent.keyagent.KeyAgentService.CreateEnvelopeKey',
+    full_name='keyagent.v1.KeyAgentService.CreateEnvelopeKey',
     index=0,
     containing_service=None,
     input_type=_CREATEENVELOPEKEYREQUEST,
@@ -424,7 +423,7 @@ _KEYAGENTSERVICE = _descriptor.ServiceDescriptor(
   ),
   _descriptor.MethodDescriptor(
     name='RotateEnvelopeKey',
-    full_name='kvmagent.kvmagent.keyagent.KeyAgentService.RotateEnvelopeKey',
+    full_name='keyagent.v1.KeyAgentService.RotateEnvelopeKey',
     index=1,
     containing_service=None,
     input_type=_ROTATEENVELOPEKEYREQUEST,
@@ -433,7 +432,7 @@ _KEYAGENTSERVICE = _descriptor.ServiceDescriptor(
   ),
   _descriptor.MethodDescriptor(
     name='GetPublicKey',
-    full_name='kvmagent.kvmagent.keyagent.KeyAgentService.GetPublicKey',
+    full_name='keyagent.v1.KeyAgentService.GetPublicKey',
     index=2,
     containing_service=None,
     input_type=_GETPUBLICKEYREQUEST,
@@ -442,7 +441,7 @@ _KEYAGENTSERVICE = _descriptor.ServiceDescriptor(
   ),
   _descriptor.MethodDescriptor(
     name='CheckEnvelopeKey',
-    full_name='kvmagent.kvmagent.keyagent.KeyAgentService.CheckEnvelopeKey',
+    full_name='keyagent.v1.KeyAgentService.CheckEnvelopeKey',
     index=3,
     containing_service=None,
     input_type=_CHECKENVELOPEKEYREQUEST,
@@ -451,7 +450,7 @@ _KEYAGENTSERVICE = _descriptor.ServiceDescriptor(
   ),
   _descriptor.MethodDescriptor(
     name='EnsureSecret',
-    full_name='kvmagent.kvmagent.keyagent.KeyAgentService.EnsureSecret',
+    full_name='keyagent.v1.KeyAgentService.EnsureSecret',
     index=4,
     containing_service=None,
     input_type=_ENSURESECRETREQUEST,
