@@ -41,6 +41,11 @@ from zstacklib.utils import thread
 from zstacklib.utils import xmlobject
 from zstacklib.utils.shell import run_without_log
 
+try:
+    long
+except NameError:
+    long = int
+
 logger = log.get_logger(__name__)
 
 RPM_BASED_OS = ['redhat', 'centos', 'alibaba', 'kylin10', 'rocky']
@@ -306,6 +311,55 @@ def rm_file_force(fpath):
 
 black_dpath_list = ["", "/", "*", "/root", "/var", "/bin", "/lib", "/sys"]
 
+
+def contains_path_traversal(path):
+    """Return True if *path* contains a '..' traversal component."""
+    normalized = path.replace('\\', '/')
+    return any(part == '..' for part in normalized.split('/'))
+
+
+# Shell metacharacters that must not appear in paths passed to shell commands.
+_SHELL_UNSAFE_RE = re.compile(
+    r'['
+    r';|&'       # command chaining / pipes
+    r'$`'        # variable expansion / command substitution
+    r'\'\"'   # quotes
+    r'\\'      # backslash
+    r'(){}'      # subshell / brace expansion
+    r'\[\]'    # glob brackets
+    r'<>'        # I/O redirection
+    r'!#~'       # history expansion, comment, home expansion
+    r'\n\r'    # newlines
+    r'\x00'     # null byte
+    r'*?'        # glob wildcards
+    r']'
+)
+
+try:
+    _string_types = basestring
+except NameError:
+    _string_types = str
+
+
+def validate_install_path(install_path, param_name="installPath"):
+    if not install_path:
+        return None, "%s cannot be empty" % param_name
+    if not isinstance(install_path, _string_types):
+        return None, "%s must be a string, got %s" % (param_name, type(install_path).__name__)
+    if not os.path.isabs(install_path):
+        return None, "%s must be an absolute path" % param_name
+    if contains_path_traversal(install_path):
+        return None, "%s %s contains illegal traversal sequence" % (param_name, install_path)
+    # Normalize first so that all subsequent checks operate on the canonical path.
+    install_path = os.path.normpath(install_path)
+    m = _SHELL_UNSAFE_RE.search(install_path)
+    if m:
+        return None, "%s contains unsafe shell character: %r" % (param_name, m.group())
+    if install_path in black_dpath_list:
+        return None, "%s %s is in black_dpath_list" % (param_name, install_path)
+    return install_path, None
+
+
 def rm_dir_force(dpath):
     if dpath.strip() in black_dpath_list:
         raise Exception("how dare you delete directory %s" % dpath)
@@ -315,6 +369,135 @@ def rm_dir_force(dpath):
         shutil.rmtree(dpath, ignore_errors=True)
     else:
         rm_file_force(dpath)
+
+
+_PROTECTED_TOP_DIRS = frozenset([
+    '/bin', '/boot', '/dev', '/etc', '/lib', '/lib64',
+    '/proc', '/run', '/sbin', '/srv', '/sys', '/tmp', '/usr', '/var',
+])
+
+_PROTECTED_FILE_NAMES = frozenset([
+    'shadow', 'passwd', 'sudoers', 'fstab', 'crypttab',
+    'authorized_keys', 'id_rsa', 'id_ed25519',
+])
+
+_PROTECTED_DEPTH1_DIRS = frozenset([
+    '/etc', '/usr', '/var', '/lib', '/lib64',
+])
+
+_SENSITIVE_DIR_PREFIXES = ('/etc/',)
+
+
+def _is_under_sensitive_dir(path):
+    return any(path.startswith(p) for p in _SENSITIVE_DIR_PREFIXES) or '/.ssh/' in path
+
+
+def is_path_dangerous(path):
+    """Check whether *path* is dangerous to delete.
+
+    Returns (is_dangerous: bool, reason: str|None).
+    """
+    if not path:
+        return True, "path is empty"
+
+    path = os.path.normpath(path)
+
+    if path in black_dpath_list:
+        return True, "%s: in black_dpath_list" % path
+
+    if path in _PROTECTED_TOP_DIRS:
+        return True, "%s: is a protected top-level system directory" % path
+
+    parts = path.rstrip('/').split('/')
+    if len(parts) == 3 and ('/' + parts[1]) in _PROTECTED_DEPTH1_DIRS:
+        return True, "%s: is a depth-1 child of a protected system directory" % path
+
+    basename = os.path.basename(path)
+    if basename in _PROTECTED_FILE_NAMES and _is_under_sensitive_dir(path):
+        return True, "%s: matches a protected sensitive filename '%s' under a sensitive directory" % (path, basename)
+
+    return False, None
+
+
+def is_safe_to_delete_dir(path):
+    dangerous, reason = is_path_dangerous(path)
+    return not dangerous, reason
+
+
+def safe_delete_paths(paths, max_batch=1000):
+    if len(paths) > max_batch:
+        raise ValueError("too many paths to delete in one batch (max: %d, got: %d)"
+                         % (max_batch, len(paths)))
+
+    failed = []
+    for f in paths:
+        if not isinstance(f, _string_types):
+            failed.append("%s: not a string (type: %s)" % (repr(f), type(f).__name__))
+            continue
+        f = f.strip()
+        if '\x00' in f:
+            failed.append("%s: contains null byte" % repr(f))
+            continue
+        if not os.path.isabs(f):
+            failed.append("%s: not an absolute path" % f)
+            continue
+        if contains_path_traversal(f):
+            failed.append("%s: contains illegal traversal sequence" % f)
+            continue
+
+        f = os.path.normpath(f)
+
+        dangerous, reason = is_path_dangerous(f)
+        if dangerous:
+            failed.append(reason)
+            continue
+
+        if not os.path.exists(f) and not os.path.islink(f):
+            continue
+
+        # Resolve symlinks before deletion; use os.unlink() to avoid
+        # shutil.rmtree() following the link into the target.
+        if os.path.islink(f):
+            real_target = os.path.realpath(f)
+            dangerous, reason = is_path_dangerous(real_target)
+            if dangerous:
+                failed.append("%s: symlink target %s is dangerous (%s)" % (f, real_target, reason))
+                continue
+            try:
+                logger.info("deleting symlink: %s -> %s" % (f, real_target))
+                os.unlink(f)
+            except Exception as e:
+                failed.append("%s: %s" % (f, str(e)))
+            continue
+
+        try:
+            if os.path.isdir(f):
+                # Also check realpath for directories (e.g. bind mounts
+                # pointing to protected directories).
+                real_f = os.path.realpath(f)
+                if real_f != f:
+                    dangerous, reason = is_path_dangerous(real_f)
+                    if dangerous:
+                        failed.append("%s: realpath %s is dangerous (%s)" % (f, real_f, reason))
+                        continue
+                logger.info("deleting directory: %s" % f)
+                rm_dir_force(f)
+            else:
+                # Also check realpath for regular files (e.g. parent
+                # symlink pointing into a protected directory).
+                real_f = os.path.realpath(f)
+                if real_f != f:
+                    dangerous, reason = is_path_dangerous(real_f)
+                    if dangerous:
+                        failed.append("%s: realpath %s is dangerous (%s)" % (f, real_f, reason))
+                        continue
+                logger.info("deleting file: %s (real: %s)" % (f, real_f))
+                rm_file_force(real_f)
+        except Exception as e:
+            failed.append("%s: %s" % (f, str(e)))
+
+    return failed
+
 
 def rm_file_checked(fpath):
     if not os.path.exists(fpath):
@@ -481,8 +664,41 @@ def get_total_file_size(paths):
     return total
 
 def get_disk_capacity_by_df(dir_path):
-    total, avail = shell.call("df %s|tail -1|awk '{print $(NF-4), $(NF-2)}'" % dir_path).split()
+    total, avail = shell.call("df %s|tail -1|awk '{print $(NF-4), $(NF-2)}'" % shellquote(dir_path)).split()
     return long(total) * 1024, long(avail) * 1024
+
+def get_tar_uncompressed_size(tar_path, timeout=1200):
+    """Get the total uncompressed size of a tar.gz file.
+
+    Tries gzip -l first (fast, but only accurate for < 2 GiB compressed files),
+    falls back to tar -tvf (slow, always accurate).
+    """
+    if tar_path.endswith('.gz') or tar_path.endswith('.tgz'):
+        compressed_file_size = os.path.getsize(tar_path)
+        if compressed_file_size < 2 * 1024 ** 3:
+            try:
+                output = shell.call("gzip -l %s" % shellquote(tar_path))
+                lines = output.strip().splitlines()
+                if len(lines) >= 2:
+                    parts = lines[1].split()
+                    if len(parts) >= 2:
+                        uncompressed = int(parts[1])
+                        compressed = int(parts[0])
+                        if uncompressed >= compressed and uncompressed > 0:
+                            return uncompressed
+                        logger.debug("gzip -l suspicious values for %s (compressed=%d, uncompressed=%d)" % (tar_path, compressed, uncompressed))
+            except Exception as e:
+                logger.debug("gzip -l failed for %s: %s" % (tar_path, str(e)))
+        else:
+            logger.debug("skipping gzip -l for %s (>= 2 GiB)" % tar_path)
+
+    try:
+        output = shell.call(
+            "set -o pipefail; timeout %d tar --numeric-owner -tvf %s | awk '{s+=$3} END{print s+0}'"
+            % (timeout, shellquote(tar_path)))
+        return int(output.strip())
+    except Exception as e:
+        raise Exception("failed to get uncompressed size via 'tar -tvf' for %s: %s" % (tar_path, str(e)))
 
 def get_folder_size(path = "."):
     total_size = 0
