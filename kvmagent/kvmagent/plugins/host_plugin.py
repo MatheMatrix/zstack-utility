@@ -4,6 +4,7 @@
 '''
 import base64
 import copy
+import functools
 import hashlib
 import os
 import os.path
@@ -55,11 +56,23 @@ host_arch = platform.machine()
 IS_AARCH64 = host_arch == 'aarch64'
 IS_MIPS64EL = host_arch == 'mips64el'
 IS_LOONGARCH64 = host_arch == 'loongarch64'
-GRUB_ROCKY_ENVS = bash_o("find /boot -name grubenv").strip().split("\n")
 GRUB_FILES = ["/boot/grub2/grub.cfg", "/boot/grub/grub.cfg", "/etc/grub2-efi.cfg", "/etc/grub-efi.cfg"] \
     + ["/boot/efi/EFI/{}/grub.cfg".format(DIST_NAME)]
-IPTABLES_CMD = iptables.get_iptables_cmd()
-EBTABLES_CMD = ebtables.get_ebtables_cmd()
+
+
+@functools.lru_cache(maxsize=1)
+def get_grub_rocky_envs():
+    return bash_o("find /boot -name grubenv").strip().split("\n")
+
+
+@functools.lru_cache(maxsize=1)
+def get_iptables_cmd():
+    return iptables.get_iptables_cmd()
+
+
+@functools.lru_cache(maxsize=1)
+def get_ebtables_cmd():
+    return ebtables.get_ebtables_cmd()
 
 # =============================================================================
 # GPU Plugin Configuration - Simplified, adapter no longer needed
@@ -1021,7 +1034,7 @@ class UpdateConfigration(object):
                                      r'\1 {0}=on modprobe.blacklist=snd_hda_intel,amd76x_edac,vga16fb,nouveau,rivafb,nvidiafb,rivatv,amdgpu,radeon'.format(
                                          self.iommu_type), content)
                 linux.write_file(grub_path, content)
-        for grub_rocky_env in GRUB_ROCKY_ENVS:
+        for grub_rocky_env in get_grub_rocky_envs():
             if os.path.exists(grub_rocky_env) and self.enableIommu:
                 env = updateGrubContent(linux.read_file(grub_rocky_env))
                 env = re.sub(r'(kernelopts=.*)',
@@ -1222,8 +1235,8 @@ class HostPlugin(kvmagent.KvmAgent):
         self.start_write_to_server()
 
         # remove old rules for vf nic
-        bash_r(EBTABLES_CMD + ' -D FORWARD -j ZSTACK-VF-NICS')
-        bash_r(EBTABLES_CMD + ' -X ZSTACK-VF-NICS')
+        bash_r(get_ebtables_cmd() + ' -D FORWARD -j ZSTACK-VF-NICS')
+        bash_r(get_ebtables_cmd() + ' -X ZSTACK-VF-NICS')
 
         return jsonobject.dumps(rsp)
 
@@ -2146,7 +2159,7 @@ do
        sed -i '/^[[:space:]]*kernelopts/s/[[:blank:]]*transparent_hugepage[[:blank:]]*=[[:blank:]]*[[:graph:]]*//g' $env
   fi
 done
-''' % (' '.join(GRUB_FILES), ' '.join(GRUB_ROCKY_ENVS))
+''' % (' '.join(GRUB_FILES), ' '.join(get_grub_rocky_envs()))
         disable_hugepage_script_path = linux.create_temp_file()
         with open(disable_hugepage_script_path, 'w') as f:
             f.write(disable_hugepage_script)
@@ -2238,7 +2251,7 @@ done
             )
 
         # Configure rocky grubenv files - kernelopts line
-        for grub_env in GRUB_ROCKY_ENVS:
+        for grub_env in get_grub_rocky_envs():
             if os.path.exists(grub_env):
                 r, o, e = bash_roe("grub2-editenv %s list" % grub_env)
                 if r == 0:

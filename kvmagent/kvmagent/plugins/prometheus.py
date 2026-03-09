@@ -1,3 +1,4 @@
+import functools
 import os.path
 import re
 
@@ -35,13 +36,21 @@ collectd_dir = "/var/lib/zstack/collectd/"
 latest_collect_result = {}
 collectResultLock = threading.RLock()
 asyncDataCollectorLock = threading.RLock()
-QEMU_CMD = os.path.basename(kvmagent.get_qemu_path())
 ALARM_CONFIG = None
 PAGE_SIZE = None
 disk_list_record = None
 hba_port_state_list_record_map = {}
 nvme_serial_numbers_record = None
-is_hygon = True if 'hygon' in linux.get_cpu_model()[1].lower() else False
+
+
+@functools.lru_cache(maxsize=1)
+def get_qemu_cmd():
+    return os.path.basename(kvmagent.get_qemu_path())
+
+
+@functools.lru_cache(maxsize=1)
+def get_is_hygon():
+    return 'hygon' in linux.get_cpu_model()[1].lower()
 dump_stack_and_objects = True
 kvmagent_physical_memory_usage_alarm_time = None
 
@@ -996,7 +1005,7 @@ def collect_ipmi_state():
     metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
 
     # get cpu info
-    if not is_hygon:
+    if not get_is_hygon():
         r, cpu_temps = bash_ro("sensors")
         if r == 0:
             count = 0
@@ -1139,7 +1148,7 @@ def collect_ipmi_state():
                     send_physical_fan_status_alarm_to_mn(
                         fan_name, info.split("|")[2].strip())
             elif re.match(r"^cpu\d+_core_temp", info):
-                if not is_hygon:
+                if not get_is_hygon():
                     continue
                 pattern = r'cpu(\d+)_core_temp.*?(\d+) degrees c'
                 match = re.search(pattern, info)
@@ -1271,7 +1280,7 @@ def fetch_vm_qemu_processes():
     processes = []
     for process in psutil.process_iter():
         try:
-            if process.name() == QEMU_CMD or QEMU_CMD in process.cmdline():  # /usr/libexec/qemu-kvm
+            if process.name() == get_qemu_cmd() or get_qemu_cmd() in process.cmdline():  # /usr/libexec/qemu-kvm
                 processes.append(process)
         except psutil.NoSuchProcess:
             pass
@@ -1315,7 +1324,7 @@ def collect_vm_statistics():
             return
 
         for pid_cpu_usage in pid_cpu_usages_str.splitlines():
-            if QEMU_CMD not in pid_cpu_usage:
+            if get_qemu_cmd() not in pid_cpu_usage:
                 continue
             arr = pid_cpu_usage.split()
             pid = arr[0]
