@@ -4,8 +4,10 @@ import urlparse
 from enum import Enum
 
 from zstacklib.utils import traceable_shell, linux, shell, plugin, log
+from zstacklib.utils.bash import bash_roe
 
 logger = log.get_logger(__name__)
+
 
 class UrlScheme(Enum):
     """Supported URL schemes"""
@@ -48,7 +50,7 @@ class HttpDownloadStrategy(DownloadStrategy):
             return True, None
         except linux.LinuxError as e:
             linux.rm_file_force(self.downloader.install_path)
-            traceback.format_exc()
+            logger.warning("HTTP download error traceback: %s" % traceback.format_exc())
             return False, str(e)
 
 
@@ -73,7 +75,7 @@ class SftpDownloadStrategy(DownloadStrategy):
                     linux.rm_file_force(ssh_pass_file)
                 if exc_val is not None:
                     linux.rm_file_force(install_path)
-                    traceback.format_exc()
+                    logger.warning("SFTP download error traceback: %s" % traceback.format_exc())
 
         try:
             with SftpDownloadDaemon(self.downloader.cmd, "DownloadImage"):
@@ -86,22 +88,32 @@ class SftpDownloadStrategy(DownloadStrategy):
                 total_size = int(shell.call(sftp_cmd % ("ls -l " + url.path)).splitlines()[1].split()[4])
                 self.downloader.t_shell.call(sftp_cmd % ("reget %s %s" % (url.path, install_path)))
             return True, None
-        except Exception:
-            return False, "SFTP download failed"
+        except Exception as e:
+            return False, "SFTP download failed: %s" % str(e)
 
 
 class FileDownloadStrategy(DownloadStrategy):
     """Download strategy for local file system"""
 
     def download(self):
-        src_path = self.downloader.cmd.url.lstrip('file:')
+        url = self.downloader.cmd.url
+        if url.startswith('file://'):
+            src_path = url[len('file://'):]
+        elif url.startswith('file:'):
+            src_path = url[len('file:'):]
+        else:
+            src_path = url
+        if linux.contains_path_traversal(src_path):
+            return False, 'file url contains illegal path traversal: %s' % src_path
         src_path = os.path.normpath(src_path)
+        if not os.path.isabs(src_path):
+            return False, 'file url must use absolute path: %s' % src_path
         if not os.path.isfile(src_path):
-            raise Exception('cannot find the file[{src_path}]')
+            return False, 'cannot find the file[%s]' % src_path
 
         logger.debug("src_path is: %s" % src_path)
         try:
-            self.downloader.t_shell.call('yes | cp %s %s' % (src_path, linux.shellquote(self.downloader.install_path)))
+            self.downloader.t_shell.call('yes | cp %s %s' % (linux.shellquote(src_path), linux.shellquote(self.downloader.install_path)))
             return True, None
         except shell.ShellError as e:
             linux.rm_file_force(self.downloader.install_path)
@@ -110,6 +122,20 @@ class FileDownloadStrategy(DownloadStrategy):
 
 class FileDownloader:
     """File Downloader - using Strategy Pattern"""
+
+    @staticmethod
+    def _redact_url(url):
+        parsed = urlparse.urlparse(url)
+        if parsed.username is None and parsed.password is None:
+            return url
+        host = parsed.hostname or ""
+        if parsed.port:
+            host = "%s:%s" % (host, parsed.port)
+        netloc = "%s:***@%s" % (parsed.username or "", host)
+        return urlparse.urlunparse((
+            parsed.scheme, netloc, parsed.path,
+            parsed.params, parsed.query, parsed.fragment
+        ))
 
     # Strategy mapping table
     STRATEGY_MAP = {
@@ -139,6 +165,124 @@ class FileDownloader:
         return linux.wget(url, workdir=workdir, rename=name, timeout=timeout, interval=2,
                           callback=self.reporter.progress_report, callback_data="report")
 
+    def get_url_file_size(self, url):
+        # Only allow HTTP/HTTPS/FTP to prevent SSRF via unexpected protocols.
+        parsed = urlparse.urlparse(url)
+        if parsed.scheme not in ('http', 'https', 'ftp'):
+            logger.debug("get_url_file_size: unsupported scheme %s, skipping" % parsed.scheme)
+            return False, 0
+
+        # curl -L follows redirects; iterate all headers and keep the last
+        # Content-Length which belongs to the final response.
+        try:
+            output = shell.call("curl -sSL --head --connect-timeout 10 --max-time 30 %s" % linux.shellquote(url))
+        except Exception as e:
+            logger.debug("curl HEAD request failed for %s: %s" % (self._redact_url(url), str(e)))
+            return False, 0
+
+        content_length = None
+        for line in output.split('\n'):
+            line_lower = line.strip().lower()
+            if 'content-length:' in line_lower:
+                parts = line.split(':', 1)
+                if len(parts) >= 2:
+                    try:
+                        content_length = int(parts[1].strip())
+                    except ValueError:
+                        pass
+        if content_length is not None:
+            return True, content_length
+        return False, 0
+
+    def get_local_file_size(self, local_file_path):
+        parsed = urlparse.urlparse(local_file_path)
+        if parsed.scheme == 'file':
+            path = parsed.path
+        else:
+            path = local_file_path
+
+        # Only allow absolute paths to avoid ambiguity with urlparse.
+        if not os.path.isabs(path):
+            logger.debug("get_local_file_size: ignoring non-absolute path %s" % path)
+            return 0
+
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return 0
+
+    def get_url_file_size_by_wget(self, url):
+        """Fallback: use wget --spider to get file size when curl HEAD fails."""
+        parsed = urlparse.urlparse(url)
+        if parsed.scheme not in ('http', 'https', 'ftp'):
+            return False, 0
+        try:
+            # wget --spider prints size info to stderr; capture it via
+            # bash_roe instead of 2>&1 so output is available even on
+            # non-zero exit codes.
+            _, _, stderr = bash_roe("wget --spider --timeout=10 --tries=1 %s" % linux.shellquote(url))
+            output = stderr if stderr else ''
+            for line in output.split('\n'):
+                line_lower = line.strip().lower()
+                if 'length:' in line_lower:
+                    # wget output: "Length: 12345 (12K) [type]"
+                    parts = line.split()
+                    for i, part in enumerate(parts):
+                        if part.lower() == 'length:' and i + 1 < len(parts):
+                            try:
+                                return True, int(parts[i + 1])
+                            except ValueError:
+                                pass
+        except Exception as e:
+            logger.debug("wget --spider failed for %s: %s" % (self._redact_url(url), str(e)))
+        return False, 0
+
+    def check_capacity(self):
+        if self.urlScheme == UrlScheme.FILE:
+            file_size = self.get_local_file_size(self.cmd.url)
+            is_support_file_size = file_size > 0
+        else:
+            is_support_file_size, file_size = self.get_url_file_size(self.cmd.url)
+            if not is_support_file_size:
+                is_support_file_size, file_size = self.get_url_file_size_by_wget(self.cmd.url)
+
+        if is_support_file_size:
+            try:
+                _, availableCapacity = linux.get_disk_capacity_by_df(os.path.dirname(self.install_path))
+            except Exception:
+                # Parent directory may not exist yet; find the nearest existing ancestor.
+                ancestor = os.path.dirname(self.install_path)
+                while ancestor and ancestor != '/' and not os.path.exists(ancestor):
+                    ancestor = os.path.dirname(ancestor)
+                if not ancestor or not os.path.exists(ancestor):
+                    logger.warning("cannot determine capacity for %s, skipping check", self.install_path)
+                    return True, None
+                _, availableCapacity = linux.get_disk_capacity_by_df(ancestor)
+            # 10% margin to mitigate TOCTOU race between check and download.
+            required = int(file_size * 1.1)
+            if availableCapacity < required:
+                return False, 'disk capacity[%s] is not enough to download file[%s] of size[%s] (with 10%% margin)' % (
+                    availableCapacity, self.cmd.url, file_size)
+        else:
+            logger.warning("unable to determine file size for %s (Content-Length header missing or local file not found), "
+                        "skipping capacity check", self._redact_url(self.cmd.url))
+            # Even when the exact file size is unknown, reject downloads when
+            # available disk space is critically low (< 1 GiB).
+            MIN_SAFE_CAPACITY = 1024 * 1024 * 1024  # 1 GiB
+            try:
+                ancestor = os.path.dirname(self.install_path)
+                while ancestor and ancestor != '/' and not os.path.exists(ancestor):
+                    ancestor = os.path.dirname(ancestor)
+                if ancestor and os.path.exists(ancestor):
+                    _, availableCapacity = linux.get_disk_capacity_by_df(ancestor)
+                    if availableCapacity < MIN_SAFE_CAPACITY:
+                        return False, ('disk available capacity [%s] is below minimum safe threshold [%s]'
+                                       % (availableCapacity, MIN_SAFE_CAPACITY))
+            except Exception:
+                logger.debug("failed to check minimum capacity for %s" % self.install_path)
+
+        return True, None
+
     def download(self):
         """Execute download using appropriate strategy"""
 
@@ -147,8 +291,12 @@ class FileDownloader:
             supported = [scheme.value for scheme in self.STRATEGY_MAP.keys()]
             return False, 'unsupported url scheme[%s], only supports %s' % (self.cmd.urlScheme, supported)
 
+        success, err = self.check_capacity()
+        if not success:
+            return False, err
+
         if not os.path.exists(self.path):
-            os.makedirs(self.path, 0777)
+            os.makedirs(self.path, 0o755)
 
         # Execute appropriate download strategy
         strategy_class = self.STRATEGY_MAP[self.urlScheme]
