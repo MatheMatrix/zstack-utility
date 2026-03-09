@@ -39,6 +39,7 @@ from zstacklib.utils import ovs
 from zstacklib.utils import shell
 from zstacklib.utils.bash import *
 from zstacklib.utils.file_downloader import FileDownloader
+from zstacklib.utils.file_system_upload_task import FileSystemUploadTask
 from zstacklib.utils.ip import get_nic_supported_max_speed
 from zstacklib.utils.ip import get_nic_driver_type
 from zstacklib.utils.ipmitool import get_sensor_info_from_ipmi
@@ -48,7 +49,7 @@ import zstacklib.utils.ip as ip
 from zstacklib.utils import netconfig
 import zstacklib.utils.plugin as plugin
 from kvmagent.plugins.prometheus import get_service_type_map, register_service_type
-from zstacklib.utils.upload_task import UploadTasks, UploadTask, StorageObject, UploadHandler
+from zstacklib.utils.upload_task import UploadTasks, UploadHandler
 
 host_arch = platform.machine()
 IS_AARCH64 = host_arch == 'aarch64'
@@ -869,7 +870,7 @@ class DownloadFileRsp(kvmagent.AgentResponse):
 class UploadFileRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(UploadFileRsp, self).__init__()
-        self.directUploadPath = None
+        self.directUploadUrl = None
 
 class UploadProgressRsp(kvmagent.AgentResponse):
     def __init__(self):
@@ -1002,81 +1003,6 @@ class UpdateConfigration(object):
                                  self.iommu_type), env)
                 linux.write_file(grub_rocky_env, env)
         bash_o("modprobe vfio && modprobe vfio-pci")
-
-class FileObject(StorageObject):
-    def __init__(self, file_path):
-        super(FileObject, self).__init__()
-        self.file_path = file_path
-        self.offset = 0
-        try:
-            self.file_obj = open(file_path, 'r+b')
-            self.size = os.path.getsize(file_path)
-        except (IOError, OSError) as e:
-            raise type(e)("Failed to open file %s: %s" % (file_path, str(e)))
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.file_obj.close()
-
-    def seek(self, offset):
-        self.offset = min(offset, self.size)
-        self.file_obj.seek(self.offset)
-
-    def read(self, n):
-        self.file_obj.seek(self.offset)
-        length = min(self.size - self.offset, n)
-        content = self.file_obj.read(length)
-        self.offset += len(content)
-        return content
-
-    def write(self, content):
-        self.file_obj.seek(self.offset)
-        self.file_obj.write(content)
-        self.offset += len(content)
-        self.file_obj.flush()
-
-    def close(self):
-        self.file_obj.close()
-
-class FileSystemUploadTask(UploadTask):
-    def __init__(self, task_uuid, install_path):
-        super(FileSystemUploadTask, self).__init__(task_uuid, install_path)
-
-    def complete_upload(self):
-        self.success()
-
-    def create_object(self, slice_offset):
-        dir_path = os.path.dirname(self.installPath)
-        if not os.path.exists(dir_path):
-            os.makedirs(dir_path)
-
-        self.create_file_if_not_exists()
-        file_obj = FileObject(self.installPath)
-        file_obj.seek(slice_offset)
-        return file_obj
-
-    def create_file_if_not_exists(self):
-        if self.task_created:
-            return
-
-        with lock.NamedLock("upload-file-task-%s" % self.taskUuid):
-            if not self.task_created:
-                r, _, e = bash_roe("fallocate -l %s %s" % (self.expectedSize, self.installPath))
-                if r != 0:
-                    raise Exception("Failed to allocate file space for %s, because %s " % (self.installPath, str(e)))
-                self.task_created = True
-
-    def check_capacity(self, required_size):
-        dir_path = os.path.dirname(self.installPath)
-        if not os.path.exists(dir_path):
-            os.makedirs(dir_path)
-
-        _, avail = linux.get_disk_capacity_by_df(dir_path)
-        if avail <= required_size:
-            return "dstPath capacity not enough for size: %d, available: %d" % (required_size, avail)
-        return None
 
 logger = log.get_logger(__name__)
 
@@ -3870,6 +3796,13 @@ done
         rsp = DownloadFileRsp()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
+        install_path, err = linux.validate_install_path(cmd.installPath)
+        if err:
+            rsp.success = False
+            rsp.error = err
+            return jsonobject.dumps(rsp)
+        cmd.installPath = install_path
+
         reporter = report.Report.from_spec(cmd, "DownloadFile")
         fileDownloader = FileDownloader(reporter, cmd)
         success, error = fileDownloader.download()
@@ -3885,9 +3818,17 @@ done
     def get_direct_upload_path(self, host):
         return 'http://' + host + self.FILE_DIRECT_UPLOAD_PATH
 
+    @kvmagent.replyerror
     def upload_file(self, req):
         rsp = UploadFileRsp()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
+
+        install_path, err = linux.validate_install_path(cmd.installPath)
+        if err:
+            rsp.success = False
+            rsp.error = err
+            return jsonobject.dumps(rsp)
+        cmd.installPath = install_path
 
         def _prepare_upload():
             class FileUploadDaemon(plugin.TaskDaemon):
@@ -3900,6 +3841,7 @@ done
                     if self.task.completed:
                         return
                     self.task.lastError = "file[%s] upload canceled" % cmd.installPath
+                    self.task.completed = True
                     linux.rm_file_force(cmd.installPath)
 
             task = FileSystemUploadTask(cmd.taskUuid, cmd.installPath)
@@ -3907,22 +3849,25 @@ done
             FileUploadDaemon(task).start()
 
         _prepare_upload()
-        rsp.directUploadPath = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
+        rsp.directUploadUrl = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
         return jsonobject.dumps(rsp)
 
-    @kvmagent.replyerror
     def direct_upload_file(self, req):
+        task_uuid = req[http.REQUEST_HEADER].get('X-FILE-UUID', '')
         try:
             UploadHandler(req, self.upload_tasks).handle_upload()
-        except Exception, e:
+        except Exception as e:
             logger.exception("File upload failed: %s", str(e))
+        finally:
+            if task_uuid:
+                self.upload_tasks.remove_task_if_completed(task_uuid)
 
     @kvmagent.replyerror
     def get_upload_progress(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         task = self.upload_tasks.get_task(cmd.taskUuid)
         if task is None:
-            raise Exception('file not found')
+            raise Exception('task not found')
 
         def _get_file_size(file_path):
             return os.path.getsize(file_path) if os.path.exists(file_path) else 0
@@ -3949,7 +3894,11 @@ done
             rsp.installPath = task.installPath
             rsp.progress = 100
         else:
-            rsp.progress = task.downloadSize * 90 / task.expectedSize
+            if task.expectedSize > 0:
+                rsp.progress = min(90, task.downloadSize * 90 // task.expectedSize)
+            else:
+                rsp.progress = 0
+                logger.warning("upload task not yet fully initialized (expectedSize=%s)", task.expectedSize)
             rsp.installPath = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
 
         if task.lastError is not None:

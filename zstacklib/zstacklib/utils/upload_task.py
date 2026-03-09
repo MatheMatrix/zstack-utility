@@ -43,13 +43,30 @@ class UploadTasks(object):
 
     @lock.lock('upload-task')
     def add_task(self, task):
+        # Lock ensures check-then-act atomicity for duplicate detection.
+        if task.taskUuid in self.tasks:
+            if self.tasks[task.taskUuid].completed:
+                self.tasks.pop(task.taskUuid, None)
+            else:
+                raise Exception("upload task %s is running" % task.taskUuid)
+
         if len(self.tasks) >= self.MAX_RECORDS:
             self._expunge_oldest_task()
+
         self.tasks[task.taskUuid] = task
 
     @lock.lock('upload-task')
     def get_task(self, task_uuid):
         return self.tasks.get(task_uuid)
+
+    @lock.lock('upload-task')
+    def remove_task_if_completed(self, task_uuid):
+        """Atomically check completed and remove to avoid TOCTOU race
+        where a concurrent retry's add_task() replaces the old entry
+        between our get_task() and remove_task() calls."""
+        task = self.tasks.get(task_uuid)
+        if task and task.completed:
+            del self.tasks[task_uuid]
 
 
 class UploadTask(object):
