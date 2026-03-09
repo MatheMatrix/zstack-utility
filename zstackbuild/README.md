@@ -7,8 +7,8 @@ The following dependencies and installation packages need to be installed before
 ```
 # other necessary dependencies: 
 yum install -y \
-    java-1.8.0-openjdk \
-    java-1.8.0-openjdk-devel \
+    java-21-openjdk \
+    java-21-openjdk-devel \
     sudo \
     git \
     make \
@@ -62,7 +62,7 @@ Now we can start building the package:
 ```
 cd /your/path/to/zstack-repos;
 
-wget -c https://archive.apache.org/dist/tomcat/tomcat-8/v8.5.57/bin/apache-tomcat-8.5.57.zip
+wget -c https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.34/bin/apache-tomcat-10.1.34.zip
 ```
 
 
