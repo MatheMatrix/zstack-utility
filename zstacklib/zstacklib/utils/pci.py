@@ -128,9 +128,39 @@ def simplify_vendor_name(name, vendor_id=None):
         if vendor_id_lower in _VENDOR_ID_MAPPING:
             return _VENDOR_ID_MAPPING[vendor_id_lower]
 
-    # Fallback: clean common suffixes
+    # Fallback: clean common suffixes and extract bracketed name if present
     result = name.replace('Co., Ltd ', '').replace('Corporation', '').strip()
+    matches = re.findall(r'\[([^\]]+)]', result)
+    if matches:
+        result = ' '.join(m.strip() for m in matches)
     return result
+
+
+def simplify_device_name(name):
+    """
+    Simplify PCI device name from lspci output.
+
+    lspci device names often contain chip codenames followed by the product
+    name in brackets, e.g.:
+    - 'GA102 [GeForce RTX 3090]' → 'GeForce RTX 3090'
+    - 'TU104 [GeForce RTX 2080 SUPER]' → 'GeForce RTX 2080 SUPER'
+    - 'GP107 [GeForce GTX 1050 Ti Rev. A]' → 'GeForce GTX 1050 Ti Rev. A'
+    - 'Chip [PartA] [PartB]' → 'PartA PartB'  (multiple brackets, concatenated)
+    - 'Ascend 310P3' → 'Ascend 310P3'  (no brackets, kept as-is)
+    - 'Device 3686' → 'Device 3686'  (no brackets, kept as-is)
+
+    Args:
+        name: Device name string from lspci
+
+    Returns:
+        str: Simplified device name
+    """
+    if not name:
+        return name
+    matches = re.findall(r'\[([^\]]+)]', name)
+    if matches:
+        return ' '.join(m.strip() for m in matches)
+    return name
 
 
 def normalize_pci_address(pci_address):

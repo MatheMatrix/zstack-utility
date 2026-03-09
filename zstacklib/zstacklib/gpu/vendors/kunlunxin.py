@@ -213,9 +213,7 @@ class Kunlunxin(GPUBase):
             key = parts[0].strip()
             value = parts[1].strip()
 
-            if key == "Product Name":
-                gpu_info_dict["product_name"] = value
-            elif key == "Serial Number":
+            if key == "Serial Number":
                 gpu_info_dict["serial_number"] = value
             elif key == "Bus Id":
                 gpu_info_dict["pci_address"] = cls.normalize_pci_address(
@@ -233,16 +231,12 @@ class Kunlunxin(GPUBase):
                 gpu_info_dict["temperature"] = value
 
         if gpu_info_dict.get("pci_address"):
-            extra = {}
-            if gpu_info_dict.get("product_name"):
-                extra["productName"] = gpu_info_dict["product_name"]
             gpu_info = GPUInfo(
                 pci_address=gpu_info_dict.get("pci_address", ""),
                 memory=gpu_info_dict.get("memory"),
                 power=gpu_info_dict.get(
                     "power") or gpu_info_dict.get("powerDraw"),
                 serial_number=gpu_info_dict.get("serial_number"),
-                extra=extra,
             )
             gpu_infos.append(gpu_info)
 
@@ -279,6 +273,35 @@ class Kunlunxin(GPUBase):
             all_gpu_infos.extend(gpu_infos)
 
         return all_gpu_infos
+
+    # ==========================================================================
+    # Addon Info Enrichment (productName)
+    # ==========================================================================
+
+    @classmethod
+    def enrich_addon_info(cls, gpu_info_map, pci_addresses):
+        """Add productName for Kunlunxin XPUs by querying each XPU individually."""
+        if not pci_addresses:
+            return
+
+        pci_set = set(pci_addresses)
+        for xpu_id in cls.get_xpu_ids():
+            r, o, _ = bash_roe(cls.get_basic_info_cmd_for_xpu(xpu_id))
+            if r != 0 or not o:
+                continue
+
+            product_name = None
+            pci_addr = None
+            for line in o.splitlines():
+                line = line.strip()
+                if "Product Name" in line:
+                    product_name = line.split(":", 1)[1].strip()
+                elif "Bus Id" in line:
+                    pci_addr = cls.normalize_pci_address(
+                        line.split(":", 1)[1].strip().lower())
+
+            if product_name and pci_addr in pci_set and pci_addr in gpu_info_map:
+                gpu_info_map[pci_addr]["productName"] = product_name
 
     # ==========================================================================
     # Prometheus Metrics Collection
@@ -396,6 +419,30 @@ class Kunlunxin(GPUBase):
         )
 
         return metrics
+
+    # ==========================================================================
+    # Post-Processing Hooks
+    # ==========================================================================
+
+    @classmethod
+    def post_process_pci_device(cls, pci_device_to):
+        """Clean up lspci misidentified names for Kunlunxin devices.
+
+        lspci may show wrong names like 'SafeNet (wrong ID)_Device 3686'
+        because the device ID is not registered in the PCI ID database.
+        When productName is already set by enrich_addon_info, this is a no-op
+        (name/device were already overridden). Otherwise, fall back to a
+        clean 'Kunlunxin_<deviceId>' format.
+        """
+        if not hasattr(pci_device_to, 'name') or not pci_device_to.name:
+            return
+        if 'wrong ID' not in pci_device_to.name:
+            return
+
+        device_id = getattr(pci_device_to, 'deviceId', '') or ''
+        clean_name = "Kunlunxin_%s" % device_id if device_id else "Kunlunxin_XPU"
+        pci_device_to.name = clean_name
+        pci_device_to.device = clean_name
 
     # ==========================================================================
     # VM Guest Tool Support
