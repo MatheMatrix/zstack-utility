@@ -220,7 +220,7 @@ def install_kvm_pkg():
             'h79c': ('%s qemu-kvm libvirt-admin seabios-bin nping freeipmi '
                      'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
             'h84r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm freeipmi '
-                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd') % helix_rhel_rpms,
+                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd key-manager') % helix_rhel_rpms,
             'rl84': 'qemu-kvm libvirt-daemon libvirt-daemon-kvm seabios-bin elfutils-libelf-devel lldpd',
             'euler20': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
             'oe2203sp1': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
@@ -239,13 +239,19 @@ def install_kvm_pkg():
             'aarch64': 'edk2-aarch64'
         }
 
+        releasever_arch_rpms = {
+            'ky10sp3': {'x86_64': 'key-manager'},
+            'ky10sp3.2403': {'x86_64': 'key-manager'}
+        }
+
         # handle zstack_repo
         if zstack_repo != 'false':
             distro_head = host_info.distro.split("_")[0] if releasever in kylin or releasever in uos else host_info.distro
-            common_dep_list = "%s %s %s %s %s" % (
+            common_dep_list = "%s %s %s %s %s %s" % (
                 os_base_dep,
                 distro_mapping.get(distro_head, ''),
                 releasever_mapping.get(releasever, ''),
+                releasever_arch_rpms.get(releasever, {}).get(host_info.host_arch, ''),
                 addition_rpms.get(releasever, {}).get(host_info.host_arch, ''),
                 edk2_mapping.get(host_info.host_arch, ''))
             # common kvmagent deps of x86 and arm that need to update
@@ -906,6 +912,17 @@ def set_gpu_blacklist():
         || echo \"blacklist ${gpu_name}\" >> /etc/modprobe.d/${gpu_name}-blacklist.conf; done" % gpu_name_list
     run_remote_command(command, host_post_info)
 
+def start_key_agent():
+    if host_info.host_arch != 'x86_64':
+        return
+    if chroot_env != 'false':
+        return
+    command = "if systemctl list-unit-files key-agent.service 2>/dev/null | grep -q '^key-agent\\.service'; then " \
+              "systemctl enable key-agent && systemctl start key-agent; " \
+              "fi"
+    host_post_info.post_label = "ansible.shell.start.key_agent"
+    host_post_info.post_label_param = None
+    run_remote_command(command, host_post_info)
 
 check_nested_kvm(host_post_info)
 install_kvm_pkg()
@@ -936,6 +953,7 @@ modprobe_usb_module()
 modprobe_mpci_module()
 modprobe_nvme_module()
 set_gpu_blacklist()
+start_key_agent()
 start_kvmagent()
 
 host_post_info.start_time = start_time
