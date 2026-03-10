@@ -98,7 +98,7 @@ qemu_installed = yum_check_package("qemu-kvm", host_post_info)
 if not qemu_installed:
     install_rpm_list += " %s" % qemu_alias.get(releasever, 'qemu-kvm')
 
-if releasever in ['h84r', 'oe2403sp1', 'ky10sp3', 'ky10sp3.2403']:
+if releasever in ['h84r', 'oe2403sp1', 'ky10sp3', 'ky10sp3.2403', 'h2203sp1o']:
     install_rpm_list += py3_rpms
 
 if zstack_repo != 'false':
