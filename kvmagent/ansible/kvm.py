@@ -232,7 +232,7 @@ def install_kvm_pkg():
             'oe2403sp1': 'vconfig open-iscsi qemu collectd-disk tcpdump %s' % py3_rpms,
             'ky10sp3': py3_rpms,
             'ky10sp3.2403': py3_rpms,
-            'h2203sp1o': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk edac-utils freeipmi lldpd tcpdump',
+            'h2203sp1o': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk edac-utils freeipmi lldpd tcpdump %s' % py3_rpms,
             'nfs4': 'vconfig iscsi-initiator-utils OpenIPMI nettle libselinux-devel iptables iptables-services qemu-kvm python2-pyudev collectd-disk'
         }
 
