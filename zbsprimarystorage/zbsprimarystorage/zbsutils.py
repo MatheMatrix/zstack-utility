@@ -1,6 +1,7 @@
 __author__ = 'Xingwei Yu'
 
 import os
+import subprocess
 from distutils.version import LooseVersion
 
 import zstacklib.utils.jsonobject as jsonobject
@@ -232,7 +233,7 @@ def cbd_to_nbd(desc, port, install_path):
     cmd = "qemu-nbd -D %s -f raw -p %d --fork %s_%s_:%s" % (
         desc, port, install_path, ZBS_USER_NAME, ZBS_CLIENT_CONF_PATH)
     logger.debug(cmd)
-    os.system(cmd)
+    subprocess.run(cmd, shell=True, check=False)
 
 
 def copy(src_path, dst_path, is_snapshot=False):

@@ -2,6 +2,7 @@
 # encoding: utf-8
 import argparse
 import datetime
+import json
 import os
 
 from zstacklib import *
@@ -51,7 +52,7 @@ parser.add_argument('-i', type=str, help="""specify inventory host file
 parser.add_argument('--private-key', type=str, help='use this file to authenticate the connection')
 parser.add_argument('-e', type=str, help='set additional variables as key=value or YAML/JSON')
 args = parser.parse_args()
-argument_dict = eval(args.e)
+argument_dict = json.loads(args.e)
 
 # update the variable from shell arguments
 locals().update(argument_dict)

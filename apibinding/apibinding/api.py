@@ -141,7 +141,7 @@ class Api(object):
                 # Catch any unexpected errors in recursive call to prevent cascading failures
                 try:
                     error_msg = str(e)
-                except:
+                except Exception:
                     error_msg = repr(e) if hasattr(e, '__repr__') else 'unknown error'
                 msg_parts.append("\n{0}[error processing cause: {1}]".format(indent, error_msg))
 
@@ -203,8 +203,8 @@ class Api(object):
                 event_name = apiname[0:-3] + "Event"
 
             try:
-                return eval('inventory.%s()' % event_name)
-            except:
+                return getattr(inventory, event_name)()
+            except Exception:
                 return None
 
         def mask_result(apievent, result):

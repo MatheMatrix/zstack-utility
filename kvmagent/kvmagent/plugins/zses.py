@@ -1,4 +1,6 @@
+import os
 import os.path
+import tempfile
 
 import zstacklib.utils.uuidhelper as uuidhelper
 from kvmagent import kvmagent
@@ -201,7 +203,8 @@ class ZsesStoragePlugin(kvmagent.KvmAgent):
             Report.url = cmd.sendCommandUrl
         report = Report(cmd.threadContext, cmd.threadContextStack)
         report.processType = "LocalStorageMigrateVolume"
-        PFILE = shell.call('mktemp /tmp/tmp-XXXXXX').strip()
+        fd, PFILE = tempfile.mkstemp(prefix='tmp-', dir='/tmp')
+        os.close(fd)
 
         total = 0
         written = 0
@@ -255,7 +258,8 @@ class ZsesStoragePlugin(kvmagent.KvmAgent):
 
         report = Report(cmd.threadContext, cmd.threadContextStack)
         report.processType = "LocalStorageMigrateVolume"
-        PFILE = shell.call('mktemp /tmp/tmp-XXXXXX').strip()
+        fd, PFILE = tempfile.mkstemp(prefix='tmp-', dir='/tmp')
+        os.close(fd)
         total = 0
         written = 0
 
@@ -315,7 +319,8 @@ class ZsesStoragePlugin(kvmagent.KvmAgent):
         report = Report(cmd.threadContext, cmd.threadContextStack)
         report.processType = "LocalStorageMigrateVolume"
         report.resourceUuid = cmd.uuid
-        PFILE = shell.call('mktemp /tmp/tmp-XXXXXX').strip()
+        fd, PFILE = tempfile.mkstemp(prefix='tmp-', dir='/tmp')
+        os.close(fd)
 
         start = 10
         end = 90

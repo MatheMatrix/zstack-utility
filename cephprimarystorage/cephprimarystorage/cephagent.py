@@ -1097,7 +1097,8 @@ class CephAgent(plugin.TaskManager):
             self._set_capacity_to_response(rsp)
             return jsonobject.dumps(AgentResponse())
 
-        p_file = tempfile.mktemp()
+        _fd, p_file = tempfile.mkstemp()
+        os.close(_fd)
         report = Report.from_spec(cmd, "FlattenVolume")
 
         def _get_percent(synced):

@@ -8671,7 +8671,7 @@ class InstallDashboardCmd(Command):
         pypi_tar_path = os.path.join(ctl.zstack_home, "static/pypi.tar.bz")
         if not os.path.isfile(pypi_tar_path):
             static_path = os.path.join(ctl.zstack_home, "static")
-            os.system('cd %s; tar jcf pypi.tar.bz pypi' % static_path)
+            subprocess.run(['tar', 'jcf', 'pypi.tar.bz', 'pypi'], cwd=static_path, check=True)
 
         yaml = '''---
 - hosts: $host
@@ -10471,7 +10471,7 @@ class StartDashboardCmd(Command):
         else:
             info('successfully started UI server on the local host, PID[%s], http://%s:%s' % (pid, default_ip, args.port))
 
-        os.system('mkdir -p /var/run/zstack/')
+        os.makedirs('/var/run/zstack/', exist_ok=True)
         with open('/var/run/zstack/zstack-dashboard.port', 'w') as fd:
             fd.write(args.port)
 
@@ -10767,7 +10767,7 @@ class StartUiCmd(Command):
 
         shell("ps aux| grep zstack-ui/scripts/start.sh | awk '{print $2}'|xargs kill -9",is_exception=False)
         script(scmd, no_pipe=True)
-        os.system('mkdir -p /var/run/zstack/')
+        os.makedirs('/var/run/zstack/', exist_ok=True)
         with open(StartUiCmd.PORT_FILE, 'w') as fd:
             fd.write(args.server_port)
 
@@ -11176,7 +11176,7 @@ class StartVDIUICmd(Command):
         else:
             info('successfully started VDI UI server on the local host, PID[%s], http://%s:%s' % (pid, default_ip, args.server_port))
 
-        os.system('mkdir -p /var/run/zstack/')
+        os.makedirs('/var/run/zstack/', exist_ok=True)
         with open('/var/run/zstack/zstack-vdi.port', 'w') as fd:
             fd.write(args.server_port)
 

@@ -146,7 +146,7 @@ def add_zone(deployConfig, session_uuid, zone_name=None):
             evt = action.run()
             deploy_logger(jsonobject.dumps(evt))
             zinv = evt.inventory
-        except:
+        except Exception:
             exc_info.append(sys.exc_info())
 
         if xmlobject.has_element(zone, 'backupStorageRef'):
@@ -161,7 +161,7 @@ def add_zone(deployConfig, session_uuid, zone_name=None):
                 try:
                     evt = action.run()
                     deploy_logger(jsonobject.dumps(evt))
-                except:
+                except Exception:
                     exc_info.append(sys.exc_info())
 
     if not xmlobject.has_element(deployConfig, 'zones.zone'):
@@ -441,7 +441,7 @@ def add_cluster(deployConfig, session_uuid, cluster_name=None,
                     action_ps.primaryStorageUuid = pinv.uuid
                     evt = action_ps.run()
                     deploy_logger(jsonobject.dumps(evt))
-        except:
+        except Exception:
             exc_info.append(sys.exc_info())
 
         if cluster.allL2NetworkRef__ == 'true':
@@ -682,7 +682,7 @@ def add_l3_network(deployConfig, session_uuid, l3_name=None, l2_name=None,
 
         try:
             evt = action.run()
-        except:
+        except Exception:
             exc_info.append(sys.exc_info())
 
         deploy_logger(jsonobject.dumps(evt))
@@ -697,7 +697,7 @@ def add_l3_network(deployConfig, session_uuid, l3_name=None, l2_name=None,
                 action.l3NetworkUuid = l3_inv.uuid
                 try:
                     evt = action.run()
-                except:
+                except Exception:
                     exc_info.append(sys.exc_info())
                 deploy_logger(jsonobject.dumps(evt))
 
@@ -712,7 +712,7 @@ def add_l3_network(deployConfig, session_uuid, l3_name=None, l2_name=None,
         action.conditions = []
         try:
             reply = action.run()
-        except:
+        except Exception:
             exc_info.append(sys.exc_info())
         for pinv in reply:
             providers[pinv.name] = pinv.uuid
@@ -922,7 +922,7 @@ def add_image(deployConfig, session_uuid):
         try:
             evt = action.run()
             deploy_logger(jsonobject.dumps(evt))
-        except:
+        except Exception:
             exc_info.append(sys.exc_info())
         finally:
             decrease_image_thread()
@@ -1028,7 +1028,7 @@ def _thread_for_action(action):
     try:
         evt = action.run()
         deploy_logger(jsonobject.dumps(evt))
-    except:
+    except Exception:
         exc_info.append(sys.exc_info())
 
 

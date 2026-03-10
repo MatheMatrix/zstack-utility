@@ -2,6 +2,7 @@ __author__ = 'frank'
 
 import os
 import os.path
+import tempfile
 import traceback
 
 import zstacklib.utils.uuidhelper as uuidhelper
@@ -474,7 +475,8 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
             Report.url = cmd.sendCommandUrl
         report = Report(cmd.threadContext, cmd.threadContextStack)
         report.processType = "LocalStorageMigrateVolume"
-        PFILE = shell.call('mktemp /tmp/tmp-XXXXXX').strip()
+        fd, PFILE = tempfile.mkstemp(prefix='tmp-', dir='/tmp')
+        os.close(fd)
 
         total = 0
         written = 0
@@ -528,7 +530,8 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
 
         report = Report(cmd.threadContext, cmd.threadContextStack)
         report.processType = "LocalStorageMigrateVolume"
-        PFILE = shell.call('mktemp /tmp/tmp-XXXXXX').strip()
+        fd, PFILE = tempfile.mkstemp(prefix='tmp-', dir='/tmp')
+        os.close(fd)
         total = 0
         written = 0
 
@@ -592,7 +595,8 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         report.processType = "LocalStorageMigrateVolume"
         report.resourceUuid = cmd.volumeUuid
 
-        PFILE = shell.call('mktemp /tmp/tmp-XXXXXX').strip()
+        fd, PFILE = tempfile.mkstemp(prefix='tmp-', dir='/tmp')
+        os.close(fd)
         PASSWORD_FILE = linux.write_to_temp_file(cmd.dstPassword)
 
         start = 10
