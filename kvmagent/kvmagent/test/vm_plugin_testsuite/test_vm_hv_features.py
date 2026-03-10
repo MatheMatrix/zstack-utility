@@ -25,7 +25,7 @@ class TestVmMaxVcpu(TestCase, vm_utils.VmPluginTestStub):
     def test_hv_synic_enabled_with_kernel_newer_than_3_10_0(self):
         hv_features = ["synic", "vpindex", "stimer"]
 
-        vm_plugin.KERNEL_VERSION = "kernel-4.18.0-348.23.1.2.g50e329d.el7.x86_64"
+        vm_plugin.KERNEL_VERSION = "4.18.0-348.23.1.2.g50e329d.el7.x86_64"
         vm = vm_utils.create_startvm_body_jsonobject()
         vm.emulateHyperV = True
         vm.hypervClock = True
