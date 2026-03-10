@@ -36,7 +36,7 @@ ZSTACK_VERSION=$ZSTACK_INSTALL_ROOT/VERSION
 app_name="zstack"
 CATALINA_ZSTACK_PATH=apache-tomcat/webapps/${app_name}
 CATALINA_ZSTACK_CLASSES=$CATALINA_ZSTACK_PATH/WEB-INF/classes
-ZSTACK_PROPERTIES=$CATALINA_ZSTACK_CLASSES/zstack.properties
+ZSTACK_PROPERTIES=$CATALINA_ZSTACK_CLASSES/${app_name}.properties
 ZSTACK_DB_DEPLOYER=$CATALINA_ZSTACK_CLASSES/deploydb.sh
 CATALINA_ZSTACK_TOOLS=$CATALINA_ZSTACK_CLASSES/tools
 ZSTACK_TOOLS_INSTALLER=$CATALINA_ZSTACK_TOOLS/install.sh
@@ -268,7 +268,7 @@ check_system(){
 do_check_system(){
     if [ $UPGRADE = 'n' ]; then
         if [ -d $ZSTACK_INSTALL_ROOT -o -f $ZSTACK_INSTALL_ROOT ];then
-            fail "$ZSTACK_INSTALL_ROOT is existing. Please delete it manually before installing a new ZStack. \n  You might want to save your previous zstack.properties by \`zstack-ctl save_config\` and restore it later.\n  You might also want to stop zstack related services before deleting: \n\t/etc/init.d/zstack-server stop \n\t/etc/init.d/zstack-ui stop"
+            fail "$ZSTACK_INSTALL_ROOT is existing. Please delete it manually before installing a new ZStack. \n  You might want to save your previous management node properties file by \`zstack-ctl save_config\` and restore it later.\n  You might also want to stop zstack related services before deleting: \n\t/etc/init.d/zstack-server stop \n\t/etc/init.d/zstack-ui stop"
         fi
     fi
 
@@ -820,7 +820,7 @@ config_system(){
 }
 
 cs_config_zstack_properties(){
-    echo_subtitle "Config zstack.properties"
+    echo_subtitle "Config management node properties file"
     if [ ! -z $YUM_ONLINE_REPO ];then
         zstack-ctl configure Ansible.var.yum_online_repo=true
     fi

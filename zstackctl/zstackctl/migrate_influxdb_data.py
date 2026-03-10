@@ -126,7 +126,7 @@ class DBUtil:
 
             def __init__(self):
                 self.zstack_home = '/usr/local/zstack/apache-tomcat/webapps/%s/' % app_name
-                self.file_name = os.path.join(self.zstack_home, 'WEB-INF/classes/zstack.properties')
+                self.file_name = get_properties_file_path(self.zstack_home, app_name=app_name)
                 self.properties = {}
 
                 with open(self.file_name, 'r') as fd:

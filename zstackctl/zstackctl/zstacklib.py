@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import traceback
+import xml.etree.ElementTree as ET
 
 import jinja2
 import urllib2
@@ -33,10 +34,152 @@ trusted_host = ""
 RPM_BASED_OS = ["centos", "redhat", "alibaba", "kylin10", "uos1021a", "rocky"]
 DEB_BASED_OS = ["ubuntu", "kylin4.0.2", "uos", "debian", "uniontech"]
 DISTRO_WITH_RPM_DEB = ["kylin"]
+DEFAULT_APP_NAME = 'zstack'
+DEFAULT_PROPERTIES_FILE_NAME = 'zstack.properties'
+APP_CONFIG_CANDIDATE_PATHS = ('app_config.xml', os.path.join('zstack', 'conf', 'app_config.xml'))
+APP_CONFIG_DETAILS_CACHE = {}
+PROPERTIES_FILE_NAME_CACHE = {}
+_CACHE_MISS = object()
+
+
+def normalize_cache_path(path):
+    return os.path.abspath(path) if path else None
+
+
+def get_classes_dir(zstack_home):
+    zstack_home = normalize_cache_path(zstack_home)
+    return os.path.join(zstack_home, 'WEB-INF/classes') if zstack_home else None
+
+
+def unique(items):
+    names = []
+    for item in items:
+        if item and item not in names:
+            names.append(item)
+
+    return names
+
+
+def find_first_existing_path(base_dir, relative_paths):
+    if not base_dir:
+        return None
+
+    for relative_path in relative_paths:
+        candidate_path = os.path.join(base_dir, relative_path)
+        if os.path.isfile(candidate_path):
+            return candidate_path
+
+    return None
+
+
+def get_app_config_path(classes_dir):
+    return find_first_existing_path(classes_dir, APP_CONFIG_CANDIDATE_PATHS)
+
+
+def read_properties_file_name_from_app_config(app_config_path):
+    if not app_config_path:
+        return None
+
+    try:
+        root = ET.parse(app_config_path).getroot()
+        properties_file = root.findtext('propertiesFile')
+        if properties_file:
+            return properties_file.strip()
+    except Exception:
+        logger.debug('failed to parse app config %s', app_config_path, exc_info=True)
+
+    return None
+
+
+def get_app_config_details(classes_dir):
+    classes_dir = normalize_cache_path(classes_dir)
+    cached = APP_CONFIG_DETAILS_CACHE.get(classes_dir, _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        return cached
+
+    app_config_path = get_app_config_path(classes_dir)
+    details = (app_config_path, read_properties_file_name_from_app_config(app_config_path))
+    APP_CONFIG_DETAILS_CACHE[classes_dir] = details
+    return details
+
+
+def find_first_existing_file_name(base_dir, file_names):
+    if not base_dir:
+        return None
+
+    for file_name in file_names:
+        if os.path.isfile(os.path.join(base_dir, file_name)):
+            return file_name
+
+    return None
+
+
+def get_candidate_properties_file_names(app_name=None):
+    env_app_name = os.environ.get('APP_NAME')
+    return unique([
+        '%s.properties' % app_name if app_name else None,
+        '%s.properties' % env_app_name if env_app_name else None,
+        DEFAULT_PROPERTIES_FILE_NAME,
+    ])
+
+
+def get_properties_file_name(zstack_home=None, app_name=None):
+    classes_dir = get_classes_dir(zstack_home)
+    candidate_names = get_candidate_properties_file_names(app_name)
+    cache_key = (classes_dir, tuple(candidate_names))
+    cached = PROPERTIES_FILE_NAME_CACHE.get(cache_key, _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        return cached
+
+    app_config_path, properties_file_name = get_app_config_details(classes_dir)
+    properties_file_name = properties_file_name or find_first_existing_file_name(classes_dir, candidate_names)
+
+    if not properties_file_name:
+        properties_file_name = candidate_names[0]
+
+    PROPERTIES_FILE_NAME_CACHE[cache_key] = properties_file_name
+    return properties_file_name
+
+
+def get_properties_file_path(zstack_home, app_name=None):
+    classes_dir = get_classes_dir(zstack_home)
+    if not classes_dir:
+        return None
+
+    return os.path.join(classes_dir, get_properties_file_name(zstack_home, app_name))
+
+
+def has_management_node_properties(zstack_home, app_name=None):
+    classes_dir = get_classes_dir(zstack_home)
+    app_config_path, _ = get_app_config_details(classes_dir)
+    properties_file_path = get_properties_file_path(zstack_home, app_name)
+    return bool(app_config_path or (properties_file_path and os.path.isfile(properties_file_path)))
+
+
+def read_app_name_from_properties(zstack_home, app_name=None, default_name='zstack'):
+    properties_file_path = get_properties_file_path(zstack_home, app_name)
+    if not properties_file_path or not os.path.isfile(properties_file_path):
+        return app_name or default_name
+
+    try:
+        with open(properties_file_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or 'APP_NAME' not in line:
+                    continue
+
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    if key.strip() == 'APP_NAME':
+                        return value.strip()
+    except (IOError, OSError):
+        pass
+
+    return app_name or default_name
 
 
 def get_app_name_from_properties_preload():
-    default_name = 'zstack'
+    default_name = os.environ.get('APP_NAME') or DEFAULT_APP_NAME
     home = os.environ.get('ZSTACK_HOME')
     USER_ZSTACK_HOME_DIR = os.path.expanduser('~zstack')
 
@@ -50,9 +193,10 @@ def get_app_name_from_properties_preload():
             for name in os.listdir(webapps):
                 if name in skip:
                     continue
-                prop_path = os.path.join(webapps, name, 'WEB-INF/classes/zstack.properties')
-                if os.path.isfile(prop_path):
-                    home = os.path.join(webapps, name)
+                home_path = os.path.join(webapps, name)
+                if has_management_node_properties(home_path, app_name=name):
+                    home = home_path
+                    default_name = name
                     break
         except OSError:
             pass
@@ -60,25 +204,8 @@ def get_app_name_from_properties_preload():
     if not home:
         return default_name
 
-    prop_file = os.path.join(home, 'WEB-INF/classes/zstack.properties')
-    if not os.path.isfile(prop_file):
-        return default_name
-
-    try:
-        with open(prop_file, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#') or 'APP_NAME' not in line:
-                    continue
-
-                if '=' in line:
-                    k, v = line.split('=', 1)
-                    if k.strip() == 'APP_NAME':
-                        return v.strip()
-    except (IOError, OSError):
-        pass
-
-    return default_name
+    current_app_name = os.environ.get('APP_NAME') or os.path.basename(home.rstrip('/')) or default_name
+    return read_app_name_from_properties(home, app_name=current_app_name, default_name=current_app_name)
 
 app_name = get_app_name_from_properties_preload()
 

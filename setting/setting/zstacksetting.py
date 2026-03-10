@@ -95,7 +95,7 @@ class Setting(object):
         
         def write_properties_file():
             content = []
-            property_file = os.path.join(self.HOME_DIR, 'zstack.properties')
+            property_file = os.path.join(self.HOME_DIR, '%s.properties' % os.environ.get('APP_NAME', 'zstack'))
             for name, value in self.settings:
                 po = self.properties_map[name]
                 if xmlobject.has_element(po.xmlobj, 'help'):
@@ -259,4 +259,3 @@ def backup_dir(dirpath, subfolder=None):
     
 def main():
     Setting().main()
-        

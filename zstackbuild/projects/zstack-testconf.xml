@@ -4,9 +4,25 @@
         <checkProperty property="zstack.source" />
         <checkFile file="${zstack.source}" />
 
+        <property name="testconf.properties.file" value="zstack.properties" />
+        <condition property="testconf.properties.file" value="${APP_NAME}.properties" else="zstack.properties">
+            <and>
+                <isset property="APP_NAME" />
+                <not>
+                    <equals arg1="${APP_NAME}" arg2="zstack" />
+                </not>
+            </and>
+        </condition>
+
         <property name="testconf.dir" location="${woodpecker.dir}/conf" />
         <makeDir dir="${testconf.dir}" />
-        <copy file="${zstack.source}/conf/zstack.properties" todir="${testconf.dir}" overwrite="true" />
+        <copy file="${zstack.source}/conf/zstack.properties" tofile="${testconf.dir}/${testconf.properties.file}" overwrite="true" />
+        <copy file="${zstack.source}/conf/app_config.xml" todir="${testconf.dir}" overwrite="true" />
+        <replaceregexp file="${testconf.dir}/app_config.xml"
+                       match="&lt;propertiesFile&gt;zstack\.properties&lt;/propertiesFile&gt;"
+                       replace="&lt;propertiesFile&gt;${testconf.properties.file}&lt;/propertiesFile&gt;"
+                       byline="true"
+                       encoding="UTF-8" />
         <echo message="successfully build zstack test config files in ${testconf.dir}" />
     </target>
 </project>

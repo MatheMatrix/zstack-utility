@@ -20,6 +20,7 @@ import functools
 import time
 import random
 import string
+from contextlib import contextmanager
 from configobj import ConfigObj
 import tempfile
 import pwd, grp
@@ -56,6 +57,12 @@ from collections import OrderedDict
 
 
 app_name = get_app_name_from_properties_preload()
+
+
+def current_properties_file_name():
+    if 'ctl' in globals() and getattr(ctl, 'properties_file_name', None):
+        return ctl.properties_file_name
+    return DEFAULT_PROPERTIES_FILE_NAME
 
 mysql_db_config_script='''
 #!/bin/bash
@@ -964,7 +971,6 @@ class ConfigObjEx(ConfigObj):
             os.fsync(f.fileno())
 
 class PropertyFile(object):
-    @lock.file_lock('/run/zstack.properties.lock')
     def __init__(self, path, use_zstack=True):
         self.path = path
         self.use_zstack = use_zstack
@@ -973,48 +979,62 @@ class PropertyFile(object):
         if not os.access(self.path, os.W_OK|os.R_OK):
             raise CtlError('%s: permission denied' % self.path)
 
-        with on_error("errors on reading %s" % self.path):
-            self.config = ConfigObjEx(self.path)
+        with self._property_lock():
+            with on_error("errors on reading %s" % self.path):
+                self.config = ConfigObjEx(self.path)
+
+    def _lock_name(self):
+        lock_seed = self.path if isinstance(self.path, str) else self.path.encode('utf-8')
+        return '/run/zstack-properties-%s.lock' % hashlib.md5(lock_seed).hexdigest()
+
+    @contextmanager
+    def _property_lock(self):
+        lock_name = self._lock_name()
+        with lock.NamedLock(lock_name):
+            with lock.FileLock(lock_name):
+                yield
 
     def read_all_properties(self):
-        with on_error("errors on reading %s" % self.path):
-            return self.config.items()
+        with self._property_lock():
+            with on_error("errors on reading %s" % self.path):
+                return self.config.items()
 
-    @lock.file_lock('/run/zstack.properties.lock')
     def delete_properties(self, keys):
-        for k in keys:
-            if k in self.config:
-                del self.config[k]
+        with self._property_lock():
+            for k in keys:
+                if k in self.config:
+                    del self.config[k]
 
-        with use_user_zstack():
-            self.config.write()
-
-    def read_property(self, key):
-        with on_error("errors on reading %s" % self.path):
-            return self.config.get(key, None)
-
-    @lock.file_lock('/run/zstack.properties.lock')
-    def write_property(self, key, value):
-        with on_error("errors on writing (%s=%s) to %s" % (key, value, self.path)):
-            if self.use_zstack:
-                with use_user_zstack():
-                    self.config[key] = value
-                    self.config.write()
-            else:
-                self.config[key] = value
+            with use_user_zstack():
                 self.config.write()
 
-    @lock.file_lock('/run/zstack.properties.lock')
-    def write_properties(self, lst):
-        with on_error("errors on writing list of key-value%s to %s" % (lst, self.path)):
-            if self.use_zstack:
-                with use_user_zstack():
-                    for key, value in lst:
+    def read_property(self, key):
+        with self._property_lock():
+            with on_error("errors on reading %s" % self.path):
+                return self.config.get(key, None)
+
+    def write_property(self, key, value):
+        with self._property_lock():
+            with on_error("errors on writing (%s=%s) to %s" % (key, value, self.path)):
+                if self.use_zstack:
+                    with use_user_zstack():
                         self.config[key] = value
                         self.config.write()
-            else:
-                for key, value in lst:
+                else:
                     self.config[key] = value
+                    self.config.write()
+
+    def write_properties(self, lst):
+        with self._property_lock():
+            with on_error("errors on writing list of key-value%s to %s" % (lst, self.path)):
+                if self.use_zstack:
+                    with use_user_zstack():
+                        for key, value in lst:
+                            self.config[key] = value
+                        self.config.write()
+                else:
+                    for key, value in lst:
+                        self.config[key] = value
                     self.config.write()
 
 class CtlParser(argparse.ArgumentParser):
@@ -1075,6 +1095,7 @@ class Ctl(object):
         self.main_parser.add_argument('-v', help="verbose, print execution details", dest="verbose", action="store_true", default=False)
         self.zstack_home = None
         self.properties_file_path = None
+        self.properties_file_name = None
         self.ui_properties_file_path = None
         self.tomcat_xml_file_path = None
         self.verbose = False
@@ -1088,6 +1109,8 @@ class Ctl(object):
         self.command_list.append(cmd)
 
     def locate_zstack_home(self):
+        global app_name
+
         env_path = os.path.expanduser(SetEnvironmentVariableCmd.PATH)
         if os.path.isfile(env_path):
             env = PropertyFile(env_path)
@@ -1104,14 +1127,16 @@ class Ctl(object):
             raise CtlError('cannot find ZSTACK_HOME at %s, please set it in .bashrc or use zstack-ctl setenv ZSTACK_HOME=path' % self.zstack_home)
 
         os.environ['ZSTACK_HOME'] = self.zstack_home
-        self.properties_file_path = os.path.join(self.zstack_home, 'WEB-INF/classes/zstack.properties')
+        app_name = os.environ.get('APP_NAME') or os.path.basename(self.zstack_home.rstrip('/')) or app_name
+        self.properties_file_name = get_properties_file_name(self.zstack_home, app_name=app_name)
+        self.properties_file_path = get_properties_file_path(self.zstack_home, app_name=app_name)
         self.tomcat_xml_file_path = os.path.join(self.USER_ZSTACK_HOME_DIR, 'apache-tomcat/conf/server.xml')
         self.ui_properties_file_path = os.path.join(Ctl.ZSTACK_UI_HOME, 'zstack.ui.properties')
         self.ssh_private_key = os.path.join(self.zstack_home, 'WEB-INF/classes/ansible/rsaKeys/id_rsa')
         self.ssh_public_key = os.path.join(self.zstack_home, 'WEB-INF/classes/ansible/rsaKeys/id_rsa.pub')
         if not os.path.isfile(self.properties_file_path):
             warn('cannot find %s, your ZStack installation may have crashed' % self.properties_file_path)
-        if os.path.getsize(self.properties_file_path) == 0:
+        elif os.path.getsize(self.properties_file_path) == 0:
             warn('%s: file empty' % self.properties_file_path)
 
     def get_env(self, name):
@@ -1902,7 +1927,7 @@ class ShowStatusCmd(Command):
 
         info_list = [
             "ZSTACK_HOME: %s" % ctl.zstack_home,
-            "zstack.properties: %s" % ctl.properties_file_path,
+            "%s: %s" % (os.path.basename(ctl.properties_file_path), ctl.properties_file_path),
             "log4j2.xml: %s" % os.path.join(os.path.dirname(ctl.properties_file_path), 'log4j2.xml'),
             "PID file: %s" % os.path.join(os.path.expanduser('~zstack'), "management-server.pid"),
             "log file: %s" % log_path
@@ -2177,14 +2202,13 @@ class ShowStatus3Cmd(Command):
 
 class DeployDBCmd(Command):
     DEPLOY_DB_SCRIPT_PATH = "WEB-INF/classes/deploydb.sh"
-    ZSTACK_PROPERTY_FILE = "WEB-INF/classes/zstack.properties"
 
     def __init__(self):
         super(DeployDBCmd, self).__init__()
         self.name = "deploydb"
         self.description = (
             "deploy a new ZStack database, create a user 'zstack' with password specified in '--zstack-password',\n"
-            "and update zstack.properties if --no-update is not set.\n"
+            "and update the management node properties file if --no-update is not set.\n"
             "\nDANGER: this will erase the existing ZStack database.\n"
             "NOTE: If the database is running on a remote host, please make sure you have granted privileges to the root user by:\n"
             "\n\tGRANT ALL PRIVILEGES ON *.* TO 'root'@'%%' IDENTIFIED BY 'your_root_password' WITH GRANT OPTION;\n"
@@ -2207,7 +2231,7 @@ class DeployDBCmd(Command):
         parser.add_argument('--zstack-password', help='password of user "zstack". [DEFAULT] empty password')
         parser.add_argument('--host', help='IP or DNS name of MySQL host; default is localhost', default='localhost')
         parser.add_argument('--port', help='port of MySQL host; default is 3306', type=int, default=3306)
-        parser.add_argument('--no-update', help='do NOT update database information to zstack.properties; if you do not know what this means, do not use it', action='store_true', default=False)
+        parser.add_argument('--no-update', help='do NOT update database information to the management node properties file; if you do not know what this means, do not use it', action='store_true', default=False)
         parser.add_argument('--drop', help='drop existing zstack database', action='store_true', default=False)
         parser.add_argument('--keep-db', help='keep existing zstack database and not raise error.', action='store_true', default=False)
 
@@ -2218,7 +2242,7 @@ class DeployDBCmd(Command):
         if not os.path.exists(script_path):
             error('cannot find %s, your ZStack installation may have been corrupted, please reinstall it' % script_path)
 
-        property_file_path = os.path.join(ctl.zstack_home, self.ZSTACK_PROPERTY_FILE)
+        property_file_path = ctl.properties_file_path
         if not os.path.exists(property_file_path):
             error('cannot find %s, your ZStack installation may have been corrupted, please reinstall it' % property_file_path)
 
@@ -2420,16 +2444,16 @@ class ConfigureCmd(Command):
     def __init__(self):
         super(ConfigureCmd, self).__init__()
         self.name = 'configure'
-        self.description = "configure zstack.properties"
+        self.description = "configure the management node properties file"
         self.reportPath = "/progress/configure/properties"
         self.properties_algorithm = "sha256"
         ctl.register_command(self)
 
     def install_argparse_arguments(self, parser):
-        parser.add_argument('--host', help='SSH URL, for example, root@192.168.0.10, to set properties in zstack.properties on the remote machine')
-        parser.add_argument('--duplicate-to-remote', help='SSH URL, for example, root@192.168.0.10, to copy zstack.properties on this machine to the remote machine')
-        parser.add_argument('--use-file', help='path to a file that will be used to as zstack.properties')
-        parser.add_argument('--delete', '-d', help='delete the property in zstack.properties by name with ctl')
+        parser.add_argument('--host', help='SSH URL, for example, root@192.168.0.10, to set properties in the management node properties file on the remote machine')
+        parser.add_argument('--duplicate-to-remote', help='SSH URL, for example, root@192.168.0.10, to copy the management node properties file on this machine to the remote machine')
+        parser.add_argument('--use-file', help='path to a file that will be used as the management node properties file')
+        parser.add_argument('--delete', '-d', help='delete the property in the management node properties file by name with ctl')
 
     def _configure_remote_node(self, args):
         shell_no_pipe('ssh %s "/usr/bin/zstack-ctl configure %s"' % (args.host, ' '.join(ctl.extra_arguments)))
@@ -3289,7 +3313,7 @@ class SaveConfigCmd(Command):
         if not os.path.exists(path):
             os.makedirs(path)
 
-        properties_file_path = os.path.join(path, 'zstack.properties')
+        properties_file_path = os.path.join(path, current_properties_file_name())
         shell('yes | cp %s %s' % (ctl.properties_file_path, properties_file_path))
         ssh_private_key_path = os.path.join(path, 'id_rsa')
         ssh_public_key_path = os.path.join(path, 'id_rsa.pub')
@@ -3317,19 +3341,31 @@ class RestoreConfigCmd(Command):
 
         path = os.path.expanduser(path)
         if os.path.isdir(path):
-            properties_file_path = os.path.join(path, 'zstack.properties')
+            restore_dir = path
+            properties_file_path = os.path.join(path, current_properties_file_name())
+            if not os.path.exists(properties_file_path):
+                legacy_properties_file_path = os.path.join(path, DEFAULT_PROPERTIES_FILE_NAME)
+                if os.path.exists(legacy_properties_file_path):
+                    properties_file_path = legacy_properties_file_path
+                else:
+                    candidates = glob.glob(os.path.join(path, '*.properties'))
+                    if len(candidates) == 1:
+                        properties_file_path = candidates[0]
+                    else:
+                        raise CtlError('cannot find properties file in %s' % path)
         elif os.path.isfile(path):
+            restore_dir = os.path.dirname(path)
             properties_file_path = path
         else:
-            raise CtlError('cannot find zstack.properties at %s' % path)
+            raise CtlError('cannot find %s at %s' % (current_properties_file_name(), path))
 
         shell('yes | cp %s %s' % (properties_file_path, ctl.properties_file_path))
-        ssh_private_key_path = os.path.join(path, 'id_rsa')
-        ssh_public_key_path = os.path.join(path, 'id_rsa.pub')
+        ssh_private_key_path = os.path.join(restore_dir, 'id_rsa')
+        ssh_public_key_path = os.path.join(restore_dir, 'id_rsa.pub')
         shell('yes | cp %s %s' % (ssh_private_key_path, ctl.ssh_private_key))
         shell('yes | cp %s %s' % (ssh_public_key_path, ctl.ssh_public_key))
 
-        info('successfully restored zstack.properties and ssh identity keys from %s to %s' % (properties_file_path, ctl.properties_file_path))
+        info('successfully restored %s and ssh identity keys from %s to %s' % (current_properties_file_name(), properties_file_path, ctl.properties_file_path))
 
 class InstallDbCmd(Command):
     def __init__(self):
@@ -5556,7 +5592,7 @@ class ResetRabbitCmd(Command):
     def __init__(self):
         super(ResetRabbitCmd, self).__init__()
         self.name = "reset_rabbitmq"
-        self.description = "Reset RabbitMQ message broker on local machine based on current configuration in zstack.properties."
+        self.description = "Reset RabbitMQ message broker on local machine based on current configuration in the management node properties file."
         ctl.register_command(self)
     def run(self, args):
         info("zstack no longer depend on rabbitmq, exit")
@@ -5605,7 +5641,7 @@ class MysqlRestrictConnection(Command):
     def get_db_portal(self):
         db_host, db_port, db_user, db_password = ctl.get_live_mysql_portal()
         if db_user != "zstack":
-            error("DB.user in the zstack.properties is not set to zstack")
+            error("DB.user in %s is not set to zstack" % ctl.properties_file_path)
 
         return db_host, db_port, db_user, db_password
 
@@ -5869,7 +5905,7 @@ class ChangeMysqlPasswordCmd(Command):
                 error(output)
             info("Change mysql password for user '%s' successfully! " % args.user_name)
             if args.user_name == 'zstack':
-                info(colored("Please change 'DB.password' in 'zstack.properties' then restart zstack to make the changes effective" , 'yellow'))
+                info(colored("Please change 'DB.password' in '%s' then restart zstack to make the changes effective" % current_properties_file_name(), 'yellow'))
             elif args.user_name == 'zstack_ui':
                 info(colored("Please change 'db_password' in 'zstack.ui.properties' then restart zstack ui to make the changes effective" , 'yellow'))
         else:
@@ -7296,7 +7332,7 @@ def is_hyper_converged_host():
     return False
 
 def is_zsv_env():
-    properties_file_path = os.path.join(os.environ['ZSTACK_HOME'], 'WEB-INF/classes/zstack.properties')
+    properties_file_path = get_properties_file_path(os.environ['ZSTACK_HOME'], app_name=app_name)
     properties = PropertyFile(properties_file_path)
     return properties.read_property('deploy_mode') == 'zsv'
 
@@ -7452,7 +7488,7 @@ class ChangeIpCmd(Command):
         _, ui_db_user, ui_db_password = ctl.get_ui_database_portal()
 
         if db_user != "zstack":
-            error("need to set 'DB.user = zstack' in zstack.properties when updating mysql restrict connection")
+            error("need to set 'DB.user = zstack' in %s when updating mysql restrict connection" % current_properties_file_name())
         if ui_db_user != "zstack_ui":
             error("need to set 'db_username = zstack_ui' in zstack.ui.properties when updating mysql restrict connection")
 
@@ -7721,7 +7757,7 @@ class InstallManagementNodeCmd(Command):
         super(InstallManagementNodeCmd, self).__init__()
         self.name = "install_management_node"
         self.description = (
-            "install ZStack management node from current machine to a remote machine with zstack.properties."
+            "install ZStack management node from current machine to a remote machine with the management node properties file."
             "\nNOTE: please configure current node before installing node on other machines"
         )
         ctl.register_command(self)
@@ -7912,8 +7948,8 @@ class InstallManagementNodeCmd(Command):
     - name: install ZStack
       script: $post_script
 
-    - name: copy zstack.properties
-      copy: src=$properties_file dest={{root}}/apache-tomcat/webapps/{app_name}/WEB-INF/classes/zstack.properties
+    - name: copy properties file
+      copy: src=$properties_file dest={{root}}/apache-tomcat/webapps/{app_name}/WEB-INF/classes/{properties_file_name}
 
     - name: mount zstack-dvd
       file:
@@ -7929,6 +7965,7 @@ class InstallManagementNodeCmd(Command):
       shell: "mkdir -p /var/lib/zstack/; chown -R zstack:zstack /var/lib/zstack/"
 '''
         yaml = yaml.replace('{app_name}', app_name)
+        yaml = yaml.replace('{properties_file_name}', current_properties_file_name())
         pre_script = '''
 {0}
 
@@ -8207,7 +8244,7 @@ class ShowConfiguration(Command):
     def __init__(self):
         super(ShowConfiguration, self).__init__()
         self.name = "show_configuration"
-        self.description = "a shortcut that prints contents of zstack.properties to screen"
+        self.description = "a shortcut that prints contents of the management node properties file to screen"
         ctl.register_command(self)
 
     def install_argparse_arguments(self, parser):
@@ -8622,7 +8659,7 @@ class UpgradeManagementNodeCmd(Command):
         upgrade_tmp_dir = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'upgrade', time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime()))
         shell('mkdir -p %s' % upgrade_tmp_dir)
 
-        property_file_backup_path = os.path.join(upgrade_tmp_dir, 'zstack.properties')
+        property_file_backup_path = os.path.join(upgrade_tmp_dir, current_properties_file_name())
 
         class NewWarFilePath(object):
             self.path = None
@@ -8666,7 +8703,7 @@ class UpgradeManagementNodeCmd(Command):
                 shell('rm -f {0}; mkdir -p {0};ln -s /opt/zstack-dvd/x86_64 {0}/x86_64; ln -s /opt/zstack-dvd/aarch64 {0}/aarch64; ln -s /opt/zstack-dvd/mips64el {0}/mips64el; ln -s /opt/zstack-dvd/loongarch64 {0}/loongarch64; chown -R zstack:zstack {0}'.format(zstack_dvd_repo))
 
             def restore_config():
-                info('restoring the zstack.properties ...')
+                info('restoring the %s ...' % current_properties_file_name())
                 ctl.internal_run('restore_config', '--restore-from %s' % os.path.dirname(property_file_backup_path))
 
             def restore_custom_pcidevice_xml():
@@ -8736,12 +8773,12 @@ class UpgradeManagementNodeCmd(Command):
             info('----------------------------------------------\n'
                  'Successfully upgraded the ZStack management node to a new version.\n'
                  'We backup the old zstack as follows:\n'
-                 '\tzstack.properties: %s\n'
+                 '\t%s: %s\n'
                  '\tzstack folder: %s\n'
                  'Please test your new ZStack. If everything is OK and stable, you can manually delete those backup by deleting %s.\n'
                  'Otherwise you can use them to rollback to the previous version\n'
                  '-----------------------------------------------\n' %
-                 (property_file_backup_path, os.path.join(upgrade_tmp_dir, 'zstack'), upgrade_tmp_dir))
+                 (current_properties_file_name(), property_file_backup_path, os.path.join(upgrade_tmp_dir, 'zstack'), upgrade_tmp_dir))
 
         def remote_upgrade():
             need_copy = 'true'
@@ -9230,7 +9267,7 @@ class RollbackManagementNodeCmd(Command):
         parser.add_argument('--war-file', help='path to zstack.war. A HTTP/HTTPS url or a path to a local zstack.war', required=True)
         parser.add_argument('--debug', help="open Ansible debug option", action="store_true", default=False)
         parser.add_argument('--ssh-key', help="the path of private key for SSH login $host; if provided, Ansible will use the specified key as private key to SSH login the $host", default=None)
-        parser.add_argument('--property-file', help="the path to zstack.properties. If omitted, the current zstack.properties will be used", default=None)
+        parser.add_argument('--property-file', help="the path to the active properties file. If omitted, the current properties file will be used", default=None)
 
     def run(self, args):
         error_if_tool_is_missing('unzip')
@@ -9266,7 +9303,7 @@ class RollbackManagementNodeCmd(Command):
             def save_property_file_if_needed():
                 if not args.property_file:
                     ctl.internal_run('save_config', '--save-to %s' % rollback_tmp_dir)
-                    rollbackinfo.property_file = os.path.join(rollback_tmp_dir, 'zstack.properties')
+                    rollbackinfo.property_file = os.path.join(rollback_tmp_dir, current_properties_file_name())
                 else:
                     rollbackinfo.property_file = args.property_file
                     if not os.path.exists(rollbackinfo.property_file):
@@ -9282,7 +9319,7 @@ class RollbackManagementNodeCmd(Command):
                 shell('unzip %s -d %s' % (rollbackinfo.war_path, ctl.zstack_home))
 
             def restore_config():
-                info('restoring the zstack.properties ...')
+                info('restoring the %s ...' % current_properties_file_name())
                 ctl.internal_run('restore_config', '--restore-from %s' % rollbackinfo.property_file)
 
             def install_tools():
@@ -9306,11 +9343,11 @@ class RollbackManagementNodeCmd(Command):
             info('----------------------------------------------\n'
                  'Successfully rollback the ZStack management node to a previous version.\n'
                  'We backup the current zstack as follows:\n'
-                 '\tzstack.properties: %s\n'
+                 '\t%s: %s\n'
                  '\tzstack folder: %s\n'
                  'Please test your ZStack. If everything is OK and stable, you can manually delete those backup by deleting %s.\n'
                  '-----------------------------------------------\n' %
-                 (rollbackinfo.property_file, os.path.join(rollback_tmp_dir, os.path.basename(ctl.zstack_home)), rollback_tmp_dir))
+                 (current_properties_file_name(), rollbackinfo.property_file, os.path.join(rollback_tmp_dir, os.path.basename(ctl.zstack_home)), rollback_tmp_dir))
 
         def remote_rollback():
             error_if_tool_is_missing('wget')
