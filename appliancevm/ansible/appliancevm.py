@@ -3,6 +3,7 @@
 
 import argparse
 import datetime
+import json
 
 from zstacklib import *
 
@@ -31,7 +32,7 @@ parser.add_argument('--private-key', type=str, help='use this file to authentica
 parser.add_argument('-e', type=str, help='set additional variables as key=value or YAML/JSON')
 
 args = parser.parse_args()
-argument_dict = eval(args.e)
+argument_dict = json.loads(args.e)
 locals().update(argument_dict)
 
 # update the variable from shell arguments

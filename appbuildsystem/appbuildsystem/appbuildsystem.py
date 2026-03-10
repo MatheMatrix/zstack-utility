@@ -3,6 +3,7 @@ __author__ = 'mingjian.deng'
 import os
 import os.path
 import pprint
+import tempfile
 import traceback
 
 import zstacklib.utils.daemon as daemon
@@ -247,7 +248,9 @@ class AppBuildSystemAgent(object):
             linux.mkdir(path, 0o755)
         def _tar_export(srcDir, dstDir, ctx):
             basename = os.path.basename(srcDir)
-            metaPath = shell.call('mktemp XXXXXX-appmeta.json', True, srcDir).strip()  # metaPath is relative path
+            _meta_fd, _meta_abs = tempfile.mkstemp(suffix='-appmeta.json', dir=srcDir)
+            os.close(_meta_fd)
+            metaPath = os.path.basename(_meta_abs)  # metaPath is relative path
             tarPath = "/tmp/%s.tar" % basename
             dstPath = "%s/%s.tar.gz" % (dstDir, basename)
 

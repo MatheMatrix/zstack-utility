@@ -7,7 +7,7 @@ import os
 try:
     if os.environ['TERM'].startswith('xterm'):
         os.environ['TERM'] = 'vt100'
-except:
+except Exception:
     os.environ['TERM'] = 'vt100'
 
 import readline
@@ -152,7 +152,7 @@ class Cli(object):
             else:
                 api_map_name = apiname
 
-            query_pri_fields = eval('inventory.%s().PRIMITIVE_FIELDS' % api_map_name)
+            query_pri_fields = getattr(inventory, api_map_name)().PRIMITIVE_FIELDS
             query_pri_fields = ['%s' % field for field in query_pri_fields]
             temp_fields = list(query_pri_fields)
             query_pri_fields = []
@@ -169,7 +169,7 @@ class Cli(object):
                 api_map_name = inventory.queryMessageInventoryMap[apiname].__name__
             else:
                 api_map_name = apiname
-            query_ext_fields = eval('inventory.%s().EXPANDED_FIELDS' % api_map_name)
+            query_ext_fields = getattr(inventory, api_map_name)().EXPANDED_FIELDS
             query_ext_fields = ['%s' % field for field in query_ext_fields]
             temp_fields = list(query_ext_fields)
             query_ext_fields = []
@@ -230,18 +230,17 @@ class Cli(object):
                 new_api_name = 'API%sMsg' % apiname
                 if inventory.queryMessageInventoryMap.has_key(new_api_name):
                     api_obj_name = inventory.queryMessageInventoryMap[new_api_name].__name__
-                    query_ext_fields = eval('inventory.%s().EXPANDED_FIELDS' % api_obj_name)
+                    query_ext_fields = getattr(inventory, api_obj_name)().EXPANDED_FIELDS
                     if head_field in query_ext_fields:
-                        current_obj_name = eval('inventory.%s().QUERY_OBJECT_MAP["%s"]' % (api_obj_name, head_field))
+                        current_obj_name = getattr(inventory, api_obj_name)().QUERY_OBJECT_MAP[head_field]
 
                         for i in range(0, fields_num):
                             if i == fields_num - 2:
                                 break
                             next_field = fields_objects[i + 1]
-                            query_ext_fields = eval('inventory.%s().EXPANDED_FIELDS' % current_obj_name)
+                            query_ext_fields = getattr(inventory, current_obj_name)().EXPANDED_FIELDS
                             if next_field in query_ext_fields:
-                                current_obj_name = eval(
-                                    'inventory.%s().QUERY_OBJECT_MAP["%s"]' % (current_obj_name, next_field))
+                                current_obj_name = getattr(inventory, current_obj_name)().QUERY_OBJECT_MAP[next_field]
                             else:
                                 current_obj_name = None
                     else:
@@ -282,10 +281,8 @@ example: %sLogInByAccount accountName=admin password=your_super_secure_admin_pas
             return True
 
         def is_api_param_a_list(apiname, param):
-            optional_list = eval('isinstance(inventory.%s().%s, \
-                    inventory.OptionalList)' % (apiname, param))
-            not_none_list = eval('isinstance(inventory.%s().%s, \
-                    inventory.NotNoneList)' % (apiname, param))
+            optional_list = isinstance(getattr(getattr(inventory, apiname)(), param), inventory.OptionalList)
+            not_none_list = isinstance(getattr(getattr(inventory, apiname)(), param), inventory.NotNoneList)
             if optional_list or not_none_list:
                 return True
 
@@ -552,7 +549,7 @@ Parse command parameters error:
             if apiname.startswith('APIQuery') and apiname not in NOT_QUERY_MYSQL_APIS:
                 params = generate_query_params(apiname, params)
 
-            msg = eval('inventory.%s()' % apiname)
+            msg = getattr(inventory, apiname)()
             for key in params.keys():
                 value = params[key]
                 setattr(msg, key, value)
@@ -561,8 +558,8 @@ Parse command parameters error:
         def create_event(apiname):
             event_name = apiname[0:-3] + "Event"
             try:
-                return eval('inventory.%s()' % event_name)
-            except:
+                return getattr(inventory, event_name)()
+            except Exception:
                 return None
 
         def set_session_to_api(msg):
@@ -689,7 +686,7 @@ Parse command parameters error:
 
         import atexit
         if not os.path.exists(os.path.dirname(CLI_HISTORY)):
-            os.system('mkdir -p %s' % os.path.dirname(CLI_HISTORY))
+            os.makedirs(os.path.dirname(CLI_HISTORY), exist_ok=True)
         atexit.register(clean_password_in_cli_history)
         atexit.register(readline.write_history_file, CLI_HISTORY)
 
@@ -726,7 +723,7 @@ Parse command parameters error:
             return keys
 
         for apiname in inventory.api_names:
-            obj = eval("inventory.%s()" % apiname)
+            obj = getattr(inventory, apiname)()
             params = []
             params.extend(obj.__dict__.keys())
             self.api_class_params[apiname] = rule_out_unneeded_params(params)
@@ -814,7 +811,7 @@ Parse command parameters error:
 
             try:
                 term_width = int(os.popen('stty size', 'r').read().split()[1])
-            except:
+            except Exception:
                 term_width = 80
 
             columes = term_width / max_match_length
@@ -1178,11 +1175,11 @@ Parse command parameters error:
         if not os.path.isdir(CLI_RESULT_HISTORY_FOLDER):
 
             linux.rm_dir_force(os.path.dirname(CLI_RESULT_HISTORY_FOLDER))
-            os.system('mkdir -p %s' % os.path.dirname(CLI_RESULT_HISTORY_FOLDER))
+            os.makedirs(os.path.dirname(CLI_RESULT_HISTORY_FOLDER), exist_ok=True)
 
         try:
             self.hd = filedb.FileDB(CLI_RESULT_HISTORY_KEY, is_abs_path=True)
-        except:
+        except Exception:
             linux.rm_dir_force(CLI_RESULT_HISTORY_KEY)
             self.hd = filedb.FileDB(CLI_RESULT_HISTORY_KEY, is_abs_path=True)
             print "\nRead history file: %s error. Has recreate it.\n" % CLI_RESULT_HISTORY_KEY
@@ -1319,7 +1316,7 @@ def main():
         admin_passwd = hashlib.sha512(options.admin_password).hexdigest()
         try:
             deploy_xml_obj.deployerConfig
-        except:
+        except Exception:
             deploy_config.deploy_initial_database(deploy_xml_obj, admin_passwd)
         else:
             deploy_config.deploy_initial_database(deploy_xml_obj.deployerConfig, admin_passwd)

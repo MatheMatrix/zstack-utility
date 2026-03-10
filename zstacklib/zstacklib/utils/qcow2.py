@@ -1,4 +1,5 @@
 import log
+import os
 import plugin
 import traceable_shell
 import report
@@ -9,7 +10,8 @@ logger = log.get_logger(__name__)
 
 def create_template_with_task_daemon(src, dst, task_spec, dst_format='qcow2', opts=None, **daemonargs):
     t_shell = traceable_shell.get_shell(task_spec)
-    p_file = tempfile.mktemp()
+    _fd, p_file = tempfile.mkstemp()
+    os.close(_fd)
 
     class ConvertTaskDaemon(plugin.TaskDaemon):
 

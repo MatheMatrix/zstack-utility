@@ -11651,7 +11651,8 @@ host side snapshot files chian:
             # '*/1 * * * * bash $script_path 60'
             cron_scripts.append('%s bash %s %d' % (self.sync_clock_cron_exp_map[interval], script_path, interval))
 
-        tmp_path = tempfile.mktemp()
+        _fd, tmp_path = tempfile.mkstemp()
+        os.close(_fd)
         with open(tmp_path, "w") as fd:
             fd.write('\n'.join(cron_scripts))
             fd.write('\n')

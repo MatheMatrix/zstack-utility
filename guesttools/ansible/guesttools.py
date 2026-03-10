@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # encoding: utf-8
 import argparse
+import json
 import os.path
 from zstacklib import *
 from datetime import datetime
@@ -27,7 +28,7 @@ parser.add_argument('-e', type=str, help='set additional variables as key=value 
 
 # update the variable from shell arguments
 args = parser.parse_args()
-argument_dict = eval(args.e)
+argument_dict = json.loads(args.e)
 locals().update(argument_dict)
 
 host_post_info = HostPostInfo()

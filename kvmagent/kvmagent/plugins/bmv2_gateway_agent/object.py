@@ -239,7 +239,8 @@ class TargetcliConfObj(object):
         self.refresh()
 
     def refresh(self):
-        temp_file = tempfile.mktemp()
+        _fd, temp_file = tempfile.mkstemp()
+        os.close(_fd)
         cmd = 'targetcli / saveconfig {temp_file}'.format(temp_file=temp_file)
         shell.call(cmd)
         with open(temp_file, 'r') as f:

@@ -5,6 +5,7 @@
 
 import paramiko
 import os.path
+import subprocess
 import log
 
 logger = log.get_logger(__name__)
@@ -122,7 +123,7 @@ def make_ssh_no_password(target, username, password, port=22):
         if os.path.exists(id_rsa):
             err = 'Did not find ssh public key in %s or %s, but private key %s exists. If this private key is copied from other place, the related public key should be copied as well. If not, it is better to delete %s. Then woodpecker will help to generate the paried private key and public key. ' % (id_rsa_pub, id_dsa_pub, id_rsa, id_rsa)
             raise SshError(err)
-        os.system("ssh-keygen -t rsa -f %s -N '' " % id_rsa)
+        subprocess.run(['ssh-keygen', '-t', 'rsa', '-f', id_rsa, '-N', ''], check=True)
         id_pub = id_rsa_pub
 
     pub_id = open(id_pub).readline().strip()
