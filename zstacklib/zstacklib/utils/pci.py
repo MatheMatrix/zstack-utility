@@ -79,7 +79,9 @@ _VENDOR_NAME_MAPPING = {
     'Advanced Micro Devices': 'AMD',
     'NVIDIA Corporation': 'NVIDIA',
     'Chengdu Haiguang': 'Haiguang',
+    'Chengdu C-3000': 'Haiguang',
     'Haiguang': 'Haiguang',
+    'Hygon': 'Haiguang',
     'Huawei': 'Huawei',
     'TianShu': 'TianShu',
     'Vastai': 'Vastai',
@@ -91,10 +93,15 @@ _VENDOR_NAME_MAPPING = {
 # Vendor ID mapping (for cases where name matching fails)
 # Format: lowercase vendor_id -> simplified name
 _VENDOR_ID_MAPPING = {
-    '1ded': 'Alibaba',  # Alibaba vendor ID
-    '1e3e': 'TianShu',  # TianShu vendor ID
-    '19e5': 'Huawei',   # Huawei vendor ID (NPU, etc.)
-    '2057': 'Kunlunxin',  # Kunlunxin vendor ID
+    '10de': 'NVIDIA',     # NVIDIA vendor ID
+    '8086': 'Intel',      # Intel vendor ID
+    '1002': 'AMD',        # AMD vendor ID
+    '1d94': 'Haiguang',   # Hygon / Chengdu C-3000
+    '1ded': 'Alibaba',    # Alibaba vendor ID
+    '1e3e': 'TianShu',    # TianShu vendor ID
+    '19e5': 'Huawei',     # Huawei vendor ID (NPU, etc.)
+    '2057': 'Kunlunxin',  # Kunlunxin vendor ID (P800 etc.)
+    '1d22': 'Kunlunxin',  # Kunlunxin vendor ID (alt)
 }
 
 
