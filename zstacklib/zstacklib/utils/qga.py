@@ -184,11 +184,11 @@ class VmQga(object):
         parsedRet = parsed['return']
         if isinstance(parsedRet, dict):
             if 'out-data' in parsedRet:
-                parsedRet['out-data'] = base64.b64decode(parsedRet['out-data']).decode()
+                parsedRet['out-data'] = decode_with_fallback(base64.b64decode(parsedRet['out-data']))
             if 'err-data' in parsedRet:
-                parsedRet['err-data'] = base64.b64decode(parsedRet['err-data']).decode()
+                parsedRet['err-data'] = decode_with_fallback(base64.b64decode(parsedRet['err-data']))
             if 'buf-b64' in parsedRet:
-                parsedRet['buf-b64'] = base64.b64decode(parsedRet['buf-b64']).decode()
+                parsedRet['buf-b64'] = decode_with_fallback(base64.b64decode(parsedRet['buf-b64']))
 
         return parsedRet
 
