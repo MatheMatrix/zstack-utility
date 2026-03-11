@@ -528,13 +528,15 @@ XPU 00000000:01:00.0
 class TestKunlunxinParseBasicInfo(unittest.TestCase):
     """Test Kunlunxin parse_basic_info (vendor plugin path) - ZSTAC-81958."""
 
-    def test_parse_basic_info_extracts_product_name(self):
-        """productName should appear in GPUInfo.extra after parsing xpu-smi output."""
+    def test_parse_basic_info_ignores_product_name(self):
+        """Output contains Product Name but parse_basic_info should NOT put it in extra;
+        productName is handled by enrich_addon_info instead."""
         from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
 
+        # XPU_SMI_SAMPLE_OUTPUT contains "Product Name : P800 PCIe"
         infos = Kunlunxin.parse_basic_info(XPU_SMI_SAMPLE_OUTPUT)
         self.assertEqual(len(infos), 1)
-        self.assertEqual(infos[0].extra.get("productName"), "P800 PCIe")
+        self.assertEqual(infos[0].extra, {})
 
     def test_parse_basic_info_extracts_pci_address(self):
         """PCI address should be normalized."""
@@ -569,7 +571,7 @@ class TestKunlunxinParseBasicInfo(unittest.TestCase):
         self.assertEqual(infos, [])
 
     def test_parse_basic_info_no_product_name(self):
-        """If xpu-smi omits Product Name, extra should be empty dict."""
+        """parse_basic_info never sets productName; extra should always be empty."""
         from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
 
         output = """\
@@ -583,6 +585,101 @@ XPU 00000000:02:00.0
         infos = Kunlunxin.parse_basic_info(output)
         self.assertEqual(len(infos), 1)
         self.assertEqual(infos[0].extra, {})
+
+
+class TestKunlunxinEnrichAddonInfo(unittest.TestCase):
+    """Test Kunlunxin enrich_addon_info with productName."""
+
+    def test_enrich_addon_info_sets_product_name(self):
+        """enrich_addon_info sets productName for Kunlunxin devices."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        gpu_info_map = {
+            "0000:01:00.0": {"isDriverLoaded": True},
+        }
+
+        with patch.object(Kunlunxin, 'get_xpu_ids', return_value=["0"]):
+            with patch('zstacklib.gpu.vendors.kunlunxin.bash_roe',
+                        return_value=(0, XPU_SMI_SAMPLE_OUTPUT, "")):
+                Kunlunxin.enrich_addon_info(gpu_info_map, ["0000:01:00.0"])
+
+        self.assertEqual(gpu_info_map["0000:01:00.0"]["productName"], "P800 PCIe")
+
+    def test_enrich_addon_info_cmd_fails(self):
+        """enrich_addon_info does nothing when xpu-smi command fails."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        gpu_info_map = {
+            "0000:01:00.0": {"isDriverLoaded": True},
+        }
+
+        with patch.object(Kunlunxin, 'get_xpu_ids', return_value=["0"]):
+            with patch('zstacklib.gpu.vendors.kunlunxin.bash_roe',
+                        return_value=(1, "", "error")):
+                Kunlunxin.enrich_addon_info(gpu_info_map, ["0000:01:00.0"])
+
+        self.assertNotIn("productName", gpu_info_map["0000:01:00.0"])
+
+    def test_enrich_addon_info_empty_pci_addresses(self):
+        """enrich_addon_info does nothing with empty pci_addresses."""
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        gpu_info_map = {}
+        Kunlunxin.enrich_addon_info(gpu_info_map, [])
+        self.assertEqual(gpu_info_map, {})
+
+
+class TestKunlunxinPostProcessPciDevice(unittest.TestCase):
+    """Test Kunlunxin post_process_pci_device cleans up wrong ID names."""
+
+    def _make_pci_device(self, name, device, device_id="3686"):
+        class FakePciDeviceTO(object):
+            pass
+        to = FakePciDeviceTO()
+        to.name = name
+        to.device = device
+        to.deviceId = device_id
+        return to
+
+    def test_cleans_wrong_id_name(self):
+        """'wrong ID' in name should be replaced with clean Kunlunxin_Device format."""
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        to = self._make_pci_device(
+            "SafeNet (wrong ID)_Device 3686", "SafeNet (wrong ID)_Device 3686")
+        Kunlunxin.post_process_pci_device(to)
+        self.assertEqual(to.name, "Kunlunxin_3686")
+        self.assertEqual(to.device, "Kunlunxin_3686")
+
+    def test_no_change_for_normal_name(self):
+        """Normal name without 'wrong ID' should not be modified."""
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        to = self._make_pci_device("P800 PCIe", "P800 PCIe")
+        Kunlunxin.post_process_pci_device(to)
+        self.assertEqual(to.name, "P800 PCIe")
+        self.assertEqual(to.device, "P800 PCIe")
+
+    def test_fallback_when_no_device_id(self):
+        """When deviceId is empty, fall back to 'Kunlunxin_XPU'."""
+        from zstacklib.gpu.vendors.kunlunxin import Kunlunxin
+
+        to = self._make_pci_device(
+            "SafeNet (wrong ID)_Device 3686", "SafeNet (wrong ID)_Device 3686",
+            device_id="")
+        Kunlunxin.post_process_pci_device(to)
+        self.assertEqual(to.name, "Kunlunxin_XPU")
+        self.assertEqual(to.device, "Kunlunxin_XPU")
 
 
 class TestKunlunxinLegacyParse(unittest.TestCase):
@@ -1401,6 +1498,61 @@ class TestIdentifyVendor(unittest.TestCase):
         # Should match by ID first
         result = identify_vendor("NVIDIA Corporation Tesla T4", "10de")
         self.assertEqual(result, "NVIDIA")
+
+
+class TestSimplifyDeviceName(unittest.TestCase):
+    """Test pci.simplify_device_name extracts bracketed product name."""
+
+    def test_nvidia_with_brackets(self):
+        from zstacklib.utils.pci import simplify_device_name
+        self.assertEqual(simplify_device_name("GA102 [GeForce RTX 3090]"), "GeForce RTX 3090")
+
+    def test_nvidia_with_revision(self):
+        from zstacklib.utils.pci import simplify_device_name
+        self.assertEqual(simplify_device_name("GP107 [GeForce GTX 1050 Ti Rev. A]"),
+                         "GeForce GTX 1050 Ti Rev. A")
+
+    def test_no_brackets(self):
+        from zstacklib.utils.pci import simplify_device_name
+        self.assertEqual(simplify_device_name("Ascend 310P3"), "Ascend 310P3")
+
+    def test_device_id_only(self):
+        from zstacklib.utils.pci import simplify_device_name
+        self.assertEqual(simplify_device_name("Device 3686"), "Device 3686")
+
+    def test_empty(self):
+        from zstacklib.utils.pci import simplify_device_name
+        self.assertEqual(simplify_device_name(""), "")
+
+    def test_none(self):
+        from zstacklib.utils.pci import simplify_device_name
+        self.assertIsNone(simplify_device_name(None))
+
+
+class TestSimplifyVendorNameFallback(unittest.TestCase):
+    """Test simplify_vendor_name fallback handles brackets."""
+
+    def test_unknown_vendor_with_brackets(self):
+        from zstacklib.utils.pci import simplify_vendor_name
+        self.assertEqual(
+            simplify_vendor_name("SomeVendor Co., Ltd [RealName]"),
+            "RealName")
+
+    def test_unknown_vendor_no_brackets(self):
+        from zstacklib.utils.pci import simplify_vendor_name
+        self.assertEqual(
+            simplify_vendor_name("SomeVendor Co., Ltd Foo"),
+            "SomeVendor Foo")
+
+    def test_unknown_vendor_with_multiple_brackets(self):
+        from zstacklib.utils.pci import simplify_vendor_name
+        self.assertEqual(
+            simplify_vendor_name("SomeVendor Co., Ltd [PartA] [PartB]"),
+            "PartA PartB")
+
+    def test_known_vendor_not_affected(self):
+        from zstacklib.utils.pci import simplify_vendor_name
+        self.assertEqual(simplify_vendor_name("NVIDIA Corporation"), "NVIDIA")
 
 
 if __name__ == '__main__':

@@ -942,6 +942,13 @@ def _gpu_device_processor(pci_device_to, context):
         if product_name:
             pci_device_to.device = product_name
             pci_device_to.name = product_name
+        else:
+            # Simplify lspci device name: 'GA102 [GeForce RTX 3090]' → 'GeForce RTX 3090'
+            from zstacklib.utils.pci import simplify_device_name
+            simplified = simplify_device_name(pci_device_to.device)
+            if simplified and simplified != pci_device_to.device:
+                pci_device_to.device = simplified
+                pci_device_to.name = "%s_%s" % (vendor_name, simplified)
 
     # Call vendor's post_process_pci_device hook
     if vendor_name:
