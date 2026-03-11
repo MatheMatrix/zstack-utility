@@ -113,6 +113,94 @@ def update_libvirtd_config(host_post_info):
 
     return file_changed_flag
 
+
+def deploy_libvirt_tls_certs(host_post_info):
+    """Deploy TLS certificates for libvirt on the host.
+
+    Generates a self-signed CA on the management node (if not present),
+    then issues server and client certs for the KVM host and copies them
+    to the standard libvirt PKI paths.
+    """
+    ca_dir = "%s/pki/CA" % zstack_lib_dir
+    libvirt_pki_dir = "%s/pki/libvirt" % zstack_lib_dir
+
+    # Step 1: Ensure local CA exists on the management node
+    command = (
+        "mkdir -p {ca_dir} {libvirt_pki_dir} && "
+        "if [ ! -f {ca_dir}/cacert.pem ]; then "
+        "  openssl genrsa -out {ca_dir}/cakey.pem 4096 && "
+        "  openssl req -new -x509 -days 3650 -key {ca_dir}/cakey.pem "
+        "    -out {ca_dir}/cacert.pem -subj '/O=ZStack/CN=ZStack Libvirt CA'; "
+        "fi"
+    ).format(ca_dir=ca_dir, libvirt_pki_dir=libvirt_pki_dir)
+    shell_return = os.system(command)
+    if shell_return != 0:
+        handle_ansible_info("Failed to create local CA for libvirt TLS", host_post_info, "WARNING")
+        return
+
+    # Step 2: Check if the host already has valid certs
+    command = "test -f /etc/pki/libvirt/servercert.pem && test -f /etc/pki/CA/cacert.pem"
+    (status, _) = run_remote_command(command, host_post_info, return_status=True, return_output=True)
+    if status == 0:
+        # Certs already exist, verify CA matches
+        command = "openssl verify -CAfile /etc/pki/CA/cacert.pem /etc/pki/libvirt/servercert.pem 2>&1 | grep -q ': OK'"
+        (verify_status, _) = run_remote_command(command, host_post_info, return_status=True, return_output=True)
+        if verify_status == 0:
+            handle_ansible_info("Libvirt TLS certs already valid on host, skipping", host_post_info, "INFO")
+            return
+
+    host_ip = host_post_info.host
+    cert_tmp_dir = "/tmp/zstack-libvirt-tls-%s" % host_ip.replace('.', '_')
+
+    # Step 3: Generate server and client certificates for this host
+    command = (
+        "mkdir -p {tmp} && "
+        "openssl genrsa -out {tmp}/serverkey.pem 4096 && "
+        "openssl req -new -key {tmp}/serverkey.pem "
+        "  -out {tmp}/server.csr -subj '/O=ZStack/CN={ip}' && "
+        "openssl x509 -req -days 3650 -in {tmp}/server.csr "
+        "  -CA {ca_dir}/cacert.pem -CAkey {ca_dir}/cakey.pem "
+        "  -CAcreateserial -out {tmp}/servercert.pem "
+        "  -extfile <(printf 'subjectAltName=IP:{ip}') && "
+        "openssl genrsa -out {tmp}/clientkey.pem 4096 && "
+        "openssl req -new -key {tmp}/clientkey.pem "
+        "  -out {tmp}/client.csr -subj '/O=ZStack/CN={ip}' && "
+        "openssl x509 -req -days 3650 -in {tmp}/client.csr "
+        "  -CA {ca_dir}/cacert.pem -CAkey {ca_dir}/cakey.pem "
+        "  -CAcreateserial -out {tmp}/clientcert.pem "
+        "  -extfile <(printf 'subjectAltName=IP:{ip}')"
+    ).format(tmp=cert_tmp_dir, ca_dir=ca_dir, ip=host_ip)
+    shell_return = os.system("bash -c '%s'" % command.replace("'", "'\\''"))
+    if shell_return != 0:
+        handle_ansible_info("Failed to generate TLS certs for host %s" % host_ip, host_post_info, "WARNING")
+        return
+
+    # Step 4: Create directories and copy certs to the remote host
+    command = "mkdir -p /etc/pki/CA /etc/pki/libvirt/private"
+    run_remote_command(command, host_post_info)
+
+    for src_file, dest_file in [
+        ("%s/cacert.pem" % ca_dir, "/etc/pki/CA/cacert.pem"),
+        ("%s/servercert.pem" % cert_tmp_dir, "/etc/pki/libvirt/servercert.pem"),
+        ("%s/serverkey.pem" % cert_tmp_dir, "/etc/pki/libvirt/private/serverkey.pem"),
+        ("%s/clientcert.pem" % cert_tmp_dir, "/etc/pki/libvirt/clientcert.pem"),
+        ("%s/clientkey.pem" % cert_tmp_dir, "/etc/pki/libvirt/private/clientkey.pem"),
+    ]:
+        copy_arg = CopyArg()
+        copy_arg.src = src_file
+        copy_arg.dest = dest_file
+        copy(copy_arg, host_post_info)
+
+    # Step 5: Set proper permissions
+    command = "chmod 600 /etc/pki/libvirt/private/*.pem && chmod 644 /etc/pki/libvirt/*.pem /etc/pki/CA/cacert.pem"
+    run_remote_command(command, host_post_info)
+
+    # Step 6: Cleanup temp dir
+    command = "rm -rf %s" % cert_tmp_dir
+    os.system(command)
+
+    handle_ansible_info("Deployed TLS certs for libvirt on host %s" % host_ip, host_post_info, "INFO")
+
 @with_arch(todo_list=['x86_64'], host_arch=host_info.host_arch)
 def check_nested_kvm(host_post_info):
     """aarch64 does not need to modprobe kvm"""
@@ -407,6 +495,8 @@ def install_kvm_pkg():
 
         #we should check libvirtd config file status before restart the service
         libvirtd_conf_status = update_libvirtd_config(host_post_info)
+        # deploy TLS certificates for libvirt before starting the service
+        deploy_libvirt_tls_certs(host_post_info)
         # in the libvirtd 5.6.0 and later, the libvirtd daemon now prefers to uses systemd socket activation
         command = "libvirtd --version | grep 'libvirtd (libvirt) ' | cut -d ' ' -f 3 | cut -d '(' -f 1"
         (status, libvirtd_version) = run_remote_command(command, host_post_info, False, True)
@@ -470,6 +560,8 @@ def install_kvm_pkg():
         update_pkg_list = ['ebtables', 'python3-libvirt', 'qemu-system-arm']
         apt_update_packages(update_pkg_list, host_post_info)
         libvirtd_conf_status = update_libvirtd_config(host_post_info)
+        # deploy TLS certificates for libvirt before starting the service
+        deploy_libvirt_tls_certs(host_post_info)
         if chroot_env == 'false':
             # name: enable libvirt daemon on RedHat based OS
             service_status("libvirtd", "state=started enabled=yes", host_post_info)
