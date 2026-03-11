@@ -63,6 +63,10 @@ def _infer_device_type(description: str, class_name: str) -> str:
         return "USB_Controller"
     if "Serial controller" in class_name:
         return "Serial_Controller"
+    if "Processing accelerators" in class_name:
+        return "GPU_Processing_Accelerators"
+    if "Co-processor" in class_name:
+        return "GPU_Co_Processor"
     if "Moxa Technologies" in class_name:
         return "Moxa_Device"
     if "Host bridge" in class_name:
