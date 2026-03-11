@@ -84,6 +84,26 @@ class TestVendorNameSimplification(unittest.TestCase):
         result = pci.simplify_vendor_name("Unknown Vendor", "1ded")
         self.assertEqual(result, "Alibaba")
 
+    def test_simplify_vendor_name_haiguang_chengdu_c3000(self):
+        """ZSTAC-82350: Chengdu C-3000 IC Design Co., Ltd. must map to Haiguang"""
+        result = pci.simplify_vendor_name("Chengdu C-3000 IC Design Co., Ltd.", "1d94")
+        self.assertEqual(result, "Haiguang")
+
+    def test_simplify_vendor_name_haiguang_by_vendor_id(self):
+        """vendor_id 1d94 should map to Haiguang even with unknown name"""
+        result = pci.simplify_vendor_name("Unknown Device", "1d94")
+        self.assertEqual(result, "Haiguang")
+
+    def test_simplify_vendor_name_haiguang_by_name(self):
+        """Chengdu Haiguang name should still work"""
+        result = pci.simplify_vendor_name("Chengdu Haiguang IC Design Co., Ltd.", None)
+        self.assertEqual(result, "Haiguang")
+
+    def test_simplify_vendor_name_hygon(self):
+        """Hygon (Haiguang English name) should map to Haiguang"""
+        result = pci.simplify_vendor_name("Hygon Information Technology", None)
+        self.assertEqual(result, "Haiguang")
+
     def test_simplify_vendor_name_unknown(self):
         """Test vendor name simplification for unknown vendor"""
         result = pci.simplify_vendor_name("Some Co., Ltd Vendor", None)
