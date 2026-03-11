@@ -11029,12 +11029,12 @@ host side snapshot files chian:
 
         if direction == 'Decrease':
             # do not decrease memory over unused memory
-            delta = actual_mem * precentage / 100
+            delta = actual_mem * precentage // 100
             delta = delta if delta < mem.usable else mem.usable
             changed_to = actual_mem - delta
         elif direction == 'Increase':
             # do not increase memory over max memory
-            changed_to = actual_mem + mem.max * precentage / 100
+            changed_to = actual_mem + mem.max * precentage // 100
             changed_to = changed_to if changed_to < mem.max else mem.max
         else:
             raise Exception('unknown direction[%s]' % direction)
@@ -11044,7 +11044,7 @@ host side snapshot files chian:
             logger.debug("vm[uuid:%s] memory is already changed to %s, skip it" % (vm_uuid, changed_to))
             return
 
-        if changed_to < mem.max * 30 / 100:
+        if changed_to < mem.max * 30 // 100:
             logger.debug("vm[uuid:%s] memory can not changed lower than 30 percent of its max memory %d, skip it" % (vm_uuid, mem.max))
             return
 
