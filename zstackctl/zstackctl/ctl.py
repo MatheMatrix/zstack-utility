@@ -4526,6 +4526,21 @@ class InstallHACmd(Command):
         if args.host3_info is not False:
             copy(copy_arg, self.host2_post_info)
 
+        #sync libvirt TLS CA key
+        libvirt_ca_dir = "/var/lib/zstack/pki/CA"
+        if os.path.isfile("%s/cacert.pem" % libvirt_ca_dir) and os.path.isfile("%s/cakey.pem" % libvirt_ca_dir):
+            # ensure remote directory exists before copying
+            run_remote_command("mkdir -p %s" % libvirt_ca_dir, self.host2_post_info)
+            if args.host3_info is not False:
+                run_remote_command("mkdir -p %s" % libvirt_ca_dir, self.host3_post_info)
+            for ca_file in ["cacert.pem", "cakey.pem"]:
+                copy_arg = CopyArg()
+                copy_arg.src = "%s/%s" % (libvirt_ca_dir, ca_file)
+                copy_arg.dest = "%s/%s" % (libvirt_ca_dir, ca_file)
+                copy(copy_arg, self.host2_post_info)
+                if args.host3_info is not False:
+                    copy(copy_arg, self.host3_post_info)
+
         print '''HA deploy finished!
 Mysql user 'root' password: %s
 Mysql user 'zstack' password: %s

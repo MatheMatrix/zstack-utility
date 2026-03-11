@@ -119,6 +119,151 @@ def update_libvirtd_config(host_post_info):
 
     return file_changed_flag
 
+
+def deploy_libvirt_tls_certs(host_post_info):
+    """Deploy TLS certificates for libvirt on the host.
+
+    Generates a self-signed CA on the management node (if not present),
+    then issues server and client certs for the KVM host and copies them
+    to the standard libvirt PKI paths.
+    """
+    ca_dir = "%s/pki/CA" % zstack_lib_dir
+    libvirt_pki_dir = "%s/pki/libvirt" % zstack_lib_dir
+
+    # Step 1: CA should already exist on the management node (generated and
+    # persisted by Java at MN startup via JsonLabelVO).
+    command = "mkdir -p {ca_dir} {libvirt_pki_dir}".format(ca_dir=ca_dir, libvirt_pki_dir=libvirt_pki_dir)
+    shell_return = os.system(command)
+    if shell_return != 0:
+        error("Failed to create local PKI directories for libvirt TLS")
+
+    if not os.path.isfile("%s/cacert.pem" % ca_dir) or not os.path.isfile("%s/cakey.pem" % ca_dir):
+        error("Libvirt TLS CA not found at %s. "
+              "The management node should have generated it on startup. "
+              "Please restart the management node or check logs." % ca_dir)
+
+    host_ip = host_post_info.host
+    cert_tmp_dir = "/tmp/zstack-libvirt-tls-%s" % host_ip.replace('.', '_')
+
+    # Collect all IPs for certificate SAN (management + migration network)
+    # tls_cert_ips is passed from Java as "ip1,ip2,ip3" via argument_dict
+    all_ips = [host_ip]
+    tls_cert_ips_val = globals().get('tls_cert_ips')
+    if tls_cert_ips_val:
+        all_ips = [ip.strip() for ip in tls_cert_ips_val.split(',') if ip.strip()]
+        if host_ip not in all_ips:
+            all_ips.insert(0, host_ip)
+    # deduplicate while preserving order
+    all_ips = list(dict.fromkeys(all_ips))
+    san_entries = ','.join(['IP:%s' % ip for ip in all_ips])
+
+    # Step 2: Check if the host already has a complete and valid cert set.
+    # Both server and client certs are required for TLS migration.
+    required_remote_files = [
+        "/etc/pki/CA/cacert.pem",
+        "/etc/pki/libvirt/servercert.pem",
+        "/etc/pki/libvirt/private/serverkey.pem",
+        "/etc/pki/libvirt/clientcert.pem",
+        "/etc/pki/libvirt/private/clientkey.pem",
+        # QEMU TLS migration data-plane certs
+        "/etc/pki/qemu/ca-cert.pem",
+        "/etc/pki/qemu/client-cert.pem",
+        "/etc/pki/qemu/client-key.pem",
+    ]
+    check_cmd = " && ".join(["test -f %s" % f for f in required_remote_files])
+    (status, _) = run_remote_command(check_cmd, host_post_info, return_status=True, return_output=True)
+    if status == 0:
+        # All files present – verify both server and client certs against
+        # the *management-node* CA so we detect a stale / foreign CA.
+        local_ca_md5 = os.popen("md5sum %s/cacert.pem | awk '{print $1}'" % ca_dir).read().strip()
+        (_, remote_ca_md5) = run_remote_command(
+            "md5sum /etc/pki/CA/cacert.pem | awk '{print $1}'",
+            host_post_info, return_status=True, return_output=True)
+        remote_ca_md5 = remote_ca_md5.strip()
+        if local_ca_md5 == remote_ca_md5:
+            verify_cmd = (
+                "openssl verify -CAfile /etc/pki/CA/cacert.pem /etc/pki/libvirt/servercert.pem 2>&1 | grep -q ': OK' && "
+                "openssl verify -CAfile /etc/pki/CA/cacert.pem /etc/pki/libvirt/clientcert.pem 2>&1 | grep -q ': OK'"
+            )
+            (verify_status, _) = run_remote_command(verify_cmd, host_post_info, return_status=True, return_output=True)
+            if verify_status == 0:
+                # Also check if cert SAN covers all required IPs
+                san_check_cmd = "openssl x509 -in /etc/pki/libvirt/servercert.pem -noout -ext subjectAltName 2>/dev/null"
+                (san_st, san_out) = run_remote_command(san_check_cmd, host_post_info, return_status=True, return_output=True)
+                san_complete = True
+                if san_st == 0 and san_out:
+                    for ip in all_ips:
+                        if 'IP Address:%s' % ip not in san_out:
+                            handle_ansible_info("Cert SAN missing IP %s, re-deploying" % ip, host_post_info, "INFO")
+                            san_complete = False
+                            break
+                if san_complete:
+                    handle_ansible_info("Libvirt TLS certs already valid on host, skipping", host_post_info, "INFO")
+                    return
+        handle_ansible_info("Remote certs incomplete or CA mismatch, re-deploying", host_post_info, "INFO")
+
+    # Step 3: Generate server and client certificates for this host
+    command = (
+        "mkdir -p {tmp} && "
+        "openssl genrsa -out {tmp}/serverkey.pem 4096 && "
+        "openssl req -new -key {tmp}/serverkey.pem "
+        "  -out {tmp}/server.csr -subj '/O=ZStack/CN={ip}' && "
+        "openssl x509 -req -days 3650 -in {tmp}/server.csr "
+        "  -CA {ca_dir}/cacert.pem -CAkey {ca_dir}/cakey.pem "
+        "  -CAcreateserial -out {tmp}/servercert.pem "
+        "  -extfile <(printf 'subjectAltName={san}') && "
+        "openssl genrsa -out {tmp}/clientkey.pem 4096 && "
+        "openssl req -new -key {tmp}/clientkey.pem "
+        "  -out {tmp}/client.csr -subj '/O=ZStack/CN={ip}' && "
+        "openssl x509 -req -days 3650 -in {tmp}/client.csr "
+        "  -CA {ca_dir}/cacert.pem -CAkey {ca_dir}/cakey.pem "
+        "  -CAcreateserial -out {tmp}/clientcert.pem "
+        "  -extfile <(printf 'subjectAltName={san}')"
+    ).format(tmp=cert_tmp_dir, ca_dir=ca_dir, ip=host_ip, san=san_entries)
+    shell_return = os.system("bash -c '%s'" % command.replace("'", "'\\''"))
+    if shell_return != 0:
+        error("Failed to generate TLS certs for host %s, cannot continue without certificates" % host_ip)
+
+    # Step 4: Create directories and copy certs to the remote host
+    # /etc/pki/qemu/ is required by QEMU for TLS migration data-plane
+    # (VIR_MIGRATE_TLS flag). QEMU looks for ca-cert.pem, client-cert.pem,
+    # client-key.pem under /etc/pki/qemu/ by default.
+    command = "mkdir -p /etc/pki/CA /etc/pki/libvirt/private /etc/pki/qemu"
+    run_remote_command(command, host_post_info)
+
+    for src_file, dest_file in [
+        ("%s/cacert.pem" % ca_dir, "/etc/pki/CA/cacert.pem"),
+        ("%s/servercert.pem" % cert_tmp_dir, "/etc/pki/libvirt/servercert.pem"),
+        ("%s/serverkey.pem" % cert_tmp_dir, "/etc/pki/libvirt/private/serverkey.pem"),
+        ("%s/clientcert.pem" % cert_tmp_dir, "/etc/pki/libvirt/clientcert.pem"),
+        ("%s/clientkey.pem" % cert_tmp_dir, "/etc/pki/libvirt/private/clientkey.pem"),
+        # QEMU TLS migration certs (data-plane)
+        ("%s/cacert.pem" % ca_dir, "/etc/pki/qemu/ca-cert.pem"),
+        ("%s/servercert.pem" % cert_tmp_dir, "/etc/pki/qemu/server-cert.pem"),
+        ("%s/serverkey.pem" % cert_tmp_dir, "/etc/pki/qemu/server-key.pem"),
+        ("%s/clientcert.pem" % cert_tmp_dir, "/etc/pki/qemu/client-cert.pem"),
+        ("%s/clientkey.pem" % cert_tmp_dir, "/etc/pki/qemu/client-key.pem"),
+    ]:
+        copy_arg = CopyArg()
+        copy_arg.src = src_file
+        copy_arg.dest = dest_file
+        copy(copy_arg, host_post_info)
+
+    # Step 5: Set proper permissions
+    command = (
+        "chmod 600 /etc/pki/libvirt/private/*.pem && "
+        "chmod 644 /etc/pki/libvirt/*.pem /etc/pki/CA/cacert.pem && "
+        "chmod 600 /etc/pki/qemu/*-key.pem && "
+        "chmod 644 /etc/pki/qemu/ca-cert.pem /etc/pki/qemu/server-cert.pem /etc/pki/qemu/client-cert.pem"
+    )
+    run_remote_command(command, host_post_info)
+
+    # Step 6: Cleanup temp dir
+    command = "rm -rf %s" % cert_tmp_dir
+    os.system(command)
+
+    handle_ansible_info("Deployed TLS certs for libvirt on host %s (SAN: %s)" % (host_ip, san_entries), host_post_info, "INFO")
+
 @with_arch(todo_list=['x86_64'], host_arch=host_info.host_arch)
 def check_nested_kvm(host_post_info):
     """aarch64 does not need to modprobe kvm"""
@@ -380,6 +525,10 @@ def install_kvm_pkg():
 
         #we should check libvirtd config file status before restart the service
         libvirtd_conf_status = update_libvirtd_config(host_post_info)
+        # deploy TLS certificates for libvirt only when init or restart_libvirtd is set,
+        # to avoid unconditionally changing host behavior on every reconnect
+        if init == 'true' or restart_libvirtd == 'true':
+            deploy_libvirt_tls_certs(host_post_info)
         # in the libvirtd 5.6.0 and later, the libvirtd daemon now prefers to uses systemd socket activation
         command = "libvirtd --version | grep 'libvirtd (libvirt) ' | cut -d ' ' -f 3 | cut -d '(' -f 1"
         (status, libvirtd_version) = run_remote_command(command, host_post_info, False, True)
@@ -443,6 +592,9 @@ def install_kvm_pkg():
         update_pkg_list = ['ebtables', 'python-libvirt', 'qemu-system-arm']
         apt_update_packages(update_pkg_list, host_post_info)
         libvirtd_conf_status = update_libvirtd_config(host_post_info)
+        # deploy TLS certificates for libvirt only when init or restart_libvirtd is set
+        if init == 'true' or restart_libvirtd == 'true':
+            deploy_libvirt_tls_certs(host_post_info)
         if chroot_env == 'false':
             # name: enable libvirt daemon on RedHat based OS
             service_status("libvirtd", "state=started enabled=yes", host_post_info)
