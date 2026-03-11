@@ -12153,11 +12153,13 @@ host side snapshot files chian:
         http_server.register_async_uri(self.SET_VM_VF_NIC_STATE, self.set_vf_nic_state)
         http_server.register_async_uri(self.SET_VF_NIC_MAC_PATH, self.set_vf_nic_mac)
 
-        # run sshfs cleanup in background to avoid blocking the startup thread
-        # (fusermount can block for up to 2s per stale mount point)
+        # snapshot stale sshfs mounts before going async, so the background
+        # thread won't accidentally unmount mounts created after startup
+        stale_sshfs = self._list_old_sshfs_mount_points()
+
         @thread.AsyncThread
         def _cleanup_old_sshfs():
-            self.clean_old_sshfs_mount_points()
+            self._clean_sshfs_mount_points(stale_sshfs)
         _cleanup_old_sshfs()
 
         self.register_libvirt_event()
@@ -12972,12 +12974,19 @@ host side snapshot files chian:
 
         thread.timer(60, vm_console_logRotate).start()
 
-    def clean_old_sshfs_mount_points(self):
+    @staticmethod
+    def _list_old_sshfs_mount_points():
         mpts = shell.call("mount -t fuse.sshfs | awk '{print $3}'").splitlines()
-        for mpt in mpts:
-            if mpt.startswith(tempfile.gettempdir()):
-                linux.get_pids_by_process_fullname(mpt)
-                linux.fumount(mpt, 2)
+        return [m for m in mpts if m.startswith(tempfile.gettempdir())]
+
+    @staticmethod
+    def _clean_sshfs_mount_points(mount_points):
+        for mpt in mount_points:
+            linux.get_pids_by_process_fullname(mpt)
+            linux.fumount(mpt, 2)
+
+    def clean_old_sshfs_mount_points(self):
+        self._clean_sshfs_mount_points(self._list_old_sshfs_mount_points())
 
     def stop(self):
         self.clean_old_sshfs_mount_points()
