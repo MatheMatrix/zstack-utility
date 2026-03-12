@@ -20,6 +20,8 @@ from zstacklib.utils.plugin import completetask
 import zstacklib.utils.uuidhelper as uuidhelper
 from zstacklib.utils import secret
 from zstacklib.utils.misc import IgnoreError
+from kvmagent.plugins import vm_metadata
+from kvmagent.plugins.vm_metadata.sblk_handler import SblkMetadataHandler
 
 logger = log.get_logger(__name__)
 LOCK_FILE = "/var/run/zstack/sharedblock.lock"
@@ -143,6 +145,34 @@ class RetryException(Exception):
 
 class SharedBlockConnectException(Exception):
     pass
+
+
+class WriteVmInstanceMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(WriteVmInstanceMetadataRsp, self).__init__()
+
+
+class ReadVmInstanceMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(ReadVmInstanceMetadataRsp, self).__init__()
+        self.metadata = None
+
+
+class ScanVmMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(ScanVmMetadataRsp, self).__init__()
+        self.metadataEntries = []
+
+
+class CleanupVmMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(CleanupVmMetadataRsp, self).__init__()
+
+
+class GetVmInstanceMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(GetVmInstanceMetadataRsp, self).__init__()
+        self.vmInstanceMetadata = []
 
 
 class GetBlockDevicesRsp(AgentRsp):
@@ -367,6 +397,13 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     SHRINK_SNAPSHOT_PATH = "/sharedblock/snapshot/shrink"
     GET_QCOW2_HASH_VALUE_PATH = "/sharedblock/getqcow2hash"
     CHECK_STATE_PATH = "/sharedblock/vgstate/check"
+    WRITE_VM_METADATA_PATH = "/sharedblock/vm/metadata/write"
+    READ_VM_METADATA_PATH = "/sharedblock/vm/metadata/read"
+    GET_VM_INSTANCE_METADATA_PATH = "/sharedblock/vm/metadata/get"
+    SCAN_VM_METADATA_PATH = "/sharedblock/vm/metadata/scan"
+    CLEANUP_VM_METADATA_PATH = "/sharedblock/vm/metadata/cleanup"
+
+    _metadata_handler = SblkMetadataHandler(lvm, bash)
 
     vgs_in_progress = set()
     vg_size = {}
@@ -419,6 +456,11 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.SHRINK_SNAPSHOT_PATH, self.shrink_snapshot)
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
         http_server.register_async_uri(self.CHECK_STATE_PATH, self.check_vg_state)
+        http_server.register_async_uri(self.WRITE_VM_METADATA_PATH, self.write_vm_metadata)
+        http_server.register_async_uri(self.READ_VM_METADATA_PATH, self.read_vm_metadata)
+        http_server.register_async_uri(self.SCAN_VM_METADATA_PATH, self.scan_vm_metadata)
+        http_server.register_async_uri(self.CLEANUP_VM_METADATA_PATH, self.cleanup_vm_metadata)
+        http_server.register_async_uri(self.GET_VM_INSTANCE_METADATA_PATH, self.get_vm_instance_metadata)
 
         self.imagestore_client = ImageStoreClient()
 
@@ -1785,4 +1827,47 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             if error:
                 rsp.failedVgs.update({vg_uuid: error})
 
+        return jsonobject.dumps(rsp)
+
+    # ===================================================================
+    # VM Instance Metadata  (AB Dual-Slot binary protocol on sblk LV)
+    # ===================================================================
+
+    @kvmagent.replyerror
+    def write_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = WriteVmInstanceMetadataRsp()
+        self._metadata_handler.write(cmd)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def read_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ReadVmInstanceMetadataRsp()
+        result = self._metadata_handler.read(cmd)
+        rsp.metadata = result.get('metadata')
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def scan_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ScanVmMetadataRsp()
+        result = self._metadata_handler.scan(cmd)
+        rsp.metadataEntries = result.get('metadataEntries', [])
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def cleanup_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CleanupVmMetadataRsp()
+        self._metadata_handler.cleanup(cmd)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def get_vm_instance_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetVmInstanceMetadataRsp()
+        result = self._metadata_handler.get_all(cmd)
+        rsp.vmInstanceMetadata = result.get('entries', [])
+        rsp.incompleteEntries = result.get('incompleteEntries', [])
         return jsonobject.dumps(rsp)

@@ -2,6 +2,7 @@ __author__ = 'frank'
 
 import os
 import os.path
+import json
 import traceback
 
 import zstacklib.utils.uuidhelper as uuidhelper
@@ -18,6 +19,7 @@ from zstacklib.utils.report import *
 from zstacklib.utils.plugin import completetask
 from zstacklib.utils import secret
 from zstacklib.utils.misc import IgnoreError
+from kvmagent.plugins.vm_metadata.file_handler import FileBasedMetadataHandler
 
 logger = log.get_logger(__name__)
 
@@ -201,6 +203,34 @@ class OfflineCommitSnapshotRsp(AgentResponse):
         self.actualSize = None
 
 
+class WriteVmMetadataRsp(AgentResponse):
+    def __init__(self):
+        super(WriteVmMetadataRsp, self).__init__()
+
+
+class ReadVmMetadataRsp(AgentResponse):
+    def __init__(self):
+        super(ReadVmMetadataRsp, self).__init__()
+        self.metadata = None
+
+
+class GetVmInstanceMetadataRsp(AgentResponse):
+    def __init__(self):
+        super(GetVmInstanceMetadataRsp, self).__init__()
+        self.entries = []
+
+
+class ScanVmMetadataRsp(AgentResponse):
+    def __init__(self):
+        super(ScanVmMetadataRsp, self).__init__()
+        self.metadataEntries = []
+
+
+class CleanupVmMetadataRsp(AgentResponse):
+    def __init__(self):
+        super(CleanupVmMetadataRsp, self).__init__()
+
+
 class LocalStoragePlugin(kvmagent.KvmAgent):
     INIT_PATH = "/localstorage/init"
     GET_PHYSICAL_CAPACITY_PATH = "/localstorage/getphysicalcapacity"
@@ -228,6 +258,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
     REBASE_ROOT_VOLUME_TO_BACKING_FILE_PATH = "/localstorage/volume/rebaserootvolumetobackingfile"
     VERIFY_SNAPSHOT_CHAIN_PATH = "/localstorage/snapshot/verifychain"
     REBASE_SNAPSHOT_BACKING_FILES_PATH = "/localstorage/snapshot/rebasebackingfiles"
+    PREFIX_REBASE_BACKING_FILES_PATH = "/localstorage/snapshot/prefixrebasebackingfiles"
     COPY_TO_REMOTE_BITS_PATH = "/localstorage/copytoremote"
     GET_MD5_PATH = "/localstorage/getmd5"
     CHECK_MD5_PATH = "/localstorage/checkmd5"
@@ -247,6 +278,13 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
     CANCEL_DOWNLOAD_BITS_FROM_KVM_HOST_PATH = "/localstorage/kvmhost/download/cancel"
     GET_DOWNLOAD_BITS_FROM_KVM_HOST_PROGRESS_PATH = "/localstorage/kvmhost/download/progress"
     GET_QCOW2_HASH_VALUE_PATH = "/localstorage/getqcow2hash"
+    WRITE_VM_METADATA_PATH = "/localstorage/vm/metadata/write"
+    READ_VM_METADATA_PATH = "/localstorage/vm/metadata/read"
+    GET_VM_INSTANCE_METADATA_PATH = "/localstorage/vm/metadata/get"
+    SCAN_VM_METADATA_PATH = "/localstorage/vm/metadata/scan"
+    CLEANUP_VM_METADATA_PATH = "/localstorage/vm/metadata/cleanup"
+
+    _metadata_handler = FileBasedMetadataHandler()
 
     LOCAL_NOT_ROOT_USER_MIGRATE_TMP_PATH = "primary_storage_tmp_dir"
 
@@ -279,6 +317,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.REBASE_ROOT_VOLUME_TO_BACKING_FILE_PATH, self.rebase_root_volume_to_backing_file)
         http_server.register_async_uri(self.VERIFY_SNAPSHOT_CHAIN_PATH, self.verify_backing_file_chain)
         http_server.register_async_uri(self.REBASE_SNAPSHOT_BACKING_FILES_PATH, self.rebase_backing_files)
+        http_server.register_async_uri(self.PREFIX_REBASE_BACKING_FILES_PATH, self.prefix_rebase_backing_files)
         http_server.register_async_uri(self.COPY_TO_REMOTE_BITS_PATH, self.copy_bits_to_remote, cmd=CopyBitsFromRemoteCmd())
         http_server.register_async_uri(self.GET_MD5_PATH, self.get_md5)
         http_server.register_async_uri(self.CHECK_MD5_PATH, self.check_md5)
@@ -297,6 +336,11 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.CANCEL_DOWNLOAD_BITS_FROM_KVM_HOST_PATH, self.cancel_download_from_kvmhost)
         http_server.register_async_uri(self.GET_DOWNLOAD_BITS_FROM_KVM_HOST_PROGRESS_PATH, self.get_download_bits_from_kvmhost_progress)
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
+        http_server.register_async_uri(self.WRITE_VM_METADATA_PATH, self.write_vm_metadata)
+        http_server.register_async_uri(self.READ_VM_METADATA_PATH, self.read_vm_metadata)
+        http_server.register_async_uri(self.GET_VM_INSTANCE_METADATA_PATH, self.get_vm_instance_metadata)
+        http_server.register_async_uri(self.SCAN_VM_METADATA_PATH, self.scan_vm_metadata)
+        http_server.register_async_uri(self.CLEANUP_VM_METADATA_PATH, self.cleanup_vm_metadata)
 
         self.imagestore_client = ImageStoreClient()
 
@@ -683,6 +727,31 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
                 linux.qcow2_rebase_no_check(sp.parentPath, sp.path)
 
         return jsonobject.dumps(AgentResponse())
+
+    @kvmagent.replyerror
+    def prefcng_files(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+        rsp.rebasedCount = 0
+
+        visited = set()
+        for file_path in cmd.filePaths:
+            current = file_path
+            while current and current not in visited:
+                visited.add(current)
+                backing = linux.qcow2_get_backing_file(current)
+                if not backing:
+                    break
+                if backing.startswith(cmd.oldPrefix):
+                    new_backing = cmd.newPrefix + backing[len(cmd.oldPrefix):]
+                    if os.path.exists(new_backing):
+                        linux.qcow2_rebase_no_check(new_backing, current)
+                        rsp.rebasedCount += 1
+                    else:
+                        logger.warn("new backing %s not exist, skip rebase for %s" % (new_backing, current))
+                current = backing
+
+        return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
     def check_bits(self, req):
@@ -1096,6 +1165,41 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         rsp.hashValue = secret.get_image_hash(cmd.installPath)
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def write_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = WriteVmMetadataRsp()
+        self._metadata_handler.write(cmd)
+        return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def read_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ReadVmMetadataRsp()
+        result = self._metadata_handler.read(cmd)
+        rsp.metadata = result.get('metadata')
+        return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def get_vm_instance_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetVmInstanceMetadataRsp()
+        result = self._metadata_handler.get_all(cmd)
+        rsp.entries = result.get('entries', [])
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def scan_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ScanVmMetadataRsp()
+        result = self._metadata_handler.scan(cmd)
+        rsp.metadataEntries = result.get('metadataEntries', [])
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def cleanup_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CleanupVmMetadataRsp()
+        self._metadata_handler.cleanup(cmd)
+        return jsonobject.dumps(rsp)
 

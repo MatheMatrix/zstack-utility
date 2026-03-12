@@ -3,6 +3,7 @@
 @author: frank
 '''
 import fcntl
+import json
 import os
 import os.path
 import tempfile
@@ -18,6 +19,7 @@ from zstacklib.utils import secret
 from zstacklib.utils import traceable_shell
 from zstacklib.utils.bash import *
 from zstacklib.utils.misc import IgnoreError
+from kvmagent.plugins.vm_metadata.file_handler import FileBasedMetadataHandler
 from zstacklib.utils.plugin import completetask
 from zstacklib.utils.report import *
 
@@ -215,6 +217,34 @@ class GetQcow2HashValueRsp(NfsResponse):
         self.hashValue = None
 
 
+class WriteVmMetadataRsp(NfsResponse):
+    def __init__(self):
+        super(WriteVmMetadataRsp, self).__init__()
+
+
+class ReadVmMetadataRsp(NfsResponse):
+    def __init__(self):
+        super(ReadVmMetadataRsp, self).__init__()
+        self.metadata = None
+
+
+class GetVmInstanceMetadataRsp(NfsResponse):
+    def __init__(self):
+        super(GetVmInstanceMetadataRsp, self).__init__()
+        self.entries = []
+
+
+class ScanVmMetadataRsp(NfsResponse):
+    def __init__(self):
+        super(ScanVmMetadataRsp, self).__init__()
+        self.metadataEntries = []
+
+
+class CleanupVmMetadataRsp(NfsResponse):
+    def __init__(self):
+        super(CleanupVmMetadataRsp, self).__init__()
+
+
 class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
     '''
     classdocs
@@ -256,10 +286,19 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
     HARD_LINK_VOLUME = "/nfsprimarystorage/volume/hardlink"
     NFS_TO_NFS_MIGRATE_BITS_PATH = "/nfsprimarystorage/migratebits"
     NFS_REBASE_VOLUME_BACKING_FILE_PATH = "/nfsprimarystorage/rebasevolumebackingfile"
+    NFS_REBASE_SNAPSHOT_BACKING_FILES_PATH = "/nfsprimarystorage/snapshot/rebasebackingfiles"
+    NFS_PREFIX_REBASE_BACKING_FILES_PATH = "/nfsprimarystorage/snapshot/prefixrebasebackingfiles"
     DOWNLOAD_BITS_FROM_KVM_HOST_PATH = "/nfsprimarystorage/kvmhost/download"
     CANCEL_DOWNLOAD_BITS_FROM_KVM_HOST_PATH = "/nfsprimarystorage/kvmhost/download/cancel"
     GET_DOWNLOAD_BITS_FROM_KVM_HOST_PROGRESS_PATH = "/nfsprimarystorage/kvmhost/download/progress"
     GET_QCOW2_HASH_VALUE_PATH = "/nfsprimarystorage/getqcow2hash"
+    WRITE_VM_METADATA_PATH = "/nfsprimarystorage/vm/metadata/write"
+    READ_VM_METADATA_PATH = "/nfsprimarystorage/vm/metadata/read"
+    GET_VM_INSTANCE_METADATA_PATH = "/nfsprimarystorage/vm/metadata/get"
+    SCAN_VM_METADATA_PATH = "/nfsprimarystorage/vm/metadata/scan"
+    CLEANUP_VM_METADATA_PATH = "/nfsprimarystorage/vm/metadata/cleanup"
+
+    _metadata_handler = FileBasedMetadataHandler()
 
     ERR_UNABLE_TO_FIND_IMAGE_IN_CACHE = "unable to find image in cache"
 
@@ -301,10 +340,17 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.HARD_LINK_VOLUME, self.hardlink_volume)
         http_server.register_async_uri(self.NFS_TO_NFS_MIGRATE_BITS_PATH, self.migrate_bits)
         http_server.register_async_uri(self.NFS_REBASE_VOLUME_BACKING_FILE_PATH, self.rebase_volume_backing_file)
+        http_server.register_async_uri(self.NFS_REBASE_SNAPSHOT_BACKING_FILES_PATH, self.rebase_snapshot_backing_files)
+        http_server.register_async_uri(self.NFS_PREFIX_REBASE_BACKING_FILES_PATH, self.prefix_rebase_backing_files)
         http_server.register_async_uri(self.DOWNLOAD_BITS_FROM_KVM_HOST_PATH, self.download_from_kvmhost)
         http_server.register_async_uri(self.CANCEL_DOWNLOAD_BITS_FROM_KVM_HOST_PATH, self.cancel_download_from_kvmhost)
         http_server.register_async_uri(self.GET_DOWNLOAD_BITS_FROM_KVM_HOST_PROGRESS_PATH, self.get_download_bits_from_kvmhost_progress)
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
+        http_server.register_async_uri(self.WRITE_VM_METADATA_PATH, self.write_vm_metadata)
+        http_server.register_async_uri(self.READ_VM_METADATA_PATH, self.read_vm_metadata)
+        http_server.register_async_uri(self.GET_VM_INSTANCE_METADATA_PATH, self.get_vm_instance_metadata)
+        http_server.register_async_uri(self.SCAN_VM_METADATA_PATH, self.scan_vm_metadata)
+        http_server.register_async_uri(self.CLEANUP_VM_METADATA_PATH, self.cleanup_vm_metadata)
 
         self.mount_path = {}
         self.image_cache = None
@@ -432,6 +478,39 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
                 continue
 
             linux.qcow2_rebase_no_check(new_backing_file, qcow2)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def rebase_snapshot_backing_files(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        for sp in cmd.snapshots:
+            if sp.parentPath:
+                linux.qcow2_rebase_no_check(sp.parentPath, sp.path)
+        return jsonobject.dumps(NfsResponse())
+
+    @kvmagent.replyerror
+    def prefix_rebase_backing_files(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = NfsResponse()
+        rsp.rebasedCount = 0
+
+        visited = set()
+        for file_path in cmd.filePaths:
+            current = file_path
+            while current and current not in visited:
+                visited.add(current)
+                backing = linux.qcow2_get_backing_file(current)
+                if not backing:
+                    break
+                if backing.startswith(cmd.oldPrefix):
+                    new_backing = cmd.newPrefix + backing[len(cmd.oldPrefix):]
+                    if os.path.exists(new_backing):
+                        linux.qcow2_rebase_no_check(new_backing, current)
+                        rsp.rebasedCount += 1
+                    else:
+                        logger.warn("new backing %s not exist, skip rebase for %s" % (new_backing, current))
+                current = backing
+
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -1066,4 +1145,42 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         rsp = GetQcow2HashValueRsp()
 
         rsp.hashValue = secret.get_image_hash(cmd.installPath)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def write_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = WriteVmMetadataRsp()
+        self._metadata_handler.write(cmd)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def read_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ReadVmMetadataRsp()
+        result = self._metadata_handler.read(cmd)
+        rsp.metadata = result.get('metadata')
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def get_vm_instance_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetVmInstanceMetadataRsp()
+        result = self._metadata_handler.get_all(cmd)
+        rsp.entries = result.get('entries', [])
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def scan_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ScanVmMetadataRsp()
+        result = self._metadata_handler.scan(cmd)
+        rsp.metadataEntries = result.get('metadataEntries', [])
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def cleanup_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CleanupVmMetadataRsp()
+        self._metadata_handler.cleanup(cmd)
         return jsonobject.dumps(rsp)

@@ -89,6 +89,7 @@ class ZsesStoragePlugin(kvmagent.KvmAgent):
     REBASE_ROOT_VOLUME_TO_BACKING_FILE_PATH = "/zses/volume/rebaserootvolumetobackingfile"
     VERIFY_SNAPSHOT_CHAIN_PATH = "/zses/snapshot/verifychain"
     REBASE_SNAPSHOT_BACKING_FILES_PATH = "/zses/snapshot/rebasebackingfiles"
+    PREFIX_REBASE_BACKING_FILES_PATH = "/zses/snapshot/prefixrebasebackingfiles"
     COPY_TO_REMOTE_BITS_PATH = "/zses/copytoremote"
     GET_MD5_PATH = "/zses/getmd5"
     CHECK_MD5_PATH = "/zses/checkmd5"
@@ -118,6 +119,7 @@ class ZsesStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.REBASE_ROOT_VOLUME_TO_BACKING_FILE_PATH, self.rebase_root_volume_to_backing_file)
         http_server.register_async_uri(self.VERIFY_SNAPSHOT_CHAIN_PATH, self.verify_backing_file_chain)
         http_server.register_async_uri(self.REBASE_SNAPSHOT_BACKING_FILES_PATH, self.rebase_backing_files)
+        http_server.register_async_uri(self.PREFIX_REBASE_BACKING_FILES_PATH, self.prefix_rebase_backing_files)
         http_server.register_async_uri(self.COPY_TO_REMOTE_BITS_PATH, self.copy_bits_to_remote)
         http_server.register_async_uri(self.GET_MD5_PATH, self.get_md5)
         http_server.register_async_uri(self.CHECK_MD5_PATH, self.check_md5)
@@ -407,6 +409,31 @@ class ZsesStoragePlugin(kvmagent.KvmAgent):
                 linux.qcow2_rebase_no_check(sp.parentPath, sp.path)
 
         return jsonobject.dumps(AgentResponse())
+
+    @kvmagent.replyerror
+    def prefix_rebase_backing_files(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+        rsp.rebasedCount = 0
+
+        visited = set()
+        for file_path in cmd.filePaths:
+            current = file_path
+            while current and current not in visited:
+                visited.add(current)
+                backing = linux.qcow2_get_backing_file(current)
+                if not backing:
+                    break
+                if backing.startswith(cmd.oldPrefix):
+                    new_backing = cmd.newPrefix + backing[len(cmd.oldPrefix):]
+                    if os.path.exists(new_backing):
+                        linux.qcow2_rebase_no_check(new_backing, current)
+                        rsp.rebasedCount += 1
+                    else:
+                        logger.warn("new backing %s not exist, skip rebase for %s" % (new_backing, current))
+                current = backing
+
+        return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
     def check_bits(self, req):
