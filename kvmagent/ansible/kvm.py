@@ -135,8 +135,7 @@ def deploy_libvirt_tls_certs(host_post_info):
     ).format(ca_dir=ca_dir, libvirt_pki_dir=libvirt_pki_dir)
     shell_return = os.system(command)
     if shell_return != 0:
-        handle_ansible_info("Failed to create local CA for libvirt TLS", host_post_info, "WARNING")
-        return
+        error("Failed to create local CA for libvirt TLS, cannot continue without certificates")
 
     # Step 2: Check if the host already has valid certs
     command = "test -f /etc/pki/libvirt/servercert.pem && test -f /etc/pki/CA/cacert.pem"
@@ -172,8 +171,7 @@ def deploy_libvirt_tls_certs(host_post_info):
     ).format(tmp=cert_tmp_dir, ca_dir=ca_dir, ip=host_ip)
     shell_return = os.system("bash -c '%s'" % command.replace("'", "'\\''"))
     if shell_return != 0:
-        handle_ansible_info("Failed to generate TLS certs for host %s" % host_ip, host_post_info, "WARNING")
-        return
+        error("Failed to generate TLS certs for host %s, cannot continue without certificates" % host_ip)
 
     # Step 4: Create directories and copy certs to the remote host
     command = "mkdir -p /etc/pki/CA /etc/pki/libvirt/private"
