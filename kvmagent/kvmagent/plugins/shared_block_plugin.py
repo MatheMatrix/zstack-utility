@@ -14,6 +14,7 @@ from zstacklib.utils import list_ops
 from zstacklib.utils import bash
 from zstacklib.utils import qemu_img, qcow2
 from zstacklib.utils import traceable_shell
+from zstacklib.utils.lv_metadata import SblkMetadataHandler, sblk_prefix_rebase_backing_files
 from zstacklib.utils.report import *
 from zstacklib.utils.plugin import completetask
 import zstacklib.utils.uuidhelper as uuidhelper
@@ -142,6 +143,34 @@ class RetryException(Exception):
 
 class SharedBlockConnectException(Exception):
     pass
+
+
+class WriteVmMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(WriteVmMetadataRsp, self).__init__()
+
+
+class ScanVmMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(ScanVmMetadataRsp, self).__init__()
+        self.metadataEntries = []
+
+
+class CleanupVmMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(CleanupVmMetadataRsp, self).__init__()
+
+
+class GetVmInstanceMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(GetVmInstanceMetadataRsp, self).__init__()
+        self.metadata = None
+
+
+class PrefixRebaseBackingFilesRsp(AgentRsp):
+    def __init__(self):
+        super(PrefixRebaseBackingFilesRsp, self).__init__()
+        self.rebasedCount = 0
 
 
 class GetBlockDevicesRsp(AgentRsp):
@@ -381,6 +410,13 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     CHECK_STATE_PATH = "/sharedblock/vgstate/check"
     TAKEOVER_PATH = "/sharedblock/takeover"
     VGS_INFO_PATH = "/sharedblock/vgs/info"
+    WRITE_VM_METADATA_PATH = "/sharedblock/vm/metadata/write"
+    GET_VM_INSTANCE_METADATA_PATH = "/sharedblock/vm/metadata/get"
+    SCAN_VM_METADATA_PATH = "/sharedblock/vm/metadata/scan"
+    CLEANUP_VM_METADATA_PATH = "/sharedblock/vm/metadata/cleanup"
+    PREFIX_REBASE_BACKING_FILES_PATH = "/sharedblock/snapshot/prefixrebasebackingfiles"
+
+    _metadata_handler = SblkMetadataHandler(lvm, bash)
 
     vgs_in_progress = set()
     vg_size = {}
@@ -435,6 +471,11 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.CHECK_STATE_PATH, self.check_vg_state)
         http_server.register_async_uri(self.TAKEOVER_PATH, self.takeover)
         http_server.register_async_uri(self.VGS_INFO_PATH, self.vgs_info)
+        http_server.register_async_uri(self.WRITE_VM_METADATA_PATH, self.write_vm_metadata)
+        http_server.register_async_uri(self.SCAN_VM_METADATA_PATH, self.scan_vm_metadata)
+        http_server.register_async_uri(self.CLEANUP_VM_METADATA_PATH, self.cleanup_vm_metadata)
+        http_server.register_async_uri(self.GET_VM_INSTANCE_METADATA_PATH, self.get_vm_instance_metadata)
+        http_server.register_async_uri(self.PREFIX_REBASE_BACKING_FILES_PATH, self.prefix_rebase_backing_files)
 
         self.imagestore_client = ImageStoreClient()
 
@@ -1888,4 +1929,48 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     def vgs_info(self, req):
         rsp = GetVgsInfoRsp()
         rsp.vgsSharedBlockStructs, rsp.vgsSharedBlockCount = lvm.get_vgs_info(tag=INIT_TAG)
+        return jsonobject.dumps(rsp)
+
+
+    @kvmagent.replyerror
+    def write_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = WriteVmMetadataRsp()
+        self._metadata_handler.write(cmd)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def scan_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ScanVmMetadataRsp()
+        rsp.metadataEntries = self._metadata_handler.scan(cmd)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def cleanup_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CleanupVmMetadataRsp()
+        self._metadata_handler.cleanup(cmd)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def get_vm_instance_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetVmInstanceMetadataRsp()
+        result = self._metadata_handler.get(cmd)
+        rsp.metadata = result.get('metadata')
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def prefix_rebase_backing_files(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = PrefixRebaseBackingFilesRsp()
+
+        rsp.rebasedCount = sblk_prefix_rebase_backing_files(
+            file_paths=cmd.filePaths,
+            old_prefix=cmd.oldPrefix,
+            new_prefix=cmd.newPrefix,
+            normalize_path=translate_absolute_path_from_install_path,
+            lvm_module=lvm,
+        )
         return jsonobject.dumps(rsp)
