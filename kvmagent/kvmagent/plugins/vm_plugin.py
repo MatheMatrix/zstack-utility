@@ -1398,7 +1398,7 @@ def find_zstack_metadata_node(root, name):
     return find_child_node_by_name(zs, name)
 
 
-def set_zstack_metadata_live(vm_uuid, metadata_key, metadata_value):
+def _sync_zstack_metadata_live(vm_uuid, metadata_key, metadata_value, delete_if_none=False):
     with lock.NamedLock('vm-zstack-metadata-live-%s' % vm_uuid):
         vm = get_vm_by_uuid(vm_uuid, exception_if_not_existing=False)
         if vm is None:
@@ -1418,17 +1418,33 @@ def set_zstack_metadata_live(vm_uuid, metadata_key, metadata_value):
         if metadata_node is not None and metadata_node.text:
             old_metadata_value = metadata_node.text.strip()
 
-        if old_metadata_value is not None and old_metadata_value.lower() == metadata_value.lower():
-            return False, old_metadata_value, 'unchanged'
+        if metadata_value is None and delete_if_none:
+            if metadata_node is None:
+                return False, None, 'unchanged'
+            zstack_node.remove(metadata_node)
+        else:
+            if old_metadata_value is not None and old_metadata_value.lower() == metadata_value.lower():
+                return False, old_metadata_value, 'unchanged'
 
-        if metadata_node is None:
-            metadata_node = etree.SubElement(zstack_node, metadata_key)
+            if metadata_node is None:
+                metadata_node = etree.SubElement(zstack_node, metadata_key)
 
-        metadata_node.text = metadata_value
-        metadata_xml = etree.tostring(zstack_node, encoding='unicode')
+            metadata_node.text = metadata_value
+
+        metadata_xml = etree.tostring(zstack_node, encoding='utf-8')
+        if isinstance(metadata_xml, bytes):
+            metadata_xml = metadata_xml.decode('utf-8')
         vm.domain.setMetadata(libvirt.VIR_DOMAIN_METADATA_ELEMENT, metadata_xml,
                               'zstack', ZS_XML_NAMESPACE, libvirt.VIR_DOMAIN_AFFECT_LIVE)
         return True, old_metadata_value, 'updated'
+
+
+def set_zstack_metadata_live(vm_uuid, metadata_key, metadata_value):
+    return _sync_zstack_metadata_live(vm_uuid, metadata_key, metadata_value)
+
+
+def delete_zstack_metadata_live(vm_uuid, metadata_key):
+    return _sync_zstack_metadata_live(vm_uuid, metadata_key, None, True)
 
 def find_domain_cdrom_address(domain_xml, target_dev):
     domain_xmlobject = xmlobject.loads(domain_xml)
