@@ -273,25 +273,35 @@ class TestCollectorRegistrationDeferredToStart(unittest.TestCase):
     so the module can be safely imported without side-effects.
     """
 
-    def test_no_collectors_registered_before_start(self):
-        """Import alone must not register any collectors.
+    def _reimport_prometheus(self):
+        """Force a fresh import of the prometheus module.
 
-        Note: a full reimport is impractical because prometheus.py has deep
-        module-level dependencies.  We reset the mock and verify no NEW
-        registrations happen after the initial import.
+        All heavy dependencies are already stubbed in sys.modules, so
+        reimporting works and lets us detect import-time side effects.
         """
+        import importlib
+        mod_name = 'kvmagent.plugins.services.prometheus'
+        sys.modules.pop(mod_name, None)
+        # Also clear the parent-package attribute cache so Python
+        # actually re-executes the module code.
+        parent = sys.modules.get('kvmagent.plugins.services')
+        if parent is not None and hasattr(parent, 'prometheus'):
+            delattr(parent, 'prometheus')
+        return importlib.import_module(mod_name)
+
+    def test_no_collectors_registered_before_start(self):
+        """Import alone must not register any collectors."""
         _mock_kvmagent_mod.register_prometheus_collector.reset_mock()
-        calls = _mock_kvmagent_mod.register_prometheus_collector.call_count
-        self.assertEqual(0, calls,
+        self._reimport_prometheus()
+        self.assertEqual(0, _mock_kvmagent_mod.register_prometheus_collector.call_count,
                          "Collectors must not be registered at import time")
 
     def test_misc_isMiniHost_not_called_at_import_time(self):
-        """misc.isMiniHost() must not be called during module import.
-
-        It is called inside PrometheusPlugin.start() instead.
-        """
+        """misc.isMiniHost() must not be called during module import."""
         _mock_misc.isMiniHost.reset_mock()
-        self.assertEqual(0, _mock_misc.isMiniHost.call_count)
+        self._reimport_prometheus()
+        self.assertEqual(0, _mock_misc.isMiniHost.call_count,
+                         "misc.isMiniHost() must not be called at import time")
 
 
 if __name__ == '__main__':

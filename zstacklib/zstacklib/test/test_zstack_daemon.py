@@ -177,8 +177,10 @@ class TestZStackDaemonOnReload(unittest.TestCase):
         svc._install_signal_handlers()
         try:
             os.kill(os.getpid(), signal.SIGHUP)
-            # Give the signal handler a moment to fire
-            time.sleep(0.05)
+            for _ in range(20):
+                if svc.reload_calls > 0:
+                    break
+                time.sleep(0.005)
         finally:
             svc._restore_signal_handlers()
         self.assertEqual(1, svc.reload_calls)
@@ -195,7 +197,8 @@ class TestZStackDaemonOnReload(unittest.TestCase):
         svc._install_signal_handlers()
         try:
             os.kill(os.getpid(), signal.SIGHUP)
-            time.sleep(0.05)
+            for _ in range(20):
+                time.sleep(0.005)
         finally:
             svc._restore_signal_handlers()
         # No exception leaked to the caller
