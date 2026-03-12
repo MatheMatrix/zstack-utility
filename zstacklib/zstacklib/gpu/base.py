@@ -444,6 +444,24 @@ class GPUBase(object):
         """
         return False, {}
 
+    @classmethod
+    def detect_tensorfusion_capability(cls, pci_device_to):
+        """
+        Detect if the GPU device supports TensorFusion virtualization.
+
+        Override to implement vendor-specific TensorFusion detection logic.
+        This method is called by the GPU processor to detect capabilities (lowest priority).
+
+        Args:
+            pci_device_to: PciDeviceTO object representing the GPU device
+
+        Returns:
+            tuple: (bool, dict) - (is_supported, capability_info)
+                is_supported: True if TensorFusion is supported
+                capability_info: dict with additional info (e.g., {'virtStatus': 'TENSORFUSION_VIRTUALIZABLE'})
+        """
+        return False, {}
+
     # ==========================================================================
     # PCI-only fallback (no SMI): candidates to add to gpu_info_map
     # ==========================================================================
