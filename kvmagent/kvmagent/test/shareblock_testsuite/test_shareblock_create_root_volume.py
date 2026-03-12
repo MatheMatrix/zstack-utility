@@ -30,6 +30,7 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
     @classmethod
     def setUpClass(cls):
         pass
+
     @pytest_utils.ztest_decorater
     def test_sharedblock_create_root_volume(self):
         iscsi_server = env.get_vm_metadata('self')
