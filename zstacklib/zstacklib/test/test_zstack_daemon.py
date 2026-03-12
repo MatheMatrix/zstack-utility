@@ -16,8 +16,10 @@ from unittest import mock
 # Ensure zstacklib is importable when running from the worktree root
 _here = os.path.dirname(os.path.abspath(__file__))
 _zstacklib_root = os.path.abspath(os.path.join(_here, '..', '..'))
+_added_paths = []
 if _zstacklib_root not in sys.path:
     sys.path.insert(0, _zstacklib_root)
+    _added_paths.append(_zstacklib_root)
 
 # ZStackDaemon only depends on `logger` from the module level of daemon.py.
 # Patch it before import so there is no real log file I/O.
@@ -75,6 +77,11 @@ def tearDownModule():
                 pass
         else:
             setattr(parent, attr, old_val)
+    for p in _added_paths:
+        try:
+            sys.path.remove(p)
+        except ValueError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +91,8 @@ def tearDownModule():
 class _CountingService(ZStackDaemon):
     """Service that counts run() invocations and stops after max_ticks."""
 
-    def __init__(self, name='test-svc', max_ticks=1):
-        super(_CountingService, self).__init__(name)
+    def __init__(self, name='test-svc', max_ticks=1, manage_signals=False):
+        super(_CountingService, self).__init__(name, manage_signals=manage_signals)
         self.ticks = 0
         self.max_ticks = max_ticks
         self.reload_calls = 0
@@ -145,6 +152,17 @@ class TestZStackDaemonLifecycle(unittest.TestCase):
         svc.start()
         self.assertEqual(3, svc.ticks)
 
+    def test_start_marks_unhealthy_on_run_exception(self):
+        class _CrashingSvc(ZStackDaemon):
+            def run(self):
+                raise RuntimeError("boom")
+
+        svc = _CrashingSvc('test')
+        with self.assertRaises(RuntimeError):
+            svc.start()
+        self.assertFalse(svc.is_healthy())
+        self.assertFalse(svc.is_running())
+
 
 class TestZStackDaemonHealth(unittest.TestCase):
 
@@ -173,7 +191,7 @@ class TestZStackDaemonOnReload(unittest.TestCase):
         svc.on_reload()  # must not raise
 
     def test_on_reload_called_on_sighup(self):
-        svc = _CountingService()
+        svc = _CountingService(manage_signals=True)
         svc._install_signal_handlers()
         try:
             os.kill(os.getpid(), signal.SIGHUP)
@@ -193,7 +211,7 @@ class TestZStackDaemonOnReload(unittest.TestCase):
             def on_reload(self):
                 raise RuntimeError("intentional failure")
 
-        svc = _BadReload('test')
+        svc = _BadReload('test', manage_signals=True)
         svc._install_signal_handlers()
         try:
             os.kill(os.getpid(), signal.SIGHUP)
@@ -206,7 +224,7 @@ class TestZStackDaemonOnReload(unittest.TestCase):
     def test_signal_handlers_restored_after_start(self):
         original_hup = signal.getsignal(signal.SIGHUP)
         original_term = signal.getsignal(signal.SIGTERM)
-        svc = _CountingService()
+        svc = _CountingService(manage_signals=True)
         svc.start()
         self.assertEqual(original_hup, signal.getsignal(signal.SIGHUP))
         self.assertEqual(original_term, signal.getsignal(signal.SIGTERM))
@@ -217,7 +235,7 @@ class TestZStackDaemonOnReload(unittest.TestCase):
                 while self.is_healthy():
                     time.sleep(0.01)
 
-        svc = _LongSvc('test')
+        svc = _LongSvc('test', manage_signals=True)
         # Install handlers from main thread (signal.signal requires it)
         svc._install_signal_handlers()
         try:

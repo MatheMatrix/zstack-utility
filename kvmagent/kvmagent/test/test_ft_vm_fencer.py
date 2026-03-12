@@ -153,27 +153,29 @@ class TestFencerLifecycle(unittest.TestCase):
         p.setup_fencer('host-1', 2000.0)   # newer fencer registered
         self.assertFalse(p.run_fencer('host-1', 1000.0))  # old thread check
 
-    def test_run_fencer_raises_keyerror_when_host_not_registered(self):
-        """Characterises current behaviour: no guard on missing host_uuid.
+    @unittest.expectedFailure
+    def test_run_fencer_returns_false_when_host_not_registered(self):
+        """Target: run_fencer should return False for unregistered host.
 
-        NOTE: this is a latent defect. run_fencer should return False instead
-        of raising KeyError. A future fix must update this assertion.
+        Currently raises KeyError (latent defect). When the production code
+        is fixed to return False, this test will start passing and the
+        expectedFailure marker should be removed.
         """
         p = self._make_plugin()
-        with self.assertRaises(KeyError):
-            p.run_fencer('unknown-host', 1000.0)
+        self.assertFalse(p.run_fencer('unknown-host', 1000.0))
 
-    def test_run_fencer_raises_keyerror_after_cancel(self):
-        """After cancel_fencer, the next run_fencer call raises KeyError.
+    @unittest.expectedFailure
+    def test_run_fencer_returns_false_after_cancel(self):
+        """Target: run_fencer should return False after cancel.
 
-        NOTE: latent race condition — a fencer thread can call run_fencer once
-        after cancel and receive an unhandled exception. Document for fix.
+        Currently raises KeyError (latent race condition — a fencer thread
+        can call run_fencer once after cancel and receive an unhandled
+        exception). When fixed, remove the expectedFailure marker.
         """
         p = self._make_plugin()
         p.setup_fencer('host-1', 1000.0)
         p.cancel_fencer('host-1')
-        with self.assertRaises(KeyError):
-            p.run_fencer('host-1', 1000.0)
+        self.assertFalse(p.run_fencer('host-1', 1000.0))
 
     # --- cancel_fencer --------------------------------------------------------
 

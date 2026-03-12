@@ -147,6 +147,13 @@ _patch_module('kvmagent.kvmagent', _mock_kvmagent_mod)
 
 
 def tearDownModule():
+    # Clean up the imported target module and its parent-package attribute
+    _target = 'kvmagent.plugins.services.prometheus'
+    sys.modules.pop(_target, None)
+    _parent = sys.modules.get('kvmagent.plugins.services')
+    if _parent is not None and hasattr(_parent, 'prometheus'):
+        delattr(_parent, 'prometheus')
+
     for name, old in _ORIGINAL_MODULES.items():
         if old is None:
             sys.modules.pop(name, None)

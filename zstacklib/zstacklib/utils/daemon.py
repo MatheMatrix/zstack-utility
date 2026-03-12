@@ -249,6 +249,11 @@ class ZStackDaemon(object):
     as a standalone systemd service.  The caller decides the execution
     context; this class is agnostic about it.
 
+    Signal handling (SIGHUP/SIGTERM) is opt-in via ``manage_signals=True``
+    because signals are process-global state.  Embedded services sharing
+    a process should leave signals to the host; only the standalone
+    systemd entry-point should enable them.
+
     Usage::
 
         class PrometheusService(ZStackDaemon):
@@ -259,10 +264,19 @@ class ZStackDaemon(object):
 
             def on_reload(self):
                 self.reload_config()
+
+        # Standalone mode — own the process signals
+        svc = PrometheusService('prometheus', manage_signals=True)
+        svc.start()
+
+        # Embedded mode (kvmagent plugin) — no signal takeover
+        svc = PrometheusService('prometheus')
+        svc.start()
     """
 
-    def __init__(self, service_name):
+    def __init__(self, service_name, manage_signals=False):
         self._service_name = service_name
+        self._manage_signals = manage_signals
         self._healthy = True
         self._running = False
         self._original_sighup = None
@@ -284,6 +298,9 @@ class ZStackDaemon(object):
         logger.info('[%s] starting' % self._service_name)
         try:
             self.run()
+        except Exception:
+            self._healthy = False
+            raise
         finally:
             self._running = False
             self._restore_signal_handlers()
@@ -320,6 +337,8 @@ class ZStackDaemon(object):
     # ------------------------------------------------------------------
 
     def _install_signal_handlers(self):
+        if not self._manage_signals:
+            return
         import signal as _signal
         import threading as _threading
         if _threading.current_thread() is not _threading.main_thread():
@@ -330,6 +349,8 @@ class ZStackDaemon(object):
         _signal.signal(_signal.SIGTERM, self._handle_sigterm)
 
     def _restore_signal_handlers(self):
+        if not self._manage_signals:
+            return
         import signal as _signal
         import threading as _threading
         if _threading.current_thread() is not _threading.main_thread():
