@@ -1204,7 +1204,7 @@ def qcow2_rebase(backing_file, target):
 def qcow2_rebase_no_check(backing_file, target, backing_fmt=None):
     fmt = backing_fmt if backing_fmt else get_img_fmt(backing_file)
     with TempAccessible(target):
-        shell.call('%s -F %s -u -f qcow2 -b "%s" %s' % (qemu_img.subcmd('rebase'), fmt, backing_file, target))
+        shell.call('%s -F %s -u -f qcow2 -b %s %s' % (qemu_img.subcmd('rebase'), fmt, shellquote(backing_file), shellquote(target)))
 
 def qcow2_virtualsize(file_path):
     file_path = shellquote(file_path)
@@ -1240,6 +1240,38 @@ def qcow2_get_backing_file(path):
         backing_file_size = struct.unpack('>L', backing_file_info[8:])[0]
         resp.seek(backing_file_offset)
         return resp.read(backing_file_size)
+
+def qcow2_prefix_rebase_backing_files(file_paths, old_prefix, new_prefix):
+    """Walk the backing chain of each qcow2 file, rebasing paths that match old_prefix to new_prefix.
+
+    Returns the number of files successfully rebased.
+    """
+    if not old_prefix:
+        raise Exception("old_prefix must not be empty")
+    if not new_prefix:
+        raise Exception("new_prefix must not be empty")
+
+    rebased_count = 0
+    for file_path in file_paths:
+        visited = set()
+        current = file_path
+        while current and current not in visited:
+            visited.add(current)
+            backing = qcow2_get_backing_file(current)
+            if not backing:
+                break
+            if backing.startswith(old_prefix):
+                new_backing = new_prefix + backing[len(old_prefix):]
+                if os.path.exists(new_backing):
+                    qcow2_rebase_no_check(new_backing, current)
+                    rebased_count += 1
+                    current = new_backing
+                else:
+                    logger.warn("new backing %s not exist, skip rebase for %s" % (new_backing, current))
+                    break
+            else:
+                current = backing
+    return rebased_count
 
 def qcow2_get_virtual_size(path):
     # type: (str) -> int
