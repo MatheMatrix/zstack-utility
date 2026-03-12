@@ -9,7 +9,7 @@ from zstacklib.utils import qemu
 
 qemu.get_path = mock.Mock(return_value="/usr/bin/qemu-system-x86_64")
 
-from kvmagent.plugins import prometheus
+from kvmagent.plugins.services import prometheus
 
 class Test(unittest.TestCase):
 
