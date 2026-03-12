@@ -2271,7 +2271,7 @@ class VmVolumesRecoveryTask(plugin.TaskDaemon):
 
 
 @linux.retry(times=3, sleep_time=1)
-def get_connect(src_host_ip, use_tls=True):
+def get_connect(src_host_ip, use_tls=False):
     proto = 'qemu+tls' if use_tls else 'qemu+tcp'
     uri = '{0}://{1}/system'.format(proto, src_host_ip)
     conn = libvirt.open(uri)
@@ -4180,7 +4180,10 @@ class Vm(object):
     def wait_live_migrate(cmd):
         def check_migrated(task_name, api_id):
             r = TaskResult()
-            with contextlib.closing(get_connect(cmd.destHostIp, getattr(cmd, 'useTls', True))) as conn:
+            # TLS certs are issued for management IP; use it for the
+            # control-plane libvirt connection when available.
+            dest_ctrl_ip = getattr(cmd, 'destHostManagementIp', None) or cmd.destHostIp
+            with contextlib.closing(get_connect(dest_ctrl_ip, getattr(cmd, 'useTls', False))) as conn:
                 dst_vm = get_vm_by_uuid(cmd.vmUuid, False, conn)
                 if not dst_vm or dst_vm.state != Vm.VM_STATE_RUNNING:
                     r.fail("cannot find task[name=%s] for api[%s] and "
@@ -4207,7 +4210,7 @@ class Vm(object):
             # set the hostname, otherwise the migration will fail
             shell.call('hostname %s.zstack.org' % hostname)
 
-        use_tls = getattr(cmd, 'useTls', True)
+        use_tls = getattr(cmd, 'useTls', False)
         migrate_proto = 'qemu+tls' if use_tls else 'qemu+tcp'
         destUrl = "{0}://{1}/system".format(migrate_proto, cmd.destHostManagementIp)
         tcpUri = "tcp://{0}".format(cmd.destHostIp)
@@ -8668,7 +8671,10 @@ class VmPlugin(kvmagent.KvmAgent):
 
             self._record_operation(cmd.vmUuid, self.VM_OP_MIGRATE)
             if cmd.migrateFromDestination:
-                with contextlib.closing(get_connect(cmd.srcHostIp, getattr(cmd, 'useTls', True))) as conn:
+                # TODO: Java side should pass srcHostManagementIp for TLS cert matching.
+                # Fall back to srcHostIp until then.
+                src_ctrl_ip = getattr(cmd, 'srcHostManagementIp', None) or cmd.srcHostIp
+                with contextlib.closing(get_connect(src_ctrl_ip, getattr(cmd, 'useTls', False))) as conn:
                     vm = get_vm_by_uuid(cmd.vmUuid, False, conn)
                     if vm is None:
                         logger.warn('unable to find vm {0} on host {1}'.format(cmd.vmUuid, cmd.srcHostIp))
@@ -9033,12 +9039,15 @@ class VmPlugin(kvmagent.KvmAgent):
         logger.info("completed copying %s:%s to %s ..." % (vmUuid, disk_name, task_spec.newVolume.installPath))
         return True, None
 
-    def _migrate_vm_with_block(self, vmUuid, dstHostIp, volumeDicts, use_tls=True):
+    def _migrate_vm_with_block(self, vmUuid, dstHostIp, volumeDicts, use_tls=False, dstHostManagementIp=None):
         vm = get_vm_by_uuid(vmUuid)
         disks, fpath = self._build_domain_new_xml(vm, volumeDicts)
 
         migrate_proto = 'qemu+tls' if use_tls else 'qemu+tcp'
-        dst = '{0}://{1}/system'.format(migrate_proto, dstHostIp)
+        # TLS control-plane URI must use management IP (cert SAN matches
+        # management address); data-plane (migurl) stays on migration network.
+        dst_ctrl_ip = dstHostManagementIp or dstHostIp
+        dst = '{0}://{1}/system'.format(migrate_proto, dst_ctrl_ip)
         migurl = 'tcp://{0}'.format(dstHostIp)
         diskstr = ','.join(disks)
 

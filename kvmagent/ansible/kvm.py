@@ -137,16 +137,35 @@ def deploy_libvirt_tls_certs(host_post_info):
     if shell_return != 0:
         error("Failed to create local CA for libvirt TLS, cannot continue without certificates")
 
-    # Step 2: Check if the host already has valid certs
-    command = "test -f /etc/pki/libvirt/servercert.pem && test -f /etc/pki/CA/cacert.pem"
-    (status, _) = run_remote_command(command, host_post_info, return_status=True, return_output=True)
+    # Step 2: Check if the host already has a complete and valid cert set.
+    # Both server and client certs are required for TLS migration / V2V.
+    required_remote_files = [
+        "/etc/pki/CA/cacert.pem",
+        "/etc/pki/libvirt/servercert.pem",
+        "/etc/pki/libvirt/private/serverkey.pem",
+        "/etc/pki/libvirt/clientcert.pem",
+        "/etc/pki/libvirt/private/clientkey.pem",
+    ]
+    check_cmd = " && ".join(["test -f %s" % f for f in required_remote_files])
+    (status, _) = run_remote_command(check_cmd, host_post_info, return_status=True, return_output=True)
     if status == 0:
-        # Certs already exist, verify CA matches
-        command = "openssl verify -CAfile /etc/pki/CA/cacert.pem /etc/pki/libvirt/servercert.pem 2>&1 | grep -q ': OK'"
-        (verify_status, _) = run_remote_command(command, host_post_info, return_status=True, return_output=True)
-        if verify_status == 0:
-            handle_ansible_info("Libvirt TLS certs already valid on host, skipping", host_post_info, "INFO")
-            return
+        # All files present – verify both server and client certs against
+        # the *management-node* CA so we detect a stale / foreign CA.
+        local_ca_md5 = os.popen("md5sum %s/cacert.pem | awk '{print $1}'" % ca_dir).read().strip()
+        (_, remote_ca_md5) = run_remote_command(
+            "md5sum /etc/pki/CA/cacert.pem | awk '{print $1}'",
+            host_post_info, return_status=True, return_output=True)
+        remote_ca_md5 = remote_ca_md5.strip()
+        if local_ca_md5 == remote_ca_md5:
+            verify_cmd = (
+                "openssl verify -CAfile /etc/pki/CA/cacert.pem /etc/pki/libvirt/servercert.pem 2>&1 | grep -q ': OK' && "
+                "openssl verify -CAfile /etc/pki/CA/cacert.pem /etc/pki/libvirt/clientcert.pem 2>&1 | grep -q ': OK'"
+            )
+            (verify_status, _) = run_remote_command(verify_cmd, host_post_info, return_status=True, return_output=True)
+            if verify_status == 0:
+                handle_ansible_info("Libvirt TLS certs already valid on host, skipping", host_post_info, "INFO")
+                return
+        handle_ansible_info("Remote certs incomplete or CA mismatch, re-deploying", host_post_info, "INFO")
 
     host_ip = host_post_info.host
     cert_tmp_dir = "/tmp/zstack-libvirt-tls-%s" % host_ip.replace('.', '_')
