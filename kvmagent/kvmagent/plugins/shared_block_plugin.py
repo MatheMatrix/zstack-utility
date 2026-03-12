@@ -15,6 +15,7 @@ from zstacklib.utils import list_ops
 from zstacklib.utils import bash
 from zstacklib.utils import qemu_img, qcow2
 from zstacklib.utils import traceable_shell
+from zstacklib.utils.lv_metadata import SblkMetadataHandler
 from zstacklib.utils.report import *
 from zstacklib.utils.plugin import completetask
 import zstacklib.utils.uuidhelper as uuidhelper
@@ -143,6 +144,34 @@ class RetryException(Exception):
 
 class SharedBlockConnectException(Exception):
     pass
+
+
+class WriteVmMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(WriteVmMetadataRsp, self).__init__()
+
+
+class ScanVmMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(ScanVmMetadataRsp, self).__init__()
+        self.metadataEntries = []
+
+
+class CleanupVmMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(CleanupVmMetadataRsp, self).__init__()
+
+
+class GetVmInstanceMetadataRsp(AgentRsp):
+    def __init__(self):
+        super(GetVmInstanceMetadataRsp, self).__init__()
+        self.metadata = None
+
+
+class PrefixRebaseBackingFilesRsp(AgentRsp):
+    def __init__(self):
+        super(PrefixRebaseBackingFilesRsp, self).__init__()
+        self.rebasedCount = 0
 
 
 class GetBlockDevicesRsp(AgentRsp):
@@ -367,6 +396,13 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     SHRINK_SNAPSHOT_PATH = "/sharedblock/snapshot/shrink"
     GET_QCOW2_HASH_VALUE_PATH = "/sharedblock/getqcow2hash"
     CHECK_STATE_PATH = "/sharedblock/vgstate/check"
+    WRITE_VM_METADATA_PATH = "/sharedblock/vm/metadata/write"
+    GET_VM_INSTANCE_METADATA_PATH = "/sharedblock/vm/metadata/get"
+    SCAN_VM_METADATA_PATH = "/sharedblock/vm/metadata/scan"
+    CLEANUP_VM_METADATA_PATH = "/sharedblock/vm/metadata/cleanup"
+    PREFIX_REBASE_BACKING_FILES_PATH = "/sharedblock/snapshot/prefixrebasebackingfiles"
+
+    _metadata_handler = SblkMetadataHandler(lvm, bash)
 
     vgs_in_progress = set()
     vg_size = {}
@@ -419,6 +455,11 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.SHRINK_SNAPSHOT_PATH, self.shrink_snapshot)
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
         http_server.register_async_uri(self.CHECK_STATE_PATH, self.check_vg_state)
+        http_server.register_async_uri(self.WRITE_VM_METADATA_PATH, self.write_vm_metadata)
+        http_server.register_async_uri(self.SCAN_VM_METADATA_PATH, self.scan_vm_metadata)
+        http_server.register_async_uri(self.CLEANUP_VM_METADATA_PATH, self.cleanup_vm_metadata)
+        http_server.register_async_uri(self.GET_VM_INSTANCE_METADATA_PATH, self.get_vm_instance_metadata)
+        http_server.register_async_uri(self.PREFIX_REBASE_BACKING_FILES_PATH, self.prefix_rebase_backing_files)
 
         self.imagestore_client = ImageStoreClient()
 
@@ -1785,4 +1826,110 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             if error:
                 rsp.failedVgs.update({vg_uuid: error})
 
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def write_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = WriteVmMetadataRsp()
+        self._metadata_handler.write(cmd)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def scan_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ScanVmMetadataRsp()
+        rsp.metadataEntries = self._metadata_handler.scan(cmd)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def cleanup_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CleanupVmMetadataRsp()
+        self._metadata_handler.cleanup(cmd)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def get_vm_instance_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetVmInstanceMetadataRsp()
+        result = self._metadata_handler.get(cmd)
+        rsp.metadata = result.get('metadata')
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def prefix_rebase_backing_files(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = PrefixRebaseBackingFilesRsp()
+
+        old_prefix = cmd.oldPrefix
+        new_prefix = cmd.newPrefix
+
+        if not old_prefix or not new_prefix:
+            raise Exception("oldPrefix and newPrefix must not be empty")
+
+        rebase_pairs = []
+        all_lv_paths = set()
+        for file_path in cmd.filePaths:
+            all_lv_paths.add(file_path)
+            visited = set()
+            current = file_path
+
+            while current and current not in visited:
+                visited.add(current)
+                with lvm.OperateLv(current, shared=True):
+                    backing = linux.qcow2_get_backing_file(current)
+
+                if not backing:
+                    break
+
+                # Normalize sharedblock:/ install path to /dev/ absolute path
+                if backing.startswith("sharedblock:/"):
+                    backing = translate_absolute_path_from_install_path(backing)
+
+                if backing.startswith(old_prefix):
+                    new_backing = new_prefix + backing[len(old_prefix):]
+                    all_lv_paths.add(new_backing)
+                    try:
+                        with lvm.OperateLv(new_backing, shared=True):
+                            exists = os.path.exists(new_backing)
+                    except Exception as e:
+                        logger.debug("[sblk] failed to check new backing %s: %s", new_backing, e)
+                        exists = False
+
+                    if exists:
+                        rebase_pairs.append((current, backing, new_backing))
+                        current = new_backing
+                    else:
+                        logger.warn("[sblk] new backing %s not accessible, "
+                                    "skip rebase for %s" % (new_backing, current))
+                        break
+                else:
+                    all_lv_paths.add(backing)
+                    current = backing
+
+        if not rebase_pairs:
+            logger.info("[sblk] prefix_rebase: no rebase needed")
+            return jsonobject.dumps(rsp)
+
+        logger.info("[sblk] prefix_rebase: discovered %d rebase pairs, "
+                    "all LV paths: %s" % (len(rebase_pairs), list(all_lv_paths)))
+
+        rebased_count = 0
+        for current_path, expected_old_backing, new_backing in rebase_pairs:
+            with lvm.OperateLv(current_path, shared=False):
+                actual_backing = linux.qcow2_get_backing_file(current_path)
+                if actual_backing != expected_old_backing:
+                    logger.warn("[sblk] prefix_rebase: backing of %s changed "
+                                "(%s -> %s) since discovery, skip"
+                                % (current_path, expected_old_backing, actual_backing))
+                    continue
+
+                with lvm.OperateLv(new_backing, shared=True):
+                    linux.qcow2_rebase_no_check(new_backing, current_path)
+                    rebased_count += 1
+                    logger.info("[sblk] prefix_rebase: rebased %s -> %s" % (current_path, new_backing))
+
+        rsp.rebasedCount = rebased_count
+        logger.info("[sblk] prefix_rebase: total rebased %d files" % rebased_count)
         return jsonobject.dumps(rsp)
