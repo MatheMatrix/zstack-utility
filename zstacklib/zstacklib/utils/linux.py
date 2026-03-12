@@ -1204,7 +1204,7 @@ def qcow2_rebase(backing_file, target):
 def qcow2_rebase_no_check(backing_file, target, backing_fmt=None):
     fmt = backing_fmt if backing_fmt else get_img_fmt(backing_file)
     with TempAccessible(target):
-        shell.call('%s -F %s -u -f qcow2 -b "%s" %s' % (qemu_img.subcmd('rebase'), fmt, backing_file, target))
+        shell.call('%s -F %s -u -f qcow2 -b %s %s' % (qemu_img.subcmd('rebase'), fmt, shellquote(backing_file), shellquote(target)))
 
 def qcow2_virtualsize(file_path):
     file_path = shellquote(file_path)
@@ -1240,6 +1240,59 @@ def qcow2_get_backing_file(path):
         backing_file_size = struct.unpack('>L', backing_file_info[8:])[0]
         resp.seek(backing_file_offset)
         return resp.read(backing_file_size)
+
+def qcow2_prefix_rebase_backing_files(file_paths, old_prefix, new_prefix):
+    """Walk the backing chain of each qcow2 file, rebasing paths that match old_prefix to new_prefix.
+
+    Returns the number of files successfully rebased.
+    """
+    if not old_prefix:
+        raise Exception("old_prefix must not be empty")
+    if not new_prefix:
+        raise Exception("new_prefix must not be empty")
+
+    # Normalize prefixes and ensure directory-boundary matching.
+    # Without trailing sep, old_prefix='/mnt/ps1' would match '/mnt/ps10/...'
+    old_prefix = os.path.normpath(old_prefix) + os.sep
+    new_prefix = os.path.normpath(new_prefix) + os.sep
+
+    rebased_count = 0
+    for file_path in file_paths:
+        # Phase 1: discover all rebase pairs for this chain
+        rebase_pairs = []
+        visited = set()
+        current = file_path
+        chain_valid = True
+        while current and current not in visited:
+            visited.add(current)
+            backing = qcow2_get_backing_file(current)
+            if not backing:
+                break
+            # Resolve relative backing paths to absolute using current file's directory
+            # Skip protocol-style paths (e.g. sharedblock:/..., rbd:...) which are not local filesystem paths
+            if not os.path.isabs(backing) and ':' not in backing:
+                backing = os.path.normpath(os.path.join(os.path.dirname(current), backing))
+            backing_norm = os.path.normpath(backing)
+            if backing_norm.startswith(old_prefix):
+                new_backing = new_prefix + backing_norm[len(old_prefix):]
+                if not os.path.exists(new_backing):
+                    logger.warn("new backing %s not exist, skip entire chain rebase for %s"
+                                % (new_backing, file_path))
+                    chain_valid = False
+                    break
+                rebase_pairs.append((current, new_backing))
+                current = new_backing
+            else:
+                current = backing
+
+        if not chain_valid or not rebase_pairs:
+            continue
+
+        # Phase 2: execute all rebases for this chain
+        for current_path, new_backing in rebase_pairs:
+            qcow2_rebase_no_check(new_backing, current_path)
+            rebased_count += 1
+    return rebased_count
 
 def qcow2_get_virtual_size(path):
     # type: (str) -> int
