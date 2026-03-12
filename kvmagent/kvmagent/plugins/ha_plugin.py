@@ -2903,18 +2903,45 @@ class HaPlugin(kvmagent.KvmAgent):
             if not isinstance(group_uuid, string_types) or not isinstance(group_cfg, dict):
                 continue
 
-            resources = group_cfg.get('resources') or []
-            if not isinstance(resources, list):
-                resources = []
+            rules = group_cfg.get('rules') or []
+            if not isinstance(rules, list):
+                logger.warn('ignore malformed ha network group[%s], rules is not a list' % group_uuid)
+                continue
 
-            cleaned_resources = sorted(set([res for res in resources if isinstance(res, string_types) and res]))
+            normalized_rules = []
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+
+                resource = rule.get('resource')
+                if not isinstance(resource, string_types) or not resource:
+                    continue
+
+                try:
+                    weight = int(rule.get('weight', 0))
+                except Exception:
+                    weight = 0
+
+                if weight <= 0:
+                    continue
+
+                normalized_rules.append({
+                    'resource': resource,
+                    'weight': weight
+                })
+
+            if not normalized_rules:
+                logger.warn('ignore malformed ha network group[%s], no valid rules found' % group_uuid)
+                continue
+
+            normalized_rules = sorted(normalized_rules, key=lambda r: (r['resource'], r['weight']))
             try:
                 min_available = int(group_cfg.get('minAvailableCount', 1))
             except Exception:
                 min_available = 1
 
             normalized[group_uuid] = {
-                'resources': cleaned_resources,
+                'rules': normalized_rules,
                 'minAvailableCount': max(min_available, 1)
             }
 
@@ -3060,20 +3087,21 @@ class HaPlugin(kvmagent.KvmAgent):
 
         status = {}
         for group_uuid, group_cfg in network_groups.items():
-            resources = group_cfg.get('resources') or []
+            rules = group_cfg.get('rules') or []
             try:
                 min_available = int(group_cfg.get('minAvailableCount', 1))
             except Exception:
                 min_available = 1
 
-            if not resources:
+            if not rules:
                 status[group_uuid] = 'Down'
                 continue
 
             available_count = 0
-            for resource in resources:
+            for rule in rules:
+                resource = rule.get('resource')
                 if resource not in down_monitors:
-                    available_count += 1
+                    available_count += int(rule.get('weight', 0))
 
             if available_count <= 0:
                 status[group_uuid] = 'Down'
