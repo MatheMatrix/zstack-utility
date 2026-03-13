@@ -2405,18 +2405,17 @@ class ZstackLib(object):
         return python_requirement_set
 
     def _basic_rpm_set(self):
-        basic = {
-            "gcc",
-            "autoconf",
-            "vim-minimal",
-        }
-
         # python3-libselinux is required by ansible selinux/copy/file modules.
         # When the current interpreter (e.g. python3.11) lacks selinux bindings,
         # ansible's respawn mechanism probes system python (/usr/bin/python3)
         # and re-executes the module with the interpreter that has
         # python3-libselinux installed.
-        basic.add("python3-libselinux")
+        basic = {
+            "gcc",
+            "autoconf",
+            "vim-minimal",
+            "python3-libselinux",
+        }
 
         if self.distro in KYLIN_DISTRO:
             basic.add("chrony")
