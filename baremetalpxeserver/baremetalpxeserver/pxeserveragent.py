@@ -1,3 +1,5 @@
+from __future__ import absolute_import
+
 __author__ = 'frank'
 
 import os
@@ -18,7 +20,7 @@ import zstacklib.utils.daemon as daemon
 import zstacklib.utils.http as http
 import zstacklib.utils.jsonobject as json_object
 from zstacklib.utils.bash import *
-from imagestore import ImageStoreClient
+from .imagestore import ImageStoreClient
 
 logger = log.get_logger(__name__)
 
@@ -474,8 +476,17 @@ http {
         rsp = AgentResponse()
 
         # check preconfiguration md5sum
+        # py2
         if hashlib.md5(cmd.preconfigurationContent).hexdigest() != cmd.preconfigurationMd5sum:
             raise PxeServerError("preconfiguration content not complete")
+        # py2 END
+        # py3
+        # content = cmd.preconfigurationContent or ""
+        # if isinstance(content, str):
+        #     content = content.encode("utf-8")
+        # if hashlib.md5(content).hexdigest() != cmd.preconfigurationMd5sum:
+        #     raise PxeServerError("preconfiguration content not complete")
+        # py3 END
 
         self.uuid = cmd.uuid
         self.dhcp_interface = cmd.dhcpInterface
