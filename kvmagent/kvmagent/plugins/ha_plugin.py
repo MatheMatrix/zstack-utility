@@ -43,6 +43,47 @@ try:
 except NameError:
     string_types = (str,)
 
+HA_NETWORK_GROUP_ROUTE_NAME = 'haNetworkGroup'
+
+ha_network_group_vm_uuids_lock = threading.RLock()
+ha_network_group_vm_uuids = frozenset()
+host_business_nic_route_snapshot_lock = threading.RLock()
+host_business_nic_route_snapshot = None
+
+
+def _normalize_vm_uuids(vm_uuids):
+    return frozenset(vm_uuid for vm_uuid in vm_uuids if isinstance(vm_uuid, string_types) and vm_uuid)
+
+
+def set_ha_network_group_vm_uuids(vm_uuids):
+    global ha_network_group_vm_uuids
+
+    with ha_network_group_vm_uuids_lock:
+        ha_network_group_vm_uuids = _normalize_vm_uuids(vm_uuids)
+
+
+def is_vm_managed_by_ha_network_group(vm_uuid):
+    with ha_network_group_vm_uuids_lock:
+        return vm_uuid in ha_network_group_vm_uuids
+
+
+def reset_host_business_nic_route_snapshot():
+    global host_business_nic_route_snapshot
+
+    with host_business_nic_route_snapshot_lock:
+        host_business_nic_route_snapshot = None
+
+
+def update_host_business_nic_route_snapshot(route_snapshot):
+    global host_business_nic_route_snapshot
+
+    with host_business_nic_route_snapshot_lock:
+        if route_snapshot == host_business_nic_route_snapshot:
+            return False
+
+        host_business_nic_route_snapshot = route_snapshot
+        return True
+
 EOF = "this_is_end"
 
 class UmountException(Exception):
@@ -292,31 +333,96 @@ class PhysicalNicFencer(AbstractHaFencer):
 
         return enable_ha
 
-    def skip_vm_bussiness_nic_check(self, vm_uuid, xml=None):
-        # block storage skip fencer due to not supported
+    def get_vm_business_nic_route(self, vm_uuid, xml=None):
         if is_block_fencer(self.get_ha_fencer_name(), vm_uuid):
-            logger.debug('skip vm %s nic fencer, not supported on block storage' % vm_uuid)
-            return True
+            return None
+
+        if is_vm_managed_by_ha_network_group(vm_uuid):
+            return HA_NETWORK_GROUP_ROUTE_NAME
 
         if not self.get_vm_enable_ha(vm_uuid, xml):
-            logger.debug('skip vm %s nic fencer, enableHa is false' % vm_uuid)
-            return True
+            return None
 
-        return False
+        return self.get_ha_fencer_name()
+
+    def _is_vm_bridge_related_to_fault_nic(self, bridge_nics, falut_nic):
+        return any(self.is_bridge_related_to_nic(bridge_nic, falut_nic) for bridge_nic in bridge_nics)
+
+    def _collect_vm_route_for_fault_nic(self, vm_uuid, xml, bridge_nics, falut_nic,
+                                        affected_host_business_nic_vm_uuids,
+                                        affected_ha_network_group_vm_uuids):
+        if not self._is_vm_bridge_related_to_fault_nic(bridge_nics, falut_nic):
+            return False
+
+        route = self.get_vm_business_nic_route(vm_uuid, xml)
+        if route == HA_NETWORK_GROUP_ROUTE_NAME:
+            affected_ha_network_group_vm_uuids.append(vm_uuid)
+            return False
+
+        if route != self.get_ha_fencer_name():
+            return False
+
+        affected_host_business_nic_vm_uuids.append(vm_uuid)
+        return True
+
+    def _get_vm_pid(self, vm_uuid):
+        vm_pid = linux.get_vm_pid(vm_uuid)
+        if not vm_pid:
+            logger.warn('vm %s pid not found' % vm_uuid)
+            return None
+
+        return vm_pid
+
+    def _build_vm_business_nic_route_snapshot(self, falut_nic, affected_host_business_nic_vm_uuids,
+                                              affected_ha_network_group_vm_uuids):
+        return (
+            tuple(sorted(set(falut_nic))),
+            tuple(sorted(set(affected_host_business_nic_vm_uuids))),
+            tuple(sorted(set(affected_ha_network_group_vm_uuids)))
+        )
+
+    def log_business_nic_route_snapshot(self, falut_nic, affected_host_business_nic_vm_uuids,
+                                  affected_ha_network_group_vm_uuids):
+        route_snapshot = self._build_vm_business_nic_route_snapshot(
+            falut_nic,
+            affected_host_business_nic_vm_uuids,
+            affected_ha_network_group_vm_uuids
+        )
+        if not update_host_business_nic_route_snapshot(route_snapshot):
+            return
+
+        logger.debug('hostBusinessNic routing for down nics[%s], affected hostBusinessNic vms:%s, '
+                     'affected haNetworkGroup vms:%s' % (
+                         ','.join(route_snapshot[0]),
+                         list(route_snapshot[1]),
+                         list(route_snapshot[2])
+                     ))
 
     def find_vm_use_falut_nic(self):
         vm_use_falut_nic_pids_dict = {}
-        falut_nic = self.find_falut_business_nic()
+        falut_nic, current_down_nics = self.find_falut_business_nic()
         if len(falut_nic) == 0:
+            if len(current_down_nics) == 0:
+                reset_host_business_nic_route_snapshot()
             return vm_use_falut_nic_pids_dict, falut_nic
-        logger.debug("nics[%s] is down" % ",".join(falut_nic))
 
         r = bash.bash_r("timeout 5 virsh list")
+        affected_host_business_nic_vm_uuids = []
+        affected_ha_network_group_vm_uuids = []
         if r == 0:
-            vm_use_falut_nic_pids_dict = self.find_vm_use_falut_nic_with_virsh(falut_nic)
+            vm_use_falut_nic_pids_dict, affected_host_business_nic_vm_uuids, affected_ha_network_group_vm_uuids = (
+                self.find_vm_use_falut_nic_with_virsh(falut_nic)
+            )
         else:
-            vm_use_falut_nic_pids_dict = self.find_vm_use_falut_nic_without_virsh(falut_nic)
+            vm_use_falut_nic_pids_dict, affected_host_business_nic_vm_uuids, affected_ha_network_group_vm_uuids = (
+                self.find_vm_use_falut_nic_without_virsh(falut_nic)
+            )
 
+        self.log_business_nic_route_snapshot(
+            falut_nic,
+            affected_host_business_nic_vm_uuids,
+            affected_ha_network_group_vm_uuids
+        )
         return vm_use_falut_nic_pids_dict, falut_nic
 
 
@@ -342,6 +448,8 @@ class PhysicalNicFencer(AbstractHaFencer):
     # get interface and bridge from xml
     def find_vm_use_falut_nic_without_virsh(self, falut_nic):
         vm_use_falut_nic_pids_dict = {}
+        affected_host_business_nic_vm_uuids = []
+        affected_ha_network_group_vm_uuids = []
         vm_in_process_uuid_list = find_vm_uuid_list_by_process()
         for vm_uuid in vm_in_process_uuid_list:
             file_name = '%s.xml' % vm_uuid
@@ -350,70 +458,82 @@ class PhysicalNicFencer(AbstractHaFencer):
                 logger.warn('cannot read xml file %s' % file_name)
                 continue
 
-            if self.skip_vm_bussiness_nic_check(vm_uuid, xml):
-                continue
-
             vm = linux.VmStruct()
             vm.uuid = vm_uuid
-            vm.pid = linux.get_vm_pid(vm_uuid)
             vm.load_from_xml(xml)
+            if not self._collect_vm_route_for_fault_nic(
+                    vm_uuid, xml, vm.bridges, falut_nic,
+                    affected_host_business_nic_vm_uuids,
+                    affected_ha_network_group_vm_uuids):
+                continue
 
-            for bridge_nic in vm.bridges:
-                if not self.is_bridge_related_to_nic(bridge_nic, falut_nic):
-                    continue
+            vm_pid = self._get_vm_pid(vm_uuid)
+            if not vm_pid:
+                continue
 
-                vm_pid = linux.find_vm_pid_by_uuid(vm_uuid)
-                if not vm_pid:
-                    logger.warn('vm %s pid not found' % vm_uuid)
-                    continue
-
-                vm_use_falut_nic_pids_dict[vm_uuid] = vm_pid
+            vm_use_falut_nic_pids_dict[vm_uuid] = vm_pid
 
         logger.debug("vm_use_falut_nic_pids_dict: %s" % vm_use_falut_nic_pids_dict)
-        return vm_use_falut_nic_pids_dict
+        return vm_use_falut_nic_pids_dict, affected_host_business_nic_vm_uuids, affected_ha_network_group_vm_uuids
 
 
     def find_vm_use_falut_nic_with_virsh(self, falut_nic):
         vm_use_falut_nic_pids_dict = {}
+        affected_host_business_nic_vm_uuids = []
+        affected_ha_network_group_vm_uuids = []
         vm_in_process_uuid_list = find_vm_uuid_list_by_virsh()
         for vm_uuid in vm_in_process_uuid_list:
             file_name = '%s.xml' % vm_uuid
             xml = linux.read_file(os.path.join(LIVE_LIBVIRT_XML_DIR, file_name))
-            if self.skip_vm_bussiness_nic_check(vm_uuid, xml):
+            bridge_nics = shell.call("virsh domiflist %s | grep bridge | awk '{print $3}'" % vm_uuid).splitlines()
+            if not self._collect_vm_route_for_fault_nic(
+                    vm_uuid, xml, bridge_nics, falut_nic,
+                    affected_host_business_nic_vm_uuids,
+                    affected_ha_network_group_vm_uuids):
                 continue
 
-            bridge_nics = shell.call("virsh domiflist %s | grep bridge | awk '{print $3}'" % vm_uuid)
-            for bridge_nic in bridge_nics.splitlines():
-                if not self.is_bridge_related_to_nic(bridge_nic, falut_nic):
-                    continue
+            vm_pid = self._get_vm_pid(vm_uuid)
+            if not vm_pid:
+                continue
 
-                vm_pid = linux.find_vm_pid_by_uuid(vm_uuid)
-                if not vm_pid:
-                    logger.warn('vm %s pid not found' % vm_uuid)
-                    continue
-
-                vm_use_falut_nic_pids_dict[vm_uuid] = vm_pid
+            vm_use_falut_nic_pids_dict[vm_uuid] = vm_pid
         logger.debug("vm_use_falut_nic_pids_dict: %s" % vm_use_falut_nic_pids_dict)
-        return vm_use_falut_nic_pids_dict
+        return vm_use_falut_nic_pids_dict, affected_host_business_nic_vm_uuids, affected_ha_network_group_vm_uuids
 
-    def find_falut_business_nic(self):
+    def _get_business_nics(self):
         nics = []
         nics.extend(ipUtils.get_host_physicl_nics())
         nics.extend(self.get_nomal_bond_nic())
-        for new_nic in nics:
-            if new_nic not in self.falut_nic_count:
-                self.falut_nic_count[new_nic] = 0
-            try:
-                ip = iproute.query_links(new_nic)
-                if ip[0].state == 'DOWN':
-                    self.falut_nic_count[new_nic] += 1
-                else:
-                    self.falut_nic_count[new_nic] = 0
-            except Exception as e:
-                logger.warn('iproute query_links is except, %s' % e)
-                continue
+        return nics
 
-        return [nic for nic, count in self.falut_nic_count.items() if count > self.max_attempts]
+    def _get_current_down_business_nics(self, nics):
+        down_nics = []
+        for nic in nics:
+            try:
+                links = iproute.query_links(nic)
+                if not links or (links[0].state or '').upper() != 'UP':
+                    down_nics.append(nic)
+            except Exception as e:
+                logger.warn('failed to query nic[%s] state, treat as down, %s' % (nic, e))
+                down_nics.append(nic)
+
+        return down_nics
+
+    def find_falut_business_nic(self):
+        nics = sorted(set(self._get_business_nics()))
+        current_down_nics = set(self._get_current_down_business_nics(nics))
+        self.falut_nic_count = {
+            nic: self.falut_nic_count.get(nic, 0)
+            for nic in nics
+        }
+        for new_nic in nics:
+            if new_nic in current_down_nics:
+                self.falut_nic_count[new_nic] += 1
+            else:
+                self.falut_nic_count[new_nic] = 0
+
+        falut_nic = [nic for nic, count in self.falut_nic_count.items() if count > self.max_attempts]
+        return falut_nic, list(current_down_nics)
 
     def get_nomal_bond_nic(self):
         bond_path = "/proc/net/bonding/"
@@ -3298,6 +3418,7 @@ class HaPlugin(kvmagent.KvmAgent):
                 for nic in self.ha_network_group_monitors
             }
             self.ha_network_group_last_status = {}
+            set_ha_network_group_vm_uuids(vm_rules.keys())
 
         logger.info('received ha network group config, version:%s monitors:%s vmRules:%s groups:%s' % (
             effective_version,
