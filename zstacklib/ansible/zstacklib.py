@@ -2415,10 +2415,14 @@ class ZstackLib(object):
         if self.distro in KYLIN_DISTRO:
             basic.add("chrony")
             basic.add("iptables")
-            # TODO: python3.11-libselinux is not available on most distros,
-            #  need to build or find a package for python3.11 when SELinux is enabled
             basic.add("python3-libselinux")
             return basic
+
+        # python3-libselinux is required by ansible selinux module's respawn
+        # mechanism: when ansible runs with python3.11 (which lacks selinux
+        # bindings), it probes system interpreters and respawns with python3.9
+        # which has python3-libselinux installed.
+        basic.add("python3-libselinux")
 
         if self.distro_version >= 7:
             # to avoid install some pkgs on virtual router which release is
