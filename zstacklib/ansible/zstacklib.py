@@ -2419,9 +2419,9 @@ class ZstackLib(object):
             return basic
 
         # python3-libselinux is required by ansible selinux module's respawn
-        # mechanism: when ansible runs with python3.11 (which lacks selinux
-        # bindings), it probes system interpreters and respawns with python3.9
-        # which has python3-libselinux installed.
+        # mechanism: when the current interpreter lacks selinux bindings,
+        # ansible probes system python (/usr/bin/python3) and respawns with
+        # the one that has python3-libselinux installed.
         basic.add("python3-libselinux")
 
         if self.distro_version >= 7:
