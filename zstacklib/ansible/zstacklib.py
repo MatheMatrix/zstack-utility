@@ -2352,9 +2352,9 @@ class ZstackLib(object):
                 if self.distro_version >= 7 and self.zstack_releasever in centos:
                     self.copy_redhat_yum_repo()
                 # zstack_repo is empty, will use system repo
-                # libselinux-python depend by ansible copy/file/template module
-                # when selinux enabled on host
-                yum_install_package("libselinux-python", self.host_post_info)
+                # python3-libselinux is needed by ansible copy/file/template/
+                # selinux modules when selinux is enabled on host
+                yum_install_package("python3-libselinux", self.host_post_info)
                 # install epel-release
                 if self.distro in RPM_BASED_OS and self.zstack_releasever in centos:
                     self.copy_epel_yum_repo()
@@ -2374,8 +2374,7 @@ class ZstackLib(object):
                 # generate zstack experimental repo anyway
                 self.generate_zstack_experimental_yum_repo()
 
-            # install libselinux-python and other command system libs from user
-            # defined repos
+            # install python3-libselinux and other system libs
             self.install_rpm_based_os_requirements(
                 self.zstack_repo, user_defined)
         elif self.distro in DEB_BASED_OS:
@@ -2406,18 +2405,21 @@ class ZstackLib(object):
         return python_requirement_set
 
     def _basic_rpm_set(self):
+        # python3-libselinux is required by ansible selinux/copy/file modules.
+        # When the current interpreter (e.g. python3.11) lacks selinux bindings,
+        # ansible's respawn mechanism probes system python (/usr/bin/python3)
+        # and re-executes the module with the interpreter that has
+        # python3-libselinux installed.
         basic = {
             "gcc",
             "autoconf",
             "vim-minimal",
+            "python3-libselinux",
         }
 
         if self.distro in KYLIN_DISTRO:
             basic.add("chrony")
             basic.add("iptables")
-            # TODO: python3.11-libselinux is not available on most distros,
-            #  need to build or find a package for python3.11 when SELinux is enabled
-            basic.add("python3-libselinux")
             return basic
 
         if self.distro_version >= 7:
@@ -2443,8 +2445,7 @@ class ZstackLib(object):
             before_install_command += \
                 "yum clean --enablerepo=%s metadata && " % zstack_repo
 
-        # install libselinux-python and other command system libs from user
-        # defined repos
+        # install python3-libselinux first, it's needed by ansible modules
         selinux_pkgs = [p for p in required_rpm_set if "selinux" in p]
         if zstack_repo == "false":
             batch_yum_install_package(selinux_pkgs, self.host_post_info)
@@ -2551,7 +2552,7 @@ enabled=0" >  /etc/yum.repos.d/zstack-mn.repo; sync /etc/yum.repos.d/zstack-mn.r
             raise Exception(
                 "failed to read yum repo content from %s" % yum_repo_file_path)
 
-        # copy module may not supported due to libselinux-python requirement
+        # copy module may not work without python3-libselinux
         # manually create yum repo to /etc/yum.repos.d/
         command = """
 cat << 'EOF' > /etc/yum.repos.d/%s
