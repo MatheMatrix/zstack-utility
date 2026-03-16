@@ -4269,8 +4269,10 @@ done
         return running_vm_uuids
 
     def _setup_vm_ha_enabled_metadata_live(self, vm_uuid, enable_ha):
-        metadata_value = 'true' if enable_ha else 'false'
-        self._setup_vm_zstack_metadata_live(vm_uuid, 'enableHa', metadata_value)
+        if enable_ha:
+            self._setup_vm_zstack_metadata_live(vm_uuid, 'enableHa', 'true')
+        else:
+            self._delete_vm_zstack_metadata_live(vm_uuid, 'enableHa')
 
     def _setup_vm_zstack_metadata_live(self, vm_uuid, metadata_key, metadata_value):
         updated, old_metadata_value, reason = vm_plugin.set_zstack_metadata_live(vm_uuid, metadata_key, metadata_value)
@@ -4297,6 +4299,32 @@ done
 
         logger.debug('updated vm[uuid:%s] %s metadata from %s to %s on host' % (
             vm_uuid, metadata_key, old_metadata_value, metadata_value))
+
+    def _delete_vm_zstack_metadata_live(self, vm_uuid, metadata_key):
+        updated, old_metadata_value, reason = vm_plugin.delete_zstack_metadata_live(vm_uuid, metadata_key)
+        if reason == 'vmNotFound':
+            logger.debug('cannot find vm[uuid:%s] when deleting %s metadata, skip' % (vm_uuid, metadata_key))
+            return
+
+        if reason == 'vmStateNotSupport':
+            vm = vm_plugin.get_vm_by_uuid(vm_uuid, exception_if_not_existing=False)
+            vm_state = vm.state if vm else 'Unknown'
+            logger.debug('vm[uuid:%s] state[%s] does not support live %s metadata deletion, skip' % (
+                vm_uuid, vm_state, metadata_key))
+            return
+
+        if reason == 'unchanged':
+            logger.debug('vm[uuid:%s] %s metadata already absent, skip live deletion' % (
+                vm_uuid, metadata_key))
+            return
+
+        if not updated:
+            logger.debug('vm[uuid:%s] skip deleting %s metadata due to unexpected reason[%s]' % (
+                vm_uuid, metadata_key, reason))
+            return
+
+        logger.debug('deleted vm[uuid:%s] %s metadata, old value %s on host' % (
+            vm_uuid, metadata_key, old_metadata_value))
 
     @kvmagent.replyerror
     def update_vm_console_password_live(self, req):
