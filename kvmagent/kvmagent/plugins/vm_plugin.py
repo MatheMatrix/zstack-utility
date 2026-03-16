@@ -4305,15 +4305,11 @@ class Vm(object):
                         logger.debug('bandwitdh mismatch, reset other device bandwidth')
                         self.reset_bandwidth()
 
-                    stats = self.domain.jobStats()
-                    if libvirt.VIR_DOMAIN_JOB_DATA_REMAINING in stats and libvirt.VIR_DOMAIN_JOB_DATA_TOTAL in stats:
-                        remain = stats[libvirt.VIR_DOMAIN_JOB_DATA_REMAINING]
-                        total = stats[libvirt.VIR_DOMAIN_JOB_DATA_TOTAL]
-                        if total == 0:
-                            return
+                    result = self._get_detail()
+                    if not result or getattr(result, 'percent', None) is None:
+                        return
 
-                        percent = min(99, 100.0 - remain * 100.0 / total)
-                        return get_exact_percent(percent, stage)
+                    return get_exact_percent(result.__getitem__('percent'), stage)
                 except libvirt.libvirtError:
                     pass
                 except:
@@ -4322,16 +4318,12 @@ class Vm(object):
             def _get_detail(self):
                 try:
                     stats = self.domain.jobStats()
-                    result = jsonobject.JsonObject()
                     if libvirt.VIR_DOMAIN_JOB_DATA_REMAINING in stats and libvirt.VIR_DOMAIN_JOB_DATA_TOTAL in stats:
                         remain = stats[libvirt.VIR_DOMAIN_JOB_DATA_REMAINING]
                         total = stats[libvirt.VIR_DOMAIN_JOB_DATA_TOTAL]
                         if total == 0:
                             logger.debug('the total amount of data migrated is 0')
                             return
-
-                        result.put("remain", remain)
-                        result.put("total", total)
 
                         self.progress_status.append((remain, total))
                         remain_list = [key for key, value in self.progress_status]
@@ -4344,13 +4336,25 @@ class Vm(object):
                             raise kvmagent.BlockJobError(
                                 "the block job status is abnormal, details is ioHung. Please check backup storage and backup network.")
 
+                        processed = total - remain
+                        result = jsonobject.JsonObject()
+                        result.put("processed", processed)
+                        result.put("total", total)
+                        result.put("stage", "migrating")
+                        result.put("unit", "bytes")
+                        if total > 0:
+                            percent = int(processed * 100.0 / total)
+                            if remain > 0:
+                                percent = min(percent, 99)
+                            result.put("percent", percent)
+
                         if remain == 0:
                             return result
 
-                        if self.progress_reporter.report.detail and self.progress_reporter.report.detail.hasattr('remain'):
+                        if self.progress_reporter.report.detail and getattr(self.progress_reporter.report.detail, 'processed', None) is not None:
                             current_time = time.time()
-                            previous_remain = self.progress_reporter.report.detail.__getitem__('remain')
-                            data_delta = previous_remain - remain
+                            previous_processed = self.progress_reporter.report.detail.__getitem__('processed')
+                            data_delta = processed - previous_processed
 
                             # Calculate speed in bytes/second
                             if self.last_detail_time is not None:
@@ -4366,8 +4370,8 @@ class Vm(object):
                             self.last_detail_time = current_time
 
                             remaining_migration_time = (remain / speed) if speed > 0 else 0
-                            result.put("speed", speed)
-                            result.put("remaining_migration_time", remaining_migration_time)
+                            result.put("speed", int(speed))
+                            result.put("estimatedRemainingSeconds", int(remaining_migration_time))
                         return result
                 except libvirt.libvirtError:
                     pass
@@ -8939,15 +8943,13 @@ class VmPlugin(kvmagent.KvmAgent):
             def _get_percent(self):
                 # type: () -> int
                 result = self._get_detail()
-                if not result:
+                if not result or getattr(result, 'percent', None) is None:
                     return
 
-                percent = min(99, 100.0 - result.__getitem__('remain') * 100.0 / result.__getitem__('total'))
-                return get_exact_percent(percent, get_task_stage(task_spec))
+                return get_exact_percent(result.__getitem__('percent'), get_task_stage(task_spec))
 
             def _get_detail(self):
                 try:
-                    result = jsonobject.JsonObject()
                     block_jobs = qmp.execute_qmp_command(vmUuid, "query-block-jobs", raise_exception=False)
                     if block_jobs is None:
                         return
@@ -8957,18 +8959,31 @@ class VmPlugin(kvmagent.KvmAgent):
                         logger.debug("do_block_copy job finished. detail no found!")
                         return
 
-                    remain = job['len'] - job['offset']
-                    result.put("remain", remain)
-                    result.put("total", job['len'])
+                    total = job['len']
+                    remain = total - job['offset']
+                    processed = job['offset']
 
-                    if job['len'] == job['offset']:
+                    result = jsonobject.JsonObject()
+                    result.put("processed", processed)
+                    result.put("total", total)
+                    result.put("stage", "blockCopy")
+                    result.put("unit", "bytes")
+                    if total > 0:
+                        percent = int(processed * 100.0 / total)
+                        if remain > 0:
+                            percent = min(percent, 99)
+                        result.put("percent", percent)
+
+                    if total == job['offset']:
                         return result
 
-                    if self.progress_reporter.report.detail and self.progress_reporter.report.detail.hasattr('remain'):
-                        speed = self.progress_reporter.report.detail.__getitem__('remain') - remain
-                        remaining_migration_time = (remain / speed) if speed != 0 else self.progress_reporter.report.detail.__getitem__('remaining_migration_time')
-                        result.put("speed", speed)
-                        result.put("remaining_migration_time", remaining_migration_time)
+                    if self.progress_reporter.report.detail and getattr(self.progress_reporter.report.detail, 'processed', None) is not None:
+                        previous_processed = self.progress_reporter.report.detail.__getitem__('processed')
+                        speed = processed - previous_processed
+                        previous_eta = getattr(self.progress_reporter.report.detail, 'estimatedRemainingSeconds', None)
+                        remaining_migration_time = (remain / speed) if speed != 0 else (previous_eta if previous_eta is not None else 0)
+                        result.put("speed", int(speed))
+                        result.put("estimatedRemainingSeconds", int(remaining_migration_time))
                     return result
                 except libvirt.libvirtError:
                     pass
