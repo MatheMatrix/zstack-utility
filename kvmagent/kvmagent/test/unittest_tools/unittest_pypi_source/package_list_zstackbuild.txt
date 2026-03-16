@@ -58,7 +58,7 @@ pyparsing-1.5.7.zip
 pyparsing-2.4.7.tar.gz
 pyroute2-0.5.14.tar.gz
 python-cephlibs-0.94.5.tar.gz
-python-dateutil-2.8.2.tar.gz
+python_dateutil-2.9.0.post0-py2.py3-none-any.whl
 python-engineio-0.9.0.tar.gz
 python-socketio-1.2.tar.gz
 PyYAML-3.11.zip
