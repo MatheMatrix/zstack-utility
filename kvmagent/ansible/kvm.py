@@ -212,7 +212,7 @@ def install_kvm_pkg():
                            'MegaCli Arcconf kernel-devel '
                            'edac-utils')
 
-        py3_rpms = 'python3.11 python3.11-devel python3.11-pip libvirt-devel libffi-devel openssl-devel'
+        py3_rpms = 'python3.11 python3.11-devel python3.11-pip libffi-devel openssl-devel'
 
         releasever_mapping = {
             'c74': 'qemu-kvm',
@@ -335,7 +335,7 @@ def install_kvm_pkg():
                 run_remote_command(command, host_post_info)
         else:
             # name: install kvm related packages on RedHat based OS from online
-            for pkg in ['zstack-release', 'openssh-clients', 'bridge-utils', 'wget', 'chrony', 'sed', 'libvirt', 'libvirt-devel', 'nfs-utils', 'vconfig',
+            for pkg in ['zstack-release', 'openssh-clients', 'bridge-utils', 'wget', 'chrony', 'sed', 'libvirt', 'nfs-utils', 'vconfig',
                         'libvirt-client', 'net-tools', 'iscsi-initiator-utils', 'lighttpd', 'iproute', 'sshpass',
                         'libguestfs-winsupport', 'libguestfs-tools', 'pv', 'rsync', 'nmap', 'ipset', 'usbutils', 'pciutils', 'expect',
                         'lvm2', 'lvm2-lockd', 'sanlock', 'sysfsutils', 'smartmontools', 'device-mapper-multipath', 'hwdata', 'sg3_utils']:
