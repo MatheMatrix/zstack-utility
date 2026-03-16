@@ -2978,7 +2978,7 @@ class HaPlugin(kvmagent.KvmAgent):
 
             try:
                 min_score = int(vm_cfg.get('minScore', 1))
-            except Exception:
+            except (TypeError, ValueError):
                 min_score = 1
 
             raw_rules = vm_cfg.get('rules') or []
@@ -3056,13 +3056,20 @@ class HaPlugin(kvmagent.KvmAgent):
 
             normalized_rules = sorted(normalized_rules, key=lambda r: (r['resource'], r['weight']))
             try:
-                min_available = int(group_cfg.get('minAvailableCount', 1))
-            except Exception:
-                min_available = 1
+                min_required_score = int(group_cfg.get('minAvailableCount', 1))
+            except (TypeError, ValueError):
+                min_required_score = 1
+
+            min_required_score = max(min_required_score, 1)
+            total_weight = sum(rule['weight'] for rule in normalized_rules)
+            if min_required_score > total_weight:
+                logger.warn('ha network group[%s] minAvailableCount[%s] exceeds total weight[%s], group will always be Down' % (
+                    group_uuid, min_required_score, total_weight
+                ))
 
             normalized[group_uuid] = {
                 'rules': normalized_rules,
-                'minAvailableCount': max(min_available, 1)
+                'minAvailableCount': min_required_score
             }
 
         return normalized
@@ -3175,7 +3182,7 @@ class HaPlugin(kvmagent.KvmAgent):
         for vm_uuid, vm_cfg in vm_rules.items():
             try:
                 min_score = int(vm_cfg.get('minScore', 1))
-            except Exception:
+            except (TypeError, ValueError):
                 min_score = 1
 
             score = self._calculate_vm_score(vm_cfg, down_monitors)
@@ -3207,25 +3214,21 @@ class HaPlugin(kvmagent.KvmAgent):
 
         status = {}
         for group_uuid, group_cfg in network_groups.items():
-            rules = group_cfg.get('rules') or []
-            try:
-                min_available = int(group_cfg.get('minAvailableCount', 1))
-            except Exception:
-                min_available = 1
+            rules = group_cfg['rules']
+            min_required_score = group_cfg['minAvailableCount']
 
-            if not rules:
-                status[group_uuid] = 'Down'
-                continue
-
-            available_count = 0
+            total_score = 0
+            current_score = 0
             for rule in rules:
-                resource = rule.get('resource')
+                weight = rule['weight']
+                total_score += weight
+                resource = rule['resource']
                 if resource not in down_monitors:
-                    available_count += int(rule.get('weight', 0))
+                    current_score += weight
 
-            if available_count <= 0:
+            if current_score < min_required_score:
                 status[group_uuid] = 'Down'
-            elif available_count < min_available:
+            elif current_score < total_score:
                 status[group_uuid] = 'Degrade'
             else:
                 status[group_uuid] = 'Available'
@@ -3376,7 +3379,7 @@ class HaPlugin(kvmagent.KvmAgent):
         if incoming_config_version is not None:
             try:
                 incoming_config_version = int(incoming_config_version)
-            except Exception:
+            except (TypeError, ValueError):
                 incoming_config_version = None
 
         monitors = cmd.get('monitors') or []
@@ -3387,11 +3390,11 @@ class HaPlugin(kvmagent.KvmAgent):
         network_groups = self._normalize_ha_network_groups(cmd.get('networkGroups') or {})
         try:
             interval = int(cmd.get('interval'))
-        except Exception:
+        except (TypeError, ValueError):
             interval = 1
         try:
             max_attempts = int(cmd.get('maxAttempts'))
-        except Exception:
+        except (TypeError, ValueError):
             max_attempts = 1
         interval = max(interval, 1)
         max_attempts = max(max_attempts, 1)
