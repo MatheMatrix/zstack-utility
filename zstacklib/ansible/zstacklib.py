@@ -2096,7 +2096,7 @@ def do_enable_ntp(trusted_host, host_post_info, distro):
     def get_ha_mn_list(conf_file):
         if os.path.isfile(conf_file):
             with open(conf_file, 'r') as fd:
-                ha_conf_content = yaml.load(fd.read())
+                ha_conf_content = yaml.safe_load(fd.read())
                 mn_list = ha_conf_content['host_list'].split(',')
             return mn_list
         else:

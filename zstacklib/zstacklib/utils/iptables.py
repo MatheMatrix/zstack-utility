@@ -909,8 +909,7 @@ class IP6Tables(Node):
                 all_chains.append(chain)
             else:
                 user_chains.append(chain)
-        # TODO(py3)
-        user_chains = sorted(user_chains, sort_func)
+        user_chains = sorted(user_chains, key=cmp_to_key(sort_func))
         all_chains.extend(user_chains)
         return all_chains
 

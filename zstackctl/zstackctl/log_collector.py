@@ -253,7 +253,7 @@ class Summary(object):
     def persist(self, collect_dir):
         summary_file = collect_dir + 'summary'
         lic_md5, username, cloud_title = self.get_identifier(collect_dir)
-        with open(summary_file, 'a+', encoding='utf-8') as f:
+        with open(summary_file, 'a', encoding='utf-8') as f:
             f.write(json.dumps({"lic_md5": lic_md5,
                                 "username": username,
                                 "cloud_name": cloud_title,

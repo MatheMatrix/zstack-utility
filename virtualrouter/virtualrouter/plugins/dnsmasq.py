@@ -240,6 +240,7 @@ class Dnsmasq(virtualrouter.VRAgent):
         
     def _add_dhcp_range_if_need(self, gateways):
         with open(self.DNSMASQ_CONF_FILE, 'a+') as fd:
+            fd.seek(0)
             content = fd.read()
             new = []
             for g in gateways:

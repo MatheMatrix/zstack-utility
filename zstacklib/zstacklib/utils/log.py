@@ -51,8 +51,7 @@ class ZstackRotatingFileHandler(ConcurrentRotatingFileHandler):
 
     def doArchive(self, old_log):
         try:
-            with open(old_log) as log:
-                # TODO(py3)
+            with open(old_log, 'rb') as log:
                 with gzip.open(old_log + '.gz', 'wb') as comp_log:
                     shutil.copyfileobj(log, comp_log)
         except:

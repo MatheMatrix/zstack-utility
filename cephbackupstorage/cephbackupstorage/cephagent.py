@@ -305,7 +305,6 @@ def get_boundary(entity):
         b = b.strip()
         if b == ib:
             break
-    # TODO(py3)
     return ib.decode('ascii')
 
 
@@ -975,7 +974,7 @@ class CephAgent(object):
                 if os.path.exists(tmp_file):
                     os.remove(tmp_file)
             else:
-                resp = open(path)
+                resp = open(path, 'rb')
                 qhdr = resp.read(qcow2_length)
                 resp.close()
             if len(qhdr) < qcow2_length:

@@ -748,7 +748,7 @@ class SblkHealthChecker(AbstractStorageFencer):
         # writer has been moved to sharedblock agent, ZSTAC-58438
         def read_content_from_lv():
             with open(volume_abs_path, "rb+") as f:
-                content = f.read().replace(b'\u0000', b'').replace(b'\x00', b'').decode()
+                content = f.read().replace(b'\x00', b'').decode()
                 content = content.split(EOF)[0]
                 if len(content) == 0:
                     return None, None
