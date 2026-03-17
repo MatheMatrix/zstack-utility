@@ -312,11 +312,40 @@ class PhysicalNicFencer(AbstractHaFencer):
         return vm_use_falut_nic_pids_dict
 
 
+    def _vm_may_use_faulted_nic_by_xml(self, vm_uuid, falut_nic):
+        """Pre-filter: check via libvirt live XML whether VM uses a bridge
+        related to any faulted NIC.  Returns True on match or when the XML
+        cannot be read (safe fallback — let virsh decide).
+        """
+        file_name = "%s.xml" % vm_uuid
+        xml = linux.read_file(os.path.join(LIVE_LIBVIRT_XML_DIR, file_name))
+        if not xml:
+            return True  # XML unreadable, fall back to virsh
+
+        vm = linux.VmStruct()
+        vm.uuid = vm_uuid
+        try:
+            vm.load_from_xml(xml)
+        except Exception as e:
+            logger.warn("cannot parse xml file %s, fallback to virsh: %s" % (file_name, str(e)))
+            return True
+
+        for bridge_nic in vm.bridges:
+            if self.is_bridge_related_to_nic(bridge_nic, falut_nic):
+                return True
+        return False
+
     def find_vm_use_falut_nic_with_virsh(self, falut_nic):
         vm_use_falut_nic_pids_dict = {}
         vm_in_process_uuid_list = find_vm_uuid_list_by_virsh()
         for vm_uuid in vm_in_process_uuid_list:
             if self.skip_vm_bussiness_nic_check(vm_uuid):
+                continue
+
+            # Skip expensive virsh domiflist when XML shows VM has no bridge
+            # related to faulted NICs (core fix for ZSTAC-79557)
+            if not self._vm_may_use_faulted_nic_by_xml(vm_uuid, falut_nic):
+                logger.debug("vm %s has no bridge related to faulted nics per XML, skip virsh" % vm_uuid)
                 continue
 
             bridge_nics = shell.call("virsh domiflist %s | grep bridge | awk '{print $3}'" % vm_uuid)
