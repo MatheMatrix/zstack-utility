@@ -2927,92 +2927,120 @@ def reset_pv_uuids(vg_uuid):
 
 
 @bash.in_bash
-def rebuild_sanlock_lockspace(vg_uuid, new_vg_uuid=None):
-    """Rebuild sanlock lockspace by converting VG to local and back to shared.
+def rename_vg(old_vg_uuid, new_vg_uuid):
+    if old_vg_uuid == new_vg_uuid:
+        logger.debug("rename vg skipped: old_vgUuid == new_vgUuid (%s)" % old_vg_uuid)
+        return
 
-    This completely destroys the old lvmlock LV and lets LVM create a fresh one
-    with properly initialized leases for ALL LVs (delta, VGLK, GLLK, and every
-    LV resource lease). This is the most thorough approach for takeover because:
-      - No stale host slots remain (delta lease area is brand new)
-      - VGLK/GLLK are freshly initialized with correct resource names
-      - Every LV resource lease is freshly initialized by lvmlockd (not us)
-      - No risk of resource name mismatch (error -221)
+    if vg_exists(new_vg_uuid) and not vg_exists(old_vg_uuid):
+        logger.debug("rename vg skipped: %s already exists and %s not found" % (new_vg_uuid, old_vg_uuid))
+        return
 
-    If new_vg_uuid is provided, VG is renamed while in local mode (no sanlock
-    lock checks), then converted back to sanlock under the new name.
+    if vg_exists(new_vg_uuid) and vg_exists(old_vg_uuid):
+        raise Exception("both old VG %s and new VG %s exist on this host. "
+                        "Refusing to rename - manual investigation required." % (old_vg_uuid, new_vg_uuid))
 
-    Flow: drop lockspace (if active) -> clean dm -> lock-type none -> lvremove lvmlock
-          -> [vgrename if new_vg_uuid] -> lock-type sanlock (creates new lvmlock + all leases)
+    @linux.retry(times=5, sleep_time=2)
+    def do_vg_rename():
+        r, o, e = bash.bash_roe(
+            "timeout -s SIGKILL %s vgrename %s %s" %
+            (lvm_cmd_timeout_with_locking, old_vg_uuid, new_vg_uuid))
+        if r != 0:
+            raise Exception("unable to rename vg %s to %s, "
+                            "stdout:%s, stderr:%s" % (old_vg_uuid, new_vg_uuid, str(o), str(e)))
+
+        if vg_exists(old_vg_uuid) and not vg_exists(new_vg_uuid):
+            raise Exception(
+                "vg rename command executed but old VG %s still exists and new VG %s not found, retrying...")
+
+        logger.debug("rename vg %s to %s successfully" % (old_vg_uuid, new_vg_uuid))
+
+    do_vg_rename()
+
+    if vg_exists(old_vg_uuid) and not vg_exists(new_vg_uuid):
+        raise Exception("vg rename appeared to succeed but post-check failed: "
+                        "old VG %s still exists, new VG %s not found" % (old_vg_uuid, new_vg_uuid))
+
+
+@bash.in_bash
+def activate_lvmlock_dm(vg_uuid):
+    """Activate the hidden lvmlock LV via dmsetup create.
+
+    lvmlock is a hidden LV that cannot be activated by lvchange -ay.
+    This function reads LV segment metadata (--nolocking) and builds
+    a device-mapper linear table to expose /dev/mapper/<vg>-lvmlock.
+
+    Idempotent: if the dm device already exists, does nothing.
+    """
+    dm_name = "%s-lvmlock" % vg_uuid
+    dm_path = "/dev/mapper/%s" % dm_name
+    if os.path.exists(dm_path):
+        return
+
+    r, o, e = bash.bash_roe(
+        "lvs --nolocking --noheadings --nosuffix --units s -o lv_size %s/lvmlock" % vg_uuid)
+    if r != 0:
+        raise Exception("failed to get lvmlock size: %s" % e)
+    lv_sectors = o.strip().split(".")[0]
+
+    r, o, e = bash.bash_roe(
+        "lvs --nolocking --noheadings -o devices %s/lvmlock" % vg_uuid)
+    if r != 0:
+        raise Exception("failed to get lvmlock devices: %s" % e)
+
+    r2, o2, e2 = bash.bash_roe(
+        "vgs --nolocking --noheadings --nosuffix --units s -o vg_extent_size %s" % vg_uuid)
+    if r2 != 0:
+        raise Exception("failed to get PE size: %s" % e2)
+    pe_sectors = o2.strip().split(".")[0]
+
+    import re
+    segments = re.findall(r'(/\S+)\((\d+)\)', o.strip())
+    if not segments:
+        raise Exception("cannot parse lvmlock devices: '%s'" % o.strip())
+
+    pv_dev, pe_start = segments[0]
+    start_sector = int(pe_start) * int(pe_sectors)
+    dm_table = "0 %s linear %s %d" % (lv_sectors, pv_dev, start_sector)
+
+    r, o, e = bash.bash_roe("echo '%s' | dmsetup create %s" % (dm_table, dm_name))
+    if r != 0:
+        raise Exception("dmsetup create %s failed: %s" % (dm_name, e))
+    logger.debug("activated lvmlock via dmsetup for %s" % vg_uuid)
+
+
+@bash.in_bash
+def deactivate_lvmlock_dm(vg_uuid):
+    """Deactivate the lvmlock dm device if it exists."""
+    dm_name = "%s-lvmlock" % vg_uuid
+    if os.path.exists("/dev/mapper/%s" % dm_name):
+        bash.bash_roe("dmsetup remove --force %s" % dm_name)
+
+
+@bash.in_bash
+def reinit_sanlock_leases(vg_uuid):
+    """Reinit delta lease, GLLK, and VGLK on an already-activated lvmlock.
+
+    Requires /dev/mapper/<vg>-lvmlock to be active (via activate_lvmlock_dm).
+    Used after vgrename to rewrite the lockspace name in sanlock lease areas.
     """
     dm_path = "/dev/mapper/%s-lvmlock" % vg_uuid
+    if not os.path.exists(dm_path):
+        raise Exception("%s not found, call activate_lvmlock_dm first" % dm_path)
 
-    # If lockspace is active, drop it first.
-    r, o, _ = bash.bash_roe("sanlock client status | grep 'lvm_%s'" % vg_uuid)
-    if r == 0 and o.strip():
-        logger.info("lockspace lvm_%s is active, dropping before rebuild" % vg_uuid)
-        drop_vg_lock(vg_uuid)
+    lockspace_name = "lvm_%s" % vg_uuid
 
-    # Clean up lvmlock dm device if present (left from prior start_vg_lock + drop).
-    if os.path.exists(dm_path):
-        r, o, e = bash.bash_roe("dmsetup remove %s-lvmlock" % vg_uuid)
-        if r != 0:
-            logger.warn("dmsetup remove %s-lvmlock failed: %s, trying force" % (vg_uuid, e))
-            bash.bash_roe("dmsetup remove --force %s-lvmlock" % vg_uuid)
-
-    # Convert to local VG (removes lock_type from metadata).
-    # "lock type not changed" means VG is already local (idempotent retry).
-    r, o, e = bash.bash_roe(
-        "timeout -s SIGKILL 60 vgchange -y --lock-type none --lock-opt force %s" % vg_uuid)
+    # Delta lease (lockspace) at offset 0.
+    r = bash.bash_r("sanlock direct init -s %s:0:%s:0" % (lockspace_name, dm_path))
     if r != 0:
-        if "lock type not changed" in (e or ""):
-            logger.debug("VG %s already has lock-type none (idempotent retry)" % vg_uuid)
-        else:
-            raise Exception("failed to convert VG %s to local: stdout=%s, stderr=%s" % (vg_uuid, o, e))
-    elif e and "lock type not changed" in e:
-        logger.debug("VG %s already has lock-type none (idempotent retry)" % vg_uuid)
-    else:
-        logger.debug("VG %s converted to local (lock-type none)" % vg_uuid)
+        raise Exception("sanlock direct init -s failed for %s" % vg_uuid)
 
-    # Remove old lvmlock LV.
-    r, o, e = bash.bash_roe("timeout -s SIGKILL 30 lvremove -y %s/lvmlock" % vg_uuid)
-    if r != 0:
-        # lvmlock may already be gone if lock-type none cleaned it up.
-        logger.warn("lvremove %s/lvmlock returned %d: %s (may already be removed)" % (vg_uuid, r, e))
+    # GLLK and VGLK — use existing init_*_if_need which checks and inits.
+    # After lockspace name change they will always mismatch and reinit.
+    sanlock.init_gllk_if_need(vg_uuid)
+    sanlock.init_vglk_if_need(vg_uuid)
+    logger.debug("reinit_sanlock_leases completed for %s" % vg_uuid)
 
-    # Rename while VG is local -- no sanlock lock checks, no "LV locked by other host".
-    final_vg_name = vg_uuid
-    if new_vg_uuid and new_vg_uuid != vg_uuid:
-        r, o, e = bash.bash_roe(
-            "timeout -s SIGKILL 60 vgrename --nolocking %s %s" % (vg_uuid, new_vg_uuid))
-        if r != 0:
-            raise Exception("failed to rename local VG %s to %s: stdout=%s, stderr=%s"
-                            % (vg_uuid, new_vg_uuid, o, e))
-        logger.debug("VG renamed %s -> %s (while local)" % (vg_uuid, new_vg_uuid))
-        final_vg_name = new_vg_uuid
-
-        # vgrename --nolocking bypasses lvmlockd, so lvmlockd still caches the
-        # old VG name. Restart lvmlockd so it discovers the renamed VG; the
-        # upcoming vgchange --lock-type sanlock needs lvmlockd to create the
-        # lvmlock LV. Adopt file preserves other VGs' lock state.
-        restart_lvmlockd()
-
-    # Convert back to shared VG with sanlock. This creates a fresh lvmlock LV
-    # and initializes ALL sanlock structures (delta lease, VGLK, GLLK, and a
-    # resource lease for every existing LV).
-    r, o, e = bash.bash_roe(
-        "timeout -s SIGKILL 120 vgchange --lock-type sanlock %s" % final_vg_name)
-    if r != 0:
-        # "lock type not changed" means VG is already sanlock (idempotent retry
-        # where previous rebuild completed but subsequent start_vg_lock failed).
-        if "lock type not changed" in (e or ""):
-            logger.debug("VG %s already has lock-type sanlock (idempotent retry)" % final_vg_name)
-        else:
-            raise Exception("failed to convert VG %s back to sanlock: stdout=%s, stderr=%s\n"
-                            "Manual recovery: run 'vgchange --lock-type sanlock %s' after "
-                            "ensuring no lockspace is active and lvmlock dm device is removed."
-                            % (final_vg_name, o, e, final_vg_name))
-    else:
-        logger.debug("VG %s converted back to sanlock (fresh lvmlock created)" % final_vg_name)
 
 
 @bash.in_bash
