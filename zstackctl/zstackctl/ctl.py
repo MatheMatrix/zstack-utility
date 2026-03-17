@@ -3180,6 +3180,18 @@ class StartCmd(Command):
             else:
                 ctl.delete_properties(['simulatorsOn'])
 
+        def clean_pycache():
+            ansible_files_dir = os.path.join(os.path.expanduser('~zstack'), "ansible/files")
+            if os.path.isdir(ansible_files_dir):
+                for root, dirs, _ in os.walk(ansible_files_dir):
+                    for d in dirs:
+                        if d == '__pycache__':
+                            pycache_dir = os.path.join(root, d)
+                            try:
+                                rmtree(pycache_dir)
+                            except Exception as e:
+                                warn("failed to remove %s: %s" % (pycache_dir, str(e)))
+
         if os.getuid() != 0:
             raise CtlError('please use sudo or root user')
 
@@ -3201,6 +3213,7 @@ class StartCmd(Command):
         prepare_bean_ref_context_xml()
 
         linux.sync_file(ctl.properties_file_path)
+        clean_pycache()
         start_mgmt_node()
         #sleep a while, since zstack won't start up so quickly
         time.sleep(5)
