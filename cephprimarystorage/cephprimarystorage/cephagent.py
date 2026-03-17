@@ -1609,14 +1609,14 @@ class CephAgent(plugin.TaskManager):
                     logger.info('volume resized to %d' % disk_size)
 
                 chunk_size = 1048576
-                zero_chunk = '\x00' * chunk_size
+                zero_chunk = b'\x00' * chunk_size
                 remainder_size = disk_size % chunk_size
 
                 thread.ThreadFacade.run_in_thread(queue_consumer, [cqueue, image, rsp])
 
                 while offset < disk_size:
                     if offset + chunk_size > disk_size:
-                        chunk_size, zero_chunk = remainder_size, '\x00' * remainder_size
+                        chunk_size, zero_chunk = remainder_size, b'\x00' * remainder_size
 
                     data  = client.read(offset, chunk_size) # client has 'read all' semantic
                     if len(data) != chunk_size:

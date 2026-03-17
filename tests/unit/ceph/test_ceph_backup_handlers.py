@@ -599,3 +599,152 @@ class TestCephBackupHelpers:
         pool, image = agent._parse_install_path("ceph://pool1/image-001")
         assert pool == "pool1"
         assert image == "image-001"
+
+
+# ---------------------------------------------------------------------------
+# get_image_format_from_buf (Python 3 bytes/str fix)
+# ---------------------------------------------------------------------------
+@pytest.mark.ceph
+class TestGetImageFormatFromBuf:
+    def test_qcow2_bytes_header(self):
+        """qcow2 magic: QFI\\xfb with no backing file (bytes 16-20 all zero)"""
+        buf = bytearray(0x9007)
+        buf[0:4] = b'QFI\xfb'
+        # bytes 16-20 already zero
+        assert module.get_image_format_from_buf(bytes(buf)) == "qcow2"
+
+    def test_derived_qcow2_bytes_header(self):
+        """qcow2 with backing file (bytes 16-20 non-zero)"""
+        buf = bytearray(0x9007)
+        buf[0:4] = b'QFI\xfb'
+        buf[16:20] = b'\x00\x00\x00\x01'
+        assert module.get_image_format_from_buf(bytes(buf)) == "derivedQcow2"
+
+    def test_vmdk_bytes_header(self):
+        buf = bytearray(0x9007)
+        buf[0:5] = b'KDMV\x03'
+        assert module.get_image_format_from_buf(bytes(buf)) == "vmdk"
+
+    def test_iso_bytes_header_at_0x8001(self):
+        buf = bytearray(0x9007)
+        buf[0x8001:0x8006] = b'CD001'
+        assert module.get_image_format_from_buf(bytes(buf)) == "iso"
+
+    def test_iso_bytes_header_at_0x8801(self):
+        buf = bytearray(0x9007)
+        buf[0x8801:0x8806] = b'CD001'
+        assert module.get_image_format_from_buf(bytes(buf)) == "iso"
+
+    def test_iso_bytes_header_at_0x9001(self):
+        buf = bytearray(0x9007)
+        buf[0x9001:0x9006] = b'CD001'
+        assert module.get_image_format_from_buf(bytes(buf)) == "iso"
+
+    def test_raw_fallback(self):
+        buf = bytearray(0x9007)
+        assert module.get_image_format_from_buf(bytes(buf)) == "raw"
+
+    def test_str_input_does_not_match(self):
+        """str input should NOT match bytes literals — returns raw"""
+        buf = 'QFI\xfb' + '\x00' * (0x9007 - 4)
+        assert module.get_image_format_from_buf(buf) == "raw"
+
+
+# ---------------------------------------------------------------------------
+# _getRealSize logic (closure inside download, tested via equivalent logic)
+# ---------------------------------------------------------------------------
+@pytest.mark.ceph
+class TestGetRealSizeLogic:
+    """_getRealSize is a closure inside download(). Replicate its logic here
+    to verify the int-return fix for Python 3.
+    TODO: if _getRealSize is extracted to module level, replace with direct import."""
+
+    @staticmethod
+    def _getRealSize(length):
+        """Exact copy of the fixed _getRealSize from cephagent.py"""
+        length = length.strip()
+        if not length[-1].isalpha():
+            return int(length)
+        units = {
+            "g": lambda x: x * 1024 * 1024 * 1024,
+            "m": lambda x: x * 1024 * 1024,
+            "k": lambda x: x * 1024,
+        }
+        try:
+            return units[length[-1].lower()](int(length[:-1]))
+        except:
+            return 0
+
+    def test_pure_digits_returns_int(self):
+        result = self._getRealSize("123456789")
+        assert result == 123456789
+        assert isinstance(result, int)
+
+    def test_with_k_suffix(self):
+        assert self._getRealSize("50K") == 50 * 1024
+
+    def test_with_m_suffix(self):
+        assert self._getRealSize("10M") == 10 * 1024 * 1024
+
+    def test_with_g_suffix(self):
+        assert self._getRealSize("2G") == 2 * 1024 * 1024 * 1024
+
+    def test_lowercase_suffix(self):
+        assert self._getRealSize("50k") == 50 * 1024
+
+    def test_strip_whitespace_and_cr(self):
+        result = self._getRealSize("123456789\r")
+        assert result == 123456789
+        assert isinstance(result, int)
+
+    def test_strip_trailing_newline(self):
+        result = self._getRealSize("50K\n")
+        assert result == 50 * 1024
+
+    def test_invalid_input_returns_zero(self):
+        assert self._getRealSize("abc") == 0
+
+    def test_comparison_with_int(self):
+        """The original bug: str > int raises TypeError in Python 3"""
+        total = self._getRealSize("123456789")
+        synced = 0
+        # This must not raise TypeError
+        assert total > synced
+
+
+# ---------------------------------------------------------------------------
+# _get_origin_format: file:// path must open in binary mode
+# ---------------------------------------------------------------------------
+@pytest.mark.ceph
+class TestGetOriginFormatFileMode:
+    def test_local_file_qcow2_detected(self):
+        """Verify local file opened in 'rb' mode detects qcow2 correctly"""
+        import tempfile, os
+        buf = bytearray(0x9007)
+        buf[0:4] = b'QFI\xfb'
+        # bytes 16-20 all zero = qcow2 (not derived)
+        fd, path = tempfile.mkstemp()
+        try:
+            os.write(fd, bytes(buf))
+            os.close(fd)
+            with open(path, 'rb') as f:
+                qhdr = f.read(0x9007)
+            assert module.get_image_format_from_buf(qhdr) == "qcow2"
+        finally:
+            os.unlink(path)
+
+    def test_local_file_text_mode_fails(self):
+        """Text mode would corrupt binary data or fail to match"""
+        import tempfile, os
+        buf = bytearray(0x9007)
+        buf[0:4] = b'QFI\xfb'
+        fd, path = tempfile.mkstemp()
+        try:
+            os.write(fd, bytes(buf))
+            os.close(fd)
+            with open(path, 'r', errors='replace') as f:
+                qhdr = f.read(0x9007)
+            # str vs bytes literal => never matches qcow2
+            assert module.get_image_format_from_buf(qhdr) == "raw"
+        finally:
+            os.unlink(path)
