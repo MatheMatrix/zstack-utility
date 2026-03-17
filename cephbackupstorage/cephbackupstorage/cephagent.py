@@ -316,23 +316,23 @@ def get_image_format_from_header(ioctx, image_name):
     return get_image_format_from_buf(buf)
 
 
-def get_image_format_from_buf(qhdr):
-    if qhdr[:4] == 'QFI\xfb':
-        if qhdr[16:20] == '\x00\x00\x00\00':
+def get_image_format_from_buf(qhdr: bytes) -> str:
+    if qhdr[:4] == b'QFI\xfb':
+        if qhdr[16:20] == b'\x00\x00\x00\00':
             return "qcow2"
         else:
             return "derivedQcow2"
 
-    if qhdr[:5] == 'KDMV\x03':
+    if qhdr[:5] == b'KDMV\x03':
         return 'vmdk'
 
-    if qhdr[0x8001:0x8006] == 'CD001':
+    if qhdr[0x8001:0x8006] == b'CD001':
         return 'iso'
 
-    if qhdr[0x8801:0x8806] == 'CD001':
+    if qhdr[0x8801:0x8806] == b'CD001':
         return 'iso'
 
-    if qhdr[0x9001:0x9006] == 'CD001':
+    if qhdr[0x9001:0x9006] == b'CD001':
         return 'iso'
     return "raw"
 
@@ -975,7 +975,7 @@ class CephAgent(object):
                 if os.path.exists(tmp_file):
                     os.remove(tmp_file)
             else:
-                resp = open(path)
+                resp = open(path, 'rb')
                 qhdr = resp.read(qcow2_length)
                 resp.close()
             if len(qhdr) < qcow2_length:
@@ -998,23 +998,22 @@ class CephAgent(object):
         def _1():
             shell.check_run('rbd rm %s/%s' % (pool, tmp_image_name))
 
-        def _getRealSize(length):
+        def _getRealSize(length: str) -> int:
             '''length looks like: 10245K'''
             logger.debug(length)
+            length = length.strip()
             if not length[-1].isalpha():
-                return length
+                return int(length)
             units = {
                 "g": lambda x: x * 1024 * 1024 * 1024,
                 "m": lambda x: x * 1024 * 1024,
                 "k": lambda x: x * 1024,
             }
             try:
-                if not length[-1].isalpha():
-                    return length
                 return units[length[-1].lower()](int(length[:-1]))
             except:
                 logger.warn(linux.get_exception_stacktrace())
-                return length
+                return 0
 
         # whether we have an upload request
         if cmd.url.startswith(self.UPLOAD_PROTO):

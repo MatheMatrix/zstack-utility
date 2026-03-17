@@ -1247,19 +1247,19 @@ def qcow2_get_virtual_size(path):
         return struct.unpack('>Q', resp.read(8))[0]
 
 def qcow2_direct_get_backing_file(path):
-    o = shell.call('dd if=%s bs=4k count=1 iflag=direct' % path)
+    o = shell.call('dd if=%s bs=4k count=1 iflag=direct' % path, output_bytes=True)
     magic = o[:4]
-    if magic != 'QFI\xfb':
+    if magic != b'QFI\xfb':
         return ""
 
     # read backing file info from header
     backing_file_info = o[8:20]
-    backing_file_offset = struct.unpack('>Q', backing_file_info[:8].encode())[0]
+    backing_file_offset = struct.unpack('>Q', backing_file_info[:8])[0]
     if backing_file_offset == 0:
         return ""
 
-    backing_file_size = struct.unpack('>L', backing_file_info[8:].encode())[0]
-    return o[backing_file_offset:backing_file_offset+backing_file_size]
+    backing_file_size = struct.unpack('>L', backing_file_info[8:])[0]
+    return o[backing_file_offset:backing_file_offset+backing_file_size].decode()
 
 # Get derived file and all its backing files
 def qcow2_get_file_chain(path):

@@ -67,13 +67,17 @@ class ShellCmd(object):
         err.append('stderr: %s' % self.stderr)
         raise ShellError('\n'.join(err))
 
-    def __call__(self, is_exception=True, logcmd=True):
+    def __call__(self, is_exception=True, logcmd=True, output_bytes=False):
         if logcmd:
             log.get_logger(__name__).debug(self.cmd)
 
         (self.stdout, self.stderr) = self.process.communicate()
-        self.stdout = self.stdout.decode() if self.stdout else ''
-        self.stderr = self.stderr.decode() if self.stderr else ''
+        if not output_bytes:
+            self.stdout = self.stdout.decode() if self.stdout else ''
+            self.stderr = self.stderr.decode() if self.stderr else ''
+        else:
+            self.stdout = self.stdout if self.stdout else b''
+            self.stderr = self.stderr if self.stderr else b''
         if is_exception and self.process.returncode != 0:
             self.raise_error()
 
@@ -81,9 +85,8 @@ class ShellCmd(object):
         return self.stdout
 
 
-def call(cmd, exception=True, workdir=None):
-    # type: (str, bool, bool) -> str
-    return ShellCmd(cmd, workdir)(exception)
+def call(cmd, exception=True, workdir=None, output_bytes=False):
+    return ShellCmd(cmd, workdir)(exception, output_bytes=output_bytes)
 
 
 def run(cmd, workdir=None):
