@@ -1393,7 +1393,9 @@ class CbdHeartbeatController(AbstractStorageFencer):
 
 last_multipath_run = time.time()
 QEMU_VERSION = qemu.get_version()
-LIBVIRT_VERSION = linux.get_libvirt_version()
+@functools.lru_cache(maxsize=1)
+def get_libvirt_version():
+    return linux.get_libvirt_version()
 host_storage_name = "hostStorageState"
 LIVE_LIBVIRT_XML_DIR = "/var/run/libvirt/qemu"
 global_allow_fencer_rule = {} # type: dict[str, list]
@@ -1739,7 +1741,7 @@ def find_root_volume_with_bootindex_from_ps_output(cmdline, vm_uuid, is_file_sys
     if qemu_version == "":
         qemu_version = QEMU_VERSION
 
-    if LooseVersion(LIBVIRT_VERSION) >= LooseVersion("6.0.0") and LooseVersion(qemu_version) >= LooseVersion("4.2.0"):
+    if LooseVersion(get_libvirt_version()) >= LooseVersion("6.0.0") and LooseVersion(qemu_version) >= LooseVersion("4.2.0"):
         if is_file_system:
             root_volume_path = find_root_volume_with_bootindex_and_file_system_from_ps_output(cmdline)
         else:

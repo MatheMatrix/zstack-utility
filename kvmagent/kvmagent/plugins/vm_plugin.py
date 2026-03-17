@@ -3,6 +3,7 @@
 '''
 import contextlib
 import difflib
+import functools
 import os.path
 import glob
 import zlib
@@ -1427,13 +1428,19 @@ def compare_version(version1, version2):
 
 
 KERNEL_VERSION = platform.release()
-LIBVIRT_VERSION = linux.get_libvirt_version()
-LIBVIRT_MAJOR_VERSION = int(LIBVIRT_VERSION.split('.')[0])
+@functools.lru_cache(maxsize=1)
+def get_libvirt_version():
+    return linux.get_libvirt_version()
+
+
+@functools.lru_cache(maxsize=1)
+def get_libvirt_major_version():
+    return int(get_libvirt_version().split('.')[0])
 
 QEMU_VERSION = qemu.get_version()
 
 def is_namespace_used():
-    return compare_version(LIBVIRT_VERSION, '1.3.3') >= 0
+    return compare_version(get_libvirt_version(), '1.3.3') >= 0
 
 
 def is_hv_freq_supported():
@@ -1462,10 +1469,10 @@ def is_high_mmio_size_supported():
 
 @linux.with_arch(todo_list=['x86_64'])
 def is_ioapic_supported():
-    return compare_version(LIBVIRT_VERSION, '3.4.0') >= 0
+    return compare_version(get_libvirt_version(), '3.4.0') >= 0
 
 def user_specify_driver():
-    return LooseVersion(LIBVIRT_VERSION) >= LooseVersion("6.0.0")
+    return LooseVersion(get_libvirt_version()) >= LooseVersion("6.0.0")
 
 def file_type_support_block_device():
     return LooseVersion(QEMU_VERSION) < LooseVersion("6.0.0")
@@ -4249,7 +4256,7 @@ class Vm(object):
                 return True
 
         # to workaround libvirt bug (c.f. RHBZ#1494454)
-        if LIBVIRT_MAJOR_VERSION >= 4:
+        if get_libvirt_major_version() >= 4:
             if is_external_shared_storage():
                 flag |= libvirt.VIR_MIGRATE_UNSAFE
 
@@ -4593,7 +4600,7 @@ class Vm(object):
 
         xml = etree.tostring(cdrom, encoding="unicode")
 
-        if LIBVIRT_MAJOR_VERSION >= 4:
+        if get_libvirt_major_version() >= 4:
             addr = find_domain_cdrom_address(self.domain.XMLDesc(0), dev)
             ridx = xml.rindex('<')
             xml = xml[:ridx] + addr.dump() + xml[ridx:]
@@ -4651,7 +4658,7 @@ class Vm(object):
 
         xml = etree.tostring(cdrom, encoding="unicode")
 
-        if LIBVIRT_MAJOR_VERSION >= 4:
+        if get_libvirt_major_version() >= 4:
             addr = find_domain_cdrom_address(self.domain.XMLDesc(0), dev)
             ridx = xml.rindex('<')
             xml = xml[:ridx] + addr.dump() + xml[ridx:]
@@ -7168,7 +7175,7 @@ def get_vm_blocks(domain_id):
 def get_block_node_name_by_disk_name(domain_id, disk_name):
     all_blocks = get_vm_blocks(domain_id)
     block = [b for b in all_blocks if disk_name in b['qdev'].split("/")][0]
-    if LooseVersion(LIBVIRT_VERSION) < LooseVersion("6.0.0"):
+    if LooseVersion(get_libvirt_version()) < LooseVersion("6.0.0"):
         return block['device']
     return block["inserted"]['node-name']
 
@@ -9053,7 +9060,7 @@ class VmPlugin(kvmagent.KvmAgent):
         diskstr = ','.join(disks)
 
         flags = "--live --p2p --copy-storage-all --persistent"
-        if LIBVIRT_MAJOR_VERSION >= 4:
+        if get_libvirt_major_version() >= 4:
             if any(s.startswith('/dev/') for s in vm.list_blk_sources()):
                 flags += " --unsafe"
 

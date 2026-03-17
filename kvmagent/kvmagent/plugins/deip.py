@@ -1,3 +1,5 @@
+import functools
+
 from kvmagent import kvmagent
 from zstacklib.utils import http
 from zstacklib.utils import ip
@@ -14,8 +16,16 @@ from prometheus_client.core import GaugeMetricFamily
 import netaddr
 
 logger = log.get_logger(__name__)
-EBTABLES_CMD = ebtables.get_ebtables_cmd()
-IPTABLES_CMD = iptables.get_iptables_cmd()
+
+
+@functools.lru_cache(maxsize=1)
+def get_ebtables_cmd():
+    return ebtables.get_ebtables_cmd()
+
+
+@functools.lru_cache(maxsize=1)
+def get_iptables_cmd():
+    return iptables.get_iptables_cmd()
 IP6TABLES_CMD = iptables.get_ip6tables_cmd()
 
 
@@ -108,78 +118,78 @@ class Eip(object):
 
         @bash.in_bash
         def delete_arp_rules():
-            if bash_r(EBTABLES_CMD + ' -t nat -L {{CHAIN_NAME}} >/dev/null 2>&1') == 0:
+            if bash_r(get_ebtables_cmd() + ' -t nat -L {{CHAIN_NAME}} >/dev/null 2>&1') == 0:
                 RULE = "-i {{NIC_NAME}} -j {{CHAIN_NAME}}"
-                bash_r(EBTABLES_CMD + " -t nat -D PREROUTING {{RULE}}")
+                bash_r(get_ebtables_cmd() + " -t nat -D PREROUTING {{RULE}}")
                 RULE_ARP = "-p ARP -i {{NIC_NAME}} -j {{CHAIN_NAME}}"
-                bash_r(EBTABLES_CMD + " -t nat -D PREROUTING {{RULE_ARP}}")
+                bash_r(get_ebtables_cmd() + " -t nat -D PREROUTING {{RULE_ARP}}")
 
-                bash_errorout(EBTABLES_CMD + ' -t nat -F {{CHAIN_NAME}}')
-                bash_errorout(EBTABLES_CMD + ' -t nat -X {{CHAIN_NAME}}')
+                bash_errorout(get_ebtables_cmd() + ' -t nat -F {{CHAIN_NAME}}')
+                bash_errorout(get_ebtables_cmd() + ' -t nat -X {{CHAIN_NAME}}')
 
             PRI_ODEV_CHAIN = "eip-{{PRI_ODEV}}-gw"
-            if bash_r(EBTABLES_CMD + ' -t nat -L {{PRI_ODEV_CHAIN}} >/dev/null 2>&1') == 0:
+            if bash_r(get_ebtables_cmd() + ' -t nat -L {{PRI_ODEV_CHAIN}} >/dev/null 2>&1') == 0:
                 RULE = "-i {{PRI_ODEV}} -j {{PRI_ODEV_CHAIN}}"
-                bash_r(EBTABLES_CMD + " -t nat -D PREROUTING {{RULE}}")
+                bash_r(get_ebtables_cmd() + " -t nat -D PREROUTING {{RULE}}")
                 RULE_ARP = "-p ARP -i {{PRI_ODEV}} -j {{PRI_ODEV_CHAIN}}"
-                bash_r(EBTABLES_CMD + " -t nat -D PREROUTING {{RULE_ARP}}")
+                bash_r(get_ebtables_cmd() + " -t nat -D PREROUTING {{RULE_ARP}}")
 
-                bash_errorout(EBTABLES_CMD + ' -t nat -F {{PRI_ODEV_CHAIN}}')
-                bash_errorout(EBTABLES_CMD + ' -t nat -X {{PRI_ODEV_CHAIN}}')
+                bash_errorout(get_ebtables_cmd() + ' -t nat -F {{PRI_ODEV_CHAIN}}')
+                bash_errorout(get_ebtables_cmd() + ' -t nat -X {{PRI_ODEV_CHAIN}}')
 
             for BLOCK_DEV in [PRI_ODEV, PUB_ODEV, NIC_NAME]:
                 BLOCK_CHAIN_NAME = 'eip-{{BLOCK_DEV}}-arp'
 
-                if bash_r(EBTABLES_CMD + ' -t nat -L {{BLOCK_CHAIN_NAME}} > /dev/null 2>&1') == 0:
+                if bash_r(get_ebtables_cmd() + ' -t nat -L {{BLOCK_CHAIN_NAME}} > /dev/null 2>&1') == 0:
                     RULE = '-p ARP -o {{BLOCK_DEV}} -j {{BLOCK_CHAIN_NAME}}'
-                    if bash_r(EBTABLES_CMD + " -t nat -L POSTROUTING | grep -- '{{RULE}}' > /dev/null") == 0:
-                        bash_errorout(EBTABLES_CMD + ' -t nat -D POSTROUTING {{RULE}}')
+                    if bash_r(get_ebtables_cmd() + " -t nat -L POSTROUTING | grep -- '{{RULE}}' > /dev/null") == 0:
+                        bash_errorout(get_ebtables_cmd() + ' -t nat -D POSTROUTING {{RULE}}')
 
-                    bash_errorout(EBTABLES_CMD + ' -t nat -F {{BLOCK_CHAIN_NAME}}')
-                    bash_errorout(EBTABLES_CMD + ' -t nat -X {{BLOCK_CHAIN_NAME}}')
+                    bash_errorout(get_ebtables_cmd() + ' -t nat -F {{BLOCK_CHAIN_NAME}}')
+                    bash_errorout(get_ebtables_cmd() + ' -t nat -X {{BLOCK_CHAIN_NAME}}')
 
             # cleanup legacy chain names (without eip- prefix)
             OLD_CHAIN_NAME = '{{NIC_NAME}}-gw'
-            if bash_r(EBTABLES_CMD + ' -t nat -L {{OLD_CHAIN_NAME}} >/dev/null 2>&1') == 0:
+            if bash_r(get_ebtables_cmd() + ' -t nat -L {{OLD_CHAIN_NAME}} >/dev/null 2>&1') == 0:
                 OLD_RULE = "-i {{NIC_NAME}} -j {{OLD_CHAIN_NAME}}"
-                if bash_r(EBTABLES_CMD + " -t nat -L PREROUTING | grep -- '{{OLD_RULE}}' > /dev/null") == 0:
-                    bash_r(EBTABLES_CMD + ' -t nat -D PREROUTING {{OLD_RULE}}')
-                bash_r(EBTABLES_CMD + ' -t nat -F {{OLD_CHAIN_NAME}}')
-                bash_r(EBTABLES_CMD + ' -t nat -X {{OLD_CHAIN_NAME}}')
+                if bash_r(get_ebtables_cmd() + " -t nat -L PREROUTING | grep -- '{{OLD_RULE}}' > /dev/null") == 0:
+                    bash_r(get_ebtables_cmd() + ' -t nat -D PREROUTING {{OLD_RULE}}')
+                bash_r(get_ebtables_cmd() + ' -t nat -F {{OLD_CHAIN_NAME}}')
+                bash_r(get_ebtables_cmd() + ' -t nat -X {{OLD_CHAIN_NAME}}')
 
             OLD_PRI_ODEV_CHAIN = "{{PRI_ODEV}}-gw"
-            if bash_r(EBTABLES_CMD + ' -t nat -L {{OLD_PRI_ODEV_CHAIN}} >/dev/null 2>&1') == 0:
+            if bash_r(get_ebtables_cmd() + ' -t nat -L {{OLD_PRI_ODEV_CHAIN}} >/dev/null 2>&1') == 0:
                 OLD_RULE = "-i {{PRI_ODEV}} -j {{OLD_PRI_ODEV_CHAIN}}"
-                if bash_r(EBTABLES_CMD + " -t nat -L PREROUTING | grep -- '{{OLD_RULE}}' > /dev/null") == 0:
-                    bash_r(EBTABLES_CMD + ' -t nat -D PREROUTING {{OLD_RULE}}')
-                bash_r(EBTABLES_CMD + ' -t nat -F {{OLD_PRI_ODEV_CHAIN}}')
-                bash_r(EBTABLES_CMD + ' -t nat -X {{OLD_PRI_ODEV_CHAIN}}')
+                if bash_r(get_ebtables_cmd() + " -t nat -L PREROUTING | grep -- '{{OLD_RULE}}' > /dev/null") == 0:
+                    bash_r(get_ebtables_cmd() + ' -t nat -D PREROUTING {{OLD_RULE}}')
+                bash_r(get_ebtables_cmd() + ' -t nat -F {{OLD_PRI_ODEV_CHAIN}}')
+                bash_r(get_ebtables_cmd() + ' -t nat -X {{OLD_PRI_ODEV_CHAIN}}')
 
             for BLOCK_DEV in [PRI_ODEV, PUB_ODEV, NIC_NAME]:
                 OLD_BLOCK_CHAIN = '{{BLOCK_DEV}}-arp'
-                if bash_r(EBTABLES_CMD + ' -t nat -L {{OLD_BLOCK_CHAIN}} > /dev/null 2>&1') == 0:
+                if bash_r(get_ebtables_cmd() + ' -t nat -L {{OLD_BLOCK_CHAIN}} > /dev/null 2>&1') == 0:
                     OLD_RULE = '-p ARP -o {{BLOCK_DEV}} -j {{OLD_BLOCK_CHAIN}}'
-                    if bash_r(EBTABLES_CMD + " -t nat -L POSTROUTING | grep -- '{{OLD_RULE}}' > /dev/null") == 0:
-                        bash_r(EBTABLES_CMD + ' -t nat -D POSTROUTING {{OLD_RULE}}')
-                    bash_r(EBTABLES_CMD + ' -t nat -F {{OLD_BLOCK_CHAIN}}')
-                    bash_r(EBTABLES_CMD + ' -t nat -X {{OLD_BLOCK_CHAIN}}')
+                    if bash_r(get_ebtables_cmd() + " -t nat -L POSTROUTING | grep -- '{{OLD_RULE}}' > /dev/null") == 0:
+                        bash_r(get_ebtables_cmd() + ' -t nat -D POSTROUTING {{OLD_RULE}}')
+                    bash_r(get_ebtables_cmd() + ' -t nat -F {{OLD_BLOCK_CHAIN}}')
+                    bash_r(get_ebtables_cmd() + ' -t nat -X {{OLD_BLOCK_CHAIN}}')
 
         @bash.in_bash
         def delete_ipv6_rules():
-            if bash_r(EBTABLES_CMD + ' -t nat -L {{CHAIN_NAME}} >/dev/null 2>&1') == 0:
+            if bash_r(get_ebtables_cmd() + ' -t nat -L {{CHAIN_NAME}} >/dev/null 2>&1') == 0:
                 RULE = "-i {{NIC_NAME}} -j {{CHAIN_NAME}}"
-                bash_r(EBTABLES_CMD + ' -t nat -D PREROUTING {{RULE}}')
+                bash_r(get_ebtables_cmd() + ' -t nat -D PREROUTING {{RULE}}')
 
-                bash_errorout(EBTABLES_CMD + ' -t nat -F {{CHAIN_NAME}}')
-                bash_errorout(EBTABLES_CMD + ' -t nat -X {{CHAIN_NAME}}')
+                bash_errorout(get_ebtables_cmd() + ' -t nat -F {{CHAIN_NAME}}')
+                bash_errorout(get_ebtables_cmd() + ' -t nat -X {{CHAIN_NAME}}')
             # cleanup legacy chain name (without eip- prefix)
             OLD_CHAIN_NAME = '{{NIC_NAME}}-gw'
-            if bash_r(EBTABLES_CMD + ' -t nat -L {{OLD_CHAIN_NAME}} >/dev/null 2>&1') == 0:
+            if bash_r(get_ebtables_cmd() + ' -t nat -L {{OLD_CHAIN_NAME}} >/dev/null 2>&1') == 0:
                 OLD_RULE = "-i {{NIC_NAME}} -j {{OLD_CHAIN_NAME}}"
-                if bash_r(EBTABLES_CMD + " -t nat -L PREROUTING | grep -- '{{OLD_RULE}}' > /dev/null") == 0:
-                    bash_r(EBTABLES_CMD + ' -t nat -D PREROUTING {{OLD_RULE}}')
-                bash_r(EBTABLES_CMD + ' -t nat -F {{OLD_CHAIN_NAME}}')
-                bash_r(EBTABLES_CMD + ' -t nat -X {{OLD_CHAIN_NAME}}')
+                if bash_r(get_ebtables_cmd() + " -t nat -L PREROUTING | grep -- '{{OLD_RULE}}' > /dev/null") == 0:
+                    bash_r(get_ebtables_cmd() + ' -t nat -D PREROUTING {{OLD_RULE}}')
+                bash_r(get_ebtables_cmd() + ' -t nat -F {{OLD_CHAIN_NAME}}')
+                bash_r(get_ebtables_cmd() + ' -t nat -X {{OLD_CHAIN_NAME}}')
 
         delete_namespace()
         delete_outer_dev()
@@ -326,55 +336,55 @@ class Eip(object):
 
         @bash.in_bash
         def create_ebtable_rule_if_needed(table, chain, rule, at_head=False):
-            if bash_r(EBTABLES_CMD + " -t {{table}} -L {{chain}} | grep -- '{{rule}}' > /dev/null") != 0:
+            if bash_r(get_ebtables_cmd() + " -t {{table}} -L {{chain}} | grep -- '{{rule}}' > /dev/null") != 0:
                 if at_head:
-                    bash_errorout(EBTABLES_CMD + ' -t {{table}} -I {{chain}} {{rule}}')
+                    bash_errorout(get_ebtables_cmd() + ' -t {{table}} -I {{chain}} {{rule}}')
                 else:
-                    bash_errorout(EBTABLES_CMD + ' -t {{table}} -A {{chain}} {{rule}}')
+                    bash_errorout(get_ebtables_cmd() + ' -t {{table}} -A {{chain}} {{rule}}')
 
         @bash.in_bash
         def ensure_ebtable_rule_at_head(table, chain, rule):
-            if bash_r(EBTABLES_CMD + " -t {{table}} -L {{chain}} | grep -- '{{rule}}' > /dev/null") == 0:
-                bash_errorout(EBTABLES_CMD + " -t {{table}} -D {{chain}} {{rule}}")
-            bash_errorout(EBTABLES_CMD + ' -t {{table}} -I {{chain}} {{rule}}')
+            if bash_r(get_ebtables_cmd() + " -t {{table}} -L {{chain}} | grep -- '{{rule}}' > /dev/null") == 0:
+                bash_errorout(get_ebtables_cmd() + " -t {{table}} -D {{chain}} {{rule}}")
+            bash_errorout(get_ebtables_cmd() + ' -t {{table}} -I {{chain}} {{rule}}')
 
         @bash.in_bash
         def delete_ebtables_chain_if_exists(table, chain):
             """Delete a legacy ebtables chain: remove jump rules from built-in chains, flush and delete."""
-            if bash_r(EBTABLES_CMD + ' -t {{table}} -L {{chain}} > /dev/null 2>&1') != 0:
+            if bash_r(get_ebtables_cmd() + ' -t {{table}} -L {{chain}} > /dev/null 2>&1') != 0:
                 return
             # remove jump rules from PREROUTING
-            RULE = bash_o(EBTABLES_CMD + " -t {{table}} -L PREROUTING --Lx 2>/dev/null | grep -F -- '-j {{chain}}'").strip()
+            RULE = bash_o(get_ebtables_cmd() + " -t {{table}} -L PREROUTING --Lx 2>/dev/null | grep -F -- '-j {{chain}}'").strip()
             if RULE:
                 for line in RULE.splitlines():
                     line = line.strip()
                     if line:
                         # line is like: -A PREROUTING ... -j chain
                         rule_part = line.replace('-A PREROUTING ', '', 1)
-                        bash_r(EBTABLES_CMD + ' -t {{table}} -D PREROUTING ' + rule_part)
+                        bash_r(get_ebtables_cmd() + ' -t {{table}} -D PREROUTING ' + rule_part)
             # remove jump rules from POSTROUTING
-            RULE = bash_o(EBTABLES_CMD + " -t {{table}} -L POSTROUTING --Lx 2>/dev/null | grep -F -- '-j {{chain}}'").strip()
+            RULE = bash_o(get_ebtables_cmd() + " -t {{table}} -L POSTROUTING --Lx 2>/dev/null | grep -F -- '-j {{chain}}'").strip()
             if RULE:
                 for line in RULE.splitlines():
                     line = line.strip()
                     if line:
                         rule_part = line.replace('-A POSTROUTING ', '', 1)
-                        bash_r(EBTABLES_CMD + ' -t {{table}} -D POSTROUTING ' + rule_part)
-            bash_r(EBTABLES_CMD + ' -t {{table}} -F {{chain}}')
-            bash_r(EBTABLES_CMD + ' -t {{table}} -X {{chain}}')
+                        bash_r(get_ebtables_cmd() + ' -t {{table}} -D POSTROUTING ' + rule_part)
+            bash_r(get_ebtables_cmd() + ' -t {{table}} -F {{chain}}')
+            bash_r(get_ebtables_cmd() + ' -t {{table}} -X {{chain}}')
 
         @bash.in_bash
         def set_eip_rules():
             DNAT_NAME = "DNAT-{{VIP}}"
             if bash_r('eval {{NS}} iptables-save | grep -w ":{{DNAT_NAME}}" > /dev/null') != 0:
-                bash_errorout('eval {{NS}} %s -t nat -N {{DNAT_NAME}}' % IPTABLES_CMD)
+                bash_errorout('eval {{NS}} %s -t nat -N {{DNAT_NAME}}' % get_iptables_cmd())
 
             create_iptable_rule_if_needed("iptables", "-t nat", 'PREROUTING -d {{VIP}}/32 -j {{DNAT_NAME}}')
             create_iptable_rule_if_needed("iptables", "-t nat", '{{DNAT_NAME}} -j DNAT --to-destination {{NIC_IP}}')
 
             FWD_NAME = "FWD-{{VIP}}"
             if bash_r('eval {{NS}} iptables-save | grep -w ":{{FWD_NAME}}" > /dev/null') != 0:
-                bash_errorout('eval {{NS}} %s -N {{FWD_NAME}}' % IPTABLES_CMD)
+                bash_errorout('eval {{NS}} %s -N {{FWD_NAME}}' % get_iptables_cmd())
 
             create_iptable_rule_if_needed("iptables", "-t filter", "FORWARD ! -d {{NIC_IP}}/32 -i {{PUB_IDEV}} -j REJECT --reject-with icmp-port-unreachable")
             create_iptable_rule_if_needed("iptables", "-t filter", "FORWARD -i {{PRI_IDEV}} -o {{PUB_IDEV}} -j {{FWD_NAME}}")
@@ -383,7 +393,7 @@ class Eip(object):
 
             SNAT_NAME = "SNAT-{{VIP}}"
             if bash_r('eval {{NS}} iptables-save | grep -w ":{{SNAT_NAME}}" > /dev/null ') != 0:
-                bash_errorout('eval {{NS}} %s -t nat -N {{SNAT_NAME}}' % IPTABLES_CMD)
+                bash_errorout('eval {{NS}} %s -t nat -N {{SNAT_NAME}}' % get_iptables_cmd())
 
             create_iptable_rule_if_needed("iptables", "-t nat", "POSTROUTING -s {{NIC_IP}}/32 -j {{SNAT_NAME}}")
             create_iptable_rule_if_needed("iptables", "-t nat", "{{SNAT_NAME}} -j SNAT --to-source {{VIP}}")
@@ -422,9 +432,9 @@ class Eip(object):
         def set_gateway_arp_if_needed():
             CHAIN_NAME = "eip-{{NIC_NAME}}-gw"
 
-            if bash_r(EBTABLES_CMD + ' -t nat -L {{CHAIN_NAME}} > /dev/null 2>&1') != 0:
-                bash_errorout(EBTABLES_CMD + ' -t nat -N {{CHAIN_NAME}}')
-            bash_errorout(EBTABLES_CMD + ' -t nat -P {{CHAIN_NAME}} RETURN')
+            if bash_r(get_ebtables_cmd() + ' -t nat -L {{CHAIN_NAME}} > /dev/null 2>&1') != 0:
+                bash_errorout(get_ebtables_cmd() + ' -t nat -N {{CHAIN_NAME}}')
+            bash_errorout(get_ebtables_cmd() + ' -t nat -P {{CHAIN_NAME}} RETURN')
 
             ensure_ebtable_rule_at_head('nat', 'PREROUTING', '-p ARP -i {{NIC_NAME}} -j {{CHAIN_NAME}}')
             GATEWAY_MAC = bash_o("eval {{NS}} ip link show {{PRI_IDEV}} | awk '/link\/ether/{print $2}'").strip()
@@ -436,17 +446,17 @@ class Eip(object):
 
             for BLOCK_DEV in [PRI_ODEV, PUB_ODEV]:
                 BLOCK_CHAIN_NAME = 'eip-{{BLOCK_DEV}}-arp'
-                if bash_r(EBTABLES_CMD + ' -t nat -L {{BLOCK_CHAIN_NAME}} > /dev/null 2>&1') != 0:
-                    bash_errorout(EBTABLES_CMD + ' -t nat -N {{BLOCK_CHAIN_NAME}}')
-                bash_errorout(EBTABLES_CMD + ' -t nat -P {{BLOCK_CHAIN_NAME}} RETURN')
+                if bash_r(get_ebtables_cmd() + ' -t nat -L {{BLOCK_CHAIN_NAME}} > /dev/null 2>&1') != 0:
+                    bash_errorout(get_ebtables_cmd() + ' -t nat -N {{BLOCK_CHAIN_NAME}}')
+                bash_errorout(get_ebtables_cmd() + ' -t nat -P {{BLOCK_CHAIN_NAME}} RETURN')
 
                 ensure_ebtable_rule_at_head('nat', 'POSTROUTING', "-p ARP -o {{BLOCK_DEV}} -j {{BLOCK_CHAIN_NAME}}")
                 create_ebtable_rule_if_needed('nat', BLOCK_CHAIN_NAME, "-p ARP -o {{BLOCK_DEV}} --arp-op Request --arp-ip-dst {{NIC_GATEWAY}} --arp-mac-src ! {{NIC_MAC_IN_EBTALES}} -j DROP")
 
             BLOCK_CHAIN_NAME = 'eip-{{NIC_NAME}}-arp'
-            if bash_r(EBTABLES_CMD + ' -t nat -L {{BLOCK_CHAIN_NAME}} > /dev/null 2>&1') != 0:
-                bash_errorout(EBTABLES_CMD + ' -t nat -N {{BLOCK_CHAIN_NAME}}')
-            bash_errorout(EBTABLES_CMD + ' -t nat -P {{BLOCK_CHAIN_NAME}} RETURN')
+            if bash_r(get_ebtables_cmd() + ' -t nat -L {{BLOCK_CHAIN_NAME}} > /dev/null 2>&1') != 0:
+                bash_errorout(get_ebtables_cmd() + ' -t nat -N {{BLOCK_CHAIN_NAME}}')
+            bash_errorout(get_ebtables_cmd() + ' -t nat -P {{BLOCK_CHAIN_NAME}} RETURN')
 
             ensure_ebtable_rule_at_head('nat', 'POSTROUTING', "-p ARP -o {{NIC_NAME}} -j {{BLOCK_CHAIN_NAME}}")
             create_ebtable_rule_if_needed('nat', BLOCK_CHAIN_NAME,
@@ -464,9 +474,9 @@ class Eip(object):
         def set_gateway_arp_if_needed_v6():
             CHAIN_NAME = "eip-{{NIC_NAME}}-gw"
 
-            if bash_r(EBTABLES_CMD + ' -t nat -L {{CHAIN_NAME}} > /dev/null 2>&1') != 0:
-                bash_errorout(EBTABLES_CMD + ' -t nat -N {{CHAIN_NAME}}')
-            bash_errorout(EBTABLES_CMD + ' -t nat -P {{CHAIN_NAME}} RETURN')
+            if bash_r(get_ebtables_cmd() + ' -t nat -L {{CHAIN_NAME}} > /dev/null 2>&1') != 0:
+                bash_errorout(get_ebtables_cmd() + ' -t nat -N {{CHAIN_NAME}}')
+            bash_errorout(get_ebtables_cmd() + ' -t nat -P {{CHAIN_NAME}} RETURN')
 
             ensure_ebtable_rule_at_head('nat', 'PREROUTING', '-i {{NIC_NAME}} -j {{CHAIN_NAME}}')
             GATEWAY_MAC = bash_o("eval {{NS}} ip link show {{PRI_IDEV}} | awk '/link\/ether/{print $2}'").strip()
@@ -509,7 +519,7 @@ class Eip(object):
                 raise Exception("cannot find CIDR of vnic ip[%s] in namespace %s" % (NIC_IP, NS_NAME))
 
             CHAIN_NAME = "vip-perf"
-            bash_r("eval {{NS}} %s -N {{CHAIN_NAME}} > /dev/null" % IPTABLES_CMD)
+            bash_r("eval {{NS}} %s -N {{CHAIN_NAME}} > /dev/null" % get_iptables_cmd())
             create_iptable_rule_if_needed("iptables", "-t filter", "FORWARD -s {{NIC_IP}}/32 ! -d {{cidr}} -j {{CHAIN_NAME}}", True)
             create_iptable_rule_if_needed("iptables", "-t filter", "FORWARD ! -s {{cidr}} -d {{NIC_IP}}/32 -j {{CHAIN_NAME}}", True)
             create_iptable_rule_if_needed("iptables", "-t filter", "{{CHAIN_NAME}} -s {{NIC_IP}}/32 -j RETURN")
@@ -548,9 +558,9 @@ class Eip(object):
             # add ebtales to prevent eip namaespace send arp request
             PRI_ODEV_CHAIN = "eip-{{PRI_ODEV}}-gw"
 
-            if bash_r(EBTABLES_CMD + ' -t nat -L {{PRI_ODEV_CHAIN}} > /dev/null 2>&1') != 0:
-                bash_errorout(EBTABLES_CMD + ' -t nat -N {{PRI_ODEV_CHAIN}}')
-            bash_errorout(EBTABLES_CMD + ' -t nat -P {{PRI_ODEV_CHAIN}} RETURN')
+            if bash_r(get_ebtables_cmd() + ' -t nat -L {{PRI_ODEV_CHAIN}} > /dev/null 2>&1') != 0:
+                bash_errorout(get_ebtables_cmd() + ' -t nat -N {{PRI_ODEV_CHAIN}}')
+            bash_errorout(get_ebtables_cmd() + ' -t nat -P {{PRI_ODEV_CHAIN}} RETURN')
 
             create_ebtable_rule_if_needed('nat', 'PREROUTING', '-p ARP -i {{PRI_ODEV}} -j {{PRI_ODEV_CHAIN}}')
             create_ebtable_rule_if_needed('nat', PRI_ODEV_CHAIN,

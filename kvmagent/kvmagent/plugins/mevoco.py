@@ -1,5 +1,7 @@
 __author__ = 'frank'
 
+import functools
+
 from kvmagent import kvmagent
 from kvmagent.plugins import network_plugin
 from zstacklib.utils import jsonobject
@@ -29,8 +31,18 @@ import platform
 from zstacklib.utils.ovs import OvsError
 
 logger = log.get_logger(__name__)
-EBTABLES_CMD = ebtables.get_ebtables_cmd()
-IPTABLES_CMD = iptables.get_iptables_cmd()
+
+
+@functools.lru_cache(maxsize=1)
+def get_ebtables_cmd():
+    return ebtables.get_ebtables_cmd()
+
+
+@functools.lru_cache(maxsize=1)
+def get_iptables_cmd():
+    return iptables.get_iptables_cmd()
+
+
 IP6TABLES_CMD = iptables.get_ip6tables_cmd()
 HOST_ARCH = platform.machine()
 
@@ -115,50 +127,50 @@ class NamespaceInfraEnv(object):
         CHAIN_NAME = "USERDATA-%s" % BR_NAME
         EBCHAIN_NAME = get_ebtables_userdata_chain_name(BR_NAME, l3_network_uuid)
 
-        ret = bash_r(EBTABLES_CMD + ' -t nat -L {{EBCHAIN_NAME}} >/dev/null 2>&1')
+        ret = bash_r(get_ebtables_cmd() + ' -t nat -L {{EBCHAIN_NAME}} >/dev/null 2>&1')
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -t nat -N {{EBCHAIN_NAME}}')
+            bash_errorout(get_ebtables_cmd() + ' -t nat -N {{EBCHAIN_NAME}}')
 
-        if bash_r(EBTABLES_CMD + " -t nat -L PREROUTING | grep -- '--logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}'") != 0:
-            bash_errorout(EBTABLES_CMD + ' -t nat -I PREROUTING --logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}')
+        if bash_r(get_ebtables_cmd() + " -t nat -L PREROUTING | grep -- '--logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}'") != 0:
+            bash_errorout(get_ebtables_cmd() + ' -t nat -I PREROUTING --logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}')
 
         # ebtables has a bug that will eliminate 0 in MAC, for example, aa:bb:0c will become aa:bb:c
         macAddr = ip.removeZeroFromMacAddress(MAC)
         RULE = "-p IPv4 --ip-src %s --ip-dst 169.254.169.254 -j dnat --to-dst %s --dnat-target ACCEPT" % (CIDR, macAddr)
-        ret = bash_r(EBTABLES_CMD + " -t nat -L {{EBCHAIN_NAME}} | grep -- '{{RULE}}' > /dev/null")
+        ret = bash_r(get_ebtables_cmd() + " -t nat -L {{EBCHAIN_NAME}} | grep -- '{{RULE}}' > /dev/null")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -t nat -I {{EBCHAIN_NAME}} {{RULE}}')
+            bash_errorout(get_ebtables_cmd() + ' -t nat -I {{EBCHAIN_NAME}} {{RULE}}')
 
         ret = bash_r(
-            EBTABLES_CMD + " -t nat -L {{EBCHAIN_NAME}} | grep -- '--arp-ip-dst %s' > /dev/null" % self.CONNECT_ALL_NETNS_BR_OUTER_IP)
+            get_ebtables_cmd() + " -t nat -L {{EBCHAIN_NAME}} | grep -- '--arp-ip-dst %s' > /dev/null" % self.CONNECT_ALL_NETNS_BR_OUTER_IP)
         if ret != 0:
             bash_errorout(
-                EBTABLES_CMD + ' -t nat -I {{EBCHAIN_NAME}}  -p arp  --arp-ip-dst %s -j DROP' % self.CONNECT_ALL_NETNS_BR_OUTER_IP)
+                get_ebtables_cmd() + ' -t nat -I {{EBCHAIN_NAME}}  -p arp  --arp-ip-dst %s -j DROP' % self.CONNECT_ALL_NETNS_BR_OUTER_IP)
 
-        ret = bash_r(EBTABLES_CMD + " -t nat -L {{EBCHAIN_NAME}} | grep -- '-j RETURN' > /dev/null")
+        ret = bash_r(get_ebtables_cmd() + " -t nat -L {{EBCHAIN_NAME}} | grep -- '-j RETURN' > /dev/null")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -t nat -A {{EBCHAIN_NAME}} -j RETURN')
+            bash_errorout(get_ebtables_cmd() + ' -t nat -A {{EBCHAIN_NAME}} -j RETURN')
 
-        ret = bash_r(EBTABLES_CMD + ' -L {{EBCHAIN_NAME}} >/dev/null 2>&1')
+        ret = bash_r(get_ebtables_cmd() + ' -L {{EBCHAIN_NAME}} >/dev/null 2>&1')
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -N {{EBCHAIN_NAME}}')
+            bash_errorout(get_ebtables_cmd() + ' -N {{EBCHAIN_NAME}}')
 
         ret = bash_r(
-            EBTABLES_CMD + " -L FORWARD | grep -- '-p ARP --arp-ip-dst 169.254.169.254 -j {{EBCHAIN_NAME}}' > /dev/null")
+            get_ebtables_cmd() + " -L FORWARD | grep -- '-p ARP --arp-ip-dst 169.254.169.254 -j {{EBCHAIN_NAME}}' > /dev/null")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -I FORWARD -p ARP --arp-ip-dst 169.254.169.254 -j {{EBCHAIN_NAME}}')
+            bash_errorout(get_ebtables_cmd() + ' -I FORWARD -p ARP --arp-ip-dst 169.254.169.254 -j {{EBCHAIN_NAME}}')
 
-        ret = bash_r(EBTABLES_CMD + " -L {{EBCHAIN_NAME}} | grep -- '-i {{ETH_NAME}} -j DROP' > /dev/null")
+        ret = bash_r(get_ebtables_cmd() + " -L {{EBCHAIN_NAME}} | grep -- '-i {{ETH_NAME}} -j DROP' > /dev/null")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -I {{EBCHAIN_NAME}} -i {{ETH_NAME}} -j DROP')
+            bash_errorout(get_ebtables_cmd() + ' -I {{EBCHAIN_NAME}} -i {{ETH_NAME}} -j DROP')
 
-        ret = bash_r(EBTABLES_CMD + " -L {{EBCHAIN_NAME}} | grep -- '-o {{ETH_NAME}} -j DROP' > /dev/null")
+        ret = bash_r(get_ebtables_cmd() + " -L {{EBCHAIN_NAME}} | grep -- '-o {{ETH_NAME}} -j DROP' > /dev/null")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -I {{EBCHAIN_NAME}} -o {{ETH_NAME}} -j DROP')
+            bash_errorout(get_ebtables_cmd() + ' -I {{EBCHAIN_NAME}} -o {{ETH_NAME}} -j DROP')
 
         ret = bash_r("ebtables-save | grep '\-A {{EBCHAIN_NAME}} -j RETURN'")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -A {{EBCHAIN_NAME}} -j RETURN')
+            bash_errorout(get_ebtables_cmd() + ' -A {{EBCHAIN_NAME}} -j RETURN')
 
     @lock.lock('namespace_infra_env')
     @lock.file_lock('/run/xtables.lock')
@@ -174,12 +186,12 @@ class NamespaceInfraEnv(object):
             for l in o.split("\n"):
                 # we don't distinguish if the rule is in filter table or nat table
                 # but try both. The wrong table will silently fail
-                cmds.append(EBTABLES_CMD + " -t filter %s" % l.replace("-A", "-D"))
-                cmds.append(EBTABLES_CMD + " -t nat %s" % l.replace("-A", "-D"))
+                cmds.append(get_ebtables_cmd() + " -t filter %s" % l.replace("-A", "-D"))
+                cmds.append(get_ebtables_cmd() + " -t nat %s" % l.replace("-A", "-D"))
 
         if bash_r("ebtables-save | grep :{{CHAIN_NAME}}") == 0:
-            cmds.append(EBTABLES_CMD + " -t filter -X %s" % CHAIN_NAME)
-            cmds.append(EBTABLES_CMD + " -t nat -X %s" % CHAIN_NAME)
+            cmds.append(get_ebtables_cmd() + " -t filter -X %s" % CHAIN_NAME)
+            cmds.append(get_ebtables_cmd() + " -t nat -X %s" % CHAIN_NAME)
 
         if len(cmds) > 0:
             bash_r("\n".join(cmds))
@@ -438,53 +450,53 @@ class DhcpNameSpaceEnv(object):
     @staticmethod
     @in_bash
     def _prepare_dhcp4_iptables():
-        ret = bash_r(EBTABLES_CMD + ' -L {{CHAIN_NAME}} > /dev/null 2>&1')
+        ret = bash_r(get_ebtables_cmd() + ' -L {{CHAIN_NAME}} > /dev/null 2>&1')
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -N {{CHAIN_NAME}}')
+            bash_errorout(get_ebtables_cmd() + ' -N {{CHAIN_NAME}}')
 
-        ret = bash_r(EBTABLES_CMD + " -L FORWARD | grep -- '-j {{CHAIN_NAME}}' > /dev/null")
+        ret = bash_r(get_ebtables_cmd() + " -L FORWARD | grep -- '-j {{CHAIN_NAME}}' > /dev/null")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -A FORWARD -j {{CHAIN_NAME}}')
-
-        ret = bash_r(
-            EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '-p ARP -o {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP' > /dev/null")
-        if ret != 0:
-            bash_errorout(
-                EBTABLES_CMD + ' -I {{CHAIN_NAME}} -p ARP -o {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP')
+            bash_errorout(get_ebtables_cmd() + ' -A FORWARD -j {{CHAIN_NAME}}')
 
         ret = bash_r(
-            EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '-p ARP -i {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP' > /dev/null")
+            get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '-p ARP -o {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP' > /dev/null")
         if ret != 0:
             bash_errorout(
-                EBTABLES_CMD + ' -I {{CHAIN_NAME}} -p ARP -i {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP')
+                get_ebtables_cmd() + ' -I {{CHAIN_NAME}} -p ARP -o {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP')
 
         ret = bash_r(
-            EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '-p ARP -o {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP' > /dev/null")
+            get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '-p ARP -i {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP' > /dev/null")
         if ret != 0:
             bash_errorout(
-                EBTABLES_CMD + ' -I {{CHAIN_NAME}} -p ARP -o {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP')
+                get_ebtables_cmd() + ' -I {{CHAIN_NAME}} -p ARP -i {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP')
 
         ret = bash_r(
-            EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '-p ARP -i {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP' > /dev/null")
+            get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '-p ARP -o {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP' > /dev/null")
         if ret != 0:
             bash_errorout(
-                EBTABLES_CMD + ' -I {{CHAIN_NAME}} -p ARP -i {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP')
+                get_ebtables_cmd() + ' -I {{CHAIN_NAME}} -p ARP -o {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP')
 
         ret = bash_r(
-            EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '-p IPv4 -o {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP' > /dev/null")
+            get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '-p ARP -i {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP' > /dev/null")
         if ret != 0:
             bash_errorout(
-                EBTABLES_CMD + ' -I {{CHAIN_NAME}} -p IPv4 -o {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP')
+                get_ebtables_cmd() + ' -I {{CHAIN_NAME}} -p ARP -i {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP')
 
         ret = bash_r(
-            EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '-p IPv4 -i {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP' > /dev/null")
+            get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '-p IPv4 -o {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP' > /dev/null")
         if ret != 0:
             bash_errorout(
-                EBTABLES_CMD + ' -I {{CHAIN_NAME}} -p IPv4 -i {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP')
+                get_ebtables_cmd() + ' -I {{CHAIN_NAME}} -p IPv4 -o {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP')
+
+        ret = bash_r(
+            get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '-p IPv4 -i {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP' > /dev/null")
+        if ret != 0:
+            bash_errorout(
+                get_ebtables_cmd() + ' -I {{CHAIN_NAME}} -p IPv4 -i {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP')
 
         ret = bash_r("ebtables-save | grep -- '-A {{CHAIN_NAME}} -j RETURN'")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -A {{CHAIN_NAME}} -j RETURN')
+            bash_errorout(get_ebtables_cmd() + ' -A {{CHAIN_NAME}} -j RETURN')
 
         # Note(WeiW): fix dhcp checksum, see more at #982
         if HOST_ARCH == 'mips64el':
@@ -492,7 +504,7 @@ class DhcpNameSpaceEnv(object):
         ret = bash_r("iptables-save | grep -- '-p udp -m udp --dport 68 -j CHECKSUM --checksum-fill'")
         if ret != 0:
             bash_errorout(
-                '%s -t mangle -A POSTROUTING -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill' % IPTABLES_CMD)
+                '%s -t mangle -A POSTROUTING -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill' % get_iptables_cmd())
 
     @staticmethod
     @in_bash
@@ -501,14 +513,14 @@ class DhcpNameSpaceEnv(object):
             if rule_add is None:
                 rule_add = rule_search
 
-            search_cmd_no_mask = EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '{{rule_search}}' > /dev/null"
+            search_cmd_no_mask = get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '{{rule_search}}' > /dev/null"
             ret = bash_r(search_cmd_no_mask)
 
             if ret != 0:
-                search_cmd_with_mask = EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '{{rule_add}}' > /dev/null"
+                search_cmd_with_mask = get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '{{rule_add}}' > /dev/null"
                 ret = bash_r(search_cmd_with_mask)
             if ret != 0:
-                add_cmd = EBTABLES_CMD + ' -I {{CHAIN_NAME}} {{rule_add}}'
+                add_cmd = get_ebtables_cmd() + ' -I {{CHAIN_NAME}} {{rule_add}}'
                 bash_errorout(add_cmd)
 
         serverip = ip.Ipv6Address(dhcp6_ip)
@@ -516,14 +528,14 @@ class DhcpNameSpaceEnv(object):
         ns_multicast_address_mask = ns_multicast_address + "/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
 
         if not is_dual_stack:
-            ret = bash_r(EBTABLES_CMD + ' -L {{CHAIN_NAME}} > /dev/null 2>&1')
+            ret = bash_r(get_ebtables_cmd() + ' -L {{CHAIN_NAME}} > /dev/null 2>&1')
             if ret != 0:
-                bash_errorout(EBTABLES_CMD + ' -N {{CHAIN_NAME}}')
+                bash_errorout(get_ebtables_cmd() + ' -N {{CHAIN_NAME}}')
 
-            ret = bash_r(EBTABLES_CMD + ' -F {{CHAIN_NAME}} > /dev/null 2>&1')
-            ret = bash_r(EBTABLES_CMD + " -L FORWARD | grep -- '-j {{CHAIN_NAME}}' > /dev/null")
+            ret = bash_r(get_ebtables_cmd() + ' -F {{CHAIN_NAME}} > /dev/null 2>&1')
+            ret = bash_r(get_ebtables_cmd() + " -L FORWARD | grep -- '-j {{CHAIN_NAME}}' > /dev/null")
             if ret != 0:
-                bash_errorout(EBTABLES_CMD + ' -I FORWARD -j {{CHAIN_NAME}}')
+                bash_errorout(get_ebtables_cmd() + ' -I FORWARD -j {{CHAIN_NAME}}')
 
         ns_rule_o = "-p IPv6 -o {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-solicitation -j DROP"
         ns_rule_add = "-p IPv6 -o {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address_mask}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-solicitation -j DROP"
@@ -550,7 +562,7 @@ class DhcpNameSpaceEnv(object):
 
         ret = bash_r("ebtables-save | grep -- '-A {{CHAIN_NAME}} -j RETURN'")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -A {{CHAIN_NAME}} -j RETURN')
+            bash_errorout(get_ebtables_cmd() + ' -A {{CHAIN_NAME}} -j RETURN')
 
             # Note(WeiW): fix dhcp checksum, see more at #982
             ret = bash_r("ip6tables-save | grep -- '-p udp -m udp --dport 546 -j CHECKSUM --checksum-fill'")
@@ -621,17 +633,17 @@ class DhcpNameSpaceEnv(object):
             if o:
                 cmds = []
                 for l in o.split("\n"):
-                    cmds.append(EBTABLES_CMD + " %s" % l.replace("-A", "-D"))
+                    cmds.append(get_ebtables_cmd() + " %s" % l.replace("-A", "-D"))
                 bash_r("\n".join(cmds))
 
             ret = bash_r("ebtables-save | grep '\-A {{CHAIN_NAME}} -j RETURN'")
             if ret != 0:
-                bash_r(EBTABLES_CMD + ' -D {{CHAIN_NAME}} -j RETURN')
+                bash_r(get_ebtables_cmd() + ' -D {{CHAIN_NAME}} -j RETURN')
 
             ret = bash_r("ebtables-save | grep '\-A FORWARD -j {{CHAIN_NAME}}'")
             if ret != 0:
-                bash_r(EBTABLES_CMD + ' -D FORWARD -j {{CHAIN_NAME}}')
-                bash_r(EBTABLES_CMD + ' -X {{CHAIN_NAME}}')
+                bash_r(get_ebtables_cmd() + ' -D FORWARD -j {{CHAIN_NAME}}')
+                bash_r(get_ebtables_cmd() + ' -X {{CHAIN_NAME}}')
 
     @in_bash
     def _del_dhcp6_tables(self):
@@ -644,17 +656,17 @@ class DhcpNameSpaceEnv(object):
         if o:
             cmds = []
             for l in o.split("\n"):
-                cmds.append(EBTABLES_CMD + " %s" % l.replace("-A", "-D"))
+                cmds.append(get_ebtables_cmd() + " %s" % l.replace("-A", "-D"))
             bash_r("\n".join(cmds))
 
         ret = bash_r("ebtables-save | grep '\-A {{DHCP6_CHAIN_NAME}} -j RETURN'")
         if ret != 0:
-            bash_r(EBTABLES_CMD + ' -D {{DHCP6_CHAIN_NAME}} -j RETURN')
+            bash_r(get_ebtables_cmd() + ' -D {{DHCP6_CHAIN_NAME}} -j RETURN')
 
         ret = bash_r("ebtables-save | grep '\-A FORWARD -j {{DHCP6_CHAIN_NAME}}'")
         if ret != 0:
-            bash_r(EBTABLES_CMD + ' -D FORWARD -j {{DHCP6_CHAIN_NAME}}')
-            bash_r(EBTABLES_CMD + ' -X {{DHCP6_CHAIN_NAME}}')
+            bash_r(get_ebtables_cmd() + ' -D FORWARD -j {{DHCP6_CHAIN_NAME}}')
+            bash_r(get_ebtables_cmd() + ' -X {{DHCP6_CHAIN_NAME}}')
 
     @in_bash
     def _del_bridge_fdb_entry_for_inner_dev(self):
@@ -781,7 +793,7 @@ def get_ebtables_userdata_chain_name(br_name, l3_network_uuid):
         return "USERDATA-%s-%s" % (br_name[-12:], l3_network_uuid[:8])
 
 def is_ebtables_nf_tables():
-    r, o, e = bash_roe(EBTABLES_CMD + ' --version')
+    r, o, e = bash_roe(get_ebtables_cmd() + ' --version')
     if r != 0:
         raise Exception('Failed to get ebtables version')
     return "nf_tables" in o
@@ -859,53 +871,53 @@ class DhcpEnv(object):
     @in_bash
     def prepare(self):
         def _prepare_dhcp4_iptables():
-            ret = bash_r(EBTABLES_CMD + ' -L {{CHAIN_NAME}} > /dev/null 2>&1')
+            ret = bash_r(get_ebtables_cmd() + ' -L {{CHAIN_NAME}} > /dev/null 2>&1')
             if ret != 0:
-                bash_errorout(EBTABLES_CMD + ' -N {{CHAIN_NAME}}')
+                bash_errorout(get_ebtables_cmd() + ' -N {{CHAIN_NAME}}')
 
-            ret = bash_r(EBTABLES_CMD + " -L FORWARD | grep -- '-j {{CHAIN_NAME}}' > /dev/null")
+            ret = bash_r(get_ebtables_cmd() + " -L FORWARD | grep -- '-j {{CHAIN_NAME}}' > /dev/null")
             if ret != 0:
-                bash_errorout(EBTABLES_CMD + ' -A FORWARD -j {{CHAIN_NAME}}')
-
-            ret = bash_r(
-                EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '-p ARP -o {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP' > /dev/null")
-            if ret != 0:
-                bash_errorout(
-                    EBTABLES_CMD + ' -I {{CHAIN_NAME}} -p ARP -o {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP')
+                bash_errorout(get_ebtables_cmd() + ' -A FORWARD -j {{CHAIN_NAME}}')
 
             ret = bash_r(
-                EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '-p ARP -i {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP' > /dev/null")
+                get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '-p ARP -o {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP' > /dev/null")
             if ret != 0:
                 bash_errorout(
-                    EBTABLES_CMD + ' -I {{CHAIN_NAME}} -p ARP -i {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP')
+                    get_ebtables_cmd() + ' -I {{CHAIN_NAME}} -p ARP -o {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP')
 
             ret = bash_r(
-                EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '-p ARP -o {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP' > /dev/null")
+                get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '-p ARP -i {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP' > /dev/null")
             if ret != 0:
                 bash_errorout(
-                    EBTABLES_CMD + ' -I {{CHAIN_NAME}} -p ARP -o {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP')
+                    get_ebtables_cmd() + ' -I {{CHAIN_NAME}} -p ARP -i {{BR_PHY_DEV}} --arp-ip-dst {{DHCP_IP}} -j DROP')
 
             ret = bash_r(
-                EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '-p ARP -i {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP' > /dev/null")
+                get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '-p ARP -o {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP' > /dev/null")
             if ret != 0:
                 bash_errorout(
-                    EBTABLES_CMD + ' -I {{CHAIN_NAME}} -p ARP -i {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP')
+                    get_ebtables_cmd() + ' -I {{CHAIN_NAME}} -p ARP -o {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP')
 
             ret = bash_r(
-                EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '-p IPv4 -o {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP' > /dev/null")
+                get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '-p ARP -i {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP' > /dev/null")
             if ret != 0:
                 bash_errorout(
-                    EBTABLES_CMD + ' -I {{CHAIN_NAME}} -p IPv4 -o {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP')
+                    get_ebtables_cmd() + ' -I {{CHAIN_NAME}} -p ARP -i {{BR_PHY_DEV}} --arp-ip-src {{DHCP_IP}} -j DROP')
 
             ret = bash_r(
-                EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '-p IPv4 -i {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP' > /dev/null")
+                get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '-p IPv4 -o {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP' > /dev/null")
             if ret != 0:
                 bash_errorout(
-                    EBTABLES_CMD + ' -I {{CHAIN_NAME}} -p IPv4 -i {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP')
+                    get_ebtables_cmd() + ' -I {{CHAIN_NAME}} -p IPv4 -o {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP')
+
+            ret = bash_r(
+                get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '-p IPv4 -i {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP' > /dev/null")
+            if ret != 0:
+                bash_errorout(
+                    get_ebtables_cmd() + ' -I {{CHAIN_NAME}} -p IPv4 -i {{BR_PHY_DEV}} --ip-proto udp --ip-sport 67:68 -j DROP')
 
             ret = bash_r("ebtables-save | grep -- '-A {{CHAIN_NAME}} -j RETURN'")
             if ret != 0:
-                bash_errorout(EBTABLES_CMD + ' -A {{CHAIN_NAME}} -j RETURN')
+                bash_errorout(get_ebtables_cmd() + ' -A {{CHAIN_NAME}} -j RETURN')
 
             # Note(WeiW): fix dhcp checksum, see more at #982
             if HOST_ARCH == 'mips64el':
@@ -913,20 +925,20 @@ class DhcpEnv(object):
             ret = bash_r("iptables-save | grep -- '-p udp -m udp --dport 68 -j CHECKSUM --checksum-fill'")
             if ret != 0:
                 bash_errorout(
-                    '%s -t mangle -A POSTROUTING -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill' % IPTABLES_CMD)
+                    '%s -t mangle -A POSTROUTING -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill' % get_iptables_cmd())
 
         def _add_ebtables_rule6(rule_search, rule_add=None):
             if rule_add is None:
                 rule_add = rule_search
 
-            search_cmd_no_mask = EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '{{rule_search}}' > /dev/null"
+            search_cmd_no_mask = get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '{{rule_search}}' > /dev/null"
             ret = bash_r(search_cmd_no_mask)
 
             if ret != 0:
-                search_cmd_with_mask = EBTABLES_CMD + " -L {{CHAIN_NAME}} | grep -- '{{rule_add}}' > /dev/null"
+                search_cmd_with_mask = get_ebtables_cmd() + " -L {{CHAIN_NAME}} | grep -- '{{rule_add}}' > /dev/null"
                 ret = bash_r(search_cmd_with_mask)
             if ret != 0:
-                add_cmd = EBTABLES_CMD + ' -I {{CHAIN_NAME}} {{rule_add}}'
+                add_cmd = get_ebtables_cmd() + ' -I {{CHAIN_NAME}} {{rule_add}}'
                 bash_errorout(add_cmd)
 
         def _prepare_dhcp6_iptables(dualStack=True):
@@ -934,15 +946,15 @@ class DhcpEnv(object):
             ns_multicast_address = serverip.get_solicited_node_multicast_address()
             ns_multicast_address_mask = ns_multicast_address + "/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
             if not dualStack:
-                ret = bash_r(EBTABLES_CMD + ' -L {{CHAIN_NAME}} > /dev/null 2>&1')
+                ret = bash_r(get_ebtables_cmd() + ' -L {{CHAIN_NAME}} > /dev/null 2>&1')
                 if ret != 0:
-                    bash_errorout(EBTABLES_CMD + ' -N {{CHAIN_NAME}}')
+                    bash_errorout(get_ebtables_cmd() + ' -N {{CHAIN_NAME}}')
 
-                ret = bash_r(EBTABLES_CMD + ' -F {{CHAIN_NAME}} > /dev/null 2>&1')
+                ret = bash_r(get_ebtables_cmd() + ' -F {{CHAIN_NAME}} > /dev/null 2>&1')
 
-                ret = bash_r(EBTABLES_CMD + " -L FORWARD | grep -- '-j {{CHAIN_NAME}}' > /dev/null")
+                ret = bash_r(get_ebtables_cmd() + " -L FORWARD | grep -- '-j {{CHAIN_NAME}}' > /dev/null")
                 if ret != 0:
-                    bash_errorout(EBTABLES_CMD + ' -A FORWARD -j {{CHAIN_NAME}}')
+                    bash_errorout(get_ebtables_cmd() + ' -A FORWARD -j {{CHAIN_NAME}}')
 
             ns_rule_o = "-p IPv6 -o {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-solicitation -j DROP"
             ns_rule_add = "-p IPv6 -o {{BR_PHY_DEV}} --ip6-dst {{ns_multicast_address_mask}} --ip6-proto ipv6-icmp --ip6-icmp-type neighbour-solicitation -j DROP"
@@ -969,7 +981,7 @@ class DhcpEnv(object):
 
             ret = bash_r("ebtables-save | grep -- '-A {{CHAIN_NAME}} -j RETURN'")
             if ret != 0:
-                bash_errorout(EBTABLES_CMD + ' -A {{CHAIN_NAME}} -j RETURN')
+                bash_errorout(get_ebtables_cmd() + ' -A {{CHAIN_NAME}} -j RETURN')
 
             # Note(WeiW): fix dhcp checksum, see more at #982
             ret = bash_r("ip6tables-save | grep -- '-p udp -m udp --dport 546 -j CHECKSUM --checksum-fill'")
@@ -1242,18 +1254,18 @@ tag:{{TAG}},option:dns-server,{{DNS}}
         if o:
             cmds = []
             for l in o.split("\n"):
-                cmds.append(EBTABLES_CMD + " %s" % l.replace("-A", "-D"))
+                cmds.append(get_ebtables_cmd() + " %s" % l.replace("-A", "-D"))
 
             bash_r("\n".join(cmds))
 
         ret = bash_r("ebtables-save | grep '\-A {{chain_name}} -j RETURN'")
         if ret != 0:
-            bash_r(EBTABLES_CMD + ' -D {{chain_name}} -j RETURN')
+            bash_r(get_ebtables_cmd() + ' -D {{chain_name}} -j RETURN')
 
         ret = bash_r("ebtables-save | grep '\-A FORWARD -j {{chain_name}}'")
         if ret != 0:
-            bash_r(EBTABLES_CMD + ' -D FORWARD -j {{chain_name}}')
-            bash_r(EBTABLES_CMD + ' -X {{chain_name}}')
+            bash_r(get_ebtables_cmd() + ' -D FORWARD -j {{chain_name}}')
+            bash_r(get_ebtables_cmd() + ' -X {{chain_name}}')
 
     @in_bash
     def _delete_dhcp6(self, namspace):
@@ -1479,8 +1491,8 @@ tag:{{TAG}},option:dns-server,{{DNS}}
 
     @kvmagent.replyerror
     def connect(self, req):
-        #shell.call(EBTABLES_CMD + ' -F')
-        # shell.call(EBTABLES_CMD + ' -t nat -F')
+        #shell.call(get_ebtables_cmd() + ' -F')
+        # shell.call(get_ebtables_cmd() + ' -t nat -F')
         # this is workaround, for anti-spoofing & distributed virtual routing feature, there is no good way to proccess this reconnect-host case,
         # it's just keep the ebtables rules from libvirt & zsn and remove others when reconnect hosts
         self.restore_ebtables_chain_except_kvmagent()
@@ -1501,12 +1513,12 @@ tag:{{TAG}},option:dns-server,{{DNS}}
             for l in o.split("\n"):
                 # we don't distinguish if the rule is in filter table or nat table
                 # but try both. The wrong table will silently fail
-                cmds.append(EBTABLES_CMD + " -t filter %s" % l.replace("-A", "-D"))
-                cmds.append(EBTABLES_CMD + " -t nat %s" % l.replace("-A", "-D"))
+                cmds.append(get_ebtables_cmd() + " -t filter %s" % l.replace("-A", "-D"))
+                cmds.append(get_ebtables_cmd() + " -t nat %s" % l.replace("-A", "-D"))
 
         if bash_r("ebtables-save | grep :{{CHAIN_NAME}}") == 0:
-            cmds.append(EBTABLES_CMD + " -t filter -X %s" % CHAIN_NAME)
-            cmds.append(EBTABLES_CMD + " -t nat -X %s" % CHAIN_NAME)
+            cmds.append(get_ebtables_cmd() + " -t filter -X %s" % CHAIN_NAME)
+            cmds.append(get_ebtables_cmd() + " -t nat -X %s" % CHAIN_NAME)
 
         if len(cmds) > 0:
             bash_r("\n".join(cmds))
@@ -1671,48 +1683,48 @@ tag:{{TAG}},option:dns-server,{{DNS}}
         CHAIN_NAME = "USERDATA-%s" % BR_NAME
         EBCHAIN_NAME = get_ebtables_userdata_chain_name(BR_NAME, to.l3NetworkUuid)
 
-        ret = bash_r(EBTABLES_CMD + ' -t nat -L {{EBCHAIN_NAME}} >/dev/null 2>&1')
+        ret = bash_r(get_ebtables_cmd() + ' -t nat -L {{EBCHAIN_NAME}} >/dev/null 2>&1')
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -t nat -N {{EBCHAIN_NAME}}')
+            bash_errorout(get_ebtables_cmd() + ' -t nat -N {{EBCHAIN_NAME}}')
 
-        if bash_r(EBTABLES_CMD + " -t nat -L PREROUTING | grep -- '--logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}'") != 0:
-            bash_errorout(EBTABLES_CMD + ' -t nat -I PREROUTING --logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}')
+        if bash_r(get_ebtables_cmd() + " -t nat -L PREROUTING | grep -- '--logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}'") != 0:
+            bash_errorout(get_ebtables_cmd() + ' -t nat -I PREROUTING --logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}')
 
         # ebtables has a bug that will eliminate 0 in MAC, for example, aa:bb:0c will become aa:bb:c
         cidr = ip.IpAddress(to.vmIp).toCidr(to.netmask)
         macAddr = ip.removeZeroFromMacAddress(MAC)
         RULE = "-p IPv4 --ip-src %s --ip-dst 169.254.169.254 -j dnat --to-dst %s --dnat-target ACCEPT" % (cidr, macAddr)
-        ret = bash_r(EBTABLES_CMD + " -t nat -L {{EBCHAIN_NAME}} | grep -- '{{RULE}}' > /dev/null")
+        ret = bash_r(get_ebtables_cmd() + " -t nat -L {{EBCHAIN_NAME}} | grep -- '{{RULE}}' > /dev/null")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -t nat -I {{EBCHAIN_NAME}} {{RULE}}')
+            bash_errorout(get_ebtables_cmd() + ' -t nat -I {{EBCHAIN_NAME}} {{RULE}}')
 
-        ret = bash_r(EBTABLES_CMD + " -t nat -L {{EBCHAIN_NAME}} | grep -- '--arp-ip-dst %s' > /dev/null" % self.CONNECT_ALL_NETNS_BR_OUTER_IP)
+        ret = bash_r(get_ebtables_cmd() + " -t nat -L {{EBCHAIN_NAME}} | grep -- '--arp-ip-dst %s' > /dev/null" % self.CONNECT_ALL_NETNS_BR_OUTER_IP)
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -t nat -I {{EBCHAIN_NAME}}  -p arp  --arp-ip-dst %s -j DROP' % self.CONNECT_ALL_NETNS_BR_OUTER_IP)
+            bash_errorout(get_ebtables_cmd() + ' -t nat -I {{EBCHAIN_NAME}}  -p arp  --arp-ip-dst %s -j DROP' % self.CONNECT_ALL_NETNS_BR_OUTER_IP)
 
-        ret = bash_r(EBTABLES_CMD + " -t nat -L {{EBCHAIN_NAME}} | grep -- '-j RETURN' > /dev/null")
+        ret = bash_r(get_ebtables_cmd() + " -t nat -L {{EBCHAIN_NAME}} | grep -- '-j RETURN' > /dev/null")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -t nat -A {{EBCHAIN_NAME}} -j RETURN')
+            bash_errorout(get_ebtables_cmd() + ' -t nat -A {{EBCHAIN_NAME}} -j RETURN')
 
-        ret = bash_r(EBTABLES_CMD + ' -L {{EBCHAIN_NAME}} >/dev/null 2>&1')
+        ret = bash_r(get_ebtables_cmd() + ' -L {{EBCHAIN_NAME}} >/dev/null 2>&1')
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -N {{EBCHAIN_NAME}}')
+            bash_errorout(get_ebtables_cmd() + ' -N {{EBCHAIN_NAME}}')
 
-        ret = bash_r(EBTABLES_CMD + " -L FORWARD | grep -- '-p ARP --arp-ip-dst 169.254.169.254 -j {{EBCHAIN_NAME}}' > /dev/null")
+        ret = bash_r(get_ebtables_cmd() + " -L FORWARD | grep -- '-p ARP --arp-ip-dst 169.254.169.254 -j {{EBCHAIN_NAME}}' > /dev/null")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -I FORWARD -p ARP --arp-ip-dst 169.254.169.254 -j {{EBCHAIN_NAME}}')
+            bash_errorout(get_ebtables_cmd() + ' -I FORWARD -p ARP --arp-ip-dst 169.254.169.254 -j {{EBCHAIN_NAME}}')
 
-        ret = bash_r(EBTABLES_CMD + " -L {{EBCHAIN_NAME}} | grep -- '-i {{ETH_NAME}} -j DROP' > /dev/null")
+        ret = bash_r(get_ebtables_cmd() + " -L {{EBCHAIN_NAME}} | grep -- '-i {{ETH_NAME}} -j DROP' > /dev/null")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -I {{EBCHAIN_NAME}} -i {{ETH_NAME}} -j DROP')
+            bash_errorout(get_ebtables_cmd() + ' -I {{EBCHAIN_NAME}} -i {{ETH_NAME}} -j DROP')
 
-        ret = bash_r(EBTABLES_CMD + " -L {{EBCHAIN_NAME}} | grep -- '-o {{ETH_NAME}} -j DROP' > /dev/null")
+        ret = bash_r(get_ebtables_cmd() + " -L {{EBCHAIN_NAME}} | grep -- '-o {{ETH_NAME}} -j DROP' > /dev/null")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -I {{EBCHAIN_NAME}} -o {{ETH_NAME}} -j DROP')
+            bash_errorout(get_ebtables_cmd() + ' -I {{EBCHAIN_NAME}} -o {{ETH_NAME}} -j DROP')
 
         ret = bash_r("ebtables-save | grep '\-A {{EBCHAIN_NAME}} -j RETURN'")
         if ret != 0:
-            bash_errorout(EBTABLES_CMD + ' -A {{EBCHAIN_NAME}} -j RETURN')
+            bash_errorout(get_ebtables_cmd() + ' -A {{EBCHAIN_NAME}} -j RETURN')
 
         self.work_userdata_iptables(CHAIN_NAME, to)
 
@@ -2097,21 +2109,21 @@ mimetype.assign = (
         if OLD_CHAIN and OLD_CHAIN != CHAIN_NAME:
             ret = bash_r("iptables-save -t nat | grep -- '-j {{OLD_CHAIN}}'")
             if ret == 0:
-                bash_r('%s -t nat -D PREROUTING -j {{OLD_CHAIN}}' % IPTABLES_CMD)
+                bash_r('%s -t nat -D PREROUTING -j {{OLD_CHAIN}}' % get_iptables_cmd())
 
-            bash_errorout('%s -t nat -F {{OLD_CHAIN}}' % IPTABLES_CMD)
-            bash_errorout('%s -t nat -X {{OLD_CHAIN}}' % IPTABLES_CMD)
+            bash_errorout('%s -t nat -F {{OLD_CHAIN}}' % get_iptables_cmd())
+            bash_errorout('%s -t nat -X {{OLD_CHAIN}}' % get_iptables_cmd())
         ret = bash_r('iptables-save | grep -w ":{{PORT_CHAIN_NAME}}" > /dev/null')
         if ret != 0:
-            self.bash_ignore_exist_for_ipt('%s -t nat -N {{PORT_CHAIN_NAME}}' % IPTABLES_CMD)
-        ret = bash_r("%s -t nat -L PREROUTING | grep -- '-j {{PORT_CHAIN_NAME}}'" % IPTABLES_CMD)
+            self.bash_ignore_exist_for_ipt('%s -t nat -N {{PORT_CHAIN_NAME}}' % get_iptables_cmd())
+        ret = bash_r("%s -t nat -L PREROUTING | grep -- '-j {{PORT_CHAIN_NAME}}'" % get_iptables_cmd())
         if ret != 0:
-            self.bash_ignore_exist_for_ipt('%s -t nat -I PREROUTING -j {{PORT_CHAIN_NAME}}' % IPTABLES_CMD)
+            self.bash_ignore_exist_for_ipt('%s -t nat -I PREROUTING -j {{PORT_CHAIN_NAME}}' % get_iptables_cmd())
         ret = bash_r(
             "iptables-save -t nat | grep -- '{{PORT_CHAIN_NAME}} -d 169.254.169.254/32 -p tcp -j DNAT --to-destination :{{PORT}}'")
         if ret != 0:
             self.bash_ignore_exist_for_ipt(
-                '%s -t nat -A {{PORT_CHAIN_NAME}} -d 169.254.169.254/32 -p tcp -j DNAT --to-destination :{{PORT}}' % IPTABLES_CMD)
+                '%s -t nat -A {{PORT_CHAIN_NAME}} -d 169.254.169.254/32 -p tcp -j DNAT --to-destination :{{PORT}}' % get_iptables_cmd())
 
     @staticmethod
     def bash_ignore_exist_for_ipt(cmd):
@@ -2315,39 +2327,39 @@ mimetype.assign = (
                 CHAIN_NAME = getDhcpEbtableChainName(dhcp_ip)
                 VF_NIC_MAC = ip.removeZeroFromMacAddress(dhcpInfo.mac)
 
-                if bash_r(EBTABLES_CMD + ' -L ZSTACK-VF-DHCP > /dev/null 2>&1') != 0:
-                    bash_errorout(EBTABLES_CMD + ' -N ZSTACK-VF-DHCP')
+                if bash_r(get_ebtables_cmd() + ' -L ZSTACK-VF-DHCP > /dev/null 2>&1') != 0:
+                    bash_errorout(get_ebtables_cmd() + ' -N ZSTACK-VF-DHCP')
 
-                if bash_r(EBTABLES_CMD + " -L FORWARD | grep -- '-j ZSTACK-VF-DHCP' > /dev/null") != 0:
-                    bash_r(EBTABLES_CMD + ' -I FORWARD -j ZSTACK-VF-DHCP')
+                if bash_r(get_ebtables_cmd() + " -L FORWARD | grep -- '-j ZSTACK-VF-DHCP' > /dev/null") != 0:
+                    bash_r(get_ebtables_cmd() + ' -I FORWARD -j ZSTACK-VF-DHCP')
 
-                if bash_r(EBTABLES_CMD + " -L ZSTACK-VF-DHCP | grep -- '-j RETURN' > /dev/null") != 0:
-                    bash_r(EBTABLES_CMD + ' -A ZSTACK-VF-DHCP -j RETURN')
+                if bash_r(get_ebtables_cmd() + " -L ZSTACK-VF-DHCP | grep -- '-j RETURN' > /dev/null") != 0:
+                    bash_r(get_ebtables_cmd() + ' -A ZSTACK-VF-DHCP -j RETURN')
 
                 if dhcpInfo.ipVersion == 4:
-                    if bash_r(EBTABLES_CMD + " -L ZSTACK-VF-DHCP | grep -- '-p IPv4 -s {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT' > /dev/null") != 0:
-                        bash_r(EBTABLES_CMD + ' -I ZSTACK-VF-DHCP -p IPv4 -s {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
+                    if bash_r(get_ebtables_cmd() + " -L ZSTACK-VF-DHCP | grep -- '-p IPv4 -s {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT' > /dev/null") != 0:
+                        bash_r(get_ebtables_cmd() + ' -I ZSTACK-VF-DHCP -p IPv4 -s {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
 
-                    if bash_r(EBTABLES_CMD + " -L ZSTACK-VF-DHCP | grep -- '-p IPv4 -d {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT' > /dev/null") != 0:
-                        bash_r(EBTABLES_CMD + ' -I ZSTACK-VF-DHCP -p IPv4 -d {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
+                    if bash_r(get_ebtables_cmd() + " -L ZSTACK-VF-DHCP | grep -- '-p IPv4 -d {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT' > /dev/null") != 0:
+                        bash_r(get_ebtables_cmd() + ' -I ZSTACK-VF-DHCP -p IPv4 -d {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
                 elif dhcpInfo.ipVersion == 6:
-                    if bash_r(EBTABLES_CMD + " -L ZSTACK-VF-DHCP | grep -- '-p IPv6 -s {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT' > /dev/null") != 0:
-                        bash_r(EBTABLES_CMD + ' -I ZSTACK-VF-DHCP -p IPv6 -s {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
+                    if bash_r(get_ebtables_cmd() + " -L ZSTACK-VF-DHCP | grep -- '-p IPv6 -s {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT' > /dev/null") != 0:
+                        bash_r(get_ebtables_cmd() + ' -I ZSTACK-VF-DHCP -p IPv6 -s {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
 
-                    if bash_r(EBTABLES_CMD + " -L ZSTACK-VF-DHCP | grep -- '-p IPv6 -d {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT' > /dev/null") != 0:
-                        bash_r(EBTABLES_CMD + ' -I ZSTACK-VF-DHCP -p IPv6 -d {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
+                    if bash_r(get_ebtables_cmd() + " -L ZSTACK-VF-DHCP | grep -- '-p IPv6 -d {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT' > /dev/null") != 0:
+                        bash_r(get_ebtables_cmd() + ' -I ZSTACK-VF-DHCP -p IPv6 -d {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
                 else:
-                    if bash_r(EBTABLES_CMD + " -L ZSTACK-VF-DHCP | grep -- '-p IPv4 -s {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT' > /dev/null") != 0:
-                        bash_r(EBTABLES_CMD + ' -I ZSTACK-VF-DHCP -p IPv4 -s {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
+                    if bash_r(get_ebtables_cmd() + " -L ZSTACK-VF-DHCP | grep -- '-p IPv4 -s {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT' > /dev/null") != 0:
+                        bash_r(get_ebtables_cmd() + ' -I ZSTACK-VF-DHCP -p IPv4 -s {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
 
-                    if bash_r(EBTABLES_CMD + " -L ZSTACK-VF-DHCP | grep -- '-p IPv4 -d {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT' > /dev/null") != 0:
-                        bash_r(EBTABLES_CMD + ' -I ZSTACK-VF-DHCP -p IPv4 -d {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
+                    if bash_r(get_ebtables_cmd() + " -L ZSTACK-VF-DHCP | grep -- '-p IPv4 -d {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT' > /dev/null") != 0:
+                        bash_r(get_ebtables_cmd() + ' -I ZSTACK-VF-DHCP -p IPv4 -d {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
 
-                    if bash_r(EBTABLES_CMD + " -L ZSTACK-VF-DHCP | grep -- '-p IPv6 -s {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT' > /dev/null") != 0:
-                        bash_r(EBTABLES_CMD + ' -I ZSTACK-VF-DHCP -p IPv6 -s {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
+                    if bash_r(get_ebtables_cmd() + " -L ZSTACK-VF-DHCP | grep -- '-p IPv6 -s {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT' > /dev/null") != 0:
+                        bash_r(get_ebtables_cmd() + ' -I ZSTACK-VF-DHCP -p IPv6 -s {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
 
-                    if bash_r(EBTABLES_CMD + " -L ZSTACK-VF-DHCP | grep -- '-p IPv6 -d {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT' > /dev/null") != 0:
-                        bash_r(EBTABLES_CMD + ' -I ZSTACK-VF-DHCP -p IPv6 -d {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
+                    if bash_r(get_ebtables_cmd() + " -L ZSTACK-VF-DHCP | grep -- '-p IPv6 -d {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT' > /dev/null") != 0:
+                        bash_r(get_ebtables_cmd() + ' -I ZSTACK-VF-DHCP -p IPv6 -d {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
 
         @in_bash
         def apply(dhcp):
@@ -2745,16 +2757,16 @@ sed -i '/^$/d' {{DNS}}
                 VF_NIC_MAC = ip.removeZeroFromMacAddress(dhcpInfo.mac)
 
                 if dhcpInfo.ipVersion == 4:
-                    bash_r(EBTABLES_CMD + ' -D ZSTACK-VF-DHCP -p IPv4 -s {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
-                    bash_r(EBTABLES_CMD + ' -D ZSTACK-VF-DHCP -p IPv4 -d {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
+                    bash_r(get_ebtables_cmd() + ' -D ZSTACK-VF-DHCP -p IPv4 -s {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
+                    bash_r(get_ebtables_cmd() + ' -D ZSTACK-VF-DHCP -p IPv4 -d {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
                 elif dhcpInfo.ipVersion == 6:
-                    bash_r(EBTABLES_CMD + ' -D ZSTACK-VF-DHCP -p IPv6 -s {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
-                    bash_r(EBTABLES_CMD + ' -D ZSTACK-VF-DHCP -p IPv6 -d {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
+                    bash_r(get_ebtables_cmd() + ' -D ZSTACK-VF-DHCP -p IPv6 -s {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
+                    bash_r(get_ebtables_cmd() + ' -D ZSTACK-VF-DHCP -p IPv6 -d {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
                 else:
-                    bash_r(EBTABLES_CMD + ' -D ZSTACK-VF-DHCP -p IPv4 -s {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
-                    bash_r(EBTABLES_CMD + ' -D ZSTACK-VF-DHCP -p IPv4 -d {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
-                    bash_r(EBTABLES_CMD + ' -D ZSTACK-VF-DHCP -p IPv6 -s {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
-                    bash_r(EBTABLES_CMD + ' -D ZSTACK-VF-DHCP -p IPv6 -d {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
+                    bash_r(get_ebtables_cmd() + ' -D ZSTACK-VF-DHCP -p IPv4 -s {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
+                    bash_r(get_ebtables_cmd() + ' -D ZSTACK-VF-DHCP -p IPv4 -d {{VF_NIC_MAC}} --ip-proto udp --ip-sport 67:68 -j ACCEPT')
+                    bash_r(get_ebtables_cmd() + ' -D ZSTACK-VF-DHCP -p IPv6 -s {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
+                    bash_r(get_ebtables_cmd() + ' -D ZSTACK-VF-DHCP -p IPv6 -d {{VF_NIC_MAC}} --ip6-proto udp --ip6-sport 546:547 -j ACCEPT')
 
         @in_bash
         def release(dhcp):
