@@ -190,6 +190,27 @@ class NbdDeviceOperator(object):
             return False
         return True
 
+    @staticmethod
+    def _check_nbd_process_alive(nbd_id):
+        """Check if the qemu-nbd process for given nbd device is still alive.
+
+        When DM holds a reference to the nbd device (as a holder),
+        /sys/block/nbdX/size will remain non-zero even after qemu-nbd
+        disconnect succeeds. Checking the process existence is the
+        reliable way to determine if disconnect truly completed.
+
+        Returns True if process is still alive, False if it has exited.
+        """
+        pid_path = '/sys/block/nbd{}/pid'.format(nbd_id)
+        try:
+            with open(pid_path, 'r') as f:
+                pid = f.read().strip()
+            if not pid:
+                return False
+            return os.path.exists('/proc/{}'.format(pid))
+        except (IOError, OSError):
+            return False
+
     def _get_available_nbd_id(self):
         """ Find a available nbd id and return
         """
@@ -285,7 +306,14 @@ class NbdDeviceOperator(object):
             shell.call(cmd)
 
         def _check_disconnected():
-            if not self._check_nbd_dev_empty(self.volume.nbd_id):
+            # NOTE: When DM device holds a reference to the nbd device
+            # (e.g. during snapshot with dmsetup suspend), the kernel
+            # won't release the block device even after qemu-nbd
+            # disconnect succeeds, so /sys/block/nbdX/size remains
+            # non-zero. Check process existence instead, which reliably
+            # indicates whether the disconnect completed.
+            # See: ZSTAC-51129
+            if self._check_nbd_process_alive(self.volume.nbd_id):
                 raise exception.NbdDeviceFailedDisconnect(
                     instance_uuid=self.volume.instance_uuid,
                     volume_uuid=self.volume.volume_uuid,
