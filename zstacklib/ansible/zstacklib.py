@@ -546,8 +546,11 @@ def get_host_releasever(host_info):
         "centos core 7.2.1511": "c74",  # c74 for old releases
         "centos core 7.1.1503": "c74",
         'helix core 7.6c': 'h76c',
+        'helix core 7.6': 'h76c',
         'helix core 7.9c': 'h79c',
+        'helix core 7.9': 'h79c',
         'helix green obsidian 8.4r': 'h84r',
+        'helix green obsidian 8.4': 'h84r',
         "helix lts-sp1 22.03": "h2203sp1o",
         "openeuler lts-sp1 20.03": "euler20",
         "openeuler lts-sp1 22.03": "oe2203sp1",
@@ -556,6 +559,7 @@ def get_host_releasever(host_info):
         "uniontech_kongzi kongzi 20": "uos1021a",
         "rocky green obsidian 8.4": "rl84",
         "uniontech os 20.06r": "uos20r",
+        "uniontech os 20.06": "uos20r",
     }
     # _key = " ".join(ansible_distribution).lower()
     _releasever = supported_release_info.get(host_info.ansible_distribution)
