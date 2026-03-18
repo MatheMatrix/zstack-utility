@@ -2962,6 +2962,34 @@ def rename_vg(old_vg_uuid, new_vg_uuid):
                         "old VG %s still exists, new VG %s not found" % (old_vg_uuid, new_vg_uuid))
 
 
+def rename_vg_nolocking(old_vg_uuid, new_vg_uuid):
+    """Rename VG bypassing lvmlockd (--nolocking).
+
+    Used in takeover when lvmlockd has no state for this VG.
+    Avoids 'LV locked by other host' errors from stale sanlock leases.
+    """
+    if old_vg_uuid == new_vg_uuid:
+        return
+
+    if vg_exists(new_vg_uuid) and not vg_exists(old_vg_uuid):
+        logger.debug("rename_vg_nolocking skipped: %s already exists" % new_vg_uuid)
+        return
+
+    if vg_exists(new_vg_uuid) and vg_exists(old_vg_uuid):
+        raise Exception("both old VG %s and new VG %s exist, refusing rename" % (old_vg_uuid, new_vg_uuid))
+
+    r, o, e = bash.bash_roe(
+        "timeout -s SIGKILL 60 vgrename --nolocking %s %s" % (old_vg_uuid, new_vg_uuid))
+    if r != 0:
+        raise Exception("vgrename --nolocking failed: rc=%s, stdout=%s, stderr=%s"
+                        % (r, o, e))
+
+    if vg_exists(old_vg_uuid) and not vg_exists(new_vg_uuid):
+        raise Exception("vgrename --nolocking appeared to succeed but old VG %s still exists"
+                        % old_vg_uuid)
+    logger.debug("rename_vg_nolocking %s -> %s done" % (old_vg_uuid, new_vg_uuid))
+
+
 @bash.in_bash
 def activate_lvmlock_dm(vg_uuid):
     """Activate the hidden lvmlock LV via dmsetup create.
@@ -3019,28 +3047,59 @@ def deactivate_lvmlock_dm(vg_uuid):
 
 @bash.in_bash
 def reinit_sanlock_leases(vg_uuid):
-    """Reinit delta lease, GLLK, and VGLK on an already-activated lvmlock.
+    """Reinit all sanlock leases (delta, GLLK, VGLK, per-LV) on lvmlock.
 
     Requires /dev/mapper/<vg>-lvmlock to be active (via activate_lvmlock_dm).
-    Used after vgrename to rewrite the lockspace name in sanlock lease areas.
+    Used after vgrename to rewrite the lockspace name in all lease areas.
+    Per-LV resource leases must also be reinited because sanlock checks
+    the lockspace name embedded in each resource lease on acquire.
     """
     dm_path = "/dev/mapper/%s-lvmlock" % vg_uuid
     if not os.path.exists(dm_path):
         raise Exception("%s not found, call activate_lvmlock_dm first" % dm_path)
 
     lockspace_name = "lvm_%s" % vg_uuid
+    sector_size = sanlock.get_sector_size(vg_uuid)
+    align = sanlock.sector_size_to_align_size(sector_size)
 
-    # Delta lease (lockspace) at offset 0.
+    # 1. Delta lease (lockspace) at offset 0.
     r = bash.bash_r("sanlock direct init -s %s:0:%s:0" % (lockspace_name, dm_path))
     if r != 0:
         raise Exception("sanlock direct init -s failed for %s" % vg_uuid)
 
-    # GLLK and VGLK — use existing init_*_if_need which checks and inits.
-    # After lockspace name change they will always mismatch and reinit.
-    sanlock.init_gllk_if_need(vg_uuid)
-    sanlock.init_vglk_if_need(vg_uuid)
-    logger.debug("reinit_sanlock_leases completed for %s" % vg_uuid)
+    # 2. GLLK at offset 65 * align.
+    gllk_offset = sanlock.GLLK_BEGIN * align
+    sanlock.direct_init_resource(
+        "%s:GLLK:%s:%d" % (lockspace_name, dm_path, gllk_offset))
 
+    # 3. VGLK at offset 66 * align.
+    vglk_offset = sanlock.VGLK_BEGIN * align
+    sanlock.direct_init_resource(
+        "%s:VGLK:%s:%d" % (lockspace_name, dm_path, vglk_offset))
+
+    # 4. Per-LV resource leases.
+    #    Each LV has lock_args "1.0.0:<slot>", slot * align = offset.
+    r, o, e = bash.bash_roe(
+        "lvs --nolocking --noheadings -o lv_name,lock_args %s" % vg_uuid)
+    if r == 0 and o.strip():
+        for line in o.strip().splitlines():
+            parts = line.split()
+            if len(parts) < 2 or parts[0] == "lvmlock":
+                continue
+            lv_name = parts[0]
+            lock_arg = parts[1]
+            if ":" not in lock_arg:
+                continue
+            try:
+                slot = int(lock_arg.rsplit(":", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            lv_offset = slot * align
+            sanlock.direct_init_resource(
+                "%s:%s:%s:%d" % (lockspace_name, lv_name, dm_path, lv_offset))
+        logger.debug("per-LV resource leases reinited for %s" % vg_uuid)
+
+    logger.debug("reinit_sanlock_leases completed for %s" % vg_uuid)
 
 
 @bash.in_bash

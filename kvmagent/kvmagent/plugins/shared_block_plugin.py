@@ -1818,29 +1818,26 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         logger.info("takeover[4/8] matched VG on storage: %s (target: %s)"
                     % (vg_uuid_on_storage, cmd.vgUuid))
 
-        # Step 5: start lockspace on old VG, rename, reinit leases for new name.
-        #   Disk lease data is intact from prior usage, so start_vg_lock works directly.
-        #   After rename, delta/GLLK/VGLK must be rewritten with new lockspace name.
+
+        # Step 5: rename VG if needed (nolocking), reinit leases, start lockspace.
+        #   lvmlockd has no state for this VG, so rename uses --nolocking
+        #   to avoid "LV locked by other host" from stale sanlock leases.
+        #   After rename, delta/GLLK/VGLK are rewritten with new lockspace name.
+        #   Finally start lockspace on the final VG name.
         lvm.check_stuck_vglk_and_gllk()
         retry_times_for_checking_vg_lockspace = lvm.get_retry_times_for_checking_vg_lockspace()
-        lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times_for_checking_vg_lockspace)
-        lvm.check_gl_lock()
-        logger.info("takeover[5a/8] lockspace started for %s" % vg_uuid_on_storage)
 
         if vg_uuid_on_storage != cmd.vgUuid:
-            lvm.rename_vg(vg_uuid_on_storage, cmd.vgUuid)
-            lvm.drop_vg_lock(vg_uuid_on_storage)
-            lvm.restart_lvmlockd()
+            lvm.rename_vg_nolocking(vg_uuid_on_storage, cmd.vgUuid)
             lvm.remove_device_map_for_vg(vg_uuid_on_storage)
-            # Reinit sanlock leases with new lockspace name lvm_<new_vg>.
             lvm.activate_lvmlock_dm(cmd.vgUuid)
             lvm.reinit_sanlock_leases(cmd.vgUuid)
             lvm.deactivate_lvmlock_dm(cmd.vgUuid)
-            lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
-            lvm.check_gl_lock()
-            logger.info("takeover[5b/8] VG renamed %s -> %s, new lockspace started"
+            logger.info("takeover[5a/8] VG renamed %s -> %s, leases reinited"
                         % (vg_uuid_on_storage, cmd.vgUuid))
 
+        lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
+        lvm.check_gl_lock()
         logger.info("takeover[5/8] sanlock ready, VG: %s" % cmd.vgUuid)
 
         # Step 6: vgck health check; restart lockspace if metadata broken
