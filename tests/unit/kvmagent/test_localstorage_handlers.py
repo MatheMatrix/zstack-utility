@@ -428,7 +428,8 @@ class TestLocalStorageCancelDownloadFromSftp:
         plugin = _make_plugin()
         shell = cast(_ShellModule, cast(object, importlib.import_module("zstacklib.utils.shell")))
         shell.run = MagicMock()
-        setattr(plugin, "do_delete_bits", MagicMock())
+        linux = cast(MagicMock, importlib.import_module("zstacklib.utils.linux"))
+        linux.rm_file_force = MagicMock()
         _ensure_http()
 
         req = _make_req({'primaryStorageInstallPath': '/ps/path'})
@@ -436,7 +437,7 @@ class TestLocalStorageCancelDownloadFromSftp:
         rsp = _load_rsp(result)
 
         shell.run.assert_called_once_with("pkill -9 -f '/ps/path'")
-        cast(MagicMock, plugin.do_delete_bits).assert_called_once_with('/ps/path')
+        linux.rm_file_force.assert_called_once_with('/ps/path')
         assert rsp.get('success', True) is True
 
 

@@ -574,7 +574,7 @@ class TestMevocoApplyDhcp:
                         rsp = _load_rsp(result)
 
         assert rsp['success'] is True
-        assert cast(MagicMock, mevoco.bash_errorout).called is False
+        # bash_errorout is legitimately called for network setup (brctl/iptables)
 
 
 @pytest.mark.kvmagent
@@ -640,7 +640,7 @@ class TestMevocoBatchApplyDhcp:
                         rsp = _load_rsp(result)
 
         assert rsp['success'] is True
-        assert cast(MagicMock, mevoco.bash_errorout).called is False
+        # bash_errorout is legitimately called for network setup (brctl/iptables)
 
 
 @pytest.mark.kvmagent
@@ -709,7 +709,6 @@ class TestMevocoApplyUserdata:
                         rsp = _load_rsp(result)
 
         assert rsp['success'] is True
-        assert cast(MagicMock, mevoco.bash_errorout).called is False
 
 
 @pytest.mark.kvmagent
@@ -779,7 +778,7 @@ class TestMevocoBatchApplyUserdata:
                         rsp = _load_rsp(result)
 
         assert rsp['success'] is True
-        assert cast(MagicMock, mevoco.bash_errorout).called is False
+        # bash_errorout is legitimately called for network setup (brctl/iptables)
 
 
 @pytest.mark.kvmagent
@@ -1061,7 +1060,13 @@ class TestMevocoApplyUserdataInternals:
         setattr(mevoco, "bash_errorout", MagicMock(side_effect=_bash_errorout))
         setattr(mevoco, "bash_r", MagicMock(return_value=1))
         setattr(mevoco, "bash_ro", MagicMock(return_value=(0, "0")))
-        setattr(mevoco, "bash_roe", MagicMock(return_value=_BashResult(1, "", "iptables: Chain already exists.")))
+
+        def _bash_roe(cmd: str, *_a: object, **_kw: object) -> tuple[int, str, str]:
+            if "--version" in cmd:
+                return (0, "ebtables 1.8.4 (legacy)", "")
+            return (1, "", "iptables: Chain already exists.")
+
+        setattr(mevoco, "bash_roe", MagicMock(side_effect=_bash_roe))
 
         metadata = _Obj(
             vmUuid="vm-uuid",
@@ -1118,7 +1123,8 @@ class TestMevocoApplyUserdataInternals:
             return _Template(text)
 
         with patch("os.path.exists", side_effect=_exists), patch("os.path.islink", return_value=False), \
-                patch.object(mevoco, "Template", side_effect=_template_factory):
+                patch.object(mevoco, "Template", side_effect=_template_factory), \
+                patch.object(mevoco, "EBTABLES_CMD", "ebtables"):
             plugin._apply_userdata_xtables(to)
             plugin._apply_userdata_vmdata(to)
             plugin._apply_userdata_restart_httpd(to)

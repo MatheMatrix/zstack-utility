@@ -12,6 +12,7 @@ from __future__ import annotations
 """Handler-level unit tests for kvmagent.plugins.vm_plugin."""
 import json
 import tempfile
+import urllib.parse
 from collections.abc import Iterator
 from typing import Callable
 import pytest
@@ -2435,7 +2436,7 @@ class TestVmStartCmdXmlBuild:
         vm_plugin.uuidhelper.to_full_uuid = MagicMock(side_effect=lambda value: value)
         def _real_parse_url(uri):
             normalized = vm_plugin.re.sub(r'^([a-zA-Z]+:)(?!/{2})', r'\1//', uri, count=1)
-            return vm_plugin.urlparse.urlparse(normalized)
+            return urllib.parse.urlparse(normalized)
 
         def _e_with_text(parent, tag, value=None, attrib=None, usenamesapce=False):
             _ = usenamesapce
@@ -2479,7 +2480,7 @@ class TestVmStartCmdXmlBuild:
         vm_plugin.uuidhelper.to_full_uuid = MagicMock(side_effect=lambda value: value)
         def _real_parse_url(uri):
             normalized = vm_plugin.re.sub(r'^([a-zA-Z]+:)(?!/{2})', r'\1//', uri, count=1)
-            return vm_plugin.urlparse.urlparse(normalized)
+            return urllib.parse.urlparse(normalized)
 
         def _e_with_text(parent, tag, value=None, attrib=None, usenamesapce=False):
             _ = usenamesapce
@@ -2738,10 +2739,10 @@ class TestVmAttachDetachDataVolume:
 
         assert vm.domain.attachDeviceFlags.called
         xml = vm.domain.attachDeviceFlags.call_args[0][0]
-        assert b'iotune' in xml
-        assert b'read_bytes_sec' in xml
-        assert b'write_iops_sec' in xml
-        assert b'serial' in xml
+        assert 'iotune' in xml
+        assert 'read_bytes_sec' in xml
+        assert 'write_iops_sec' in xml
+        assert 'serial' in xml
 
     def test_detach_data_volume_logs_out_iscsi(self):
         vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
@@ -2844,7 +2845,7 @@ class TestVmDiskHelpers:
             "</devices></domain>"
         )
         orig_tostring = vm_plugin.etree.tostring
-        with patch.object(vm_plugin.etree, 'tostring', side_effect=lambda elem: orig_tostring(elem).decode()):
+        with patch.object(vm_plugin.etree, 'tostring', side_effect=lambda elem, **kw: orig_tostring(elem).decode()):
             chains = vm.get_all_disk_backing_chain()
         assert chains == [['/tmp/pull4.qcow2', '/tmp/pull3.qcow2', '/tmp/pull2.qcow2']]
 

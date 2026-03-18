@@ -186,7 +186,8 @@ import functools as _functools
 _mock_bash.functools = _functools  # agents use `from bash import *` then `functools.wraps`
 _mock_bash.in_bash = lambda f: f  # decorator passthrough
 _mock_bash.__all__ = ['log', 'bash_roe', 'bash_ro', 'bash_r', 'bash_o',
-                       'bash_errorout', 'bash', 'in_bash', 'functools', 'linux']
+                       'bash_errorout', 'bash', 'in_bash', 'functools', 'linux',
+                       'shell']
 sys.modules['zstacklib.utils.bash'] = _mock_bash
 
 # ============================================================================
@@ -215,6 +216,7 @@ for _pkg, _path in _pkg_paths.items():
 
 # --- Functional mock for linux module ---
 _mock_linux = MagicMock()
+_mock_linux.get_libvirt_version.return_value = '6.0.0'
 _mock_linux.HOST_ARCH = 'x86_64'
 _mock_linux.DEB_BASED_OS = ['ubuntu', 'debian']
 _mock_linux.DIST_WITH_RPM_DEB = ['centos', 'redhat', 'ubuntu', 'debian']
@@ -311,6 +313,20 @@ _SIMPLE_MOCKS = [
 for _mod_name in _SIMPLE_MOCKS:
     if _mod_name not in sys.modules:
         sys.modules[_mod_name] = MagicMock()
+
+# bash module needs shell reference so `from zstacklib.utils.bash import *` brings
+# `shell` into agent module namespaces (e.g. host_plugin.py uses bare `shell.call()`)
+_mock_bash.shell = sys.modules['zstacklib.utils.shell']
+
+# lock module needs passthrough decorators — plain MagicMock decorators break when
+# their internal state is modified by earlier tests (e.g. @lock.lock('lighttpd'))
+def _passthrough_lock(*_args, **_kwargs):
+    if _args and callable(_args[0]) and len(_args) == 1 and not _kwargs:
+        return _args[0]
+    return lambda func: func
+_mock_lock = sys.modules['zstacklib.utils.lock']
+_mock_lock.lock = _passthrough_lock
+_mock_lock.file_lock = _passthrough_lock
 
 # sizeunit needs get_size to be callable
 sys.modules['zstacklib.utils.sizeunit'].get_size = lambda s: int(s) if isinstance(s, (int, float)) else 0
