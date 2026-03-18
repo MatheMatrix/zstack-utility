@@ -2278,11 +2278,13 @@ class VmVolumesRecoveryTask(plugin.TaskDaemon):
 
 
 @linux.retry(times=3, sleep_time=1)
-def get_connect(src_host_ip):
-    conn = libvirt.open('qemu+tcp://{0}/system'.format(src_host_ip))
+def get_connect(src_host_ip, use_tls=False):
+    proto = 'qemu+tls' if use_tls else 'qemu+tcp'
+    uri = '{0}://{1}/system'.format(proto, src_host_ip)
+    conn = libvirt.open(uri)
     if conn is None:
-        logger.warn('unable to connect qemu on host {0}'.format(src_host_ip))
-        raise kvmagent.KvmError('unable to connect qemu on host %s' % (src_host_ip))
+        logger.warn('unable to connect qemu on host {0} via {1}'.format(src_host_ip, proto))
+        raise kvmagent.KvmError('unable to connect qemu on host %s via %s' % (src_host_ip, proto))
     return conn
 
 
@@ -4185,7 +4187,10 @@ class Vm(object):
     def wait_live_migrate(cmd):
         def check_migrated(task_name, api_id):
             r = TaskResult()
-            with contextlib.closing(get_connect(cmd.destHostIp)) as conn:
+            # TLS certs are issued for management IP; use it for the
+            # control-plane libvirt connection when available.
+            dest_ctrl_ip = getattr(cmd, 'destHostManagementIp', None) or cmd.destHostIp
+            with contextlib.closing(get_connect(dest_ctrl_ip, getattr(cmd, 'useTls', False))) as conn:
                 dst_vm = get_vm_by_uuid(cmd.vmUuid, False, conn)
                 if not dst_vm or dst_vm.state != Vm.VM_STATE_RUNNING:
                     r.fail("cannot find task[name=%s] for api[%s] and "
@@ -4212,7 +4217,12 @@ class Vm(object):
             # set the hostname, otherwise the migration will fail
             shell.call('hostname %s.zstack.org' % hostname)
 
-        destUrl = "qemu+tcp://{0}/system".format(cmd.destHostManagementIp)
+        use_tls = getattr(cmd, 'useTls', False)
+        migrate_proto = 'qemu+tls' if use_tls else 'qemu+tcp'
+        destUrl = "{0}://{1}/system".format(migrate_proto, cmd.destHostManagementIp)
+        # Data channel URI must always use tcp:// scheme.
+        # When TLS is enabled, encryption is activated via VIR_MIGRATE_TLS flag,
+        # not by changing the URI scheme.
         tcpUri = "tcp://{0}".format(cmd.destHostIp)
         bandwidth = cmd.bandwidth if cmd.bandwidth > 0 else 0
 
@@ -4262,6 +4272,9 @@ class Vm(object):
 
         if cmd.useNuma or storage_migration_required:
             flag |= libvirt.VIR_MIGRATE_PERSIST_DEST
+
+        if use_tls and hasattr(libvirt, 'VIR_MIGRATE_TLS'):
+            flag |= libvirt.VIR_MIGRATE_TLS
 
         stage = get_task_stage(cmd)
         timeout = get_timeout(cmd)
@@ -8675,7 +8688,9 @@ class VmPlugin(kvmagent.KvmAgent):
 
             self._record_operation(cmd.vmUuid, self.VM_OP_MIGRATE)
             if cmd.migrateFromDestination:
-                with contextlib.closing(get_connect(cmd.srcHostIp)) as conn:
+                # Use management IP for TLS cert matching (SAN binds to management IP).
+                src_ctrl_ip = getattr(cmd, 'srcHostManagementIp', None) or cmd.srcHostIp
+                with contextlib.closing(get_connect(src_ctrl_ip, getattr(cmd, 'useTls', False))) as conn:
                     vm = get_vm_by_uuid(cmd.vmUuid, False, conn)
                     if vm is None:
                         logger.warn('unable to find vm {0} on host {1}'.format(cmd.vmUuid, cmd.srcHostIp))
@@ -9051,15 +9066,23 @@ class VmPlugin(kvmagent.KvmAgent):
         logger.info("completed copying %s:%s to %s ..." % (vmUuid, disk_name, task_spec.newVolume.installPath))
         return True, None
 
-    def _migrate_vm_with_block(self, vmUuid, dstHostIp, volumeDicts):
+    def _migrate_vm_with_block(self, vmUuid, dstHostIp, volumeDicts, use_tls=False, dstHostManagementIp=None):
         vm = get_vm_by_uuid(vmUuid)
         disks, fpath = self._build_domain_new_xml(vm, volumeDicts)
 
-        dst = 'qemu+tcp://{0}/system'.format(dstHostIp)
+        migrate_proto = 'qemu+tls' if use_tls else 'qemu+tcp'
+        # TLS control-plane URI must use management IP (cert SAN matches
+        # management address); data-plane uses tls:// when TLS is enabled.
+        dst_ctrl_ip = dstHostManagementIp or dstHostIp
+        dst = '{0}://{1}/system'.format(migrate_proto, dst_ctrl_ip)
+        # Data channel URI must always use tcp:// scheme.
+        # When TLS is enabled, virsh --tls flag handles encryption.
         migurl = 'tcp://{0}'.format(dstHostIp)
         diskstr = ','.join(disks)
 
         flags = "--live --p2p --copy-storage-all --persistent"
+        if use_tls:
+            flags += " --tls"
         if get_libvirt_major_version() >= 4:
             if any(s.startswith('/dev/') for s in vm.list_blk_sources()):
                 flags += " --unsafe"
