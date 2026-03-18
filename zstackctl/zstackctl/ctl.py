@@ -1635,8 +1635,8 @@ def find_process_by_cmdline(keyword):
     pids = [pid for pid in os.listdir('/proc') if pid.isdigit()]
     for pid in pids:
         try:
-            with open(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
-                cmdline = fd.read()
+            with open(os.path.join('/proc', pid, 'cmdline'), 'rb') as fd:
+                cmdline = fd.read().decode('utf-8', errors='replace')
 
             if keyword not in cmdline:
                 continue
@@ -4860,10 +4860,10 @@ class InstallHACmd(Command):
         host_list = "%s,%s" % (self.host1_post_info.host, self.host2_post_info.host)
         if args.host3_info is not False:
             host_list = "%s,%s,%s" % (self.host1_post_info.host, self.host2_post_info.host, self.host3_post_info.host)
-        ha_conf_file = open(InstallHACmd.conf_file, 'w')
-        ha_info = {'vip':args.vip, 'gateway':self.host1_post_info.gateway_ip, 'bridge_name':InstallHACmd.bridge,
-                   'mevoco_url':'http://' + args.vip + ':8888', 'cluster_url':'http://'+ args.vip +':9132/zstack', 'host_list':host_list}
-        yaml.dump(ha_info, ha_conf_file, default_flow_style=False)
+        with open(InstallHACmd.conf_file, 'w') as ha_conf_file:
+            ha_info = {'vip':args.vip, 'gateway':self.host1_post_info.gateway_ip, 'bridge_name':InstallHACmd.bridge,
+                       'mevoco_url':'http://' + args.vip + ':8888', 'cluster_url':'http://'+ args.vip +':9132/zstack', 'host_list':host_list}
+            yaml.dump(ha_info, ha_conf_file, default_flow_style=False)
 
         command = "mkdir -p %s" % InstallHACmd.conf_dir
         run_remote_command(command, self.host2_post_info)
@@ -11651,7 +11651,7 @@ class TimelineCmd(Command):
             if not os.path.isfile(log_file):
                 raise CtlError("The log file %s was not found!" % args.log_file)
             if log_file.endswith('.gz'):
-                f = gzip.open(log_file, 'r')
+                f = gzip.open(log_file, 'rt')
             else:
                 f = open(log_file, 'r')
 

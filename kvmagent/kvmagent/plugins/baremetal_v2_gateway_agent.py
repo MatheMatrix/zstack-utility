@@ -400,6 +400,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             uuid=instance_obj.uuid)
 
         with open(self.DNSMASQ_HOSTS_PATH, 'a+') as f:
+            f.seek(0)
             if host not in f.read():
                 f.write(host)
 
@@ -409,7 +410,8 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
                     mac_addr=info.provision_mac,
                     ip_addr=info.provision_ip,
                     uuid=instance_obj.uuid)
-                with open(self.DNSMASQ_HOSTS_PATH, 'a+r') as f:
+                with open(self.DNSMASQ_HOSTS_PATH, 'a+') as f:
+                    f.seek(0)
                     if host not in f.read():
                         f.write(host)
 
@@ -418,6 +420,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             uuid=instance_obj.uuid,
             tftp_server_address=instance_obj.gateway_ip)
         with open(self.DNSMASQ_OPTS_PATH, 'a+') as f:
+            f.seek(0)
             if opts not in f.read():
                 f.write(opts)
                 f.write('\n')

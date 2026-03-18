@@ -305,7 +305,6 @@ def get_boundary(entity):
         b = b.strip()
         if b == ib:
             break
-    # TODO(py3)
     return ib.decode('ascii')
 
 

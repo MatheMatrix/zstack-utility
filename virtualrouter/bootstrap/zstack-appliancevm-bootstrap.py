@@ -263,9 +263,9 @@ class VRBootStrap(object):
     def read_bootstrap_info(self):
         ret = {}
 
-        with open(self.VIRTIO_PORT_PATH, 'r') as fd:
+        with open(self.VIRTIO_PORT_PATH, 'rb') as fd:
             def read_info(data):
-                text = fd.read()
+                text = fd.read().decode('utf-8', errors='replace')
                 if not text:
                     return False
                 

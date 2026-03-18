@@ -2165,8 +2165,8 @@ def find_process_by_cmdline(cmdlines):
     pids = [pid for pid in os.listdir('/proc') if pid.isdigit()]
     for pid in pids:
         try:
-            with open(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
-                cmdline = fd.read()
+            with open(os.path.join('/proc', pid, 'cmdline'), 'rb') as fd:
+                cmdline = fd.read().decode('utf-8', errors='replace')
 
             is_find = True
             for c in cmdlines:
@@ -2188,8 +2188,8 @@ def find_all_process_by_cmdline(cmdlines):
     pids = [pid for pid in os.listdir('/proc') if pid.isdigit()]
     for pid in pids:
         try:
-            with open(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
-                cmdline = fd.read()
+            with open(os.path.join('/proc', pid, 'cmdline'), 'rb') as fd:
+                cmdline = fd.read().decode('utf-8', errors='replace')
 
             is_find = True
             for c in cmdlines:
@@ -2220,8 +2220,8 @@ def find_process_by_command(comm, cmdlines=None):
             if not cmdlines:
                 return pid
 
-            with open(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
-                cmdline = fd.read().replace('\x00', ' ').strip()
+            with open(os.path.join('/proc', pid, 'cmdline'), 'rb') as fd:
+                cmdline = fd.read().replace(b'\x00', b' ').decode('utf-8', errors='replace').strip()
                 if all(c in cmdline for c in cmdlines):
                     return pid
         except (IOError, OSError):
@@ -2245,8 +2245,8 @@ def find_process_list_by_command(comm, cmdlines=None):
                 match_pids.append(pid)
                 continue
 
-            with open(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
-                cmdline = fd.read().replace('\x00', ' ').strip()
+            with open(os.path.join('/proc', pid, 'cmdline'), 'rb') as fd:
+                cmdline = fd.read().replace(b'\x00', b' ').decode('utf-8', errors='replace').strip()
                 if all(c in cmdline for c in cmdlines):
                     match_pids.append(pid)
                     continue
@@ -2278,7 +2278,8 @@ def property_file_to_list(filepath):
     return ps
 
 def get_command_by_pid(pid):
-    return open(os.path.join('/proc', str(pid), 'cmdline'), 'r').read()
+    with open(os.path.join('/proc', str(pid), 'cmdline'), 'rb') as fd:
+        return fd.read().decode('utf-8', errors='replace')
 
 def get_netmask_of_nic(nic_name):
     nic_addrs = iproute.query_addresses_by_ifname(nic_name)
@@ -3219,7 +3220,7 @@ def write_uuids(type, str):
 
 def get_max_vm_ipa_size():
     try:
-        with open(KVM_DEVICE, 'rwb') as kvm_fd:
+        with open(KVM_DEVICE, 'r+b') as kvm_fd:
             ipa_max = fcntl.ioctl(kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_ARM_VM_IPA_SIZE)
             ipa_max = ipa_max if (ipa_max > 0) else DEFAULT_VM_IPA_SIZE
             return pow(2, ipa_max)
@@ -3239,7 +3240,7 @@ def hdev_get_max_transfer_via_segments(blk_path):
         os.path.realpath(blk_path))
     if not os.path.exists(segments_path):
         return 0
-    with open(segments_path, 'ro') as f:
+    with open(segments_path, 'r') as f:
         max_segments = int(f.read())
     return max_segments * resource.getpagesize()
 
@@ -3296,7 +3297,7 @@ def compare_segmented_xxhash(src_path, dst_path, total_size, raise_exception=Fal
         return True
 
     seg_size = 2*1024**3 ## 2G
-    seg_offset = [total_size/5*x for x in range(0, 5)]
+    seg_offset = [total_size//5*x for x in range(0, 5)]
     def _get_seg_xxhash(fd, offset):
         hasher = xxhash.xxh64()
         fd.seek(offset)
@@ -3306,8 +3307,8 @@ def compare_segmented_xxhash(src_path, dst_path, total_size, raise_exception=Fal
             buf = fd.read(blocksize)
         return hasher.hexdigest()
 
-    with open(src_path, 'r') as srcFile:
-        with open(dst_path, 'r') as dstFile:
+    with open(src_path, 'rb') as srcFile:
+        with open(dst_path, 'rb') as dstFile:
             for offset in seg_offset:
                 src_hash = _get_seg_xxhash(srcFile, offset)
                 dst_hash = _get_seg_xxhash(dstFile, offset)
