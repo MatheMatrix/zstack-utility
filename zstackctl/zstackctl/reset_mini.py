@@ -96,7 +96,9 @@ def bash_roe(cmd, errorout=False, ret_code=0, pipe_fail=False):
     p = get_process("/bin/bash", pipe=True)
     if pipe_fail:
         cmd = 'set -o pipefail; %s' % cmd
-    o, e = p.communicate(cmd)
+    o, e = p.communicate(cmd.encode())
+    o = o.decode() if o else ''
+    e = e.decode() if e else ''
     r = p.returncode
 
     __BASH_DEBUG_INFO__ = ctx.get('__BASH_DEBUG_INFO__')
