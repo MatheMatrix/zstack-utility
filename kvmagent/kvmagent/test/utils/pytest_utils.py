@@ -20,11 +20,17 @@ except ImportError:
     _HAS_DEPS = False
 
 
-class PytestExtension(object):
-    """Base class for integration test cases.
+# Detect if running inside ztest nested VM (zguest) or local pytest
+_IN_ZTEST = os.path.exists('/root/.zguest') or os.environ.get('ZTEST_MODE') == '1'
 
-    Formerly used os._exit() to signal pass/fail to ztest.
-    Now lets pytest handle process lifecycle normally.
+Out_flag = True
+
+
+class PytestExtension(object):
+    """Base class for ztest integration test cases.
+
+    In ztest mode: uses os._exit(0/1) to signal pass/fail to ztest framework.
+    In local pytest mode: lets pytest handle process lifecycle normally.
     """
 
     cov = None
@@ -71,17 +77,28 @@ class PytestExtension(object):
 
     def teardown_class(self):
         self.stop_coverage()
-        # No longer calls os._exit() — pytest controls the process lifecycle
+
+        if _IN_ZTEST:
+            if Out_flag:
+                os._exit(0)
+            os._exit(1)
 
 
 def ztest_decorater(func):
-    """Decorator formerly used to track pass/fail for ztest.
+    """Decorator that tracks pass/fail for ztest framework.
 
-    Now simplified to a pass-through — pytest handles test result collection.
-    Kept for backwards compatibility so existing test files don't need changes.
+    In ztest mode: sets Out_flag so teardown_class knows the result.
+    In local pytest mode: pass-through, pytest handles results.
     """
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
+        global Out_flag
+        if _IN_ZTEST:
+            last_out_flag = Out_flag
+            Out_flag = False
+            func(*args, **kwargs)
+            Out_flag = last_out_flag
+        else:
+            return func(*args, **kwargs)
 
     return wrapper
