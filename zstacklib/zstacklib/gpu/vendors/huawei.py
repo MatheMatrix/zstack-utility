@@ -667,9 +667,3 @@ class Huawei(GPUBase):
         """
         # Huawei NPU does not support SR-IOV
         return False, {}
-
-    @classmethod
-    def post_process_pci_device(cls, pci_device_to):
-        """Huawei NPU hides the raw device field, keeps productName as name."""
-        if hasattr(pci_device_to, 'name') and pci_device_to.name:
-            pci_device_to.device = "-"
