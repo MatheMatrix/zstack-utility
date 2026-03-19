@@ -1,6 +1,7 @@
 import os
 import os.path
 import platform
+import json
 
 from kvmagent import kvmagent
 from zstacklib.utils import jsonobject
