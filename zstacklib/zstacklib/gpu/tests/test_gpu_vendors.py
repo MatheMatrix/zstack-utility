@@ -439,6 +439,56 @@ Power Dissipation : 150 W
         candidates = Huawei.get_pci_only_candidates(device_ids, device_names)
         self.assertEqual(candidates, [])
 
+    def test_post_process_preserves_product_name_in_device(self):
+        """ZSTAC-83466: When productName is available, device should keep productName
+        after post_process_pci_device_by_vendor (not be overwritten to '-').
+
+        The processing chain in _gpu_device_processor:
+        1. lspci collects raw device (e.g. 'Device [d500]')
+        2. gpu_info_map has productName -> device = productName
+        3. post_process_pci_device_by_vendor is called last
+
+        Previously step 3 forced device='-', losing the productName from step 2.
+        """
+        from zstacklib.utils.gpu import post_process_pci_device_by_vendor
+
+        class FakePciDeviceTO(object):
+            pass
+
+        to = FakePciDeviceTO()
+        to.vendor = "Huawei"
+        # Simulate step 2: productName was set as device/name
+        to.device = "Atlas 300T A2"
+        to.name = "Atlas 300T A2"
+
+        post_process_pci_device_by_vendor(to, "Huawei")
+
+        self.assertEqual(to.device, "Atlas 300T A2")
+        self.assertEqual(to.name, "Atlas 300T A2")
+
+    def test_post_process_preserves_lspci_raw_device(self):
+        """ZSTAC-83466: When no productName, device should keep lspci raw value
+        after post_process_pci_device_by_vendor (not be overwritten to '-').
+
+        This covers the case where npu-smi cannot retrieve productName,
+        so device retains the lspci original value like 'Device [d500]'.
+        """
+        from zstacklib.utils.gpu import post_process_pci_device_by_vendor
+
+        class FakePciDeviceTO(object):
+            pass
+
+        to = FakePciDeviceTO()
+        to.vendor = "Huawei"
+        # Simulate: no productName, lspci raw value kept
+        to.device = "Device [d500]"
+        to.name = "Huawei_Device [d500]"
+
+        post_process_pci_device_by_vendor(to, "Huawei")
+
+        self.assertEqual(to.device, "Device [d500]")
+        self.assertEqual(to.name, "Huawei_Device [d500]")
+
 
 class TestHaiguangGetPciOnlyCandidates(unittest.TestCase):
     """Test Haiguang get_pci_only_candidates."""
