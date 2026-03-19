@@ -660,7 +660,7 @@ def copy_zs_scripts():
 @with_arch(todo_list=['x86_64'], host_arch=host_info.host_arch)
 def copy_tensor_fusion_worker():
     """copy tensor-fusion-worker binary from mn_node to host_node"""
-    _src = '/opt/zstack-dvd/{}/{}/scripts/tensor-fusion-worker'.format(host_info.host_arch, releasever)
+    _src = '/opt/zstack-dvd/{}/{}/tensor-fusion-worker'.format(host_info.host_arch, releasever)
     if os.path.exists(_src):
         _dst = '/usr/local/bin/tensor-fusion-worker'
         copy_to_remote(_src, _dst, "mode=755", host_post_info)
