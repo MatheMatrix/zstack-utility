@@ -1,5 +1,6 @@
 import os
 import re
+import traceback
 
 from kvmagent import kvmagent
 from zstacklib.utils import http
@@ -389,21 +390,19 @@ class DesiredStateBuilder(object):
                 bridge_mappings.append('%s:%s' % (physical_network, br_name))
 
         # OVS external_ids (global)
-        ovn_config = getattr(cmd, 'ovnConfig', None)
-        if ovn_config:
-            for attr, key in [('systemId', 'system-id'),
-                              ('ovnRemote', 'ovn-remote'),
-                              ('encapType', 'ovn-encap-type')]:
-                val = getattr(ovn_config, attr, None)
-                if val:
-                    state.ovs_external_ids[key] = val
+        # system-id = hostUuid
+        if state.host_uuid:
+            state.ovs_external_ids['system-id'] = state.host_uuid
 
-        # Fallback: construct ovn-remote from controllerAddress if not set by ovnConfig
-        if 'ovn-remote' not in state.ovs_external_ids:
-            controller_addrs = getattr(cmd, 'controllerAddress', None)
-            if controller_addrs:
-                remote_str = ','.join('tcp:%s:6642' % addr for addr in controller_addrs)
-                state.ovs_external_ids['ovn-remote'] = remote_str
+        # ovn-remote from controllerAddress
+        controller_addrs = getattr(cmd, 'controllerAddress', None)
+        if controller_addrs:
+            remote_str = ','.join('tcp:%s:6642' % addr for addr in controller_addrs)
+            state.ovs_external_ids['ovn-remote'] = remote_str
+
+        # ovn-encap-type = geneve when overlay transport zone exists
+        if encap_ip:
+            state.ovs_external_ids['ovn-encap-type'] = 'geneve'
 
         if encap_ip:
             state.ovs_external_ids['ovn-encap-ip'] = encap_ip
@@ -1085,89 +1084,95 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                     if r2 != 0:
                         logger.warn('delete stale vnic %s failed: %s' % (vnic, o2))
 
-    @kvmagent.replyerror
     @lock.lock('ovs_provision')
     @bash.in_bash
     def provision(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ProvisionResponse()
+        dpdk_bound_pci_list = None
+        try:
+            cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
-        # Unwrap spec: hostSwitches, globalConfig etc. are nested under spec
-        spec = cmd.spec
-        for key in ('hostSwitches', 'globalConfig', 'ovnConfig',
-                    'dpdkConfig', 'restoreNicPciAddressList'):
-            val = getattr(spec, key, None)
-            if val is not None:
-                setattr(cmd, key, val)
+            # Unwrap spec: hostSwitches, globalConfig etc. are nested under spec
+            spec = cmd.spec
+            for key in ('hostUuid', 'configVersion',
+                        'hostSwitches', 'globalConfig', 'controllerAddress',
+                        'dpdkConfig', 'restoreNicPciAddressList'):
+                val = getattr(spec, key, None)
+                if val is not None:
+                    setattr(cmd, key, val)
 
-        logger.info('received OVS provision request, configVersion=%s' % cmd.configVersion)
+            rsp.hostUuid = cmd.hostUuid
+            rsp.cloudCallbackUrl = getattr(cmd, 'cloudCallbackUrl', None)
+            rsp.cloudTaskUuid = getattr(cmd, 'cloudTaskUuid', None)
+            rsp.triggerUrl = getattr(cmd, 'triggerUrl', None)
 
-        if not cmd.hostUuid:
-            raise Exception('hostUuid is required')
-        if cmd.configVersion is None:
-            raise Exception('configVersion is required')
+            logger.info('received OVS provision request, configVersion=%s' % cmd.configVersion)
 
-        desired_switches = cmd.hostSwitches if cmd.hostSwitches else []
-        dpdk_mode = any((getattr(sw, 'type_', None) or getattr(sw, 'type', None)) == 'dpdk'
-                        for sw in desired_switches)
+            if not cmd.hostUuid:
+                raise Exception('hostUuid is required')
+            if cmd.configVersion is None:
+                raise Exception('configVersion is required')
 
-        # Ensure OVS/OVN packages are installed
-        vsctl = ovn.VsCtl()
-        r = bash.bash_r('which ovs-vsctl')
-        if r != 0:
-            logger.info('ovs-vsctl not found, installing OVS/OVN packages')
-            vsctl.installOvsPackages()
+            desired_switches = cmd.hostSwitches if cmd.hostSwitches else []
+            dpdk_mode = any((getattr(sw, 'type_', None) or getattr(sw, 'type', None)) == 'dpdk'
+                            for sw in desired_switches)
 
-        # --- Resolve dpdk_config ---
-        # Level 1: normalize spec.dpdkConfig into agent internal field names
-        raw_dpdk_config = getattr(cmd, 'dpdkConfig', None)
-        dpdk_config = (self._normalize_dpdk_config(raw_dpdk_config)
-                       if raw_dpdk_config else None)
-        if dpdk_config:
-            cmd.dpdkConfig = dpdk_config
+            # Ensure OVS/OVN packages are installed
+            vsctl = ovn.VsCtl()
+            r = bash.bash_r('which ovs-vsctl')
+            if r != 0:
+                logger.info('ovs-vsctl not found, installing OVS/OVN packages')
+                vsctl.installOvsPackages()
 
-        # Level 2: extract from per-switch dpdkConfig
-        if dpdk_mode and not dpdk_config:
-            for sw in desired_switches:
-                sw_type = getattr(sw, 'type_', None) or getattr(sw, 'type', None)
-                sw_dpdk_cfg = getattr(sw, 'dpdkConfig', None)
-                if sw_type == 'dpdk' and sw_dpdk_cfg:
-                    dpdk_config = self._normalize_dpdk_config(sw_dpdk_cfg)
-                    cmd.dpdkConfig = dpdk_config
-                    logger.info('extracted dpdkConfig from switch %s' % sw.name)
-                    break
-
-        # Auto-populate nicNamePciAddressMap if missing (fallback)
-        if dpdk_config and not getattr(dpdk_config, 'nicNamePciAddressMap', None):
-            nic_pci_map = self._build_nic_pci_map_from_uplink(desired_switches)
-            if nic_pci_map:
-                dpdk_config.nicNamePciAddressMap = nic_pci_map
-                logger.info('auto-discovered NIC PCI map for DPDK')
-
-        # Level 3: no dpdkConfig at all -- construct from defaults
-        if dpdk_mode and not dpdk_config:
-            nic_pci_map = self._build_nic_pci_map_from_uplink(desired_switches)
-            if nic_pci_map:
-                dpdk_config = DefaultDpdkConfig(nic_pci_map)
+            # --- Resolve dpdk_config ---
+            # Level 1: normalize spec.dpdkConfig into agent internal field names
+            raw_dpdk_config = getattr(cmd, 'dpdkConfig', None)
+            dpdk_config = (self._normalize_dpdk_config(raw_dpdk_config)
+                           if raw_dpdk_config else None)
+            if dpdk_config:
                 cmd.dpdkConfig = dpdk_config
-                logger.info('using default dpdkConfig with auto-discovered PCI map')
-            else:
-                logger.warn('dpdk mode requested but cannot determine NIC PCI addresses, '
-                            'falling back to kernel mode startup')
-                # Override switch types so DesiredStateBuilder produces
-                # datapath_type=system instead of netdev.
+
+            # Level 2: extract from per-switch dpdkConfig
+            if dpdk_mode and not dpdk_config:
                 for sw in desired_switches:
                     sw_type = getattr(sw, 'type_', None) or getattr(sw, 'type', None)
-                    if sw_type == 'dpdk':
-                        if hasattr(sw, 'type_'):
-                            sw.type_ = 'system'
-                        if hasattr(sw, 'type'):
-                            sw.type = 'system'
-                dpdk_mode = False
+                    sw_dpdk_cfg = getattr(sw, 'dpdkConfig', None)
+                    if sw_type == 'dpdk' and sw_dpdk_cfg:
+                        dpdk_config = self._normalize_dpdk_config(sw_dpdk_cfg)
+                        cmd.dpdkConfig = dpdk_config
+                        logger.info('extracted dpdkConfig from switch %s' % sw.name)
+                        break
 
-        nic_pci_map = getattr(dpdk_config, 'nicNamePciAddressMap', None) if dpdk_config else None
-        dpdk_bound_pci_list = None
+            # Auto-populate nicNamePciAddressMap if missing (fallback)
+            if dpdk_config and not getattr(dpdk_config, 'nicNamePciAddressMap', None):
+                nic_pci_map = self._build_nic_pci_map_from_uplink(desired_switches)
+                if nic_pci_map:
+                    dpdk_config.nicNamePciAddressMap = nic_pci_map
+                    logger.info('auto-discovered NIC PCI map for DPDK')
 
-        try:
+            # Level 3: no dpdkConfig at all -- construct from defaults
+            if dpdk_mode and not dpdk_config:
+                nic_pci_map = self._build_nic_pci_map_from_uplink(desired_switches)
+                if nic_pci_map:
+                    dpdk_config = DefaultDpdkConfig(nic_pci_map)
+                    cmd.dpdkConfig = dpdk_config
+                    logger.info('using default dpdkConfig with auto-discovered PCI map')
+                else:
+                    logger.warn('dpdk mode requested but cannot determine NIC PCI addresses, '
+                                'falling back to kernel mode startup')
+                    # Override switch types so DesiredStateBuilder produces
+                    # datapath_type=system instead of netdev.
+                    for sw in desired_switches:
+                        sw_type = getattr(sw, 'type_', None) or getattr(sw, 'type', None)
+                        if sw_type == 'dpdk':
+                            if hasattr(sw, 'type_'):
+                                sw.type_ = 'system'
+                            if hasattr(sw, 'type'):
+                                sw.type = 'system'
+                    dpdk_mode = False
+
+            nic_pci_map = getattr(dpdk_config, 'nicNamePciAddressMap', None) if dpdk_config else None
+
             if dpdk_config:
                 # ----------------------------------------------------------
                 # DPDK startup -- strictly follows ovn.py start_ovn_service
@@ -1260,104 +1265,161 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
 
             logger.info('OVS provision completed successfully, configVersion=%s' % cmd.configVersion)
             return jsonobject.dumps(rsp)
-        except Exception:
+        except Exception as e:
             if dpdk_bound_pci_list:
                 logger.error('OVS provision failed after binding NIC drivers, restoring PCI addresses: %s'
                              % dpdk_bound_pci_list)
                 restore_ret, restore_err = ovn.restoreNicDriver(dpdk_bound_pci_list)
                 if restore_ret != 0:
                     logger.error('failed to restore NIC drivers after provision failure: %s' % restore_err)
-            raise
+            content = traceback.format_exc()
+            logger.warn('OVS provision failed, hostUuid=%s, error=%s\n%s'
+                        % (getattr(rsp, 'hostUuid', None), str(e), content))
+            rsp.success = False
+            rsp.error = str(e)
+            return jsonobject.dumps(rsp)
 
-    @kvmagent.replyerror
     @lock.lock('ovs_provision')
     @bash.in_bash
     def deprovision(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = DeprovisionResponse()
-        rsp.hostUuid = cmd.hostUuid
-        rsp.cloudCallbackUrl = getattr(cmd, 'cloudCallbackUrl', None)
-        rsp.cloudTaskUuid = getattr(cmd, 'cloudTaskUuid', None)
-        rsp.triggerUrl = getattr(cmd, 'triggerUrl', None)
+        try:
+            cmd = jsonobject.loads(req[http.REQUEST_BODY])
+            rsp.hostUuid = cmd.hostUuid
+            rsp.cloudCallbackUrl = getattr(cmd, 'cloudCallbackUrl', None)
+            rsp.cloudTaskUuid = getattr(cmd, 'cloudTaskUuid', None)
+            rsp.triggerUrl = getattr(cmd, 'triggerUrl', None)
 
-        if not cmd.hostUuid:
-            raise Exception('hostUuid is required')
+            if not cmd.hostUuid:
+                raise Exception('hostUuid is required')
 
-        logger.info('received OVS deprovision request, hostUuid=%s' % cmd.hostUuid)
+            logger.info('received OVS deprovision request, hostUuid=%s' % cmd.hostUuid)
 
-        # 1. Stop ovn-controller
-        r, o, e = bash.bash_roe('systemctl stop ovn-controller')
-        if r != 0:
-            raise Exception('failed to stop ovn-controller: %s' % e)
-        logger.info('stopped ovn-controller')
-
-        # 2. Clear OVN external_ids from Open_vSwitch table
-        vsctl = ovn.VsCtl()
-        ovn_keys = ['ovn-remote', 'ovn-encap-type', 'ovn-encap-ip',
-                     'system-id', 'ovn-bridge-mappings',
-                     'ovn-bfd-min-tx', 'ovn-bfd-min-rx', 'ovn-bfd-mult']
-        failed_keys = []
-        for key in ovn_keys:
-            err, val = vsctl.getOvsExternalIdsConfig(key)
-            if not err and val is not None:
-                # For map-type columns, only key is needed to remove the entry
-                r, o, e = bash.bash_roe('ovs-vsctl remove Open_vSwitch . external_ids %s'
-                                        % key)
+            # helper: check if a systemd service is active
+            # Returns: 'active', 'inactive', or 'unknown'
+            #  - 'active'   : service is running
+            #  - 'inactive' : systemctl confirmed inactive/unknown/dead
+            #  - 'unknown'  : query itself failed (e.g. D-Bus error)
+            def _query_service_state(svc):
+                r, o, e = bash.bash_roe('systemctl is-active %s' % svc)
+                stdout = o.strip()
+                if stdout == 'active':
+                    return 'active'
+                if stdout in ('inactive', 'unknown', 'dead', 'failed'):
+                    return 'inactive'
+                # Non-zero exit with unexpected output treat as query failure
                 if r != 0:
-                    failed_keys.append(key)
-                    logger.warn('failed to remove OVN external_id %s: %s' % (key, e))
-        if failed_keys:
-            raise Exception('failed to clear OVN external_ids: %s' % failed_keys)
-        logger.info('cleared OVN external_ids')
+                    logger.warn('systemctl is-active %s returned exit=%d stdout=%r stderr=%r'
+                                % (svc, r, stdout, e.strip()))
+                    return 'unknown'
+                return 'inactive'
 
-        # 3. Delete all managed-by=zstack-agent bridges
-        br_names = vsctl.listBridges()
-        for br_name in br_names:
-            ext_ids = vsctl.getBridgeExternalIds(br_name)
-            if ext_ids.get(MANAGED_BY_KEY) == MANAGED_BY_VALUE:
-                _validate_ovs_name(br_name)
-                r, o, e = bash.bash_roe('ovs-vsctl --if-exists del-br %s' % br_name)
+            # helper: check if ovsdb-server is reachable
+            def _is_ovsdb_reachable():
+                r, o, e = bash.bash_roe('timeout 5 ovs-vsctl show')
+                return r == 0
+
+            # 1. Stop ovn-controller
+            ovn_ctl_state = _query_service_state('ovn-controller')
+            if ovn_ctl_state == 'active':
+                r, o, e = bash.bash_roe('systemctl stop ovn-controller')
                 if r != 0:
-                    raise Exception('failed to delete bridge %s: %s' % (br_name, e))
-                logger.info('deleted managed bridge %s' % br_name)
+                    raise Exception('failed to stop ovn-controller: %s' % e)
+                logger.info('stopped ovn-controller')
+            elif ovn_ctl_state == 'inactive':
+                logger.info('ovn-controller already stopped, skipping')
+            else:
+                raise Exception('cannot determine ovn-controller state, aborting deprovision')
 
-        # 4. Discover DPDK-bound NICs before stopping OVS (so we know what to restore)
-        restore_pci_list = getattr(cmd, 'restoreNicPciAddressList', None) or []
-        dpdk_bound_nics = ovn.getAllVfioPciNic()
-        if dpdk_bound_nics:
-            auto_pci = [nic.pciAddress for nic in dpdk_bound_nics]
-            existing = set(restore_pci_list)
-            for pci in auto_pci:
-                if pci not in existing:
-                    restore_pci_list.append(pci)
-            logger.info('found %d DPDK-bound NICs to restore: %s'
-                        % (len(restore_pci_list), restore_pci_list))
+            # 2. Clear OVN external_ids from Open_vSwitch table
+            # 3. Delete all managed-by=zstack-agent bridges
+            if _is_ovsdb_reachable():
+                vsctl = ovn.VsCtl()
+                failed_keys = []
+                for key in MANAGED_OVS_EXTERNAL_ID_KEYS:
+                    err, val = vsctl.getOvsExternalIdsConfig(key)
+                    if not err and val is not None:
+                        r, o, e = bash.bash_roe('ovs-vsctl remove Open_vSwitch . external_ids %s'
+                                                % key)
+                        if r != 0:
+                            failed_keys.append(key)
+                            logger.warn('failed to remove OVN external_id %s: %s' % (key, e))
+                if failed_keys:
+                    raise Exception('failed to clear OVN external_ids: %s' % failed_keys)
+                logger.info('cleared OVN external_ids')
 
-        # 5. Stop openvswitch (includes ovs-vswitchd, and ovsdb-server on
-        #    distros that bundle them into a single service unit)
-        r, o, e = bash.bash_roe('systemctl stop openvswitch')
-        if r != 0:
-            raise Exception('failed to stop openvswitch: %s' % e)
-        logger.info('stopped openvswitch')
+                br_names = vsctl.listBridges()
+                for br_name in br_names:
+                    ext_ids = vsctl.getBridgeExternalIds(br_name)
+                    if ext_ids.get(MANAGED_BY_KEY) == MANAGED_BY_VALUE:
+                        _validate_ovs_name(br_name)
+                        r, o, e = bash.bash_roe('ovs-vsctl --if-exists del-br %s' % br_name)
+                        if r != 0:
+                            raise Exception('failed to delete bridge %s: %s' % (br_name, e))
+                        logger.info('deleted managed bridge %s' % br_name)
+            else:
+                logger.info('ovsdb not reachable, skipping external_ids cleanup and bridge deletion')
 
-        # 6. Stop ovsdb-server if it is a separate service unit
-        r, o, e = bash.bash_roe('systemctl stop ovsdb-server')
-        if r != 0:
-            logger.info('ovsdb-server.service not available, '
-                        'already stopped by openvswitch')
-        else:
-            logger.info('stopped ovsdb-server')
+            # 4. Discover DPDK-bound NICs before stopping OVS (so we know what to restore)
+            restore_pci_list = getattr(cmd, 'restoreNicPciAddressList', None) or []
+            dpdk_bound_nics = ovn.getAllVfioPciNic()
+            if dpdk_bound_nics:
+                auto_pci = [nic.pciAddress for nic in dpdk_bound_nics]
+                existing = set(restore_pci_list)
+                for pci in auto_pci:
+                    if pci not in existing:
+                        restore_pci_list.append(pci)
+                logger.info('found %d DPDK-bound NICs to restore: %s'
+                            % (len(restore_pci_list), restore_pci_list))
 
-        # 7. Restore NIC drivers from DPDK to kernel drivers
-        if restore_pci_list:
-            logger.info('restoring NIC drivers for PCI addresses: %s' % restore_pci_list)
-            r, e = ovn.restoreNicDriver(restore_pci_list)
-            if r != 0:
-                raise Exception('failed to restore NIC drivers: %s' % e)
-            logger.info('NIC driver restoration completed')
+            # 5. Stop openvswitch
+            ovs_state = _query_service_state('openvswitch')
+            if ovs_state == 'active':
+                r, o, e = bash.bash_roe('systemctl stop openvswitch')
+                if r != 0:
+                    raise Exception('failed to stop openvswitch: %s' % e)
+                logger.info('stopped openvswitch')
+            elif ovs_state == 'inactive':
+                logger.info('openvswitch already stopped, skipping')
+            else:
+                raise Exception('cannot determine openvswitch state, aborting deprovision')
 
-        logger.info('OVS deprovision completed, hostUuid=%s' % cmd.hostUuid)
-        return jsonobject.dumps(rsp)
+            # 6. Stop ovsdb-server if it is a separate service unit
+            ovsdb_state = _query_service_state('ovsdb-server')
+            if ovsdb_state == 'active':
+                r, o, e = bash.bash_roe('systemctl stop ovsdb-server')
+                if r != 0:
+                    # Non-zero may be a real failure, or a race where
+                    # stopping openvswitch already took ovsdb-server down.
+                    # Re-check the actual state before deciding.
+                    recheck = _query_service_state('ovsdb-server')
+                    if recheck != 'inactive':
+                        raise Exception('failed to stop ovsdb-server: %s' % e)
+                    logger.info('ovsdb-server already inactive after stop attempt (likely cascaded), continuing')
+                else:
+                    logger.info('stopped ovsdb-server')
+            elif ovsdb_state == 'inactive':
+                logger.info('ovsdb-server already stopped, skipping')
+            else:
+                raise Exception('cannot determine ovsdb-server state, aborting deprovision')
+
+            # 7. Restore NIC drivers from DPDK to kernel drivers
+            if restore_pci_list:
+                logger.info('restoring NIC drivers for PCI addresses: %s' % restore_pci_list)
+                r, e = ovn.restoreNicDriver(restore_pci_list)
+                if r != 0:
+                    raise Exception('failed to restore NIC drivers: %s' % e)
+                logger.info('NIC driver restoration completed')
+
+            logger.info('OVS deprovision completed, hostUuid=%s' % cmd.hostUuid)
+            return jsonobject.dumps(rsp)
+        except Exception as e:
+            content = traceback.format_exc()
+            logger.warn('OVS deprovision failed, hostUuid=%s, error=%s\n%s'
+                        % (getattr(rsp, 'hostUuid', None), str(e), content))
+            rsp.success = False
+            rsp.error = str(e)
+            return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
     @lock.lock('ovs_provision')
