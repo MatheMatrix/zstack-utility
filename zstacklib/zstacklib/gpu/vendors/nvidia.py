@@ -3,6 +3,7 @@
 NVIDIA GPU Vendor Implementation (Python 2/3 Compatible)
 """
 
+import os
 import threading
 
 from zstacklib.utils import log
@@ -33,6 +34,7 @@ class NVIDIA(GPUBase):
     VENDOR_IDS = {"10de"}
     PCI_NAME_KEYWORDS = {"NVIDIA Corporation"}
     CLI_TOOL = "nvidia-smi"
+    TENSORFUSION_WORKER_BINARY = "/usr/local/bin/tensor-fusion-worker"
 
     # Device types recognized as GPU
     DEVICE_TYPES = {"3D controller", "VGA compatible controller"}
@@ -435,25 +437,14 @@ class NVIDIA(GPUBase):
 
         # Check if nvidia vgpu is supported by current device
         r, o, e = bash_roe("nvidia-smi vgpu -i %s -v -c" % addr)
-        if r != 0:
-            # SR-IOV backed vGPU cards (e.g. L20, RTX8000) report creatable types
-            # only after VFs are created. Fall back to supported-types query which
-            # works on the PF regardless of VF state. ZSTAC-67411 / ZSTAC-81403
-            r2, _, _ = bash_roe("nvidia-smi vgpu -i %s -s" % addr)
-            if r2 != 0:
+        if r != 0 or not o or "No supported devices" in o:
+            # SR-IOV backed vGPU cards (e.g. L20, RTX8000) may not report
+            # creatable types on the PF before VFs are created. Fall back to
+            # supported-types query which still reflects device capability.
+            rs, support, _ = bash_roe("nvidia-smi vgpu -i %s -s" % addr)
+            if rs != 0 or not support or "No supported devices" in support:
                 return False, {}
-            capability_info = {}
-            if legacy_mdev_dir_exists:
-                _, support, _ = bash_roe("nvidia-smi vgpu -i %s -s | grep -v %s" %
-                                         (addr, addr))
-                _, creatable, _ = bash_roe("nvidia-smi vgpu -i %s -c | grep -v %s" %
-                                           (addr, addr))
-                capability_info['virtStatus'] = ("VFIO_MDEV_VIRTUALIZED"
-                                                 if support != creatable
-                                                 else "VFIO_MDEV_VIRTUALIZABLE")
-            else:
-                capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
-            return True, capability_info
+            o = support
 
         mdev_specs = []
         for line in o.splitlines()[1:]:
@@ -594,3 +585,130 @@ class NVIDIA(GPUBase):
             return True, capability_info
         else:
             return False, {}
+
+    @classmethod
+    def detect_tensorfusion_capability(cls, pci_device_to):
+        """
+        Detect NVIDIA TensorFusion (GPU virtualization) capability.
+
+        Requirements:
+        - NVIDIA driver version >= 570.x
+        - CUDA version >= 12.1
+
+        Returns tuple: (is_supported, capability_info)
+        """
+        addr = pci_device_to.pciDeviceAddress
+
+        # Query GPU details for this specific device
+        r, o, e = bash_roe('nvidia-smi --query-gpu=pci.bus_id,driver_version,cuda_version --format=csv,noheader -i %s' % addr)
+        if r != 0:
+            logger.debug('TensorFusion capability check failed for %s: nvidia-smi query failed' % addr)
+            return False, {}
+
+        parts = [p.strip() for p in o.strip().split(',')]
+        if len(parts) < 3:
+            logger.debug('TensorFusion capability check failed for %s: unexpected nvidia-smi output' % addr)
+            return False, {}
+
+        driver_version = parts[1]
+        cuda_version = parts[2]
+
+        capability_info = {
+            'driverVersion': driver_version,
+            'cudaVersion': cuda_version
+        }
+
+        try:
+            # Parse driver version (e.g., "535.104.05" -> 535)
+            driver_major = int(driver_version.split('.')[0])
+            if driver_major < 570:
+                capability_info['virtStatus'] = "TENSORFUSION_NOT_SUPPORTED"
+                capability_info['reason'] = "Driver version %s < 570.x" % driver_version
+                return False, capability_info
+
+            # Parse CUDA version and compare by tuple so versions like 12.10 stay precise.
+            cuda_parts = cuda_version.split('.')
+            cuda_major = int(cuda_parts[0])
+            cuda_minor = int(cuda_parts[1]) if len(cuda_parts) > 1 else 0
+
+            if (cuda_major, cuda_minor) < (12, 1):
+                capability_info['virtStatus'] = "TENSORFUSION_NOT_SUPPORTED"
+                capability_info['reason'] = "CUDA version %s < 12.1" % cuda_version
+                return False, capability_info
+
+            if not os.path.exists(cls.TENSORFUSION_WORKER_BINARY):
+                capability_info['virtStatus'] = "TENSORFUSION_NOT_SUPPORTED"
+                capability_info['reason'] = "TensorFusion worker binary %s not found" % cls.TENSORFUSION_WORKER_BINARY
+                return False, capability_info
+
+            # Check if TensorFusion worker can be created (virtualizable)
+            # In the future, we can check if workers are already running (virtualized)
+            capability_info['virtStatus'] = "TENSORFUSION_VIRTUALIZABLE"
+            return True, capability_info
+
+        except (ValueError, IndexError) as ex:
+            logger.warn('TensorFusion capability check failed for %s: failed to parse version info: %s' % (addr, str(ex)))
+            capability_info['virtStatus'] = "TENSORFUSION_NOT_SUPPORTED"
+            capability_info['reason'] = "Failed to parse version info"
+            return False, capability_info
+
+    # ==========================================================================
+    # GPU Detail Query
+    # ==========================================================================
+
+
+
+    @classmethod
+    def query_gpu_details(cls):
+        """Query nvidia-smi for GPU detail information.
+
+        Returns:
+            dict: {pci_address: {cuda_index, pci_address, name, total_memory_mb, driver_version}}
+                  Keys are normalized via zstacklib.utils.pci.normalize_pci_address.
+        """
+        from zstacklib.utils.pci import normalize_pci_address
+
+        if not cls.is_available():
+            logger.warn('nvidia-smi not available')
+            return {}
+
+        _DETAIL_QUERY_CMD = ('nvidia-smi --query-gpu=index,pci.bus_id,name,memory.total,driver_version '
+                             '--format=csv,noheader,nounits')
+
+        r, o, e = bash_roe(_DETAIL_QUERY_CMD)
+        if r != 0:
+            logger.warn('nvidia-smi detail query failed (rc=%d): %s' % (r, e))
+            return {}
+
+        result = {}
+        for line in o.strip().split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) < 5:
+                logger.warn('unexpected nvidia-smi output line: %s' % line)
+                continue
+
+            try:
+                cuda_index = int(parts[0])
+            except ValueError:
+                logger.warn('invalid cuda index: %s' % parts[0])
+                continue
+
+            pci_address = normalize_pci_address(parts[1])
+            try:
+                total_memory_mb = int(float(parts[3]))
+            except ValueError:
+                total_memory_mb = 0
+
+            entry = {
+                'cuda_index': cuda_index,
+                'pci_address': pci_address,
+                'name': parts[2],
+                'total_memory_mb': total_memory_mb,
+                'driver_version': parts[4],
+            }
+            result[pci_address] = entry
+
+        return result
