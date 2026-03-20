@@ -305,7 +305,7 @@ class TestNVIDIA(unittest.TestCase):
         self.assertEqual(info.get('virtStatus'), 'VFIO_MDEV_VIRTUALIZABLE')
 
     def test_detect_tensorfusion_capability_supported(self):
-        """TensorFusion capability requires NVIDIA driver >= 570.x and CUDA >= 12.1."""
+        """TensorFusion capability requires NVIDIA driver >= 570.x."""
         from zstacklib.gpu.vendors.nvidia import NVIDIA
         try:
             from unittest.mock import patch
@@ -315,14 +315,13 @@ class TestNVIDIA(unittest.TestCase):
         pci_device = type('PciDeviceTO', (), {'pciDeviceAddress': '0000:3b:00.0'})()
 
         with patch("zstacklib.gpu.vendors.nvidia.bash_roe",
-                   return_value=(0, "00000000:3B:00.0, 570.124.06, 12.2\n", "")), \
+                   return_value=(0, "00000000:3B:00.0, 570.124.06\n", "")), \
              patch("zstacklib.gpu.vendors.nvidia.os.path.exists", return_value=True):
             supported, info = NVIDIA.detect_tensorfusion_capability(pci_device)
 
         self.assertTrue(supported)
         self.assertEqual(info.get("virtStatus"), "TENSORFUSION_VIRTUALIZABLE")
         self.assertEqual(info.get("driverVersion"), "570.124.06")
-        self.assertEqual(info.get("cudaVersion"), "12.2")
 
     def test_detect_tensorfusion_capability_rejects_old_driver(self):
         """TensorFusion capability should reject NVIDIA driver versions below 570.x."""
@@ -335,7 +334,7 @@ class TestNVIDIA(unittest.TestCase):
         pci_device = type('PciDeviceTO', (), {'pciDeviceAddress': '0000:3b:00.0'})()
 
         with patch("zstacklib.gpu.vendors.nvidia.bash_roe",
-                   return_value=(0, "00000000:3B:00.0, 565.43.01, 12.2\n", "")), \
+                   return_value=(0, "00000000:3B:00.0, 565.43.01\n", "")), \
              patch("zstacklib.gpu.vendors.nvidia.os.path.exists", return_value=True):
             supported, info = NVIDIA.detect_tensorfusion_capability(pci_device)
 
@@ -354,7 +353,7 @@ class TestNVIDIA(unittest.TestCase):
         pci_device = type('PciDeviceTO', (), {'pciDeviceAddress': '0000:3b:00.0'})()
 
         with patch("zstacklib.gpu.vendors.nvidia.bash_roe",
-                   return_value=(0, "00000000:3B:00.0, 570.124.06, 12.2\n", "")), \
+                   return_value=(0, "00000000:3B:00.0, 570.124.06\n", "")), \
              patch("zstacklib.gpu.vendors.nvidia.os.path.exists", return_value=False):
             supported, info = NVIDIA.detect_tensorfusion_capability(pci_device)
 
