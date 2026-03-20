@@ -34,13 +34,17 @@ from zstacklib.utils.ovs import OvsError
 logger = log.get_logger(__name__)
 
 
-def write_file_if_changed(path, content, mode=None):
+def write_file_if_changed(path, content, mode=None, encoding=None):
+    open_kwargs = {'encoding': encoding} if encoding is not None else {}
     if os.path.exists(path):
-        with open(path, 'r') as fd:
-            if fd.read() == content:
-                return False
+        try:
+            with open(path, 'r', **open_kwargs) as fd:
+                if fd.read() == content:
+                    return False
+        except UnicodeDecodeError:
+            pass
 
-    with open(path, 'w') as fd:
+    with open(path, 'w', **open_kwargs) as fd:
         fd.write(content)
     if mode is not None:
         os.chmod(path, mode)
@@ -2084,13 +2088,13 @@ mimetype.assign = (
         if to.userdataList:
             userdata_content = packUserdata(to.userdataList)
             userdata_file_path = os.path.join(root, 'user-data')
-            write_file_if_changed(userdata_file_path, userdata_content)
+            write_file_if_changed(userdata_file_path, userdata_content, encoding='utf-8')
 
             windows_meta_data_json_path = os.path.join(root, 'meta_data.json')
             write_file_if_changed(windows_meta_data_json_path, conf)
 
             windows_userdata_file_path = os.path.join(root, 'user_data')
-            write_file_if_changed(windows_userdata_file_path, userdata_content)
+            write_file_if_changed(windows_userdata_file_path, userdata_content, encoding='utf-8')
 
             windows_meta_data_password = os.path.join(root, 'password')
             write_file_if_changed(windows_meta_data_password, '')

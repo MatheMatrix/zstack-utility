@@ -990,6 +990,18 @@ class TestMevocoDhcpEnvPrepare:
 
 @pytest.mark.kvmagent
 class TestMevocoApplyUserdataInternals:
+    def test_write_file_if_changed_rewrites_invalid_utf8_file(self, tmp_path: object):
+        path = os.path.join(str(tmp_path), "user-data")
+        content = "#cloud-config\nhostname: 测试虚机\n"
+
+        with open(path, "wb") as fd:
+            fd.write(b"\xff\xfeold-userdata")
+
+        assert mevoco.write_file_if_changed(path, content, encoding="utf-8")
+        with open(path, encoding="utf-8") as fd:
+            assert fd.read() == content
+        assert not mevoco.write_file_if_changed(path, content, encoding="utf-8")
+
     def test_apply_userdata_xtables_vmdata_restart_httpd(self, tmp_path: object):
         plugin = _make_plugin()
         _ensure_http()
@@ -1087,7 +1099,7 @@ class TestMevocoApplyUserdataInternals:
             netmask="255.255.255.0",
             port=80,
             metadata=metadata,
-            userdataList=["#cloud-config\n"],
+            userdataList=["#cloud-config\nhostname: 测试虚机\n"],
             agentConfig=_Obj(pvpanic="enable"),
             networkInterfaces=network_interfaces,
         )
@@ -1121,15 +1133,35 @@ class TestMevocoApplyUserdataInternals:
 
             return _Template(text)
 
+        real_open = open
+        open_encodings: dict[str, str | None] = {}
+
+        def _track_open(file: object, mode: str = "r", *args: object, **kwargs: object):
+            path = os.fspath(file)
+            if path.endswith("/user-data") or path.endswith("/user_data"):
+                open_encodings[path] = cast(str | None, kwargs.get("encoding"))
+            return real_open(file, mode, *args, **kwargs)
+
         with patch("os.path.exists", side_effect=_exists), patch("os.path.islink", return_value=False), \
                 patch.object(mevoco, "Template", side_effect=_template_factory), \
                 patch.object(mevoco, 'EBTABLES_CMD', 'ebtables', create=True), \
-                patch.object(mevoco, 'is_ebtables_nf_tables', return_value=False):
+                patch.object(mevoco, 'is_ebtables_nf_tables', return_value=False), \
+                patch("builtins.open", side_effect=_track_open):
             plugin._apply_userdata_xtables(to)
             plugin._apply_userdata_vmdata(to)
             plugin._apply_userdata_restart_httpd(to)
 
+        userdata_root = os.path.join(http_root, cast(str, to.vmIp))
+        user_data_path = os.path.join(userdata_root, "user-data")
+        windows_user_data_path = os.path.join(userdata_root, "user_data")
+
         assert linux.mkdir.called
+        assert open_encodings[user_data_path] == "utf-8"
+        assert open_encodings[windows_user_data_path] == "utf-8"
+        with open(user_data_path, encoding="utf-8") as fd:
+            assert fd.read() == "#cloud-config\nhostname: 测试虚机\n"
+        with open(windows_user_data_path, encoding="utf-8") as fd:
+            assert fd.read() == "#cloud-config\nhostname: 测试虚机\n"
 
 
 @pytest.mark.kvmagent
