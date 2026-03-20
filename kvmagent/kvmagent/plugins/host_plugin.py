@@ -22,6 +22,7 @@ import pipes
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
+from kvmagent.plugins.vm_local_volume_cache.command_wrapper.filesystem import FileSystemCommandWrapper
 from zstacklib.utils import http, lvm, ceph, pci, gpu
 from zstacklib.utils import qemu
 from zstacklib.utils import linux
@@ -146,6 +147,12 @@ class GetUsbDevicesRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(GetUsbDevicesRsp, self).__init__()
         self.usbDevicesInfo = None
+
+
+class GetBlockDevicesRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(GetBlockDevicesRsp, self).__init__()
+        self.blockDevices = None
 
 
 class StartUsbRedirectServerRsp(kvmagent.AgentResponse):
@@ -1117,6 +1124,7 @@ class HostPlugin(kvmagent.KvmAgent):
     ATTACH_VOLUME_PATH = "/host/volume/attach"
     DETACH_VOLUME_PATH = "/host/volume/detach"
     UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH = "/host/vm/updateConsolePassword/live"
+    GET_BLOCK_DEVICES_PATH = "/host/blockdevices"
 
     def __init__(self):
         self.IS_YUM = False
@@ -4047,6 +4055,13 @@ done
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    def get_block_devices(self, req):
+        rsp = GetBlockDevicesRsp()
+        all_devices = lvm.get_block_devices() # type: list[lvm.SharedBlockCandidateStruct]
+        rsp.blockDevices = list(filter(lambda dev: not FileSystemCommandWrapper.is_block_device_mounted(dev.name), all_devices))
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
     def get_dev_capacity(self, req):
         rsp = GetDevCapacityRsp()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -4393,6 +4408,8 @@ done
             self.DETACH_VOLUME_PATH, self.detach_volume__path)
         http_server.register_async_uri(
             self.UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH, self.update_vm_console_password_live)
+        http_server.register_async_uri(
+            self.GET_BLOCK_DEVICES_PATH, self.get_block_devices)
 
         self.heartbeat_timer = {}
         filepath = r'/etc/libvirt/qemu/networks/autostart/default.xml'
