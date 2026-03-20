@@ -74,7 +74,7 @@ enable_qemukvm_coredump() {
 rm_ebtables_dangling_lock() {
         lockfile=$1
         test -e $lockfile || return
-        lsof $lockfile 2>/dev/null >/dev/null && return
+        timeout 5 lsof -b $lockfile 2>/dev/null >/dev/null && return
         unlink $lockfile
 }
 
