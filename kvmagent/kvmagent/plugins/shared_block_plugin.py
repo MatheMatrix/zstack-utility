@@ -3,7 +3,6 @@ import os.path
 import re
 import random
 import traceback
-import difflib
 
 from kvmagent import kvmagent
 from kvmagent.plugins.imagestore import ImageStoreClient
@@ -218,6 +217,7 @@ class CreateVolumeFromCacheRsp(AgentRsp):
         super(CreateVolumeFromCacheRsp, self).__init__()
         self.actualSize = None
         self.size = None
+
 
 def translate_absolute_path_from_install_path(path):
     if path is None:
@@ -552,25 +552,13 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
     @kvmagent.replyerror
     def connect(self, req):
-        @linux.retry(times=10, sleep_time=random.uniform(0.1, 1))
-        def get_lock(sblk_lock):
-            sblk_lock.lock = lock._get_lock(sblk_lock.name)
-            if sblk_lock.lock.acquire(False) is False:
-                raise SharedBlockConnectException("can not get %s lock, there is other thread running" % sblk_lock.name)
-
-        def release_lock(sblk_lock):
-            try:
-                sblk_lock.lock.release()
-            except Exception:
-                return
-
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         global MAX_ACTUAL_SIZE_FACTOR
         MAX_ACTUAL_SIZE_FACTOR = cmd.maxActualSizeFactor
         sblk_lock = lock.NamedLock("sharedblock-%s" % cmd.vgUuid)
         rsp = None
         try:
-            get_lock(sblk_lock)
+            self.get_lock(sblk_lock)
             rsp = self.do_connect(cmd)
         except SharedBlockConnectException as e:
             r = AgentRsp()
@@ -586,13 +574,76 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                 r.error = "%s\n%s" % (str(e), content)
                 rsp = jsonobject.dumps(r)
         finally:
-            release_lock(sblk_lock)
+            self.release_lock(sblk_lock)
             return rsp
 
     @kvmagent.replyerror
     @lock.file_lock(LOCK_FILE)
     def do_connect(self, cmd):
         rsp = ConnectRsp()
+
+        diskPaths, disks, allDiskPaths, allDisks = self.prepare_disk(cmd)
+
+        lvm.config_lvm(cmd.hostId, allDiskPaths, cmd.vgUuid, cmd.hostUuid, DEFAULT_SANLOCK_LV_SIZE,
+                       kvmagent.get_host_os_type(), cmd.enableLvmetad)
+
+        lvm.start_lock_service(cmd.ioTimeout)
+        logger.debug("find/create vg %s lock..." % cmd.vgUuid)
+        rsp.isFirst = self.create_vg_if_not_found(cmd.vgUuid, disks, cmd.hostUuid, allDisks, cmd.forceWipe, cmd.isFirst)
+
+#       sanlock table:
+#
+#       | sanlock patch version | delta lease sleep time | retry times |
+#       | --------------------- | ---------------------- | ----------- |
+#       | 1                     | 40 seconds             | 15          |
+#       | 2 or higher           | 0 second               | 3           |
+#
+#
+#       explain:
+#
+#       In sanlock patch version 1, when you start a vg lock, it takes around 40 seconds
+#       in delta lease. So 15 retry times are required to check if vg lockspace exists.
+#
+#       In sanlock patch version 2, the sleep time in delta lease can be defined by zstack
+#       utility in sanlock.conf. It's 0 second by default, so retry times can be reduced to
+#       3 in order to save time.
+
+        retry_times_for_checking_vg_lockspace = lvm.get_retry_times_for_checking_vg_lockspace()
+
+        lvm.check_stuck_vglk_and_gllk()
+        logger.debug("starting vg %s lock..." % cmd.vgUuid)
+        lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
+
+        if lvm.lvm_vgck(cmd.vgUuid, 60)[0] is False and lvm.lvm_check_operation(cmd.vgUuid) is False:
+            lvm.drop_vg_lock(cmd.vgUuid)
+            logger.debug("restarting vg %s lock..." % cmd.vgUuid)
+            lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
+
+        # lvm.clean_vg_exists_host_tags(cmd.vgUuid, cmd.hostUuid, HEARTBEAT_TAG)
+        # lvm.add_vg_tag(cmd.vgUuid, "%s::%s::%s::%s" % (HEARTBEAT_TAG, cmd.hostUuid, time.time(), linux.get_hostname()))
+        self.clear_stalled_qmp_socket()
+        lvm.check_missing_pv(cmd.vgUuid)
+
+        rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
+        rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
+        rsp.vgLvmUuid = lvm.get_vg_lvm_uuid(cmd.vgUuid)
+        rsp.hostUuid = cmd.hostUuid
+        rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
+        return jsonobject.dumps(rsp)
+
+    @linux.retry(times=10, sleep_time=random.uniform(0.1, 1))
+    def get_lock(self, sblk_lock):
+        sblk_lock.lock = lock._get_lock(sblk_lock.name)
+        if sblk_lock.lock.acquire(False) is False:
+            raise SharedBlockConnectException("can not get %s lock, there is other thread running" % sblk_lock.name)
+
+    def release_lock(self, sblk_lock):
+        try:
+            sblk_lock.lock.release()
+        except Exception:
+            return
+
+    def prepare_disk(self, cmd):
         diskPaths = set()
         disks = set()
         allDiskPaths = set()
@@ -624,112 +675,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             allDiskPaths.add("/dev/sd*")
             allDiskPaths.add("/dev/vd*")
 
-        def config_lvm(host_id, enableLvmetad=False):
-            lvm.backup_lvm_config()
-            config = lvm.get_lvm_default_config()
-            lvmlockd_lock_retries = 6
-            config.modify({
-                "use_lvmlockd": 1,
-                "host_id": host_id,
-                "sanlock_lv_extend": DEFAULT_SANLOCK_LV_SIZE,
-                "lvmlockd_lock_retries": lvmlockd_lock_retries,
-                "issue_discards": 0,
-                "reserved_stack": 256,
-                "reserved_memory": 131072,
-                "use_lvmetad": 1 if enableLvmetad else 0
-            })
-            if kvmagent.get_host_os_type() == "debian":
-                config.modify({"udev_rules": 0, "udev_sync": 0})
-            config.write_to_file(lvm.LVM_CONFIG_TMP_FILE)
-            lvm.config_lvm_filter([os.path.basename(lvm.LVM_CONFIG_TMP_FILE)], preserve_disks=allDiskPaths)
-
-            new_config = linux.read_file(lvm.LVM_CONFIG_TMP_FILE)
-            old_config = linux.read_file(lvm.LVM_LOCAL_CONFIG_FILE)
-            diff = list(difflib.unified_diff(old_config.splitlines() if old_config is not None else [], new_config.splitlines()))
-            if len(diff) == 0:
-                logger.debug("lvm config has not changed")
-            else:
-                linux.write_file(lvm.LVM_CONFIG_FILE, new_config, create_if_not_exist=True)
-                linux.write_file(lvm.LVM_LOCAL_CONFIG_FILE, new_config, create_if_not_exist=True)
-                logger.debug("lvm config has changed:\n %s" % '\n'.join(diff))
-                lvm.report_config_changed()
-
-            # max lock retries times = (external lvmlockd_lock_retries + 1) * (internal lock_retries + 1 after a lock conflict)
-            lvm.lvm_cmd_timeout_with_locking = ((lvmlockd_lock_retries + 1) * 6) * 5
-            lvm.modify_sanlock_config("sh_retries", 20)
-            lvm.modify_sanlock_config("logfile_priority", 7)
-            lvm.modify_sanlock_config("renewal_read_extend_sec", 24)
-            lvm.modify_sanlock_config("debug_renew", 1)
-            lvm.modify_sanlock_config("use_watchdog", 0)
-            lvm.modify_sanlock_config("max_sectors_kb", "ignore")
-            lvm.modify_sanlock_config("watchdog_fire_timeout", 1)
-            lvm.modify_sanlock_config("kill_grace_seconds", 40)
-            lvm.modify_sanlock_config("zstack_vglock_timeout", 0)
-            lvm.modify_sanlock_config("use_zstack_vglock_timeout", 0)
-            lvm.modify_sanlock_config("zstack_vglock_large_delay", 8)
-            lvm.modify_sanlock_config("use_zstack_vglock_large_delay", 0)
-
-            sanlock_hostname = "%s-%s-%s" % (cmd.vgUuid[:8], cmd.hostUuid[:8], linux.get_hostname()[:20])
-            lvm.modify_sanlock_config("our_host_name", sanlock_hostname)
-            shell.call("sed -i 's/.*rotate .*/rotate 10/g' /etc/logrotate.d/sanlock", exception=False)
-            shell.call("sed -i 's/.*size .*/size 20M/g' /etc/logrotate.d/sanlock", exception=False)
-
-        config_lvm(cmd.hostId, cmd.enableLvmetad)
-
-        lvm.start_lock_service(cmd.ioTimeout)
-        logger.debug("find/create vg %s lock..." % cmd.vgUuid)
-        rsp.isFirst = self.create_vg_if_not_found(cmd.vgUuid, disks, cmd.hostUuid, allDisks, cmd.forceWipe, cmd.isFirst)
-
-#       sanlock table:
-#       
-#       | sanlock patch version | delta lease sleep time | retry times |
-#       | --------------------- | ---------------------- | ----------- |
-#       | 1                     | 40 seconds             | 15          |
-#       | 2 or higher           | 0 second               | 3           |
-#       
-#       
-#       explain:
-#       
-#       In sanlock patch version 1, when you start a vg lock, it takes around 40 seconds
-#       in delta lease. So 15 retry times are required to check if vg lockspace exists.
-#       
-#       In sanlock patch version 2, the sleep time in delta lease can be defined by zstack
-#       utility in sanlock.conf. It's 0 second by default, so retry times can be reduced to
-#       3 in order to save time.
-
-        @bash.in_bash
-        def get_retry_times_for_checking_vg_lockspace():
-            r, sanlock_patch_version = bash.bash_ro("sanlock get_patch_version")
-            # if version is not a digit, e.g. "client action get_patch_version is unknown", it also means that sanlock patch version < 2
-            if sanlock_patch_version.strip().isdigit() is False:
-                return 15
-            elif int(sanlock_patch_version.strip()) >= 2:
-                return 3
-            else:
-                return 15
-
-        retry_times_for_checking_vg_lockspace = get_retry_times_for_checking_vg_lockspace()
-
-        lvm.check_stuck_vglk_and_gllk()
-        logger.debug("starting vg %s lock..." % cmd.vgUuid)
-        lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
-
-        if lvm.lvm_vgck(cmd.vgUuid, 60)[0] is False and lvm.lvm_check_operation(cmd.vgUuid) is False:
-            lvm.drop_vg_lock(cmd.vgUuid)
-            logger.debug("restarting vg %s lock..." % cmd.vgUuid)
-            lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
-
-        # lvm.clean_vg_exists_host_tags(cmd.vgUuid, cmd.hostUuid, HEARTBEAT_TAG)
-        # lvm.add_vg_tag(cmd.vgUuid, "%s::%s::%s::%s" % (HEARTBEAT_TAG, cmd.hostUuid, time.time(), linux.get_hostname()))
-        self.clear_stalled_qmp_socket()
-        lvm.check_missing_pv(cmd.vgUuid)
-
-        rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
-        rsp.hostId = lvm.get_running_host_id(cmd.vgUuid)
-        rsp.vgLvmUuid = lvm.get_vg_lvm_uuid(cmd.vgUuid)
-        rsp.hostUuid = cmd.hostUuid
-        rsp.lunCapacities = lvm.get_lun_capacities_from_vg(cmd.vgUuid, self.vgs_path_and_wwid)
-        return jsonobject.dumps(rsp)
+        return diskPaths, disks, allDiskPaths, allDisks
 
     @staticmethod
     @bash.in_bash
