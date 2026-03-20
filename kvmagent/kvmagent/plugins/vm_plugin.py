@@ -5467,7 +5467,7 @@ class Vm(object):
                         e(cpu, 'topology', attrib={'sockets': str(cmd.socketNum), 'cores': str(cmd.cpuOnSocket), 'threads': '1'})
                     else:
                         socketNum = LibvirtAutoReconnect.capabilities.host().cells().getAttribute('num')
-                        cores = str(int(max_vcpu / int(socketNum)))
+                        cores = str(int(max_vcpu // int(socketNum)))
                         e(cpu, 'topology', attrib={'sockets': socketNum, 'cores': cores, 'threads': '1'})
                     numa = e(cpu, 'numa')
                     e(numa, 'cell', attrib={'id': '0', 'cpus': '0-%d' % (max_vcpu - 1), 'memory': str(mem), 'unit': 'KiB'})
@@ -5480,7 +5480,7 @@ class Vm(object):
                     e(cpu, 'model', str(MIPS64EL_CPU_MODEL), attrib={'fallback': 'allow'})
                     sockets = cmd.socketNum if cmd.socketNum else 2
                     mem = cmd.memory // 1024 // sockets
-                    cores = max_vcpu / sockets
+                    cores = max_vcpu // sockets
                     e(cpu, 'topology', attrib={'sockets': str(sockets), 'cores': str(cores), 'threads': '1'})
                     numa = e(cpu, 'numa')
                     for i in range(sockets):
@@ -5494,7 +5494,7 @@ class Vm(object):
                     e(cpu, 'model', str(LOONGARCH64_CPU_MODEL), attrib={'fallback': 'allow'})
                     sockets = cmd.socketNum if cmd.socketNum else 8
                     mem = cmd.memory // 1024 // sockets
-                    cores = max_vcpu / sockets
+                    cores = max_vcpu // sockets
                     e(cpu, 'topology', attrib={'sockets': str(sockets), 'cores': str(cores), 'threads': '1'})
                     numa = e(cpu, 'numa')
                     for i in range(sockets):

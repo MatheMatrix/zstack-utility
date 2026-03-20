@@ -1332,7 +1332,7 @@ qemu-io -c "discard $[i*2145386496] 2145386496" -f qcow2 -d unmap {1}
 let i+=1
 done
 qemu-io -c "discard $[i*2145386496] {2}" -f qcow2 -d unmap {1}
-    '''.format(virtual_size / 2145386496, path, virtual_size % 2145386496))
+    '''.format(virtual_size // 2145386496, path, virtual_size % 2145386496))
 
     cmd(False)
     logger.debug("qcow2 discard return code: %s, stderr: %s" % (cmd.return_code, cmd.stderr))
@@ -3296,7 +3296,7 @@ def compare_segmented_xxhash(src_path, dst_path, total_size, raise_exception=Fal
         return True
 
     seg_size = 2*1024**3 ## 2G
-    seg_offset = [total_size/5*x for x in range(0, 5)]
+    seg_offset = [total_size//5*x for x in range(0, 5)]
     def _get_seg_xxhash(fd, offset):
         hasher = xxhash.xxh64()
         fd.seek(offset)

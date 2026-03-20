@@ -633,7 +633,7 @@ def migrate(args):
     origin_global_config = mysql_client.get_max_allowed_packet()
 
     if not args.num:
-        args.num = origin_global_config / 4096
+        args.num = origin_global_config // 4096
 
     if args.passwd:
         if origin_global_config < 67108864:  # 64m

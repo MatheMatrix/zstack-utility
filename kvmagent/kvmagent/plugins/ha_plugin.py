@@ -679,7 +679,7 @@ class SblkHealthChecker(AbstractStorageFencer):
         parser = sanlock.SanlockHostStatusParser(shell.call("timeout 30 sanlock client host_status -s lvm_%s -D" % ps_uuid))
         dst_host_io_timeout = parser.get_record(dst_host_id).get_io_timeout()
         our_host_io_timeout = parser.get_record(our_host_id).get_io_timeout()
-        max_check_count = (sanlock.calc_host_dead_seconds(dst_host_io_timeout) + 2 * our_host_io_timeout) / check_interval + 1
+        max_check_count = (sanlock.calc_host_dead_seconds(dst_host_io_timeout) + 2 * our_host_io_timeout) // check_interval + 1
         logger.debug("dst host %s sanlock io timeout is %s, current host: %s" % (dst_host_uuid, dst_host_io_timeout, our_host_io_timeout))
         latest_timestamp = None
         timestamp_change_count = 0
