@@ -1164,7 +1164,9 @@ Parse command parameters error:
         """
         Constructor
         """
-        readline.parse_and_bind("tab: complete")
+        readline.parse_and_bind("tab: menu-complete")
+        readline.parse_and_bind("set completion-ignore-case on")
+        readline.parse_and_bind("set show-all-if-ambiguous on")
         readline.set_completer(self.complete)
         readline.set_completion_display_matches_hook(self.completer_print)
         try:
