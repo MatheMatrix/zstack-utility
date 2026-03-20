@@ -2031,17 +2031,18 @@ mimetype.assign = (
         self._write_metadata_files(meta_root, to)
 
         if to.userdataList:
+            packed_userdata = packUserdata(to.userdataList)
             userdata_file_path = os.path.join(root, 'user-data')
-            with open(userdata_file_path, 'w') as fd:
-                fd.write(packUserdata(to.userdataList))
+            with open(userdata_file_path, 'w', encoding='utf-8') as fd:
+                fd.write(packed_userdata)
 
             windows_meta_data_json_path = os.path.join(root, 'meta_data.json')
             with open(windows_meta_data_json_path, 'w') as fd:
                 fd.write(conf)
 
             windows_userdata_file_path = os.path.join(root, 'user_data')
-            with open(windows_userdata_file_path, 'w') as fd:
-                fd.write(packUserdata(to.userdataList))
+            with open(windows_userdata_file_path, 'w', encoding='utf-8') as fd:
+                fd.write(packed_userdata)
 
             windows_meta_data_password = os.path.join(root, 'password')
             with open(windows_meta_data_password, 'w') as fd:
