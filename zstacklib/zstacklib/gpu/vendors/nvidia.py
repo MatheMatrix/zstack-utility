@@ -593,29 +593,25 @@ class NVIDIA(GPUBase):
 
         Requirements:
         - NVIDIA driver version >= 570.x
-        - CUDA version >= 12.1
 
         Returns tuple: (is_supported, capability_info)
         """
         addr = pci_device_to.pciDeviceAddress
 
-        # Query GPU details for this specific device
-        r, o, e = bash_roe('nvidia-smi --query-gpu=pci.bus_id,driver_version,cuda_version --format=csv,noheader -i %s' % addr)
+        r, o, e = bash_roe('nvidia-smi --query-gpu=pci.bus_id,driver_version --format=csv,noheader -i %s' % addr)
         if r != 0:
             logger.debug('TensorFusion capability check failed for %s: nvidia-smi query failed' % addr)
             return False, {}
 
         parts = [p.strip() for p in o.strip().split(',')]
-        if len(parts) < 3:
+        if len(parts) < 2:
             logger.debug('TensorFusion capability check failed for %s: unexpected nvidia-smi output' % addr)
             return False, {}
 
         driver_version = parts[1]
-        cuda_version = parts[2]
 
         capability_info = {
-            'driverVersion': driver_version,
-            'cudaVersion': cuda_version
+            'driverVersion': driver_version
         }
 
         try:
@@ -624,16 +620,6 @@ class NVIDIA(GPUBase):
             if driver_major < 570:
                 capability_info['virtStatus'] = "TENSORFUSION_NOT_SUPPORTED"
                 capability_info['reason'] = "Driver version %s < 570.x" % driver_version
-                return False, capability_info
-
-            # Parse CUDA version and compare by tuple so versions like 12.10 stay precise.
-            cuda_parts = cuda_version.split('.')
-            cuda_major = int(cuda_parts[0])
-            cuda_minor = int(cuda_parts[1]) if len(cuda_parts) > 1 else 0
-
-            if (cuda_major, cuda_minor) < (12, 1):
-                capability_info['virtStatus'] = "TENSORFUSION_NOT_SUPPORTED"
-                capability_info['reason'] = "CUDA version %s < 12.1" % cuda_version
                 return False, capability_info
 
             if not os.path.exists(cls.TENSORFUSION_WORKER_BINARY):
