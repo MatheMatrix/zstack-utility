@@ -40,11 +40,11 @@ def create_lvm_snapshot(
         virtual_size = linux.qcow2_virtualsize(drbd_path if drbd_path else absolute_path)
         if virtual_size <= 2147483648:
             snap_size = calc_lv_reserved_size(virtual_size)
-            snap_size = int(snap_size / 512 + 1) * 512
-        elif int((virtual_size / 512) * size_percent * 512) <= 2147483648:
+            snap_size = int(snap_size // 512 + 1) * 512
+        elif int((virtual_size // 512) * size_percent * 512) <= 2147483648:
             snap_size = 2147483648
         else:
-            snap_size = int((virtual_size / 512) * size_percent + 1) * 512
+            snap_size = int((virtual_size // 512) * size_percent + 1) * 512
         size_command = f" -L {snap_size}B "
         
     bash.bash_errorout(

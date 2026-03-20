@@ -816,7 +816,7 @@ Parse command parameters error:
             except:
                 term_width = 80
 
-            columes = term_width / max_match_length
+            columes = term_width // max_match_length
             if columes == 0:
                 columes = 1
 
@@ -840,10 +840,8 @@ Parse command parameters error:
 
         print('')
         print_bold()
-        print('')
-        cprint('%s%s' % (self.get_prompt_with_account_info(), readline.get_line_buffer()), end='')
-
-        # readline.redisplay()
+        sys.stdout.write('%s%s' % (self.get_prompt_with_account_info(), readline.get_line_buffer()))
+        sys.stdout.flush()
 
     def write_more(self, cmd, result, success=True):
         if self.hd.get(self.start_key):
@@ -1166,7 +1164,9 @@ Parse command parameters error:
         """
         Constructor
         """
-        readline.parse_and_bind("tab: complete")
+        readline.parse_and_bind("tab: menu-complete")
+        readline.parse_and_bind("set completion-ignore-case on")
+        readline.parse_and_bind("set show-all-if-ambiguous on")
         readline.set_completer(self.complete)
         readline.set_completion_display_matches_hook(self.completer_print)
         try:

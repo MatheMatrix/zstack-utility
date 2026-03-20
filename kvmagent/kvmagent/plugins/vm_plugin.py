@@ -5480,7 +5480,7 @@ class Vm(object):
                         e(cpu, 'topology', attrib={'sockets': str(cmd.socketNum), 'cores': str(cmd.cpuOnSocket), 'threads': '1'})
                     else:
                         socketNum = LibvirtAutoReconnect.capabilities.host().cells().getAttribute('num')
-                        cores = str(int(max_vcpu / int(socketNum)))
+                        cores = str(int(max_vcpu // int(socketNum)))
                         e(cpu, 'topology', attrib={'sockets': socketNum, 'cores': cores, 'threads': '1'})
                     numa = e(cpu, 'numa')
                     e(numa, 'cell', attrib={'id': '0', 'cpus': '0-%d' % (max_vcpu - 1), 'memory': str(mem), 'unit': 'KiB'})

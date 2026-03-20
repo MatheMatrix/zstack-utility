@@ -1093,7 +1093,7 @@ class CephAgent(object):
                 last = linux.tail_1(PFILE).strip()
                 if not last or not last.isdigit():
                     return synced
-                report.progress_report(int(last)*90/100, "report")
+                report.progress_report(int(last)*90//100, "report")
                 return synced
 
             get_content_from_pipe_cmd = "pv -s %s -n %s 2>%s" % (actual_size, pipe_path, PFILE)
