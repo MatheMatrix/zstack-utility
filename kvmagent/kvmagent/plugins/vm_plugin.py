@@ -12696,7 +12696,8 @@ host side snapshot files chian:
 
         try:
             event_str = LibvirtEventManager.event_to_string(event)
-            if event_str not in (LibvirtEventManager.EVENT_SHUTDOWN, LibvirtEventManager.EVENT_STOPPED):
+            if event_str not in (LibvirtEventManager.EVENT_SHUTDOWN, LibvirtEventManager.EVENT_STOPPED,
+                                 LibvirtEventManager.EVENT_CRASHED):
                 return
 
             vm_uuid = dom.name()
