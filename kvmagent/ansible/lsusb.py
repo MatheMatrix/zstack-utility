@@ -1,10 +1,10 @@
-#!/usr/bin/python2
+#!/usr/bin/python
 # lsusb.py
 # Displays your USB devices in reasonable form.
 # (c) Kurt Garloff <garloff@suse.de>, 2/2009, GPL v2 or v3.
 # Usage: See usage()
 
-import os, sys, re, getopt
+import os, sys, re, getopt, io
 
 # from __future__ import print_function
 
@@ -121,7 +121,7 @@ def parse_usb_ids():
     mode = 0
     strg = ""
     cstrg = ""
-    with open(usbids, 'r') as fd:
+    with io.open(usbids, 'r', errors='replace') as fd:
         for ln in fd.readlines():
             if ln[0] == '#':
                 continue
@@ -491,7 +491,7 @@ def read_usb():
         usbdev = UsbDevice(None, 0)
         usbdev.read(dirent)
         usbdev.readchildren()
-        os.write(sys.stdout.fileno(), usbdev.__str__())
+        os.write(sys.stdout.fileno(), str(usbdev).encode('utf-8', 'replace'))
 
 def main(argv):
     "main entry point"
@@ -538,8 +538,8 @@ def main(argv):
         fix_usbprod()
         fix_usbclass()
     except:
-        print(" WARNING: Failure to read usb.ids", file=sys.stderr)
-        print(sys.exc_info(), file=sys.stderr)
+        sys.stderr.write(" WARNING: Failure to read usb.ids\n")
+        sys.stderr.write(str(sys.exc_info()) + "\n")
     read_usb()
 
 # Entry point
