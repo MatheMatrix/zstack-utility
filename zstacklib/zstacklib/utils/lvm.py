@@ -168,6 +168,8 @@ class SharedBlockCandidateStruct:
         self.source = None  # type: str
         self.transport = None  # type: str
         self.targetIdentifier = None  # type: str
+        self.mpathDevice = None  # type: str
+        self.dev_name = None  # type: str
 
 def get_vg_uuid(path):
     # type: (str) -> str
@@ -291,13 +293,14 @@ def get_mpath_block_devices(scsi_info):
 
     block_devices_list = [None] * len(mpath_devices)
 
-    def get_slave_block_devices(slave, dm, i):
+    def get_slave_block_devices(slave, dm, i, mpath_dev):
         try:
             struct = get_device_info(slave, scsi_info)
             if struct is None:
                 return
             struct.type = "mpath"
             struct.dev_name = slave
+            struct.mpathDevice = mpath_dev
             block_devices_list[i] = struct
         except Exception as e:
             logger.warn(linux.get_exception_stacktrace())
@@ -315,11 +318,12 @@ def get_mpath_block_devices(scsi_info):
                 struct = SharedBlockCandidateStruct()
                 struct.wwid = get_dm_wwid(dm)
                 struct.type = "mpath"
+                struct.mpathDevice = mpath_device
                 block_devices_list[idx] = struct
                 continue
 
             slave_devices.extend(slaves)
-            threads.append(thread.ThreadFacade.run_in_thread(get_slave_block_devices, [slaves[0], dm, idx]))
+            threads.append(thread.ThreadFacade.run_in_thread(get_slave_block_devices, [slaves[0], dm, idx, mpath_device]))
         except Exception as e:
             logger.warn(linux.get_exception_stacktrace())
             continue
@@ -2749,7 +2753,6 @@ class LvmlockdStatus(object):
 @bash.in_bash
 def get_retry_times_for_checking_vg_lockspace():
     _, sanlock_patch_version = bash.bash_ro("sanlock get_patch_version")
-    # if version is not a digit, e.g. "client action get_patch_version is unknown", it also means that sanlock patch version < 2
     if sanlock_patch_version.strip().isdigit() is False:
         return 15
     elif int(sanlock_patch_version.strip()) >= 2:
@@ -2810,3 +2813,201 @@ def config_lvm(host_id, all_disk_paths, vg_uuid, host_uuid, default_sanlock_lv_s
     modify_sanlock_config("our_host_name", sanlock_hostname)
     shell.call("sed -i 's/.*rotate .*/rotate 10/g' /etc/logrotate.d/sanlock", exception=False)
     shell.call("sed -i 's/.*size .*/size 20M/g' /etc/logrotate.d/sanlock", exception=False)
+
+
+@bash.in_bash
+def get_vgs_info(tag):
+    vgsSharedBlockStructs = {}
+    vgsSharedBlockCount = {}
+
+    block_devices = get_block_devices()
+
+    block_devices_by_dev_name = {}
+    for bd in block_devices:
+        if bd.dev_name:
+            block_devices_by_dev_name[bd.dev_name] = bd
+        if bd.mpathDevice:
+            block_devices_by_dev_name[bd.mpathDevice] = bd
+            try:
+                dm_name = os.path.basename(os.path.realpath("/dev/mapper/%s" % bd.mpathDevice))
+                if dm_name:
+                    block_devices_by_dev_name[dm_name] = bd
+                    for slave in os.listdir("/sys/class/block/%s/slaves/" % dm_name):
+                        if slave and slave.strip():
+                            block_devices_by_dev_name[slave.strip()] = bd
+            except Exception:
+                logger.warn("resolve dm name failed for mpath device %s: %s" %
+                            (bd.mpathDevice, linux.get_exception_stacktrace()))
+
+    r, o, e = bash.bash_roe("vgs --nolocking -t -o vg_name,pv_count,pv_name,tags --noheadings")
+    if r != 0:
+        raise Exception("get vgs info failed, error: %s" % e)
+
+    for info in form.load('vg_name pv_count pv_name tags\n' + o):
+        vg_name = info['vg_name']
+        pv_count = info['pv_count']
+        pv_name = info['pv_name']
+        tags = info['tags']
+
+        tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
+        if not any(t.startswith(tag) for t in tag_list):
+            continue
+
+        pv_basename = os.path.basename(pv_name)
+        if vg_name not in vgsSharedBlockStructs:
+            vgsSharedBlockStructs[vg_name] = []
+        if vg_name not in vgsSharedBlockCount:
+            vgsSharedBlockCount[vg_name] = int(pv_count)
+
+        block_device = block_devices_by_dev_name.get(pv_basename)
+        if block_device is None:
+            try:
+                real_name = os.path.basename(os.path.realpath(pv_name))
+                block_device = block_devices_by_dev_name.get(real_name)
+            except Exception as e:
+                logger.warn("resolve realpath failed for pv %s: %s" % (pv_name, str(e)))
+        if block_device:
+            vgsSharedBlockStructs[vg_name].append(block_device)
+        else:
+            logger.warn("PV %s belongs to VG %s but not found in block devices scan" % (pv_basename, vg_name))
+
+    for vg_name, expected_count in vgsSharedBlockCount.items():
+        actual_count = len(vgsSharedBlockStructs.get(vg_name, []))
+        if actual_count < expected_count:
+            logger.warn("VG %s has incomplete WWID set: expected %d PVs but resolved %d block devices. "
+                        "WWID matching may fail for this VG." % (vg_name, expected_count, actual_count))
+
+    return vgsSharedBlockStructs, vgsSharedBlockCount
+
+
+@bash.in_bash
+def reset_pv_uuids(vg_uuid):
+    """Reset all PV UUIDs in the VG to avoid collision with the source platform."""
+    pvs_output = bash.bash_o(
+        "timeout -s SIGKILL 10 pvs --noheading --nolocking -t "
+        "-Svg_name=%s -oname" % vg_uuid).strip().splitlines()
+
+    succeeded = []
+    for pv_line in pvs_output:
+        pv_name = pv_line.strip()
+        if not pv_name:
+            continue
+        r, _, e = bash.bash_roe("timeout -s SIGKILL 30 pvchange --yes --uuid %s" % pv_name)
+        if r != 0:
+            raise Exception("failed to reset PV UUID for %s: %s\n"
+                            "succeeded PVs: %s" % (pv_name, e, succeeded))
+        succeeded.append(pv_name)
+
+    if succeeded:
+        logger.debug("reset PV UUIDs for VG %s: %s" % (vg_uuid, succeeded))
+
+
+@bash.in_bash
+def rename_vg(old_vg_uuid, new_vg_uuid):
+    if old_vg_uuid == new_vg_uuid:
+        logger.debug("rename vg skipped: old_vgUuid == new_vgUuid (%s)" % old_vg_uuid)
+        return
+
+    if vg_exists(new_vg_uuid) and not vg_exists(old_vg_uuid):
+        logger.debug("rename vg skipped: %s already exists and %s not found" % (new_vg_uuid, old_vg_uuid))
+        return
+
+    if vg_exists(new_vg_uuid) and vg_exists(old_vg_uuid):
+        raise Exception("both old VG %s and new VG %s exist on this host. "
+                        "Refusing to rename - manual investigation required." % (old_vg_uuid, new_vg_uuid))
+
+    @linux.retry(times=5, sleep_time=2)
+    def do_vg_rename():
+        r, o, e = bash.bash_roe(
+            "timeout -s SIGKILL %s vgrename %s %s" %
+            (lvm_cmd_timeout_with_locking, old_vg_uuid, new_vg_uuid))
+        if r != 0:
+            raise Exception("unable to rename vg %s to %s, "
+                            "stdout:%s, stderr:%s" % (old_vg_uuid, new_vg_uuid, str(o), str(e)))
+
+        old_exists = vg_exists(old_vg_uuid)
+        new_exists = vg_exists(new_vg_uuid)
+        if old_exists or not new_exists:
+            raise RetryException(
+                "unexpected VG state after rename %s -> %s: old_exists=%s, new_exists=%s" % (
+                    old_vg_uuid, new_vg_uuid, old_exists, new_exists))
+
+        logger.debug("rename vg %s to %s successfully" % (old_vg_uuid, new_vg_uuid))
+
+    do_vg_rename()
+
+    old_exists = vg_exists(old_vg_uuid)
+    new_exists = vg_exists(new_vg_uuid)
+    if old_exists or not new_exists:
+        raise Exception("vg rename post-check failed: old_exists=%s, new_exists=%s for %s -> %s" %
+                        (old_exists, new_exists, old_vg_uuid, new_vg_uuid))
+
+
+@bash.in_bash
+def reset_sanlock_lockspace(vg_uuid):
+    lockspace_path = "/dev/mapper/%s-lvmlock" % vg_uuid
+
+    fix_vglk(vg_uuid)
+
+    r, o, e = bash.bash_roe(
+        "timeout -s SIGKILL 60 sanlock direct init -s lvm_%s:0:%s:0" % (vg_uuid, lockspace_path))
+    if r != 0:
+        raise Exception("failed to init sanlock lockspace for %s: stdout=%s, stderr=%s"
+                        % (vg_uuid, o, e))
+
+    sector_size = sanlock.get_sector_size(vg_uuid)
+    align_size = sanlock.sector_size_to_align_size(sector_size)
+    gllk_offset = sanlock.GLLK_BEGIN * align_size
+    vglk_offset = sanlock.VGLK_BEGIN * align_size
+
+    r, o, e = bash.bash_roe(
+        "timeout -s SIGKILL 30 sanlock direct init -r lvm_%s:GLLK:%s:%s" % (vg_uuid, lockspace_path, gllk_offset))
+    if r != 0:
+        logger.warn("failed to reinit GLLK for %s (non-fatal): %s" % (vg_uuid, e))
+    else:
+        logger.debug("reset_sanlock_lockspace: reinit GLLK at offset %s" % gllk_offset)
+
+    r, o, e = bash.bash_roe(
+        "timeout -s SIGKILL 30 sanlock direct init -r lvm_%s:VGLK:%s:%s" % (vg_uuid, lockspace_path, vglk_offset))
+    if r != 0:
+        logger.warn("failed to reinit VGLK for %s (non-fatal): %s" % (vg_uuid, e))
+    else:
+        logger.debug("reset_sanlock_lockspace: reinit VGLK at offset %s" % vglk_offset)
+
+    o = bash.bash_errorout("lvs -ouuid,lock_args -Svg_name=%s --noheading --nolocking -t" % vg_uuid)
+
+    def repair(uuid, offset):
+        r, _o, e = bash.bash_roe("timeout -s SIGKILL 30 sanlock direct init -r lvm_%s:%s:%s:%s" % (vg_uuid, uuid, lockspace_path, offset))
+        if r != 0:
+            logger.warn("failed to reinit LV lease %s for %s (non-fatal): %s" % (uuid, vg_uuid, e))
+
+    for line in o.strip().splitlines():
+        xs = line.strip().split()
+        if len(xs) < 2 or ":" not in xs[1]:
+            logger.warn("reset_sanlock_lockspace: skip unparseable LV lease line: %r" % line)
+            continue
+        uuid = xs[0]
+        offset = xs[1].split(":")[-1]
+        logger.debug("reset_sanlock_lockspace: reinit LV lease %s offset %s" % (uuid, offset))
+        repair(uuid, offset)
+
+@bash.in_bash
+def update_vg_tag(vg_uuid, old_tag_prefix, new_tag):
+    """Update VG tag: find existing tag by old_tag_prefix and replace with new_tag."""
+    r, o, e = bash.bash_roe("timeout -s SIGKILL 10 vgs --nolocking -t -o tags --noheadings %s" % vg_uuid)
+    if r != 0:
+        logger.warn("failed to get VG tags for %s, skipping tag update" % vg_uuid)
+        return
+
+    old_tag = next((t.strip() for t in o.strip().split(",")
+                    if t.strip().startswith(old_tag_prefix)), None)
+    if not old_tag:
+        logger.warn("no tag with prefix [%s] found on VG %s, skipping tag update" % (old_tag_prefix, vg_uuid))
+        return
+
+    r, o, e = bash.bash_roe(
+        "vgchange --deltag %s --addtag %s %s" % (linux.shellquote(old_tag), linux.shellquote(new_tag), vg_uuid))
+    if r != 0:
+        logger.warn("failed to update VG tag for %s: %s (non-fatal)" % (vg_uuid, e))
+    else:
+        logger.debug("updated VG tag for %s: %s -> %s" % (vg_uuid, old_tag, new_tag))
