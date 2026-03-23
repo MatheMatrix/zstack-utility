@@ -1,3 +1,4 @@
+import difflib
 import functools
 import random
 import os
@@ -2743,3 +2744,69 @@ class LvmlockdStatus(object):
         except Exception as e:
             logger.warn(str(e))
             self.failed = True
+
+
+@bash.in_bash
+def get_retry_times_for_checking_vg_lockspace():
+    _, sanlock_patch_version = bash.bash_ro("sanlock get_patch_version")
+    # if version is not a digit, e.g. "client action get_patch_version is unknown", it also means that sanlock patch version < 2
+    if sanlock_patch_version.strip().isdigit() is False:
+        return 15
+    elif int(sanlock_patch_version.strip()) >= 2:
+        return 3
+    else:
+        return 15
+
+
+def config_lvm(host_id, all_disk_paths, vg_uuid, host_uuid, default_sanlock_lv_size, host_os_type,
+               enable_lvmetad=False):
+    backup_lvm_config()
+    config = get_lvm_default_config()
+    lvmlockd_lock_retries = 6
+    config.modify({
+        "use_lvmlockd": 1,
+        "host_id": host_id,
+        "sanlock_lv_extend": default_sanlock_lv_size,
+        "lvmlockd_lock_retries": lvmlockd_lock_retries,
+        "issue_discards": 0,
+        "reserved_stack": 256,
+        "reserved_memory": 131072,
+        "use_lvmetad": 1 if enable_lvmetad else 0
+    })
+
+    if host_os_type == "debian":
+        config.modify({"udev_rules": 0, "udev_sync": 0})
+    config.write_to_file(LVM_CONFIG_TMP_FILE)
+    config_lvm_filter([os.path.basename(LVM_CONFIG_TMP_FILE)], preserve_disks=all_disk_paths)
+
+    new_config = linux.read_file(LVM_CONFIG_TMP_FILE)
+    old_config = linux.read_file(LVM_LOCAL_CONFIG_FILE)
+    diff = list(difflib.unified_diff(old_config.splitlines() if old_config is not None else [], new_config.splitlines()))
+    if len(diff) == 0:
+        logger.debug("lvm config has not changed")
+    else:
+        linux.write_file(LVM_CONFIG_FILE, new_config, create_if_not_exist=True)
+        linux.write_file(LVM_LOCAL_CONFIG_FILE, new_config, create_if_not_exist=True)
+        logger.debug("lvm config has changed:\n %s" % '\n'.join(diff))
+        report_config_changed()
+
+    # max lock retries times = (external lvmlockd_lock_retries + 1) * (internal lock_retries + 1 after a lock conflict)
+    global lvm_cmd_timeout_with_locking
+    lvm_cmd_timeout_with_locking = ((lvmlockd_lock_retries + 1) * 6) * 5
+    modify_sanlock_config("sh_retries", 20)
+    modify_sanlock_config("logfile_priority", 7)
+    modify_sanlock_config("renewal_read_extend_sec", 24)
+    modify_sanlock_config("debug_renew", 1)
+    modify_sanlock_config("use_watchdog", 0)
+    modify_sanlock_config("max_sectors_kb", "ignore")
+    modify_sanlock_config("watchdog_fire_timeout", 1)
+    modify_sanlock_config("kill_grace_seconds", 40)
+    modify_sanlock_config("zstack_vglock_timeout", 0)
+    modify_sanlock_config("use_zstack_vglock_timeout", 0)
+    modify_sanlock_config("zstack_vglock_large_delay", 8)
+    modify_sanlock_config("use_zstack_vglock_large_delay", 0)
+
+    sanlock_hostname = "%s-%s-%s" % (vg_uuid[:8], host_uuid[:8], linux.get_hostname()[:20])
+    modify_sanlock_config("our_host_name", sanlock_hostname)
+    shell.call("sed -i 's/.*rotate .*/rotate 10/g' /etc/logrotate.d/sanlock", exception=False)
+    shell.call("sed -i 's/.*size .*/size 20M/g' /etc/logrotate.d/sanlock", exception=False)
