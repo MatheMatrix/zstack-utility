@@ -218,6 +218,19 @@ class CreateVolumeFromCacheRsp(AgentRsp):
         self.actualSize = None
         self.size = None
 
+
+class TakeoverRsp(AgentRsp):
+    def __init__(self):
+        super(TakeoverRsp, self).__init__()
+
+
+class GetVgsInfoRsp(AgentRsp):
+    def __init__(self):
+        super(GetVgsInfoRsp, self).__init__()
+        self.vgsSharedBlockStructs = {}
+        self.vgsSharedBlockCount = {}
+
+
 def translate_absolute_path_from_install_path(path):
     if path is None:
         raise Exception("install path can not be null")
@@ -366,6 +379,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     SHRINK_SNAPSHOT_PATH = "/sharedblock/snapshot/shrink"
     GET_QCOW2_HASH_VALUE_PATH = "/sharedblock/getqcow2hash"
     CHECK_STATE_PATH = "/sharedblock/vgstate/check"
+    TAKEOVER_PATH = "/sharedblock/takeover"
+    VGS_INFO_PATH = "/sharedblock/vgs/info"
 
     vgs_in_progress = set()
     vg_size = {}
@@ -418,6 +433,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.SHRINK_SNAPSHOT_PATH, self.shrink_snapshot)
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
         http_server.register_async_uri(self.CHECK_STATE_PATH, self.check_vg_state)
+        http_server.register_async_uri(self.TAKEOVER_PATH, self.takeover)
+        http_server.register_async_uri(self.VGS_INFO_PATH, self.vgs_info)
 
         self.imagestore_client = ImageStoreClient()
 
@@ -1724,4 +1741,153 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             if error:
                 rsp.failedVgs.update({vg_uuid: error})
 
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def takeover(self, req):
+        def _takeover_get_lock(sblk_lock, retry_times=10, retry_interval=(1, 2)):
+            for i in range(retry_times):
+                sblk_lock.lock = lock._get_lock(sblk_lock.name)
+                if sblk_lock.lock.acquire(False):
+                    return
+                if i < retry_times - 1:
+                    sleep = random.uniform(*retry_interval)
+                    logger.debug(
+                        "cannot get %s lock, retry %d/%d after %.1fs" % (sblk_lock.name, i + 1, retry_times, sleep))
+                    time.sleep(sleep)
+            raise SharedBlockConnectException("can not get %s lock after %d retries" % (sblk_lock.name, retry_times))
+
+        def _takeover_release_lock(sblk_lock):
+            try:
+                sblk_lock.lock.release()
+            except Exception:
+                return
+
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        sblk_lock = lock.NamedLock("sharedblock-%s" % cmd.vgUuid)
+        rsp = None
+        try:
+            _takeover_get_lock(sblk_lock)
+            rsp = self.do_takeover(cmd)
+        except SharedBlockConnectException as e:
+            r = AgentRsp()
+            r.success = False
+            r.error = "can not take over sharedblock primary storage[uuid: %s] on host[uuid: %s], " \
+                      "because other thread is taking over now" % (cmd.vgUuid, cmd.hostUuid)
+            rsp = jsonobject.dumps(r)
+        except Exception as e:
+            if rsp is None:
+                r = AgentRsp()
+                r.success = False
+                content = traceback.format_exc()
+                r.error = "%s\n%s" % (str(e), content)
+                rsp = jsonobject.dumps(r)
+        finally:
+            _takeover_release_lock(sblk_lock)
+            return rsp
+
+    @lock.file_lock(LOCK_FILE)
+    def do_takeover(self, cmd):
+        rsp = TakeoverRsp()
+        logger.info("takeover starts: vgUuid=%s, hostId=%s, hostUuid=%s, disks=%s"
+                    % (cmd.vgUuid, cmd.hostId, cmd.hostUuid, cmd.sharedBlockUuids))
+
+        # Step 1: prepare disk paths (inline, simpler than connect -- only needs allDiskPaths)
+        allDiskPaths = set()
+        for diskUuid in cmd.sharedBlockUuids:
+            disk = CheckDisk(diskUuid)
+            p = disk.get_path(raise_exception=False)
+            if p is not None:
+                allDiskPaths.add(p)
+        try:
+            root_disks = ["%s[0-9]*" % d for d in linux.get_physical_disk()]
+            allDiskPaths.update(root_disks)
+        except Exception as e:
+            logger.warn("get exception: %s" % e.message)
+            allDiskPaths.add("/dev/sd*")
+            allDiskPaths.add("/dev/vd*")
+        logger.info("takeover[1/8] prepared %d disk paths" % len(allDiskPaths))
+
+        # Step 2: configure LVM
+        lvm.config_lvm(cmd.hostId, allDiskPaths, cmd.vgUuid, cmd.hostUuid, DEFAULT_SANLOCK_LV_SIZE,
+                       kvmagent.get_host_os_type(), cmd.enableLvmetad)
+        logger.info("takeover[2/8] LVM config applied")
+
+        # Step 3: start lock service
+        lvm.start_lock_service(cmd.ioTimeout)
+        logger.info("takeover[3/8] lock service started")
+
+        # Step 4: find VG on storage by exact WWID match
+        def get_vg_name_by_shared_block_uuid():
+            vgsSharedBlockStructs, vgsSharedBlockCount = lvm.get_vgs_info(tag=INIT_TAG)
+            target_wwids = set(w.strip().lower() for w in cmd.sharedBlockUuids if w and w.strip())
+            matched_vgs = []
+
+            for _vg_uuid, block_devices in vgsSharedBlockStructs.items():
+                expected_pv_count = vgsSharedBlockCount.get(_vg_uuid, len(block_devices))
+                if any(not bd.wwid for bd in block_devices) or len(block_devices) != expected_pv_count:
+                    logger.warn("skip VG %s: incomplete WWID set" % _vg_uuid)
+                    continue
+                vg_wwids = set(bd.wwid.strip().lower() for bd in block_devices)
+                if target_wwids == vg_wwids:
+                    matched_vgs.append(_vg_uuid)
+
+            if len(matched_vgs) == 0:
+                available = {k: [bd.wwid for bd in v]
+                             for k, v in vgsSharedBlockStructs.items()}
+                raise Exception("cannot find VG with tag prefix [%s] and exact WWID match. "
+                                "target=%s, available=%s" % (INIT_TAG, cmd.sharedBlockUuids, available))
+            if len(matched_vgs) > 1:
+                raise Exception("found multiple VGs matching the same WWID set: %s" % matched_vgs)
+            return matched_vgs[0]
+
+        vg_uuid_on_storage = get_vg_name_by_shared_block_uuid()
+        logger.info("takeover[4/8] matched VG: %s (target: %s)" % (vg_uuid_on_storage, cmd.vgUuid))
+
+        # Step 5: reset sanlock lockspace and re-establish lock
+        lvm.check_stuck_vglk_and_gllk()
+        retry_times = lvm.get_retry_times_for_checking_vg_lockspace()
+
+        active_vg_uuid = vg_uuid_on_storage
+        try:
+            lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times)
+            lvm.reset_sanlock_lockspace(vg_uuid_on_storage)
+            lvm.drop_vg_lock(vg_uuid_on_storage)
+            lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times)
+            logger.info("takeover[5/8] sanlock lockspace reset for %s" % vg_uuid_on_storage)
+
+            lvm.check_gl_lock()
+
+            # Step 6: rename VG to match the target platform's database UUID
+            if vg_uuid_on_storage != cmd.vgUuid:
+                lvm.rename_vg(vg_uuid_on_storage, cmd.vgUuid)
+                active_vg_uuid = cmd.vgUuid
+                logger.info("takeover[6/8] VG renamed %s -> %s" % (vg_uuid_on_storage, cmd.vgUuid))
+                lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times)
+            else:
+                logger.info("takeover[6/8] VG name already matches, skip rename")
+
+            self.clear_stalled_qmp_socket()
+
+            # Step 7: fix PV state
+            lvm.check_missing_pv(cmd.vgUuid)
+            lvm.reset_pv_uuids(cmd.vgUuid)
+            logger.info("takeover[7/8] PV state fixed for %s" % cmd.vgUuid)
+
+            # Step 8: stamp VG tag with current host info
+            new_tag = "%s::%s::%s::%s" % (INIT_TAG, cmd.hostUuid, time.time(), linux.get_hostname())
+            lvm.update_vg_tag(cmd.vgUuid, INIT_TAG, new_tag)
+            logger.info("takeover[8/8] VG tag updated for %s" % cmd.vgUuid)
+        except Exception:
+            logger.warn("takeover failed after lockspace established, "
+                        "dropping vg lock for %s to allow next host to retry" % active_vg_uuid)
+            lvm.drop_vg_lock(active_vg_uuid)
+            raise
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def vgs_info(self, req):
+        rsp = GetVgsInfoRsp()
+        rsp.vgsSharedBlockStructs, rsp.vgsSharedBlockCount = lvm.get_vgs_info(tag=INIT_TAG)
         return jsonobject.dumps(rsp)
