@@ -3,7 +3,6 @@ import os.path
 import re
 import random
 import traceback
-import difflib
 
 from kvmagent import kvmagent
 from kvmagent.plugins.imagestore import ImageStoreClient
@@ -624,57 +623,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             allDiskPaths.add("/dev/sd*")
             allDiskPaths.add("/dev/vd*")
 
-        def config_lvm(host_id, enableLvmetad=False):
-            lvm.backup_lvm_config()
-            config = lvm.get_lvm_default_config()
-            lvmlockd_lock_retries = 6
-            config.modify({
-                "use_lvmlockd": 1,
-                "host_id": host_id,
-                "sanlock_lv_extend": DEFAULT_SANLOCK_LV_SIZE,
-                "lvmlockd_lock_retries": lvmlockd_lock_retries,
-                "issue_discards": 0,
-                "reserved_stack": 256,
-                "reserved_memory": 131072,
-                "use_lvmetad": 1 if enableLvmetad else 0
-            })
-            if kvmagent.get_host_os_type() == "debian":
-                config.modify({"udev_rules": 0, "udev_sync": 0})
-            config.write_to_file(lvm.LVM_CONFIG_TMP_FILE)
-            lvm.config_lvm_filter([os.path.basename(lvm.LVM_CONFIG_TMP_FILE)], preserve_disks=allDiskPaths)
-
-            new_config = linux.read_file(lvm.LVM_CONFIG_TMP_FILE)
-            old_config = linux.read_file(lvm.LVM_LOCAL_CONFIG_FILE)
-            diff = list(difflib.unified_diff(old_config.splitlines() if old_config is not None else [], new_config.splitlines()))
-            if len(diff) == 0:
-                logger.debug("lvm config has not changed")
-            else:
-                linux.write_file(lvm.LVM_CONFIG_FILE, new_config, create_if_not_exist=True)
-                linux.write_file(lvm.LVM_LOCAL_CONFIG_FILE, new_config, create_if_not_exist=True)
-                logger.debug("lvm config has changed:\n %s" % '\n'.join(diff))
-                lvm.report_config_changed()
-
-            # max lock retries times = (external lvmlockd_lock_retries + 1) * (internal lock_retries + 1 after a lock conflict)
-            lvm.lvm_cmd_timeout_with_locking = ((lvmlockd_lock_retries + 1) * 6) * 5
-            lvm.modify_sanlock_config("sh_retries", 20)
-            lvm.modify_sanlock_config("logfile_priority", 7)
-            lvm.modify_sanlock_config("renewal_read_extend_sec", 24)
-            lvm.modify_sanlock_config("debug_renew", 1)
-            lvm.modify_sanlock_config("use_watchdog", 0)
-            lvm.modify_sanlock_config("max_sectors_kb", "ignore")
-            lvm.modify_sanlock_config("watchdog_fire_timeout", 1)
-            lvm.modify_sanlock_config("kill_grace_seconds", 40)
-            lvm.modify_sanlock_config("zstack_vglock_timeout", 0)
-            lvm.modify_sanlock_config("use_zstack_vglock_timeout", 0)
-            lvm.modify_sanlock_config("zstack_vglock_large_delay", 8)
-            lvm.modify_sanlock_config("use_zstack_vglock_large_delay", 0)
-
-            sanlock_hostname = "%s-%s-%s" % (cmd.vgUuid[:8], cmd.hostUuid[:8], linux.get_hostname()[:20])
-            lvm.modify_sanlock_config("our_host_name", sanlock_hostname)
-            shell.call("sed -i 's/.*rotate .*/rotate 10/g' /etc/logrotate.d/sanlock", exception=False)
-            shell.call("sed -i 's/.*size .*/size 20M/g' /etc/logrotate.d/sanlock", exception=False)
-
-        config_lvm(cmd.hostId, cmd.enableLvmetad)
+        lvm.config_lvm(cmd.hostId, allDiskPaths, cmd.vgUuid, cmd.hostUuid, DEFAULT_SANLOCK_LV_SIZE,
+                       kvmagent.get_host_os_type(), cmd.enableLvmetad)
 
         lvm.start_lock_service(cmd.ioTimeout)
         logger.debug("find/create vg %s lock..." % cmd.vgUuid)
@@ -697,18 +647,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 #       utility in sanlock.conf. It's 0 second by default, so retry times can be reduced to
 #       3 in order to save time.
 
-        @bash.in_bash
-        def get_retry_times_for_checking_vg_lockspace():
-            r, sanlock_patch_version = bash.bash_ro("sanlock get_patch_version")
-            # if version is not a digit, e.g. "client action get_patch_version is unknown", it also means that sanlock patch version < 2
-            if sanlock_patch_version.strip().isdigit() is False:
-                return 15
-            elif int(sanlock_patch_version.strip()) >= 2:
-                return 3
-            else:
-                return 15
-
-        retry_times_for_checking_vg_lockspace = get_retry_times_for_checking_vg_lockspace()
+        retry_times_for_checking_vg_lockspace = lvm.get_retry_times_for_checking_vg_lockspace()
 
         lvm.check_stuck_vglk_and_gllk()
         logger.debug("starting vg %s lock..." % cmd.vgUuid)
