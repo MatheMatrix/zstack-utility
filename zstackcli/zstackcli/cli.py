@@ -268,6 +268,9 @@ class Cli(object):
         self.curr_pattern = pattern
 
         try:
+            if index == 0 and len(self.matching_words) > 1:
+                max_len = max(len(w) for w in self.matching_words)
+                self.completer_print(pattern, self.matching_words, max_len)
             return self.matching_words[index]
         except IndexError:
             return None
@@ -1166,7 +1169,6 @@ Parse command parameters error:
         """
         readline.parse_and_bind("tab: menu-complete")
         readline.parse_and_bind("set completion-ignore-case on")
-        readline.parse_and_bind("set show-all-if-ambiguous on")
         readline.set_completer(self.complete)
         readline.set_completion_display_matches_hook(self.completer_print)
         try:
