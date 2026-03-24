@@ -110,6 +110,10 @@ DEFAULT_ZBS_CONF_PATH = "/etc/zbs/client.conf"
 DEFAULT_ZBS_USER_NAME = "zbs"
 PROTOCOL_CBD_PREFIX = "cbd:"
 
+# libvirt.py is in old version, (since virsh has been upgrade) we should use these constants
+VIR_DOMAIN_UNDEFINE_TPM = 1 << 5
+VIR_DOMAIN_UNDEFINE_KEEP_TPM = 1 << 6
+
 class RetryException(Exception):
     pass
 
@@ -2873,7 +2877,7 @@ class Vm(object):
 
             def force_undefine():
                 try:
-                    self.domain.undefineFlags(libvirt.VIR_DOMAIN_UNDEFINE_KEEP_NVRAM)
+                    self.domain.undefineFlags(libvirt.VIR_DOMAIN_UNDEFINE_KEEP_NVRAM | VIR_DOMAIN_UNDEFINE_KEEP_TPM)
                 except:
                     logger.warn('cannot undefine the VM[uuid:%s]' % self.uuid)
                     pid = linux.find_process_by_cmdline(['qemu', self.uuid])
@@ -2883,7 +2887,7 @@ class Vm(object):
 
             try:
                 flags = 0
-                for attr in [ "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA", "VIR_DOMAIN_UNDEFINE_KEEP_NVRAM" ]:
+                for attr in [ "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA", "VIR_DOMAIN_UNDEFINE_KEEP_NVRAM", "VIR_DOMAIN_UNDEFINE_KEEP_TPM" ]:
                     if hasattr(libvirt, attr):
                         flags |= getattr(libvirt, attr)
                 self.domain.undefineFlags(flags)
