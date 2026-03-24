@@ -156,6 +156,13 @@ class IpAddressSpec(object):
 
 class OvsDesiredState(object):
     """Complete desired state."""
+
+    # Linux IFNAMSIZ = 16 (including '\0'), so max interface name = 15 chars.
+    # OVS uses the bridge name as the internal-port interface name, and when
+    # it exceeds 15 characters the kernel netdev is silently NOT created,
+    # causing all subsequent ip-addr/ip-link commands to fail.
+    _MAX_IFNAME_LEN = 15
+
     def __init__(self):
         self.host_uuid = None
         self.config_version = None
@@ -163,6 +170,26 @@ class OvsDesiredState(object):
         self.infra_bridges = {}        # name -> InfraBridgeSpec
         self.ip_addresses = {}
         self.ovs_external_ids = {}
+
+    @staticmethod
+    def _safe_bridge_name(name):
+        """Truncate bridge name to fit Linux IFNAMSIZ (max 15 chars).
+
+        If the original name exceeds 15 characters, it is truncated to 9
+        characters followed by a dash and a 5-character hash suffix derived
+        from the full name so that different long names produce different
+        short names.  For example:
+            'hsp-zcf1500-retest'  ->  'hsp-zcf15-e1a2b'
+        """
+        if len(name) <= OvsDesiredState._MAX_IFNAME_LEN:
+            return name
+        import hashlib
+        suffix = hashlib.sha256(name.encode('utf-8')).hexdigest()[:5]
+        prefix = name[:OvsDesiredState._MAX_IFNAME_LEN - 6]  # 15 - 1(dash) - 5(hash)
+        short = '%s-%s' % (prefix, suffix)
+        logger.info('bridge name "%s" exceeds %d chars, shortened to "%s"'
+                    % (name, OvsDesiredState._MAX_IFNAME_LEN, short))
+        return short
 
 
 class OvsActualState(object):
@@ -352,7 +379,7 @@ class DesiredStateBuilder(object):
         encap_ip = None
 
         for sw in desired_switches:
-            br_name = sw.name
+            br_name = OvsDesiredState._safe_bridge_name(sw.name)
             sw_type = getattr(sw, 'type_', None) or getattr(sw, 'type', None)
             dp_type = 'netdev' if sw_type == 'dpdk' else 'system'
             transport_zones = getattr(sw, 'transportZones', None) or []
@@ -708,7 +735,7 @@ class OvsReconciler(object):
 
     @staticmethod
     def _reconcile_ip_addresses(desired, actual):
-        """Phase 6: Flush and assign IP addresses on infrastructure bridges."""
+        """Flush and assign IP addresses on infrastructure bridges."""
         for device, spec in desired.ip_addresses.items():
             _validate_ovs_name(device)
             _validate_ip_address(spec.address)
