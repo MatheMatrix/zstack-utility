@@ -45,12 +45,16 @@ class FileBasedMetadataHandler(VmMetadataHandler):
     def _do_write(self, metadataPath, metadata, vmUuid, vmName, vmCategory, architecture, schemaVersion):
         with self._get_path_lock(metadataPath):
             dir_path = os.path.dirname(metadataPath)
+            created_dir = False
             if not os.path.isdir(dir_path):
                 try:
                     os.makedirs(dir_path)
+                    created_dir = True
                 except OSError:
                     if not os.path.isdir(dir_path):
                         raise
+            if created_dir:
+                _fsync_directory(dir_path)
 
             metadata_tmp = metadataPath + ".tmp"
             fd = os.open(metadata_tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -84,15 +88,9 @@ class FileBasedMetadataHandler(VmMetadataHandler):
                 tmp_path = metadataPath + ".tmp"
                 if os.path.isfile(tmp_path):
                     try:
-                        with open(tmp_path, 'r') as f:
-                            content = f.read()
-                        json.loads(content)
                         os.rename(tmp_path, metadataPath)
                         _fsync_directory(metadataPath)
                         logger.info("recovered tmp file to %s during get", metadataPath)
-                    except (ValueError, TypeError):
-                        logger.warn("tmp file %s contains incomplete JSON", tmp_path)
-                        return {'metadata': None}
                     except Exception as e:
                         logger.warn("failed to recover tmp file %s: %s", tmp_path, e)
                         return {'metadata': None}
@@ -117,13 +115,17 @@ class FileBasedMetadataHandler(VmMetadataHandler):
 
         entries = []
         for fname in os.listdir(metadataDir):
-            if not fname.endswith(_METADATA_SUFFIX):
+            is_tmp = fname.endswith(_METADATA_SUFFIX + '.tmp')
+            if not (fname.endswith(_METADATA_SUFFIX) or is_tmp):
                 continue
-            vm_uuid = fname[:-len(_METADATA_SUFFIX)]
+            vm_uuid = fname[:-len(_METADATA_SUFFIX + '.tmp')] if is_tmp else fname[:-len(_METADATA_SUFFIX)]
             if not _UUID_HEX_RE.match(vm_uuid):
                 continue
 
             fpath = os.path.join(metadataDir, fname)
+            metadata_path = fpath[:-4] if is_tmp else fpath
+            if is_tmp and os.path.isfile(metadata_path):
+                continue
             if not os.path.isfile(fpath):
                 continue
 
@@ -131,12 +133,13 @@ class FileBasedMetadataHandler(VmMetadataHandler):
                 stat = os.stat(fpath)
                 entry = VmMetadataScanEntry(
                     vmUuid=vm_uuid,
-                    metadataPath=fpath,
+                    metadataPath=metadata_path,
                     sizeBytes=stat.st_size,
                     lastUpdateTime=int(stat.st_mtime * 1000),
+                    incomplete=is_tmp,
                 )
 
-                summary_path = fpath + '.summary'
+                summary_path = metadata_path + '.summary'
                 try:
                     if os.path.isfile(summary_path):
                         with open(summary_path, 'r') as sf:

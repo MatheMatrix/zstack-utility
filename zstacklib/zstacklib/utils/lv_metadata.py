@@ -418,9 +418,20 @@ def _read_flow_c(fd, header, lv_size):
 # ---- Repair helpers ----
 
 def _repair_config_update(fd, header, target, lv_size):
-    """Tries old-layout then new-layout for target slot (dual-layout fallback)."""
+    """Tries old-layout then new-layout for target slot (dual-layout fallback).
+
+    When completing Phase 3, always use the layout derived from the current
+    ``lv_size`` (via ``calculate_slot_layout``).  If the LV was extended between
+    Phase 1 and Phase 3, the Phase-1 header still records the *old* slot
+    offsets/capacities.  Writing those stale values back would leave the header
+    inconsistent with the actual LV geometry.  ``calculate_slot_layout(lv_size)``
+    returns the correct layout regardless of whether an expansion occurred.
+    """
     if not target.valid:
         target = _try_read_target_new_layout(fd, header, lv_size)
+
+    # Current layout based on actual LV size (correct after possible expansion)
+    layout = calculate_slot_layout(lv_size)
 
     if target.valid and target.seq_num == header.write_sequence:
         # Complete Phase 3
@@ -428,10 +439,10 @@ def _repair_config_update(fd, header, target, lv_size):
             active_slot=1 - header.active_slot,
             pending_op=PENDING_NONE,
             write_sequence=header.write_sequence,
-            slot_a_offset=header.slot_a_offset,
-            slot_a_capacity=header.slot_a_capacity,
-            slot_b_offset=header.slot_b_offset,
-            slot_b_capacity=header.slot_b_capacity,
+            slot_a_offset=layout.slot_a_offset,
+            slot_a_capacity=layout.slot_a_capacity,
+            slot_b_offset=layout.slot_b_offset,
+            slot_b_capacity=layout.slot_b_capacity,
             last_update_time=current_epoch_ms(),
             schema_version=header.schema_version,
             vm_category=header.vm_category,
@@ -441,7 +452,9 @@ def _repair_config_update(fd, header, target, lv_size):
         aligned_pwrite(fd, h, 0)
         return True, "Completed Phase 3 for config update"
     else:
-        # Abort incomplete write -> clear PendingOp
+        # Abort incomplete write -> clear PendingOp.
+        # Use header's original layout here because no expansion completed
+        # successfully (the target slot was never written at new offsets).
         h = build_header(
             active_slot=header.active_slot,
             pending_op=PENDING_NONE,
@@ -461,19 +474,26 @@ def _repair_config_update(fd, header, target, lv_size):
 
 
 def _repair_storage_change(fd, header, target, lv_size):
-    """Tries old-layout then new-layout for target slot (dual-layout fallback)."""
+    """Tries old-layout then new-layout for target slot (dual-layout fallback).
+
+    See ``_repair_config_update`` for the rationale on using
+    ``calculate_slot_layout(lv_size)`` when completing Phase 3.
+    """
     if not target.valid:
         target = _try_read_target_new_layout(fd, header, lv_size)
+
+    # Current layout based on actual LV size (correct after possible expansion)
+    layout = calculate_slot_layout(lv_size)
 
     if target.valid and target.seq_num == header.write_sequence:
         h = build_header(
             active_slot=1 - header.active_slot,
             pending_op=PENDING_NONE,
             write_sequence=header.write_sequence,
-            slot_a_offset=header.slot_a_offset,
-            slot_a_capacity=header.slot_a_capacity,
-            slot_b_offset=header.slot_b_offset,
-            slot_b_capacity=header.slot_b_capacity,
+            slot_a_offset=layout.slot_a_offset,
+            slot_a_capacity=layout.slot_a_capacity,
+            slot_b_offset=layout.slot_b_offset,
+            slot_b_capacity=layout.slot_b_capacity,
             last_update_time=current_epoch_ms(),
             schema_version=header.schema_version,
             vm_category=header.vm_category,
@@ -561,8 +581,8 @@ def _determine_op_type(fd, header, new_payload):
                 return PENDING_STORAGE_CHANGE
             else:
                 return PENDING_CONFIG_UPDATE
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("failed to determine op type, defaulting to STORAGE_CHANGE: %s", e)
     return PENDING_STORAGE_CHANGE
 
 
@@ -588,7 +608,7 @@ def _storage_topology_changed(old_payload, new_payload):
             except (ValueError, TypeError):
                 pass
         snaps = {}
-        for vol_uuid, snap_list in d.get('snapshots', {}).items():
+        for _vol_uuid, snap_list in d.get('snapshots', {}).items():
             if isinstance(snap_list, list):
                 for s_json in snap_list:
                     try:
@@ -843,7 +863,7 @@ class SblkMetadataHandler(VmMetadataHandler):
     def _lv_list_func(self, vg):
         if not self._SAFE_VG_RE.match(vg):
             raise Exception("invalid VG name: %s" % vg)
-        r, o = self._bash.bash_ro(
+        _r, o = self._bash.bash_ro(
             "lvs --nolocking -t %s --noheadings -o lv_name,lv_path,lv_size"
             " --units b --nosuffix --separator '|'" % vg
         )
@@ -964,7 +984,7 @@ class SblkMetadataHandler(VmMetadataHandler):
             else:
                 logger.debug("metadata LV %s does not exist, skip cleanup", metadataPath)
         except Exception as e:
-            raise Exception("failed to cleanup metadata LV %s: %s" % (metadataPath, str(e)))
+            raise Exception("failed to cleanup metadata LV %s: %s" % (metadataPath, str(e))) from e
 
         logger.debug("cleanup_vm_metadata: cleaned %s", metadataPath)
         return {}

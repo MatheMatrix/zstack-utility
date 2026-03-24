@@ -1889,7 +1889,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                     try:
                         with lvm.OperateLv(new_backing, shared=True):
                             exists = os.path.exists(new_backing)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("[sblk] failed to check new backing %s: %s", new_backing, e)
                         exists = False
 
                     if exists:
