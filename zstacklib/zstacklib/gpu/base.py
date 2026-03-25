@@ -407,6 +407,18 @@ class GPUBase(object):
     # Virtualization Capabilities Detection
     # ==========================================================================
 
+    @staticmethod
+    def set_capability_virt_metadata(
+            capability_info,
+            virt_status,
+            virt_state,
+            virt_mode=None,
+            virt_capabilities=None):
+        capability_info['virtStatus'] = virt_status
+        capability_info['virtState'] = virt_state
+        capability_info['virtMode'] = virt_mode
+        capability_info['virtCapabilities'] = list(virt_capabilities or [])
+
     @classmethod
     def detect_vfio_mdev_capability(cls, pci_device_to):
         """

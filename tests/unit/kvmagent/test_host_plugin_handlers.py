@@ -1380,6 +1380,8 @@ Framebuffer : 1024 MB
         rsp = json.loads(result)
         assert rsp['error'] == ''
         assert rsp['pciDevicesInfo'][0]['virtStatus'] == 'VFIO_MDEV_VIRTUALIZABLE'
+        assert rsp['pciDevicesInfo'][0]['virtState'] == 'VIRTUALIZABLE'
+        assert rsp['pciDevicesInfo'][0]['virtCapabilities'] == ['VFIO_MDEV']
 
     def test_get_pci_info_reports_nvidia_vfio_mdev_virtualized_when_creatable_query_fails_on_pf(self):
         plugin = _make_plugin()
@@ -1498,6 +1500,8 @@ Framebuffer : 1024 MB
         rsp = json.loads(result)
         assert rsp['error'] == ''
         assert rsp['pciDevicesInfo'][0]['virtStatus'] == 'VFIO_MDEV_VIRTUALIZED'
+        assert rsp['pciDevicesInfo'][0]['virtState'] == 'VIRTUALIZED'
+        assert rsp['pciDevicesInfo'][0]['virtCapabilities'] == ['VFIO_MDEV']
 
 
 @pytest.mark.kvmagent

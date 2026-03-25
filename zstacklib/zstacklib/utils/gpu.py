@@ -32,6 +32,35 @@ class VmGpuStatus(Enum):
     NOMINAL = "nominal"
 
 
+def set_pci_virt_metadata(
+        pci_device_to,
+        virt_status,
+        virt_state,
+        virt_mode=None,
+        virt_capabilities=None):
+    # Keep virtStatus populated for backward compatibility only. New
+    # virtualization semantics are carried by virtState/virtMode/
+    # virtCapabilities, and virtStatus is expected to be deprecated later.
+    pci_device_to.virtStatus = virt_status or ""
+    pci_device_to.virtState = virt_state or ""
+    pci_device_to.virtMode = virt_mode or ""
+    pci_device_to.virtCapabilities = list(virt_capabilities or [])
+
+
+def apply_explicit_virt_metadata(pci_device_to, capability_info):
+    if capability_info is None:
+        return
+
+    # Keep virtStatus populated for backward compatibility only. New
+    # virtualization semantics are carried by virtState/virtMode/
+    # virtCapabilities, and virtStatus is expected to be deprecated later.
+    pci_device_to.virtStatus = capability_info.get('virtStatus', '') or ''
+    pci_device_to.virtState = capability_info.get('virtState', '') or ''
+    pci_device_to.virtMode = capability_info.get('virtMode', '') or ''
+    pci_device_to.virtCapabilities = list(
+        capability_info.get('virtCapabilities') or [])
+
+
 def shut_persistenced_by_guesttool(domain):
     vm_uuid = domain.name()
     qga = VmQga(domain)
@@ -744,7 +773,7 @@ def get_enflame_gpu_info_cmd():
 
 def post_process_enflame_gpu_device(to):
     """Deprecated: Use post_process_pci_device_by_vendor instead"""
-    to.virtStatus = "UNVIRTUALIZABLE"
+    set_pci_virt_metadata(to, "UNVIRTUALIZABLE", "UNVIRTUALIZABLE")
 
 
 def _gpu_device_matcher(pci_device_to, context):
@@ -909,18 +938,20 @@ def _gpu_device_processor(pci_device_to, context):
 
                 # Set virtStatus by priority
                 if vfio_mdev_supported:
-                    pci_device_to.virtStatus = vfio_mdev_info.get('virtStatus', 'VFIO_MDEV_VIRTUALIZABLE')
+                    apply_explicit_virt_metadata(pci_device_to, vfio_mdev_info)
                 elif sriov_supported:
-                    pci_device_to.virtStatus = sriov_info.get('virtStatus', 'SRIOV_VIRTUALIZABLE')
+                    apply_explicit_virt_metadata(pci_device_to, sriov_info)
                 elif tensorfusion_supported:
-                    pci_device_to.virtStatus = tensorfusion_info.get('virtStatus', 'TENSORFUSION_VIRTUALIZABLE')
+                    apply_explicit_virt_metadata(pci_device_to, tensorfusion_info)
                 elif not pci_device_to.virtStatus:
-                    pci_device_to.virtStatus = "UNVIRTUALIZABLE"
+                    set_pci_virt_metadata(
+                        pci_device_to, "UNVIRTUALIZABLE", "UNVIRTUALIZABLE")
         except Exception as e:
             logger.debug("Failed to detect GPU capabilities for vendor %s: %s" % (
                 vendor_name, str(e)))
             if not pci_device_to.virtStatus:
-                pci_device_to.virtStatus = "UNVIRTUALIZABLE"
+                set_pci_virt_metadata(
+                    pci_device_to, "UNVIRTUALIZABLE", "UNVIRTUALIZABLE")
 
     # Collect GPU addon info (productName, etc.) from enriched gpu_info_map
     vendor_name = pci_device_to.vendor if hasattr(

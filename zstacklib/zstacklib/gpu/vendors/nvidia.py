@@ -474,11 +474,18 @@ class NVIDIA(GPUBase):
             if rs != 0:
                 return False, {}
             if rc != 0:
-                capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
+                cls.set_capability_virt_metadata(
+                    capability_info, "VFIO_MDEV_VIRTUALIZABLE",
+                    "VIRTUALIZABLE", None, ["VFIO_MDEV"])
             else:
-                capability_info['virtStatus'] = ("VFIO_MDEV_VIRTUALIZED"
-                                                 if support != creatable
-                                                 else "VFIO_MDEV_VIRTUALIZABLE")
+                if support != creatable:
+                    cls.set_capability_virt_metadata(
+                        capability_info, "VFIO_MDEV_VIRTUALIZED",
+                        "VIRTUALIZED", "VFIO_MDEV", ["VFIO_MDEV"])
+                else:
+                    cls.set_capability_virt_metadata(
+                        capability_info, "VFIO_MDEV_VIRTUALIZABLE",
+                        "VIRTUALIZABLE", None, ["VFIO_MDEV"])
         elif virt_function_dir_exits:
             # Virt function: check virtfn and mdev devices
             r, o, e = bash_roe(
@@ -500,15 +507,25 @@ class NVIDIA(GPUBase):
                                 virtualizable = True
                                 break
                 if mdev_devices_exists:
-                    capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZED"
+                    cls.set_capability_virt_metadata(
+                        capability_info, "VFIO_MDEV_VIRTUALIZED",
+                        "VIRTUALIZED", "VFIO_MDEV", ["VFIO_MDEV"])
                 elif virtualizable:
-                    capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
+                    cls.set_capability_virt_metadata(
+                        capability_info, "VFIO_MDEV_VIRTUALIZABLE",
+                        "VIRTUALIZABLE", None, ["VFIO_MDEV"])
                 else:
-                    capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
+                    cls.set_capability_virt_metadata(
+                        capability_info, "VFIO_MDEV_VIRTUALIZABLE",
+                        "VIRTUALIZABLE", None, ["VFIO_MDEV"])
             else:
-                capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
+                cls.set_capability_virt_metadata(
+                    capability_info, "VFIO_MDEV_VIRTUALIZABLE",
+                    "VIRTUALIZABLE", None, ["VFIO_MDEV"])
         else:
-            capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
+            cls.set_capability_virt_metadata(
+                capability_info, "VFIO_MDEV_VIRTUALIZABLE",
+                "VIRTUALIZABLE", None, ["VFIO_MDEV"])
 
         return True, capability_info
 
@@ -538,9 +555,13 @@ class NVIDIA(GPUBase):
 
             with open(numvfs, 'r') as f:
                 if f.read().strip() != '0':
-                    capability_info['virtStatus'] = "SRIOV_VIRTUALIZED"
+                    cls.set_capability_virt_metadata(
+                        capability_info, "SRIOV_VIRTUALIZED",
+                        "VIRTUALIZED", "SRIOV", ["SRIOV"])
                 else:
-                    capability_info['virtStatus'] = "SRIOV_VIRTUALIZABLE"
+                    cls.set_capability_virt_metadata(
+                        capability_info, "SRIOV_VIRTUALIZABLE",
+                        "VIRTUALIZABLE", None, ["SRIOV"])
             return True, capability_info
         elif os.path.exists(physfn):
             # VF (Virtual Function)
@@ -568,7 +589,9 @@ class NVIDIA(GPUBase):
                 # NVIDIA A-Series VF: clear device/vendor IDs
                 pci_device_to.deviceId = ""
                 pci_device_to.vendorId = ""
-            capability_info['virtStatus'] = "SRIOV_VIRTUAL"
+            cls.set_capability_virt_metadata(
+                capability_info, "SRIOV_VIRTUAL",
+                "VIRTUAL", "SRIOV", [])
 
             capability_info['parentAddress'] = os.readlink(
                 physfn).split('/')[-1]
@@ -618,23 +641,29 @@ class NVIDIA(GPUBase):
             # Parse driver version (e.g., "535.104.05" -> 535)
             driver_major = int(driver_version.split('.')[0])
             if driver_major < 570:
-                capability_info['virtStatus'] = "TENSORFUSION_NOT_SUPPORTED"
+                cls.set_capability_virt_metadata(
+                    capability_info, "TENSORFUSION_NOT_SUPPORTED", "", None, [])
                 capability_info['reason'] = "Driver version %s < 570.x" % driver_version
                 return False, capability_info
 
             if not os.path.exists(cls.TENSORFUSION_WORKER_BINARY):
-                capability_info['virtStatus'] = "TENSORFUSION_NOT_SUPPORTED"
+                cls.set_capability_virt_metadata(
+                    capability_info, "TENSORFUSION_NOT_SUPPORTED", "", None, [])
                 capability_info['reason'] = "TensorFusion worker binary %s not found" % cls.TENSORFUSION_WORKER_BINARY
                 return False, capability_info
 
             # Check if TensorFusion worker can be created (virtualizable)
-            # In the future, we can check if workers are already running (virtualized)
-            capability_info['virtStatus'] = "TENSORFUSION_VIRTUALIZABLE"
+            # A follow-up enhancement can check whether workers are already
+            # running (virtualized).
+            cls.set_capability_virt_metadata(
+                capability_info, "TENSORFUSION_VIRTUALIZABLE",
+                "VIRTUALIZABLE", None, ["TENSORFUSION"])
             return True, capability_info
 
         except (ValueError, IndexError) as ex:
             logger.warn('TensorFusion capability check failed for %s: failed to parse version info: %s' % (addr, str(ex)))
-            capability_info['virtStatus'] = "TENSORFUSION_NOT_SUPPORTED"
+            cls.set_capability_virt_metadata(
+                capability_info, "TENSORFUSION_NOT_SUPPORTED", "", None, [])
             capability_info['reason'] = "Failed to parse version info"
             return False, capability_info
 
