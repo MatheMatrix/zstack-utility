@@ -771,7 +771,7 @@ class SblkHealthChecker(AbstractStorageFencer):
         shell.run("%s -asy %s" % (lvm.subcmd("lvchange"), volume_abs_path))
         if not os.path.exists(volume_abs_path):
             # Activate heartbeat lv without lock, this only applies to situations where lv will not be changed temporarily.
-            shell.run("%s -asy %s --lockopt skipvg,skiplv" % (lvm.subcmd("lvchange"), volume_abs_path))
+            shell.run("%s -asy %s" % (lvm.subcmd("lvchange", lockopts=["skipvg","skiplv"]), volume_abs_path))
             if os.path.exists(volume_abs_path):
                 return read_content_from_lv()
 

@@ -1468,12 +1468,12 @@ def resize_lv(path, size, force=False):
 
 @bash.in_bash
 @linux.retry(times=15, sleep_time=random.uniform(0.1, 3))
-def extend_lv(path, extend_size, skip_if_sufficient=False, extra_options=""):
+def extend_lv(path, extend_size, skip_if_sufficient=False, lockopts: list[str] | None = None):
     final_size = calcLvReservedSize(extend_size)
     if skip_if_sufficient and int(get_lv_size(path)) >= final_size:
         return
 
-    r, o, e = bash.bash_roe("%s --size %sb %s %s" % (subcmd("lvextend"), final_size, path, extra_options))
+    r, o, e = bash.bash_roe("%s --size %sb %s" % (subcmd("lvextend", lockopts=lockopts), final_size, path))
     if r == 0:
         logger.debug("successfully extend lv %s size to %s" % (path, extend_size))
         return
@@ -2817,16 +2817,23 @@ NOLOCK_CMDS = {"lvs", "pvs", "vgs"}
 TIMEOUT_CMDS = {"lvchange", "lvcreate", "lvrename", "lvresize", "lvextend", "lvremove"}
 REPAIR_LV_CMDS = TIMEOUT_CMDS - {"lvcreate"}
 REPAIR_VG_CMDS = {"vgchange"}
-def subcmd(cmd, timeout=lvm_cmd_timeout_with_locking):
+def subcmd(cmd, timeout=lvm_cmd_timeout_with_locking, lockopts: list[str] | None = None):
     argv = [cmd]
+    lockopts = list(lockopts) if lockopts is not None else []
 
     if cmd in NOLOCK_CMDS:
         argv += ["--nolocking", "-t"]
-    elif cmd in TIMEOUT_CMDS:
-        argv = ["timeout", "-s", "SIGKILL", str(timeout)] + argv
+    else:
+        if cmd in TIMEOUT_CMDS:
+            argv = ["timeout", "-s", "SIGKILL", str(timeout)] + argv
         if cmd in REPAIR_LV_CMDS:
-            argv += ["--lockopt", "repairlv"]
-    elif cmd in REPAIR_VG_CMDS:
-        argv += ["--lockopt", "repair"]
+            lockopts.append("repairlv")
+        if cmd in REPAIR_VG_CMDS:
+            lockopts.append("repair")
+
+    lockopts = list(dict.fromkeys(lockopts))
+
+    if lockopts:
+        argv += ["--lockopt", ",".join(lockopts)]
 
     return " ".join(argv)

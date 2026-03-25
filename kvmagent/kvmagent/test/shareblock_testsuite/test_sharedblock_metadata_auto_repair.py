@@ -1,7 +1,7 @@
 # coding=utf-8
 from kvmagent.test.shareblock_testsuite.shared_block_plugin_teststub import SharedBlockPluginTestStub
 from kvmagent.test.utils import sharedblock_utils,pytest_utils,storage_device_utils
-from zstacklib.utils import bash, lvm, jsonobject, sanlock, linux
+from zstacklib.utils import bash, lvm, jsonobject, sanlock, linux, log
 from unittest import TestCase
 from zstacklib.test.utils import misc,env
 import os
@@ -18,6 +18,7 @@ __ENV_SETUP__ = {
     }
 }
 
+logger = log.get_logger(__name__)
 hostUuid = "8b12f74e6a834c5fa90304b8ea54b1dd"
 hostId = 24
 vgUuid = "36b02490bb944233b0b01990a450ba83"
@@ -41,11 +42,6 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
 
     @pytest_utils.ztest_decorater
     def test_sharedblock_metadata_auto_repair(self):
-        ver = lvm.get_sanlock_patch_version()
-        if not (ver and ver.isdigit()) or int(ver) < 7:
-            # current sanlock version not support autoRepair
-            return
-
         self_vm = env.get_vm_metadata('self')
         rsp = storage_device_utils.iscsi_login(
             self_vm.ip,"3260"
@@ -60,11 +56,28 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
         o = bash.bash_o("vgs")
         self.assertEqual(True, rsp.success, o)
 
+        self.lvm_repair_cmd_test()
+
+        ver = lvm.get_sanlock_patch_version()
+        if not (ver and ver.isdigit()) or int(ver) < 7:
+            # current sanlock version not support autoRepair
+            return
+
         self.lvlk_repair_test()
         self.vglk_repair_test()
         self.lockspace_repair_test()
         self.gllk_repair_test()
 
+    def lvm_repair_cmd_test(self):
+        test_lv = "/dev/{}/testlv".format(vgUuid)
+        lvm.create_lv_from_absolute_path("/dev/{}/testlv".format(vgUuid), 4194304, exact_size=True)
+        lvm.active_lv_with_check(test_lv, shared=True)
+        lvm.active_lv(test_lv, shared=False)
+        lvm.extend_lv(test_lv, 20971520, lockopts=["shupdate", "norefresh"])
+        lvm.lv_rename(test_lv, "/dev/{}/testlv-new".format(vgUuid))
+        test_lv = "/dev/{}/testlv-new".format(vgUuid)
+        lvm.deactive_lv(test_lv)
+        lvm.delete_lv(test_lv)
 
     def lvlk_repair_test(self):
         volume_uuid = misc.uuid()
@@ -128,6 +141,11 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
             r, o, e = bash.bash_roe("lvremove -y /dev/%s/test_lv" % vgUuid)
             self.assertEqual(True, r == 0, "lvremove failed: %s uuid %s offset %s" % (str(o)+str(e), "VGLK", lock_offset))
 
+    def wait_lockspace_stop(self):
+        def _wait(_):
+            return bash.bash_r("lvmlockctl -i -d | grep lvm_%s" % vgUuid) != 0
+        linux.wait_callback_success(_wait, timeout=10, interval=0.5)
+
     def lockspace_repair_test(self):
         volume_uuid = misc.uuid()
         volume_path = "sharedblock://{}/{}".format(vgUuid, volume_uuid)
@@ -139,13 +157,15 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
             vgUuid=vgUuid
         )
         self.assertEqual(True, rsp.success, rsp.error)
-
         for i in range(10):
-            bash.bash_errorout("lvmlockctl -r {0}".format(vgUuid))
             self.corrupt_data(vgUuid, 0, length=1048576)
             self.corrupt_data(vgUuid, 65*1024**2, length=1048576)
+            bash.bash_o("vgchange -an {0} && vgchange --lockstop {0}".format(vgUuid))
+            bash.bash_o("lvmlockctl -r {0}".format(vgUuid))
             if i == 9:
                 bash.bash_r("sanlock direct init -s lvm_{0}:1:/dev/mapper/{0}-lvmlock:0".format(vgUuid))
+
+            self.wait_lockspace_stop()
             rsp = self.connect(blockUuids[0 : 1], blockUuids, vgUuid, hostUuid, 1, forceWipe=False)
             self.assertEqual(True, rsp.success, "lockspace %s hostId %s err %s" % (vgUuid, 1, rsp.error))
 
