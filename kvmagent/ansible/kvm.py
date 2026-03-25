@@ -132,9 +132,9 @@ def deploy_libvirt_tls_certs(host_post_info):
         error("Failed to create local PKI directories for libvirt TLS")
 
     if not os.path.isfile("%s/cacert.pem" % ca_dir) or not os.path.isfile("%s/cakey.pem" % ca_dir):
-        error("Libvirt TLS CA not found at %s. "
-              "The management node should have generated it on startup. "
-              "Please restart the management node or check logs." % ca_dir)
+        handle_ansible_info("Libvirt TLS CA not found at %s, skipping cert deployment" % ca_dir,
+                            host_post_info, "WARNING")
+        return
 
     host_ip = host_post_info.host
     cert_tmp_dir = "/tmp/zstack-libvirt-tls-%s" % host_ip.replace('.', '_')
@@ -552,10 +552,9 @@ def install_kvm_pkg():
 
         #we should check libvirtd config file status before restart the service
         libvirtd_conf_status = update_libvirtd_config(host_post_info)
-        # deploy TLS certificates for libvirt only when init or restart_libvirtd is set,
-        # to avoid unconditionally changing host behavior on every reconnect
-        if init == 'true' or restart_libvirtd == 'true':
-            deploy_libvirt_tls_certs(host_post_info)
+        # deploy TLS certificates unconditionally - the function has built-in
+        # idempotency checks and will skip if certs are already valid
+        deploy_libvirt_tls_certs(host_post_info)
         # in the libvirtd 5.6.0 and later, the libvirtd daemon now prefers to uses systemd socket activation
         command = "libvirtd --version | grep 'libvirtd (libvirt) ' | cut -d ' ' -f 3 | cut -d '(' -f 1"
         (status, libvirtd_version) = run_remote_command(command, host_post_info, False, True)
@@ -619,9 +618,8 @@ def install_kvm_pkg():
         update_pkg_list = ['ebtables', 'python3-libvirt', 'qemu-system-arm']
         apt_update_packages(update_pkg_list, host_post_info)
         libvirtd_conf_status = update_libvirtd_config(host_post_info)
-        # deploy TLS certificates for libvirt only when init or restart_libvirtd is set
-        if init == 'true' or restart_libvirtd == 'true':
-            deploy_libvirt_tls_certs(host_post_info)
+        # deploy TLS certificates unconditionally - idempotent, skips if valid
+        deploy_libvirt_tls_certs(host_post_info)
         if chroot_env == 'false':
             # name: enable libvirt daemon on RedHat based OS
             service_status("libvirtd", "state=started enabled=yes", host_post_info)

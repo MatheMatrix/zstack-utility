@@ -121,6 +121,39 @@ DEFAULT_ZBS_USER_NAME = "zbs"
 PROTOCOL_CBD_PREFIX = "cbd:"
 MAX_NBD_READ_SIZE = 32768000
 LIBVIRT_DEFINED_XML_DIR = "/etc/libvirt/qemu/"
+LIBVIRT_TLS_PORT = 16514
+
+
+def _check_tls_ready(dest_ip, vm_uuid):
+    """Check if TLS migration is actually possible.
+
+    Verifies local client certificates exist and remote TLS port is reachable.
+    Returns True if TLS migration can proceed, False to fall back to TCP.
+    """
+    required_local_certs = [
+        "/etc/pki/CA/cacert.pem",
+        "/etc/pki/libvirt/clientcert.pem",
+        "/etc/pki/libvirt/private/clientkey.pem",
+        # QEMU TLS data-plane certs (required for VIR_MIGRATE_TLS)
+        "/etc/pki/qemu/ca-cert.pem",
+        "/etc/pki/qemu/client-cert.pem",
+        "/etc/pki/qemu/client-key.pem",
+    ]
+    for f in required_local_certs:
+        if not os.path.isfile(f):
+            logger.warn('TLS cert missing: %s, falling back to TCP '
+                         'for vm[uuid:%s]' % (f, vm_uuid))
+            return False
+
+    try:
+        sock = socket.create_connection((dest_ip, LIBVIRT_TLS_PORT), timeout=3)
+        sock.close()
+    except (socket.error, socket.timeout):
+        logger.warn('TLS port %d not reachable on %s, '
+                     'falling back to TCP for vm[uuid:%s]' % (LIBVIRT_TLS_PORT, dest_ip, vm_uuid))
+        return False
+
+    return True
 
 
 class RetryException(Exception):
@@ -4190,7 +4223,10 @@ class Vm(object):
             # TLS certs are issued for management IP; use it for the
             # control-plane libvirt connection when available.
             dest_ctrl_ip = getattr(cmd, 'destHostManagementIp', None) or cmd.destHostIp
-            with contextlib.closing(get_connect(dest_ctrl_ip, getattr(cmd, 'useTls', False))) as conn:
+            use_tls = getattr(cmd, 'useTls', False)
+            if use_tls:
+                use_tls = _check_tls_ready(dest_ctrl_ip, cmd.vmUuid)
+            with contextlib.closing(get_connect(dest_ctrl_ip, use_tls)) as conn:
                 dst_vm = get_vm_by_uuid(cmd.vmUuid, False, conn)
                 if not dst_vm or dst_vm.state != Vm.VM_STATE_RUNNING:
                     r.fail("cannot find task[name=%s] for api[%s] and "
@@ -4217,9 +4253,12 @@ class Vm(object):
             # set the hostname, otherwise the migration will fail
             shell.call('hostname %s.zstack.org' % hostname)
 
+        dest_ctrl_ip = getattr(cmd, 'destHostManagementIp', None) or cmd.destHostIp
         use_tls = getattr(cmd, 'useTls', False)
+        if use_tls:
+            use_tls = _check_tls_ready(dest_ctrl_ip, cmd.vmUuid)
         migrate_proto = 'qemu+tls' if use_tls else 'qemu+tcp'
-        destUrl = "{0}://{1}/system".format(migrate_proto, cmd.destHostManagementIp)
+        destUrl = "{0}://{1}/system".format(migrate_proto, dest_ctrl_ip)
         # Data channel URI must always use tcp:// scheme.
         # When TLS is enabled, encryption is activated via VIR_MIGRATE_TLS flag,
         # not by changing the URI scheme.
@@ -8690,7 +8729,10 @@ class VmPlugin(kvmagent.KvmAgent):
             if cmd.migrateFromDestination:
                 # Use management IP for TLS cert matching (SAN binds to management IP).
                 src_ctrl_ip = getattr(cmd, 'srcHostManagementIp', None) or cmd.srcHostIp
-                with contextlib.closing(get_connect(src_ctrl_ip, getattr(cmd, 'useTls', False))) as conn:
+                use_tls = getattr(cmd, 'useTls', False)
+                if use_tls:
+                    use_tls = _check_tls_ready(src_ctrl_ip, cmd.vmUuid)
+                with contextlib.closing(get_connect(src_ctrl_ip, use_tls)) as conn:
                     vm = get_vm_by_uuid(cmd.vmUuid, False, conn)
                     if vm is None:
                         logger.warn('unable to find vm {0} on host {1}'.format(cmd.vmUuid, cmd.srcHostIp))
