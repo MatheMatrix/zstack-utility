@@ -30,6 +30,14 @@ MANAGED_OVS_EXTERNAL_ID_KEYS = frozenset({
     'ovn-bfd-min-tx', 'ovn-bfd-min-rx', 'ovn-bfd-mult',
 })
 
+# DPDK-related other_config keys that must be cleared when switching from
+# DPDK to kernel mode or during deprovision, to prevent dpdk_initialized
+# from lingering as true.
+DPDK_OTHER_CONFIG_KEYS = [
+    'dpdk-init', 'dpdk-socket-mem', 'dpdk-lcore-mask',
+    'pmd-cpu-mask', 'hw-offload', 'dpdk-extra', 'userspace-tso-enable',
+]
+
 # Allowed characters for OVS entity names (bridge, port, bond, interface).
 # OVS names are typically alphanumeric with hyphens, underscores, and dots.
 _OVS_NAME_RE = re.compile(r'^[a-zA-Z0-9._-]+$')
@@ -1017,6 +1025,23 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                                 nr_path, e, page_size_mb, nr_hugepages))
 
     @staticmethod
+    def _clear_dpdk_other_config(vsctl):
+        """Remove all DPDK-related other_config keys from Open_vSwitch table.
+
+        Called during deprovision and kernel-mode provision to ensure
+        dpdk_initialized does not linger as true after a DPDK-to-kernel switch.
+        """
+        for key in DPDK_OTHER_CONFIG_KEYS:
+            err, val = vsctl.getOvsOtherConfig(key)
+            if not err and val is not None:
+                r, o, e = bash.bash_roe(
+                    'ovs-vsctl --no-wait remove Open_vSwitch . other_config %s' % key)
+                if r != 0:
+                    logger.warn('failed to remove DPDK other_config %s: %s' % (key, e))
+                else:
+                    logger.info('removed DPDK other_config %s=%s' % (key, val))
+
+    @staticmethod
     def _ensure_dpdk_init(vsctl, dpdk_config):
         """Initialize OVS DPDK mode.
 
@@ -1247,6 +1272,10 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                 if not ok:
                     raise Exception('failed to ensure OVS running: %s' % err)
 
+                # Kernel mode: clear any residual DPDK other_config to prevent
+                # dpdk_initialized from lingering after a DPDK-to-kernel switch.
+                self._clear_dpdk_other_config(vsctl)
+
             # Step 3: bridge / bond / OVN config (ovn.py line 276-383)
             provisioner = OvsProvisioner()
             rsp = provisioner.apply(cmd)
@@ -1384,6 +1413,10 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                         if r != 0:
                             raise Exception('failed to delete bridge %s: %s' % (br_name, e))
                         logger.info('deleted managed bridge %s' % br_name)
+
+                # 3b. Clear DPDK other_config keys to prevent dpdk_initialized
+                # from lingering after a DPDK-to-kernel mode switch.
+                self._clear_dpdk_other_config(vsctl)
             else:
                 logger.info('ovsdb not reachable, skipping external_ids cleanup and bridge deletion')
 
