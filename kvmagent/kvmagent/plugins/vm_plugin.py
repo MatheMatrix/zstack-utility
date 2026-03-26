@@ -3780,7 +3780,10 @@ class Vm(object):
 
             def force_undefine():
                 try:
-                    self.domain.undefineFlags(libvirt.VIR_DOMAIN_UNDEFINE_KEEP_NVRAM | VIR_DOMAIN_UNDEFINE_KEEP_TPM)
+                    flags = libvirt.VIR_DOMAIN_UNDEFINE_KEEP_NVRAM
+                    if tpm.VIRSH_SUPPORT_KEEP_TPM:
+                        flags |= VIR_DOMAIN_UNDEFINE_KEEP_TPM
+                    self.domain.undefineFlags(flags)
                 except:
                     logger.warn('cannot undefine the VM[uuid:%s]' % self.uuid)
                     pid = linux.find_process_by_cmdline(['qemu', self.uuid])
@@ -3790,9 +3793,12 @@ class Vm(object):
 
             try:
                 flags = 0
-                for attr in [ "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA", "VIR_DOMAIN_UNDEFINE_KEEP_NVRAM", "VIR_DOMAIN_UNDEFINE_KEEP_TPM" ]:
+                for attr in [ "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA", "VIR_DOMAIN_UNDEFINE_KEEP_NVRAM" ]:
                     if hasattr(libvirt, attr):
                         flags |= getattr(libvirt, attr)
+                # only pass KEEP_TPM if virsh actually supports it
+                if tpm.VIRSH_SUPPORT_KEEP_TPM:
+                    flags |= getattr(libvirt, "VIR_DOMAIN_UNDEFINE_KEEP_TPM", VIR_DOMAIN_UNDEFINE_KEEP_TPM)
                 self.domain.undefineFlags(flags)
             except libvirt.libvirtError as ex:
                 logger.warn('undefine domain[%s] failed: %s' % (self.uuid, str(ex)))
@@ -8704,8 +8710,21 @@ class VmPlugin(kvmagent.KvmAgent):
         try:
             if os.path.exists(os.path.join(LIBVIRT_DEFINED_XML_DIR, cmd.vmInstanceUuid + ".xml")) \
                     and not linux.get_vm_pid(cmd.vmInstanceUuid):
-                # undefine previous
-                shell.run("virsh undefine %s" % cmd.vmInstanceUuid)
+                @LibvirtAutoReconnect
+                def undefine_previous_domain(conn):
+                    flags = 0
+                    for attr in [ "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA", "VIR_DOMAIN_UNDEFINE_KEEP_NVRAM" ]:
+                        if hasattr(libvirt, attr):
+                            flags |= getattr(libvirt, attr)
+                    if tpm.VIRSH_SUPPORT_KEEP_TPM:
+                        flags |= getattr(libvirt, "VIR_DOMAIN_UNDEFINE_KEEP_TPM", VIR_DOMAIN_UNDEFINE_KEEP_TPM)
+                    conn.lookupByName(cmd.vmInstanceUuid).undefineFlags(flags)
+
+                try:
+                    undefine_previous_domain()
+                except libvirt.libvirtError as ex:
+                    if ex.get_error_code() != libvirt.VIR_ERR_NO_DOMAIN:
+                        logger.warn('undefine previous domain[%s] before start failed: %s' % (cmd.vmInstanceUuid, str(ex)))
 
             vm = get_vm_by_uuid_no_retry(cmd.vmInstanceUuid, False)
 
