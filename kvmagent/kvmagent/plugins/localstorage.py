@@ -637,15 +637,24 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
             IP = cmd.dstIp
             PORT = (cmd.dstPort and cmd.dstPort or "22")
             DIR = os.path.dirname(path)
-            _, _, err = bash_progress_1(
-                # Fixes ZSTAC-13430: handle extremely complex password like ~ ` !@#$%^&*()_+-=[]{}|?<>;:'"/ .
-                'rsync -avK --progress --relative {{PATH}} --rsh="/usr/bin/sshpass -f{{PASSWORD_FILE}} ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {{PORT}} -l {{USER}}" {{IP}}:/ 1>{{PFILE}}', _get_progress, False)
+            written += os.path.getsize(path)
+
+            err = None
+            if cmd.dstStoragePath and cmd.dstStoragePath != cmd.storagePath:
+                PATH = cmd.dstStoragePath + path.replace(cmd.storagePath, "", 1)
+                DIR = os.path.dirname(path)
+                _, _, err = bash_progress_1(
+                    'rsync -avK --progress {{PATH}} --rsh="/usr/bin/sshpass -f{{PASSWORD_FILE}} ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {{PORT}} -l {{USER}}" --rsync-path="mkdir -p \'{{DIR}}\' && rsync" {{IP}}:{{DIR}} 1>{{PFILE}}',_get_progress, False)
+            else:
+                _, _, err = bash_progress_1(
+                    # Fixes ZSTAC-13430: handle extremely complex password like ~ ` !@#$%^&*()_+-=[]{}|?<>;:'"/ .
+                    'rsync -avK --progress --relative {{PATH}} --rsh="/usr/bin/sshpass -f{{PASSWORD_FILE}} ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {{PORT}} -l {{USER}}" {{IP}}:/ 1>{{PFILE}}', _get_progress, False)
+
             if err:
                 linux.rm_file_force(PASSWORD_FILE)
                 linux.rm_file_force(PFILE)
                 raise Exception('fail to migrate vm to host, because %s' % str(err))
 
-            written += os.path.getsize(path)
             bash_errorout('/usr/bin/sshpass -f{{PASSWORD_FILE}} ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {{PORT}} {{USER}}@{{IP}} "/bin/sync {{PATH}}"')
             percent = int(round(float(written) / float(total) * (end - start) + start))
             report.progress_report(percent, "report")
