@@ -4160,6 +4160,20 @@ class Vm(object):
                 devices.insert(parent_index, new_disk)
                 xml_changed = True
 
+        # Remove spice graphics and related channels to prevent migration
+        # failure when target host uses a newer qemu that does not support spice
+        for graphics in list(tree.iterfind('devices/graphics')):
+            if graphics.attrib.get('type') == 'spice':
+                devices.remove(graphics)
+                xml_changed = True
+                logger.debug('removed spice graphics from migration destination XML for vm[uuid:%s]' % self.uuid)
+
+        for channel in list(tree.iterfind('devices/channel')):
+            if channel.attrib.get('type') == 'spicevmc':
+                devices.remove(channel)
+                xml_changed = True
+                logger.debug('removed spicevmc channel from migration destination XML for vm[uuid:%s]' % self.uuid)
+
         if xml_changed:
             return migrate_disks.keys(), etree.tostring(tree.getroot())
         else:
