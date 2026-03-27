@@ -3622,8 +3622,14 @@ class InstallDbCmd(Command):
             or ansible_os_family == 'Kylin' \
             or ansible_os_family == 'Openeuler' \
             or ansible_os_family == 'Nfs' \
-            or (ansible_os_family == 'UnionTech' and ansible_distribution_release == 'kongzi')
+            or (ansible_os_family == 'UnionTech' and ansible_distribution_release == 'kongzi') \
+            or (ansible_os_family == 'UnionTech' and ansible_distribution_version == '20.06' and yum_repo != 'false')
       shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y  mariadb mariadb-server iptables-services
+      register: install_result
+
+    - name: install MySQL for UnionTech UOS20R without local repo
+      when: ansible_os_family == 'UnionTech' and ansible_distribution_version == '20.06' and yum_repo == 'false'
+      shell: yum clean metadata; yum --nogpgcheck install -y  mariadb mariadb-server iptables-services
       register: install_result
 
     - name: install MySQL for RedHat 7/Helix 8/Kylin10 or from local
@@ -3653,9 +3659,9 @@ class InstallDbCmd(Command):
       shell: apt-get -y install --allow-unauthenticated mariadb-server mariadb-client netfilter-persistent
       register: install_result
 
-    - name: open 3306 port on RedHat 7/Alibaba/Kyliin10/openEuler/UnionTech kongzi/Nfs
+    - name: open 3306 port on RedHat 7/Alibaba/Kyliin10/openEuler/UnionTech/Nfs
       when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba' or (ansible_os_family == 'Kylin' and ansible_distribution_version == '10')
-            or ansible_os_family == 'Nfs' or (ansible_os_family == 'UnionTech' and ansible_distribution_release == 'kongzi')
+            or ansible_os_family == 'Nfs' or ansible_os_family == 'UnionTech'
       shell: iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport 3306 -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport 3306 -j ACCEPT && service iptables save)
 
     - name: open 3306 port
@@ -3669,11 +3675,11 @@ class InstallDbCmd(Command):
       when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7
       service: name=mysqld state=restarted enabled=yes
 
-    - name: enable MySQL daemon on RedHat 7/Helix 8/ Kyliin10/openEuler/UnionTech kongzi/Nfs
+    - name: enable MySQL daemon on RedHat 7/Helix 8/ Kyliin10/openEuler/UnionTech/Nfs
       when: (ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 7) \
             or ansible_os_family == 'Helix' or ansible_os_family == 'Kylin' \
             or ansible_os_family == 'Openeuler' or ansible_os_family == 'Nfs' \
-            or (ansible_os_family == 'UnionTech' and ansible_distribution_release == 'kongzi')
+            or ansible_os_family == 'UnionTech'
       service: name=mariadb state=restarted enabled=yes
 
     - name: enable MySQL daemon on AliOS 7
@@ -3701,8 +3707,8 @@ class InstallDbCmd(Command):
       when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mysql mysql-server
 
-    - name: rollback MySQL installation on RedHat 7/ Helix 8
-      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Helix') \
+    - name: rollback MySQL installation on RedHat 7/ Helix 8/ UnionTech
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Helix' or ansible_os_family == 'UnionTech') \
             and ansible_distribution_major_version >= 7 \
             and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mariadb mariadb-server
