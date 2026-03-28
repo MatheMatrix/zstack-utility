@@ -11079,7 +11079,7 @@ host side snapshot files chian:
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = kvmagent.AgentResponse()
 
-        r, o, err = bash.bash_roe("virsh qemu-agent-command %s --cmd '{\"execute\":\"guest-fstrim\"}'" % cmd.vmUuid)
+        r, o, err = bash.bash_roe("virsh qemu-agent-command %s --timeout 300 --cmd '{\"execute\":\"guest-fstrim\"}'" % cmd.vmUuid)
         if r != 0:
             logger.warn("vm[uuid:%s] failed to fstrim : %s, %s" % (self.uuid, o, err))
             rsp.success = False
