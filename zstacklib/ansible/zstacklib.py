@@ -2345,6 +2345,7 @@ class ZstackLib(object):
 
         if self.distro in RPM_BASED_OS:
             repair_rpmdb_if_damaged(self.host_post_info)
+            configure_yum(self.host_post_info)
             install_release_on_host(True, host_info, self.host_post_info)
             # always add aliyun yum repo
             self.generate_aliyun_yum_repo()
@@ -2693,6 +2694,15 @@ deb http://{{ apt_server }}/zstack/static/zstack-repo/$basearch/{{ zstack_releas
         install_pkg_list = ["python-dev", "python-setuptools",
                             "python-pip", "gcc", "autoconf", "chrony"]
         apt_install_packages(install_pkg_list, self.host_post_info)
+
+
+def configure_yum(host_post_info):
+    configure_yum_cmd = ('grep -q "^clean_requirements_on_remove" /etc/yum.conf && '
+                         'sed -i "s/^clean_requirements_on_remove.*/clean_requirements_on_remove=0/" /etc/yum.conf || '
+                         'echo "clean_requirements_on_remove=0" >> /etc/yum.conf')
+    host_post_info.post_label = "ansible.shell.configure.yum"
+    host_post_info.post_label_param = None
+    run_remote_command(configure_yum_cmd, host_post_info)
 
 
 def configure_hosts(host_post_info):
