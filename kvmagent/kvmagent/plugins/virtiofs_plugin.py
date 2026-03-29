@@ -16,6 +16,22 @@ logger = log.get_logger(__name__)
 VIRTIOFS_DEFAULT_CACHE_MODE = 'always'  # Recommended for model loading scenarios
 VALID_CACHE_MODES = ('none', 'auto', 'always')
 
+# QGA command timeout configuration
+# QGA guest_exec_bash uses polling mechanism with 'wait' and 'retry' parameters:
+#   - wait: seconds between status checks
+#   - retry: number of polling attempts
+#   - total_timeout = wait * retry
+# These constants define the intended timeout in seconds; retry_count is derived
+# by dividing timeout_secs by wait_interval_secs.
+QGA_WAIT_INTERVAL_SECS = 1   # seconds between status checks
+QGA_MKDIR_TIMEOUT_SECS = 10  # mkdir timeout in seconds (fast operation)
+QGA_MOUNT_TIMEOUT_SECS = 30  # mount timeout in seconds (may take longer)
+QGA_UMOUNT_TIMEOUT_SECS = 15 # umount timeout in seconds
+
+# Helper to convert timeout seconds to retry count for guest_exec_bash
+def _qga_retry_count(timeout_secs):
+    return timeout_secs // QGA_WAIT_INTERVAL_SECS
+
 # virtiofsd candidate paths (different distributions use different locations)
 VIRTIOFSD_CANDIDATE_PATHS = [
     '/usr/libexec/virtiofsd',  # RHEL/CentOS
@@ -205,7 +221,7 @@ def get_vm_domain(vm_uuid):
                 conn.close()
             except Exception:
                 pass
-        raise Exception("Failed to get VM domain[%s]: %s" % (vm_uuid, str(e))) from e
+        raise Exception("Failed to get VM domain[%s]: %s" % (vm_uuid, str(e)))
 
 
 def check_vm_memory_backing(domain):
@@ -265,6 +281,11 @@ def mount_virtiofs_in_vm(domain, tag, mount_path):
     Returns:
         tuple: (success: bool, error_message: str or None)
     """
+    # Track current QGA step and timeout for accurate error reporting
+    # Initialize to "init" phase before any QGA operations
+    current_qga_step = "init"
+    current_qga_timeout_secs = QGA_MKDIR_TIMEOUT_SECS  # reasonable default for init phase
+
     try:
         # Check if QGA is connected
         if not is_qga_connected(domain):
@@ -286,36 +307,43 @@ def mount_virtiofs_in_vm(domain, tag, mount_path):
         logger.info("Attempting to mount virtiofs inside VM[%s] via QGA, os=%s" % (
             domain.name(), qga.os))
 
-        # 1. Create mount directory (with -p to create parent dirs)
         # Use shlex.quote to prevent command injection
         safe_mount_path = shlex.quote(mount_path)
+
+        # 1. Create mount directory (with -p to create parent dirs)
+        current_qga_step = "mkdir"
+        current_qga_timeout_secs = QGA_MKDIR_TIMEOUT_SECS
         mkdir_cmd = "mkdir -p %s" % safe_mount_path
 
         logger.debug("QGA: executing mkdir command: %s" % mkdir_cmd)
-        exitcode, stdout, stderr = qga.guest_exec_bash(mkdir_cmd)
+        exitcode, stdout, stderr = qga.guest_exec_bash(mkdir_cmd, retry=_qga_retry_count(QGA_MKDIR_TIMEOUT_SECS))
 
         if exitcode != 0:
             error_msg = stderr if stderr else "unknown error"
             logger.error("Failed to create mount directory[%s]: %s" % (mount_path, error_msg))
             return False, "Failed to create mount directory: %s" % error_msg
 
-        # 2. Check if already mounted
+        # 2. Check if already mounted (use shorter timeout)
+        # mountpoint -q returns: 0 if mount point, 1 if not mount point, >1 on error
+        # guest_exec_bash does NOT raise exception on non-zero exitcode, only on timeout/connection errors
+        current_qga_step = "mountpoint-check"
+        current_qga_timeout_secs = QGA_MKDIR_TIMEOUT_SECS
         check_mount_cmd = "mountpoint -q %s" % safe_mount_path
-        try:
-            exitcode, _, _ = qga.guest_exec_bash(check_mount_cmd)
-            if exitcode == 0:
-                logger.info("Path[%s] is already a mount point in VM[%s]" % (mount_path, domain.name()))
-                return True, None
-        except Exception:
-            # mountpoint returns non-zero if not a mount point, which raises exception
-            pass
+        exitcode, _, _ = qga.guest_exec_bash(check_mount_cmd, retry=_qga_retry_count(QGA_MKDIR_TIMEOUT_SECS))
+        if exitcode == 0:
+            logger.info("Path[%s] is already a mount point in VM[%s]" % (mount_path, domain.name()))
+            return True, None
+        # exitcode 1 means not a mount point, continue to mount
+        # exitcode >1 means error (e.g., path doesn't exist), but we still try mount
 
-        # 3. Mount virtiofs
-        # Use guest_exec_command for safer argument passing
-        mount_cmd = "mount -t virtiofs %s %s" % (shlex.quote(tag), safe_mount_path)
+        # 3. Mount virtiofs (use longer timeout for mount operation)
+        current_qga_step = "mount"
+        current_qga_timeout_secs = QGA_MOUNT_TIMEOUT_SECS
+        safe_tag = shlex.quote(tag)
+        mount_cmd = "mount -t virtiofs %s %s" % (safe_tag, safe_mount_path)
 
         logger.info("QGA: executing mount command: %s" % mount_cmd)
-        exitcode, stdout, stderr = qga.guest_exec_bash(mount_cmd)
+        exitcode, stdout, stderr = qga.guest_exec_bash(mount_cmd, retry=_qga_retry_count(QGA_MOUNT_TIMEOUT_SECS))
 
         if exitcode != 0:
             error_msg = stderr if stderr else stdout if stdout else "unknown error"
@@ -328,9 +356,16 @@ def mount_virtiofs_in_vm(domain, tag, mount_path):
         return True, None
 
     except Exception as e:
-        logger.error("Exception during QGA mount: %s\n%s" % (str(e), traceback.format_exc()))
+        error_str = str(e)
+        # Check if it's a timeout error
+        if 'timeout' in error_str.lower():
+            logger.error("QGA command[%s] timeout during mount operation for VM[%s]" % (
+                current_qga_step, domain.name()))
+            return False, "%s operation timeout after %d seconds. Please mount manually: mount -t virtiofs %s %s" % (
+                current_qga_step, current_qga_timeout_secs, tag, mount_path)
+        logger.error("Exception during QGA mount: %s\n%s" % (error_str, traceback.format_exc()))
         return False, "QGA mount failed: %s. Please mount manually: mount -t virtiofs %s %s" % (
-            str(e), tag, mount_path)
+            error_str, tag, mount_path)
 
 
 def unmount_virtiofs_in_vm(domain, tag):
@@ -343,6 +378,11 @@ def unmount_virtiofs_in_vm(domain, tag):
     Returns:
         tuple: (success: bool, error_message: str or None)
     """
+    # Track current QGA step and timeout for accurate error reporting
+    # Initialize to "init" phase before any QGA operations
+    current_qga_step = "init"
+    current_qga_timeout_secs = QGA_MKDIR_TIMEOUT_SECS  # reasonable default for init phase
+
     try:
         qga = VmQga(domain)
 
@@ -358,9 +398,11 @@ def unmount_virtiofs_in_vm(domain, tag):
         # /proc/mounts format: device mount_point fs_type options
         # For virtiofs: model-xxx /mnt/models/qwen virtiofs rw,...
         # Use awk -v to pass variable safely, avoiding nested quote issues
+        current_qga_step = "find-mount"
+        current_qga_timeout_secs = QGA_MKDIR_TIMEOUT_SECS
         safe_tag = shlex.quote(tag)
         find_mount_cmd = "awk -v tag=%s '$1==tag && $3==\"virtiofs\" {print $2}' /proc/mounts" % safe_tag
-        exitcode, mount_path, stderr = qga.guest_exec_bash(find_mount_cmd)
+        exitcode, mount_path, stderr = qga.guest_exec_bash(find_mount_cmd, retry=_qga_retry_count(QGA_MKDIR_TIMEOUT_SECS))
 
         if exitcode != 0 or not mount_path or not mount_path.strip():
             logger.info("No mount point found for virtiofs tag[%s] in VM[%s], skip unmount" % (
@@ -372,19 +414,22 @@ def unmount_virtiofs_in_vm(domain, tag):
             mount_path, tag, domain.name()))
 
         # Unmount
+        current_qga_step = "umount"
+        current_qga_timeout_secs = QGA_UMOUNT_TIMEOUT_SECS
         safe_mount_path = shlex.quote(mount_path)
         umount_cmd = "umount %s" % safe_mount_path
 
         logger.info("QGA: executing umount command: %s" % umount_cmd)
-        exitcode, stdout, stderr = qga.guest_exec_bash(umount_cmd)
+        exitcode, stdout, stderr = qga.guest_exec_bash(umount_cmd, retry=_qga_retry_count(QGA_UMOUNT_TIMEOUT_SECS))
 
         if exitcode != 0:
             # Try lazy unmount if regular unmount fails
             error_msg = stderr if stderr else "unknown error"
             logger.warning("Regular unmount failed: %s, trying lazy unmount" % error_msg)
 
+            current_qga_step = "umount-lazy"
             umount_lazy_cmd = "umount -l %s" % safe_mount_path
-            exitcode, stdout, stderr = qga.guest_exec_bash(umount_lazy_cmd)
+            exitcode, stdout, stderr = qga.guest_exec_bash(umount_lazy_cmd, retry=_qga_retry_count(QGA_UMOUNT_TIMEOUT_SECS))
 
             if exitcode != 0:
                 error_msg = stderr if stderr else "unknown error"
@@ -396,8 +441,14 @@ def unmount_virtiofs_in_vm(domain, tag):
         return True, None
 
     except Exception as e:
-        logger.error("Exception during QGA unmount: %s\n%s" % (str(e), traceback.format_exc()))
-        return False, "QGA unmount failed: %s" % str(e)
+        error_str = str(e)
+        # Check if it's a timeout error
+        if 'timeout' in error_str.lower():
+            logger.error("QGA command[%s] timeout during unmount operation for VM[%s]" % (
+                current_qga_step, domain.name()))
+            return False, "%s operation timeout after %d seconds" % (current_qga_step, current_qga_timeout_secs)
+        logger.error("Exception during QGA unmount: %s\n%s" % (error_str, traceback.format_exc()))
+        return False, "QGA unmount failed: %s" % error_str
 
 
 class VirtiofsPlugin(kvmagent.KvmAgent):
@@ -453,6 +504,7 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
 
             # 4. Build virtiofs XML using resolved path and cache mode
             cache_mode = getattr(cmd, 'cacheMode', VIRTIOFS_DEFAULT_CACHE_MODE)
+
             xml_str = build_virtiofs_xml(cmd.tag, resolved_path, cache_mode)
 
             # 4. Attach device to running VM (hot-plug)
