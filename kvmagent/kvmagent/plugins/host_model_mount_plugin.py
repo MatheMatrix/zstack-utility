@@ -6,10 +6,7 @@ import re
 import uuid
 import shlex
 import traceback
-try:
-    from urllib.parse import urlsplit, urlunsplit
-except ImportError:
-    from urlparse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 from kvmagent import kvmagent
 from zstacklib.utils import log, shell, jsonobject, http
 
@@ -18,8 +15,8 @@ logger = log.get_logger(__name__)
 # Base directory for Model Center mounts
 MODEL_MOUNT_BASE = "/opt/zstack/models"
 
-# UUID validation regex - ZStack uses 32-character UUID without hyphens
-UUID_RE = re.compile(r'^[0-9a-fA-F]{32}$')
+# UUID validation regex
+UUID_RE = re.compile(r'^[0-9a-fA-F-]{36}$')
 
 
 def _mask_url(url):
@@ -68,7 +65,7 @@ def ensure_mount_base_dir():
 def check_juicefs_installed():
     """Check if juicefs binary is available
 
-    Returns: (installed, error_message)
+    Returns: (juicefs_path_or_None, error_message)
     """
     # Check common installation paths
     juicefs_paths = [
@@ -80,19 +77,20 @@ def check_juicefs_installed():
     for path in juicefs_paths:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             logger.debug("Found juicefs binary at %s" % path)
-            return True, None
+            return path, None
 
     # Try to find in PATH using shell.ShellCmd
     which_cmd = shell.ShellCmd("which juicefs")
     which_cmd(False)
     if which_cmd.return_code == 0:
-        logger.debug("Found juicefs in PATH")
-        return True, None
+        juicefs_path = which_cmd.stdout.strip()
+        logger.debug("Found juicefs in PATH: %s" % juicefs_path)
+        return juicefs_path, None
 
     error_msg = ("juicefs binary not found. Please install juicefs to "
                  "/usr/local/bin/juicefs or any location in PATH. "
                  "Download from: https://github.com/juicedata/juicefs/releases")
-    return False, error_msg
+    return None, error_msg
 
 
 def mount_juicefs(zdfs_url, mount_point):
@@ -125,19 +123,19 @@ def mount_juicefs(zdfs_url, mount_point):
         os.makedirs(mount_point, exist_ok=True)
 
         # Check if juicefs binary is available
-        installed, error_msg = check_juicefs_installed()
-        if not installed:
+        juicefs_path, error_msg = check_juicefs_installed()
+        if not juicefs_path:
             logger.error(error_msg)
             return False, error_msg
 
         # JuiceFS mount command
         # Mount only the models/ subdirectory using --subdir models
         # The zdfs_url is the meta URL (e.g., redis://redis-host:6379/0)
-        cache_dir = "/var/cache/juicefs"
+        cache_dir = "/var/cache/virtiofs/juicefs"
         # Use shlex.quote to prevent shell injection
-        # Use absolute path to juicefs binary to avoid PATH issues
-        cmd = "/usr/local/bin/juicefs mount %s %s --read-only -d --subdir models --cache-dir %s" % (
-            shlex.quote(zdfs_url), shlex.quote(mount_point), shlex.quote(cache_dir))
+        # Use full path to juicefs binary to avoid PATH issues
+        cmd = "%s mount %s %s --read-only -d --subdir models --cache-dir %s" % (
+            shlex.quote(juicefs_path), shlex.quote(zdfs_url), shlex.quote(mount_point), shlex.quote(cache_dir))
 
         logger.info("Executing mount command for Model Center, mount_point=%s, url=%s" % (
             mount_point, _mask_url(zdfs_url)))
@@ -182,8 +180,7 @@ class HostModelMountPlugin(kvmagent.KvmAgent):
             logger.info("Mounting Model Center[%s] with URL: %s" % (
                 cmd.modelCenterUuid, _mask_url(cmd.storageUrl)))
 
-            # Validate modelCenterUuid format to prevent path traversal
-            if not cmd.modelCenterUuid or not UUID_RE.fullmatch(cmd.modelCenterUuid):
+            if not cmd.modelCenterUuid:
                 rsp.error = "invalid modelCenterUuid"
                 return jsonobject.dumps(rsp)
 
