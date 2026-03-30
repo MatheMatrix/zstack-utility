@@ -13,7 +13,6 @@ import tempfile
 import time
 import uuid
 import string
-import struct
 import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
@@ -81,75 +80,15 @@ KEY_AGENT_ERR_KEYS_NOT_ON_DISK = 'KEY_AGENT_KEYS_NOT_ON_DISK'
 KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH = 'KEY_AGENT_KEY_FILES_INTEGRITY_MISMATCH'
 KEY_AGENT_ERR_SECRET_NOT_FOUND = 'KEY_AGENT_SECRET_NOT_FOUND'
 
-# Supported secret purposes for key-agent secret workflow.
-# Currently only vTPM is supported.
-KEY_AGENT_SECRET_PURPOSES = ('vtpm',)
-
-def normalize_key_agent_secret_purpose(purpose):
-    p = (purpose or '').strip().lower()
-    if p == '':
-        return 'vtpm'
-    return p
-
-def _key_agent_pb_varint(n):
-    out = bytearray()
-    while n > 127:
-        out.append((n & 0x7f) | 0x80)
-        n >>= 7
-    out.append(n)
-    return bytes(out)
+KEY_AGENT_SUPPORTED_SECRET_PURPOSES = ('vtpm',)
 
 
-def _key_agent_encode_get_delete_secret_request(vm_uuid, key_version, purpose):
-    """Encode GetSecretRequest/DeleteSecretRequest (vm_uuid=1, key_version=2, purpose=3)."""
-    out = bytearray()
-    for field_num, s in ((1, vm_uuid), (2, key_version), (3, purpose)):
-        b = str(s).encode('utf-8')
-        out.append((field_num << 3) | 2)  # wire type 2 (length-delimited)
-        out.extend(_key_agent_pb_varint(len(b)))
-        out.extend(b)
-    return bytes(out)
+def is_valid_key_agent_secret_purpose(purpose):
+    """True if purpose is in KEY_AGENT_SUPPORTED_SECRET_PURPOSES."""
+    if not purpose:
+        return False
+    return purpose in KEY_AGENT_SUPPORTED_SECRET_PURPOSES
 
-
-def _key_agent_maybe_unwrap_grpc_message(data):
-    """
-    Some key-agent clients receive gRPC framed payload as:
-      1-byte flag + 4-byte big-endian length + protobuf payload
-    If detected, return the protobuf payload.
-    """
-    if not data:
-        return b''
-    data = bytes(data)
-    if len(data) >= 5 and data[0] in (0, 1):
-        msg_len = struct.unpack('>I', data[1:5])[0]
-        if msg_len == len(data) - 5:
-            return data[5:]
-    return data
-
-
-def _key_agent_parse_secret_uuid_from_response(data):
-    """Parse GetSecretResponse/EnsureSecretResponse-like bytes (string secret_uuid = field 1)."""
-    if not data:
-        return ''
-    payload = _key_agent_maybe_unwrap_grpc_message(data)
-    if not payload:
-        return ''
-    # field 1, wire type 2 => tag 0x0a
-    if payload[0] != 0x0a:
-        return ''
-    i = 1
-    ln = 0
-    shift = 0
-    while i < len(payload):
-        b = payload[i]
-        i += 1
-        ln |= (b & 0x7f) << shift
-        if not (b & 0x80):
-            break
-        shift += 7
-    if i + ln > len(payload):
-        return ''
-    return payload[i:i + ln].decode('utf-8')
 
 BOND_MODE_ACTIVE_0 = "balance-rr"
 BOND_MODE_ACTIVE_1 = "active-backup"
@@ -1473,32 +1412,15 @@ class HostPlugin(kvmagent.KvmAgent):
                 return (None, None, 'key-agent socket not found')
             channel = grpc.insecure_channel(KEY_AGENT_UNIX_SOCKET)
             try:
-                purpose_norm = str(purpose or 'vtpm').strip().lower()
-                if purpose_norm == 'vtpm':
-                    # For vtpm, client protobuf does not have GetSecretRequest.purpose field
-                    # but key-agent falls back to vtpm when purpose is empty.
-                    stub = key_agent_pb2_grpc.KeyAgentServiceStub(channel)
-                    req = key_agent_pb2.GetSecretRequest(
-                        vm_uuid=str(vm_uuid),
-                        key_version=str(key_version),
-                    )
-                    resp = stub.GetSecret(req, timeout=5)
-                    if resp and getattr(resp, 'secret_uuid', None):
-                        return (resp.secret_uuid, None, None)
-                    return (None, None, 'key-agent GetSecret returned no secret_uuid')
-
-                # Non-vtpm purpose: kvmagent key_agent_pb2 lacks purpose field,
-                # so we must send a custom encoded request bytes.
-                req_bytes = _key_agent_encode_get_delete_secret_request(vm_uuid, key_version, purpose_norm)
-                get_secret_rpc = channel.unary_unary(
-                    '/keyagent.v1.KeyAgentService/GetSecret',
-                    request_serializer=lambda x: x,
-                    response_deserializer=lambda x: x,
+                stub = key_agent_pb2_grpc.KeyAgentServiceStub(channel)
+                req = key_agent_pb2.GetSecretRequest(
+                    vm_uuid=str(vm_uuid),
+                    key_version=str(key_version),
+                    purpose=purpose,
                 )
-                resp_bytes = get_secret_rpc(req_bytes, timeout=5)
-                secret_uuid = _key_agent_parse_secret_uuid_from_response(resp_bytes)
-                if secret_uuid:
-                    return (secret_uuid, None, None)
+                resp = stub.GetSecret(req, timeout=5)
+                if resp and getattr(resp, 'secret_uuid', None):
+                    return (resp.secret_uuid, None, None)
                 return (None, None, 'key-agent GetSecret returned no secret_uuid')
             finally:
                 channel.close()
@@ -1521,23 +1443,13 @@ class HostPlugin(kvmagent.KvmAgent):
                 return (False, None, 'key-agent socket not found')
             channel = grpc.insecure_channel(KEY_AGENT_UNIX_SOCKET)
             try:
-                purpose_norm = str(purpose or 'vtpm').strip().lower()
-                if purpose_norm == 'vtpm':
-                    stub = key_agent_pb2_grpc.KeyAgentServiceStub(channel)
-                    req = key_agent_pb2.DeleteSecretRequest(
-                        vm_uuid=str(vm_uuid),
-                        key_version=str(key_version),
-                    )
-                    stub.DeleteSecret(req, timeout=5)
-                    return (True, None, None)
-
-                req_bytes = _key_agent_encode_get_delete_secret_request(vm_uuid, key_version, purpose_norm)
-                delete_secret_rpc = channel.unary_unary(
-                    '/keyagent.v1.KeyAgentService/DeleteSecret',
-                    request_serializer=lambda x: x,
-                    response_deserializer=lambda x: x,
+                stub = key_agent_pb2_grpc.KeyAgentServiceStub(channel)
+                req = key_agent_pb2.DeleteSecretRequest(
+                    vm_uuid=str(vm_uuid),
+                    key_version=str(key_version),
+                    purpose=purpose,
                 )
-                delete_secret_rpc(req_bytes, timeout=5)
+                stub.DeleteSecret(req, timeout=5)
                 return (True, None, None)
             finally:
                 channel.close()
@@ -1753,12 +1665,12 @@ class HostPlugin(kvmagent.KvmAgent):
             return jsonobject.dumps(rsp)
         encrypted_dek_b64 = getattr(cmd, 'encryptedDek', None)
         vm_uuid = getattr(cmd, 'vmUuid', None)
-        purpose = normalize_key_agent_secret_purpose(getattr(cmd, 'purpose', None))
+        purpose = getattr(cmd, 'purpose', None)
         key_version = getattr(cmd, 'keyVersion', None)
         description = getattr(cmd, 'description', None) or ''
-        if purpose not in KEY_AGENT_SECRET_PURPOSES:
+        if not is_valid_key_agent_secret_purpose(purpose):
             rsp.success = False
-            rsp.error = 'unsupported purpose: %s (supported: %s)' % (purpose, ','.join(KEY_AGENT_SECRET_PURPOSES))
+            rsp.error = 'unsupported purpose: %s (supported: %s)' % (purpose, ','.join(KEY_AGENT_SUPPORTED_SECRET_PURPOSES))
             return jsonobject.dumps(rsp)
         if not encrypted_dek_b64 or not vm_uuid or not purpose or key_version is None:
             rsp.success = False
@@ -1813,10 +1725,10 @@ class HostPlugin(kvmagent.KvmAgent):
             return jsonobject.dumps(rsp)
         vm_uuid = getattr(cmd, 'vmUuid', None)
         key_version = getattr(cmd, 'keyVersion', None)
-        purpose = normalize_key_agent_secret_purpose(getattr(cmd, 'purpose', None))
-        if purpose not in KEY_AGENT_SECRET_PURPOSES:
+        purpose = getattr(cmd, 'purpose', None)
+        if not is_valid_key_agent_secret_purpose(purpose):
             rsp.success = False
-            rsp.error = 'unsupported purpose: %s (supported: %s)' % (purpose, ','.join(KEY_AGENT_SECRET_PURPOSES))
+            rsp.error = 'unsupported purpose: %s (supported: %s)' % (purpose, ','.join(KEY_AGENT_SUPPORTED_SECRET_PURPOSES))
             return jsonobject.dumps(rsp)
         if not vm_uuid or key_version is None:
             rsp.success = False
@@ -1851,10 +1763,10 @@ class HostPlugin(kvmagent.KvmAgent):
             return jsonobject.dumps(rsp)
         vm_uuid = getattr(cmd, 'vmUuid', None)
         key_version = getattr(cmd, 'keyVersion', None)
-        purpose = normalize_key_agent_secret_purpose(getattr(cmd, 'purpose', None))
-        if purpose not in KEY_AGENT_SECRET_PURPOSES:
+        purpose = getattr(cmd, 'purpose', None)
+        if not is_valid_key_agent_secret_purpose(purpose):
             rsp.success = False
-            rsp.error = 'unsupported purpose: %s (supported: %s)' % (purpose, ','.join(KEY_AGENT_SECRET_PURPOSES))
+            rsp.error = 'unsupported purpose: %s (supported: %s)' % (purpose, ','.join(KEY_AGENT_SUPPORTED_SECRET_PURPOSES))
             return jsonobject.dumps(rsp)
         if not vm_uuid or key_version is None:
             rsp.success = False
