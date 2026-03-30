@@ -3,6 +3,7 @@
 @author: frank
 '''
 import base64
+import concurrent.futures
 import copy
 import functools
 import hashlib
@@ -77,6 +78,11 @@ def get_ebtables_cmd():
 # =============================================================================
 # GPU Plugin Configuration - Simplified, adapter no longer needed
 # =============================================================================
+
+# Cap concurrent virsh subprocess calls to avoid overwhelming the host.
+# Most VMs hit the early-return path (no passthrough devices), so in
+# practice far fewer than max_workers actually run virsh commands.
+_PCI_QUERY_MAX_WORKERS = 16
 
 COLO_QEMU_KVM_VERSION = '/var/lib/zstack/colo/qemu_kvm_version'
 COLO_LIB_PATH = '/var/lib/zstack/colo/'
@@ -3148,35 +3154,59 @@ done
                  for line in o.strip().splitlines() if line.strip()]
         return uuids
 
-    def get_all_vm_pci_mappings(self):
+    def _collect_vm_mappings_parallel(self, mapping_func):
+        """Query VM device mappings in parallel using a bounded thread pool.
+
+        Dispatches *mapping_func(domain)* for every running VM.  The heavy
+        work—``virsh qemu-monitor-command`` subprocesses spawned inside
+        ``_query_pci_info_by_qmp``—runs outside the GIL, giving true
+        parallelism.  The libvirt API itself (``conn.lookupByName``,
+        ``domain.XMLDesc``) is thread-safe since libvirt 0.6.0.
+
+        Args:
+            mapping_func: callable(domain) -> dict or None,
+                          e.g. ``pci.get_pci_passthrough_mapping``
+        Returns:
+            List of non-empty mapping dicts, one per VM that has passthrough
+            devices.
         """
-        mapping: {host_pci_address: vm_pci_address}
-        """
-        host_pci_mapping = {}
         libvirt_singleton = LibvirtSingleton()
         conn = libvirt_singleton.conn
-        for uuid in self.list_vm_uuids():
-            domain = conn.lookupByName(uuid)
-            if domain is None:
-                continue
-            original_mapping = pci.get_pci_passthrough_mapping(domain)
-            if original_mapping:
-                for vm_pci_addr, host_pci_addr in original_mapping.items():
-                    host_pci_mapping[host_pci_addr] = vm_pci_addr
+        uuids = self.list_vm_uuids()
+        if not uuids:
+            return []
+
+        task_uuid = log.get_task_uuid()
+
+        def query_vm(vm_uuid):
+            if task_uuid:
+                log.set_task_uuid(task_uuid)
+            try:
+                domain = conn.lookupByName(vm_uuid)
+                if domain is None:
+                    return None
+                return mapping_func(domain)
+            except Exception as e:
+                logger.debug("Failed to get device mapping for VM {}: {}".format(
+                    vm_uuid, str(e)))
+                return None
+
+        max_workers = min(len(uuids), _PCI_QUERY_MAX_WORKERS)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            return [m for m in executor.map(query_vm, uuids) if m]
+
+    def get_all_vm_pci_mappings(self):
+        """mapping: {host_pci_address: vm_pci_address}"""
+        host_pci_mapping = {}
+        for mapping in self._collect_vm_mappings_parallel(pci.get_pci_passthrough_mapping):
+            for vm_pci_addr, host_pci_addr in mapping.items():
+                host_pci_mapping[host_pci_addr] = vm_pci_addr
         return host_pci_mapping
 
     def get_all_vm_mdev_mappings(self):
-        """
-        mapping: {mdev_uuid: vm_pci_address}
-        """
+        """mapping: {mdev_uuid: vm_pci_address}"""
         mdev_mapping = {}
-        libvirt_singleton = LibvirtSingleton()
-        conn = libvirt_singleton.conn
-        for uuid in self.list_vm_uuids():
-            domain = conn.lookupByName(uuid)
-            if domain is None:
-                continue
-            mapping = pci.get_mdev_passthrough_mapping(domain)
+        for mapping in self._collect_vm_mappings_parallel(pci.get_mdev_passthrough_mapping):
             mdev_mapping.update(mapping)
         return mdev_mapping
 

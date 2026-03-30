@@ -491,37 +491,47 @@ def _query_vm_pci_address_mapping(vm_uuid, aliases, alias_to_host, mapping_build
     Returns:
         Dict mapping VM device addresses to host device identifiers
     """
+    if not aliases:
+        return {}
+
     max_retries = 3
     retry_interval = 2
-    
+    mapping = {}
+
     for attempt in range(max_retries):
         try:
             r, qemu_output, e = _query_pci_info_by_qmp(vm_uuid)
-            
+
             if r != 0:
                 logger.debug("Failed to execute qemu-monitor-command for VM {} on attempt {}: {}".format(
                     vm_uuid, attempt + 1, e))
             else:
-                mapping = _parse_pci_info_by_qmp_output(qemu_output, aliases, alias_to_host, mapping_builder)
+                new_entries = _parse_pci_info_by_qmp_output(qemu_output, aliases, alias_to_host, mapping_builder)
+                mapping.update(new_entries)
 
-                if mapping:
-                    logger.debug("Successfully got PCI mapping for VM {} on attempt {}".format(
-                        vm_uuid, attempt + 1))
+                if len(mapping) >= len(aliases):
+                    logger.debug("Successfully got all {}/{} PCI mappings for VM {} on attempt {}".format(
+                        len(mapping), len(aliases), vm_uuid, attempt + 1))
                     return mapping
                 else:
-                    logger.debug("No PCI mapping found for VM {} on attempt {}, will retry".format(
-                        vm_uuid, attempt + 1))
-                
+                    logger.debug("Got {}/{} PCI mappings for VM {} on attempt {}, will retry".format(
+                        len(mapping), len(aliases), vm_uuid, attempt + 1))
+
         except Exception as ex:
             logger.debug("Error querying info pci for VM {} on attempt {}: {}".format(
                 vm_uuid, attempt + 1, str(ex)))
-        
+
         # Wait before next retry (except for last attempt)
         if attempt < max_retries - 1:
             logger.debug("Waiting {} seconds before retry {} for VM {}".format(
                 retry_interval, attempt + 2, vm_uuid))
             time.sleep(retry_interval)
-    
+
+    if mapping:
+        logger.warn("Partial PCI mapping for VM {}: got {}/{} after {} attempts".format(
+            vm_uuid, len(mapping), len(aliases), max_retries))
+        return mapping
+
     logger.warn("Failed to get PCI mapping for VM {} after {} attempts".format(
         vm_uuid, max_retries))
     return {}
@@ -530,12 +540,16 @@ def _query_vm_pci_address_mapping(vm_uuid, aliases, alias_to_host, mapping_build
 def get_pci_passthrough_mapping(vm_dom):
     vm_uuid = vm_dom.UUIDString()
     xml_tree = ET.fromstring(vm_dom.XMLDesc())
-    
+
     # Collect alias to host PCI mapping in one pass
     alias_to_host = {}
     aliases = []
-    
-    for hostdev in xml_tree.find('devices').findall('hostdev'):
+
+    devices = xml_tree.find('devices')
+    if devices is None:
+        return {}
+
+    for hostdev in devices.findall('hostdev'):
         if hostdev.get('type') != 'pci':
             continue
             
@@ -554,13 +568,16 @@ def get_pci_passthrough_mapping(vm_dom):
                 host_domain, host_bus, host_slot, host_function)
             alias_to_host[alias_name] = host_pci_address
     
+    if not aliases:
+        return {}
+
     # Query actual PCI addresses inside VM
     def build_pci_mapping(current_device_info, alias, alias_to_host):
         bus, device, function = current_device_info
         vm_pci_address = "{:04x}:{:02x}:{:02x}.{:x}".format(0, bus, device, function)
         host_pci_address = alias_to_host[alias]
         return vm_pci_address, host_pci_address
-    
+
     return _query_vm_pci_address_mapping(
         vm_uuid, aliases, alias_to_host, build_pci_mapping)
 
@@ -573,7 +590,11 @@ def get_mdev_passthrough_mapping(vm_dom):
     alias_to_host = {}
     aliases = []
 
-    for hostdev in xml_tree.find('devices').findall('hostdev'):
+    devices = xml_tree.find('devices')
+    if devices is None:
+        return {}
+
+    for hostdev in devices.findall('hostdev'):
         if hostdev.get('type') != 'mdev':
             continue
 
@@ -587,13 +608,16 @@ def get_mdev_passthrough_mapping(vm_dom):
             mdev_uuid = source_address.get('uuid').replace('-', '')
             alias_to_host[alias_name] = mdev_uuid
 
+    if not aliases:
+        return {}
+
     # Query actual mdev addresses inside VM
     def build_mdev_mapping(current_device_info, alias, alias_to_host):
         bus, device, function = current_device_info
         vm_mdev_address = "{:04x}:{:02x}:{:02x}.{:x}".format(0, bus, device, function)
         host_mdev_uuid = alias_to_host[alias]
         return host_mdev_uuid, vm_mdev_address
-    
+
     return _query_vm_pci_address_mapping(
         vm_uuid, aliases, alias_to_host, build_mdev_mapping)
 
