@@ -18,11 +18,7 @@ DESCRIPTOR = _descriptor.FileDescriptor(
   package='keyagent.v1',
   syntax='proto3',
   serialized_options=None,
-<<<<<<< HEAD
-  serialized_pb=b'\n\x0fkey_agent.proto\x12\x0bkeyagent.v1\"\x1a\n\x18\x43reateEnvelopeKeyRequest\",\n\x19\x43reateEnvelopeKeyResponse\x12\x0f\n\x07\x63reated\x18\x01 \x01(\x08\"\x1a\n\x18RotateEnvelopeKeyRequest\"\x1b\n\x19RotateEnvelopeKeyResponse\"\x15\n\x13GetPublicKeyRequest\"*\n\x14GetPublicKeyResponse\x12\x12\n\npublic_key\x18\x01 \x01(\x0c\"\x19\n\x17\x43heckEnvelopeKeyRequest\"\x1a\n\x18\x43heckEnvelopeKeyResponse\"x\n\x13\x45nsureSecretRequest\x12\x15\n\rencrypted_dek\x18\x01 \x01(\x0c\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x0f\n\x07vm_uuid\x18\x03 \x01(\t\x12\x0f\n\x07purpose\x18\x04 \x01(\t\x12\x13\n\x0bkey_version\x18\x05 \x01(\t\"+\n\x14\x45nsureSecretResponse\x12\x13\n\x0bsecret_uuid\x18\x01 \x01(\t\"8\n\x10GetSecretRequest\x12\x0f\n\x07vm_uuid\x18\x01 \x01(\t\x12\x13\n\x0bkey_version\x18\x02 \x01(\t\"(\n\x11GetSecretResponse\x12\x13\n\x0bsecret_uuid\x18\x01 \x01(\t\";\n\x13\x44\x65leteSecretRequest\x12\x0f\n\x07vm_uuid\x18\x01 \x01(\t\x12\x13\n\x0bkey_version\x18\x02 \x01(\t\"\x16\n\x14\x44\x65leteSecretResponse2\x85\x05\n\x0fKeyAgentService\x12\x62\n\x11\x43reateEnvelopeKey\x12%.keyagent.v1.CreateEnvelopeKeyRequest\x1a&.keyagent.v1.CreateEnvelopeKeyResponse\x12\x62\n\x11RotateEnvelopeKey\x12%.keyagent.v1.RotateEnvelopeKeyRequest\x1a&.keyagent.v1.RotateEnvelopeKeyResponse\x12S\n\x0cGetPublicKey\x12 .keyagent.v1.GetPublicKeyRequest\x1a!.keyagent.v1.GetPublicKeyResponse\x12_\n\x10\x43heckEnvelopeKey\x12$.keyagent.v1.CheckEnvelopeKeyRequest\x1a%.keyagent.v1.CheckEnvelopeKeyResponse\x12S\n\x0c\x45nsureSecret\x12 .keyagent.v1.EnsureSecretRequest\x1a!.keyagent.v1.EnsureSecretResponse\x12J\n\tGetSecret\x12\x1d.keyagent.v1.GetSecretRequest\x1a\x1e.keyagent.v1.GetSecretResponse\x12S\n\x0c\x44\x65leteSecret\x12 .keyagent.v1.DeleteSecretRequest\x1a!.keyagent.v1.DeleteSecretResponseb\x06proto3'
-=======
-  serialized_pb=b'\n\x0fkey_agent.proto\x12\x0bkeyagent.v1\"\x1a\n\x18\x43reateEnvelopeKeyRequest\",\n\x19\x43reateEnvelopeKeyResponse\x12\x0f\n\x07\x63reated\x18\x01 \x01(\x08\"\x1a\n\x18RotateEnvelopeKeyRequest\"\x1b\n\x19RotateEnvelopeKeyResponse\"\x15\n\x13GetPublicKeyRequest\"*\n\x14GetPublicKeyResponse\x12\x12\n\npublic_key\x18\x01 \x01(\x0c\"\x19\n\x17\x43heckEnvelopeKeyRequest\"\x1a\n\x18\x43heckEnvelopeKeyResponse\"x\n\x13\x45nsureSecretRequest\x12\x15\n\rencrypted_dek\x18\x01 \x01(\x0c\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x0f\n\x07vm_uuid\x18\x03 \x01(\t\x12\x0f\n\x07purpose\x18\x04 \x01(\t\x12\x13\n\x0bkey_version\x18\x05 \x01(\t\"+\n\x14\x45nsureSecretResponse\x12\x13\n\x0bsecret_uuid\x18\x01 \x01(\t\"I\n\x10GetSecretRequest\x12\x0f\n\x07vm_uuid\x18\x01 \x01(\t\x12\x13\n\x0bkey_version\x18\x02 \x01(\t\x12\x0f\n\x07purpose\x18\x03 \x01(\t\"(\n\x11GetSecretResponse\x12\x13\n\x0bsecret_uuid\x18\x01 \x01(\t\"L\n\x13\x44\x65leteSecretRequest\x12\x0f\n\x07vm_uuid\x18\x01 \x01(\t\x12\x13\n\x0bkey_version\x18\x02 \x01(\t\x12\x0f\n\x07purpose\x18\x03 \x01(\t\"\x16\n\x14\x44\x65leteSecretResponse2\x85\x05\n\x0fKeyAgentService\x12\x62\n\x11\x43reateEnvelopeKey\x12%.keyagent.v1.CreateEnvelopeKeyRequest\x1a&.keyagent.v1.CreateEnvelopeKeyResponse\x12\x62\n\x11RotateEnvelopeKey\x12%.keyagent.v1.RotateEnvelopeKeyRequest\x1a&.keyagent.v1.RotateEnvelopeKeyResponse\x12S\n\x0cGetPublicKey\x12 .keyagent.v1.GetPublicKeyRequest\x1a!.keyagent.v1.GetPublicKeyResponse\x12_\n\x10\x43heckEnvelopeKey\x12$.keyagent.v1.CheckEnvelopeKeyRequest\x1a%.keyagent.v1.CheckEnvelopeKeyResponse\x12S\n\x0c\x45nsureSecret\x12 .keyagent.v1.EnsureSecretRequest\x1a!.keyagent.v1.EnsureSecretResponse\x12J\n\tGetSecret\x12\x1d.keyagent.v1.GetSecretRequest\x1a\x1e.keyagent.v1.GetSecretResponse\x12S\n\x0c\x44\x65leteSecret\x12 .keyagent.v1.DeleteSecretRequest\x1a!.keyagent.v1.DeleteSecretResponseb\x06proto3'
->>>>>>> d982d6e2a (fix<kvmagent>: support libvirt secret lifecycle)
+  serialized_pb=b'\n\x0fkey_agent.proto\x12\x0bkeyagent.v1\"\x1a\n\x18\x43reateEnvelopeKeyRequest\",\n\x19\x43reateEnvelopeKeyResponse\x12\x0f\n\x07\x63reated\x18\x01 \x01(\x08\"\x1a\n\x18RotateEnvelopeKeyRequest\"\x1b\n\x19RotateEnvelopeKeyResponse\"\x15\n\x13GetPublicKeyRequest\"*\n\x14GetPublicKeyResponse\x12\x12\n\npublic_key\x18\x01 \x01(\x0c\"\x19\n\x17\x43heckEnvelopeKeyRequest\"\x1a\n\x18\x43heckEnvelopeKeyResponse\"\xa5\x01\n\x13\x45nsureSecretRequest\x12\x15\n\rencrypted_dek\x18\x01 \x01(\x0c\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x0f\n\x07vm_uuid\x18\x03 \x01(\t\x12\x0f\n\x07purpose\x18\x04 \x01(\t\x12\x13\n\x0bkey_version\x18\x05 \x01(\x05\x12\x16\n\x0eusage_instance\x18\x06 \x01(\t\x12\x13\n\x0bsecret_uuid\x18\x07 \x01(\t\"+\n\x14\x45nsureSecretResponse\x12\x13\n\x0bsecret_uuid\x18\x01 \x01(\t\"a\n\x10GetSecretRequest\x12\x0f\n\x07vm_uuid\x18\x01 \x01(\t\x12\x13\n\x0bkey_version\x18\x02 \x01(\x05\x12\x0f\n\x07purpose\x18\x03 \x01(\t\x12\x16\n\x0eusage_instance\x18\x04 \x01(\t\"(\n\x11GetSecretResponse\x12\x13\n\x0bsecret_uuid\x18\x01 \x01(\t\"d\n\x13\x44\x65leteSecretRequest\x12\x0f\n\x07vm_uuid\x18\x01 \x01(\t\x12\x13\n\x0bkey_version\x18\x02 \x01(\x05\x12\x0f\n\x07purpose\x18\x03 \x01(\t\x12\x16\n\x0eusage_instance\x18\x04 \x01(\t\"\x16\n\x14\x44\x65leteSecretResponse2\x85\x05\n\x0fKeyAgentService\x12\x62\n\x11\x43reateEnvelopeKey\x12%.keyagent.v1.CreateEnvelopeKeyRequest\x1a&.keyagent.v1.CreateEnvelopeKeyResponse\x12\x62\n\x11RotateEnvelopeKey\x12%.keyagent.v1.RotateEnvelopeKeyRequest\x1a&.keyagent.v1.RotateEnvelopeKeyResponse\x12S\n\x0cGetPublicKey\x12 .keyagent.v1.GetPublicKeyRequest\x1a!.keyagent.v1.GetPublicKeyResponse\x12_\n\x10\x43heckEnvelopeKey\x12$.keyagent.v1.CheckEnvelopeKeyRequest\x1a%.keyagent.v1.CheckEnvelopeKeyResponse\x12S\n\x0c\x45nsureSecret\x12 .keyagent.v1.EnsureSecretRequest\x1a!.keyagent.v1.EnsureSecretResponse\x12J\n\tGetSecret\x12\x1d.keyagent.v1.GetSecretRequest\x1a\x1e.keyagent.v1.GetSecretResponse\x12S\n\x0c\x44\x65leteSecret\x12 .keyagent.v1.DeleteSecretRequest\x1a!.keyagent.v1.DeleteSecretResponseb\x06proto3'
 )
 
 
@@ -271,7 +267,21 @@ _ENSURESECRETREQUEST = _descriptor.Descriptor(
       serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='key_version', full_name='keyagent.v1.EnsureSecretRequest.key_version', index=4,
-      number=5, type=9, cpp_type=9, label=1,
+      number=5, type=5, cpp_type=1, label=1,
+      has_default_value=False, default_value=0,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
+    _descriptor.FieldDescriptor(
+      name='usage_instance', full_name='keyagent.v1.EnsureSecretRequest.usage_instance', index=5,
+      number=6, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"".decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
+    _descriptor.FieldDescriptor(
+      name='secret_uuid', full_name='keyagent.v1.EnsureSecretRequest.secret_uuid', index=6,
+      number=7, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
@@ -288,8 +298,8 @@ _ENSURESECRETREQUEST = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=285,
-  serialized_end=405,
+  serialized_start=286,
+  serialized_end=451,
 )
 
 
@@ -319,8 +329,8 @@ _ENSURESECRETRESPONSE = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=407,
-  serialized_end=450,
+  serialized_start=453,
+  serialized_end=496,
 )
 
 
@@ -340,13 +350,11 @@ _GETSECRETREQUEST = _descriptor.Descriptor(
       serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='key_version', full_name='keyagent.v1.GetSecretRequest.key_version', index=1,
-      number=2, type=9, cpp_type=9, label=1,
-      has_default_value=False, default_value=b"".decode('utf-8'),
+      number=2, type=5, cpp_type=1, label=1,
+      has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR),
-<<<<<<< HEAD
-=======
     _descriptor.FieldDescriptor(
       name='purpose', full_name='keyagent.v1.GetSecretRequest.purpose', index=2,
       number=3, type=9, cpp_type=9, label=1,
@@ -354,7 +362,13 @@ _GETSECRETREQUEST = _descriptor.Descriptor(
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR),
->>>>>>> d982d6e2a (fix<kvmagent>: support libvirt secret lifecycle)
+    _descriptor.FieldDescriptor(
+      name='usage_instance', full_name='keyagent.v1.GetSecretRequest.usage_instance', index=3,
+      number=4, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"".decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
@@ -367,12 +381,8 @@ _GETSECRETREQUEST = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=452,
-<<<<<<< HEAD
-  serialized_end=508,
-=======
-  serialized_end=525,
->>>>>>> d982d6e2a (fix<kvmagent>: support libvirt secret lifecycle)
+  serialized_start=498,
+  serialized_end=595,
 )
 
 
@@ -402,13 +412,8 @@ _GETSECRETRESPONSE = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-<<<<<<< HEAD
-  serialized_start=510,
-  serialized_end=550,
-=======
-  serialized_start=527,
-  serialized_end=567,
->>>>>>> d982d6e2a (fix<kvmagent>: support libvirt secret lifecycle)
+  serialized_start=597,
+  serialized_end=637,
 )
 
 
@@ -428,13 +433,11 @@ _DELETESECRETREQUEST = _descriptor.Descriptor(
       serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='key_version', full_name='keyagent.v1.DeleteSecretRequest.key_version', index=1,
-      number=2, type=9, cpp_type=9, label=1,
-      has_default_value=False, default_value=b"".decode('utf-8'),
+      number=2, type=5, cpp_type=1, label=1,
+      has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR),
-<<<<<<< HEAD
-=======
     _descriptor.FieldDescriptor(
       name='purpose', full_name='keyagent.v1.DeleteSecretRequest.purpose', index=2,
       number=3, type=9, cpp_type=9, label=1,
@@ -442,7 +445,13 @@ _DELETESECRETREQUEST = _descriptor.Descriptor(
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR),
->>>>>>> d982d6e2a (fix<kvmagent>: support libvirt secret lifecycle)
+    _descriptor.FieldDescriptor(
+      name='usage_instance', full_name='keyagent.v1.DeleteSecretRequest.usage_instance', index=3,
+      number=4, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"".decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
@@ -455,13 +464,8 @@ _DELETESECRETREQUEST = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-<<<<<<< HEAD
-  serialized_start=552,
-  serialized_end=611,
-=======
-  serialized_start=569,
-  serialized_end=645,
->>>>>>> d982d6e2a (fix<kvmagent>: support libvirt secret lifecycle)
+  serialized_start=639,
+  serialized_end=739,
 )
 
 
@@ -484,13 +488,8 @@ _DELETESECRETRESPONSE = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-<<<<<<< HEAD
-  serialized_start=613,
-  serialized_end=635,
-=======
-  serialized_start=647,
-  serialized_end=669,
->>>>>>> d982d6e2a (fix<kvmagent>: support libvirt secret lifecycle)
+  serialized_start=741,
+  serialized_end=763,
 )
 
 DESCRIPTOR.message_types_by_name['CreateEnvelopeKeyRequest'] = _CREATEENVELOPEKEYREQUEST
@@ -615,13 +614,8 @@ _KEYAGENTSERVICE = _descriptor.ServiceDescriptor(
   file=DESCRIPTOR,
   index=0,
   serialized_options=None,
-<<<<<<< HEAD
-  serialized_start=638,
-  serialized_end=1283,
-=======
-  serialized_start=672,
-  serialized_end=1317,
->>>>>>> d982d6e2a (fix<kvmagent>: support libvirt secret lifecycle)
+  serialized_start=766,
+  serialized_end=1411,
   methods=[
   _descriptor.MethodDescriptor(
     name='CreateEnvelopeKey',
