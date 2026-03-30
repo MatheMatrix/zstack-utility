@@ -37,7 +37,7 @@ from zstacklib.utils.linux import remote_shell_quote
 from cephdriver import CephDriver
 from thirdpartycephdriver import ThirdpartyCephDriver
 from zstacklib.utils.misc import IgnoreError
-from distutils.version import LooseVersion
+from zstacklib.utils.version import NumericVersion
 
 log.configure_log('/var/log/zstack/ceph-primarystorage.log')
 logger = log.get_logger(__name__)
@@ -476,7 +476,7 @@ class CephAgent(plugin.TaskManager):
         else:
             xms_version = None
             logger.warn('can not get xms version, the xms-cli version output is: %s' % o)
-        if xms_version and LooseVersion(xms_version) >= LooseVersion('5.2.106.2.230330'):
+        if xms_version and NumericVersion(xms_version) >= NumericVersion('5.2.106.2.230330'):
             return
 
         regex = 'grep -v 3.10.0-'

@@ -24,7 +24,7 @@ from zstacklib.utils import thread
 from zstacklib.utils import sanlock
 from zstacklib.utils import remoteStorage
 from cachetools import TTLCache
-from distutils.version import LooseVersion
+from zstacklib.utils.version import NumericVersion
 
 from zstacklib.utils.linux import get_fs_type
 
@@ -451,7 +451,7 @@ def get_multipath_name(dev_name):
 
 def get_lvmlockd_service_name():
     service_name = 'lvm2-lvmlockd.service'
-    if LooseVersion(get_lvmlockd_version()) > LooseVersion("2.02"):
+    if NumericVersion(get_lvmlockd_version()) > NumericVersion("2.02"):
         service_name = 'lvmlockd.service'
     return service_name
 
@@ -808,7 +808,7 @@ def start_lock_service(io_timeout=40):
 
     def is_lvmlockd_upgraded():
         running_lockd_version = get_running_lvmlockd_version()
-        return running_lockd_version is not None and LooseVersion(running_lockd_version) < LooseVersion(get_lvmlockd_version())
+        return running_lockd_version is not None and NumericVersion(running_lockd_version) < NumericVersion(get_lvmlockd_version())
 
     def need_restart_sanlock():
         running_patch_version = get_running_sanlock_patch_version()
@@ -829,7 +829,7 @@ def start_lock_service(io_timeout=40):
 
     restart_sanlock = need_restart_sanlock()
     restart_lvmlockd = restart_sanlock or is_lvmlockd_upgraded() or \
-                       (LooseVersion(get_lvmlockd_version()) >= LooseVersion("2.03") and LvmlockdStatus().failed)
+                       (NumericVersion(get_lvmlockd_version()) >= NumericVersion("2.03") and LvmlockdStatus().failed)
     if restart_sanlock:
         stop_sanlock()
     if restart_lvmlockd:

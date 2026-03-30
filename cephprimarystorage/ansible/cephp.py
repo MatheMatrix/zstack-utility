@@ -2,7 +2,6 @@
 # encoding: utf-8
 import argparse
 import datetime
-from distutils.version import LooseVersion
 
 from zstacklib import *
 
@@ -103,7 +102,7 @@ if host_info.distro in RPM_BASED_OS:
     if remote_bin_installed(host_post_info, "qemu-img", return_status=True):
         (status, qemu_img_version) = get_qemu_img_version(host_post_info)
         # When the qemu-img version is smaller than 4.0.0, rbd is already included
-        if LooseVersion(qemu_img_version) < LooseVersion('4.0.0'):
+        if NumericVersion(qemu_img_version) < NumericVersion('4.0.0'):
             qemu_installed = True
     if not qemu_installed:
         qemu_installed = yum_check_package("qemu-kvm", host_post_info) or yum_check_package("qemu-kvm-ev", host_post_info) or yum_check_package("qemu", host_post_info)
@@ -146,7 +145,7 @@ if host_info.distro in RPM_BASED_OS:
 
     # replace qemu-img binary if qemu-img-ev before 2.12.0 is installed, to fix zstack-11004 / zstack-13594 / zstack-20983
     (status, qemu_img_version) = get_qemu_img_version(host_post_info)
-    if IS_AARCH64 and LooseVersion(qemu_img_version) < LooseVersion('2.12.0'):
+    if IS_AARCH64 and NumericVersion(qemu_img_version) < NumericVersion('2.12.0'):
         copy_arg = CopyArg()
         copy_arg.src = "%s" % qemu_img_pkg
         copy_arg.dest = "%s" % qemu_img_local_pkg

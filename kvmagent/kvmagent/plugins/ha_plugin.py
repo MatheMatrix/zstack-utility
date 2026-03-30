@@ -24,7 +24,7 @@ import rados
 import rbd
 import json
 from datetime import datetime, timedelta
-from distutils.version import LooseVersion
+from zstacklib.utils.version import NumericVersion
 import abc
 import functools
 import pprint
@@ -1710,7 +1710,7 @@ def find_root_volume_with_bootindex_from_ps_output(cmdline, vm_uuid, is_file_sys
     if qemu_version == "":
         qemu_version = QEMU_VERSION
 
-    if LooseVersion(LIBVIRT_VERSION) >= LooseVersion("6.0.0") and LooseVersion(qemu_version) >= LooseVersion("4.2.0"):
+    if NumericVersion(LIBVIRT_VERSION) >= NumericVersion("6.0.0") and NumericVersion(qemu_version) >= NumericVersion("4.2.0"):
         if is_file_system:
             root_volume_path = find_root_volume_with_bootindex_and_file_system_from_ps_output(cmdline)
         else:
