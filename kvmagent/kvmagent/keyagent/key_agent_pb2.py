@@ -18,7 +18,7 @@ DESCRIPTOR = _descriptor.FileDescriptor(
   package='keyagent.v1',
   syntax='proto3',
   serialized_options=None,
-  serialized_pb=b'\n\x0fkey_agent.proto\x12\x0bkeyagent.v1\"\x1a\n\x18\x43reateEnvelopeKeyRequest\",\n\x19\x43reateEnvelopeKeyResponse\x12\x0f\n\x07\x63reated\x18\x01 \x01(\x08\"\x1a\n\x18RotateEnvelopeKeyRequest\"\x1b\n\x19RotateEnvelopeKeyResponse\"\x15\n\x13GetPublicKeyRequest\"*\n\x14GetPublicKeyResponse\x12\x12\n\npublic_key\x18\x01 \x01(\x0c\"\x19\n\x17\x43heckEnvelopeKeyRequest\"\x1a\n\x18\x43heckEnvelopeKeyResponse\"z\n\x13\x45nsureSecretRequest\x12\x15\n\rencrypted_dek\x18\x01 \x01(\x0c\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x0f\n\x07vm_uuid\x18\x03 \x01(\t\x12\x0f\n\x07purpose\x18\x04 \x01(\t\x12\x15\n\rprovider_name\x18\x05 \x01(\t\"+\n\x14\x45nsureSecretResponse\x12\x13\n\x0bsecret_uuid\x18\x01 \x01(\t2\xe4\x03\n\x0fKeyAgentService\x12\x62\n\x11\x43reateEnvelopeKey\x12%.keyagent.v1.CreateEnvelopeKeyRequest\x1a&.keyagent.v1.CreateEnvelopeKeyResponse\x12\x62\n\x11RotateEnvelopeKey\x12%.keyagent.v1.RotateEnvelopeKeyRequest\x1a&.keyagent.v1.RotateEnvelopeKeyResponse\x12S\n\x0cGetPublicKey\x12 .keyagent.v1.GetPublicKeyRequest\x1a!.keyagent.v1.GetPublicKeyResponse\x12_\n\x10\x43heckEnvelopeKey\x12$.keyagent.v1.CheckEnvelopeKeyRequest\x1a%.keyagent.v1.CheckEnvelopeKeyResponse\x12S\n\x0c\x45nsureSecret\x12 .keyagent.v1.EnsureSecretRequest\x1a!.keyagent.v1.EnsureSecretResponseb\x06proto3'
+  serialized_pb=b'\n\x0fkey_agent.proto\x12\x0bkeyagent.v1\"\x1a\n\x18\x43reateEnvelopeKeyRequest\",\n\x19\x43reateEnvelopeKeyResponse\x12\x0f\n\x07\x63reated\x18\x01 \x01(\x08\"\x1a\n\x18RotateEnvelopeKeyRequest\"\x1b\n\x19RotateEnvelopeKeyResponse\"\x15\n\x13GetPublicKeyRequest\"*\n\x14GetPublicKeyResponse\x12\x12\n\npublic_key\x18\x01 \x01(\x0c\"\x19\n\x17\x43heckEnvelopeKeyRequest\"\x1a\n\x18\x43heckEnvelopeKeyResponse\"x\n\x13\x45nsureSecretRequest\x12\x15\n\rencrypted_dek\x18\x01 \x01(\x0c\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x0f\n\x07vm_uuid\x18\x03 \x01(\t\x12\x0f\n\x07purpose\x18\x04 \x01(\t\x12\x13\n\x0bkey_version\x18\x05 \x01(\t\"+\n\x14\x45nsureSecretResponse\x12\x13\n\x0bsecret_uuid\x18\x01 \x01(\t\"8\n\x10GetSecretRequest\x12\x0f\n\x07vm_uuid\x18\x01 \x01(\t\x12\x13\n\x0bkey_version\x18\x02 \x01(\t\"(\n\x11GetSecretResponse\x12\x13\n\x0bsecret_uuid\x18\x01 \x01(\t\";\n\x13\x44\x65leteSecretRequest\x12\x0f\n\x07vm_uuid\x18\x01 \x01(\t\x12\x13\n\x0bkey_version\x18\x02 \x01(\t\"\x16\n\x14\x44\x65leteSecretResponse2\x85\x05\n\x0fKeyAgentService\x12\x62\n\x11\x43reateEnvelopeKey\x12%.keyagent.v1.CreateEnvelopeKeyRequest\x1a&.keyagent.v1.CreateEnvelopeKeyResponse\x12\x62\n\x11RotateEnvelopeKey\x12%.keyagent.v1.RotateEnvelopeKeyRequest\x1a&.keyagent.v1.RotateEnvelopeKeyResponse\x12S\n\x0cGetPublicKey\x12 .keyagent.v1.GetPublicKeyRequest\x1a!.keyagent.v1.GetPublicKeyResponse\x12_\n\x10\x43heckEnvelopeKey\x12$.keyagent.v1.CheckEnvelopeKeyRequest\x1a%.keyagent.v1.CheckEnvelopeKeyResponse\x12S\n\x0c\x45nsureSecret\x12 .keyagent.v1.EnsureSecretRequest\x1a!.keyagent.v1.EnsureSecretResponse\x12J\n\tGetSecret\x12\x1d.keyagent.v1.GetSecretRequest\x1a\x1e.keyagent.v1.GetSecretResponse\x12S\n\x0c\x44\x65leteSecret\x12 .keyagent.v1.DeleteSecretRequest\x1a!.keyagent.v1.DeleteSecretResponseb\x06proto3'
 )
 
 
@@ -266,7 +266,7 @@ _ENSURESECRETREQUEST = _descriptor.Descriptor(
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
-      name='provider_name', full_name='keyagent.v1.EnsureSecretRequest.provider_name', index=4,
+      name='key_version', full_name='keyagent.v1.EnsureSecretRequest.key_version', index=4,
       number=5, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
@@ -285,7 +285,7 @@ _ENSURESECRETREQUEST = _descriptor.Descriptor(
   oneofs=[
   ],
   serialized_start=285,
-  serialized_end=407,
+  serialized_end=405,
 )
 
 
@@ -315,8 +315,139 @@ _ENSURESECRETRESPONSE = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=409,
-  serialized_end=452,
+  serialized_start=407,
+  serialized_end=450,
+)
+
+
+_GETSECRETREQUEST = _descriptor.Descriptor(
+  name='GetSecretRequest',
+  full_name='keyagent.v1.GetSecretRequest',
+  filename=None,
+  file=DESCRIPTOR,
+  containing_type=None,
+  fields=[
+    _descriptor.FieldDescriptor(
+      name='vm_uuid', full_name='keyagent.v1.GetSecretRequest.vm_uuid', index=0,
+      number=1, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"".decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
+    _descriptor.FieldDescriptor(
+      name='key_version', full_name='keyagent.v1.GetSecretRequest.key_version', index=1,
+      number=2, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"".decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
+  ],
+  extensions=[
+  ],
+  nested_types=[],
+  enum_types=[
+  ],
+  serialized_options=None,
+  is_extendable=False,
+  syntax='proto3',
+  extension_ranges=[],
+  oneofs=[
+  ],
+  serialized_start=452,
+  serialized_end=508,
+)
+
+
+_GETSECRETRESPONSE = _descriptor.Descriptor(
+  name='GetSecretResponse',
+  full_name='keyagent.v1.GetSecretResponse',
+  filename=None,
+  file=DESCRIPTOR,
+  containing_type=None,
+  fields=[
+    _descriptor.FieldDescriptor(
+      name='secret_uuid', full_name='keyagent.v1.GetSecretResponse.secret_uuid', index=0,
+      number=1, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"".decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
+  ],
+  extensions=[
+  ],
+  nested_types=[],
+  enum_types=[
+  ],
+  serialized_options=None,
+  is_extendable=False,
+  syntax='proto3',
+  extension_ranges=[],
+  oneofs=[
+  ],
+  serialized_start=510,
+  serialized_end=550,
+)
+
+
+_DELETESECRETREQUEST = _descriptor.Descriptor(
+  name='DeleteSecretRequest',
+  full_name='keyagent.v1.DeleteSecretRequest',
+  filename=None,
+  file=DESCRIPTOR,
+  containing_type=None,
+  fields=[
+    _descriptor.FieldDescriptor(
+      name='vm_uuid', full_name='keyagent.v1.DeleteSecretRequest.vm_uuid', index=0,
+      number=1, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"".decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
+    _descriptor.FieldDescriptor(
+      name='key_version', full_name='keyagent.v1.DeleteSecretRequest.key_version', index=1,
+      number=2, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"".decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
+  ],
+  extensions=[
+  ],
+  nested_types=[],
+  enum_types=[
+  ],
+  serialized_options=None,
+  is_extendable=False,
+  syntax='proto3',
+  extension_ranges=[],
+  oneofs=[
+  ],
+  serialized_start=552,
+  serialized_end=611,
+)
+
+
+_DELETESECRETRESPONSE = _descriptor.Descriptor(
+  name='DeleteSecretResponse',
+  full_name='keyagent.v1.DeleteSecretResponse',
+  filename=None,
+  file=DESCRIPTOR,
+  containing_type=None,
+  fields=[
+  ],
+  extensions=[
+  ],
+  nested_types=[],
+  enum_types=[
+  ],
+  serialized_options=None,
+  is_extendable=False,
+  syntax='proto3',
+  extension_ranges=[],
+  oneofs=[
+  ],
+  serialized_start=613,
+  serialized_end=635,
 )
 
 DESCRIPTOR.message_types_by_name['CreateEnvelopeKeyRequest'] = _CREATEENVELOPEKEYREQUEST
@@ -329,6 +460,10 @@ DESCRIPTOR.message_types_by_name['CheckEnvelopeKeyRequest'] = _CHECKENVELOPEKEYR
 DESCRIPTOR.message_types_by_name['CheckEnvelopeKeyResponse'] = _CHECKENVELOPEKEYRESPONSE
 DESCRIPTOR.message_types_by_name['EnsureSecretRequest'] = _ENSURESECRETREQUEST
 DESCRIPTOR.message_types_by_name['EnsureSecretResponse'] = _ENSURESECRETRESPONSE
+DESCRIPTOR.message_types_by_name['GetSecretRequest'] = _GETSECRETREQUEST
+DESCRIPTOR.message_types_by_name['GetSecretResponse'] = _GETSECRETRESPONSE
+DESCRIPTOR.message_types_by_name['DeleteSecretRequest'] = _DELETESECRETREQUEST
+DESCRIPTOR.message_types_by_name['DeleteSecretResponse'] = _DELETESECRETRESPONSE
 _sym_db.RegisterFileDescriptor(DESCRIPTOR)
 
 CreateEnvelopeKeyRequest = _reflection.GeneratedProtocolMessageType('CreateEnvelopeKeyRequest', (_message.Message,), {
@@ -401,6 +536,34 @@ EnsureSecretResponse = _reflection.GeneratedProtocolMessageType('EnsureSecretRes
   })
 _sym_db.RegisterMessage(EnsureSecretResponse)
 
+GetSecretRequest = _reflection.GeneratedProtocolMessageType('GetSecretRequest', (_message.Message,), {
+  'DESCRIPTOR' : _GETSECRETREQUEST,
+  '__module__' : 'key_agent_pb2'
+  # @@protoc_insertion_point(class_scope:keyagent.v1.GetSecretRequest)
+  })
+_sym_db.RegisterMessage(GetSecretRequest)
+
+GetSecretResponse = _reflection.GeneratedProtocolMessageType('GetSecretResponse', (_message.Message,), {
+  'DESCRIPTOR' : _GETSECRETRESPONSE,
+  '__module__' : 'key_agent_pb2'
+  # @@protoc_insertion_point(class_scope:keyagent.v1.GetSecretResponse)
+  })
+_sym_db.RegisterMessage(GetSecretResponse)
+
+DeleteSecretRequest = _reflection.GeneratedProtocolMessageType('DeleteSecretRequest', (_message.Message,), {
+  'DESCRIPTOR' : _DELETESECRETREQUEST,
+  '__module__' : 'key_agent_pb2'
+  # @@protoc_insertion_point(class_scope:keyagent.v1.DeleteSecretRequest)
+  })
+_sym_db.RegisterMessage(DeleteSecretRequest)
+
+DeleteSecretResponse = _reflection.GeneratedProtocolMessageType('DeleteSecretResponse', (_message.Message,), {
+  'DESCRIPTOR' : _DELETESECRETRESPONSE,
+  '__module__' : 'key_agent_pb2'
+  # @@protoc_insertion_point(class_scope:keyagent.v1.DeleteSecretResponse)
+  })
+_sym_db.RegisterMessage(DeleteSecretResponse)
+
 
 
 _KEYAGENTSERVICE = _descriptor.ServiceDescriptor(
@@ -409,8 +572,8 @@ _KEYAGENTSERVICE = _descriptor.ServiceDescriptor(
   file=DESCRIPTOR,
   index=0,
   serialized_options=None,
-  serialized_start=455,
-  serialized_end=939,
+  serialized_start=638,
+  serialized_end=1283,
   methods=[
   _descriptor.MethodDescriptor(
     name='CreateEnvelopeKey',
@@ -455,6 +618,24 @@ _KEYAGENTSERVICE = _descriptor.ServiceDescriptor(
     containing_service=None,
     input_type=_ENSURESECRETREQUEST,
     output_type=_ENSURESECRETRESPONSE,
+    serialized_options=None,
+  ),
+  _descriptor.MethodDescriptor(
+    name='GetSecret',
+    full_name='keyagent.v1.KeyAgentService.GetSecret',
+    index=5,
+    containing_service=None,
+    input_type=_GETSECRETREQUEST,
+    output_type=_GETSECRETRESPONSE,
+    serialized_options=None,
+  ),
+  _descriptor.MethodDescriptor(
+    name='DeleteSecret',
+    full_name='keyagent.v1.KeyAgentService.DeleteSecret',
+    index=6,
+    containing_service=None,
+    input_type=_DELETESECRETREQUEST,
+    output_type=_DELETESECRETRESPONSE,
     serialized_options=None,
   ),
 ])
