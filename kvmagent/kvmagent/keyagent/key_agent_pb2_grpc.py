@@ -39,6 +39,16 @@ class KeyAgentServiceStub(object):
         request_serializer=key__agent__pb2.EnsureSecretRequest.SerializeToString,
         response_deserializer=key__agent__pb2.EnsureSecretResponse.FromString,
         )
+    self.GetSecret = channel.unary_unary(
+        '/keyagent.v1.KeyAgentService/GetSecret',
+        request_serializer=key__agent__pb2.GetSecretRequest.SerializeToString,
+        response_deserializer=key__agent__pb2.GetSecretResponse.FromString,
+        )
+    self.DeleteSecret = channel.unary_unary(
+        '/keyagent.v1.KeyAgentService/DeleteSecret',
+        request_serializer=key__agent__pb2.DeleteSecretRequest.SerializeToString,
+        response_deserializer=key__agent__pb2.DeleteSecretResponse.FromString,
+        )
 
 
 class KeyAgentServiceServicer(object):
@@ -80,6 +90,20 @@ class KeyAgentServiceServicer(object):
     context.set_details('Method not implemented!')
     raise NotImplementedError('Method not implemented!')
 
+  def GetSecret(self, request, context):
+    # missing associated documentation comment in .proto file
+    pass
+    context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+    context.set_details('Method not implemented!')
+    raise NotImplementedError('Method not implemented!')
+
+  def DeleteSecret(self, request, context):
+    # missing associated documentation comment in .proto file
+    pass
+    context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+    context.set_details('Method not implemented!')
+    raise NotImplementedError('Method not implemented!')
+
 
 def add_KeyAgentServiceServicer_to_server(servicer, server):
   rpc_method_handlers = {
@@ -107,6 +131,16 @@ def add_KeyAgentServiceServicer_to_server(servicer, server):
           servicer.EnsureSecret,
           request_deserializer=key__agent__pb2.EnsureSecretRequest.FromString,
           response_serializer=key__agent__pb2.EnsureSecretResponse.SerializeToString,
+      ),
+      'GetSecret': grpc.unary_unary_rpc_method_handler(
+          servicer.GetSecret,
+          request_deserializer=key__agent__pb2.GetSecretRequest.FromString,
+          response_serializer=key__agent__pb2.GetSecretResponse.SerializeToString,
+      ),
+      'DeleteSecret': grpc.unary_unary_rpc_method_handler(
+          servicer.DeleteSecret,
+          request_deserializer=key__agent__pb2.DeleteSecretRequest.FromString,
+          response_serializer=key__agent__pb2.DeleteSecretResponse.SerializeToString,
       ),
   }
   generic_handler = grpc.method_handlers_generic_handler(
