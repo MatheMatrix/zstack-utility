@@ -179,10 +179,10 @@ def compare_versions(v1, v2):
     Returns:
         -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2.
     """
-    from distutils.version import LooseVersion
-    
-    lv1 = LooseVersion(v1)
-    lv2 = LooseVersion(v2)
+    from zstacklib.utils.version import NumericVersion
+
+    lv1 = NumericVersion(v1)
+    lv2 = NumericVersion(v2)
     
     if lv1 < lv2:
         return -1

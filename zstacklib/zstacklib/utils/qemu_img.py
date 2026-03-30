@@ -1,5 +1,5 @@
 from zstacklib.utils import shell
-from distutils.version import LooseVersion
+from zstacklib.utils.version import NumericVersion
 import json
 import re
 
@@ -34,7 +34,7 @@ def get_release_version():
 
 def subcmd(subcmd):
     options = ''
-    if LooseVersion(get_version()) >= LooseVersion('2.10.0'):
+    if NumericVersion(get_version()) >= NumericVersion('2.10.0'):
         if subcmd in ['info', 'check', 'compare', 'convert', 'rebase', 'measure']:
             options += ' --force-share '
     return 'qemu-img %s %s ' % (subcmd, options)
@@ -48,10 +48,10 @@ def get_check_result(path):
                        result.get("filename"), result.get("format"))
 
 def take_default_backing_fmt_for_convert():
-    return LooseVersion(get_version()) <= LooseVersion("6.0.0")
+    return NumericVersion(get_version()) <= NumericVersion("6.0.0")
 
 def resize_backing_before_rebase():
-    return LooseVersion(get_release_version()) < LooseVersion("6.2.0-227")
+    return NumericVersion(get_release_version()) < NumericVersion("6.2.0-227")
 
 
 

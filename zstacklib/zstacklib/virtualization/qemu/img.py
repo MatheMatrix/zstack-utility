@@ -8,7 +8,7 @@ Provides functions for working with QEMU disk images.
 
 import json
 import logging
-from distutils.version import LooseVersion
+from zstacklib.utils.version import NumericVersion
 from typing import List, Optional
 
 from zstacklib.utils import shell
@@ -55,7 +55,7 @@ def build_subcmd(subcmd, force_share=True):
     version = get_qemu_img_version()
     options = ''
     
-    if force_share and LooseVersion(version) >= LooseVersion('2.10.0'):
+    if force_share and NumericVersion(version) >= NumericVersion('2.10.0'):
         if subcmd in FORCE_SHARE_SUBCMDS:
             options = ' --force-share '
     

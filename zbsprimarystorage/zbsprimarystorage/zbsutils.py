@@ -1,7 +1,7 @@
 __author__ = 'Xingwei Yu'
 
 import os
-from distutils.version import LooseVersion
+from zstacklib.utils.version import NumericVersion
 
 import zstacklib.utils.jsonobject as jsonobject
 
@@ -57,7 +57,7 @@ c.f. http://jira.zstack.io/browse/ZBS-327
 
 @in_bash
 def get_cluster_uuid(cluster_version):
-    if cluster_version and LooseVersion(cluster_version) < LooseVersion(CLUSTER_UUID_SUPPORTED_VERSION):
+    if cluster_version and NumericVersion(cluster_version) < NumericVersion(CLUSTER_UUID_SUPPORTED_VERSION):
         return None
 
     _, o, _ = bash_roe("%s cluster ls --format json" % ZBSADM_BIN_PATH)

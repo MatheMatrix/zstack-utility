@@ -2,7 +2,7 @@ from kvmagent.plugins import vm_plugin
 from kvmagent.test.utils import vm_utils, network_utils, pytest_utils
 from kvmagent.test.utils.stub import *
 from unittest import TestCase
-from distutils.version import LooseVersion
+from kvmagent.plugins.vm_plugin import NumericVersion
 
 import platform
 
@@ -76,7 +76,7 @@ class TestVmMaxVcpu(TestCase, vm_utils.VmPluginTestStub):
             r, o = bash.bash_ro(
                 "virsh dumpxml %s | grep %s" % (vm.vmInstanceUuid, feature))
             
-            if LooseVersion(vm_plugin.KERNEL_VERSION) > LooseVersion("3.10.0"):
+            if NumericVersion(vm_plugin.KERNEL_VERSION) > NumericVersion("3.10.0"):
                 self.assertTrue(r == 0, "missing feature %s from xml" % feature)
             else:
                 self.assertTrue(r == 1, "unexpected feature %s from xml %s" % (feature, o))
