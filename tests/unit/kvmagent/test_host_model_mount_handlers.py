@@ -8,7 +8,6 @@ Handler-level unit tests for kvmagent.plugins.host_model_mount_plugin.
 Tests cover:
 - mount_model_center() handler
 - list_model_centers() handler
-- UUID validation (ZStack uses 32-char UUID without hyphens)
 - check_juicefs_installed() function
 - _mask_url() function for sensitive URL masking
 """
@@ -17,7 +16,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import pytest
 from unittest.mock import patch, MagicMock
@@ -30,64 +28,6 @@ from zstacklib.utils import http
 
 # Import the module under test
 from kvmagent.plugins import host_model_mount_plugin
-
-
-class TestUuidValidation:
-    """Test UUID validation regex - ZStack uses 32-char UUID without hyphens."""
-
-    def test_accept_valid_32char_uuid(self):
-        """Test that valid 32-char ZStack UUID is accepted."""
-        valid_uuid = "2cc1f4d6b8014b44912f92bb242e9675"
-        assert host_model_mount_plugin.UUID_RE.fullmatch(valid_uuid) is not None
-
-    def test_accept_lowercase_uuid(self):
-        """Test that lowercase UUID is accepted."""
-        valid_uuid = "abc123def456789012345678901234ab"
-        assert host_model_mount_plugin.UUID_RE.fullmatch(valid_uuid) is not None
-
-    def test_accept_uppercase_uuid(self):
-        """Test that uppercase UUID is accepted."""
-        valid_uuid = "ABC123DEF456789012345678901234AB"
-        assert host_model_mount_plugin.UUID_RE.fullmatch(valid_uuid) is not None
-
-    def test_accept_mixed_case_uuid(self):
-        """Test that mixed case UUID is accepted."""
-        # 32 chars: 16 hex pairs in mixed case
-        valid_uuid = "AaBbCcDdEeFf0011223344556677889a"
-        assert host_model_mount_plugin.UUID_RE.fullmatch(valid_uuid) is not None
-
-    def test_reject_36char_uuid_with_hyphens(self):
-        """Test that standard 36-char UUID with hyphens is REJECTED.
-
-        Note: ZStack uses 32-char UUIDs without hyphens.
-        Standard UUID format like '2cc1f4d6-b801-4b44-912f-92bb242e9675' is NOT valid.
-        """
-        invalid_uuid = "2cc1f4d6-b801-4b44-912f-92bb242e9675"
-        assert host_model_mount_plugin.UUID_RE.fullmatch(invalid_uuid) is None
-
-    def test_reject_empty_string(self):
-        """Test that empty string is rejected."""
-        assert host_model_mount_plugin.UUID_RE.fullmatch("") is None
-
-    def test_reject_too_short_uuid(self):
-        """Test that UUID with less than 32 chars is rejected."""
-        short_uuid = "2cc1f4d6b8014b44912f92bb242e967"
-        assert host_model_mount_plugin.UUID_RE.fullmatch(short_uuid) is None
-
-    def test_reject_too_long_uuid(self):
-        """Test that UUID with more than 32 chars is rejected."""
-        long_uuid = "2cc1f4d6b8014b44912f92bb242e9675a"
-        assert host_model_mount_plugin.UUID_RE.fullmatch(long_uuid) is None
-
-    def test_reject_uuid_with_special_chars(self):
-        """Test that UUID with special characters is rejected."""
-        invalid_uuid = "2cc1f4d6b8014b44912f92bb242e967!"
-        assert host_model_mount_plugin.UUID_RE.fullmatch(invalid_uuid) is None
-
-    def test_reject_uuid_with_spaces(self):
-        """Test that UUID with spaces is rejected."""
-        invalid_uuid = "2cc1f4d6 b8014b44912f92bb2 42e9675"
-        assert host_model_mount_plugin.UUID_RE.fullmatch(invalid_uuid) is None
 
 
 class TestMaskUrl:
@@ -259,24 +199,26 @@ class TestMountModelCenterHandler:
         )
         return plugin
 
-    def test_mount_with_invalid_uuid_format(self):
-        """Test that mount with invalid UUID format returns error.
-
-        This tests the bug fix: UUID_RE should accept 32-char UUIDs (ZStack format),
-        not 36-char UUIDs with hyphens (standard format).
-        """
-        # 36-char UUID with hyphens should be rejected
+    def test_mount_with_non_empty_uuid_accepted(self):
+        """Test that mount with any non-empty UUID is accepted (no format validation)."""
+        # UUID format is no longer validated, any non-empty string is accepted
         req = self._make_req({
-            'modelCenterUuid': '2cc1f4d6-b801-4b44-912f-92bb242e9675',  # Invalid format
+            'modelCenterUuid': '2cc1f4d6-b801-4b44-912f-92bb242e9675',  # Previously invalid format
             'storageUrl': 'redis://localhost:6379/0',
         })
 
         plugin = self._make_plugin()
-        result = plugin.mount_model_center(req)
-        rsp = json.loads(result)
 
-        assert rsp.get('success') is False
-        assert 'invalid modelCenterUuid' in rsp.get('error', '')
+        with patch.object(host_model_mount_plugin, 'mount_juicefs') as mock_mount:
+            mock_mount.return_value = (True, None)
+
+            result = plugin.mount_model_center(req)
+            rsp = json.loads(result)
+
+            # Should succeed because UUID is not empty
+            assert rsp.get('success') is True
+            # The mount point should use the exact UUID provided
+            assert rsp.get('mountPoint') == '/opt/zstack/models/2cc1f4d6-b801-4b44-912f-92bb242e9675'
 
     def test_mount_with_empty_uuid(self):
         """Test that mount with empty UUID returns error."""
@@ -306,9 +248,9 @@ class TestMountModelCenterHandler:
         assert rsp.get('success') is False
 
     def test_mount_with_valid_uuid_format(self):
-        """Test that mount with valid 32-char ZStack UUID format is accepted."""
+        """Test that mount with any non-empty UUID is accepted."""
         req = self._make_req({
-            'modelCenterUuid': '2cc1f4d6b8014b44912f92bb242e9675',  # Valid 32-char format
+            'modelCenterUuid': '2cc1f4d6b8014b44912f92bb242e9675',
             'storageUrl': 'redis://localhost:6379/0',
         })
 
