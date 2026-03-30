@@ -601,7 +601,6 @@ class OvsReconciler(object):
     def reconcile(self, desired, actual):
         """Execute all reconciliation phases in order."""
         self._reconcile_managed_bridges_delete(desired, actual)
-        self._reconcile_legacy_br_tun(actual)
         recreated = self._reconcile_infra_bridges_create(desired, actual)
         for br_name in recreated:
             actual.managed_bonds.pop(br_name, None)
@@ -618,13 +617,6 @@ class OvsReconciler(object):
                 _validate_ovs_name(br_name)
                 OvsProvisioner._run_ovs_cmd('ovs-vsctl --if-exists del-br %s' % br_name)
                 logger.info('deleted managed bridge %s (no longer desired)' % br_name)
-
-    @staticmethod
-    def _reconcile_legacy_br_tun(actual):
-        """Delete legacy br-tun bridge if it exists."""
-        if 'br-tun' in actual.all_bridges:
-            OvsProvisioner._run_ovs_cmd('ovs-vsctl --if-exists del-br br-tun')
-            logger.info('deleted legacy br-tun bridge')
 
     @staticmethod
     def _reconcile_infra_bridges_create(desired, actual):
@@ -667,6 +659,17 @@ class OvsReconciler(object):
         return recreated
 
     @staticmethod
+    def _effective_mtu(uplink_mtu, tunnel_mtu):
+        """Return the larger of uplink MTU and tunnel MTU.
+
+        The uplink interface carries both VLAN traffic (sized by uplink_mtu)
+        and geneve-encapsulated tunnel traffic (sized by tunnel_mtu).
+        To avoid drops, the physical interface must accommodate whichever is larger.
+        """
+        values = [v for v in (uplink_mtu, tunnel_mtu) if v is not None]
+        return max(values) if values else None
+
+    @staticmethod
     def _reconcile_bonds(desired, actual):
         """Reconcile bonds on all managed bridges."""
         nic_pci_map = (getattr(desired.dpdk_config, 'nicNamePciAddressMap', None)
@@ -691,7 +694,8 @@ class OvsReconciler(object):
                 if bond_name not in actual_bonds:
                     OvsReconciler._build_add_bond(builder, br_name, bond_spec,
                                                   desired.config_version, nic_pci_map,
-                                                  managed_port_names)
+                                                  managed_port_names,
+                                                  desired.tunnel_mtu)
                     rebuilt_bonds.add(bond_name)
                 else:
                     actual_bond = actual_bonds[bond_name]
@@ -700,7 +704,8 @@ class OvsReconciler(object):
                         managed_port_names.discard(bond_name)
                         OvsReconciler._build_add_bond(builder, br_name, bond_spec,
                                                       desired.config_version, nic_pci_map,
-                                                      managed_port_names)
+                                                      managed_port_names,
+                                                      desired.tunnel_mtu)
                         rebuilt_bonds.add(bond_name)
                     else:
                         if bond_spec.mode and bond_spec.mode != (actual_bond.bond_mode or ''):
@@ -710,11 +715,12 @@ class OvsReconciler(object):
             for bond_name, bond_spec in desired_bonds.items():
                 if bond_name in rebuilt_bonds or bond_name not in actual_bonds:
                     continue
-                if bond_spec.mtu is None:
+                effective = OvsReconciler._effective_mtu(bond_spec.mtu, desired.tunnel_mtu)
+                if effective is None:
                     continue
                 for member in actual_bonds[bond_name].members:
-                    if actual_bonds[bond_name].member_mtus.get(member) != bond_spec.mtu:
-                        builder.set_interface(member, 'mtu_request', str(bond_spec.mtu))
+                    if actual_bonds[bond_name].member_mtus.get(member) != effective:
+                        builder.set_interface(member, 'mtu_request', str(effective))
 
             # Refresh config-version on bonds not rebuilt
             for bond_name, _ in desired_bonds.items():
@@ -733,7 +739,8 @@ class OvsReconciler(object):
 
     @staticmethod
     def _build_add_bond(builder, bridge_name, spec, config_version,
-                        nic_pci_map=None, managed_port_names=None):
+                        nic_pci_map=None, managed_port_names=None,
+                        tunnel_mtu=None):
         """Add bond creation ops to the command builder."""
         members = spec.members if spec.members else []
         if not members:
@@ -770,9 +777,10 @@ class OvsReconciler(object):
             builder.set_port_external_id(spec.name, UPLINK_PROFILE_UUID_KEY, spec.uplink_uuid)
 
         # Interface external_ids and MTU
+        effective = OvsReconciler._effective_mtu(spec.mtu, tunnel_mtu)
         for member in members:
-            if spec.mtu is not None:
-                builder.set_interface(member, 'mtu_request', str(spec.mtu))
+            if effective is not None:
+                builder.set_interface(member, 'mtu_request', str(effective))
             builder.set_interface_external_id(member, MANAGED_BY_KEY, MANAGED_BY_VALUE)
             builder.set_interface_external_id(member, CONFIG_VERSION_KEY, str(config_version))
 
@@ -1306,6 +1314,21 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                     if r != 0:
                         raise Exception('failed to change NIC to DPDK driver: %s' % e)
                     dpdk_bound_pci_list = list(nic_pci_map.__dict__.values())
+
+                    # Verify NIC drivers are actually bound after changeNicToDpdkDriver.
+                    # dpdk-devbind.py may return exit code 0 but skip binding when
+                    # the interface is active, so we must confirm the driver switched.
+                    verify_nics = ovn.getAllDpdkNic()
+                    for nic_name, pci_addr in nic_pci_map.__dict__.items():
+                        for nic in verify_nics:
+                            if nic.pciAddress == pci_addr:
+                                if nic.driver not in ('vfio-pci', 'uio_pci_generic', 'mlx5_core'):
+                                    raise Exception(
+                                        'failed to change NIC to DPDK driver: '
+                                        'nic %s [pci address: %s] driver binding verification failed: '
+                                        'expected DPDK driver, got %s'
+                                        % (nic_name, pci_addr, nic.driver))
+                                break
 
                 # Step 1: ensure OVS services running (ovn.py line 236-259)
                 if not vsctl.isOvsRunning():
