@@ -81,6 +81,47 @@ def _validate_ip_address(addr):
     return addr
 
 
+def _apply_tunnel_mtu(tunnel_mtu):
+    """Apply tunnel MTU to all geneve interfaces and managed bridge internal ports.
+
+    This sets mtu_request on:
+    1. All OVS interfaces of type=geneve (tunnel ports created by ovn-controller)
+    2. All managed bridge internal ports (bridges with managed-by=zstack-agent)
+    """
+    tunnel_mtu = int(tunnel_mtu)
+
+    # 1. Find and update geneve tunnel interfaces
+    r, o, e = bash.bash_roe(
+        "ovs-vsctl --no-headings --columns=name find interface type=geneve")
+    if r == 0 and o.strip():
+        for line in o.strip().splitlines():
+            iface_name = line.split(':', 1)[-1].strip().strip('"')
+            if not iface_name:
+                continue
+            r2, _, e2 = bash.bash_roe(
+                'ovs-vsctl set interface %s mtu_request=%s' % (iface_name, tunnel_mtu))
+            if r2 != 0:
+                logger.warn('failed to set mtu_request=%s on geneve interface %s: %s'
+                            % (tunnel_mtu, iface_name, e2))
+            else:
+                logger.info('set mtu_request=%s on geneve interface %s'
+                            % (tunnel_mtu, iface_name))
+
+    # 2. Find managed bridges and set mtu_request on their internal ports
+    vsctl = ovn.VsCtl()
+    for br_name in vsctl.listBridges():
+        ext_ids = vsctl.getBridgeExternalIds(br_name)
+        if ext_ids.get(MANAGED_BY_KEY) == MANAGED_BY_VALUE:
+            r3, _, e3 = bash.bash_roe(
+                'ovs-vsctl set interface %s mtu_request=%s' % (br_name, tunnel_mtu))
+            if r3 != 0:
+                logger.warn('failed to set mtu_request=%s on bridge internal port %s: %s'
+                            % (tunnel_mtu, br_name, e3))
+            else:
+                logger.info('set mtu_request=%s on bridge internal port %s'
+                            % (tunnel_mtu, br_name))
+
+
 # --- Data models ---
 
 class ProvisionResponse(kvmagent.AgentResponse):
@@ -178,6 +219,7 @@ class OvsDesiredState(object):
         self.infra_bridges = {}        # name -> InfraBridgeSpec
         self.ip_addresses = {}
         self.ovs_external_ids = {}
+        self.tunnel_mtu = None         # tunnel MTU from globalConfig
 
     @staticmethod
     def _safe_bridge_name(name):
@@ -444,7 +486,7 @@ class DesiredStateBuilder(object):
         if bridge_mappings:
             state.ovs_external_ids['ovn-bridge-mappings'] = ','.join(bridge_mappings)
 
-        # globalConfig -- BFD parameters
+        # globalConfig -- BFD parameters and tunnel MTU
         global_config = getattr(cmd, 'globalConfig', None)
         if global_config:
             for attr, key in [('bfdMinTx', 'ovn-bfd-min-tx'),
@@ -453,6 +495,9 @@ class DesiredStateBuilder(object):
                 val = getattr(global_config, attr, None)
                 if val is not None:
                     state.ovs_external_ids[key] = str(val)
+            tunnel_mtu = getattr(global_config, 'tunnelMtu', None)
+            if tunnel_mtu is not None:
+                state.tunnel_mtu = int(tunnel_mtu)
 
         return state
 
@@ -563,6 +608,7 @@ class OvsReconciler(object):
         self._reconcile_bonds(desired, actual)
         self._reconcile_ip_addresses(desired, actual)
         self._reconcile_ovs_external_ids(desired, actual)
+        self._reconcile_tunnel_mtu(desired)
 
     @staticmethod
     def _reconcile_managed_bridges_delete(desired, actual):
@@ -784,6 +830,30 @@ class OvsReconciler(object):
                 if r != 0:
                     raise Exception('failed to remove OVS external_id %s: %s' % (key, e))
                 logger.info('removed OVS external_id %s (no longer desired)' % key)
+
+    @staticmethod
+    def _reconcile_tunnel_mtu(desired):
+        """Phase 8: Apply tunnel MTU to geneve interfaces and bridge internal ports.
+
+        During provision, geneve interfaces may not exist yet (created async
+        by ovn-controller), so we also set MTU on overlay bridge internal ports
+        directly using desired.ip_addresses (bridges with TEP IPs).
+        """
+        if desired.tunnel_mtu is None:
+            return
+        # Apply to any geneve interfaces that already exist
+        _apply_tunnel_mtu(desired.tunnel_mtu)
+        # Also set MTU on overlay bridge internal ports (bridges with TEP IP),
+        # regardless of whether geneve interfaces exist yet
+        for br_name in desired.ip_addresses:
+            r, _, e = bash.bash_roe(
+                'ovs-vsctl set interface %s mtu_request=%s' % (br_name, desired.tunnel_mtu))
+            if r != 0:
+                logger.warn('failed to set mtu_request=%s on bridge internal port %s: %s'
+                            % (desired.tunnel_mtu, br_name, e))
+            else:
+                logger.info('set mtu_request=%s on overlay bridge internal port %s'
+                            % (desired.tunnel_mtu, br_name))
 
 
 # --- OVS Provisioner ---
@@ -1511,6 +1581,11 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
             if r != 0:
                 raise Exception('failed to set OVS external_ids: %s' % e)
             logger.info('updated OVS external_ids: %s' % list(updates.keys()))
+
+        # Apply tunnelMtu to geneve tunnel interfaces and bridge internal ports
+        tunnel_mtu = getattr(gc, 'tunnelMtu', None)
+        if tunnel_mtu is not None:
+            _apply_tunnel_mtu(tunnel_mtu)
 
         logger.info('apply-global-config completed')
         return jsonobject.dumps(rsp)
