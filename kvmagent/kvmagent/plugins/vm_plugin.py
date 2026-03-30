@@ -1269,6 +1269,15 @@ class WriteVmHostFileContentResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(WriteVmHostFileContentResponse, self).__init__()
 
+class BackupVmHostFileCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(BackupVmHostFileCmd, self).__init__()
+        self.vmHostFileBackupJobs = []  # type: list[vm_host_file.VmHostFileBackupJob]
+
+class BackupVmHostFileResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(BackupVmHostFileResponse, self).__init__()
+
 
 class VncPortIptableRule(object):
     def __init__(self):
@@ -7188,6 +7197,7 @@ class VmPlugin(kvmagent.KvmAgent):
     FSTRIM_VM_PATH = "/vm/fstrim"
     READ_VM_HOST_FILE_PATH = "/vm/hostfile/read"
     WRITE_VM_HOST_FILE_PATH = "/vm/hostfile/write"
+    BACKUP_VM_HOST_FILE_PATH = "/vm/hostfile/backup"
 
     VM_CONSOLE_LOGROTATE_PATH = "/etc/logrotate.d/vm-console-log"
 
@@ -11566,6 +11576,17 @@ host side snapshot files chian:
             rsp.success = False
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def backup_hostfile(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])  # type: BackupVmHostFileCmd
+        rsp = BackupVmHostFileResponse()
+        try:
+            vm_host_file.backup_vm_host_files(cmd.vmHostFileBackupJobs)
+        except Exception as e:
+            rsp.error = str(e)
+            rsp.success = False
+        return jsonobject.dumps(rsp)
+
     def start(self):
         http_server = kvmagent.get_http_server()
 
@@ -11678,6 +11699,7 @@ host side snapshot files chian:
         http_server.register_async_uri(self.SET_VM_VF_NIC_STATE, self.set_vf_nic_state)
         http_server.register_async_uri(self.READ_VM_HOST_FILE_PATH, self.read_hostfile, cmd=ReadVmHostFileContentCmd())
         http_server.register_async_uri(self.WRITE_VM_HOST_FILE_PATH, self.write_hostfile, cmd=WriteVmHostFileContentCmd())
+        http_server.register_async_uri(self.BACKUP_VM_HOST_FILE_PATH, self.backup_hostfile, cmd=BackupVmHostFileCmd())
         self.clean_old_sshfs_mount_points()
         self.register_libvirt_event()
         self.register_qemu_log_cleaner()
