@@ -81,6 +81,16 @@ KEY_AGENT_ERR_KEYS_NOT_ON_DISK = 'KEY_AGENT_KEYS_NOT_ON_DISK'
 KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH = 'KEY_AGENT_KEY_FILES_INTEGRITY_MISMATCH'
 KEY_AGENT_ERR_SECRET_NOT_FOUND = 'KEY_AGENT_SECRET_NOT_FOUND'
 
+# Supported secret purposes for key-agent secret workflow.
+# Currently only vTPM is supported.
+KEY_AGENT_SECRET_PURPOSES = ('vtpm',)
+
+def normalize_key_agent_secret_purpose(purpose):
+    p = (purpose or '').strip().lower()
+    if p == '':
+        return 'vtpm'
+    return p
+
 def _key_agent_pb_varint(n):
     out = bytearray()
     while n > 127:
@@ -1497,10 +1507,6 @@ class HostPlugin(kvmagent.KvmAgent):
             logger.debug('key-agent GetSecret gRPC error: %s' % details)
             if e.code() == grpc.StatusCode.NOT_FOUND or KEY_AGENT_ERR_SECRET_NOT_FOUND in details:
                 return (None, KEY_AGENT_ERR_SECRET_NOT_FOUND, details or 'secret not found')
-            if KEY_AGENT_ERR_KEYS_NOT_ON_DISK in details:
-                return (None, KEY_AGENT_ERR_KEYS_NOT_ON_DISK, details)
-            if KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH in details:
-                return (None, KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH, details)
             return (None, None, details or str(e))
         except Exception as e:
             logger.debug('key-agent GetSecret failed: %s' % e)
@@ -1540,10 +1546,6 @@ class HostPlugin(kvmagent.KvmAgent):
             logger.debug('key-agent DeleteSecret gRPC error: %s' % details)
             if e.code() == grpc.StatusCode.NOT_FOUND or KEY_AGENT_ERR_SECRET_NOT_FOUND in details:
                 return (False, KEY_AGENT_ERR_SECRET_NOT_FOUND, details or 'secret not found')
-            if KEY_AGENT_ERR_KEYS_NOT_ON_DISK in details:
-                return (False, KEY_AGENT_ERR_KEYS_NOT_ON_DISK, details)
-            if KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH in details:
-                return (False, KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH, details)
             return (False, None, details or str(e))
         except Exception as e:
             logger.debug('key-agent DeleteSecret failed: %s' % e)
@@ -1751,9 +1753,13 @@ class HostPlugin(kvmagent.KvmAgent):
             return jsonobject.dumps(rsp)
         encrypted_dek_b64 = getattr(cmd, 'encryptedDek', None)
         vm_uuid = getattr(cmd, 'vmUuid', None)
-        purpose = getattr(cmd, 'purpose', None)
+        purpose = normalize_key_agent_secret_purpose(getattr(cmd, 'purpose', None))
         key_version = getattr(cmd, 'keyVersion', None)
         description = getattr(cmd, 'description', None) or ''
+        if purpose not in KEY_AGENT_SECRET_PURPOSES:
+            rsp.success = False
+            rsp.error = 'unsupported purpose: %s (supported: %s)' % (purpose, ','.join(KEY_AGENT_SECRET_PURPOSES))
+            return jsonobject.dumps(rsp)
         if not encrypted_dek_b64 or not vm_uuid or not purpose or key_version is None:
             rsp.success = False
             rsp.error = 'missing encryptedDek, vmUuid, purpose or keyVersion'
@@ -1807,7 +1813,11 @@ class HostPlugin(kvmagent.KvmAgent):
             return jsonobject.dumps(rsp)
         vm_uuid = getattr(cmd, 'vmUuid', None)
         key_version = getattr(cmd, 'keyVersion', None)
-        purpose = getattr(cmd, 'purpose', None) or 'vtpm'
+        purpose = normalize_key_agent_secret_purpose(getattr(cmd, 'purpose', None))
+        if purpose not in KEY_AGENT_SECRET_PURPOSES:
+            rsp.success = False
+            rsp.error = 'unsupported purpose: %s (supported: %s)' % (purpose, ','.join(KEY_AGENT_SECRET_PURPOSES))
+            return jsonobject.dumps(rsp)
         if not vm_uuid or key_version is None:
             rsp.success = False
             rsp.error = 'missing vmUuid or keyVersion'
@@ -1841,7 +1851,11 @@ class HostPlugin(kvmagent.KvmAgent):
             return jsonobject.dumps(rsp)
         vm_uuid = getattr(cmd, 'vmUuid', None)
         key_version = getattr(cmd, 'keyVersion', None)
-        purpose = getattr(cmd, 'purpose', None) or 'vtpm'
+        purpose = normalize_key_agent_secret_purpose(getattr(cmd, 'purpose', None))
+        if purpose not in KEY_AGENT_SECRET_PURPOSES:
+            rsp.success = False
+            rsp.error = 'unsupported purpose: %s (supported: %s)' % (purpose, ','.join(KEY_AGENT_SECRET_PURPOSES))
+            return jsonobject.dumps(rsp)
         if not vm_uuid or key_version is None:
             rsp.success = False
             rsp.error = 'missing vmUuid or keyVersion'
