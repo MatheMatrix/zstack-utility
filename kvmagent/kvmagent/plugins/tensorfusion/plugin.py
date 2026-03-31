@@ -228,6 +228,7 @@ class TensorFusionPlugin(kvmagent.KvmAgent):
                 LibvirtEventManager.EVENT_STOPPED,
                 LibvirtEventManager.EVENT_SHUTDOWN,
                 LibvirtEventManager.EVENT_CRASHED,
+                LibvirtEventManager.EVENT_UNDEFINED,
             ):
                 return
 

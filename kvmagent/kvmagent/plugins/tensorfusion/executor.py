@@ -106,8 +106,8 @@ class ProcessExecutor(object):
         log_file = os.path.join(self.LOG_DIR, 'tf-worker-%s.log' % request.vm_uuid)
         env['TF_LOG_PATH'] = log_file
 
-        logger.info('starting tensor-fusion-worker: cmd=%s, cuda_index=%d, gpu=%s' %
-                     (' '.join(cmd), cuda_index, pci_address))
+        logger.info('starting tensor-fusion-worker: cmd=%s, cuda_index=%d, gpu=%s, vm=%s, env=%s' %
+                     (' '.join(cmd), cuda_index, pci_address, request.vm_uuid, env))
 
         log_fd = None
         try:

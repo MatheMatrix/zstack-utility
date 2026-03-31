@@ -18,6 +18,9 @@ from kvmagent.plugins.tensorfusion.monitor import WorkerRestartMonitor
 
 logger = log.get_logger(__name__)
 
+
+from kvmagent.plugins.tensorfusion.utils import is_vm_running  # noqa: F401
+
 DEFAULT_ENABLE_LOG = ProcessExecutor.DEFAULT_ENABLE_LOG
 DEFAULT_LOG_LEVEL = ProcessExecutor.DEFAULT_LOG_LEVEL
 BYTES_PER_MB = ProcessExecutor.BYTES_PER_MB
@@ -42,9 +45,35 @@ class TensorFusionService(object):
         """Initialize the service: scan running workers, rebuild state."""
         logger.info('TensorFusionService: initializing')
         running = self._executor.scan_running()
-        self._store.sync(running)
-        self._tracker.rebuild_from_workers(running)
-        logger.info('TensorFusionService: initialized with %d running workers' % len(running))
+
+        # Kill orphan workers whose VM is no longer running in libvirt.
+        # is_vm_running returns True/False/None; None means libvirt query
+        # failed — keep the worker alive to avoid killing healthy processes.
+        alive = []
+        for w in running:
+            vm_state = is_vm_running(w.vm_uuid)
+            if vm_state is False:
+                logger.warn('TensorFusionService: killing orphan worker %s '
+                            '(pid=%d, vm=%s not running)' % (w.device_uuid, w.pid, w.vm_uuid))
+                try:
+                    self._executor.stop(w)
+                except Exception as e:
+                    logger.warn('TensorFusionService: failed to stop orphan worker %s: %s' %
+                                (w.device_uuid, e))
+                    if self._executor.is_alive(w):
+                        logger.warn('TensorFusionService: orphan worker %s still alive, keeping in state' %
+                                    w.device_uuid)
+                        alive.append(w)
+            else:
+                if vm_state is None:
+                    logger.warn('TensorFusionService: cannot check VM %s, keeping worker %s' %
+                                (w.vm_uuid, w.device_uuid))
+                alive.append(w)
+
+        self._store.sync(alive)
+        self._tracker.rebuild_from_workers(alive)
+        logger.info('TensorFusionService: initialized with %d running workers '
+                     '(%d orphans cleaned)' % (len(alive), len(running) - len(alive)))
         self._monitor.start()
 
     def stop(self):
