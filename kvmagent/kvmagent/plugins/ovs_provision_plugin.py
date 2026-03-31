@@ -30,6 +30,14 @@ MANAGED_OVS_EXTERNAL_ID_KEYS = frozenset({
     'ovn-bfd-min-tx', 'ovn-bfd-min-rx', 'ovn-bfd-mult',
 })
 
+# DPDK-related other_config keys that must be cleared when switching from
+# DPDK to kernel mode or during deprovision, to prevent dpdk_initialized
+# from lingering as true.
+DPDK_OTHER_CONFIG_KEYS = [
+    'dpdk-init', 'dpdk-socket-mem', 'dpdk-lcore-mask',
+    'pmd-cpu-mask', 'hw-offload', 'dpdk-extra', 'userspace-tso-enable',
+]
+
 # Allowed characters for OVS entity names (bridge, port, bond, interface).
 # OVS names are typically alphanumeric with hyphens, underscores, and dots.
 _OVS_NAME_RE = re.compile(r'^[a-zA-Z0-9._-]+$')
@@ -71,6 +79,53 @@ def _validate_ip_address(addr):
     if not addr or not _IP_ADDR_RE.match(addr):
         raise ValueError('invalid IP address: %r' % addr)
     return addr
+
+
+def _apply_tunnel_mtu(tunnel_mtu):
+    """Apply tunnel MTU to all geneve interfaces and managed bridge internal ports.
+
+    This sets mtu_request on:
+    1. All OVS interfaces of type=geneve (tunnel ports created by ovn-controller)
+    2. All managed bridge internal ports (bridges with managed-by=zstack-agent)
+    """
+    tunnel_mtu = int(tunnel_mtu)
+
+    # 1. Find and update geneve tunnel interfaces
+    r, o, _e = bash.bash_roe(
+        "ovs-vsctl --no-headings --columns=name find interface type=geneve")
+    if r == 0 and o.strip():
+        for line in o.strip().splitlines():
+            iface_name = line.split(':', 1)[-1].strip().strip('"')
+            if not iface_name:
+                continue
+            try:
+                _validate_ovs_name(iface_name)
+            except ValueError:
+                logger.warn('skip invalid interface name from ovsdb: %r' % iface_name)
+                continue
+            r2, _, e2 = bash.bash_roe(
+                'ovs-vsctl set interface %s mtu_request=%s' % (iface_name, tunnel_mtu))
+            if r2 != 0:
+                logger.warn('failed to set mtu_request=%s on geneve interface %s: %s'
+                            % (tunnel_mtu, iface_name, e2))
+            else:
+                logger.info('set mtu_request=%s on geneve interface %s'
+                            % (tunnel_mtu, iface_name))
+
+    # 2. Find managed bridges and set mtu_request on their internal ports
+    vsctl = ovn.VsCtl()
+    for br_name in vsctl.listBridges():
+        _validate_ovs_name(br_name)
+        ext_ids = vsctl.getBridgeExternalIds(br_name)
+        if ext_ids.get(MANAGED_BY_KEY) == MANAGED_BY_VALUE:
+            r3, _, e3 = bash.bash_roe(
+                'ovs-vsctl set interface %s mtu_request=%s' % (br_name, tunnel_mtu))
+            if r3 != 0:
+                logger.warn('failed to set mtu_request=%s on bridge internal port %s: %s'
+                            % (tunnel_mtu, br_name, e3))
+            else:
+                logger.info('set mtu_request=%s on bridge internal port %s'
+                            % (tunnel_mtu, br_name))
 
 
 # --- Data models ---
@@ -130,20 +185,23 @@ class DefaultDpdkConfig(object):
 class BondSpec(object):
     """Desired state for a bond on an infrastructure bridge."""
     def __init__(self, name, members, mode='balance-slb',
-                 mtu=None, switch_type=None, uplink_uuid=None):
+                 mtu=None, switch_type=None, uplink_uuid=None,
+                 transport_vlan=0):
         self.name = name
         self.members = members
         self.mode = mode
         self.mtu = mtu
         self.switch_type = switch_type   # 'dpdk' or None
         self.uplink_uuid = uplink_uuid
+        self.transport_vlan = transport_vlan or 0
 
 
 class InfraBridgeSpec(object):
     """Desired state for an infrastructure bridge."""
-    def __init__(self, name, datapath_type='system'):
+    def __init__(self, name, datapath_type='system', overlay_vlan=0):
         self.name = name
         self.datapath_type = datapath_type
+        self.overlay_vlan = overlay_vlan or 0
         self.bonds = {}  # name -> BondSpec
 
 
@@ -170,6 +228,7 @@ class OvsDesiredState(object):
         self.infra_bridges = {}        # name -> InfraBridgeSpec
         self.ip_addresses = {}
         self.ovs_external_ids = {}
+        self.tunnel_mtu = None         # tunnel MTU from globalConfig
 
     @staticmethod
     def _safe_bridge_name(name):
@@ -393,8 +452,14 @@ class DesiredStateBuilder(object):
                     physical_network = tz.physicalNetwork
 
             # Bridge spec with bonds
-            br_spec = InfraBridgeSpec(br_name, dp_type)
             uplink_profile = getattr(sw, 'uplinkProfile', None)
+            transport_vlan = 0
+            overlay_vlan = 0
+            if uplink_profile:
+                transport_vlan = getattr(uplink_profile, 'transportVlan', 0) or 0
+                overlay_vlan = getattr(uplink_profile, 'overlayVlan', 0) or 0
+
+            br_spec = InfraBridgeSpec(br_name, dp_type, overlay_vlan)
             if uplink_profile and uplink_profile.lag:
                 mtu = uplink_profile.mtu
                 uplink_uuid = getattr(uplink_profile, 'uuid', '') or ''
@@ -403,7 +468,8 @@ class DesiredStateBuilder(object):
                     mode = lag.mode if lag.mode else 'balance-slb'
                     bond_name = '%s-%s' % (br_name, lag.name)
                     br_spec.bonds[bond_name] = BondSpec(
-                        bond_name, members, mode, mtu, sw_type, uplink_uuid)
+                        bond_name, members, mode, mtu, sw_type, uplink_uuid,
+                        transport_vlan)
             state.infra_bridges[br_name] = br_spec
 
             # TEP IP on this bridge
@@ -436,7 +502,7 @@ class DesiredStateBuilder(object):
         if bridge_mappings:
             state.ovs_external_ids['ovn-bridge-mappings'] = ','.join(bridge_mappings)
 
-        # globalConfig -- BFD parameters
+        # globalConfig -- BFD parameters and tunnel MTU
         global_config = getattr(cmd, 'globalConfig', None)
         if global_config:
             for attr, key in [('bfdMinTx', 'ovn-bfd-min-tx'),
@@ -445,6 +511,9 @@ class DesiredStateBuilder(object):
                 val = getattr(global_config, attr, None)
                 if val is not None:
                     state.ovs_external_ids[key] = str(val)
+            tunnel_mtu = getattr(global_config, 'tunnelMtu', None)
+            if tunnel_mtu is not None:
+                state.tunnel_mtu = int(tunnel_mtu)
 
         return state
 
@@ -494,6 +563,12 @@ class OvsCommandBuilder(object):
     def set_port(self, name, key, value):
         _validate_ovs_name(name)
         self._ops.append('set port %s %s=%s' % (name, key, value))
+        return self
+
+    def clear_port_attr(self, name, key):
+        """Clear a column value from a port (e.g., clear VLAN tag)."""
+        _validate_ovs_name(name)
+        self._ops.append('clear port %s %s' % (name, key))
         return self
 
     def set_port_external_id(self, name, key, value):
@@ -548,13 +623,14 @@ class OvsReconciler(object):
     def reconcile(self, desired, actual):
         """Execute all reconciliation phases in order."""
         self._reconcile_managed_bridges_delete(desired, actual)
-        self._reconcile_legacy_br_tun(actual)
         recreated = self._reconcile_infra_bridges_create(desired, actual)
         for br_name in recreated:
             actual.managed_bonds.pop(br_name, None)
         self._reconcile_bonds(desired, actual)
+        self._reconcile_vlan_tags(desired)
         self._reconcile_ip_addresses(desired, actual)
         self._reconcile_ovs_external_ids(desired, actual)
+        self._reconcile_tunnel_mtu(desired)
 
     @staticmethod
     def _reconcile_managed_bridges_delete(desired, actual):
@@ -564,13 +640,6 @@ class OvsReconciler(object):
                 _validate_ovs_name(br_name)
                 OvsProvisioner._run_ovs_cmd('ovs-vsctl --if-exists del-br %s' % br_name)
                 logger.info('deleted managed bridge %s (no longer desired)' % br_name)
-
-    @staticmethod
-    def _reconcile_legacy_br_tun(actual):
-        """Delete legacy br-tun bridge if it exists."""
-        if 'br-tun' in actual.all_bridges:
-            OvsProvisioner._run_ovs_cmd('ovs-vsctl --if-exists del-br br-tun')
-            logger.info('deleted legacy br-tun bridge')
 
     @staticmethod
     def _reconcile_infra_bridges_create(desired, actual):
@@ -613,6 +682,17 @@ class OvsReconciler(object):
         return recreated
 
     @staticmethod
+    def _effective_mtu(uplink_mtu, tunnel_mtu):
+        """Return the larger of uplink MTU and tunnel MTU.
+
+        The uplink interface carries both VLAN traffic (sized by uplink_mtu)
+        and geneve-encapsulated tunnel traffic (sized by tunnel_mtu).
+        To avoid drops, the physical interface must accommodate whichever is larger.
+        """
+        values = [v for v in (uplink_mtu, tunnel_mtu) if v is not None]
+        return max(values) if values else None
+
+    @staticmethod
     def _reconcile_bonds(desired, actual):
         """Reconcile bonds on all managed bridges."""
         nic_pci_map = (getattr(desired.dpdk_config, 'nicNamePciAddressMap', None)
@@ -637,7 +717,8 @@ class OvsReconciler(object):
                 if bond_name not in actual_bonds:
                     OvsReconciler._build_add_bond(builder, br_name, bond_spec,
                                                   desired.config_version, nic_pci_map,
-                                                  managed_port_names)
+                                                  managed_port_names,
+                                                  desired.tunnel_mtu)
                     rebuilt_bonds.add(bond_name)
                 else:
                     actual_bond = actual_bonds[bond_name]
@@ -646,7 +727,8 @@ class OvsReconciler(object):
                         managed_port_names.discard(bond_name)
                         OvsReconciler._build_add_bond(builder, br_name, bond_spec,
                                                       desired.config_version, nic_pci_map,
-                                                      managed_port_names)
+                                                      managed_port_names,
+                                                      desired.tunnel_mtu)
                         rebuilt_bonds.add(bond_name)
                     else:
                         if bond_spec.mode and bond_spec.mode != (actual_bond.bond_mode or ''):
@@ -656,11 +738,12 @@ class OvsReconciler(object):
             for bond_name, bond_spec in desired_bonds.items():
                 if bond_name in rebuilt_bonds or bond_name not in actual_bonds:
                     continue
-                if bond_spec.mtu is None:
+                effective = OvsReconciler._effective_mtu(bond_spec.mtu, desired.tunnel_mtu)
+                if effective is None:
                     continue
                 for member in actual_bonds[bond_name].members:
-                    if actual_bonds[bond_name].member_mtus.get(member) != bond_spec.mtu:
-                        builder.set_interface(member, 'mtu_request', str(bond_spec.mtu))
+                    if actual_bonds[bond_name].member_mtus.get(member) != effective:
+                        builder.set_interface(member, 'mtu_request', str(effective))
 
             # Refresh config-version on bonds not rebuilt
             for bond_name, _ in desired_bonds.items():
@@ -679,7 +762,8 @@ class OvsReconciler(object):
 
     @staticmethod
     def _build_add_bond(builder, bridge_name, spec, config_version,
-                        nic_pci_map=None, managed_port_names=None):
+                        nic_pci_map=None, managed_port_names=None,
+                        tunnel_mtu=None):
         """Add bond creation ops to the command builder."""
         members = spec.members if spec.members else []
         if not members:
@@ -716,9 +800,10 @@ class OvsReconciler(object):
             builder.set_port_external_id(spec.name, UPLINK_PROFILE_UUID_KEY, spec.uplink_uuid)
 
         # Interface external_ids and MTU
+        effective = OvsReconciler._effective_mtu(spec.mtu, tunnel_mtu)
         for member in members:
-            if spec.mtu is not None:
-                builder.set_interface(member, 'mtu_request', str(spec.mtu))
+            if effective is not None:
+                builder.set_interface(member, 'mtu_request', str(effective))
             builder.set_interface_external_id(member, MANAGED_BY_KEY, MANAGED_BY_VALUE)
             builder.set_interface_external_id(member, CONFIG_VERSION_KEY, str(config_version))
 
@@ -732,6 +817,54 @@ class OvsReconciler(object):
             if port_ext_ids.get(MANAGED_BY_KEY) == MANAGED_BY_VALUE:
                 managed_port_names.add(port_name)
         return managed_port_names
+
+    @staticmethod
+    def _reconcile_vlan_tags(desired):
+        """Set or clear VLAN tags on bridge internal ports and bond ports.
+
+        - overlay_vlan on bridge internal port (port name == bridge name)
+        - transport_vlan on bond ports (uplink ports)
+        VLAN > 0 means set tag; VLAN == 0 means clear tag.
+        """
+        for br_name, br_spec in desired.infra_bridges.items():
+            _validate_ovs_name(br_name)
+            # Overlay VLAN on bridge internal port
+            if br_spec.overlay_vlan and br_spec.overlay_vlan > 0:
+                r, o, e = bash.bash_roe(
+                    'ovs-vsctl set port %s tag=%s' % (br_name, br_spec.overlay_vlan))
+                if r != 0:
+                    raise Exception('failed to set overlay VLAN tag=%s on port %s: %s'
+                                    % (br_spec.overlay_vlan, br_name, e))
+                logger.info('set overlay VLAN tag=%s on bridge internal port %s'
+                            % (br_spec.overlay_vlan, br_name))
+            else:
+                r, o, e = bash.bash_roe(
+                    'ovs-vsctl clear port %s tag' % br_name)
+                if r != 0:
+                    logger.debug('clear overlay VLAN tag on port %s (may not have tag): %s'
+                                 % (br_name, e))
+                else:
+                    logger.info('cleared overlay VLAN tag on bridge internal port %s' % br_name)
+
+            # Transport VLAN on bond ports
+            for bond_name, bond_spec in br_spec.bonds.items():
+                _validate_ovs_name(bond_name)
+                if bond_spec.transport_vlan and bond_spec.transport_vlan > 0:
+                    r, _o, e = bash.bash_roe(
+                        'ovs-vsctl set port %s tag=%s' % (bond_name, bond_spec.transport_vlan))
+                    if r != 0:
+                        raise Exception('failed to set transport VLAN tag=%s on port %s: %s'
+                                        % (bond_spec.transport_vlan, bond_name, e))
+                    logger.info('set transport VLAN tag=%s on bond port %s'
+                                % (bond_spec.transport_vlan, bond_name))
+                else:
+                    r, _o, e = bash.bash_roe(
+                        'ovs-vsctl clear port %s tag' % bond_name)
+                    if r != 0:
+                        logger.debug('clear transport VLAN tag on port %s (may not have tag): %s'
+                                     % (bond_name, e))
+                    else:
+                        logger.info('cleared transport VLAN tag on bond port %s' % bond_name)
 
     @staticmethod
     def _reconcile_ip_addresses(desired, actual):
@@ -776,6 +909,30 @@ class OvsReconciler(object):
                 if r != 0:
                     raise Exception('failed to remove OVS external_id %s: %s' % (key, e))
                 logger.info('removed OVS external_id %s (no longer desired)' % key)
+
+    @staticmethod
+    def _reconcile_tunnel_mtu(desired):
+        """Phase 8: Apply tunnel MTU to geneve interfaces and bridge internal ports.
+
+        During provision, geneve interfaces may not exist yet (created async
+        by ovn-controller), so we also set MTU on overlay bridge internal ports
+        directly using desired.ip_addresses (bridges with TEP IPs).
+        """
+        if desired.tunnel_mtu is None:
+            return
+        # Apply to any geneve interfaces that already exist
+        _apply_tunnel_mtu(desired.tunnel_mtu)
+        # Also set MTU on overlay bridge internal ports (bridges with TEP IP),
+        # regardless of whether geneve interfaces exist yet
+        for br_name in desired.ip_addresses:
+            r, _, e = bash.bash_roe(
+                'ovs-vsctl set interface %s mtu_request=%s' % (br_name, desired.tunnel_mtu))
+            if r != 0:
+                logger.warn('failed to set mtu_request=%s on bridge internal port %s: %s'
+                            % (desired.tunnel_mtu, br_name, e))
+            else:
+                logger.info('set mtu_request=%s on overlay bridge internal port %s'
+                            % (desired.tunnel_mtu, br_name))
 
 
 # --- OVS Provisioner ---
@@ -1017,6 +1174,23 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                                 nr_path, e, page_size_mb, nr_hugepages))
 
     @staticmethod
+    def _clear_dpdk_other_config(vsctl):
+        """Remove all DPDK-related other_config keys from Open_vSwitch table.
+
+        Called during deprovision and kernel-mode provision to ensure
+        dpdk_initialized does not linger as true after a DPDK-to-kernel switch.
+        """
+        for key in DPDK_OTHER_CONFIG_KEYS:
+            err, val = vsctl.getOvsOtherConfig(key)
+            if not err and val is not None:
+                r, _o, e = bash.bash_roe(
+                    'ovs-vsctl --no-wait remove Open_vSwitch . other_config %s' % key)
+                if r != 0:
+                    logger.warn('failed to remove DPDK other_config %s: %s' % (key, e))
+                else:
+                    logger.info('removed DPDK other_config %s=%s' % (key, val))
+
+    @staticmethod
     def _ensure_dpdk_init(vsctl, dpdk_config):
         """Initialize OVS DPDK mode.
 
@@ -1212,6 +1386,28 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                         raise Exception('failed to change NIC to DPDK driver: %s' % e)
                     dpdk_bound_pci_list = list(nic_pci_map.__dict__.values())
 
+                    # Verify NIC drivers are actually bound after changeNicToDpdkDriver.
+                    # dpdk-devbind.py may return exit code 0 but skip binding when
+                    # the interface is active, so we must confirm the driver switched.
+                    verify_nics = ovn.getAllDpdkNic()
+                    for nic_name, pci_addr in nic_pci_map.__dict__.items():
+                        found = False
+                        for nic in verify_nics:
+                            if nic.pciAddress == pci_addr:
+                                found = True
+                                if nic.driver not in ('vfio-pci', 'uio_pci_generic', 'mlx5_core'):
+                                    raise Exception(
+                                        'failed to change NIC to DPDK driver: '
+                                        'nic %s [pci address: %s] driver binding verification failed: '
+                                        'expected DPDK driver, got %s'
+                                        % (nic_name, pci_addr, nic.driver))
+                                break
+                        if not found:
+                            raise Exception(
+                                'failed to change NIC to DPDK driver: '
+                                'nic %s [pci address: %s] not found in dpdk-devbind status output'
+                                % (nic_name, pci_addr))
+
                 # Step 1: ensure OVS services running (ovn.py line 236-259)
                 if not vsctl.isOvsRunning():
                     # Allocate hugepages BEFORE starting openvswitch.
@@ -1246,6 +1442,10 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                     after_ovsdb_start_hook=self._clean_stale_vnics)
                 if not ok:
                     raise Exception('failed to ensure OVS running: %s' % err)
+
+                # Kernel mode: clear any residual DPDK other_config to prevent
+                # dpdk_initialized from lingering after a DPDK-to-kernel switch.
+                self._clear_dpdk_other_config(vsctl)
 
             # Step 3: bridge / bond / OVN config (ovn.py line 276-383)
             provisioner = OvsProvisioner()
@@ -1384,6 +1584,10 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                         if r != 0:
                             raise Exception('failed to delete bridge %s: %s' % (br_name, e))
                         logger.info('deleted managed bridge %s' % br_name)
+
+                # 3b. Clear DPDK other_config keys to prevent dpdk_initialized
+                # from lingering after a DPDK-to-kernel mode switch.
+                self._clear_dpdk_other_config(vsctl)
             else:
                 logger.info('ovsdb not reachable, skipping external_ids cleanup and bridge deletion')
 
@@ -1478,6 +1682,11 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
             if r != 0:
                 raise Exception('failed to set OVS external_ids: %s' % e)
             logger.info('updated OVS external_ids: %s' % list(updates.keys()))
+
+        # Apply tunnelMtu to geneve tunnel interfaces and bridge internal ports
+        tunnel_mtu = getattr(gc, 'tunnelMtu', None)
+        if tunnel_mtu is not None:
+            _apply_tunnel_mtu(tunnel_mtu)
 
         logger.info('apply-global-config completed')
         return jsonobject.dumps(rsp)
