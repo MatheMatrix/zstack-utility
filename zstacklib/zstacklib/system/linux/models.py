@@ -28,7 +28,7 @@ class DistroInfo:
     
     def is_redhat_based(self) -> bool:
         """Check if this is a Red Hat based distribution."""
-        redhat_distros = {'redhat', 'centos', 'alibaba', 'kylin10', 'rocky', 'rhel', 'fedora', 'openeuler'}
+        redhat_distros = {'redhat', 'centos', 'alibaba', 'alinux', 'kylin10', 'rocky', 'rhel', 'fedora', 'openeuler'}
         return self.name.lower() in redhat_distros or any(d in redhat_distros for d in self.id_like)
     
     def is_debian_based(self) -> bool:
@@ -107,7 +107,7 @@ class SystemInfo:
 SUPPORTED_ARCH = ['x86_64', 'aarch64', 'mips64el', 'loongarch64']
 
 # Red Hat based distributions
-RPM_BASED_OS = ['redhat', 'centos', 'alibaba', 'kylin10', 'rocky']
+RPM_BASED_OS = ['redhat', 'centos', 'alibaba', 'alinux', 'kylin10', 'rocky']
 
 # Debian based distributions
 DEB_BASED_OS = ['uos', 'kylin4.0.2', 'debian', 'ubuntu', 'uniontech']

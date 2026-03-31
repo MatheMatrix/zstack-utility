@@ -89,8 +89,8 @@ def _parse_redhat_release(path: str) -> DistroInfo:
         name = 'centos'
     elif 'rocky' in content.lower():
         name = 'rocky'
-    elif 'alibaba' in content.lower():
-        name = 'alibaba'
+    elif 'alinux' in content.lower() or 'alibaba' in content.lower():
+        name = 'alinux'
     
     # Extract version
     match = re.search(r'release\s+(\d+(?:\.\d+)*)', content)

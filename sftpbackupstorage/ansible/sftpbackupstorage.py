@@ -92,7 +92,7 @@ if host_info.distro in RPM_BASED_OS:
     py3_rpms = ' python3.11 python3.11-devel python3.11-pip libffi-devel openssl-devel'
     if releasever in kylin:
         install_pkgs = "nmap {}".format(install_pkgs)
-    if releasever in ["h84r", "oe2403sp1", "ky10sp3", "ky10sp3.2403", "h2203sp1o"]:
+    if releasever in ["h84r", "oe2403sp1", "ky10sp3", "ky10sp3.2403", "h2203sp1o", "alinux4"]:
         install_pkgs += py3_rpms
 
     if not remote_bin_installed(host_post_info, "qemu-img", return_status=True):

@@ -351,6 +351,7 @@ def install_kvm_pkg():
             'kylin': 'vconfig open-iscsi python2-pyudev collectd-disk OpenIPMI libselinux-devel nettle tuned qemu-kvm libicu edac-utils lldpd freeipmi tcpdump',
             'uniontech': 'vconfig iscsi-initiator-utils OpenIPMI nettle qemu-kvm python-pyudev collectd-disk',
             'rocky': 'iscsi-initiator-utils OpenIPMI-modalias mcelog MegaCli Arcconf python-pyudev kernel-devel collectd-disk edac-utils',
+            'alinux': 'iscsi-initiator-utils OpenIPMI-modalias qemu-kvm collectd-disk edac-utils lldpd tcpdump',
         }
 
         helix_rhel_rpms = ('iscsi-initiator-utils OpenIPMI-modalias mcelog '
@@ -378,7 +379,8 @@ def install_kvm_pkg():
             'ky10sp3': py3_rpms,
             'ky10sp3.2403': py3_rpms,
             'h2203sp1o': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk edac-utils freeipmi lldpd tcpdump %s' % py3_rpms,
-            'nfs4': 'vconfig iscsi-initiator-utils OpenIPMI nettle libselinux-devel iptables iptables-services qemu-kvm python2-pyudev collectd-disk'
+            'nfs4': 'vconfig iscsi-initiator-utils OpenIPMI nettle libselinux-devel iptables iptables-services qemu-kvm python2-pyudev collectd-disk',
+            'alinux4': 'qemu-kvm libvirt-daemon libvirt-daemon-kvm seabios-bin elfutils-libelf-devel collectd-disk lldpd freeipmi tcpdump %s' % py3_rpms,
         }
 
         edk2_mapping = {
