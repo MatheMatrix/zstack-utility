@@ -5792,6 +5792,10 @@ class Vm(object):
             if get_gic_version(cmd.cpuNum) == 2:
                 e(features, "gic", attrib={'version': '2'})
 
+            # disable PMU to avoid kernel panic on aarch64 Kunpeng-920 (7270Z/5230Z)
+            # where PMMIR_EL1 register is not supported by KVM. See ZSTAC-76375
+            if getattr(cmd, 'pmu', True) is False:
+                e(features, 'pmu', attrib={'state': 'off'})
 
         def make_qemu_commandline():
             if not os.path.exists(QMP_SOCKET_PATH):

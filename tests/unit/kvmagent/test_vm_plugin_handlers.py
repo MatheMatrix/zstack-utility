@@ -2222,6 +2222,7 @@ class TestVmStartCmdXmlBuild:
             'x2apic': False,
             'kvmHiddenState': True,
             'vmPortOff': True,
+            'pmu': True,
             'emulateHyperV': True,
             'hypervClock': True,
             'vendorId': 'zstack',
@@ -2467,6 +2468,53 @@ class TestVmStartCmdXmlBuild:
         assert 'protocol="rbd"' in xml_str
         assert 'clean-traffic' in xml_str
         assert 'net0-slave1' in xml_str
+        # PMU defaults to True, so <pmu state="off"/> should NOT appear
+        assert '<pmu state="off"' not in xml_str
+
+    def test_from_start_vm_cmd_builds_xml_with_pmu_disabled(self):
+        """ZSTAC-76375: when pmu=False, libvirt XML must contain <pmu state='off'/>."""
+        vm_plugin.ovs.OvsDpdkSupportVnic = []
+        vm_plugin.pci.need_config_pcimmio = MagicMock(return_value=True)
+        vm_plugin.pci.get_bars_max_addressable_memory = MagicMock(return_value=256)
+        vm_plugin.linux.get_cpu_model = MagicMock(return_value=('GenuineIntel', 'Intel'))
+        vm_plugin.is_hv_freq_supported = MagicMock(return_value=True)
+        vm_plugin.is_hv_synic_supported = MagicMock(return_value=True)
+        vm_plugin.is_ioapic_supported = MagicMock(return_value=True)
+        vm_plugin.is_spice_tls = MagicMock(return_value=0)
+        vm_plugin.is_spiceport_driver_supported = MagicMock(return_value=True)
+        vm_plugin.notify_vrouter = MagicMock()
+        vm_plugin.VmPlugin.clean_vm_firmware_flash = MagicMock()
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        vm_plugin.linux.VmUsbManager = MagicMock(return_value=MagicMock(request_slot=MagicMock(return_value=1)))
+        vm_plugin.netaddr.IPAddress = MagicMock(side_effect=lambda addr: MagicMock(version=4))
+        vm_plugin.uuidhelper.to_full_uuid = MagicMock(side_effect=lambda value: value)
+        def _real_parse_url(uri):
+            normalized = vm_plugin.re.sub(r'^([a-zA-Z]+:)(?!/{2})', r'\1//', uri, count=1)
+            return urllib.parse.urlparse(normalized)
+
+        def _e_with_text(parent, tag, value=None, attrib=None, usenamesapce=False):
+            _ = usenamesapce
+            if attrib is None:
+                attrib = {}
+            attrib = {k: str(v) for k, v in attrib.items()}
+            elem = vm_plugin.etree.SubElement(parent, tag, attrib)
+            if value:
+                elem.text = str(value)
+            return elem
+
+        orig_tostring = vm_plugin.etree.tostring
+        with patch('os.path.exists', return_value=True), \
+                patch.object(vm_plugin, 'parse_url', side_effect=_real_parse_url), \
+                patch.object(vm_plugin, 'xrange', range, create=True), \
+                patch.object(vm_plugin, 'range', self._RangeCompat), \
+                patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
+                patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
+            cmd = self._build_start_cmd(use_numa=False)
+            cmd.pmu = False
+            vm = vm_plugin.Vm.from_StartVmCmd(cmd)
+        xml_str = vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
+        assert '<pmu state="off"' in xml_str, \
+            "PMU disabled but <pmu state='off'/> not found in XML"
 
     def test_from_start_vm_cmd_builds_xml_with_numa(self):
         vm_plugin.ovs.OvsDpdkSupportVnic = []
