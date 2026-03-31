@@ -550,3 +550,187 @@ class TestCheckVmMemoryBacking:
         has_backing, error = virtiofs_plugin.check_vm_memory_backing(mock_domain)
         assert has_backing is True
         assert error is None
+
+
+class TestMountVirtiofsInVm:
+    """Test mount_virtiofs_in_vm function."""
+
+    QGA_STATE_RUNNING = "Running"
+    QGA_STATE_NOT_RUNNING = "NotRunning"
+
+    def _create_mock_domain(self, name="test-vm"):
+        """Create a mock domain with basic properties."""
+        mock_domain = MagicMock()
+        mock_domain.name = MagicMock(return_value=name)
+        return mock_domain
+
+    def _create_mock_qga(self, os_type="linux", state=None):
+        """Create a mock VmQga object."""
+        if state is None:
+            state = self.QGA_STATE_RUNNING
+        mock_qga = MagicMock()
+        mock_qga.state = state
+        mock_qga.os = os_type
+        return mock_qga
+
+    @patch('kvmagent.plugins.virtiofs_plugin.VmQga')
+    @patch('kvmagent.plugins.virtiofs_plugin.is_qga_connected', return_value=True)
+    def test_mount_command_uses_readonly_option(self, mock_is_connected, mock_qga_class):
+        """Test that mount command uses -o ro (read-only) option."""
+        mock_domain = self._create_mock_domain()
+        mock_qga = self._create_mock_qga()
+        # Set QGA_STATE_RUNNING on the mock class
+        mock_qga_class.QGA_STATE_RUNNING = self.QGA_STATE_RUNNING
+        mock_qga_class.return_value = mock_qga
+
+        # Mock QGA commands: mkdir succeeds, mountpoint check returns 1 (not mounted),
+        # mount succeeds
+        mock_qga.guest_exec_bash.side_effect = [
+            (0, "", ""),           # mkdir succeeds
+            (1, "", ""),           # mountpoint check (not a mount point)
+            (0, "", ""),           # mount succeeds
+        ]
+
+        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/models")
+
+        assert success is True
+        assert error is None
+
+        # Verify the mount command was called with -o ro
+        # Check all calls for the mount command with -o ro
+        all_calls = [str(call) for call in mock_qga.guest_exec_bash.call_args_list]
+        mount_call_found = any('mount -t virtiofs -o ro' in call_str for call_str in all_calls)
+        assert mount_call_found, "Mount command should use -o ro option. Calls: %s" % all_calls
+
+    @patch('kvmagent.plugins.virtiofs_plugin.VmQga')
+    @patch('kvmagent.plugins.virtiofs_plugin.is_qga_connected', return_value=True)
+    @patch('time.sleep')  # Mock sleep to speed up test
+    def test_mount_retries_on_failure(self, mock_sleep, mock_is_connected, mock_qga_class):
+        """Test that mount retries once on failure."""
+        mock_domain = self._create_mock_domain()
+        mock_qga = self._create_mock_qga()
+        mock_qga_class.QGA_STATE_RUNNING = self.QGA_STATE_RUNNING
+        mock_qga_class.return_value = mock_qga
+
+        # Mock QGA commands: mkdir succeeds, mountpoint check succeeds (not mounted),
+        # mount fails twice
+        mock_qga.guest_exec_bash.side_effect = [
+            (0, "", ""),           # mkdir succeeds
+            (1, "", ""),           # mountpoint check (not a mount point)
+            (1, "", "mount error"),  # mount attempt 1 fails
+            (1, "", "mount error"),  # mount attempt 2 fails
+        ]
+
+        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/models")
+
+        assert success is False
+        assert "Failed to mount model in VM" in error
+
+        # Verify sleep was called once (between retries)
+        mock_sleep.assert_called_once_with(1)
+
+    @patch('kvmagent.plugins.virtiofs_plugin.VmQga')
+    @patch('kvmagent.plugins.virtiofs_plugin.is_qga_connected', return_value=True)
+    @patch('time.sleep')
+    def test_mount_succeeds_on_retry(self, mock_sleep, mock_is_connected, mock_qga_class):
+        """Test that mount succeeds on second attempt."""
+        mock_domain = self._create_mock_domain()
+        mock_qga = self._create_mock_qga()
+        mock_qga_class.QGA_STATE_RUNNING = self.QGA_STATE_RUNNING
+        mock_qga_class.return_value = mock_qga
+
+        # Mock QGA commands: mkdir succeeds, mountpoint check succeeds (not mounted),
+        # mount fails first time, succeeds on retry
+        mock_qga.guest_exec_bash.side_effect = [
+            (0, "", ""),           # mkdir succeeds
+            (1, "", ""),           # mountpoint check (not a mount point)
+            (1, "", "mount error"),  # mount attempt 1 fails
+            (0, "", ""),           # mount attempt 2 succeeds
+        ]
+
+        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/models")
+
+        assert success is True
+        assert error is None
+
+        # Verify sleep was called once (between retries)
+        mock_sleep.assert_called_once_with(1)
+
+    @patch('kvmagent.plugins.virtiofs_plugin.is_qga_connected', return_value=False)
+    def test_mount_fails_when_qga_not_connected(self, mock_is_connected):
+        """Test that mount fails gracefully when QGA is not connected."""
+        mock_domain = self._create_mock_domain()
+
+        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/models")
+
+        assert success is False
+        assert "VM guest agent is not connected" in error
+
+    @patch('kvmagent.plugins.virtiofs_plugin.VmQga')
+    @patch('kvmagent.plugins.virtiofs_plugin.is_qga_connected', return_value=True)
+    def test_mount_fails_on_windows_vm(self, mock_is_connected, mock_qga_class):
+        """Test that mount fails on Windows VMs."""
+        mock_domain = self._create_mock_domain()
+        mock_qga = self._create_mock_qga(os_type="mswindows")
+        mock_qga_class.QGA_STATE_RUNNING = self.QGA_STATE_RUNNING
+        mock_qga_class.return_value = mock_qga
+
+        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/models")
+
+        assert success is False
+        assert "Windows VM does not support virtiofs mount" in error
+
+
+class TestUnmountVirtiofsInVm:
+    """Test unmount_virtiofs_in_vm function."""
+
+    QGA_STATE_RUNNING = "Running"
+    QGA_STATE_NOT_RUNNING = "NotRunning"
+
+    def _create_mock_domain(self, name="test-vm"):
+        """Create a mock domain with basic properties."""
+        mock_domain = MagicMock()
+        mock_domain.name = MagicMock(return_value=name)
+        return mock_domain
+
+    def _create_mock_qga(self, os_type="linux", state=None):
+        """Create a mock VmQga object."""
+        if state is None:
+            state = self.QGA_STATE_RUNNING
+        mock_qga = MagicMock()
+        mock_qga.state = state
+        mock_qga.os = os_type
+        return mock_qga
+
+    @patch('kvmagent.plugins.virtiofs_plugin.VmQga')
+    @patch('kvmagent.plugins.virtiofs_plugin.is_qga_connected', return_value=True)
+    def test_unmount_succeeds(self, mock_is_connected, mock_qga_class):
+        """Test successful unmount."""
+        mock_domain = self._create_mock_domain()
+        mock_qga = self._create_mock_qga()
+        mock_qga_class.QGA_STATE_RUNNING = self.QGA_STATE_RUNNING
+        mock_qga_class.return_value = mock_qga
+
+        # Mock QGA commands
+        mock_qga.guest_exec_bash.side_effect = [
+            (0, "/mnt/models", ""),  # findmnt succeeds (is mounted)
+            (0, "", ""),              # unmount succeeds
+        ]
+
+        success, error = virtiofs_plugin.unmount_virtiofs_in_vm(mock_domain, "test-tag")
+
+        assert success is True
+        assert error is None
+
+    @patch('kvmagent.plugins.virtiofs_plugin.VmQga')
+    def test_unmount_fails_when_qga_not_running(self, mock_qga_class):
+        """Test that unmount fails gracefully when QGA is not running."""
+        mock_domain = self._create_mock_domain()
+        mock_qga = MagicMock()
+        mock_qga.state = self.QGA_STATE_NOT_RUNNING  # Not running
+        mock_qga_class.return_value = mock_qga
+
+        success, error = virtiofs_plugin.unmount_virtiofs_in_vm(mock_domain, "test-tag")
+
+        assert success is False
+        assert "VM guest agent is not running" in error
