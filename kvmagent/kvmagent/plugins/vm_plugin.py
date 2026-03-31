@@ -5582,7 +5582,10 @@ class Vm(object):
             if cmd.noSharePages or cmd.useHugePage:
                 e(backing, "nosharepages")
 
-            if cmd.MemAccess in "shared":
+            if cmd.MemAccess == "shared":
+                # virtiofs requires shared memory backing with memfd source
+                # <source type="memfd"/>
+                e(backing, "source", attrib={'type': 'memfd'})
                 # <access mode="shared|private"/>
                 e(backing, "access", attrib={'mode': 'shared'})
 

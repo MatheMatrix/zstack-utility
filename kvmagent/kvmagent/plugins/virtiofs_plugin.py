@@ -3,6 +3,7 @@
 
 import os
 import shlex
+import time
 import traceback
 import libvirt
 from xml.sax.saxutils import escape as xml_escape
@@ -290,19 +291,19 @@ def mount_virtiofs_in_vm(domain, tag, mount_path):
         # Check if QGA is connected
         if not is_qga_connected(domain):
             logger.warning("QGA not connected for VM[%s], cannot mount inside VM" % domain.name())
-            return False, "QGA not connected, please mount manually: mount -t virtiofs %s %s" % (tag, mount_path)
+            return False, "VM guest agent is not connected, unable to mount model inside VM"
 
         qga = VmQga(domain)
 
         # Check QGA state
         if qga.state != VmQga.QGA_STATE_RUNNING:
             logger.warning("QGA not running for VM[%s], state=%s" % (domain.name(), qga.state))
-            return False, "QGA not running, please mount manually: mount -t virtiofs %s %s" % (tag, mount_path)
+            return False, "VM guest agent is not running, unable to mount model inside VM"
 
         # Check OS type - virtiofs only works on Linux
         if qga.os and 'mswindows' in qga.os.lower():
             logger.warning("Windows VM detected, virtiofs mount not supported")
-            return False, "Windows VM does not support virtiofs mount via QGA"
+            return False, "Windows VM does not support virtiofs mount"
 
         logger.info("Attempting to mount virtiofs inside VM[%s] via QGA, os=%s" % (
             domain.name(), qga.os))
@@ -321,7 +322,7 @@ def mount_virtiofs_in_vm(domain, tag, mount_path):
         if exitcode != 0:
             error_msg = stderr if stderr else "unknown error"
             logger.error("Failed to create mount directory[%s]: %s" % (mount_path, error_msg))
-            return False, "Failed to create mount directory: %s" % error_msg
+            return False, "Failed to create mount directory in VM: %s" % error_msg
 
         # 2. Check if already mounted (use shorter timeout)
         # mountpoint -q returns: 0 if mount point, 1 if not mount point, >1 on error
@@ -336,24 +337,40 @@ def mount_virtiofs_in_vm(domain, tag, mount_path):
         # exitcode 1 means not a mount point, continue to mount
         # exitcode >1 means error (e.g., path doesn't exist), but we still try mount
 
-        # 3. Mount virtiofs (use longer timeout for mount operation)
+        # 3. Mount virtiofs with retry mechanism
+        # First mount attempt may fail if virtiofs kernel module is not yet loaded.
+        # Retry once after a short delay to handle this scenario.
         current_qga_step = "mount"
         current_qga_timeout_secs = QGA_MOUNT_TIMEOUT_SECS
         safe_tag = shlex.quote(tag)
-        mount_cmd = "mount -t virtiofs %s %s" % (safe_tag, safe_mount_path)
+        mount_cmd = "mount -t virtiofs -o ro %s %s" % (safe_tag, safe_mount_path)
 
-        logger.info("QGA: executing mount command: %s" % mount_cmd)
-        exitcode, stdout, stderr = qga.guest_exec_bash(mount_cmd, retry=_qga_retry_count(QGA_MOUNT_TIMEOUT_SECS))
+        max_retries = 2
+        last_error_msg = "unknown error"
 
-        if exitcode != 0:
-            error_msg = stderr if stderr else stdout if stdout else "unknown error"
-            logger.error("Failed to mount virtiofs[%s] to[%s]: %s" % (tag, mount_path, error_msg))
-            return False, "Mount failed: %s. Please mount manually: mount -t virtiofs %s %s" % (
-                error_msg, tag, mount_path)
+        for attempt in range(max_retries):
+            if attempt > 0:
+                logger.info("QGA: retrying mount command (attempt %d/%d) after 1 second delay for VM[%s]" % (
+                    attempt + 1, max_retries, domain.name()))
+                time.sleep(1)
 
-        logger.info("Successfully mounted virtiofs[%s] to[%s] inside VM[%s]" % (
-            tag, mount_path, domain.name()))
-        return True, None
+            logger.info("QGA: executing mount command (attempt %d/%d): %s" % (attempt + 1, max_retries, mount_cmd))
+            exitcode, stdout, stderr = qga.guest_exec_bash(mount_cmd, retry=_qga_retry_count(QGA_MOUNT_TIMEOUT_SECS))
+
+            if exitcode == 0:
+                logger.info("Successfully mounted virtiofs[%s] to[%s] inside VM[%s] on attempt %d" % (
+                    tag, mount_path, domain.name(), attempt + 1))
+                return True, None
+
+            # Mount failed, record error and retry
+            last_error_msg = stderr if stderr else stdout if stdout else "unknown error"
+            logger.warning("Mount attempt %d/%d failed for virtiofs[%s] to[%s] in VM[%s]: %s" % (
+                attempt + 1, max_retries, tag, mount_path, domain.name(), last_error_msg))
+
+        # All retries exhausted
+        logger.error("Failed to mount virtiofs[%s] to[%s] in VM[%s] after %d attempts: %s" % (
+            tag, mount_path, domain.name(), max_retries, last_error_msg))
+        return False, "Failed to mount model in VM: %s" % last_error_msg
 
     except Exception as e:
         error_str = str(e)
@@ -361,11 +378,9 @@ def mount_virtiofs_in_vm(domain, tag, mount_path):
         if 'timeout' in error_str.lower():
             logger.error("QGA command[%s] timeout during mount operation for VM[%s]" % (
                 current_qga_step, domain.name()))
-            return False, "%s operation timeout after %d seconds. Please mount manually: mount -t virtiofs %s %s" % (
-                current_qga_step, current_qga_timeout_secs, tag, mount_path)
+            return False, "Mount operation timed out in VM"
         logger.error("Exception during QGA mount: %s\n%s" % (error_str, traceback.format_exc()))
-        return False, "QGA mount failed: %s. Please mount manually: mount -t virtiofs %s %s" % (
-            error_str, tag, mount_path)
+        return False, "Failed to mount model in VM: %s" % error_str
 
 
 def unmount_virtiofs_in_vm(domain, tag):
@@ -388,7 +403,7 @@ def unmount_virtiofs_in_vm(domain, tag):
 
         if qga.state != VmQga.QGA_STATE_RUNNING:
             logger.warning("QGA not running for VM[%s]" % domain.name())
-            return False, "QGA not running"
+            return False, "VM guest agent is not running"
 
         if qga.os and 'mswindows' in qga.os.lower():
             logger.warning("Windows VM detected, skip unmount")
@@ -434,7 +449,7 @@ def unmount_virtiofs_in_vm(domain, tag):
             if exitcode != 0:
                 error_msg = stderr if stderr else "unknown error"
                 logger.error("Lazy unmount also failed: %s" % error_msg)
-                return False, "Unmount failed: %s" % error_msg
+                return False, "Failed to unmount model in VM: %s" % error_msg
 
         logger.info("Successfully unmounted virtiofs[%s] from[%s] inside VM[%s]" % (
             tag, mount_path, domain.name()))
@@ -446,9 +461,9 @@ def unmount_virtiofs_in_vm(domain, tag):
         if 'timeout' in error_str.lower():
             logger.error("QGA command[%s] timeout during unmount operation for VM[%s]" % (
                 current_qga_step, domain.name()))
-            return False, "%s operation timeout after %d seconds" % (current_qga_step, current_qga_timeout_secs)
+            return False, "Unmount operation timed out in VM"
         logger.error("Exception during QGA unmount: %s\n%s" % (error_str, traceback.format_exc()))
-        return False, "QGA unmount failed: %s" % error_str
+        return False, "Failed to unmount model in VM: %s" % error_str
 
 
 class VirtiofsPlugin(kvmagent.KvmAgent):
@@ -525,6 +540,22 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
                 rsp.qgaMountSuccess = qga_success
                 if qga_error:
                     rsp.qgaMountError = qga_error
+
+                # If QGA mount was attempted but failed, return failure
+                # This ensures the API returns error and Java side will not create DB record
+                if not qga_success:
+                    logger.warning("QGA mount failed for VM[%s], detaching virtiofs device and returning error: %s" % (
+                        cmd.vmInstanceUuid, qga_error))
+                    # Detach the device since mount failed (best effort)
+                    try:
+                        domain.detachDeviceFlags(xml_str, libvirt.VIR_DOMAIN_AFFECT_LIVE)
+                        domain.detachDeviceFlags(xml_str, libvirt.VIR_DOMAIN_AFFECT_CONFIG)
+                    except Exception as detach_err:
+                        logger.warning("Failed to detach virtiofs after mount failure for VM[%s], "
+                                       "device may remain in config: %s" % (cmd.vmInstanceUuid, str(detach_err)))
+
+                    rsp.error = qga_error
+                    return jsonobject.dumps(rsp)
             else:
                 logger.warning("No mountPath specified, skip VM internal mount")
 
