@@ -6742,11 +6742,8 @@ class Vm(object):
                 e(source, "address", None, { "uuid": uuidhelper.to_full_uuid(mdevUuid) })
 
         def make_shmem_device(shmemDevices):
-            root = elements['root']
-            qcmd = root.find('{http://libvirt.org/schemas/domain/qemu/1.0}commandline')
-            if qcmd is None:
-                qcmd = e(root, 'qemu:commandline')
-            for idx, shmem in enumerate(shmemDevices):
+            devices = elements['devices']
+            for shmem in shmemDevices:
                 mem_path = shmem.path
                 if not mem_path:
                     raise kvmagent.KvmError('dGPU shmem path is required but missing in StartVmCmd.addons[pciDevice.dgpu]')
@@ -6759,11 +6756,10 @@ class Vm(object):
                     raise kvmagent.KvmError('invalid dGPU shmem size[%s], must be greater than 0' % shmem.size)
                 shmem_size_mb = (shmem.size + 1024 * 1024 - 1) // (1024 * 1024)
 
-                shm_id = 'tf_shm%d' % idx
-                e(qcmd, "qemu:arg", attrib={"value": "-object"})
-                e(qcmd, "qemu:arg", attrib={"value": "memory-backend-file,id=%s,mem-path=%s,size=%sM,share=on" % (shm_id, normalized_mem_path, shmem_size_mb)})
-                e(qcmd, "qemu:arg", attrib={"value": "-device"})
-                e(qcmd, "qemu:arg", attrib={"value": "ivshmem-plain,memdev=%s" % shm_id})
+                shmem_name = os.path.basename(normalized_mem_path)
+                shmem_el = e(devices, "shmem", attrib={"name": shmem_name})
+                e(shmem_el, "model", attrib={"type": "ivshmem-plain"})
+                e(shmem_el, "size", str(shmem_size_mb), attrib={"unit": "M"})
 
         def make_usb_device(usbDevices):
             def reserve_port(bus):
