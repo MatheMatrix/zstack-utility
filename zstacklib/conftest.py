@@ -25,11 +25,16 @@ _mock_bash.log = _mock_log  # `from bash import *` brings `log` into scope
 _mock_bash.bash_roe = lambda *a, **kw: (0, '', '')
 _mock_bash.bash_ro = lambda *a, **kw: (0, '')
 _mock_bash.bash_r = lambda *a, **kw: 0
+_mock_bash.in_bash = lambda fn: fn  # pass-through decorator
 sys.modules['zstacklib.utils.bash'] = _mock_bash
 
 # ---- Step 3: Mock remaining Py2-only / unavailable modules -----------------
 _SIMPLE_MOCKS = [
     'libvirt',
+    'cherrypy',
+    'cachetools',
+    'jsonobject',
+    'urllib3',
     'zstacklib.utils.shell',
     'zstacklib.utils.lock',
     'zstacklib.utils.linux',
@@ -41,6 +46,15 @@ _SIMPLE_MOCKS = [
     'zstacklib.utils.sizeunit',
     'zstacklib.utils.thread',
     'zstacklib.utils.qga',
+    'zstacklib.utils.http',
+    'zstacklib.utils.report',
+    'zstacklib.utils.jsonobject',
+    'zstacklib.utils.debug',
+    'zstacklib.utils.sanlock',
+    'zstacklib.utils.remoteStorage',
+    'zstacklib.utils.iproute',
+    'zstacklib.utils.ip',
+    'zstacklib.utils.misc',
 ]
 for _mod_name in _SIMPLE_MOCKS:
     sys.modules[_mod_name] = MagicMock()

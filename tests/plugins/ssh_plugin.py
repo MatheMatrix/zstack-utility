@@ -39,6 +39,41 @@ def pytest_addoption(parser):
             "Format: IP or hostname (e.g., 172.24.194.116)"
         ),
     )
+    parser.addoption(
+        "--callback-url",
+        action="store",
+        default=None,
+        help=(
+            "Override callback URL for async tests. Use when kvmagent "
+            "cannot reach the test machine directly. "
+            "Format: http://relay-host:port/callback"
+        ),
+    )
+    parser.addoption(
+        "--direct-port",
+        action="store",
+        default=None,
+        help="Override agent port (default: per-agent, e.g. 7070 for kvmagent).",
+    )
+    parser.addoption(
+        "--callback-ssh-host",
+        action="store",
+        default=None,
+        help=(
+            "Compute host IP for SSH-poll callback mode. "
+            "A callback_collector.py must be running on this host. "
+            "wait() reads /tmp/callbacks/<uuid>.json via SSH."
+        ),
+    )
+    parser.addoption(
+        "--callback-ssh-jump",
+        action="store",
+        default=None,
+        help=(
+            "SSH jump host (woodpecker) for reaching compute host. "
+            "Format: IP (uses root@IP with sshpass)."
+        ),
+    )
 
 
 def parse_ssh_host(host_string: str) -> Tuple[str, Optional[str], str, int]:

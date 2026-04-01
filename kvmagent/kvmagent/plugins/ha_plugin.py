@@ -2274,11 +2274,25 @@ class HaPlugin(kvmagent.KvmAgent):
                 self.report_self_fencer_triggered([vg], ','.join(killed_vm_uuids))
                 clean_network_config(killed_vm_uuids)
 
-            lvm.remove_partial_lv_dm(vg)
+            # LVM cleanup commands (pvs/lvs/vgs) may block indefinitely
+            # under multipath queue_if_no_path. Run them in a separate thread
+            # with a hard timeout to prevent blocking the fencer thread.
+            lvm_cleanup_timeout = max(cmd.storageCheckerTimeout * 2, 30)
 
-            if lvm.check_vg_status(vg, cmd.storageCheckerTimeout, True)[0] is False:
-                lvm.drop_vg_lock(vg)
-                lvm.remove_device_map_for_vg(vg, keep_device_map=[self.sblk_health_checker.get_record_vm_device_map(vg)])
+            def _lvm_cleanup():
+                try:
+                    lvm.remove_partial_lv_dm(vg)
+                    if lvm.check_vg_status(vg, cmd.storageCheckerTimeout, True)[0] is False:
+                        lvm.drop_vg_lock(vg)
+                        lvm.remove_device_map_for_vg(vg, keep_device_map=[self.sblk_health_checker.get_record_vm_device_map(vg)])
+                except Exception as e:
+                    logger.warn("LVM cleanup for vg %s failed: %s" % (vg, e))
+
+            cleanup_thread = thread.ThreadFacade.run_in_thread(_lvm_cleanup)
+            cleanup_thread.join(timeout=lvm_cleanup_timeout)
+            if cleanup_thread.is_alive():
+                logger.warn("LVM cleanup for vg %s timed out after %ss, "
+                            "VMs already killed, skipping cleanup" % (vg, lvm_cleanup_timeout))
 
             return True
 
@@ -2334,7 +2348,7 @@ class HaPlugin(kvmagent.KvmAgent):
                     self.fencer_fire_timestamp.pop(vg, None)
 
             if len(self.sblk_health_checker.fired_vgs) != 0:
-                logger.warn(
+                logger.debug(
                     "sharedblock fencer for vgs %s fired before and not recover yet" % self.sblk_health_checker.fired_vgs)
 
         except Exception as e:

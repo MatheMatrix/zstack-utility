@@ -165,6 +165,12 @@ class GetVolumeWatchersRsp(AgentResponse):
     def __init__(self):
         super(GetVolumeWatchersRsp, self).__init__()
         self.watchers = None
+        self.watcherInfos = None
+
+class EvictVolumeWatcherRsp(AgentResponse):
+    def __init__(self):
+        super(EvictVolumeWatcherRsp, self).__init__()
+        self.evictedCount = 0
 
 class GetVolumeSnapshotSizeRsp(AgentResponse):
     def __init__(self):
@@ -321,6 +327,7 @@ class CephAgent(plugin.TaskManager):
     GET_VOLUME_SIZE_PATH = "/ceph/primarystorage/getvolumesize"
     BATCH_GET_VOLUME_SIZE_PATH = "/ceph/primarystorage/batchgetvolumesize"
     GET_VOLUME_WATCHES_PATH = "/ceph/primarystorage/getvolumewatchers"
+    EVICT_VOLUME_WATCHER_PATH = "/ceph/primarystorage/evictvolumewatcher"
     GET_VOLUME_SNAPSHOT_SIZE_PATH = "/ceph/primarystorage/getvolumesnapshotsize"
     GET_BACKING_CHAIN_PATH = "/ceph/primarystorage/volume/getbackingchain"
     DELETE_VOLUME_CHAIN_PATH = "/ceph/primarystorage/volume/deletechain"
@@ -408,6 +415,7 @@ class CephAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.GET_VOLUME_SIZE_PATH, self.get_volume_size)
         self.http_server.register_async_uri(self.BATCH_GET_VOLUME_SIZE_PATH, self.batch_get_volume_size)
         self.http_server.register_async_uri(self.GET_VOLUME_WATCHES_PATH, self.get_volume_watchers)
+        self.http_server.register_async_uri(self.EVICT_VOLUME_WATCHER_PATH, self.evict_volume_watcher)
         self.http_server.register_async_uri(self.GET_VOLUME_SNAPSHOT_SIZE_PATH, self.get_volume_snapshot_size)
         self.http_server.register_async_uri(self.PING_PATH, self.ping)
         self.http_server.register_async_uri(self.GET_FACTS, self.get_facts)
@@ -778,21 +786,104 @@ class CephAgent(plugin.TaskManager):
 
         return jsonobject.dumps(rsp)
 
+    @staticmethod
+    def _parse_watchers(path):
+        """Parse rbd watchers using JSON format for reliability.
+
+        Returns (raw_watchers, watcher_infos) where:
+        - raw_watchers: list of raw watcher strings (backward compatible)
+        - watcher_infos: list of dicts with ip, address, clientId, cookie
+        """
+        try:
+            output = shell.call('timeout 10 rbd status --format json %s' % path)
+            data = simplejson.loads(output)
+        except Exception:
+            # fallback to text parsing if --format json not supported
+            output = shell.call('timeout 10 rbd status %s' % path)
+            raw = []
+            infos = []
+            if output:
+                for line in output.splitlines():
+                    if "watcher=" not in line:
+                        continue
+                    line = line.lstrip()
+                    raw.append(line)
+                    # try to extract IP from "watcher=IP:port/nonce ..."
+                    ip = ""
+                    try:
+                        rest = line.split("watcher=")[1]
+                        ip = rest.split(":")[0]
+                    except (IndexError, ValueError):
+                        pass
+                    infos.append({"ip": ip, "address": "", "clientId": "", "cookie": ""})
+            return raw, infos
+
+        watchers = data.get("watchers", [])
+        raw_list = []
+        info_list = []
+        for w in watchers:
+            address = w.get("address", "")
+            client_id = w.get("client", "")
+            cookie = w.get("cookie", "")
+            ip = address.split(":")[0] if ":" in address else ""
+            raw_list.append("watcher=%s client.%s cookie=%s" % (
+                address, client_id, cookie))
+            info_list.append({
+                "ip": ip,
+                "address": address,
+                "clientId": str(client_id),
+                "cookie": str(cookie)
+            })
+        return raw_list, info_list
+
     @replyerror
     def get_volume_watchers(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         path = self._normalize_install_path(cmd.volumePath)
         rsp = GetVolumeWatchersRsp()
 
-        watchers_result = shell.call('timeout 10 rbd status %s' % path)
-        if not watchers_result:
+        raw_watchers, watcher_infos = self._parse_watchers(path)
+        rsp.watchers = raw_watchers if raw_watchers else []
+        rsp.watcherInfos = watcher_infos if watcher_infos else []
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def evict_volume_watcher(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        path = self._normalize_install_path(cmd.volumePath)
+        rsp = EvictVolumeWatcherRsp()
+
+        _, watcher_infos = self._parse_watchers(path)
+        if not watcher_infos:
             return jsonobject.dumps(rsp)
 
-        rsp.watchers = []
-        for watcher in watchers_result.splitlines():
-            if "watcher=" in watcher:
-                rsp.watchers.append(watcher.lstrip())
+        # filter by IP if specified, otherwise evict all
+        target_ips = set(cmd.watcherIps) if hasattr(cmd, 'watcherIps') and cmd.watcherIps else None
 
+        evicted = 0
+        for info in watcher_infos:
+            if target_ips and info["ip"] not in target_ips:
+                continue
+
+            address = info.get("address", "")
+            if not address:
+                logger.warn("skip evict watcher with empty address on %s" % path)
+                continue
+
+            # ceph >= nautilus uses 'blocklist', older uses 'blacklist'
+            r = shell.run('ceph osd blocklist add %s' % address)
+            if r != 0:
+                r = shell.run('ceph osd blacklist add %s' % address)
+            if r == 0:
+                evicted += 1
+                logger.info("evicted stale watcher on %s: client.%s address=%s" % (
+                    path, info.get("clientId", ""), address))
+            else:
+                logger.warn("failed to evict watcher on %s: client.%s address=%s" % (
+                    path, info.get("clientId", ""), address))
+
+        rsp.evictedCount = evicted
         return jsonobject.dumps(rsp)
 
     @replyerror
@@ -1375,12 +1466,8 @@ class CephAgent(plugin.TaskManager):
         return True
 
     def _get_watcher(self, path):
-        watchers_result = shell.call('timeout 10 rbd status %s' % path)
-        if watchers_result:
-            for watcher in watchers_result.splitlines():
-                if "watcher=" in watcher:
-                    return watcher
-        return None
+        raw_watchers, _ = self._parse_watchers(path)
+        return raw_watchers[0] if raw_watchers else None
 
     def _get_dst_volume_size(self, dst_install_path, dst_mon_addr, dst_mon_user, dst_mon_passwd, dst_mon_port):
         o = linux.sshpass_call(dst_mon_addr, dst_mon_passwd, "rbd --format json info %s" % dst_install_path, dst_mon_user, dst_mon_port)

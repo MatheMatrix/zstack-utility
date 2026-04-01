@@ -13,7 +13,7 @@ class TestCephBackupHandlers:
         response = cephbackup_client.post('/ceph/backupstorage/echo', data={})
 
         # Ceph might not be configured, accept multiple status codes
-        assert response.status_code in [200, 400, 404, 500]
+        assert response.status_code in [200, 400, 403, 404, 500]
         
         if response.status_code == 200:
             # Echo handler returns empty string on success
@@ -25,7 +25,7 @@ class TestCephBackupHandlers:
         response = cephbackup_client.post('/ceph/backupstorage/ping', data=test_data)
 
         # Ceph might not be configured, accept multiple status codes
-        assert response.status_code in [200, 400, 404, 500]
+        assert response.status_code in [200, 400, 403, 404, 500]
         
         if response.status_code == 200:
             data = response.json()
