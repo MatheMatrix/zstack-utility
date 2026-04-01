@@ -28,6 +28,7 @@ import inspect
 import random
 from zstacklib.utils import iproute
 import zstacklib.utils.ip as ipUtils
+from kvmagent.plugins.vms import tpm_ha
 
 logger = log.get_logger(__name__)
 KEY_REPORT_URL = 'key_report_url'
@@ -859,6 +860,9 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
             if self.mounted_by_zstack and not linux.is_mounted(self.mount_path):
                 self.try_remount_fs_callback(self.mount_path, self.ps_uuid, self.created_time, self, self.url, self.options)
                 self.prepare_heartbeat_dir()
+        else:
+            # piggyback TPM state sync onto successful storage heartbeat
+            tpm_ha.sync_tpm_states_to_filesystem(self.mount_path, self.host_uuid)
 
     def after_kill_vm(self, killed_vm_uuids, on_storage_vm_uuids):  # type: (list[str], list[str]) -> None
         if not self.mounted_by_zstack:
@@ -1064,6 +1068,9 @@ class CephHeartbeatController(AbstractStorageFencer):
                 "heartbeat of host:%s on ceph storage:%s pool:%s success" % (self.host_uuid, self.primary_storage_uuid, self.pool_name))
             # reset failure count after heartbeat succeed
             self.reset_failure_count()
+            # piggyback TPM state sync onto successful storage heartbeat
+            tpm_ha.sync_tpm_states_to_ceph(self.ioctx, self.host_uuid, self.pool_name,
+                                           self.storage_check_timeout)
             # continue
         else:
             self.handle_heartbeat_failure()
