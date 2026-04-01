@@ -81,6 +81,52 @@ def _validate_ip_address(addr):
     return addr
 
 
+_PCI_ADDR_RE = re.compile(r'^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]$')
+
+# Userspace drivers that take NICs away from the kernel networking stack.
+_DPDK_USERSPACE_DRIVERS = ('vfio-pci', 'uio_pci_generic')
+
+
+def _get_dpdk_bound_network_devices():
+    """Detect network devices bound to DPDK userspace drivers via sysfs.
+
+    Scans /sys/bus/pci/drivers/{vfio-pci,uio_pci_generic} for PCI devices
+    whose class is 0x02xxxx (Network controller).
+
+    Unlike ovn.getAllVfioPciNic() which parses dpdk-devbind.py output with
+    ``grep drv=`` (and misses devices listed under "Other Network devices"
+    that lack a ``drv=`` field), this function reads sysfs directly and is
+    reliable regardless of dpdk-devbind.py output format.
+
+    Returns:
+        list[str]: PCI addresses (e.g. ['0000:00:04.0']) of network devices
+                   currently bound to a DPDK userspace driver.
+    """
+    result = []
+    for drv_name in _DPDK_USERSPACE_DRIVERS:
+        drv_path = '/sys/bus/pci/drivers/%s' % drv_name
+        if not os.path.isdir(drv_path):
+            continue
+        try:
+            for entry in os.listdir(drv_path):
+                if not _PCI_ADDR_RE.match(entry):
+                    continue
+                class_path = os.path.join(drv_path, entry, 'class')
+                if not os.path.exists(class_path):
+                    continue
+                with open(class_path, 'r') as f:
+                    pci_class = f.read().strip()
+                # PCI class 0x02xxxx = Network controller
+                if pci_class.startswith('0x02'):
+                    result.append(entry)
+                    logger.debug('found %s bound network device: %s (class=%s)'
+                                 % (drv_name, entry, pci_class))
+        except OSError as e:
+            logger.warn('failed to scan %s devices: %s' % (drv_name, e))
+
+    return result
+
+
 def _apply_tunnel_mtu(tunnel_mtu):
     """Apply tunnel MTU to all geneve interfaces and managed bridge internal ports.
 
