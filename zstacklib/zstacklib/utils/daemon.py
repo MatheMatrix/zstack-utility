@@ -235,3 +235,139 @@ class Daemon(object):
 
         origin_lines.append(to_add_line + '\n')
         linux.write_file_lines(hosts_path, origin_lines)
+
+
+class ZStackDaemon(object):
+    """Base class for ZStack embedded services.
+
+    Provides a standard lifecycle contract (start / stop / run) plus:
+      - SIGHUP graceful reload via on_reload() hook
+      - Health state tracking via is_healthy() / set_healthy()
+
+    Unlike Daemon (which double-forks into a background process),
+    ZStackDaemon can run either embedded inside kvmagent as a plugin OR
+    as a standalone systemd service.  The caller decides the execution
+    context; this class is agnostic about it.
+
+    Signal handling (SIGHUP/SIGTERM) is opt-in via ``manage_signals=True``
+    because signals are process-global state.  Embedded services sharing
+    a process should leave signals to the host; only the standalone
+    systemd entry-point should enable them.
+
+    Usage::
+
+        class PrometheusService(ZStackDaemon):
+            def run(self):
+                while self.is_healthy():
+                    collect_metrics()
+                    time.sleep(interval)
+
+            def on_reload(self):
+                self.reload_config()
+
+        # Standalone mode — own the process signals
+        svc = PrometheusService('prometheus', manage_signals=True)
+        svc.start()
+
+        # Embedded mode (kvmagent plugin) — no signal takeover
+        svc = PrometheusService('prometheus')
+        svc.start()
+    """
+
+    def __init__(self, service_name, manage_signals=False):
+        self._service_name = service_name
+        self._manage_signals = manage_signals
+        self._healthy = True
+        self._running = False
+        self._original_sighup = None
+        self._original_sigterm = None
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def run(self):
+        """Main service loop.  Override in subclasses."""
+        raise NotImplementedError("Subclasses must implement run()")
+
+    def start(self):
+        """Install signal handlers then call run()."""
+        self._healthy = True
+        self._install_signal_handlers()
+        self._running = True
+        logger.info('[%s] starting' % self._service_name)
+        try:
+            self.run()
+        except Exception:
+            self._healthy = False
+            raise
+        finally:
+            self._running = False
+            self._restore_signal_handlers()
+
+    def stop(self):
+        """Signal the service loop to exit on its next iteration."""
+        logger.info('[%s] stopping' % self._service_name)
+        self._healthy = False
+        self._running = False
+
+    def is_running(self):
+        return self._running
+
+    # ------------------------------------------------------------------
+    # Health
+    # ------------------------------------------------------------------
+
+    def set_healthy(self, healthy=True):
+        self._healthy = healthy
+
+    def is_healthy(self):
+        return self._healthy
+
+    # ------------------------------------------------------------------
+    # Reload hook
+    # ------------------------------------------------------------------
+
+    def on_reload(self):
+        """Called on SIGHUP.  Override to implement graceful config reload."""
+        pass
+
+    # ------------------------------------------------------------------
+    # Signal handling (internal)
+    # ------------------------------------------------------------------
+
+    def _install_signal_handlers(self):
+        if not self._manage_signals:
+            return
+        import signal as _signal
+        import threading as _threading
+        if _threading.current_thread() is not _threading.main_thread():
+            return
+        self._original_sighup = _signal.getsignal(_signal.SIGHUP)
+        self._original_sigterm = _signal.getsignal(_signal.SIGTERM)
+        _signal.signal(_signal.SIGHUP, self._handle_sighup)
+        _signal.signal(_signal.SIGTERM, self._handle_sigterm)
+
+    def _restore_signal_handlers(self):
+        if not self._manage_signals:
+            return
+        import signal as _signal
+        import threading as _threading
+        if _threading.current_thread() is not _threading.main_thread():
+            return
+        if self._original_sighup is not None:
+            _signal.signal(_signal.SIGHUP, self._original_sighup)
+        if self._original_sigterm is not None:
+            _signal.signal(_signal.SIGTERM, self._original_sigterm)
+
+    def _handle_sighup(self, signum, frame):
+        logger.info('[%s] received SIGHUP, reloading' % self._service_name)
+        try:
+            self.on_reload()
+        except Exception:
+            content = traceback.format_exc()
+            logger.error('[%s] on_reload failed: %s' % (self._service_name, content))
+
+    def _handle_sigterm(self, signum, frame):
+        logger.info('[%s] received SIGTERM, stopping' % self._service_name)
+        self.stop()
