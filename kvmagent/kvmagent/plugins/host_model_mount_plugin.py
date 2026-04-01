@@ -3,8 +3,10 @@
 
 import os
 import re
+import json
 import uuid
 import shlex
+import threading
 import traceback
 from urllib.parse import urlsplit, urlunsplit
 from kvmagent import kvmagent
@@ -17,6 +19,218 @@ MODEL_MOUNT_BASE = "/opt/zstack/models"
 
 # UUID validation regex
 UUID_RE = re.compile(r'^[0-9a-fA-F-]{36}$')
+
+# Mount watchdog configuration
+MOUNT_REGISTRY_FILE = os.path.join(MODEL_MOUNT_BASE, ".registry")
+WATCHDOG_INTERVAL_SECS = 60
+MOUNT_CHECK_TIMEOUT_SECS = 5
+# Number of consecutive health check failures before triggering remount.
+# This prevents false positives from momentary I/O spikes or network blips.
+MOUNT_UNHEALTHY_THRESHOLD = 3
+
+_registry_lock = threading.Lock()
+_recovering = set()
+_recovering_lock = threading.Lock()
+_watchdog = None
+# Track consecutive health check failures per mount point
+# {mount_point: failure_count}
+_health_failures = {}
+
+
+def _load_mount_registry():
+    """Load mount registry from disk.
+    Format: {mcUuid: {"storageUrl": "...", "mountPoint": "..."}}
+    """
+    if not os.path.exists(MOUNT_REGISTRY_FILE):
+        return {}
+    try:
+        with open(MOUNT_REGISTRY_FILE, 'r') as f:
+            return json.load(f)
+    except (ValueError, IOError) as e:
+        logger.warning("Failed to load mount registry: %s" % str(e))
+        return {}
+
+
+def _write_registry(registry):
+    """Write registry to disk atomically (rename is atomic on Linux)."""
+    ensure_mount_base_dir()
+    tmp_file = MOUNT_REGISTRY_FILE + '.tmp'
+    with open(tmp_file, 'w') as f:
+        json.dump(registry, f, indent=2)
+    os.rename(tmp_file, MOUNT_REGISTRY_FILE)
+
+
+def _save_mount_registry_entry(model_center_uuid, storage_url, mount_point):
+    """Add or update a mount registry entry. Thread-safe."""
+    with _registry_lock:
+        registry = _load_mount_registry()
+        registry[model_center_uuid] = {
+            'storageUrl': storage_url,
+            'mountPoint': mount_point,
+        }
+        _write_registry(registry)
+        logger.debug("Saved mount registry entry for model center[%s]" % model_center_uuid)
+
+
+def _check_mount_health(mount_point):
+    """Check if a mount point is healthy using dual verification.
+
+    1. os.path.ismount() checks VFS mount status
+    2. timeout ls checks actual accessibility (detects zombie FUSE mounts)
+
+    Returns True if mount point exists and is accessible.
+    """
+    if not os.path.ismount(mount_point):
+        return False
+    try:
+        check_cmd = shell.ShellCmd("timeout %d ls %s >/dev/null 2>&1" % (
+            MOUNT_CHECK_TIMEOUT_SECS, shlex.quote(mount_point)))
+        check_cmd(False)
+        return check_cmd.return_code == 0
+    except Exception:
+        return False
+
+
+def remount_model_center(model_center_uuid):
+    """Remount a model center's JuiceFS mount point.
+
+    Used by both the watchdog thread (periodic health check) and the
+    virtiofs attach flow (on-demand recovery).
+
+    Returns True if mount is healthy or recovery succeeded.
+    """
+    # Prevent concurrent remount of the same model center
+    should_cleanup = False
+    with _recovering_lock:
+        if model_center_uuid in _recovering:
+            logger.debug("Already recovering model center[%s], skipping" % model_center_uuid)
+            return False
+        _recovering.add(model_center_uuid)
+        should_cleanup = True
+
+    try:
+        registry = _load_mount_registry()
+        if model_center_uuid not in registry:
+            logger.error("Cannot remount: no registry entry for model center[%s]" % model_center_uuid)
+            return False
+
+        info = registry[model_center_uuid]
+        storage_url = info.get('storageUrl', '')
+        mount_point = info.get('mountPoint', '')
+
+        if not storage_url or not mount_point:
+            logger.error("Invalid registry entry for model center[%s]" % model_center_uuid)
+            return False
+
+        # Already healthy, nothing to do
+        if _check_mount_health(mount_point):
+            return True
+
+        logger.warning("Mount point %s (mc=%s) is unhealthy, attempting recovery" % (
+            mount_point, model_center_uuid))
+
+        # Clean up existing mount (zombie or otherwise)
+        if os.path.ismount(mount_point):
+            umount_cmd = shell.ShellCmd("umount %s" % shlex.quote(mount_point))
+            umount_cmd(False)
+            if umount_cmd.return_code != 0:
+                logger.warning("Regular umount failed for %s, trying lazy umount" % mount_point)
+                lazy_cmd = shell.ShellCmd("umount -l %s" % shlex.quote(mount_point))
+                lazy_cmd(False)
+
+        # Remount
+        success, error = mount_juicefs(storage_url, mount_point)
+        if success:
+            logger.info("Successfully remounted model center[%s] at %s" % (
+                model_center_uuid, mount_point))
+        else:
+            logger.error("Failed to remount model center[%s]: %s" % (model_center_uuid, error))
+        return success
+
+    except Exception as e:
+        logger.error("Exception during remount of model center[%s]: %s" % (model_center_uuid, str(e)))
+        return False
+    finally:
+        if should_cleanup:
+            with _recovering_lock:
+                _recovering.discard(model_center_uuid)
+
+
+class _MountWatchdog(object):
+    """Background daemon thread that periodically checks mount point health
+    and automatically recovers broken mounts.
+
+    Started by HostModelMountPlugin.start(), stopped by stop().
+    Uses threading.Event.wait() for graceful shutdown.
+    """
+
+    def __init__(self):
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def start(self):
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True, name='mount-watchdog')
+        self._thread.start()
+        logger.info("Mount watchdog started, interval=%ds" % WATCHDOG_INTERVAL_SECS)
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        logger.info("Mount watchdog stopped")
+
+    def _run(self):
+        # Initial check on startup (recovers mounts lost after host reboot)
+        self._check_all_mounts()
+
+        while not self._stop_event.is_set():
+            self._stop_event.wait(timeout=WATCHDOG_INTERVAL_SECS)
+            if not self._stop_event.is_set():
+                self._check_all_mounts()
+
+    def _check_all_mounts(self):
+        global _health_failures
+        registry = _load_mount_registry()
+        if not registry:
+            return
+        for mc_uuid, info in registry.items():
+            mount_point = info.get('mountPoint', '')
+            if not mount_point:
+                continue
+            if _check_mount_health(mount_point):
+                # Healthy: reset failure counter
+                _health_failures.pop(mc_uuid, None)
+            else:
+                # Unhealthy: increment failure counter
+                _health_failures[mc_uuid] = _health_failures.get(mc_uuid, 0) + 1
+                failure_count = _health_failures[mc_uuid]
+                if failure_count >= MOUNT_UNHEALTHY_THRESHOLD:
+                    logger.warning("Watchdog: mount point %s (mc=%s) unhealthy for %d consecutive checks, "
+                                   "triggering recovery" % (mount_point, mc_uuid, failure_count))
+                    success = remount_model_center(mc_uuid)
+                    if success:
+                        _health_failures.pop(mc_uuid, None)
+                else:
+                    logger.info("Watchdog: mount point %s (mc=%s) check failed (%d/%d), "
+                                "waiting for more failures before recovery" % (
+                                    mount_point, mc_uuid, failure_count, MOUNT_UNHEALTHY_THRESHOLD))
+
+
+def _start_watchdog():
+    global _watchdog
+    if _watchdog is not None:
+        return
+    _watchdog = _MountWatchdog()
+    _watchdog.start()
+
+
+def _stop_watchdog():
+    global _watchdog
+    if _watchdog is not None:
+        _watchdog.stop()
+        _watchdog = None
 
 
 def _mask_url(url):
@@ -165,9 +379,10 @@ class HostModelMountPlugin(kvmagent.KvmAgent):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.MOUNT_PATH, self.mount_model_center)
         http_server.register_async_uri(self.LIST_PATH, self.list_model_centers)
+        _start_watchdog()
 
     def stop(self):
-        pass
+        _stop_watchdog()
 
     @kvmagent.replyerror
     def mount_model_center(self, req):
@@ -202,6 +417,7 @@ class HostModelMountPlugin(kvmagent.KvmAgent):
             success, error = mount_juicefs(cmd.storageUrl, mount_point)
             if success:
                 rsp.success = True
+                _save_mount_registry_entry(cmd.modelCenterUuid, cmd.storageUrl, mount_point)
                 logger.info("Successfully mounted Model Center[%s] at %s" % (
                     cmd.modelCenterUuid, mount_point))
             else:
@@ -224,6 +440,8 @@ class HostModelMountPlugin(kvmagent.KvmAgent):
         try:
             if os.path.exists(MODEL_MOUNT_BASE):
                 for name in os.listdir(MODEL_MOUNT_BASE):
+                    if name.startswith('.'):
+                        continue
                     mount_point = os.path.join(MODEL_MOUNT_BASE, name)
                     is_mounted = os.path.ismount(mount_point)
                     rsp.mounts.append({

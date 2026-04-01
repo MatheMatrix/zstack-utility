@@ -8,6 +8,7 @@ import traceback
 import libvirt
 from xml.sax.saxutils import escape as xml_escape
 from kvmagent import kvmagent
+from kvmagent.plugins.host_model_mount_plugin import remount_model_center
 from zstacklib.utils import log, shell, http, jsonobject
 from zstacklib.utils.qga import VmQga, is_qga_connected
 
@@ -158,6 +159,40 @@ def verify_source_path(source_path):
     return real_path
 
 
+def _verify_source_path_with_recovery(source_path):
+    """Verify source path with automatic mount recovery.
+
+    If the source path is not accessible and appears to be under a broken
+    JuiceFS mount point, attempt to remount before failing. This provides
+    on-demand recovery triggered by the virtiofs attach flow (approach 4).
+    """
+    try:
+        return verify_source_path(source_path)
+    except Exception as path_error:
+        # Only attempt recovery for paths under model mount base
+        source = source_path or ''
+        if not source.startswith('/opt/zstack/models/'):
+            raise
+
+        # Extract model center UUID from path: /opt/zstack/models/{mcUuid}/...
+        # parts: ['', 'opt', 'zstack', 'models', '{mcUuid}', ...]
+        parts = source.split('/')
+        if len(parts) < 5 or not parts[4]:
+            raise
+
+        mc_uuid = parts[4]
+        logger.info("Source path[%s] not accessible, attempting mount recovery for model center[%s]" % (
+            source, mc_uuid))
+
+        if remount_model_center(mc_uuid):
+            # Wait briefly for FUSE filesystem to become fully ready
+            time.sleep(1)
+            logger.info("Mount recovery succeeded for model center[%s], retrying source path verification" % mc_uuid)
+            return verify_source_path(source_path)
+
+        raise path_error
+
+
 def build_virtiofs_xml(tag, source_path, cache_mode=VIRTIOFS_DEFAULT_CACHE_MODE):
     """Build virtiofs device XML for libvirt attach
 
@@ -291,14 +326,14 @@ def mount_virtiofs_in_vm(domain, tag, mount_path):
         # Check if QGA is connected
         if not is_qga_connected(domain):
             logger.warning("QGA not connected for VM[%s], cannot mount inside VM" % domain.name())
-            return False, "VM guest agent is not connected, unable to mount model inside VM"
+            return False, "QGA not connected for VM, unable to mount model inside VM"
 
         qga = VmQga(domain)
 
         # Check QGA state
         if qga.state != VmQga.QGA_STATE_RUNNING:
             logger.warning("QGA not running for VM[%s], state=%s" % (domain.name(), qga.state))
-            return False, "VM guest agent is not running, unable to mount model inside VM"
+            return False, "QGA is not running, unable to mount model inside VM"
 
         # Check OS type - virtiofs only works on Linux
         if qga.os and 'mswindows' in qga.os.lower():
@@ -380,7 +415,7 @@ def mount_virtiofs_in_vm(domain, tag, mount_path):
                 current_qga_step, domain.name()))
             return False, "Mount operation timed out in VM"
         logger.error("Exception during QGA mount: %s\n%s" % (error_str, traceback.format_exc()))
-        return False, "Failed to mount model in VM: %s" % error_str
+        return False, "Exception during QGA mount in VM: %s" % error_str
 
 
 def unmount_virtiofs_in_vm(domain, tag):
@@ -506,7 +541,8 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
                 getattr(cmd, 'cacheMode', VIRTIOFS_DEFAULT_CACHE_MODE)))
 
             # 1. Verify source path on host and get resolved path
-            resolved_path = verify_source_path(cmd.sourcePath)
+            #    Includes automatic mount recovery if JuiceFS mount is broken
+            resolved_path = _verify_source_path_with_recovery(cmd.sourcePath)
 
             # 2. Get VM domain
             domain, conn = get_vm_domain(cmd.vmInstanceUuid)
