@@ -24,7 +24,7 @@ from zstacklib.utils import thread
 from zstacklib.utils import sanlock
 from zstacklib.utils import remoteStorage
 from cachetools import TTLCache
-from distutils.version import LooseVersion
+from zstacklib.utils.version import NumericVersion
 
 from zstacklib.utils.linux import get_fs_type
 
@@ -452,7 +452,7 @@ def get_multipath_name(dev_name):
 
 def get_lvmlockd_service_name():
     service_name = 'lvm2-lvmlockd.service'
-    if LooseVersion(get_lvmlockd_version()) > LooseVersion("2.02"):
+    if NumericVersion(get_lvmlockd_version()) > NumericVersion("2.02"):
         service_name = 'lvmlockd.service'
     return service_name
 
@@ -812,9 +812,9 @@ def start_lock_service(io_timeout=40):
         local_lockd_version = get_lvmlockd_version()
         if not running_lockd_version:
             return False
-        elif LvmlockdStatus().failed and LooseVersion(local_lockd_version) >= LooseVersion("2.03"):
+        elif LvmlockdStatus().failed and NumericVersion(local_lockd_version) >= NumericVersion("2.03"):
             return True
-        return LooseVersion(running_lockd_version) != LooseVersion(local_lockd_version)
+        return NumericVersion(running_lockd_version) != NumericVersion(local_lockd_version)
 
     def need_restart_sanlock():
         running_patch_version = get_running_sanlock_patch_version()

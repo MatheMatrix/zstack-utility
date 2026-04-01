@@ -2,7 +2,6 @@
 # encoding: utf-8
 import argparse
 import datetime
-from distutils.version import LooseVersion
 import os.path
 import re
 
@@ -221,7 +220,7 @@ def load_nbd():
     status = run_remote_command(command, host_post_info, True, False)
     if status is False:
         return "nbd kernel module not found!"
-    if LooseVersion(host_info.kernel_version) > LooseVersion('4.0.0'):
+    if NumericVersion(host_info.kernel_version) > NumericVersion('4.0.0'):
         command = "/sbin/modprobe nbd nbds_max=32 max_part=16"
     else:
         command = "/sbin/modprobe nbd nbds_max=128 max_part=16"

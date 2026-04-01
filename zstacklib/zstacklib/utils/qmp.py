@@ -4,7 +4,7 @@ import errno
 import socket
 import logging
 import re
-from distutils.version import LooseVersion
+from zstacklib.utils.version import NumericVersion
 
 
 logger = log.get_logger(__name__)
@@ -121,7 +121,7 @@ def qmp_subcmd(qemu_version, s_cmd):
     # '{"execute": "object-add", "arguments": {"vnet_hdr_support": true, "iothread": "iothread%s",
     #              "secondary_in": "secondary-in-s-%s", "primary_in": "primary-in-c-%s", "id": "comp-%s",
     #              "qom-type": "colo-compare", "outdev": "primary-out-c-%s"}}'
-    if LooseVersion(qemu_version) >= LooseVersion("6.0.0") and re.match(r'.*object-add.*arguments.*props.*', s_cmd):
+    if NumericVersion(qemu_version) >= NumericVersion("6.0.0") and re.match(r'.*object-add.*arguments.*props.*', s_cmd):
         j_cmd = json.loads(s_cmd)
         props = j_cmd.get("arguments").get("props")
         j_cmd.get("arguments").pop("props")

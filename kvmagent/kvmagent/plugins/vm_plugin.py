@@ -33,8 +33,8 @@ import warnings
 import libvirt
 import xml.dom.minidom as minidom
 #from typing import List, Any, Union
-from distutils.version import LooseVersion
 from collections import Counter
+from zstacklib.utils.version import NumericVersion
 from collections import deque
 
 import zstacklib.utils.ip as ip
@@ -73,7 +73,6 @@ from zstacklib.utils import linux
 from zstacklib.utils.linux import is_virtual_machine
 from zstacklib.utils.ovn import delVnicFromOvsByVmUuidIfExist
 from zstacklib.gpu.base import VendorEnum
-from zstacklib.utils.misc import cmp
 from zstacklib.utils.plugin import TaskManager, TaskResult
 from zstacklib.utils.qga import *
 from zstacklib.utils import jsonobject
@@ -1453,13 +1452,6 @@ def is_nbd_disk(disk_xml):
     return hasattr(disk_xml, 'source') and disk_xml.source.protocol_ == 'nbd'
 
 
-# TODO(py3) test
-def compare_version(version1, version2):
-    def normalize(v):
-        return [int(x) for x in re.sub(r'(\.0+)*$','', v).split(".")]
-    return cmp(normalize(version1), normalize(version2))
-
-
 KERNEL_VERSION = platform.release()
 @functools.lru_cache(maxsize=1)
 def get_libvirt_version():
@@ -1473,51 +1465,51 @@ def get_libvirt_major_version():
 QEMU_VERSION = qemu.get_version()
 
 def is_namespace_used():
-    return compare_version(get_libvirt_version(), '1.3.3') >= 0
+    return NumericVersion(get_libvirt_version()) >= NumericVersion('1.3.3')
 
 
 def is_hv_freq_supported():
-    return (compare_version(qemu.get_version(), '2.12.0') >= 0 and
-            LooseVersion(KERNEL_VERSION) >= LooseVersion('3.10.0-957'))
+    return (NumericVersion(qemu.get_version()) >= NumericVersion('2.12.0') and
+            NumericVersion(KERNEL_VERSION) >= NumericVersion('3.10.0-957'))
 
 
 
 def is_hv_synic_supported():
-    return (LooseVersion(qemu.get_version()) >= LooseVersion("4.2.0") and
-            LooseVersion(KERNEL_VERSION) >= LooseVersion("4.18.0"))
+    return (NumericVersion(qemu.get_version()) >= NumericVersion("4.2.0") and
+            NumericVersion(KERNEL_VERSION) >= NumericVersion("4.18.0"))
 
 
 def is_new_ovmf_supported():
     if not linux.is_rpm_installed('edk2-ovmf'):
         return False
     edk2_version = linux.get_rpm_version('edk2-ovmf')
-    return(LooseVersion(qemu.get_version()) >= LooseVersion("4.2.0") and
-           LooseVersion(edk2_version) >= LooseVersion('20220126gitbb1bba3d77-4'))
+    return(NumericVersion(qemu.get_version()) >= NumericVersion("4.2.0") and
+           NumericVersion(edk2_version) >= NumericVersion('20220126gitbb1bba3d77-4'))
 
 
 
 def is_high_mmio_size_supported():
-    return LooseVersion(qemu_img.get_release_version()) >= LooseVersion("6.2.0-902")
+    return NumericVersion(qemu_img.get_release_version()) >= NumericVersion("6.2.0-902")
 
 
 @linux.with_arch(todo_list=['x86_64'])
 def is_ioapic_supported():
-    return compare_version(get_libvirt_version(), '3.4.0') >= 0
+    return NumericVersion(get_libvirt_version()) >= NumericVersion('3.4.0')
 
 def user_specify_driver():
-    return LooseVersion(get_libvirt_version()) >= LooseVersion("6.0.0")
+    return NumericVersion(get_libvirt_version()) >= NumericVersion("6.0.0")
 
 def file_type_support_block_device():
-    return LooseVersion(QEMU_VERSION) < LooseVersion("6.0.0")
+    return NumericVersion(QEMU_VERSION) < NumericVersion("6.0.0")
 
 def is_qemu_support_migrate_with_bitmap(version):
-    return LooseVersion(version) >= LooseVersion("4.2.0-640")
+    return NumericVersion(version) >= NumericVersion("4.2.0-640")
 
 def is_libvirt_support_migrate_with_bitmap(version):
-    return LooseVersion(version) < LooseVersion('6.0.0')
+    return NumericVersion(version) < NumericVersion('6.0.0')
 
 def is_libvirt_support_blockdev(version):
-    return LooseVersion(version) > LooseVersion('6.0.0')
+    return NumericVersion(version) > NumericVersion('6.0.0')
 
 def block_device_use_block_type():
     return user_specify_driver() or not file_type_support_block_device()
@@ -1543,7 +1535,7 @@ def get_domain_type():
 
 def get_gic_version(cpu_num):
     kernel_release = platform.release().split("-")[0]
-    if is_kylin402() and cpu_num <= 8 and LooseVersion(kernel_release) < LooseVersion('4.15.0'):
+    if is_kylin402() and cpu_num <= 8 and NumericVersion(kernel_release) < NumericVersion('4.15.0'):
         return 2
 
 # Occasionally, libvirt might fail to list VM ...
@@ -2813,8 +2805,8 @@ class Vm(object):
         try:
             libvirt_version, libvirt_release = linux.get_libvirt_rpm_info()
             if ((libvirt_version != '' and libvirt_release != '')
-                and (LooseVersion(libvirt_version) == LooseVersion('6.0.0'))
-                and (LooseVersion(libvirt_release) < LooseVersion('560'))):
+                and (NumericVersion(libvirt_version) == NumericVersion('6.0.0'))
+                and (NumericVersion(libvirt_release) < NumericVersion('560'))):
                 return self.domain_xml
 
             return self.domain.XMLDesc(libvirt.VIR_DOMAIN_XML_MIGRATABLE)
@@ -5249,7 +5241,7 @@ class Vm(object):
         """
         if not top.startswith('/dev'):
             return
-        if LooseVersion(qemu.get_version()) > LooseVersion('2.12.0'):
+        if NumericVersion(qemu.get_version()) > NumericVersion('2.12.0'):
             return
         checking_file = top
         while checking_file:
@@ -5778,7 +5770,7 @@ class Vm(object):
                         e(hyperv, 'runtime', attrib={'state': 'on'})
                         # The configuration item 'direct' can only on when
                         # libvirt version >= 6.0.0
-                        if LooseVersion(linux.get_libvirt_version()) >= LooseVersion('6.0.0') and DIST_NAME != 'kylin':
+                        if NumericVersion(linux.get_libvirt_version()) >= NumericVersion('6.0.0') and DIST_NAME != 'kylin':
                             e(stimer, 'direct', attrib={'state': 'on'})
 
                 # refer to: https://access.redhat.com/articles/2470791
@@ -7227,7 +7219,7 @@ def get_vm_blocks(domain_id):
 def get_block_node_name_by_disk_name(domain_id, disk_name):
     all_blocks = get_vm_blocks(domain_id)
     block = [b for b in all_blocks if disk_name in b['qdev'].split("/")][0]
-    if LooseVersion(get_libvirt_version()) < LooseVersion("6.0.0"):
+    if NumericVersion(get_libvirt_version()) < NumericVersion("6.0.0"):
         return block['device']
     return block["inserted"]['node-name']
 
@@ -13302,10 +13294,10 @@ host side snapshot files chian:
             raise Exception(('The qemu guest agent not in running state'))
 
         ga_version = qga.guest_info()['version']
-        if LooseVersion(ga_version) < LooseVersion('2.5'):
+        if NumericVersion(ga_version) < NumericVersion('2.5'):
             raise Exception(('The guest agent version %s less '
                              'than minimum requirement 2.5.0') % ga_version)
-        elif LooseVersion('100.0') > LooseVersion(ga_version) >= LooseVersion('5.2'):
+        elif NumericVersion('100.0') > NumericVersion(ga_version) >= NumericVersion('5.2'):
             ga_add_authorized_keys()
         else:
             leagacy_add_authorized_keys()
@@ -13337,10 +13329,10 @@ host side snapshot files chian:
             raise Exception(('The qemu guest agent not in running state'))
 
         ga_version = qga.guest_info()['version']
-        if LooseVersion(ga_version) < LooseVersion('2.5'):
+        if NumericVersion(ga_version) < NumericVersion('2.5'):
             raise Exception(('The guest agent version %s less than '
                              'minimum requirement version 2.5') % ga_version)
-        elif LooseVersion('100.0') > LooseVersion(ga_version) >= LooseVersion('5.2'):
+        elif NumericVersion('100.0') > NumericVersion(ga_version) >= NumericVersion('5.2'):
             ga_remove_authorized_keys()
         else:
             leagacy_remove_authorized_keys()

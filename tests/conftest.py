@@ -123,7 +123,7 @@ if 'distutils.version' not in sys.modules:
     class _LooseVersion:
         def __init__(self, v='0'):
             self.vstring = str(v)
-            self.version = [int(x) if x.isdigit() else x for x in re.split(r'[.\-]', self.vstring)]
+            self.version = [int(x) if x.isdigit() else x for x in re.findall(r'\d+|[a-zA-Z]+|[.\-]', self.vstring)]
         def __lt__(self, o): return self.version < getattr(o, 'version', [])
         def __le__(self, o): return self == o or self < o
         def __gt__(self, o): return not self <= o

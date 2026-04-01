@@ -2,7 +2,6 @@
 # encoding=utf-8
 import argparse
 import datetime
-from distutils.version import LooseVersion
 import os
 import re
 from uuid import uuid4
@@ -558,7 +557,7 @@ def install_kvm_pkg():
         # in the libvirtd 5.6.0 and later, the libvirtd daemon now prefers to uses systemd socket activation
         command = "libvirtd --version | grep 'libvirtd (libvirt) ' | cut -d ' ' -f 3 | cut -d '(' -f 1"
         (status, libvirtd_version) = run_remote_command(command, host_post_info, False, True)
-        if LooseVersion(libvirtd_version) >= LooseVersion('5.6.0'):
+        if NumericVersion(libvirtd_version) >= NumericVersion('5.6.0'):
             command = 'systemctl mask libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket libvirtd-tls.socket libvirtd-tcp.socket'
             run_remote_command(command, host_post_info)
         if chroot_env == 'false':
@@ -583,7 +582,7 @@ def install_kvm_pkg():
         (status, qemu_img_version) = get_qemu_img_version(host_post_info)
         if qemu_img_version is None or qemu_img_version == '':
             error('cannot get qemu-img version!')
-        if LooseVersion(qemu_img_version) < LooseVersion('2.12.0'):
+        if NumericVersion(qemu_img_version) < NumericVersion('2.12.0'):
             qemu_img_src = '{}/{}'.format(file_root, "qemu-img" if host_info.host_arch == 'x86_64' else "qemu-img_"+host_info.host_arch )
             qemu_img_dst = '{}/{}'.format(kvm_root, 'qemu-img')
             copy_to_remote(qemu_img_src, qemu_img_dst, None, host_post_info)
