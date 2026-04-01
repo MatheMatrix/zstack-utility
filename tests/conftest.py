@@ -359,9 +359,12 @@ _mock_qemu = sys.modules['zstacklib.utils.qemu']
 _mock_qemu.get_path.return_value = '/usr/bin/qemu-system-x86_64'
 
 # qga and report use `from ... import *` in vm_plugin — they must export `log`
+# VmQga is used by _qga_online_hotplugged_cpus() for CPU hotplug online
 _mock_qga = sys.modules['zstacklib.utils.qga']
 _mock_qga.log = _mock_log
-_mock_qga.__all__ = ['log']
+_mock_qga.VmQga = MagicMock()
+_mock_qga.VmQga.QGA_STATE_RUNNING = 'Running'
+_mock_qga.__all__ = ['log', 'VmQga']
 
 _mock_report = sys.modules['zstacklib.utils.report']
 _mock_report.log = _mock_log

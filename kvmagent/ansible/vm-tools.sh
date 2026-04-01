@@ -113,6 +113,27 @@ query_agent_info() {
   version=`echo "$AGENT_VERSION" | grep "zwatch-vm-agent=" | awk -F '=' '{print $2}'`
 }
 
+install_cpu_hotplug_udev_rule() {
+    UDEV_RULE_FILE="/etc/udev/rules.d/99-zstack-cpu-hotplug.rules"
+    UDEV_RULE_CONTENT='SUBSYSTEM=="cpu", ACTION=="add", TEST=="online", ATTR{online}="1"'
+
+    if [ x"$AGENT_OS" = x"linux" ]; then
+        if [ ! -f "$UDEV_RULE_FILE" ]; then
+            mkdir -p "$(dirname "$UDEV_RULE_FILE")" 2>/dev/null
+            if printf '%s\n' "$UDEV_RULE_CONTENT" > "$UDEV_RULE_FILE" 2>/dev/null; then
+                if command -v udevadm >/dev/null 2>&1; then
+                    udevadm control --reload-rules 2>/dev/null || true
+                fi
+                log_info "installed CPU hotplug udev rule"
+            else
+                log_info "failed to install CPU hotplug udev rule"
+            fi
+        elif ! grep -qxF "$UDEV_RULE_CONTENT" "$UDEV_RULE_FILE" 2>/dev/null; then
+            log_info "CPU hotplug udev rule exists but differs; skip overwrite"
+        fi
+    fi
+}
+
 install_agent_tools() {
   cd $TEMP_PATH
   chmod +x zwatch-vm-agent.download
@@ -161,6 +182,8 @@ query_agent_info
 
 log_info "install zwatch-vm-agent"
 install_agent_tools
+
+install_cpu_hotplug_udev_rule
 
 send_install_success
 
