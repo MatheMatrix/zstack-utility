@@ -194,6 +194,18 @@ class WorkerRestartMonitor(object):
                             device_uuid)
                 return
 
+            # Guard: skip restart if the owning VM no longer exists in libvirt
+            # (e.g. VM was deleted/undefined while we were in backoff).
+            # is_vm_running returns True/False/None; None means query failed
+            # — proceed with restart to avoid dropping a healthy worker.
+            from kvmagent.plugins.tensorfusion.utils import is_vm_running
+            vm_state = is_vm_running(current_worker.vm_uuid)
+            if vm_state is False:
+                logger.info('WorkerRestartMonitor: VM %s no longer running, '
+                            'skipping restart for worker %s' % (current_worker.vm_uuid, device_uuid))
+                self._give_up(current_worker)
+                return
+
             req = WorkerCreateRequest()
             req.device_uuid      = device_uuid
             req.vm_uuid          = current_worker.vm_uuid
