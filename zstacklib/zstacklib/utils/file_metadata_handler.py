@@ -132,7 +132,8 @@ class FileBasedMetadataHandler(VmMetadataHandler):
             created_dir = False
             if not os.path.isdir(dir_path):
                 try:
-                    os.makedirs(dir_path)
+                    os.makedirs(dir_path, 0o700)
+                    os.chmod(dir_path, 0o700)
                     created_dir = True
                 except OSError:
                     if not os.path.isdir(dir_path):

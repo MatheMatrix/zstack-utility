@@ -831,11 +831,14 @@ def write_metadata(lv_path, payload, lv_size_getter, lv_extend_func,
     #
     # Phase 1 records new_layout (not current_layout) so that recovery
     # flows B/C can locate the Phase-2 payload at the correct offset
-    # after an extend.  If a crash happens between Phase 1 and Phase 2,
-    # the active slot's capacity in the slot header won't match the
-    # header's new_layout capacity, causing strict parse to fail; both
-    # flow B and flow C then fall back to full_refresh, which is the
-    # correct recovery action for an interrupted extend.
+    # after an extend.  When new_layout differs from current_layout
+    # (i.e. an extend occurred), Phase 1 also records prev_slot_*
+    # fields so that recovery can locate the active slot using the
+    # pre-extend capacity - the active slot's on-disk slot header still
+    # records the old capacity, and strict parse would reject the new
+    # capacity.  Recovery flows B/C use prev_slot_* to retry the active
+    # slot read on strict failure.
+    layout_changed = (new_layout != current_layout)
     fd = open_lv(lv_path)
     try:
         # Phase 1: Mark Intent - use new_layout so recovery can find
@@ -852,6 +855,9 @@ def write_metadata(lv_path, payload, lv_size_getter, lv_extend_func,
             schema_version=header.schema_version,
             vm_category=header.vm_category, vm_uuid=header.vm_uuid,
             vm_name=header.vm_name, architecture=header.architecture,
+            prev_slot_a_capacity=current_layout.slot_a_capacity if layout_changed else 0,
+            prev_slot_b_offset=current_layout.slot_b_offset if layout_changed else 0,
+            prev_slot_b_capacity=current_layout.slot_b_capacity if layout_changed else 0,
         )
         aligned_pwrite(fd, phase1, 0)
 
@@ -914,8 +920,7 @@ def _read_metadata_fd(fd, lv_size):
         logger.error("Header corrupted on LV (lv_size=%d), "
                      "cannot read metadata", lv_size)
         return ReadResult(status=ReadStatus.CORRUPTED,
-                          error="Header corrupted",
-                          repair_action="full_refresh")
+                          error="Header corrupted")
 
 
 # ---- Flow A: PendingOp == 0, normal read ----
@@ -928,16 +933,16 @@ def _read_flow_a(fd, header, lv_size):
 
     inactive = _read_inactive_slot(fd, header)
     if inactive.valid:
+        logger.warning("Active slot corrupted; returning inactive payload "
+                     "(SeqNum=%d) which may be stale", inactive.seq_num)
         return ReadResult(
-            status=ReadStatus.DEGRADED, header=header,
+            status=ReadStatus.OK, header=header,
             payload=inactive.payload,
             error=("Active slot corrupted; returning inactive payload "
-                   "(SeqNum=%d) which may be stale" % inactive.seq_num),
-            repair_action="switch_active_or_full_refresh")
+                   "(SeqNum=%d) which may be stale" % inactive.seq_num))
 
     return ReadResult(status=ReadStatus.CORRUPTED, header=header,
-                      error="Both slots corrupted",
-                      repair_action="full_refresh")
+                      error="Both slots corrupted")
 
 
 # ---- Flow B: PendingOp == 1, CONFIG_UPDATE interrupted ----
@@ -946,22 +951,23 @@ def _read_flow_b(fd, header, lv_size):
     target = _read_slot_at(fd, header, 1 - header.active_slot)
 
     if target.valid and target.seq_num == header.write_sequence:
-        # Phase 2 done, Phase 3 not
+        # Phase 2 done, Phase 3 not — target slot has latest data
+        logger.info("CONFIG_UPDATE interrupted after Phase 2; "
+                    "using target slot (seq=%d)", target.seq_num)
         return ReadResult(
-            status=ReadStatus.NEED_REPAIR,
-            payload=target.payload, header=header,
-            repair_action="complete_phase3")
+            status=ReadStatus.OK,
+            payload=target.payload, header=header)
 
-    active = _read_active_slot(fd, header)
+    active = _read_active_slot_with_prev(fd, header)
     if active.valid:
+        logger.info("CONFIG_UPDATE interrupted before Phase 2; "
+                    "using active slot (seq=%d)", active.seq_num)
         return ReadResult(
-            status=ReadStatus.NEED_REPAIR,
-            payload=active.payload, header=header,
-            repair_action="clear_pending_op")
+            status=ReadStatus.OK,
+            payload=active.payload, header=header)
 
     return ReadResult(status=ReadStatus.CORRUPTED, header=header,
-                      error="CONFIG_UPDATE pending, both slots unreadable",
-                      repair_action="full_refresh")
+                      error="CONFIG_UPDATE pending, both slots unreadable")
 
 
 # ---- Flow C: PendingOp == 2, STORAGE_CHANGE interrupted ----
@@ -970,20 +976,20 @@ def _read_flow_c(fd, header, lv_size):
     target = _read_slot_at(fd, header, 1 - header.active_slot)
 
     if target.valid and target.seq_num == header.write_sequence:
+        logger.info("STORAGE_CHANGE interrupted after Phase 2; "
+                    "using target slot (seq=%d)", target.seq_num)
         return ReadResult(
-            status=ReadStatus.NEED_REPAIR,
-            payload=target.payload, header=header,
-            repair_action="complete_phase3")
+            status=ReadStatus.OK,
+            payload=target.payload, header=header)
 
     # Target invalid -> stale data, DANGEROUS
-    active = _read_active_slot(fd, header)
+    active = _read_active_slot_with_prev(fd, header)
     return ReadResult(
         status=ReadStatus.STORAGE_CHANGE_INCOMPLETE,
         payload=active.payload if active.valid else None,
         header=header,
         error=("Storage topology changed but metadata not updated. "
-               "Active slot has stale data. Must execute full-refresh."),
-        repair_action="full_refresh_required")
+               "Active slot has stale data. Must execute full-refresh."))
 
 
 # ---- Slot I/O helpers ----
@@ -1004,6 +1010,34 @@ def _read_slot_at(fd, header, slot_index):
         offset = header.slot_b_offset
         capacity = header.slot_b_capacity
     return _read_and_parse_slot(fd, offset, capacity, strict=True)
+
+
+def _read_active_slot_with_prev(fd, header):
+    """Read active slot; on strict failure, retry with prev layout.
+
+    After an LV extend, Phase 1 records new_layout in the header but
+    the active slot's on-disk slot header still has the old capacity.
+    Strict parse rejects the capacity mismatch.  If prev_slot_*
+    fields are present (non-zero), retry the read with the pre-extend
+    layout so the active slot's intact data can be recovered.
+    """
+    active = _read_active_slot(fd, header)
+    if active.valid:
+        return active
+
+    if header.active_slot == SLOT_A:
+        prev_cap = header.prev_slot_a_capacity
+        if prev_cap > 0:
+            return _read_and_parse_slot(
+                fd, header.slot_a_offset, prev_cap, strict=True)
+    else:
+        prev_off = header.prev_slot_b_offset
+        prev_cap = header.prev_slot_b_capacity
+        if prev_cap > 0 and prev_off > 0:
+            return _read_and_parse_slot(
+                fd, prev_off, prev_cap, strict=True)
+
+    return active
 
 
 def _read_and_parse_slot(fd, offset, capacity, strict=True):
