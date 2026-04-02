@@ -7040,13 +7040,18 @@ class Vm(object):
         else:
             e(interface, 'source', None, attrib={'bridge': nic.bridgeName})
             e(interface, 'target', None, attrib={'dev': nic.nicInternalName})
+            if getattr(nic, 'bridgePortType', None):
+                vp = e(interface, 'virtualport', None, attrib={'type': nic.bridgePortType})
+                iface_id = getattr(nic, 'interfaceId', None)
+                if iface_id:
+                    e(vp, 'parameters', None, attrib={'interfaceid': iface_id})
 
         if nic.pci is not None and (iftype == 'bridge' or iftype == 'direct' or iftype == 'vhostuser'):
             e(interface, 'address', None, attrib={'type': nic.pci.type, 'domain': nic.pci.domain, 'bus': nic.pci.bus, 'slot': nic.pci.slot, "function": nic.pci.function})
         else:
             e(interface, 'address', None, attrib={'type': "pci"})
 
-        if nic.cleanTraffic and iftype == 'bridge':
+        if nic.cleanTraffic and iftype == 'bridge' and not getattr(nic, 'bridgePortType', None):
             if nic.ips:
                 ip4Addr = None
                 ip6Addrs = []
