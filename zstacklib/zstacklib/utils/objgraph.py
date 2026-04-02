@@ -33,9 +33,9 @@ import inspect
 import types
 import operator
 import os
-import subprocess
-import tempfile
 import sys
+from zstacklib.utils.compat import subprocess
+import tempfile
 import itertools
 
 try:
