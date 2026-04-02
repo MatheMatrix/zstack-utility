@@ -1025,7 +1025,6 @@ def copy_ovs_tools():
 
 def copy_juicefs():
     """copy juicefs binary for Model Center storage mounting (ZSTAC-83157)"""
-    # 根据架构选择二进制文件
     if host_info.host_arch == 'aarch64':
         juicefs_binary = "juicefs-arm64"
     else:
@@ -1039,8 +1038,7 @@ def copy_juicefs():
     _dst = "/usr/local/bin/juicefs"
     copy_to_remote(_src, _dst, "mode=755", host_post_info)
 
-    # 创建 juicefs 缓存目录
-    command = "mkdir -p /var/cache/juicefs"
+    command = "mkdir -p /var/cache/virtiofs/juicefs"
     host_post_info.post_label = "ansible.shell.juicefs.cache"
     host_post_info.post_label_param = None
     run_remote_command(command, host_post_info)

@@ -2,9 +2,7 @@
 # ZSTAC-83157: Host model mount plugin for Model Center pre-mounting
 
 import os
-import re
 import json
-import uuid
 import shlex
 import threading
 import traceback
@@ -17,8 +15,8 @@ logger = log.get_logger(__name__)
 # Base directory for Model Center mounts
 MODEL_MOUNT_BASE = "/opt/zstack/models"
 
-# UUID validation regex
-UUID_RE = re.compile(r'^[0-9a-fA-F-]{36}$')
+# JuiceFS local block/cache directory (must match kvm.yaml / copy_juicefs on host deploy)
+JUICEFS_CACHE_DIR = "/var/cache/virtiofs/juicefs"
 
 # Mount watchdog configuration
 MOUNT_REGISTRY_FILE = os.path.join(MODEL_MOUNT_BASE, ".registry")
@@ -32,10 +30,13 @@ _registry_lock = threading.Lock()
 _recovering = set()
 _recovering_lock = threading.Lock()
 _watchdog = None
+_watchdog_lock = threading.Lock()
 # Track consecutive health check failures per mount point
 # {mount_point: failure_count}
 _health_failures = {}
-
+_health_failures_lock = threading.Lock()
+# Per-UUID Event signaled when remount completes (for concurrent callers to wait on)
+_recovery_events = {}
 
 def get_model_center_uuid_from_path(path):
     """Extract the model center UUID from a path under MODEL_MOUNT_BASE.
@@ -43,8 +44,8 @@ def get_model_center_uuid_from_path(path):
     Expected format: /opt/zstack/models/{mcUuid}[/optional/sub/path]
 
     Returns:
-        str  -- the UUID segment if the path matches and the UUID is valid.
-        None -- if the path is not under MODEL_MOUNT_BASE or the UUID is invalid.
+        str  -- the first path segment after MODEL_MOUNT_BASE.
+        None -- if the path is not under MODEL_MOUNT_BASE or no segment found.
 
     Centralises the path-to-UUID mapping so callers (e.g. virtiofs_plugin)
     do not need to hard-code the directory layout.
@@ -54,11 +55,8 @@ def get_model_center_uuid_from_path(path):
     prefix = MODEL_MOUNT_BASE + os.sep
     if not path.startswith(prefix):
         return None
-    # Take only the first component after the base dir (the UUID segment)
     mc_uuid = path[len(prefix):].split(os.sep)[0]
-    if mc_uuid and UUID_RE.match(mc_uuid):
-        return mc_uuid
-    return None
+    return mc_uuid if mc_uuid else None
 
 
 def _load_mount_registry():
@@ -101,12 +99,6 @@ def _load_mount_registry():
                 logger.warning("Skipping registry entry for key[%s]: mountPoint[%s] not under %s" % (
                     key, mount_point, MODEL_MOUNT_BASE))
                 continue
-            # Extract UUID part and validate
-            uuid_part = mount_point[len(expected_prefix):]
-            if not UUID_RE.match(uuid_part):
-                logger.warning("Skipping registry entry for key[%s]: mountPoint[%s] has invalid UUID format" % (
-                    key, mount_point))
-                continue
             valid_registry[key] = value
         return valid_registry
     except (ValueError, IOError) as e:
@@ -128,8 +120,9 @@ def _write_registry(registry):
     fd = os.open(tmp_file, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
     with os.fdopen(fd, 'w') as f:
         json.dump(registry, f, indent=2)
+    # os.rename is atomic and preserves the 0o600 mode set on tmp_file above,
+    # so no explicit os.chmod is needed here.
     os.rename(tmp_file, MOUNT_REGISTRY_FILE)
-    os.chmod(MOUNT_REGISTRY_FILE, 0o600)
 
 
 def _save_mount_registry_entry(model_center_uuid, storage_url, mount_point):
@@ -202,13 +195,12 @@ def remount_model_center(model_center_uuid):
         False -- recovery attempted and failed
     """
     # Prevent concurrent remount of the same model center
-    should_cleanup = False
     with _recovering_lock:
         if model_center_uuid in _recovering:
             logger.debug("Already recovering model center[%s], skipping" % model_center_uuid)
             return None
         _recovering.add(model_center_uuid)
-        should_cleanup = True
+        _recovery_events[model_center_uuid] = threading.Event()
 
     try:
         registry = _load_mount_registry()
@@ -259,9 +251,24 @@ def remount_model_center(model_center_uuid):
         logger.error("Exception during remount of model center[%s]: %s" % (model_center_uuid, str(e)))
         return False
     finally:
-        if should_cleanup:
-            with _recovering_lock:
-                _recovering.discard(model_center_uuid)
+        with _recovering_lock:
+            _recovering.discard(model_center_uuid)
+            event = _recovery_events.pop(model_center_uuid, None)
+        if event is not None:
+            event.set()
+
+
+def wait_for_recovery(model_center_uuid, timeout_secs):
+    """Wait for an ongoing recovery to complete (non-busy wait).
+
+    Returns True if the recovery event was signaled, False on timeout
+    or if no recovery is in progress for the given UUID.
+    """
+    with _recovering_lock:
+        event = _recovery_events.get(model_center_uuid)
+    if event is None:
+        return False
+    return event.wait(timeout=timeout_secs)
 
 
 class _MountWatchdog(object):
@@ -315,23 +322,28 @@ class _MountWatchdog(object):
                 continue
             if _check_mount_health(mount_point):
                 # Healthy: reset failure counter
-                _health_failures.pop(mc_uuid, None)
+                with _health_failures_lock:
+                    _health_failures.pop(mc_uuid, None)
             else:
                 # Unhealthy: increment failure counter
-                _health_failures[mc_uuid] = _health_failures.get(mc_uuid, 0) + 1
-                failure_count = _health_failures[mc_uuid]
+                with _health_failures_lock:
+                    _health_failures[mc_uuid] = _health_failures.get(mc_uuid, 0) + 1
+                    failure_count = _health_failures[mc_uuid]
                 if failure_count >= MOUNT_UNHEALTHY_THRESHOLD:
                     logger.warning("Watchdog: mount point %s (mc=%s) unhealthy for %d consecutive checks, "
                                    "triggering recovery" % (mount_point, mc_uuid, failure_count))
                     result = remount_model_center(mc_uuid)
-                    if result is True:
-                        _health_failures.pop(mc_uuid, None)
-                    elif result is None:
-                        # Another thread is recovering; keep counter, retry next cycle
-                        pass
-                    else:
-                        # Recovery failed; reset counter to avoid hammering every cycle
-                        _health_failures.pop(mc_uuid, None)
+                    with _health_failures_lock:
+                        if result is True:
+                            _health_failures.pop(mc_uuid, None)
+                        elif result is None:
+                            # Another thread is recovering; keep counter, retry next cycle
+                            pass
+                        else:
+                            # Recovery failed; keep counter near threshold so the next
+                            # watchdog cycle triggers another attempt instead of waiting
+                            # a full THRESHOLD * INTERVAL window again.
+                            _health_failures[mc_uuid] = MOUNT_UNHEALTHY_THRESHOLD - 1
                 else:
                     logger.info("Watchdog: mount point %s (mc=%s) check failed (%d/%d), "
                                 "waiting for more failures before recovery" % (
@@ -339,20 +351,22 @@ class _MountWatchdog(object):
 
 
 def _start_watchdog():
-    """Create and start the global mount watchdog (idempotent)."""
+    """Create and start the global mount watchdog (idempotent, thread-safe)."""
     global _watchdog
-    if _watchdog is not None:
-        return
-    _watchdog = _MountWatchdog()
-    _watchdog.start()
+    with _watchdog_lock:
+        if _watchdog is not None:
+            return
+        _watchdog = _MountWatchdog()
+        _watchdog.start()
 
 
 def _stop_watchdog():
-    """Stop and destroy the global mount watchdog."""
+    """Stop and destroy the global mount watchdog (thread-safe)."""
     global _watchdog
-    if _watchdog is not None:
-        _watchdog.stop()
-        _watchdog = None
+    with _watchdog_lock:
+        if _watchdog is not None:
+            _watchdog.stop()
+            _watchdog = None
 
 
 def _mask_url(url):
@@ -469,14 +483,16 @@ def mount_juicefs(zdfs_url, mount_point):
             logger.error(error_msg)
             return False, error_msg, False
 
+        os.makedirs(JUICEFS_CACHE_DIR, exist_ok=True)
+
         # JuiceFS mount command
         # Mount only the models/ subdirectory using --subdir models
         # The zdfs_url is the meta URL (e.g., redis://redis-host:6379/0)
-        cache_dir = "/var/cache/virtiofs/juicefs"
         # Use shlex.quote to prevent shell injection
         # Use full path to juicefs binary to avoid PATH issues
         cmd = "%s mount %s %s --read-only -d --subdir models --cache-dir %s" % (
-            shlex.quote(juicefs_path), shlex.quote(zdfs_url), shlex.quote(mount_point), shlex.quote(cache_dir))
+            shlex.quote(juicefs_path), shlex.quote(zdfs_url), shlex.quote(mount_point),
+            shlex.quote(JUICEFS_CACHE_DIR))
 
         logger.info("Executing mount command for Model Center, mount_point=%s, url=%s" % (
             mount_point, _mask_url(zdfs_url)))
