@@ -59,6 +59,8 @@ IS_LOONGARCH64 = host_arch == 'loongarch64'
 GRUB_FILES = ["/boot/grub2/grub.cfg", "/boot/grub/grub.cfg", "/etc/grub2-efi.cfg", "/etc/grub-efi.cfg"] \
     + ["/boot/efi/EFI/{}/grub.cfg".format(DIST_NAME)]
 
+IPMITOOL_TIMEOUT = 30
+
 
 @functools.lru_cache(maxsize=1)
 def get_grub_rocky_envs():
@@ -1387,25 +1389,35 @@ class HostPlugin(kvmagent.KvmAgent):
                 libvirtCapabilitiesList.append("blockcopynetworktarget")
             rsp.libvirtCapabilities = libvirtCapabilitiesList
 
-        bmc_version = shell.call(
-            "ipmitool mc info | grep 'Firmware Revision' | awk -F ':' '{print $2}'").strip()
-        rsp.bmcVersion = bmc_version if bmc_version else 'unknown'
+        try:
+            bmc_version = bash_o(
+                "ipmitool mc info | grep 'Firmware Revision' | awk -F ':' '{print $2}'",
+                timeout=IPMITOOL_TIMEOUT).strip()
+            rsp.bmcVersion = bmc_version if bmc_version else 'unknown'
+        except BashError as e:
+            logger.warn("failed to get bmcVersion: %s" % str(e))
+            rsp.bmcVersion = 'unknown'
 
         # To see which lan the BMC is listening on, try the following (1-11),
         # https://wiki.docking.org/index.php/Configuring_IPMI
+        rsp.ipmiAddress = 'None'
         for channel in range(1, 12):
             '''
             example:
             except result:         IP Address              : xxx.xxx.xxx.xxx
             set ipmi_address "None" when got results unexpected or happened some errors
             '''
-            ret, out, err = bash_roe(
-                "ipmitool lan print %s | grep -w 'IP Address'| grep -v 'Source'" % channel)
+            try:
+                ret, out, err = bash_roe(
+                    "ipmitool lan print %s | grep -w 'IP Address'| grep -v 'Source'" % channel,
+                    timeout=IPMITOOL_TIMEOUT)
+            except BashError as e:
+                logger.warn("failed to get ipmi address on channel %s: %s" % (channel, str(e)))
+                continue
             if ret == 0 and out != "":
                 rsp.ipmiAddress = out.split(":")[1].strip()
                 break
             else:
-                rsp.ipmiAddress = 'None'
                 logger.debug(
                     "failed to get ipmi address from BMC lan channel [%s], because %s" % (channel, err))
 
@@ -2292,11 +2304,11 @@ done
         os.remove(tmpfile)
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
     def identify_host(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = kvmagent.AgentResponse()
-        sc = shell.ShellCmd("ipmitool chassis identify %s" % cmd.interval)
-        sc(True)
+        bash_errorout("ipmitool chassis identify %s" % int(cmd.interval), timeout=IPMITOOL_TIMEOUT)
         return jsonobject.dumps(rsp)
 
     def locate_host_network_interface(self, req):

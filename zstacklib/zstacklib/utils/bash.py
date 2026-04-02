@@ -1,7 +1,9 @@
 import functools
 import inspect
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -17,6 +19,9 @@ logger = log.get_logger(__name__)
 
 class BashError(Exception):
     '''bash error'''
+
+class BashTimeoutError(BashError):
+    '''bash timeout error'''
 
 def __collect_locals_on_stack():
     frames = []
@@ -51,15 +56,29 @@ def bash_eval(raw_str, ctx=None):
     return raw_str
 
 # @return: return code, stdout, stderr
-def bash_roe(cmd, errorout=False, ret_code = 0, pipe_fail=False):
-    # type: (str, bool, int, bool) -> (int, str, str)
+def bash_roe(cmd, errorout=False, ret_code = 0, pipe_fail=False, timeout=None):
+    # type: (str, bool, int, bool, int) -> (int, str, str)
     ctx = __collect_locals_on_stack()
 
     cmd = bash_eval(cmd, ctx)
-    p = shell.get_process("/bin/bash", pipe=True)
+    p = shell.get_process("/bin/bash", pipe=True, start_new_session=True)
     if pipe_fail:
         cmd = 'set -o pipefail; %s' % cmd
-    o, e = p.communicate(cmd.encode())
+    try:
+        o, e = p.communicate(cmd.encode(), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except OSError:
+            p.kill()
+        try:
+            o, e = p.communicate(timeout=5)
+        except Exception:
+            o, e = None, None
+        stdout_partial = (o.decode() if o else '')[:1024]
+        stderr_partial = (e.decode() if e else '')[:1024]
+        raise BashTimeoutError('bash command timed out after %ss: %s\nstdout(partial): %s\nstderr(partial): %s'
+                               % (timeout, cmd, stdout_partial, stderr_partial))
     r = p.returncode
 
     o = o.decode() if o else ''
@@ -81,26 +100,26 @@ def bash_roe(cmd, errorout=False, ret_code = 0, pipe_fail=False):
     return r, o, e
 
 # @return: return code, stdout
-def bash_ro(cmd, pipe_fail=False):
-    # type: (str, bool) -> (int, str)
-    ret, o, _ = bash_roe(cmd, pipe_fail=pipe_fail)
+def bash_ro(cmd, pipe_fail=False, timeout=None):
+    # type: (str, bool, int) -> (int, str)
+    ret, o, _ = bash_roe(cmd, pipe_fail=pipe_fail, timeout=timeout)
     return ret, o
 
 # @return: stdout
-def bash_o(cmd, pipe_fail=False):
-    # type: (str, bool) -> str
-    _, o, _ = bash_roe(cmd, pipe_fail=pipe_fail)
+def bash_o(cmd, pipe_fail=False, timeout=None):
+    # type: (str, bool, int) -> str
+    _, o, _ = bash_roe(cmd, pipe_fail=pipe_fail, timeout=timeout)
     return o
 
 # @return: return code
-def bash_r(cmd, pipe_fail=False):
-    ret, _, _ = bash_roe(cmd, pipe_fail=pipe_fail)
+def bash_r(cmd, pipe_fail=False, timeout=None):
+    ret, _, _ = bash_roe(cmd, pipe_fail=pipe_fail, timeout=timeout)
     return ret
 
 # @return: stdout
-def bash_errorout(cmd, code=0, pipe_fail=False):
-    # type: (str, int, bool) -> str
-    _, o, _ = bash_roe(cmd, errorout=True, ret_code=code, pipe_fail=pipe_fail)
+def bash_errorout(cmd, code=0, pipe_fail=False, timeout=None):
+    # type: (str, int, bool, int) -> str
+    _, o, _ = bash_roe(cmd, errorout=True, ret_code=code, pipe_fail=pipe_fail, timeout=timeout)
     return o
 
 def bash_progress_1(cmd, func, errorout=True, pipe_fail=False):
