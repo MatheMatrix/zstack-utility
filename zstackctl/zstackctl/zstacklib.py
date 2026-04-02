@@ -33,6 +33,22 @@ DEB_BASED_OS = ["ubuntu", "kylin4.0.2", "uos", "debian", "uniontech"]
 DISTRO_WITH_RPM_DEB = ["kylin"]
 
 
+def get_distro_id():
+    """Get distro ID for RPM_BASED_OS / DEB_BASED_OS matching.
+
+    UOS20R (ID=uos, VERSION_ID ends with 'r') is actually Rocky8-based
+    and should be treated as RPM distro, not DEB.
+    """
+    import platform
+    os_release = platform.freedesktop_os_release()
+    distro = os_release.get('ID', '').lower()
+    if distro == 'uos':
+        version_id = os_release.get('VERSION_ID', '')
+        if version_id.endswith('r'):
+            return 'rocky'
+    return distro
+
+
 def ignoreerror(func):
     @functools.wraps(func)
     def wrap(*args, **kwargs):
