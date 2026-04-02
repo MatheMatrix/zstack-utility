@@ -7,8 +7,9 @@ import time
 import traceback
 import libvirt
 from xml.sax.saxutils import escape as xml_escape
+from xml.sax.saxutils import quoteattr as xml_quoteattr
 from kvmagent import kvmagent
-from kvmagent.plugins.host_model_mount_plugin import remount_model_center, get_model_center_uuid_from_path
+from kvmagent.plugins.host_model_mount_plugin import remount_model_center, get_model_center_uuid_from_path, wait_for_recovery
 from zstacklib.utils import log, shell, http, jsonobject
 from zstacklib.utils.qga import VmQga, is_qga_connected
 
@@ -29,6 +30,9 @@ QGA_WAIT_INTERVAL_SECS = 1   # seconds between status checks
 QGA_MKDIR_TIMEOUT_SECS = 10  # mkdir timeout in seconds (fast operation)
 QGA_MOUNT_TIMEOUT_SECS = 30  # mount timeout in seconds (may take longer)
 QGA_UMOUNT_TIMEOUT_SECS = 15 # umount timeout in seconds
+
+# Recovery polling configuration (used when another thread is already recovering a mount)
+_RECOVERY_POLL_TIMEOUT_SECS = 30   # max seconds to wait for concurrent recovery to finish
 
 # Helper to convert timeout seconds to retry count for guest_exec_bash
 def _qga_retry_count(timeout_secs):
@@ -178,29 +182,33 @@ def _verify_source_path_with_recovery(source_path):
             raise
 
         logger.info("Source path[%s] not accessible, attempting mount recovery for model center[%s]" % (
-            source, mc_uuid))
+            source_path, mc_uuid))
 
         result = remount_model_center(mc_uuid)
 
         if result is True:
-            # Recovery succeeded, retry verify
-            time.sleep(1)
-            logger.info("Mount recovery succeeded for model center[%s], retrying source path verification" % mc_uuid)
-            return verify_source_path(source_path)
-
-        if result is None:
-            # Another thread is already recovering — poll until it finishes
-            logger.info("Another thread is recovering model center[%s], polling for completion" % mc_uuid)
-            poll_interval = 2
-            poll_timeout = 30
-            deadline = time.time() + poll_timeout
-            while time.time() < deadline:
-                time.sleep(poll_interval)
+            # Recovery succeeded, retry verify with short delays
+            for _ in range(3):
+                time.sleep(1)
                 try:
                     return verify_source_path(source_path)
                 except Exception:
                     continue
-            logger.warning("Timed out waiting for recovery of model center[%s]" % mc_uuid)
+            logger.warning("Mount recovery succeeded but source path[%s] still not accessible" % source_path)
+            raise path_error
+
+        if result is None:
+            # Another thread is recovering — wait for completion signal (non-busy)
+            logger.info("Another thread is recovering model center[%s], waiting for completion" % mc_uuid)
+            wait_for_recovery(mc_uuid, _RECOVERY_POLL_TIMEOUT_SECS)
+            # Recovery event fired; retry verify a few times
+            for _ in range(3):
+                try:
+                    return verify_source_path(source_path)
+                except Exception:
+                    time.sleep(1)
+            logger.warning("Source path[%s] still not accessible after recovery of model center[%s]" % (
+                source_path, mc_uuid))
 
         raise path_error
 
@@ -229,17 +237,20 @@ def build_virtiofs_xml(tag, source_path, cache_mode=VIRTIOFS_DEFAULT_CACHE_MODE)
             cache_mode, VIRTIOFS_DEFAULT_CACHE_MODE))
         cache_mode = VIRTIOFS_DEFAULT_CACHE_MODE
 
-    safe_source_path = xml_escape(source_path)
-    safe_tag = xml_escape(tag)
+    # NOTE: xml_escape() does not escape quotes, and these values are used in XML
+    # attribute context. Use quoteattr() to ensure proper quoting and escaping.
+    safe_source_path = xml_quoteattr(source_path)
+    safe_tag = xml_quoteattr(tag)
+    safe_virtiofsd_path = xml_quoteattr(virtiofsd_path)
     return '''<filesystem type='mount' accessmode='passthrough'>
     <driver type='virtiofs'/>
-    <source dir='%s'/>
-    <target dir='%s'/>
-    <binary path='%s' xattr='on'>
+    <source dir=%s/>
+    <target dir=%s/>
+    <binary path=%s xattr='on'>
         <cache mode='%s'/>
         <sandbox mode='namespace'/>
     </binary>
-</filesystem>''' % (safe_source_path, safe_tag, virtiofsd_path, cache_mode)
+</filesystem>''' % (safe_source_path, safe_tag, safe_virtiofsd_path, cache_mode)
 
 
 def get_vm_domain(vm_uuid):

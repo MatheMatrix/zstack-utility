@@ -42,7 +42,7 @@
       when: juicefs_pkg_stat.stat.exists
 
     - name: create juicefs cache directory
-      file: path=/var/cache/juicefs state=directory mode=755
+      file: path=/var/cache/virtiofs/juicefs state=directory mode=755
 
     - name: install kvm related packages on RedHat based OS from user defined repo
       when: ansible_os_family == 'RedHat' and yum_repos != 'false'
