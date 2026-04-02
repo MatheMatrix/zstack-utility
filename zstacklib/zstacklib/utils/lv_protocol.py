@@ -104,6 +104,11 @@ HeaderData = collections.namedtuple('HeaderData', [
     'checksum', 'valid',
     'vm_category', 'vm_uuid', 'architecture',
     'schema_version', 'vm_name',
+    # Previous layout - recorded in Phase 1 when LV extend changes the
+    # slot geometry.  Recovery flows use these to locate the active slot
+    # whose on-disk capacity still matches the pre-extend layout.
+    # Zero means "not applicable" (no prior extend in progress).
+    'prev_slot_a_capacity', 'prev_slot_b_offset', 'prev_slot_b_capacity',
 ])
 
 SlotData = collections.namedtuple('SlotData', [
@@ -114,33 +119,26 @@ SlotData = collections.namedtuple('SlotData', [
 
 class ReadStatus(object):
     OK = 'OK'
-    NEED_REPAIR = 'NEED_REPAIR'
-    DEGRADED = 'DEGRADED'
     STORAGE_CHANGE_INCOMPLETE = 'STORAGE_CHANGE_INCOMPLETE'
     CORRUPTED = 'CORRUPTED'
 
 
 class ReadResult(object):
-    __slots__ = ('status', 'payload', 'header', 'repair_action', 'error')
+    __slots__ = ('status', 'payload', 'header', 'error')
 
-    def __init__(self, status, payload=None, header=None,
-                 repair_action=None, error=None):
+    def __init__(self, status, payload=None, header=None, error=None):
         self.status = status
         self.payload = payload
         self.header = header
-        self.repair_action = repair_action
         self.error = error
 
     def is_usable(self):
-        return self.status in (ReadStatus.OK,
-                               ReadStatus.NEED_REPAIR,
-                               ReadStatus.DEGRADED)
+        return self.status == ReadStatus.OK
 
     def __repr__(self):
-        return ("ReadResult(status=%s, payload_len=%s, repair=%s, error=%s)"
+        return ("ReadResult(status=%s, payload_len=%s, error=%s)"
                 % (self.status,
                    len(self.payload) if self.payload else 0,
-                   self.repair_action,
                    self.error))
 
 
@@ -177,7 +175,9 @@ def build_header(active_slot, pending_op, write_sequence,
                  slot_b_offset, slot_b_capacity,
                  last_update_time, schema_version,
                  vm_category='', vm_uuid='', vm_name='',
-                 architecture=''):
+                 architecture='',
+                 prev_slot_a_capacity=0, prev_slot_b_offset=0,
+                 prev_slot_b_capacity=0):
     """Serialise a 4096-byte Header Block (JSON layout).
 
     [0:4)      Magic         uint32 BE   0x5A534D54
@@ -224,6 +224,12 @@ def build_header(active_slot, pending_op, write_sequence,
         header_dict['vmName'] = vm_name
     if architecture:
         header_dict['architecture'] = architecture
+    if prev_slot_a_capacity > 0:
+        header_dict['prevSlotACapacity'] = prev_slot_a_capacity
+    if prev_slot_b_offset > 0:
+        header_dict['prevSlotBOffset'] = prev_slot_b_offset
+    if prev_slot_b_capacity > 0:
+        header_dict['prevSlotBCapacity'] = prev_slot_b_capacity
 
     json_str = json.dumps(header_dict, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
     json_bytes = json_str.encode('utf-8')
@@ -336,6 +342,9 @@ def parse_header(block):
         architecture=d.get('architecture', ''),
         schema_version=d.get('schemaVersion', '0'),
         vm_name=d.get('vmName', ''),
+        prev_slot_a_capacity=d.get('prevSlotACapacity', 0),
+        prev_slot_b_offset=d.get('prevSlotBOffset', 0),
+        prev_slot_b_capacity=d.get('prevSlotBCapacity', 0),
     )
 
 
@@ -350,6 +359,8 @@ def _invalid_header():
         vm_category='', vm_uuid='', architecture='',
         schema_version='',
         vm_name='',
+        prev_slot_a_capacity=0, prev_slot_b_offset=0,
+        prev_slot_b_capacity=0,
     )
 
 
