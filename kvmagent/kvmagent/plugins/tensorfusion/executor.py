@@ -160,35 +160,12 @@ class ProcessExecutor(object):
     def stop(self, worker):
         # type: (Worker) -> bool
         """Stop a worker process and clean up resources."""
-        pid = worker.pid
-        proc = self._get_proc(pid)
-        pgid = None
         try:
-            pgid = os.getpgid(pid)
-            os.killpg(pgid, signal.SIGTERM)
-            logger.info('sent SIGTERM to process group %d (worker %s)' % (pgid, worker.device_uuid))
-        except OSError as e:
-            if e.errno == errno.ESRCH:
-                logger.info('worker %s pid %d already exited before destroy' % (worker.device_uuid, pid))
-            else:
-                raise Exception('failed to kill process group for pid %d: %s' % (pid, str(e)))
-
-        if not self._wait_for_exit(pid, self.STOP_WAIT_SEC, proc):
-            if pgid is not None:
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                    logger.warn('sent SIGKILL to process group %d (worker %s) after SIGTERM timeout' % (
-                        pgid, worker.device_uuid))
-                except OSError as e:
-                    if e.errno != errno.ESRCH:
-                        raise Exception('failed to kill process group for pid %d with SIGKILL: %s' % (
-                            pid, str(e)))
-
-            if not self._wait_for_exit(pid, self.KILL_WAIT_SEC, proc):
-                raise Exception('worker %s pid %d did not exit within %ss after SIGTERM and %ss after SIGKILL' %
-                                (worker.device_uuid, pid, self.STOP_WAIT_SEC, self.KILL_WAIT_SEC))
-
-        self._forget_proc(pid)
+            self._stop_pid(worker.pid, worker.device_uuid)
+        finally:
+            # Always clean up _procs tracking even if _stop_pid raises,
+            # to prevent Popen object leaks and ensure zombie can be reaped.
+            self._forget_proc(worker.pid)
 
         # Clean up shared memory file
         if worker.shared_memory_path and os.path.exists(worker.shared_memory_path):
@@ -200,6 +177,35 @@ class ProcessExecutor(object):
                                 (worker.shared_memory_path, str(e)))
 
         return True
+
+    def _stop_pid(self, pid, device_uuid=None):
+        proc = self._get_proc(pid)
+        pgid = None
+        label = device_uuid or 'unknown'
+        try:
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, signal.SIGTERM)
+            logger.info('sent SIGTERM to process group %d (worker %s, pid=%d)' % (pgid, label, pid))
+        except OSError as e:
+            if e.errno == errno.ESRCH:
+                logger.info('worker %s pid %d already exited before destroy' % (label, pid))
+            else:
+                raise Exception('failed to kill process group for pid %d: %s' % (pid, str(e)))
+
+        if not self._wait_for_exit(pid, self.STOP_WAIT_SEC, proc):
+            if pgid is not None:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                    logger.warn('sent SIGKILL to process group %d (worker %s) after SIGTERM timeout' % (
+                        pgid, label))
+                except OSError as e:
+                    if e.errno != errno.ESRCH:
+                        raise Exception('failed to kill process group for pid %d with SIGKILL: %s' % (
+                            pid, str(e)))
+
+            if not self._wait_for_exit(pid, self.KILL_WAIT_SEC, proc):
+                raise Exception('worker %s pid %d did not exit within %ss after SIGTERM and %ss after SIGKILL' %
+                                (label, pid, self.STOP_WAIT_SEC, self.KILL_WAIT_SEC))
 
     def _wait_for_exit(self, pid, timeout, proc=None):
         # type: (int, int, subprocess.Popen) -> bool
@@ -259,6 +265,20 @@ class ProcessExecutor(object):
     def _forget_proc(self, pid):
         with self._proc_lock:
             self._procs.pop(pid, None)
+
+    def reap_dead(self, pid):
+        """Reap a dead child process to prevent zombies, and clean up _procs tracking."""
+        proc = self._get_proc(pid)
+        if proc is not None:
+            self._reap_process(proc)
+        else:
+            # No Popen object tracked — try os.waitpid directly as fallback.
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except (OSError, ChildProcessError):
+                pass
+        self._forget_proc(pid)
+        logger.debug('reaped dead worker process pid=%d' % pid)
 
     def scan_running(self):
         # type: () -> list
@@ -357,6 +377,95 @@ class ProcessExecutor(object):
 
         logger.info('scan_running: found %d tensor-fusion-worker processes' % len(workers))
         return workers
+
+    def cleanup_residual_workers_by_vm(self, vm_uuid, known_pids=None):
+        # type: (str, list) -> int
+        """Best-effort cleanup for worker processes that are missing from StateStore."""
+        known_pids = set(known_pids or [])
+        residuals = self._scan_residual_worker_processes(vm_uuid, known_pids)
+        cleaned = 0
+        handled_pgids = set()
+
+        for residual in residuals:
+            pid = residual['pid']
+            label = residual.get('device_uuid') or 'residual@%s' % pid
+
+            try:
+                pgid = os.getpgid(pid)
+            except OSError as e:
+                if e.errno == errno.ESRCH:
+                    continue
+                raise Exception('failed to get process group for residual worker %s pid %d: %s' % (
+                    label, pid, str(e)))
+
+            if pgid in handled_pgids:
+                continue
+
+            try:
+                self._stop_pid(pid, label)
+            except Exception as e:
+                logger.warn('failed to stop residual worker %s pid %d: %s' % (label, pid, e))
+                continue
+
+            handled_pgids.add(pgid)
+            cleaned += 1
+
+            shm_path = residual.get('shared_memory_path')
+            if shm_path and os.path.exists(shm_path):
+                try:
+                    os.remove(shm_path)
+                    logger.debug('removed residual shared memory file: %s' % shm_path)
+                except OSError as e:
+                    logger.warn('failed to remove residual shared memory file %s: %s' %
+                                (shm_path, str(e)))
+
+        if cleaned:
+            logger.info('cleanup_residual_workers_by_vm: cleaned %d residual worker groups for VM %s' % (
+                cleaned, vm_uuid))
+        return cleaned
+
+    def _scan_residual_worker_processes(self, vm_uuid, known_pids=None):
+        # type: (str, set) -> list
+        known_pids = set(known_pids or [])
+        residuals = []
+        try:
+            import psutil
+        except ImportError:
+            logger.warn('psutil not available, cannot scan residual workers for VM %s' % vm_uuid)
+            return residuals
+
+        binary_name = os.path.basename(self.WORKER_BINARY)
+        for proc in psutil.process_iter():
+            try:
+                if proc.pid in known_pids:
+                    continue
+                if proc.name() != binary_name:
+                    continue
+
+                try:
+                    environ = proc.environ() or {}
+                except (AttributeError, psutil.AccessDenied):
+                    environ = {}
+
+                if environ.get('VM_UUID') != vm_uuid:
+                    continue
+
+                shared_memory_path = None
+                cmdline = proc.cmdline() or []
+                for i, arg in enumerate(cmdline):
+                    if arg == '-m' and i + 1 < len(cmdline):
+                        shared_memory_path = self.SHM_PREFIX + cmdline[i + 1].lstrip('/')
+                        break
+
+                residuals.append({
+                    'pid': proc.pid,
+                    'device_uuid': environ.get('TF_DEVICE_UUID'),
+                    'shared_memory_path': shared_memory_path,
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        return residuals
 
     @classmethod
     def _bytes_to_mb(cls, size):

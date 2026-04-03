@@ -4,9 +4,10 @@ NVIDIA GPU Vendor Implementation (Python 2/3 Compatible)
 """
 
 import os
+import re
 import threading
 
-from zstacklib.utils import log
+from zstacklib.utils import log, linux
 from zstacklib.utils.bash import bash_roe
 from zstacklib.gpu.base import (
     GPUBase,
@@ -352,6 +353,131 @@ class NVIDIA(GPUBase):
         cmd = cls.get_shut_persistenced_cmd()
         r, o, _ = bash_roe(cmd)
         return r, o
+
+    # ==========================================================================
+    # Device In-Use Check
+    # ==========================================================================
+
+    # Processes that transiently open nvidia devices for monitoring/management
+    # and are safe to ignore when deciding whether a GPU is actively in use.
+    _IGNORED_COMMANDS = frozenset([
+        "nvidia-smi",
+    ])
+
+    @classmethod
+    def _get_dev_path(cls, pci_address):
+        """Find /dev/nvidia{N} device path for a given PCI address.
+
+        Uses nvidia-smi to get the authoritative index-to-PCI mapping.
+
+        Args:
+            pci_address: Normalized PCI address (e.g., "0000:34:00.0").
+
+        Returns:
+            Device path like "/dev/nvidia0", or None if not found.
+        """
+        try:
+            r, o, e = bash_roe(
+                "nvidia-smi --query-gpu=index,pci.bus_id --format=csv,noheader 2>/dev/null"
+            )
+            if r != 0 or not o.strip():
+                return None
+
+            # nvidia-smi outputs lines like "0, 00000000:34:00.0"
+            # The bus_id uses 8-digit domain; normalize both sides for comparison.
+            target = pci_address.lower()
+            for line in o.strip().splitlines():
+                parts = line.split(",")
+                if len(parts) != 2:
+                    continue
+                idx = parts[0].strip()
+                bus_id = parts[1].strip().lower()
+                # nvidia-smi uses 8-digit domain (e.g. 00000000:xx:xx.x),
+                # normalize to 4-digit (0000:xx:xx.x) for comparison
+                domain = bus_id.split(":")[0]
+                if len(domain) == 8:
+                    bus_id = bus_id[4:]
+                if bus_id == target:
+                    dev_path = "/dev/nvidia%s" % idx
+                    if os.path.exists(dev_path):
+                        return dev_path
+                    return None
+        except Exception:
+            pass
+
+        return None
+
+    @classmethod
+    def check_device_in_use(cls, pci_address):
+        """Check if an NVIDIA GPU is in use by other processes.
+
+        This prevents unbinding a GPU that is actively used, which would cause
+        the NVIDIA driver's nv_pci_remove() to hang indefinitely in kernel space,
+        leading to zombie processes and libvirtd failure.
+
+        Args:
+            pci_address: Normalized PCI address (e.g., "0000:34:00.0").
+
+        Raises:
+            PciError: When the device is in use by other processes.
+        """
+        from zstacklib.hardware.pci.address import PciError
+
+        device_path = os.path.join("/sys/bus/pci/devices", pci_address)
+        if not os.path.exists(device_path):
+            return
+
+        driver_link = os.path.join(device_path, "driver")
+        if not os.path.islink(driver_link):
+            return
+
+        current_driver = os.path.basename(os.path.realpath(driver_link))
+        if current_driver != "nvidia":
+            return
+
+        dev_path = cls._get_dev_path(pci_address)
+        if not dev_path:
+            logger.debug("cannot find /dev/nvidia* for pci device %s, skip in-use check", pci_address)
+            return
+
+        r, o, e = bash_roe("fuser %s 2>/dev/null" % dev_path)
+        if r == 1 or not o.strip():
+            # fuser exit 1 means no process using the device
+            return
+        if r != 0:
+            # fuser failed (e.g., not installed rc=127), log and skip check
+            logger.debug("fuser command failed (rc=%d) for %s, skip in-use check", r, dev_path)
+            return
+
+        pids = re.findall(r'\d+', o)
+        active_details = []
+        for pid in pids:
+            try:
+                comm = linux.read_file("/proc/%s/comm" % pid)
+                comm = comm.strip() if comm else "unknown"
+            except Exception:
+                # Process vanished between fuser and read — skip it
+                continue
+            if comm in cls._IGNORED_COMMANDS:
+                logger.debug("ignoring benign process %s(%s) on %s", pid, comm, dev_path)
+                continue
+            active_details.append("%s(%s)" % (pid, comm))
+            if len(active_details) >= 5:
+                break
+
+        if not active_details:
+            return
+
+        raise PciError(
+            "GPU %s (%s) is currently in use by process: %s. "
+            "Unbinding a busy NVIDIA GPU will cause the kernel driver to hang indefinitely. "
+            "Please stop the process using this GPU before detaching it."
+            % (pci_address, dev_path, ", ".join(active_details))
+        )
+
+    # ==========================================================================
+    # Persistenced Management Commands
+    # ==========================================================================
 
     @classmethod
     def get_shut_persistenced_cmd(cls, is_windows=False):
