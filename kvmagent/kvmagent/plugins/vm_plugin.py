@@ -87,8 +87,8 @@ logger = log.get_logger(__name__)
 
 HOST_ARCH = platform.machine()
 
-# L3 SMBIOS constants for CPU hotplug auto-online (ZSTAC-81735)
-_SMBIOS_CPU_HOTPLUG_OS_WHITELIST = ('ubuntu', 'debian')
+# SMBIOS constants for CPU hotplug auto-online (ZSTAC-81735)
+_CPU_HOTPLUG_OS_WHITELIST = ('ubuntu', 'debian')
 _SMBIOS_MANUFACTURER = 'Microsoft Corporation'
 _SMBIOS_PRODUCT = 'Virtual Machine'
 
@@ -4796,16 +4796,46 @@ class Vm(object):
         return
 
     def _qga_online_hotplugged_cpus(self, prev_cpu_num):
-        """After CPU hotplug, use QGA guest-set-vcpus to online only the newly added CPUs.
+        """After CPU hotplug, use QGA to online newly added CPUs for whitelisted guests.
+
+        Only acts when ALL of the following are true:
+        - Host architecture is x86_64
+        - QGA is running in the guest
+        - Guest OS is in the whitelist (Ubuntu/Debian), determined via QGA
+        - SMBIOS manufacturer is NOT already set to 'Microsoft Corporation'
+          (if set, guest udev handles CPU onlining automatically)
 
         @param prev_cpu_num: the CPU count before this hotplug operation,
                used to avoid re-onlining CPUs that were manually offlined by the user.
         """
+        if HOST_ARCH != 'x86_64':
+            return
+
         try:
             qga = VmQga(self.domain)
             if qga.state != VmQga.QGA_STATE_RUNNING:
-                logger.debug('QGA not running for vm[uuid:%s], skip online CPUs' % self.uuid)
                 return
+
+            # Check guest OS via QGA (qga.os is set by qga_init from guest-get-osinfo
+            # or /etc/os-release, e.g. 'ubuntu', 'centos', 'debian', 'mswindows')
+            guest_os = getattr(qga, 'os', None) or ''
+            if not any(os_name in guest_os.lower() for os_name in _CPU_HOTPLUG_OS_WHITELIST):
+                return
+
+            # Check if SMBIOS manufacturer is already set (VM started after fix)
+            # If so, guest udev handles CPU onlining — no need for QGA
+            try:
+                sysinfo = self.domain_xmlobject.get_child_node('sysinfo')
+                if sysinfo is not None:
+                    system = sysinfo.get_child_node('system')
+                    if system is not None:
+                        for entry in system.get_child_node_as_list('entry'):
+                            if entry.name_ == 'manufacturer' and entry.text_ == _SMBIOS_MANUFACTURER:
+                                logger.debug('SMBIOS already set for vm[uuid:%s], '
+                                             'skip QGA cpu online' % self.uuid)
+                                return
+            except Exception:
+                pass  # can't determine → fall through to QGA
 
             vcpus_info = qga.call_qga_command('guest-get-vcpus')
             if not vcpus_info:
@@ -4823,7 +4853,6 @@ class Vm(object):
                     })
 
             if not offline_cpus:
-                logger.debug('no newly hotplugged offline vCPUs for vm[uuid:%s]' % self.uuid)
                 return
 
             result = qga.call_qga_command('guest-set-vcpus', args={'vcpus': offline_cpus})
@@ -5759,19 +5788,19 @@ class Vm(object):
 
                 e(os, 'bootmenu', attrib=boot_menu_attrib)
 
-            # Enable smbios mode if serial number is set, or if L3 SMBIOS is needed for Ubuntu/Debian
+            # Enable smbios mode if serial number is set, or for Ubuntu/Debian on x86_64 (CPU hotplug)
             _guest_os = getattr(cmd, 'guestOsType', None) or ''
-            _needs_smbios = cmd.systemSerialNumber or any(
-                os_name in _guest_os.lower() for os_name in _SMBIOS_CPU_HOTPLUG_OS_WHITELIST
+            _needs_smbios_for_hotplug = HOST_ARCH == 'x86_64' and any(
+                os_name in _guest_os.lower() for os_name in _CPU_HOTPLUG_OS_WHITELIST
             )
-            if _needs_smbios and HOST_ARCH != 'mips64el':
+            if (cmd.systemSerialNumber or _needs_smbios_for_hotplug) and HOST_ARCH != 'mips64el':
                 e(os, 'smbios', attrib={'mode': 'sysinfo'})
 
         def make_sysinfo():
-            # L3: check if Ubuntu/Debian guest needs SMBIOS even without serial number
+            # Check if Ubuntu/Debian guest on x86_64 needs SMBIOS for CPU hotplug auto-online
             guest_os = getattr(cmd, 'guestOsType', None) or ''
-            needs_smbios_for_cpu_hotplug = HOST_ARCH != 'mips64el' and any(
-                os_name in guest_os.lower() for os_name in _SMBIOS_CPU_HOTPLUG_OS_WHITELIST
+            needs_smbios_for_cpu_hotplug = HOST_ARCH == 'x86_64' and any(
+                os_name in guest_os.lower() for os_name in _CPU_HOTPLUG_OS_WHITELIST
             )
 
             if not cmd.systemSerialNumber and not needs_smbios_for_cpu_hotplug:
