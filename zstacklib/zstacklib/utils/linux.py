@@ -1208,7 +1208,7 @@ def qcow2_rebase(backing_file, target):
 def qcow2_rebase_no_check(backing_file, target, backing_fmt=None):
     fmt = backing_fmt if backing_fmt else get_img_fmt(backing_file)
     with TempAccessible(target):
-        shell.call('%s -F %s -u -f qcow2 -b "%s" %s' % (qemu_img.subcmd('rebase'), fmt, backing_file, target))
+        shell.call('%s -F %s -u -f qcow2 -b %s %s' % (qemu_img.subcmd('rebase'), fmt, shellquote(backing_file), shellquote(target)))
 
 def qcow2_virtualsize(file_path):
     file_path = shellquote(file_path)
@@ -1244,6 +1244,9 @@ def qcow2_get_backing_file(path):
         backing_file_size = struct.unpack('>L', backing_file_info[8:])[0]
         resp.seek(backing_file_offset)
         return resp.read(backing_file_size)
+
+# Moved to file_metadata_handler.py; re-exported for backward compatibility
+from zstacklib.utils.file_metadata_handler import qcow2_prefix_rebase_backing_files  # noqa: F401,E402
 
 def qcow2_get_virtual_size(path):
     # type: (str) -> int
