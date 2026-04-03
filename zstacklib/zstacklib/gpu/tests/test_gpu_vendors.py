@@ -304,6 +304,62 @@ class TestNVIDIA(unittest.TestCase):
         self.assertTrue(supported)
         self.assertEqual(info.get('virtStatus'), 'VFIO_MDEV_VIRTUALIZABLE')
 
+    def test_detect_tensorfusion_capability_supported(self):
+        """TensorFusion capability requires NVIDIA driver >= 570.x."""
+        from zstacklib.gpu.vendors.nvidia import NVIDIA
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+
+        pci_device = type('PciDeviceTO', (), {'pciDeviceAddress': '0000:3b:00.0'})()
+
+        with patch("zstacklib.gpu.vendors.nvidia.bash_roe",
+                   return_value=(0, "00000000:3B:00.0, 570.124.06\n", "")), \
+             patch("zstacklib.gpu.vendors.nvidia.os.path.exists", return_value=True):
+            supported, info = NVIDIA.detect_tensorfusion_capability(pci_device)
+
+        self.assertTrue(supported)
+        self.assertEqual(info.get("virtStatus"), "TENSORFUSION_VIRTUALIZABLE")
+        self.assertEqual(info.get("driverVersion"), "570.124.06")
+
+    def test_detect_tensorfusion_capability_rejects_old_driver(self):
+        """TensorFusion capability should reject NVIDIA driver versions below 570.x."""
+        from zstacklib.gpu.vendors.nvidia import NVIDIA
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+
+        pci_device = type('PciDeviceTO', (), {'pciDeviceAddress': '0000:3b:00.0'})()
+
+        with patch("zstacklib.gpu.vendors.nvidia.bash_roe",
+                   return_value=(0, "00000000:3B:00.0, 565.43.01\n", "")), \
+             patch("zstacklib.gpu.vendors.nvidia.os.path.exists", return_value=True):
+            supported, info = NVIDIA.detect_tensorfusion_capability(pci_device)
+
+        self.assertFalse(supported)
+        self.assertEqual(info.get("virtStatus"), "TENSORFUSION_NOT_SUPPORTED")
+        self.assertIn("570.x", info.get("reason", ""))
+
+    def test_detect_tensorfusion_capability_rejects_missing_worker_binary(self):
+        """TensorFusion capability should reject hosts without tensor-fusion-worker installed."""
+        from zstacklib.gpu.vendors.nvidia import NVIDIA
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+
+        pci_device = type('PciDeviceTO', (), {'pciDeviceAddress': '0000:3b:00.0'})()
+
+        with patch("zstacklib.gpu.vendors.nvidia.bash_roe",
+                   return_value=(0, "00000000:3B:00.0, 570.124.06\n", "")), \
+             patch("zstacklib.gpu.vendors.nvidia.os.path.exists", return_value=False):
+            supported, info = NVIDIA.detect_tensorfusion_capability(pci_device)
+
+        self.assertFalse(supported)
+        self.assertEqual(info.get("virtStatus"), "TENSORFUSION_NOT_SUPPORTED")
+        self.assertIn("tensor-fusion-worker", info.get("reason", ""))
 
 class TestAMD(unittest.TestCase):
     """Test AMD vendor implementation"""
