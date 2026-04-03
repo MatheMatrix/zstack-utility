@@ -186,6 +186,14 @@ class WorkerRestartMonitor(object):
                             device_uuid)
                 return
 
+            # Reap the old dead process to prevent zombie.
+            if getattr(w, 'pid', None):
+                try:
+                    self._executor.reap_dead(w.pid)
+                except Exception as e:
+                    logger.warn('WorkerRestartMonitor: failed to reap dead process pid=%s for worker %s: %s' %
+                                (w.pid, device_uuid, e))
+
             # Guard: worker may have been intentionally destroyed or replaced while we waited.
             current_worker = self._store.get(device_uuid)
             if current_worker is not w:
@@ -255,6 +263,13 @@ class WorkerRestartMonitor(object):
 
     def _give_up(self, w):
         device_uuid = w.device_uuid
+        # Reap the dead process to prevent zombie.
+        if getattr(w, 'pid', None):
+            try:
+                self._executor.reap_dead(w.pid)
+            except Exception as e:
+                logger.warn('WorkerRestartMonitor: failed to reap dead process pid=%s '
+                            'during give_up for worker %s: %s' % (w.pid, device_uuid, e))
         self._tracker.release(w.pci_address, device_uuid)
         self._store.remove(device_uuid)
         with self._lock:

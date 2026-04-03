@@ -40,6 +40,7 @@ import zstacklib.utils.ip as ip
 import zstacklib.utils.iptables as iptables
 import zstacklib.utils.lock as lock
 from zstacklib.utils import sizeunit
+from zstacklib.hardware.pci.passthrough import check_device_in_use
 
 from jinja2 import Template
 
@@ -6710,6 +6711,12 @@ class Vm(object):
                         raise kvmagent.KvmError('failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s' % (addr, o, stderr))
 
 
+                try:
+                    check_device_in_use(addr)
+                except Exception as e:
+                    raise kvmagent.KvmError(
+                        'failed pre-detach device-in-use check for %s: %s' % (addr, str(e)))
+
                 ret, out, err = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
                 if ret != 0:
                     raise kvmagent.KvmError('failed to nodedev-detach %s: %s, %s' % (addr, out, err))
@@ -10529,6 +10536,7 @@ host side snapshot files chian:
                 return jsonobject.dumps(rsp)
 
         try:
+            check_device_in_use(addr)
             formatted_addr = cmd.pciDeviceAddress.replace(':', '_').replace('.', '_')
             r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % formatted_addr)
             if r != 0:

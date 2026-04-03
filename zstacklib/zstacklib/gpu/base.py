@@ -387,6 +387,26 @@ class GPUBase(object):
         return 0, None
 
     # ==========================================================================
+    # Device In-Use Check Hook
+    # ==========================================================================
+
+    @classmethod
+    def check_device_in_use(cls, pci_address):
+        """
+        Check if a PCI device is actively in use and cannot be safely unbound.
+
+        Override in vendor subclass to implement vendor-specific detection
+        (e.g., NVIDIA checks /dev/nvidia* file descriptors via fuser).
+
+        Args:
+            pci_address: Normalized PCI address (e.g., "0000:34:00.0").
+
+        Raises:
+            PciError: When the device is in use and unbinding would be unsafe.
+        """
+        pass
+
+    # ==========================================================================
     # Post-Processing Hooks
     # ==========================================================================
 
