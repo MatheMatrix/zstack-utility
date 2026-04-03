@@ -18,13 +18,15 @@ from kvmagent.plugins.tensorfusion.monitor import WorkerRestartMonitor
 
 logger = log.get_logger(__name__)
 
-
-from kvmagent.plugins.tensorfusion.utils import is_vm_running  # noqa: F401
-
 DEFAULT_ENABLE_LOG = ProcessExecutor.DEFAULT_ENABLE_LOG
 DEFAULT_LOG_LEVEL = ProcessExecutor.DEFAULT_LOG_LEVEL
 BYTES_PER_MB = ProcessExecutor.BYTES_PER_MB
 DEFAULT_SHMEM_SIZE = ProcessExecutor.SHM_SIZE
+
+
+def _is_vm_running(vm_uuid):
+    from kvmagent.plugins.tensorfusion.utils import is_vm_running
+    return is_vm_running(vm_uuid)
 
 
 class TensorFusionService(object):
@@ -40,6 +42,8 @@ class TensorFusionService(object):
                                              restart_worker=self.restart_worker)
         self._create_lock_guard = threading.RLock()
         self._create_locks = {}
+        self._orphan_scan_stop = threading.Event()
+        self._orphan_scan_thread = None
         self.refresh_gpu_details()
 
     def initialize(self):
@@ -52,22 +56,22 @@ class TensorFusionService(object):
         # failed — keep the worker alive to avoid killing healthy processes.
         alive = []
         for w in running:
-            vm_state = is_vm_running(w.vm_uuid)
+            vm_state = _is_vm_running(w.vm_uuid)
             if vm_state is False:
-                logger.warn('TensorFusionService: killing orphan worker %s '
+                logger.warning('TensorFusionService: killing orphan worker %s '
                             '(pid=%d, vm=%s not running)' % (w.device_uuid, w.pid, w.vm_uuid))
                 try:
                     self._executor.stop(w)
                 except Exception as e:
-                    logger.warn('TensorFusionService: failed to stop orphan worker %s: %s' %
+                    logger.warning('TensorFusionService: failed to stop orphan worker %s: %s' %
                                 (w.device_uuid, e))
                     if self._executor.is_alive(w):
-                        logger.warn('TensorFusionService: orphan worker %s still alive, keeping in state' %
+                        logger.warning('TensorFusionService: orphan worker %s still alive, keeping in state' %
                                     w.device_uuid)
                         alive.append(w)
             else:
                 if vm_state is None:
-                    logger.warn('TensorFusionService: cannot check VM %s, keeping worker %s' %
+                    logger.warning('TensorFusionService: cannot check VM %s, keeping worker %s' %
                                 (w.vm_uuid, w.device_uuid))
                 alive.append(w)
 
@@ -76,19 +80,115 @@ class TensorFusionService(object):
         logger.info('TensorFusionService: initialized with %d running workers '
                      '(%d orphans cleaned)' % (len(alive), len(running) - len(alive)))
         self._monitor.start()
+        self._start_orphan_scan_timer()
+
+    # Interval (seconds) between periodic orphan worker scans.
+    ORPHAN_SCAN_INTERVAL_SEC = 300
 
     def stop(self):
+        self._orphan_scan_stop.set()
         self._monitor.stop()
+        thread = self._orphan_scan_thread
+        if thread and thread.is_alive():
+            thread.join(1)
+        if thread and not thread.is_alive():
+            self._orphan_scan_thread = None
+
+    def _start_orphan_scan_timer(self):
+        """Start a daemon thread that periodically scans for orphan workers."""
+        old = self._orphan_scan_thread
+        if old and old.is_alive():
+            self._orphan_scan_stop.set()
+            old.join(2)
+            if old.is_alive():
+                logger.warning('TensorFusionService: old orphan scan thread still alive, '
+                            'skipping new thread start')
+                return
+
+        self._orphan_scan_stop.clear()
+        t = threading.Thread(target=self._orphan_scan_loop, name='tf-orphan-scan')
+        t.daemon = True
+        t.start()
+        self._orphan_scan_thread = t
+        logger.info('TensorFusionService: started periodic orphan worker scan '
+                     '(interval=%ds)' % self.ORPHAN_SCAN_INTERVAL_SEC)
+
+    def _orphan_scan_loop(self):
+        """Periodic loop that detects and kills workers whose VMs no longer exist."""
+        while not self._orphan_scan_stop.wait(self.ORPHAN_SCAN_INTERVAL_SEC):
+            try:
+                self._scan_and_cleanup_orphans()
+            except Exception:
+                logger.warning('TensorFusionService: orphan scan error: %s' %
+                            __import__('traceback').format_exc())
+
+    def _scan_and_cleanup_orphans(self):
+        """Reconcile running worker processes against libvirt VM state.
+
+        Scans ALL running tensor-fusion-worker processes (regardless of whether
+        they are tracked in StateStore) and kills any whose VM no longer exists
+        in libvirt.  Also cleans up stale StateStore entries for dead processes.
+        """
+        try:
+            running = self._executor.scan_running()
+        except Exception as e:
+            logger.warning('TensorFusionService: orphan scan: failed to scan running workers: %s' % e)
+            return
+
+        running_pids = {w.pid for w in running}
+        killed = 0
+
+        for w in running:
+            vm_state = _is_vm_running(w.vm_uuid)
+            if vm_state is not False:
+                continue
+
+            logger.warning('TensorFusionService: orphan scan: killing worker %s '
+                        '(pid=%d, vm=%s not running, tracked=%s)' %
+                        (w.device_uuid, w.pid, w.vm_uuid,
+                         self._store.get(w.device_uuid) is not None))
+            try:
+                self._executor.stop(w)
+            except Exception as e:
+                logger.warning('TensorFusionService: orphan scan: failed to stop worker %s: %s' %
+                            (w.device_uuid, e))
+                if self._executor.is_alive(w):
+                    continue
+
+            # Clean up StateStore entry if present
+            tracked = self._store.get(w.device_uuid)
+            if tracked:
+                self._remove_worker_state(tracked)
+            killed += 1
+
+        # Clean up stale StateStore entries whose processes are already dead
+        for w in self._store.list_all():
+            if getattr(w, 'pid', None) and w.pid not in running_pids:
+                if not self._executor.is_alive(w):
+                    logger.info('TensorFusionService: orphan scan: removing stale entry %s '
+                                '(pid=%d already dead)' % (w.device_uuid, w.pid))
+                    self._remove_worker_state(w)
+
+        if killed:
+            logger.info('TensorFusionService: orphan scan: cleaned up %d orphan workers' % killed)
 
     def _remove_worker_state(self, worker):
         removed = self._store.remove(worker.device_uuid, expected_worker=worker)
         if removed is None:
             logger.info('TensorFusionService: worker %s changed before state cleanup, skipping stale cleanup' %
                         worker.device_uuid)
-            return
+            return None
 
-        self._monitor.clear(worker.device_uuid)
-        self._tracker.release(worker.pci_address, worker.device_uuid)
+        # Reap the child process first to prevent zombies and clean up _procs tracking.
+        if getattr(removed, 'pid', None):
+            try:
+                self._executor.reap_dead(removed.pid)
+            except Exception as e:
+                logger.warning('TensorFusionService: failed to reap process pid=%s for worker %s: %s' %
+                            (removed.pid, removed.device_uuid, e))
+        self._monitor.clear(removed.device_uuid)
+        self._tracker.release(removed.pci_address, removed.device_uuid)
+        return removed
 
     @staticmethod
     def _validate_request_license(request):
@@ -114,7 +214,7 @@ class TensorFusionService(object):
         try:
             gpu_details = NVIDIA.query_gpu_details()
         except Exception as e:
-            logger.warn('TensorFusionService: failed to query GPU details, continuing with current inventory: %s' % e)
+            logger.warning('TensorFusionService: failed to query GPU details, continuing with current inventory: %s' % e)
             return False
 
         self._gpu_details.clear()
@@ -147,13 +247,20 @@ class TensorFusionService(object):
             if existing:
                 if self._executor.is_alive(existing):
                     if self._is_same_worker_request(existing, request):
-                        logger.warn('TensorFusionService: worker %s already running for VM %s, reusing existing process' %
+                        logger.warning('TensorFusionService: worker %s already running for VM %s, reusing existing process' %
                                     (request.device_uuid, request.vm_uuid))
                         return existing
 
                     raise Exception('worker %s already exists for vm %s on %s' %
                                     (request.device_uuid, existing.vm_uuid, existing.pci_address))
 
+                # Clean up the dead worker: reap zombie, release resources, remove state.
+                if getattr(existing, 'pid', None):
+                    try:
+                        self._executor.reap_dead(existing.pid)
+                    except Exception as e:
+                        logger.warning('TensorFusionService: failed to reap dead process pid=%s '
+                                    'for existing worker %s: %s' % (existing.pid, request.device_uuid, e))
                 self._monitor.clear(request.device_uuid)
                 self._tracker.release(existing.pci_address, request.device_uuid)
                 self._store.remove(request.device_uuid)
@@ -171,17 +278,17 @@ class TensorFusionService(object):
                 try:
                     self._executor.stop(worker)
                 except Exception as stop_error:
-                    logger.warn('TensorFusionService: failed to rollback worker %s after create error: %s' % (
+                    logger.warning('TensorFusionService: failed to rollback worker %s after create error: %s' % (
                         request.device_uuid, stop_error))
                 try:
                     self._store.remove(worker.device_uuid)
                 except Exception as remove_error:
-                    logger.warn('TensorFusionService: failed to remove worker %s from state store after create error: %s' % (
+                    logger.warning('TensorFusionService: failed to remove worker %s from state store after create error: %s' % (
                         request.device_uuid, remove_error))
                 try:
                     self._tracker.release(pci, worker.device_uuid)
                 except Exception as release_error:
-                    logger.warn('TensorFusionService: failed to release worker %s tracker allocation after create error: %s' % (
+                    logger.warning('TensorFusionService: failed to release worker %s tracker allocation after create error: %s' % (
                         request.device_uuid, release_error))
                 raise
 
@@ -231,7 +338,7 @@ class TensorFusionService(object):
                 try:
                     self._executor.stop(new_worker)
                 except Exception as stop_error:
-                    logger.warn('TensorFusionService: failed to stop orphan worker %s after restart CAS miss: %s' % (
+                    logger.warning('TensorFusionService: failed to stop orphan worker %s after restart CAS miss: %s' % (
                         current_worker.device_uuid, stop_error))
                 return None
 
@@ -267,17 +374,31 @@ class TensorFusionService(object):
         """Stop and remove a worker by device_uuid."""
         worker = self._store.get(device_uuid)
         if not worker:
-            logger.warn('TensorFusionService: worker %s not found' % device_uuid)
+            logger.warning('TensorFusionService: worker %s not found' % device_uuid)
             return False
 
-        try:
-            self._executor.stop(worker)
-        except Exception:
-            if not self._executor.is_alive(worker):
-                self._remove_worker_state(worker)
-            raise
+        create_lock = self._get_create_lock(self._normalize_pci_address(worker.pci_address))
+        with create_lock:
+            worker = self._store.get(device_uuid)
+            if not worker:
+                logger.warning('TensorFusionService: worker %s not found' % device_uuid)
+                return False
 
-        self._remove_worker_state(worker)
+            try:
+                self._executor.stop(worker)
+            except Exception:
+                if not self._executor.is_alive(worker):
+                    removed = self._remove_worker_state(worker)
+                    if removed is None:
+                        logger.warning('TensorFusionService: worker %s changed during destroy after stop failure' %
+                                    device_uuid)
+                raise
+
+            removed = self._remove_worker_state(worker)
+            if removed is None:
+                logger.warning('TensorFusionService: worker %s changed during destroy, refusing success' %
+                            device_uuid)
+                return False
 
         logger.info('TensorFusionService: destroyed worker %s' % device_uuid)
         return True
@@ -286,6 +407,7 @@ class TensorFusionService(object):
         # type: (str) -> int
         """Destroy all workers belonging to a VM. Returns count destroyed."""
         workers = self._store.list_by_vm(vm_uuid)
+        known_pids = [w.pid for w in workers if getattr(w, 'pid', None)]
         count = 0
         failures = []
         for w in workers:
@@ -297,6 +419,11 @@ class TensorFusionService(object):
             if destroyed:
                 count += 1
 
+        try:
+            count += self._executor.cleanup_residual_workers_by_vm(vm_uuid, known_pids=known_pids)
+        except Exception as e:
+            failures.append('residual cleanup: %s' % str(e))
+
         if failures:
             raise Exception('failed to destroy some workers for VM %s: %s' %
                             (vm_uuid, '; '.join(failures)))
@@ -307,8 +434,8 @@ class TensorFusionService(object):
     def get_worker(self, device_uuid):
         """Get a worker by device_uuid with passive health check."""
         worker = self._store.get(device_uuid)
-        if worker and not self._executor.is_alive(worker):
-            logger.warn('TensorFusionService: worker %s (pid=%d) is dead, cleaning up' %
+        if worker and not getattr(worker, 'restarting', False) and not self._executor.is_alive(worker):
+            logger.warning('TensorFusionService: worker %s (pid=%d) is dead, cleaning up' %
                         (device_uuid, worker.pid))
             self._remove_worker_state(worker)
             return None
@@ -346,8 +473,10 @@ class TensorFusionService(object):
         """Remove dead workers from state. Returns list of cleaned-up device_uuids."""
         cleaned = []
         for w in self._store.list_all():
+            if getattr(w, 'restarting', False):
+                continue
             if not self._executor.is_alive(w):
-                logger.warn('TensorFusionService: cleaning up dead worker %s (pid=%d)' %
+                logger.warning('TensorFusionService: cleaning up dead worker %s (pid=%d)' %
                             (w.device_uuid, w.pid))
                 self._remove_worker_state(w)
                 cleaned.append(w.device_uuid)

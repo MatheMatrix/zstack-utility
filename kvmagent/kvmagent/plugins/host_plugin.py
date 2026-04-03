@@ -2892,6 +2892,15 @@ done
             r2, _, _ = bash_roe("nvidia-smi vgpu -i %s -s" % addr)
             if r2 != 0:
                 return False
+            rs, support, _ = bash_roe("nvidia-smi vgpu -i %s -s | grep -v %s" %
+                                      (addr, addr))
+            rc, creatable, _ = bash_roe(
+                "nvidia-smi vgpu -i %s -c | grep -v %s" % (addr, addr))
+            if rs == 0 and support.strip() and (rc != 0 or support != creatable):
+                set_pci_virt_metadata(
+                    to, "VFIO_MDEV_VIRTUALIZED", "VIRTUALIZED",
+                    "VFIO_MDEV", ["VFIO_MDEV"])
+                return True
             if legacy_mdev_dir_exists:
                 self._legacy_mdev(to)
             elif virt_function_dir_exits:
@@ -3063,14 +3072,14 @@ done
                         break
             if virtualizable or mdev_devices_exists:
                 break
-        if virtualizable is True and mdev_devices_exists is False:
-            set_pci_virt_metadata(
-                to, "VFIO_MDEV_VIRTUALIZABLE", "VIRTUALIZABLE",
-                None, ["VFIO_MDEV"])
-        elif virtualizable is False and mdev_devices_exists is True:
+        if mdev_devices_exists is True:
             set_pci_virt_metadata(
                 to, "VFIO_MDEV_VIRTUALIZED", "VIRTUALIZED",
                 "VFIO_MDEV", ["VFIO_MDEV"])
+        elif virtualizable is True:
+            set_pci_virt_metadata(
+                to, "VFIO_MDEV_VIRTUALIZABLE", "VIRTUALIZABLE",
+                None, ["VFIO_MDEV"])
 
     def _simplify_pci_device_name(self, name, vendor_id):
         """
@@ -3295,7 +3304,7 @@ done
             return
         device_ids, device_names, pci_device_mapper = result
 
-        if pci_device_addresses is not None:
+        if pci_device_addresses:
             normalized_addresses = set()
             for address in pci_device_addresses:
                 normalized = pci.normalize_pci_address(address)

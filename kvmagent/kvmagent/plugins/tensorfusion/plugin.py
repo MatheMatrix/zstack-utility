@@ -151,6 +151,7 @@ class TensorFusionPlugin(kvmagent.KvmAgent):
     CLEANUP = '/tensorfusion/health/cleanup'
 
     def __init__(self):
+        super(TensorFusionPlugin, self).__init__()
         self.config = None
         self._service = None
         self._cleanup_lock = threading.Lock()
@@ -195,7 +196,7 @@ class TensorFusionPlugin(kvmagent.KvmAgent):
                 continue
             thread.join(5)
             if thread.is_alive():
-                logger.warn('TensorFusion: cleanup thread %s did not exit within 5s' % thread.name)
+                logger.warning('TensorFusion: cleanup thread %s did not exit within 5s' % thread.name)
 
     # --- Event notifier (Agent -> Management node push) ---
 
@@ -211,7 +212,7 @@ class TensorFusionPlugin(kvmagent.KvmAgent):
         def notifier(device_uuid, vm_uuid, pci_address, crash_count, event_type):
             mn_url = self.config.get(kvmagent.SEND_COMMAND_URL) if self.config else None
             if not mn_url:
-                logger.warn('TensorFusion: skip worker event %s for worker %s: no management node URL in config' % (
+                logger.warning('TensorFusion: skip worker event %s for worker %s: no management node URL in config' % (
                     event_type, device_uuid))
                 return
 
@@ -232,8 +233,13 @@ class TensorFusionPlugin(kvmagent.KvmAgent):
         """Register libvirt lifecycle callback to clean up workers when a VM stops."""
         from kvmagent.plugins.vm_plugin import LibvirtAutoReconnect
         import libvirt
-        LibvirtAutoReconnect.add_libvirt_callback(
-            libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._on_vm_lifecycle_event)
+        callbacks = LibvirtAutoReconnect.libvirt_event_callbacks.get(
+            libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, []
+        )
+        if self._on_vm_lifecycle_event not in callbacks:
+            LibvirtAutoReconnect.add_libvirt_callback(
+                libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._on_vm_lifecycle_event
+            )
         logger.info('TensorFusion: registered VM lifecycle hook')
 
     def _on_vm_lifecycle_event(self, conn, dom, event, detail, opaque):
@@ -251,7 +257,7 @@ class TensorFusionPlugin(kvmagent.KvmAgent):
             self._schedule_vm_worker_cleanup(vm_uuid, event_str)
         except Exception:
             import traceback
-            logger.warn('TensorFusion: VM lifecycle hook error: %s' % traceback.format_exc())
+            logger.warning('TensorFusion: VM lifecycle hook error: %s' % traceback.format_exc())
 
     def _schedule_vm_worker_cleanup(self, vm_uuid, event_str):
         with self._cleanup_lock:
@@ -279,7 +285,7 @@ class TensorFusionPlugin(kvmagent.KvmAgent):
                     count, vm_uuid, event_str))
         except Exception:
             import traceback
-            logger.warn('TensorFusion: async cleanup for VM %s after lifecycle event %s failed: %s' % (
+            logger.warning('TensorFusion: async cleanup for VM %s after lifecycle event %s failed: %s' % (
                 vm_uuid, event_str, traceback.format_exc()))
         finally:
             with self._cleanup_lock:

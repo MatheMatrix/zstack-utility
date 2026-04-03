@@ -85,7 +85,7 @@ class WorkerRestartMonitor(object):
         if self._thread and self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(self.STOP_JOIN_TIMEOUT)
             if self._thread.is_alive():
-                logger.warn('WorkerRestartMonitor: monitor thread did not exit within %ss' % self.STOP_JOIN_TIMEOUT)
+                logger.warning('WorkerRestartMonitor: monitor thread did not exit within %ss' % self.STOP_JOIN_TIMEOUT)
 
         with self._lock:
             restart_threads = list(self._restart_threads.values())
@@ -96,7 +96,7 @@ class WorkerRestartMonitor(object):
                 continue
             thread.join(self.STOP_JOIN_TIMEOUT)
             if thread.is_alive():
-                logger.warn('WorkerRestartMonitor: restart thread %s did not exit within %ss' % (
+                logger.warning('WorkerRestartMonitor: restart thread %s did not exit within %ss' % (
                     thread.name, self.STOP_JOIN_TIMEOUT))
 
     def clear(self, device_uuid):
@@ -164,7 +164,7 @@ class WorkerRestartMonitor(object):
             self._give_up(current_worker, already_removed=True)
             return
 
-        logger.warn(
+        logger.warning(
             'WorkerRestartMonitor: scheduling restart for worker %s '
             'in %ds (attempt %d/%d)' % (device_uuid, backoff, count, CrashState.MAX_CRASHES))
 
@@ -196,6 +196,14 @@ class WorkerRestartMonitor(object):
                 logger.info('WorkerRestartMonitor: stop requested during backoff, skipping restart for worker %s' %
                             device_uuid)
                 return
+
+            # Reap the old dead process to prevent zombie.
+            if getattr(w, 'pid', None):
+                try:
+                    self._executor.reap_dead(w.pid)
+                except Exception as e:
+                    logger.warning('WorkerRestartMonitor: failed to reap dead process pid=%s for worker %s: %s' %
+                                (w.pid, device_uuid, e))
 
             # Guard: worker may have been intentionally destroyed or replaced while we waited.
             current_worker = self._store.get(device_uuid)
@@ -229,7 +237,7 @@ class WorkerRestartMonitor(object):
                 new_worker = self._restart_worker(current_worker)
                 if new_worker is None:
                     self.clear(device_uuid)
-                    logger.warn('WorkerRestartMonitor: worker %s changed during restart, skipping stale replacement' %
+                    logger.warning('WorkerRestartMonitor: worker %s changed during restart, skipping stale replacement' %
                                 device_uuid)
                     return
 
@@ -258,6 +266,13 @@ class WorkerRestartMonitor(object):
                 return
             w = current_worker
 
+        # Reap the dead process to prevent zombie.
+        if getattr(w, 'pid', None):
+            try:
+                self._executor.reap_dead(w.pid)
+            except Exception as e:
+                logger.warning('WorkerRestartMonitor: failed to reap dead process pid=%s '
+                            'during give_up for worker %s: %s' % (w.pid, device_uuid, e))
         self._tracker.release(w.pci_address, device_uuid)
         with self._lock:
             self._states.pop(device_uuid, None)
@@ -272,7 +287,7 @@ class WorkerRestartMonitor(object):
             return
         try:
             self._event_notifier(w.device_uuid, w.vm_uuid, w.pci_address, crash_count, event_type)
-            logger.warn('WorkerRestartMonitor: pushed %s event for worker %s '
+            logger.warning('WorkerRestartMonitor: pushed %s event for worker %s '
                         '(crashCount=%d, vm=%s)' % (event_type, w.device_uuid, crash_count, w.vm_uuid))
         except Exception as e:
             logger.error('WorkerRestartMonitor: failed to push %s event '

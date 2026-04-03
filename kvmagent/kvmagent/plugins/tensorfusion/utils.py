@@ -32,8 +32,8 @@ def is_vm_running(vm_uuid):
     except libvirt.libvirtError as e:
         if e.get_error_code() == libvirt.VIR_ERR_NO_DOMAIN:
             return False
-        logger.warn('is_vm_running: libvirt error checking VM %s: %s' % (vm_uuid, e))
+        logger.warning('is_vm_running: libvirt error checking VM %s: %s' % (vm_uuid, e))
         return None
     except Exception as e:
-        logger.warn('is_vm_running: unexpected error checking VM %s: %s' % (vm_uuid, e))
+        logger.warning('is_vm_running: unexpected error checking VM %s: %s' % (vm_uuid, e))
         return None

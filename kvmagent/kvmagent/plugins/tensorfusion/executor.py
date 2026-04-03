@@ -122,7 +122,7 @@ class ProcessExecutor(object):
                     env=env,
                     stdout=log_fd,
                     stderr=log_fd,
-                    preexec_fn=os.setsid,
+                    start_new_session=True,
                     close_fds=True,
                 )
             finally:
@@ -167,15 +167,17 @@ class ProcessExecutor(object):
         pid = worker.pid
         proc = self._get_proc(pid)
         stopped = True
+        cleanup_allowed = True
         if proc is not None and self._process_has_exited(proc):
             logger.info('worker %s pid %d already exited before destroy' % (worker.device_uuid, pid))
             stopped = False
         if proc is None:
             verified, reason = self._verify_worker_pid(pid, worker)
             if not verified:
-                logger.warn('skip stopping pid %d for worker %s: %s' % (
+                logger.warning('skip stopping pid %d for worker %s: %s' % (
                     pid, worker.device_uuid, reason))
                 stopped = False
+                cleanup_allowed = self._is_worker_process_gone_or_replaced(reason)
 
         if stopped:
             pgid = None
@@ -193,7 +195,7 @@ class ProcessExecutor(object):
                 if pgid is not None:
                     try:
                         os.killpg(pgid, signal.SIGKILL)
-                        logger.warn('sent SIGKILL to process group %d (worker %s) after SIGTERM timeout' % (
+                        logger.warning('sent SIGKILL to process group %d (worker %s) after SIGTERM timeout' % (
                             pgid, worker.device_uuid))
                     except OSError as e:
                         if e.errno != errno.ESRCH:
@@ -204,7 +206,14 @@ class ProcessExecutor(object):
                     raise Exception('worker %s pid %d did not exit within %ss after SIGTERM and %ss after SIGKILL' %
                                     (worker.device_uuid, pid, self.STOP_WAIT_SEC, self.KILL_WAIT_SEC))
 
-        self._forget_proc(pid)
+        if not cleanup_allowed:
+            raise Exception('worker %s pid %d stop not confirmed: skip local cleanup' %
+                            (worker.device_uuid, pid))
+
+        try:
+            self._forget_proc(pid)
+        except Exception:
+            pass
 
         # Clean up shared memory file
         if worker.shared_memory_path and os.path.exists(worker.shared_memory_path):
@@ -216,6 +225,47 @@ class ProcessExecutor(object):
                                 (worker.shared_memory_path, str(e)))
 
         return stopped
+
+    @staticmethod
+    def _is_worker_process_gone_or_replaced(reason):
+        # type: (str) -> bool
+        if not reason:
+            return False
+
+        return (
+            reason == 'process no longer exists' or
+            reason.startswith('unexpected binary ') or
+            reason.startswith('device uuid mismatch: ')
+        )
+
+    def _stop_pid(self, pid, device_uuid=None):
+        proc = self._get_proc(pid)
+        pgid = None
+        label = device_uuid or 'unknown'
+        try:
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, signal.SIGTERM)
+            logger.info('sent SIGTERM to process group %d (worker %s, pid=%d)' % (pgid, label, pid))
+        except OSError as e:
+            if e.errno == errno.ESRCH:
+                logger.info('worker %s pid %d already exited before destroy' % (label, pid))
+            else:
+                raise Exception('failed to kill process group for pid %d: %s' % (pid, str(e)))
+
+        if not self._wait_for_exit(pid, self.STOP_WAIT_SEC, proc):
+            if pgid is not None:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                    logger.warning('sent SIGKILL to process group %d (worker %s) after SIGTERM timeout' % (
+                        pgid, label))
+                except OSError as e:
+                    if e.errno != errno.ESRCH:
+                        raise Exception('failed to kill process group for pid %d with SIGKILL: %s' % (
+                            pid, str(e)))
+
+            if not self._wait_for_exit(pid, self.KILL_WAIT_SEC, proc):
+                raise Exception('worker %s pid %d did not exit within %ss after SIGTERM and %ss after SIGKILL' %
+                                (label, pid, self.STOP_WAIT_SEC, self.KILL_WAIT_SEC))
 
     def _wait_for_exit(self, pid, timeout, proc=None):
         # type: (int, int, subprocess.Popen) -> bool
@@ -276,7 +326,8 @@ class ProcessExecutor(object):
         with self._proc_lock:
             self._procs.pop(pid, None)
 
-    def _verify_worker_pid(self, pid, worker):
+    @classmethod
+    def _verify_worker_pid(cls, pid, worker):
         # type: (int, Worker) -> tuple
         cmdline_path = '/proc/%s/cmdline' % pid
         environ_path = '/proc/%s/environ' % pid
@@ -294,7 +345,7 @@ class ProcessExecutor(object):
             return False, 'empty cmdline'
 
         binary = os.path.basename(cmdline[0])
-        if binary != os.path.basename(self.WORKER_BINARY):
+        if binary != os.path.basename(cls.WORKER_BINARY):
             return False, 'unexpected binary %s' % binary
 
         try:
@@ -319,6 +370,20 @@ class ProcessExecutor(object):
 
         return True, 'verified tensor-fusion-worker process'
 
+    def reap_dead(self, pid):
+        """Reap a dead child process to prevent zombies, and clean up _procs tracking."""
+        proc = self._get_proc(pid)
+        if proc is not None:
+            self._reap_process(proc)
+        else:
+            # No Popen object tracked — try os.waitpid directly as fallback.
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except (OSError, ChildProcessError):
+                pass
+        self._forget_proc(pid)
+        logger.debug('reaped dead worker process pid=%d' % pid)
+
     def scan_running(self):
         # type: () -> list
         """Scan for running tensor-fusion-worker processes and reconstruct Worker objects."""
@@ -326,7 +391,7 @@ class ProcessExecutor(object):
         try:
             import psutil
         except ImportError:
-            logger.warn('psutil not available, cannot scan running workers')
+            logger.warning('psutil not available, cannot scan running workers')
             return workers
 
         # Build reverse mapping: cuda_index -> pci_address
@@ -380,7 +445,7 @@ class ProcessExecutor(object):
                 worker.pci_address = normalize_pci_address(environ.get('TF_PCI_ADDRESS')) or \
                     cuda_to_pci.get(worker.cuda_index, '')
                 if not worker.pci_address:
-                    logger.warn('skipping worker pid=%d: missing PCI address' % proc.pid)
+                    logger.warning('skipping worker pid=%d: missing PCI address' % proc.pid)
                     continue
 
                 mem_limit = environ.get('TF_GPU_MEMORY_LIMIT', '0')
@@ -404,7 +469,7 @@ class ProcessExecutor(object):
                 worker.license = environ.get('TF_LICENSE')
                 worker.license_sign = environ.get('TF_LICENSE_SIGN')
                 if not worker.license or not worker.license_sign:
-                    logger.warn('skipping worker pid=%d: missing TF_LICENSE or TF_LICENSE_SIGN' % proc.pid)
+                    logger.warning('skipping worker pid=%d: missing TF_LICENSE or TF_LICENSE_SIGN' % proc.pid)
                     continue
 
                 workers.append(worker)
@@ -417,6 +482,95 @@ class ProcessExecutor(object):
         logger.info('scan_running: found %d tensor-fusion-worker processes' % len(workers))
         return workers
 
+    def cleanup_residual_workers_by_vm(self, vm_uuid, known_pids=None):
+        # type: (str, list) -> int
+        """Best-effort cleanup for worker processes that are missing from StateStore."""
+        known_pids = set(known_pids or [])
+        residuals = self._scan_residual_worker_processes(vm_uuid, known_pids)
+        cleaned = 0
+        handled_pgids = set()
+
+        for residual in residuals:
+            pid = residual['pid']
+            label = residual.get('device_uuid') or 'residual@%s' % pid
+
+            try:
+                pgid = os.getpgid(pid)
+            except OSError as e:
+                if e.errno == errno.ESRCH:
+                    continue
+                raise Exception('failed to get process group for residual worker %s pid %d: %s' % (
+                    label, pid, str(e)))
+
+            if pgid in handled_pgids:
+                continue
+
+            try:
+                self._stop_pid(pid, label)
+            except Exception as e:
+                logger.warning('failed to stop residual worker %s pid %d: %s' % (label, pid, e))
+                continue
+
+            handled_pgids.add(pgid)
+            cleaned += 1
+
+            shm_path = residual.get('shared_memory_path')
+            if shm_path and os.path.exists(shm_path):
+                try:
+                    os.remove(shm_path)
+                    logger.debug('removed residual shared memory file: %s' % shm_path)
+                except OSError as e:
+                    logger.warning('failed to remove residual shared memory file %s: %s' %
+                                (shm_path, str(e)))
+
+        if cleaned:
+            logger.info('cleanup_residual_workers_by_vm: cleaned %d residual worker groups for VM %s' % (
+                cleaned, vm_uuid))
+        return cleaned
+
+    def _scan_residual_worker_processes(self, vm_uuid, known_pids=None):
+        # type: (str, set) -> list
+        known_pids = set(known_pids or [])
+        residuals = []
+        try:
+            import psutil
+        except ImportError:
+            logger.warning('psutil not available, cannot scan residual workers for VM %s' % vm_uuid)
+            return residuals
+
+        binary_name = os.path.basename(self.WORKER_BINARY)
+        for proc in psutil.process_iter():
+            try:
+                if proc.pid in known_pids:
+                    continue
+                if proc.name() != binary_name:
+                    continue
+
+                try:
+                    environ = proc.environ() or {}
+                except (AttributeError, psutil.AccessDenied):
+                    environ = {}
+
+                if environ.get('VM_UUID') != vm_uuid:
+                    continue
+
+                shared_memory_path = None
+                cmdline = proc.cmdline() or []
+                for i, arg in enumerate(cmdline):
+                    if arg == '-m' and i + 1 < len(cmdline):
+                        shared_memory_path = self.SHM_PREFIX + cmdline[i + 1].lstrip('/')
+                        break
+
+                residuals.append({
+                    'pid': proc.pid,
+                    'device_uuid': environ.get('TF_DEVICE_UUID'),
+                    'shared_memory_path': shared_memory_path,
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        return residuals
+
     @classmethod
     def _bytes_to_mb(cls, size):
         # type: (int) -> int
@@ -424,19 +578,27 @@ class ProcessExecutor(object):
             return 0
         return (size + cls.BYTES_PER_MB - 1) // cls.BYTES_PER_MB
 
-    @staticmethod
-    def is_alive(worker):
+    @classmethod
+    def is_alive(cls, worker):
         # type: (Worker) -> bool
         """Check if a worker process is still alive."""
         try:
             import psutil
             p = psutil.Process(worker.pid)
-            return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+            if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
+                return False
+
+            verified, _ = cls._verify_worker_pid(worker.pid, worker)
+            return verified
         except ImportError:
             # Fallback: use kill(0), then check Linux /proc state to filter zombies.
             try:
                 os.kill(worker.pid, 0)
-                return not ProcessExecutor._is_linux_zombie(worker.pid)
+                if cls._is_linux_zombie(worker.pid):
+                    return False
+
+                verified, _ = cls._verify_worker_pid(worker.pid, worker)
+                return verified
             except OSError:
                 return False
         except Exception:

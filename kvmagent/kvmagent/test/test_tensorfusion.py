@@ -11,6 +11,7 @@ import threading
 import time
 import types
 import unittest
+import importlib
 
 try:
     import builtins
@@ -89,18 +90,45 @@ class _MockNVIDIA(object):
 
 _mock_nvidia_mod.NVIDIA = _MockNVIDIA
 
-for mod_name, mod_obj in [
-    ('zstacklib', types.ModuleType('zstacklib')),
-    ('zstacklib.utils', types.ModuleType('zstacklib.utils')),
-    ('zstacklib.utils.log', _mock_log),
-    ('zstacklib.utils.pci', _mock_pci),
-    ('zstacklib.gpu', types.ModuleType('zstacklib.gpu')),
-    ('zstacklib.gpu.vendors', types.ModuleType('zstacklib.gpu.vendors')),
-    ('zstacklib.gpu.vendors.nvidia', _mock_nvidia_mod),
-]:
-    sys.modules.setdefault(mod_name, mod_obj)
+def _build_mock_modules():
+    zstacklib_mod = types.ModuleType('zstacklib')
+    zstacklib_utils_mod = types.ModuleType('zstacklib.utils')
+    zstacklib_gpu_mod = types.ModuleType('zstacklib.gpu')
+    zstacklib_gpu_vendors_mod = types.ModuleType('zstacklib.gpu.vendors')
+    libvirt_mod = types.ModuleType('libvirt')
 
-# Now safe to import tensorfusion modules
+    zstacklib_mod.utils = zstacklib_utils_mod
+    zstacklib_mod.gpu = zstacklib_gpu_mod
+    zstacklib_utils_mod.log = _mock_log
+    zstacklib_utils_mod.pci = _mock_pci
+    zstacklib_gpu_mod.vendors = zstacklib_gpu_vendors_mod
+    zstacklib_gpu_vendors_mod.nvidia = _mock_nvidia_mod
+
+    return {
+        'zstacklib': zstacklib_mod,
+        'zstacklib.utils': zstacklib_utils_mod,
+        'zstacklib.utils.log': _mock_log,
+        'zstacklib.utils.pci': _mock_pci,
+        'zstacklib.gpu': zstacklib_gpu_mod,
+        'zstacklib.gpu.vendors': zstacklib_gpu_vendors_mod,
+        'zstacklib.gpu.vendors.nvidia': _mock_nvidia_mod,
+        'libvirt': libvirt_mod,
+    }
+
+
+def _preload_tensorfusion_modules():
+    with mock.patch.dict(sys.modules, _build_mock_modules()):
+        importlib.import_module('kvmagent.plugins.tensorfusion.models')
+        importlib.import_module('kvmagent.plugins.tensorfusion.store')
+        importlib.import_module('kvmagent.plugins.tensorfusion.tracker')
+        importlib.import_module('kvmagent.plugins.tensorfusion.executor')
+        importlib.import_module('kvmagent.plugins.tensorfusion.monitor')
+        importlib.import_module('kvmagent.plugins.tensorfusion.utils')
+        importlib.import_module('kvmagent.plugins.tensorfusion.service')
+
+
+_preload_tensorfusion_modules()
+
 from kvmagent.plugins.tensorfusion.models import Worker, WorkerCreateRequest, GPUResourceInfo, GPUHardwareInfo
 from kvmagent.plugins.tensorfusion.store import StateStore
 from kvmagent.plugins.tensorfusion.tracker import ResourceTracker
@@ -399,7 +427,9 @@ class TestResourceTracker(unittest.TestCase):
 class TestTensorFusionService(unittest.TestCase):
 
     def _mock_executor(self, MockExecutor):
-        return MockExecutor.return_value
+        executor = MockExecutor.return_value
+        executor.cleanup_residual_workers_by_vm.return_value = 0
+        return executor
 
     @mock.patch('kvmagent.plugins.tensorfusion.service.NVIDIA')
     @mock.patch('kvmagent.plugins.tensorfusion.service.ProcessExecutor')
@@ -707,6 +737,7 @@ class TestTensorFusionService(unittest.TestCase):
         count = svc.destroy_workers_by_vm('vm-001')
         self.assertEqual(count, 2)
         self.assertEqual(len(svc.list_workers()), 0)
+        mock_executor.cleanup_residual_workers_by_vm.assert_called_once_with('vm-001', known_pids=[1001, 1002])
 
     @mock.patch('kvmagent.plugins.tensorfusion.service.NVIDIA')
     @mock.patch('kvmagent.plugins.tensorfusion.service.ProcessExecutor')
@@ -743,6 +774,24 @@ class TestTensorFusionService(unittest.TestCase):
         self.assertEqual(mock_executor.stop.call_count, 2)
         self.assertIsNotNone(svc.get_worker('d1'))
         self.assertIsNone(svc.get_worker('d2'))
+
+    @mock.patch('kvmagent.plugins.tensorfusion.service.NVIDIA')
+    @mock.patch('kvmagent.plugins.tensorfusion.service.ProcessExecutor')
+    def test_destroy_workers_by_vm_cleans_residual_processes_when_store_empty(self, MockExecutor, MockNVIDIA):
+        MockNVIDIA.query_gpu_details.return_value = _make_gpu_details()
+
+        mock_executor = self._mock_executor(MockExecutor)
+        mock_executor.scan_running.return_value = []
+        mock_executor.cleanup_residual_workers_by_vm.return_value = 1
+
+        from kvmagent.plugins.tensorfusion.service import TensorFusionService
+        svc = TensorFusionService()
+        svc.initialize()
+
+        count = svc.destroy_workers_by_vm('vm-001')
+
+        self.assertEqual(1, count)
+        mock_executor.cleanup_residual_workers_by_vm.assert_called_once_with('vm-001', known_pids=[])
 
     @mock.patch('kvmagent.plugins.tensorfusion.service.NVIDIA')
     @mock.patch('kvmagent.plugins.tensorfusion.service.ProcessExecutor')
@@ -1252,6 +1301,57 @@ class TestProcessExecutor(unittest.TestCase):
 
         self.assertEqual([], workers)
 
+    @mock.patch('kvmagent.plugins.tensorfusion.executor.ProcessExecutor._wait_for_exit', return_value=True)
+    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.path.exists', return_value=False)
+    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.killpg')
+    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.getpgid')
+    def test_cleanup_residual_workers_by_vm_kills_untracked_process_group_once(self, mock_getpgid, mock_killpg, _mock_exists, _mock_wait):
+        from kvmagent.plugins.tensorfusion.executor import ProcessExecutor
+
+        class _FakeProc(object):
+            def __init__(self, pid, env):
+                self.pid = pid
+                self._env = env
+
+            @staticmethod
+            def name():
+                return 'tensor-fusion-worker'
+
+            @staticmethod
+            def cmdline():
+                return ['tensor-fusion-worker', '-n', 'shmem', '-m', '/tf_dev-001', '-M', '1024']
+
+            def environ(self):
+                return self._env
+
+        fake_psutil = types.ModuleType('psutil')
+        fake_psutil.AccessDenied = type('AccessDenied', (Exception,), {})
+        fake_psutil.NoSuchProcess = type('NoSuchProcess', (Exception,), {})
+        fake_psutil.ZombieProcess = type('ZombieProcess', (Exception,), {})
+        fake_psutil.process_iter = lambda: [
+            _FakeProc(4321, {'VM_UUID': 'vm-001', 'TF_DEVICE_UUID': 'dev-001'}),
+            _FakeProc(4322, {'VM_UUID': 'vm-001', 'TF_DEVICE_UUID': 'dev-002'}),
+            _FakeProc(5321, {'VM_UUID': 'vm-002', 'TF_DEVICE_UUID': 'dev-003'}),
+        ]
+
+        pgids = {
+            4321: 9001,
+            4322: 9001,
+        }
+
+        def _getpgid(pid):
+            value = pgids[pid]
+            return value
+
+        mock_getpgid.side_effect = _getpgid
+
+        with mock.patch.dict(sys.modules, {'psutil': fake_psutil}):
+            executor = ProcessExecutor(_make_gpu_details())
+            cleaned = executor.cleanup_residual_workers_by_vm('vm-001', known_pids=[1234])
+
+        self.assertEqual(1, cleaned)
+        mock_killpg.assert_called_once_with(9001, mock.ANY)
+
 
 class TestWorkerRestartMonitor(unittest.TestCase):
 
@@ -1323,10 +1423,214 @@ class TestWorkerRestartMonitor(unittest.TestCase):
 
         executor.start.side_effect = _start
 
-        monitor._do_restart(worker, 0)
+        with mock.patch('kvmagent.plugins.tensorfusion.utils.is_vm_running', return_value=True):
+            monitor._do_restart(worker, 0)
 
         executor.stop.assert_called_once_with(restarted)
         self.assertIsNone(store.get(worker.device_uuid))
+
+
+# =============================================================================
+# Orphan scan tests
+# =============================================================================
+
+class TestOrphanScan(unittest.TestCase):
+    """Tests for TensorFusionService._scan_and_cleanup_orphans."""
+
+    @mock.patch('kvmagent.plugins.tensorfusion.service.NVIDIA')
+    @mock.patch('kvmagent.plugins.tensorfusion.service.ProcessExecutor')
+    def test_orphan_scan_kills_tracked_worker_whose_vm_is_gone(self, MockExecutor, MockNVIDIA):
+        """A tracked worker whose VM is no longer running should be killed."""
+        MockNVIDIA.query_gpu_details.return_value = _make_gpu_details()
+
+        mock_executor = MockExecutor.return_value
+        mock_executor.cleanup_residual_workers_by_vm.return_value = 0
+        mock_executor.scan_running.return_value = []
+        mock_executor.is_alive.return_value = True
+        mock_executor.stop.return_value = True
+
+        created_worker = _make_worker()
+        mock_executor.start.return_value = created_worker
+
+        from kvmagent.plugins.tensorfusion.service import TensorFusionService
+        svc = TensorFusionService()
+        with mock.patch('kvmagent.plugins.tensorfusion.service._is_vm_running', return_value=True):
+            svc.initialize()
+
+        req = WorkerCreateRequest()
+        req.vm_uuid = 'vm-001'
+        req.pci_address = '0000:3b:00.0'
+        req.memory_mb = 1024
+        req.device_uuid = 'dev-001'
+        req.license = TEST_LICENSE
+        req.license_sign = TEST_LICENSE_SIGN
+        svc.create_worker(req)
+
+        # Now simulate VM gone; scan_running still sees the process
+        mock_executor.is_alive.return_value = False
+        mock_executor.scan_running.return_value = [created_worker]
+        with mock.patch('kvmagent.plugins.tensorfusion.service._is_vm_running', return_value=False):
+            svc._scan_and_cleanup_orphans()
+
+        mock_executor.stop.assert_called_with(created_worker)
+        # Worker should be removed from state
+        self.assertIsNone(svc.get_worker('dev-001'))
+
+    @mock.patch('kvmagent.plugins.tensorfusion.service.NVIDIA')
+    @mock.patch('kvmagent.plugins.tensorfusion.service.ProcessExecutor')
+    def test_orphan_scan_keeps_worker_whose_vm_is_running(self, MockExecutor, MockNVIDIA):
+        """A tracked worker whose VM is still running should NOT be killed."""
+        MockNVIDIA.query_gpu_details.return_value = _make_gpu_details()
+
+        mock_executor = MockExecutor.return_value
+        mock_executor.cleanup_residual_workers_by_vm.return_value = 0
+        mock_executor.scan_running.return_value = []
+        mock_executor.is_alive.return_value = True
+        mock_executor.stop.return_value = True
+
+        created_worker = _make_worker()
+        mock_executor.start.return_value = created_worker
+
+        from kvmagent.plugins.tensorfusion.service import TensorFusionService
+        svc = TensorFusionService()
+        with mock.patch('kvmagent.plugins.tensorfusion.service._is_vm_running', return_value=True):
+            svc.initialize()
+
+        req = WorkerCreateRequest()
+        req.vm_uuid = 'vm-001'
+        req.pci_address = '0000:3b:00.0'
+        req.memory_mb = 1024
+        req.device_uuid = 'dev-001'
+        req.license = TEST_LICENSE
+        req.license_sign = TEST_LICENSE_SIGN
+        svc.create_worker(req)
+
+        # VM still running; scan_running sees the process
+        mock_executor.scan_running.return_value = [created_worker]
+        with mock.patch('kvmagent.plugins.tensorfusion.service._is_vm_running', return_value=True):
+            svc._scan_and_cleanup_orphans()
+
+        # stop should not have been called for cleanup
+        self.assertIsNotNone(svc.get_worker('dev-001'))
+
+    @mock.patch('kvmagent.plugins.tensorfusion.service.NVIDIA')
+    @mock.patch('kvmagent.plugins.tensorfusion.service.ProcessExecutor')
+    def test_orphan_scan_kills_untracked_worker_whose_vm_is_gone(self, MockExecutor, MockNVIDIA):
+        """An untracked worker process (not in StateStore) whose VM is gone should be killed."""
+        MockNVIDIA.query_gpu_details.return_value = _make_gpu_details()
+
+        mock_executor = MockExecutor.return_value
+        mock_executor.cleanup_residual_workers_by_vm.return_value = 0
+        mock_executor.is_alive.return_value = True
+        mock_executor.stop.return_value = True
+
+        from kvmagent.plugins.tensorfusion.service import TensorFusionService
+        svc = TensorFusionService()
+
+        # No tracked workers at init
+        mock_executor.scan_running.return_value = []
+        with mock.patch('kvmagent.plugins.tensorfusion.service._is_vm_running', return_value=True):
+            svc.initialize()
+
+        # Simulate an untracked worker process discovered during scan
+        orphan_worker = _make_worker(device_uuid='orphan-001', vm_uuid='vm-gone', pid=9999)
+        mock_executor.scan_running.return_value = [orphan_worker]
+
+        with mock.patch('kvmagent.plugins.tensorfusion.service._is_vm_running', return_value=False):
+            svc._scan_and_cleanup_orphans()
+
+        mock_executor.stop.assert_called_with(orphan_worker)
+
+    @mock.patch('kvmagent.plugins.tensorfusion.service.NVIDIA')
+    @mock.patch('kvmagent.plugins.tensorfusion.service.ProcessExecutor')
+    def test_orphan_scan_keeps_untracked_worker_when_vm_check_fails(self, MockExecutor, MockNVIDIA):
+        """When libvirt query fails (returns None), untracked worker should be kept alive."""
+        MockNVIDIA.query_gpu_details.return_value = _make_gpu_details()
+
+        mock_executor = MockExecutor.return_value
+        mock_executor.cleanup_residual_workers_by_vm.return_value = 0
+        mock_executor.is_alive.return_value = True
+
+        from kvmagent.plugins.tensorfusion.service import TensorFusionService
+        svc = TensorFusionService()
+
+        mock_executor.scan_running.return_value = []
+        with mock.patch('kvmagent.plugins.tensorfusion.service._is_vm_running', return_value=True):
+            svc.initialize()
+
+        orphan_worker = _make_worker(device_uuid='orphan-002', vm_uuid='vm-unknown', pid=8888)
+        mock_executor.scan_running.return_value = [orphan_worker]
+
+        # is_vm_running returns None (libvirt query failed)
+        with mock.patch('kvmagent.plugins.tensorfusion.service._is_vm_running', return_value=None):
+            svc._scan_and_cleanup_orphans()
+
+        mock_executor.stop.assert_not_called()
+
+    @mock.patch('kvmagent.plugins.tensorfusion.service.NVIDIA')
+    @mock.patch('kvmagent.plugins.tensorfusion.service.ProcessExecutor')
+    def test_orphan_scan_timer_starts_and_stops(self, MockExecutor, MockNVIDIA):
+        """Verify the orphan scan timer thread starts on initialize and stops on stop()."""
+        MockNVIDIA.query_gpu_details.return_value = _make_gpu_details()
+
+        mock_executor = MockExecutor.return_value
+        mock_executor.cleanup_residual_workers_by_vm.return_value = 0
+        mock_executor.scan_running.return_value = []
+
+        # Count scan threads before
+        before = len([t for t in threading.enumerate() if t.name == 'tf-orphan-scan'])
+
+        from kvmagent.plugins.tensorfusion.service import TensorFusionService
+        svc = TensorFusionService()
+        # Use a very short interval for testing
+        svc.ORPHAN_SCAN_INTERVAL_SEC = 0.1
+
+        with mock.patch('kvmagent.plugins.tensorfusion.service._is_vm_running', return_value=True):
+            svc.initialize()
+
+        # Check that one more orphan scan thread is running
+        after = len([t for t in threading.enumerate() if t.name == 'tf-orphan-scan'])
+        self.assertEqual(after, before + 1)
+
+        svc.stop()
+        # Give thread time to notice the stop event
+        time.sleep(0.3)
+        stopped = len([t for t in threading.enumerate() if t.name == 'tf-orphan-scan'])
+        self.assertEqual(stopped, before)
+
+    @mock.patch('kvmagent.plugins.tensorfusion.service.NVIDIA')
+    @mock.patch('kvmagent.plugins.tensorfusion.service.ProcessExecutor')
+    def test_orphan_scan_timer_can_restart_after_stop(self, MockExecutor, MockNVIDIA):
+        MockNVIDIA.query_gpu_details.return_value = _make_gpu_details()
+
+        mock_executor = MockExecutor.return_value
+        mock_executor.cleanup_residual_workers_by_vm.return_value = 0
+        mock_executor.scan_running.return_value = []
+
+        from kvmagent.plugins.tensorfusion.service import TensorFusionService
+        svc = TensorFusionService()
+        svc.ORPHAN_SCAN_INTERVAL_SEC = 0.1
+
+        with mock.patch('kvmagent.plugins.tensorfusion.service._is_vm_running', return_value=True):
+            svc.initialize()
+
+        first_thread = svc._orphan_scan_thread
+        self.assertIsNotNone(first_thread)
+        self.assertTrue(first_thread.is_alive())
+
+        svc.stop()
+        time.sleep(0.2)
+        self.assertFalse(first_thread.is_alive())
+
+        with mock.patch('kvmagent.plugins.tensorfusion.service._is_vm_running', return_value=True):
+            svc.initialize()
+
+        second_thread = svc._orphan_scan_thread
+        self.assertIsNotNone(second_thread)
+        self.assertIsNot(first_thread, second_thread)
+        self.assertTrue(second_thread.is_alive())
+
+        svc.stop()
 
 
 if __name__ == '__main__':

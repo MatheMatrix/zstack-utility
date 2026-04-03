@@ -41,6 +41,7 @@ import zstacklib.utils.ip as ip
 import zstacklib.utils.iptables as iptables
 import zstacklib.utils.lock as lock
 from zstacklib.utils import sizeunit
+from zstacklib.hardware.pci.passthrough import check_device_in_use
 
 from jinja2 import Template
 
@@ -6925,6 +6926,12 @@ class Vm(object):
                         raise kvmagent.KvmError('failed to /usr/lib/nvidia/sriov-manage -d %s: %s, %s' % (addr, o, stderr))
 
 
+                try:
+                    check_device_in_use(addr)
+                except Exception as ex:
+                    raise kvmagent.KvmError(
+                        'failed pre-detach device-in-use check for %s: %s' % (addr, str(ex)))
+
                 ret, out, err = bash.bash_roe("virsh nodedev-detach pci_%s" % addr.replace(':', '_').replace('.', '_'))
                 if ret != 0:
                     raise kvmagent.KvmError('failed to nodedev-detach %s: %s, %s' % (addr, out, err))
@@ -6974,11 +6981,16 @@ class Vm(object):
                     raise kvmagent.KvmError('invalid dGPU shmem path[%s], path must be normalized under /dev/shm' % mem_path)
                 try:
                     shmem_size = int(shmem_size)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError) as e:
                     raise kvmagent.KvmError('invalid dGPU shmem size[%s], must be an integer' % shmem_size)
                 if shmem_size <= 0:
                     raise kvmagent.KvmError('invalid dGPU shmem size[%s], must be greater than 0' % shmem_size)
                 shmem_size_mb = (shmem_size + 1024 * 1024 - 1) // (1024 * 1024)
+                if shmem_size_mb < 1 or (shmem_size_mb & (shmem_size_mb - 1)) != 0:
+                    raise kvmagent.KvmError(
+                        'invalid dGPU shmem size[%s], libvirt requires a power-of-two MiB value >= 1 MiB'
+                        % shmem_size
+                    )
 
                 shmem_name = os.path.basename(normalized_mem_path)
                 shmem_el = e(devices, "shmem", attrib={"name": shmem_name})
@@ -10782,6 +10794,7 @@ host side snapshot files chian:
                 return jsonobject.dumps(rsp)
 
         try:
+            check_device_in_use(addr)
             formatted_addr = cmd.pciDeviceAddress.replace(':', '_').replace('.', '_')
             r, o, e = bash.bash_roe("virsh nodedev-detach pci_%s" % formatted_addr)
             if r != 0:
