@@ -86,12 +86,6 @@ from zstacklib.utils.libvirt_singleton import LibvirtSingleton
 logger = log.get_logger(__name__)
 
 HOST_ARCH = platform.machine()
-
-# L3 SMBIOS constants for CPU hotplug auto-online (ZSTAC-81735)
-_SMBIOS_CPU_HOTPLUG_OS_WHITELIST = ('ubuntu', 'debian')
-_SMBIOS_MANUFACTURER = 'Microsoft Corporation'
-_SMBIOS_PRODUCT = 'Virtual Machine'
-
 os_info = platform.freedesktop_os_release()
 DIST_NAME = os_info.get('ID', '').lower()
 # FIXME(py3): remove it
@@ -4795,43 +4789,6 @@ class Vm(object):
             raise kvmagent.KvmError(err)
         return
 
-    def _qga_online_hotplugged_cpus(self, prev_cpu_num):
-        """After CPU hotplug, use QGA guest-set-vcpus to online only the newly added CPUs.
-
-        @param prev_cpu_num: the CPU count before this hotplug operation,
-               used to avoid re-onlining CPUs that were manually offlined by the user.
-        """
-        try:
-            qga = VmQga(self.domain)
-            if qga.state != VmQga.QGA_STATE_RUNNING:
-                logger.debug('QGA not running for vm[uuid:%s], skip online CPUs' % self.uuid)
-                return
-
-            vcpus_info = qga.call_qga_command('guest-get-vcpus')
-            if not vcpus_info:
-                return
-
-            # Only online CPUs with logical-id >= prev_cpu_num (newly hotplugged),
-            # do not touch CPUs that were manually offlined by the user.
-            offline_cpus = []
-            for vcpu in vcpus_info:
-                if isinstance(vcpu, dict) and not vcpu.get('online', True) \
-                        and vcpu.get('logical-id', 0) >= prev_cpu_num:
-                    offline_cpus.append({
-                        'logical-id': vcpu['logical-id'],
-                        'online': True
-                    })
-
-            if not offline_cpus:
-                logger.debug('no newly hotplugged offline vCPUs for vm[uuid:%s]' % self.uuid)
-                return
-
-            result = qga.call_qga_command('guest-set-vcpus', args={'vcpus': offline_cpus})
-            logger.debug('QGA guest-set-vcpus for vm[uuid:%s]: set CPUs %s online, result=%s'
-                         % (self.uuid, [c['logical-id'] for c in offline_cpus], result))
-        except Exception as e:
-            logger.warning('failed to online CPUs via QGA for vm[uuid:%s]: %s' % (self.uuid, str(e)))
-
     @linux.retry(times=3, sleep_time=5)
     def _attach_nic(self, cmd):
         def check_device(_):
@@ -5759,45 +5716,21 @@ class Vm(object):
 
                 e(os, 'bootmenu', attrib=boot_menu_attrib)
 
-            # Enable smbios mode if serial number is set, or if L3 SMBIOS is needed for Ubuntu/Debian
-            _guest_os = getattr(cmd, 'guestOsType', None) or ''
-            _needs_smbios = cmd.systemSerialNumber or any(
-                os_name in _guest_os.lower() for os_name in _SMBIOS_CPU_HOTPLUG_OS_WHITELIST
-            )
-            if _needs_smbios and HOST_ARCH != 'mips64el':
+            if cmd.systemSerialNumber and HOST_ARCH != 'mips64el':
                 e(os, 'smbios', attrib={'mode': 'sysinfo'})
 
         def make_sysinfo():
-            # L3: check if Ubuntu/Debian guest needs SMBIOS even without serial number
-            guest_os = getattr(cmd, 'guestOsType', None) or ''
-            needs_smbios_for_cpu_hotplug = HOST_ARCH != 'mips64el' and any(
-                os_name in guest_os.lower() for os_name in _SMBIOS_CPU_HOTPLUG_OS_WHITELIST
-            )
-
-            if not cmd.systemSerialNumber and not needs_smbios_for_cpu_hotplug:
+            if not cmd.systemSerialNumber:
                 return
 
             root = elements['root']
             sysinfo = e(root, 'sysinfo', attrib={'type': 'smbios'})
             system = e(sysinfo, 'system')
-
-            if cmd.systemSerialNumber:
-                e(system, 'entry', cmd.systemSerialNumber, attrib={'name': 'serial'})
+            e(system, 'entry', cmd.systemSerialNumber, attrib={'name': 'serial'})
 
             if cmd.chassisAssetTag is not None:
                 chassis = e(sysinfo, 'chassis')
                 e(chassis, 'entry', cmd.chassisAssetTag, attrib={'name': 'asset'})
-
-            # L3: auto-set SMBIOS manufacturer/product for Ubuntu/Debian guests
-            # to enable udev-based CPU auto-online on hotplug.
-            # Only applies to VMs started after this version; existing VMs rely on L1(QGA)/L2(udev).
-            # Only this code path sets manufacturer/product; no other code sets these fields.
-            if needs_smbios_for_cpu_hotplug:
-                existing_entries = [child.attrib.get('name') for child in system]
-                if 'manufacturer' not in existing_entries:
-                    e(system, 'entry', _SMBIOS_MANUFACTURER, attrib={'name': 'manufacturer'})
-                if 'product' not in existing_entries:
-                    e(system, 'entry', _SMBIOS_PRODUCT, attrib={'name': 'product'})
 
             if cmd.oemStrings is not None:
                 oem_strings = e(sysinfo, 'oemStrings')
@@ -8437,10 +8370,8 @@ class VmPlugin(kvmagent.KvmAgent):
 
         try:
             vm = get_vm_by_uuid(cmd.vmUuid)
-            prev_cpu_num = vm.get_cpu_num()
             cpu_num = cmd.cpuNum
             vm.hotplug_cpu(cpu_num)
-            vm._qga_online_hotplugged_cpus(prev_cpu_num)
             vm = get_vm_by_uuid(cmd.vmUuid)
             rsp.cpuNum = vm.get_cpu_num()
             logger.debug('successfully increase cpu number of vm[uuid:%s] to %s' % (cmd.vmUuid, vm.get_cpu_num()))
@@ -8457,13 +8388,10 @@ class VmPlugin(kvmagent.KvmAgent):
         rsp = ChangeCpuMemResponse()
         try:
             vm = get_vm_by_uuid(cmd.vmUuid)
-            prev_cpu_num = vm.get_cpu_num()
             cpu_num = cmd.cpuNum
             memory_size = cmd.memorySize
             vm.hotplug_mem(memory_size)
             vm.hotplug_cpu(cpu_num)
-            if cpu_num > prev_cpu_num:
-                vm._qga_online_hotplugged_cpus(prev_cpu_num)
             vm = get_vm_by_uuid(cmd.vmUuid)
             rsp.cpuNum = vm.get_cpu_num()
             rsp.memorySize = vm.get_memory()
