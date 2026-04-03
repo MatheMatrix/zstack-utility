@@ -4063,7 +4063,7 @@ load_install_conf() {
 
 load_install_conf
 OPTIND=1
-TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDEFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum,choose-database: -- "$@"`
+TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDEFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum,choose-database:,precheck -- "$@"`
 if [ $? != 0 ]; then
     usage
 fi
@@ -4127,6 +4127,7 @@ do
         --sds) SDS_INSTALL='y';shift;;
         --no-zops) SKIP_ZOPS_INSTALL='y';shift;;
         --skip-pjnum) SKIP_PJNUM_CHECK='y';shift;;
+        --precheck) PRECHECK='y';UPGRADE='y';shift;;
         --choose-database )
             check_myarg $1 $2;
             if [[ "$2" != "MariaDB" && "$2" != "GreatDB" ]]; then
@@ -4506,6 +4507,14 @@ source ~/.bashrc >/dev/null 2>&1
 
 #Do preinstallation checking for CentOS and Ubuntu
 check_system
+
+if [ x"$PRECHECK" = x'y' ]; then
+    iptables -L INPUT | grep -q 'zstack allow login mysql from 127.0.0.1' && post_scripts_to_restore_iptables_rules
+    [ -n "$upgrade_folder" ] && rm -rf "$upgrade_folder"
+    cleanup_function
+    echo "Pre-upgrade checks passed."
+    exit 0
+fi
 
 if [ "$IS_YUM" = "y" ]; then
      install_sync_repo_dependences
