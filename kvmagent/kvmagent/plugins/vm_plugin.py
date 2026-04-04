@@ -87,8 +87,8 @@ logger = log.get_logger(__name__)
 
 HOST_ARCH = platform.machine()
 
-# L3 SMBIOS constants for CPU hotplug auto-online (ZSTAC-81735)
-_SMBIOS_CPU_HOTPLUG_OS_WHITELIST = ('ubuntu', 'debian')
+# CPU hotplug auto-online constants (ZSTAC-81735)
+_CPU_HOTPLUG_OS_WHITELIST = ('ubuntu', 'debian')
 _SMBIOS_MANUFACTURER = 'Microsoft Corporation'
 _SMBIOS_PRODUCT = 'Virtual Machine'
 
@@ -4795,24 +4795,61 @@ class Vm(object):
             raise kvmagent.KvmError(err)
         return
 
-    def _qga_online_hotplugged_cpus(self, prev_cpu_num):
-        """After CPU hotplug, use QGA guest-set-vcpus to online only the newly added CPUs.
+    def _has_smbios_cpu_hotplug(self):
+        """Check if SMBIOS manufacturer+product are set for CPU hotplug auto-online."""
+        try:
+            sysinfo = self.domain_xmlobject.get_child_node('sysinfo')
+            if sysinfo is None:
+                return False
+            system = sysinfo.get_child_node('system')
+            if system is None:
+                return False
+            entries = {e.name_: e.text_ for e in system.get_child_node_as_list('entry')}
+            return (entries.get('manufacturer') == _SMBIOS_MANUFACTURER
+                    and entries.get('product') == _SMBIOS_PRODUCT)
+        except Exception as ex:
+            logger.debug('failed to check SMBIOS for vm[uuid:%s]: %s' % (self.uuid, str(ex)))
+            return False
 
-        @param prev_cpu_num: the CPU count before this hotplug operation,
-               used to avoid re-onlining CPUs that were manually offlined by the user.
+    def _qga_online_hotplugged_cpus(self, prev_cpu_num):
+        """After CPU hotplug, use QGA to online newly added CPUs for whitelisted guests.
+
+        Decision flow:
+        1. x86_64 only (aarch64/mips64el skip)
+        2. QGA must be running
+        3. Guest OS must be in whitelist (ubuntu/debian) — detected via QGA
+        4. If SMBIOS manufacturer already set, skip (guest udev handles it)
+        5. Only online CPUs with logical-id >= prev_cpu_num (protect user-offlined CPUs)
+
+        Fail-safe: any exception only warns, never blocks hotplug.
         """
+        if HOST_ARCH != 'x86_64':
+            return
+
         try:
             qga = VmQga(self.domain)
             if qga.state != VmQga.QGA_STATE_RUNNING:
-                logger.debug('QGA not running for vm[uuid:%s], skip online CPUs' % self.uuid)
+                logger.debug('QGA not running for vm[uuid:%s], skip cpu online' % self.uuid)
+                return
+
+            # Get guest OS via QGA (qga.os from guest-get-osinfo / /etc/os-release)
+            guest_os = (qga.os or '').lower()
+            if not any(os_name in guest_os for os_name in _CPU_HOTPLUG_OS_WHITELIST):
+                logger.debug('guest OS [%s] not in whitelist for vm[uuid:%s], skip cpu online'
+                             % (guest_os, self.uuid))
+                return
+
+            # If SMBIOS manufacturer+product are already set (VM started/restarted after fix),
+            # guest udev auto-onlines CPUs — QGA call is redundant
+            if self._has_smbios_cpu_hotplug():
+                logger.debug('SMBIOS already set for vm[uuid:%s], '
+                             'skip QGA cpu online' % self.uuid)
                 return
 
             vcpus_info = qga.call_qga_command('guest-get-vcpus')
             if not vcpus_info:
                 return
 
-            # Only online CPUs with logical-id >= prev_cpu_num (newly hotplugged),
-            # do not touch CPUs that were manually offlined by the user.
             offline_cpus = []
             for vcpu in vcpus_info:
                 if isinstance(vcpu, dict) and not vcpu.get('online', True) \
@@ -5759,19 +5796,19 @@ class Vm(object):
 
                 e(os, 'bootmenu', attrib=boot_menu_attrib)
 
-            # Enable smbios mode if serial number is set, or if L3 SMBIOS is needed for Ubuntu/Debian
+            # Enable smbios mode if serial number is set, or for Ubuntu/Debian on x86_64 (CPU hotplug)
             _guest_os = getattr(cmd, 'guestOsType', None) or ''
-            _needs_smbios = cmd.systemSerialNumber or any(
-                os_name in _guest_os.lower() for os_name in _SMBIOS_CPU_HOTPLUG_OS_WHITELIST
+            _needs_smbios_for_hotplug = HOST_ARCH == 'x86_64' and any(
+                os_name in _guest_os.lower() for os_name in _CPU_HOTPLUG_OS_WHITELIST
             )
-            if _needs_smbios and HOST_ARCH != 'mips64el':
+            if (cmd.systemSerialNumber or _needs_smbios_for_hotplug) and HOST_ARCH != 'mips64el':
                 e(os, 'smbios', attrib={'mode': 'sysinfo'})
 
         def make_sysinfo():
-            # L3: check if Ubuntu/Debian guest needs SMBIOS even without serial number
+            # Check if Ubuntu/Debian guest on x86_64 needs SMBIOS for CPU hotplug auto-online
             guest_os = getattr(cmd, 'guestOsType', None) or ''
-            needs_smbios_for_cpu_hotplug = HOST_ARCH != 'mips64el' and any(
-                os_name in guest_os.lower() for os_name in _SMBIOS_CPU_HOTPLUG_OS_WHITELIST
+            needs_smbios_for_cpu_hotplug = HOST_ARCH == 'x86_64' and any(
+                os_name in guest_os.lower() for os_name in _CPU_HOTPLUG_OS_WHITELIST
             )
 
             if not cmd.systemSerialNumber and not needs_smbios_for_cpu_hotplug:
@@ -5788,10 +5825,10 @@ class Vm(object):
                 chassis = e(sysinfo, 'chassis')
                 e(chassis, 'entry', cmd.chassisAssetTag, attrib={'name': 'asset'})
 
-            # L3: auto-set SMBIOS manufacturer/product for Ubuntu/Debian guests
+            # Auto-set SMBIOS manufacturer/product for Ubuntu/Debian guests on x86_64
             # to enable udev-based CPU auto-online on hotplug.
-            # Only applies to VMs started after this version; existing VMs rely on L1(QGA)/L2(udev).
-            # Only this code path sets manufacturer/product; no other code sets these fields.
+            # Only applies to VMs started/restarted after this version;
+            # pre-upgrade VMs rely on QGA _qga_online_hotplugged_cpus().
             if needs_smbios_for_cpu_hotplug:
                 existing_entries = [child.attrib.get('name') for child in system]
                 if 'manufacturer' not in existing_entries:
