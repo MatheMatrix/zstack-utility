@@ -59,6 +59,10 @@ class UploadTasks(object):
     def get_task(self, task_uuid):
         return self.tasks.get(task_uuid)
 
+    @lock.lock('upload-task')
+    def remove_task(self, task_uuid):
+        self.tasks.pop(task_uuid, None)
+
 
 class UploadTask(object):
     def __init__(self, task_uuid, install_path):
