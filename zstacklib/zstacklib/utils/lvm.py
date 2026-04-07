@@ -520,6 +520,40 @@ def get_device_info(dev_name, scsi_info):
     s.path = get_device_path(dev_name)
     return s
 
+def get_udev_serial_and_wwn(dev_path):
+    # type: (str) -> tuple
+    """Get ID_SERIAL and ID_WWN from udev properties for a block device.
+
+    Different OS versions (e.g., CentOS 7.6 vs HuaWei H84R) map lsblk's WWN
+    and SERIAL columns to different underlying udev fields:
+      - C76:  lsblk WWN = ID_WWN,                SERIAL = ID_SERIAL_SHORT (SCSI Page 0x83)
+      - H84R: lsblk WWN = ID_WWN_WITH_EXTENSION, SERIAL = ID_SCSI_SERIAL  (SCSI Page 0x80)
+
+    Reading ID_WWN and ID_SERIAL directly from udev ensures the same LUN gets
+    the same identifiers regardless of which OS version is running.
+
+    Returns:
+        (serial, wwn) -- either value may be None if udev does not expose it.
+    """
+    r, o = bash.bash_ro("udevadm info --query=property --name=%s 2>/dev/null" % dev_path)
+    if r != 0 or not o.strip():
+        return None, None
+
+    serial = None
+    wwn = None
+    for line in o.strip().splitlines():
+        if '=' not in line:
+            continue
+        k, _, v = line.partition('=')
+        k = k.strip()
+        v = v.strip()
+        if k == 'ID_SERIAL':
+            serial = v
+        elif k == 'ID_WWN':
+            wwn = v
+    return serial, wwn
+
+
 def lsblk_info(dev_name):
     # type: (str) -> SharedBlockCandidateStruct
     s = SharedBlockCandidateStruct()
@@ -551,6 +585,17 @@ def lsblk_info(dev_name):
         elif entry.startswith('TRAN'):
             s.transport = get_data(entry)
             s.source = s.transport
+
+    # Override wwn/serial with stable udev properties so the same physical LUN
+    # gets identical identifiers on every host, regardless of OS version.
+    # lsblk derives these columns from version-specific udev fields which differ
+    # between CentOS 7.6 (C76) and HuaWei H84R -- causing the management plane
+    # to treat the same LUN as two distinct objects (see ZSTAC-69641).
+    udev_serial, udev_wwn = get_udev_serial_and_wwn("/dev/%s" % dev_name)
+    if udev_serial:
+        s.serial = udev_serial
+    if udev_wwn:
+        s.wwn = udev_wwn
 
     return s
 
