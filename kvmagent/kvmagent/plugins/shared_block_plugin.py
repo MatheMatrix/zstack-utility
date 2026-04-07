@@ -1834,13 +1834,23 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                     % (cmd.vgUuid, cmd.hostId, cmd.hostUuid, cmd.sharedBlockUuids))
 
         # Step 1: prepare disk paths - all disks are required (consistent with do_connect)
+        diskPaths = set()
         allDiskPaths = set()
+
         for diskUuid in cmd.sharedBlockUuids:
             disk = CheckDisk(diskUuid)
-            allDiskPaths.add(disk.get_path())
+            diskPaths.add(disk.get_path())
+
+        for diskUuid in cmd.allSharedBlockUuids:
+            disk = CheckDisk(diskUuid)
+            p = disk.get_path(raise_exception=False)
+            if p is not None:
+                allDiskPaths.add(p)
+
+        allDiskPaths = allDiskPaths.union(diskPaths)
         try:
             root_disks = ["%s[0-9]*" % d for d in linux.get_physical_disk()]
-            allDiskPaths.update(root_disks)
+            allDiskPaths = allDiskPaths.union(root_disks)
         except Exception as e:
             logger.warn("get exception: %s" % e.message)
             allDiskPaths.add("/dev/sd*")
