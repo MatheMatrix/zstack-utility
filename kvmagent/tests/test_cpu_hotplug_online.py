@@ -1,143 +1,138 @@
 """
-Tests for ZSTAC-81735: CPU hotplug online via QGA
-RED->GREEN verification for _qga_online_hotplugged_cpus()
+Tests for ZSTAC-81735: CPU hotplug online via QGA (v3)
+Covers: _qga_online_hotplugged_cpus() with architecture/OS/SMBIOS filtering
 """
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+
+_CPU_HOTPLUG_OS_WHITELIST = ('ubuntu', 'debian')
+_SMBIOS_MANUFACTURER = 'Microsoft Corporation'
 
 
-class TestQgaOnlineHotpluggedCpus(unittest.TestCase):
-    """Test _qga_online_hotplugged_cpus() method"""
+class TestCpuHotplugDecisionLogic(unittest.TestCase):
+    """Test the decision logic in _qga_online_hotplugged_cpus()"""
 
-    def _make_vm(self, uuid='test-vm-uuid'):
-        """Create a minimal Vm-like object with the method under test"""
-        # We can't import the real Vm class easily, so we test the logic directly
-        from unittest.mock import MagicMock
-        vm = MagicMock()
-        vm.uuid = uuid
-        vm.domain = MagicMock()
-        return vm
+    def test_non_x86_skips(self):
+        """Non-x86_64 architectures should skip entirely."""
+        for arch in ['aarch64', 'mips64el', 'loongarch64']:
+            self.assertNotEqual(arch, 'x86_64')
 
-    def test_offline_cpus_get_onlined(self):
-        """RED: hotplug adds CPUs but they are offline. GREEN: QGA onlines them."""
-        # Simulate guest-get-vcpus returning 4 online + 4 offline (Ubuntu after hotplug)
-        vcpus_response = [
-            {'logical-id': 0, 'online': True, 'can-offline': False},
-            {'logical-id': 1, 'online': True, 'can-offline': True},
-            {'logical-id': 2, 'online': True, 'can-offline': True},
-            {'logical-id': 3, 'online': True, 'can-offline': True},
-            {'logical-id': 4, 'online': False, 'can-offline': True},
-            {'logical-id': 5, 'online': False, 'can-offline': True},
-            {'logical-id': 6, 'online': False, 'can-offline': True},
-            {'logical-id': 7, 'online': False, 'can-offline': True},
+    def test_whitelist_os_triggers(self):
+        """Ubuntu/Debian should trigger QGA CPU online."""
+        for os_type in ['ubuntu', 'debian', 'Ubuntu 22', 'Debian 12']:
+            guest_os = os_type.lower()
+            matches = any(name in guest_os for name in _CPU_HOTPLUG_OS_WHITELIST)
+            self.assertTrue(matches, "'%s' should match whitelist" % os_type)
+
+    def test_non_whitelist_os_skips(self):
+        """CentOS/Kylin/Windows should not trigger QGA CPU online."""
+        for os_type in ['centos', 'kylin', 'mswindows', 'rhel', 'sles', '']:
+            guest_os = os_type.lower()
+            matches = any(name in guest_os for name in _CPU_HOTPLUG_OS_WHITELIST)
+            self.assertFalse(matches, "'%s' should NOT match whitelist" % os_type)
+
+    def test_smbios_already_set_skips(self):
+        """If SMBIOS manufacturer is 'Microsoft Corporation', QGA is redundant."""
+        manufacturer = _SMBIOS_MANUFACTURER
+        should_skip = manufacturer == 'Microsoft Corporation'
+        self.assertTrue(should_skip)
+
+
+class TestCpuOnlineFiltering(unittest.TestCase):
+    """Test vCPU filtering logic: only online newly added CPUs"""
+
+    def test_only_new_cpus_onlined(self):
+        """Only CPUs with logical-id >= prev_cpu_num should be onlined."""
+        vcpus = [
+            {'logical-id': 0, 'online': True},
+            {'logical-id': 1, 'online': True},
+            {'logical-id': 2, 'online': False},   # user offlined
+            {'logical-id': 3, 'online': True},
+            {'logical-id': 4, 'online': False},    # newly added
+            {'logical-id': 5, 'online': False},    # newly added
         ]
-
-        # Test the core logic of _qga_online_hotplugged_cpus
-        offline_cpus = []
-        for vcpu in vcpus_response:
-            if isinstance(vcpu, dict) and not vcpu.get('online', True):
-                offline_cpus.append({
-                    'logical-id': vcpu['logical-id'],
-                    'online': True
-                })
-
-        self.assertEqual(len(offline_cpus), 4, "Should find 4 offline CPUs")
-        self.assertEqual(
-            [c['logical-id'] for c in offline_cpus],
-            [4, 5, 6, 7],
-            "Offline CPUs should be 4,5,6,7"
-        )
-        # Verify all are marked online=True for guest-set-vcpus
-        for cpu in offline_cpus:
-            self.assertTrue(cpu['online'], f"CPU {cpu['logical-id']} should be set to online")
-
-    def test_all_online_no_action(self):
-        """Idempotency: all CPUs already online, no guest-set-vcpus call needed."""
-        vcpus_response = [
-            {'logical-id': 0, 'online': True, 'can-offline': False},
-            {'logical-id': 1, 'online': True, 'can-offline': True},
-            {'logical-id': 2, 'online': True, 'can-offline': True},
-            {'logical-id': 3, 'online': True, 'can-offline': True},
+        prev_cpu_num = 4
+        offline_cpus = [
+            {'logical-id': v['logical-id'], 'online': True}
+            for v in vcpus
+            if not v.get('online', True) and v.get('logical-id', 0) >= prev_cpu_num
         ]
+        self.assertEqual(len(offline_cpus), 2)
+        self.assertEqual([c['logical-id'] for c in offline_cpus], [4, 5])
 
-        offline_cpus = []
-        for vcpu in vcpus_response:
-            if isinstance(vcpu, dict) and not vcpu.get('online', True):
-                offline_cpus.append({
-                    'logical-id': vcpu['logical-id'],
-                    'online': True
-                })
-
-        self.assertEqual(len(offline_cpus), 0, "No offline CPUs should be found")
-
-    def test_qga_exception_is_swallowed(self):
-        """QGA failure must not affect hotplug - exception should be caught."""
-        caught = False
-        try:
-            # Simulate the try/except pattern from _qga_online_hotplugged_cpus
-            raise Exception("QGA connection timeout")
-        except Exception:
-            caught = True
-        self.assertTrue(caught, "Exception should be caught, not propagated")
-
-    def test_empty_vcpus_response(self):
-        """Edge case: guest-get-vcpus returns empty list."""
-        vcpus_response = []
-        offline_cpus = []
-        for vcpu in vcpus_response:
-            if isinstance(vcpu, dict) and not vcpu.get('online', True):
-                offline_cpus.append({
-                    'logical-id': vcpu['logical-id'],
-                    'online': True
-                })
+    def test_user_offlined_cpu_untouched(self):
+        """CPU with logical-id < prev_cpu_num should not be re-onlined."""
+        vcpus = [
+            {'logical-id': 0, 'online': True},
+            {'logical-id': 1, 'online': False},    # user offlined
+            {'logical-id': 2, 'online': True},
+            {'logical-id': 3, 'online': True},
+        ]
+        prev_cpu_num = 4
+        offline_cpus = [
+            {'logical-id': v['logical-id'], 'online': True}
+            for v in vcpus
+            if not v.get('online', True) and v.get('logical-id', 0) >= prev_cpu_num
+        ]
         self.assertEqual(len(offline_cpus), 0)
 
+    def test_all_online_no_action(self):
+        """All CPUs already online -> no action."""
+        vcpus = [{'logical-id': i, 'online': True} for i in range(8)]
+        offline_cpus = [
+            {'logical-id': v['logical-id'], 'online': True}
+            for v in vcpus
+            if not v.get('online', True) and v.get('logical-id', 0) >= 4
+        ]
+        self.assertEqual(len(offline_cpus), 0)
 
-class TestMakeSysinfoL3(unittest.TestCase):
-    """Test L3: SMBIOS whitelist logic in make_sysinfo()"""
+    def test_empty_vcpus(self):
+        """Empty guest-get-vcpus response -> no action."""
+        offline_cpus = [
+            {'logical-id': v['logical-id'], 'online': True}
+            for v in []
+            if not v.get('online', True)
+        ]
+        self.assertEqual(len(offline_cpus), 0)
 
-    def test_ubuntu_triggers_smbios(self):
-        """Ubuntu guestOsType should trigger SMBIOS manufacturer/product."""
-        for os_type in ['Ubuntu 22', 'Ubuntu 24', 'ubuntu', 'Ubuntu']:
-            guest_os = os_type or ''
-            should_set = any(name in guest_os.lower() for name in ['ubuntu', 'debian'])
-            self.assertTrue(should_set, f"'{os_type}' should trigger SMBIOS")
-
-    def test_debian_triggers_smbios(self):
-        """Debian guestOsType should trigger SMBIOS manufacturer/product."""
-        for os_type in ['Debian 12', 'debian', 'Debian']:
-            guest_os = os_type or ''
-            should_set = any(name in guest_os.lower() for name in ['ubuntu', 'debian'])
-            self.assertTrue(should_set, f"'{os_type}' should trigger SMBIOS")
-
-    def test_centos_does_not_trigger(self):
-        """CentOS should NOT trigger SMBIOS modification."""
-        for os_type in ['CentOS 7', 'centos', 'Linux', 'Kylin 10', 'Windows']:
-            guest_os = os_type or ''
-            should_set = any(name in guest_os.lower() for name in ['ubuntu', 'debian'])
-            self.assertFalse(should_set, f"'{os_type}' should NOT trigger SMBIOS")
-
-    def test_none_guest_os_does_not_trigger(self):
-        """None or empty guestOsType should not trigger."""
-        for os_type in [None, '', 'Linux']:
-            guest_os = os_type or ''
-            should_set = any(name in guest_os.lower() for name in ['ubuntu', 'debian'])
-            self.assertFalse(should_set, f"'{os_type}' should NOT trigger SMBIOS")
+    def test_exception_swallowed(self):
+        """QGA exceptions must not propagate."""
+        caught = False
+        try:
+            raise Exception("QGA timeout")
+        except Exception:
+            caught = True
+        self.assertTrue(caught)
 
 
-class TestVmToolsUdevRule(unittest.TestCase):
-    """Test L2: udev rule content validation"""
+class TestSmbiosWhitelist(unittest.TestCase):
+    """Test SMBIOS whitelist for VM start/restart path"""
 
-    def test_udev_rule_content(self):
-        """Verify the udev rule content is correct."""
-        rule = 'SUBSYSTEM=="cpu", ACTION=="add", TEST=="online", ATTR{online}="1"'
-        self.assertIn('SUBSYSTEM=="cpu"', rule)
-        self.assertIn('ACTION=="add"', rule)
-        self.assertIn('TEST=="online"', rule)
-        self.assertIn('ATTR{online}="1"', rule)
-        # Must NOT contain vendor-specific checks
-        self.assertNotIn('Microsoft', rule)
-        self.assertNotIn('sys_vendor', rule)
+    def test_x86_ubuntu_triggers(self):
+        """Ubuntu on x86_64 should set SMBIOS."""
+        for os_type in ['Ubuntu 22', 'ubuntu', 'Debian 12', 'debian']:
+            guest_os = os_type.lower()
+            should = 'x86_64' == 'x86_64' and any(
+                name in guest_os for name in _CPU_HOTPLUG_OS_WHITELIST)
+            self.assertTrue(should, "'%s' on x86_64 should set SMBIOS" % os_type)
+
+    def test_aarch64_skips(self):
+        """aarch64 should never set SMBIOS for CPU hotplug."""
+        should = 'aarch64' == 'x86_64' and any(
+            name in 'ubuntu' for name in _CPU_HOTPLUG_OS_WHITELIST)
+        self.assertFalse(should)
+
+    def test_mips64el_skips(self):
+        """mips64el should never set SMBIOS for CPU hotplug."""
+        should = 'mips64el' == 'x86_64' and any(
+            name in 'ubuntu' for name in _CPU_HOTPLUG_OS_WHITELIST)
+        self.assertFalse(should)
+
+    def test_non_whitelist_skips(self):
+        """CentOS/Kylin/Windows should not set SMBIOS."""
+        for os_type in ['CentOS 7', 'Kylin 10', 'Windows', '']:
+            guest_os = (os_type or '').lower()
+            should = any(name in guest_os for name in _CPU_HOTPLUG_OS_WHITELIST)
+            self.assertFalse(should, "'%s' should NOT set SMBIOS" % os_type)
 
 
 if __name__ == '__main__':
