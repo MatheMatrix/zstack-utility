@@ -951,7 +951,7 @@ def _read_flow_b(fd, header, lv_size):
     target = _read_slot_at(fd, header, 1 - header.active_slot)
 
     if target.valid and target.seq_num == header.write_sequence:
-        # Phase 2 done, Phase 3 not — target slot has latest data
+        # Phase 2 done, Phase 3 not - target slot has latest data
         logger.info("CONFIG_UPDATE interrupted after Phase 2; "
                     "using target slot (seq=%d)", target.seq_num)
         return ReadResult(
