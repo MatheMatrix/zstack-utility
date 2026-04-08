@@ -15,7 +15,6 @@ logger = log.get_logger(__name__)
 
 OVS_PROVISION_PATH = '/network/ovs/provision'
 OVS_DEPROVISION_PATH = '/network/ovs/deprovision'
-OVS_APPLY_GLOBAL_CONFIG_PATH = '/network/ovs/apply-global-config'
 MANAGED_BY_KEY = 'managed-by'
 MANAGED_BY_VALUE = 'zstack-agent'
 CONFIG_VERSION_KEY = 'config-version'
@@ -79,6 +78,59 @@ def _validate_ip_address(addr):
     if not addr or not _IP_ADDR_RE.match(addr):
         raise ValueError('invalid IP address: %r' % addr)
     return addr
+
+
+_PCI_ADDR_RE = re.compile(r'^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]$')
+
+# Userspace drivers that take NICs away from the kernel networking stack.
+_DPDK_USERSPACE_DRIVERS = ('vfio-pci', 'uio_pci_generic')
+
+
+def _get_dpdk_bound_network_devices():
+    """Detect network devices bound to DPDK userspace drivers via sysfs.
+
+    Scans /sys/bus/pci/drivers/{vfio-pci,uio_pci_generic} for PCI devices
+    whose class is 0x02xxxx (Network controller).
+
+    Unlike ovn.getAllVfioPciNic() which parses dpdk-devbind.py output with
+    ``grep drv=`` (and misses devices listed under "Other Network devices"
+    that lack a ``drv=`` field), this function reads sysfs directly and is
+    reliable regardless of dpdk-devbind.py output format.
+
+    Returns:
+        list[str]: PCI addresses (e.g. ['0000:00:04.0']) of network devices
+                   currently bound to a DPDK userspace driver.
+    """
+    result = []
+    for drv_name in _DPDK_USERSPACE_DRIVERS:
+        drv_path = '/sys/bus/pci/drivers/%s' % drv_name
+        if not os.path.isdir(drv_path):
+            continue
+        try:
+            entries = os.listdir(drv_path)
+        except OSError as e:
+            logger.warn('failed to list %s devices: %s' % (drv_name, e))
+            continue
+        for entry in entries:
+            if not _PCI_ADDR_RE.match(entry):
+                continue
+            try:
+                class_path = os.path.join(drv_path, entry, 'class')
+                if not os.path.exists(class_path):
+                    continue
+                with open(class_path, 'r') as f:
+                    pci_class = f.read().strip()
+            except OSError as e:
+                logger.warn('failed to inspect %s device %s: %s'
+                            % (drv_name, entry, e))
+                continue
+            # PCI class 0x02xxxx = Network controller
+            if pci_class.startswith('0x02'):
+                result.append(entry)
+                logger.debug('found %s bound network device: %s (class=%s)'
+                             % (drv_name, entry, pci_class))
+
+    return result
 
 
 def _apply_tunnel_mtu(tunnel_mtu):
@@ -162,6 +214,7 @@ class ActualBond(object):
         self.name = name
         self.members = []
         self.bond_mode = None
+        self.lacp = None
         self.external_ids = {}
         self.member_mtus = {}  # member_name -> mtu_request
 
@@ -355,6 +408,10 @@ class OvsStateQuerier(object):
         if not err:
             bond.bond_mode = bond_mode
 
+        err, lacp = self.vsctl.getTableAttr('port', port_name, 'lacp')
+        if not err:
+            bond.lacp = lacp
+
         ifaces = self._list_bond_members_safe(port_name)
         bond.members = ifaces
 
@@ -547,17 +604,21 @@ class OvsCommandBuilder(object):
         for m in members:
             _validate_ovs_name(m)
         _validate_ovs_name(bond_mode)
+        # balance-tcp mode requires LACP, auto-enable if not set
+        lacp_opt = ''
+        if bond_mode == 'balance-tcp':
+            lacp_opt = ' lacp=active'
         if len(members) >= 2:
-            self._ops.append('--may-exist add-bond %s %s %s bond_mode=%s' % (
-                bridge, name, ' '.join(members), bond_mode))
+            self._ops.append('--may-exist add-bond %s %s %s bond_mode=%s%s' % (
+                bridge, name, ' '.join(members), bond_mode, lacp_opt))
         else:
             # OVS add-bond requires 2+ interfaces; for single member,
             # create the interface and port via OVSDB ops directly
             self._ops.append('--id=@%s create Interface name=%s' % (
                 members[0], members[0]))
             self._ops.append('--may-exist add-port %s %s' % (bridge, name))
-            self._ops.append('set Port %s interfaces=@%s bond_mode=%s' % (
-                name, members[0], bond_mode))
+            self._ops.append('set Port %s interfaces=@%s bond_mode=%s%s' % (
+                name, members[0], bond_mode, lacp_opt))
         return self
 
     def set_port(self, name, key, value):
@@ -733,6 +794,14 @@ class OvsReconciler(object):
                     else:
                         if bond_spec.mode and bond_spec.mode != (actual_bond.bond_mode or ''):
                             builder.set_port(bond_name, 'bond_mode', bond_spec.mode)
+
+                        # Reconcile LACP independently of bond_mode change
+                        if bond_spec.mode:
+                            expected_lacp = 'active' if bond_spec.mode == 'balance-tcp' else 'off'
+                            # Normalize OVS unset values (None, '', '[]') to 'off'
+                            actual_lacp = actual_bond.lacp if actual_bond.lacp and actual_bond.lacp != '[]' else 'off'
+                            if actual_lacp != expected_lacp:
+                                builder.set_port(bond_name, 'lacp', expected_lacp)
 
             # MTU comparison (skip rebuilt bonds)
             for bond_name, bond_spec in desired_bonds.items():
@@ -990,6 +1059,124 @@ class OvsProvisioner(object):
             raise Exception('ovs-vsctl command failed (exit %d): %s\ncmd: %s' % (r, e, cmd_str))
 
 
+def _verify_nics_not_in_use(desired_switches, managed_bridge_names=None):
+    """Pre-check: verify NICs are not in use before provisioning.
+
+    This check applies to both DPDK and Kernel modes.
+    Using an in-use NIC for OVS bridge will cause network disruption.
+    Raises Exception if any NIC fails the checks.
+
+    Args:
+        desired_switches: list of desired switch specs.
+        managed_bridge_names: optional set of bridge names managed by this
+            plugin.  NICs already attached to one of these bridges are
+            considered "ours" and skipped so that re-provision is not blocked.
+    """
+    if managed_bridge_names is None:
+        managed_bridge_names = set()
+
+    nic_members = set()
+    for sw in desired_switches:
+        uplink_profile = getattr(sw, 'uplinkProfile', None)
+        if not uplink_profile or not uplink_profile.lag:
+            continue
+        for lag in uplink_profile.lag:
+            if lag.members:
+                nic_members.update(lag.members)
+
+    for nic_name in nic_members:
+        try:
+            _validate_ovs_name(nic_name)
+        except ValueError:
+            raise Exception(
+                'cannot use NIC for provisioning: '
+                'invalid NIC name %r' % nic_name)
+
+        # Check 1: IP address configured
+        r, o, e = bash.bash_roe(
+            "ip -o addr show dev %s 2>/dev/null | grep -v 'inet6.*scope link' | head -1"
+            % nic_name)
+        if r == 0 and o.strip():
+            raise Exception(
+                'cannot use NIC for provisioning: '
+                'nic %s has IP address configured and is in use. '
+                'Please remove the IP first: "ip addr flush dev %s"'
+                % (nic_name, nic_name))
+
+        # Check 2: Already attached to an OVS bridge (including bond members)
+        r2, o2, _e2 = bash.bash_roe(
+            "ovs-vsctl iface-to-br %s 2>/dev/null" % nic_name)
+        if r2 == 0 and o2.strip():
+            br_name = o2.strip()
+            if br_name not in managed_bridge_names:
+                raise Exception(
+                    'cannot use NIC for provisioning: '
+                    'nic %s is already attached to OVS bridge %s. '
+                    'Please remove it from the bridge first.'
+                    % (nic_name, br_name))
+
+        # Check 3: Bond slave
+        r, o, e = bash.bash_roe(
+            "ip -o link show dev %s 2>/dev/null | grep -o 'master [^ ]*' | head -1"
+            % nic_name)
+        if r == 0 and o.strip():
+            master = o.strip().split()[-1] if o.strip().split() else ''
+            if master and master != 'ovs-system':
+                raise Exception(
+                    'cannot use NIC for provisioning: '
+                    'nic %s is a slave of bond/master %s. '
+                    'Please remove it from the bond first.'
+                    % (nic_name, master))
+
+        # Check 4: Has routes (non-link-local)
+        r, o, e = bash.bash_roe(
+            "ip route show dev %s 2>/dev/null | grep -v 'linkdown\\|linklocal' | head -1"
+            % nic_name)
+        if r == 0 and o.strip():
+            raise Exception(
+                'cannot use NIC for provisioning: '
+                'nic %s has active routes and is in use. '
+                'Please remove routes first: "ip route flush dev %s"'
+                % (nic_name, nic_name))
+
+        # Check 5: NetworkManager managed (may auto-configure)
+        r, o, e = bash.bash_roe(
+            "nmcli -t -f DEVICE,STATE device status 2>/dev/null | grep '^%s:' | head -1"
+            % nic_name)
+        if r == 0 and o.strip():
+            state = o.strip().split(':')[-1] if ':' in o.strip() else ''
+            if state and state not in ('unmanaged', 'unavailable'):
+                raise Exception(
+                    'cannot use NIC for provisioning: '
+                    'nic %s is managed by NetworkManager (state: %s). '
+                    'Please set it unmanaged first: "nmcli device set %s managed no"'
+                    % (nic_name, state, nic_name))
+
+        # Check 6: Has VLAN sub-interfaces
+        r, o, e = bash.bash_roe(
+            "ip -o link show 2>/dev/null | grep -E '%s\\.[0-9]+@%s' | head -1"
+            % (nic_name, nic_name))
+        if r == 0 and o.strip():
+            vlan_if = o.strip().split(':')[1].split('@')[0].strip() if ':' in o.strip() else ''
+            if vlan_if:
+                raise Exception(
+                    'cannot use NIC for provisioning: '
+                    'nic %s has VLAN sub-interface %s configured. '
+                    'Please delete VLAN interfaces first: "ip link delete %s"'
+                    % (nic_name, vlan_if, vlan_if))
+
+        # Check 7: Has tc qdisc rules (traffic control)
+        r, o, _e = bash.bash_roe(
+            "tc qdisc show dev %s 2>/dev/null | grep -v 'qdisc noop\\|qdisc pfifo_fast\\|qdisc mq\\|qdisc fq_codel' | head -1"
+            % nic_name)
+        if r == 0 and o.strip():
+            raise Exception(
+                'cannot use NIC for provisioning: '
+                'nic %s has tc qdisc rules configured. '
+                'Please clear tc rules first: "tc qdisc del dev %s root"'
+                % (nic_name, nic_name))
+
+
 # --- Plugin Entry ---
 
 class OvsProvisionPlugin(kvmagent.KvmAgent):
@@ -999,9 +1186,8 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(OVS_PROVISION_PATH, self.provision)
         http_server.register_async_uri(OVS_DEPROVISION_PATH, self.deprovision)
-        http_server.register_async_uri(OVS_APPLY_GLOBAL_CONFIG_PATH, self.apply_global_config)
-        logger.info('OvsProvisionPlugin started, registered %s, %s and %s'
-                     % (OVS_PROVISION_PATH, OVS_DEPROVISION_PATH, OVS_APPLY_GLOBAL_CONFIG_PATH))
+        logger.info('OvsProvisionPlugin started, registered %s and %s'
+                     % (OVS_PROVISION_PATH, OVS_DEPROVISION_PATH))
 
     def stop(self):
         logger.info('OvsProvisionPlugin stopped')
@@ -1224,12 +1410,28 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                     raise Exception('check OVS DPDK huge page mem error')
 
         # 3. dpdk-init=true (ovn.py line 268-273)
+        # IMPORTANT: if dpdk-init changes from false/none to true, OVS must be
+        # restarted for DPDK EAL initialization to take effect. Otherwise bridges
+        # will be created with datapath_type=system instead of netdev.
         err, val = vsctl.getOvsOtherConfig("dpdk-init")
-        if err or val != 'true':
+        dpdk_init_changed = (err or val != 'true')
+        if dpdk_init_changed:
             r = vsctl.setOvsOtherConfig("dpdk-init", 'true')
             if r != 0:
                 raise Exception('failed to set dpdk-init')
             logger.info('set dpdk-init=true')
+
+            # Restart openvswitch to initialize DPDK EAL if it was already running.
+            # This is critical when OVS was running before dpdk-init was set.
+            r, o, e = bash.bash_roe('systemctl is-active openvswitch')
+            if r == 0:
+                logger.info('dpdk-init changed, restarting openvswitch for DPDK EAL init')
+                r, o, e = bash.bash_roe('systemctl restart openvswitch')
+                if r != 0:
+                    raise Exception('failed to restart openvswitch after setting dpdk-init: %s' % e)
+                r, o, e = bash.bash_roe('systemctl restart ovn-controller')
+                if r != 0:
+                    raise Exception('failed to restart ovn-controller after setting dpdk-init: %s' % e)
 
         # 4. CPU cores (ovn.py line 284-291)
         if getattr(dpdk_config, 'lcores', None):
@@ -1257,6 +1459,14 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
             r = vsctl.setOvsExternalIdsConfig("ovn-remote-probe-interval", '100000')
             if r != 0:
                 raise Exception('failed to set ovn-remote-probe-interval')
+
+        # 6. Ensure br-int datapath_type=netdev for DPDK mode (ovn.py line 276-280)
+        # ovn-controller may create br-int with datapath_type=system on startup,
+        # we need to set it to netdev for DPDK mode.
+        r, _o, e = bash.bash_roe('ovs-vsctl --may-exist add-br br-int -- set bridge br-int datapath_type=netdev')
+        if r != 0:
+            raise Exception('failed to set br-int datapath_type=netdev: %s' % e)
+        logger.info('ensured br-int datapath_type=netdev for DPDK mode')
 
         logger.info('DPDK mode initialized')
 
@@ -1318,12 +1528,22 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
             dpdk_mode = any((getattr(sw, 'type_', None) or getattr(sw, 'type', None)) == 'dpdk'
                             for sw in desired_switches)
 
+            # Collect managed bridge names so re-provision is not blocked
+            # for NICs already belonging to our bridges.
+            managed_bridge_names = set()
+            for sw in desired_switches:
+                sw_name = getattr(sw, 'name', None)
+                if sw_name:
+                    managed_bridge_names.add(sw_name)
+
+            _verify_nics_not_in_use(desired_switches, managed_bridge_names)
+
             # Ensure OVS/OVN packages are installed
             vsctl = ovn.VsCtl()
             r = bash.bash_r('which ovs-vsctl')
             if r != 0:
                 logger.info('ovs-vsctl not found, installing OVS/OVN packages')
-                vsctl.installOvsPackages()
+                ovn.VsCtl.installOvsPackages()
 
             # --- Resolve dpdk_config ---
             # Level 1: normalize spec.dpdkConfig into agent internal field names
@@ -1593,9 +1813,8 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
 
             # 4. Discover DPDK-bound NICs before stopping OVS (so we know what to restore)
             restore_pci_list = getattr(cmd, 'restoreNicPciAddressList', None) or []
-            dpdk_bound_nics = ovn.getAllVfioPciNic()
-            if dpdk_bound_nics:
-                auto_pci = [nic.pciAddress for nic in dpdk_bound_nics]
+            auto_pci = _get_dpdk_bound_network_devices()
+            if auto_pci:
                 existing = set(restore_pci_list)
                 for pci in auto_pci:
                     if pci not in existing:
@@ -1651,42 +1870,3 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
             rsp.success = False
             rsp.error = str(e)
             return jsonobject.dumps(rsp)
-
-    @kvmagent.replyerror
-    @lock.lock('ovs_provision')
-    @bash.in_bash
-    def apply_global_config(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = kvmagent.AgentResponse()
-        rsp.cloudCallbackUrl = getattr(cmd, 'cloudCallbackUrl', None)
-        rsp.cloudTaskUuid = getattr(cmd, 'cloudTaskUuid', None)
-        rsp.triggerUrl = getattr(cmd, 'triggerUrl', None)
-
-        gc = cmd.globalConfig
-        logger.info('received apply-global-config request: tunnelMtu=%s, bfdMinTx=%s, bfdMinRx=%s, bfdMult=%s'
-                     % (gc.tunnelMtu, gc.bfdMinTx, gc.bfdMinRx, gc.bfdMult))
-
-        updates = {}
-        if gc.bfdMinTx is not None:
-            updates['ovn-bfd-min-tx'] = str(gc.bfdMinTx)
-        if gc.bfdMinRx is not None:
-            updates['ovn-bfd-min-rx'] = str(gc.bfdMinRx)
-        if gc.bfdMult is not None:
-            updates['ovn-bfd-mult'] = str(gc.bfdMult)
-
-        if updates:
-            parts = ['external_ids:%s=%s' % (k, _validate_external_id_value(v))
-                     for k, v in updates.items()]
-            cmd_str = 'ovs-vsctl set Open_vSwitch . ' + ' '.join(parts)
-            r, o, e = bash.bash_roe(cmd_str)
-            if r != 0:
-                raise Exception('failed to set OVS external_ids: %s' % e)
-            logger.info('updated OVS external_ids: %s' % list(updates.keys()))
-
-        # Apply tunnelMtu to geneve tunnel interfaces and bridge internal ports
-        tunnel_mtu = getattr(gc, 'tunnelMtu', None)
-        if tunnel_mtu is not None:
-            _apply_tunnel_mtu(tunnel_mtu)
-
-        logger.info('apply-global-config completed')
-        return jsonobject.dumps(rsp)
