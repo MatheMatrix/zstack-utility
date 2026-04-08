@@ -275,6 +275,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
     RAID_LOCATE_PATH = "/storagedevice/raid/locate"
     RAID_SELF_TEST_PATH = "/storagedevice/raid/selftest"
     HBA_SCAN_PATH = "/storagedevice/hba/scan"
+    UPDATE_LVM_FILTER_PATH = "/storagedevice/lvm/updatefilter"
 
     def start(self):
         http_server = kvmagent.get_http_server()
@@ -295,6 +296,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.RAID_SELF_TEST_PATH, self.drive_self_test)
         http_server.register_async_uri(self.GET_MULTIPATH_TOPOLOGY_PATH, self.get_multipath_topology)
         http_server.register_async_uri(self.HBA_SCAN_PATH, self.hba_scan)
+        http_server.register_async_uri(self.UPDATE_LVM_FILTER_PATH, self.update_lvm_filter)
 
     def stop(self):
         pass
@@ -304,6 +306,52 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = FcHbaScanRsp()
         rsp.hbaDeviceStructs = self.get_hba_devices()
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def update_lvm_filter(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentRsp()
+
+        new_disk_paths = set(cmd.diskPaths) if cmd.diskPaths else set()
+        if not new_disk_paths:
+            return jsonobject.dumps(rsp)
+
+        # read existing accept entries from lvm.conf filter line
+        existing_disks = set()
+        conf_file = lvm.LVM_CONFIG_FILE
+        if os.path.exists(conf_file):
+            with open(conf_file, 'r') as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped.startswith('filter') or stripped.startswith('global_filter'):
+                        # extract accept patterns: "a|^/dev/sdb$|" -> /dev/sdb
+                        for m in re.finditer(r'"a\|[^"]*\|"', stripped):
+                            entry = m.group()
+                            # remove quotes, a| prefix, | suffix, and unescape
+                            path = entry.strip('"').lstrip('a|').rstrip('|')
+                            path = path.replace('\\/','/')
+                            # strip regex anchors
+                            if path.startswith('^'):
+                                path = path[1:]
+                            if path.endswith('$'):
+                                path = path[:-1]
+                            if path:
+                                existing_disks.add(path)
+
+        # add OS root disk patterns
+        try:
+            root_disks = ["%s[0-9]*" % d for d in linux.get_physical_disk()]
+            existing_disks = existing_disks.union(root_disks)
+        except Exception as e:
+            logger.warn("get root disk exception: %s" % e)
+            existing_disks.add("/dev/sd*")
+            existing_disks.add("/dev/vd*")
+
+        all_disks = existing_disks.union(new_disk_paths)
+        lvm.config_lvm_filter(["lvm.conf", "lvmlocal.conf"], preserve_disks=all_disks)
+
+        logger.debug("updated lvm filter, added disks: %s" % list(new_disk_paths))
         return jsonobject.dumps(rsp)
 
     def get_hba_devices(self):
