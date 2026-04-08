@@ -4086,6 +4086,18 @@ class UpgradeHACmd(Command):
         for file in [args.mevoco_installer, community_iso]:
             self.check_file_exist(file, UpgradeHACmd.host_post_info_list)
 
+        # pre-check all HA nodes before stopping any node
+        mevoco_dir = os.path.dirname(args.mevoco_installer)
+        mevoco_bin = os.path.basename(args.mevoco_installer)
+        for host_post_info in UpgradeHACmd.host_post_info_list:
+            command = "rm -rf /tmp/zstack_upgrade.lock && cd %s && bash %s -u -i --precheck" % (
+                mevoco_dir, mevoco_bin)
+            (status, output) = subprocess.getstatusoutput(
+                "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '%s'" %
+                (UpgradeHACmd.private_key_name, host_post_info.host, command))
+            if status != 0:
+                error("Pre-upgrade check failed on HA node %s\n %s" % (host_post_info.host, output))
+
         spinner_info = SpinnerInfo()
         spinner_info.output = "Starting to upgrade repo"
         spinner_info.name = "upgrade_repo"
@@ -4113,7 +4125,9 @@ class UpgradeHACmd(Command):
         SpinnerInfo.spinner_status = reset_dict_value(SpinnerInfo.spinner_status,False)
         SpinnerInfo.spinner_status['backup_db'] = True
         ZstackSpinner(spinner_info)
-        (status, output) =  subprocess.getstatusoutput("zstack-ctl dump_mysql >> /dev/null 2>&1")
+        (status, output) =  subprocess.getstatusoutput("zstack-ctl dump_mysql")
+        if status != 0:
+            error("Backup database failed: %s" % output)
 
         spinner_info = SpinnerInfo()
         spinner_info.output = "Starting to upgrade mevoco"
@@ -8911,14 +8925,19 @@ class UpgradeManagementNodeCmd(Command):
 
             def upgrade():
                 info('start to upgrade the management node ...')
-                linux.rm_dir_force(ctl.zstack_home)
                 if ctl.zstack_home.endswith('/'):
                     webapp_dir = os.path.dirname(os.path.dirname(ctl.zstack_home))
                 else:
                     webapp_dir = os.path.dirname(ctl.zstack_home)
 
+                # unzip to temp dir first, only remove old after success
+                tmp_new_zstack = os.path.join(webapp_dir, 'zstack_upgrade_tmp')
+                linux.rm_dir_force(tmp_new_zstack)
                 shell('cp %s %s' % (new_war.path, webapp_dir))
-                ShellCmd('unzip %s -d zstack' % os.path.basename(new_war.path), workdir=webapp_dir)()
+                ShellCmd('unzip %s -d %s' % (os.path.basename(new_war.path), os.path.basename(tmp_new_zstack)),
+                         workdir=webapp_dir)()
+                linux.rm_dir_force(ctl.zstack_home)
+                os.rename(tmp_new_zstack, ctl.zstack_home)
                 #create local repo folder for possible zstack local yum repo
                 zstack_dvd_repo = '{}/zstack/static/zstack-repo'.format(webapp_dir)
                 shell('rm -f {0}; mkdir -p {0};ln -s /opt/zstack-dvd/x86_64 {0}/x86_64; ln -s /opt/zstack-dvd/aarch64 {0}/aarch64; ln -s /opt/zstack-dvd/mips64el {0}/mips64el; ln -s /opt/zstack-dvd/loongarch64 {0}/loongarch64; chown -R zstack:zstack {0}'.format(zstack_dvd_repo))
@@ -8979,6 +8998,15 @@ class UpgradeManagementNodeCmd(Command):
                 info('change permission to user zstack')
                 shell('chown -R zstack:zstack %s' % os.path.join(ctl.zstack_home, '../../'))
 
+            if not need_download and new_war.path:
+                ret = subprocess.run(
+                    ['unzip', '-t', new_war.path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                ).returncode
+                if ret != 0:
+                    raise CtlError('WAR file %s is corrupted or not a valid zip file' % new_war.path)
+
             backup()
             download_war_if_needed()
             stop_node()
@@ -9025,7 +9053,7 @@ fi
             t = string.Template(upgrade_script)
             upgrade_script = t.substitute({
                 'war_file': dst_war,
-                'need_copy': need_copy
+                'need_copy': need_copy,
             })
 
             fd, upgrade_script_path = tempfile.mkstemp(suffix='.sh')
@@ -9127,6 +9155,13 @@ class UpgradeMultiManagementNodeCmd(Command):
         ssh_key = ctl.zstack_home + "/WEB-INF/classes/ansible/rsaKeys/id_rsa.pub"
         private_key = ssh_key.split('.')[0]
         inventory_file = ctl.zstack_home + "/../../../ansible/hosts"
+
+        # pre-check local node before stopping any node
+        linux.rm_dir_force("/tmp/zstack_upgrade.lock")
+        ret = shell_return("bash %s -u --precheck" % args.installer_bin)
+        if ret != 0:
+            error("Pre-upgrade check failed on local node %s" % local_mn_ip)
+
         for mn_ip in mn_ip_list:
             if mn_ip != local_mn_ip:
                 host_info = HostPostInfo()
@@ -9536,8 +9571,17 @@ class RollbackManagementNodeCmd(Command):
 
             def rollback():
                 info('start to rollback the management node ...')
+                if ctl.zstack_home.endswith('/'):
+                    webapp_dir = os.path.dirname(os.path.dirname(ctl.zstack_home))
+                else:
+                    webapp_dir = os.path.dirname(ctl.zstack_home)
+
+                # unzip to temp dir first, only remove old after success
+                tmp_rollback = os.path.join(webapp_dir, 'zstack_rollback_tmp')
+                linux.rm_dir_force(tmp_rollback)
+                shell('unzip %s -d %s' % (rollbackinfo.war_path, tmp_rollback))
                 linux.rm_dir_force(ctl.zstack_home)
-                shell('unzip %s -d %s' % (rollbackinfo.war_path, ctl.zstack_home))
+                os.rename(tmp_rollback, ctl.zstack_home)
 
             def restore_config():
                 info('restoring the zstack.properties ...')
