@@ -1534,7 +1534,7 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
             for sw in desired_switches:
                 sw_name = getattr(sw, 'name', None)
                 if sw_name:
-                    managed_bridge_names.add(sw_name)
+                    managed_bridge_names.add(OvsDesiredState._safe_bridge_name(sw_name))
 
             _verify_nics_not_in_use(desired_switches, managed_bridge_names)
 
