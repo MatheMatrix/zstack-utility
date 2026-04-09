@@ -2967,6 +2967,59 @@ class HaPlugin(kvmagent.KvmAgent):
         rsp.blockRules = global_block_fencer_rule
         return jsonobject.dumps(rsp)
 
+    def _normalize_weighted_network_rules(self, raw_rules):
+        if not isinstance(raw_rules, list):
+            return []
+
+        normalized_rules = []
+        for rule in raw_rules:
+            if not isinstance(rule, dict):
+                continue
+
+            resource = rule.get('resource')
+            if not isinstance(resource, string_types) or not resource:
+                continue
+
+            try:
+                weight = int(rule.get('weight', 0))
+            except (TypeError, ValueError):
+                weight = 0
+
+            if weight <= 0:
+                continue
+
+            normalized_rules.append({
+                'resource': resource,
+                'weight': weight
+            })
+
+        return sorted(normalized_rules, key=lambda r: (r['resource'], r['weight']))
+
+    def _normalize_vm_network_group_subgroups(self, groups):
+        if not isinstance(groups, dict):
+            return {}
+
+        normalized_groups = {}
+        for group_uuid, group_cfg in groups.items():
+            if not isinstance(group_uuid, string_types) or not isinstance(group_cfg, dict):
+                continue
+
+            try:
+                min_score = int(group_cfg.get('minScore', 1))
+            except (TypeError, ValueError):
+                min_score = 1
+
+            rules = self._normalize_weighted_network_rules(group_cfg.get('rules') or [])
+            if not rules:
+                continue
+
+            normalized_groups[group_uuid] = {
+                'minScore': max(min_score, 1),
+                'rules': rules
+            }
+
+        return normalized_groups
+
     def _normalize_ha_network_group_vm_rules(self, vm_rules):
         if not isinstance(vm_rules, dict):
             return {}
@@ -2976,40 +3029,18 @@ class HaPlugin(kvmagent.KvmAgent):
             if not isinstance(vm_uuid, string_types) or not isinstance(vm_cfg, dict):
                 continue
 
-            try:
-                min_score = int(vm_cfg.get('minScore', 1))
-            except (TypeError, ValueError):
-                min_score = 1
-
-            raw_rules = vm_cfg.get('rules') or []
-            if not isinstance(raw_rules, list):
+            groups = vm_cfg.get('groups')
+            if not isinstance(groups, dict):
+                logger.warn('ignore malformed ha network group vm config[%s], groups is not a dict' % vm_uuid)
                 continue
 
-            rules = []
-            for rule in raw_rules:
-                if not isinstance(rule, dict):
-                    continue
-
-                resource = rule.get('resource')
-                if not resource:
-                    continue
-
-                try:
-                    weight = int(rule.get('weight', 0))
-                except Exception:
-                    weight = 0
-
-                if weight <= 0:
-                    continue
-
-                rules.append({'resource': resource, 'weight': weight})
-
-            if not rules:
+            normalized_groups = self._normalize_vm_network_group_subgroups(groups)
+            if not normalized_groups:
+                logger.warn('ignore malformed ha network group vm config[%s], no valid groups found' % vm_uuid)
                 continue
 
             normalized[vm_uuid] = {
-                'minScore': max(min_score, 1),
-                'rules': rules
+                'groups': normalized_groups
             }
 
         return normalized
@@ -3028,33 +3059,12 @@ class HaPlugin(kvmagent.KvmAgent):
                 logger.warn('ignore malformed ha network group[%s], rules is not a list' % group_uuid)
                 continue
 
-            normalized_rules = []
-            for rule in rules:
-                if not isinstance(rule, dict):
-                    continue
-
-                resource = rule.get('resource')
-                if not isinstance(resource, string_types) or not resource:
-                    continue
-
-                try:
-                    weight = int(rule.get('weight', 0))
-                except Exception:
-                    weight = 0
-
-                if weight <= 0:
-                    continue
-
-                normalized_rules.append({
-                    'resource': resource,
-                    'weight': weight
-                })
+            normalized_rules = self._normalize_weighted_network_rules(rules)
 
             if not normalized_rules:
                 logger.warn('ignore malformed ha network group[%s], no valid rules found' % group_uuid)
                 continue
 
-            normalized_rules = sorted(normalized_rules, key=lambda r: (r['resource'], r['weight']))
             try:
                 min_required_score = int(group_cfg.get('minAvailableCount', 1))
             except (TypeError, ValueError):
@@ -3164,13 +3174,27 @@ class HaPlugin(kvmagent.KvmAgent):
         return down_monitors
 
     @staticmethod
-    def _calculate_vm_score(vm_cfg, down_monitors):
+    def _calculate_vm_group_score(group_cfg, down_monitors):
         score = 0
-        for rule in vm_cfg.get('rules', []):
-            if rule.get('resource') not in down_monitors:
-                score += int(rule.get('weight', 0))
+        for rule in group_cfg['rules']:
+            if rule['resource'] not in down_monitors:
+                score += rule['weight']
 
         return score
+
+    def _get_failed_vm_network_groups(self, vm_cfg, down_monitors):
+        failed_groups = []
+        for group_uuid, group_cfg in sorted(vm_cfg.get('groups', {}).items()):
+            min_score = group_cfg['minScore']
+            score = self._calculate_vm_group_score(group_cfg, down_monitors)
+            if score < min_score:
+                failed_groups.append({
+                    'groupUuid': group_uuid,
+                    'score': score,
+                    'minScore': min_score
+                })
+
+        return failed_groups
 
     def _kill_vms_by_network_group_rule(self, vm_rules, down_monitors):
         if not vm_rules:
@@ -3180,16 +3204,11 @@ class HaPlugin(kvmagent.KvmAgent):
         down_str = ','.join(sorted(list(down_monitors))) if down_monitors else 'none'
 
         for vm_uuid, vm_cfg in vm_rules.items():
-            try:
-                min_score = int(vm_cfg.get('minScore', 1))
-            except (TypeError, ValueError):
-                min_score = 1
-
-            score = self._calculate_vm_score(vm_cfg, down_monitors)
-            if score >= min_score:
+            failed_groups = self._get_failed_vm_network_groups(vm_cfg, down_monitors)
+            if not failed_groups:
                 continue
 
-            vm_pid = linux.find_vm_pid_by_uuid(vm_uuid)
+            vm_pid = linux.get_vm_pid(vm_uuid)
             if not vm_pid:
                 continue
 
@@ -3197,13 +3216,17 @@ class HaPlugin(kvmagent.KvmAgent):
                 logger.debug('skip vm %s network group fencer, enableHa is false' % vm_uuid)
                 continue
 
-            reason = 'because vm network score[%s] is lower than minScore[%s], down resources[%s]' % (
-                score, min_score, down_str
+            failed_groups_str = ','.join([
+                '%s:%s/%s' % (group['groupUuid'], group['score'], group['minScore'])
+                for group in failed_groups
+            ])
+            reason = 'because vm network groups[%s] are lower than required minScore, down resources[%s]' % (
+                failed_groups_str, down_str
             )
             kill_vm_use_pid({vm_uuid: vm_pid}, reason)
             killed_vms.append(vm_uuid)
-            logger.warn('ha network group fencer killed vm[uuid:%s], score:%s, minScore:%s, down:%s' % (
-                vm_uuid, score, min_score, down_str
+            logger.warn('ha network group fencer killed vm[uuid:%s], failedGroups:%s, down:%s' % (
+                vm_uuid, failed_groups_str, down_str
             ))
 
         return killed_vms
@@ -3386,8 +3409,8 @@ class HaPlugin(kvmagent.KvmAgent):
         if not isinstance(monitors, list):
             monitors = []
 
-        vm_rules = self._normalize_ha_network_group_vm_rules(cmd.get('vms') or {})
         network_groups = self._normalize_ha_network_groups(cmd.get('networkGroups') or {})
+        vm_rules = self._normalize_ha_network_group_vm_rules(cmd.get('vms') or {})
         try:
             interval = int(cmd.get('interval'))
         except (TypeError, ValueError):
