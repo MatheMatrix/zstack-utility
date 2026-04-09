@@ -519,6 +519,44 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
         return diskPaths
 
+    def _check_vg_consistency(self, expected_vg_uuid, shared_block_uuids):
+        """ZSV-11801: check that the disks' actual VG matches the platform expectation.
+
+        When the underlying LUN is overwritten (e.g. after CBT migration or storage
+        re-provisioning), the disks may belong to a different VG. If we proceed with
+        start_vg_lock on the wrong VG, lvmlockd will create a stale lvmlock LV and
+        the platform enters a permanent reconnect failure loop.
+
+        This must be called AFTER config_lvm/start_lock_service (so LVM filter is
+        correct and pvs/vgs can see the disks) and BEFORE start_vg_lock (which
+        implicitly creates the lvmlock LV).
+        """
+        target_wwids = set(w.strip().lower() for w in shared_block_uuids if w and w.strip())
+        if not target_wwids:
+            return
+
+        try:
+            vgs_info, _ = lvm.get_vgs_info(tag=INIT_TAG)
+        except Exception as e:
+            logger.warn("_check_vg_consistency: get_vgs_info failed, skip check: %s" % str(e))
+            return
+
+        for vg_name, block_devices in vgs_info.items():
+            vg_wwids = set(bd.wwid.strip().lower() for bd in block_devices if bd.wwid)
+            # check if the disks overlap — any shared WWID means this VG uses our disks
+            if not target_wwids.intersection(vg_wwids):
+                continue
+            if vg_name != expected_vg_uuid:
+                raise Exception(
+                    "shared block storage inconsistency detected: "
+                    "disks with WWIDs %s belong to VG [%s], but the platform expects VG [%s]. "
+                    "The underlying LUN may have been overwritten or reassigned to a different "
+                    "shared block storage. Manual intervention is required."
+                    % (list(target_wwids.intersection(vg_wwids)), vg_name, expected_vg_uuid))
+
+        logger.debug("_check_vg_consistency: VG %s is consistent with disks %s"
+                     % (expected_vg_uuid, list(target_wwids)))
+
     def create_vg_if_not_found(self, vgUuid, disks, hostUuid, allDisks, forceWipe=False, is_first_create_vg=False):
         # type: (str, set([CheckDisk]), str, set([CheckDisk]), bool) -> bool
         @linux.retry(times=5, sleep_time=random.uniform(0.1, 3))
@@ -708,6 +746,14 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         retry_times_for_checking_vg_lockspace = lvm.get_retry_times_for_checking_vg_lockspace()
 
         lvm.check_stuck_vglk_and_gllk()
+
+        # ZSV-11801: before start_vg_lock (which implicitly creates lvmlock LV),
+        # verify that the disks' actual VG matches what the platform expects.
+        # If the underlying LUN was overwritten/reassigned to a different VG,
+        # proceeding would create a stale lvmlock and enter a reconnect dead-loop.
+        if not cmd.isFirst:
+            self._check_vg_consistency(cmd.vgUuid, cmd.sharedBlockUuids)
+
         logger.debug("starting vg %s lock..." % cmd.vgUuid)
         lvm.start_vg_lock(cmd.vgUuid, cmd.hostId, retry_times_for_checking_vg_lockspace)
 
