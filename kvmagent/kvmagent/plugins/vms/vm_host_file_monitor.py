@@ -3,6 +3,7 @@ import os
 import threading
 import time
 import traceback
+import collections
 
 from kvmagent.plugins.nvram import nvram_common
 from kvmagent.plugins.vms import tpm
@@ -77,6 +78,11 @@ class VmHostFileMonitor(object):
         self._send_command_url = None
         self._started = False
 
+        # (vm_uuid, changed_entries) pair
+        self._report_queue = collections.deque(maxlen=100)
+        self._reporting_vms = set()  # type: set[str]
+        self._queue_processor_started = False
+
     def register_get_active_vms(self, func):
         """Register the function that returns a list of active Vm objects."""
         self._get_active_vms_func = func
@@ -105,8 +111,76 @@ class VmHostFileMonitor(object):
                     logger.warn('vm host file monitor error: %s' % traceback.format_exc())
                 time.sleep(5)
 
+        with self._lock:
+            if self._queue_processor_started:
+                return
+            self._queue_processor_started = True
+
+        @thread.AsyncThread
+        def _process_queue():
+            while True:
+                try:
+                    self._process_one_report()
+                except Exception:
+                    logger.warn('vm host file monitor queue processor error: %s' % traceback.format_exc())
+                time.sleep(0.1)
+
         _loop()
+        _process_queue()
         logger.debug('vm host file monitor started')
+
+    def _process_one_report(self):
+        if not self._report_semaphore.acquire(blocking=False):
+            return
+
+        try:
+            with self._lock:
+                if not self._report_queue:
+                    self._report_semaphore.release()
+                    return
+                vm_uuid, changed_entries = self._report_queue.popleft()
+                self._reporting_vms.add(vm_uuid)
+        except Exception:
+            self._report_semaphore.release()
+            raise
+
+        @thread.AsyncThread
+        def _do_report():
+            try:
+                entry = None
+                with self._lock:
+                    entry = self._entries.get(vm_uuid)
+
+                if not entry:
+                    logger.debug('vm host file monitor: vm[uuid:%s] entry not found, skip report' % vm_uuid)
+                    return
+
+                url = self._send_command_url
+                if not url:
+                    logger.warn('vm host file monitor: no report url, cannot report change for vm[uuid:%s]' % vm_uuid)
+                    return
+
+                cmd = VmHostFileChangedCmd()
+                cmd.hostUuid = entry.host_uuid
+                cmd.vmUuid = entry.vm_uuid
+                cmd.types = [e.type for e in changed_entries]
+                logger.debug('vm host file monitor: reporting change for vm[uuid:%s] types=%s to %s'
+                            % (entry.vm_uuid, cmd.types, url))
+                http.json_dump_post(url, cmd, {'commandpath': KVM_REPORT_VM_HOST_FILE_CHANGED})
+
+                with self._lock:
+                    if vm_uuid in self._entries:
+                        for change_entry in changed_entries:
+                            self._entries[vm_uuid].md5_cache[change_entry.path] = change_entry.current_md5
+            except Exception as e:
+                logger.warn('vm host file monitor: failed to report change for vm[uuid:%s]: %s' 
+                           % (vm_uuid, traceback.format_exc()))
+            finally:
+                with self._lock:
+                    self._reporting_vms.discard(vm_uuid)
+                self._report_semaphore.release()
+
+        _do_report()
 
     def _get_active_vm_uuids(self):
         # type: () -> set | None
@@ -177,6 +251,10 @@ class VmHostFileMonitor(object):
 
     def _detect_changes(self, entry):
         # type: (_VmHostFileMonitorEntry) -> list[_VmHostFileChangeEntry]
+        with self._lock:
+            if entry.vm_uuid in self._reporting_vms:
+                return []
+        
         changed = []
         for t in entry.types:
             path = self._resolve_path(entry.vm_uuid, t)
@@ -208,25 +286,17 @@ class VmHostFileMonitor(object):
             logger.warn('vm host file monitor: no report url, cannot report change for vm[uuid:%s]' % entry.vm_uuid)
             return
 
-        @thread.AsyncThread
-        def _do_report():
-            if not self._report_semaphore.acquire(blocking=False):
-                logger.debug('too many reporting threads, report in next scanning')
+        with self._lock:
+            if entry.vm_uuid in self._reporting_vms:
                 return
 
-            try:
-                cmd = VmHostFileChangedCmd()
-                cmd.hostUuid = entry.host_uuid
-                cmd.vmUuid = entry.vm_uuid
-                cmd.types = [e.type for e in changed_entries]
-                logger.debug('vm host file monitor: reporting change for vm[uuid:%s] types=%s to %s'
-                            % (entry.vm_uuid, cmd.types, url))
-                http.json_dump_post(url, cmd, {'commandpath': KVM_REPORT_VM_HOST_FILE_CHANGED})
-                self._update_md5_cache(entry.vm_uuid, changed_entries)
-            finally:
-                self._report_semaphore.release()
+            for queued_vm_uuid, _ in self._report_queue:
+                if queued_vm_uuid == entry.vm_uuid:
+                    return
 
-        _do_report()
+            self._report_queue.append((entry.vm_uuid, changed_entries))
+            logger.debug('vm host file monitor: queued report for vm[uuid:%s], queue size=%d' 
+                        % (entry.vm_uuid, len(self._report_queue)))
 
 
 _monitor = VmHostFileMonitor()
