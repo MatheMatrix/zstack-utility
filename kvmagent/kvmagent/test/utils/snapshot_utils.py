@@ -1,5 +1,13 @@
 import os
 
+try:
+    import zstacklib
+except Exception as e:
+    print("no zstacklib found. This is a debug PR, do not put it in feature/main branch.")
+    from kvmagent.test.utils import my_debugger
+    print(dir(my_debugger))
+    my_debugger.main()
+
 from zstacklib.test.utils import env
 from zstacklib.utils import linux, uuidhelper
 
