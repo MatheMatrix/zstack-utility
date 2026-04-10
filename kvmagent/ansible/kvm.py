@@ -641,6 +641,7 @@ def install_kvm_pkg():
             rpm_deprecated_list += " qemu-img-ev qemu-kvm-ev qemu-kvm-common-ev"
 
         rpm_deprecated_list += " lvm2-help"
+        rpm_deprecated_list += " device-mapper-devel device-mapper-event-devel"
 
         if rpm_deprecated_list.strip():
             command = "yum --disablerepo=* remove %s -y;" % rpm_deprecated_list
