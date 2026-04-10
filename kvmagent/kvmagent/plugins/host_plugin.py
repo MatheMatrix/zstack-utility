@@ -15,6 +15,7 @@ import uuid
 import sys
 import string
 import socket
+import tempfile
 import yaml
 import subprocess
 try:
@@ -120,6 +121,19 @@ class HostCapacityResponse(kvmagent.AgentResponse):
         self.usedMemory = None
         self.cpuSockets = None
         self.cpuCoreNum = None
+
+
+class UpdateTlsCertCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(UpdateTlsCertCmd, self).__init__()
+        self.caCert = None
+        self.caKey = None
+        self.certIps = None   # comma-separated IP list
+
+
+class UpdateTlsCertResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(UpdateTlsCertResponse, self).__init__()
 
 
 class HostFactResponse(kvmagent.AgentResponse):
@@ -1086,6 +1100,7 @@ class HostPlugin(kvmagent.KvmAgent):
     CAPACITY_PATH = '/host/capacity'
     ECHO_PATH = '/host/echo'
     FACT_PATH = '/host/fact'
+    UPDATE_TLS_CERT_PATH = '/host/updatetlscert'
     PING_PATH = "/host/ping"
     CHECK_FILE_ON_HOST_PATH = '/host/checkfile'
     GET_USB_DEVICES_PATH = "/host/usbdevice/get"
@@ -1533,6 +1548,165 @@ class HostPlugin(kvmagent.KvmAgent):
         if sh_cmd.return_code == 0 and sh_cmd.stdout.strip():
             rsp.cpuFeatureMd5 = hashlib.md5(
                 sh_cmd.stdout.strip().encode()).hexdigest()
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def update_tls_cert(self, req):
+        """Update TLS certificates for libvirt if SAN IPs have changed.
+
+        Receives CA cert+key content and IP list from management node,
+        checks if existing cert SAN covers all IPs, regenerates if needed.
+        """
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = UpdateTlsCertResponse()
+
+        ca_cert = cmd.caCert
+        ca_key = cmd.caKey
+        cert_ips = cmd.certIps  # comma-separated
+
+        if not ca_cert or not ca_key or not cert_ips:
+            rsp.success = False
+            rsp.error = "missing caCert, caKey or certIps"
+            return jsonobject.dumps(rsp)
+
+        all_ips = [ip.strip() for ip in cert_ips.split(',') if ip.strip()]
+        all_ips = list(dict.fromkeys(all_ips))  # deduplicate preserving order
+        san_entries = ','.join(['IP:%s' % ip for ip in all_ips])
+
+        # Idempotency: skip regeneration only when ALL conditions are met:
+        # 1. Full cert file set exists (libvirt + qemu)
+        # 2. On-disk CA matches the CA sent by MN (detects CA rotation)
+        # 3. SAN IPs exactly match certIps (no missing, no extra)
+        # 4. Both server and client certs are verifiable by the CA
+        required_files = [
+            "/etc/pki/CA/cacert.pem",
+            "/etc/pki/libvirt/servercert.pem",
+            "/etc/pki/libvirt/clientcert.pem",
+            "/etc/pki/libvirt/private/serverkey.pem",
+            "/etc/pki/libvirt/private/clientkey.pem",
+            "/etc/pki/qemu/ca-cert.pem",
+            "/etc/pki/qemu/server-cert.pem",
+            "/etc/pki/qemu/client-cert.pem",
+            "/etc/pki/qemu/server-key.pem",
+            "/etc/pki/qemu/client-key.pem",
+        ]
+        server_cert_path = "/etc/pki/libvirt/servercert.pem"
+        client_cert_path = "/etc/pki/libvirt/clientcert.pem"
+        ca_cert_path = "/etc/pki/CA/cacert.pem"
+
+        all_files_exist = all(os.path.isfile(f) for f in required_files)
+        if not all_files_exist:
+            missing = [f for f in required_files if not os.path.isfile(f)]
+            logger.info("TLS cert files missing %s, will regenerate" % missing)
+        else:
+            try:
+                # Check 1: on-disk CA matches the CA from MN
+                with open(ca_cert_path, 'r') as f:
+                    local_ca = f.read().strip()
+                if local_ca != ca_cert.strip():
+                    logger.info("TLS CA cert changed (CA rotation), will regenerate")
+                else:
+                    # Check 2: SAN IPs exactly match
+                    san_out = shell.call(
+                        "openssl x509 -in %s -noout -ext subjectAltName 2>/dev/null" % server_cert_path)
+                    san_match = True
+                    for ip in all_ips:
+                        if 'IP Address:%s' % ip not in san_out:
+                            logger.info("TLS cert SAN missing IP %s, will regenerate" % ip)
+                            san_match = False
+                            break
+                    if san_match:
+                        san_ips = set(re.findall(r'IP Address:([^\s,]+)', san_out))
+                        extra_ips = san_ips - set(all_ips)
+                        if extra_ips:
+                            logger.info("TLS cert SAN has extra IPs %s, will regenerate" % extra_ips)
+                            san_match = False
+                    if san_match:
+                        # Check 3: both server and client certs are signed by this CA
+                        sv = shell.run(
+                            "openssl verify -CAfile %s %s 2>&1 | grep -q ': OK'" % (ca_cert_path, server_cert_path))
+                        cv = shell.run(
+                            "openssl verify -CAfile %s %s 2>&1 | grep -q ': OK'" % (ca_cert_path, client_cert_path))
+                        if sv == 0 and cv == 0:
+                            logger.info("TLS certs already valid with all IPs covered, skipping")
+                            return jsonobject.dumps(rsp)
+                        else:
+                            logger.info("TLS cert verify failed (server=%s client=%s), will regenerate" % (sv, cv))
+            except Exception as e:
+                logger.warn("Failed to check existing cert, will regenerate: %s" % e)
+
+        # Write CA cert and key to temp files
+        host_ip = all_ips[0] if all_ips else "unknown"
+        tmp_dir = tempfile.mkdtemp(prefix="zstack-libvirt-tls-")
+        try:
+
+            ca_cert_file = os.path.join(tmp_dir, "cacert.pem")
+            ca_key_file = os.path.join(tmp_dir, "cakey.pem")
+            with open(ca_cert_file, 'w') as f:
+                f.write(ca_cert)
+            with open(ca_key_file, 'w') as f:
+                f.write(ca_key)
+            os.chmod(ca_key_file, 0o600)
+
+            # Generate server and client certificates
+            gen_cmd = (
+                "openssl genrsa -out {tmp}/serverkey.pem 4096 2>/dev/null && "
+                "openssl req -new -key {tmp}/serverkey.pem "
+                "  -out {tmp}/server.csr -subj '/O=ZStack/CN={ip}' 2>/dev/null && "
+                "openssl x509 -req -days 3650 -in {tmp}/server.csr "
+                "  -CA {tmp}/cacert.pem -CAkey {tmp}/cakey.pem "
+                "  -CAcreateserial -out {tmp}/servercert.pem "
+                "  -extfile <(printf 'subjectAltName={san}') 2>/dev/null && "
+                "openssl genrsa -out {tmp}/clientkey.pem 4096 2>/dev/null && "
+                "openssl req -new -key {tmp}/clientkey.pem "
+                "  -out {tmp}/client.csr -subj '/O=ZStack/CN={ip}' 2>/dev/null && "
+                "openssl x509 -req -days 3650 -in {tmp}/client.csr "
+                "  -CA {tmp}/cacert.pem -CAkey {tmp}/cakey.pem "
+                "  -CAcreateserial -out {tmp}/clientcert.pem "
+                "  -extfile <(printf 'subjectAltName={san}') 2>/dev/null"
+            ).format(tmp=tmp_dir, ip=host_ip, san=san_entries)
+            bash_errorout("bash -c '%s'" % gen_cmd.replace("'", "'\\''"))
+
+            # Deploy certs to standard locations
+            bash_errorout("mkdir -p /etc/pki/CA /etc/pki/libvirt/private /etc/pki/qemu")
+
+            for src, dst in [
+                ("cacert.pem", "/etc/pki/CA/cacert.pem"),
+                ("servercert.pem", "/etc/pki/libvirt/servercert.pem"),
+                ("serverkey.pem", "/etc/pki/libvirt/private/serverkey.pem"),
+                ("clientcert.pem", "/etc/pki/libvirt/clientcert.pem"),
+                ("clientkey.pem", "/etc/pki/libvirt/private/clientkey.pem"),
+                ("cacert.pem", "/etc/pki/qemu/ca-cert.pem"),
+                ("servercert.pem", "/etc/pki/qemu/server-cert.pem"),
+                ("serverkey.pem", "/etc/pki/qemu/server-key.pem"),
+                ("clientcert.pem", "/etc/pki/qemu/client-cert.pem"),
+                ("clientkey.pem", "/etc/pki/qemu/client-key.pem"),
+            ]:
+                bash_errorout("cp %s/%s %s" % (tmp_dir, src, dst))
+
+            # Fix permissions
+            bash_errorout(
+                "chmod 600 /etc/pki/libvirt/private/*.pem /etc/pki/qemu/*-key.pem && "
+                "chmod 644 /etc/pki/libvirt/*.pem /etc/pki/CA/cacert.pem "
+                "/etc/pki/qemu/ca-cert.pem /etc/pki/qemu/server-cert.pem /etc/pki/qemu/client-cert.pem"
+            )
+
+            logger.info("Successfully deployed TLS certs with SAN: %s" % san_entries)
+
+            # Restart libvirtd to pick up new TLS certs
+            # Note: reload (SIGHUP) does NOT reload TLS certs, only restart works
+            ret = shell.run("systemctl restart libvirtd")
+            if ret == 0:
+                logger.info("Restarted libvirtd to apply new TLS certs")
+            else:
+                logger.warn("Failed to restart libvirtd (exit %s), TLS certs may not take effect until next restart" % ret)
+        except Exception as e:
+            logger.warn("Failed to update TLS certs: %s" % e)
+            rsp.success = False
+            rsp.error = str(e)
+        finally:
+            bash_r("rm -rf %s" % tmp_dir)
 
         return jsonobject.dumps(rsp)
 
@@ -4368,6 +4542,7 @@ done
         http_server.register_async_uri(
             self.SETUP_MOUNTABLE_PRIMARY_STORAGE_HEARTBEAT, self.setup_heartbeat_file)
         http_server.register_async_uri(self.FACT_PATH, self.fact)
+        http_server.register_async_uri(self.UPDATE_TLS_CERT_PATH, self.update_tls_cert)
         http_server.register_async_uri(
             self.GET_USB_DEVICES_PATH, self.get_usb_devices)
         http_server.register_async_uri(self.UPDATE_OS_PATH, self.update_os)
