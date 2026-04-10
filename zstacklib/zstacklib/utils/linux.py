@@ -372,8 +372,9 @@ def rm_dir_force(dpath):
 
 
 _PROTECTED_TOP_DIRS = frozenset([
-    '/bin', '/boot', '/dev', '/etc', '/lib', '/lib64',
-    '/proc', '/run', '/sbin', '/srv', '/sys', '/tmp', '/usr', '/var',
+    '/bin', '/boot', '/dev', '/etc', '/home', '/lib', '/lib64',
+    '/media', '/mnt', '/opt', '/proc', '/root', '/run', '/sbin',
+    '/snap', '/srv', '/sys', '/tmp', '/usr', '/var',
 ])
 
 _PROTECTED_FILE_NAMES = frozenset([
@@ -382,7 +383,7 @@ _PROTECTED_FILE_NAMES = frozenset([
 ])
 
 _PROTECTED_DEPTH1_DIRS = frozenset([
-    '/etc', '/usr', '/var', '/lib', '/lib64',
+    '/etc', '/home', '/lib', '/lib64', '/usr', '/var',
 ])
 
 _SENSITIVE_DIR_PREFIXES = ('/etc/',)
@@ -413,6 +414,8 @@ def is_path_dangerous(path):
         return True, "%s: is a depth-1 child of a protected system directory" % path
 
     basename = os.path.basename(path)
+    if basename == '.ssh':
+        return True, "%s: is a protected .ssh directory" % path
     if basename in _PROTECTED_FILE_NAMES and _is_under_sensitive_dir(path):
         return True, "%s: matches a protected sensitive filename '%s' under a sensitive directory" % (path, basename)
 
@@ -464,7 +467,7 @@ def safe_delete_paths(paths, max_batch=1000):
                 failed.append("%s: symlink target %s is dangerous (%s)" % (f, real_target, reason))
                 continue
             try:
-                logger.info("deleting symlink: %s -> %s" % (f, real_target))
+                logger.debug("deleting symlink: %s -> %s" % (f, real_target))
                 os.unlink(f)
             except Exception as e:
                 failed.append("%s: %s" % (f, str(e)))
@@ -480,10 +483,16 @@ def safe_delete_paths(paths, max_batch=1000):
                     if dangerous:
                         failed.append("%s: realpath %s is dangerous (%s)" % (f, real_f, reason))
                         continue
-                logger.info("deleting directory: %s" % f)
+                logger.debug("deleting directory: %s" % f)
                 rm_dir_force(f)
             else:
-                logger.info("deleting file: %s" % f)
+                real_f = os.path.realpath(f)
+                if real_f != f:
+                    dangerous, reason = is_path_dangerous(real_f)
+                    if dangerous:
+                        failed.append("%s: realpath %s is dangerous (%s)" % (f, real_f, reason))
+                        continue
+                logger.debug("deleting file: %s" % f)
                 rm_file_force(f)
         except Exception as e:
             failed.append("%s: %s" % (f, str(e)))
