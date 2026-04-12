@@ -3840,7 +3840,7 @@ done
                 def _cancel(self):
                     if self.task.completed:
                         return
-                    self.task.lastError = "file[%s] upload canceled" % cmd.installPath
+                    self.task.fail("file[%s] upload canceled" % cmd.installPath)
                     linux.rm_file_force(cmd.installPath)
 
             task = FileSystemUploadTask(cmd.taskUuid, cmd.installPath)
