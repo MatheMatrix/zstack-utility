@@ -1740,7 +1740,8 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
             if not cmd.hostUuid:
                 raise Exception('hostUuid is required')
 
-            logger.info('received OVS deprovision request, hostUuid=%s' % cmd.hostUuid)
+            force = getattr(cmd, 'force', False)
+            logger.info('received OVS deprovision request, hostUuid=%s, force=%s' % (cmd.hostUuid, force))
 
             # helper: check if a systemd service is active
             # Returns: 'active', 'inactive', or 'unknown'
@@ -1809,7 +1810,9 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                 # from lingering after a DPDK-to-kernel mode switch.
                 self._clear_dpdk_other_config(vsctl)
             else:
-                logger.info('ovsdb not reachable, skipping external_ids cleanup and bridge deletion')
+                if not force:
+                    raise Exception('ovsdb not reachable and force is not set, cannot deprovision safely')
+                logger.warn('ovsdb not reachable but force=True, skipping external_ids cleanup and bridge deletion')
 
             # 4. Discover DPDK-bound NICs before stopping OVS (so we know what to restore)
             restore_pci_list = getattr(cmd, 'restoreNicPciAddressList', None) or []
