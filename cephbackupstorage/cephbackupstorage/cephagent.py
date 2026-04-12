@@ -1525,8 +1525,10 @@ class CephAgent(object):
         shm_dir = '/dev/shm' if os.path.isdir('/dev/shm') else None
         ssh_passwd_tmp = None
         ssh_passwd_file = None
-        sudo_passwd_file_created = False
+        sudo_passwd_file_cleanup_needed = False
         file_copied = False
+        delete_upgrade_package = None
+        delete_remote_sudo_passwd_file = None
         try:
             ssh_passwd_tmp = tempfile.NamedTemporaryFile(mode='wb', prefix='ssh_', suffix='.tmp',
                                                          dir=shm_dir, delete=False)
@@ -1545,12 +1547,14 @@ class CephAgent(object):
                                                                      quoted_ssh_username, quoted_ssh_target_ip)
 
             def create_upgrade_package_target_path():
+                logger.info("creating upgrade package target path on remote host: %s" % cmd.upgradePackageTargetPath)
                 cmd_str = '%s "mkdir -p %s"' % (sshpass_cmd_header, upgrade_package_target_path)
                 r, _, e = bash.bash_roe(cmd_str)
                 if r != 0:
                     raise Exception("mkdir failed: %s" % e)
 
             def copy_file():
+                logger.info("copying upgrade package to remote host: %s" % ssh_target_ip)
                 cmd_str = 'timeout 1200 sshpass -f %s scp -P %d -o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s %s@%s:%s' % (
                     quoted_ssh_passwd_file, target_host_ssh_port,
                     upgrade_package_source_path, quoted_ssh_username,
@@ -1562,6 +1566,7 @@ class CephAgent(object):
                     raise Exception("scp failed: %s" % e)
 
             def create_remote_sudo_passwd_file():
+                logger.info("creating remote sudo passwd file on remote host")
                 # Use 'umask 077' so the file is created with 0600 permissions
                 # from the start, eliminating the TOCTOU race window that would
                 # exist with 'touch FILE && chmod 600 FILE'.
@@ -1579,6 +1584,7 @@ class CephAgent(object):
                     raise Exception("create remote sudo passwd file failed: %s" % passwd_error)
 
             def unzip_upgrade_package():
+                logger.info("unzipping upgrade package on remote host")
                 cmd_str = '%s "sudo -S < %s tar --no-same-owner --no-same-permissions -zxf %s -C %s"' % (
                     sshpass_cmd_header, quoted_remote_sudo_passwd_file_path,
                     linux.shellquote(target_upgrade_package_path),
@@ -1588,16 +1594,25 @@ class CephAgent(object):
                     raise Exception("tar failed: %s" % e)
 
             def run_upgrade_script():
+                logger.info("running upgrade script on remote host: %s" % cmd.upgradeScriptPath)
                 script_timeout = getattr(cmd, 'upgradeScriptTimeout', None) or self._DEFAULT_UPGRADE_SCRIPT_TIMEOUT
                 try:
                     script_timeout = int(script_timeout)
                 except (ValueError, TypeError):
                     script_timeout = self._DEFAULT_UPGRADE_SCRIPT_TIMEOUT
-                cmd_str = '{0} "sudo -S < {1} chmod +x {2} && sudo -S < {1} timeout {3} {2}"'.format(
+                # cd to the script's directory so relative paths inside
+                # upgrade.sh (e.g. "source cmd.sh") resolve correctly.
+                upgrade_script_dir = linux.shellquote(os.path.dirname(cmd.upgradeScriptPath))
+                cmd_str = (
+                    '{0} "sudo -S < {1} chmod +x {2}'
+                    ' && cd {4}'
+                    ' && sudo -S < {1} timeout {3} {2}"'
+                ).format(
                     sshpass_cmd_header,
                     quoted_remote_sudo_passwd_file_path,
                     upgrade_script_path,
-                    script_timeout)
+                    script_timeout,
+                    upgrade_script_dir)
                 r, _, e = bash.bash_roe(cmd_str)
                 if r == 124:
                     raise Exception("upgrade.sh timed out after %d seconds" % script_timeout)
@@ -1605,6 +1620,7 @@ class CephAgent(object):
                     raise Exception("upgrade.sh failed (exit code %d): %s" % (r, e))
 
             def delete_remote_sudo_passwd_file():
+                logger.info("deleting remote sudo passwd file on remote host")
                 # Retry deletion to reduce risk of leaving password file on remote host.
                 # Use 'shred -u' for secure erasure when available, fall back to 'rm -f'.
                 max_retries = 3
@@ -1628,15 +1644,19 @@ class CephAgent(object):
                              % (max_retries, remote_sudo_passwd_file_path))
 
             def delete_upgrade_package():
+                logger.info("deleting upgrade package on remote host: %s" % cmd.upgradePackageTargetPath)
                 try:
-                    cmd_str = ('%s "rm -f %s"' % (sshpass_cmd_header, linux.shellquote(target_upgrade_package_path)))
+                    cmd_str = ('%s "sudo -S < %s rm -rf %s"' % (
+                        sshpass_cmd_header, quoted_remote_sudo_passwd_file_path, upgrade_package_target_path))
                     bash.bash_roe(cmd_str)
                 except Exception:
-                    logger.warning("failed to delete remote upgrade package: %s" % target_upgrade_package_path)
+                    logger.warning("failed to delete remote upgrade target directory: %s"
+                                   % cmd.upgradePackageTargetPath)
 
             def verify_no_path_escape():
                 """Post-extraction Zip-Slip check: ensure all extracted files
                 stay within the target directory on the remote host."""
+                logger.info("verifying no path escape after extraction on remote host")
                 # Escape regex metacharacters (e.g. '.') in the path so that
                 # grep -E treats them as literal characters.
                 escaped_target = re.escape(cmd.upgradePackageTargetPath)
@@ -1657,7 +1677,7 @@ class CephAgent(object):
             create_upgrade_package_target_path()
             copy_file()
             file_copied = True
-            sudo_passwd_file_created = True
+            sudo_passwd_file_cleanup_needed = True
             create_remote_sudo_passwd_file()
             unzip_upgrade_package()
             verify_no_path_escape()
@@ -1668,10 +1688,10 @@ class CephAgent(object):
             rsp.error = "execution failed: %s" % str(e)
             return jsonobject.dumps(rsp)
         finally:
-            if sudo_passwd_file_created:
-                delete_remote_sudo_passwd_file()
-            if file_copied:
+            if file_copied and delete_upgrade_package is not None:
                 delete_upgrade_package()
+            if sudo_passwd_file_cleanup_needed and delete_remote_sudo_passwd_file is not None:
+                delete_remote_sudo_passwd_file()
             if ssh_passwd_tmp is not None:
                 try:
                     ssh_passwd_tmp.close()
