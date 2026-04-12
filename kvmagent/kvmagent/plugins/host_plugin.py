@@ -3841,6 +3841,7 @@ done
                     if self.task.completed:
                         return
                     self.task.lastError = "file[%s] upload canceled" % cmd.installPath
+                    self.task.completed = True
                     linux.rm_file_force(cmd.installPath)
 
             task = FileSystemUploadTask(cmd.taskUuid, cmd.installPath)
@@ -3852,10 +3853,14 @@ done
         return jsonobject.dumps(rsp)
 
     def direct_upload_file(self, req):
+        task_uuid = req[http.REQUEST_HEADER].get('X-FILE-UUID', '')
         try:
             UploadHandler(req, self.upload_tasks).handle_upload()
         except Exception as e:
             logger.exception("File upload failed: %s", str(e))
+        finally:
+            if task_uuid:
+                self.upload_tasks.remove_task_if_completed(task_uuid)
 
     @kvmagent.replyerror
     def get_upload_progress(self, req):

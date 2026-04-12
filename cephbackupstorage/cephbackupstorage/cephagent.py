@@ -1294,6 +1294,7 @@ class CephAgent(object):
                     if self.task.completed:
                         return
                     self.task.lastError = "file[%s] upload canceled" % cmd.installPath
+                    self.task.completed = True
                     linux.rm_file_force(cmd.installPath)
 
             task = FileSystemUploadTask(cmd.taskUuid, cmd.installPath)
@@ -1305,10 +1306,14 @@ class CephAgent(object):
         return jsonobject.dumps(rsp)
 
     def direct_upload_file(self, req):
+        task_uuid = req[http.REQUEST_HEADER].get('X-FILE-UUID', '')
         try:
             UploadHandler(req, self.upload_file_tasks).handle_upload()
         except Exception as e:
             logger.exception("File upload failed: %s", str(e))
+        finally:
+            if task_uuid:
+                self.upload_file_tasks.remove_task_if_completed(task_uuid)
 
     class PathEscapeError(Exception):
         """Raised when a path escape (Zip-Slip) attempt is detected."""

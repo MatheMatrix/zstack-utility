@@ -59,6 +59,15 @@ class UploadTasks(object):
     def get_task(self, task_uuid):
         return self.tasks.get(task_uuid)
 
+    @lock.lock('upload-task')
+    def remove_task_if_completed(self, task_uuid):
+        """Atomically check completed and remove to avoid TOCTOU race
+        where a concurrent retry's add_task() replaces the old entry
+        between our get_task() and remove_task() calls."""
+        task = self.tasks.get(task_uuid)
+        if task and task.completed:
+            del self.tasks[task_uuid]
+
 
 class UploadTask(object):
     def __init__(self, task_uuid, install_path):
