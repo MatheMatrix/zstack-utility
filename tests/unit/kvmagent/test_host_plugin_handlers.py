@@ -764,6 +764,45 @@ class TestHostPluginGetUsbDevices:
         assert rsp['success'] is True
 
 
+    def test_get_usb_devices_same_vid_pid(self):
+        """Two devices with same VID:PID should both be returned (ZSTAC-83615)."""
+        plugin = _make_plugin()
+        lsusb_u = "Device 0751:9842\nDevice 0751:9842\n"
+        lsusb_v = (
+            "Bus 001 Device 003: ID 0751:9842\n"
+            "idVendor 0x0751 Camera Corp\n"
+            "idProduct 0x9842 USB Camera\n"
+            "bcdUSB 2.00\n"
+            "iManufacturer 1 Camera Corp\n"
+            "iProduct 2 USB Camera\n"
+            "iSerial 3 AAA111\n"
+            "\n"
+            "Bus 001 Device 004: ID 0751:9842\n"
+            "idVendor 0x0751 Camera Corp\n"
+            "idProduct 0x9842 USB Camera\n"
+            "bcdUSB 2.00\n"
+            "iManufacturer 1 Camera Corp\n"
+            "iProduct 2 USB Camera\n"
+            "iSerial 3 BBB222\n"
+        )
+
+        with patch.object(host_plugin, 'bash_roe', side_effect=[
+            (0, lsusb_u, ''),
+            (0, lsusb_v, ''),
+        ]), patch.object(host_plugin, 'bash_r', return_value=1), \
+                patch('kvmagent.plugins.host_plugin.logger'):
+            req = _make_req({})
+            result = plugin.get_usb_devices(req)
+        rsp = json.loads(result)
+        assert rsp['success'] is True
+        infos = rsp['usbDevicesInfo']
+        assert len(infos) == 2, "expected 2 devices with same VID:PID, got %d" % len(infos)
+        assert infos[0]['devNum'] == '003'
+        assert infos[1]['devNum'] == '004'
+        assert infos[0]['iSerial'] == 'AAA111'
+        assert infos[1]['iSerial'] == 'BBB222'
+
+
 @pytest.mark.kvmagent
 class TestHostPluginUpdateOs:
     def test_update_os(self):
