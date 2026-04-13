@@ -28,6 +28,8 @@ _mock_bash.bash_r = lambda *a, **kw: 0
 sys.modules['zstacklib.utils.bash'] = _mock_bash
 
 # ---- Step 3: Mock remaining Py2-only / unavailable modules -----------------
+# NOTE: Do NOT mock modules you want to test (e.g. ovs). Instead mock their
+# external C/system dependencies so the real Python code can be imported.
 _SIMPLE_MOCKS = [
     'libvirt',
     'zstacklib.utils.shell',
@@ -36,11 +38,16 @@ _SIMPLE_MOCKS = [
     'zstacklib.utils.daemon',
     'zstacklib.utils.filedb',
     'zstacklib.utils.salt',
-    'zstacklib.utils.ovs',
     'zstacklib.utils.qemu',
     'zstacklib.utils.sizeunit',
     'zstacklib.utils.thread',
     'zstacklib.utils.qga',
+    'zstacklib.utils.iproute',
+    'zstacklib.utils.http',
+    'zstacklib.utils.ip',
+    'pyroute2',
+    'pyroute2.netns',
+    'cherrypy',
 ]
 for _mod_name in _SIMPLE_MOCKS:
     sys.modules[_mod_name] = MagicMock()

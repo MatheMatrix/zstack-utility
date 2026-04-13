@@ -267,7 +267,6 @@ _SIMPLE_MOCKS = [
     'zstacklib.utils.daemon',
     'zstacklib.utils.filedb',
     'zstacklib.utils.salt',
-    'zstacklib.utils.ovs',
     'zstacklib.utils.qemu',
     'zstacklib.utils.sizeunit',
     'zstacklib.utils.thread',

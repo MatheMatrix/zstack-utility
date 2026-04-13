@@ -1901,9 +1901,9 @@ class OvsDpdkCtl(OvsBaseCtl):
         """
         try:
             bond_list = []
-            itemDict = {}
             for item in bond_list_org:
                 if "----" in item:
+                    itemDict = {}
                     bond_list.append(itemDict)
                     itemDict["name"] = item.split(" ")[1]
 
