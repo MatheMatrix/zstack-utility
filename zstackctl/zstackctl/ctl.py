@@ -10027,11 +10027,13 @@ class InstallLicenseCmd(Command):
             install_xsky_license(args)
 
 # tag::deploymentProfiles[]
+# Format: (heap_gb, maxPoolSize, maxThreads.ratio, scrapeInterval, maxThreadNum, enableElaboration, ping.interval, ping.parallelismDegree)
 deploymentProfiles = {
-        'small':  ( 4,  64, 0.6, 15),
-        'medium': ( 8, 128, 0.5, 30),
-        'large':  (16, 128, 0.4, 60),
-        'default':( 12, 100, 0.6, 15),
+        'small':  ( 4,  64, 0.6, 15, 150, 'true', 60, 100),
+        'medium': ( 8, 128, 0.5, 30, 150, 'true', 60, 100),
+        'large':  (16, 128, 0.4, 60, 300, 'true', 60, 200),
+        'xlarge': (32, 256, 0.3, 120, 1000, 'false', 120, 300),
+        'default':( 12, 100, 0.6, 15, 150, 'true', 60, 100),
 }
 # end::deploymentProfiles[]
 
@@ -10044,6 +10046,7 @@ class SetDeploymentCmd(Command):
 
     def install_argparse_arguments(self, parser):
         parser.add_argument('--size', '-s', help="instance size, one of %s" % deploymentProfiles.keys(), required=True)
+
 
     def find_opt(self, opts, prefix):
         for opt in opts:
@@ -10064,17 +10067,38 @@ class SetDeploymentCmd(Command):
         opts.remove(cur)
         return '-Xmx%sG %s' % (heap, ' '.join(opts))
 
+    def update_global_config(self, category, name, value):
+        sval = str(value).strip()
+
+        db_hostname, db_port, db_user, db_password = ctl.get_live_mysql_portal()
+
+        if db_password:
+            cmd = ShellCmd('''mysql -u %s -p%s --host %s --port %s zstack -e "update GlobalConfigVO set value='%s' where name='%s' and category='%s'"'''
+                           % (db_user, shell_quote(db_password), db_hostname, db_port, sval, name, category))
+        else:
+            cmd = ShellCmd('''mysql -u %s --host %s --port %s zstack -e "update GlobalConfigVO set value='%s' where name='%s' and category='%s'"'''
+                           % (db_user, db_hostname, db_port, sval, name, category))
+        cmd(False)
+        if cmd.return_code != 0:
+            raise CtlError('failed to update GlobalConfig %s.%s: %s' % (category, name, cmd.stderr))
+
+        info('updated GlobalConfig %s.%s to %s via DB (will take effect after MN restart)' % (category, name, sval))
+
     def run(self, args):
         s = args.size.lower()
         if not s in deploymentProfiles.keys():
             raise CtlError('unexpected size: %s' % args.size)
 
-        heap, psize, ratio, sint = deploymentProfiles[s]
+        heap, psize, ratio, sint, max_thread, enable_elab, ping_interval, ping_parallel = deploymentProfiles[s]
         # tag::setdeploymentconfig[]
         commands.getstatusoutput("zstack-ctl setenv CATALINA_OPTS='%s'" % self.build_catalina_opts(heap))
         commands.getstatusoutput("zstack-ctl configure DbFacadeDataSource.maxPoolSize=%s" % psize)
         commands.getstatusoutput("zstack-ctl configure KvmHost.maxThreads.ratio=%s" % ratio)
         commands.getstatusoutput("zstack-ctl configure Prometheus.scrapeInterval=%s" % sint)
+        commands.getstatusoutput("zstack-ctl configure ThreadFacade.maxThreadNum=%s" % max_thread)
+        commands.getstatusoutput("zstack-ctl configure enableElaboration=%s" % enable_elab)
+        self.update_global_config('host', 'ping.interval', ping_interval)
+        self.update_global_config('host', 'ping.parallelismDegree', ping_parallel)
         # end::setdeploymentconfig[]
 
 class ClearLicenseCmd(Command):
