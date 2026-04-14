@@ -847,7 +847,7 @@ class TestHostPluginInitHostMoc:
                 'masterVethName': 'veth0',
                 'bridgeName': 'br0',
             })
-        result = plugin.init_host_moc(req)
+            result = plugin.init_host_moc(req)
         rsp = json.loads(result)
         assert rsp['success'] is True
 
@@ -1419,6 +1419,128 @@ Framebuffer : 1024 MB
         rsp = json.loads(result)
         assert rsp['error'] == ''
         assert rsp['pciDevicesInfo'][0]['virtStatus'] == 'VFIO_MDEV_VIRTUALIZABLE'
+        assert rsp['pciDevicesInfo'][0]['virtState'] == 'VIRTUALIZABLE'
+        assert rsp['pciDevicesInfo'][0]['virtCapabilities'] == ['VFIO_MDEV']
+
+    def test_get_pci_info_reports_nvidia_vfio_mdev_virtualized_when_creatable_query_fails_on_pf(self):
+        plugin = _make_plugin()
+
+        for attr in ('HUAWEI', 'HAIGUANG', 'TIANSHU', 'VASTAI', 'ENFLAME', 'ALIBABA', 'KUNLUNXIN'):
+            if not hasattr(host_plugin.VendorEnum, attr):
+                setattr(host_plugin.VendorEnum, attr, attr.lower())
+
+        from zstacklib.utils import linux, pci as pci_mod
+
+        pci_mod.get_pci_device_ids = MagicMock(return_value=(
+            0,
+            "\n".join([
+                "Slot: 0000:65:00.0",
+                "Class: 3D controller",
+                "Vendor: 10de",
+                "Device: 1db6",
+                "SVendor: 10de",
+                "SDevice: 12a2",
+                "Rev: a1",
+            ]),
+            "",
+        ))
+        pci_mod.get_pci_device_names = MagicMock(return_value=(
+            0,
+            "\n".join([
+                "Slot: 0000:65:00.0",
+                "Class: 3D controller",
+                "Vendor: NVIDIA Corporation",
+                "Device: Tesla",
+                "SVendor: NVIDIA Corporation",
+                "SDevice: Tesla",
+                "Rev: a1",
+            ]),
+            "",
+        ))
+        pci_mod.collect_pci_devices_with_dependencies = MagicMock(return_value=[])
+        pci_mod.simplify_vendor_name = MagicMock(return_value='NVIDIA')
+        pci_mod.normalize_pci_address = MagicMock(side_effect=lambda addr: addr)
+        pci_mod.pci_device_prepare_chain = MagicMock(return_value=[])
+        pci_mod.pci_device_probe = MagicMock()
+        pci_mod.update_cache_devices = MagicMock()
+        pci_mod.calculate_max_addressable_memory = MagicMock()
+
+        class _Context:
+            def __init__(self, pci_device_mapper=None, opaque=None):
+                self.pci_device_mapper = pci_device_mapper or {}
+                self.opaque = opaque
+                self.gpu_info_map = None
+
+        pci_mod.PciDeviceProcessingContext = _Context
+
+        linux.read_file_lines = MagicMock(return_value=[])
+
+        def bash_roe_side_effect(cmd, *_args, **_kwargs):
+            if "nvidia-smi vgpu -i 0000:65:00.0 -v -c" in cmd:
+                return (1, "", "creatable types unavailable on PF")
+            if "nvidia-smi vgpu -i 0000:65:00.0 -s | grep -v 0000:65:00.0" in cmd:
+                return (0, "profile-a\n", "")
+            if "nvidia-smi vgpu -i 0000:65:00.0 -c | grep -v 0000:65:00.0" in cmd:
+                return (1, "", "")
+            if "nvidia-smi vgpu -i 0000:65:00.0 -s" in cmd:
+                return (0, """index : 0
+vGPU Type ID : 25
+Framebuffer : 1024 MB
+""", "")
+            if "ls /sys/bus/pci/devices/0000:65:00.0/ | grep virtfn" in cmd:
+                return (0, "virtfn0\n", "")
+            if "ls /sys/bus/mdev/devices/" in cmd:
+                return (0, "11111111-1111-1111-1111-111111111111\n", "")
+            if "virsh list --uuid" in cmd:
+                return (1, "", "")
+            return (0, "", "")
+
+        def exists_side_effect(path):
+            if path.endswith('/mdev_supported_types'):
+                return False
+            if path.endswith('/virtfn0/mdev_supported_types'):
+                return True
+            if path.endswith('/virtfn0/11111111-1111-1111-1111-111111111111'):
+                return True
+            if "sriov_totalvfs" in path or "sriov_numvfs" in path or "physfn" in path:
+                return False
+            return False
+
+        def isdir_side_effect(path):
+            if path.endswith('/mdev_supported_types'):
+                return False
+            if path.endswith('/virtfn0/mdev_supported_types'):
+                return True
+            return False
+
+        def listdir_side_effect(path):
+            if path.endswith('/virtfn0/mdev_supported_types'):
+                return ['nvidia-1']
+            return []
+
+        def open_side_effect(path, _mode='r', *_args, **_kwargs):
+            if path.endswith('available_instances'):
+                return io.StringIO('1')
+            return io.StringIO()
+
+        with patch.object(host_plugin, 'bash_roe', side_effect=bash_roe_side_effect), \
+                patch('kvmagent.plugins.host_plugin.os.path.exists', side_effect=exists_side_effect), \
+                patch('kvmagent.plugins.host_plugin.os.path.isdir', side_effect=isdir_side_effect), \
+                patch('kvmagent.plugins.host_plugin.os.listdir', side_effect=listdir_side_effect), \
+                patch('builtins.open', side_effect=open_side_effect):
+            req = _make_req({
+                'skipGrubConfig': True,
+                'enableIommu': True,
+                'opaque': False,
+                'pciDeviceAddresses': [],
+            })
+            result = plugin.get_pci_info(req)
+
+        rsp = json.loads(result)
+        assert rsp['error'] == ''
+        assert rsp['pciDevicesInfo'][0]['virtStatus'] == 'VFIO_MDEV_VIRTUALIZED'
+        assert rsp['pciDevicesInfo'][0]['virtState'] == 'VIRTUALIZED'
+        assert rsp['pciDevicesInfo'][0]['virtCapabilities'] == ['VFIO_MDEV']
 
 
 @pytest.mark.kvmagent

@@ -927,7 +927,13 @@ class PciDeviceTO(object):
         self.parentAddress = ""
         self.iommuGroup = ""
         self.type = ""
+        # Legacy compatibility field. New virtualization semantics should use
+        # virtState/virtMode/virtCapabilities directly. virtStatus will be
+        # deprecated once all consumers migrate.
         self.virtStatus = ""
+        self.virtState = ""
+        self.virtMode = ""
+        self.virtCapabilities = []
         self.maxPartNum = "0"
         self.ramSize = ""
         self.mdevSpecifications = []
@@ -943,6 +949,21 @@ class MttyDeviceTO(object):
         self.description = ""
         self.type = ""
         self.virtStatus = ""
+
+
+def set_pci_virt_metadata(
+        to,
+        virt_status,
+        virt_state,
+        virt_mode=None,
+        virt_capabilities=None):
+    # Keep virtStatus populated for backward compatibility only. New
+    # virtualization semantics are carried by virtState/virtMode/
+    # virtCapabilities, and virtStatus is expected to be deprecated later.
+    to.virtStatus = virt_status or ""
+    to.virtState = virt_state or ""
+    to.virtMode = virt_mode or ""
+    to.virtCapabilities = list(virt_capabilities or [])
 
 # moved from vm_plugin to host_plugin
 
@@ -2617,9 +2638,11 @@ done
 
             with open(numvfs, 'r') as f:
                 if f.read().strip() != '0':
-                    to.virtStatus = "SRIOV_VIRTUALIZED"
+                    set_pci_virt_metadata(
+                        to, "SRIOV_VIRTUALIZED", "VIRTUALIZED", "SRIOV", ["SRIOV"])
                 else:
-                    to.virtStatus = "SRIOV_VIRTUALIZABLE"
+                    set_pci_virt_metadata(
+                        to, "SRIOV_VIRTUALIZABLE", "VIRTUALIZABLE", None, ["SRIOV"])
         elif os.path.exists(physfn):
             # for vf, to.maxPartNum means the number of current vfs
             numvfs = os.path.join(physfn, "sriov_numvfs")
@@ -2661,8 +2684,9 @@ done
                     virtfn):
                 to.deviceId = ""
                 to.vendorId = ""
-            else:
-                to.virtStatus = "SRIOV_VIRTUAL"
+
+            set_pci_virt_metadata(
+                to, "SRIOV_VIRTUAL", "VIRTUAL", "SRIOV", [])
 
             to.parentAddress = os.readlink(physfn).split('/')[-1]
             if os.path.exists(gpuvf):
@@ -2694,12 +2718,23 @@ done
             r2, _, _ = bash_roe("nvidia-smi vgpu -i %s -s" % addr)
             if r2 != 0:
                 return False
+            rs, support, _ = bash_roe("nvidia-smi vgpu -i %s -s | grep -v %s" %
+                                      (addr, addr))
+            rc, creatable, _ = bash_roe(
+                "nvidia-smi vgpu -i %s -c | grep -v %s" % (addr, addr))
+            if rs == 0 and support.strip() and (rc != 0 or support != creatable):
+                set_pci_virt_metadata(
+                    to, "VFIO_MDEV_VIRTUALIZED", "VIRTUALIZED",
+                    "VFIO_MDEV", ["VFIO_MDEV"])
+                return True
             if legacy_mdev_dir_exists:
                 self._legacy_mdev(to)
             elif virt_function_dir_exits:
                 self._virt_function(to)
             else:
-                to.virtStatus = 'VFIO_MDEV_VIRTUALIZABLE'
+                set_pci_virt_metadata(
+                    to, "VFIO_MDEV_VIRTUALIZABLE", "VIRTUALIZABLE",
+                    None, ["VFIO_MDEV"])
             return True
 
         for line in o.splitlines()[1:]:
@@ -2717,13 +2752,17 @@ done
         if legacy_mdev_dir_exists:
             rc, _, _ = bash_roe("nvidia-smi vgpu -i %s -c" % addr)
             if rc != 0:
-                to.virtStatus = 'VFIO_MDEV_VIRTUALIZABLE'
+                set_pci_virt_metadata(
+                    to, "VFIO_MDEV_VIRTUALIZABLE", "VIRTUALIZABLE",
+                    None, ["VFIO_MDEV"])
             else:
                 self._legacy_mdev(to)
         elif virt_function_dir_exits:
             self._virt_function(to)
         else:
-            to.virtStatus = 'VFIO_MDEV_VIRTUALIZABLE'
+            set_pci_virt_metadata(
+                to, "VFIO_MDEV_VIRTUALIZABLE", "VIRTUALIZABLE",
+                None, ["VFIO_MDEV"])
 
         return True
 
@@ -2797,9 +2836,13 @@ done
             return False
 
         if addr.lower() in virtStatusOut.lower():
-            to.virtStatus = "VFIO_MDEV_VIRTUALIZED"
+            set_pci_virt_metadata(
+                to, "VFIO_MDEV_VIRTUALIZED", "VIRTUALIZED",
+                "VFIO_MDEV", ["VFIO_MDEV"])
         else:
-            to.virtStatus = "VFIO_MDEV_VIRTUALIZABLE"
+            set_pci_virt_metadata(
+                to, "VFIO_MDEV_VIRTUALIZABLE", "VIRTUALIZABLE",
+                None, ["VFIO_MDEV"])
 
         return True
 
@@ -2819,9 +2862,13 @@ done
         _, creatable, _ = bash_roe(
             "nvidia-smi vgpu -i %s -c | grep -v %s" % (to.pciDeviceAddress, to.pciDeviceAddress))
         if support != creatable:
-            to.virtStatus = "VFIO_MDEV_VIRTUALIZED"
+            set_pci_virt_metadata(
+                to, "VFIO_MDEV_VIRTUALIZED", "VIRTUALIZED",
+                "VFIO_MDEV", ["VFIO_MDEV"])
         else:
-            to.virtStatus = "VFIO_MDEV_VIRTUALIZABLE"
+            set_pci_virt_metadata(
+                to, "VFIO_MDEV_VIRTUALIZABLE", "VIRTUALIZABLE",
+                None, ["VFIO_MDEV"])
 
     def _virt_function(self, to):
         addr = to.pciDeviceAddress
@@ -2851,10 +2898,14 @@ done
                         break
             if virtualizable or mdev_devices_exists:
                 break
-        if virtualizable is True and mdev_devices_exists is False:
-            to.virtStatus = "VFIO_MDEV_VIRTUALIZABLE"
-        elif virtualizable is False and mdev_devices_exists is True:
-            to.virtStatus = "VFIO_MDEV_VIRTUALIZED"
+        if mdev_devices_exists is True:
+            set_pci_virt_metadata(
+                to, "VFIO_MDEV_VIRTUALIZED", "VIRTUALIZED",
+                "VFIO_MDEV", ["VFIO_MDEV"])
+        elif virtualizable is True:
+            set_pci_virt_metadata(
+                to, "VFIO_MDEV_VIRTUALIZABLE", "VIRTUALIZABLE",
+                None, ["VFIO_MDEV"])
 
     def _simplify_pci_device_name(self, name, vendor_id):
         """
@@ -3041,8 +3092,9 @@ done
 
     def _apply_virt_status_fallback(self, pci_devices_info, context):
         """
-        For PCI devices that don't have virtStatus set by device ops (e.g.,
-        NICs), run host-level vfio_mdev and sriov detection and set virtStatus.
+        For PCI devices that don't have explicit virt metadata set by device
+        ops (e.g., NICs), run host-level vfio_mdev and sriov detection and set
+        the legacy status plus the new explicit fields.
         Restores behavior that previously ran for every PCI device before
         refactor (ZSTAC-81834).
         """
@@ -3053,14 +3105,24 @@ done
                 vfio_mdev_status = to.virtStatus
                 sriov_supported = self._get_sriov_info(to, gpu_info_map)
                 if vfio_mdev_supported and sriov_supported:
-                    if vfio_mdev_status != "VFIO_MDEV_VIRTUALIZED":
-                        to.virtStatus = "VFIO_MDEV_VIRTUALIZABLE"
+                    virt_capabilities = list(getattr(to, 'virtCapabilities', []) or [])
+                    if "VFIO_MDEV" not in virt_capabilities:
+                        virt_capabilities.append("VFIO_MDEV")
+                    if vfio_mdev_status == "VFIO_MDEV_VIRTUALIZED" and not getattr(to, 'virtMode', None):
+                        set_pci_virt_metadata(
+                            to, vfio_mdev_status, "VIRTUALIZED", "VFIO_MDEV", virt_capabilities)
+                    else:
+                        set_pci_virt_metadata(
+                            to, to.virtStatus, getattr(to, 'virtState', None),
+                            getattr(to, 'virtMode', None), virt_capabilities)
                 elif not vfio_mdev_supported and not sriov_supported:
-                    to.virtStatus = "UNVIRTUALIZABLE"
+                    set_pci_virt_metadata(
+                        to, "UNVIRTUALIZABLE", "UNVIRTUALIZABLE")
                 # If only one of vfio_mdev or sriov is supported, keep the value
                 # already set by _get_sriov_info or _get_vfio_mdev_info
             if not to.virtStatus or to.virtStatus == "":
-                to.virtStatus = "UNVIRTUALIZABLE"
+                set_pci_virt_metadata(
+                    to, "UNVIRTUALIZABLE", "UNVIRTUALIZABLE")
 
     def _collect_format_pci_device_info(self, rsp, opaque, pci_device_addresses=None):
         result = self._parse_pci_device_info(rsp)
@@ -3069,7 +3131,15 @@ done
         device_ids, device_names, pci_device_mapper = result
 
         if pci_device_addresses:
-            device_ids = {slot: info for slot, info in device_ids.items() if slot in pci_device_addresses}
+            normalized_addresses = set()
+            for address in pci_device_addresses:
+                normalized = pci.normalize_pci_address(address)
+                normalized_addresses.add(normalized or address)
+
+            device_ids = {
+                slot: info for slot, info in device_ids.items()
+                if slot in normalized_addresses
+            }
 
         pci_devices_dict = {}
 

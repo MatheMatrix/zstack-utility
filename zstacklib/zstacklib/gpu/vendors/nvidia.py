@@ -3,9 +3,11 @@
 NVIDIA GPU Vendor Implementation (Python 2/3 Compatible)
 """
 
+import os
+import re
 import threading
 
-from zstacklib.utils import log
+from zstacklib.utils import log, linux
 from zstacklib.utils.bash import bash_roe
 from zstacklib.gpu.base import (
     GPUBase,
@@ -33,6 +35,7 @@ class NVIDIA(GPUBase):
     VENDOR_IDS = {"10de"}
     PCI_NAME_KEYWORDS = {"NVIDIA Corporation"}
     CLI_TOOL = "nvidia-smi"
+    TENSORFUSION_WORKER_BINARY = "/usr/local/bin/tensor-fusion-worker"
 
     # Device types recognized as GPU
     DEVICE_TYPES = {"3D controller", "VGA compatible controller"}
@@ -351,6 +354,132 @@ class NVIDIA(GPUBase):
         r, o, _ = bash_roe(cmd)
         return r, o
 
+    # ==========================================================================
+    # Device In-Use Check
+    # ==========================================================================
+
+    # Processes that transiently open nvidia devices for monitoring/management
+    # and are safe to ignore when deciding whether a GPU is actively in use.
+    _IGNORED_COMMANDS = frozenset([
+        "nvidia-smi",
+    ])
+
+    @classmethod
+    def _get_dev_path(cls, pci_address):
+        """Find /dev/nvidia{N} device path for a given PCI address.
+
+        Uses nvidia-smi to get the authoritative index-to-PCI mapping.
+
+        Args:
+            pci_address: Normalized PCI address (e.g., "0000:34:00.0").
+
+        Returns:
+            Device path like "/dev/nvidia0", or None if not found.
+        """
+        try:
+            r, o, e = bash_roe(
+                "nvidia-smi --query-gpu=index,pci.bus_id --format=csv,noheader 2>/dev/null"
+            )
+            if r != 0 or not o.strip():
+                return None
+
+            # nvidia-smi outputs lines like "0, 00000000:34:00.0"
+            # The bus_id uses 8-digit domain; normalize both sides for comparison.
+            target = pci_address.lower()
+            for line in o.strip().splitlines():
+                parts = line.split(",")
+                if len(parts) != 2:
+                    continue
+                idx = parts[0].strip()
+                bus_id = parts[1].strip().lower()
+                # nvidia-smi uses 8-digit domain (e.g. 00000000:xx:xx.x),
+                # normalize to 4-digit (0000:xx:xx.x) for comparison
+                domain = bus_id.split(":")[0]
+                if len(domain) == 8:
+                    bus_id = bus_id[4:]
+                if bus_id == target:
+                    dev_path = "/dev/nvidia%s" % idx
+                    if os.path.exists(dev_path):
+                        return dev_path
+                    return None
+        except Exception:
+            pass
+
+        return None
+
+    @classmethod
+    def check_device_in_use(cls, pci_address):
+        """Check if an NVIDIA GPU is in use by other processes.
+
+        This prevents unbinding a GPU that is actively used, which would cause
+        the NVIDIA driver's nv_pci_remove() to hang indefinitely in kernel space,
+        leading to zombie processes and libvirtd failure.
+
+        Args:
+            pci_address: Normalized PCI address (e.g., "0000:34:00.0").
+
+        Raises:
+            PciError: When the device is in use by other processes.
+        """
+        from zstacklib.hardware.pci.address import PciError
+
+        device_path = os.path.join("/sys/bus/pci/devices", pci_address)
+        if not os.path.exists(device_path):
+            return
+
+        driver_link = os.path.join(device_path, "driver")
+        if not os.path.islink(driver_link):
+            return
+
+        current_driver = os.path.basename(os.path.realpath(driver_link))
+        if current_driver != "nvidia":
+            return
+
+        dev_path = cls._get_dev_path(pci_address)
+        if not dev_path:
+            logger.debug("cannot find /dev/nvidia* for pci device %s, skip in-use check", pci_address)
+            return
+
+        r, o, e = bash_roe("fuser %s 2>/dev/null" % dev_path)
+        if r == 1 or not o.strip():
+            # fuser exit 1 means no process using the device
+            return
+        if r != 0:
+            # fuser failed (e.g., not installed rc=127), log and skip check
+            logger.debug("fuser command failed (rc=%d) for %s, skip in-use check", r, dev_path)
+            return
+
+        pids = re.findall(r'\d+', o)
+        active_details = []
+        for pid in pids:
+            try:
+                comm = linux.read_file("/proc/%s/comm" % pid)
+                comm = comm.strip() if comm else "unknown"
+            except Exception:
+                if not os.path.exists("/proc/%s" % pid):
+                    continue
+                comm = "unknown"
+            if comm in cls._IGNORED_COMMANDS:
+                logger.debug("ignoring benign process %s(%s) on %s", pid, comm, dev_path)
+                continue
+            active_details.append("%s(%s)" % (pid, comm))
+            if len(active_details) >= 5:
+                break
+
+        if not active_details:
+            return
+
+        raise PciError(
+            "GPU %s (%s) is currently in use by process: %s. "
+            "Unbinding a busy NVIDIA GPU will cause the kernel driver to hang indefinitely. "
+            "Please stop the process using this GPU before detaching it."
+            % (pci_address, dev_path, ", ".join(active_details))
+        )
+
+    # ==========================================================================
+    # Persistenced Management Commands
+    # ==========================================================================
+
     @classmethod
     def get_shut_persistenced_cmd(cls, is_windows=False):
         """Get command to shut down nvidia-persistenced"""
@@ -435,25 +564,14 @@ class NVIDIA(GPUBase):
 
         # Check if nvidia vgpu is supported by current device
         r, o, e = bash_roe("nvidia-smi vgpu -i %s -v -c" % addr)
-        if r != 0:
-            # SR-IOV backed vGPU cards (e.g. L20, RTX8000) report creatable types
-            # only after VFs are created. Fall back to supported-types query which
-            # works on the PF regardless of VF state. ZSTAC-67411 / ZSTAC-81403
-            r2, _, _ = bash_roe("nvidia-smi vgpu -i %s -s" % addr)
-            if r2 != 0:
+        if r != 0 or not o or "No supported devices" in o:
+            # SR-IOV backed vGPU cards (e.g. L20, RTX8000) may not report
+            # creatable types on the PF before VFs are created. Fall back to
+            # supported-types query which still reflects device capability.
+            rs, support, _ = bash_roe("nvidia-smi vgpu -i %s -s" % addr)
+            if rs != 0 or not support or "No supported devices" in support:
                 return False, {}
-            capability_info = {}
-            if legacy_mdev_dir_exists:
-                _, support, _ = bash_roe("nvidia-smi vgpu -i %s -s | grep -v %s" %
-                                         (addr, addr))
-                _, creatable, _ = bash_roe("nvidia-smi vgpu -i %s -c | grep -v %s" %
-                                           (addr, addr))
-                capability_info['virtStatus'] = ("VFIO_MDEV_VIRTUALIZED"
-                                                 if support != creatable
-                                                 else "VFIO_MDEV_VIRTUALIZABLE")
-            else:
-                capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
-            return True, capability_info
+            o = support
 
         mdev_specs = []
         for line in o.splitlines()[1:]:
@@ -483,11 +601,18 @@ class NVIDIA(GPUBase):
             if rs != 0:
                 return False, {}
             if rc != 0:
-                capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
+                cls.set_capability_virt_metadata(
+                    capability_info, "VFIO_MDEV_VIRTUALIZABLE",
+                    "VIRTUALIZABLE", None, ["VFIO_MDEV"])
             else:
-                capability_info['virtStatus'] = ("VFIO_MDEV_VIRTUALIZED"
-                                                 if support != creatable
-                                                 else "VFIO_MDEV_VIRTUALIZABLE")
+                if support != creatable:
+                    cls.set_capability_virt_metadata(
+                        capability_info, "VFIO_MDEV_VIRTUALIZED",
+                        "VIRTUALIZED", "VFIO_MDEV", ["VFIO_MDEV"])
+                else:
+                    cls.set_capability_virt_metadata(
+                        capability_info, "VFIO_MDEV_VIRTUALIZABLE",
+                        "VIRTUALIZABLE", None, ["VFIO_MDEV"])
         elif virt_function_dir_exits:
             # Virt function: check virtfn and mdev devices
             r, o, e = bash_roe(
@@ -509,15 +634,25 @@ class NVIDIA(GPUBase):
                                 virtualizable = True
                                 break
                 if mdev_devices_exists:
-                    capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZED"
+                    cls.set_capability_virt_metadata(
+                        capability_info, "VFIO_MDEV_VIRTUALIZED",
+                        "VIRTUALIZED", "VFIO_MDEV", ["VFIO_MDEV"])
                 elif virtualizable:
-                    capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
+                    cls.set_capability_virt_metadata(
+                        capability_info, "VFIO_MDEV_VIRTUALIZABLE",
+                        "VIRTUALIZABLE", None, ["VFIO_MDEV"])
                 else:
-                    capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
+                    cls.set_capability_virt_metadata(
+                        capability_info, "VFIO_MDEV_VIRTUALIZABLE",
+                        "VIRTUALIZABLE", None, ["VFIO_MDEV"])
             else:
-                capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
+                cls.set_capability_virt_metadata(
+                    capability_info, "VFIO_MDEV_VIRTUALIZABLE",
+                    "VIRTUALIZABLE", None, ["VFIO_MDEV"])
         else:
-            capability_info['virtStatus'] = "VFIO_MDEV_VIRTUALIZABLE"
+            cls.set_capability_virt_metadata(
+                capability_info, "VFIO_MDEV_VIRTUALIZABLE",
+                "VIRTUALIZABLE", None, ["VFIO_MDEV"])
 
         return True, capability_info
 
@@ -547,9 +682,13 @@ class NVIDIA(GPUBase):
 
             with open(numvfs, 'r') as f:
                 if f.read().strip() != '0':
-                    capability_info['virtStatus'] = "SRIOV_VIRTUALIZED"
+                    cls.set_capability_virt_metadata(
+                        capability_info, "SRIOV_VIRTUALIZED",
+                        "VIRTUALIZED", "SRIOV", ["SRIOV"])
                 else:
-                    capability_info['virtStatus'] = "SRIOV_VIRTUALIZABLE"
+                    cls.set_capability_virt_metadata(
+                        capability_info, "SRIOV_VIRTUALIZABLE",
+                        "VIRTUALIZABLE", None, ["SRIOV"])
             return True, capability_info
         elif os.path.exists(physfn):
             # VF (Virtual Function)
@@ -577,7 +716,9 @@ class NVIDIA(GPUBase):
                 # NVIDIA A-Series VF: clear device/vendor IDs
                 pci_device_to.deviceId = ""
                 pci_device_to.vendorId = ""
-            capability_info['virtStatus'] = "SRIOV_VIRTUAL"
+            cls.set_capability_virt_metadata(
+                capability_info, "SRIOV_VIRTUAL",
+                "VIRTUAL", "SRIOV", [])
 
             capability_info['parentAddress'] = os.readlink(
                 physfn).split('/')[-1]
@@ -594,3 +735,129 @@ class NVIDIA(GPUBase):
             return True, capability_info
         else:
             return False, {}
+
+    @classmethod
+    def detect_tensorfusion_capability(cls, pci_device_to):
+        """
+        Detect NVIDIA TensorFusion (GPU virtualization) capability.
+
+        Requirements:
+        - NVIDIA driver version >= 570.x
+
+        Returns tuple: (is_supported, capability_info)
+        """
+        addr = pci_device_to.pciDeviceAddress
+        dev = os.path.join("/sys/bus/pci/devices/", addr)
+        physfn = os.path.join(dev, "physfn")
+
+        if os.path.exists(physfn):
+            logger.debug('TensorFusion capability check skipped for %s: SR-IOV VF is not eligible' % addr)
+            return False, {}
+
+        r, o, e = bash_roe('nvidia-smi --query-gpu=pci.bus_id,driver_version --format=csv,noheader -i %s' % addr)
+        if r != 0:
+            logger.debug('TensorFusion capability check failed for %s: nvidia-smi query failed' % addr)
+            return False, {}
+
+        parts = [p.strip() for p in o.strip().split(',')]
+        if len(parts) < 2:
+            logger.debug('TensorFusion capability check failed for %s: unexpected nvidia-smi output' % addr)
+            return False, {}
+
+        driver_version = parts[1]
+
+        capability_info = {
+            'driverVersion': driver_version
+        }
+
+        try:
+            # Parse driver version (e.g., "535.104.05" -> 535)
+            driver_major = int(driver_version.split('.')[0])
+            if driver_major < 570:
+                cls.set_capability_virt_metadata(
+                    capability_info, "TENSORFUSION_NOT_SUPPORTED", "", None, [])
+                capability_info['reason'] = "Driver version %s < 570.x" % driver_version
+                return False, capability_info
+
+            worker = cls.TENSORFUSION_WORKER_BINARY
+            if not os.path.isfile(worker) or not os.access(worker, os.X_OK):
+                cls.set_capability_virt_metadata(
+                    capability_info, "TENSORFUSION_NOT_SUPPORTED", "", None, [])
+                capability_info['reason'] = "TensorFusion worker binary %s is missing or not executable" % worker
+                return False, capability_info
+
+            # Check if TensorFusion worker can be created (virtualizable)
+            # A follow-up enhancement can check whether workers are already
+            # running (virtualized).
+            cls.set_capability_virt_metadata(
+                capability_info, "TENSORFUSION_VIRTUALIZABLE",
+                "VIRTUALIZABLE", None, ["TENSORFUSION"])
+            return True, capability_info
+
+        except (ValueError, IndexError) as ex:
+            logger.warn('TensorFusion capability check failed for %s: failed to parse version info: %s' % (addr, str(ex)))
+            cls.set_capability_virt_metadata(
+                capability_info, "TENSORFUSION_NOT_SUPPORTED", "", None, [])
+            capability_info['reason'] = "Failed to parse version info"
+            return False, capability_info
+
+    # ==========================================================================
+    # GPU Detail Query
+    # ==========================================================================
+
+
+
+    @classmethod
+    def query_gpu_details(cls):
+        """Query nvidia-smi for GPU detail information.
+
+        Returns:
+            dict: {pci_address: {cuda_index, pci_address, name, total_memory_mb, driver_version}}
+                  Keys are normalized via zstacklib.utils.pci.normalize_pci_address.
+        """
+        from zstacklib.utils.pci import normalize_pci_address
+
+        if not cls.is_available():
+            logger.warn('nvidia-smi not available')
+            return {}
+
+        _DETAIL_QUERY_CMD = ('nvidia-smi --query-gpu=index,pci.bus_id,name,memory.total,driver_version '
+                             '--format=csv,noheader,nounits')
+
+        r, o, e = bash_roe(_DETAIL_QUERY_CMD)
+        if r != 0:
+            logger.warn('nvidia-smi detail query failed (rc=%d): %s' % (r, e))
+            return {}
+
+        result = {}
+        for line in o.strip().split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) < 5:
+                logger.warn('unexpected nvidia-smi output line: %s' % line)
+                continue
+
+            try:
+                cuda_index = int(parts[0])
+            except ValueError:
+                logger.warn('invalid cuda index: %s' % parts[0])
+                continue
+
+            pci_address = normalize_pci_address(parts[1])
+            try:
+                total_memory_mb = int(float(parts[3]))
+            except ValueError:
+                total_memory_mb = 0
+
+            entry = {
+                'cuda_index': cuda_index,
+                'pci_address': pci_address,
+                'name': parts[2],
+                'total_memory_mb': total_memory_mb,
+                'driver_version': parts[4],
+            }
+            result[pci_address] = entry
+
+        return result

@@ -85,7 +85,6 @@ class TestUpdateNicHandler:
         vm_plugin.get_vm_by_uuid.assert_called_once_with('vm-uuid')
         mock_vm.update_nic.assert_called_once()
 
-
 @pytest.mark.kvmagent
 class TestHardenConsoleHandler:
     def test_harden_console(self):

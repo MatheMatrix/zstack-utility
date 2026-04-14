@@ -1,9 +1,8 @@
 
 import os
 import re
-from typing import Optional
 
-from zstacklib.utils.bash import bash_o, bash_roe
+from zstacklib.utils.bash import bash_roe
 from zstacklib.utils.log import get_logger
 from zstacklib.utils import linux
 
@@ -144,6 +143,39 @@ def _write_sysfs(path: str, content: str) -> None:
         raise PciError("failed to write %s: %s" % (path, exc))
 
 
+def check_device_in_use(address: str) -> None:
+    """Check if a PCI device is in use by other processes.
+
+    Delegates to the appropriate GPU vendor implementation for
+    vendor-specific in-use detection (e.g., NVIDIA checks /dev/nvidia*
+    file descriptors to prevent driver hang on unbind).
+
+    Args:
+        address: PCI address string.
+
+    Raises:
+        PciError: When the device is in use by other processes.
+    """
+    normalized = _normalize_address(address)
+    device_path = os.path.join("/sys/bus/pci/devices", normalized)
+    if not os.path.exists(device_path):
+        return
+
+    device = get_device(normalized)
+    if not device or not device.vendor_id:
+        return
+
+    try:
+        from zstacklib.gpu.base import get_vendor_by_id
+    except ImportError:
+        logger.debug("gpu vendor module not available, skip device in-use check")
+        return
+
+    vendor = get_vendor_by_id(device.vendor_id)
+    if vendor:
+        vendor.check_device_in_use(normalized)
+
+
 def bind_device_to_vfio(address: str) -> None:
     """Bind PCI device to vfio-pci.
 
@@ -165,6 +197,7 @@ def bind_device_to_vfio(address: str) -> None:
         current_driver = os.path.basename(os.path.realpath(driver_link))
         if current_driver == "vfio-pci":
             return
+        check_device_in_use(address)
         _write_sysfs(os.path.join(driver_link, "unbind"), normalized)
 
     _write_sysfs(os.path.join(device_path, "driver_override"), "vfio-pci")
