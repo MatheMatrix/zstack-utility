@@ -3962,6 +3962,7 @@ class UpgradeHACmd(Command):
 
     def install_argparse_arguments(self, parser):
         parser.add_argument('--zstack-enterprise-installer','--enterprise',
+                            dest='mevoco_installer',
                             help="The new zstack-enterprise installer package, get it from http://cdn.zstack.io/product_downloads/zstack-enterprise/",
                             required=True)
         parser.add_argument('--iso',
