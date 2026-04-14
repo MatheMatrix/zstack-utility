@@ -76,6 +76,7 @@ from zstacklib.gpu.base import VendorEnum
 from zstacklib.utils.plugin import TaskManager, TaskResult
 from zstacklib.utils.qga import *
 from zstacklib.utils import jsonobject
+from zstacklib.utils.job_progress import calculate_detail_speed, normalize_report_speed, summarize_block_job
 from zstacklib.utils.qmp import get_block_node_name_and_file
 from zstacklib.utils.report import *
 from zstacklib.utils.vm_plugin_queue_singleton import VmPluginQueueSingleton
@@ -782,6 +783,13 @@ class GetVolumeMirrorModeResponse(kvmagent.AgentResponse):
 class QueryBlockJobStatusResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(QueryBlockJobStatusResponse, self).__init__()
+        self.status = 'completed'
+        self.device = None
+        self.offset = 0
+        self.total = 0
+        self.remain = 0
+        self.speed = None
+        self.percent = 100
 
 class QueryVmLatenciesThread(threading.Thread):
     def __init__(self, func, uuids, times):
@@ -4377,7 +4385,9 @@ class Vm(object):
                 self.to_migrate_disks = disks
                 self.ready_disks = []
                 self.bandwidth = bandwidth  # in MiB/s
-                self.last_detail_time = None
+                self.last_progress_time = None
+                self.last_progress_remain = None
+                self.last_speed = 0
 
             def check_bandwidth_mismatch(self):
                 ready_blocks = []
@@ -4461,27 +4471,13 @@ class Vm(object):
                         if remain == 0:
                             return result
 
-                        if self.progress_reporter.report.detail and getattr(self.progress_reporter.report.detail, 'processed', None) is not None:
-                            current_time = time.time()
-                            previous_processed = self.progress_reporter.report.detail.__getitem__('processed')
-                            data_delta = processed - previous_processed
-
-                            # Calculate speed in bytes/second
-                            if self.last_detail_time is not None:
-                                time_delta = current_time - self.last_detail_time
-                                if time_delta > 0:
-                                    speed = max(0, data_delta / time_delta)
-                                else:
-                                    speed = 0
-                            else:
-                                # First sample, no speed available
-                                speed = 0
-
-                            self.last_detail_time = current_time
-
-                            remaining_migration_time = (remain / speed) if speed > 0 else 0
-                            result.put("speed", int(speed))
-                            result.put("estimatedRemainingSeconds", int(remaining_migration_time))
+                        configured_speed = bandwidth * 1024 * 1024 if bandwidth > 0 else None
+                        self.last_progress_time, self.last_progress_remain, speed = calculate_detail_speed(
+                            remain, self.last_progress_remain, self.last_progress_time, self.last_speed, configured_speed)
+                        self.last_speed = speed
+                        remaining_migration_time = (remain / speed) if speed > 0 else 0
+                        result.put("speed", speed)
+                        result.put("remaining_migration_time", remaining_migration_time)
                         return result
                 except libvirt.libvirtError:
                     pass
@@ -9158,6 +9154,9 @@ class VmPlugin(kvmagent.KvmAgent):
                 super(BlockCopyDaemon, self).__init__(task_spec, 'blockCopy')
                 self.domain = domain
                 self.disk_name = disk_name
+                self.last_progress_time = None
+                self.last_progress_remain = None
+                self.last_speed = 0
 
             def _cancel(self):
                 logger.debug('cancelling vm[uuid:%s] blockCopy disk[%s]' % (vmUuid, self.disk_name))
@@ -9201,13 +9200,13 @@ class VmPlugin(kvmagent.KvmAgent):
                     if total == job['offset']:
                         return result
 
-                    if self.progress_reporter.report.detail and getattr(self.progress_reporter.report.detail, 'processed', None) is not None:
-                        previous_processed = self.progress_reporter.report.detail.__getitem__('processed')
-                        speed = processed - previous_processed
-                        previous_eta = getattr(self.progress_reporter.report.detail, 'estimatedRemainingSeconds', None)
-                        remaining_migration_time = (remain / speed) if speed != 0 else (previous_eta if previous_eta is not None else 0)
-                        result.put("speed", int(speed))
-                        result.put("estimatedRemainingSeconds", int(remaining_migration_time))
+                    configured_speed = task_spec.bandwidth * 1024 * 1024 if task_spec.bandwidth > 0 else None
+                    self.last_progress_time, self.last_progress_remain, speed = calculate_detail_speed(
+                        remain, self.last_progress_remain, self.last_progress_time, self.last_speed, configured_speed)
+                    self.last_speed = speed
+                    remaining_migration_time = (remain / speed) if speed > 0 else 0
+                    result.put("speed", speed)
+                    result.put("remaining_migration_time", remaining_migration_time)
                     return result
                 except libvirt.libvirtError:
                     pass
@@ -10233,12 +10232,34 @@ host side snapshot files chian:
     @kvmagent.replyerror
     def query_block_job_status(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = kvmagent.AgentResponse()
-        for i in range(0, 6):
-            # for log
-            qmp.execute_qmp_command(cmd.vmUuid, "query-block-jobs")
-            time.sleep(0.5)
+        rsp = QueryBlockJobStatusResponse()
 
+        block_jobs = qmp.execute_qmp_command(cmd.vmUuid, "query-block-jobs", raise_exception=False)
+        if block_jobs is None:
+            rsp.success = False
+            rsp.error = "failed to query block jobs from qmp on vm[uuid:%s]" % cmd.vmUuid
+            return jsonobject.dumps(rsp)
+
+        # query-block-jobs may transiently return [] right after a job is created;
+        # retry briefly so callers don't prematurely treat the job as completed.
+        for _ in range(5):
+            if block_jobs:
+                break
+            time.sleep(0.5)
+            block_jobs = qmp.execute_qmp_command(cmd.vmUuid, "query-block-jobs", raise_exception=False)
+            if block_jobs is None:
+                rsp.success = False
+                rsp.error = "failed to query block jobs from qmp on vm[uuid:%s]" % cmd.vmUuid
+                return jsonobject.dumps(rsp)
+
+        summary = summarize_block_job(block_jobs)
+        rsp.status = summary['status']
+        rsp.device = summary['device']
+        rsp.offset = summary['offset']
+        rsp.total = summary['total']
+        rsp.remain = summary['remain']
+        rsp.speed = summary['speed']
+        rsp.percent = summary['percent']
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
