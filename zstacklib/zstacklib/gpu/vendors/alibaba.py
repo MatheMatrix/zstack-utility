@@ -213,21 +213,30 @@ class Alibaba(GPUBase):
                 result.append((normalized, {"isDriverLoaded": False, "_deviceId": dev_id}))
         return result
 
+    _available_cache = None
+
     @classmethod
     def is_available(cls):
         """
         Check if ppu-smi tool is available.
-        
+        Result is cached to avoid repeated shell calls and log spam.
+
         Returns:
             bool: True if ppu-smi is available, False otherwise
         """
+        if cls._available_cache is not None:
+            return cls._available_cache
+
         r, o, _ = bash_roe("which ppu-smi")
         if r == 0:
             logger.debug("[ALIBABA PPU] ppu-smi found at: %s" % o.strip())
+            cls._available_cache = True
             return True
         # Also check common installation path
         if os.path.exists("/usr/local/bin/ppu-smi"):
             logger.debug("[ALIBABA PPU] ppu-smi found at /usr/local/bin/ppu-smi")
+            cls._available_cache = True
             return True
         logger.debug("[ALIBABA PPU] ppu-smi not found")
+        cls._available_cache = False
         return False
