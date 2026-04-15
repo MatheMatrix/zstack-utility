@@ -101,6 +101,7 @@ class CheckIsBitsExistingRsp(AgentResponse):
 
 class SetPasswordResponse(AgentResponse):
     def __init__(self):
+        super().__init__()
         self.cephInstallPath = None
         self.vmUuid = None
         self.account = None
@@ -609,7 +610,7 @@ class CephAgent(plugin.TaskManager):
             return jsonobject.dumps(rsp)
 
         o = bash_o('rbd children {{SP_PATH}}')
-        o = o.strip(' \t\r\n')
+        o = o.strip()
         if o:
             raise Exception('the image cache[%s] is still in used' % cmd.imagePath)
 
@@ -664,8 +665,7 @@ class CephAgent(plugin.TaskManager):
         rsp.fsid = ceph.get_fsid()
         rsp.type = ceph.get_ceph_manufacturer()
 
-        ip_addresses = [chunk.address for chunk in filter(
-            lambda x: x.address != '127.0.0.1' and not x.ifname.endswith('zs'), iproute.query_addresses(ip_version=4))]
+        ip_addresses = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
         rsp.ipAddresses = ip_addresses
 
         return jsonobject.dumps(rsp)
@@ -696,13 +696,15 @@ class CephAgent(plugin.TaskManager):
             def wrap(f):
                 @functools.wraps(f)
                 def inner(*args, **kwargs):
+                    ex = None
                     for i in range(0, times):
                         try:
                             return f(*args, **kwargs)
                         except Exception as e:
+                            ex = traceback.format_exc()
                             logger.error(e)
                             time.sleep(sleep_time)
-                    rsp.error = ("Still failed after retry. Below is detail:\n %s" % e)
+                    rsp.error = ("Still failed after retry. Below is detail:\n %s" % ex)
 
                 return inner
 
@@ -744,7 +746,7 @@ class CephAgent(plugin.TaskManager):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GetBatchVolumeSizeRsp()
 
-        for uuid, installPath in cmd.volumeUuidInstallPaths.__dict__.items():
+        for uuid, installPath in list(cmd.volumeUuidInstallPaths.__dict__.items()):
             with IgnoreError():
                 path = self._normalize_install_path(installPath)
                 rsp.actualSizes[uuid] = self._get_file_actual_size(path)
@@ -915,7 +917,7 @@ class CephAgent(plugin.TaskManager):
             return
 
         o = bash_o('rbd children %s' % path)
-        o = o.strip(' \t\r\n')
+        o = o.strip()
         if o:
             raise Exception("the snapshot[%s] is still in used, children: %s" % (snapshot_path, o))
 

@@ -1,6 +1,8 @@
+from __future__ import absolute_import
+
 from zstacklib.utils.bash import *
 from zstacklib.utils.thirdparty_ceph import RbdDeviceOperator
-import cephdriver
+from . import cephdriver
 
 logger = log.get_logger(__name__)
 

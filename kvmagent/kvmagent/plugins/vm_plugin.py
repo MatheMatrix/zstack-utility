@@ -47,6 +47,8 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.imagestore import ImageStoreClient
+from kvmagent.plugins.nvram import nvram
+from kvmagent.plugins.vms import vm_host_file, vm_host_file_monitor, tpm
 from zstacklib.utils import bash, plugin, iscsi, qemu_nbd
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import lvm
@@ -107,6 +109,10 @@ MAX_NBD_READ_SIZE = 32768000
 DEFAULT_ZBS_CONF_PATH = "/etc/zbs/client.conf"
 DEFAULT_ZBS_USER_NAME = "zbs"
 PROTOCOL_CBD_PREFIX = "cbd:"
+
+# libvirt.py is in old version, (since virsh has been upgrade) we should use these constants
+VIR_DOMAIN_UNDEFINE_TPM = 1 << 5
+VIR_DOMAIN_UNDEFINE_KEEP_TPM = 1 << 6
 
 class RetryException(Exception):
     pass
@@ -419,6 +425,8 @@ class StartVmCmd(kvmagent.AgentCommand):
         self.cacheVolumes = []
         self.isoPath = None
         self.nics = []
+        self.tpm = None  # type: None|dict[str]
+        self.nvRam = None  # type: None|dict[str]
         self.timeout = None
         self.dataIsoPaths = None
         self.addons = None
@@ -430,6 +438,8 @@ class StartVmCmd(kvmagent.AgentCommand):
         self.isApplianceVm = False
         self.systemSerialNumber = None
         self.bootMode = None
+        self.secureBoot = None  # type: None|bool
+        self.edkVersion = None  # type: None|str
         self.consolePassword = None
         self.memBalloon = None # type:VirtualDeviceInfo
         self.suspendToRam = None
@@ -444,6 +454,7 @@ class StartVmResponse(kvmagent.AgentResponse):
         self.memBalloonInfo = None  # type:VirtualDeviceInfo
         self.virtualizerInfo = VirtualizerInfoTO()  # type:VirtualizerInfoTO
         self.vmXml = None
+        self.edkRpm = None
 
 class SyncVmDeviceInfoCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -458,6 +469,7 @@ class SyncVmDeviceInfoResponse(kvmagent.AgentResponse):
         self.memBalloonInfo = None  # type:VirtualDeviceInfo
         self.virtualizerInfo = VirtualizerInfoTO()  # type:VirtualizerInfoTO
         self.vmXml = None
+        self.edkRpm = None
 
 
 class VirtualDeviceInfo():
@@ -1213,6 +1225,7 @@ class TakeVmConsoleScreenshotCmd(kvmagent.AgentCommand):
 
 
 class TakeVmConsoleScreenshotRsp(kvmagent.AgentResponse):
+    @log.sensitive_fields("imageData")
     def __init__(self):
         super(TakeVmConsoleScreenshotRsp, self).__init__()
         self.imageData = None
@@ -1234,6 +1247,39 @@ class ChangeVfNicHaStateCmd(kvmagent.AgentCommand):
 class ChangeVfNicHaStateRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(ChangeVfNicHaStateRsp, self).__init__()
+
+
+class ReadVmHostFileContentCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(ReadVmHostFileContentCmd, self).__init__()
+        # without VmHostFileTO.contentBase64, VmHostFileTO.fileFormat
+        self.hostFiles = []  # type: list[vm_host_file.VmHostFileTO]
+
+class ReadVmHostFileContentResponse(kvmagent.AgentResponse):
+    @log.sensitive_fields("hostFiles")
+    def __init__(self):
+        super(ReadVmHostFileContentResponse, self).__init__()
+        self.hostFiles = []  # type: list[vm_host_file.VmHostFileTO]
+
+
+class WriteVmHostFileContentCmd(kvmagent.AgentCommand):
+    @log.sensitive_fields("hostFiles")
+    def __init__(self):
+        super(WriteVmHostFileContentCmd, self).__init__()
+        self.hostFiles = []  # type: list[vm_host_file.VmHostFileTO]
+
+class WriteVmHostFileContentResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(WriteVmHostFileContentResponse, self).__init__()
+
+class BackupVmHostFileCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(BackupVmHostFileCmd, self).__init__()
+        self.vmHostFileBackupJobs = []  # type: list[vm_host_file.VmHostFileBackupJob]
+
+class BackupVmHostFileResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(BackupVmHostFileResponse, self).__init__()
 
 
 class VncPortIptableRule(object):
@@ -2330,6 +2376,8 @@ def get_all_vm_states_with_process():
 
     return states
 
+# return all ACTIVE VMs !!! not only running VMs
+# include VIR_DOMAIN_RUNNING/VIR_DOMAIN_PAUSED/VIR_DOMAIN_SHUTTING_DOWN/VIR_DOMAIN_PMSUSPENDED VMs
 def get_running_vms():
     @LibvirtAutoReconnect
     def get_all_ids(conn):
@@ -2843,7 +2891,10 @@ class Vm(object):
 
             def force_undefine():
                 try:
-                    self.domain.undefine()
+                    flags = libvirt.VIR_DOMAIN_UNDEFINE_KEEP_NVRAM
+                    if tpm.VIRSH_SUPPORT_KEEP_TPM:
+                        flags |= VIR_DOMAIN_UNDEFINE_KEEP_TPM
+                    self.domain.undefineFlags(flags)
                 except:
                     logger.warn('cannot undefine the VM[uuid:%s]' % self.uuid)
                     pid = linux.find_process_by_cmdline(['qemu', self.uuid])
@@ -2853,9 +2904,12 @@ class Vm(object):
 
             try:
                 flags = 0
-                for attr in [ "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA", "VIR_DOMAIN_UNDEFINE_NVRAM" ]:
+                for attr in [ "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA", "VIR_DOMAIN_UNDEFINE_KEEP_NVRAM" ]:
                     if hasattr(libvirt, attr):
                         flags |= getattr(libvirt, attr)
+                # only pass KEEP_TPM if virsh actually supports it
+                if tpm.VIRSH_SUPPORT_KEEP_TPM:
+                    flags |= getattr(libvirt, "VIR_DOMAIN_UNDEFINE_KEEP_TPM", VIR_DOMAIN_UNDEFINE_KEEP_TPM)
                 self.domain.undefineFlags(flags)
             except libvirt.libvirtError as ex:
                 logger.warn('undefine domain[%s] failed: %s' % (self.uuid, str(ex)))
@@ -5057,9 +5111,10 @@ class Vm(object):
 
     @staticmethod
     def from_StartVmCmd(cmd):
+        # type: (StartVmCmd) -> None
         use_numa = cmd.useNuma
         numa_nodes = cmd.addons.numaNodes
-        machine_type = get_machineType(cmd.machineType)
+        machine_type = get_machineType(cmd.machineType)  # type: str
         if HOST_ARCH == "aarch64" and cmd.bootMode == 'Legacy':
             raise kvmagent.KvmError("Aarch64 does not support legacy, please change boot mode to UEFI instead of Legacy on your VM or Image.")
         if cmd.architecture and cmd.architecture != HOST_ARCH:
@@ -5300,43 +5355,54 @@ class Vm(object):
             root = elements['root']
             os = e(root, 'os')
             host_arch = kvmagent.host_arch
+            os_type = kvmagent.get_host_os_type()
+            yum_release = kvmagent.get_host_yum_release()
 
-            def on_x86_64():
+            loader_attribute = {'readonly' : 'yes', 'type' : 'pflash'}
+            need_register_nvram = False   # only for x86
+
+            if cmd.secureBoot:
+                loader_attribute['secureBoot'] = 'yes'
+                need_register_nvram = True
+
+            if cmd.tpm:
+                need_register_nvram = True
+
+            # mips64el and loongarch64 is no longer supported, skip
+            nvram_fd_path = nvram.build_nvram_fd_path(cmd.vmInstanceUuid, need_register_nvram)
+            if host_arch == "x86_64" and cmd.bootMode == "UEFI":
                 e(os, 'type', 'hvm', attrib={'machine': machine_type})
-                # if boot mode is UEFI
-                if cmd.bootMode == "UEFI":
-                    e(os, 'loader', '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-pure-efi.fd', attrib={'readonly': 'yes', 'type': 'pflash'})
-                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-pure-efi.fd'})
-                elif cmd.bootMode == "UEFI_WITH_CSM":
-                    e(os, 'loader', '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-with-csm.fd', attrib={'readonly': 'yes', 'type': 'pflash'})
-                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-with-csm.fd'})
-                elif cmd.addons['loaderRom'] is not None:
-                    e(os, 'loader', cmd.addons['loaderRom'], {'type': 'rom'})
-
-            def on_aarch64():
-
-                def on_redhat():
-                    e(os, 'type', 'hvm', attrib={'arch': 'aarch64', 'machine': machine_type})
-                    e(os, 'loader', '/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw', attrib={'readonly': 'yes', 'type': 'pflash'})
-                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/edk2/aarch64/vars-template-pflash.raw'})
-
-                def on_debian():
-                    e(os, 'type', 'hvm', attrib={'arch': 'aarch64', 'machine': machine_type})
-                    e(os, 'loader', '/usr/share/OVMF/QEMU_EFI-pflash.raw', attrib={'readonly': 'yes', 'type': 'rom'})
-                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': '/usr/share/OVMF/vars-template-pflash.raw'})
-
-                eval("on_{}".format(kvmagent.get_host_os_type()))()
-
-            def on_mips64el():
-                e(os, 'type', 'hvm', attrib={'arch': 'mips64el', 'machine': 'loongson7a'})
-                e(os, 'loader', '/usr/share/qemu/ls3a_bios.bin', attrib={'readonly': 'yes', 'type': 'rom'})
-
-            def on_loongarch64():
-                e(os, 'type', 'hvm', attrib={'arch': 'loongarch64', 'machine': 'loongson7a'})
-                e(os, 'loader', '{}loongarch_bios.bin'.format(qemu.get_bin_dir()), attrib={'readonly': 'yes', 'type': 'rom'})
-
-            VmPlugin.clean_vm_firmware_flash(cmd.vmInstanceUuid)
-            eval("on_{}".format(host_arch))()
+                if yum_release in ("ky10sp3", "ky10sp3.2403"):
+                    e(os, 'loader', '/usr/share/edk2/ovmf/OVMF_CODE.fd', attrib=loader_attribute)
+                    e(os, 'nvram', nvram_fd_path, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.fd'})
+                else: # h84r ...
+                    if need_register_nvram:
+                        e(os, 'loader', '/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd', attrib=loader_attribute)
+                        element = e(os, 'nvram', None, attrib={'template': '/usr/share/edk2/ovmf/OVMF_VARS.secboot.fd'})
+                        e(element, 'source', nvram_fd_path)
+                    else:
+                        e(os, 'loader', '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-pure-efi.fd', attrib=loader_attribute)
+                        element = e(os, 'nvram', None, attrib={'template': '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-pure-efi.fd'})
+                        e(element, 'source', nvram_fd_path)
+            elif host_arch == "x86_64" and cmd.bootMode == "UEFI_WITH_CSM":
+                e(os, 'type', 'hvm', attrib={'machine': machine_type})
+                e(os, 'loader', '/usr/share/edk2.git/ovmf-x64/OVMF_CODE-with-csm.fd', attrib=loader_attribute)
+                e(os, 'nvram', nvram_fd_path, attrib={'template': '/usr/share/edk2.git/ovmf-x64/OVMF_VARS-with-csm.fd'})
+            elif host_arch == "x86_64" and cmd.addons is not None and cmd.addons['loaderRom'] is not None:
+                loader_attribute['type'] = 'rom'  # not pflash
+                e(os, 'type', 'hvm', attrib={'machine': machine_type})
+                e(os, 'loader', cmd.addons['loaderRom'], attrib=loader_attribute)
+            elif host_arch == "x86_64":
+                e(os, 'type', 'hvm', attrib={'machine': machine_type})
+            elif host_arch == "aarch64" and os_type == "redhat":
+                e(os, 'type', 'hvm', attrib={'arch': 'aarch64', 'machine': machine_type})
+                e(os, 'loader', '/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw', attrib=loader_attribute)
+                e(os, 'nvram', nvram_fd_path, attrib={'template': '/usr/share/edk2/aarch64/vars-template-pflash.raw'})
+            elif host_arch == "aarch64" and os_type == "debian":
+                loader_attribute['type'] = 'rom'  # not pflash
+                e(os, 'type', 'hvm', attrib={'arch': 'aarch64', 'machine': machine_type})
+                e(os, 'loader', '/usr/share/OVMF/QEMU_EFI-pflash.raw', attrib=loader_attribute)
+                e(os, 'nvram', nvram_fd_path, attrib={'template': '/usr/share/OVMF/vars-template-pflash.raw'})
 
             if cmd.useBootMenu:
                 boot_menu_attrib = {'enable': 'yes'}
@@ -5411,6 +5477,8 @@ class Vm(object):
             if get_gic_version(cmd.cpuNum) == 2:
                 e(features, "gic", attrib={'version': '2'})
 
+            if cmd.tpm is not None or cmd.secureBoot:
+                e(features, "smm", attrib={'state': 'on'})
 
         def make_qemu_commandline():
             if not os.path.exists(QMP_SOCKET_PATH):
@@ -5422,6 +5490,10 @@ class Vm(object):
 
             e(qcmd, "qemu:arg", attrib={"value": "-qmp"})
             e(qcmd, "qemu:arg", attrib={"value": "unix:{}/{}.sock,server,nowait".format(QMP_SOCKET_PATH, cmd.vmInstanceUuid)})
+
+            if machine_type == 'q35' and HOST_ARCH == 'x86_64' and cmd.bootMode == "UEFI":
+                e(qcmd, "qemu:arg", attrib={"value": "-global"})
+                e(qcmd, "qemu:arg", attrib={"value": "mch.extended-tseg-mbytes=288"})
 
             args = cmd.addons['qemuCommandLine']
             if args is not None:
@@ -5537,6 +5609,18 @@ class Vm(object):
             else:
                 set_keyboard()
                 set_tablet()
+
+            if cmd.tpm is not None:
+                tpm_element = e(devices, 'tpm', None, {'model': 'tpm-crb'})
+                backend_element = e(tpm_element, 'backend', None, {'type': 'emulator', 'version': '2.0'})
+
+                secret = getattr(cmd.tpm, "secretUuid", '') # type: str
+                if secret:
+                    try:
+                        secret = str(uuid.UUID(secret))
+                    except (TypeError, ValueError):
+                        raise kvmagent.KvmError('invalid TPM secretUuid: %s' % secret)
+                    e(backend_element, 'encryption', None, {'secret': secret})
 
             elements['devices'] = devices
 
@@ -6681,6 +6765,18 @@ class Vm(object):
             for i, pos in enumerate(disk_positions):
                 children[pos] = ordered_disk_elements[i]
 
+        def prepare_nvram():
+            extension = nvram.NvRamVmExtensions()
+            extension.vm_uuid = cmd.vmInstanceUuid
+
+            if cmd.nvRam is None:
+                extension.cleanup()
+                return
+
+            extension.nvram_volume = cmd.nvRam
+            extension.prepare()
+
+        prepare_nvram()
         make_root()
         make_meta()
         make_cpu()
@@ -7115,6 +7211,10 @@ class VmPlugin(kvmagent.KvmAgent):
     TAKE_VM_CONSOLE_SCREENSHOT_PATH = "/vm/console/screenshot"
     GET_VM_PROCESS_IDENTIFIER_CREATE_TIME_PATH = "/vm/getpidcreatetime"
     FSTRIM_VM_PATH = "/vm/fstrim"
+    READ_VM_HOST_FILE_PATH = "/vm/hostfile/read"
+    WRITE_VM_HOST_FILE_PATH = "/vm/hostfile/write"
+    BACKUP_VM_HOST_FILE_PATH = "/vm/hostfile/backup"
+
     VM_CONSOLE_LOGROTATE_PATH = "/etc/logrotate.d/vm-console-log"
 
     SET_VM_IOTHREADPIN_PATH = "/vm/setiothreadpin"
@@ -7213,7 +7313,9 @@ class VmPlugin(kvmagent.KvmAgent):
                     logger.debug('vm[uuid:%s, name:%s] is already running' % (cmd.vmInstanceUuid, vm.get_name()))
                     return
                 else:
-                    vm.destroy()
+                    # Work Around: libvirt 8.0.0 is not support '--keep-swtpm' params (unless upgrade libvirt to 10.10)
+                    # We should keep TPM state file before start VM
+                    vm.stop(strategy='cold', undefine=False)
 
             vm = Vm.from_StartVmCmd(cmd)
 
@@ -7424,6 +7526,26 @@ class VmPlugin(kvmagent.KvmAgent):
 
         return jsonobject.dumps(rsp)
 
+    def _register_vm_host_file_monitor(self, cmd):
+        """Register vm host file monitoring for TPM/NvRam change detection."""
+        monitor_types = []
+        if cmd.tpm is not None:
+            monitor_types.append('TpmState')
+        if cmd.tpm is not None or cmd.secureBoot or cmd.nvRam is not None:
+            monitor_types.append('NvRam')
+        if not monitor_types:
+            return
+
+        try:
+            vm_host_file_monitor.add_monitor(
+                cmd.vmInstanceUuid,
+                self.config.get(kvmagent.HOST_UUID),
+                monitor_types,
+                report_url=self.config.get(kvmagent.SEND_COMMAND_URL))
+        except Exception as e:
+            logger.warn('cannot register vm host file monitor for vm %s: %s' % (
+                cmd.vmInstanceUuid, str(e)))
+
     @kvmagent.replyerror
     def start_vm(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -7465,8 +7587,14 @@ class VmPlugin(kvmagent.KvmAgent):
                 logger.warn("enable coredump for VM: %s: %s" % (cmd.vmInstanceUuid, str(e)))
 
         if rsp.success == True:
-            rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo, rsp.vmXml = self.get_vm_device_info(cmd.vmInstanceUuid)
+            device_info_dict = self.get_vm_device_info(cmd.vmInstanceUuid)
+            rsp.nicInfos = device_info_dict["nicInfos"]
+            rsp.virtualDeviceInfoList.extend(device_info_dict["virtualDeviceInfoList"])
+            rsp.memBalloonInfo = device_info_dict["memBalloonInfo"]
+            rsp.vmXml = device_info_dict["vmXml"]
+            rsp.edkRpm = device_info_dict["edkRpm"]
             self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
+            self._register_vm_host_file_monitor(cmd)
 
         return jsonobject.dumps(rsp)
 
@@ -7474,6 +7602,9 @@ class VmPlugin(kvmagent.KvmAgent):
         vm = get_vm_by_uuid(uuid)
         nicInfos = []
         virtualDeviceInfoList = []
+        memBalloonInfo = ""
+        edkRpm = ""
+
         for iface in vm.domain_xmlobject.devices.get_child_node_as_list('interface'):
             vmNicInfo = VmNicInfo()
             vmNicInfo.deviceAddress.bus = iface.address.bus_
@@ -7490,15 +7621,30 @@ class VmPlugin(kvmagent.KvmAgent):
         memBalloonPci = vm.domain_xmlobject.devices.get_child_node('memballoon')
         if memBalloonPci is not None:
             memBalloonInfo = self.get_device_address_info(memBalloonPci)
-            return nicInfos, virtualDeviceInfoList, memBalloonInfo, vm.domain_xml
+        
+        osLoaderElement = vm.domain_xmlobject.os.get_child_node('loader')
+        if osLoaderElement is not None:
+            loaderPath = osLoaderElement.text_
+            edkRpm = bash.bash_o("rpm -qf %s" % loaderPath).strip()
 
-        return nicInfos, virtualDeviceInfoList, None, vm.domain_xml
+        return {
+            "nicInfos" : nicInfos,
+            "virtualDeviceInfoList" : virtualDeviceInfoList,
+            "memBalloonInfo" : memBalloonInfo,
+            "vmXml" : vm.domain_xml,
+            "edkRpm" : edkRpm,
+        }
 
     @kvmagent.replyerror
     def sync_vm_deviceinfo(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = SyncVmDeviceInfoResponse()
-        rsp.nicInfos, rsp.virtualDeviceInfoList, rsp.memBalloonInfo, rsp.vmXml = self.get_vm_device_info(cmd.vmInstanceUuid)
+        device_info_dict = self.get_vm_device_info(cmd.vmInstanceUuid)
+        rsp.nicInfos = device_info_dict["nicInfos"]
+        rsp.virtualDeviceInfoList.extend(device_info_dict["virtualDeviceInfoList"])
+        rsp.memBalloonInfo = device_info_dict["memBalloonInfo"]
+        rsp.vmXml = device_info_dict["vmXml"]
+        rsp.edkRpm = device_info_dict["edkRpm"]
         self.collect_vm_virtualizer_info(cmd.vmInstanceUuid, rsp.virtualizerInfo)
         return jsonobject.dumps(rsp)
 
@@ -8779,6 +8925,12 @@ class VmPlugin(kvmagent.KvmAgent):
 
         vm = get_vm_by_uuid(cmd.snapshotJobs[0].vmInstanceUuid, exception_if_not_existing=False)
         try:
+            # backup vm host files (NvRam, TpmState, etc.) alongside snapshot
+            try:
+                vm_host_file.backup_vm_host_files(getattr(cmd, 'vmHostFileBackupJobs', None))
+            except Exception as e:
+                raise kvmagent.KvmError("failed to backup vm host files: %s" % str(e))
+
             vm_state = Vm.VM_STATE_SHUTDOWN if vm is None else vm.state
             expected_snapshot_state = LIVE_SNAPSHOT if cmd.snapshotJobs[0].live else OFFLINE_SNAPSHOT
             if vm_state not in Vm.SNAPSHOT_VM_STATE_DICT[expected_snapshot_state]:
@@ -10532,11 +10684,6 @@ host side snapshot files chian:
 
         return jsonobject.dumps(rsp)
 
-    @staticmethod
-    def clean_vm_firmware_flash(vm_uuid):
-        fpath = "/var/lib/libvirt/qemu/nvram/{}.fd".format(vm_uuid)
-        linux.rm_file_checked(fpath)
-
     @kvmagent.replyerror
     def clean_firmware_flash(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -10544,7 +10691,9 @@ host side snapshot files chian:
 
         vm_uuid = cmd.vmUuid
         if not get_vm_by_uuid_no_retry(vm_uuid, False):
-            self.clean_vm_firmware_flash(vm_uuid)
+            extension = nvram.NvRamVmExtensions()
+            extension.vm_uuid = vm_uuid
+            extension.cleanup()
 
         return jsonobject.dumps(rsp)
 
@@ -11422,6 +11571,59 @@ host side snapshot files chian:
         finally:
             return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def read_hostfile(self, req):
+        # type: (dict) -> object
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])  # type: ReadVmHostFileContentCmd
+        rsp = ReadVmHostFileContentResponse()
+
+        for host_file in cmd.hostFiles:
+            if host_file.type == 'NvRam':
+                rsp.hostFiles.append(nvram.NvRamHostFile().read_file(host_file))
+            elif host_file.type == 'TpmState':
+                rsp.hostFiles.append(tpm.TpmStateHostFile().read_file(host_file))
+            else:
+                result = vm_host_file.VmHostFileTO()
+                result.path = host_file.path
+                result.type = host_file.type
+                result.error = "invalid host file type: %s" % host_file.type
+                rsp.hostFiles.append(result)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def write_hostfile(self, req):
+        # type: (dict) -> None
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])  # type: WriteVmHostFileContentCmd
+        rsp = WriteVmHostFileContentResponse()
+        errors = [] # type: list[str]
+
+        for host_file in cmd.hostFiles:
+            try:
+                if host_file.type == 'NvRam':
+                    nvram.NvRamHostFile().write_file(host_file)
+                elif host_file.type == 'TpmState':
+                    tpm.TpmStateHostFile().write_file(host_file)
+                else:
+                    errors.append("invalid host file type: %s" % host_file.type)
+            except Exception as e:
+                errors.append(str(e))
+        
+        if errors:
+            rsp.error = ','.join(errors)
+            rsp.success = False
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def backup_hostfile(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])  # type: BackupVmHostFileCmd
+        rsp = BackupVmHostFileResponse()
+        try:
+            vm_host_file.backup_vm_host_files(cmd.vmHostFileBackupJobs)
+        except Exception as e:
+            rsp.error = str(e)
+            rsp.success = False
+        return jsonobject.dumps(rsp)
+
     def start(self):
         http_server = kvmagent.get_http_server()
 
@@ -11532,6 +11734,9 @@ host side snapshot files chian:
         http_server.register_async_uri(self.GET_VM_PROCESS_IDENTIFIER_CREATE_TIME_PATH, self.get_vm_process_identifier_create_time)
         http_server.register_async_uri(self.FSTRIM_VM_PATH, self.fstrim_vm)
         http_server.register_async_uri(self.SET_VM_VF_NIC_STATE, self.set_vf_nic_state)
+        http_server.register_async_uri(self.READ_VM_HOST_FILE_PATH, self.read_hostfile, cmd=ReadVmHostFileContentCmd())
+        http_server.register_async_uri(self.WRITE_VM_HOST_FILE_PATH, self.write_hostfile, cmd=WriteVmHostFileContentCmd())
+        http_server.register_async_uri(self.BACKUP_VM_HOST_FILE_PATH, self.backup_hostfile, cmd=BackupVmHostFileCmd())
         self.clean_old_sshfs_mount_points()
         self.register_libvirt_event()
         self.register_qemu_log_cleaner()
@@ -11544,6 +11749,13 @@ host side snapshot files chian:
         # libvirt won't create this directory when migrating a VR,
         # we have to do this otherwise VR migration may fail
         linux.mkdir('/var/lib/zstack/kvm/agentSocket/')
+
+        try:
+            # register and start vm host file change monitor
+            vm_host_file_monitor.register_get_active_vms(get_running_vms)
+            vm_host_file_monitor.start_monitor()
+        except Exception as e:
+            logger.warn('cannot start vm host file monitor: %s' % str(e))
 
         @thread.AsyncThread
         def wait_end_signal():
@@ -11963,6 +12175,31 @@ host side snapshot files chian:
         except:
             content = traceback.format_exc()
             logger.warn("traceback: %s" % content)
+    
+    def _prepare_nvram_after_vm_start(self, conn, dom, event, detail, opaque):
+        event = LibvirtEventManager.event_to_string(event)
+        if event not in (LibvirtEventManager.EVENT_STARTED,):
+            return
+        vm_uuid = dom.name()
+        try:
+            from kvmagent.plugins.nvram import nvram_common
+            token_path = nvram_common.build_nvram_delete_token_file_path(vm_uuid)
+            if os.path.isfile(token_path):
+                os.remove(token_path)
+                logger.debug('remove nvram delete token in %s for manually started VM' % token_path)
+        except Exception as e:
+            logger.warn('failed to remove nvram delete token for vm %s: %s' % (vm_uuid, str(e)))
+
+    @bash.in_bash
+    def _deactivate_nvram(self, conn, dom, event, detail, opaque):
+        event_str = LibvirtEventManager.event_to_string(event)
+        if event_str not in (LibvirtEventManager.EVENT_STOPPED,):
+            return
+
+        vm_uuid = dom.name()
+        extension = nvram.NvRamVmExtensions()
+        extension.vm_uuid = vm_uuid
+        extension.cleanup()
 
     @bash.in_bash
     def _release_sharedblocks(self, conn, dom, event, detail, opaque):
@@ -12045,6 +12282,8 @@ host side snapshot files chian:
                     volume = DomainVolume.from_xmlobject(disk)
                     if volume.source.startswith("/dev/"):
                         deactivate_volume(event_str, volume.source, vm_uuid)
+
+                # Note: nvram volume deactivation is in nvram_sblk.py
 
             out = bash.bash_o('virsh dumpxml %s | grep -E "(active|hidden) file="' % vm_uuid).strip().splitlines()
             if len(out) != 0:
@@ -12270,6 +12509,8 @@ host side snapshot files chian:
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._vm_crashed_event)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._release_sharedblocks)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._deactivate_drbd)
+        LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._prepare_nvram_after_vm_start)
+        LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._deactivate_nvram)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._clean_colo_heartbeat)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._extend_sharedblock)
         LibvirtAutoReconnect.add_libvirt_callback(libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, self._delete_pushgateway_metric)

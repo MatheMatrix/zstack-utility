@@ -1657,4 +1657,6 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         pass
 
     def configure(self, config):
+        if config is None:
+            config = {}
         self.config = config

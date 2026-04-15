@@ -49,3 +49,5 @@ mock==3.0.5
 futures==3.4.0
 setuptools==21.0.0
 Pillow==2.9.0
+grpcio==1.27.2
+protobuf==3.12.4
