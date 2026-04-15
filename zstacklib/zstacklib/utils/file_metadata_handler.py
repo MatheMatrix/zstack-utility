@@ -275,6 +275,51 @@ class FileBasedMetadataHandler(VmMetadataHandler):
 
         return {}
 
+    def _do_cleanup_all(self, metadataDir):
+        """Delete ALL .vmmeta files (and their side-files) in metadataDir.
+
+        Returns dict with ``cleanedCount`` (number of .vmmeta files removed).
+        """
+        if not metadataDir or not os.path.isabs(metadataDir):
+            logger.warn("cleanup_all: metadataDir must be an absolute path: %s", metadataDir)
+            return {'cleanedCount': 0}
+        if not os.path.isdir(metadataDir):
+            logger.debug("cleanup_all: metadataDir %s does not exist, nothing to clean", metadataDir)
+            return {'cleanedCount': 0}
+
+        cleaned = 0
+        for fname in os.listdir(metadataDir):
+            if not fname.endswith(_METADATA_SUFFIX):
+                continue
+            vm_uuid = fname[:-len(_METADATA_SUFFIX)]
+            if not _UUID_HEX_RE.match(vm_uuid):
+                continue
+
+            metadata_path = os.path.join(metadataDir, fname)
+            with self._get_path_lock(metadata_path):
+                removed_any = False
+                for path in [metadata_path, metadata_path + '.tmp',
+                             metadata_path + '.summary', metadata_path + '.summary.tmp']:
+                    try:
+                        if os.path.exists(path):
+                            os.remove(path)
+                            removed_any = True
+                    except Exception as e:
+                        if path == metadata_path:
+                            logger.error("cleanup_all: failed to remove %s: %s", path, e)
+                        else:
+                            logger.warn("cleanup_all: failed to remove %s: %s", path, e)
+
+                if removed_any:
+                    try:
+                        _fsync_directory(metadata_path)
+                    except Exception as e:
+                        logger.warn("cleanup_all: fsync_directory failed for %s: %s", metadata_path, e)
+                    cleaned += 1
+
+        logger.info("cleanup_all: cleaned %d metadata files in %s", cleaned, metadataDir)
+        return {'cleanedCount': cleaned}
+
 
 def _write_summary_best_effort(summary_path, vm_uuid, vm_name='', vm_category='', architecture='', schema_version=''):
     """Write a lightweight summary file next to the metadata file.
