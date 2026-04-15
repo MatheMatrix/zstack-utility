@@ -255,6 +255,42 @@ class SblkMetadataHandler(VmMetadataHandler):
         logger.debug("cleanup_vm_metadata: cleaned %s", metadataPath)
         return {}
 
+    def _do_cleanup_all(self, metadataDir):
+        """Delete ALL _vmmeta LVs in the VG.
+
+        metadataDir is /dev/{vgUuid} for shared block.
+        Returns dict with ``cleanedCount`` (number of LVs removed).
+        """
+        if not metadataDir:
+            logger.warn("cleanup_all: metadataDir is empty")
+            return {'cleanedCount': 0}
+        vg_uuid = os.path.basename(os.path.normpath(metadataDir))
+        if not vg_uuid:
+            logger.warn("cleanup_all: invalid metadataDir: %s", metadataDir)
+            return {'cleanedCount': 0}
+        lvm = self._lvm
+        bash = self._bash
+
+        @bash.in_bash
+        def _lv_list(vg):
+            return self._lv_list_func(vg)
+
+        metadata_lvs = scan_metadata_lvs(vg_uuid, _lv_list)
+        cleaned = 0
+        for item in metadata_lvs:
+            lv_path = item['lv_path']
+            try:
+                if lvm.lv_exists(lv_path):
+                    delete_metadata_lv(lv_path, lvm.delete_lv)
+                    cleaned += 1
+                else:
+                    logger.debug("cleanup_all: metadata LV %s no longer exists, skip", lv_path)
+            except Exception:
+                logger.error("cleanup_all: failed to delete metadata LV %s", lv_path, exc_info=True)
+
+        logger.info("cleanup_all: cleaned %d metadata LVs in VG %s", cleaned, vg_uuid)
+        return {'cleanedCount': cleaned}
+
 
 # ###################################################################
 # SharedBlock qcow2 backing-file rebase with LVM lock protection
