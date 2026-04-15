@@ -236,6 +236,7 @@ class ScanVmMetadataRsp(NfsResponse):
 class CleanupVmMetadataRsp(NfsResponse):
     def __init__(self):
         super(CleanupVmMetadataRsp, self).__init__()
+        self.cleanedCount = 0
 
 
 class PrefixRebaseBackingFilesRsp(NfsResponse):
@@ -1144,7 +1145,8 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         self.check_nfs_mounted(self.mount_path.get(cmd.uuid))
         rsp = CleanupVmMetadataRsp()
-        self._metadata_handler.cleanup(cmd)
+        result = self._metadata_handler.cleanup(cmd)
+        rsp.cleanedCount = result.get('cleanedCount', 0)
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror

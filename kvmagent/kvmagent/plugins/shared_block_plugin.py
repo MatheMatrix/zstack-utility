@@ -159,6 +159,7 @@ class ScanVmMetadataRsp(AgentRsp):
 class CleanupVmMetadataRsp(AgentRsp):
     def __init__(self):
         super(CleanupVmMetadataRsp, self).__init__()
+        self.cleanedCount = 0
 
 
 class GetVmInstanceMetadataRsp(AgentRsp):
@@ -1960,7 +1961,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     def cleanup_vm_metadata(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = CleanupVmMetadataRsp()
-        self._metadata_handler.cleanup(cmd)
+        result = self._metadata_handler.cleanup(cmd)
+        rsp.cleanedCount = result.get('cleanedCount', 0)
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
