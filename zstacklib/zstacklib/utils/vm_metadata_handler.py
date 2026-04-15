@@ -35,7 +35,9 @@ class VmMetadataHandler(object):
         return self._do_scan(cmd.metadataDir)
 
     def cleanup(self, cmd):
-        """Delete a VM's metadata.  Returns ``dict``."""
+        """Delete a VM's metadata.  Returns ``dict`` with optional ``cleanedCount``."""
+        if getattr(cmd, 'cleanAllVmMetadata', False):
+            return self._do_cleanup_all(getattr(cmd, 'metadataDir', None))
         return self._do_cleanup(cmd.metadataPath)
 
     def _do_write(self, metadataPath, metadata, vmUuid, vmName, vmCategory, architecture, schemaVersion):
@@ -50,4 +52,8 @@ class VmMetadataHandler(object):
         raise NotImplementedError
 
     def _do_cleanup(self, metadataPath):
+        raise NotImplementedError
+
+    def _do_cleanup_all(self, metadataDir):
+        """Delete ALL metadata in the given directory/VG.  Returns ``dict`` with ``cleanedCount``."""
         raise NotImplementedError

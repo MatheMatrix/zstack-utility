@@ -275,6 +275,31 @@ class FileBasedMetadataHandler(VmMetadataHandler):
 
         return {}
 
+    def _do_cleanup_all(self, metadataDir):
+        """Delete ALL metadata files by removing and recreating the metadata directory.
+
+        Returns dict with ``cleanedCount`` (number of .vmmeta files that existed).
+        """
+        if not metadataDir or not os.path.isabs(metadataDir):
+            logger.warn("cleanup_all: metadataDir must be an absolute path: %s", metadataDir)
+            return {'cleanedCount': 0}
+        if not os.path.isdir(metadataDir):
+            logger.debug("cleanup_all: metadataDir %s does not exist, nothing to clean", metadataDir)
+            return {'cleanedCount': 0}
+
+        # Count .vmmeta files for statistics before wiping
+        cleaned = 0
+        for fname in os.listdir(metadataDir):
+            if fname.endswith(_METADATA_SUFFIX) and _UUID_HEX_RE.match(fname[:-len(_METADATA_SUFFIX)]):
+                cleaned += 1
+
+        import shutil
+        shutil.rmtree(metadataDir)
+        os.makedirs(metadataDir, 0o700)
+
+        logger.info("cleanup_all: removed directory %s (%d metadata files)", metadataDir, cleaned)
+        return {'cleanedCount': cleaned}
+
 
 def _write_summary_best_effort(summary_path, vm_uuid, vm_name='', vm_category='', architecture='', schema_version=''):
     """Write a lightweight summary file next to the metadata file.
