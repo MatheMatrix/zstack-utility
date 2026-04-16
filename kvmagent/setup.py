@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 import sys, os
 import platform
 
-version = '4.10.0'
+version = '5.0.0'
 
 install_requires = [
     "prometheus_client",
