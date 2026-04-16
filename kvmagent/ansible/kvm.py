@@ -1023,6 +1023,29 @@ def copy_ovs_tools():
     run_remote_command(command, host_post_info)
 
 
+def copy_juicefs():
+    """copy juicefs binary for Model Center storage mounting (ZSTAC-83157)"""
+    if host_info.host_arch == 'aarch64':
+        juicefs_binary = "juicefs-arm64"
+    else:
+        juicefs_binary = "juicefs-amd64"
+
+    _src = os.path.join(file_root, juicefs_binary)
+    if not os.path.exists(_src):
+        handle_ansible_info("juicefs binary [%s] not found, skip copying" % _src, host_post_info, "WARNING")
+        return
+
+    _dst = "/usr/local/bin/juicefs"
+    copy_to_remote(_src, _dst, "mode=755", host_post_info)
+
+    command = "mkdir -p /var/cache/virtiofs/juicefs"
+    host_post_info.post_label = "ansible.shell.juicefs.cache"
+    host_post_info.post_label_param = None
+    run_remote_command(command, host_post_info)
+
+    handle_ansible_info("Successfully copied juicefs binary to %s" % _dst, host_post_info, "INFO")
+
+
 @on_debian_based(host_info.distro, exclude=['Kylin'])
 def set_legacy_iptables_ebtables():
     """set legacy mode if needed"""
@@ -1158,6 +1181,7 @@ copy_bond_conf()
 copy_i40e_driver()
 copy_cube_tools()
 copy_ovs_tools()
+copy_juicefs()
 create_virtio_driver_directory()
 set_max_performance()
 do_libvirt_qemu_config()
