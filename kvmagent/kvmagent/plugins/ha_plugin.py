@@ -909,11 +909,12 @@ class FileSystemHeartbeatController(AbstractStorageFencer):
             return current_read_heartbeat_time[0], current_vm_uuids[0]
 
     def kill_vm(self):
-        r = bash.bash_r("timeout 5 virsh list")
-        if r == 0:
-            return kill_vm(self.max_attempts, self.strategy, [self.mount_path], True)
-        else:
+        try:
             return kill_vm_by_xml(self.max_attempts, self.strategy, self.mount_path, True)
+        except Exception as e:
+            logger.warn('kill_vm_by_xml failed: %s' % e)
+            logger.warn(traceback.format_exc())
+            return {}, []
 
     def check_storage_heartbeat(self):
         if self.write_fencer_heartbeat() is False:
@@ -1007,7 +1008,13 @@ class CephHeartbeatController(AbstractStorageFencer):
                 # for example, pool name is aaa
                 # add slash to confirm kill_vm matches vm with volume aaa/volume_path
                 # but not aaa_suffix/volume_path
-                vm_uuids, _ = kill_vm(self.max_attempts, self.strategy, ['%s/' % self.pool_name], False)
+                try:
+                    vm_uuids, _ = kill_vm_by_xml(self.max_attempts, self.strategy, '%s/' % self.pool_name, False)
+                except Exception as e:
+                    logger.warn('kill_vm_by_xml failed: %s' % e)
+                    logger.warn(traceback.format_exc())
+                    vm_uuids = {}
+
                 if self.strategy == 'Permissive':
                     self.reset_failure_count()
 
