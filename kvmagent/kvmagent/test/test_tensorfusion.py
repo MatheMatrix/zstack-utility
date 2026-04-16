@@ -121,7 +121,7 @@ def _preload_tensorfusion_modules():
         importlib.import_module('kvmagent.plugins.tensorfusion.models')
         importlib.import_module('kvmagent.plugins.tensorfusion.store')
         importlib.import_module('kvmagent.plugins.tensorfusion.tracker')
-        importlib.import_module('kvmagent.plugins.tensorfusion.executor')
+        importlib.import_module('kvmagent.plugins.tensorfusion.process_executor')
         importlib.import_module('kvmagent.plugins.tensorfusion.monitor')
         importlib.import_module('kvmagent.plugins.tensorfusion.utils')
         importlib.import_module('kvmagent.plugins.tensorfusion.service')
@@ -1051,12 +1051,12 @@ class TestProcessExecutor(unittest.TestCase):
             raise ImportError('psutil unavailable')
         return self._real_import(name, *args, **kwargs)
 
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.time.sleep')
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.path.exists', return_value=False)
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.killpg')
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.getpgid')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.time.sleep')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.path.exists', return_value=False)
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.killpg')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.getpgid')
     def test_stop_waits_for_worker_exit(self, mock_getpgid, mock_killpg, _mock_exists, _mock_sleep):
-        from kvmagent.plugins.tensorfusion.executor import ProcessExecutor
+        from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
 
         mock_getpgid.side_effect = [1234, 1234, OSError(3, 'No such process')]
         executor = ProcessExecutor(_make_gpu_details())
@@ -1066,12 +1066,12 @@ class TestProcessExecutor(unittest.TestCase):
         mock_killpg.assert_called_once_with(1234, mock.ANY)
         self.assertEqual(mock_getpgid.call_count, 3)
 
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.time.sleep')
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.path.exists', return_value=False)
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.killpg')
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.getpgid')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.time.sleep')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.path.exists', return_value=False)
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.killpg')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.getpgid')
     def test_stop_reaps_tracked_process(self, mock_getpgid, mock_killpg, _mock_exists, _mock_sleep):
-        from kvmagent.plugins.tensorfusion.executor import ProcessExecutor
+        from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
 
         mock_getpgid.return_value = 1234
         proc = mock.MagicMock()
@@ -1087,13 +1087,13 @@ class TestProcessExecutor(unittest.TestCase):
         self.assertIsNone(executor._get_proc(5678))
         mock_killpg.assert_called_once_with(1234, mock.ANY)
 
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.time.sleep')
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.time.time')
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.path.exists', return_value=False)
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.killpg')
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.getpgid')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.time.sleep')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.time.time')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.path.exists', return_value=False)
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.killpg')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.getpgid')
     def test_stop_raises_when_worker_does_not_exit(self, mock_getpgid, mock_killpg, _mock_exists, mock_time, _mock_sleep):
-        from kvmagent.plugins.tensorfusion.executor import ProcessExecutor
+        from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
 
         mock_getpgid.return_value = 1234
         mock_time.side_effect = [0, 1, 2, 3, 4, 5, 5, 7]
@@ -1111,7 +1111,7 @@ class TestProcessExecutor(unittest.TestCase):
         ], mock_killpg.call_args_list)
 
     def test_start_requires_license_configuration(self):
-        from kvmagent.plugins.tensorfusion.executor import ProcessExecutor
+        from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
 
         req = WorkerCreateRequest()
         req.vm_uuid = 'vm-001'
@@ -1126,12 +1126,12 @@ class TestProcessExecutor(unittest.TestCase):
 
         self.assertIn('tensor-fusion license is required', str(ctx.exception))
 
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.subprocess.Popen')
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.time.sleep')
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.time.time')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.subprocess.Popen')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.time.sleep')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.time.time')
     @mock.patch(BUILTINS_MODULE + '.open', new_callable=mock.mock_open)
     def test_start_polls_process_during_startup_window(self, _mock_open, mock_time, mock_sleep, mock_popen):
-        from kvmagent.plugins.tensorfusion.executor import ProcessExecutor
+        from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
 
         proc = mock.MagicMock()
         proc.poll.side_effect = [None, None, None]
@@ -1155,12 +1155,12 @@ class TestProcessExecutor(unittest.TestCase):
         self.assertEqual(2, proc.poll.call_count)
         self.assertEqual(2, mock_sleep.call_count)
 
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.subprocess.Popen')
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.time.sleep')
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.time.time')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.subprocess.Popen')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.time.sleep')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.time.time')
     @mock.patch(BUILTINS_MODULE + '.open', new_callable=mock.mock_open)
     def test_start_defaults_enable_log_consistently(self, _mock_open, mock_time, _mock_sleep, mock_popen):
-        from kvmagent.plugins.tensorfusion.executor import ProcessExecutor
+        from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
 
         proc = mock.MagicMock()
         proc.poll.side_effect = [None, None]
@@ -1183,9 +1183,9 @@ class TestProcessExecutor(unittest.TestCase):
         self.assertEqual('1', mock_popen.call_args.kwargs['env']['TF_ENABLE_LOG'])
         self.assertTrue(worker.enable_log)
 
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.kill')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.kill')
     def test_is_alive_fallback_treats_linux_zombie_as_dead(self, mock_kill):
-        from kvmagent.plugins.tensorfusion.executor import ProcessExecutor
+        from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
 
         self._real_import = builtins.__import__
         worker = _make_worker(pid=5678)
@@ -1198,7 +1198,7 @@ class TestProcessExecutor(unittest.TestCase):
         mock_kill.assert_called_once_with(5678, 0)
 
     def test_scan_running_prefers_pci_address_from_environment(self):
-        from kvmagent.plugins.tensorfusion.executor import ProcessExecutor
+        from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
 
         class _FakeProc(object):
             pid = 4321
@@ -1235,7 +1235,7 @@ class TestProcessExecutor(unittest.TestCase):
         self.assertEqual('0000:3b:00.0', workers[0].pci_address)
 
     def test_scan_running_skips_worker_when_pci_address_cannot_be_reconstructed(self):
-        from kvmagent.plugins.tensorfusion.executor import ProcessExecutor
+        from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
 
         class _FakeProc(object):
             pid = 4321
@@ -1268,7 +1268,7 @@ class TestProcessExecutor(unittest.TestCase):
         self.assertEqual([], workers)
 
     def test_scan_running_skips_worker_when_license_cannot_be_reconstructed(self):
-        from kvmagent.plugins.tensorfusion.executor import ProcessExecutor
+        from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
 
         class _FakeProc(object):
             pid = 4321
@@ -1301,12 +1301,12 @@ class TestProcessExecutor(unittest.TestCase):
 
         self.assertEqual([], workers)
 
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.ProcessExecutor._wait_for_exit', return_value=True)
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.path.exists', return_value=False)
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.killpg')
-    @mock.patch('kvmagent.plugins.tensorfusion.executor.os.getpgid')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.ProcessExecutor._wait_for_exit', return_value=True)
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.path.exists', return_value=False)
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.killpg')
+    @mock.patch('kvmagent.plugins.tensorfusion.process_executor.os.getpgid')
     def test_cleanup_residual_workers_by_vm_kills_untracked_process_group_once(self, mock_getpgid, mock_killpg, _mock_exists, _mock_wait):
-        from kvmagent.plugins.tensorfusion.executor import ProcessExecutor
+        from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
 
         class _FakeProc(object):
             def __init__(self, pid, env):

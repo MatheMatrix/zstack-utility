@@ -26,6 +26,8 @@ class Worker(object):
         self.enable_log = True
         self.log_level = 'info'
         self.restarting = False
+        self.container_id = None
+        self.container_name = None
 
     def to_dict(self):
         return {
@@ -42,6 +44,8 @@ class Worker(object):
             'enableLog': self.enable_log,
             'logLevel': self.log_level,
             'restarting': self.restarting,
+            'containerId': self.container_id,
+            'containerName': self.container_name,
         }
 
 

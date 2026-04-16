@@ -17,7 +17,14 @@ import threading
 import time
 
 from zstacklib.utils import log
+from kvmagent.plugins.tensorfusion.base_executor import WorkerExecutor
+
 logger = log.get_logger(__name__)
+
+
+def _worker_label(w):
+    """Return a human-readable worker identifier for logging."""
+    return WorkerExecutor.worker_label(w)
 
 
 class CrashState(object):
@@ -52,7 +59,7 @@ class WorkerRestartMonitor(object):
     Monitors all Workers in StateStore. On detecting a dead process:
       1. Marks worker.restarting = True (keeps it in store -> no false Fault).
       2. Waits backoff delay, then restarts the process.
-      3. On success: updates worker.pid, clears restarting flag.
+      3. On success: updates worker, clears restarting flag.
       4. On persistent failure (>= MAX_CRASHES): removes worker, releases tracker.
     """
 
@@ -129,8 +136,8 @@ class WorkerRestartMonitor(object):
 
     def _handle_dead(self, w):
         device_uuid = w.device_uuid
-        logger.error('WorkerRestartMonitor: worker %s (pid=%s) died for vm=%s' % (
-            device_uuid, w.pid, w.vm_uuid))
+        logger.error('WorkerRestartMonitor: worker %s (%s) died for vm=%s' % (
+            device_uuid, _worker_label(w), w.vm_uuid))
 
         with self._lock:
             state = self._states.get(device_uuid)
@@ -198,12 +205,11 @@ class WorkerRestartMonitor(object):
                 return
 
             # Reap the old dead process to prevent zombie.
-            if getattr(w, 'pid', None):
-                try:
-                    self._executor.reap_dead(w.pid)
-                except Exception as e:
-                    logger.warning('WorkerRestartMonitor: failed to reap dead process pid=%s for worker %s: %s' %
-                                (w.pid, device_uuid, e))
+            try:
+                self._executor.reap_dead(w)
+            except Exception as e:
+                logger.warning('WorkerRestartMonitor: failed to reap dead worker %s (%s): %s' %
+                            (device_uuid, _worker_label(w), e))
 
             # Guard: worker may have been intentionally destroyed or replaced while we waited.
             current_worker = self._store.get(device_uuid)
@@ -243,8 +249,8 @@ class WorkerRestartMonitor(object):
 
                 with self._lock:
                     self._notified_events.discard(device_uuid)
-                logger.info('WorkerRestartMonitor: restarted worker %s (new pid=%d)' % (
-                    device_uuid, new_worker.pid))
+                logger.info('WorkerRestartMonitor: restarted worker %s (%s)' % (
+                    device_uuid, _worker_label(new_worker)))
             except Exception as e:
                 logger.error('WorkerRestartMonitor: failed to restart worker %s: %s' % (device_uuid, e))
                 self._store.set_restarting(device_uuid, False, expected_worker=current_worker)
@@ -267,12 +273,11 @@ class WorkerRestartMonitor(object):
             w = current_worker
 
         # Reap the dead process to prevent zombie.
-        if getattr(w, 'pid', None):
-            try:
-                self._executor.reap_dead(w.pid)
-            except Exception as e:
-                logger.warning('WorkerRestartMonitor: failed to reap dead process pid=%s '
-                            'during give_up for worker %s: %s' % (w.pid, device_uuid, e))
+        try:
+            self._executor.reap_dead(w)
+        except Exception as e:
+            logger.warning('WorkerRestartMonitor: failed to reap dead worker %s '
+                        'during give_up: %s' % (device_uuid, e))
         self._tracker.release(w.pci_address, device_uuid)
         with self._lock:
             self._states.pop(device_uuid, None)
