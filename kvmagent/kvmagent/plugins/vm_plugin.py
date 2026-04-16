@@ -2889,6 +2889,16 @@ class Vm(object):
             if not self.is_alive():
                 return True
 
+            try:
+                if self.domain.isActive():
+                    logger.info("vm[uuid:%s] is still active", self.uuid)
+                    return False
+            except libvirt.libvirtError as ex:
+                if ex.get_error_code() == libvirt.VIR_ERR_NO_DOMAIN:
+                    return True
+                logger.warn("get vm[uuid:%s] active status failed: %s" % (self.uuid, str(ex)))
+                return False
+
             def force_undefine():
                 try:
                     flags = libvirt.VIR_DOMAIN_UNDEFINE_KEEP_NVRAM
