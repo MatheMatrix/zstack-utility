@@ -1,3 +1,4 @@
+import difflib
 import functools
 import random
 import os
@@ -167,6 +168,7 @@ class SharedBlockCandidateStruct:
         self.source = None  # type: str
         self.transport = None  # type: str
         self.targetIdentifier = None  # type: str
+        self.multipathPath = None  # type: str
 
 def get_vg_uuid(path):
     # type: (str) -> str
@@ -290,13 +292,14 @@ def get_mpath_block_devices(scsi_info):
 
     block_devices_list = [None] * len(mpath_devices)
 
-    def get_slave_block_devices(slave, dm, i):
+    def get_slave_block_devices(slave, dm, i, mpath_dev):
         try:
             struct = get_device_info(slave, scsi_info)
             if struct is None:
                 return
             struct.type = "mpath"
             struct.dev_name = slave
+            struct.multipathPath = mpath_dev
             block_devices_list[i] = struct
         except Exception as e:
             logger.warn(linux.get_exception_stacktrace())
@@ -314,11 +317,12 @@ def get_mpath_block_devices(scsi_info):
                 struct = SharedBlockCandidateStruct()
                 struct.wwid = get_dm_wwid(dm)
                 struct.type = "mpath"
+                struct.multipathPath = mpath_device
                 block_devices_list[idx] = struct
                 continue
 
             slave_devices.extend(slaves)
-            threads.append(thread.ThreadFacade.run_in_thread(get_slave_block_devices, [slaves[0], dm, idx]))
+            threads.append(thread.ThreadFacade.run_in_thread(get_slave_block_devices, [slaves[0], dm, idx, mpath_device]))
         except Exception as e:
             logger.warn(linux.get_exception_stacktrace())
             continue
@@ -2743,3 +2747,277 @@ class LvmlockdStatus(object):
         except Exception as e:
             logger.warn(str(e))
             self.failed = True
+
+
+@bash.in_bash
+def get_retry_times_for_checking_vg_lockspace():
+    _, sanlock_patch_version = bash.bash_ro("sanlock get_patch_version")
+    # if version is not a digit, e.g. "client action get_patch_version is unknown", it also means that sanlock patch version < 2
+    if sanlock_patch_version.strip().isdigit() is False:
+        return 15
+    elif int(sanlock_patch_version.strip()) >= 2:
+        return 3
+    else:
+        return 15
+
+
+def config_lvm(host_id, all_disk_paths, vg_uuid, host_uuid, default_sanlock_lv_size, host_os_type, enable_lvmetad):
+    backup_lvm_config()
+    config = get_lvm_default_config()
+    lvmlockd_lock_retries = 6
+    config.modify({
+        "use_lvmlockd": 1,
+        "host_id": host_id,
+        "sanlock_lv_extend": default_sanlock_lv_size,
+        "lvmlockd_lock_retries": lvmlockd_lock_retries,
+        "issue_discards": 0,
+        "reserved_stack": 256,
+        "reserved_memory": 131072,
+        "use_lvmetad": 1 if enable_lvmetad else 0
+    })
+
+    if host_os_type == "debian":
+        config.modify({"udev_rules": 0, "udev_sync": 0})
+    config.write_to_file(LVM_CONFIG_TMP_FILE)
+    config_lvm_filter([os.path.basename(LVM_CONFIG_TMP_FILE)], preserve_disks=all_disk_paths)
+
+    new_config = linux.read_file(LVM_CONFIG_TMP_FILE)
+    old_config = linux.read_file(LVM_LOCAL_CONFIG_FILE)
+    diff = list(difflib.unified_diff(old_config.splitlines() if old_config is not None else [], new_config.splitlines()))
+    if len(diff) == 0:
+        logger.debug("lvm config has not changed")
+    else:
+        linux.write_file(LVM_CONFIG_FILE, new_config, create_if_not_exist=True)
+        linux.write_file(LVM_LOCAL_CONFIG_FILE, new_config, create_if_not_exist=True)
+        logger.debug("lvm config has changed:\n %s" % '\n'.join(diff))
+        report_config_changed()
+
+    # max lock retries times = (external lvmlockd_lock_retries + 1) * (internal lock_retries + 1 after a lock conflict)
+    global lvm_cmd_timeout_with_locking
+    lvm_cmd_timeout_with_locking = ((lvmlockd_lock_retries + 1) * 6) * 5
+    modify_sanlock_config("sh_retries", 20)
+    modify_sanlock_config("logfile_priority", 7)
+    modify_sanlock_config("renewal_read_extend_sec", 24)
+    modify_sanlock_config("debug_renew", 1)
+    modify_sanlock_config("use_watchdog", 0)
+    modify_sanlock_config("max_sectors_kb", "ignore")
+    modify_sanlock_config("watchdog_fire_timeout", 1)
+    modify_sanlock_config("kill_grace_seconds", 40)
+    modify_sanlock_config("zstack_vglock_timeout", 0)
+    modify_sanlock_config("use_zstack_vglock_timeout", 0)
+    modify_sanlock_config("zstack_vglock_large_delay", 8)
+    modify_sanlock_config("use_zstack_vglock_large_delay", 0)
+
+    sanlock_hostname = "%s-%s-%s" % (vg_uuid[:8], host_uuid[:8], linux.get_hostname()[:20])
+    modify_sanlock_config("our_host_name", sanlock_hostname)
+    shell.call("sed -i 's/.*rotate .*/rotate 10/g' /etc/logrotate.d/sanlock", exception=False)
+    shell.call("sed -i 's/.*size .*/size 20M/g' /etc/logrotate.d/sanlock", exception=False)
+
+
+@bash.in_bash
+def get_vgs_info(tag):
+    groupDiskInfos = {}
+
+    block_devices = get_block_devices()
+
+    block_devices_by_dev_name = {}
+    for bd in block_devices:
+        if bd.dev_name:
+            block_devices_by_dev_name[bd.dev_name] = bd
+        if bd.multipathPath:
+            block_devices_by_dev_name[bd.multipathPath] = bd
+            try:
+                dm_name = os.path.basename(os.path.realpath("/dev/mapper/%s" % bd.multipathPath))
+                if dm_name:
+                    block_devices_by_dev_name[dm_name] = bd
+                    for slave in os.listdir("/sys/class/block/%s/slaves/" % dm_name):
+                        if slave and slave.strip():
+                            block_devices_by_dev_name[slave.strip()] = bd
+            except Exception:
+                logger.warn("resolve dm name failed for mpath device %s: %s" %
+                            (bd.multipathPath, linux.get_exception_stacktrace()))
+
+    r, o, e = bash.bash_roe("vgs --nolocking -t -o vg_name,pv_count,pv_name,tags --noheadings")
+    if r != 0:
+        raise Exception("get vgs info failed, error: %s" % e)
+
+    for info in form.load('vg_name pv_count pv_name tags\n' + o):
+        vg_name = info['vg_name']
+        pv_count = info['pv_count']
+        pv_name = info['pv_name']
+        tags = info['tags']
+
+        tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
+        if not any(t.startswith(tag) for t in tag_list):
+            continue
+
+        pv_basename = os.path.basename(pv_name)
+        if vg_name not in groupDiskInfos:
+            groupDiskInfos[vg_name] = {"disks": [], "diskCount": int(pv_count)}
+
+        block_device = block_devices_by_dev_name.get(pv_basename)
+        if block_device is None:
+            # fallback: try resolving via realpath (e.g. /dev/mapper/mpathX -> dm-N)
+            try:
+                real_name = os.path.basename(os.path.realpath(pv_name))
+                block_device = block_devices_by_dev_name.get(real_name)
+            except Exception as e:
+                logger.warn("resolve realpath failed for pv %s: %s" % (pv_name, str(e)))
+        if block_device:
+            groupDiskInfos[vg_name]["disks"].append(block_device)
+        else:
+            logger.warn("PV %s belongs to VG %s but not found in block devices scan" % (pv_basename, vg_name))
+
+    for vg_name, info in groupDiskInfos.items():
+        actual_count = len(info["disks"])
+        expected_count = info["diskCount"]
+        if actual_count < expected_count:
+            logger.warn("VG %s has incomplete WWID set: expected %d PVs but resolved %d block devices. "
+                        "WWID matching may fail for this VG." % (vg_name, expected_count, actual_count))
+
+    return groupDiskInfos
+
+
+@bash.in_bash
+def reset_pv_uuids(vg_uuid):
+    """Reset all PV UUIDs in the VG to avoid collision with the source platform."""
+    r, o, e = bash.bash_roe(
+        "timeout -s SIGKILL 30 pvs --noheading --nolocking -t -Svg_name=%s -oname" % vg_uuid)
+    if r != 0:
+        raise Exception("failed to list PVs for VG %s: stdout=%s, stderr=%s" % (vg_uuid, o, e))
+    pv_names = [line.strip() for line in o.strip().splitlines() if line.strip()]
+    if not pv_names:
+        raise Exception("no PVs found for VG %s while resetting PV UUIDs" % vg_uuid)
+
+    all_pvs = " ".join(pv_names)
+    r, _, e = bash.bash_roe("timeout -s SIGKILL %s pvchange --yes --uuid %s" % (lvm_cmd_timeout_with_locking, all_pvs))
+    if r != 0:
+        raise Exception("failed to reset PV UUIDs for VG %s (pvs: %s): %s" % (vg_uuid, all_pvs, e))
+
+    logger.debug("reset PV UUIDs for VG %s: %s" % (vg_uuid, pv_names))
+
+
+@bash.in_bash
+def rename_vg(old_vg_uuid, new_vg_uuid):
+    if old_vg_uuid == new_vg_uuid:
+        logger.debug("rename vg skipped: old_vgUuid == new_vgUuid (%s)" % old_vg_uuid)
+        return
+
+    if vg_exists(new_vg_uuid) and not vg_exists(old_vg_uuid):
+        logger.debug("rename vg skipped: %s already exists and %s not found" % (new_vg_uuid, old_vg_uuid))
+        return
+
+    if vg_exists(new_vg_uuid) and vg_exists(old_vg_uuid):
+        raise Exception("both old VG %s and new VG %s exist on this host. "
+                        "Refusing to rename - manual investigation required." % (old_vg_uuid, new_vg_uuid))
+
+    @linux.retry(times=5, sleep_time=2)
+    def do_vg_rename():
+        # Guard: rename may have already succeeded in a previous retry
+        if vg_exists(new_vg_uuid) and not vg_exists(old_vg_uuid):
+            logger.debug("rename vg already completed: %s -> %s" % (old_vg_uuid, new_vg_uuid))
+            return
+
+        r, o, e = bash.bash_roe(
+            "timeout -s SIGKILL %s vgrename %s %s" %
+            (lvm_cmd_timeout_with_locking, old_vg_uuid, new_vg_uuid))
+        if r != 0:
+            raise Exception("unable to rename vg %s to %s, "
+                            "stdout:%s, stderr:%s" % (old_vg_uuid, new_vg_uuid, str(o), str(e)))
+
+        old_exists = vg_exists(old_vg_uuid)
+        new_exists = vg_exists(new_vg_uuid)
+        if old_exists or not new_exists:
+            raise RetryException(
+                "unexpected VG state after rename %s -> %s: old_exists=%s, new_exists=%s" % (
+                    old_vg_uuid, new_vg_uuid, old_exists, new_exists))
+
+        logger.debug("rename vg %s to %s successfully" % (old_vg_uuid, new_vg_uuid))
+
+    do_vg_rename()
+
+    old_exists = vg_exists(old_vg_uuid)
+    new_exists = vg_exists(new_vg_uuid)
+    if old_exists or not new_exists:
+        raise Exception("vg rename post-check failed: old_exists=%s, new_exists=%s for %s -> %s" %
+                        (old_exists, new_exists, old_vg_uuid, new_vg_uuid))
+
+
+@bash.in_bash
+def reset_sanlock_lockspace(vg_uuid):
+    lockspace_path = "/dev/mapper/%s-lvmlock" % vg_uuid
+
+    fix_vglk(vg_uuid)
+
+    # Reinit delta lease area (clears ALL host slots).
+    r, o, e = bash.bash_roe(
+        "timeout -s SIGKILL 60 sanlock direct init -s lvm_%s:0:%s:0" % (vg_uuid, lockspace_path))
+    if r != 0:
+        raise Exception("failed to init sanlock lockspace for %s: stdout=%s, stderr=%s"
+                        % (vg_uuid, o, e))
+
+    # Reinit GLLK and VGLK resource leases (clear source platform owner residue).
+    sector_size = sanlock.get_sector_size(vg_uuid)
+    align_size = sanlock.sector_size_to_align_size(sector_size)
+    gllk_offset = sanlock.GLLK_BEGIN * align_size
+    vglk_offset = sanlock.VGLK_BEGIN * align_size
+
+    r, o, e = bash.bash_roe(
+        "timeout -s SIGKILL 30 sanlock direct init -r lvm_%s:GLLK:%s:%s" % (vg_uuid, lockspace_path, gllk_offset))
+    if r != 0:
+        raise Exception("failed to reinit GLLK for %s: %s" % (vg_uuid, e))
+    logger.debug("reset_sanlock_lockspace: reinit GLLK at offset %s" % gllk_offset)
+
+    r, o, e = bash.bash_roe(
+        "timeout -s SIGKILL 30 sanlock direct init -r lvm_%s:VGLK:%s:%s" % (vg_uuid, lockspace_path, vglk_offset))
+    if r != 0:
+        raise Exception("failed to reinit VGLK for %s: %s" % (vg_uuid, e))
+    logger.debug("reset_sanlock_lockspace: reinit VGLK at offset %s" % vglk_offset)
+
+    # Reinit per-LV resource leases.
+    o = bash.bash_errorout("timeout -s SIGKILL 30 lvs -ouuid,lock_args -Svg_name=%s --noheading --nolocking -t" % vg_uuid)
+
+    failed_lvs = []
+    for line in o.strip().splitlines():
+        xs = line.strip().split()
+        if len(xs) < 2 or ":" not in xs[1]:
+            logger.warn("reset_sanlock_lockspace: skip unparseable LV lease line: %r" % line)
+            continue
+        uuid = xs[0]
+        offset = xs[1].split(":")[-1]
+        logger.debug("reset_sanlock_lockspace: reinit LV lease %s offset %s" % (uuid, offset))
+        r, _o, e = bash.bash_roe(
+            "timeout -s SIGKILL 30 sanlock direct init -r lvm_%s:%s:%s:%s" % (vg_uuid, uuid, lockspace_path, offset))
+        if r != 0:
+            failed_lvs.append(uuid)
+            logger.warn("failed to reinit LV lease %s for %s: %s" % (uuid, vg_uuid, e))
+
+    if failed_lvs:
+        raise Exception("failed to reinit %d LV lease(s) for %s: %s" % (len(failed_lvs), vg_uuid, failed_lvs))
+
+
+@bash.in_bash
+def update_vg_tag(vg_uuid, old_tag_prefix, new_tag):
+    """Update VG tag: find existing tag by old_tag_prefix and replace with new_tag."""
+    r, o, e = bash.bash_roe("timeout -s SIGKILL 30 vgs --nolocking -t -o tags --noheadings %s" % vg_uuid)
+    if r != 0:
+        raise Exception("failed to get VG tags for %s: %s" % (vg_uuid, e))
+
+    old_tags = [t.strip() for t in o.strip().split(",")
+                if t.strip().startswith(old_tag_prefix)]
+
+    # Add new tag first - ensures VG always has at least one matchable tag,
+    # even if the subsequent deltag fails. This makes retry safe: get_vgs_info(tag=INIT_TAG)
+    # can always find the VG.
+    bash.bash_errorout("timeout -s SIGKILL %s vgchange --addtag %s %s" % (lvm_cmd_timeout_with_locking, linux.shellquote(new_tag), vg_uuid))
+
+    # Remove all old tags (may be >1 if a previous attempt partially succeeded)
+    for old_tag in old_tags:
+        r, o, e = bash.bash_roe("timeout -s SIGKILL %s vgchange --deltag %s %s" % (lvm_cmd_timeout_with_locking, linux.shellquote(old_tag), vg_uuid))
+        if r != 0:
+            logger.warn("failed to remove old tag %s from VG %s: %s (non-fatal, new tag already set)"
+                        % (old_tag, vg_uuid, e))
+    if old_tags:
+        logger.debug("updated VG tag for %s: %s -> %s" % (vg_uuid, old_tags, new_tag))
+    else:
+        logger.warn("no tag with prefix [%s] found on VG %s, added new tag directly" % (old_tag_prefix, vg_uuid))
