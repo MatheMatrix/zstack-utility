@@ -401,6 +401,13 @@ class GetHostNetworkBongdingCmd(kvmagent.AgentCommand):
         self.managementServerIp = None
 
 
+class GetHostBondingFactsCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(GetHostBondingFactsCmd, self).__init__()
+        self.managementServerIp = None
+        self.bondName = None
+
+
 class GetHostNetworkBongdingResponse(kvmagent.AgentResponse):
     bondings = None  # type: list[HostNetworkBondingInventory]
     nics = None  # type: list[HostNetworkInterfaceInventory]
@@ -409,6 +416,12 @@ class GetHostNetworkBongdingResponse(kvmagent.AgentResponse):
         super(GetHostNetworkBongdingResponse, self).__init__()
         self.bondings = None
         self.nics = None
+
+
+class GetHostBondingFactsResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(GetHostBondingFactsResponse, self).__init__()
+        self.bonding = None
 
 
 class HostNetworkBondingInventory(object):
@@ -1167,6 +1180,7 @@ class HostPlugin(kvmagent.KvmAgent):
     UPDATE_HOST_OVS_CPU_PINNING = "/host/ovs/cpu-pin/update"
     CHANGE_PASSWORD = "/host/changepassword"
     GET_HOST_NETWORK_FACTS = "/host/networkfacts"
+    GET_HOST_BONDING_FACTS = "/host/networkfacts/bonding"
     SET_IP_ON_HOST_NETWORK_INTERFACE = "/host/setip/networkinterface"
     CHECK_INTERFACE_VLAN = "/host/checkvlan/networkinterface"
     GET_INTERFACE_VLAN = "/host/getvlan/networkinterface"
@@ -2908,6 +2922,24 @@ done
 
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def get_host_bonding_facts(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = GetHostBondingFactsResponse()
+
+        if not cmd.bondName:
+            rsp.success = False
+            rsp.error = "bondName is required"
+            return jsonobject.dumps(rsp)
+
+        if not linux.is_bond(cmd.bondName):
+            rsp.success = False
+            rsp.error = "bond[%s] not found or unsupported bonding type" % cmd.bondName
+            return jsonobject.dumps(rsp)
+
+        rsp.bonding = HostNetworkBondingInventory(cmd.bondName, "kernalBond", cmd.managementServerIp)
+        return jsonobject.dumps(rsp)
+
     def _make_host_kernel_interface(self, interface_name=None, vlan_id=None, bridge_name=None):
         if not interface_name or vlan_id is None:
             logger.debug("interface name or vlan id is None")
@@ -4621,6 +4653,7 @@ done
         http_server.register_async_uri(self.UPDATE_HOST_OVS_CPU_PINNING, self.update_ovs_cpu_pinning)
         http_server.register_async_uri(self.CHANGE_PASSWORD, self.change_password, cmd=ChangeHostPasswordCmd())
         http_server.register_async_uri(self.GET_HOST_NETWORK_FACTS, self.get_host_network_facts)
+        http_server.register_async_uri(self.GET_HOST_BONDING_FACTS, self.get_host_bonding_facts)
         http_server.register_async_uri(self.SET_IP_ON_HOST_NETWORK_INTERFACE, self.set_ip_on_host_network_interface)
         http_server.register_async_uri(self.SET_SERVICE_TYPE_ON_HOST_NETWORK_INTERFACE, self.set_service_type_on_host_network_interface)
         http_server.register_async_uri(self.CHECK_INTERFACE_VLAN, self.check_interface_vlan)
