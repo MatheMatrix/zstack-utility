@@ -8,40 +8,6 @@ from zstacklib.utils import jsonobject
 # Shared Models
 # ============================================================================
 
-class PVRef(object):
-    pvUuid = None # type: str | None
-    pvName = None # type: str | None
-    pvDevicePath = None # type: str | None
-
-
-class PVHealthRef(PVRef):
-    healthy = None # type: bool | None
-
-
-class VGRef(object):
-    vgUuid = None # type: str | None
-    vgName = None # type: str | None
-
-
-class LVRef(object):
-    lvUuid = None # type: str | None
-    lvName = None # type: str | None
-    lvPath = None # type: str | None
-
-
-class FileSystemRef(object):
-    fsUuid = None # type: str | None
-    fsType = None # type: str | None
-
-
-class VolumeRef(object):
-    volumeUuid = None # type: str | None
-    installPath = None # type: str | None
-    deviceType = None # type: str | None
-    format = None # type: str | None
-    size = None # type: int | None
-
-
 class CacheTO(object):
     """Corresponds to Java CacheTO extends BaseVirtualDeviceTO"""
     cacheUuid = None          # type: str | None
@@ -153,9 +119,9 @@ def _deserialize_nested(cls, json_object):
 # ============================================================================
 # Base Command/Response
 # ============================================================================
-_T = TypeVar("_T", bound="VMLocalVolumeCacheBaseCommand")
+_T = TypeVar("_T", bound="VolumeCacheBaseCommand")
 
-class VMLocalVolumeCacheBaseCommand(kvmagent.AgentCommand):
+class VolumeCacheBaseCommand(kvmagent.AgentCommand):
     """Base command class with nested deserialization support.
 
     Subclasses may declare a ``_nested_types`` dict mapping attribute names
@@ -169,7 +135,7 @@ class VMLocalVolumeCacheBaseCommand(kvmagent.AgentCommand):
         return _deserialize_nested(cls, json_object)
 
 
-class VMLocalVolumeCacheBaseResponse(kvmagent.AgentResponse):
+class VolumeCacheBaseResponse(kvmagent.AgentResponse):
     """Base response class"""
 
     success = True # type: bool
@@ -188,7 +154,7 @@ class VMLocalVolumeCacheBaseResponse(kvmagent.AgentResponse):
         self.__error = value
         self.__dict__['error'] = value
 
-class BaseCmd(VMLocalVolumeCacheBaseCommand):
+class BaseCmd(VolumeCacheBaseCommand):
     poolUuid = None # type: str
 
 class PoolBaseCmd(BaseCmd):
@@ -211,7 +177,7 @@ class CacheBaseCmd(BaseCmd):
 class InitPoolCmd(PoolBaseCmd):
     """Initialize cache pool on host"""
 
-    pvs = None # type: list[str]
+    devices = None # type: list[str]
 
 
 class ConnectPoolCmd(PoolBaseCmd):
@@ -220,9 +186,9 @@ class ConnectPoolCmd(PoolBaseCmd):
 
 
 class ExtendPoolCmd(PoolBaseCmd):
-    """Extend cache pool pvs and capacity"""
+    """Extend cache pool devices and capacity"""
 
-    pvs = None # type: list[str]
+    devices = None # type: list[str]
 
 
 class DeletePoolCmd(PoolBaseCmd):
@@ -273,33 +239,27 @@ class GetCacheCapacityCmd(CacheBaseCmd):
 # Response Definitions
 # ============================================================================
 
-class EmptyRsp(VMLocalVolumeCacheBaseResponse):
+class EmptyRsp(VolumeCacheBaseResponse):
     """Empty response"""
     pass
 
 
-class PoolRsp(VMLocalVolumeCacheBaseResponse):
-    """Pool details response"""
+class PoolRsp(VolumeCacheBaseResponse):
+    """Pool details response -- MN-facing, no LVM topology"""
 
     poolUuid = None # type: str | None
     mountPoint = None # type: str | None
-    pvs = None # type: list[PVRef] | None
-    vg = None # type: VGRef | None
-    lv = None # type: LVRef | None
-    filesystem = None # type: FileSystemRef | None
+    capacity = None # type: int | None
 
 
-class PoolHealthRsp(VMLocalVolumeCacheBaseResponse):
-    """Pool health response"""
+class PoolHealthRsp(VolumeCacheBaseResponse):
+    """Pool health response -- aggregated signal only"""
 
     healthy = None # type: bool | None
-    pvs = None # type: list[PVHealthRef] | None
-    vg = None # type: bool | None
-    lv = None # type: bool | None
-    filesystem = None # type: bool | None
+    reason = None # type: str | None
 
 
-class PoolCapacityRsp(VMLocalVolumeCacheBaseResponse):
+class PoolCapacityRsp(VolumeCacheBaseResponse):
     """Pool capacity response"""
 
     total = None # type: int | None
@@ -309,7 +269,7 @@ class PoolCapacityRsp(VMLocalVolumeCacheBaseResponse):
     dirty = None # type: int | None
 
 
-class CacheRsp(VMLocalVolumeCacheBaseResponse):
+class CacheRsp(VolumeCacheBaseResponse):
     """Allocate cache volume response"""
 
     installPath = None # type: str | None
@@ -318,7 +278,7 @@ class CacheRsp(VMLocalVolumeCacheBaseResponse):
 
 
 
-class GcPoolRsp(VMLocalVolumeCacheBaseResponse):
+class GcPoolRsp(VolumeCacheBaseResponse):
     """Pool GC response"""
 
     gcFiles = None  # type: list[str] | None
