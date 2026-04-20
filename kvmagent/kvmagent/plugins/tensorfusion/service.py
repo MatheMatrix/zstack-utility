@@ -4,6 +4,7 @@ TensorFusionService - facade that orchestrates all components.
 @author: tensorfusion
 '''
 
+import os
 import threading
 
 from zstacklib.utils import log
@@ -40,20 +41,18 @@ class TensorFusionService(object):
             self._executor = executor
             self._executor._gpu_details = self._gpu_details
         else:
-            from kvmagent.plugins.tensorfusion.container_executor import ContainerExecutor
-            from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
-            if ContainerExecutor.is_available():
-                # Check for legacy process workers still running.
-                probe = ProcessExecutor(self._gpu_details)
-                legacy_workers = probe.scan_running()
-                if legacy_workers:
-                    logger.info('TensorFusionService: found %d legacy process workers, '
-                                'staying in process mode' % len(legacy_workers))
-                    self._executor = probe
-                else:
-                    self._executor = ContainerExecutor(self._gpu_details)
-            else:
+            executor_mode = os.environ.get('TF_EXECUTOR_MODE', 'container').lower()
+            if executor_mode == 'process':
+                from kvmagent.plugins.tensorfusion.process_executor import ProcessExecutor
+                logger.warning('TensorFusionService: TF_EXECUTOR_MODE=process, '
+                               'using ProcessExecutor instead of ContainerExecutor')
                 self._executor = ProcessExecutor(self._gpu_details)
+            elif executor_mode == 'container':
+                from kvmagent.plugins.tensorfusion.container_executor import ContainerExecutor
+                self._executor = ContainerExecutor(self._gpu_details)
+            else:
+                raise Exception('TensorFusionService: unknown TF_EXECUTOR_MODE=%s, '
+                                'expected "container" or "process"' % executor_mode)
         self._monitor = WorkerRestartMonitor(self._store, self._executor, self._tracker,
                                              event_notifier=event_notifier,
                                              restart_worker=self.restart_worker)
