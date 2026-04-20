@@ -7,7 +7,7 @@ from subprocess import Popen
 import threading
 from typing import IO, Generator, Callable, Optional
 
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.virsh import VirshCommandWrapper
+from kvmagent.plugins.volume_cache.command_wrapper.virsh import VirshCommandWrapper
 
 from zstacklib.utils import linux, log, qemu_img, shell
 from enum import Enum

@@ -50,8 +50,8 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.imagestore import ImageStoreClient
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.virsh import VirshCommandWrapper as CacheVirshWrapper
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.qemu_img import BackingVolumeDeviceType, supported_backing_volume_classes
+from kvmagent.plugins.volume_cache.command_wrapper.virsh import VirshCommandWrapper as CacheVirshWrapper
+from kvmagent.plugins.volume_cache.command_wrapper.qemu_img import BackingVolumeDeviceType, supported_backing_volume_classes
 
 from zstacklib.utils import bash, plugin, iscsi, gpu
 from zstacklib.utils.bash import in_bash

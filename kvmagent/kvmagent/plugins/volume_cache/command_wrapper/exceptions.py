@@ -1,11 +1,11 @@
 """
-Custom exception classes for vm_local_volume_cache module.
+Custom exception classes for volume_cache module.
 Provides fine-grained error classification for pool and cache operations.
 """
 
 
-class VmLocalVolumeCacheError(Exception):
-    """Base exception for all vm_local_volume_cache errors."""
+class VolumeCacheError(Exception):
+    """Base exception for all volume_cache errors."""
     pass
 
 
@@ -13,17 +13,17 @@ class VmLocalVolumeCacheError(Exception):
 # Pool Exceptions
 # ============================================================================
 
-class PoolNotInitializedError(VmLocalVolumeCacheError):
+class PoolNotInitializedError(VolumeCacheError):
     """Raised when a pool operation requires an initialized pool but the pool is not initialized."""
     pass
 
 
-class PoolNotFoundError(VmLocalVolumeCacheError):
+class PoolNotFoundError(VolumeCacheError):
     """Raised when a requested pool processor does not exist."""
     pass
 
 
-class PoolOperationError(VmLocalVolumeCacheError):
+class PoolOperationError(VolumeCacheError):
     """Raised when a pool operation (create/connect/extend/delete) fails."""
     pass
 
@@ -32,12 +32,12 @@ class PoolOperationError(VmLocalVolumeCacheError):
 # Cache Exceptions
 # ============================================================================
 
-class CacheNotInstantiatedError(VmLocalVolumeCacheError):
+class CacheNotInstantiatedError(VolumeCacheError):
     """Raised when a cache file is expected to exist but has not been instantiated."""
     pass
 
 
-class CacheOperationError(VmLocalVolumeCacheError):
+class CacheOperationError(VolumeCacheError):
     """Raised when a cache operation (create/flush/delete) fails."""
     pass
 
@@ -46,11 +46,11 @@ class CacheOperationError(VmLocalVolumeCacheError):
 # Volume / Device Exceptions
 # ============================================================================
 
-class UnsupportedDeviceTypeError(VmLocalVolumeCacheError):
+class UnsupportedDeviceTypeError(VolumeCacheError):
     """Raised when the backing volume device type is not supported."""
     pass
 
 
-class VolumeValidationError(VmLocalVolumeCacheError):
+class VolumeValidationError(VolumeCacheError):
     """Raised when volume parameters fail validation (e.g. missing required fields)."""
     pass

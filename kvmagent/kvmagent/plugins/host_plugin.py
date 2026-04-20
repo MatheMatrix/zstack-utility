@@ -26,7 +26,7 @@ except ImportError:
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.filesystem import FileSystemCommandWrapper
+from kvmagent.plugins.volume_cache.command_wrapper.filesystem import FileSystemCommandWrapper
 from zstacklib.utils import http, lvm, ceph, pci, gpu
 from zstacklib.utils import qemu
 from zstacklib.utils import iptables

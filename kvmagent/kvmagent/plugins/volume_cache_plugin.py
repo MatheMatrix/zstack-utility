@@ -8,12 +8,12 @@ import os
 import traceback
 from typing import Any, Callable, TypeVar
 from kvmagent import kvmagent
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.lvm import LvmCommandWrapper
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.filesystem import FileSystemCommandWrapper
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.lvm import LvmObjectType, LVType, PVInfoFields, VGInfoFields, LVInfoFields
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.filesystem import FileSystemType, FileSystemInfoFields, MountPointInfoFields
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.qemu_img import BackingVolume, BackingVolumeDeviceType, QemuImgCommandWrapper, supported_backing_volume_classes
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.exceptions import (
+from kvmagent.plugins.volume_cache.command_wrapper.lvm import LvmCommandWrapper
+from kvmagent.plugins.volume_cache.command_wrapper.filesystem import FileSystemCommandWrapper
+from kvmagent.plugins.volume_cache.command_wrapper.lvm import LvmObjectType, LVType, PVInfoFields, VGInfoFields, LVInfoFields
+from kvmagent.plugins.volume_cache.command_wrapper.filesystem import FileSystemType, FileSystemInfoFields, MountPointInfoFields
+from kvmagent.plugins.volume_cache.command_wrapper.qemu_img import BackingVolume, BackingVolumeDeviceType, QemuImgCommandWrapper, supported_backing_volume_classes
+from kvmagent.plugins.volume_cache.command_wrapper.exceptions import (
     CacheNotInstantiatedError,
     CacheOperationError,
     PoolNotFoundError,
@@ -22,7 +22,7 @@ from kvmagent.plugins.vm_local_volume_cache.command_wrapper.exceptions import (
     UnsupportedDeviceTypeError,
     VolumeValidationError,
 )
-from kvmagent.plugins.vm_local_volume_cache.objects import (
+from kvmagent.plugins.volume_cache.objects import (
     CacheCapacityInfo,
     PVInfo,
     PoolHealthInfo,
@@ -33,7 +33,7 @@ from kvmagent.plugins.vm_local_volume_cache.objects import (
     PoolCapacityInfo,
     MountPointInfo
 )
-from kvmagent.plugins.vm_local_volume_cache.schemas import (
+from kvmagent.plugins.volume_cache.schemas import (
     AllocateCacheCmd,
     BaseCmd,
     CacheBaseCmd,
@@ -57,14 +57,9 @@ from kvmagent.plugins.vm_local_volume_cache.schemas import (
     PoolBaseCmd,
     PoolCapacityRsp,
     PoolHealthRsp,
-    PVHealthRef,
-    PVRef,
     PoolRsp,
-    VGRef,
-    LVRef,
-    FileSystemRef,
-    VMLocalVolumeCacheBaseCommand,
-    VMLocalVolumeCacheBaseResponse,
+    VolumeCacheBaseCommand,
+    VolumeCacheBaseResponse,
     VolumeTO,
 )
 from zstacklib.utils import jsonobject
@@ -92,10 +87,20 @@ class PoolProcessor(object):
     DEFAULT_LV_STRIPESIZE = "64K"
     DEFAULT_FS_TYPE = FileSystemType.XFS
 
-    VM_LOCAL_VOLUME_CACHE_POOL_LVM_TAG_PREFIX = "zs::vm_local_volume_cache_pool"
+    VM_LOCAL_VOLUME_CACHE_POOL_LVM_TAG_PREFIX = "zs::volume_cache_pool"
     VM_LOCAL_VOLUME_CACHE_POOL_MANAGED_LVM_TAG = "%s::%s" % (VM_LOCAL_VOLUME_CACHE_POOL_LVM_TAG_PREFIX, "managed")
     VM_LOCAL_VOLUME_CACHE_POOL_UUID_LVM_TAG_PREFIX = "%s::%s" % (VM_LOCAL_VOLUME_CACHE_POOL_LVM_TAG_PREFIX, "pool_uuid")
     VM_LOCAL_VOLUME_CACHE_POOL_MOUNT_PATH_LVM_TAG_PREFIX = "%s::%s" % (VM_LOCAL_VOLUME_CACHE_POOL_LVM_TAG_PREFIX, "mount_path")
+
+    # Legacy (pre-rename) LVM tag prefix constants. Kept for read/scan
+    # compatibility so that hosts upgraded from older releases -- where VG/PV/LV
+    # metadata is still tagged with the old ``zs::vm_local_volume_cache_pool*``
+    # prefix -- remain discoverable. All write paths (create/add-tag/remove-tag)
+    # must continue to use the canonical new prefix above.
+    LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_LVM_TAG_PREFIX = "zs::vm_local_volume_cache_pool"
+    LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_MANAGED_LVM_TAG = "%s::%s" % (LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_LVM_TAG_PREFIX, "managed")
+    LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_UUID_LVM_TAG_PREFIX = "%s::%s" % (LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_LVM_TAG_PREFIX, "pool_uuid")
+    LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_MOUNT_PATH_LVM_TAG_PREFIX = "%s::%s" % (LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_LVM_TAG_PREFIX, "mount_path")
 
     VM_LOCAL_VOLUME_CACHE_POOL_LVM_NAME_PREFIX = "vlvc_pool"
     HEARTBEAT_FILE_RELATIVE_PATH = ".heartbeat"
@@ -113,6 +118,12 @@ class PoolProcessor(object):
     def pool_tag(self):
         # type: () -> str
         return "%s::%s" % (self.VM_LOCAL_VOLUME_CACHE_POOL_UUID_LVM_TAG_PREFIX, self.pool_uuid)
+
+    @property
+    def legacy_pool_tag(self):
+        # type: () -> str
+        """ Legacy pool UUID tag (pre-rename). Used for read/scan only; never written. """
+        return "%s::%s" % (self.LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_UUID_LVM_TAG_PREFIX, self.pool_uuid)
 
     @property
     def mount_path_tag(self):
@@ -161,32 +172,53 @@ class PoolProcessor(object):
         LvmCommandWrapper.rescan_lv()
         pool_processors = []
 
-        lv_objects = LvmCommandWrapper.get_lvm_objects_by_tag(
-            LvmObjectType.LV, cls.VM_LOCAL_VOLUME_CACHE_POOL_MANAGED_LVM_TAG, [LVInfoFields.LV_TAGS])
+        # Match both the canonical (new) and legacy "managed" tags so that
+        # hosts upgraded from older releases -- whose LVM metadata still carries
+        # the old ``zs::vm_local_volume_cache_pool::managed`` tag -- continue to
+        # surface their pools. De-duplicate by LV UUID across the two lookups.
+        lv_objects_by_uuid = {}
+        for managed_tag in (cls.VM_LOCAL_VOLUME_CACHE_POOL_MANAGED_LVM_TAG,
+                            cls.LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_MANAGED_LVM_TAG):
+            found = LvmCommandWrapper.get_lvm_objects_by_tag(
+                LvmObjectType.LV, managed_tag,
+                [LVInfoFields.LV_UUID, LVInfoFields.LV_NAME, LVInfoFields.LV_TAGS, VGInfoFields.VG_NAME])
+            if not found:
+                continue
+            for lv_object in found:
+                lv_objects_by_uuid.setdefault(lv_object[LVInfoFields.LV_UUID.value], lv_object)
 
-        if not lv_objects:
+        if not lv_objects_by_uuid:
             return pool_processors
 
-        for lv_object in lv_objects:
+        # Prefixes to probe on each LV -- new first (preferred), legacy second.
+        pool_uuid_prefixes = (cls.VM_LOCAL_VOLUME_CACHE_POOL_UUID_LVM_TAG_PREFIX,
+                              cls.LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_UUID_LVM_TAG_PREFIX)
+        mount_path_prefixes = (cls.VM_LOCAL_VOLUME_CACHE_POOL_MOUNT_PATH_LVM_TAG_PREFIX,
+                               cls.LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_MOUNT_PATH_LVM_TAG_PREFIX)
+
+        for lv_object in lv_objects_by_uuid.values():
             lv_tags = lv_object[LVInfoFields.LV_TAGS.value].split(",")
-            pool_uuid_tags = [tag for tag in lv_tags if tag.startswith(cls.VM_LOCAL_VOLUME_CACHE_POOL_UUID_LVM_TAG_PREFIX)]
-            mount_path_tags = [tag for tag in lv_tags if tag.startswith(cls.VM_LOCAL_VOLUME_CACHE_POOL_MOUNT_PATH_LVM_TAG_PREFIX)]
-            if not pool_uuid_tags:
-                logger.warning("LV %s in VG %s is tagged with %s but missing pool UUID tag, skip loading this LV as a cache pool",
-                               lv_object[LVInfoFields.LV_NAME.value], lv_object[VGInfoFields.VG_NAME.value],
-                               cls.VM_LOCAL_VOLUME_CACHE_POOL_MANAGED_LVM_TAG)
+            pool_uuid_tag = next(
+                (tag for prefix in pool_uuid_prefixes for tag in lv_tags if tag.startswith(prefix + "::")),
+                None)
+            mount_path_tag = next(
+                (tag for prefix in mount_path_prefixes for tag in lv_tags if tag.startswith(prefix + "::")),
+                None)
+            if not pool_uuid_tag:
+                logger.warning("LV %s in VG %s is tagged as managed but missing pool UUID tag, skip loading this LV as a cache pool",
+                               lv_object[LVInfoFields.LV_NAME.value], lv_object[VGInfoFields.VG_NAME.value])
                 continue
-            if not mount_path_tags:
-                logger.warning("LV %s in VG %s is tagged with %s but missing mount path tag, skip loading this LV as a cache pool",
-                               lv_object[LVInfoFields.LV_NAME.value], lv_object[VGInfoFields.VG_NAME.value],
-                               cls.VM_LOCAL_VOLUME_CACHE_POOL_MANAGED_LVM_TAG)
+            if not mount_path_tag:
+                logger.warning("LV %s in VG %s is tagged as managed but missing mount path tag, skip loading this LV as a cache pool",
+                               lv_object[LVInfoFields.LV_NAME.value], lv_object[VGInfoFields.VG_NAME.value])
                 continue
-            pool_uuid = pool_uuid_tags.pop().replace(cls.VM_LOCAL_VOLUME_CACHE_POOL_UUID_LVM_TAG_PREFIX + "::", "", 1)
-            mount_path = mount_path_tags.pop().replace(cls.VM_LOCAL_VOLUME_CACHE_POOL_MOUNT_PATH_LVM_TAG_PREFIX + "::", "", 1)
+            # Strip whichever prefix matched (new or legacy) to recover the raw value.
+            pool_uuid = pool_uuid_tag.split("::", 3)[-1]
+            mount_path = mount_path_tag.split("::", 3)[-1]
             pool = cls(pool_uuid, mount_path)
             pool.connect_pool()
             pool_processors.append(pool)
-        
+
         return pool_processors
 
     def __create_pvs(self, device_paths, metadata_size=None, force=False):
@@ -385,8 +417,8 @@ class PoolProcessor(object):
         # type: () -> list[PVInfo]
         """ Load PVInfo of physical volumes used by this pool based on the PV UUIDs tagged with pool UUID """
         LvmCommandWrapper.rescan_pv()
-        pvs = LvmCommandWrapper.get_lvm_objects_by_tag(
-            LvmObjectType.PV, self.pool_tag, [PVInfoFields.PV_UUID])
+        pvs = self.__get_lvm_objects_by_pool_tag(
+            LvmObjectType.PV, [PVInfoFields.PV_UUID])
         if not pvs:
             raise Exception("No PVs found for pool %s" % self.pool_uuid)
         # type: ignore
@@ -396,8 +428,8 @@ class PoolProcessor(object):
         # type: () -> VGInfo
         """ Load VGInfo of volume group used by this pool based on the VG UUID tagged with pool UUID """
         LvmCommandWrapper.rescan_vg()
-        vgs = LvmCommandWrapper.get_lvm_objects_by_tag(
-            LvmObjectType.VG, self.pool_tag, [VGInfoFields.VG_UUID])
+        vgs = self.__get_lvm_objects_by_pool_tag(
+            LvmObjectType.VG, [VGInfoFields.VG_UUID])
         if not vgs:
             raise Exception("No VG found for pool %s" % self.pool_uuid)
         if len(vgs) > 1:
@@ -409,8 +441,9 @@ class PoolProcessor(object):
         # type: () -> LVInfo
         """ Load LVInfo of logical volume used by this pool based on the LV UUID tagged with pool UUID """
         LvmCommandWrapper.rescan_lv()
-        lvs = LvmCommandWrapper.get_lvm_objects_by_tag(LvmObjectType.LV, self.pool_tag,
-                                                       [LVInfoFields.LV_UUID, LVInfoFields.LV_NAME, LVInfoFields.LV_ACTIVE, VGInfoFields.VG_NAME])
+        lvs = self.__get_lvm_objects_by_pool_tag(
+            LvmObjectType.LV,
+            [LVInfoFields.LV_UUID, LVInfoFields.LV_NAME, LVInfoFields.LV_ACTIVE, VGInfoFields.VG_NAME])
         if not lvs:
             raise Exception("No LV found for pool %s" % self.pool_uuid)
         if len(lvs) > 1:
@@ -421,6 +454,23 @@ class PoolProcessor(object):
             LvmCommandWrapper.active_lv(
                 lv_name=lv[LVInfoFields.LV_NAME.value], vg_name=lv[VGInfoFields.VG_NAME.value])
         return LVInfo(lv[LVInfoFields.LV_UUID.value])
+
+    def __get_lvm_objects_by_pool_tag(self, object_type, fields):
+        # type: (LvmObjectType, list) -> list[dict[str, str]]
+        """ Read-side lookup that matches either the new or the legacy pool-uuid
+        tag for this pool's UUID, de-duplicating by the first requested field. """
+        primary_field = fields[0].value
+        merged = {}
+        for tag in (self.pool_tag, self.legacy_pool_tag):
+            found = LvmCommandWrapper.get_lvm_objects_by_tag(object_type, tag, fields)
+            if not found:
+                continue
+            for obj in found:
+                key = obj.get(primary_field)
+                if key is None:
+                    continue
+                merged.setdefault(key, obj)
+        return list(merged.values())
 
     def __load_filesystem(self):
         # type: () -> FileSystemInfo
@@ -842,7 +892,7 @@ class CacheProcessor(object):
 class FlushCacheTaskDaemon(plugin.TaskDaemon):
     def __init__(self, task_spec, cache):
         # type: (object, CacheProcessor) -> None
-        super(FlushCacheTaskDaemon, self).__init__(task_spec, "FlushVmLocalVolumeCache")
+        super(FlushCacheTaskDaemon, self).__init__(task_spec, "FlushVolumeCache")
         self.cache = cache
         self.progress = 0
         self.error = None
@@ -875,15 +925,15 @@ class FlushCacheTaskDaemon(plugin.TaskDaemon):
         self.progress = 100
 
 T_Cmd = TypeVar("T_Cmd", bound="BaseCmd")
-T_Rsp = TypeVar("T_Rsp", bound="VMLocalVolumeCacheBaseResponse")
+T_Rsp = TypeVar("T_Rsp", bound="VolumeCacheBaseResponse")
 
 def auto_serialize(cmd_type, rsp_type):
-    # type: (type[T_Cmd], type[T_Rsp]) -> Callable[[Callable[[VmLocalVolumeCachePlugin, T_Cmd], T_Rsp]], Callable[[VmLocalVolumeCachePlugin, dict[str, Any]], str]]
+    # type: (type[T_Cmd], type[T_Rsp]) -> Callable[[Callable[[VolumeCachePlugin, T_Cmd], T_Rsp]], Callable[[VolumeCachePlugin, dict[str, Any]], str]]
     def decorator(func):
-        # type: (Callable[[VmLocalVolumeCachePlugin, T_Cmd], T_Rsp]) -> Callable[[VmLocalVolumeCachePlugin, dict[str, Any]], str]
+        # type: (Callable[[VolumeCachePlugin, T_Cmd], T_Rsp]) -> Callable[[VolumeCachePlugin, dict[str, Any]], str]
         @functools.wraps(func)
         def wrapper(self, req):
-            # type: (VmLocalVolumeCachePlugin, dict[str, Any]) -> str
+            # type: (VolumeCachePlugin, dict[str, Any]) -> str
             try:
                 cmd = cmd_type.from_json(jsonobject.loads(req[http.REQUEST_BODY])) # type: BaseCmd
                 rsp_obj = func(self, cmd)
@@ -896,12 +946,12 @@ def auto_serialize(cmd_type, rsp_type):
     return decorator
 
 def ensure_pool(initialized=False):
-    # type: (bool) -> Callable[[Callable[[VmLocalVolumeCachePlugin, T_Cmd, PoolProcessor], T_Rsp]], Callable[[VmLocalVolumeCachePlugin, T_Cmd], T_Rsp]]
+    # type: (bool) -> Callable[[Callable[[VolumeCachePlugin, T_Cmd, PoolProcessor], T_Rsp]], Callable[[VolumeCachePlugin, T_Cmd], T_Rsp]]
     def decorator(func):
-        # type: (Callable[[VmLocalVolumeCachePlugin, T_Cmd, PoolProcessor], T_Rsp]) -> Callable[[VmLocalVolumeCachePlugin, T_Cmd], T_Rsp]
+        # type: (Callable[[VolumeCachePlugin, T_Cmd, PoolProcessor], T_Rsp]) -> Callable[[VolumeCachePlugin, T_Cmd], T_Rsp]
         @functools.wraps(func)
         def wrapper(self, cmd):
-            # type: (VmLocalVolumeCachePlugin, T_Cmd) -> T_Rsp
+            # type: (VolumeCachePlugin, T_Cmd) -> T_Rsp
             pool_processor = self.pool_processors.get(cmd.poolUuid)
             if not pool_processor:
                 raise PoolNotFoundError("No pool processor found for pool UUID %s" % cmd.poolUuid)
@@ -911,24 +961,41 @@ def ensure_pool(initialized=False):
         return wrapper
     return decorator
 
-class VmLocalVolumeCachePlugin(kvmagent.KvmAgent):
+class VolumeCachePlugin(kvmagent.KvmAgent):
     pool_processors = None  # type: dict[str, PoolProcessor]
 
-    INIT_POOL_PATH = "/localvolumecache/pool/init"
-    CONNECT_POOL_PATH = "/localvolumecache/pool/connect"
-    EXTEND_POOL_PATH = "/localvolumecache/pool/extend"
-    DELETE_POOL_PATH = "/localvolumecache/pool/delete"
-    CHECK_POOL_PATH = "/localvolumecache/pool/check"
-    GET_POOL_CAPACITY_PATH = "/localvolumecache/pool/getcapacity"
-    GC_POOL_PATH = "/localvolumecache/pool/gc"
+    INIT_POOL_PATH = "/hostcachestore/init"
+    CONNECT_POOL_PATH = "/hostcachestore/connect"
+    EXTEND_POOL_PATH = "/hostcachestore/extend"
+    DELETE_POOL_PATH = "/hostcachestore/delete"
+    CHECK_POOL_PATH = "/hostcachestore/check"
+    GET_POOL_CAPACITY_PATH = "/hostcachestore/getcapacity"
+    GC_POOL_PATH = "/hostcachestore/gc"
 
-    CREATE_CACHE_PATH = "/localvolumecache/create"
-    DELETE_CACHE_PATH = "/localvolumecache/delete"
-    FLUSH_CACHE_PATH = "/localvolumecache/flush"
-    GET_CACHE_CAPACITY_PATH = "/localvolumecache/getcapacity"    
+    CREATE_CACHE_PATH = "/volumecache/create"
+    DELETE_CACHE_PATH = "/volumecache/delete"
+    FLUSH_CACHE_PATH = "/volumecache/flush"
+    GET_CACHE_CAPACITY_PATH = "/volumecache/getcapacity"
+
+    # Legacy HTTP path aliases (pre-rename). Registered alongside the new
+    # routes above so that older management-node builds -- which still target
+    # ``/localvolumecache/*`` during rolling upgrades -- keep working. Each
+    # alias maps 1:1 to its corresponding new path handler.
+    LEGACY_INIT_POOL_PATH = "/localvolumecache/pool/init"
+    LEGACY_CONNECT_POOL_PATH = "/localvolumecache/pool/connect"
+    LEGACY_EXTEND_POOL_PATH = "/localvolumecache/pool/extend"
+    LEGACY_DELETE_POOL_PATH = "/localvolumecache/pool/delete"
+    LEGACY_CHECK_POOL_PATH = "/localvolumecache/pool/check"
+    LEGACY_GET_POOL_CAPACITY_PATH = "/localvolumecache/pool/getcapacity"
+    LEGACY_GC_POOL_PATH = "/localvolumecache/pool/gc"
+
+    LEGACY_CREATE_CACHE_PATH = "/localvolumecache/create"
+    LEGACY_DELETE_CACHE_PATH = "/localvolumecache/delete"
+    LEGACY_FLUSH_CACHE_PATH = "/localvolumecache/flush"
+    LEGACY_GET_CACHE_CAPACITY_PATH = "/localvolumecache/getcapacity"
 
     def __init__(self):
-        super(VmLocalVolumeCachePlugin, self).__init__()
+        super(VolumeCachePlugin, self).__init__()
         self.pool_processors = {}
 
     def __load_pool_processors(self):
@@ -953,6 +1020,23 @@ class VmLocalVolumeCachePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.FLUSH_CACHE_PATH, self.flush_cache)
         http_server.register_async_uri(self.GET_CACHE_CAPACITY_PATH, self.get_cache_capacity)
 
+        # Register legacy ``/localvolumecache/*`` aliases so that rolling
+        # upgrades -- where the management node may still be on an older
+        # release that targets the pre-rename URLs -- continue to reach the
+        # same handlers.
+        http_server.register_async_uri(self.LEGACY_INIT_POOL_PATH, self.init_pool)
+        http_server.register_async_uri(self.LEGACY_CONNECT_POOL_PATH, self.connect_pool)
+        http_server.register_async_uri(self.LEGACY_EXTEND_POOL_PATH, self.extend_pool)
+        http_server.register_async_uri(self.LEGACY_DELETE_POOL_PATH, self.delete_pool)
+        http_server.register_async_uri(self.LEGACY_CHECK_POOL_PATH, self.check_pool)
+        http_server.register_async_uri(self.LEGACY_GET_POOL_CAPACITY_PATH, self.get_pool_capacity)
+        http_server.register_async_uri(self.LEGACY_GC_POOL_PATH, self.gc_pool)
+
+        http_server.register_async_uri(self.LEGACY_CREATE_CACHE_PATH, self.create_cache)
+        http_server.register_async_uri(self.LEGACY_DELETE_CACHE_PATH, self.delete_cache)
+        http_server.register_async_uri(self.LEGACY_FLUSH_CACHE_PATH, self.flush_cache)
+        http_server.register_async_uri(self.LEGACY_GET_CACHE_CAPACITY_PATH, self.get_cache_capacity)
+
     def stop(self):
         pass
 
@@ -962,45 +1046,31 @@ class VmLocalVolumeCachePlugin(kvmagent.KvmAgent):
         assert pool.vg and pool.lv and pool.fs and pool.mount_point
         rsp.poolUuid = pool.pool_uuid
         rsp.mountPoint = pool.mount_point[MountPointInfoFields.TARGET]
-        rsp.pvs = []
-        for pv in pool.pvs:  # type: ignore
-            pv_ref = PVRef()
-            pv_ref.pvUuid = pv[PVInfoFields.PV_UUID]
-            pv_ref.pvName = pv[PVInfoFields.PV_NAME]
-            pv_ref.pvDevicePath = pv[PVInfoFields.PV_NAME]
-            rsp.pvs.append(pv_ref)
-
-        vg_ref = VGRef()
-        vg_ref.vgUuid = pool.vg[VGInfoFields.VG_UUID]
-        vg_ref.vgName = pool.vg[VGInfoFields.VG_NAME]
-        rsp.vg = vg_ref
-
-        lv_ref = LVRef()
-        lv_ref.lvUuid = pool.lv[LVInfoFields.LV_UUID]
-        lv_ref.lvName = pool.lv[LVInfoFields.LV_NAME]
-        lv_ref.lvPath = pool.lv[LVInfoFields.LV_PATH]
-        rsp.lv = lv_ref
-
-        fs_ref = FileSystemRef()
-        fs_ref.fsUuid = pool.fs[FileSystemInfoFields.UUID]
-        fs_ref.fsType = pool.fs[FileSystemInfoFields.TYPE]
-        rsp.filesystem = fs_ref
-
+        try:
+            pool_capacity = pool.get_capacity()
+            rsp.capacity = pool_capacity.total
+        except Exception as e:
+            logger.warning("Failed to read capacity for pool %s: %s" % (pool.pool_uuid, str(e)))
+            rsp.capacity = None
         return rsp
 
     def _to_pool_health_rsp(self, pool_health_info):
         # type: (PoolHealthInfo) -> PoolHealthRsp
         rsp = PoolHealthRsp()
-        rsp.pvs = []
-        for pv, healthy in pool_health_info.pvs.items():  # type: ignore
-            pv_health_ref = PVHealthRef()
-            pv_health_ref.pvName = pv[PVInfoFields.PV_NAME]
-            pv_health_ref.healthy = healthy
-            rsp.pvs.append(pv_health_ref)
-        rsp.vg = pool_health_info.vg
-        rsp.lv = pool_health_info.lv
-        rsp.filesystem = pool_health_info.filesystem
         rsp.healthy = pool_health_info.is_healthy
+        if not pool_health_info.is_healthy:
+            # aggregate failure reason: first unhealthy layer wins
+            reasons = []
+            unhealthy_pvs = [pv[PVInfoFields.PV_NAME] for pv, healthy in pool_health_info.pvs.items() if not healthy]
+            if unhealthy_pvs:
+                reasons.append("unhealthy pvs: %s" % ",".join(unhealthy_pvs))
+            if pool_health_info.vg is False:
+                reasons.append("vg unhealthy")
+            if pool_health_info.lv is False:
+                reasons.append("lv unhealthy")
+            if pool_health_info.filesystem is False:
+                reasons.append("filesystem unhealthy")
+            rsp.reason = "; ".join(reasons) if reasons else "unhealthy"
         return rsp
 
     def _to_pool_capacity_rsp(self, capacity):
@@ -1035,7 +1105,7 @@ class VmLocalVolumeCachePlugin(kvmagent.KvmAgent):
 
         pool = PoolProcessor(cmd.poolUuid, cmd.mountPoint)
         pool.init_pool(
-            device_paths=cmd.pvs,
+            device_paths=cmd.devices,
             force=bool(cmd.force)
         )
         self.pool_processors[cmd.poolUuid] = pool
@@ -1054,7 +1124,7 @@ class VmLocalVolumeCachePlugin(kvmagent.KvmAgent):
     @ensure_pool(initialized=True)
     def extend_pool(self, cmd, pool):
         # type: (ExtendPoolCmd, PoolProcessor) -> ExtendPoolRsp
-        pool.extend_pool(additional_device_paths=cmd.pvs, force=bool(cmd.force))
+        pool.extend_pool(additional_device_paths=cmd.devices, force=bool(cmd.force))
         pool.connect_pool()
 
         return self._to_pool_rsp(pool)
