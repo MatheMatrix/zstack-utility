@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import traceback
 
 from kvmagent import kvmagent
@@ -1495,6 +1496,32 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                     if r2 != 0:
                         logger.warn('delete stale vnic %s failed: %s' % (vnic, o2))
 
+    @staticmethod
+    def _reset_ovn_controller_sb_cluster_state():
+        """Best-effort reset ovn-controller cached SB Raft state (ZCF-2129).
+
+        Idempotent and lightweight -- safe to call on every provision.
+        """
+        cmd = 'timeout 5 ovn-appctl -t ovn-controller sb-cluster-state-reset'
+        retries, interval = 3, 1
+        last_err = None
+
+        for i in range(retries):
+            r, o, e = bash.bash_roe(cmd)
+            if r == 0:
+                logger.info('ovn-controller SB cluster state reset completed')
+                return
+            last_err = (r, o, e)
+            if i < retries - 1:
+                logger.warn('sb-cluster-state-reset failed (try %s/%s, rc=%s): '
+                            'stdout=%s stderr=%s'
+                            % (i + 1, retries, r, o, e))
+                time.sleep(interval)
+
+        r, o, e = last_err
+        logger.warn('sb-cluster-state-reset failed after %s retries (rc=%s): '
+                    'stdout=%s stderr=%s' % (retries, r, o, e))
+
     @lock.lock('ovs_provision')
     @bash.in_bash
     def provision(self, req):
@@ -1670,6 +1697,9 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
             # Step 3: bridge / bond / OVN config (ovn.py line 276-383)
             provisioner = OvsProvisioner()
             rsp = provisioner.apply(cmd)
+
+            # Best-effort reset cached SB cluster state after provision
+            self._reset_ovn_controller_sb_cluster_state()
 
             # Step 4: DPDK post-provisioning (ovn.py line 331-395)
             if dpdk_config:
