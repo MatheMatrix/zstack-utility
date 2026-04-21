@@ -775,6 +775,48 @@ def start_remote_mn( host_post_info):
 def shell_quote(s):
     return "'" + s.replace("'", "'\\''") + "'"
 
+
+def run_mysqlcheck_zstack(db_user, db_password, db_hostname, db_port):
+    error_if_tool_is_missing('mysqlcheck')
+    try:
+        if db_password:
+            shell('mysqlcheck -u %s -p%s --host %s --port %s zstack' % (
+                shell_quote(db_user), shell_quote(db_password), shell_quote(db_hostname), shell_quote(db_port)))
+        else:
+            shell('mysqlcheck -u %s --host %s --port %s zstack' % (
+                shell_quote(db_user), shell_quote(db_hostname), shell_quote(db_port)))
+    except Exception as e:
+        raise CtlError('Table integrity pre-check (mysqlcheck) failed: %s' % str(e))
+
+
+def _atomic_switch_dir(target_dir, tmp_new_dir, backup_dir):
+    # If target is missing but backup exists, a previous switch crashed
+    # between the two renames — restore the backup first.
+    if not os.path.exists(target_dir) and os.path.exists(backup_dir):
+        os.rename(backup_dir, target_dir)
+
+    if not os.path.exists(tmp_new_dir):
+        raise CtlError('New directory %s does not exist, cannot switch' % tmp_new_dir)
+
+    # Clean up any leftover backup from a completed previous run
+    linux.rm_dir_force(backup_dir)
+
+    if os.path.exists(target_dir):
+        os.rename(target_dir, backup_dir)
+
+    try:
+        os.rename(tmp_new_dir, target_dir)
+    except Exception:
+        # Restore the original directory if the switch fails
+        if os.path.exists(backup_dir):
+            os.rename(backup_dir, target_dir)
+        # Clean up the leftover tmp directory
+        linux.rm_dir_force(tmp_new_dir)
+        raise
+
+    # Clean up the backup after successful switch
+    linux.rm_dir_force(backup_dir)
+
 class SpinnerInfo(object):
     spinner_status = {}
     def __init__(self):
@@ -8937,8 +8979,8 @@ class UpgradeManagementNodeCmd(Command):
                 shell('cp %s %s' % (new_war.path, webapp_dir))
                 ShellCmd('unzip %s -d %s' % (os.path.basename(new_war.path), os.path.basename(tmp_new_zstack)),
                          workdir=webapp_dir)()
-                linux.rm_dir_force(ctl.zstack_home)
-                os.rename(tmp_new_zstack, ctl.zstack_home)
+                backup_old_zstack = os.path.join(webapp_dir, 'zstack_upgrade_old')
+                _atomic_switch_dir(ctl.zstack_home, tmp_new_zstack, backup_old_zstack)
                 #create local repo folder for possible zstack local yum repo
                 zstack_dvd_repo = '{}/zstack/static/zstack-repo'.format(webapp_dir)
                 shell('rm -f {0}; mkdir -p {0};ln -s /opt/zstack-dvd/x86_64 {0}/x86_64; ln -s /opt/zstack-dvd/aarch64 {0}/aarch64; ln -s /opt/zstack-dvd/mips64el {0}/mips64el; ln -s /opt/zstack-dvd/loongarch64 {0}/loongarch64; chown -R zstack:zstack {0}'.format(zstack_dvd_repo))
@@ -9260,6 +9302,7 @@ class UpgradeDbCmd(Command):
                             '\nNOTE: only use it when you know exactly what it does', action='store_true', default=False)
         parser.add_argument('--no-backup', help='do NOT backup the database. If the database is very large and you have manually backup it, using this option will fast the upgrade process. [DEFAULT] false', default=False)
         parser.add_argument('--dry-run', help='Check if db could be upgraded. [DEFAULT] not set', action='store_true', default=False)
+        parser.add_argument('--precheck-tables', help='Run mysqlcheck on zstack schema before migrate. [DEFAULT] false', action='store_true', default=False)
         parser.add_argument('--update-schema-version', help='update the schema_version checksum in the environment. [DEFAULT] not set', action='store_true', default=False)
 
     def run(self, args):
@@ -9283,8 +9326,21 @@ class UpgradeDbCmd(Command):
 
         ctl.check_if_management_node_has_stopped(args.force)
 
+        if args.precheck_tables:
+            run_mysqlcheck_zstack(db_user, db_password, db_hostname, db_port)
+
+        def validate():
+            schema_path = 'filesystem:%s' % upgrading_schema_dir
+            if db_password:
+                shell_no_pipe('bash %s validate -user=%s -password=%s -url=%s -locations=%s' % (
+                    shell_quote(flyway_path), shell_quote(db_user), shell_quote(db_password), shell_quote(db_url), shell_quote(schema_path)))
+            else:
+                shell_no_pipe('bash %s validate -user=%s -url=%s -locations=%s' % (
+                    shell_quote(flyway_path), shell_quote(db_user), shell_quote(db_url), shell_quote(schema_path)))
+
         if args.dry_run:
-            info('Dry run finished. Database could be upgraded. ')
+            validate()
+            info('Dry run finished. Flyway validation succeeded.')
             return True
 
         def update_db_config():
@@ -9375,6 +9431,7 @@ class UpgradeDbCmd(Command):
         update_sql = "update schema_version set checksum = '-1450264399' where script = 'V3.6.0__schema.sql' and checksum = '-111240960'"
         execute_sql(update_sql)
 
+        validate()
         migrate()
 
 class UpgradeUIDbCmd(Command):
@@ -9416,8 +9473,18 @@ class UpgradeUIDbCmd(Command):
             if status == 0 and 'Running' in output:
                 raise CtlError('ZStack UI is still running. Please stop it before upgrade zstack_ui database.')
 
+        def validate():
+            schema_path = 'filesystem:%s' % upgrading_schema_dir
+            if db_password:
+                shell_no_pipe('bash %s validate -user=%s -password=%s -url=%s -locations=%s' % (
+                    shell_quote(flyway_path), shell_quote(db_user), shell_quote(db_password), shell_quote(db_url), shell_quote(schema_path)))
+            else:
+                shell_no_pipe('bash %s validate -user=%s -url=%s -locations=%s' % (
+                    shell_quote(flyway_path), shell_quote(db_user), shell_quote(db_url), shell_quote(schema_path)))
+
         if args.dry_run:
-            info('Dry run finished. zstack_ui database could be upgraded. ')
+            validate()
+            info('Dry run finished. Flyway validation succeeded.')
             return True
 
         def backup_current_database():
@@ -9469,6 +9536,7 @@ class UpgradeUIDbCmd(Command):
 
         backup_current_database()
         create_schema_version_table_if_needed()
+        validate()
         migrate()
 
 class UpgradeCtlCmd(Command):
@@ -9581,8 +9649,8 @@ class RollbackManagementNodeCmd(Command):
                 tmp_rollback = os.path.join(webapp_dir, 'zstack_rollback_tmp')
                 linux.rm_dir_force(tmp_rollback)
                 shell('unzip %s -d %s' % (rollbackinfo.war_path, tmp_rollback))
-                linux.rm_dir_force(ctl.zstack_home)
-                os.rename(tmp_rollback, ctl.zstack_home)
+                backup_old_zstack = os.path.join(webapp_dir, 'zstack_rollback_old')
+                _atomic_switch_dir(ctl.zstack_home, tmp_rollback, backup_old_zstack)
 
             def restore_config():
                 info('restoring the zstack.properties ...')
