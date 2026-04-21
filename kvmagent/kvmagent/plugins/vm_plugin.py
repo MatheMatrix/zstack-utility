@@ -3014,6 +3014,19 @@ class Vm(object):
                     path = chan.source.path_
                     linux.rm_file_force(path)
 
+            for shmem in self.domain_xmlobject.devices.get_child_node_as_list('shmem'):
+                name = getattr(shmem, 'name_', None)
+                if not name:
+                    name = getattr(shmem, 'name', None)
+                if not name:
+                    continue
+
+                shmem_name = os.path.basename(name)
+                if shmem_name != name or not re.match(r'^[a-zA-Z0-9_-]+$', shmem_name):
+                    logger.warn('skip invalid shmem name[%s] for vm[uuid:%s]' % (name, self.uuid))
+                    continue
+                linux.rm_file_force(os.path.join('/dev/shm', shmem_name))
+
         def loop_shutdown(_):
             try:
                 self.domain.shutdown()
@@ -6980,7 +6993,7 @@ class Vm(object):
                     raise kvmagent.KvmError('invalid dGPU shmem path[%s], path must be normalized under /dev/shm' % mem_path)
                 try:
                     shmem_size = int(shmem_size)
-                except (TypeError, ValueError) as e:
+                except (TypeError, ValueError) as ex:
                     raise kvmagent.KvmError('invalid dGPU shmem size[%s], must be an integer' % shmem_size)
                 if shmem_size <= 0:
                     raise kvmagent.KvmError('invalid dGPU shmem size[%s], must be greater than 0' % shmem_size)

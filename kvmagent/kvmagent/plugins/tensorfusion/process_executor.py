@@ -15,33 +15,23 @@ from zstacklib.utils import log
 from zstacklib.utils.pci import normalize_pci_address
 
 from kvmagent.plugins.tensorfusion.models import Worker, WorkerCreateRequest
+from kvmagent.plugins.tensorfusion.base_executor import WorkerExecutor
 
 logger = log.get_logger(__name__)
 
 
-class ProcessExecutor(object):
+class ProcessExecutor(WorkerExecutor):
     """Manages tensor-fusion-worker process start/stop/scan."""
 
     WORKER_BINARY = '/usr/local/bin/tensor-fusion-worker'
-    SHM_PREFIX = '/dev/shm/'
-    SHM_SIZE_MB = 512
-    BYTES_PER_MB = 1024 * 1024
-    SHM_SIZE = SHM_SIZE_MB * BYTES_PER_MB
-    LOG_DIR = '/var/log/zstack'
     STARTUP_WAIT_SEC = 3
     STARTUP_POLL_INTERVAL_SEC = 0.2
     STOP_WAIT_SEC = 5
     STOP_POLL_INTERVAL_SEC = 0.2
     KILL_WAIT_SEC = 2
-    DEFAULT_ENABLE_LOG = True
-    DEFAULT_LOG_LEVEL = 'info'
 
     def __init__(self, gpu_details):
-        """
-        Args:
-            gpu_details: dict {pci_address: detail_dict} from NVIDIA.query_gpu_details().
-        """
-        self._gpu_details = gpu_details
+        super(ProcessExecutor, self).__init__(gpu_details)
         self._proc_lock = threading.RLock()
         self._procs = {}
 
@@ -370,8 +360,11 @@ class ProcessExecutor(object):
 
         return True, 'verified tensor-fusion-worker process'
 
-    def reap_dead(self, pid):
+    def reap_dead(self, worker):
         """Reap a dead child process to prevent zombies, and clean up _procs tracking."""
+        pid = getattr(worker, 'pid', None)
+        if pid is None:
+            return
         proc = self._get_proc(pid)
         if proc is not None:
             self._reap_process(proc)
@@ -482,10 +475,10 @@ class ProcessExecutor(object):
         logger.info('scan_running: found %d tensor-fusion-worker processes' % len(workers))
         return workers
 
-    def cleanup_residual_workers_by_vm(self, vm_uuid, known_pids=None):
+    def cleanup_residual_workers_by_vm(self, vm_uuid, known_workers=None):
         # type: (str, list) -> int
         """Best-effort cleanup for worker processes that are missing from StateStore."""
-        known_pids = set(known_pids or [])
+        known_pids = set(w.pid for w in (known_workers or []) if getattr(w, 'pid', None))
         residuals = self._scan_residual_worker_processes(vm_uuid, known_pids)
         cleaned = 0
         handled_pgids = set()
@@ -570,13 +563,6 @@ class ProcessExecutor(object):
                 continue
 
         return residuals
-
-    @classmethod
-    def _bytes_to_mb(cls, size):
-        # type: (int) -> int
-        if size <= 0:
-            return 0
-        return (size + cls.BYTES_PER_MB - 1) // cls.BYTES_PER_MB
 
     @classmethod
     def is_alive(cls, worker):

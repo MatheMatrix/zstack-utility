@@ -549,6 +549,15 @@ class NVIDIA(GPUBase):
     # ==========================================================================
 
     @classmethod
+    def _is_bound_to_vfio(cls, pci_address):
+        """Check if a PCI device is bound to vfio-pci driver (GPU passthrough)."""
+        driver_link = os.path.join("/sys/bus/pci/devices", pci_address, "driver")
+        if os.path.islink(driver_link):
+            current_driver = os.path.basename(os.path.realpath(driver_link))
+            return current_driver in ("vfio-pci", "vfio_pci")
+        return False
+
+    @classmethod
     def detect_vfio_mdev_capability(cls, pci_device_to):
         """
         Detect NVIDIA vGPU (VFIO mdev) capability.
@@ -557,18 +566,23 @@ class NVIDIA(GPUBase):
         """
         import os
         addr = pci_device_to.pciDeviceAddress
+
+        if cls._is_bound_to_vfio(addr):
+            logger.debug('vGPU capability check skipped for %s: device bound to vfio-pci (passthrough)' % addr)
+            return False, {}
+
         check_mdev_folder = '/sys/bus/pci/devices/%s/mdev_supported_types' % addr
         legacy_mdev_dir_exists = os.path.isdir(check_mdev_folder)
         check_virtfn_folder = '/sys/bus/pci/devices/%s/virtfn0/mdev_supported_types' % addr
         virt_function_dir_exits = os.path.isdir(check_virtfn_folder)
 
         # Check if nvidia vgpu is supported by current device
-        r, o, e = bash_roe("nvidia-smi vgpu -i %s -v -c" % addr)
+        r, o, e = bash_roe("timeout 10 nvidia-smi vgpu -i %s -v -c" % addr)
         if r != 0 or not o or "No supported devices" in o:
             # SR-IOV backed vGPU cards (e.g. L20, RTX8000) may not report
             # creatable types on the PF before VFs are created. Fall back to
             # supported-types query which still reflects device capability.
-            rs, support, _ = bash_roe("nvidia-smi vgpu -i %s -s" % addr)
+            rs, support, _ = bash_roe("timeout 10 nvidia-smi vgpu -i %s -s" % addr)
             if rs != 0 or not support or "No supported devices" in support:
                 return False, {}
             o = support
@@ -594,10 +608,10 @@ class NVIDIA(GPUBase):
         # Determine virtStatus based on mdev directory structure
         if legacy_mdev_dir_exists:
             # Legacy mdev: check if supported specs != creatable specs
-            rs, support, _ = bash_roe("nvidia-smi vgpu -i %s -s | grep -v %s" %
+            rs, support, _ = bash_roe("timeout 10 nvidia-smi vgpu -i %s -s | grep -v %s" %
                                       (addr, addr))
             rc, creatable, _ = bash_roe(
-                "nvidia-smi vgpu -i %s -c | grep -v %s" % (addr, addr))
+                "timeout 10 nvidia-smi vgpu -i %s -c | grep -v %s" % (addr, addr))
             if rs != 0:
                 return False, {}
             if rc != 0:
@@ -754,7 +768,11 @@ class NVIDIA(GPUBase):
             logger.debug('TensorFusion capability check skipped for %s: SR-IOV VF is not eligible' % addr)
             return False, {}
 
-        r, o, e = bash_roe('nvidia-smi --query-gpu=pci.bus_id,driver_version --format=csv,noheader -i %s' % addr)
+        if cls._is_bound_to_vfio(addr):
+            logger.debug('TensorFusion capability check skipped for %s: device bound to vfio-pci (passthrough)' % addr)
+            return False, {}
+
+        r, o, e = bash_roe('timeout 10 nvidia-smi --query-gpu=pci.bus_id,driver_version --format=csv,noheader -i %s' % addr)
         if r != 0:
             logger.debug('TensorFusion capability check failed for %s: nvidia-smi query failed' % addr)
             return False, {}
@@ -779,11 +797,26 @@ class NVIDIA(GPUBase):
                 capability_info['reason'] = "Driver version %s < 570.x" % driver_version
                 return False, capability_info
 
-            worker = cls.TENSORFUSION_WORKER_BINARY
-            if not os.path.isfile(worker) or not os.access(worker, os.X_OK):
+            # Container runtime checks for dGPU virtualization.
+            r_docker, _, _ = bash_roe('which docker')
+            if r_docker != 0:
                 cls.set_capability_virt_metadata(
                     capability_info, "TENSORFUSION_NOT_SUPPORTED", "", None, [])
-                capability_info['reason'] = "TensorFusion worker binary %s is missing or not executable" % worker
+                capability_info['reason'] = "docker is not installed or not in PATH"
+                return False, capability_info
+
+            r_ctk, _, _ = bash_roe('which nvidia-ctk')
+            if r_ctk != 0:
+                cls.set_capability_virt_metadata(
+                    capability_info, "TENSORFUSION_NOT_SUPPORTED", "", None, [])
+                capability_info['reason'] = "nvidia-container-toolkit (nvidia-ctk) is not installed"
+                return False, capability_info
+
+            r_img, _, _ = bash_roe('docker image inspect tf-worker:latest')
+            if r_img != 0:
+                cls.set_capability_virt_metadata(
+                    capability_info, "TENSORFUSION_NOT_SUPPORTED", "", None, [])
+                capability_info['reason'] = "tf-worker:latest image not found, install via zstack-dgpu-toolkit.bin or docker load"
                 return False, capability_info
 
             # Check if TensorFusion worker can be created (virtualizable)
