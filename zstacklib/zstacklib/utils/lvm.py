@@ -3021,3 +3021,26 @@ def update_vg_tag(vg_uuid, old_tag_prefix, new_tag):
         logger.debug("updated VG tag for %s: %s -> %s" % (vg_uuid, old_tags, new_tag))
     else:
         logger.warn("no tag with prefix [%s] found on VG %s, added new tag directly" % (old_tag_prefix, vg_uuid))
+
+
+def filter_lvm_pv_wwids(candidate_wwids):
+    """Return the subset of unmanaged LUN wwids whose device carries an LVM2_member header.
+
+    Probe failures and missing devices are skipped (not added to filter). This avoids
+    expanding the forceWipe blast radius to LUNs we cannot positively identify as PVs.
+    """
+    kept = []
+    if not candidate_wwids:
+        return kept
+    for wwid in candidate_wwids:
+        dev_path = "/dev/disk/by-id/%s" % wwid
+        if not os.path.exists(dev_path):
+            logger.info("filter_lvm_pv_wwids: skip %s, device %s not present" % (wwid, dev_path))
+            continue
+        ret, out, err = bash.bash_roe("blkid -p -s TYPE -o value %s" % dev_path)
+        if ret != 0:
+            logger.info("filter_lvm_pv_wwids: skip %s, blkid ret=%s err=%s" % (wwid, ret, err))
+            continue
+        if (out or "").strip() == "LVM2_member":
+            kept.append(wwid)
+    return kept
