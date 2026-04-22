@@ -649,36 +649,130 @@ def config_lvm_by_sed(keyword, entry, files):
     logger.debug(bash.bash_o("lvmconfig --type diff"))
 
 
+# Match active "filter = [...]" / "global_filter = [...]" lines.
+# Reject any line whose first non-whitespace char is '#' (comments).
+# Anchored to start-of-line; key name must be followed by whitespace or '='
+# so that hypothetical neighbours like "filter_a" cannot be matched.
+_ACTIVE_FILTER_RE = re.compile(r'^\s*filter(?:\s|=)')
+_ACTIVE_GLOBAL_FILTER_RE = re.compile(r'^\s*global_filter(?:\s|=)')
+_COMMENT_RE = re.compile(r'^\s*#')
+
+
+def _build_filter_value(preserve_disks=None, no_drbd=False, vgs=None):
+    """Build the bracketed filter value string, e.g. '["a|^/dev/sda$|", "r|.*|"]'.
+
+    Caller decides whether to put it on a 'filter = ...' or 'global_filter = ...' line.
+    """
+    if preserve_disks is not None and len(preserve_disks) != 0:
+        accept = ['"a|^%s$|"' % disk for disk in preserve_disks]
+        return '[' + ', '.join(accept + ['"r|.*|"']) + ']'
+
+    rejects = ['"r|/dev/cdrom|"']
+    for vg in (vgs or []):
+        rejects.append('"r|/dev/mapper/%s.*|"' % vg.strip())
+    if no_drbd:
+        rejects.append('"r|/dev/drbd.*|"')
+    return '[' + ', '.join(rejects) + ']'
+
+
+def _apply_filter_on_text(text, filter_value, write_global_filter):
+    """Surgical replacement on a lvm.conf-style text.
+
+    - Replaces only the FIRST active 'filter = ...' / 'global_filter = ...' line
+      (anchored ^, skips comments). Subsequent duplicates are dropped entirely.
+    - If the existing active value spans multiple lines (e.g. "filter = [\n  ...\n ]"),
+      ALL continuation lines are consumed by tracking bracket depth so no orphan
+      lines like "]" are left behind.
+    - If no active line exists, the directive is appended at end-of-file. Comments
+      (any line whose first non-whitespace char is '#') are preserved verbatim,
+      including lines that happen to mention the word 'filter' inside descriptions.
+    - Adjacent keys whose name only PREFIXES 'filter' (e.g. 'filter_a') are NOT
+      matched, because the regex requires '=' or whitespace immediately after the
+      key name.
+    """
+    lines = text.splitlines(True)  # keep line endings (\n or \r\n)
+    out_lines = []
+    filter_written = False
+    global_written = False
+
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+
+        if _COMMENT_RE.match(line):
+            out_lines.append(line)
+            i += 1
+            continue
+
+        m_filter = _ACTIVE_FILTER_RE.match(line)
+        m_global = _ACTIVE_GLOBAL_FILTER_RE.match(line) if write_global_filter else None
+
+        if m_filter or m_global:
+            # Consume continuation lines until square-bracket depth returns to 0.
+            depth = line.count('[') - line.count(']')
+            j = i + 1
+            while depth > 0 and j < n:
+                depth += lines[j].count('[') - lines[j].count(']')
+                j += 1
+
+            if m_filter:
+                if not filter_written:
+                    out_lines.append("filter = %s\n" % filter_value)
+                    filter_written = True
+                # else: drop duplicate (and its continuation lines)
+            else:
+                if not global_written:
+                    out_lines.append("global_filter = %s\n" % filter_value)
+                    global_written = True
+                # else: drop duplicate
+
+            i = j
+            continue
+
+        out_lines.append(line)
+        i += 1
+
+    if not filter_written:
+        if out_lines and not out_lines[-1].endswith("\n"):
+            out_lines.append("\n")
+        out_lines.append("filter = %s\n" % filter_value)
+    if write_global_filter and not global_written:
+        out_lines.append("global_filter = %s\n" % filter_value)
+
+    return "".join(out_lines)
+
+
 @bash.in_bash
 def config_lvm_filter(files, no_drbd=False, preserve_disks=None):
     # type: (list[str], bool, set[str]) -> object
+    """Configure devices/filter (and devices/global_filter when preserving disks) in
+    the given lvm config files (relative to LVM_CONFIG_PATH).
+
+    Replaces ONLY active 'filter = ...' / 'global_filter = ...' lines. Comments and
+    every other directive are preserved. Appends the directive if the file has none.
+    """
     if not os.path.exists(LVM_CONFIG_PATH):
         raise Exception("can not find lvm config path: %s, config lvm failed" % LVM_CONFIG_PATH)
 
     if preserve_disks is not None and len(preserve_disks) != 0:
-        filter_str = 'filter=['
-        for disk in preserve_disks:
-            filter_str += '"a|^%s$|", ' % disk.replace("/", "\\/")
-        filter_str += '"r\/.*\/"]'
-
-        for f in files:
-            bash.bash_r("sed -i 's/.*\\b%s.*/%s/g' %s/%s" % ("filter", filter_str, LVM_CONFIG_PATH, f))
-            bash.bash_r("sed -i 's/.*\\b%s.*/global_%s/g' %s/%s" % ("global_filter", filter_str, LVM_CONFIG_PATH, f))
-            linux.sync_file(os.path.join(LVM_CONFIG_PATH, f))
-        return
-
-    filter_str = 'filter=["r|\\/dev\\/cdrom|"'
-    vgs = bash.bash_o("vgs --nolocking -t -oname --noheading").splitlines()
-    for vg in vgs:
-        filter_str += ', "r\\/dev\\/mapper\\/%s.*\\/"' % vg.strip()
-    if no_drbd:
-        filter_str += ', "r\\/dev\\/drbd.*\\/"'
-
-    filter_str += ']'
+        filter_value = _build_filter_value(preserve_disks=preserve_disks)
+        write_global_filter = True
+    else:
+        vgs = bash.bash_o("vgs --nolocking -t -oname --noheading").splitlines()
+        filter_value = _build_filter_value(no_drbd=no_drbd, vgs=vgs)
+        write_global_filter = False
 
     for f in files:
-        bash.bash_r("sed -i 's/.*\\b%s.*/%s/g' %s/%s" % ("filter", filter_str, LVM_CONFIG_PATH, f))
-        linux.sync_file(os.path.join(LVM_CONFIG_PATH, f))
+        path = os.path.join(LVM_CONFIG_PATH, f)
+        if not os.path.exists(path):
+            logger.warn("config_lvm_filter: skip %s, file does not exist" % path)
+            continue
+        original = linux.read_file(path) or ""
+        updated = _apply_filter_on_text(original, filter_value, write_global_filter)
+        if updated != original:
+            linux.write_file(path, updated, create_if_not_exist=True)
+        linux.sync_file(path)
 
 
 def modify_sanlock_config(key, value):
@@ -2837,7 +2931,7 @@ def get_vgs_info(tag):
                 logger.warn("resolve dm name failed for mpath device %s: %s" %
                             (bd.multipathPath, linux.get_exception_stacktrace()))
 
-    r, o, e = bash.bash_roe("vgs --nolocking -t -o vg_name,pv_count,pv_name,tags --noheadings")
+    r, o, e = bash.bash_roe("vgs --nolocking --shared --foreign -t -o vg_name,pv_count,pv_name,tags --noheadings")
     if r != 0:
         raise Exception("get vgs info failed, error: %s" % e)
 
