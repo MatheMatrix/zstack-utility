@@ -141,7 +141,11 @@ class PortMirrorPlugin(kvmagent.KvmAgent):
             shell_cmd = shell.ShellCmd("tc qdisc show dev %s |grep 'qdisc prio 1:'" % device_name)
             shell_cmd(False)
             if shell_cmd.return_code != 0:
-                shell.call("tc qdisc add dev %s handle 1: root prio" % device_name)
+                # Use `replace` instead of `add`: newer kernels / libvirt versions
+                # install a default `noqueue` root qdisc on tap/vnic devices, and
+                # `tc qdisc add ... root` against an existing root qdisc fails with
+                # "RTNETLINK answers: File exists" / "NLM_F_REPLACE needed to override".
+                shell.call("tc qdisc replace dev %s handle 1: root prio" % device_name)
             shell_cmd = shell.ShellCmd(" tc filter list dev %s parent 1: |grep '%s'" % (device_name, mirror_device_name))
             shell_cmd(False)
             
