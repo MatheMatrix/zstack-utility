@@ -669,6 +669,13 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                 if diskUuid in cmd.sharedBlockUuids:
                     self.vgs_path_and_wwid[cmd.vgUuid][p] = diskUuid
 
+        for wwid in (cmd.unmanagedHostLunWwids or []):
+            disk = CheckDisk(wwid)
+            p = disk.get_path(raise_exception=False)
+            if p is not None:
+                allDiskPaths.add(p)
+                allDisks.add(disk)
+
         allDiskPaths = allDiskPaths.union(diskPaths)
         allDisks = allDisks.union(disks)
 
@@ -848,6 +855,14 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                     self.vgs_path_and_wwid[cmd.vgUuid][p] = diskUuid
         allDiskPaths.add(disk.get_path())
         allDisks.add(disk)
+
+        for wwid in (cmd.unmanagedHostLunWwids or []):
+            _disk = CheckDisk(wwid)
+            p = _disk.get_path(raise_exception=False)
+            if p is not None:
+                allDiskPaths.add(p)
+                allDisks.add(_disk)
+
         try:
             root_disks = ["%s[0-9]*" % d for d in linux.get_physical_disk()]
             allDiskPaths = allDiskPaths.union(root_disks)
@@ -1679,6 +1694,11 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             if p is not None:
                 allDiskPaths.add(p)
 
+        for wwid in (cmd.unmanagedHostLunWwids or []):
+            p = CheckDisk(wwid).get_path(raise_exception=False)
+            if p is not None:
+                allDiskPaths.add(p)
+
         try:
             root_disks = ["%s[0-9]*" % d for d in linux.get_physical_disk()]
             allDiskPaths = allDiskPaths.union(root_disks)
@@ -1843,6 +1863,11 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         for diskUuid in (cmd.allSharedBlockUuids or []):
             disk = CheckDisk(diskUuid)
             p = disk.get_path(raise_exception=False)
+            if p is not None:
+                allDiskPaths.add(p)
+
+        for wwid in (cmd.unmanagedHostLunWwids or []):
+            p = CheckDisk(wwid).get_path(raise_exception=False)
             if p is not None:
                 allDiskPaths.add(p)
 
