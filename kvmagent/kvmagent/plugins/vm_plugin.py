@@ -2905,7 +2905,7 @@ class Vm(object):
             return False
         return memory_state['last_update'] > 0
 
-    def stop(self, strategy='grace', timeout=5, undefine=True):
+    def stop(self, strategy='grace', timeout=5, undefine=True, tpm_backup_jobs=None):
         def cleanup_addons():
             for chan in self.domain_xmlobject.devices.get_child_node_as_list('channel'):
                 if chan.type_ == 'unix':
@@ -3020,6 +3020,14 @@ class Vm(object):
                     logger.warn('failed to kill vm, timeout after 60 secs')
                     raise kvmagent.KvmError('failed to kill vm, timeout after 60 secs')
             return
+
+        # best-effort backup of TPM state files before virsh undefine deletes them
+        if tpm_backup_jobs:
+            try:
+                vm_host_file.backup_vm_host_files(tpm_backup_jobs)
+            except Exception as e:
+                logger.warn('best-effort TPM state backup before undefine failed for vm[uuid:%s]: %s'
+                            % (self.uuid, str(e)))
 
         # undefine domain only if it is persistent
         if not isPersistent:
@@ -8212,10 +8220,11 @@ class VmPlugin(kvmagent.KvmAgent):
                     logger.info('vm has no operating system. stop it use \'force\' mode')
                     strategy = "force"
 
+            tpm_backup_jobs = getattr(cmd, 'tpmBackupJobs', None)
             if strategy == "cold" or strategy == "force":
-                vm.stop(strategy=strategy)
+                vm.stop(strategy=strategy, tpm_backup_jobs=tpm_backup_jobs)
             else:
-                vm.stop(timeout=cmd.timeout / 2)
+                vm.stop(timeout=cmd.timeout / 2, tpm_backup_jobs=tpm_backup_jobs)
 
             if vmUseOpenvSwitch:
                 ovs.getOvsCtl(with_dpdk=True).destoryNicBackend(vmUuid)
