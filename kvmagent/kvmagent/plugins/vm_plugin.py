@@ -5328,7 +5328,15 @@ class Vm(object):
             if is_external_shared_storage():
                 flag |= libvirt.VIR_MIGRATE_UNSAFE
 
-        if cmd.useNuma or storage_migration_required:
+        tpm_device_exists = False
+        try:
+            tpm_devices = self.domain_xmlobject.devices.get_child_node_as_list('tpm')
+            tpm_device_exists = tpm_devices is not None and len(tpm_devices) > 0
+        except Exception as e:
+            tpm_device_exists = True
+            logger.warn('get vm[uuid:%s] tpm device in xml failed, %s' % (self.uuid, str(e)))
+
+        if cmd.useNuma or storage_migration_required or tpm_device_exists:
             flag |= libvirt.VIR_MIGRATE_PERSIST_DEST
 
         if use_tls and hasattr(libvirt, 'VIR_MIGRATE_TLS'):
