@@ -1355,6 +1355,10 @@ class HostPlugin(kvmagent.KvmAgent):
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
         ipV4Addrs = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if
                                          x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
+        # IPv6 支持：收集非链路本地（fe80::/10）的 IPv6 地址，去掉 zone id（%ifname 后缀）
+        ipV6Addrs = [chunk.address.split('%')[0] for chunk in [x for x in iproute.query_addresses(ip_version=6) if
+                                         not x.address.lower().startswith('fe80') and not x.ifname.endswith('zs')]]
+        allIpAddrs = ipV4Addrs + ipV6Addrs
 
 
         def run_dmidecode(cmd, default=''):
@@ -1400,7 +1404,7 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.qemuImgVersion = qemu_img_version
         rsp.libvirtVersion = self.libvirt_version
         rsp.libvirtPackageVersion = linux.get_libvirt_package_version()
-        rsp.ipAddresses = ipV4Addrs
+        rsp.ipAddresses = allIpAddrs
         rsp.cpuArchitecture = platform.machine()
         rsp.uptime = shell.call('uptime -s').strip()
         rsp.iscsiInitiatorName = linux.get_iscsi_initiator_name()

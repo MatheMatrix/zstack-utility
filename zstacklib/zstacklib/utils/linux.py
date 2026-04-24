@@ -2480,14 +2480,17 @@ def get_free_port_in_range(start_port, end_port):
     raise Exception("no free port found in range[%d, %d]" % (start_port, end_port))
 
 def tcp_port_is_free(port):
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(('', port))
-        sock.close()
-        return True
-    except socket.error:
-        return False
+    # IPv6 支持：优先尝试 AF_INET6（Linux 默认双栈），退回 AF_INET
+    for af, addr in ((socket.AF_INET6, '::'), (socket.AF_INET, '')):
+        try:
+            sock = socket.socket(af, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((addr, port))
+            sock.close()
+            return True
+        except socket.error:
+            continue
+    return False
 
 def find_free_port_with_locking(start_port, end_port):
     keep_lock = False
@@ -2509,24 +2512,33 @@ def parse_port_range(port_range):
 def check_socket_available(host, port, timeout=10):
     start_time = time.time()
     while time.time() - start_time < timeout:
+        # IPv6 支持：使用 getaddrinfo 自动选择 AF_INET 或 AF_INET6
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            result = sock.connect_ex((host, port))
-            sock.close()
-            if result == 0:
-                return True
-        except:
+            for res in socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM):
+                af, socktype, proto, canonname, sockaddr = res
+                try:
+                    sock = socket.socket(af, socktype, proto)
+                    result = sock.connect_ex(sockaddr)
+                    sock.close()
+                    if result == 0:
+                        return True
+                except Exception:
+                    continue
+        except Exception:
             pass
         time.sleep(1)
     return False
 
 def is_port_available(port):
-    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+    # IPv6 支持：优先尝试 AF_INET6，退回 AF_INET
+    for af, addr in ((socket.AF_INET6, '::'), (socket.AF_INET, '')):
         try:
-            s.bind(('', int(port)))
-            return True
+            with contextlib.closing(socket.socket(af, socket.SOCK_STREAM)) as s:
+                s.bind((addr, int(port)))
+                return True
         except:
-            return False
+            continue
+    return False
 
 def get_all_ethernet_device_names():
     return os.listdir('/sys/class/net/')
@@ -3251,7 +3263,9 @@ class RetryException(Exception):
 
 @retry(3, 3)
 def check_port(ip, port):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # IPv6 支持：根据地址类型选择 AF_INET6 或 AF_INET
+    af = socket.AF_INET6 if ':' in ip else socket.AF_INET
+    s = socket.socket(af, socket.SOCK_STREAM)
     # set timeout to avoid socket hang on
     s.settimeout(1)
     try:
