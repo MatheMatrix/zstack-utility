@@ -1,7 +1,7 @@
 from functools import partial, reduce
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.filesystem import FileSystemCommandWrapper, FileSystemInfoFields, MountPointInfoFields
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.lvm import LVInfoFields, LvmCommandWrapper, LvmObjectType, PVInfoFields, VGInfoFields
-from kvmagent.plugins.vm_local_volume_cache.command_wrapper.qemu_img import QemuImgCommandWrapper
+from kvmagent.plugins.volume_cache.command_wrapper.filesystem import FileSystemCommandWrapper, FileSystemInfoFields, MountPointInfoFields
+from kvmagent.plugins.volume_cache.command_wrapper.lvm import LVInfoFields, LvmCommandWrapper, LvmObjectType, PVInfoFields, VGInfoFields
+from kvmagent.plugins.volume_cache.command_wrapper.qemu_img import QemuImgCommandWrapper
 
 
 class LvmObjectInfoMeta(type):
