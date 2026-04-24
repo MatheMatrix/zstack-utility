@@ -1355,9 +1355,15 @@ class HostPlugin(kvmagent.KvmAgent):
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
         ipV4Addrs = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if
                                          x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
-        # IPv6 支持：收集非链路本地（fe80::/10）的 IPv6 地址，去掉 zone id（%ifname 后缀）
+        # IPv6 支持：使用 ipaddress 标准库过滤链路本地地址（RFC 4291 fe80::/10），去掉 zone id
+        def _is_valid_ipv6(addr):
+            try:
+                import ipaddress
+                return not ipaddress.ip_address(addr.split('%')[0]).is_link_local
+            except ValueError:
+                return False
         ipV6Addrs = [chunk.address.split('%')[0] for chunk in [x for x in iproute.query_addresses(ip_version=6) if
-                                         not x.address.lower().startswith('fe80') and not x.ifname.endswith('zs')]]
+                                         _is_valid_ipv6(x.address) and not x.ifname.endswith('zs')]]
         allIpAddrs = ipV4Addrs + ipV6Addrs
 
 

@@ -691,9 +691,15 @@ class CephAgent(plugin.TaskManager):
         rsp.type = ceph.get_ceph_manufacturer()
 
         ip_addresses = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
-        # IPv6 支持：同时收集非链路本地的 IPv6 地址
+        # IPv6 支持：使用 ipaddress 标准库过滤链路本地地址（RFC 4291 fe80::/10）
+        def _is_valid_ipv6(addr):
+            try:
+                import ipaddress
+                return not ipaddress.ip_address(addr.split('%')[0]).is_link_local
+            except ValueError:
+                return False
         ip_addresses += [chunk.address.split('%')[0] for chunk in [x for x in iproute.query_addresses(ip_version=6) if
-                                         not x.address.lower().startswith('fe80') and not x.ifname.endswith('zs')]]
+                                         _is_valid_ipv6(x.address) and not x.ifname.endswith('zs')]]
         rsp.ipAddresses = ip_addresses
 
         return jsonobject.dumps(rsp)
