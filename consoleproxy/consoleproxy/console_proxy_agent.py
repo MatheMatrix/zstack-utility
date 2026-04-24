@@ -17,6 +17,14 @@ import threading
 
 logger = log.get_logger(__name__)
 
+
+def _format_proxy_host_port(hostname, port):
+    """Format host:port for websockify; brackets IPv6 bare addresses."""
+    if hostname and ':' in hostname and not hostname.startswith('['):
+        return "[%s]:%d" % (hostname, port)
+    return "%s:%d" % (hostname, port)
+
+
 class AgentResponse(object):
     def __init__(self, success=True, error=None):
         self.success = success
@@ -398,10 +406,12 @@ class ConsoleProxyAgent(object):
         logger.debug('successfully add new vnc proxy token file %s' % info_str)
 
         ## kill garbage websockify process: same proxyip:proxyport, different cert file
+        _hp = _format_proxy_host_port(cmd.proxyHostname, cmd.proxyPort)
+        _hp_escaped = _hp.replace('[', r'\[').replace(']', r'\]')
         if not cmd.sslCertFile:
-            command = "ps aux | grep '[z]stack.*websockify_init' | grep '%s:%d' | grep 'cert=' | awk '{ print $2 }'" % (cmd.proxyHostname, cmd.proxyPort)
+            command = "ps aux | grep '[z]stack.*websockify_init' | grep '%s' | grep 'cert=' | awk '{ print $2 }'" % _hp_escaped
         else:
-            command = "ps aux | grep '[z]stack.*websockify_init' | grep '%s:%d' | grep -v '%s' | awk '{ print $2 }'" % (cmd.proxyHostname, cmd.proxyPort, cmd.sslCertFile)
+            command = "ps aux | grep '[z]stack.*websockify_init' | grep '%s' | grep -v '%s' | awk '{ print $2 }'" % (_hp_escaped, cmd.sslCertFile)
         ret,out,err = bash_roe(command)
         for pid in out.splitlines():
             try:
@@ -413,7 +423,7 @@ class ConsoleProxyAgent(object):
         alive = False
         ret,out,err = bash_roe("ps aux | grep '[z]stack.*websockify_init'")
         for o in out.splitlines():
-            if o.find("%s:%d" % (cmd.proxyHostname, cmd.proxyPort)) != -1:
+            if o.find(_format_proxy_host_port(cmd.proxyHostname, cmd.proxyPort)) != -1:
                 alive = True
                 break
         if alive:
@@ -429,10 +439,11 @@ class ConsoleProxyAgent(object):
             LOG_FILE = log_file
             PROXY_HOST_NAME = cmd.proxyHostname
             PROXY_PORT = cmd.proxyPort
+            PROXY_HOST_PORT = _format_proxy_host_port(cmd.proxyHostname, cmd.proxyPort)
             TOKEN_FILE_DIR = self.TOKEN_FILE_DIR 
             TIMEOUT = timeout
             TLS_VERSION = "--ssl-version=%s" % cmd.tlsVersion if cmd.tlsVersion else ""
-            start_cmd = '''python -c "from zstacklib.utils import log; import websockify; log.configure_log('{{LOG_FILE}}'); websockify.websocketproxy.websockify_init()" {{PROXY_HOST_NAME}}:{{PROXY_PORT}} -D --target-config={{TOKEN_FILE_DIR}} --idle-timeout={{TIMEOUT}} {{TLS_VERSION}}'''
+            start_cmd = '''python -c "from zstacklib.utils import log; import websockify; log.configure_log('{{LOG_FILE}}'); websockify.websocketproxy.websockify_init()" {{PROXY_HOST_PORT}} -D --target-config={{TOKEN_FILE_DIR}} --idle-timeout={{TIMEOUT}} {{TLS_VERSION}}'''
             if cmd.sslCertFile:
                 start_cmd += ' --cert=%s' % cmd.sslCertFile
             ret,out,err = bash_roe(start_cmd)

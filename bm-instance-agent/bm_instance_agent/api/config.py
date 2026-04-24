@@ -1,8 +1,9 @@
 # Server Specific Configurations
 # See https://pecan.readthedocs.org/en/latest/configuration.html#server-configuration # noqa
+import os
 server = {
     'port': 7090,
-    'host': '0.0.0.0'
+    'host': os.environ.get('BM_AGENT_BIND_IP', '::')
 }
 
 # Pecan Application Configurations
