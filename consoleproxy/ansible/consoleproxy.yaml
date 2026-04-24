@@ -43,7 +43,7 @@
 
     # only for os using init.d not systemd
     - name: copy consoleproxy service file
-      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Debian'
+      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux' or ansible_os_family == 'Debian'
       copy: src="{{file_root}}/zstack-consoleproxy" dest=/etc/init.d/ mode=755
 
     - meta: flush_handlers

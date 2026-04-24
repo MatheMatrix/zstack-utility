@@ -45,35 +45,35 @@
       file: path=/var/cache/virtiofs/juicefs state=directory mode=755
 
     - name: install kvm related packages on RedHat based OS from user defined repo
-      when: ansible_os_family == 'RedHat' and yum_repos != 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and yum_repos != 'false'
       shell: "yum --disablerepo=* --enablerepo={{yum_repos}} --nogpgcheck install -y qemu-kvm bridge-utils wget qemu-img libvirt-python libvirt nfs-utils vconfig libvirt-client net-tools iscsi-initiator-utils lighttpd dnsmasq iproute sshpass rsync"
 
     - name: install kvm related packages on RedHat based OS from online
-      when: ansible_os_family == 'RedHat' and yum_repos == 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and yum_repos == 'false'
       shell: "yum --nogpgcheck install -y qemu-kvm bridge-utils wget qemu-img libvirt-python libvirt nfs-utils vconfig libvirt-client net-tools iscsi-initiator-utils lighttpd dnsmasq iproute sshpass rsync "
 
     - name: copy name space supported iproute for RHEL6
       copy: src="{{iproute_pkg}}" dest={{iproute_local_pkg}}
-      when: ansible_os_family == "RedHat" and ansible_distribution_version < '7'
+      when: (ansible_os_family == "RedHat" or ansible_os_family == 'Alibaba Cloud Linux') and ansible_distribution_version < '7'
 
     - name: Update iproute for RHEL6
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version < '7'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and ansible_distribution_version < '7'
       shell: "rpm -q iproute-2.6.32-130.el6ost.netns.2 || yum install -y {{iproute_local_pkg}}"
 
     - name: copy name space supported iproute for RHEL7
       copy: src="{{iproute_el7_pkg}}" dest={{iproute_el7_local_pkg}}
-      when: ansible_os_family == "RedHat" and ansible_distribution_version == '7'
+      when: (ansible_os_family == "RedHat" or ansible_os_family == 'Alibaba Cloud Linux') and ansible_distribution_version == '7'
 
     - name: Update iproute for RHEL7
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version == '7'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and ansible_distribution_version == '7'
       shell: "rpm -q iproute-4.20.0-1.x86_64 || yum install -y {{iproute_el7_local_pkg}}"
 
     - name: copy updated dnsmasq for RHEL6 and RHEL7
       copy: src="{{dnsmasq_pkg}}" dest={{dnsmasq_local_pkg}}
-      when: ansible_os_family == "RedHat"
+      when: ansible_os_family == "RedHat" or ansible_os_family == 'Alibaba Cloud Linux'
 
     - name: Update dnsmasq for RHEL6 and RHEL7
-      when: ansible_os_family == 'RedHat'
+      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux'
       shell: "rpm -q dnsmasq-2.68-1 || yum install -y {{dnsmasq_local_pkg}}"
 
     - name: install kvm related packages on Debian based OS
@@ -95,40 +95,40 @@
         - rsync
 
     - name: RHEL7 specific packages from user defined repos
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version >= '7' and yum_repos != 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and ansible_distribution_version >= '7' and yum_repos != 'false'
       shell: "rpm -q iptables-services || yum --disablerepo=* --enablerepo={{yum_repos}} --nogpgcheck install -y iptables-services"
 
     - name: RHEL7 specific packages from online
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version >= '7' and yum_repos == 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and ansible_distribution_version >= '7' and yum_repos == 'false'
       shell: "rpm -q iptables-services || yum --nogpgcheck install -y iptables-services "
 
     - name: disable firewalld in RHEL7 and Centos7
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version >= '7'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and ansible_distribution_version >= '7'
       shell: "(which firewalld && service firewalld stop && chkconfig firewalld off) || true"
 
     - name: copy iptables initial rules in RedHat
       copy: src="{{file_root}}/iptables" dest=/etc/sysconfig/iptables
-      when: ansible_os_family == "RedHat" and is_init == 'true'
+      when: (ansible_os_family == "RedHat" or ansible_os_family == 'Alibaba Cloud Linux') and is_init == 'true'
 
     - name: disable NetworkManager in RedHat
       service: name=NetworkManager state=stopped enabled=no
-      when: ansible_os_family == 'RedHat'
+      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux'
       ignore_errors: yes
 
     - name: restart iptables
       service: name=iptables state=restarted enabled=yes
-      when: chroot_env == 'false' and ansible_os_family == 'RedHat' and is_init == 'true'
+      when: chroot_env == 'false' and (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and is_init == 'true'
 
     - name: remove libvirt default bridge
       shell: "(ip addr show dev virbr0 &> /dev/null && virsh net-destroy default > /dev/null && virsh net-undefine default > /dev/null) || true"
 
     - name: disable selinux on RedHat based OS
-      when: ansible_os_family == 'RedHat'
+      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux'
       selinux: state=permissive policy=targeted
 
     - name: copy sysconfig libvirtd conf in RedHat
       copy: src="{{file_root}}/libvirtd" dest=/etc/sysconfig/libvirtd
-      when: ansible_os_family == 'RedHat'
+      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux'
       notify:
         - restart redhat libvirtd
 
@@ -154,11 +154,11 @@
       shell: "rm -f /etc/libvirt/hooks/qemu"
 
     - name: enable libvirt daemon on RedHat based OS
-      when: chroot_env == 'false' and ansible_os_family == 'RedHat'
+      when: chroot_env == 'false' and (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux')
       service: name=libvirtd state=started enabled=yes
 
     - name: enable bridge forward on RHEL
-      when: ansible_os_family == 'RedHat'
+      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux'
       shell: "echo 1 > /proc/sys/net/bridge/bridge-nf-call-iptables ; echo 1 > /proc/sys/net/bridge/bridge-nf-filter-vlan-tagged ; echo 1 > /proc/sys/net/ipv4/conf/default/forwarding"
 
     - name: enable bridge forward on UBUNTU
@@ -192,7 +192,7 @@
 
     # only for os using init.d not systemd
     - name: copy kvm service file
-      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Debian'
+      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux' or ansible_os_family == 'Debian'
       copy: src=files/kvm/zstack-kvmagent dest=/etc/init.d/ mode=755
 
     - meta: flush_handlers
@@ -210,7 +210,7 @@
 
     - name: restart redhat libvirtd
       service: name=libvirtd state=restarted enabled=yes
-      when: chroot_env == 'false' and ansible_os_family == 'RedHat'
+      when: chroot_env == 'false' and (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux')
 
     - name: restart debian libvirtd
       service: name=libvirt-bin state=restarted enabled=yes

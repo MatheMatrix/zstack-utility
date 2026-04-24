@@ -44,7 +44,7 @@ from zstacklib.utils import iproute
 
 logger = log.get_logger(__name__)
 
-RPM_BASED_OS = ['redhat', 'centos', 'alibaba', 'kylin10', 'rocky', 'helix']
+RPM_BASED_OS = ['redhat', 'centos', 'alibaba', 'alinux', 'kylin10', 'rocky', 'helix']
 DEB_BASED_OS = ['uos', 'kylin4.0.2', 'debian', 'ubuntu', 'uniontech']
 ARM_ACPI_SUPPORT_OS = ['kylin10', 'openEuler20.03', 'openEuler22.03']
 SUPPORTED_ARCH = ['x86_64', 'aarch64', 'mips64el', 'loongarch64']
@@ -1775,6 +1775,51 @@ def move_dev_route(src_dev, dest_dev):
     # Restore routes on the destination device
     for r in routes:
         shell.call('ip route add %s' % r)
+
+    # Migrate DNS settings for systems using systemd-resolved (e.g. alinux4).
+    # On these systems DNS servers are bound per-link; after bridging, the
+    # physical interface no longer carries an IP so its DNS config becomes
+    # unreachable.  We read DNS servers from the source device and apply them
+    # to the destination bridge device.
+    _migrate_resolved_dns(src_dev, dest_dev)
+
+
+def _migrate_resolved_dns(src_dev, dest_dev):
+    """Migrate systemd-resolved per-link DNS from *src_dev* to *dest_dev*."""
+    # Only act when systemd-resolved is in use
+    if not os.path.exists('/run/systemd/resolve/stub-resolv.conf'):
+        return
+
+    try:
+        # resolvectl dns <dev> prints: "Link 2 (enp1s0): 223.5.5.5 8.8.8.8"
+        out = shell.call('resolvectl dns %s' % src_dev, exception=False)
+        if not out or ':' not in out:
+            return
+
+        dns_part = out.split(':', 1)[1].strip()
+        if not dns_part:
+            return
+
+        dns_servers = dns_part.split()
+        if not dns_servers:
+            return
+
+        # Check if dest already has DNS configured
+        dest_out = shell.call('resolvectl dns %s' % dest_dev, exception=False)
+        if dest_out and ':' in dest_out:
+            dest_dns = dest_out.split(':', 1)[1].strip()
+            if dest_dns:
+                logger.debug("Destination device %s already has DNS [%s], skip migration" % (dest_dev, dest_dns))
+                return
+
+        # Apply DNS servers to the bridge device
+        shell.call('resolvectl dns %s %s' % (dest_dev, ' '.join(dns_servers)))
+        # Set the bridge as a default-route DNS link so it handles all domains
+        shell.call('resolvectl domain %s "~."' % dest_dev)
+        logger.debug("Migrated DNS servers [%s] from %s to %s" % (' '.join(dns_servers), src_dev, dest_dev))
+    except Exception as e:
+        logger.warning("Failed to migrate resolved DNS from %s to %s: %s" % (src_dev, dest_dev, str(e)))
+
 
 def pretty_xml(xmlstr):
     # dom cannot handle namespace tag like <qemu:commandline>

@@ -1350,6 +1350,8 @@ class HostPlugin(kvmagent.KvmAgent):
             rsp.osRelease = rsp.osRelease.replace('ZStack', 'Sword')
         elif rsp.osDistribution == "helix":
             rsp.osRelease = "release"
+        elif rsp.osDistribution == "alinux":
+            rsp.osRelease = "release"
         # to be compatible with both `2.6.0` and
         # `2.9.0(qemu-kvm-ev-2.9.0-16.el7_4.8.1)`
         qemu_img_version = shell.call(

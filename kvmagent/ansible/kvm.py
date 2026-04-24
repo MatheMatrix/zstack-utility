@@ -44,7 +44,7 @@ disableIp6Tables = 'false'
 bridgeDisableIptables = 'false'
 isBareMetal2Gateway='false'
 releasever = ''
-unsupported_iproute_list = ["nfs4"]
+unsupported_iproute_list = ["nfs4", "alinux4"]
 unittest_flag = 'false'
 isEnableKsm = 'none'
 restart_libvirtd = 'false'
@@ -90,6 +90,10 @@ host_info = get_remote_host_info_obj(host_post_info)
 host_info = upgrade_to_helix(host_info, host_post_info)
 releasever = get_host_releasever(host_info)
 host_post_info.releasever = releasever
+
+# alinux4: also enable zstack-local repo for packages not in remote repos
+if releasever == "alinux4" and zstack_repo != "false" and "zstack-local" not in zstack_repo:
+    zstack_repo = zstack_repo.strip('"') + ",zstack-local"
 
 # get remote host arch
 IS_AARCH64 = host_info.host_arch == 'aarch64'
@@ -350,6 +354,8 @@ def install_kvm_pkg():
             'kylin': 'vconfig open-iscsi python2-pyudev collectd-disk OpenIPMI libselinux-devel nettle tuned qemu-kvm libicu edac-utils lldpd freeipmi tcpdump',
             'uniontech': 'vconfig iscsi-initiator-utils OpenIPMI nettle qemu-kvm python-pyudev collectd-disk',
             'rocky': 'iscsi-initiator-utils OpenIPMI-modalias mcelog MegaCli Arcconf python-pyudev kernel-devel collectd-disk edac-utils',
+            'alinux': 'iscsi-initiator-utils OpenIPMI-modalias mcelog MegaCli Arcconf kernel-devel edac-utils',
+            'alibaba': 'iscsi-initiator-utils kernel-devel',
         }
 
         helix_rhel_rpms = ('iscsi-initiator-utils OpenIPMI-modalias mcelog '
@@ -377,7 +383,9 @@ def install_kvm_pkg():
             'ky10sp3': py3_rpms,
             'ky10sp3.2403': py3_rpms,
             'h2203sp1o': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk edac-utils freeipmi lldpd tcpdump %s' % py3_rpms,
-            'nfs4': 'vconfig iscsi-initiator-utils OpenIPMI nettle libselinux-devel iptables iptables-services qemu-kvm python2-pyudev collectd-disk'
+            'nfs4': 'vconfig iscsi-initiator-utils OpenIPMI nettle libselinux-devel iptables iptables-services qemu-kvm python2-pyudev collectd-disk',
+            'alinux4': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm freeipmi '
+                        'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump %s') % (helix_rhel_rpms, py3_rpms),
         }
 
         edk2_mapping = {
@@ -386,7 +394,8 @@ def install_kvm_pkg():
         }
         
         arch_exclude_mapping = {
-            'loongarch64': 'edac-utils freeipmi lldpd libcbd'
+            'loongarch64': 'edac-utils freeipmi lldpd libcbd',
+            'x86_64_alinux4': 'usbredir-server collectd-virt storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils collectd-disk lldpd edk2.git-ovmf-x64'
         }
 
         arch_release_mapping = {
@@ -453,7 +462,7 @@ def install_kvm_pkg():
             if extra_packages != '':
                 dep_list = dep_list + " " + extra_packages
 
-            exclude_pkgs = arch_exclude_mapping.get(host_info.host_arch, "")
+            exclude_pkgs = arch_exclude_mapping.get(host_info.host_arch + "_" + releasever, arch_exclude_mapping.get(host_info.host_arch, ""))
             if exclude_pkgs:
                 dep_list = ' '.join([pkg for pkg in dep_list.split() if pkg not in exclude_pkgs.split()])
 
@@ -1036,10 +1045,50 @@ def copy_juicefs():
 
 @on_debian_based(host_info.distro, exclude=['Kylin'])
 def set_legacy_iptables_ebtables():
-    """set legacy mode if needed"""
-    command = "update-alternatives --set iptables /usr/sbin/iptables-legacy;" \
-              "update-alternatives --set ebtables /usr/sbin/ebtables-legacy"
-    host_post_info.post_label = "ansible.shell.switch.legacy-version"
+    """set legacy mode if needed; on alinux4 deploy ebtables wrapper for --logical-in compatibility"""
+    if releasever == "alinux4":
+        # alinux4 has no ebtables-legacy; deploy wrapper that translates --logical-in to -i
+        wrapper = (
+            '#!/bin/bash\n'
+            'args=()\n'
+            'for arg in "$@"; do\n'
+            '    case "$arg" in\n'
+            '        --logical-in)  args+=("-i") ;;\n'
+            '        --logical-out) args+=("-o") ;;\n'
+            '        *)             args+=("$arg") ;;\n'
+            '    esac\n'
+            'done\n'
+            'exec /usr/sbin/ebtables-nft "${args[@]}"\n'
+        )
+        command = (
+            "printf '%%s' '%s' > /usr/local/sbin/ebtables-wrapper && "
+            "chmod +x /usr/local/sbin/ebtables-wrapper && "
+            "alternatives --install /usr/sbin/ebtables ebtables /usr/local/sbin/ebtables-wrapper 200 || true"
+        ) % wrapper
+        host_post_info.post_label = "ansible.shell.switch.legacy-version"
+        host_post_info.post_label_param = None
+        run_remote_command(command, host_post_info)
+    else:
+        command = "update-alternatives --set iptables /usr/sbin/iptables-legacy;" \
+                  "update-alternatives --set ebtables /usr/sbin/ebtables-legacy"
+        host_post_info.post_label = "ansible.shell.switch.legacy-version"
+        host_post_info.post_label_param = None
+        run_remote_command(command, host_post_info)
+
+
+def create_ovmf_symlinks():
+    """on alinux4, install edk2.git-ovmf-x64 from ZStack repo (alinux4 native edk2-ovmf lacks UEFI video drivers)"""
+    if releasever != "alinux4":
+        return
+    command = (
+        "rpm -q edk2.git-ovmf-x64 > /dev/null 2>&1 || "
+        "yum install -y --disablerepo='*' --enablerepo='zstack-local,zstack-mn' edk2.git-ovmf-x64 || "
+        "rpm -ivh http://mirrors.rpms.zstack.io/x86_64/h84r/5.5.12/Packages/edk2.git-ovmf-x64-0-20190704.1178.g4ac8ceb5d6.noarch.rpm; "
+        "cd /usr/share/edk2.git/ovmf-x64 && "
+        "ln -sf OVMF_CODE-need-smm.fd OVMF_CODE-with-secboot.fd && "
+        "ln -sf OVMF_VARS-need-smm.fd OVMF_VARS-with-secboot.fd"
+    )
+    host_post_info.post_label = "ansible.shell.install-edk2-git-ovmf"
     host_post_info.post_label_param = None
     run_remote_command(command, host_post_info)
 
@@ -1176,6 +1225,7 @@ do_network_config()
 copy_spice_certificates_to_host()
 install_virtualenv()
 set_legacy_iptables_ebtables()
+create_ovmf_symlinks()
 install_agent_pkg()
 do_auditd_config()
 do_systemd_config()

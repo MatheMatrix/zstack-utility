@@ -174,6 +174,7 @@ class VmConfigPlugin(kvmagent.KvmAgent):
         VmQga.VM_OS_LINUX_OPENEULER: ("20", "22",),
         VmQga.VM_OS_LINUX_ROCKY: ("8", "9",),
         VmQga.VM_OS_LINUX_ALMALINUX: ("9",),
+        VmQga.VM_OS_LINUX_ALINUX: ("3", "4",),
         VmQga.VM_OS_WINDOWS: ("10", "10.0", "2012", "2012r2", "2016", "2019", "2022", "2008r2",)
     }
 
