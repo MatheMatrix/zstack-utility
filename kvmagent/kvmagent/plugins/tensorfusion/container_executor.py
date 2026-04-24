@@ -21,12 +21,21 @@ from kvmagent.plugins.tensorfusion.base_executor import WorkerExecutor
 logger = log.get_logger(__name__)
 
 
+class DockerCommandError(Exception):
+    """Raised when a docker CLI command exits with a non-zero return code."""
+    def __init__(self, rc, cmd_str, stderr):
+        self.rc = rc
+        self.stderr = stderr
+        super(DockerCommandError, self).__init__(
+            'docker command failed (rc=%d): %s\nstderr: %s' % (rc, cmd_str, stderr))
+
+
 class ContainerExecutor(WorkerExecutor):
     """Manages tensor-fusion-worker containers via Docker CLI.
 
     Each Worker runs as a Docker container with nvidia runtime for GPU
     device-level hard isolation. Container naming convention:
-    ``tf-worker-<device_uuid[:12]>``.
+    ``tf-worker-<vm_uuid[:12]>``.
     """
 
     WORKER_IMAGE = 'tf-worker:latest'
@@ -37,7 +46,6 @@ class ContainerExecutor(WorkerExecutor):
 
     # Docker labels used for filtering and identification.
     LABEL_MARKER = 'tf-worker'
-    LABEL_DEVICE_UUID = 'device_uuid'
     LABEL_VM_UUID = 'vm_uuid'
     LABEL_PCI_ADDRESS = 'pci_address'
 
@@ -60,7 +68,7 @@ class ContainerExecutor(WorkerExecutor):
 
         cuda_index = detail['cuda_index']
         device_uuid = request.device_uuid
-        container_name = self._container_name(device_uuid)
+        container_name = self._container_name(request.vm_uuid)
 
         # Verify the worker image is available locally.
         if not self._image_exists():
@@ -101,6 +109,8 @@ class ContainerExecutor(WorkerExecutor):
             protocol=request.protocol or 'shmem',
         )
 
+        logger.info('starting worker container: docker %s' % ' '.join(cmd))
+
         try:
             container_id = self._docker(cmd).strip()
         except Exception as e:
@@ -116,12 +126,22 @@ class ContainerExecutor(WorkerExecutor):
         state = info.get('State', {})
         if not state.get('Running', False):
             exit_code = state.get('ExitCode', '?')
-            # Grab last few lines of logs for diagnostics.
-            logs = self._docker_quiet(['logs', '--tail', '20', container_name])
+            # Grab last few lines of container stdout/stderr.
+            docker_logs = self._docker_quiet(['logs', '--tail', '20', container_name])
+            # Also read the worker log file — the worker writes to file, not stdout.
+            worker_logs = ''
+            try:
+                if os.path.isfile(log_file):
+                    with open(log_file, 'r') as f:
+                        lines = f.readlines()
+                        worker_logs = ''.join(lines[-20:])
+            except Exception:
+                pass
             self._docker_quiet(['rm', '-f', container_name])
+            diag = docker_logs or worker_logs or '<empty>'
             raise Exception(
                 'worker container %s exited immediately (exit_code=%s). logs:\n%s' %
-                (container_name, exit_code, logs or '<empty>'))
+                (container_name, exit_code, diag))
 
         shm_path = self.SHM_PREFIX + 'tf_%s' % device_uuid
 
@@ -190,11 +210,17 @@ class ContainerExecutor(WorkerExecutor):
         try:
             out = cls._docker_class(['inspect', '--format', '{{.State.Running}}', target])
             return out.strip() == 'true'
-        except Exception as e:
-            err_msg = str(e).lower()
-            if 'no such' in err_msg or 'not found' in err_msg:
+        except DockerCommandError as e:
+            # Only treat as dead when Docker explicitly says the object doesn't exist.
+            # Do not rely on rc alone — it varies across Docker versions and error types.
+            stderr_lower = e.stderr.lower()
+            if 'no such object' in stderr_lower or 'no such container' in stderr_lower:
                 return False
-            # Docker daemon issue / timeout — assume alive to avoid false reaping.
+            # Anything else (daemon issue, permission denied, etc.) — assume alive.
+            logger.warning('is_alive: docker inspect failed for %s, assuming alive: %s' % (target, e))
+            return True
+        except Exception as e:
+            # Timeout or unexpected error — assume alive to avoid false reaping.
             logger.warning('is_alive: docker inspect failed for %s, assuming alive: %s' % (target, e))
             return True
 
@@ -278,9 +304,10 @@ class ContainerExecutor(WorkerExecutor):
                 if name in known_names:
                     continue
 
-                # Extract device_uuid from labels for shm cleanup.
-                labels = info.get('Config', {}).get('Labels', {})
-                device_uuid = labels.get(self.LABEL_DEVICE_UUID)
+                # Extract device_uuid from env for shm cleanup.
+                env_list = info.get('Config', {}).get('Env', [])
+                env = {e.split('=', 1)[0]: e.split('=', 1)[1] for e in env_list if '=' in e}
+                device_uuid = env.get('TF_DEVICE_UUID')
 
                 self._docker_quiet(['rm', '-f', cid])
 
@@ -323,8 +350,7 @@ class ContainerExecutor(WorkerExecutor):
         stderr_str = stderr.decode('utf-8', 'ignore').strip() if stderr else ''
 
         if proc.returncode != 0:
-            raise Exception('docker command failed (rc=%d): %s\nstderr: %s' %
-                            (proc.returncode, ' '.join(cmd), stderr_str))
+            raise DockerCommandError(proc.returncode, ' '.join(cmd), stderr_str)
         return stdout_str
 
     def _docker_quiet(self, args, timeout=None):
@@ -349,8 +375,8 @@ class ContainerExecutor(WorkerExecutor):
             proc.wait()
             raise
         if proc.returncode != 0:
-            raise Exception('docker command failed (rc=%d): %s' %
-                            (proc.returncode, ' '.join(cmd)))
+            stderr_str = stderr.decode('utf-8', 'ignore').strip() if stderr else ''
+            raise DockerCommandError(proc.returncode, ' '.join(cmd), stderr_str)
         return stdout.decode('utf-8', 'ignore').strip() if stdout else ''
 
     # ------------------------------------------------------------------
@@ -358,9 +384,9 @@ class ContainerExecutor(WorkerExecutor):
     # ------------------------------------------------------------------
 
     @classmethod
-    def _container_name(cls, device_uuid):
-        """Generate container name from device UUID."""
-        return '%s%s' % (cls.CONTAINER_PREFIX, device_uuid[:12])
+    def _container_name(cls, vm_uuid):
+        """Generate container name from VM UUID."""
+        return '%s%s' % (cls.CONTAINER_PREFIX, vm_uuid[:12])
 
     def _inspect_container(self, name_or_id):
         """Run docker inspect and return the parsed JSON dict, or None on error."""
@@ -409,7 +435,6 @@ class ContainerExecutor(WorkerExecutor):
             '--name=%s' % container_name,
             # Labels for identification and filtering.
             '--label', '%s=true' % self.LABEL_MARKER,
-            '--label', '%s=%s' % (self.LABEL_DEVICE_UUID, device_uuid),
             '--label', '%s=%s' % (self.LABEL_VM_UUID, vm_uuid),
             '--label', '%s=%s' % (self.LABEL_PCI_ADDRESS, pci_address),
             # GPU environment: container sees only 1 GPU, always index 0.
@@ -466,7 +491,7 @@ class ContainerExecutor(WorkerExecutor):
                 key, value = entry.split('=', 1)
                 env[key] = value
 
-        device_uuid = labels.get(self.LABEL_DEVICE_UUID) or env.get('TF_DEVICE_UUID')
+        device_uuid = env.get('TF_DEVICE_UUID')
         vm_uuid = labels.get(self.LABEL_VM_UUID) or env.get('VM_UUID')
 
         if not device_uuid or not vm_uuid:

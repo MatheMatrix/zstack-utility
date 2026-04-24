@@ -141,6 +141,18 @@ class VGPUMetrics(object):
         self.memory_utilization = memory_utilization
 
 
+class DGpuWorkerMetrics(object):
+    """dGPU (TensorFusion) per-worker metrics for Prometheus collection."""
+
+    def __init__(self, device_uuid, vm_uuid, pci_address,
+                 utilization=None, memory_utilization=None):
+        self.device_uuid = device_uuid
+        self.vm_uuid = vm_uuid
+        self.pci_address = pci_address
+        self.utilization = utilization
+        self.memory_utilization = memory_utilization
+
+
 # =============================================================================
 # Abstract Base Class (Python 2/3 Compatible)
 # =============================================================================

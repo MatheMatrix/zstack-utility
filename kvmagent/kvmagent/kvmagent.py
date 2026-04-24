@@ -58,6 +58,7 @@ def register_prometheus_collector(collector):
     logger.debug('success registered %s' % metric_collectors)
 
 _rest_service = None
+_tf_service = None
 _qemu_path = None
 host_arch = linux.HOST_ARCH
 
@@ -69,6 +70,13 @@ def new_rest_service(config={}):
 
 def get_http_server():
     return _rest_service.http_server
+
+def set_tf_service(service):
+    global _tf_service
+    _tf_service = service
+
+def get_tf_service():
+    return _tf_service
 
 def get_host_yum_release():
     return subprocess.getoutput("rpm -q zstack-release 2>/dev/null | awk -F'-' '{print $3}'").strip()

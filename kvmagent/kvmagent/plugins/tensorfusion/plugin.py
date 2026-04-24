@@ -5,6 +5,7 @@ TensorFusion KVM Agent Plugin - HTTP API for GPU virtualization worker managemen
 '''
 
 import threading
+import time
 
 from kvmagent import kvmagent
 from zstacklib.utils import http
@@ -137,6 +138,15 @@ class CleanupRsp(kvmagent.AgentResponse):
 class TensorFusionPlugin(kvmagent.KvmAgent):
     """TensorFusion GPU virtualization plugin for KVM Agent."""
 
+    _instance = None
+
+    @classmethod
+    def get_service(cls):
+        """Get the TensorFusionService instance for metrics collection."""
+        if cls._instance:
+            return cls._instance._service
+        return None
+
     # HTTP endpoint paths
     CREATE_WORKER = '/tensorfusion/worker/create'
     DESTROY_WORKER = '/tensorfusion/worker/destroy'
@@ -150,12 +160,18 @@ class TensorFusionPlugin(kvmagent.KvmAgent):
     CHECK_HEALTH = '/tensorfusion/health/check'
     CLEANUP = '/tensorfusion/health/cleanup'
 
+    # Seconds to suppress duplicate cleanup after one completes for the same VM.
+    # VM stop produces Shutdown → Stopped → Undefined in sequence; without debounce
+    # a later event can race with MN's next create_worker and kill the new container.
+    CLEANUP_DEBOUNCE_SECS = 10
+
     def __init__(self):
         super(TensorFusionPlugin, self).__init__()
         self.config = None
         self._service = None
         self._cleanup_lock = threading.Lock()
         self._cleanup_threads = {}
+        self._cleanup_done_ts = {}  # vm_uuid → monotonic timestamp of last successful cleanup
 
     def configure(self, config):
         self.config = config
@@ -178,12 +194,16 @@ class TensorFusionPlugin(kvmagent.KvmAgent):
 
         self._service = TensorFusionService(event_notifier=self._make_event_notifier())
         self._service.initialize()
+        TensorFusionPlugin._instance = self
+        kvmagent.set_tf_service(self._service)
 
         self._register_vm_lifecycle_hook()
 
         logger.info('TensorFusion plugin started')
 
     def stop(self):
+        kvmagent.set_tf_service(None)
+        TensorFusionPlugin._instance = None
         if self._service is not None:
             self._service.stop()
 
@@ -267,6 +287,16 @@ class TensorFusionPlugin(kvmagent.KvmAgent):
                     vm_uuid, event_str))
                 return
 
+            # Debounce: if a cleanup recently completed for this VM, skip.
+            # This prevents Stopped/Undefined events (arriving seconds after Shutdown)
+            # from racing with a new create_worker that MN issues after the first cleanup.
+            last_done = self._cleanup_done_ts.get(vm_uuid, 0)
+            if (time.monotonic() - last_done) < self.CLEANUP_DEBOUNCE_SECS:
+                logger.debug('TensorFusion: cleanup for VM %s completed %.1fs ago (debounce=%ds), '
+                             'ignore lifecycle event %s' % (
+                    vm_uuid, time.monotonic() - last_done, self.CLEANUP_DEBOUNCE_SECS, event_str))
+                return
+
             thread = threading.Thread(
                 target=self._cleanup_workers_by_vm_async,
                 args=(vm_uuid, event_str),
@@ -278,8 +308,10 @@ class TensorFusionPlugin(kvmagent.KvmAgent):
         thread.start()
 
     def _cleanup_workers_by_vm_async(self, vm_uuid, event_str):
+        cleanup_succeeded = False
         try:
             count = self._service.destroy_workers_by_vm(vm_uuid)
+            cleanup_succeeded = True
             if count > 0:
                 logger.info('TensorFusion: cleaned up %d workers for VM %s after lifecycle event %s' % (
                     count, vm_uuid, event_str))
@@ -289,6 +321,8 @@ class TensorFusionPlugin(kvmagent.KvmAgent):
                 vm_uuid, event_str, traceback.format_exc()))
         finally:
             with self._cleanup_lock:
+                if cleanup_succeeded:
+                    self._cleanup_done_ts[vm_uuid] = time.monotonic()
                 thread = self._cleanup_threads.get(vm_uuid)
                 if thread is threading.current_thread():
                     self._cleanup_threads.pop(vm_uuid, None)
