@@ -303,8 +303,16 @@ class HttpServer(object):
 
         cherrypy.engine.autoreload.unsubscribe()
         site_config = {}
-        # IPv6 双栈监听：'::' 在 Linux 默认(IPV6_V6ONLY=0)下同时监听 IPv4 和 IPv6
-        site_config['server.socket_host'] = '::'
+        # IPv6 双栈监听：'::' 在 Linux(IPV6_V6ONLY=0)下同时接受 IPv4/IPv6 连接
+        # 若系统禁用 IPv6（disable_ipv6=1），自动回退到 0.0.0.0
+        try:
+            import socket as _socket
+            _s = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
+            _s.close()
+            bind_ip = '::'
+        except OSError:
+            bind_ip = '0.0.0.0'
+        site_config['server.socket_host'] = bind_ip
         site_config['server.socket_port'] = self.port
         site_config['server.thread_pool'] = int(os.getenv('POOLSIZE', '10'))
 
