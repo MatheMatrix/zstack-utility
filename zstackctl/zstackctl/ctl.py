@@ -1647,6 +1647,12 @@ def find_process_by_cmdline(keyword):
 
     return None
 
+
+def _bracket_ipv6(ip):
+    """IPv6 地址在 URL / SSH 命令中需要用方括号包裹，IPv4 原样返回。"""
+    return '[%s]' % ip if ':' in str(ip) else ip
+
+
 class Zsha2Utils(object):
     def __init__(self):
         r, out, e = shell_return_stdout_stderr("sudo -i /usr/local/bin/zsha2 status -json")
@@ -1674,9 +1680,11 @@ class Zsha2Utils(object):
         peer_port = self.config.get('peerport', 22)
         if peer_port == '':
             peer_port = 22
+        # IPv6 支持：IPv6 地址在 SSH 目标中需要用方括号包裹
+        peer_host = _bracket_ipv6(self.config['peerip'])
         scmd = ShellCmd(
             "sudo -u %s ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s -p %s %s \"%s\"" % (
-                self.ssh_exec_user, self.config['peerip'], peer_port, "sudo" if useSudo else "", script))
+                self.ssh_exec_user, peer_host, peer_port, "sudo" if useSudo else "", script))
         scmd(False)
         if scmd.return_code != 0:
             scmd.raise_error()
@@ -1684,8 +1692,10 @@ class Zsha2Utils(object):
 
 
     def scp_to_peer(self, src_path, dst_path):
+        # IPv6 支持：IPv6 地址在 SCP 目标中需要用方括号包裹
+        peer_host = _bracket_ipv6(self.config['peerip'])
         shell("sudo -u %s scp -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no %s %s:%s" % (
-            self.ssh_exec_user, src_path, self.config['peerip'], "/tmp/dst_path"))
+            self.ssh_exec_user, src_path, peer_host, "/tmp/dst_path"))
         self.execute_on_peer("mv %s %s" % ("/tmp/dst_path", dst_path), True)
 
 
@@ -11832,7 +11842,10 @@ class IamService(ExtraService):
 
         with open(template_path, "r") as f:
             content = f.read()
-        content = content.replace("{{MN1_IP}}", self.zsha2_utils.config['nodeip']).replace("{{MN2_IP}}", self.zsha2_utils.config['peerip']).replace("{{LISTEN_PORT}}", str(self.default_nginx_port))
+        # IPv6 支持：nginx upstream server 指令要求 IPv6 地址用方括号包裹
+        mn1_ip = _bracket_ipv6(self.zsha2_utils.config['nodeip'])
+        mn2_ip = _bracket_ipv6(self.zsha2_utils.config['peerip'])
+        content = content.replace("{{MN1_IP}}", mn1_ip).replace("{{MN2_IP}}", mn2_ip).replace("{{LISTEN_PORT}}", str(self.default_nginx_port))
 
         with open(conf_path, "w") as f:
             f.write(content)
@@ -11855,9 +11868,10 @@ class IamService(ExtraService):
 
     def post_start_log(self):
         if self.zsha2_utils:
-            info("IAM service has been started in HA mode. Access it at: http://%s:%s" % (self.zsha2_utils.config['dbvip'], self.default_nginx_port))
+            # IPv6 支持：URL 中 IPv6 地址需要方括号包裹
+            info("IAM service has been started in HA mode. Access it at: http://%s:%s" % (_bracket_ipv6(self.zsha2_utils.config['dbvip']), self.default_nginx_port))
         else:
-            info("IAM service has been started. Access it at: http://%s:%s" % (get_default_ip(), self.default_port))
+            info("IAM service has been started. Access it at: http://%s:%s" % (_bracket_ipv6(get_default_ip()), self.default_port))
 
     def _wait_for_keycloak(self, url, timeout=600):
         info_and_debug("Waiting for %s to become available at: %s" % (self.service_name(), url))
