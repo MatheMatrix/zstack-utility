@@ -15,7 +15,7 @@
     - include: zstacklib.yaml
 
     - name: install appliance vm related packages on RedHat based OS
-      when: ansible_os_family == 'RedHat' and yum_repos == 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and yum_repos == 'false'
       yum: name="{{item}}"
       with_items:
         - iputils
@@ -23,7 +23,7 @@
         - ethtool
 
     - name: install appliance vm related packages on RedHat based OS from user defined repo
-      when: ansible_os_family == 'RedHat' and yum_repos != 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and yum_repos != 'false'
       shell: "yum --disablerepo=* --enablerepo={{yum_repos}} --nogpgcheck install -y iputils tcpdump ethtool"
 
     - name: install appliance vm related packages on Debian based OS
@@ -53,7 +53,7 @@
 
     - name: copy iptables initial rules in RedHat
       copy: src="{{file_root}}/iptables" dest=/etc/sysconfig/iptables
-      when: ansible_os_family == "RedHat"
+      when: ansible_os_family == "RedHat" or ansible_os_family == 'Alibaba Cloud Linux'
       notify:
         - restart iptables
 
@@ -69,11 +69,11 @@
 
     - name: workaround RHEL7 iptables service issue
       shell: 'mkdir -p /var/lock/subsys/'
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version >= '7'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and ansible_distribution_version >= '7'
 
     - name: remove RHEL7 firewalld
       yum: name=firewalld state=absent
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version >= '7'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and ansible_distribution_version >= '7'
 
     - name: copy bootstrap script
       copy: src="{{file_root}}/zstack-appliancevm-bootstrap.py" dest=/sbin/zstack-appliancevm-bootstrap.py mode=0777
@@ -99,7 +99,7 @@
 
     - name: enable appliancevm service for RedHat on chroot
       service: name=zstack-appliancevm enabled=yes state=stopped
-      when: chroot_env != 'false' and ansible_os_family == 'RedHat'
+      when: chroot_env != 'false' and (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux')
 
     - name: enable appliancevm service for Debian -1
       command: sed -i '/zstack-appliancevm start/d' /etc/rc.local 
@@ -112,7 +112,7 @@
   handlers:
     - name: restart iptables
       service: name=iptables state=restarted enabled=yes
-      when: chroot_env == 'false' and ansible_os_family == 'RedHat'
+      when: chroot_env == 'false' and (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux')
 
     - name: restore iptables
       command: /etc/network/if-pre-up.d/iptables.up

@@ -177,7 +177,22 @@ if [ $? -ne 0 ]; then
     sed -i "/\[mysqld\]/a tmpdir=$mysql_tmp_path" $mysql_conf
 fi
 
-if [[ $DB_VERSION == *"GreatSQL"* ]]; then    
+# Alinux4: disable foreign_key_checks to workaround SNS initialization bug
+# CentOS 8 has foreign_key_checks=0 by default, Alinux4 enables it by default,
+# causing SNS HTTPTopicAndEndPointCreator to fail on persist() due to missing platform record.
+# Note: foreign_key_checks is a session-level variable, cannot be set in my.cnf directly.
+# Use init-file to execute SET GLOBAL at MariaDB startup.
+if grep -qi 'Alibaba Cloud Linux' /etc/os-release 2>/dev/null; then
+    grep 'foreign_key_checks' $mysql_conf >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "foreign_key_checks=0 via init-file (Alinux4 workaround)"
+        echo "SET GLOBAL foreign_key_checks=0;" > /var/lib/mysql/init_fk.sql
+        chown mysql:mysql /var/lib/mysql/init_fk.sql
+        sed -i '/\[mysqld\]/a init-file=/var/lib/mysql/init_fk.sql\' $mysql_conf
+    fi
+fi
+
+if [[ $DB_VERSION == *"GreatSQL"* ]]; then
     grep 'explicit_defaults_for_timestamp=' $mysql_conf >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo "explicit_defaults_for_timestamp=OFF"
@@ -250,7 +265,83 @@ zstone_db_dump_skip_tables = ""
 configure_yum_repo_script = '''
 if [ -f /etc/redhat-release ]; then
     os_release=`cat /etc/redhat-release`
-    if [[ $os_release =~ ' 7' ]]; then
+    if [[ $os_release =~ 'Alibaba Cloud Linux' ]]; then
+        [ -d /etc/yum.repos.d/ ] && [ ! -f /etc/yum.repos.d/zstack-aliyun-yum.repo ] && cat << 'EOF' > /etc/yum.repos.d/zstack-aliyun-yum.repo
+#aliyun alinux4 base
+[alibase]
+name=ALinux-4 - OS - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/os/$basearch/
+gpgcheck=0
+enabled=0
+module_hotfixes=true
+
+#released updates
+[aliupdates]
+name=ALinux-4 - Updates - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/updates/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+[aliextras]
+name=ALinux-4 - Plus - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/plus/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+[aliepel]
+name=ALinux-4 - Devel - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/devel/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+[zstack-rpm-mirror]
+name=ZStack RPM Mirror
+baseurl=http://mirrors.rpms.zstack.io/$basearch/h84r/5.5.6/
+enabled=0
+gpgcheck=0
+includepkgs=grafana zs-forecast-capacity
+EOF
+        [ -d /etc/yum.repos.d/ ] && [ ! -f /etc/yum.repos.d/zstack-163-yum.repo ] && cat << 'EOF' > /etc/yum.repos.d/zstack-163-yum.repo
+#163 alinux4 (fallback to aliyun)
+[163base]
+name=ALinux-4 - OS - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/os/$basearch/
+gpgcheck=0
+enabled=0
+module_hotfixes=true
+
+[163updates]
+name=ALinux-4 - Updates - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/updates/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+[163extras]
+name=ALinux-4 - Plus - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/plus/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+[ustcepel]
+name=ALinux-4 - Devel - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/devel/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+[zstack-rpm-mirror]
+name=ZStack RPM Mirror
+baseurl=http://mirrors.rpms.zstack.io/$basearch/h84r/5.5.6/
+enabled=0
+gpgcheck=0
+includepkgs=grafana zs-forecast-capacity
+EOF
+    elif [[ $os_release =~ ' 7' ]]; then
         [ -d /etc/yum.repos.d/ ] &&  [ ! -f /etc/yum.repos.d/epel.repo ] && cat << 'EOF' > /etc/yum.repos.d/epel.repo
 [epel]
 name=Extra Packages for Enterprise Linux $releasever - $basearce - mirrors.aliyun.com
@@ -3606,13 +3697,23 @@ class InstallDbCmd(Command):
     - name: pre-install script
       script: $pre_install_script
 
+    - name: install MySQL for Alibaba Cloud Linux 4 from local
+      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4 and yum_repo != 'false'
+      shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y  mariadb mariadb-server iptables-services
+      register: install_result
+
+    - name: install MySQL for Alibaba Cloud Linux 4
+      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4 and yum_repo == 'false'
+      shell: yum clean metadata; yum --nogpgcheck install -y  mariadb mariadb-server iptables-services
+      register: install_result
+
     - name: install MySQL for RedHat 6 through user defined repos
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and yum_repo != 'false'
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and ansible_distribution != 'Alibaba' and yum_repo != 'false'
       shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y mysql mysql-server
       register: install_result
 
     - name: install MySQL for RedHat 6 through system defined repos
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and yum_repo == 'false'
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and ansible_distribution != 'Alibaba' and yum_repo == 'false'
       shell: "yum clean metadata; yum --nogpgcheck install -y mysql mysql-server "
       register: install_result
 
@@ -3653,20 +3754,20 @@ class InstallDbCmd(Command):
       shell: apt-get -y install --allow-unauthenticated mariadb-server mariadb-client netfilter-persistent
       register: install_result
 
-    - name: open 3306 port on RedHat 7/Alibaba/Kyliin10/openEuler/UnionTech kongzi/Nfs
-      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba' or (ansible_os_family == 'Kylin' and ansible_distribution_version == '10')
+    - name: open 3306 port on RedHat 7/Alibaba/Alibaba Cloud Linux/Kyliin10/openEuler/UnionTech kongzi/Nfs
+      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba' or (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) or (ansible_os_family == 'Kylin' and ansible_distribution_version == '10')
             or ansible_os_family == 'Nfs' or (ansible_os_family == 'UnionTech' and ansible_distribution_release == 'kongzi')
       shell: iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport 3306 -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport 3306 -j ACCEPT && service iptables save)
 
     - name: open 3306 port
-      when: ansible_os_family != 'RedHat' and ansible_os_family != 'Alibaba' and (ansible_os_family == 'Kylin' and ansible_distribution_version == '4.0.2')
+      when: ansible_os_family != 'RedHat' and ansible_os_family != 'Alibaba' and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and (ansible_os_family == 'Kylin' and ansible_distribution_version == '4.0.2')
       shell: iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport 3306 -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport 3306 -j ACCEPT && /etc/init.d/netfilter-persistent save)
 
     - name: run post-install script
       script: $post_install_script
 
     - name: enable MySQL daemon on RedHat 6
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and ansible_distribution != 'Alibaba'
       service: name=mysqld state=restarted enabled=yes
 
     - name: enable MySQL daemon on RedHat 7/Helix 8/ Kyliin10/openEuler/UnionTech kongzi/Nfs
@@ -3678,6 +3779,10 @@ class InstallDbCmd(Command):
 
     - name: enable MySQL daemon on AliOS 7
       when: ansible_os_family == 'Alibaba' and ansible_distribution_major_version >= 7
+      service: name=mariadb state=restarted enabled=yes
+
+    - name: enable MySQL daemon on Alibaba Cloud Linux 4
+      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4
       service: name=mariadb state=restarted enabled=yes
 
     - name: enable MySQL on Ubuntu
@@ -3698,7 +3803,7 @@ class InstallDbCmd(Command):
       shell: $grant_access_cmd
 
     - name: rollback MySQL installation on RedHat 6
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and change_root_result.rc != 0 and install_result.changed == True
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and ansible_distribution != 'Alibaba' and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mysql mysql-server
 
     - name: rollback MySQL installation on RedHat 7/ Helix 8
@@ -3713,6 +3818,10 @@ class InstallDbCmd(Command):
 
     - name: rollback MySQL installation on AliOS 7
       when: ansible_os_family == 'Alibaba' and ansible_distribution_major_version >= 7 and change_root_result.rc != 0 and install_result.changed == True
+      shell: rpm -ev mariadb mariadb-server
+
+    - name: rollback MySQL installation on Alibaba Cloud Linux 4
+      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4 and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mariadb mariadb-server
 
     - name: rollback MySql installation on Ubuntu
@@ -3820,6 +3929,7 @@ class InstallDbCmd(Command):
             grant_access_cmd = '''/usr/bin/mysql -u root -e ''' \
                                '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{}' IDENTIFIED BY '' WITH GRANT OPTION; '''\
+                               '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'%%' IDENTIFIED BY '' WITH GRANT OPTION; '''\
                                '''{} FLUSH PRIVILEGES;"'''.format(args.host, more_cmd)
             if args.choose_database == 'GreatDB':
                 more_cmd = ' '
@@ -3848,6 +3958,7 @@ class InstallDbCmd(Command):
             grant_access_cmd = '''/usr/bin/mysql -u root -p{root_pass} -e '''\
                                '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
+                               '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'%%' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''{more_cmd} FLUSH PRIVILEGES;"'''.format(root_pass=args.root_password, host=args.host, more_cmd=more_cmd)
             if args.choose_database == 'GreatDB':
                 more_cmd = ' '

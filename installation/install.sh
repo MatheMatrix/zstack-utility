@@ -35,7 +35,7 @@ export TERM=xterm
 
 OS=''
 IS_UBUNTU='n'
-REDHAT_OS="CENTOS6 CENTOS7 RHEL7 HELIX7 HELIX8 ALIOS7 ISOFT4 KYLIN10 EULER20 UOS1020A NFS4 ROCKY8 OE2203 H2203SP1O UOS20R OE2403"
+REDHAT_OS="CENTOS6 CENTOS7 RHEL7 HELIX7 HELIX8 ALIOS7 ALINUX4 ISOFT4 KYLIN10 EULER20 UOS1020A NFS4 ROCKY8 OE2203 H2203SP1O UOS20R OE2403"
 DEBIAN_OS="UBUNTU14.04 UBUNTU16.04 UBUNTU KYLIN4.0.2 DEBIAN9 UOS20"
 KYLIN_V10_OS="ky10sp1 ky10sp2 ky10sp3 ky10sp3.2403"
 XINCHUANG_OS="$KYLIN10_OS uos20"
@@ -122,9 +122,9 @@ ZSTACK_YUM_REPOS=''
 ZSTACK_LOCAL_YUM_REPOS='zstack-local'
 ZSTACK_MN_REPOS='zstack-mn,qemu-kvm-ev-mn'
 ZSTACK_MN_UPGRADE_REPOS='zstack-mn'
-MIRROR_163_YUM_REPOS='163base,163updates,163extras,ustcepel,163-qemu-ev'
+MIRROR_163_YUM_REPOS='163base,163updates,163extras,ustcepel,163-qemu-ev,zstack-rpm-mirror'
 MIRROR_163_YUM_WEBSITE='mirrors.163.com'
-MIRROR_ALI_YUM_REPOS='alibase,aliupdates,aliextras,aliepel,ali-qemu-ev'
+MIRROR_ALI_YUM_REPOS='alibase,aliupdates,aliextras,aliepel,ali-qemu-ev,zstack-rpm-mirror'
 MIRROR_ALI_YUM_WEBSITE='mirrors.aliyun.com'
 #used for zstack.properties Ansible.var.zstack_repo
 ZSTACK_PROPERTIES_REPO=''
@@ -898,12 +898,13 @@ check_system(){
     echo_title "Check System"
     echo ""
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    cat /etc/*-release |egrep -i -h "centos |Helix|Red Hat Enterprise|Alibaba|NeoKylin|Kylin Linux Advanced Server release V10|openEuler|UnionTech OS release 20.06r|UnionTech OS Server release 20 \(kongzi\)|NFSChina Server release 4.0.220727 \(RTM3\)|Rocky Linux" >>$ZSTACK_INSTALL_LOG 2>&1
+    cat /etc/*-release |egrep -i -h "centos |Helix|Red Hat Enterprise|Alibaba|Alibaba Cloud Linux|NeoKylin|Kylin Linux Advanced Server release V10|openEuler|UnionTech OS release 20.06r|UnionTech OS Server release 20 \(kongzi\)|NFSChina Server release 4.0.220727 \(RTM3\)|Rocky Linux" >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -eq 0 ]; then
         grep -qi 'CentOS release 6' /etc/system-release && OS="CENTOS6"
         grep -qi 'CentOS Linux release 7' /etc/system-release && OS="CENTOS7"
         grep -qi 'Red Hat Enterprise Linux Server release 7' /etc/system-release && OS="RHEL7"
         grep -qi 'Alibaba Group Enterprise Linux' /etc/system-release && OS="ALIOS7"
+        grep -qi 'Alibaba Cloud Linux' /etc/os-release && OS="ALINUX4"
         grep -qi 'iSoft Linux release 4' /etc/system-release && OS="ISOFT4"
         grep -qi 'NeoKylin Linux' /etc/system-release && OS="RHEL7"
         grep -qi 'Kylin Linux Advanced Server release V10' /etc/system-release && OS="KYLIN10"
@@ -1695,9 +1696,12 @@ is_install_general_libs_rh(){
 
     [ x"$ZSTACK_OFFLINE_INSTALL" = x'y' ] && missing_list=$deps_list
     if [ ! -z $ZSTACK_YUM_REPOS ]; then
-        yum --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS clean metadata >/dev/null 2>&1
-        echo yum install --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y general libs... >>$ZSTACK_INSTALL_LOG
-        yum install --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y $always_update_list $missing_list >>$ZSTACK_INSTALL_LOG 2>&1
+        # Enable zstack-rpm-mirror if repo config exists (provides grafana/zs-forecast-capacity for alinux4)
+        EXTRA_REPOS=""
+        grep -ql 'zstack-rpm-mirror' /etc/yum.repos.d/*.repo 2>/dev/null && EXTRA_REPOS="--enablerepo=zstack-rpm-mirror"
+        yum --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS $EXTRA_REPOS clean metadata >/dev/null 2>&1
+        echo yum install --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS $EXTRA_REPOS -y general libs... >>$ZSTACK_INSTALL_LOG
+        yum install --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS $EXTRA_REPOS -y $always_update_list $missing_list >>$ZSTACK_INSTALL_LOG 2>&1
     else
         yum clean metadata >/dev/null 2>&1
         echo "yum install -y python3-libselinux libselinux-python java ..." >>$ZSTACK_INSTALL_LOG
@@ -2488,6 +2492,8 @@ install_db(){
     /bin/rm -rf $ssh_tmp_dir
     mkdir -p $ssh_tmp_dir
     show_spinner cs_gen_sshkey $ssh_tmp_dir
+    #ensure sshd is running before ansible connects via ssh (alinux4 may not have sshd started at firstboot)
+    systemctl is-active sshd >/dev/null 2>&1 || systemctl start sshd >>$ZSTACK_INSTALL_LOG 2>&1
     #install mysql db
     show_spinner cs_install_mysql $ssh_tmp_dir
     #deploy initial database
@@ -3212,9 +3218,14 @@ cs_deploy_ui_db(){
 sz_start_zstack(){
     echo_subtitle "Start ${PRODUCT_NAME} management node (takes a couple of minutes)"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    # Temporarily disable foreign_key_checks for MariaDB 10.6+ to workaround SNS initialization bug
+    mysql -u root -p${MYSQL_NEW_ROOT_PASSWORD} -e "SET GLOBAL foreign_key_checks=0;" >>$ZSTACK_INSTALL_LOG 2>&1
     zstack-ctl stop_node -f >>$ZSTACK_INSTALL_LOG 2>&1
     zstack-ctl start_node --timeout=$ZSTACK_START_TIMEOUT >>$ZSTACK_INSTALL_LOG 2>&1
-    [ $? -ne 0 ] && fail "failed to start ${PRODUCT_NAME,,}"
+    start_result=$?
+    # Re-enable foreign_key_checks after management node starts
+    mysql -u root -p${MYSQL_NEW_ROOT_PASSWORD} -e "SET GLOBAL foreign_key_checks=1;" >>$ZSTACK_INSTALL_LOG 2>&1
+    [ $start_result -ne 0 ] && fail "failed to start ${PRODUCT_NAME,,}"
     i=1
     while [ $i -lt 120 ]; do
         i=`expr $i + 1`
@@ -3432,7 +3443,84 @@ create_yum_repo(){
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     if [ -f /etc/redhat-release ]; then
         os_release=`cat /etc/redhat-release`
-        if [[ $os_release =~ ' 8' ]]; then
+        if [[ $os_release =~ 'Alibaba Cloud Linux' ]]; then
+            cat << 'EOF' > $zstack_ali_repo_file
+#aliyun alinux4 base
+[alibase]
+name=ALinux-4 - OS - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/os/$basearch/
+gpgcheck=0
+enabled=0
+module_hotfixes=true
+
+#released updates
+[aliupdates]
+name=ALinux-4 - Updates - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/updates/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+[aliextras]
+name=ALinux-4 - Plus - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/plus/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+[aliepel]
+name=ALinux-4 - Devel - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/devel/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+[zstack-rpm-mirror]
+name=ZStack RPM Mirror
+baseurl=http://mirrors.rpms.zstack.io/$basearch/h84r/5.5.6/
+enabled=0
+gpgcheck=0
+includepkgs=grafana zs-forecast-capacity
+EOF
+            cat << 'EOF' > $zstack_163_repo_file
+#163 alinux4 base (fallback to aliyun since 163 has no alinux mirror)
+[163base]
+name=ALinux-4 - OS - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/os/$basearch/
+gpgcheck=0
+enabled=0
+module_hotfixes=true
+
+#released updates
+[163updates]
+name=ALinux-4 - Updates - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/updates/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+[163extras]
+name=ALinux-4 - Plus - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/plus/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+[ustcepel]
+name=ALinux-4 - Devel - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/devel/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+[zstack-rpm-mirror]
+name=ZStack RPM Mirror
+baseurl=http://mirrors.rpms.zstack.io/$basearch/h84r/5.5.6/
+enabled=0
+gpgcheck=0
+includepkgs=grafana zs-forecast-capacity
+EOF
+        elif [[ $os_release =~ ' 8' ]]; then
             cat << 'EOF' > $zstack_ali_repo_file
 #aliyun base
 [alibase]
@@ -3617,6 +3705,7 @@ install_sync_repo_dependences() {
 create_local_repo_files() {
 trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
 mkdir -p /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/Extra/{qemu-kvm-ev,ceph,galera,virtio-win}
+mkdir -p /etc/yum.repos.d
 
 repo_file=/etc/yum.repos.d/zstack-local-greatdb.repo
 echo "create $repo_file" >> $ZSTACK_INSTALL_LOG
