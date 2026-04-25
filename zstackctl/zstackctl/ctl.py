@@ -7879,9 +7879,21 @@ class ChangeIpCmd(Command):
             error("please change to single management before change ip")
 
         zstack_conf_file = ctl.properties_file_path
-        ip_check = re.compile('^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
+
+        def _is_valid_ip(addr):
+            for af in (socket.AF_INET, socket.AF_INET6):
+                try:
+                    socket.inet_pton(af, addr)
+                    return True
+                except socket.error:
+                    pass
+            return False
+
+        def _ip_to_hostname(ip):
+            return ip.strip('[]').replace(':', '-').replace('.', '-')
+
         for input_ip in [cloudbus_server_ip, mysql_ip]:
-            if not ip_check.match(input_ip):
+            if not _is_valid_ip(input_ip):
                 info("The ip address you input: %s seems not a valid ip" % input_ip)
                 return 1
             if self.isVirtualIp(input_ip):
@@ -7892,13 +7904,13 @@ class ChangeIpCmd(Command):
         if os.path.isfile(zstack_conf_file):
             old_ip = ctl.read_property('management.server.ip')
             if old_ip is not None:
-                if not ip_check.match(old_ip):
+                if not _is_valid_ip(old_ip):
                     info("The ip address[%s] read from [%s] seems not a valid ip" % (old_ip, zstack_conf_file))
                     return 1
 
             # read from env other than /etc/hostname in case of impact of DHCP SERVER
             old_hostname = shell("hostname").replace("\n","")
-            new_hostname = args.ip.replace(".","-")
+            new_hostname = _ip_to_hostname(args.ip)
             if old_hostname != "localhost" and old_hostname != "localhost.localdomain":
                new_hostname = old_hostname
 
@@ -7947,9 +7959,21 @@ class ChangeIpCmd(Command):
 
             # update zstack db url
             db_url = ctl.read_property('DB.url')
-            db_old_ip = re.findall(r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost', db_url)
-            if not self.isVirtualIp(db_old_ip[0]) and not db_old_ip[0] == ctl.read_property('management.server.vip'):
-                db_new_url = db_url.split(db_old_ip[0])[0] + mysql_ip + db_url.split(db_old_ip[0])[1]
+            # support both IPv4 and IPv6 (JDBC IPv6 format: jdbc:mysql://[2001:db8::1]:3306)
+            ipv6_match = re.findall(r'\[([0-9a-fA-F:]+)\]', db_url)
+            ipv4_match = re.findall(r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost', db_url)
+            if ipv6_match:
+                db_old_ip = ipv6_match[0]
+                db_new_ip = ('[%s]' % mysql_ip) if ':' in mysql_ip else mysql_ip
+                db_new_url = db_url.replace('[%s]' % db_old_ip, db_new_ip, 1)
+            elif ipv4_match:
+                db_old_ip = ipv4_match[0]
+                db_new_ip = ('[%s]' % mysql_ip) if ':' in mysql_ip else mysql_ip
+                db_new_url = db_url.replace(db_old_ip, db_new_ip, 1)
+            else:
+                db_old_ip = None
+                db_new_url = None
+            if db_old_ip and not self.isVirtualIp(db_old_ip) and db_old_ip != ctl.read_property('management.server.vip'):
                 ctl.write_properties([
                     ('DB.url', db_new_url),
                 ])
@@ -7958,13 +7982,24 @@ class ChangeIpCmd(Command):
             # update zstack_ui db url
             if os.path.isfile(ctl.ui_properties_file_path):
                 db_url = ctl.read_ui_property('db_url')
-                db_old_ip = re.findall(r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost', db_url)
-                if not self.isVirtualIp(db_old_ip[0]) and not db_old_ip[0] == ctl.read_property('management.server.vip'):
-                    db_new_url = db_url.split(db_old_ip[0])[0] + mysql_ip + db_url.split(db_old_ip[0])[1]
+                ipv6_match_ui = re.findall(r'\[([0-9a-fA-F:]+)\]', db_url)
+                ipv4_match_ui = re.findall(r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost', db_url)
+                if ipv6_match_ui:
+                    db_old_ip_ui = ipv6_match_ui[0]
+                    db_new_ip_ui = ('[%s]' % mysql_ip) if ':' in mysql_ip else mysql_ip
+                    db_new_url_ui = db_url.replace('[%s]' % db_old_ip_ui, db_new_ip_ui, 1)
+                elif ipv4_match_ui:
+                    db_old_ip_ui = ipv4_match_ui[0]
+                    db_new_ip_ui = ('[%s]' % mysql_ip) if ':' in mysql_ip else mysql_ip
+                    db_new_url_ui = db_url.replace(db_old_ip_ui, db_new_ip_ui, 1)
+                else:
+                    db_old_ip_ui = None
+                    db_new_url_ui = None
+                if db_old_ip_ui and not self.isVirtualIp(db_old_ip_ui) and db_old_ip_ui != ctl.read_property('management.server.vip'):
                     ctl.write_ui_properties([
-                        ('db_url', db_new_url),
+                        ('db_url', db_new_url_ui),
                     ])
-                    info("Update mysql new url %s in %s " % (db_new_url, ctl.ui_properties_file_path))
+                    info("Update mysql new url %s in %s " % (db_new_url_ui, ctl.ui_properties_file_path))
 
             # update mysql restrict connection configuration
             self.checkMysqlConnection(args.ip, args.root_password)
