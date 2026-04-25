@@ -25,6 +25,13 @@ from .imagestore import ImageStoreClient
 logger = log.get_logger(__name__)
 
 
+def _url_host(ip):
+    """Bracket bare IPv6 addresses for use in FTP/HTTP URLs."""
+    if ip and ':' in ip and not ip.startswith('['):
+        return '[%s]' % ip
+    return ip
+
+
 class PxeServerError(Exception):
     '''baremetal pxeserver error'''
 
@@ -233,6 +240,7 @@ class PxeServerAgent(object):
                 not self._is_belong_to_same_subnet(cmd.dhcpRangeEnd, pxeserver_dhcp_nic_ip, pxeserver_dhcp_nic_nm):
             raise PxeServerError("%s ~ %s cannot connect to dhcp interface %s" % (
             cmd.dhcpRangeBegin, cmd.dhcpRangeEnd, cmd.dhcpInterface))
+        pxeserver_dhcp_nic_ip = _url_host(pxeserver_dhcp_nic_ip)
 
         # get pxe server capacity
         self._set_capacity_to_response(rsp)
@@ -510,7 +518,7 @@ http {
         # create pxelinux.cfg/01-MAC for legacy x86_64
         ks_cfg_name = cmd.pxeNicMac
         pxe_cfg_file = os.path.join(self.PXELINUX_CFG_PATH, "01-" + ks_cfg_name)
-        pxeserver_dhcp_nic_ip = self._get_ip_address(cmd.dhcpInterface).strip()
+        pxeserver_dhcp_nic_ip = _url_host(self._get_ip_address(cmd.dhcpInterface).strip())
 
         append = ""
         if cmd.preconfigurationType == 'kickstart':
@@ -591,7 +599,7 @@ menuentry 'Install OS on Bare Metal Instance' --class fedora --class gnu-linux -
         {{ POST_SCRIPTS }}
         """
 
-        pxeserver_dhcp_nic_ip = self._get_ip_address(cmd.dhcpInterface).strip()
+        pxeserver_dhcp_nic_ip = _url_host(self._get_ip_address(cmd.dhcpInterface).strip())
         if cmd.preconfigurationType == 'kickstart':
             rendered_content = self._render_kickstart_template(cmd, pxeserver_dhcp_nic_ip)
         elif cmd.preconfigurationType == 'preseed':
