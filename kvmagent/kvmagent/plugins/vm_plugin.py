@@ -6741,7 +6741,7 @@ class Vm(object):
             else:
                 vnc = e(devices, 'graphics', None,
                         {'type': 'vnc', 'port': '5900', 'autoport': 'yes', 'passwd': str(cmd.consolePassword)})
-            e(vnc, "listen", None, {'type': 'address', 'address': '0.0.0.0'})
+            e(vnc, "listen", None, {'type': 'address', 'address': getattr(cmd, 'vncListenAddress', None) or '0.0.0.0'})
 
         def make_spice():
             devices = elements['devices']
@@ -6750,7 +6750,7 @@ class Vm(object):
             else:
                 spice = e(devices, 'graphics', None,
                           {'type': 'spice', 'port': '5900', 'autoport': 'yes', 'passwd': str(cmd.consolePassword)})
-            e(spice, "listen", None, {'type': 'address', 'address': '0.0.0.0'})
+            e(spice, "listen", None, {'type': 'address', 'address': getattr(cmd, 'vncListenAddress', None) or '0.0.0.0'})
 
             if is_spice_tls() == 0 and cmd.spiceChannels != None:
                 for channel in cmd.spiceChannels:
