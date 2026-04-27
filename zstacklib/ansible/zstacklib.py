@@ -1625,6 +1625,20 @@ def get_remote_host_info_obj(host_post_info):
         host_info.distro_release = facts['ansible_distribution_release']
         host_info.distro_version = \
             re.sub(r'[^0-9.]', '', str(facts['ansible_distribution_version']))
+        # Helix EL7's /etc/os-release only sets VERSION_ID="7" (no minor),
+        # so ansible facts return distro_version="7" and the lookup key
+        # 'helix core 7' misses entries like 'helix core 7.6'/'7.9'.
+        # Recover the numeric minor from /etc/system-release (e.g. "Helix release 7.9c (Core)").
+        if host_info.distro == 'helix' and '.' not in host_info.distro_version:
+            (sr_status, sr_output) = run_remote_command(
+                'cat /etc/system-release 2>/dev/null',
+                host_post_info,
+                return_status=True,
+                return_output=True)
+            if sr_status and sr_output:
+                m = re.search(r'release\s+(\d+\.\d+)', sr_output)
+                if m:
+                    host_info.distro_version = m.group(1)
         host_info.cpu_info = cpu_info_output.lower()
         host_info.host_arch = facts['ansible_machine']
         host_info.kernel_version = facts['ansible_kernel']
