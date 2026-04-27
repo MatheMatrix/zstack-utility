@@ -1846,6 +1846,20 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                 # dpdk_initialized from lingering after a DPDK-to-kernel switch.
                 self._clear_dpdk_other_config(vsctl)
 
+                # ZCF-1841 (reverse): when switching from DPDK to kernel mode
+                # the previously-existing br-int (created by ovn-controller and
+                # not deleted by deprovision because it lacks managed-by tag)
+                # still has datapath_type=netdev from the prior DPDK provision.
+                # That mismatches the system-mode user bridges and breaks
+                # traffic. Force br-int back to datapath_type=system. Mirror
+                # of the netdev-direction fix already done in _ensure_dpdk_init.
+                r, _o, e = bash.bash_roe(
+                    'ovs-vsctl --may-exist add-br br-int '
+                    '-- set bridge br-int datapath_type=system')
+                if r != 0:
+                    raise Exception('failed to set br-int datapath_type=system: %s' % e)
+                logger.info('ensured br-int datapath_type=system for kernel mode')
+
             # Step 3: bridge / bond / OVN config (ovn.py line 276-383)
             provisioner = OvsProvisioner()
             rsp = provisioner.apply(cmd)
