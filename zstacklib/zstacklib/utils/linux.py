@@ -2482,7 +2482,7 @@ def get_free_port_in_range(start_port, end_port):
     raise Exception("no free port found in range[%d, %d]" % (start_port, end_port))
 
 def tcp_port_is_free(port):
-    # IPv6 支持：优先尝试 AF_INET6（Linux 默认双栈），退回 AF_INET
+    # IPv6 support: prefer AF_INET6 (Linux dual-stack default), fall back to AF_INET
     for af, addr in ((socket.AF_INET6, '::'), (socket.AF_INET, '')):
         try:
             sock = socket.socket(af, socket.SOCK_STREAM)
@@ -2514,7 +2514,7 @@ def parse_port_range(port_range):
 def check_socket_available(host, port, timeout=10):
     start_time = time.time()
     while time.time() - start_time < timeout:
-        # IPv6 支持：使用 getaddrinfo 自动选择 AF_INET 或 AF_INET6
+        # IPv6 support: use getaddrinfo to auto-select AF_INET or AF_INET6
         try:
             for res in socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM):
                 af, socktype, proto, canonname, sockaddr = res
@@ -2532,7 +2532,7 @@ def check_socket_available(host, port, timeout=10):
     return False
 
 def is_port_available(port):
-    # IPv6 支持：优先尝试 AF_INET6，退回 AF_INET
+    # IPv6 support: prefer AF_INET6, fall back to AF_INET
     for af, addr in ((socket.AF_INET6, '::'), (socket.AF_INET, '')):
         try:
             with contextlib.closing(socket.socket(af, socket.SOCK_STREAM)) as s:
@@ -3265,7 +3265,7 @@ class RetryException(Exception):
 
 @retry(3, 3)
 def check_port(ip, port):
-    # IPv6 支持：根据地址类型选择 AF_INET6 或 AF_INET
+    # IPv6 support: select AF_INET6 or AF_INET based on address type
     af = socket.AF_INET6 if ':' in ip else socket.AF_INET
     s = socket.socket(af, socket.SOCK_STREAM)
     # set timeout to avoid socket hang on
