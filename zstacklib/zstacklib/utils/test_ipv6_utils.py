@@ -9,20 +9,23 @@ from unittest.mock import MagicMock, patch
 
 
 class TestHttpIpv6Bind(unittest.TestCase):
-    """TP-047: CherryPy server.socket_host IPv6 双栈绑定（http.py L308-314）"""
+    """TP-047: CherryPy server.socket_host IPv6 dual-stack binding (http.py L308-314)"""
 
     def test_ipv6_socket_available_binds_colon_colon(self):
-        """TP-047a: 系统支持 IPv6 时，socket_host = '::'"""
-        try:
-            _s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-            _s.close()
-            bind_ip = '::'
-        except OSError:
-            bind_ip = '0.0.0.0'
-        self.assertEqual(bind_ip, '::')
+        """TP-047a: when IPv6 is available, socket_host = '::'"""
+        with patch('socket.socket') as mock_socket:
+            mock_socket.return_value.__enter__ = mock_socket.return_value
+            mock_socket.return_value.__exit__ = lambda *a: None
+            try:
+                _s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                _s.close()
+                bind_ip = '::'
+            except OSError:
+                bind_ip = '0.0.0.0'
+            self.assertEqual(bind_ip, '::')
 
     def test_ipv6_unavailable_fallback_to_0000(self):
-        """TP-047b: 系统禁用 IPv6 时，fallback 到 0.0.0.0"""
+        """TP-047b: when IPv6 is disabled, fallback to 0.0.0.0"""
         with patch('socket.socket') as mock_socket:
             mock_socket.side_effect = OSError("IPv6 not available")
             try:

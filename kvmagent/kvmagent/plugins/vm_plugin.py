@@ -6747,6 +6747,17 @@ class Vm(object):
                 if cmd.hypervClock:
                     e(clock, 'timer', None, {'name': 'hypervclock', 'present': 'yes'})
 
+        def _default_console_listen_address():
+            # Use '::' when IPv6 is available (listens on both IPv4 and IPv6 on Linux with IPV6_V6ONLY=0).
+            # Fall back to '0.0.0.0' on IPv6-disabled systems.
+            try:
+                import socket as _socket
+                s = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
+                s.close()
+                return '::'
+            except OSError:
+                return '0.0.0.0'
+
         def make_vnc():
             devices = elements['devices']
             if cmd.consolePassword == None:
@@ -6754,7 +6765,7 @@ class Vm(object):
             else:
                 vnc = e(devices, 'graphics', None,
                         {'type': 'vnc', 'port': '5900', 'autoport': 'yes', 'passwd': str(cmd.consolePassword)})
-            e(vnc, "listen", None, {'type': 'address', 'address': getattr(cmd, 'vncListenAddress', None) or '0.0.0.0'})
+            e(vnc, "listen", None, {'type': 'address', 'address': getattr(cmd, 'vncListenAddress', None) or _default_console_listen_address()})
 
         def make_spice():
             devices = elements['devices']
@@ -6763,7 +6774,7 @@ class Vm(object):
             else:
                 spice = e(devices, 'graphics', None,
                           {'type': 'spice', 'port': '5900', 'autoport': 'yes', 'passwd': str(cmd.consolePassword)})
-            e(spice, "listen", None, {'type': 'address', 'address': getattr(cmd, 'vncListenAddress', None) or '0.0.0.0'})
+            e(spice, "listen", None, {'type': 'address', 'address': getattr(cmd, 'vncListenAddress', None) or _default_console_listen_address()})
 
             if is_spice_tls() == 0 and cmd.spiceChannels != None:
                 for channel in cmd.spiceChannels:

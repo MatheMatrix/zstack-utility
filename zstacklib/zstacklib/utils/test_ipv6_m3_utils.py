@@ -195,12 +195,12 @@ class TestBmAgentServerHost(unittest.TestCase):
         self.assertEqual(addr, b'\x00' * 16)
 
     def test_env_var_removed_restores_default(self):
-        """TP-081e: 删除环境变量后，server['host'] 恢复为 '::'"""
-        with patch.dict(os.environ, {'BM_AGENT_BIND_IP': '10.0.0.1'}):
-            pass  # 临时设置
-        # 离开 patch.dict 上下文后变量已移除
-        host = os.environ.get('BM_AGENT_BIND_IP', '::')
-        self.assertEqual(host, '::')
+        """TP-081e: after removing env var, server['host'] restores to '::'"""
+        with patch.dict(os.environ, {}, clear=True):
+            # ensure BM_AGENT_BIND_IP is absent
+            os.environ.pop('BM_AGENT_BIND_IP', None)
+            host = os.environ.get('BM_AGENT_BIND_IP', '::')
+            self.assertEqual(host, '::')
 
 
 # ===========================================================================

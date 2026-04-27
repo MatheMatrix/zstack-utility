@@ -1307,15 +1307,22 @@ class Ctl(object):
         db_url = self.get_db_url()
         host_name_ports = []
 
+        def _parse_host_port(entry):
+            # IPv6 bracket notation: [2001:db8::1]:3306
+            if entry.startswith('['):
+                bracket_end = entry.index(']')
+                hostname = entry[1:bracket_end]
+                port = entry[bracket_end + 2:] if bracket_end + 2 < len(entry) else '3306'
+                return hostname, port
+            if ':' in entry:
+                hostname, port = entry.rsplit(':', 1)
+                return hostname, port
+            return entry, '3306'
+
         def parse_hostname_ports(prefix):
             ips = db_url.lstrip(prefix).lstrip('/').split('/')[0]
-            ips = ips.split(',')
-            for ip in ips:
-                if ":" in ip:
-                    hostname, port = ip.split(':')
-                    host_name_ports.append((hostname, port))
-                else:
-                    host_name_ports.append((ip, '3306'))
+            for entry in ips.split(','):
+                host_name_ports.append(_parse_host_port(entry))
 
         if db_url.startswith('jdbc:mysql:loadbalance:'):
             parse_hostname_ports('jdbc:mysql:loadbalance:')
@@ -1340,15 +1347,21 @@ class Ctl(object):
         db_url = self.get_ui_db_url()
         host_name_ports = []
 
+        def _parse_host_port(entry):
+            if entry.startswith('['):
+                bracket_end = entry.index(']')
+                hostname = entry[1:bracket_end]
+                port = entry[bracket_end + 2:] if bracket_end + 2 < len(entry) else '3306'
+                return hostname, port
+            if ':' in entry:
+                hostname, port = entry.rsplit(':', 1)
+                return hostname, port
+            return entry, '3306'
+
         def parse_hostname_ports(prefix):
             ips = db_url.lstrip(prefix).lstrip('/').split('/')[0]
-            ips = ips.split(',')
-            for ip in ips:
-                if ":" in ip:
-                    hostname, port = ip.split(':')
-                    host_name_ports.append((hostname, port))
-                else:
-                    host_name_ports.append((ip, '3306'))
+            for entry in ips.split(','):
+                host_name_ports.append(_parse_host_port(entry))
 
         if db_url.startswith('jdbc:mysql:loadbalance:'):
             parse_hostname_ports('jdbc:mysql:loadbalance:')
@@ -1649,7 +1662,7 @@ def find_process_by_cmdline(keyword):
 
 
 def _bracket_ipv6(ip):
-    """IPv6 地址在 URL / SSH 命令中需要用方括号包裹，IPv4 原样返回。"""
+    """Wrap an IPv6 address in brackets for use in URLs/SSH targets; IPv4 is returned as-is."""
     return '[%s]' % ip if ':' in str(ip) else ip
 
 
@@ -1680,7 +1693,7 @@ class Zsha2Utils(object):
         peer_port = self.config.get('peerport', 22)
         if peer_port == '':
             peer_port = 22
-        # IPv6 支持：IPv6 地址在 SSH 目标中需要用方括号包裹
+        # IPv6 support: IPv6 addresses need brackets in SSH targets
         peer_host = _bracket_ipv6(self.config['peerip'])
         scmd = ShellCmd(
             "sudo -u %s ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s -p %s %s \"%s\"" % (
@@ -1692,11 +1705,12 @@ class Zsha2Utils(object):
 
 
     def scp_to_peer(self, src_path, dst_path):
-        # IPv6 支持：IPv6 地址在 SCP 目标中需要用方括号包裹
+        # IPv6 support: IPv6 addresses need brackets in SCP targets
         peer_host = _bracket_ipv6(self.config['peerip'])
+        tmp_path = '/tmp/zstack_scp_%s' % uuid.uuid4().hex
         shell("sudo -u %s scp -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no %s %s:%s" % (
-            self.ssh_exec_user, src_path, peer_host, "/tmp/dst_path"))
-        self.execute_on_peer("mv %s %s" % ("/tmp/dst_path", dst_path), True)
+            self.ssh_exec_user, src_path, peer_host, tmp_path))
+        self.execute_on_peer("mv %s %s" % (tmp_path, dst_path), True)
 
 
 
@@ -11877,7 +11891,7 @@ class IamService(ExtraService):
 
         with open(template_path, "r") as f:
             content = f.read()
-        # IPv6 支持：nginx upstream server 指令要求 IPv6 地址用方括号包裹
+        # IPv6 support: nginx upstream server directive requires IPv6 addresses in brackets
         mn1_ip = _bracket_ipv6(self.zsha2_utils.config['nodeip'])
         mn2_ip = _bracket_ipv6(self.zsha2_utils.config['peerip'])
         content = content.replace("{{MN1_IP}}", mn1_ip).replace("{{MN2_IP}}", mn2_ip).replace("{{LISTEN_PORT}}", str(self.default_nginx_port))
@@ -11903,7 +11917,7 @@ class IamService(ExtraService):
 
     def post_start_log(self):
         if self.zsha2_utils:
-            # IPv6 支持：URL 中 IPv6 地址需要方括号包裹
+            # IPv6 support: IPv6 addresses in URLs must be wrapped in brackets
             info("IAM service has been started in HA mode. Access it at: http://%s:%s" % (_bracket_ipv6(self.zsha2_utils.config['dbvip']), self.default_nginx_port))
         else:
             info("IAM service has been started. Access it at: http://%s:%s" % (_bracket_ipv6(get_default_ip()), self.default_port))

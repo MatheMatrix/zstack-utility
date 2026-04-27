@@ -202,7 +202,7 @@ class PxeServerAgent(object):
 
     @staticmethod
     def _get_ip_address(ifname: str) -> str:
-        """获取接口的第一个可用 IP（优先 IPv4，若无则取 IPv6 全局地址）。"""
+        """Get the first available IP of the interface (prefer IPv4, fallback to global IPv6)."""
         try:
             out = subprocess.check_output(
                 ['ip', 'addr', 'show', 'dev', ifname], stderr=subprocess.DEVNULL

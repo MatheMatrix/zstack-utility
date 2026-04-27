@@ -1355,11 +1355,12 @@ class HostPlugin(kvmagent.KvmAgent):
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
         ipV4Addrs = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if
                                          x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
-        # IPv6 支持：使用 ipaddress 标准库过滤链路本地地址（RFC 4291 fe80::/10），去掉 zone id
+        # IPv6 support: filter link-local (RFC 4291 fe80::/10) and loopback (::1) addresses, strip zone id
         def _is_valid_ipv6(addr):
             try:
                 import ipaddress
-                return not ipaddress.ip_address(addr.split('%')[0]).is_link_local
+                ip = ipaddress.ip_address(addr.split('%')[0])
+                return not ip.is_link_local and not ip.is_loopback
             except ValueError:
                 return False
         ipV6Addrs = [chunk.address.split('%')[0] for chunk in [x for x in iproute.query_addresses(ip_version=6) if
