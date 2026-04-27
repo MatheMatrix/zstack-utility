@@ -313,6 +313,119 @@ class NVIDIA(GPUBase):
         return vgpus
 
     # ==========================================================================
+    # dGPU (TensorFusion) Per-Worker Metrics
+    # ==========================================================================
+
+    @classmethod
+    def collect_dgpu_worker_metrics(cls, workers):
+        """Collect per-worker GPU metrics via nvidia-smi pmon + TensorFusion worker list.
+
+        Args:
+            workers: list of TensorFusion worker objects, each with device_uuid,
+                     vm_uuid, pci_address, pid, container_id, restarting fields.
+
+        Returns list of DGpuWorkerMetrics. Workers not found in pmon get 0 values.
+        Only calls nvidia-smi pmon when there are active TF workers.
+        """
+        from zstacklib.gpu.base import DGpuWorkerMetrics
+
+        if not workers:
+            return []
+
+        # Build {host_pid: worker} mapping
+        pid_to_worker = {}
+        for w in workers:
+            if w.restarting:
+                continue
+            host_pid = cls._get_worker_host_pid(w)
+            if host_pid:
+                pid_to_worker[host_pid] = w
+
+        if not pid_to_worker:
+            return []
+
+        # Get per-PID GPU metrics from nvidia-smi pmon
+        pmon = cls._parse_pmon_output()
+
+        # Iterate all workers; default to 0 if not found in pmon
+        result = []
+        for host_pid, w in pid_to_worker.items():
+            sm_util, fb_mib = pmon.get(host_pid, (0.0, 0.0))
+            allocated = getattr(w, 'allocated_memory_mb', 0) or 0
+            mem_pct = min((fb_mib / allocated * 100.0), 100.0) if allocated > 0 else 0.0
+            result.append(DGpuWorkerMetrics(
+                device_uuid=w.device_uuid or '',
+                vm_uuid=w.vm_uuid or '',
+                pci_address=w.pci_address or '',
+                utilization=sm_util,
+                memory_utilization=mem_pct,
+            ))
+        return result
+
+    @classmethod
+    def _parse_pmon_output(cls):
+        """Call nvidia-smi pmon and return {pid: (sm_util, fb_mib)}.
+
+        sm_util: GPU SM utilization percentage from pmon.
+        fb_mib: framebuffer usage in MiB (absolute value, converted to % later using worker.allocatedMemoryMb).
+        """
+        r, o, _ = bash_roe("timeout 10 nvidia-smi pmon -c 1 -s mu")
+        if r != 0:
+            return {}
+
+        # nvidia-smi pmon -c 1 -s mu output columns:
+        # gpu  pid  type  fb  ccpm  sm  mem  enc  dec  jpg  ofa  command
+        #  0    1    2    3    4    5    6    7    8    9   10     11
+        result = {}
+        for line in o.strip().splitlines():
+            line = line.strip()
+            if line.startswith('#') or not line:
+                continue
+            parts = line.split()
+            if len(parts) < 7:
+                continue
+            try:
+                pid = int(parts[1])
+                sm = float(parts[5]) if parts[5] != '-' else 0.0
+                fb_mib = float(parts[3]) if parts[3] != '-' else 0.0
+                result[pid] = (sm, fb_mib)
+            except (ValueError, IndexError):
+                continue
+        return result
+
+    @staticmethod
+    def _get_worker_host_pid(worker):
+        """Get the host-visible PID for a TF worker (handles container mode)."""
+        if worker.container_id:
+            import subprocess
+            proc = None
+            try:
+                proc = subprocess.Popen(
+                    ['docker', 'inspect', '--format', '{{.State.Pid}}', worker.container_id],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    close_fds=True
+                )
+                stdout, stderr = proc.communicate(timeout=5)
+                if proc.returncode != 0:
+                    err = stderr.decode('utf-8', 'ignore').strip() if stderr else ''
+                    logger.debug('failed to inspect container %s: %s' % (worker.container_id, err))
+                    return None
+                o = stdout.decode('utf-8', 'ignore').strip()
+                if o.isdigit():
+                    return int(o)
+            except subprocess.TimeoutExpired:
+                if proc is not None:
+                    proc.kill()
+                    proc.wait()
+                logger.warning('docker inspect timed out for container %s' % worker.container_id)
+                return None
+            except Exception as e:
+                logger.debug('failed to inspect container %s: %s' % (worker.container_id, str(e)))
+                return None
+        return worker.pid
+
+    # ==========================================================================
     # Pre-Detach Hooks
     # ==========================================================================
 

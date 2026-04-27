@@ -1594,7 +1594,7 @@ def get_gpu_metrics():
                                              ['pci_device_address', 'gpuStatus', 'gpu_serial']),
         "vgpu_utilization": GaugeMetricFamily('vgpu_utilization', 'vgpu utilization', None, ['vm_uuid', 'mdev_uuid']),
         "vgpu_memory_utilization": GaugeMetricFamily('vgpu_memory_utilization', 'vgpu memory utilization', None,
-                                                     ['vm_uuid', 'mdev_uuid'])
+                                                     ['vm_uuid', 'mdev_uuid']),
     }
 
 
@@ -1710,6 +1710,45 @@ def collect_gpu_metrics_via_plugin():
                 vendor_name, str(e)))
             import traceback
             logger.debug(traceback.format_exc())
+
+    return metrics.values()
+
+
+def collect_dgpu_worker_metrics():
+    """Collect dGPU (TensorFusion) per-worker GPU metrics independently."""
+    metrics = {
+        "dgpu_worker_gpu_utilization": GaugeMetricFamily(
+            'dgpu_worker_gpu_utilization',
+            'dGPU worker per-process GPU SM utilization',
+            None, ['device_uuid', 'vm_uuid', 'pci_device_address']),
+        "dgpu_worker_memory_utilization": GaugeMetricFamily(
+            'dgpu_worker_memory_utilization',
+            'dGPU worker per-process GPU memory utilization',
+            None, ['device_uuid', 'vm_uuid', 'pci_device_address']),
+    }
+
+    try:
+        tf_service = kvmagent.get_tf_service()
+        if not tf_service:
+            return metrics.values()
+
+        workers = tf_service.list_workers()
+        if not workers:
+            return metrics.values()
+
+        from zstacklib.gpu.vendors.nvidia import NVIDIA
+        if not NVIDIA.is_available():
+            return metrics.values()
+
+        dgpu_metrics_list = NVIDIA.collect_dgpu_worker_metrics(workers)
+        for dm in dgpu_metrics_list:
+            labels = [dm.device_uuid, dm.vm_uuid, dm.pci_address]
+            add_metrics('dgpu_worker_gpu_utilization',
+                        dm.utilization, labels, metrics)
+            add_metrics('dgpu_worker_memory_utilization',
+                        dm.memory_utilization, labels, metrics)
+    except Exception as e:
+        logger.warn("Failed to collect dGPU worker metrics: %s" % str(e))
 
     return metrics.values()
 
@@ -2045,6 +2084,7 @@ kvmagent.register_prometheus_collector(collect_ssd_state)
 
 # GPU metrics collector (using plugin system)
 kvmagent.register_prometheus_collector(collect_gpu_metrics_via_plugin)
+kvmagent.register_prometheus_collector(collect_dgpu_worker_metrics)
 kvmagent.register_prometheus_collector(collect_hba_port_device_state)
 kvmagent.register_prometheus_collector(collect_disk_stat)
 kvmagent.register_prometheus_collector(collect_kvmagent_memory_statistics)

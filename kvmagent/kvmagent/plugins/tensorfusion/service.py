@@ -398,10 +398,17 @@ class TensorFusionService(object):
                 logger.warning('TensorFusionService: worker %s not found' % device_uuid)
                 return False
 
+            # Mark restarting + clear monitor before killing the process so the
+            # monitor thread does not race and push a spurious fault event.
+            self._store.set_restarting(device_uuid, True, expected_worker=worker)
+            self._monitor.clear(device_uuid)
+
             try:
                 self._executor.stop(worker)
             except Exception:
-                if not self._executor.is_alive(worker):
+                if self._executor.is_alive(worker):
+                    self._store.set_restarting(device_uuid, False, expected_worker=worker)
+                else:
                     removed = self._remove_worker_state(worker)
                     if removed is None:
                         logger.warning('TensorFusionService: worker %s changed during destroy after stop failure' %
@@ -421,6 +428,15 @@ class TensorFusionService(object):
         # type: (str) -> int
         """Destroy all workers belonging to a VM. Returns count destroyed."""
         workers = self._store.list_by_vm(vm_uuid)
+
+        # Mark workers as restarting so the monitor thread (_check_all) skips
+        # them. This prevents the monitor from detecting the intentional kill
+        # as a crash and pushing a spurious fault event during the window
+        # between executor.stop() and store.remove().
+        for w in workers:
+            self._store.set_restarting(w.device_uuid, True, expected_worker=w)
+            self._monitor.clear(w.device_uuid)
+
         count = 0
         failures = []
         for w in workers:
