@@ -2837,7 +2837,12 @@ def get_vgs_info(tag):
                 logger.warn("resolve dm name failed for mpath device %s: %s" %
                             (bd.multipathPath, linux.get_exception_stacktrace()))
 
-    r, o, e = bash.bash_roe("vgs --nolocking -t -o vg_name,pv_count,pv_name,tags --noheadings")
+    accept_all_config = (
+        '--config \'devices/filter=["a|.*|"] devices/global_filter=["a|.*|"]\''
+    )
+    r, o, e = bash.bash_roe(
+        "timeout -s SIGKILL 120 vgs --nolocking --shared --foreign -t %s "
+        "-o vg_name,pv_count,pv_name,tags --noheadings" % accept_all_config)
     if r != 0:
         raise Exception("get vgs info failed, error: %s" % e)
 
