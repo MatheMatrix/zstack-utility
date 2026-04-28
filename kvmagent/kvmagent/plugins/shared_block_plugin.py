@@ -363,6 +363,25 @@ class CheckDisk(object):
         return None
 
 
+def filter_lvm_pv_wwids(candidate_wwids):
+    kept = []
+    if not candidate_wwids:
+        return kept
+    for wwid in candidate_wwids:
+        path = CheckDisk(wwid).get_path(raise_exception=False)
+        if path is None:
+            logger.info("filter_lvm_pv_wwids: skip %s, no by-id link or absolute path resolved" % wwid)
+            continue
+        ret, out, err = bash.bash_roe(
+            "timeout -s SIGKILL 10 blkid -p -s TYPE -o value %s" % linux.shellquote(path))
+        if ret != 0:
+            logger.info("filter_lvm_pv_wwids: skip %s (path %s), blkid ret=%s err=%s" % (wwid, path, ret, err))
+            continue
+        if (out or "").strip() == "LVM2_member":
+            kept.append(wwid)
+    return kept
+
+
 class SharedBlockPlugin(kvmagent.KvmAgent):
 
     PING_PATH = "/sharedblock/ping"
@@ -669,6 +688,13 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                 if diskUuid in cmd.sharedBlockUuids:
                     self.vgs_path_and_wwid[cmd.vgUuid][p] = diskUuid
 
+        for wwid in filter_lvm_pv_wwids(cmd.candidateUnmanagedLunWwids):
+            disk = CheckDisk(wwid)
+            p = disk.get_path(raise_exception=False)
+            if p is not None:
+                allDiskPaths.add(p)
+                allDisks.add(disk)
+
         allDiskPaths = allDiskPaths.union(diskPaths)
         allDisks = allDisks.union(disks)
 
@@ -846,6 +872,13 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                 allDisks.add(_disk)
                 if diskUuid == cmd.diskUuid:
                     self.vgs_path_and_wwid[cmd.vgUuid][p] = diskUuid
+
+        for wwid in filter_lvm_pv_wwids(cmd.candidateUnmanagedLunWwids):
+            _disk = CheckDisk(wwid)
+            p = _disk.get_path(raise_exception=False)
+            if p is not None:
+                allDiskPaths.add(p)
+                allDisks.add(_disk)
         allDiskPaths.add(disk.get_path())
         allDisks.add(disk)
         try:
@@ -1679,6 +1712,12 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             if p is not None:
                 allDiskPaths.add(p)
 
+        for wwid in filter_lvm_pv_wwids(cmd.candidateUnmanagedLunWwids):
+            disk = CheckDisk(wwid)
+            p = disk.get_path(raise_exception=False)
+            if p is not None:
+                allDiskPaths.add(p)
+
         try:
             root_disks = ["%s[0-9]*" % d for d in linux.get_physical_disk()]
             allDiskPaths = allDiskPaths.union(root_disks)
@@ -1846,6 +1885,12 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             if p is not None:
                 allDiskPaths.add(p)
 
+        for wwid in filter_lvm_pv_wwids(cmd.candidateUnmanagedLunWwids):
+            disk = CheckDisk(wwid)
+            p = disk.get_path(raise_exception=False)
+            if p is not None:
+                allDiskPaths.add(p)
+
         allDiskPaths = allDiskPaths.union(diskPaths)
         try:
             root_disks = ["%s[0-9]*" % d for d in linux.get_physical_disk()]
@@ -1942,6 +1987,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     @kvmagent.replyerror
     def vgs_info(self, req):
         rsp = GetVgsInfoRsp()
+        bash.bash_roe("pvscan --cache")
         rsp.groupDiskInfos = lvm.get_vgs_info(tag=INIT_TAG)
         return jsonobject.dumps(rsp)
 

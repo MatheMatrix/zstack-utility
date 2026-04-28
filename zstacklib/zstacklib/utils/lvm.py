@@ -2837,7 +2837,17 @@ def get_vgs_info(tag):
                 logger.warn("resolve dm name failed for mpath device %s: %s" %
                             (bd.multipathPath, linux.get_exception_stacktrace()))
 
-    r, o, e = bash.bash_roe("vgs --nolocking -t -o vg_name,pv_count,pv_name,tags --noheadings")
+    # --config: override host /etc/lvm/lvm.conf filter for THIS invocation only.
+    # Without it, distro-default narrow filters (e.g. only /dev/vda*, /dev/sda)
+    # hide LUNs newly attached to the host (iSCSI/FC/NVMe), so VGs created on
+    # those LUNs by other platforms cannot be discovered by
+    # APIDiscoverStrangePrimaryStorageMsg. -t (test mode) keeps it read-only.
+    accept_all_config = (
+        '--config \'devices/filter=["a|.*|"] devices/global_filter=["a|.*|"]\''
+    )
+    r, o, e = bash.bash_roe(
+        "vgs --nolocking --shared --foreign -t %s "
+        "-o vg_name,pv_count,pv_name,tags --noheadings" % accept_all_config)
     if r != 0:
         raise Exception("get vgs info failed, error: %s" % e)
 
