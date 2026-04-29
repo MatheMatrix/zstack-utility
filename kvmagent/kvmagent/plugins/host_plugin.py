@@ -2029,15 +2029,25 @@ if __name__ == "__main__":
         rsp = UpdateDependencyRsp()
         if self.IS_YUM:
             shell.run(
-                "timeout --kill-after=10 60 yum --disablerepo=* --enablerepo=zstack-mn list >/dev/null 2>&1 || "
-                "timeout 180 bash -c \""
-                "pkill -9 -f 'yum --disablerepo=\\* --enablerepo=zstack-mn' >/dev/null 2>&1; "
-                "pkill -9 -f 'rpm -qp' >/dev/null 2>&1; "
-                "pkill -9 -f 'rpm --rebuilddb' >/dev/null 2>&1; "
+                "out=$(timeout --kill-after=10 60 yum --disablerepo=* --enablerepo=zstack-mn list 2>&1 >/dev/null); rc=$?; "
+                "if [ $rc -eq 0 ]; then exit 0; fi; "
+                "if [ $rc -eq 124 ] || [ $rc -eq 137 ] || "
+                "   echo \"$out\" | grep -qE "
+                "'DB_RUNRECOVERY|BDB[0-9]+ |rpmdb: BDB|db[0-9]+ error|cannot open Packages|cannot get .* lock|Thread died|Failed to acquire .* rpmdb'; "
+                "then "
+                "  logger -t zstack-rpmdb-repair \"rpmdb corruption detected (rc=$rc): $out\" 2>/dev/null || true; "
+                "  timeout 180 bash -c \""
+                "ps -eo pid,comm,args --no-headers | awk '\\$2==\\\"rpm\\\" && (/--rebuilddb/ || / -qp /) {print \\$1}' | xargs -r kill -9; "
+                "ps -eo pid,comm,args --no-headers | awk '(\\$2==\\\"yum\\\" || \\$2 ~ /^python/) && /enablerepo=zstack-mn/ {print \\$1}' | xargs -r kill -9; "
                 "sleep 1; "
                 "rm -f /var/lib/rpm/__db.*; "
                 "rpm --rebuilddb"
-                "\"")
+                "  \"; "
+                "  exit $?; "
+                "else "
+                "  echo \"yum preflight non-bdb failure (rc=$rc), skipping rpmdb repair: $out\" >&2; "
+                "  exit 0; "
+                "fi")
             releasever = kvmagent.get_host_yum_release()
             shell.run("yum remove -y qemu-kvm-tools-ev")
             yum_cmd = "export YUM0={};yum --enablerepo=* clean all && yum --disablerepo=* --enablerepo={} install `cat /var/lib/zstack/dependencies` -y"\
