@@ -38,7 +38,7 @@ def _call_takeover(plugin, sharedBlockUuids, allSharedBlockUuids, vgUuid, hostId
 
 
 def _call_vgs_info(plugin):
-    rsp_str = plugin.vgs_info(misc.make_a_request({}))
+    rsp_str = plugin.vgs_all_info(misc.make_a_request({}))
     return jsonobject.loads(rsp_str)
 
 

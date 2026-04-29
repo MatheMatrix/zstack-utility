@@ -259,6 +259,12 @@ class GetVgsInfoRsp(AgentRsp):
         self.groupDiskInfos = {}
 
 
+class GetManagedVgsInfoRsp(AgentRsp):
+    def __init__(self):
+        super(GetManagedVgsInfoRsp, self).__init__()
+        self.groupDiskInfos = {}
+
+
 def translate_absolute_path_from_install_path(path):
     if path is None:
         raise Exception("install path can not be null")
@@ -408,7 +414,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     GET_QCOW2_HASH_VALUE_PATH = "/sharedblock/getqcow2hash"
     CHECK_STATE_PATH = "/sharedblock/vgstate/check"
     TAKEOVER_PATH = "/sharedblock/takeover"
-    VGS_INFO_PATH = "/sharedblock/vgs/info"
+    VGS_ALL_PATH = "/sharedblock/vgs/all"
+    VGS_MANAGED_PATH = "/sharedblock/vgs/managed"
     WRITE_VM_METADATA_PATH = "/sharedblock/vm/metadata/write"
     GET_VM_INSTANCE_METADATA_PATH = "/sharedblock/vm/metadata/get"
     SCAN_VM_METADATA_PATH = "/sharedblock/vm/metadata/scan"
@@ -469,7 +476,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
         http_server.register_async_uri(self.CHECK_STATE_PATH, self.check_vg_state)
         http_server.register_async_uri(self.TAKEOVER_PATH, self.takeover)
-        http_server.register_async_uri(self.VGS_INFO_PATH, self.vgs_info)
+        http_server.register_async_uri(self.VGS_ALL_PATH, self.vgs_all_info)
+        http_server.register_async_uri(self.VGS_MANAGED_PATH, self.vgs_managed_info)
         http_server.register_async_uri(self.WRITE_VM_METADATA_PATH, self.write_vm_metadata)
         http_server.register_async_uri(self.SCAN_VM_METADATA_PATH, self.scan_vm_metadata)
         http_server.register_async_uri(self.CLEANUP_VM_METADATA_PATH, self.cleanup_vm_metadata)
@@ -1867,7 +1875,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
         # Step 4: find VG on storage by exact WWID match
         def get_vg_name_by_shared_block_uuid():
-            groupDiskInfos = lvm.get_vgs_info(tag=INIT_TAG)
+            groupDiskInfos = lvm.get_managed_vgs(tag=INIT_TAG)
             target_wwids = set(w.strip().lower() for w in cmd.sharedBlockUuids if w and w.strip())
             matched_vgs = []
 
@@ -1940,9 +1948,15 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
-    def vgs_info(self, req):
+    def vgs_all_info(self, req):
         rsp = GetVgsInfoRsp()
-        rsp.groupDiskInfos = lvm.get_vgs_info(tag=INIT_TAG)
+        rsp.groupDiskInfos = lvm.get_all_vgs(tag=INIT_TAG)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def vgs_managed_info(self, req):
+        rsp = GetManagedVgsInfoRsp()
+        rsp.groupDiskInfos = lvm.get_managed_vgs(tag=INIT_TAG)
         return jsonobject.dumps(rsp)
 
 
