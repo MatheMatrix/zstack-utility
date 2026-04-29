@@ -38,6 +38,10 @@ class VmMetadataHandler(object):
         """Delete a VM's metadata.  Returns ``dict``."""
         return self._do_cleanup(cmd.metadataPath)
 
+    def cleanup_all(self, cmd):
+        """Delete all VM metadata under metadataDir.  Returns ``dict`` with keys cleanedCount, failedCount."""
+        return self._do_cleanup_all(cmd.metadataDir)
+
     def _do_write(self, metadataPath, metadata, vmUuid, vmName, vmCategory, architecture, schemaVersion):
         raise NotImplementedError
 
@@ -50,4 +54,8 @@ class VmMetadataHandler(object):
         raise NotImplementedError
 
     def _do_cleanup(self, metadataPath):
+        raise NotImplementedError
+
+    def _do_cleanup_all(self, metadataDir):
+        """Cleanup all metadata under metadataDir. Returns dict with cleanedCount, failedCount."""
         raise NotImplementedError

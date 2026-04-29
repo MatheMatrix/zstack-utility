@@ -255,6 +255,43 @@ class SblkMetadataHandler(VmMetadataHandler):
         logger.debug("cleanup_vm_metadata: cleaned %s", metadataPath)
         return {}
 
+    def cleanup_all(self, cmd):
+        vg_uuid = getattr(cmd, 'vgUuid', None)
+        if not vg_uuid or not isinstance(vg_uuid, str):
+            logger.warn("cleanup_all: vgUuid missing on cmd")
+            return {'cleanedCount': 0, 'failedCount': 0}
+        if not self._SAFE_VG_RE.match(vg_uuid):
+            logger.warn("cleanup_all: invalid vgUuid: %r", vg_uuid)
+            return {'cleanedCount': 0, 'failedCount': 0}
+
+        lvm = self._lvm
+        cleaned = 0
+        failed = 0
+        try:
+            metadata_lvs = scan_metadata_lvs(vg_uuid, lvm.list_lvs)
+        except Exception as e:
+            logger.warn("scan_metadata_lvs failed on vg %s: %s", vg_uuid, e)
+            return {'cleanedCount': 0, 'failedCount': 0, 'error': str(e)}
+
+        for item in metadata_lvs:
+            lv_path = item.get('lv_path')
+            try:
+                if lvm.lv_exists(lv_path):
+                    delete_metadata_lv(lv_path, lvm.delete_lv)
+                cleaned += 1
+            except Exception as e:
+                logger.warn("failed to delete metadata LV %s: %s", lv_path, e)
+                failed += 1
+
+        logger.debug("cleanup_all_vm_metadata on vg %s: cleaned=%d failed=%d",
+                     vg_uuid, cleaned, failed)
+        return {'cleanedCount': cleaned, 'failedCount': failed}
+
+    def _do_cleanup_all(self, metadataDir):
+        raise NotImplementedError(
+            "SblkMetadataHandler.cleanup_all uses cmd.vgUuid; "
+            "_do_cleanup_all(metadataDir) should not be called")
+
 
 # ###################################################################
 # SharedBlock qcow2 backing-file rebase with LVM lock protection

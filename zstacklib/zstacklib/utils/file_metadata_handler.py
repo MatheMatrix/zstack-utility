@@ -275,6 +275,56 @@ class FileBasedMetadataHandler(VmMetadataHandler):
 
         return {}
 
+    def _do_cleanup_all(self, metadataDir):
+        if not metadataDir or not isinstance(metadataDir, str):
+            raise Exception("invalid metadataDir: %r" % metadataDir)
+        if not os.path.isabs(metadataDir):
+            logger.warn("cleanup_all: metadataDir must be an absolute path: %s", metadataDir)
+            return {'cleanedCount': 0, 'failedCount': 0}
+        if not os.path.isdir(metadataDir):
+            logger.debug("cleanup_all: metadataDir %s does not exist, nothing to clean", metadataDir)
+            return {'cleanedCount': 0, 'failedCount': 0}
+
+        meta_name_re = re.compile(
+            r'^[0-9a-f]{32}\.vmmeta(?:\.tmp|\.summary|\.summary\.tmp)?$')
+
+        cleaned_main = 0
+        failed = 0
+        removed_any = False
+        try:
+            names = os.listdir(metadataDir)
+        except Exception as e:
+            logger.warn("listdir failed for %s: %s", metadataDir, e)
+            return {'cleanedCount': 0, 'failedCount': 0, 'error': str(e)}
+
+        for fname in names:
+            if not meta_name_re.match(fname):
+                continue
+            fpath = os.path.join(metadataDir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                os.remove(fpath)
+                removed_any = True
+                if fname.endswith(_METADATA_SUFFIX) and \
+                        _UUID_HEX_RE.match(fname[:-len(_METADATA_SUFFIX)]):
+                    cleaned_main += 1
+            except Exception as e:
+                logger.warn("failed to remove metadata file %s: %s", fpath, e)
+                if fname.endswith(_METADATA_SUFFIX) and \
+                        _UUID_HEX_RE.match(fname[:-len(_METADATA_SUFFIX)]):
+                    failed += 1
+
+        if removed_any:
+            try:
+                _fsync_directory(os.path.join(metadataDir, 'dummy'))
+            except Exception as e:
+                logger.warn("fsync of %s failed: %s", metadataDir, e)
+
+        logger.debug("cleanup_all_vm_metadata on %s: cleaned=%d failed=%d",
+                     metadataDir, cleaned_main, failed)
+        return {'cleanedCount': cleaned_main, 'failedCount': failed}
+
 
 def _write_summary_best_effort(summary_path, vm_uuid, vm_name='', vm_category='', architecture='', schema_version=''):
     """Write a lightweight summary file next to the metadata file.
