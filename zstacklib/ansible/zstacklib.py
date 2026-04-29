@@ -2306,8 +2306,15 @@ def install_release_on_host(is_rpm, host_info, host_post_info):
 
 
 def repair_rpmdb_if_damaged(host_post_info):
-    cmd = "yum --disablerepo=* --enablerepo=zstack-local list >/dev/null 2>&1 || " \
-          "(rm -f /var/lib/rpm/__db.*; rpm --rebuilddb)"
+    cmd = "timeout --kill-after=10 60 yum --disablerepo=* --enablerepo=zstack-local list >/dev/null 2>&1 || " \
+          "timeout 180 bash -c \"" \
+          "pkill -9 -f 'yum --disablerepo=\\* --enablerepo=zstack-local' >/dev/null 2>&1; " \
+          "pkill -9 -f 'rpm -qp' >/dev/null 2>&1; " \
+          "pkill -9 -f 'rpm --rebuilddb' >/dev/null 2>&1; " \
+          "sleep 1; " \
+          "rm -f /var/lib/rpm/__db.*; " \
+          "rpm --rebuilddb" \
+          "\""
     run_remote_command(cmd, host_post_info)
 
 
