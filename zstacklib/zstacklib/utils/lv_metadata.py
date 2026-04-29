@@ -255,6 +255,42 @@ class SblkMetadataHandler(VmMetadataHandler):
         logger.debug("cleanup_vm_metadata: cleaned %s", metadataPath)
         return {}
 
+    def _do_cleanup_all(self, metadataDir):
+        """Delete every metadata LV in the VG referenced by metadataDir.
+
+        metadataDir for SharedBlock has the form '/dev/<vgUuid>'.
+        """
+        if not metadataDir or not isinstance(metadataDir, str):
+            raise Exception("invalid metadataDir: %r" % metadataDir)
+        if not metadataDir.startswith('/dev/'):
+            raise Exception("invalid metadataDir for sharedblock: %s" % metadataDir)
+        vg_uuid = metadataDir[len('/dev/'):].strip('/')
+        if not re.match(r'^[0-9a-f-]+$', vg_uuid):
+            raise Exception("invalid vg_uuid extracted from %s" % metadataDir)
+
+        lvm = self._lvm
+        cleaned = 0
+        failed = 0
+        try:
+            metadata_lvs = scan_metadata_lvs(vg_uuid, lvm.list_lvs)
+        except Exception as e:
+            logger.warn("scan_metadata_lvs failed on vg %s: %s", vg_uuid, e)
+            return {'cleanedCount': 0, 'failedCount': 0, 'error': str(e)}
+
+        for item in metadata_lvs:
+            lv_path = item.get('lv_path')
+            try:
+                if lvm.lv_exists(lv_path):
+                    delete_metadata_lv(lv_path, lvm.delete_lv)
+                cleaned += 1
+            except Exception as e:
+                logger.warn("failed to delete metadata LV %s: %s", lv_path, e)
+                failed += 1
+
+        logger.debug("cleanup_all_vm_metadata on vg %s: cleaned=%d failed=%d",
+                     vg_uuid, cleaned, failed)
+        return {'cleanedCount': cleaned, 'failedCount': failed}
+
 
 # ###################################################################
 # SharedBlock qcow2 backing-file rebase with LVM lock protection

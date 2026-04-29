@@ -2,7 +2,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
+import uuid as _uuid
 
 from zstacklib.utils import lock
 from zstacklib.utils.vm_metadata_handler import VmMetadataHandler, VmMetadataScanEntry
@@ -274,6 +276,56 @@ class FileBasedMetadataHandler(VmMetadataHandler):
             logger.debug("cleanup_vm_metadata: cleaned %s", metadataPath)
 
         return {}
+
+    def _do_cleanup_all(self, metadataDir):
+        """Wipe entire metadataDir.
+
+        Strategy: rename to a unique sibling, recreate empty dir, then rmtree the renamed
+        copy. This minimises the time the original path is missing and lets concurrent
+        writers race-recreate cleanly.
+        """
+        if not metadataDir or not isinstance(metadataDir, str):
+            raise Exception("invalid metadataDir: %r" % metadataDir)
+        cleaned = 0
+        failed = 0
+        try:
+            if not os.path.exists(metadataDir):
+                return {'cleanedCount': 0, 'failedCount': 0}
+
+            entries_before = []
+            try:
+                for n in os.listdir(metadataDir):
+                    if n.endswith(_METADATA_SUFFIX):
+                        entries_before.append(n)
+            except Exception as e:
+                logger.warn("listdir failed for %s: %s", metadataDir, e)
+
+            graveyard = "%s.deleting-%s" % (metadataDir.rstrip('/'), _uuid.uuid4().hex)
+            try:
+                os.rename(metadataDir, graveyard)
+            except OSError as e:
+                raise Exception("failed to rename metadataDir %s -> %s: %s" %
+                                (metadataDir, graveyard, e))
+            try:
+                os.makedirs(metadataDir, 0o700)
+            except OSError as e:
+                if not os.path.isdir(metadataDir):
+                    logger.warn("failed to recreate metadataDir %s: %s", metadataDir, e)
+
+            try:
+                shutil.rmtree(graveyard, ignore_errors=False)
+                cleaned = len(entries_before)
+            except Exception as e:
+                logger.warn("rmtree of %s failed: %s", graveyard, e)
+                failed = len(entries_before)
+                cleaned = 0
+
+            logger.debug("cleanup_all_vm_metadata on %s: cleaned=%d failed=%d",
+                         metadataDir, cleaned, failed)
+            return {'cleanedCount': cleaned, 'failedCount': failed}
+        except Exception as e:
+            logger.warn("cleanup_all_vm_metadata on %s failed: %s", metadataDir, e)
+            return {'cleanedCount': cleaned, 'failedCount': failed, 'error': str(e)}
 
 
 def _write_summary_best_effort(summary_path, vm_uuid, vm_name='', vm_category='', architecture='', schema_version=''):
