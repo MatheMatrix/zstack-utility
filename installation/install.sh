@@ -2500,6 +2500,13 @@ install_or_upgrade_vops(){
     show_spinner is_install_vops
 }
 
+install_or_upgrade_zmigrate(){
+    echo_title "Install or upgrade ZMigrate"
+    echo ""
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    show_spinner is_install_zmigrate
+}
+
 setup_install_param(){
     echo_title "Setup Install Parameters"
     echo ""
@@ -3245,6 +3252,19 @@ is_install_vops(){
     [[ ! -f "$vops_installer_bin" ]] && fail2 "failed to find VOps installation file"
     bash $vops_installer_bin >>$ZSTACK_INSTALL_LOG 2>&1
     [ $? -ne 0 ] && fail2 "failed to install VOps"
+    pass
+}
+
+is_install_zmigrate(){
+    echo_subtitle "Install ZMigrate"
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    zmigrate_installer_bin="/opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/zmigrate/zmigrate-ui.sh"
+    if [[ ! -f "$zmigrate_installer_bin" ]]; then
+        echo "ZMigrate UI installer not found, skip" >>$ZSTACK_INSTALL_LOG 2>&1
+        pass
+        return
+    fi
+    bash "$zmigrate_installer_bin" >>$ZSTACK_INSTALL_LOG 2>&1 || fail2 "failed to install ZMigrate UI"
     pass
 }
 
@@ -4343,9 +4363,12 @@ if [ x"$UPGRADE" = x'y' ]; then
     #only upgrade zstack
     upgrade_zstack
 
-    #Upgrade or install zops / vops
-    install_zops
-    install_or_upgrade_vops
+    #Upgrade or install zops / vops (if not "only upgrade ctl")
+    if [ -z $ONLY_UPGRADE_CTL ]; then
+        install_zops
+        install_or_upgrade_vops
+        install_or_upgrade_zmigrate
+    fi
 
     #Setup audit.rules
     setup_audit_file
@@ -4567,6 +4590,7 @@ fi
 #Install/Upgrade zops / vops
 install_zops
 install_or_upgrade_vops
+install_or_upgrade_zmigrate
 
 echo ""
 echo_star_line
