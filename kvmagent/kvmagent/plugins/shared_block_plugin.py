@@ -161,6 +161,10 @@ class CleanupVmMetadataRsp(AgentRsp):
         super(CleanupVmMetadataRsp, self).__init__()
 
 
+class CleanupAllVmMetadataRsp(AgentRsp):
+    pass
+
+
 class GetVmInstanceMetadataRsp(AgentRsp):
     def __init__(self):
         super(GetVmInstanceMetadataRsp, self).__init__()
@@ -413,6 +417,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     GET_VM_INSTANCE_METADATA_PATH = "/sharedblock/vm/metadata/get"
     SCAN_VM_METADATA_PATH = "/sharedblock/vm/metadata/scan"
     CLEANUP_VM_METADATA_PATH = "/sharedblock/vm/metadata/cleanup"
+    CLEANUP_ALL_VM_METADATA_PATH = "/sharedblock/vm/metadata/cleanup-all"
     PREFIX_REBASE_BACKING_FILES_PATH = "/sharedblock/snapshot/prefixrebasebackingfiles"
 
     _metadata_handler = SblkMetadataHandler(lvm, bash)
@@ -473,6 +478,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.WRITE_VM_METADATA_PATH, self.write_vm_metadata)
         http_server.register_async_uri(self.SCAN_VM_METADATA_PATH, self.scan_vm_metadata)
         http_server.register_async_uri(self.CLEANUP_VM_METADATA_PATH, self.cleanup_vm_metadata)
+        http_server.register_async_uri(self.CLEANUP_ALL_VM_METADATA_PATH, self.cleanup_all_vm_metadata)
         http_server.register_async_uri(self.GET_VM_INSTANCE_METADATA_PATH, self.get_vm_instance_metadata)
         http_server.register_async_uri(self.PREFIX_REBASE_BACKING_FILES_PATH, self.prefix_rebase_backing_files)
 
@@ -1965,6 +1971,16 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = CleanupVmMetadataRsp()
         self._metadata_handler.cleanup(cmd)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def cleanup_all_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CleanupAllVmMetadataRsp()
+        result = self._metadata_handler.cleanup_all(cmd) or {}
+        if result.get('error'):
+            rsp.success = False
+            rsp.error = result.get('error')
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror

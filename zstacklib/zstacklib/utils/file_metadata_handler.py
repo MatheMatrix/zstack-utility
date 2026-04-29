@@ -7,6 +7,11 @@ import threading
 from zstacklib.utils import lock
 from zstacklib.utils.vm_metadata_handler import VmMetadataHandler, VmMetadataScanEntry
 
+try:
+    string_types = basestring  # noqa: F821
+except NameError:
+    string_types = str
+
 logger = logging.getLogger(__name__)
 
 # MN uses FILE_METADATA_SUFFIX = ".vmmeta"
@@ -273,6 +278,51 @@ class FileBasedMetadataHandler(VmMetadataHandler):
 
             logger.debug("cleanup_vm_metadata: cleaned %s", metadataPath)
 
+        return {}
+
+    def _do_cleanup_all(self, metadataDir):
+        if not metadataDir or not isinstance(metadataDir, string_types):
+            raise Exception("invalid metadataDir: %r" % metadataDir)
+        if not os.path.isabs(metadataDir):
+            logger.warn("cleanup_all: metadataDir must be an absolute path: %s", metadataDir)
+            return {}
+        if not os.path.isdir(metadataDir):
+            logger.debug("cleanup_all: metadataDir %s does not exist, nothing to clean", metadataDir)
+            return {}
+
+        meta_name_re = re.compile(
+            r'^[0-9a-f]{32}\.vmmeta(?:\.tmp|\.summary|\.summary\.tmp)?$')
+
+        removed_any = False
+        failures = []  # list of "path: cause"
+        try:
+            names = os.listdir(metadataDir)
+        except Exception as e:
+            logger.warn("listdir failed for %s: %s", metadataDir, e)
+            return {'error': "listdir failed for %s: %s" % (metadataDir, e)}
+
+        for fname in names:
+            if not meta_name_re.match(fname):
+                continue
+            fpath = os.path.join(metadataDir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                os.remove(fpath)
+                removed_any = True
+            except Exception as e:
+                logger.warn("failed to remove metadata file %s: %s", fpath, e)
+                failures.append("%s: %s" % (fpath, e))
+
+        if removed_any:
+            try:
+                _fsync_directory(os.path.join(metadataDir, 'dummy'))
+            except Exception as e:
+                logger.warn("fsync of %s failed: %s", metadataDir, e)
+
+        if failures:
+            return {'error': "failed to remove %d metadata file(s) under %s: %s" %
+                             (len(failures), metadataDir, "; ".join(failures))}
         return {}
 
 
