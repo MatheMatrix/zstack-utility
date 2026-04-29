@@ -2814,8 +2814,7 @@ def config_lvm(host_id, all_disk_paths, vg_uuid, host_uuid, default_sanlock_lv_s
     shell.call("sed -i 's/.*size .*/size 20M/g' /etc/logrotate.d/sanlock", exception=False)
 
 
-@bash.in_bash
-def get_vgs_info(tag):
+def _resolve_vgs_info(o, tag):
     groupDiskInfos = {}
 
     block_devices = get_block_devices()
@@ -2836,10 +2835,6 @@ def get_vgs_info(tag):
             except Exception:
                 logger.warn("resolve dm name failed for mpath device %s: %s" %
                             (bd.multipathPath, linux.get_exception_stacktrace()))
-
-    r, o, e = bash.bash_roe("vgs --nolocking -t -o vg_name,pv_count,pv_name,tags --noheadings")
-    if r != 0:
-        raise Exception("get vgs info failed, error: %s" % e)
 
     for info in form.load('vg_name pv_count pv_name tags\n' + o):
         vg_name = info['vg_name']
@@ -2876,6 +2871,29 @@ def get_vgs_info(tag):
                         "WWID matching may fail for this VG." % (vg_name, expected_count, actual_count))
 
     return groupDiskInfos
+
+
+@bash.in_bash
+def get_all_vgs(tag):
+    """Full-scan VG view: includes foreign sanlock VGs, bypasses lvm.conf filter."""
+    accept_all_config = (
+        '--config \'devices/filter=["a|.*|"] devices/global_filter=["a|.*|"]\''
+    )
+    r, o, e = bash.bash_roe(
+        "timeout -s SIGKILL 120 vgs --nolocking --shared --foreign -t %s "
+        "-o vg_name,pv_count,pv_name,tags --noheadings" % accept_all_config)
+    if r != 0:
+        raise Exception("get all vgs failed, error: %s" % e)
+    return _resolve_vgs_info(o, tag)
+
+
+@bash.in_bash
+def get_managed_vgs(tag):
+    """Host-managed VG view: subject to lvm.conf filter, excludes foreign VGs."""
+    r, o, e = bash.bash_roe("timeout -s SIGKILL 120 vgs --nolocking -t -o vg_name,pv_count,pv_name,tags --noheadings")
+    if r != 0:
+        raise Exception("get managed vgs failed, error: %s" % e)
+    return _resolve_vgs_info(o, tag)
 
 
 @bash.in_bash
@@ -3007,7 +3025,7 @@ def update_vg_tag(vg_uuid, old_tag_prefix, new_tag):
                 if t.strip().startswith(old_tag_prefix)]
 
     # Add new tag first - ensures VG always has at least one matchable tag,
-    # even if the subsequent deltag fails. This makes retry safe: get_vgs_info(tag=INIT_TAG)
+    # even if the subsequent deltag fails. This makes retry safe: get_managed_vgs(tag=INIT_TAG)
     # can always find the VG.
     bash.bash_errorout("timeout -s SIGKILL %s vgchange --addtag %s %s" % (lvm_cmd_timeout_with_locking, linux.shellquote(new_tag), vg_uuid))
 
