@@ -238,6 +238,13 @@ class CleanupVmMetadataRsp(NfsResponse):
         super(CleanupVmMetadataRsp, self).__init__()
 
 
+class CleanupAllVmMetadataRsp(NfsResponse):
+    def __init__(self):
+        super(CleanupAllVmMetadataRsp, self).__init__()
+        self.cleanedCount = 0
+        self.failedCount = 0
+
+
 class PrefixRebaseBackingFilesRsp(NfsResponse):
     def __init__(self):
         super(PrefixRebaseBackingFilesRsp, self).__init__()
@@ -293,6 +300,7 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
     GET_VM_INSTANCE_METADATA_PATH = "/nfsprimarystorage/vm/metadata/get"
     SCAN_VM_METADATA_PATH = "/nfsprimarystorage/vm/metadata/scan"
     CLEANUP_VM_METADATA_PATH = "/nfsprimarystorage/vm/metadata/cleanup"
+    CLEANUP_ALL_VM_METADATA_PATH = "/nfsprimarystorage/vm/metadata/cleanup-all"
     NFS_PREFIX_REBASE_BACKING_FILES_PATH = "/nfsprimarystorage/snapshot/prefixrebasebackingfiles"
 
     _metadata_handler = FileBasedMetadataHandler()
@@ -345,6 +353,7 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.GET_VM_INSTANCE_METADATA_PATH, self.get_vm_instance_metadata)
         http_server.register_async_uri(self.SCAN_VM_METADATA_PATH, self.scan_vm_metadata)
         http_server.register_async_uri(self.CLEANUP_VM_METADATA_PATH, self.cleanup_vm_metadata)
+        http_server.register_async_uri(self.CLEANUP_ALL_VM_METADATA_PATH, self.cleanup_all_vm_metadata)
         http_server.register_async_uri(self.NFS_PREFIX_REBASE_BACKING_FILES_PATH, self.prefix_rebase_backing_files)
 
         self.mount_path = {}
@@ -1145,6 +1154,16 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         self.check_nfs_mounted(self.mount_path.get(cmd.uuid))
         rsp = CleanupVmMetadataRsp()
         self._metadata_handler.cleanup(cmd)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def cleanup_all_vm_metadata(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        self.check_nfs_mounted(self.mount_path.get(cmd.uuid))
+        rsp = CleanupAllVmMetadataRsp()
+        result = self._metadata_handler.cleanup_all(cmd) or {}
+        rsp.cleanedCount = int(result.get('cleanedCount', 0) or 0)
+        rsp.failedCount = int(result.get('failedCount', 0) or 0)
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
