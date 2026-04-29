@@ -1194,6 +1194,8 @@ class CephAgent(object):
         ioctx = self.get_ioctx(pool_name)
         try:
             token = ioctx.read(image_name + "-export")
+            if isinstance(token, bytes):
+                token = token.decode()
             if 'token' not in kwargs or token != kwargs['token']:
                 rsp.status = 403
                 return "Forbidden"

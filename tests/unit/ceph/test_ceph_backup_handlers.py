@@ -327,6 +327,63 @@ class TestCephBackupAddExportToken:
 
 
 # ---------------------------------------------------------------------------
+# export
+# ---------------------------------------------------------------------------
+@pytest.mark.ceph
+class TestCephBackupExport:
+    class Response:
+        def __init__(self):
+            self.status = 200
+            self.headers = {}
+
+    class Request:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def test_export_accepts_bytes_token_matching_url_token(self):
+        agent = _make_agent()
+        image_uuid = "1234567890abcdef1234567890abcdef"
+        mock_ioctx = MagicMock()
+        mock_ioctx.read.return_value = b"secret-token-123"
+        agent.get_ioctx = MagicMock(return_value=mock_ioctx)
+        rsp = self.Response()
+
+        with patch.object(module.rbd, "Image", return_value=MagicMock()) as image, \
+                patch.object(module, "ImageFileObject") as image_file_object, \
+                patch.object(module, "_serve_fileobj", return_value="file-response") as serve_fileobj:
+            image_file_object.return_value.size = 1024
+            result = agent.export(self.Request(), rsp,
+                                  pool="pool1",
+                                  image="ceph://pool1/%s" % image_uuid,
+                                  token="secret-token-123")
+
+        assert result == "file-response"
+        assert rsp.status == 200
+        mock_ioctx.read.assert_called_once_with("%s-export" % image_uuid)
+        image.assert_called_once_with(mock_ioctx, image_uuid, read_only=True)
+        serve_fileobj.assert_called_once()
+
+    def test_export_rejects_mismatched_bytes_token(self):
+        agent = _make_agent()
+        image_uuid = "1234567890abcdef1234567890abcdef"
+        mock_ioctx = MagicMock()
+        mock_ioctx.read.return_value = b"secret-token-123"
+        agent.get_ioctx = MagicMock(return_value=mock_ioctx)
+        rsp = self.Response()
+
+        result = agent.export(self.Request(), rsp,
+                              pool="pool1",
+                              image="ceph://pool1/%s" % image_uuid,
+                              token="wrong-token")
+
+        assert result == "Forbidden"
+        assert rsp.status == 403
+
+
+# ---------------------------------------------------------------------------
 # remove_export_token
 # ---------------------------------------------------------------------------
 @pytest.mark.ceph
