@@ -182,13 +182,22 @@ fi
 # causing SNS HTTPTopicAndEndPointCreator to fail on persist() due to missing platform record.
 # Note: foreign_key_checks is a session-level variable, cannot be set in my.cnf directly.
 # Use init-file to execute SET GLOBAL at MariaDB startup.
+# IMPORTANT: place init-file OUTSIDE mysql datadir (/var/lib/mysql), because:
+#   1) datadir is owned/managed by mariadb-prepare-db-dir; planting files there
+#      can cause "directory not empty, cannot initialize" failures on first start.
+#   2) once init-file is referenced from my.cnf, deleting/cleaning datadir would
+#      leave my.cnf pointing at a missing file -> mariadbd aborts on next start.
 if grep -qi 'Alibaba Cloud Linux' /etc/os-release 2>/dev/null; then
-    grep 'foreign_key_checks' $mysql_conf >/dev/null 2>&1
+    grep 'init-file=.*init_fk.sql' $mysql_conf >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo "foreign_key_checks=0 via init-file (Alinux4 workaround)"
-        echo "SET GLOBAL foreign_key_checks=0;" > /var/lib/mysql/init_fk.sql
-        chown mysql:mysql /var/lib/mysql/init_fk.sql
-        sed -i '/\[mysqld\]/a init-file=/var/lib/mysql/init_fk.sql\' $mysql_conf
+        init_fk_dir=/var/lib/zstack
+        init_fk_file=$init_fk_dir/init_fk.sql
+        mkdir -p $init_fk_dir
+        echo "SET GLOBAL foreign_key_checks=0;" > $init_fk_file
+        chown mysql:mysql $init_fk_file
+        chmod 644 $init_fk_file
+        sed -i "/\[mysqld\]/a init-file=$init_fk_file" $mysql_conf
     fi
 fi
 
@@ -265,7 +274,7 @@ zstone_db_dump_skip_tables = ""
 configure_yum_repo_script = '''
 if [ -f /etc/redhat-release ]; then
     os_release=`cat /etc/redhat-release`
-    if [[ $os_release =~ 'Alibaba Cloud Linux' ]]; then
+    if [[ $os_release =~ 'Alibaba Cloud Linux' ]] && grep -Eq '^VERSION_ID="?4(\.|")' /etc/os-release 2>/dev/null; then
         [ -d /etc/yum.repos.d/ ] && [ ! -f /etc/yum.repos.d/zstack-aliyun-yum.repo ] && cat << 'EOF' > /etc/yum.repos.d/zstack-aliyun-yum.repo
 #aliyun alinux4 base
 [alibase]
@@ -283,63 +292,6 @@ enabled=0
 gpgcheck=0
 module_hotfixes=true
 
-[aliextras]
-name=ALinux-4 - Plus - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/alinux/4/plus/$basearch/
-enabled=0
-gpgcheck=0
-module_hotfixes=true
-
-[aliepel]
-name=ALinux-4 - Devel - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/alinux/4/devel/$basearch/
-enabled=0
-gpgcheck=0
-module_hotfixes=true
-
-[zstack-rpm-mirror]
-name=ZStack RPM Mirror
-baseurl=http://mirrors.rpms.zstack.io/$basearch/h84r/5.5.6/
-enabled=0
-gpgcheck=0
-includepkgs=grafana zs-forecast-capacity
-EOF
-        [ -d /etc/yum.repos.d/ ] && [ ! -f /etc/yum.repos.d/zstack-163-yum.repo ] && cat << 'EOF' > /etc/yum.repos.d/zstack-163-yum.repo
-#163 alinux4 (fallback to aliyun)
-[163base]
-name=ALinux-4 - OS - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/alinux/4/os/$basearch/
-gpgcheck=0
-enabled=0
-module_hotfixes=true
-
-[163updates]
-name=ALinux-4 - Updates - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/alinux/4/updates/$basearch/
-enabled=0
-gpgcheck=0
-module_hotfixes=true
-
-[163extras]
-name=ALinux-4 - Plus - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/alinux/4/plus/$basearch/
-enabled=0
-gpgcheck=0
-module_hotfixes=true
-
-[ustcepel]
-name=ALinux-4 - Devel - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/alinux/4/devel/$basearch/
-enabled=0
-gpgcheck=0
-module_hotfixes=true
-
-[zstack-rpm-mirror]
-name=ZStack RPM Mirror
-baseurl=http://mirrors.rpms.zstack.io/$basearch/h84r/5.5.6/
-enabled=0
-gpgcheck=0
-includepkgs=grafana zs-forecast-capacity
 EOF
     elif [[ $os_release =~ ' 7' ]]; then
         [ -d /etc/yum.repos.d/ ] &&  [ ! -f /etc/yum.repos.d/epel.repo ] && cat << 'EOF' > /etc/yum.repos.d/epel.repo
@@ -1221,6 +1173,13 @@ class Ctl(object):
 
         self.verbose = args.verbose
         globals()['verbose'] = self.verbose
+
+        # Python 3 argparse: subparsers default to required=False, so running
+        # `zstack-ctl` with no sub-command leaves sub_command_name=None.
+        # Print help instead of raising KeyError.
+        if args.sub_command_name is None:
+            self.main_parser.print_help()
+            sys.exit(0)
 
         cmd = self.commands[args.sub_command_name]
 
@@ -3708,12 +3667,12 @@ class InstallDbCmd(Command):
       register: install_result
 
     - name: install MySQL for RedHat 6 through user defined repos
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and ansible_distribution != 'Alibaba' and yum_repo != 'false'
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and yum_repo != 'false'
       shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y mysql mysql-server
       register: install_result
 
     - name: install MySQL for RedHat 6 through system defined repos
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and ansible_distribution != 'Alibaba' and yum_repo == 'false'
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and yum_repo == 'false'
       shell: "yum clean metadata; yum --nogpgcheck install -y mysql mysql-server "
       register: install_result
 
@@ -3767,7 +3726,7 @@ class InstallDbCmd(Command):
       script: $post_install_script
 
     - name: enable MySQL daemon on RedHat 6
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and ansible_distribution != 'Alibaba'
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4)
       service: name=mysqld state=restarted enabled=yes
 
     - name: enable MySQL daemon on RedHat 7/Helix 8/ Kyliin10/openEuler/UnionTech kongzi/Nfs
@@ -3803,7 +3762,7 @@ class InstallDbCmd(Command):
       shell: $grant_access_cmd
 
     - name: rollback MySQL installation on RedHat 6
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and ansible_distribution != 'Alibaba' and change_root_result.rc != 0 and install_result.changed == True
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mysql mysql-server
 
     - name: rollback MySQL installation on RedHat 7/ Helix 8
@@ -8396,13 +8355,13 @@ fi
 if [ $$? -eq 0 ]; then
     usermod -d $install_path zstack
 else
-    useradd -d $install_path zstack && mkdir -p $install_path && chown -R zstack.zstack $install_path
+    useradd -d $install_path zstack && mkdir -p $install_path && chown -R zstack:zstack $install_path
 fi
 grep 'zstack' /etc/sudoers >/dev/null || echo 'zstack        ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers
 grep '^root' /etc/sudoers >/dev/null || echo 'root        ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers
 sed -i '/requiretty$$/d' /etc/sudoers
-chown -R zstack.zstack $install_path
-mkdir /home/zstack && chown -R zstack.zstack /home/zstack
+chown -R zstack:zstack $install_path
+mkdir /home/zstack && chown -R zstack:zstack /home/zstack
 zstack-ctl setenv ZSTACK_HOME=$install_path/apache-tomcat/webapps/zstack
 '''
         t = string.Template(setup_account)
@@ -8964,7 +8923,7 @@ class BootstrapCmd(Command):
         return False
 
     def run(self, args):
-        shell('id -u zstack 2>/dev/null || (useradd -d %s zstack -s /bin/false && mkdir -p %s && chown -R zstack.zstack %s)' % (ctl.USER_ZSTACK_HOME_DIR, ctl.USER_ZSTACK_HOME_DIR, ctl.USER_ZSTACK_HOME_DIR))
+        shell('id -u zstack 2>/dev/null || (useradd -d %s zstack -s /bin/false && mkdir -p %s && chown -R zstack:zstack %s)' % (ctl.USER_ZSTACK_HOME_DIR, ctl.USER_ZSTACK_HOME_DIR, ctl.USER_ZSTACK_HOME_DIR))
         shell("grep 'zstack' /etc/sudoers || echo 'zstack        ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers")
         shell('mkdir -p %s && chown zstack:zstack %s' % (ctl.USER_ZSTACK_HOME_DIR, ctl.USER_ZSTACK_HOME_DIR))
 

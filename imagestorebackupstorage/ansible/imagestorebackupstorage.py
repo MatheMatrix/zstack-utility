@@ -117,17 +117,12 @@ if host_info.distro in RPM_BASED_OS:
         'h84r': ' collectd-disk pyparted iscsi-initiator-utils',
         'uos20r': ' collectd-disk pyparted iscsi-initiator-utils',
         'h2203sp1o': ' collectd-disk iscsi-initiator-utils python2-pyparted',
-        'alinux4': ' iscsi-initiator-utils',
+        'alinux4': ' iscsi-initiator-utils python3-pyparted',
     }
 
     for k in kylin:
         releasever_mapping[k] = ' python2-pyparted nettle open-iscsi'
     qemu_pkg += releasever_mapping.get(releasever, ' pyparted iscsi-initiator-utils')
-
-    # alinux4: remove packages not available
-    if releasever == 'alinux4':
-        _alinux4_skip = {'fuse-sshfs', 'blktrace', 'pyparted'}
-        qemu_pkg = ' '.join(p for p in qemu_pkg.split() if p not in _alinux4_skip)
 
     if not remote_bin_installed(host_post_info, "qemu-img", return_status=True):
         qemu_pkg += ' qemu-img'

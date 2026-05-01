@@ -92,8 +92,11 @@ releasever = get_host_releasever(host_info)
 host_post_info.releasever = releasever
 
 # alinux4: also enable zstack-local repo for packages not in remote repos
-if releasever == "alinux4" and zstack_repo != "false" and "zstack-local" not in zstack_repo:
-    zstack_repo = zstack_repo.strip('"') + ",zstack-local"
+if releasever == "alinux4" and zstack_repo != "false":
+    repo_items = [r.strip() for r in zstack_repo.strip('"').split(",") if r.strip()]
+    if "zstack-local" not in repo_items:
+        repo_items.append("zstack-local")
+        zstack_repo = ",".join(repo_items)
 
 # get remote host arch
 IS_AARCH64 = host_info.host_arch == 'aarch64'
@@ -395,7 +398,9 @@ def install_kvm_pkg():
         
         arch_exclude_mapping = {
             'loongarch64': 'edac-utils freeipmi lldpd libcbd',
-            'x86_64_alinux4': 'usbredir-server collectd-virt storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils collectd-disk lldpd edk2.git-ovmf-x64'
+            'x86_64_alinux4': 'usbredir-server collectd-virt storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils collectd-disk lldpd edk2.git-ovmf-x64',
+            # aarch64 alinux4: same RAID/x86 firmware exclusions, plus edk2-aarch64 already covered separately
+            'aarch64_alinux4': 'usbredir-server collectd-virt storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils collectd-disk lldpd edk2.git-ovmf-x64'
         }
 
         arch_release_mapping = {
@@ -1019,10 +1024,9 @@ def copy_ovs_tools():
     run_remote_command(command, host_post_info)
 
 
-@on_debian_based(host_info.distro, exclude=['Kylin'])
 def set_legacy_iptables_ebtables():
-    """set legacy mode if needed; on alinux4 deploy ebtables wrapper for --logical-in compatibility"""
-    if releasever == "alinux4":
+    """set legacy mode if needed; on alinux4 deploy ebtables wrapper for --logical-in compatibility."""
+    if releasever == "alinux4" and host_info.distro in RPM_BASED_OS:
         # alinux4 has no ebtables-legacy; deploy wrapper that translates --logical-in to -i
         wrapper = (
             '#!/bin/bash\n'
@@ -1044,7 +1048,7 @@ def set_legacy_iptables_ebtables():
         host_post_info.post_label = "ansible.shell.switch.legacy-version"
         host_post_info.post_label_param = None
         run_remote_command(command, host_post_info)
-    else:
+    elif host_info.distro in DEB_BASED_OS and host_info.distro != 'kylin4.0.2':
         command = "update-alternatives --set iptables /usr/sbin/iptables-legacy;" \
                   "update-alternatives --set ebtables /usr/sbin/ebtables-legacy"
         host_post_info.post_label = "ansible.shell.switch.legacy-version"
@@ -1053,13 +1057,27 @@ def set_legacy_iptables_ebtables():
 
 
 def create_ovmf_symlinks():
-    """on alinux4, install edk2.git-ovmf-x64 from ZStack repo (alinux4 native edk2-ovmf lacks UEFI video drivers)"""
+    """on alinux4, install edk2.git-ovmf-x64 from ZStack repo (alinux4 native edk2-ovmf lacks UEFI video drivers).
+
+    The rpm is built into the alinux4 ISO repo via mkrepo_alinux4 + comps_alinux4.xml.tmpl,
+    so it must be installable from the local zstack-local/zstack-mn repos.
+    No external network fallback - offline deployment is the product baseline.
+
+    Two independent idempotent steps:
+      1) yum install -y is itself idempotent; running it unconditionally also self-heals
+         a previous half-installed state.
+      2) Symlink check/recreate runs every time so a missing/broken secboot link is
+         repaired even when the rpm is already present.
+    """
     if releasever != "alinux4":
         return
+    # edk2.git-ovmf-x64 is x86 firmware; aarch64 alinux4 uses edk2-aarch64 instead
+    if host_info.host_arch != 'x86_64':
+        return
     command = (
-        "rpm -q edk2.git-ovmf-x64 > /dev/null 2>&1 || "
-        "yum install -y --disablerepo='*' --enablerepo='zstack-local,zstack-mn' edk2.git-ovmf-x64 || "
-        "rpm -ivh http://mirrors.rpms.zstack.io/x86_64/h84r/5.5.12/Packages/edk2.git-ovmf-x64-0-20190704.1178.g4ac8ceb5d6.noarch.rpm; "
+        # 1) install (idempotent)
+        "yum install -y --disablerepo='*' --enablerepo='zstack-local,zstack-mn' edk2.git-ovmf-x64 && "
+        # 2) (re)create secboot symlinks unconditionally; ln -sf is idempotent
         "cd /usr/share/edk2.git/ovmf-x64 && "
         "ln -sf OVMF_CODE-need-smm.fd OVMF_CODE-with-secboot.fd && "
         "ln -sf OVMF_VARS-need-smm.fd OVMF_VARS-with-secboot.fd"
