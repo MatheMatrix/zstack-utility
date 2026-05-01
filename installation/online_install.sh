@@ -293,7 +293,7 @@ do_check_system(){
     zstack_home=`eval echo ~zstack`
     if [ ! -d $zstack_home ];then
         mkdir -p $zstack_home >>$ZSTACK_INSTALL_LOG 2>&1
-        chown -R zstack.zstack $zstack_home >>$ZSTACK_INSTALL_LOG 2>&1
+        chown -R zstack:zstack $zstack_home >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     grep 'zstack' /etc/sudoers >/dev/null || echo 'zstack        ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers
     grep '^root' /etc/sudoers >/dev/null || echo 'root ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers
@@ -828,15 +828,15 @@ cs_config_zstack_properties(){
     rsa_key_folder=${ZSTACK_INSTALL_ROOT}/${CATALINA_ZSTACK_CLASSES}/ansible/rsaKeys
     /bin/rm -f ${rsa_key_folder}/*
     ssh-keygen -f ${rsa_key_folder}/id_rsa -N '' -q
-    chown -R zstack.zstack ${rsa_key_folder}
+    chown -R zstack:zstack ${rsa_key_folder}
     pass
 }
 
 cs_chown_install_root(){
     echo_subtitle "Change Ownership of ZStack Install Root"
-    chown -R zstack.zstack $ZSTACK_INSTALL_ROOT >>$ZSTACK_INSTALL_LOG 2>&1
+    chown -R zstack:zstack $ZSTACK_INSTALL_ROOT >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -ne 0 ];then
-        fail "failed to chown for $ZSTACK_INSTALL_ROOT with zstack.zstack"
+        fail "failed to chown for $ZSTACK_INSTALL_ROOT with zstack:zstack"
     fi
     pass
 }

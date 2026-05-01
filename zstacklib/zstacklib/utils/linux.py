@@ -1792,7 +1792,8 @@ def _migrate_resolved_dns(src_dev, dest_dev):
 
     try:
         # resolvectl dns <dev> prints: "Link 2 (enp1s0): 223.5.5.5 8.8.8.8"
-        out = shell.call('resolvectl dns %s' % src_dev, exception=False)
+        # Force LC_ALL=C so the format is locale-independent
+        out = shell.call('LC_ALL=C resolvectl dns %s' % src_dev, exception=False)
         if not out or ':' not in out:
             return
 
@@ -1805,7 +1806,7 @@ def _migrate_resolved_dns(src_dev, dest_dev):
             return
 
         # Check if dest already has DNS configured
-        dest_out = shell.call('resolvectl dns %s' % dest_dev, exception=False)
+        dest_out = shell.call('LC_ALL=C resolvectl dns %s' % dest_dev, exception=False)
         if dest_out and ':' in dest_out:
             dest_dns = dest_out.split(':', 1)[1].strip()
             if dest_dns:
@@ -1813,9 +1814,9 @@ def _migrate_resolved_dns(src_dev, dest_dev):
                 return
 
         # Apply DNS servers to the bridge device
-        shell.call('resolvectl dns %s %s' % (dest_dev, ' '.join(dns_servers)))
+        shell.call('LC_ALL=C resolvectl dns %s %s' % (dest_dev, ' '.join(dns_servers)))
         # Set the bridge as a default-route DNS link so it handles all domains
-        shell.call('resolvectl domain %s "~."' % dest_dev)
+        shell.call('LC_ALL=C resolvectl domain %s "~."' % dest_dev)
         logger.debug("Migrated DNS servers [%s] from %s to %s" % (' '.join(dns_servers), src_dev, dest_dev))
     except Exception as e:
         logger.warning("Failed to migrate resolved DNS from %s to %s: %s" % (src_dev, dest_dev, str(e)))
