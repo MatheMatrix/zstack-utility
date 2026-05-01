@@ -49,6 +49,7 @@ from kvmagent import kvmagent
 from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
+from kvmagent.plugins import vm_artifact
 from kvmagent.plugins.imagestore import ImageStoreClient
 from kvmagent.plugins.shared_block_plugin import MAX_ACTUAL_SIZE_FACTOR
 from zstacklib.utils import bash, plugin, iscsi, gpu
@@ -6940,6 +6941,12 @@ class Vm(object):
 
             make_pvpanic(cmd.addons['panicIsa'], cmd.addons['panicHyperv'])
 
+        def make_vm_artifact_views():
+            views = vm_artifact.get_addon(cmd.addons, vm_artifact.ADDON_VM_ARTIFACT_VIEWS)
+            if not views:
+                return
+            vm_artifact.add_virtiofs_devices(elements['devices'], views, e)
+
         # FIXME: manage scsi device in one place.
         def make_storage_device(storageDevices):
             lvm.unpriv_sgio()
@@ -7231,6 +7238,7 @@ class Vm(object):
         if not cmd.addons or cmd.addons['noConsole'] is not True:
             make_graphic_console()
         make_addons()
+        make_vm_artifact_views()
         make_balloon_memory()
         make_console()
         make_sec_label()
