@@ -28,7 +28,7 @@ pkg_zstacklib = ""
 yum_server = ""
 trusted_host = ""
 
-RPM_BASED_OS = ["centos", "redhat", "alibaba", "kylin10", "uos1021a", "rocky", "helix"]
+RPM_BASED_OS = ["centos", "redhat", "alibaba", "alinux", "kylin10", "uos1021a", "rocky", "helix"]
 DEB_BASED_OS = ["ubuntu", "kylin4.0.2", "uos", "debian", "uniontech"]
 DISTRO_WITH_RPM_DEB = ["kylin"]
 
@@ -254,6 +254,7 @@ def get_host_releasever(ansible_distribution):
         "uniontech kongzi 20": "uos1021a",
         "rocky green obsidian 8.4": "rl84",
         "uniontech os 20.06r": "uos20r",
+        "alibaba cloud linux pro edition 4": "alinux4",
     }
     _key = " ".join(ansible_distribution).lower()
     _releasever = supported_release_info.get(_key)

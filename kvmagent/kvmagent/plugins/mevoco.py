@@ -131,8 +131,10 @@ class NamespaceInfraEnv(object):
         if ret != 0:
             bash_errorout(get_ebtables_cmd() + ' -t nat -N {{EBCHAIN_NAME}}')
 
-        if bash_r(get_ebtables_cmd() + " -t nat -L PREROUTING | grep -- '--logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}'") != 0:
-            bash_errorout(get_ebtables_cmd() + ' -t nat -I PREROUTING --logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}')
+        if bash_r(get_ebtables_cmd() + " -t nat -L PREROUTING | grep -E -- '(--logical-in|-i) {{BR_NAME}} -j {{EBCHAIN_NAME}}'") != 0:
+            # try --logical-in first; fall back to -i for kernels (e.g. alinux4 >= 6.6.102-5.3) that reject `meta ibrname`
+            if bash_r(get_ebtables_cmd() + ' -t nat -I PREROUTING --logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}') != 0:
+                bash_errorout(get_ebtables_cmd() + ' -t nat -I PREROUTING -i {{BR_NAME}} -j {{EBCHAIN_NAME}}')
 
         # ebtables has a bug that will eliminate 0 in MAC, for example, aa:bb:0c will become aa:bb:c
         macAddr = ip.removeZeroFromMacAddress(MAC)
@@ -1687,8 +1689,10 @@ tag:{{TAG}},option:dns-server,{{DNS}}
         if ret != 0:
             bash_errorout(get_ebtables_cmd() + ' -t nat -N {{EBCHAIN_NAME}}')
 
-        if bash_r(get_ebtables_cmd() + " -t nat -L PREROUTING | grep -- '--logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}'") != 0:
-            bash_errorout(get_ebtables_cmd() + ' -t nat -I PREROUTING --logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}')
+        if bash_r(get_ebtables_cmd() + " -t nat -L PREROUTING | grep -E -- '(--logical-in|-i) {{BR_NAME}} -j {{EBCHAIN_NAME}}'") != 0:
+            # try --logical-in first; fall back to -i for kernels (e.g. alinux4 >= 6.6.102-5.3) that reject `meta ibrname`
+            if bash_r(get_ebtables_cmd() + ' -t nat -I PREROUTING --logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}') != 0:
+                bash_errorout(get_ebtables_cmd() + ' -t nat -I PREROUTING -i {{BR_NAME}} -j {{EBCHAIN_NAME}}')
 
         # ebtables has a bug that will eliminate 0 in MAC, for example, aa:bb:0c will become aa:bb:c
         cidr = ip.IpAddress(to.vmIp).toCidr(to.netmask)

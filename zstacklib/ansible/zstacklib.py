@@ -43,13 +43,13 @@ apt_server = ""
 trusted_host = ""
 uos = ['uos20', 'uos1021a']
 kylin = ["ky10sp1", "ky10sp2", "ky10sp3", "ky10sp3.2403"]
-centos = ['c74', 'c76', 'c79', 'h76c', 'h79c', 'rl84', 'h84r', 'uos20r']
-enable_networkmanager_list = kylin + ["euler20", "uos1021a", "nfs4", "oe2203sp1", "h2203sp1o", "oe2403sp1"]
+centos = ['c74', 'c76', 'c79', 'h76c', 'h79c', 'rl84', 'h84r', 'uos20r', 'alinux4']
+enable_networkmanager_list = kylin + ["euler20", "uos1021a", "nfs4", "oe2203sp1", "h2203sp1o", "oe2403sp1", "alinux4"]
 supported_arch_list = ["x86_64", "aarch64", "mips64el", "loongarch64"]
 
 KYLIN_DISTRO = ["kylin_zstack", "kylin_tercel", "kylin_sword", "kylin_lance", "kylin_halberd"]
 RPM_BASED_OS = ["kylin_zstack", "kylin_tercel", "kylin_sword", "kylin_lance", "kylin_halberd",
-                "alibaba", "centos", "openeuler", "uniontech_kongzi", "nfs",
+                "alibaba", "alinux", "centos", "openeuler", "uniontech_kongzi", "nfs",
                 "redhat", "rocky", "helix", "uniontech_na"]
 DEB_BASED_OS = ["ubuntu", "uos", "kylin4.0.2", "debian", "uniontech_fou"]
 DISTRO_WITH_RPM_DEB = ["kylin", "uniontech"]
@@ -72,7 +72,8 @@ qemu_alias = {
     'h76c': 'qemu-kvm',
     'h79c': 'qemu-kvm',
     'h84r': 'qemu-kvm',
-    'uos20r': 'qemu-kvm'
+    'uos20r': 'qemu-kvm',
+    'alinux4': 'qemu-kvm'
 }
 
 ansible_constants.set_constant('HOST_KEY_CHECKING', False)
@@ -560,6 +561,7 @@ def get_host_releasever(host_info):
         "rocky green obsidian 8.4": "rl84",
         "uniontech os 20.06r": "uos20r",
         "uniontech os 20.06": "uos20r",
+        "alibaba cloud linux pro edition 4": "alinux4",
     }
     # _key = " ".join(ansible_distribution).lower()
     _releasever = supported_release_info.get(host_info.ansible_distribution)
@@ -2289,7 +2291,8 @@ def install_release_on_host(is_rpm, host_info, host_post_info):
             'h84r': 'h8',
             'uos20r': 'h8',
             'h2203sp1o': 'h2203sp1',
-            'oe2403sp1': 'oe2403sp1'}
+            'oe2403sp1': 'oe2403sp1',
+            'alinux4': 'h8'}
         release_name = release_name_mapping.get(releasever, 'el7')
         pkg_name = 'zstack-release-{0}-1.{1}.zstack.noarch.rpm'.format(releasever, release_name)
         src_pkg = '/opt/zstack-dvd/{0}/{1}/Packages/{2}'.format(host_info.host_arch, releasever, pkg_name)
@@ -2353,7 +2356,7 @@ class ZstackLib(object):
             if user_defined:
                 # Enable extra repo for install centos-release-qemu-ev in
                 # kvm.py
-                if self.distro_version >= 7 and self.zstack_releasever in centos:
+                if (self.distro_version >= 7 or self.zstack_releasever == 'alinux4') and self.zstack_releasever in centos:
                     self.copy_redhat_yum_repo()
                 # zstack_repo is empty, will use system repo
                 # python3-libselinux is needed by ansible copy/file/template/
@@ -2370,7 +2373,7 @@ class ZstackLib(object):
                 if 'zstack-mn' in self.zstack_repo:
                     self.generate_mn_yum_repo()
                 if 'qemu-kvm-ev-mn' in self.zstack_repo and (
-                        self.distro == 'nfs' or self.distro_version >= 7):
+                        self.distro == 'nfs' or self.distro_version >= 7 or self.zstack_releasever == 'alinux4'):
                     self.generate_qemu_kvm_ev_yum_repo()
                 if 'mlnx-ofed' in self.zstack_repo:
                     self.generate_mlnx_yum_repo()
@@ -2401,7 +2404,7 @@ class ZstackLib(object):
             "python3.11-setuptools",
         }
 
-        if self.distro == 'nfs' or self.distro_version >= 7:
+        if self.distro == 'nfs' or self.distro_version >= 7 or self.zstack_releasever == 'alinux4':
             python_requirement_set.add("python3.11-pip")
         else:
             python_requirement_set.add("python-pip")
@@ -2426,7 +2429,7 @@ class ZstackLib(object):
             basic.add("iptables")
             return basic
 
-        if self.distro_version >= 7:
+        if self.distro_version >= 7 or self.zstack_releasever == 'alinux4':
             # to avoid install some pkgs on virtual router which release is
             # Centos 6.x
             basic.add("chrony")

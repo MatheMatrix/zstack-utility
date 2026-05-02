@@ -20,11 +20,11 @@
         - "{{virtenv_path}}"
 
     - name: install dependent packages on RedHat based OS from user defined repos
-      when: ansible_os_family == 'RedHat' and yum_repos != 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and yum_repos != 'false'
       shell: "yum --disablerepo=* --enablerepo={{yum_repos}} --nogpgcheck install -y wget qemu-img"
 
     - name: install dependent packages on RedHat based OS from online
-      when: ansible_os_family == 'RedHat' and yum_repos == 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and yum_repos == 'false'
       shell: "yum --nogpgcheck install -y wget qemu-img"
 
     - name: install dependent packages on Debian based OS
@@ -35,19 +35,19 @@
         - qemu-utils
 
     - name: RHEL7 specific packages from user defined repos
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version >= '7' and yum_repos != 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and ansible_distribution_version >= '7' and yum_repos != 'false'
       shell: "rpm -q iptables-services || yum --disablerepo=* --enablerepo={{yum_repos}} --nogpgcheck install -y iptables-services"
 
     - name: RHEL7 specific packages from online
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version >= '7' and yum_repos == 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and ansible_distribution_version >= '7' and yum_repos == 'false'
       shell: "rpm -q iptables-services || yum --nogpgcheck install -y iptables-services"
 
     - name: disable firewalld in RHEL7 and Centos7
-      when: ansible_os_family == 'RedHat' and ansible_distribution_version >= '7'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and ansible_distribution_version >= '7'
       shell: "(which firewalld && service firewalld stop && chkconfig firewalld off) || true"
 
     - name: disable selinux on RedHat based OS
-      when: ansible_os_family == 'RedHat'
+      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux'
       selinux: state=permissive policy=targeted
 
     - shell: virtualenv --version | grep "12.1.1"
@@ -72,7 +72,7 @@
         - install cephpagent
 
     - name: copy service file
-      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Debian'
+      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux' or ansible_os_family == 'Debian'
       copy: src=files/cephp/zstack-ceph-primarystorage dest=/etc/init.d/ mode=755
 
     - meta: flush_handlers
