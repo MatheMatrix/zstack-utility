@@ -183,8 +183,6 @@ kill_zstack_tui(){
   pkill -9 zstack_tui
 }
 
-# stop zstack_tui to prevent zstack auto installation
-stop_zstack_tui
 
 #define extra upgrade params
 #USE THIS PATTERN: upgrade_params_array[INDEX]='VERSION,PARAM'
