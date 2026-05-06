@@ -486,8 +486,6 @@ class OvsStateQuerier(object):
         return ext_ids
 
 
-# --- Desired State Builder ---
-
 class DesiredStateBuilder(object):
     """Builds complete desired state from a provision command."""
 
@@ -511,11 +509,10 @@ class DesiredStateBuilder(object):
             dp_type = 'netdev' if sw_type == 'dpdk' else 'system'
             transport_zones = getattr(sw, 'transportZones', None) or []
 
-            tep_ip, physical_network = None, None
+            tep_ip = getattr(sw, 'tepIp', None)
+            physical_network = None
             for tz in transport_zones:
                 tz_type = getattr(tz, 'type_', None) or getattr(tz, 'type', None)
-                if tz_type != 'vlan' and getattr(tz, 'tepIp', None) and tep_ip is None:
-                    tep_ip = tz.tepIp
                 if tz_type == 'vlan' and getattr(tz, 'physicalNetwork', None):
                     physical_network = tz.physicalNetwork
 
@@ -1058,12 +1055,9 @@ class OvsProvisioner(object):
 
         for sw in desired_switches:
             switch_result = {'name': sw.name, 'status': 'realized'}
-            tzs = getattr(sw, 'transportZones', None) or []
-            for tz in tzs:
-                tz_type = getattr(tz, 'type_', None) or getattr(tz, 'type', None)
-                if tz_type != 'vlan' and getattr(tz, 'tepIp', None):
-                    switch_result['tepIp'] = tz.tepIp
-                    break
+            tep_ip = getattr(sw, 'tepIp', None)
+            if tep_ip:
+                switch_result['tepIp'] = tep_ip
             rsp.hostSwitches.append(switch_result)
         return rsp
 
