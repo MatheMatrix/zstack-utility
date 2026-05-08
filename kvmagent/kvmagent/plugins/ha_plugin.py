@@ -1761,6 +1761,7 @@ class HaPlugin(kvmagent.KvmAgent):
     SETUP_CBD_SELF_FENCER_PATH = "/ha/cbd/setupselffencer"
     CANCEL_CBD_SELF_FENCER_PATH = "/ha/cbd/cancelselffencer"
     CBD_CHECK_VMSTATE_PATH = "/cbd/check/vmstate"
+    SIBLING_FENCE_VM_PATH = "/ha/sibling-fence-vm"
 
     FENCER_STATE_PATH = "/ha/selffencer/state"
 
@@ -2698,6 +2699,161 @@ class HaPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    def sibling_fence_vm(self, req):
+        # SSH-based sibling fence for Ceph HA. See ZSTAC-83890 / Task 5.
+        # Request body fields (sent by CephSiblingFencer.java):
+        #   failedHostIp, failedHostSshPort (default 22), vmUuid, [failedHostUuid]
+        # Response shape MUST match SiblingFenceVmOnHostReply field names exactly.
+        import re
+        # Strict input validators to defend against shell injection.
+        _UUID_RE = re.compile(r'^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+        _IPV4_RE = re.compile(r'^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$')
+        _IPV6_RE = re.compile(r'^[0-9a-fA-F:]+$')
+
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentRsp()
+        # Conservative defaults: alive=True so any early-return on
+        # validation/parse/local error does NOT signal "host dead" to the
+        # caller. The caller treats !alive as fence-success and would start a
+        # new VM — if the old qemu is still running we get a split-brain. So
+        # alive=False is set ONLY by the two paths that have positive evidence:
+        # (a) ssh probe rc!=0 (host considered dead) and (b) virsh list
+        # confirms the VM is not running on the failed host.
+        rsp.alive = True
+        rsp.killed = False
+        rsp.sshReachable = False
+        rsp.qemuFound = False
+        rsp.executorHostUuid = self.config.get(kvmagent.HOST_UUID)
+        rsp.executorRole = "sibling"
+        rsp.reason = ""
+
+        vm_uuid = cmd.vmUuid
+        host_ip = cmd.failedHostIp
+        try:
+            ssh_port = int(cmd.failedHostSshPort) if cmd.failedHostSshPort else 22
+        except (TypeError, ValueError):
+            rsp.reason = "invalid failedHostSshPort"
+            logger.warn("[sibling-fence-vm] %s: %r" % (rsp.reason, cmd.failedHostSshPort))
+            return jsonobject.dumps(rsp)
+        failed_host_uuid = getattr(cmd, 'failedHostUuid', None)
+
+        logger.info("[sibling-fence-vm] enter vm=%s failedHostIp=%s failedHostUuid=%s executor=%s" % (
+            vm_uuid, host_ip, failed_host_uuid, rsp.executorHostUuid))
+
+        if not vm_uuid or not host_ip:
+            rsp.reason = "missing vmUuid or failedHostIp"
+            logger.warn("[sibling-fence-vm] %s" % rsp.reason)
+            return jsonobject.dumps(rsp)
+
+        # Validate vm_uuid (must be UUID, used in shell commands).
+        if not _UUID_RE.match(vm_uuid):
+            rsp.reason = "invalid vmUuid format"
+            logger.warn("[sibling-fence-vm] reject vmUuid=%r" % vm_uuid)
+            return jsonobject.dumps(rsp)
+
+        # Validate host_ip (IPv4 or IPv6 numeric only — no hostnames, no shell metacharacters).
+        if not (_IPV4_RE.match(host_ip) or _IPV6_RE.match(host_ip)):
+            rsp.reason = "invalid failedHostIp format"
+            logger.warn("[sibling-fence-vm] reject failedHostIp=%r" % host_ip)
+            return jsonobject.dumps(rsp)
+
+        # Validate port range.
+        if ssh_port < 1 or ssh_port > 65535:
+            rsp.reason = "ssh port out of range"
+            logger.warn("[sibling-fence-vm] reject port=%d" % ssh_port)
+            return jsonobject.dumps(rsp)
+
+        ssh_base = ('ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '
+                    '-o BatchMode=yes -o ConnectTimeout=5 -p %d root@%s ' % (ssh_port, host_ip))
+
+        def _ssh(remote_cmd, timeout=10):
+            full = "timeout %d %s '%s'" % (timeout, ssh_base, remote_cmd.replace("'", "'\\''"))
+            try:
+                ret, out, err = bash.bash_roe(full)
+                logger.info("[sibling-fence-vm] ssh ret=%s cmd=%s" % (ret, remote_cmd))
+                return ret, out, err
+            except Exception as e:
+                logger.warn("[sibling-fence-vm] ssh exception cmd=%s err=%s" % (remote_cmd, str(e)))
+                return -1, "", str(e)
+
+        # Step (a): connectivity probe.
+        # SSH exit code semantics:
+        #   0       — host reachable, command ran
+        #   124     — `timeout` killed it (host or sshd hung) -> treat as dead
+        #   255     — ssh-layer failure (auth, host-key, network unreachable, conn refused)
+        #             this is AMBIGUOUS — could be misconfig (false-dead -> split-brain risk).
+        #             Conservative: refuse to fence, report failure so upper layer can retry/escalate.
+        #   other   — remote command failed (sshd alive). Host is alive at SSH layer.
+        ret, _, ssh_err = _ssh("true", timeout=8)
+        if ret == 255:
+            rsp.alive = True
+            rsp.reason = ("ssh layer failure (rc=255, likely auth/host-key/network unreachable); "
+                          "refusing to declare host dead to avoid split-brain. err=%s" % (ssh_err or "")[:200])
+            logger.warn("[sibling-fence-vm] vm=%s ssh layer failure, refuse fence: %s" % (vm_uuid, rsp.reason))
+            return jsonobject.dumps(rsp)
+        if ret != 0:
+            # Includes 124 (timeout). True host-down or sshd-hang signal.
+            # Override the conservative alive=True default with explicit
+            # alive=False — we now have positive evidence host is dead.
+            rsp.alive = False
+            rsp.reason = "ssh probe timed out or unreachable (rc=%s), host considered dead" % ret
+            logger.info("[sibling-fence-vm] vm=%s %s" % (vm_uuid, rsp.reason))
+            return jsonobject.dumps(rsp)
+
+        rsp.sshReachable = True
+
+        # Step (b): is the vm process there?
+        ret, out, _ = _ssh("virsh list --uuid", timeout=10)
+        if ret != 0:
+            rsp.alive = True
+            rsp.reason = "virsh list failed (rc=%s) — uncertain, treating as alive" % ret
+            logger.warn("[sibling-fence-vm] vm=%s %s" % (vm_uuid, rsp.reason))
+            return jsonobject.dumps(rsp)
+
+        running_uuids = [line.strip() for line in (out or "").splitlines() if line.strip()]
+        if vm_uuid not in running_uuids:
+            # qemu confirmed gone on the failed host — positive evidence the
+            # VM is no longer running, override the conservative alive=True.
+            rsp.alive = False
+            rsp.qemuFound = False
+            rsp.reason = "vm not found on failed host"
+            logger.info("[sibling-fence-vm] vm=%s not present on failed host" % vm_uuid)
+            return jsonobject.dumps(rsp)
+
+        rsp.qemuFound = True
+
+        # Step (c): try virsh destroy + pkill -9
+        d_ret, _, d_err = _ssh("virsh destroy %s" % vm_uuid, timeout=15)
+        logger.info("[sibling-fence-vm] vm=%s virsh destroy ret=%s err=%s" % (vm_uuid, d_ret, d_err))
+
+        k_ret, _, k_err = _ssh('pkill -9 -f "guest=%s"' % vm_uuid, timeout=10)
+        logger.info("[sibling-fence-vm] vm=%s pkill -9 ret=%s err=%s" % (vm_uuid, k_ret, k_err))
+
+        # Re-check
+        ret2, out2, _ = _ssh("virsh list --uuid", timeout=10)
+        if ret2 != 0:
+            rsp.alive = True
+            rsp.killed = False
+            rsp.reason = "post-kill virsh list failed (rc=%s) — uncertain" % ret2
+            logger.warn("[sibling-fence-vm] vm=%s %s" % (vm_uuid, rsp.reason))
+            return jsonobject.dumps(rsp)
+
+        running_uuids2 = [line.strip() for line in (out2 or "").splitlines() if line.strip()]
+        if vm_uuid in running_uuids2:
+            rsp.alive = True
+            rsp.killed = False
+            rsp.reason = "virsh destroy + kill -9 both failed"
+            logger.warn("[sibling-fence-vm] vm=%s %s" % (vm_uuid, rsp.reason))
+        else:
+            rsp.alive = False
+            rsp.killed = True
+            rsp.reason = "killed via virsh destroy + pkill"
+            logger.info("[sibling-fence-vm] vm=%s killed successfully" % vm_uuid)
+
+        return jsonobject.dumps(rsp)
+        # TODO(T8): add fault-injection test (mock bash.bash_roe to simulate ssh failures)
+
+    @kvmagent.replyerror
     def add_vm_fencer_rule_to_host(self, req):
         rsp = AgentRsp()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -2747,6 +2903,7 @@ class HaPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.SETUP_CBD_SELF_FENCER_PATH, self.setup_cbd_self_fencer)
         http_server.register_async_uri(self.CANCEL_CBD_SELF_FENCER_PATH, self.cancel_cbd_self_fencer)
         http_server.register_async_uri(self.CBD_CHECK_VMSTATE_PATH, self.cbd_check_vmstate)
+        http_server.register_async_uri(self.SIBLING_FENCE_VM_PATH, self.sibling_fence_vm)
 
 
         http_server.register_async_uri(self.FENCER_STATE_PATH, self.get_fencer_state)
