@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import os
 import re
@@ -82,6 +83,27 @@ def _validate_ip_address(addr):
     if not addr or not _IP_ADDR_RE.match(addr):
         raise ValueError('invalid IP address: %r' % addr)
     return addr
+
+
+def _has_active_ipv4_route(route_output):
+    """Return True if route output contains a non-link-local IPv4 route."""
+    if not route_output:
+        return False
+
+    for line in route_output.splitlines():
+        route = line.strip()
+        if not route:
+            continue
+        if 'linkdown' in route or 'linklocal' in route:
+            continue
+
+        destination = route.split()[0]
+        if destination == '169.254.0.0/16' or destination.startswith('169.254.'):
+            continue
+
+        return True
+
+    return False
 
 
 _PCI_ADDR_RE = re.compile(r'^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]$')
@@ -1143,9 +1165,9 @@ def _verify_nics_not_in_use(desired_switches, managed_bridge_names=None):
 
         # Check 4: Has routes (non-link-local)
         r, o, e = bash.bash_roe(
-            "ip route show dev %s 2>/dev/null | grep -v 'linkdown\\|linklocal' | head -1"
+            "ip route show dev %s 2>/dev/null"
             % nic_name)
-        if r == 0 and o.strip():
+        if r == 0 and _has_active_ipv4_route(o):
             raise Exception(
                 'cannot use NIC for provisioning: '
                 'nic %s has active routes and is in use. '
