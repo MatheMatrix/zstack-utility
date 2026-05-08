@@ -2161,11 +2161,12 @@ class DetachBlockCacheTaskDaemon(plugin.TaskDaemon):
     progress back to the management node via the standard task-progress
     mechanism."""
 
-    def __init__(self, task_spec, vm_uuid, volume):
-        # type: (object, str, object) -> None
+    def __init__(self, task_spec, vm_uuid, volume, disk_name):
+        # type: (object, str, object, str) -> None
         super(DetachBlockCacheTaskDaemon, self).__init__(task_spec, 'DetachBlockCache')
         self.vm_uuid = vm_uuid       # type: str
         self.volume = volume         # type: object
+        self.disk_name = disk_name   # type: str
         self.progress = 0            # type: int
         self.error = None            # type: str
 
@@ -2200,7 +2201,7 @@ class DetachBlockCacheTaskDaemon(plugin.TaskDaemon):
 
         CacheVirshWrapper.block_cache_detach(
             domain=self.vm_uuid,
-            path=self.volume.installPath,
+            path=self.disk_name,
             timeout=timeout,
             delete=delete,
             on_progress=self._on_progress)
@@ -8753,37 +8754,29 @@ class VmPlugin(kvmagent.KvmAgent):
         # type: (dict) -> str
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AttachVolumeCacheRsp()
-        try:
-            vm = get_vm_by_uuid(cmd.instanceUuid)
-            if vm.state != Vm.VM_STATE_RUNNING and vm.state != Vm.VM_STATE_PAUSED:
-                raise kvmagent.KvmError(
-                    'unable to attach volume cache to vm[uuid:%s], vm must be running or paused' % vm.uuid)
 
-            volume = cmd.volume
-            cache = getattr(volume, 'cache', None)
-            if not cache or not getattr(cache, 'installPath', None):
-                raise kvmagent.KvmError('volume.cache.installPath is required to attach volume cache')
+        vm = get_vm_by_uuid(cmd.instanceUuid)
+        if vm.state != Vm.VM_STATE_RUNNING and vm.state != Vm.VM_STATE_PAUSED:
+            raise kvmagent.KvmError(
+                'unable to attach volume cache to vm[uuid:%s], vm must be running or paused' % vm.uuid)
 
-            cache_install_path = cache.installPath  # type: str
-            target_disk, disk_name = vm._get_target_disk(volume)
-            logger.debug('attaching cache[%s] to volume[%s] disk[%s] of vm[uuid:%s]'
-                         % (cache_install_path, volume.installPath, disk_name, vm.uuid))
+        volume = cmd.volume
+        cache = getattr(volume, 'cache', None)
+        if not cache or not getattr(cache, 'installPath', None):
+            raise kvmagent.KvmError('volume.cache.installPath is required to attach volume cache')
 
-            CacheVirshWrapper.block_cache_attach(
-                domain=cmd.instanceUuid,
-                path=volume.installPath,
-                cache=cache_install_path)
+        cache_install_path = cache.installPath  # type: str
+        target_disk, disk_name = vm._get_target_disk(volume)
+        logger.debug('attaching cache[%s] to volume[%s] disk[%s] of vm[uuid:%s]'
+                     % (cache_install_path, volume.installPath, disk_name, vm.uuid))
 
-            logger.debug('successfully attached cache[%s] to volume[%s] of vm[uuid:%s]'
-                         % (cache_install_path, volume.installPath, vm.uuid))
-        except kvmagent.KvmError as ke:
-            logger.warn(linux.get_exception_stacktrace())
-            rsp.error = str(ke)
-            rsp.success = False
-        except Exception as ex:
-            logger.warn(linux.get_exception_stacktrace())
-            rsp.error = str(ex)
-            rsp.success = False
+        CacheVirshWrapper.block_cache_attach(
+            domain=cmd.instanceUuid,
+            path=disk_name,
+            cache=cache_install_path)
+
+        logger.debug('successfully attached cache[%s] to volume[%s] of vm[uuid:%s]'
+                     % (cache_install_path, volume.installPath, vm.uuid))
 
         return jsonobject.dumps(rsp)
 
@@ -8792,34 +8785,26 @@ class VmPlugin(kvmagent.KvmAgent):
         # type: (dict) -> str
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = DetachVolumeCacheRsp()
-        try:
-            vm = get_vm_by_uuid(cmd.instanceUuid)
-            if vm.state != Vm.VM_STATE_RUNNING and vm.state != Vm.VM_STATE_PAUSED:
-                raise kvmagent.KvmError(
-                    'unable to detach volume cache from vm[uuid:%s], vm must be running or paused' % vm.uuid)
 
-            volume = cmd.volume
-            cache = getattr(volume, 'cache', None)
-            timeout = int(cache.timeout) if cache and getattr(cache, 'timeout', None) else None  # type: int
-            delete = bool(getattr(cache, 'delete', False)) if cache else False  # type: bool
+        vm = get_vm_by_uuid(cmd.instanceUuid)
+        if vm.state != Vm.VM_STATE_RUNNING and vm.state != Vm.VM_STATE_PAUSED:
+            raise kvmagent.KvmError(
+                'unable to detach volume cache from vm[uuid:%s], vm must be running or paused' % vm.uuid)
 
-            target_disk, disk_name = vm._get_target_disk(volume)
-            logger.debug('detaching cache from volume[%s] disk[%s] of vm[uuid:%s]'
-                         % (volume.installPath, disk_name, vm.uuid))
+        volume = cmd.volume
+        cache = getattr(volume, 'cache', None)
+        timeout = int(cache.timeout) if cache and getattr(cache, 'timeout', None) else None  # type: int
+        delete = bool(getattr(cache, 'delete', False)) if cache else False  # type: bool
 
-            with DetachBlockCacheTaskDaemon(cmd, vm.uuid, volume) as daemon:
-                daemon.detach()
+        target_disk, disk_name = vm._get_target_disk(volume)
+        logger.debug('detaching cache from volume[%s] disk[%s] of vm[uuid:%s]'
+                     % (volume.installPath, disk_name, vm.uuid))
 
-            logger.debug('successfully detached cache from volume[%s] of vm[uuid:%s]'
-                         % (volume.installPath, vm.uuid))
-        except kvmagent.KvmError as ke:
-            logger.warn(linux.get_exception_stacktrace())
-            rsp.error = str(ke)
-            rsp.success = False
-        except Exception as ex:
-            logger.warn(linux.get_exception_stacktrace())
-            rsp.error = str(ex)
-            rsp.success = False
+        with DetachBlockCacheTaskDaemon(cmd, vm.uuid, volume, disk_name) as daemon:
+            daemon.detach()
+
+        logger.debug('successfully detached cache from volume[%s] of vm[uuid:%s]'
+                     % (volume.installPath, vm.uuid))
 
         return jsonobject.dumps(rsp)
 
