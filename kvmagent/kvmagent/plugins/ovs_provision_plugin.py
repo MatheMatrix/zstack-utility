@@ -1,5 +1,8 @@
+# -*- coding: utf-8 -*-
+import json
 import os
 import re
+import time
 import traceback
 
 from kvmagent import kvmagent
@@ -22,11 +25,13 @@ PORT_ROLE_KEY = 'port-role'
 PORT_ROLE_BOND = 'bond'
 HOST_UUID_KEY = 'host-uuid'
 UPLINK_PROFILE_UUID_KEY = 'uplink-profile-uuid'
+SDN_CONTROLLER_UUID_KEY = 'sdn-controller-uuid'
 
 MANAGED_OVS_EXTERNAL_ID_KEYS = frozenset({
     'ovn-remote', 'ovn-encap-type', 'ovn-encap-ip',
     'system-id', 'ovn-bridge-mappings',
     'ovn-bfd-min-tx', 'ovn-bfd-min-rx', 'ovn-bfd-mult',
+    SDN_CONTROLLER_UUID_KEY,
 })
 
 # DPDK-related other_config keys that must be cleared when switching from
@@ -78,6 +83,27 @@ def _validate_ip_address(addr):
     if not addr or not _IP_ADDR_RE.match(addr):
         raise ValueError('invalid IP address: %r' % addr)
     return addr
+
+
+def _has_active_ipv4_route(route_output):
+    """Return True if route output contains a non-link-local IPv4 route."""
+    if not route_output:
+        return False
+
+    for line in route_output.splitlines():
+        route = line.strip()
+        if not route:
+            continue
+        if 'linkdown' in route or 'linklocal' in route:
+            continue
+
+        destination = route.split()[0]
+        if destination == '169.254.0.0/16' or destination.startswith('169.254.'):
+            continue
+
+        return True
+
+    return False
 
 
 _PCI_ADDR_RE = re.compile(r'^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]$')
@@ -278,20 +304,21 @@ class OvsDesiredState(object):
         self.host_uuid = None
         self.config_version = None
         self.dpdk_config = None
+        self.sdn_controller_uuid = None  # ZNS cluster UUID for ownership (ZCF-2786)
         self.infra_bridges = {}        # name -> InfraBridgeSpec
         self.ip_addresses = {}
         self.ovs_external_ids = {}
         self.tunnel_mtu = None         # tunnel MTU from globalConfig
 
     @staticmethod
-    def _safe_bridge_name(name):
-        """Truncate bridge name to fit Linux IFNAMSIZ (max 15 chars).
+    def _safe_ifname(name, label='interface'):
+        """Truncate an OVS entity name to fit Linux IFNAMSIZ (max 15 chars).
 
         If the original name exceeds 15 characters, it is truncated to 9
         characters followed by a dash and a 5-character hash suffix derived
         from the full name so that different long names produce different
         short names.  For example:
-            'hsp-zcf1500-retest'  ->  'hsp-zcf15-e1a2b'
+            'br-provider1-bond0'  ->  'br-provid-a3f1c'
         """
         if len(name) <= OvsDesiredState._MAX_IFNAME_LEN:
             return name
@@ -299,9 +326,14 @@ class OvsDesiredState(object):
         suffix = hashlib.sha256(name.encode('utf-8')).hexdigest()[:5]
         prefix = name[:OvsDesiredState._MAX_IFNAME_LEN - 6]  # 15 - 1(dash) - 5(hash)
         short = '%s-%s' % (prefix, suffix)
-        logger.info('bridge name "%s" exceeds %d chars, shortened to "%s"'
-                    % (name, OvsDesiredState._MAX_IFNAME_LEN, short))
+        logger.info('%s name "%s" exceeds %d chars, shortened to "%s"'
+                    % (label, name, OvsDesiredState._MAX_IFNAME_LEN, short))
         return short
+
+    @staticmethod
+    def _safe_bridge_name(name):
+        """Truncate bridge name to fit Linux IFNAMSIZ (max 15 chars)."""
+        return OvsDesiredState._safe_ifname(name, 'bridge')
 
 
 class OvsActualState(object):
@@ -476,8 +508,6 @@ class OvsStateQuerier(object):
         return ext_ids
 
 
-# --- Desired State Builder ---
-
 class DesiredStateBuilder(object):
     """Builds complete desired state from a provision command."""
 
@@ -486,6 +516,7 @@ class DesiredStateBuilder(object):
         state = OvsDesiredState()
         state.host_uuid = cmd.hostUuid
         state.config_version = cmd.configVersion
+        state.sdn_controller_uuid = cmd.sdnControllerUuid
         raw_dpdk_config = getattr(cmd, 'dpdkConfig', None)
         state.dpdk_config = (OvsProvisionPlugin._normalize_dpdk_config(raw_dpdk_config)
                              if raw_dpdk_config else None)
@@ -500,11 +531,10 @@ class DesiredStateBuilder(object):
             dp_type = 'netdev' if sw_type == 'dpdk' else 'system'
             transport_zones = getattr(sw, 'transportZones', None) or []
 
-            tep_ip, physical_network = None, None
+            tep_ip = getattr(sw, 'tepIp', None)
+            physical_network = None
             for tz in transport_zones:
                 tz_type = getattr(tz, 'type_', None) or getattr(tz, 'type', None)
-                if tz_type != 'vlan' and getattr(tz, 'tepIp', None) and tep_ip is None:
-                    tep_ip = tz.tepIp
                 if tz_type == 'vlan' and getattr(tz, 'physicalNetwork', None):
                     physical_network = tz.physicalNetwork
 
@@ -523,7 +553,8 @@ class DesiredStateBuilder(object):
                 for lag in uplink_profile.lag:
                     members = lag.members if lag.members else []
                     mode = lag.mode if lag.mode else 'balance-slb'
-                    bond_name = '%s-%s' % (br_name, lag.name)
+                    bond_name = OvsDesiredState._safe_ifname(
+                        '%s-%s' % (br_name, lag.name), 'bond')
                     br_spec.bonds[bond_name] = BondSpec(
                         bond_name, members, mode, mtu, sw_type, uplink_uuid,
                         transport_vlan)
@@ -543,6 +574,9 @@ class DesiredStateBuilder(object):
         # system-id = hostUuid
         if state.host_uuid:
             state.ovs_external_ids['system-id'] = state.host_uuid
+
+        # sdn-controller-uuid = ZNS cluster UUID for ownership verification (ZCF-2786)
+        state.ovs_external_ids[SDN_CONTROLLER_UUID_KEY] = state.sdn_controller_uuid
 
         # ovn-remote from controllerAddress
         controller_addrs = getattr(cmd, 'controllerAddress', None)
@@ -726,6 +760,8 @@ class OvsReconciler(object):
                     builder.set_bridge_external_id(br_name, CONFIG_VERSION_KEY,
                                                    str(desired.config_version))
                     builder.set_bridge_external_id(br_name, HOST_UUID_KEY, desired.host_uuid)
+                    builder.set_bridge_external_id(br_name, SDN_CONTROLLER_UUID_KEY,
+                                                   desired.sdn_controller_uuid)
                     OvsProvisioner._run_ovs_cmd(builder.build())
                     continue
 
@@ -736,6 +772,8 @@ class OvsReconciler(object):
             builder.set_bridge_external_id(br_name, CONFIG_VERSION_KEY,
                                            str(desired.config_version))
             builder.set_bridge_external_id(br_name, HOST_UUID_KEY, desired.host_uuid)
+            builder.set_bridge_external_id(br_name, SDN_CONTROLLER_UUID_KEY,
+                                           desired.sdn_controller_uuid)
             OvsProvisioner._run_ovs_cmd(builder.build())
             recreated.add(br_name)
             logger.info('ensured infra bridge %s with datapath_type=%s'
@@ -1039,12 +1077,9 @@ class OvsProvisioner(object):
 
         for sw in desired_switches:
             switch_result = {'name': sw.name, 'status': 'realized'}
-            tzs = getattr(sw, 'transportZones', None) or []
-            for tz in tzs:
-                tz_type = getattr(tz, 'type_', None) or getattr(tz, 'type', None)
-                if tz_type != 'vlan' and getattr(tz, 'tepIp', None):
-                    switch_result['tepIp'] = tz.tepIp
-                    break
+            tep_ip = getattr(sw, 'tepIp', None)
+            if tep_ip:
+                switch_result['tepIp'] = tep_ip
             rsp.hostSwitches.append(switch_result)
         return rsp
 
@@ -1130,9 +1165,9 @@ def _verify_nics_not_in_use(desired_switches, managed_bridge_names=None):
 
         # Check 4: Has routes (non-link-local)
         r, o, e = bash.bash_roe(
-            "ip route show dev %s 2>/dev/null | grep -v 'linkdown\\|linklocal' | head -1"
+            "ip route show dev %s 2>/dev/null"
             % nic_name)
-        if r == 0 and o.strip():
+        if r == 0 and _has_active_ipv4_route(o):
             raise Exception(
                 'cannot use NIC for provisioning: '
                 'nic %s has active routes and is in use. '
@@ -1495,6 +1530,99 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                     if r2 != 0:
                         logger.warn('delete stale vnic %s failed: %s' % (vnic, o2))
 
+    @staticmethod
+    def _reset_ovn_controller_sb_cluster_state():
+        """Best-effort reset ovn-controller cached SB Raft state (ZCF-2129).
+
+        Idempotent and lightweight -- safe to call on every provision.
+        """
+        cmd = 'timeout 5 ovn-appctl -t ovn-controller sb-cluster-state-reset'
+        retries, interval = 3, 1
+        last_err = None
+
+        for i in range(retries):
+            r, o, e = bash.bash_roe(cmd)
+            if r == 0:
+                logger.info('ovn-controller SB cluster state reset completed')
+                return
+            last_err = (r, o, e)
+            if i < retries - 1:
+                logger.warn('sb-cluster-state-reset failed (try %s/%s, rc=%s): '
+                            'stdout=%s stderr=%s'
+                            % (i + 1, retries, r, o, e))
+                time.sleep(interval)
+
+        r, o, e = last_err
+        logger.warn('sb-cluster-state-reset failed after %s retries (rc=%s): '
+                    'stdout=%s stderr=%s' % (retries, r, o, e))
+
+    @staticmethod
+    def _read_existing_sdn_controller_uuid(retries=1):
+        """Read sdn-controller-uuid from Open_vSwitch.external_ids.
+
+        Returns a tri-state tuple (state, value):
+          - ('present', uuid)     -- key is set in external_ids
+          - ('absent', None)      -- ovsdb is reachable but key not set
+                                     (legitimate first-provision state)
+          - ('unreachable', err)  -- ovsdb-server is down / hung / not installed
+
+        Uses `ovs-vsctl --format=json --columns=external_ids list Open_vSwitch`
+        and JSON parses the result. This is robust against value contents
+        (commas, equals, quotes, escapes), unlike string-splitting the OVSDB
+        map literal. A short `--timeout` prevents hanging on a half-dead
+        ovsdb. Optionally retries once on unreachable to absorb the brief
+        gap between `systemctl start ovsdb-server` returning and the unix
+        socket actually accepting clients.
+
+        :param retries: extra attempts after the first failure (default 1).
+        """
+        cmd = ('ovs-vsctl --timeout=5 --format=json --columns=external_ids '
+               'list Open_vSwitch')
+        last_err = ''
+        for attempt in range(retries + 1):
+            r, o, e = bash.bash_roe(cmd)
+            if r != 0:
+                last_err = (e or '').strip() or ('rc=%s' % r)
+                if attempt < retries:
+                    time.sleep(0.5)
+                    continue
+                return 'unreachable', last_err
+
+            try:
+                payload = json.loads(o)
+            except Exception as ex:
+                # If the output is not parseable JSON, treat as transient
+                # and retry; otherwise report unreachable.
+                last_err = 'json parse error: %s; raw=%r' % (ex, o[:200])
+                if attempt < retries:
+                    time.sleep(0.5)
+                    continue
+                return 'unreachable', last_err
+
+            try:
+                # payload format:
+                #   {"data": [[ ["map", [["k1","v1"],["k2","v2"],...]] ]],
+                #    "headings": ["external_ids"]}
+                rows = payload.get('data') or []
+                if not rows:
+                    return 'absent', None
+                cell = rows[0][0]
+                if (isinstance(cell, list) and len(cell) == 2
+                        and cell[0] == 'map'):
+                    pairs = cell[1] or []
+                    for kv in pairs:
+                        if (isinstance(kv, list) and len(kv) == 2
+                                and kv[0] == SDN_CONTROLLER_UUID_KEY):
+                            return 'present', kv[1]
+                    return 'absent', None
+                # Unexpected shape -- fail-closed.
+                return 'unreachable', ('unexpected json shape: %r'
+                                       % (payload,))[:200]
+            except Exception as ex:
+                return 'unreachable', 'json shape error: %s' % ex
+
+        return 'unreachable', last_err
+
     @lock.lock('ovs_provision')
     @bash.in_bash
     def provision(self, req):
@@ -1523,6 +1651,25 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                 raise Exception('hostUuid is required')
             if cmd.configVersion is None:
                 raise Exception('configVersion is required')
+
+            # ZCF-2786: sdnControllerUuid is mandatory — reject early.
+            sdn_controller_uuid = getattr(cmd, 'sdnControllerUuid', None)
+            if not sdn_controller_uuid:
+                raise Exception('sdnControllerUuid is required for provision')
+
+            # ZCF-2786: best-effort early ownership check. If ovsdb happens
+            # to be reachable right now and external_ids already records a
+            # different controller, reject before doing anything destructive
+            # (NIC validation, package install, DPDK driver bind, hugepage
+            # alloc, systemctl restart, _clear_dpdk_other_config). When ovsdb
+            # is down (e.g. deprovisioned host), this check is skipped and
+            # the strict late check after ensureOvsRunning() takes over.
+            early_state, early_value = self._read_existing_sdn_controller_uuid()
+            if early_state == 'present' and early_value != sdn_controller_uuid:
+                raise Exception(
+                    'host already managed by another SdnController: %s, '
+                    'current request from: %s'
+                    % (early_value, sdn_controller_uuid))
 
             desired_switches = cmd.hostSwitches if cmd.hostSwitches else []
             dpdk_mode = any((getattr(sw, 'type_', None) or getattr(sw, 'type', None)) == 'dpdk'
@@ -1594,9 +1741,20 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
 
             nic_pci_map = getattr(dpdk_config, 'nicNamePciAddressMap', None) if dpdk_config else None
 
+            # Bring OVS services up so we can read external_ids for the late
+            # ownership check below.
             if dpdk_config:
                 # ----------------------------------------------------------
-                # DPDK startup -- strictly follows ovn.py start_ovn_service
+                # DPDK startup -- strictly follows ovn.py start_ovn_service.
+                # Step 0 (NIC PCI driver rebind) MUST happen before
+                # ovs-vswitchd starts: if dpdk-init=true persists in OVSDB
+                # from a previous run, ovs-vswitchd attempts DPDK EAL init
+                # on startup and needs the NIC already bound to a DPDK
+                # driver. Moving this past the ownership check would break
+                # cold-restart of a host that previously ran in DPDK mode.
+                # The trade-off is that a wrong-controller DPDK request can
+                # still rebind NICs; the early best-effort check above
+                # mitigates the common case (ovsdb up, mismatched UUID).
                 # ----------------------------------------------------------
 
                 # Step 0: bind NIC drivers (ovn.py line 226)
@@ -1650,10 +1808,6 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                     r, o, e = bash.bash_roe('systemctl restart ovn-controller')
                     if r != 0:
                         raise Exception('failed to restart ovn-controller: %s' % e)
-
-                # Step 2: DPDK init (ovn.py line 261-307)
-                # hugepages, dpdk-socket-mem, dpdk-init, CPU masks, monitor config
-                self._ensure_dpdk_init(vsctl, dpdk_config)
             else:
                 # ----------------------------------------------------------
                 # Kernel mode startup
@@ -1663,13 +1817,71 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                 if not ok:
                     raise Exception('failed to ensure OVS running: %s' % err)
 
+            # ZCF-2786: late strict ownership check (must happen here).
+            # ovsdb-server is now guaranteed to be running by the block
+            # above. This is the last point before any code mutates OVSDB
+            # content (DPDK init / clear-other-config / provisioner.apply);
+            # wrong-controller kernel-mode requests are rejected here before
+            # any such write.
+            #
+            # Note: in DPDK mode, NIC PCI rebind already happened above
+            # (it must run before ovs-vswitchd starts, see comment there).
+            # That side effect is only protected by the early best-effort
+            # check, not by this strict one. Acceptable because DPDK
+            # provision is always initiated by ZNS itself in practice.
+            #
+            # The reader does a single ovs-vsctl read with --timeout=5 and
+            # JSON parsing (no ad-hoc string splitting), and retries once
+            # to absorb the brief gap between systemctl returning and the
+            # ovsdb unix socket accepting clients.
+            state, value = self._read_existing_sdn_controller_uuid()
+            if state == 'unreachable':
+                # Should not happen here -- ovsdb was just started.
+                # Fail-closed; reconciler will retry on the next pass.
+                raise Exception(
+                    'cannot verify SdnController ownership: '
+                    'ovsdb unreachable after start (%s)' % value)
+            if state == 'present' and value != sdn_controller_uuid:
+                raise Exception(
+                    'host already managed by another SdnController: %s, '
+                    'current request from: %s'
+                    % (value, sdn_controller_uuid))
+            # state == 'absent' (first provision after deprovision or fresh
+            # host) or state == 'present' with matching UUID: proceed.
+
+            # ============================================================
+            # OVSDB-content mutation below this line is only reached after
+            # ownership has been verified by the late strict check.
+            # ============================================================
+            if dpdk_config:
+                # DPDK Step 2: DPDK init (ovn.py line 261-307)
+                # hugepages, dpdk-socket-mem, dpdk-init, CPU masks, monitor config
+                self._ensure_dpdk_init(vsctl, dpdk_config)
+            else:
                 # Kernel mode: clear any residual DPDK other_config to prevent
                 # dpdk_initialized from lingering after a DPDK-to-kernel switch.
                 self._clear_dpdk_other_config(vsctl)
 
+                # ZCF-1841 (reverse): when switching from DPDK to kernel mode
+                # the previously-existing br-int (created by ovn-controller and
+                # not deleted by deprovision because it lacks managed-by tag)
+                # still has datapath_type=netdev from the prior DPDK provision.
+                # That mismatches the system-mode user bridges and breaks
+                # traffic. Force br-int back to datapath_type=system. Mirror
+                # of the netdev-direction fix already done in _ensure_dpdk_init.
+                r, _o, e = bash.bash_roe(
+                    'ovs-vsctl --may-exist add-br br-int '
+                    '-- set bridge br-int datapath_type=system')
+                if r != 0:
+                    raise Exception('failed to set br-int datapath_type=system: %s' % e)
+                logger.info('ensured br-int datapath_type=system for kernel mode')
+
             # Step 3: bridge / bond / OVN config (ovn.py line 276-383)
             provisioner = OvsProvisioner()
             rsp = provisioner.apply(cmd)
+
+            # Best-effort reset cached SB cluster state after provision
+            self._reset_ovn_controller_sb_cluster_state()
 
             # Step 4: DPDK post-provisioning (ovn.py line 331-395)
             if dpdk_config:
@@ -1742,6 +1954,28 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
 
             force = getattr(cmd, 'force', False)
             logger.info('received OVS deprovision request, hostUuid=%s, force=%s' % (cmd.hostUuid, force))
+
+            # ZCF-2786: verify SdnController ownership before deprovisioning.
+            # sdnControllerUuid is mandatory — reject requests without it.
+            # Skip ownership check when force=true (force ignores all safety checks).
+            sdn_controller_uuid = getattr(cmd, 'sdnControllerUuid', None)
+            if not sdn_controller_uuid:
+                raise Exception('sdnControllerUuid is required for deprovision')
+
+            if not force:
+                try:
+                    vsctl_check = ovn.VsCtl()
+                    err, existing_controller = vsctl_check.getOvsExternalIdsConfig(
+                        SDN_CONTROLLER_UUID_KEY)
+                    if not err and existing_controller and existing_controller != sdn_controller_uuid:
+                        raise Exception(
+                            'host already managed by another SdnController: %s, '
+                            'current request from: %s'
+                            % (existing_controller, sdn_controller_uuid))
+                except Exception as e:
+                    if 'already managed by another SdnController' in str(e):
+                        raise
+                    logger.warn('SdnController ownership check failed: %s' % e)
 
             # helper: check if a systemd service is active
             # Returns: 'active', 'inactive', or 'unknown'
