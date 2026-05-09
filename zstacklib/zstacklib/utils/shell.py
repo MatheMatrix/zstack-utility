@@ -2,10 +2,8 @@
 
 @author: frank
 '''
-import json
+from zstacklib.utils.compat import subprocess
 import os
-import subprocess
-
 from zstacklib.utils import log
 from zstacklib.utils import lock
 
@@ -36,7 +34,6 @@ def get_process(cmd, shell=None, workdir=None, pipe=None, executable=None):
 
 class ShellError(Exception):
     '''shell error'''
-
 
 class ShellCmd(object):
     '''
