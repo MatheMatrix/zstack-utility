@@ -118,6 +118,25 @@ def execute_qmp_command(domain, name, raise_exception=True, **kwargs):
     return _execute_qmp_command(domain, json.dumps(qmp_cmd).encode('utf-8'), raise_exception)
 
 
+def execute_qmp_command_raw(domain_id, command_json, raise_exception=True):
+    """
+    Execute a pre-serialised QMP command JSON string.
+
+    Use this when QMP arguments contain fields that collide with
+    execute_qmp_command's Python parameter ``name`` (e.g. block-dirty-bitmap-add
+    requires an arguments.name field which shadows the function's positional
+    ``name`` parameter).
+
+    :param domain_id: VM UUID / libvirt domain ID
+    :param command_json: complete QMP command as JSON str (not bytes)
+    :param raise_exception: raise on error if True (default True)
+    :return: the 'return' value from QMP response, or None on suppressed error
+    """
+    if not isinstance(command_json, str):
+        command_json = command_json.decode("utf-8") if hasattr(command_json, "decode") else str(command_json)
+    return _execute_qmp_command(domain_id, command_json, raise_exception=raise_exception)
+
+
 def qmp_subcmd(qemu_version, s_cmd):
     # object-add option props (removed in 6.0).
     # Specify the properties for the object as top-level arguments instead.
