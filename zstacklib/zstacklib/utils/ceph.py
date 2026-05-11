@@ -54,6 +54,37 @@ def get_defer_deleting_options(cmd):
 
     return opts
 
+def find_rbd_trash(trash_list, image_name):
+    return next((t for t in trash_list if image_name in (t.get("id"), t.get("name"))), None)
+
+def rbd_children(path):
+    children = bash.bash_o('rbd children %s' % path)
+    if not children:
+        return []
+    return [c.strip() for c in children.splitlines() if c.strip()]
+
+def rbd_trash_list(pool_name):
+    ret, stdout, stderr = bash.bash_roe("rbd trash list -p %s --format json" % pool_name)
+    if ret != 0 or not stdout or not stdout.strip():
+        return ret, [], stderr
+
+    entries = jsonobject.loads(stdout)
+    if not entries:
+        return ret, [], stderr
+
+    if isinstance(entries[0], str):
+        trash_list = [{"id": entries[i], "name": entries[i + 1] if i + 1 < len(entries) else entries[i]}
+                      for i in range(0, len(entries), 2)]
+    else:
+        trash_list = [{"id": e.id, "name": e.name} for e in entries]
+    return ret, trash_list, stderr
+
+def rbd_trash_rm(pool_name, trash_id, force=False):
+    cmd = "rbd trash rm %s/%s" % (pool_name, trash_id)
+    if force:
+        cmd += " --force"
+    return bash.bash_roe(cmd)
+
 def is_zstone():
     return os.path.exists("/opt/zstone/bin/zstnlet")
 
