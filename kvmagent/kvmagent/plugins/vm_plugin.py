@@ -2302,6 +2302,174 @@ def get_vm_by_uuid_no_retry(uuid, exception_if_not_existing=True):
         err = 'error happened when looking up vm[uuid:%(uuid)s], libvirt error code: %(error_code)s, %(e)s' % locals()
         raise libvirt.libvirtError(err)
 
+
+def _block_struct_contains_volume_uuid(obj, volume_uuid):
+    """
+    Recursively check whether any string value inside a nested dict/list
+    structure contains the given volume_uuid.
+
+    This mirrors the logic used by the ZR plugin so that mirror device
+    resolution is always based on the QEMU block graph.
+    """
+    # Python 2: basestring covers both str and unicode.
+    # Python 3: basestring does not exist; use str instead.
+    _str_types = basestring if hasattr(__builtins__, 'basestring') else str
+    if isinstance(obj, _str_types):
+        return volume_uuid in obj
+    if isinstance(obj, dict):
+        for v in obj.values():
+            if _block_struct_contains_volume_uuid(v, volume_uuid):
+                return True
+    elif isinstance(obj, list):
+        for v in obj:
+            if _block_struct_contains_volume_uuid(v, volume_uuid):
+                return True
+    return False
+
+
+def _find_root_block_node(vm_uuid, start_node_name):
+    """
+    Use x-debug-query-block-graph to walk upwards from the given node name
+    and find the block-driver node that is directly attached to a block-backend.
+
+    If the graph is unavailable or cannot be parsed, falls back to
+    {@code start_node_name}.
+    """
+    if not vm_uuid or not start_node_name:
+        return start_node_name
+    try:
+        graph = qmp.execute_qmp_command(vm_uuid, "x-debug-query-block-graph", raise_exception=False)
+    except Exception:
+        return start_node_name
+    if not graph or not isinstance(graph, dict):
+        return start_node_name
+
+    nodes_list = graph.get("nodes")
+    edges_list = graph.get("edges")
+    if not nodes_list or not edges_list:
+        return start_node_name
+
+    id_to_node = {}
+    name_to_ids = {}
+    for n in nodes_list:
+        if not isinstance(n, dict):
+            continue
+        nid = n.get("id")
+        if nid is None:
+            continue
+        id_to_node[nid] = n
+        nname = n.get("name") or ""
+        name_to_ids.setdefault(nname, []).append(nid)
+
+    parents_by_child = {}
+    children_by_parent = {}
+    for e in edges_list:
+        if not isinstance(e, dict):
+            continue
+        parent_id = e.get("parent")
+        child_id = e.get("child")
+        if parent_id is None or child_id is None:
+            continue
+        parents_by_child.setdefault(child_id, []).append(parent_id)
+        children_by_parent.setdefault(parent_id, []).append(child_id)
+
+    start_ids = name_to_ids.get(start_node_name) or []
+    if not start_ids:
+        return start_node_name
+
+    visited = set()
+
+    def ascend_from(node_id):
+        if node_id in visited:
+            return None
+        visited.add(node_id)
+        parents = parents_by_child.get(node_id) or []
+        for pid in parents:
+            pnode = id_to_node.get(pid)
+            if not pnode:
+                continue
+            ptype = pnode.get("type") or ""
+            if ptype == "block-backend":
+                node = id_to_node.get(node_id)
+                root_name = (node or {}).get("name")
+                return root_name or start_node_name
+            if ptype == "block-driver":
+                root = ascend_from(pid)
+                if root:
+                    return root
+            if ptype == "block-job":
+                # A block-job (e.g. mirror/backup) sits between the real
+                # block-driver chain and the block-backend. It breaks the
+                # normal parent walk, so we look at the job's *other*
+                # block-driver children (the source side of the job) and
+                # continue ascending from there to reach the block-backend.
+                job_children = children_by_parent.get(pid) or []
+                for cid in job_children:
+                    cnode = id_to_node.get(cid)
+                    if not cnode:
+                        continue
+                    if cnode.get("type") == "block-driver":
+                        root = ascend_from(cid)
+                        if root:
+                            return root
+        return None
+
+    for sid in start_ids:
+        visited.clear()
+        root_name = ascend_from(sid)
+        if root_name:
+            return root_name
+
+    return start_node_name
+
+
+def get_mirror_device_for_volume_uuid(vm_uuid, volume_uuid):
+    """
+    Resolve the mirror-capable (node_name, device_name) for a volume from QEMU query-block.
+
+    Uses the actual QEMU block graph: the root block-driver node name (from the graph)
+    is preferred as node_name for drive-mirror/blockdev-mirror. node_name is the BDS
+    node name (reliable under -blockdev); device_name is the qdev-derived alias or empty.
+
+    Returns (node_name, device_name), or (None, None) if the volume is not found.
+    """
+    if not vm_uuid or not volume_uuid:
+        return None, None
+    vol_str = volume_uuid if isinstance(volume_uuid, str) else str(volume_uuid)
+    try:
+        blocks = qmp.execute_qmp_command(vm_uuid, "query-block", raise_exception=False)
+    except Exception:
+        return None, None
+    if not blocks:
+        return None, None
+    # query-block normally returns a list; guard against unusual dict form.
+    if isinstance(blocks, dict):
+        blocks = list(blocks.values())
+    for b in (blocks or []):
+        if not isinstance(b, dict) or not _block_struct_contains_volume_uuid(b, vol_str):
+            continue
+        device = b.get("device") or ""
+        if not (isinstance(device, str) and device.strip()):
+            device = None
+        qdev_path = b.get("qdev") or b.get("Qdev") or ""
+        if not isinstance(qdev_path, str):
+            qdev_path = str(qdev_path) if qdev_path else ""
+        if (not device or not device.strip()) and qdev_path.strip():
+            parts = qdev_path.strip().rstrip("/").split("/")
+            for p in reversed(parts):
+                if p and p not in ("virtio-backend", "machine", "peripheral", "scsi-backend"):
+                    device = p
+                    break
+        inserted = b.get("inserted") or {}
+        node_name = inserted.get("node-name") if isinstance(inserted, dict) else None
+        raw_node = node_name or device
+        if not raw_node:
+            continue
+        root_node = _find_root_block_node(vm_uuid, raw_node)
+        return root_node, (device or raw_node)
+    return None, None
+
+
 def get_active_vm_uuids_states():
     @LibvirtAutoReconnect
     def call_libvirt(conn):
