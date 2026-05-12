@@ -2377,6 +2377,8 @@ class ZstackLib(object):
                     self.generate_qemu_kvm_ev_yum_repo()
                 if 'mlnx-ofed' in self.zstack_repo:
                     self.generate_mlnx_yum_repo()
+                if 'zstack-local' in [r.strip() for r in self.zstack_repo.strip('"').split(',')]:
+                    self.generate_zstack_local_yum_repo()
 
                 # generate zstack experimental repo anyway
                 self.generate_zstack_experimental_yum_repo()
@@ -2575,6 +2577,19 @@ EOF
     # copy zstack-aliyun-yum.repo to /etc/yum.repos.d/
     def generate_aliyun_yum_repo(self):
         self.generate_yum_repo_config_from_zstack_lib("zstack-aliyun-yum.repo")
+
+    def generate_zstack_local_yum_repo(self):
+        generate_zstack_local_repo_command = """
+cat > /etc/yum.repos.d/zstack-local.repo << EOF
+[zstack-local]
+name=zstack-local
+baseurl=file:///opt/zstack-dvd/\$basearch/\$YUM0
+gpgcheck=0
+enabled=1
+module_hotfixes=true
+EOF
+        """
+        run_remote_command(generate_zstack_local_repo_command, self.host_post_info)
 
     def find_preferred_yum_repo_conf_path(self, conf_file_name):
         repo_conf_path = "files/zstacklib/%s/%s/%s" % (self.distro,
