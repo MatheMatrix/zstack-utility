@@ -81,6 +81,10 @@ class GetVmFencerRuleRsp(AgentRsp):
         self.allowRules = None
         self.blockRules = None
 
+class FenceVmOnSuspectHostRsp(AgentRsp):
+    def __init__(self):
+        super(FenceVmOnSuspectHostRsp, self).__init__()
+
 class DelVpcHaFromHostRsp(AgentRsp):
     def __init__(self):
         super(DelVpcHaFromHostRsp, self).__init__()
@@ -1823,6 +1827,7 @@ class HaPlugin(kvmagent.KvmAgent):
     SETUP_CBD_SELF_FENCER_PATH = "/ha/cbd/setupselffencer"
     CANCEL_CBD_SELF_FENCER_PATH = "/ha/cbd/cancelselffencer"
     CBD_CHECK_VMSTATE_PATH = "/cbd/check/vmstate"
+    FENCE_VM_ON_SUSPECT_HOST_PATH = "/ha/vm/fenceonsuspecthost"
 
     FENCER_STATE_PATH = "/ha/selffencer/state"
 
@@ -2680,6 +2685,60 @@ class HaPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    def fence_vm_on_suspect_host(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = FenceVmOnSuspectHostRsp()
+
+        vm_uuid = cmd.vmUuid
+        target_ip = cmd.targetHostIp
+        target_user = cmd.targetHostUsername if cmd.targetHostUsername else "root"
+        target_port = int(cmd.targetHostSshPort) if cmd.targetHostSshPort else 22
+        target_pwd = cmd.targetHostPassword
+        ssh_timeout = int(cmd.sshTimeoutSec) if cmd.sshTimeoutSec else 20
+
+        remote_cmd = (
+            "(timeout 8 virsh destroy {uuid} >/dev/null 2>&1 || true); "
+            "pkill -9 -f '[q]emu-[ks].*{uuid}' >/dev/null 2>&1 || true; "
+            "sleep 1; "
+            "if pgrep -f '[q]emu-[ks].*{uuid}' >/dev/null 2>&1; then echo QEMU_ALIVE; exit 2; fi; "
+            "echo QEMU_DEAD"
+        ).format(uuid=vm_uuid)
+
+        sshpass_file = linux.write_to_temp_file(target_pwd if target_pwd else "")
+        os.chmod(sshpass_file, 0o600)
+        ssh_argv = (
+            "timeout %d sshpass -f %s ssh -p %d "
+            "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            "-o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 "
+            "-o BatchMode=no %s@%s %s"
+        ) % (ssh_timeout, sshpass_file, target_port, target_user, target_ip,
+             linux.shellquote(remote_cmd))
+
+        logger.info("fence vm[%s] on suspect host[%s] via this peer" % (vm_uuid, target_ip))
+        try:
+            try:
+                s = shell.ShellCmd(ssh_argv)
+                s(False)
+            except Exception as e:
+                logger.warn("ssh to suspect host[%s] threw %s, treat as unreachable" % (target_ip, str(e)))
+                return jsonobject.dumps(rsp)
+            rc, out, err = s.return_code, s.stdout, s.stderr
+
+            if rc == 0:
+                logger.info("vm[%s] confirmed dead on suspect host[%s]" % (vm_uuid, target_ip))
+            elif rc == 2:
+                rsp.success = False
+                rsp.error = "qemu still alive on %s after force-destroy attempt" % target_ip
+                logger.warn("vm[%s] still alive on suspect host[%s]" % (vm_uuid, target_ip))
+            else:
+                logger.info("ssh to suspect host[%s] failed (rc=%s, err=%s), treat as unreachable"
+                            % (target_ip, rc, err))
+        finally:
+            linux.rm_file_force(sshpass_file)
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
     def sanlock_scan_host(self, req):
         def parseLockspaceHostIdPair(s):
             xs = s.split(':', 3)
@@ -2817,6 +2876,7 @@ class HaPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.SETUP_CBD_SELF_FENCER_PATH, self.setup_cbd_self_fencer)
         http_server.register_async_uri(self.CANCEL_CBD_SELF_FENCER_PATH, self.cancel_cbd_self_fencer)
         http_server.register_async_uri(self.CBD_CHECK_VMSTATE_PATH, self.cbd_check_vmstate)
+        http_server.register_async_uri(self.FENCE_VM_ON_SUSPECT_HOST_PATH, self.fence_vm_on_suspect_host)
 
 
         http_server.register_async_uri(self.FENCER_STATE_PATH, self.get_fencer_state)
