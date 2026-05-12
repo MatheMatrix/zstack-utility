@@ -18,7 +18,7 @@ class CheckResult(object):
 def get_version():
     global __QEMU_IMG_VERSION
     if not __QEMU_IMG_VERSION:
-        command = "qemu-img --version 2>/dev/null | head -1 | sed -n 's/.*\\([0-9]\\{1,\\}\\.[0-9]\\{1,\\}\\.[0-9]\\{1,\\}\\).*/\\1/p'"
+        command = "qemu-img --version 2>/dev/null | head -1 | sed -n 's/[^0-9]*\\([0-9]\\{1,\\}\\.[0-9]\\{1,\\}\\.[0-9]\\{1,\\}\\).*/\\1/p'"
         __QEMU_IMG_VERSION = shell.call(command).strip('\t\r\n ,')
 
     return __QEMU_IMG_VERSION
