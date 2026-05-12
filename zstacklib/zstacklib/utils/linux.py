@@ -23,6 +23,7 @@ import pprint
 import errno
 import json
 import math
+import stat
 
 from zstacklib.utils import thread
 from zstacklib.utils import qemu_img
@@ -2309,3 +2310,67 @@ def write_uuids(type, str):
     else:
         uuids += "\n%s" % str
     write_file('/etc/zstack-uuids', uuids.strip())
+
+
+def create_temp_file(dir=None):
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=dir)
+    os.close(tmp_fd)
+    return tmp_path
+
+class _CrashSafeFileContent:
+    def __init__(self, text):
+        self.text = text
+
+class CrashSafeFileEditor(object):
+    def __init__(self, dest):
+        self.dest = dest
+
+    def __enter__(self):
+        if not os.path.exists(self.dest):
+            raise Exception("write file failed because file %s not exist" % self.dest)
+
+        self.old_content = read_file(self.dest)
+        self.buffer = _CrashSafeFileContent(self.old_content)
+        return self.buffer
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            logger.debug("exception found when edit file %s, %s" % (self.dest, str(exc)))
+            traceback.print_tb(tb)
+            return
+
+        new_content = self.buffer.text
+        if new_content == self.old_content:
+            logger.debug("%s file not changed, skip overwrite" % self.dest)
+            return
+
+        st = os.stat(self.dest)
+        mode = stat.S_IMODE(st.st_mode)
+        uid = st.st_uid
+        gid = st.st_gid
+        dirpath = os.path.dirname(self.dest) or "."
+        tmp_path = create_temp_file(dir=dirpath)
+        renamed = False
+        try:
+            os.chmod(tmp_path, mode)
+            if uid != -1 and gid != -1:
+                os.chown(tmp_path, uid, gid)
+
+            write_file(tmp_path, str(new_content))
+
+            os.rename(tmp_path, self.dest)
+            renamed = True
+            dir_fd = os.open(dirpath, os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            except OSError:
+                pass
+            finally:
+                os.close(dir_fd)
+
+        finally:
+            if not renamed:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
