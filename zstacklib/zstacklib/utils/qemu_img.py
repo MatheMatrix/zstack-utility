@@ -18,7 +18,7 @@ class CheckResult(object):
 def get_version():
     global __QEMU_IMG_VERSION
     if not __QEMU_IMG_VERSION:
-        command = "qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1"
+        command = "qemu-img --version 2>/dev/null | head -1 | sed -n 's/.*\\([0-9]\\{1,\\}\\.[0-9]\\{1,\\}\\.[0-9]\\{1,\\}\\).*/\\1/p'"
         __QEMU_IMG_VERSION = shell.call(command).strip('\t\r\n ,')
 
     return __QEMU_IMG_VERSION
@@ -28,8 +28,16 @@ def get_version():
 def get_release_version():
     global __QEMU_IMG_RELEASE_VERSION
     if not __QEMU_IMG_RELEASE_VERSION:
-        version = shell.call("qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 4")
-        __QEMU_IMG_RELEASE_VERSION = get_version() + "-" + re.search(r'%s-(\d+)' % get_version(), version).group(1)
+        full_output = shell.call("qemu-img --version 2>/dev/null")
+        base_ver = get_version()
+        if base_ver:
+            match = re.search(r'%s-(\d+)' % base_ver.replace('.', '\\.'), full_output)
+            if match:
+                __QEMU_IMG_RELEASE_VERSION = base_ver + "-" + match.group(1)
+            else:
+                __QEMU_IMG_RELEASE_VERSION = base_ver
+        else:
+            __QEMU_IMG_RELEASE_VERSION = ""
     return __QEMU_IMG_RELEASE_VERSION
 
 def subcmd(subcmd):
