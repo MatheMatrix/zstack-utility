@@ -23,6 +23,7 @@ from zstacklib.utils import misc
 
 logger = log.get_logger(__name__)
 ISCSI_LOGIN_DEFAULT_TIMEOUT = 180
+ISCSID_CONFIG_PATH = "/etc/iscsi/iscsid.conf"
 
 
 class RetryException(Exception):
@@ -519,7 +520,10 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
                                      "it may recover after a while so check and login again" %((len(disks_by_iscsi) - len(disks_by_no_mapping_lun)), len(disks_by_dev), disks_by_dev))
 
         def check_iscsi_conf():
-            shell.call("sed -i 's/.*iscsid.startup.*=.*/iscsid.startup = \/bin\/systemctl start iscsid.socket iscsiuio.soccket/' /etc/iscsi/iscsid.conf", exception=False)
+            if os.path.exists(ISCSID_CONFIG_PATH):
+                with linux.CrashSafeFileEditor(ISCSID_CONFIG_PATH) as content:
+                    content.text, _ = re.subn(r"^.*iscsid\.startup.*=.*$", "iscsid.startup = /bin/systemctl start iscsid.socket iscsiuio.socket",
+                                              content.text, flags=re.MULTILINE)
 
         check_iscsi_conf()
         path = "/var/lib/iscsi/nodes"
@@ -1831,5 +1835,4 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
 
         drive = self.get_megaraid_device_info_storcli("/dev/bus/%d -d megaraid,%d" % (bus_number, device_number), vd_info, pd_info)
         return drive
-
 
