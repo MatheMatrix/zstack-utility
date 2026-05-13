@@ -1348,10 +1348,8 @@ class HostPlugin(kvmagent.KvmAgent):
             rsp.osRelease = rsp.osRelease.replace('ZStack', 'Sword')
         elif rsp.osDistribution == "helix":
             rsp.osRelease = "release"
-        # to be compatible with both `2.6.0` and
-        # `2.9.0(qemu-kvm-ev-2.9.0-16.el7_4.8.1)`
-        qemu_img_version = shell.call(
-            "qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1")
+        # to be compatible with both `2.6.0` and `2.9.0(qemu-kvm-ev-2.9.0-16.el7_4.8.1)`
+        qemu_img_version = shell.call("qemu-img --version 2>/dev/null | head -1 | sed -n 's/[^0-9]*\\([0-9]\\{1,\\}\\.[0-9]\\{1,\\}\\.[0-9]\\{1,\\}\\).*/\\1/p'")
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
         ipV4Addrs = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if
                                          x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
