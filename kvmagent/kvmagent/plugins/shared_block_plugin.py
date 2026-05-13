@@ -647,6 +647,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                 "issue_discards": 0,
                 "reserved_stack": 256,
                 "reserved_memory": 131072,
+                "use_devicesfile": 0,
                 "use_lvmetad": 1 if enableLvmetad else 0
             })
             if kvmagent.get_host_os_type() == "debian":
