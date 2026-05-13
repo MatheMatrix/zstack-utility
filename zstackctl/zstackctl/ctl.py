@@ -177,16 +177,6 @@ if [ $? -ne 0 ]; then
     sed -i "/\[mysqld\]/a tmpdir=$mysql_tmp_path" $mysql_conf
 fi
 
-# Alinux4: disable foreign_key_checks to workaround SNS initialization bug
-# CentOS 8 has foreign_key_checks=0 by default, Alinux4 enables it by default,
-# causing SNS HTTPTopicAndEndPointCreator to fail on persist() due to missing platform record.
-# Note: foreign_key_checks is a session-level variable, cannot be set in my.cnf directly.
-# Use init-file to execute SET GLOBAL at MariaDB startup.
-# IMPORTANT: place init-file OUTSIDE mysql datadir (/var/lib/mysql), because:
-#   1) datadir is owned/managed by mariadb-prepare-db-dir; planting files there
-#      can cause "directory not empty, cannot initialize" failures on first start.
-#   2) once init-file is referenced from my.cnf, deleting/cleaning datadir would
-#      leave my.cnf pointing at a missing file -> mariadbd aborts on next start.
 if grep -qi 'Alibaba Cloud Linux' /etc/os-release 2>/dev/null; then
     grep 'init-file=.*init_fk.sql' $mysql_conf >/dev/null 2>&1
     if [ $? -ne 0 ]; then
@@ -3897,17 +3887,51 @@ class InstallDbCmd(Command):
       script: $pre_install_script
       
     - name: install readline needed by greatdb-client, greatdb-server
-      when: ansible_os_family == 'Kylin' and ansible_distribution_version == '10'
+      when: >
+        (ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
+        or (ansible_os_family == 'Kylin' and ansible_distribution_version == '10')
+        or (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
       shell: yum clean all; yum --disablerepo="*" --enablerepo=zstack-local-greatdb install -y readline
+
+    - name: fail fast when GreatDB repo is missing on Alibaba Cloud Linux 4
+      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4 and yum_repo == 'false'
+      fail:
+        msg: "GreatDB on Alibaba Cloud Linux 4 requires a configured yum repo"
+
+    - name: record mariadb-connector-c-config state on Alibaba Cloud Linux 4
+      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4
+      shell: rpm -q mariadb-connector-c-config
+      register: alinux4_mariadb_config_state
+      failed_when: false
+      changed_when: false
+
+    - name: install GreatDB on Alibaba Cloud Linux 4
+      when: >
+        (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
+        and yum_repo != 'false'
+      shell: |
+        yum clean all &&
+        if [ {{ alinux4_mariadb_config_state.rc }} -eq 0 ]; then
+            rpm -e --nodeps mariadb-connector-c-config
+        fi &&
+        yum --disablerepo="*" --enablerepo=zstack-local install -y compat-readline7 compat-openssl11 compat-openldap24 &&
+        yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
+      register: alinux4_install_result
 
     - name: install GreatDB
       when: >
-        ((ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8)
+        ((ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
         or
         (ansible_os_family == 'Kylin' and ansible_distribution_version == '10'))
+        and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
         and yum_repo != 'false'
       shell: yum clean all; yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
       register: install_result
+
+    - name: set GreatDB install result on Alibaba Cloud Linux 4
+      when: ansible_distribution == "Alibaba" and ansible_distribution_major_version|int >= 4
+      set_fact:
+        install_result: "{{ alinux4_install_result }}"
 
     - name: open 3306 port
       when: ansible_os_family == 'RedHat'
@@ -3917,7 +3941,9 @@ class InstallDbCmd(Command):
       script: $post_install_script
 
     - name: start GreatDB service
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8
+      when: >
+        (ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
+        or (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
       service: name=mysql state=restarted enabled=yes
 
     - name: update root password
@@ -3930,8 +3956,18 @@ class InstallDbCmd(Command):
       shell: $grant_access_cmd
 
     - name: rollback GreatDB
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version >= 8 and change_root_result.rc != 0 and install_result.changed == True
+      when: >
+        ((ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
+        or (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4))
+        and change_root_result.rc != 0 and install_result.changed == True
       shell: yum remove -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
+
+    - name: restore mariadb-connector-c-config on Alibaba Cloud Linux 4 rollback
+      when: >
+        (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
+        and change_root_result.rc != 0 and install_result.changed == True
+        and alinux4_mariadb_config_state.rc == 0
+      shell: yum --disablerepo="*" --enablerepo=zstack-local install -y mariadb-connector-c-config
 
     - name: failure
       fail: >
