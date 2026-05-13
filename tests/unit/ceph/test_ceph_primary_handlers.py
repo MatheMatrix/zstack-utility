@@ -4,6 +4,7 @@ import importlib
 import json
 import sys
 import pytest
+from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch, PropertyMock
 
@@ -25,6 +26,12 @@ try:
     module = importlib.reload(module)
 except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Cannot import cephprimarystorage: {e}", allow_module_level=True)
+
+
+_REAL_CEPH_UTIL_PATH = Path(__file__).resolve().parents[3] / "zstacklib/zstacklib/utils/ceph.py"
+_real_ceph_spec = importlib.util.spec_from_file_location("_real_zstacklib_utils_ceph", str(_REAL_CEPH_UTIL_PATH))
+real_ceph_utils = importlib.util.module_from_spec(_real_ceph_spec)
+_real_ceph_spec.loader.exec_module(real_ceph_utils)
 
 
 def _make_req(body_dict=None):
@@ -68,6 +75,10 @@ def _mock_ceph():
     ceph_mod.is_sandstone = MagicMock(return_value=False)
     ceph_mod.support_defer_deleting = MagicMock(return_value=False)
     ceph_mod.get_pools_capacity = MagicMock(return_value=[])
+    ceph_mod.find_rbd_trash = real_ceph_utils.find_rbd_trash
+    ceph_mod.rbd_children = real_ceph_utils.rbd_children
+    ceph_mod.rbd_trash_list = real_ceph_utils.rbd_trash_list
+    ceph_mod.rbd_trash_rm = real_ceph_utils.rbd_trash_rm
     return ceph_mod
 
 
@@ -413,6 +424,73 @@ class TestCephPrimaryDeleteSnapshot:
 
 
 # ---------------------------------------------------------------------------
+# delete_image_cache
+# ---------------------------------------------------------------------------
+@pytest.mark.ceph
+class TestCephPrimaryDeleteImageCacheTrash:
+    def test_delete_image_cache_purges_matching_trash_child(self):
+        agent = _make_agent()
+        _mock_capacity(agent)
+        ceph_mod = _mock_ceph()
+        module.bash_r = MagicMock(return_value=0)
+        module.bash_errorout = MagicMock()
+        module.bash_roe = MagicMock(return_value=(0, "", ""))
+        rbd_children = MagicMock(return_value=["pool/root-volume"])
+        rbd_trash_list = MagicMock(return_value=(0, [{"id": "trash-id", "name": "root-volume"}], ""))
+        rbd_trash_rm = MagicMock(return_value=(0, "", ""))
+
+        with patch.object(ceph_mod, "rbd_children", rbd_children), \
+                patch.object(ceph_mod, "rbd_trash_list", rbd_trash_list), \
+                patch.object(ceph_mod, "rbd_trash_rm", rbd_trash_rm):
+            result = agent.delete_image_cache(_make_req({
+                "imagePath": "ceph://pool/image-cache",
+                "snapshotPath": "ceph://pool/image-cache@snap",
+            }))
+
+        rsp = _load_rsp(result)
+        assert rsp["success"] is True
+        rbd_children.assert_called_once_with("pool/image-cache@snap")
+        rbd_trash_rm.assert_called_once_with("pool", "trash-id", True)
+        module.bash_errorout.assert_any_call('rbd snap unprotect {{SP_PATH}}')
+        module.bash_errorout.assert_any_call('rbd rm {{IMAGE_PATH}}')
+
+    def test_delete_image_cache_keeps_active_child_protected(self):
+        agent = _make_agent()
+        _mock_capacity(agent)
+        ceph_mod = _mock_ceph()
+        module.bash_r = MagicMock(return_value=0)
+        module.bash_errorout = MagicMock()
+        rbd_children = MagicMock(return_value=["pool/active-volume"])
+        rbd_trash_list = MagicMock(return_value=(0, [{"id": "trash-id", "name": "old-volume"}], ""))
+        rbd_trash_rm = MagicMock()
+
+        with patch.object(ceph_mod, "rbd_children", rbd_children), \
+                patch.object(ceph_mod, "rbd_trash_list", rbd_trash_list), \
+                patch.object(ceph_mod, "rbd_trash_rm", rbd_trash_rm):
+            result = agent.delete_image_cache(_make_req({
+                "imagePath": "ceph://pool/image-cache",
+                "snapshotPath": "ceph://pool/image-cache@snap",
+            }))
+
+        rsp = _load_rsp(result)
+        assert rsp["success"] is False
+        assert "still in used" in rsp["error"]
+        assert not any("rbd snap unprotect" in str(c)
+                       for c in module.bash_errorout.call_args_list)
+        rbd_trash_rm.assert_not_called()
+
+    def test_parse_legacy_trash_entries(self):
+        ceph_mod = _mock_ceph()
+        bash_roe = MagicMock(return_value=(0, '["trash-id", "root-volume"]', ""))
+
+        with patch.object(real_ceph_utils.bash, "bash_roe", bash_roe):
+            _, entries, _ = ceph_mod.rbd_trash_list("pool")
+
+        assert entries == [{"id": "trash-id", "name": "root-volume"}]
+        assert ceph_mod.find_rbd_trash(entries, "root-volume") == entries[0]
+
+
+# ---------------------------------------------------------------------------
 # protect_snapshot
 # ---------------------------------------------------------------------------
 @pytest.mark.ceph
@@ -691,6 +769,28 @@ class TestCephPrimaryCleanTrash:
         }))
         rsp = _load_rsp(result)
         assert rsp["success"] is True
+
+    def test_clean_trash_uses_shared_legacy_parser(self):
+        agent = _make_agent()
+        _mock_capacity(agent)
+        ceph_mod = _mock_ceph()
+        ceph_mod.support_defer_deleting = MagicMock(return_value=True)
+        bash_roe = MagicMock(side_effect=[
+            (0, '["trash-id", "root-volume"]', ""),
+            (0, "", ""),
+        ])
+
+        with patch.object(real_ceph_utils.bash, "bash_roe", bash_roe):
+            result = agent.clean_trash(_make_req({
+                "pools": ["pool"],
+                "force": True,
+            }))
+
+        rsp = _load_rsp(result)
+        assert rsp["success"] is True
+        assert rsp["pool2TrashResult"] == {"pool": ["root-volume"]}
+        assert any("rbd trash rm pool/trash-id --force" in str(c)
+                   for c in bash_roe.call_args_list)
 
 
 # ---------------------------------------------------------------------------

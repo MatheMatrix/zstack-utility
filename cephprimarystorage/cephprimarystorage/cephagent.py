@@ -11,7 +11,6 @@ import rados
 import rbd
 import queue
 import threading
-import simplejson
 
 import zstacklib.utils.daemon as daemon
 import zstacklib.utils.jsonobject as jsonobject
@@ -607,6 +606,37 @@ class CephAgent(plugin.TaskManager):
         with open(path) as f:
             return f.read()
 
+    def _purge_trash_child(self, snapshot_path, child):
+        pool_name, child_name = self._parse_install_path(child)
+        ret, trash_list, error = ceph.rbd_trash_list(pool_name)
+        if ret != 0:
+            logger.warn("unable to list rbd trash while deleting image cache snapshot[%s], "
+                        "pool[%s], child[%s], ret[%s], stderr[%s]" %
+                        (snapshot_path, pool_name, child, ret, error))
+            return False
+
+        trash = ceph.find_rbd_trash(trash_list, child_name)
+        if trash is None or not trash.get("id"):
+            logger.warn("unable to find rbd child[%s] in trash while deleting image cache snapshot[%s], "
+                        "pool[%s]" % (child, snapshot_path, pool_name))
+            return False
+
+        trash_id = trash.get("id")
+        ret, _, error = ceph.rbd_trash_rm(pool_name, trash_id, True)
+        if ret != 0:
+            logger.warn("unable to purge rbd trash child while deleting image cache snapshot[%s], "
+                        "pool[%s], child[%s], trash id[%s], ret[%s], stderr[%s]" %
+                        (snapshot_path, pool_name, child, trash_id, ret, error))
+            return False
+        return True
+
+    def _purge_trash_children(self, snapshot_path, children):
+        remaining_children = []
+        for child in children:
+            if not self._purge_trash_child(snapshot_path, child):
+                remaining_children.append(child)
+        return remaining_children
+
     @replyerror
     @in_bash
     def resize_volume(self, req):
@@ -634,10 +664,10 @@ class CephAgent(plugin.TaskManager):
         if bash_r('rbd info {{IMAGE_PATH}}') != 0:
             return jsonobject.dumps(rsp)
 
-        o = bash_o('rbd children {{SP_PATH}}')
-        o = o.strip()
-        if o:
-            raise Exception('the image cache[%s] is still in used' % cmd.imagePath)
+        snapshot_children = ceph.rbd_children(SP_PATH)
+        remaining_children = self._purge_trash_children(SP_PATH, snapshot_children)
+        if remaining_children:
+            raise Exception('the image cache[%s] is still in used, children: %s' % (cmd.imagePath, remaining_children))
 
         bash_errorout('rbd snap unprotect {{SP_PATH}}')
         bash_errorout('rbd snap rm {{SP_PATH}}')
@@ -654,22 +684,21 @@ class CephAgent(plugin.TaskManager):
         if not cmd.pools or not ceph.support_defer_deleting():
             return jsonobject.dumps(rsp)
 
-        force = "--force" if cmd.force else ""
         for pool_name in set(cmd.pools):
-            r, o, e = bash_roe("rbd trash list -p %s --format json" % pool_name)
-            if r != 0 or o.strip() == '':
+            ret, trash_list, _ = ceph.rbd_trash_list(pool_name)
+            if ret != 0 or not trash_list:
                 continue
 
-            rsp.pool2TrashResult.update({pool_name: []})
-            trash_list = jsonobject.loads(o)
-            if len(trash_list) != 0 and isinstance(trash_list[0], str):
-                trash_list = [{"id": trash_list[idx], "name": trash_list[idx+1]} for idx in range(0, len(trash_list), 2)]
-                trash_list = jsonobject.loads(simplejson.dumps(trash_list))
-
+            pool_trashes = []
             for trash in trash_list:
-                r, o, e = bash_roe("rbd trash rm %s/%s %s" % (pool_name, trash.id, force))
-                if r == 0:
-                    rsp.pool2TrashResult.get(pool_name).append(trash.name)
+                trash_id = trash.get("id")
+                if not trash_id:
+                    continue
+
+                ret, _, _ = ceph.rbd_trash_rm(pool_name, trash_id, cmd.force)
+                if ret == 0:
+                    pool_trashes.append(trash.get("name"))
+            rsp.pool2TrashResult[pool_name] = pool_trashes
         self._set_capacity_to_response(rsp)
         return jsonobject.dumps(rsp)
 
