@@ -189,12 +189,12 @@ class FaultToleranceFecnerPlugin(kvmagent.KvmAgent):
             
             for vm_uuid, vm_pid in list(vm_pids_dict.items()):
                 delVnicFromOvsByVmUuidIfExist(vm_uuid)
-                kill = shell.ShellCmd('kill -9 %s' % vm_pid)
-                kill(False)
-                if kill.return_code == 0:
+                try:
+                    linux.kill_process(vm_pid, timeout=10, is_exception=True, is_graceful=False)
                     logger.warn('kill the vm[uuid:%s, pid:%s]' % (vm_uuid, vm_pid))
-                else:
-                    logger.warn('failed to kill the vm[uuid:%s, pid:%s] %s' % (vm_uuid, vm_pid, kill.stderr))
+                except Exception as e:
+                    logger.error('kill FAILED, likely D-state/Zombie[%s,%s]: %s'
+                                 % (vm_uuid, vm_pid, e))
 
         @in_bash
         def secondary_drbd_if_peer_is_primary():
