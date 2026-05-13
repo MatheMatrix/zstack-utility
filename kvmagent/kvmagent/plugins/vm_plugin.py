@@ -1029,6 +1029,14 @@ class HotUnplugMdevDeviceRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(HotUnplugMdevDeviceRsp, self).__init__()
 
+class HotPlugDGpuShmemRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(HotPlugDGpuShmemRsp, self).__init__()
+
+class HotUnplugDGpuShmemRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(HotUnplugDGpuShmemRsp, self).__init__()
+
 class AttachPciDeviceToHostCommand(kvmagent.AgentCommand):
     def __init__(self):
         super(AttachPciDeviceToHostCommand, self).__init__()
@@ -7628,6 +7636,8 @@ class VmPlugin(kvmagent.KvmAgent):
     DETACH_PCI_DEVICE_FROM_HOST = "/pcidevice/detachfromhost"
     HOT_PLUG_MDEV_DEVICE = "/mdevdevice/hotplug"
     HOT_UNPLUG_MDEV_DEVICE = "/mdevdevice/hotunplug"
+    HOT_PLUG_DGPU_SHMEM = "/dgpu/shmem/hotplug"
+    HOT_UNPLUG_DGPU_SHMEM = "/dgpu/shmem/hotunplug"
     KVM_ATTACH_USB_DEVICE_PATH = "/vm/usbdevice/attach"
     KVM_DETACH_USB_DEVICE_PATH = "/vm/usbdevice/detach"
     RELOAD_USB_REDIRECT_PATH = "/vm/usbdevice/reload"
@@ -10819,6 +10829,157 @@ host side snapshot files chian:
                 return jsonobject.dumps(rsp)
         return jsonobject.dumps(rsp)
 
+    def _build_dgpu_shmem_xml(self, shmem):
+        if isinstance(shmem, dict):
+            mem_path = shmem.get('path')
+            shmem_size = shmem.get('size')
+        else:
+            mem_path = getattr(shmem, 'path', None)
+            shmem_size = getattr(shmem, 'size', None)
+
+        if not mem_path:
+            raise kvmagent.KvmError('dGPU shmem path is required but missing')
+        normalized_mem_path = os.path.normpath(mem_path)
+        if not re.match(r'^/dev/shm/[a-zA-Z0-9_-]+$', normalized_mem_path):
+            raise kvmagent.KvmError('invalid dGPU shmem path[%s], expected /dev/shm/*' % mem_path)
+        if normalized_mem_path != mem_path:
+            raise kvmagent.KvmError('invalid dGPU shmem path[%s], path must be normalized under /dev/shm' % mem_path)
+        try:
+            shmem_size = int(shmem_size)
+        except (TypeError, ValueError):
+            raise kvmagent.KvmError('invalid dGPU shmem size[%s], must be an integer' % shmem_size)
+        if shmem_size <= 0:
+            raise kvmagent.KvmError('invalid dGPU shmem size[%s], must be greater than 0' % shmem_size)
+
+        shmem_size_mb = (shmem_size + 1024 * 1024 - 1) // (1024 * 1024)
+        if shmem_size_mb < 1 or (shmem_size_mb & (shmem_size_mb - 1)) != 0:
+            raise kvmagent.KvmError(
+                'invalid dGPU shmem size[%s], libvirt requires a power-of-two MiB value >= 1 MiB'
+                % shmem_size
+            )
+
+        shmem_name = os.path.basename(normalized_mem_path)
+        root = etree.Element('shmem', {'name': shmem_name})
+        e(root, 'model', attrib={'type': 'ivshmem-plain'})
+        e(root, 'size', str(shmem_size_mb), attrib={'unit': 'M'})
+        return etree.tostring(root, encoding="unicode"), normalized_mem_path, shmem_name
+
+    def _is_dgpu_shmem_attached(self, vm, shmem_name, expected_size_mb=None):
+        domain_xml = vm.domain.XMLDesc(0)
+        root = etree.fromstring(domain_xml)
+        for shmem in root.findall('./devices/shmem'):
+            if shmem.get('name') != shmem_name:
+                continue
+            if expected_size_mb is None:
+                return True
+            size = shmem.find('size')
+            if size is None or size.get('unit') != 'M':
+                return False
+            try:
+                return int(size.text) == expected_size_mb
+            except (TypeError, ValueError):
+                return False
+        return False
+
+    def _get_dgpu_shmem_size_mb(self, xml):
+        size = etree.fromstring(xml).find('size')
+        return int(size.text)
+
+    def _wait_dgpu_shmem_attached_state(self, vm, shmem_name, attached, expected_size_mb=None, timeout=20):
+        return linux.wait_callback_success(
+            lambda _: self._is_dgpu_shmem_attached(vm, shmem_name, expected_size_mb) == attached,
+            None,
+            timeout=timeout,
+            interval=1
+        )
+
+    @kvmagent.replyerror
+    def hot_plug_dgpu_shmem(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = HotPlugDGpuShmemRsp()
+        try:
+            xml, _, shmem_name = self._build_dgpu_shmem_xml(cmd.shmem)
+            expected_size_mb = self._get_dgpu_shmem_size_mb(xml)
+            vm = get_vm_by_uuid(cmd.vmUuid)
+            vm._wait_vm_run_until_seconds(60)
+            if self._is_dgpu_shmem_attached(vm, shmem_name, expected_size_mb):
+                logger.debug("dGPU shmem[%s] already attached to vm[uuid:%s]" % (shmem_name, cmd.vmUuid))
+                return jsonobject.dumps(rsp)
+            if self._is_dgpu_shmem_attached(vm, shmem_name):
+                rsp.success = False
+                rsp.error = "dGPU shmem %s is attached to vm %s with unexpected size" % (shmem_name, cmd.vmUuid)
+                return jsonobject.dumps(rsp)
+
+            try:
+                vm.domain.attachDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
+            except libvirt.libvirtError as ex:
+                if not self._wait_dgpu_shmem_attached_state(vm, shmem_name, True, expected_size_mb):
+                    rsp.success = False
+                    rsp.error = "failed to attach dGPU shmem %s to vm %s: %s" % (shmem_name, cmd.vmUuid, ex)
+                    return jsonobject.dumps(rsp)
+
+            if not self._wait_dgpu_shmem_attached_state(vm, shmem_name, True, expected_size_mb):
+                rsp.success = False
+                rsp.error = "dGPU shmem %s still not attached to vm %s after 20s" % (shmem_name, cmd.vmUuid)
+                return jsonobject.dumps(rsp)
+
+            logger.debug("attached dGPU shmem[%s] to vm[uuid:%s]" % (shmem_name, cmd.vmUuid))
+        except Exception as ex:
+            rsp.success = False
+            rsp.error = str(ex)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def hot_unplug_dgpu_shmem(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = HotUnplugDGpuShmemRsp()
+        try:
+            xml, mem_path, shmem_name = self._build_dgpu_shmem_xml(cmd.shmem)
+            expected_size_mb = self._get_dgpu_shmem_size_mb(xml)
+            vm = get_vm_by_uuid_no_retry(cmd.vmUuid, exception_if_not_existing=False)
+            if not vm or vm.state == Vm.VM_STATE_SHUTDOWN:
+                logger.debug("vm[uuid:%s] is absent or shutdown, no need to detach dGPU shmem[%s]" %
+                             (cmd.vmUuid, shmem_name))
+                linux.rm_file_force(mem_path)
+                return jsonobject.dumps(rsp)
+
+            try:
+                vm._wait_vm_run_until_seconds(60)
+            except Exception:
+                logger.debug("cannot find pid of vm[uuid:%s, state:%s], no need to detach dGPU shmem[%s]" %
+                             (cmd.vmUuid, vm.state, shmem_name))
+                linux.rm_file_force(mem_path)
+                return jsonobject.dumps(rsp)
+
+            if not self._is_dgpu_shmem_attached(vm, shmem_name, expected_size_mb):
+                if self._is_dgpu_shmem_attached(vm, shmem_name):
+                    rsp.success = False
+                    rsp.error = "dGPU shmem %s is attached to vm %s with unexpected size" % (shmem_name, cmd.vmUuid)
+                    return jsonobject.dumps(rsp)
+                logger.debug("dGPU shmem[%s] not found on vm[uuid:%s]" % (shmem_name, cmd.vmUuid))
+                linux.rm_file_force(mem_path)
+                return jsonobject.dumps(rsp)
+
+            try:
+                vm.domain.detachDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
+            except libvirt.libvirtError as ex:
+                if not self._wait_dgpu_shmem_attached_state(vm, shmem_name, False, expected_size_mb):
+                    rsp.success = False
+                    rsp.error = "failed to detach dGPU shmem %s from vm %s: %s" % (shmem_name, cmd.vmUuid, ex)
+                    return jsonobject.dumps(rsp)
+
+            if not self._wait_dgpu_shmem_attached_state(vm, shmem_name, False, expected_size_mb):
+                rsp.success = False
+                rsp.error = "dGPU shmem %s still attached to vm %s after 20s" % (shmem_name, cmd.vmUuid)
+                return jsonobject.dumps(rsp)
+
+            linux.rm_file_force(mem_path)
+            logger.debug("detached dGPU shmem[%s] from vm[uuid:%s]" % (shmem_name, cmd.vmUuid))
+        except Exception as ex:
+            rsp.success = False
+            rsp.error = str(ex)
+        return jsonobject.dumps(rsp)
+
     @kvmagent.replyerror
     @in_bash
     def attach_pci_device_to_host(self, req):
@@ -12468,6 +12629,8 @@ host side snapshot files chian:
         http_server.register_async_uri(self.DETACH_PCI_DEVICE_FROM_HOST, self.detach_pci_device_from_host)
         http_server.register_async_uri(self.HOT_PLUG_MDEV_DEVICE, self.hot_plug_mdev_device)
         http_server.register_async_uri(self.HOT_UNPLUG_MDEV_DEVICE, self.hot_unplug_mdev_device)
+        http_server.register_async_uri(self.HOT_PLUG_DGPU_SHMEM, self.hot_plug_dgpu_shmem)
+        http_server.register_async_uri(self.HOT_UNPLUG_DGPU_SHMEM, self.hot_unplug_dgpu_shmem)
         http_server.register_async_uri(self.KVM_ATTACH_USB_DEVICE_PATH, self.kvm_attach_usb_device)
         http_server.register_async_uri(self.KVM_DETACH_USB_DEVICE_PATH, self.kvm_detach_usb_device)
         http_server.register_async_uri(self.RELOAD_USB_REDIRECT_PATH, self.reload_redirect_usb)

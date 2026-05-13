@@ -1779,6 +1779,209 @@ class TestReloadRedirectUsbHandler:
 
 
 @pytest.mark.kvmagent
+class TestDGpuShmemHotplugHandlers:
+    def test_build_dgpu_shmem_xml_validates_and_normalizes(self):
+        plugin = _make_vm_plugin()
+
+        xml, mem_path, shmem_name = plugin._build_dgpu_shmem_xml({
+            'path': '/dev/shm/tf_vm-uuid',
+            'size': 2 * 1024 * 1024,
+        })
+
+        root = ET.fromstring(xml)
+        assert root.tag == 'shmem'
+        assert root.get('name') == 'tf_vm-uuid'
+        assert root.find('model').get('type') == 'ivshmem-plain'
+        assert root.find('size').text == '2'
+        assert root.find('size').get('unit') == 'M'
+        assert mem_path == '/dev/shm/tf_vm-uuid'
+        assert shmem_name == 'tf_vm-uuid'
+
+    @pytest.mark.parametrize('path', [
+        '/tmp/tf_vm-uuid',
+        '/dev/shm/../tf_vm-uuid',
+        '/dev/shm/tf.vm',
+    ])
+    def test_build_dgpu_shmem_xml_rejects_invalid_path(self, path):
+        plugin = _make_vm_plugin()
+
+        with pytest.raises(vm_plugin.kvmagent.KvmError):
+            plugin._build_dgpu_shmem_xml({'path': path, 'size': 1024 * 1024})
+
+    def test_is_dgpu_shmem_attached_compares_size(self):
+        plugin = _make_vm_plugin()
+        vm = MagicMock()
+        vm.domain.XMLDesc = MagicMock(return_value=(
+            '<domain><devices><shmem name="tf_vm-uuid"><size unit="M">1</size></shmem></devices></domain>'
+        ))
+
+        assert plugin._is_dgpu_shmem_attached(vm, 'tf_vm-uuid') is True
+        assert plugin._is_dgpu_shmem_attached(vm, 'tf_vm-uuid', 2) is False
+        assert plugin._is_dgpu_shmem_attached(vm, 'tf_vm-uuid', 1) is True
+
+    def test_hot_plug_dgpu_shmem_attaches_live_device(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        vm = MagicMock()
+        vm.domain.XMLDesc = MagicMock(return_value='<domain><devices></devices></domain>')
+        vm.domain.attachDeviceFlags = MagicMock()
+        wait_callback_success = MagicMock(return_value=True)
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=vm))
+        monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success', wait_callback_success)
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'shmem': {'path': '/dev/shm/tf_vm-uuid', 'size': 2 * 1024 * 1024},
+        })
+
+        result = plugin.hot_plug_dgpu_shmem(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        vm._wait_vm_run_until_seconds.assert_called_once_with(60)
+        vm.domain.attachDeviceFlags.assert_called_once()
+        xml_arg, flags_arg = vm.domain.attachDeviceFlags.call_args[0]
+        assert ET.fromstring(xml_arg).get('name') == 'tf_vm-uuid'
+        assert flags_arg == vm_plugin.libvirt.VIR_DOMAIN_AFFECT_LIVE
+        wait_callback_success.assert_called_once()
+
+    def test_hot_plug_dgpu_shmem_accepts_libvirt_error_when_state_converged(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        vm = MagicMock()
+        vm.domain.XMLDesc = MagicMock(return_value='<domain><devices></devices></domain>')
+        vm.domain.attachDeviceFlags = MagicMock(side_effect=vm_plugin.libvirt.libvirtError('attach race'))
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=vm))
+        monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success', MagicMock(return_value=True))
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'shmem': {'path': '/dev/shm/tf_vm-uuid', 'size': 2 * 1024 * 1024},
+        })
+
+        result = plugin.hot_plug_dgpu_shmem(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        vm.domain.attachDeviceFlags.assert_called_once()
+
+    def test_hot_plug_dgpu_shmem_fails_when_device_does_not_appear(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        vm = MagicMock()
+        vm.domain.XMLDesc = MagicMock(return_value='<domain><devices></devices></domain>')
+        vm.domain.attachDeviceFlags = MagicMock()
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=vm))
+        monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success', MagicMock(return_value=False))
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'shmem': {'path': '/dev/shm/tf_vm-uuid', 'size': 2 * 1024 * 1024},
+        })
+
+        result = plugin.hot_plug_dgpu_shmem(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is False
+        assert 'still not attached' in rsp['error']
+
+    def test_hot_unplug_dgpu_shmem_waits_for_detach_before_cleanup(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        vm = MagicMock(state=vm_plugin.Vm.VM_STATE_RUNNING)
+        vm.domain.XMLDesc = MagicMock(return_value=(
+            '<domain><devices><shmem name="tf_vm-uuid"><size unit="M">2</size></shmem></devices></domain>'
+        ))
+        vm.domain.detachDeviceFlags = MagicMock()
+        wait_callback_success = MagicMock(return_value=True)
+        rm_file_force = MagicMock()
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid_no_retry', MagicMock(return_value=vm))
+        monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success', wait_callback_success)
+        monkeypatch.setattr(vm_plugin.linux, 'rm_file_force', rm_file_force)
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'shmem': {'path': '/dev/shm/tf_vm-uuid', 'size': 2 * 1024 * 1024},
+        })
+
+        result = plugin.hot_unplug_dgpu_shmem(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        vm.domain.detachDeviceFlags.assert_called_once()
+        xml_arg, flags_arg = vm.domain.detachDeviceFlags.call_args[0]
+        assert ET.fromstring(xml_arg).get('name') == 'tf_vm-uuid'
+        assert flags_arg == vm_plugin.libvirt.VIR_DOMAIN_AFFECT_LIVE
+        wait_callback_success.assert_called_once()
+        rm_file_force.assert_called_once_with('/dev/shm/tf_vm-uuid')
+
+    def test_hot_unplug_dgpu_shmem_accepts_libvirt_error_when_state_converged(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        vm = MagicMock(state=vm_plugin.Vm.VM_STATE_RUNNING)
+        vm.domain.XMLDesc = MagicMock(return_value=(
+            '<domain><devices><shmem name="tf_vm-uuid"><size unit="M">2</size></shmem></devices></domain>'
+        ))
+        vm.domain.detachDeviceFlags = MagicMock(side_effect=vm_plugin.libvirt.libvirtError('detach race'))
+        rm_file_force = MagicMock()
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid_no_retry', MagicMock(return_value=vm))
+        monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success', MagicMock(return_value=True))
+        monkeypatch.setattr(vm_plugin.linux, 'rm_file_force', rm_file_force)
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'shmem': {'path': '/dev/shm/tf_vm-uuid', 'size': 2 * 1024 * 1024},
+        })
+
+        result = plugin.hot_unplug_dgpu_shmem(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        vm.domain.detachDeviceFlags.assert_called_once()
+        rm_file_force.assert_called_once_with('/dev/shm/tf_vm-uuid')
+
+    def test_hot_unplug_dgpu_shmem_fails_without_cleanup_when_device_remains(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        vm = MagicMock(state=vm_plugin.Vm.VM_STATE_RUNNING)
+        vm.domain.XMLDesc = MagicMock(return_value=(
+            '<domain><devices><shmem name="tf_vm-uuid"><size unit="M">2</size></shmem></devices></domain>'
+        ))
+        vm.domain.detachDeviceFlags = MagicMock()
+        rm_file_force = MagicMock()
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid_no_retry', MagicMock(return_value=vm))
+        monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success', MagicMock(return_value=False))
+        monkeypatch.setattr(vm_plugin.linux, 'rm_file_force', rm_file_force)
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'shmem': {'path': '/dev/shm/tf_vm-uuid', 'size': 2 * 1024 * 1024},
+        })
+
+        result = plugin.hot_unplug_dgpu_shmem(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is False
+        assert 'still attached' in rsp['error']
+        vm.domain.detachDeviceFlags.assert_called_once()
+        _, flags_arg = vm.domain.detachDeviceFlags.call_args[0]
+        assert flags_arg == vm_plugin.libvirt.VIR_DOMAIN_AFFECT_LIVE
+        rm_file_force.assert_not_called()
+
+    def test_hot_unplug_dgpu_shmem_cleans_file_for_stopped_vm(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        vm = MagicMock(state=vm_plugin.Vm.VM_STATE_SHUTDOWN)
+        rm_file_force = MagicMock()
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid_no_retry', MagicMock(return_value=vm))
+        monkeypatch.setattr(vm_plugin.linux, 'rm_file_force', rm_file_force)
+
+        req = _make_req({
+            'vmUuid': 'vm-uuid',
+            'shmem': {'path': '/dev/shm/tf_vm-uuid', 'size': 2 * 1024 * 1024},
+        })
+
+        result = plugin.hot_unplug_dgpu_shmem(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        rm_file_force.assert_called_once_with('/dev/shm/tf_vm-uuid')
+
+
+@pytest.mark.kvmagent
 class TestScriptExecOnVmHandler:
     def test_script_exec_on_vm(self):
         plugin = _make_vm_plugin()
