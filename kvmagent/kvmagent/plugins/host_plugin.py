@@ -1331,6 +1331,9 @@ class HostPlugin(kvmagent.KvmAgent):
             logger.debug('checked fake dead, sleep 3 secs')
             time.sleep(3)
             loop += 1
+        if loop >= 1200:
+            logger.warn('fakedead-kvmagent file persisted for 1 hour, forcing cleanup')
+            linux.recover_fake_dead('kvmagent')
         return ''
 
     def _cache_units_convert(self, str):
