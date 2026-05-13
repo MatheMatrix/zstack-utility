@@ -2734,7 +2734,7 @@ def remote_bin_installed(host_post_info, bin_name, return_status=False):
 
 
 def get_qemu_img_version(host_post_info):
-    command = "qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1"
+    command = "qemu-img --version 2>/dev/null | head -1 | sed -n 's/[^0-9]*\\([0-9]\\{1,\\}\\.[0-9]\\{1,\\}\\.[0-9]\\{1,\\}\\).*/\\1/p'"
     (status, qemu_img_version) = run_remote_command(command, host_post_info, False, True)
     return status, qemu_img_version
 

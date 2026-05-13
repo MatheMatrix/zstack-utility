@@ -1159,8 +1159,6 @@ class HostPlugin(kvmagent.KvmAgent):
     ATTACH_VOLUME_PATH = "/host/volume/attach"
     DETACH_VOLUME_PATH = "/host/volume/detach"
     UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH = "/host/vm/updateConsolePassword/live"
-    SETUP_VM_HA_ENABLED_METADATA_LIVE_PATH = '/host/vm/setupHaEnabledMetadata/live'
-    RECONCILE_VM_HA_ENABLED_METADATA_LIVE_PATH = '/host/vm/reconcileHaEnabledMetadata/live'
 
     def __init__(self):
         self.IS_YUM = False
@@ -1350,12 +1348,8 @@ class HostPlugin(kvmagent.KvmAgent):
             rsp.osRelease = rsp.osRelease.replace('ZStack', 'Sword')
         elif rsp.osDistribution == "helix":
             rsp.osRelease = "release"
-        elif rsp.osDistribution == "alinux":
-            rsp.osRelease = "release"
-        # to be compatible with both `2.6.0` and
-        # `2.9.0(qemu-kvm-ev-2.9.0-16.el7_4.8.1)`
-        qemu_img_version = shell.call(
-            "qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1")
+        # to be compatible with both `2.6.0` and `2.9.0(qemu-kvm-ev-2.9.0-16.el7_4.8.1)`
+        qemu_img_version = shell.call("qemu-img --version 2>/dev/null | head -1 | sed -n 's/[^0-9]*\\([0-9]\\{1,\\}\\.[0-9]\\{1,\\}\\.[0-9]\\{1,\\}\\).*/\\1/p'")
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
         ipV4Addrs = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if
                                          x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
@@ -4363,110 +4357,6 @@ done
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
-    def setup_vm_ha_enabled_metadata_live(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = kvmagent.AgentResponse()
-        self._setup_vm_ha_enabled_metadata_live(cmd.vmUuid, self._to_bool(cmd.enableHa))
-        return jsonobject.dumps(rsp)
-
-
-    @kvmagent.replyerror
-    def reconcile_vm_ha_enabled_metadata_live(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = kvmagent.AgentResponse()
-
-        never_stop_vm_uuids = set(cmd.neverStopVmUuids or [])
-        running_vm_uuids = self._get_running_vm_uuids_on_host()
-        failed_updates = []
-        for vm_uuid in running_vm_uuids:
-            enable_ha = vm_uuid in never_stop_vm_uuids
-            try:
-                self._setup_vm_ha_enabled_metadata_live(vm_uuid, enable_ha)
-            except Exception as e:
-                failed_updates.append('%s: %s' % (vm_uuid, e))
-
-        if failed_updates:
-            rsp.success = False
-            rsp.error = '; '.join(failed_updates)
-        return jsonobject.dumps(rsp)
-
-
-    @staticmethod
-    def _to_bool(value):
-        if isinstance(value, bool):
-            return value
-
-        if isinstance(value, str):
-            return value.lower() == 'true'
-
-        return value is not None and bool(value)
-
-    def _get_running_vm_uuids_on_host(self):
-        running_vm_uuids = set(vm_plugin.get_all_vm_states_with_process().keys())
-        for vm in vm_plugin.get_running_vms():
-            running_vm_uuids.add(vm.uuid)
-
-        return running_vm_uuids
-
-    def _setup_vm_ha_enabled_metadata_live(self, vm_uuid, enable_ha):
-        if enable_ha:
-            self._setup_vm_zstack_metadata_live(vm_uuid, 'enableHa', 'true')
-        else:
-            self._delete_vm_zstack_metadata_live(vm_uuid, 'enableHa')
-
-    def _setup_vm_zstack_metadata_live(self, vm_uuid, metadata_key, metadata_value):
-        updated, old_metadata_value, reason = vm_plugin.set_zstack_metadata_live(vm_uuid, metadata_key, metadata_value)
-        if reason == 'vmNotFound':
-            logger.debug('cannot find vm[uuid:%s] when updating %s metadata, skip' % (vm_uuid, metadata_key))
-            return
-
-        if reason == 'vmStateNotSupport':
-            vm = vm_plugin.get_vm_by_uuid(vm_uuid, exception_if_not_existing=False)
-            vm_state = vm.state if vm else 'Unknown'
-            logger.debug('vm[uuid:%s] state[%s] does not support live %s metadata update, skip' % (
-                vm_uuid, vm_state, metadata_key))
-            return
-
-        if reason == 'unchanged':
-            logger.debug('vm[uuid:%s] %s metadata already %s, skip live update' % (
-                vm_uuid, metadata_key, metadata_value))
-            return
-
-        if not updated:
-            logger.debug('vm[uuid:%s] skip updating %s metadata due to unexpected reason[%s]' % (
-                vm_uuid, metadata_key, reason))
-            return
-
-        logger.debug('updated vm[uuid:%s] %s metadata from %s to %s on host' % (
-            vm_uuid, metadata_key, old_metadata_value, metadata_value))
-
-    def _delete_vm_zstack_metadata_live(self, vm_uuid, metadata_key):
-        updated, old_metadata_value, reason = vm_plugin.delete_zstack_metadata_live(vm_uuid, metadata_key)
-        if reason == 'vmNotFound':
-            logger.debug('cannot find vm[uuid:%s] when deleting %s metadata, skip' % (vm_uuid, metadata_key))
-            return
-
-        if reason == 'vmStateNotSupport':
-            vm = vm_plugin.get_vm_by_uuid(vm_uuid, exception_if_not_existing=False)
-            vm_state = vm.state if vm else 'Unknown'
-            logger.debug('vm[uuid:%s] state[%s] does not support live %s metadata deletion, skip' % (
-                vm_uuid, vm_state, metadata_key))
-            return
-
-        if reason == 'unchanged':
-            logger.debug('vm[uuid:%s] %s metadata already absent, skip live deletion' % (
-                vm_uuid, metadata_key))
-            return
-
-        if not updated:
-            logger.debug('vm[uuid:%s] skip deleting %s metadata due to unexpected reason[%s]' % (
-                vm_uuid, metadata_key, reason))
-            return
-
-        logger.debug('deleted vm[uuid:%s] %s metadata, old value %s on host' % (
-            vm_uuid, metadata_key, old_metadata_value))
-
-    @kvmagent.replyerror
     def update_vm_console_password_live(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = kvmagent.AgentResponse()
@@ -4639,10 +4529,6 @@ done
             self.DETACH_VOLUME_PATH, self.detach_volume__path)
         http_server.register_async_uri(
             self.UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH, self.update_vm_console_password_live)
-        http_server.register_async_uri(
-            self.SETUP_VM_HA_ENABLED_METADATA_LIVE_PATH, self.setup_vm_ha_enabled_metadata_live)
-        http_server.register_async_uri(
-            self.RECONCILE_VM_HA_ENABLED_METADATA_LIVE_PATH, self.reconcile_vm_ha_enabled_metadata_live)
 
         self.heartbeat_timer = {}
         filepath = r'/etc/libvirt/qemu/networks/autostart/default.xml'
