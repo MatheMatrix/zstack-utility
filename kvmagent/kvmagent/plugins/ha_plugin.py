@@ -1832,9 +1832,11 @@ class HaPlugin(kvmagent.KvmAgent):
     STORAGE_DISCONNECTED = "Disconnected"
     STORAGE_CONNECTED = "Connected"
 
+    FENCER_STATE_FILE = '/var/lib/zstack/kvmagent/fencer-state.json'
+
     def __init__(self):
         # {ps_uuid: created_time} e.g. {'07ee15b2f68648abb489f43182bd59d7': 1544513500.163033}
-        self.run_fencer_timestamp = {}  # type: dict[str, float]
+        self.run_fencer_timestamp = self._load_fencer_state()
         self.fencer_fire_timestamp = {}  # type: dict[str, float]
         self.global_storage_ha = []
         self.storage_status = {}  # type: dict[str, float]
@@ -1846,6 +1848,32 @@ class HaPlugin(kvmagent.KvmAgent):
         self.vpc_lock = threading.RLock()
 
         self.fencer_storage_list = set()
+
+    def _load_fencer_state(self):
+        try:
+            if os.path.exists(self.FENCER_STATE_FILE):
+                with open(self.FENCER_STATE_FILE, 'r') as f:
+                    state = json.load(f)
+                    if isinstance(state, dict):
+                        logger.info('recovered fencer state from %s: %d entries'
+                                    % (self.FENCER_STATE_FILE, len(state)))
+                        return state
+        except Exception as e:
+            logger.warn('failed to load fencer state from %s: %s'
+                        % (self.FENCER_STATE_FILE, e))
+        return {}
+
+    def _persist_fencer_state(self):
+        try:
+            tmp = self.FENCER_STATE_FILE + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(self.run_fencer_timestamp, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.rename(tmp, self.FENCER_STATE_FILE)
+        except Exception as e:
+            logger.warn('failed to persist fencer state to %s: %s'
+                        % (self.FENCER_STATE_FILE, e))
 
     @kvmagent.replyerror
     def cancel_ceph_self_fencer(self, req):
@@ -2910,6 +2938,7 @@ class HaPlugin(kvmagent.KvmAgent):
         with self.fencer_lock:
             logger.debug('setup fencer for ps: %s, create time: %d' % (ps_uuid, created_time))
             self.run_fencer_timestamp[ps_uuid] = created_time
+            self._persist_fencer_state()
 
             if origin_uuid is not None:
                 self.fencer_storage_list.add(origin_uuid)
@@ -2924,6 +2953,7 @@ class HaPlugin(kvmagent.KvmAgent):
                     logger.debug('cancel fencer for ps: %s, with fencer key: %s' % (ps_uuid, key))
                     self.run_fencer_timestamp.pop(key, None)
                     self.sblk_health_checker.delvg(ps_uuid)  # ugly ...
+            self._persist_fencer_state()
             if ps_uuid in self.fencer_storage_list:
                 self.fencer_storage_list.remove(ps_uuid)
 
@@ -2933,3 +2963,4 @@ class HaPlugin(kvmagent.KvmAgent):
                 if fencer_key_matcher(key):
                     logger.debug('cancel fencer for ps: %s, with fencer key: %s' % (ps_uuid, key))
                     self.run_fencer_timestamp.pop(key, None)
+            self._persist_fencer_state()
