@@ -1782,8 +1782,8 @@ def not_exec_kill_vm(strategy, vm_uuid, fencer_name):
 def kill_vm_by_xml(maxAttempts, strategy, mountPath, isFlushbufs = True):
     vm_pids_dict, on_storage_vm_uuids = get_runnning_vm_root_volume_on_ps(maxAttempts, strategy, mountPath, isFlushbufs)
     reason = "because we lost connection to the storage, failed to read the heartbeat file %s times" % maxAttempts
-    kill_vm_use_pid(vm_pids_dict, reason)
-    return vm_pids_dict, on_storage_vm_uuids
+    dead = kill_vm_use_pid(vm_pids_dict, reason)
+    return dead, on_storage_vm_uuids
 
 
 @bash.in_bash
@@ -1866,18 +1866,21 @@ def kill_vm(maxAttempts, strategy, mountPaths=None, isFileSystem=None):
 
         vm_pids_dict[vm_uuid] = vm_pid
     reason = "because we lost connection to the storage, failed to read the heartbeat file %s times" % maxAttempts
-    kill_vm_use_pid(vm_pids_dict, reason)
-    return vm_pids_dict, on_storage_vm_uuids
+    dead = kill_vm_use_pid(vm_pids_dict, reason)
+    return dead, on_storage_vm_uuids
 
 def kill_vm_use_pid(vm_pids_dict, reason):
+    dead = {}
     for vm_uuid, vm_pid in list(vm_pids_dict.items()):
         delVnicFromOvsByVmUuidIfExist(vm_uuid)
-        kill = shell.ShellCmd('kill -9 %s' % vm_pid)
-        kill(False)
-        if kill.return_code == 0:
+        try:
+            linux.kill_process(vm_pid, timeout=10, is_exception=True, is_graceful=False)
+            dead[vm_uuid] = vm_pid
             logger.warn('kill the vm[uuid:%s, pid:%s] %s' % (vm_uuid, vm_pid, reason))
-        else:
-            logger.warn('failed to kill the vm[uuid:%s, pid:%s] %s' % (vm_uuid, vm_pid, kill.stderr))
+        except Exception as e:
+            logger.error('kill FAILED, likely D-state/Zombie[%s,%s]: %s; NOT reporting as killed'
+                         % (vm_uuid, vm_pid, e))
+    return dead
 
 
 def mount_path_is_nfs(mount_path):
