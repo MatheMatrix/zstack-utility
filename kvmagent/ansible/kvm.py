@@ -962,6 +962,28 @@ def install_virtualenv():
         host_post_info.post_label_param = None
         run_remote_command(command, host_post_info)
 
+def kvmagent_installed_marker_path():
+    return os.path.join(workplace, ".kvmagent-installed-md5")
+
+def is_kvmagent_installed_marker_matched():
+    marker_path = kvmagent_installed_marker_path()
+    package_path = os.path.join(kvm_root, pkg_kvmagent)
+    command = "test \"$(cat {marker} 2>/dev/null)\" = \"$(md5sum {package} | awk '{{print $1}}')\"".format(
+        marker=marker_path, package=package_path)
+    host_post_info.post_label = "ansible.shell.check.kvmagent.installed.marker"
+    host_post_info.post_label_param = marker_path
+    return run_remote_command(command, host_post_info, return_status=True)
+
+def update_kvmagent_installed_marker():
+    marker_path = kvmagent_installed_marker_path()
+    marker_dir = os.path.dirname(marker_path)
+    package_path = os.path.join(kvm_root, pkg_kvmagent)
+    command = "mkdir -p {marker_dir} && md5sum {package} | awk '{{print $1}}' > {marker}".format(
+        marker_dir=marker_dir, package=package_path, marker=marker_path)
+    host_post_info.post_label = "ansible.shell.update.kvmagent.installed.marker"
+    host_post_info.post_label_param = marker_path
+    run_remote_command(command, host_post_info)
+
 def install_agent_pkg():
     """install zstacklib and kvmagent on host"""
 
@@ -973,13 +995,14 @@ def install_agent_pkg():
         agent_install_arg.virtualenv_site_packages = "yes"
         agent_install(agent_install_arg, host_post_info)
 
-    if copy_kvmagent_status != "changed:False":
+    if copy_kvmagent_status != "changed:False" or not is_kvmagent_installed_marker_matched():
         agent_install_arg = AgentInstallArg(trusted_host, pip_url, virtenv_path, init_install)
         agent_install_arg.agent_name = "kvm agent"
         agent_install_arg.agent_root = kvm_root
         agent_install_arg.pkg_name = pkg_kvmagent
         agent_install_arg.virtualenv_site_packages = "yes"
         agent_install(agent_install_arg, host_post_info)
+        update_kvmagent_installed_marker()
 
 def copy_i40e_driver():
     """copy intel i40e ethernet dirver"""
