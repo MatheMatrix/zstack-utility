@@ -1043,20 +1043,33 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
     def _to_pool_rsp(self, pool):
         # type: (PoolProcessor) -> PoolRsp
         rsp = PoolRsp()
+        self._fill_pool_rsp(rsp, pool)
+        return rsp
+
+    def _fill_pool_rsp(self, rsp, pool):
+        # type: (PoolRsp, PoolProcessor) -> None
         assert pool.vg and pool.lv and pool.fs and pool.mount_point
         rsp.poolUuid = pool.pool_uuid
         rsp.mountPoint = pool.mount_point[MountPointInfoFields.TARGET]
         try:
-            pool_capacity = pool.get_capacity()
-            rsp.capacity = pool_capacity.total
+            self._fill_pool_capacity(rsp, pool.get_capacity())
         except Exception as e:
             logger.warning("Failed to read capacity for pool %s: %s" % (pool.pool_uuid, str(e)))
             rsp.capacity = None
-        return rsp
 
-    def _to_pool_health_rsp(self, pool_health_info):
-        # type: (PoolHealthInfo) -> PoolHealthRsp
+    def _fill_pool_capacity(self, rsp, capacity):
+        # type: (PoolRsp, PoolCapacityInfo) -> None
+        rsp.capacity = capacity.total
+        rsp.total = capacity.total
+        rsp.used = capacity.used
+        rsp.available = capacity.available
+        rsp.allocated = capacity.allocated
+        rsp.dirty = capacity.dirty
+
+    def _to_pool_health_rsp(self, pool, pool_health_info):
+        # type: (PoolProcessor, PoolHealthInfo) -> PoolHealthRsp
         rsp = PoolHealthRsp()
+        self._fill_pool_rsp(rsp, pool)
         rsp.healthy = pool_health_info.is_healthy
         if not pool_health_info.is_healthy:
             # aggregate failure reason: first unhealthy layer wins
@@ -1073,14 +1086,13 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
             rsp.reason = "; ".join(reasons) if reasons else "unhealthy"
         return rsp
 
-    def _to_pool_capacity_rsp(self, capacity):
-        # type: (PoolCapacityInfo) -> PoolCapacityRsp
+    def _to_pool_capacity_rsp(self, pool, capacity):
+        # type: (PoolProcessor, PoolCapacityInfo) -> PoolCapacityRsp
         rsp = PoolCapacityRsp()
-        rsp.total = capacity.total
-        rsp.used = capacity.used
-        rsp.available = capacity.available
-        rsp.allocated = capacity.allocated
-        rsp.dirty = capacity.dirty
+        assert pool.mount_point
+        rsp.poolUuid = pool.pool_uuid
+        rsp.mountPoint = pool.mount_point[MountPointInfoFields.TARGET]
+        self._fill_pool_capacity(rsp, capacity)
         return rsp
 
     def _to_cache_rsp(self, cache):
@@ -1144,7 +1156,7 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
     def check_pool(self, cmd, pool):
         # type: (CheckPoolCmd, PoolProcessor) -> PoolHealthRsp
         pool_health = pool.check_pool()
-        return self._to_pool_health_rsp(pool_health)
+        return self._to_pool_health_rsp(pool, pool_health)
 
     @kvmagent.replyerror
     @auto_serialize(GetPoolCapacityCmd, PoolCapacityRsp)
@@ -1152,7 +1164,7 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
     def get_pool_capacity(self, cmd, pool):
         # type: (GetPoolCapacityCmd, PoolProcessor) -> PoolCapacityRsp
         capacity = pool.get_capacity()
-        return self._to_pool_capacity_rsp(capacity)
+        return self._to_pool_capacity_rsp(pool, capacity)
 
     @kvmagent.replyerror
     @auto_serialize(AllocateCacheCmd, CacheRsp)
@@ -1192,6 +1204,7 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
         gc_files = pool.gc_pool(volume_uuids)
 
         rsp = GcPoolRsp()
+        self._fill_pool_rsp(rsp, pool)
         rsp.gcFiles = gc_files
         rsp.gcCount = len(gc_files)
         return rsp
