@@ -232,6 +232,30 @@ class TestFencerCallsKillVmByXml(unittest.TestCase):
                 return
         self.fail("get_runnning_vm_root_volume_on_ps not found in source")
 
+    def test_get_runnning_vm_uses_not_exec_kill_vm_not_is_allow_fencer(self):
+        """get_runnning_vm_root_volume_on_ps must use not_exec_kill_vm to skip VMs (not is_allow_fencer).
+
+        allowRules lists VMs that SHOULD be killed even in Permissive strategy (e.g. VPC/SLB system VMs).
+        Using is_allow_fencer directly as the skip condition reverses the semantics:
+        VMs in allowRules would be skipped instead of killed.
+        """
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.FunctionDef) and node.name == 'get_runnning_vm_root_volume_on_ps':
+                calls = []
+                for call_node in ast.walk(node):
+                    if isinstance(call_node, ast.Call):
+                        if isinstance(call_node.func, ast.Name):
+                            calls.append(call_node.func.id)
+                        elif isinstance(call_node.func, ast.Attribute):
+                            calls.append(call_node.func.attr)
+                self.assertIn('not_exec_kill_vm', calls,
+                              "get_runnning_vm_root_volume_on_ps must use not_exec_kill_vm to skip VMs")
+                self.assertNotIn('is_allow_fencer', calls,
+                                 "get_runnning_vm_root_volume_not NOT call is_allow_fencer directly "
+                                 "(allowRules VMs should be killed, not skipped)")
+                return
+        self.fail("get_runnning_vm_root_volume_on_ps not found in source")
+
 
 if __name__ == '__main__':
     unittest.main()
