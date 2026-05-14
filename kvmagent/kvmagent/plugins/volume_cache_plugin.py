@@ -1188,7 +1188,7 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
     @ensure_pool(initialized=True)
     def gc_pool(self, cmd, pool):
         # type: (GcPoolCmd, PoolProcessor) -> GcPoolRsp
-        volume_uuids = [vol.volumeUuid for vol in cmd.volumes] if cmd.volumes else []
+        volume_uuids = cmd.inUseCacheUuids if cmd.inUseCacheUuids else []
         gc_files = pool.gc_pool(volume_uuids)
 
         rsp = GcPoolRsp()
