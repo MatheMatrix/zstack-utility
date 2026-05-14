@@ -144,18 +144,18 @@ class FileSystemInfo(object):
 
 class PoolCapacityInfo(object):
     total = None # type: int | None
-    used = None # type: int | None
     available = None # type: int | None
-    allocated = None # type: int | None
-    dirty = None # type: int | None
+    total_physical = None # type: int | None
+    available_physical = None # type: int | None
+    system_used = None # type: int | None
 
-    def __init__(self, total, used, available, allocated, dirty):
+    def __init__(self, total, available, total_physical, available_physical, system_used):
         # type: (str|int, str|int, str|int, str|int, str|int) -> None
         self.total = int(total)
-        self.used = int(used)
         self.available = int(available)
-        self.allocated = int(allocated)
-        self.dirty = int(dirty)
+        self.total_physical = int(total_physical)
+        self.available_physical = int(available_physical)
+        self.system_used = int(system_used)
 
 class CacheCapacityInfo(object):
     virtual_size = None # type: int | None
@@ -197,11 +197,14 @@ class MountPointInfo(object):
             dirty_size = reduce(lambda x, y: x + y,
                                 map(lambda file_path: QemuImgCommandWrapper.get_qcow2_actual_size(file_path),
                                     qcow2_files))
-        return PoolCapacityInfo(total=self[MountPointInfoFields.SIZE],
-                                used=self[MountPointInfoFields.USED],
-                                available=self[MountPointInfoFields.AVAIL],
-                                allocated=allocated_size,
-                                dirty=dirty_size)
+        total_physical_size = int(self[MountPointInfoFields.SIZE])
+        available_physical_size = int(self[MountPointInfoFields.AVAIL])
+        system_used_size = max(0, int(self[MountPointInfoFields.USED]) - dirty_size)
+        return PoolCapacityInfo(total=total_physical_size,
+                                available=total_physical_size - allocated_size - system_used_size,
+                                total_physical=total_physical_size,
+                                available_physical=available_physical_size,
+                                system_used=system_used_size)
 
     def _load(self):
         # type: () -> dict[str, str]

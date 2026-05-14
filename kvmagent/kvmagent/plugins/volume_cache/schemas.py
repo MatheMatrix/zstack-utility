@@ -248,27 +248,26 @@ class PoolRsp(VolumeCacheBaseResponse):
 
     poolUuid = None # type: str | None
     mountPoint = None # type: str | None
-    capacity = None # type: int | None
+    totalCapacity = None # type: int | None
+    availableCapacity = None # type: int | None
+    totalPhysicalCapacity = None # type: int | None
+    availablePhysicalCapacity = None # type: int | None
+    systemUsedCapacity = None # type: int | None
 
 
 class PoolHealthRsp(VolumeCacheBaseResponse):
     """Pool health response -- aggregated signal only"""
 
+    poolUuid = None # type: str | None
+    mountPoint = None # type: str | None
     healthy = None # type: bool | None
     reason = None # type: str | None
 
 
-class PoolCapacityRsp(VolumeCacheBaseResponse):
+class PoolCapacityRsp(PoolRsp):
     """Pool capacity response"""
 
-    total = None # type: int | None
-    used = None # type: int | None
-    available = None # type: int | None
-    allocated = None # type: int | None
-    dirty = None # type: int | None
-
-
-class CacheRsp(VolumeCacheBaseResponse):
+class CacheRsp(PoolRsp):
     """Allocate cache volume response"""
 
     installPath = None # type: str | None
@@ -276,8 +275,12 @@ class CacheRsp(VolumeCacheBaseResponse):
     actualSize = None # type: int | None
 
 
+class DeleteCacheRsp(PoolRsp):
+    """Release cache volume response"""
+    pass
 
-class GcPoolRsp(VolumeCacheBaseResponse):
+
+class GcPoolRsp(PoolRsp):
     """Pool GC response"""
 
     gcFiles = None  # type: list[str] | None
@@ -285,4 +288,4 @@ class GcPoolRsp(VolumeCacheBaseResponse):
 
 
 InitPoolRsp = ConnectPoolRsp = ExtendPoolRsp = PoolRsp
-DeleteCacheRsp = DeletePoolRsp = EmptyRsp
+DeletePoolRsp = EmptyRsp
