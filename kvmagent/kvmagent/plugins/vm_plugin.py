@@ -4111,8 +4111,8 @@ class Vm(object):
             _, disk_name = self._get_target_disk_by_path(oldpath)
             migrate_disks[disk_name] = volume
 
-        xml_changed = False
         tree = etree.ElementTree(etree.fromstring(self.get_migratable_xml()))
+        xml_changed = self._split_legacy_rbd_snapshot(tree.getroot())
         devices = tree.getroot().find('devices')
         for disk in tree.iterfind('devices/disk'):
             dev = disk.find('target').attrib['dev']
@@ -4127,6 +4127,32 @@ class Vm(object):
             return migrate_disks.keys(), etree.tostring(tree.getroot())
         else:
             return None, None
+
+    @staticmethod
+    def _split_legacy_rbd_snapshot(root):
+        xml_changed = False
+        for disk in root.iterfind('devices/disk'):
+            if disk.get('type') != 'network':
+                continue
+
+            source = disk.find('source')
+            if source is None or source.get('protocol') != 'rbd':
+                continue
+
+            name = source.get('name')
+            if not name or '@' not in name:
+                continue
+
+            image_name, snapshot_name = name.rsplit('@', 1)
+            if not image_name or not snapshot_name:
+                continue
+
+            source.set('name', image_name)
+            if source.find('snapshot') is None:
+                etree.SubElement(source, 'snapshot', {'name': snapshot_name})
+            xml_changed = True
+
+        return xml_changed
 
     MIGRATE_VM_TASK_NAME = "MigrateVm"
     @staticmethod
