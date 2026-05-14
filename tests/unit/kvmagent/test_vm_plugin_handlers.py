@@ -1281,6 +1281,186 @@ class TestDetachPciDeviceFromHostHandler:
 
 
 @pytest.mark.kvmagent
+class TestMigrateDomainXml:
+    def test_split_legacy_rbd_cdrom_snapshot(self):
+        domain_xml = """
+<domain type='kvm'>
+  <name>vm-uuid</name>
+  <devices>
+    <disk type='network' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source protocol='rbd' name='pool/image@snapshot'>
+        <host name='172.24.1.1' port='6789'/>
+      </source>
+      <target dev='hdc' bus='ide'/>
+      <readonly/>
+    </disk>
+  </devices>
+</domain>
+"""
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.get_migratable_xml = MagicMock(return_value=domain_xml)
+
+        disks, dest_xml = vm._build_domain_new_xml({})
+
+        assert disks == []
+        root = ET.fromstring(dest_xml)
+        source = root.find("devices/disk/source")
+        assert source.attrib["name"] == "pool/image"
+        assert source.find("snapshot").attrib["name"] == "snapshot"
+
+    def test_split_legacy_rbd_data_disk_snapshot(self):
+        domain_xml = """
+<domain type='kvm'>
+  <name>vm-uuid</name>
+  <devices>
+    <disk type='network' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source protocol='rbd' name='pool/image@snapshot'>
+        <host name='172.24.1.1' port='6789'/>
+      </source>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+  </devices>
+</domain>
+"""
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.get_migratable_xml = MagicMock(return_value=domain_xml)
+
+        disks, dest_xml = vm._build_domain_new_xml({})
+
+        assert disks == []
+        root = ET.fromstring(dest_xml)
+        source = root.find("devices/disk/source")
+        assert source.attrib["name"] == "pool/image"
+        assert source.find("snapshot").attrib["name"] == "snapshot"
+
+    def test_keeps_existing_rbd_cdrom_snapshot(self):
+        domain_xml = """
+<domain type='kvm'>
+  <name>vm-uuid</name>
+  <devices>
+    <disk type='network' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source protocol='rbd' name='pool/image@legacy-snapshot'>
+        <host name='172.24.1.1' port='6789'/>
+        <snapshot name='existing-snapshot'/>
+      </source>
+      <target dev='hdc' bus='ide'/>
+      <readonly/>
+    </disk>
+  </devices>
+</domain>
+"""
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.get_migratable_xml = MagicMock(return_value=domain_xml)
+
+        _, dest_xml = vm._build_domain_new_xml({})
+
+        root = ET.fromstring(dest_xml)
+        source = root.find("devices/disk/source")
+        assert source.attrib["name"] == "pool/image"
+        assert source.find("snapshot").attrib["name"] == "existing-snapshot"
+        assert len(source.findall("snapshot")) == 1
+
+    def test_does_not_split_rbd_data_disk_without_snapshot(self):
+        domain_xml = """
+<domain type='kvm'>
+  <name>vm-uuid</name>
+  <devices>
+    <disk type='network' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source protocol='rbd' name='pool/image'>
+        <host name='172.24.1.1' port='6789'/>
+      </source>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+  </devices>
+</domain>
+"""
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.get_migratable_xml = MagicMock(return_value=domain_xml)
+
+        disks, dest_xml = vm._build_domain_new_xml({})
+
+        assert disks is None
+        assert dest_xml is None
+
+    def test_splits_snapshot_when_replacing_migration_disk(self):
+        domain_xml = """
+<domain type='kvm'>
+  <name>vm-uuid</name>
+  <devices>
+    <disk type='network' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source protocol='rbd' name='pool/iso@snapshot'>
+        <host name='172.24.1.1' port='6789'/>
+      </source>
+      <target dev='hdc' bus='ide'/>
+      <readonly/>
+    </disk>
+    <disk type='network' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source protocol='rbd' name='pool/data-image'>
+        <host name='172.24.1.1' port='6789'/>
+      </source>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+  </devices>
+</domain>
+"""
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.get_migratable_xml = MagicMock(return_value=domain_xml)
+        vm._get_target_disk_by_path = MagicMock(return_value=(None, "vda"))
+        volume = jsonobject.loads(json.dumps({
+            "deviceType": "ceph",
+            "installPath": "ceph://pool/replaced-data-image",
+            "useVirtioSCSI": False,
+            "useVirtio": True,
+            "shareable": False,
+            "secretUuid": None,
+            "monInfo": [],
+            "physicalBlockSize": None,
+            "format": "raw",
+            "backing_store": None,
+        }))
+
+        disks, dest_xml = vm._build_domain_new_xml({"ceph://pool/data-image": volume})
+
+        assert disks == ["vda"]
+        root = ET.fromstring(dest_xml)
+        sources = root.findall("devices/disk/source")
+        cdrom_source = sources[0]
+        disk_source = sources[1]
+        assert cdrom_source.attrib["name"] == "pool/iso"
+        assert cdrom_source.find("snapshot").attrib["name"] == "snapshot"
+        assert disk_source.attrib["name"] == "pool/replaced-data-image"
+
+    def test_does_not_split_non_rbd_network_disk_snapshot(self):
+        domain_xml = """
+<domain type='kvm'>
+  <name>vm-uuid</name>
+  <devices>
+    <disk type='network' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source protocol='cbd' name='pool/image@snapshot'>
+        <host name='172.24.1.1' port='7777'/>
+      </source>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+  </devices>
+</domain>
+"""
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.get_migratable_xml = MagicMock(return_value=domain_xml)
+
+        disks, dest_xml = vm._build_domain_new_xml({})
+
+        assert disks is None
+        assert dest_xml is None
+
+
+@pytest.mark.kvmagent
 class TestBlockMigrateHandler:
     def test_block_migrate(self):
         plugin = _make_vm_plugin()
