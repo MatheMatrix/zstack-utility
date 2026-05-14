@@ -1,3 +1,4 @@
+import select
 import time
 
 from kvmagent import kvmagent
@@ -227,4 +228,9 @@ class PhysicalNicMonitor(kvmagent.KvmAgent):
             while True:
                 if time_lock_now != self.time_lock:
                     break
-                self.physical_nic_monitor_get(ip)
+                try:
+                    readable, _, _ = select.select([ip], [], [], 5.0)
+                    if readable:
+                        self.physical_nic_monitor_get(ip)
+                except Exception:
+                    pass
