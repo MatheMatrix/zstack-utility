@@ -7,6 +7,7 @@ import yaml
 import glob
 import uuid
 import re
+import shlex
 import simplejson
 from enum import Enum, unique
 
@@ -33,6 +34,12 @@ BONDING_MODE_TCP = "balance-tcp"
 LACP_MODE_OFF = "off"
 LACP_MODE_ACTIVE = "active"
 LACP_MODE_PASSIVE = "passive"
+
+
+def getInterfaceId(nicName, nicUuid, ifaceId=None):
+    if ifaceId is not None and str(ifaceId).strip() != "":
+        return ifaceId
+    return "{}_{}".format(nicName, nicUuid)
 
 
 class OvsError(Exception):
@@ -376,26 +383,29 @@ class VsCtl(object):
             return []
 
     @bash.in_bash
-    def addVnic(self, nicName, nicUuid, vmUuid, reinstall=False, brName="br-int", nicType="dpdkvhostuserclient"):
+    def addVnic(self, nicName, nicUuid, vmUuid, reinstall=False, brName="br-int", nicType="dpdkvhostuserclient",
+                ifaceId=None):
         try:
             if vmUuid is not None and vmUuid.strip() != "":
                 vmUuid = vmUuid.replace('-', '')
             srcPath = OVS_DPDK_SRC_PATH + nicName
+            interfaceId = getInterfaceId(nicName, nicUuid, ifaceId)
+            safeInterfaceId = shlex.quote(str(interfaceId))
             if reinstall:
                 cmd = '{cmd} del-port {brName} {nicName}; ' \
                       '{cmd} add-port {brName} {nicName} ' \
                       '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
-                      '-- set interface {nicName} external-ids:iface-id={nicName}_{nicUuid} ' \
+                      '-- set interface {nicName} external-ids:iface-id={interfaceId} ' \
                       '-- set interface {nicName} external-ids:vm-uuid={vmUuid}'.format(
-                    cmd=CtlBin, brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid,
-                    vmUuid=vmUuid)
+                    cmd=CtlBin, brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath,
+                    vmUuid=vmUuid, interfaceId=safeInterfaceId)
             else:
                 cmd = CtlBin + '--may-exist add-port {brName} {nicName} ' \
                                '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
-                               '-- set interface {nicName} external-ids:iface-id={nicName}_{nicUuid} ' \
+                               '-- set interface {nicName} external-ids:iface-id={interfaceId} ' \
                                '-- set interface {nicName} external-ids:vm-uuid={vmUuid}'.format(
-                    brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid,
-                    vmUuid=vmUuid)
+                    brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath,
+                    vmUuid=vmUuid, interfaceId=safeInterfaceId)
             bash.bash_r(cmd)
         except Exception as err:
             logger.error(
