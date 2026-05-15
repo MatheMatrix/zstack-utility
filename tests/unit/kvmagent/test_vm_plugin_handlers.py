@@ -451,6 +451,23 @@ class TestStopVmHandler:
         plugin._stop_vm.assert_called_once()
         vm_plugin.notify_vrouter.assert_called_once()
 
+    def test_stop_vm_ignore_not_found(self):
+        plugin = _make_vm_plugin()
+        plugin.kill_vm = MagicMock()
+        cmd = MagicMock()
+        cmd.uuid = 'vm-uuid'
+        cmd.type = 'grace'
+        cmd.ignoreNotFound = True
+
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=None)
+        vm_plugin.delVnicFromOvsByVmUuidIfExist = MagicMock()
+
+        plugin._stop_vm(cmd)
+
+        vm_plugin.get_vm_by_uuid.assert_called_once_with('vm-uuid', exception_if_not_existing=False)
+        vm_plugin.delVnicFromOvsByVmUuidIfExist.assert_called_once_with('vm-uuid')
+        plugin.kill_vm.assert_called_once_with('vm-uuid')
+
 
 @pytest.mark.kvmagent
 class TestPauseVmHandler:
