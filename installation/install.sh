@@ -3323,7 +3323,11 @@ is_install_zops(){
     echo_subtitle "Install ZOps"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     zops_installer_bin=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/zops -name "zops-installer*" | head -n 1`
-    bash $zops_installer_bin install --for_ops >>$ZSTACK_INSTALL_LOG 2>&1
+    if [ -n "$MYSQL_NEW_ROOT_PASSWORD" ]; then
+        bash "$zops_installer_bin" install --for_ops -p "$MYSQL_NEW_ROOT_PASSWORD" >>$ZSTACK_INSTALL_LOG 2>&1
+    else
+        bash "$zops_installer_bin" install --for_ops >>$ZSTACK_INSTALL_LOG 2>&1
+    fi
     [ $? -eq 0 ] && pass
 }
 
