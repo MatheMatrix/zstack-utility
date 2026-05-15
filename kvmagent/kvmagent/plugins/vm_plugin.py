@@ -3978,6 +3978,30 @@ class Vm(object):
         base = get_volume_actual_installpath(task_spec.base)
         install_path = VmPlugin.get_source_file_by_disk(target_disk)
         active_commit = top == install_path
+
+        # Idempotency guard: detect work already done by a previous (interrupted) call.
+        # 1) `top` no longer in chain AND `base` is in chain  ->  commit already happened.
+        # 2) A libvirt block job is still running on this disk  ->  take over instead of
+        #    re-issuing blockCommit (which libvirt would reject as duplicate).
+        try:
+            current_chain = self.get_disk_chain_by_volume(volume)
+        except Exception:
+            current_chain = []
+        if current_chain and (top not in current_chain) and (base in current_chain):
+            logger.debug('block commit skipped: top[%s] already merged into base[%s] for disk %s'
+                         % (top, base, disk_name))
+            return base
+        try:
+            inflight = bool(self.domain.blockJobInfo(disk_name, 0))
+        except Exception:
+            inflight = False
+        if inflight:
+            logger.debug('block commit detected in-flight job on %s, awaiting completion' % disk_name)
+            with BlockCommitDaemon(task_spec, self, disk_name, top=top, base=base, active_commit=active_commit) as d:
+                if not self.await_block_job(disk_name, d.get_remaining_timeout()):
+                    raise kvmagent.KvmError('block commit failed - previous block job did not finish')
+            return base
+
         with BlockCommitDaemon(task_spec, self, disk_name, top=top, base=base, active_commit=active_commit) as d:
             return do_block_commit_disk(task_spec, disk_name, task_spec.top, task_spec.base, active_commit)
 
@@ -4102,6 +4126,44 @@ class Vm(object):
                 res.append(src_file)
 
         return res
+
+    def get_disk_chain_by_volume(self, volume):
+        """Return the active->bottom chain for the disk that hosts `volume`.
+
+        First element is the active (top) source file. Empty list if not found.
+        Used by idempotent block_commit/merge_snapshot to skip work that has
+        already been done in a previous (interrupted) call.
+        """
+        try:
+            target_disk, _ = self._get_target_disk(volume, is_exception=False)
+        except Exception:
+            target_disk = None
+        if not target_disk:
+            return []
+        try:
+            install_path = VmPlugin.get_source_file_by_disk(target_disk)
+        except Exception:
+            install_path = None
+        if not install_path:
+            return []
+        chain = [install_path]
+        chain.extend(self._get_backfile_chain(install_path))
+        return chain
+
+    def await_block_job(self, disk_name, timeout):
+        """Block until libvirt reports no more block job on `disk_name`.
+
+        Returns True if the job completed within timeout (or there was no job
+        to begin with), False if it timed out.
+
+        Used to take over an in-flight block job left by a previous request,
+        without re-issuing blockCommit/blockRebase (which libvirt would reject
+        or duplicate).
+        """
+        def _poll(_):
+            return not self._wait_for_block_job(disk_name, abort_on_error=False)
+        return linux.wait_callback_success(_poll, timeout=timeout,
+                                           ignore_exception_in_callback=True)
 
     def get_all_disk_backing_chain(self):
         # type: () -> list
@@ -5055,11 +5117,48 @@ class Vm(object):
 
             logger.debug('end block rebase [active: %s, new backing: %s]' % (top, base))
 
+        # Idempotency guard: if destPath already has the desired backing
+        # (or no backing for fullRebase), the merge has already happened in a
+        # previous (possibly interrupted) call -- nothing to do.
+        try:
+            current_backing = self._get_back_file(cmd.destPath) or ""
+        except Exception:
+            current_backing = None
+        target_backing = "" if cmd.fullRebase else cmd.srcPath
+        if current_backing is not None and current_backing == target_backing:
+            logger.debug('merge_snapshot skipped: %s already has backing %r' %
+                         (cmd.destPath, target_backing))
+            # Still drain any leftover block job to keep libvirt clean.
+            try:
+                if self.domain.blockJobInfo(disk_name, 0):
+                    self.await_block_job(disk_name, 60)
+            except Exception:
+                pass
+            return
+
         self._check_snapshot_can_livemerge(cmd.srcPath, cmd.destPath,
                                            cmd.fullRebase)
         # confirm MergeSnapshotDaemon's cancel will be invoked before block job wait
         base = None if cmd.fullRebase else cmd.srcPath
         with MergeSnapshotDaemon(cmd, self, disk_name, top=cmd.destPath, base=base) as d:
+            # If a block job is already running on this disk (e.g. previous
+            # request issued blockRebase but lost the reply), take it over
+            # instead of re-issuing.
+            try:
+                inflight = bool(self.domain.blockJobInfo(disk_name, 0))
+            except Exception:
+                inflight = False
+            if inflight:
+                logger.debug('merge_snapshot detected in-flight block job on %s, awaiting completion' % disk_name)
+                if not self.await_block_job(disk_name, d.get_remaining_timeout()):
+                    raise kvmagent.KvmError('merge snapshot failed - previous block job did not finish')
+                # Verify final backing matches expectation.
+                final_backing = self._get_back_file(cmd.destPath) or ""
+                if final_backing != target_backing:
+                    raise kvmagent.KvmError(
+                        'merge snapshot inflight job finished but backing mismatch: expect %r got %r'
+                        % (target_backing, final_backing))
+                return
             do_pull(base, cmd.destPath)
 
     def take_volumes_shallow_backup(self, task_spec, volumes, dst_backup_paths):
@@ -9864,7 +9963,7 @@ host side snapshot files chian:
             rsp.success = False
             return jsonobject.dumps(rsp)
 
-        rsp.size = VmPlugin._get_snapshot_size(cmd.base)
+        rsp.size = VmPlugin._get_snapshot_size(cmd.base) if os.path.exists(cmd.base) else 0
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror

@@ -801,8 +801,11 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         if not os.path.exists(workspace_dir):
             os.makedirs(workspace_dir)
 
-        t_shell = traceable_shell.get_shell(cmd)
-        linux.create_template(cmd.snapshotInstallPath, cmd.workspaceInstallPath, shell=t_shell)
+        # Idempotency: if a previous (possibly retried) call already produced
+        # the workspace template, skip the expensive qemu-img convert.
+        if not qcow2.already_template_of(cmd.snapshotInstallPath, cmd.workspaceInstallPath):
+            t_shell = traceable_shell.get_shell(cmd)
+            linux.create_template(cmd.snapshotInstallPath, cmd.workspaceInstallPath, shell=t_shell)
         rsp.size, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.workspaceInstallPath)
 
         rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.storagePath)
@@ -813,11 +816,13 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         snapshots = cmd.snapshotInstallPaths
         count = len(snapshots)
+        # Idempotency: only do the rebases that haven't already been done.
         for i in range(count):
             if i+1 < count:
                 target = snapshots[i]
                 backing_file = snapshots[i+1]
-                linux.qcow2_rebase_no_check(backing_file, target)
+                if linux.qcow2_get_backing_file(target) != backing_file:
+                    linux.qcow2_rebase_no_check(backing_file, target)
 
         latest = snapshots[0]
         rsp = RebaseAndMergeSnapshotsRsp()
@@ -825,7 +830,8 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         if not os.path.exists(workspace_dir):
             os.makedirs(workspace_dir)
 
-        linux.create_template(latest, cmd.workspaceInstallPath)
+        if not qcow2.already_template_of(latest, cmd.workspaceInstallPath):
+            linux.create_template(latest, cmd.workspaceInstallPath)
         rsp.size, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.workspaceInstallPath)
 
         rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.storagePath)

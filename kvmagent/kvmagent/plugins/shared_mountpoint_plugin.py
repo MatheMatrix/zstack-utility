@@ -472,8 +472,11 @@ class SharedMountPointPrimaryStoragePlugin(kvmagent.KvmAgent):
         if not os.path.exists(workspace_dir):
             os.makedirs(workspace_dir)
 
-        t_shell = traceable_shell.get_shell(cmd)
-        linux.create_template(cmd.snapshotInstallPath, cmd.workspaceInstallPath, shell=t_shell)
+        # Idempotency: skip the qemu-img convert if a previous (retried) call
+        # already produced the workspace template.
+        if not qcow2.already_template_of(cmd.snapshotInstallPath, cmd.workspaceInstallPath):
+            t_shell = traceable_shell.get_shell(cmd)
+            linux.create_template(cmd.snapshotInstallPath, cmd.workspaceInstallPath, shell=t_shell)
         rsp.size, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.workspaceInstallPath)
 
         rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.mountPoint)
