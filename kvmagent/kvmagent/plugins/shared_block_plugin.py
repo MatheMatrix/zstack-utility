@@ -1199,6 +1199,18 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         lvm.update_pv_allocate_strategy(cmd)
         with lvm.RecursiveOperateLv(snapshot_abs_path, shared=True):
             virtual_size = linux.qcow2_virtualsize(snapshot_abs_path)
+            # Idempotency: if the workspace LV already exists AND already
+            # holds a self-contained template of the snapshot, skip the
+            # expensive qemu-img convert (which would otherwise re-run on
+            # every retry of this HTTP request).
+            if lvm.lv_exists(workspace_abs_path):
+                with lvm.OperateLv(workspace_abs_path, shared=False):
+                    if qcow2.already_template_of(snapshot_abs_path, workspace_abs_path):
+                        rsp.size = virtual_size
+                        rsp.actualSize = int(lvm.get_lv_size(workspace_abs_path))
+                        rsp.totalCapacity, rsp.availableCapacity = lvm.get_vg_size(cmd.vgUuid)
+                        return jsonobject.dumps(rsp)
+
             lv_size = max(self.get_total_required_size(snapshot_abs_path), int(lvm.get_lv_size(snapshot_abs_path)))
             if not lvm.lv_exists(workspace_abs_path):
                 pe_ranges = lvm.get_lv_affinity_sorted_pvs(snapshot_abs_path, cmd)
