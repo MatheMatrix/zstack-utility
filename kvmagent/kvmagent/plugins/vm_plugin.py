@@ -588,6 +588,7 @@ class StopVmCmd(kvmagent.AgentCommand):
         super(StopVmCmd, self).__init__()
         self.uuid = None
         self.timeout = None
+        self.ignoreNotFoundError = False
 
 
 class StopVmResponse(kvmagent.AgentResponse):
@@ -8846,7 +8847,10 @@ class VmPlugin(kvmagent.KvmAgent):
         try:
             vmUuid = cmd.uuid
             strategy = str(cmd.type)
-            vm = get_vm_by_uuid(vmUuid)
+            vm = get_vm_by_uuid(vmUuid, exception_if_not_existing=not getattr(cmd, 'ignoreNotFoundError', False))
+            if vm is None:
+                logger.debug("vm[uuid:%s] not found, skip stop vm" % vmUuid)
+                return
             vmUseOpenvSwitch = ovs.isVmUseOpenvSwitch(vmUuid)
 
             if strategy == "cold" or strategy == "force":
