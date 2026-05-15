@@ -25,10 +25,10 @@
       with_items:
         - haproxy
         - dnsmasq
-      when: ansible_os_family == "RedHat" and yum_repos == 'false'
+      when: (ansible_os_family == "RedHat" or ansible_os_family == 'Alibaba Cloud Linux') and yum_repos == 'false'
 
     - name: install appliance vm related packages on RedHat based OS from user defined repo
-      when: ansible_os_family == 'RedHat' and yum_repos != 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and yum_repos != 'false'
       shell: "yum --disablerepo=* --enablerepo={{yum_repos}} --nogpgcheck install -y haproxy dnsmasq"
 
     - name: install virtual router related packages for Debian
@@ -86,7 +86,7 @@
 
     - name: enable virtual router service for RedHat on chroot
       service: name=zstack-virtualrouter enabled=yes state=stopped
-      when: chroot_env != 'false' and ansible_os_family == 'RedHat'
+      when: chroot_env != 'false' and (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux')
 
     - name: enable virtual rotuer service for Debian -1
       command: sed -i '/zstack-virtualrouter start/d' /etc/rc.local 

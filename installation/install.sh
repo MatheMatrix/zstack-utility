@@ -34,8 +34,13 @@ LEGACY_MINI_INSTALL_ROOT="/usr/local/zstack-mini/"
 export TERM=xterm
 
 OS=''
+# detect alinux4 directly from /etc/os-release; usable before check_system runs
+is_alinux4_host(){
+    [ -r /etc/os-release ] || return 1
+    grep -qi 'Alibaba Cloud Linux' /etc/os-release && grep -Eq '^VERSION_ID="?4(\.|")' /etc/os-release
+}
 IS_UBUNTU='n'
-REDHAT_OS="CENTOS6 CENTOS7 RHEL7 HELIX7 HELIX8 ALIOS7 ISOFT4 KYLIN10 EULER20 UOS1020A NFS4 ROCKY8 OE2203 H2203SP1O UOS20R OE2403"
+REDHAT_OS="CENTOS6 CENTOS7 RHEL7 HELIX7 HELIX8 ALIOS7 ALINUX4 ISOFT4 KYLIN10 EULER20 UOS1020A NFS4 ROCKY8 OE2203 H2203SP1O UOS20R OE2403"
 DEBIAN_OS="UBUNTU14.04 UBUNTU16.04 UBUNTU KYLIN4.0.2 DEBIAN9 UOS20"
 KYLIN_V10_OS="ky10sp1 ky10sp2 ky10sp3 ky10sp3.2403"
 XINCHUANG_OS="$KYLIN10_OS uos20"
@@ -126,6 +131,8 @@ MIRROR_163_YUM_REPOS='163base,163updates,163extras,ustcepel,163-qemu-ev'
 MIRROR_163_YUM_WEBSITE='mirrors.163.com'
 MIRROR_ALI_YUM_REPOS='alibase,aliupdates,aliextras,aliepel,ali-qemu-ev'
 MIRROR_ALI_YUM_WEBSITE='mirrors.aliyun.com'
+# alinux4 only ships base + updates upstream (no extras/epel/qemu-ev mirrors); 163 has no alinux mirror so only aliyun is supported
+MIRROR_ALI_YUM_REPOS_ALINUX4='alibase,aliupdates'
 #used for zstack.properties Ansible.var.zstack_repo
 ZSTACK_PROPERTIES_REPO=''
 ZSTACK_ANSIBLE_EXECUTABLE='python3.11'
@@ -898,12 +905,14 @@ check_system(){
     echo_title "Check System"
     echo ""
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    cat /etc/*-release |egrep -i -h "centos |Helix|Red Hat Enterprise|Alibaba|NeoKylin|Kylin Linux Advanced Server release V10|openEuler|UnionTech OS release 20.06r|UnionTech OS Server release 20 \(kongzi\)|NFSChina Server release 4.0.220727 \(RTM3\)|Rocky Linux" >>$ZSTACK_INSTALL_LOG 2>&1
+    cat /etc/*-release |egrep -i -h "centos |Helix|Red Hat Enterprise|Alibaba|Alibaba Cloud Linux|NeoKylin|Kylin Linux Advanced Server release V10|openEuler|UnionTech OS release 20.06r|UnionTech OS Server release 20 \(kongzi\)|NFSChina Server release 4.0.220727 \(RTM3\)|Rocky Linux" >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -eq 0 ]; then
         grep -qi 'CentOS release 6' /etc/system-release && OS="CENTOS6"
         grep -qi 'CentOS Linux release 7' /etc/system-release && OS="CENTOS7"
         grep -qi 'Red Hat Enterprise Linux Server release 7' /etc/system-release && OS="RHEL7"
         grep -qi 'Alibaba Group Enterprise Linux' /etc/system-release && OS="ALIOS7"
+        # only treat as ALINUX4 when both NAME matches and VERSION_ID=4 (avoid catching alinux2/3)
+        grep -qi 'Alibaba Cloud Linux' /etc/os-release && grep -Eq '^VERSION_ID="?4(\.|")' /etc/os-release && OS="ALINUX4"
         grep -qi 'iSoft Linux release 4' /etc/system-release && OS="ISOFT4"
         grep -qi 'NeoKylin Linux' /etc/system-release && OS="RHEL7"
         grep -qi 'Kylin Linux Advanced Server release V10' /etc/system-release && OS="KYLIN10"
@@ -2430,7 +2439,7 @@ cp_third_party_tools(){
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     if [ -d "/opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/tools" ]; then
         /usr/bin/rsync -a --ignore-existing /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/tools/* $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS >/dev/null 2>&1
-        chown -R zstack.zstack $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS/*
+        chown -R zstack:zstack $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS/*
     fi
     cp_virtio_drivers
     install_zstack_network
@@ -2488,6 +2497,10 @@ install_db(){
     /bin/rm -rf $ssh_tmp_dir
     mkdir -p $ssh_tmp_dir
     show_spinner cs_gen_sshkey $ssh_tmp_dir
+    #ensure sshd is running before ansible connects via ssh (alinux4 may not have sshd started at firstboot)
+    if [ x"$OS" = x"ALINUX4" ]; then
+        systemctl is-active sshd >/dev/null 2>&1 || systemctl start sshd >>$ZSTACK_INSTALL_LOG 2>&1
+    fi
     #install mysql db
     show_spinner cs_install_mysql $ssh_tmp_dir
     #deploy initial database
@@ -3212,6 +3225,7 @@ cs_deploy_ui_db(){
 sz_start_zstack(){
     echo_subtitle "Start ${PRODUCT_NAME} management node (takes a couple of minutes)"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    # ALinux4 FK workaround handled by ctl.py init_fk.sql (mysqld startup hook).
     zstack-ctl stop_node -f >>$ZSTACK_INSTALL_LOG 2>&1
     zstack-ctl start_node --timeout=$ZSTACK_START_TIMEOUT >>$ZSTACK_INSTALL_LOG 2>&1
     [ $? -ne 0 ] && fail "failed to start ${PRODUCT_NAME,,}"
@@ -3432,7 +3446,26 @@ create_yum_repo(){
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     if [ -f /etc/redhat-release ]; then
         os_release=`cat /etc/redhat-release`
-        if [[ $os_release =~ ' 8' ]]; then
+        if [[ $os_release =~ 'Alibaba Cloud Linux' ]]; then
+            cat << 'EOF' > $zstack_ali_repo_file
+#aliyun alinux4 base
+[alibase]
+name=ALinux-4 - OS - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/os/$basearch/
+gpgcheck=0
+enabled=0
+module_hotfixes=true
+
+#released updates
+[aliupdates]
+name=ALinux-4 - Updates - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4/updates/$basearch/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
+
+EOF
+        elif [[ $os_release =~ ' 8' ]]; then
             cat << 'EOF' > $zstack_ali_repo_file
 #aliyun base
 [alibase]
@@ -3592,13 +3625,22 @@ get_zstack_repo(){
         fi
         echo $ZSTACK_YUM_REPOS |grep "ali" >/dev/null 2>&1
         if [ $? -eq 0 ]; then
-            ZSTACK_YUM_REPOS=$MIRROR_ALI_YUM_REPOS
-            ZSTACK_PROPERTIES_REPO=$MIRROR_ALI_YUM_REPOS
+            if is_alinux4_host; then
+                ZSTACK_YUM_REPOS=$MIRROR_ALI_YUM_REPOS_ALINUX4
+                ZSTACK_PROPERTIES_REPO=$MIRROR_ALI_YUM_REPOS_ALINUX4
+            else
+                ZSTACK_YUM_REPOS=$MIRROR_ALI_YUM_REPOS
+                ZSTACK_PROPERTIES_REPO=$MIRROR_ALI_YUM_REPOS
+            fi
         fi
         echo $ZSTACK_YUM_REPOS |grep "163" >/dev/null 2>&1
         if [ $? -eq 0 ]; then
-            ZSTACK_YUM_REPOS=$MIRROR_163_YUM_REPOS
-            ZSTACK_PROPERTIES_REPO=$MIRROR_163_YUM_REPOS
+            if is_alinux4_host; then
+                fail2 "\n\t163 mirror is not supported on Alibaba Cloud Linux 4 (no real alinux mirror exists). Please use aliyun mirror (-R aliyun) or zstack-local instead.\n\n"
+            else
+                ZSTACK_YUM_REPOS=$MIRROR_163_YUM_REPOS
+                ZSTACK_PROPERTIES_REPO=$MIRROR_163_YUM_REPOS
+            fi
         fi
         YUM_ONLINE_REPO=''
     fi
@@ -3617,6 +3659,7 @@ install_sync_repo_dependences() {
 create_local_repo_files() {
 trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
 mkdir -p /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/Extra/{qemu-kvm-ev,ceph,galera,virtio-win}
+mkdir -p /etc/yum.repos.d
 
 repo_file=/etc/yum.repos.d/zstack-local-greatdb.repo
 echo "create $repo_file" >> $ZSTACK_INSTALL_LOG
@@ -4180,12 +4223,20 @@ if [ ! -z $ZSTACK_PKG_MIRROR ]; then
         fail2 "\n\tYou want to use yum mirror from '$ZSTACK_PKG_MIRROR' . But $PRODUCT_NAME only supports yum mirrors for '$PKG_MIRROR_ALIYUN' or '$PKG_MIRROR_163'. Please fix it and rerun the installation.\n\n"
     fi
     if [ x"$ZSTACK_PKG_MIRROR" = x"$PKG_MIRROR_163" ]; then
+        if is_alinux4_host; then
+            fail2 "\n\t163 mirror is not supported on Alibaba Cloud Linux 4 (no real alinux mirror exists). Please use '-R $PKG_MIRROR_ALIYUN' instead.\n\n"
+        fi
         ZSTACK_YUM_REPOS=$MIRROR_163_YUM_REPOS
         ZSTACK_PROPERTIES_REPO=$MIRROR_163_YUM_REPOS
         WEBSITE=$MIRROR_163_YUM_WEBSITE
     else
-        ZSTACK_YUM_REPOS=$MIRROR_ALI_YUM_REPOS
-        ZSTACK_PROPERTIES_REPO=$MIRROR_ALI_YUM_REPOS
+        if is_alinux4_host; then
+            ZSTACK_YUM_REPOS=$MIRROR_ALI_YUM_REPOS_ALINUX4
+            ZSTACK_PROPERTIES_REPO=$MIRROR_ALI_YUM_REPOS_ALINUX4
+        else
+            ZSTACK_YUM_REPOS=$MIRROR_ALI_YUM_REPOS
+            ZSTACK_PROPERTIES_REPO=$MIRROR_ALI_YUM_REPOS
+        fi
         WEBSITE=$MIRROR_ALI_YUM_WEBSITE
     fi
 elif [ -z $YUM_ONLINE_REPO ]; then

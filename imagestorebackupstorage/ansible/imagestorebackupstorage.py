@@ -68,6 +68,10 @@ host_info = upgrade_to_helix(host_info, host_post_info)
 releasever = get_host_releasever(host_info)
 host_post_info.releasever = releasever
 
+# alinux4: also enable zstack-local repo for packages not in remote repos
+if releasever == "alinux4" and zstack_repo != "false" and "zstack-local" not in zstack_repo:
+    zstack_repo = zstack_repo.strip('"') + ",zstack-local"
+
 IS_AARCH64 = host_info.host_arch == 'aarch64'
 IS_MIPS64EL = host_info.host_arch == 'mips64el'
 IS_LOONGARCH64 = host_info.host_arch == 'loongarch64'
@@ -113,6 +117,7 @@ if host_info.distro in RPM_BASED_OS:
         'h84r': ' collectd-disk pyparted iscsi-initiator-utils',
         'uos20r': ' collectd-disk pyparted iscsi-initiator-utils',
         'h2203sp1o': ' collectd-disk iscsi-initiator-utils python2-pyparted',
+        'alinux4': ' iscsi-initiator-utils python3-pyparted',
     }
 
     for k in kylin:

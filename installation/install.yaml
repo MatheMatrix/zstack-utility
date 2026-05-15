@@ -31,14 +31,14 @@
        shell: 'rm -rf {{zstack_root}}'
 
      - name: Install system dependencies
-       when: ansible_os_family == 'RedHat'
+       when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux'
        yum: name="{{item}}"
        with_items:
          - rpm
          - mysql
 
      - name: Check MySQL availability
-       when: ansible_os_family == 'RedHat'
+       when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux'
        shell: 'ls /etc/init.d/mysqld'
        ignore_errors: yes
        register: mysql_check_result
@@ -57,7 +57,7 @@
      - debug: var=mysql_install_result
 
      - name: Start new MySQL installation
-       when: mysql_install_result.changed == True and ansible_os_family == 'RedHat'
+       when: mysql_install_result.changed == True and (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux')
        shell: "service mysqld start"
 
      - name: Ask root password for new MySQL installation

@@ -21,11 +21,11 @@
         - "{{virtenv_path}}"
 
     - name: install sftp backup storage related packages on RedHat based OS from local
-      when: ansible_os_family == 'RedHat' and yum_repos != 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and yum_repos != 'false'
       shell: "yum --disablerepo=* --enablerepo={{yum_repos}} --nogpgcheck install -y openssh-clients"
 
     - name: install sftp backup storage related packages on RedHat based OS from online
-      when: ansible_os_family == 'RedHat' and yum_repos == 'false'
+      when: (ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux') and yum_repos == 'false'
       shell: "yum --nogpgcheck install -y openssh-clients "
 
     - name: install sftp backup storage related packages on Debian based OS
@@ -60,7 +60,7 @@
 
     # only for os using init.d not systemd
     - name: copy sftp backup storage service file
-      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Debian'
+      when: ansible_os_family == 'RedHat' or ansible_os_family == 'Alibaba Cloud Linux' or ansible_os_family == 'Debian'
       copy: src="{{file_root}}/zstack-sftpbackupstorage" dest=/etc/init.d/ mode=755
 
     - meta: flush_handlers
