@@ -896,6 +896,8 @@ class OvsReconciler(object):
             for member in members:
                 pci_addr = getattr(nic_pci_map, member, None)
                 if pci_addr:
+                    if not _PCI_ADDR_RE.match(pci_addr):
+                        raise ValueError('invalid PCI address for %s: %r' % (member, pci_addr))
                     builder.set_interface(member, 'type', 'dpdk')
                     builder.set_interface(member, 'options:dpdk-devargs', pci_addr)
 
