@@ -983,10 +983,16 @@ class OvsReconciler(object):
 
     @staticmethod
     def _reconcile_ip_addresses(desired, actual):
-        """Flush and assign IP addresses on infrastructure bridges."""
+        """Assign IP addresses on infrastructure bridges when needed."""
         for device, spec in desired.ip_addresses.items():
             _validate_ovs_name(device)
             _validate_ip_address(spec.address)
+            current_addresses = actual.ip_addresses.get(device, [])
+            if spec.address in current_addresses:
+                logger.debug('IP %s already exists on %s, skip reconcile'
+                             % (spec.address, device))
+                continue
+
             r, o, e = bash.bash_roe('ip addr flush dev %s' % device)
             if r != 0:
                 raise Exception('failed to flush IP addresses on %s: %s'

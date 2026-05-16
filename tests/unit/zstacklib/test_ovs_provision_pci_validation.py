@@ -153,3 +153,39 @@ def test_unwrap_spec_copies_sdn_controller_uuid():
     assert cmd.hostUuid == "host-uuid"
     assert cmd.configVersion == 3
     assert cmd.sdnControllerUuid == "sdn-controller-uuid"
+
+
+@pytest.mark.unit
+def test_reconcile_ip_addresses_skips_when_desired_address_exists():
+    plugin = _load_plugin()
+    desired = plugin.OvsDesiredState()
+    actual = plugin.OvsActualState()
+    desired.ip_addresses["br0"] = plugin.IpAddressSpec("br0", "10.0.0.2/24")
+    actual.ip_addresses["br0"] = ["10.0.0.2/24", "10.0.0.3/24"]
+
+    calls = []
+    plugin.bash.bash_roe = lambda cmd: calls.append(cmd) or (0, "", "")
+
+    plugin.OvsReconciler._reconcile_ip_addresses(desired, actual)
+
+    assert calls == []
+
+
+@pytest.mark.unit
+def test_reconcile_ip_addresses_updates_when_desired_address_missing():
+    plugin = _load_plugin()
+    desired = plugin.OvsDesiredState()
+    actual = plugin.OvsActualState()
+    desired.ip_addresses["br0"] = plugin.IpAddressSpec("br0", "10.0.0.2/24")
+    actual.ip_addresses["br0"] = ["10.0.0.3/24"]
+
+    calls = []
+    plugin.bash.bash_roe = lambda cmd: calls.append(cmd) or (0, "", "")
+
+    plugin.OvsReconciler._reconcile_ip_addresses(desired, actual)
+
+    assert calls == [
+        "ip addr flush dev br0",
+        "ip addr add 10.0.0.2/24 dev br0",
+        "ip link set br0 up",
+    ]
