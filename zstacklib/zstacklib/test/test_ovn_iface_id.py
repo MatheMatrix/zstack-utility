@@ -66,9 +66,10 @@ class TestOvnIfaceId(unittest.TestCase):
         with self.assertRaises(ValueError):
             ovn.getInterfaceId("vnic1.0", "cloud-nic-uuid", "zns iface; touch /tmp/bad")
 
-        ovn.VsCtl().addVnic(
-            "vnic1.0", "cloud-nic-uuid", "vm-uuid", ifaceId="zns iface; touch /tmp/bad"
-        )
+        with self.assertRaises(ValueError):
+            ovn.VsCtl().addVnic(
+                "vnic1.0", "cloud-nic-uuid", "vm-uuid", ifaceId="zns iface; touch /tmp/bad"
+            )
 
         self.assertEqual(0, len(self.commands))
 

@@ -140,6 +140,34 @@ def test_accepts_safe_external_id_value_in_builder():
 
 
 @pytest.mark.unit
+def test_rejects_unsafe_ovs_key_in_builder():
+    plugin = _load_plugin()
+    builder = plugin.OvsCommandBuilder()
+
+    with pytest.raises(ValueError):
+        builder.set_bridge("br0", "datapath_type;bad", "system")
+
+    with pytest.raises(ValueError):
+        builder.set_port("bond0", "tag;bad", "100")
+
+    with pytest.raises(ValueError):
+        builder.clear_port_attr("bond0", "tag;bad")
+
+    with pytest.raises(ValueError):
+        builder.set_interface("eth0", "type;bad", "dpdk")
+
+
+@pytest.mark.unit
+def test_quotes_ovs_values_in_builder():
+    plugin = _load_plugin()
+    builder = plugin.OvsCommandBuilder()
+
+    builder.set_interface("eth0", "type", "dpdk;touch /tmp/bad")
+
+    assert "set interface eth0 type='dpdk;touch /tmp/bad'" in builder.build()
+
+
+@pytest.mark.unit
 def test_unwrap_spec_copies_sdn_controller_uuid():
     plugin = _load_plugin()
     cmd = Obj()
@@ -250,3 +278,31 @@ def test_deprovision_ownership_check_accepts_current_controller():
     plugin.ovn.VsCtl = VsCtl
 
     plugin.OvsProvisionPlugin._check_deprovision_ownership("controller-a")
+
+
+@pytest.mark.unit
+def test_build_nic_pci_map_logs_sysfs_failure_and_uses_dpdk_fallback():
+    plugin = _load_plugin()
+    messages = []
+    plugin.logger.debug = lambda msg: messages.append(msg)
+
+    def get_bdf(member):
+        raise RuntimeError("sysfs unavailable")
+
+    plugin.ovs_utils.getBDFOfInterface = get_bdf
+    dpdk_nic = Obj()
+    dpdk_nic.name = "eth0"
+    dpdk_nic.pciAddress = "0000:00:04.0"
+    plugin.ovn.getAllDpdkNic = lambda: [dpdk_nic]
+
+    lag = Obj()
+    lag.members = ["eth0"]
+    uplink = Obj()
+    uplink.lag = [lag]
+    sw = Obj()
+    sw.uplinkProfile = uplink
+
+    result = plugin.OvsProvisionPlugin._build_nic_pci_map_from_uplink([sw])
+
+    assert result.eth0 == "0000:00:04.0"
+    assert "getBDFOfInterface(eth0) failed" in messages[0]

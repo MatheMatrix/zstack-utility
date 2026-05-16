@@ -416,6 +416,8 @@ class VsCtl(object):
                     brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath,
                     vmUuid=vmUuid, interfaceId=safeInterfaceId)
             bash.bash_r(cmd)
+        except ValueError:
+            raise
         except Exception as err:
             logger.error(
                 "Add port {} for bridge {} failed. {}".format(nicName, brName, err))

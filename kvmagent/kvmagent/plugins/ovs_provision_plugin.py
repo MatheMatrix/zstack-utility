@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shlex
 import time
 import traceback
 
@@ -46,6 +47,9 @@ DPDK_OTHER_CONFIG_KEYS = [
 # OVS names are typically alphanumeric with hyphens, underscores, and dots.
 _OVS_NAME_RE = re.compile(r'^[a-zA-Z0-9._-]+$')
 
+# Allowed characters for OVS column keys and map keys interpolated into commands.
+_OVS_KEY_RE = re.compile(r'^[a-zA-Z0-9._:-]+$')
+
 # Allowed characters for IP address with optional CIDR prefix (e.g. 10.0.0.1/24).
 _IP_ADDR_RE = re.compile(r'^[0-9a-fA-F.:/%]+$')
 
@@ -73,6 +77,16 @@ def _validate_ovs_name(name):
     if not name or not _OVS_NAME_RE.match(name):
         raise ValueError('invalid OVS entity name: %r' % name)
     return name
+
+
+def _validate_ovs_key(key):
+    if not key or not _OVS_KEY_RE.match(key):
+        raise ValueError('invalid OVS key: %r' % key)
+    return key
+
+
+def _quote_ovs_value(value):
+    return shlex.quote(str(value))
 
 
 def _validate_ip_address(addr):
@@ -624,12 +638,13 @@ class OvsCommandBuilder(object):
 
     def set_bridge(self, name, key, value):
         _validate_ovs_name(name)
-        self._ops.append('set bridge %s %s=%s' % (name, key, value))
+        _validate_ovs_key(key)
+        self._ops.append('set bridge %s %s=%s' % (name, key, _quote_ovs_value(value)))
         return self
 
     def set_bridge_external_id(self, name, key, value):
         _validate_ovs_name(name)
-        _validate_ovs_name(key)
+        _validate_ovs_key(key)
         value = _validate_external_id_value(str(value))
         self._ops.append('br-set-external-id %s %s %s' % (name, key, value))
         return self
@@ -659,30 +674,33 @@ class OvsCommandBuilder(object):
 
     def set_port(self, name, key, value):
         _validate_ovs_name(name)
-        self._ops.append('set port %s %s=%s' % (name, key, value))
+        _validate_ovs_key(key)
+        self._ops.append('set port %s %s=%s' % (name, key, _quote_ovs_value(value)))
         return self
 
     def clear_port_attr(self, name, key):
         """Clear a column value from a port (e.g., clear VLAN tag)."""
         _validate_ovs_name(name)
+        _validate_ovs_key(key)
         self._ops.append('clear port %s %s' % (name, key))
         return self
 
     def set_port_external_id(self, name, key, value):
         _validate_ovs_name(name)
-        _validate_ovs_name(key)
+        _validate_ovs_key(key)
         value = _validate_external_id_value(str(value))
         self._ops.append('set port %s external_ids:%s=%s' % (name, key, value))
         return self
 
     def set_interface(self, name, key, value):
         _validate_ovs_name(name)
-        self._ops.append('set interface %s %s=%s' % (name, key, value))
+        _validate_ovs_key(key)
+        self._ops.append('set interface %s %s=%s' % (name, key, _quote_ovs_value(value)))
         return self
 
     def set_interface_external_id(self, name, key, value):
         _validate_ovs_name(name)
-        _validate_ovs_name(key)
+        _validate_ovs_key(key)
         value = _validate_external_id_value(str(value))
         self._ops.append('set interface %s external_ids:%s=%s' % (name, key, value))
         return self
@@ -1372,8 +1390,9 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                         if bdf:
                             nic_pci[member] = bdf
                             continue
-                    except Exception:
-                        pass
+                    except Exception as ex:
+                        logger.debug('getBDFOfInterface(%s) failed, will try DPDK fallback: %s'
+                                     % (member, ex))
 
                     # Fallback: query DPDK-bound NICs
                     if dpdk_nics is None:
