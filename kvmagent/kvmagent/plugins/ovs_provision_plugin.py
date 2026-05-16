@@ -1290,6 +1290,17 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                 % (existing_controller, sdn_controller_uuid))
 
     @staticmethod
+    def _fallback_dpdk_switches_to_system(cmd, desired_switches):
+        cmd.dpdkConfig = None
+        for sw in desired_switches:
+            sw_type = getattr(sw, 'type_', None) or getattr(sw, 'type', None)
+            if sw_type == 'dpdk':
+                if hasattr(sw, 'type_'):
+                    sw.type_ = 'system'
+                if hasattr(sw, 'type'):
+                    sw.type = 'system'
+
+    @staticmethod
     def _normalize_dpdk_config(raw):
         """Normalize per-switch dpdkConfig from management plane format to agent internal format.
 
@@ -1774,6 +1785,14 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                 if nic_pci_map:
                     dpdk_config.nicNamePciAddressMap = nic_pci_map
                     logger.info('auto-discovered NIC PCI map for DPDK')
+                else:
+                    logger.warn('dpdk_config exists but nicNamePciAddressMap is missing '
+                                'and _build_nic_pci_map_from_uplink(desired_switches) '
+                                'returned no map; clearing cmd.dpdkConfig, setting '
+                                'dpdk_mode=False, and converting desired_switches to system')
+                    dpdk_config = None
+                    dpdk_mode = False
+                    self._fallback_dpdk_switches_to_system(cmd, desired_switches)
 
             # Level 3: no dpdkConfig at all -- construct from defaults
             if dpdk_mode and not dpdk_config:
@@ -1787,13 +1806,7 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                                 'falling back to kernel mode startup')
                     # Override switch types so DesiredStateBuilder produces
                     # datapath_type=system instead of netdev.
-                    for sw in desired_switches:
-                        sw_type = getattr(sw, 'type_', None) or getattr(sw, 'type', None)
-                        if sw_type == 'dpdk':
-                            if hasattr(sw, 'type_'):
-                                sw.type_ = 'system'
-                            if hasattr(sw, 'type'):
-                                sw.type = 'system'
+                    self._fallback_dpdk_switches_to_system(cmd, desired_switches)
                     dpdk_mode = False
 
             nic_pci_map = getattr(dpdk_config, 'nicNamePciAddressMap', None) if dpdk_config else None

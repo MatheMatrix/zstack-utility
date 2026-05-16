@@ -281,6 +281,24 @@ def test_deprovision_ownership_check_accepts_current_controller():
 
 
 @pytest.mark.unit
+def test_fallback_dpdk_switches_to_system_clears_dpdk_config():
+    plugin = _load_plugin()
+    cmd = Obj()
+    cmd.dpdkConfig = Obj()
+    switch_with_type = Obj()
+    switch_with_type.type = "dpdk"
+    switch_with_type_ = Obj()
+    switch_with_type_.type_ = "dpdk"
+
+    plugin.OvsProvisionPlugin._fallback_dpdk_switches_to_system(
+        cmd, [switch_with_type, switch_with_type_])
+
+    assert cmd.dpdkConfig is None
+    assert switch_with_type.type == "system"
+    assert switch_with_type_.type_ == "system"
+
+
+@pytest.mark.unit
 def test_build_nic_pci_map_logs_sysfs_failure_and_uses_dpdk_fallback():
     plugin = _load_plugin()
     messages = []
