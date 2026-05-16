@@ -189,3 +189,64 @@ def test_reconcile_ip_addresses_updates_when_desired_address_missing():
         "ip addr add 10.0.0.2/24 dev br0",
         "ip link set br0 up",
     ]
+
+
+@pytest.mark.unit
+def test_deprovision_ownership_check_fails_closed_on_read_error():
+    plugin = _load_plugin()
+
+    class VsCtl(object):
+        def getOvsExternalIdsConfig(self, key):
+            return True, None
+
+    plugin.ovn.VsCtl = VsCtl
+
+    with pytest.raises(Exception) as exc:
+        plugin.OvsProvisionPlugin._check_deprovision_ownership("controller-a")
+
+    assert "unable to read sdn-controller-uuid" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_deprovision_ownership_check_fails_closed_on_exception():
+    plugin = _load_plugin()
+
+    class VsCtl(object):
+        def getOvsExternalIdsConfig(self, key):
+            raise RuntimeError("ovsdb unavailable")
+
+    plugin.ovn.VsCtl = VsCtl
+
+    with pytest.raises(Exception) as exc:
+        plugin.OvsProvisionPlugin._check_deprovision_ownership("controller-a")
+
+    assert "ovsdb unavailable" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_deprovision_ownership_check_rejects_other_controller():
+    plugin = _load_plugin()
+
+    class VsCtl(object):
+        def getOvsExternalIdsConfig(self, key):
+            return False, "controller-b"
+
+    plugin.ovn.VsCtl = VsCtl
+
+    with pytest.raises(Exception) as exc:
+        plugin.OvsProvisionPlugin._check_deprovision_ownership("controller-a")
+
+    assert "already managed by another SdnController" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_deprovision_ownership_check_accepts_current_controller():
+    plugin = _load_plugin()
+
+    class VsCtl(object):
+        def getOvsExternalIdsConfig(self, key):
+            return False, "controller-a"
+
+    plugin.ovn.VsCtl = VsCtl
+
+    plugin.OvsProvisionPlugin._check_deprovision_ownership("controller-a")

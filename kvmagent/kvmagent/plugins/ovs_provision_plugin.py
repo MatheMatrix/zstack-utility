@@ -1255,6 +1255,23 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                 setattr(cmd, key, val)
 
     @staticmethod
+    def _check_deprovision_ownership(sdn_controller_uuid):
+        try:
+            err, existing_controller = ovn.VsCtl().getOvsExternalIdsConfig(
+                SDN_CONTROLLER_UUID_KEY)
+        except Exception as e:
+            raise Exception('SdnController ownership check failed: %s' % e)
+
+        if err:
+            raise Exception('SdnController ownership check failed: unable to read %s'
+                            % SDN_CONTROLLER_UUID_KEY)
+        if existing_controller and existing_controller != sdn_controller_uuid:
+            raise Exception(
+                'host already managed by another SdnController: %s, '
+                'current request from: %s'
+                % (existing_controller, sdn_controller_uuid))
+
+    @staticmethod
     def _normalize_dpdk_config(raw):
         """Normalize per-switch dpdkConfig from management plane format to agent internal format.
 
@@ -1975,19 +1992,7 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                 raise Exception('sdnControllerUuid is required for deprovision')
 
             if not force:
-                try:
-                    vsctl_check = ovn.VsCtl()
-                    err, existing_controller = vsctl_check.getOvsExternalIdsConfig(
-                        SDN_CONTROLLER_UUID_KEY)
-                    if not err and existing_controller and existing_controller != sdn_controller_uuid:
-                        raise Exception(
-                            'host already managed by another SdnController: %s, '
-                            'current request from: %s'
-                            % (existing_controller, sdn_controller_uuid))
-                except Exception as e:
-                    if 'already managed by another SdnController' in str(e):
-                        raise
-                    logger.warn('SdnController ownership check failed: %s' % e)
+                self._check_deprovision_ownership(sdn_controller_uuid)
 
             # helper: check if a systemd service is active
             # Returns: 'active', 'inactive', or 'unknown'
