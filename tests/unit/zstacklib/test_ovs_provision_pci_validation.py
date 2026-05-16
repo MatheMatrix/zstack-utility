@@ -62,6 +62,8 @@ def _load_plugin():
 
     path = pathlib.Path(__file__).parents[3] / "kvmagent/kvmagent/plugins/ovs_provision_plugin.py"
     spec = importlib.util.spec_from_file_location("ovs_provision_plugin_for_test", str(path))
+    if spec is None or spec.loader is None:
+        raise RuntimeError("failed to load ovs_provision_plugin.py for test: %s" % path)
     module = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(module)
