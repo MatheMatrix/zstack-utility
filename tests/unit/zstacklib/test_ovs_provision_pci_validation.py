@@ -78,6 +78,10 @@ class NicPciMap(object):
     pass
 
 
+class Obj(object):
+    pass
+
+
 @pytest.mark.unit
 def test_rejects_invalid_dpdk_pci_address_before_command_build():
     plugin = _load_plugin()
@@ -101,3 +105,49 @@ def test_accepts_valid_dpdk_pci_address():
     plugin.OvsReconciler._build_add_bond(builder, "br0", spec, 1, pci_map)
 
     assert "options:dpdk-devargs=0000:00:04.0" in builder.build()
+
+
+@pytest.mark.unit
+def test_rejects_unsafe_external_id_value_in_builder():
+    plugin = _load_plugin()
+    builder = plugin.OvsCommandBuilder()
+
+    with pytest.raises(ValueError):
+        builder.set_bridge_external_id("br0", "host-uuid", "host;touch /tmp/bad")
+
+    with pytest.raises(ValueError):
+        builder.set_port_external_id("bond0", "managed-by", "zstack-agent;bad")
+
+    with pytest.raises(ValueError):
+        builder.set_interface_external_id("eth0", "config-version", "1;bad")
+
+
+@pytest.mark.unit
+def test_accepts_safe_external_id_value_in_builder():
+    plugin = _load_plugin()
+    builder = plugin.OvsCommandBuilder()
+
+    builder.set_bridge_external_id("br0", "host-uuid", "host-uuid_1")
+    builder.set_port_external_id("bond0", "managed-by", "zstack-agent")
+    builder.set_interface_external_id("eth0", "config-version", "1")
+
+    command = builder.build()
+    assert "br-set-external-id br0 host-uuid host-uuid_1" in command
+    assert "set port bond0 external_ids:managed-by=zstack-agent" in command
+    assert "set interface eth0 external_ids:config-version=1" in command
+
+
+@pytest.mark.unit
+def test_unwrap_spec_copies_sdn_controller_uuid():
+    plugin = _load_plugin()
+    cmd = Obj()
+    cmd.spec = Obj()
+    cmd.spec.hostUuid = "host-uuid"
+    cmd.spec.configVersion = 3
+    cmd.spec.sdnControllerUuid = "sdn-controller-uuid"
+
+    plugin.OvsProvisionPlugin._unwrap_spec(cmd)
+
+    assert cmd.hostUuid == "host-uuid"
+    assert cmd.configVersion == 3
+    assert cmd.sdnControllerUuid == "sdn-controller-uuid"

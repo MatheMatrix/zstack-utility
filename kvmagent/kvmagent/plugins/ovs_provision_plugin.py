@@ -629,6 +629,8 @@ class OvsCommandBuilder(object):
 
     def set_bridge_external_id(self, name, key, value):
         _validate_ovs_name(name)
+        _validate_ovs_name(key)
+        value = _validate_external_id_value(str(value))
         self._ops.append('br-set-external-id %s %s %s' % (name, key, value))
         return self
 
@@ -668,6 +670,8 @@ class OvsCommandBuilder(object):
 
     def set_port_external_id(self, name, key, value):
         _validate_ovs_name(name)
+        _validate_ovs_name(key)
+        value = _validate_external_id_value(str(value))
         self._ops.append('set port %s external_ids:%s=%s' % (name, key, value))
         return self
 
@@ -678,6 +682,8 @@ class OvsCommandBuilder(object):
 
     def set_interface_external_id(self, name, key, value):
         _validate_ovs_name(name)
+        _validate_ovs_name(key)
+        value = _validate_external_id_value(str(value))
         self._ops.append('set interface %s external_ids:%s=%s' % (name, key, value))
         return self
 
@@ -1230,6 +1236,19 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
         logger.info('OvsProvisionPlugin stopped')
 
     @staticmethod
+    def _unwrap_spec(cmd):
+        spec = getattr(cmd, 'spec', None)
+        if spec is None:
+            return
+
+        for key in ('hostUuid', 'configVersion', 'sdnControllerUuid',
+                    'hostSwitches', 'globalConfig', 'controllerAddress',
+                    'dpdkConfig', 'restoreNicPciAddressList'):
+            val = getattr(spec, key, None)
+            if val is not None:
+                setattr(cmd, key, val)
+
+    @staticmethod
     def _normalize_dpdk_config(raw):
         """Normalize per-switch dpdkConfig from management plane format to agent internal format.
 
@@ -1634,13 +1653,7 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
             cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
             # Unwrap spec: hostSwitches, globalConfig etc. are nested under spec
-            spec = cmd.spec
-            for key in ('hostUuid', 'configVersion',
-                        'hostSwitches', 'globalConfig', 'controllerAddress',
-                        'dpdkConfig', 'restoreNicPciAddressList'):
-                val = getattr(spec, key, None)
-                if val is not None:
-                    setattr(cmd, key, val)
+            self._unwrap_spec(cmd)
 
             rsp.hostUuid = cmd.hostUuid
             rsp.cloudCallbackUrl = getattr(cmd, 'cloudCallbackUrl', None)
@@ -1797,19 +1810,10 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                     self._ensure_hugepages(
                         dpdk_config.hugePageNumber, dpdk_config.hugePageSize)
 
-                    r, o, e = bash.bash_roe('systemctl restart ovsdb-server')
-                    if r != 0:
-                        raise Exception('failed to restart ovsdb-server: %s' % e)
-
-                    self._clean_stale_vnics()
-
-                    r, o, e = bash.bash_roe('systemctl restart openvswitch')
-                    if r != 0:
-                        raise Exception('failed to restart openvswitch: %s' % e)
-
-                    r, o, e = bash.bash_roe('systemctl restart ovn-controller')
-                    if r != 0:
-                        raise Exception('failed to restart ovn-controller: %s' % e)
+                    ok, err = vsctl.ensureOvsRunning(
+                        after_ovsdb_start_hook=self._clean_stale_vnics)
+                    if not ok:
+                        raise Exception('failed to ensure OVS running in DPDK mode: %s' % err)
             else:
                 # ----------------------------------------------------------
                 # Kernel mode startup
