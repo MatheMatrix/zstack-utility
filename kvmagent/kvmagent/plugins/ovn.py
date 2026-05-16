@@ -456,7 +456,7 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
 
         for nicName, nicUuid in cmd.nicMap.__dict__.items():
             vm_uuid = cmd.nicVmInstanceUuidMap.__dict__.get(nicName, None)
-            vsctl.addVnic(nicName, nicUuid, vm_uuid, reinstall)
+            vsctl.addVnic(nicName, nicUuid, vm_uuid, reinstall, ifaceId=self._get_iface_id(cmd, nicName))
         rsp = OvnAddPortResponse()
 
         return jsonobject.dumps(rsp)
@@ -616,9 +616,21 @@ class OvnNetworkPlugin(kvmagent.KvmAgent):
 
         for nicName, nicUuid in cmd.nicMap.__dict__.items():
             if nicName not in localVnics:
-                vsctl.addVnic(nicName, nicUuid, cmd.vmUuid, False)
+                vsctl.addVnic(nicName, nicUuid, cmd.vmUuid, False, ifaceId=self._get_iface_id(cmd, nicName))
 
         return jsonobject.dumps(rsp)
+
+    def _get_iface_id(self, cmd, nicName):
+        iface_id_map = getattr(cmd, "ifaceIdMap", None)
+        if iface_id_map is None:
+            return None
+        if isinstance(iface_id_map, dict):
+            iface_id = iface_id_map.get(nicName, None)
+        else:
+            iface_id = getattr(iface_id_map, "__dict__", {}).get(nicName, None)
+        if iface_id is None or str(iface_id).strip() == "":
+            return None
+        return ovn.normalizeInterfaceId(iface_id)
 
     @kvmagent.replyerror
     @bash.in_bash
