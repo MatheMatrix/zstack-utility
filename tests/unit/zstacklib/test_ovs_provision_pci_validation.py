@@ -175,12 +175,20 @@ def test_unwrap_spec_copies_sdn_controller_uuid():
     cmd.spec.hostUuid = "host-uuid"
     cmd.spec.configVersion = 3
     cmd.spec.sdnControllerUuid = "sdn-controller-uuid"
+    cmd.spec.force = True
+    cmd.spec.cloudCallbackUrl = "callback-url"
+    cmd.spec.cloudTaskUuid = "task-uuid"
+    cmd.spec.triggerUrl = "trigger-url"
 
     plugin.OvsProvisionPlugin._unwrap_spec(cmd)
 
     assert cmd.hostUuid == "host-uuid"
     assert cmd.configVersion == 3
     assert cmd.sdnControllerUuid == "sdn-controller-uuid"
+    assert cmd.force is True
+    assert cmd.cloudCallbackUrl == "callback-url"
+    assert cmd.cloudTaskUuid == "task-uuid"
+    assert cmd.triggerUrl == "trigger-url"
 
 
 @pytest.mark.unit
@@ -324,3 +332,47 @@ def test_build_nic_pci_map_logs_sysfs_failure_and_uses_dpdk_fallback():
 
     assert result.eth0 == "0000:00:04.0"
     assert "getBDFOfInterface(eth0) failed" in messages[0]
+
+
+@pytest.mark.unit
+def test_stop_openvswitch_before_nic_restore_raises_on_failure():
+    plugin = _load_plugin()
+    plugin.bash.bash_roe = lambda cmd: (1, "", "stop failed")
+
+    with pytest.raises(Exception) as exc:
+        plugin.OvsProvisionPlugin._stop_openvswitch_before_nic_restore()
+
+    assert "failed to stop openvswitch before restoring NIC drivers" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_deprovision_unwraps_spec_before_reading_fields():
+    plugin = _load_plugin()
+    plugin.http.REQUEST_BODY = "body"
+    cmd = Obj()
+    cmd.spec = Obj()
+    cmd.spec.hostUuid = "host-uuid"
+    cmd.spec.sdnControllerUuid = "controller-uuid"
+    cmd.spec.force = True
+    cmd.spec.cloudCallbackUrl = "callback-url"
+    cmd.spec.cloudTaskUuid = "task-uuid"
+    cmd.spec.triggerUrl = "trigger-url"
+    plugin.jsonobject.loads = lambda body: cmd
+    plugin.jsonobject.dumps = lambda obj: obj
+
+    def bash_roe(command):
+        if command.startswith("systemctl is-active "):
+            return 3, "inactive\n", ""
+        if command == "timeout 5 ovs-vsctl show":
+            return 1, "", "unreachable"
+        raise AssertionError("unexpected command: %s" % command)
+
+    plugin.bash.bash_roe = bash_roe
+
+    rsp = plugin.OvsProvisionPlugin().deprovision({"body": "{}"})
+
+    assert not hasattr(rsp, "error")
+    assert rsp.hostUuid == "host-uuid"
+    assert rsp.cloudCallbackUrl == "callback-url"
+    assert rsp.cloudTaskUuid == "task-uuid"
+    assert rsp.triggerUrl == "trigger-url"

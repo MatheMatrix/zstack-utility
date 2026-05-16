@@ -1267,7 +1267,8 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
 
         for key in ('hostUuid', 'configVersion', 'sdnControllerUuid',
                     'hostSwitches', 'globalConfig', 'controllerAddress',
-                    'dpdkConfig', 'restoreNicPciAddressList'):
+                    'dpdkConfig', 'restoreNicPciAddressList', 'force',
+                    'cloudCallbackUrl', 'cloudTaskUuid', 'triggerUrl'):
             val = getattr(spec, key, None)
             if val is not None:
                 setattr(cmd, key, val)
@@ -1299,6 +1300,12 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                     sw.type_ = 'system'
                 if hasattr(sw, 'type'):
                     sw.type = 'system'
+
+    @staticmethod
+    def _stop_openvswitch_before_nic_restore():
+        r, _o, e = bash.bash_roe('systemctl stop openvswitch')
+        if r != 0:
+            raise Exception('failed to stop openvswitch before restoring NIC drivers: %s' % e)
 
     @staticmethod
     def _normalize_dpdk_config(raw):
@@ -1970,9 +1977,7 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
                 # restoreNicDriver (ovn.py line 392-395)
                 restore_list = getattr(cmd, 'restoreNicPciAddressList', None)
                 if restore_list:
-                    r, o, e = bash.bash_roe("systemctl stop openvswitch")
-                    if r != 0:
-                        raise Exception('failed to stop openvswitch before restoring NIC drivers: %s' % e)
+                    self._stop_openvswitch_before_nic_restore()
                     restore_ret, restore_err = ovn.restoreNicDriver(restore_list)
                     r, o, e = bash.bash_roe("systemctl start openvswitch")
                     if r != 0:
@@ -1986,17 +1991,27 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
             logger.info('OVS provision completed successfully, configVersion=%s' % cmd.configVersion)
             return jsonobject.dumps(rsp)
         except Exception as e:
+            rollback_errors = []
             if dpdk_bound_pci_list:
                 logger.error('OVS provision failed after binding NIC drivers, restoring PCI addresses: %s'
                              % dpdk_bound_pci_list)
-                restore_ret, restore_err = ovn.restoreNicDriver(dpdk_bound_pci_list)
-                if restore_ret != 0:
-                    logger.error('failed to restore NIC drivers after provision failure: %s' % restore_err)
+                try:
+                    self._stop_openvswitch_before_nic_restore()
+                    restore_ret, restore_err = ovn.restoreNicDriver(dpdk_bound_pci_list)
+                    if restore_ret != 0:
+                        rollback_errors.append('failed to restore NIC drivers after provision failure: %s'
+                                               % restore_err)
+                except Exception as rollback_error:
+                    rollback_errors.append(str(rollback_error))
+                for rollback_error in rollback_errors:
+                    logger.error(rollback_error)
             content = traceback.format_exc()
             logger.warn('OVS provision failed, hostUuid=%s, error=%s\n%s'
                         % (getattr(rsp, 'hostUuid', None), str(e), content))
             rsp.success = False
             rsp.error = str(e)
+            if rollback_errors:
+                rsp.error = '%s; rollback failed: %s' % (rsp.error, '; '.join(rollback_errors))
             return jsonobject.dumps(rsp)
 
     @lock.lock('ovs_provision')
@@ -2005,12 +2020,14 @@ class OvsProvisionPlugin(kvmagent.KvmAgent):
         rsp = DeprovisionResponse()
         try:
             cmd = jsonobject.loads(req[http.REQUEST_BODY])
-            rsp.hostUuid = cmd.hostUuid
+            self._unwrap_spec(cmd)
+
+            rsp.hostUuid = getattr(cmd, 'hostUuid', None)
             rsp.cloudCallbackUrl = getattr(cmd, 'cloudCallbackUrl', None)
             rsp.cloudTaskUuid = getattr(cmd, 'cloudTaskUuid', None)
             rsp.triggerUrl = getattr(cmd, 'triggerUrl', None)
 
-            if not cmd.hostUuid:
+            if not getattr(cmd, 'hostUuid', None):
                 raise Exception('hostUuid is required')
 
             force = getattr(cmd, 'force', False)
