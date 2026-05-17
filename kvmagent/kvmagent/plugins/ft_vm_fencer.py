@@ -187,14 +187,17 @@ class FaultToleranceFecnerPlugin(kvmagent.KvmAgent):
                 vm_pid = vm_pid.strip()
                 vm_pids_dict[vm_uuid] = vm_pid
             
+            failed_vms = {}
             for vm_uuid, vm_pid in list(vm_pids_dict.items()):
                 delVnicFromOvsByVmUuidIfExist(vm_uuid)
                 try:
                     linux.kill_process(vm_pid, timeout=10, is_exception=True, is_graceful=False)
                     logger.warn('kill the vm[uuid:%s, pid:%s]' % (vm_uuid, vm_pid))
                 except Exception as e:
+                    failed_vms[vm_uuid] = vm_pid
                     logger.error('kill FAILED, likely D-state/Zombie[%s,%s]: %s'
                                  % (vm_uuid, vm_pid, e))
+            return failed_vms
 
         @in_bash
         def secondary_drbd_if_peer_is_primary():
@@ -238,7 +241,10 @@ class FaultToleranceFecnerPlugin(kvmagent.KvmAgent):
                     continue    
                 
                 logger.debug("network down, need to kill ft vm")
-                kill_fault_tolerance_vms()
+                failed_vms = kill_fault_tolerance_vms()
+                if failed_vms:
+                    logger.error('FT vm kill failed for %d VM(s): %s; proceeding with fencing'
+                                 % (len(failed_vms), list(failed_vms.keys())))
                 mn_fenced = stop_management_node()
                 secondary_drbd_if_peer_is_primary()
 
