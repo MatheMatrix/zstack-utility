@@ -1865,6 +1865,9 @@ class HaPlugin(kvmagent.KvmAgent):
 
     def _persist_fencer_state(self):
         try:
+            state_dir = os.path.dirname(self.FENCER_STATE_FILE)
+            if state_dir and not os.path.exists(state_dir):
+                os.makedirs(state_dir, 0o755)
             tmp = self.FENCER_STATE_FILE + '.tmp'
             with open(tmp, 'w') as f:
                 json.dump(self.run_fencer_timestamp, f)
