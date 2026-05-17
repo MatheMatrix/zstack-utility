@@ -1057,7 +1057,7 @@ def drop_vg_lock(vgUuid):
 
     clear_orphan_locks()
     bash.bash_roe("timeout 30 lvmlockctl --gl-disable %s" % vgUuid)
-    r, o, e = bash.bash_roe("timeout 30 lvmlockctl --drop %s" % vgUuid)
+    r, _, e = bash.bash_roe("timeout 30 lvmlockctl --drop %s" % vgUuid)
     if r != 0:
         logger.warn("lvmlockctl --drop %s failed (rc=%s, stderr=%s), force-releasing sanlock locks" % (vgUuid, r, e))
         force_release_locks(vgUuid)
@@ -1065,7 +1065,7 @@ def drop_vg_lock(vgUuid):
 
 @bash.in_bash
 def force_release_locks(vgUuid):
-    r, o = bash.bash_ro("sanlock client status | grep 'lvm_%s'" % vgUuid)
+    r, o = bash.bash_ro("sanlock client status | grep 'r lvm_%s'" % vgUuid)
     if r != 0:
         return
     for line in o.strip().splitlines():
