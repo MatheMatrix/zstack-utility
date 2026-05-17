@@ -77,7 +77,7 @@ class PhysicalMemoryMonitor(kvmagent.KvmAgent):
 
         if self.monitor_thread and self.monitor_thread.is_alive():
             self.state = False
-            self.monitor_thread.join()
+            self.monitor_thread.join(timeout=10)
 
         self.state = True
         self.monitor_thread = thread.ThreadFacade.run_in_thread(target=_monitor_error)

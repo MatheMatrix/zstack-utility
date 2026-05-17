@@ -1208,6 +1208,8 @@ class HostPlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = ConnectResponse()
 
+        linux.recover_fake_dead('kvmagent')
+
         # page table extension
         if shell.run('lscpu | grep -q -w GenuineIntel') == 0:
             new_ept = False if cmd.pageTableExtensionDisabled else True
