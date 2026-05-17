@@ -7,6 +7,7 @@ import yaml
 import glob
 import uuid
 import re
+import shlex
 import simplejson
 from enum import Enum, unique
 
@@ -33,6 +34,21 @@ BONDING_MODE_TCP = "balance-tcp"
 LACP_MODE_OFF = "off"
 LACP_MODE_ACTIVE = "active"
 LACP_MODE_PASSIVE = "passive"
+
+SAFE_IFACE_ID = re.compile(r'^[A-Za-z0-9_.:-]+$')
+
+
+def getInterfaceId(nicName, nicUuid, ifaceId=None):
+    if ifaceId is not None and str(ifaceId).strip() != "":
+        return normalizeInterfaceId(ifaceId)
+    return "{}_{}".format(nicName, nicUuid)
+
+
+def normalizeInterfaceId(ifaceId):
+    ifaceId = str(ifaceId).strip()
+    if not SAFE_IFACE_ID.match(ifaceId):
+        raise ValueError("invalid ifaceId: %s" % ifaceId)
+    return ifaceId
 
 
 class OvsError(Exception):
@@ -168,9 +184,11 @@ def changeNicToDpdkDriver(nicNamePciAddressMap):
 def restoreNicDriver(pciAddressList):
     logger.debug("starting restore nic driver {}".format(simplejson.dumps(pciAddressList)))
     if not pciAddressList:
-        return
+        return 0, ""
 
     dpdkNics = getAllDpdkNic()
+    restoreTargets = []
+    errors = []
 
     for pciAddress in pciAddressList:
         found = False
@@ -182,29 +200,39 @@ def restoreNicDriver(pciAddressList):
                 break
 
         if not found:
+            errors.append("nic [pci address: {}] is not found by dpdk-devbind.py before restore"
+                          .format(pciAddress))
             continue
 
         # if nis is not use vfio, nothing to to
         if targetNic.driver != "vfio-pci" and targetNic.driver != "uio_pci_generic":
+            logger.debug("nic [pci address: {}] already uses kernel driver {}"
+                         .format(pciAddress, targetNic.driver))
             continue
 
         driverType = "virtio-pci" if targetNic.driver == "uio_pci_generic" else targetNic.oldDriver
+        if not driverType:
+            errors.append("nic [pci address: {}] has no original driver to restore"
+                          .format(pciAddress))
+            continue
+
         cmd = DevBindBin + " -u {pciAddress};".format(pciAddress=pciAddress)
         cmd = cmd + DevBindBin + " -b {driver} {pciAddress}".format(driver=driverType, pciAddress=pciAddress)
         logger.debug("cmd: {}".format(cmd))
         r, _, e = bash.bash_roe(cmd)
         if r != 0:
-            logger.debug(
+            errors.append(
                 "change change nic [pci address: {}] driver to {} failed: {}"
-                .format(pciAddress, targetNic.oldDriver, e))
+                .format(pciAddress, driverType, e))
         else:
             logger.debug(
                 "successfully change change nic [pci address: {}] driver to {}"
-                .format(pciAddress, targetNic.oldDriver))
+                .format(pciAddress, driverType))
+            restoreTargets.append((pciAddress, driverType))
 
     # getAllDpdkNic does not return the nic name, so call it again
     dpdkNics = getAllDpdkNic()
-    for pciAddress in pciAddressList:
+    for pciAddress, expectedDriver in restoreTargets:
         found = False
         targetNic = OvsDpdkNic()
         for dpdkNic in dpdkNics:
@@ -214,10 +242,34 @@ def restoreNicDriver(pciAddressList):
                 break
 
         if not found:
+            errors.append("nic [pci address: {}] cannot be verified after restore"
+                          .format(pciAddress))
             continue
 
-        bash.bash_r("ip link set up dev {}".format(targetNic.name))
+        if targetNic.driver == "vfio-pci" or targetNic.driver == "uio_pci_generic":
+            errors.append("nic [pci address: {}] is still bound to driver {} after restore"
+                          .format(pciAddress, targetNic.driver))
+            continue
 
+        if targetNic.driver != expectedDriver:
+            errors.append("nic [pci address: {}] restored to unexpected driver {}, expected {}"
+                          .format(pciAddress, targetNic.driver, expectedDriver))
+            continue
+
+        if not targetNic.name:
+            errors.append("nic [pci address: {}] has no interface name after restore"
+                          .format(pciAddress))
+            continue
+
+        r, _, e = bash.bash_roe("ip link set up dev {}".format(targetNic.name))
+        if r != 0:
+            errors.append("set nic [pci address: {}] link up failed: {}"
+                          .format(pciAddress, e))
+
+    if errors:
+        err = "; ".join(errors)
+        logger.error("restore nic driver failed: {}".format(err))
+        return 1, err
 
     return 0, ""
 
@@ -340,27 +392,32 @@ class VsCtl(object):
             return []
 
     @bash.in_bash
-    def addVnic(self, nicName, nicUuid, vmUuid, reinstall=False, brName="br-int", nicType="dpdkvhostuserclient"):
+    def addVnic(self, nicName, nicUuid, vmUuid, reinstall=False, brName="br-int", nicType="dpdkvhostuserclient",
+                ifaceId=None):
         try:
             if vmUuid is not None and vmUuid.strip() != "":
                 vmUuid = vmUuid.replace('-', '')
             srcPath = OVS_DPDK_SRC_PATH + nicName
+            interfaceId = getInterfaceId(nicName, nicUuid, ifaceId)
+            safeInterfaceId = shlex.quote(str(interfaceId))
             if reinstall:
                 cmd = '{cmd} del-port {brName} {nicName}; ' \
                       '{cmd} add-port {brName} {nicName} ' \
                       '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
-                      '-- set interface {nicName} external-ids:iface-id={nicName}_{nicUuid} ' \
+                      '-- set interface {nicName} external-ids:iface-id={interfaceId} ' \
                       '-- set interface {nicName} external-ids:vm-uuid={vmUuid}'.format(
-                    cmd=CtlBin, brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid,
-                    vmUuid=vmUuid)
+                    cmd=CtlBin, brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath,
+                    vmUuid=vmUuid, interfaceId=safeInterfaceId)
             else:
                 cmd = CtlBin + '--may-exist add-port {brName} {nicName} ' \
                                '-- set Interface {nicName} type={nicType} options:vhost-server-path={srcPath} ' \
-                               '-- set interface {nicName} external-ids:iface-id={nicName}_{nicUuid} ' \
+                               '-- set interface {nicName} external-ids:iface-id={interfaceId} ' \
                                '-- set interface {nicName} external-ids:vm-uuid={vmUuid}'.format(
-                    brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath, nicUuid=nicUuid,
-                    vmUuid=vmUuid)
+                    brName=brName, nicName=nicName, nicType=nicType, srcPath=srcPath,
+                    vmUuid=vmUuid, interfaceId=safeInterfaceId)
             bash.bash_r(cmd)
+        except ValueError:
+            raise
         except Exception as err:
             logger.error(
                 "Add port {} for bridge {} failed. {}".format(nicName, brName, err))
@@ -465,6 +522,98 @@ class VsCtl(object):
             return pids[0] != -1 and pids[1] != -1 and pids[2] != -1
 
     @bash.in_bash
+    def ensureOvsRunning(self, after_ovsdb_start_hook=None):
+        """Ensure ovsdb-server, ovs-vswitchd, and ovn-controller are running.
+
+        If any of them is not running, restart them in order:
+          1. restart ovsdb-server (or openvswitch if ovsdb-server is not a
+             separate service unit, see ovn_check_local_port in ovn.py)
+          2. call after_ovsdb_start_hook (if provided, e.g. clean stale vnics)
+          3. restart openvswitch + ovn-controller (or just ovn-controller if
+             openvswitch was already restarted in step 1)
+
+        :param after_ovsdb_start_hook: optional callable invoked after ovsdb-server
+               is up but before openvswitch restarts, useful for cleaning stale
+               ports that require ovsdb access.
+        :return: (success: bool, error: str)
+        """
+        if self.isOvsRunning():
+            return True, ''
+
+        logger.info('OVS services not fully running, attempting restart')
+
+        # Step 1: bring up ovsdb-server so ovs-vsctl commands work.
+        # Some distros have a separate ovsdb-server.service (see start_ovn_service
+        # in ovn.py), while others bundle it into openvswitch.service.
+        ovsdb_started_separately = False
+        r, o, e = bash.bash_roe('systemctl restart ovsdb-server')
+        if r == 0:
+            ovsdb_started_separately = True
+        else:
+            if self._systemdUnitExists('ovsdb-server.service') is False:
+                logger.info('ovsdb-server.service not available, restarting openvswitch instead')
+                r, o, e = bash.bash_roe('systemctl restart openvswitch')
+                if r != 0:
+                    return False, 'restart openvswitch failed: %s' % e
+            else:
+                return False, 'restart ovsdb-server failed: %s' % e
+
+        # Step 2: optional hook (e.g. clean stale vnics while ovsdb is up)
+        if after_ovsdb_start_hook:
+            try:
+                after_ovsdb_start_hook()
+            except Exception as ex:
+                logger.warn('after_ovsdb_start_hook failed: %s' % str(ex))
+
+        # Step 3: bring up remaining services
+        if ovsdb_started_separately:
+            r, o, e = bash.bash_roe('systemctl restart openvswitch')
+            if r != 0:
+                return False, 'restart openvswitch failed: %s' % e
+
+        r, o, e = bash.bash_roe('systemctl restart ovn-controller')
+        if r != 0:
+            return False, 'restart ovn-controller failed: %s' % e
+
+        logger.info('OVS services restarted successfully')
+        return True, ''
+
+    @staticmethod
+    @bash.in_bash
+    def _systemdUnitExists(unit):
+        r, o, e = bash.bash_roe('systemctl list-unit-files %s --no-legend' % unit)
+        output = (o or '').strip()
+        error = (e or '').strip()
+        if r == 0:
+            return bool(output)
+        if 'No files found' in output or 'No files found' in error:
+            return False
+        return None
+
+    @staticmethod
+    @bash.in_bash
+    def installOvsPackages():
+        """Install OVS/OVN packages from zstack-local repo and fix service user.
+
+        Same logic as install_ovn_package in ovn.py.
+        """
+        packages = "dpdk openvswitch ovn ovn-host"
+        r, o, e = bash.bash_roe("yum --disablerepo=* --enablerepo=zstack-local "
+                                "--nogpgcheck install -y {}".format(packages))
+        if r != 0:
+            raise Exception('failed to install OVS/OVN packages: %s' % e)
+
+        # change ovs-vswitchd and ovn-controller user to root
+        r, o, e = bash.bash_roe("sed -i 's/^OVS_USER_ID=\"openvswitch:hugetlbfs\"/"
+                                "OVS_USER_ID=\"root:root\"/' /etc/sysconfig/openvswitch")
+        if r != 0:
+            raise Exception('failed to configure openvswitch service user: %s' % e)
+        r, o, e = bash.bash_roe("sed -i 's/^OVN_USER_ID=\"openvswitch:openvswitch\"/"
+                                "OVN_USER_ID=\"root:root\"/' /etc/sysconfig/ovn")
+        if r != 0:
+            raise Exception('failed to configure ovn service user: %s' % e)
+
+    @bash.in_bash
     def getOvsOtherConfig(self, key):
         try:
             r, o, e = bash.bash_roe(CtlBin + "get Open_vSwitch . other_config:{}".format(key))
@@ -546,6 +695,158 @@ class VsCtl(object):
         except Exception as e:
             logger.error("Error getting OVS config: {}".format(e))
             return True, None
+
+    # --- Generic OVS query methods ---
+
+    @staticmethod
+    def parseOvsMap(raw):
+        """Parse OVS map format {key=value, key2="value2"} into a dict."""
+        raw = raw.strip()
+        if not raw or raw == '{}':
+            return {}
+        if raw.startswith('{') and raw.endswith('}'):
+            raw = raw[1:-1]
+        result = {}
+        for pair in VsCtl._splitOvsMapItems(raw):
+            pair = pair.strip()
+            if '=' in pair:
+                k, v = pair.split('=', 1)
+                result[VsCtl._unquoteOvsValue(k.strip())] = VsCtl._unquoteOvsValue(v.strip())
+        return result
+
+    @staticmethod
+    def _splitOvsMapItems(raw):
+        items = []
+        current = []
+        in_quotes = False
+        escaped = False
+        for ch in raw:
+            if escaped:
+                current.append(ch)
+                escaped = False
+                continue
+            if ch == '\\' and in_quotes:
+                current.append(ch)
+                escaped = True
+                continue
+            if ch == '"':
+                in_quotes = not in_quotes
+                current.append(ch)
+                continue
+            if ch == ',' and not in_quotes:
+                item = ''.join(current).strip()
+                if item:
+                    items.append(item)
+                current = []
+                continue
+            current.append(ch)
+
+        item = ''.join(current).strip()
+        if item:
+            items.append(item)
+        return items
+
+    @staticmethod
+    def _unquoteOvsValue(value):
+        if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+            value = value[1:-1]
+            chars = []
+            escaped = False
+            for ch in value:
+                if escaped:
+                    chars.append(ch)
+                    escaped = False
+                    continue
+                if ch == '\\':
+                    escaped = True
+                    continue
+                chars.append(ch)
+            if escaped:
+                chars.append('\\')
+            return ''.join(chars)
+        return value
+
+    @bash.in_bash
+    def listBridges(self):
+        """Return a list of all OVS bridge names."""
+        r, o, e = bash.bash_roe(CtlBin + 'list-br')
+        if r != 0:
+            raise Exception('failed to list OVS bridges: %s' % e)
+        return [line.strip() for line in o.strip().splitlines() if line.strip()]
+
+    @bash.in_bash
+    def listPorts(self, bridge):
+        """Return a list of port names on the given bridge."""
+        r, o, e = bash.bash_roe(CtlBin + 'list-ports %s' % bridge)
+        if r != 0:
+            logger.warn('failed to list ports on bridge %s: %s' % (bridge, e))
+            return []
+        return [line.strip() for line in o.strip().splitlines() if line.strip()]
+
+    @bash.in_bash
+    def listBridgeIfaces(self, bridge):
+        """Return a sorted list of interface names on a bridge.
+
+        Uses ``ovs-vsctl list-ifaces <bridge>`` which lists all interfaces
+        on the given bridge (excluding the internal port with the same name
+        as the bridge).
+        """
+        r, o, e = bash.bash_roe(CtlBin + 'list-ifaces %s' % bridge)
+        if r != 0:
+            return []
+        return sorted([line.strip() for line in o.strip().splitlines() if line.strip()])
+
+    @bash.in_bash
+    def listBondMembers(self, port_name):
+        """Return a sorted list of interface names belonging to a port (bond).
+
+        Queries the OVSDB Port table for the interface UUIDs, then resolves
+        each UUID to an interface name.  Returns an empty list on error.
+        """
+        err, iface_uuids_raw = self.getTableAttr('port', port_name, 'interfaces')
+        if err or not iface_uuids_raw:
+            return []
+        # iface_uuids_raw is e.g. "[uuid1, uuid2]" or a single uuid
+        uuids = [u.strip() for u in iface_uuids_raw.strip('[]').split(',') if u.strip()]
+        names = []
+        for iface_uuid in uuids:
+            err, name = self.getTableAttr('interface', iface_uuid, 'name')
+            if not err and name:
+                names.append(name)
+        return sorted(names)
+
+    @bash.in_bash
+    def getBridgeExternalIds(self, bridge):
+        """Return external_ids dict for a bridge (via br-get-external-id)."""
+        r, o, e = bash.bash_roe(CtlBin + 'br-get-external-id %s' % bridge)
+        if r != 0:
+            return {}
+        result = {}
+        for line in o.strip().splitlines():
+            line = line.strip()
+            if '=' in line:
+                k, v = line.split('=', 1)
+                result[k.strip()] = v.strip()
+        return result
+
+    @bash.in_bash
+    def getExternalIds(self, table, name):
+        """Return external_ids dict for a port or interface record."""
+        r, o, e = bash.bash_roe(CtlBin + 'get %s %s external_ids' % (table, name))
+        if r != 0:
+            return {}
+        return self.parseOvsMap(o.strip())
+
+    @bash.in_bash
+    def getInterfaceMacInUse(self, name):
+        """Return the mac_in_use value of an interface, or None."""
+        r, o, e = bash.bash_roe(CtlBin + 'get interface %s mac_in_use' % name)
+        if r != 0:
+            return None
+        mac = o.strip().strip('"')
+        if mac and mac != '[]':
+            return mac
+        return None
 
 def _writeSysfs(path, value, suppressRaise=False):
     try:
