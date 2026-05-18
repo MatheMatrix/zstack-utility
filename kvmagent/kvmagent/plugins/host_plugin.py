@@ -109,6 +109,8 @@ DISTRO_USING_DNF = ['rl84', 'h84r', 'ky10sp1', 'ky10sp2', 'ky10sp3',
 class ConnectResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(ConnectResponse, self).__init__()
+        self.firstConnect = False
+        self.agentStartTimeMillis = 0
 
 
 class HostCapacityResponse(kvmagent.AgentResponse):
@@ -1593,6 +1595,8 @@ class HostPlugin(kvmagent.KvmAgent):
         self.IS_YUM = False
         self.IS_APT = False
         self.NVIDIA_SMI_INSTALLED = False
+        self._first_connect_after_boot = True
+        self._agent_start_time_millis = int(time.time() * 1000)
 
         if shell.run("which yum") == 0:
             self.IS_YUM = True
@@ -1636,6 +1640,8 @@ class HostPlugin(kvmagent.KvmAgent):
     def connect(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = ConnectResponse()
+        rsp.agentStartTimeMillis = self._agent_start_time_millis
+        rsp.firstConnect = self._first_connect_after_boot
 
         # page table extension
         if shell.run('lscpu | grep -q -w GenuineIntel') == 0:
@@ -1694,6 +1700,7 @@ class HostPlugin(kvmagent.KvmAgent):
         bash_r(get_ebtables_cmd() + ' -D FORWARD -j ZSTACK-VF-NICS')
         bash_r(get_ebtables_cmd() + ' -X ZSTACK-VF-NICS')
 
+        self._first_connect_after_boot = False
         return jsonobject.dumps(rsp)
 
     @thread.AsyncThread
