@@ -313,7 +313,10 @@ class TestGetIothreadPinHandler:
 class TestQueryBlockJobStatusHandler:
     def test_query_block_job_status(self):
         plugin = _make_vm_plugin()
-        vm_plugin.qmp.execute_qmp_command = MagicMock()
+        # return [] so the empty-result retry loop in query_block_job_status
+        # is actually exercised; bare MagicMock() returns a truthy mock which
+        # would break out of the loop on the first iteration (call_count=1).
+        vm_plugin.qmp.execute_qmp_command = MagicMock(return_value=[])
         with patch('time.sleep', return_value=None):
             req = _make_req({'vmUuid': 'vm-uuid'})
             result = plugin.query_block_job_status(req)
