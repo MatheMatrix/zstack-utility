@@ -2433,11 +2433,17 @@ class ZstackLib(object):
         # ansible's respawn mechanism probes system python (/usr/bin/python3)
         # and re-executes the module with the interpreter that has
         # python3-libselinux installed.
+        probe = ('if [ -x /usr/bin/python3 ]; '
+                 'then echo python3-libselinux; '
+                 'else echo libselinux-python; fi')
+        ok, stdout = run_remote_command(probe, self.host_post_info,
+                                        return_status=True, return_output=True)
+        selinux_pkg = stdout.strip() if ok and stdout.strip() else "libselinux-python"
         basic = {
             "gcc",
             "autoconf",
             "vim-minimal",
-            "python3-libselinux",
+            selinux_pkg,
         }
 
         if self.distro in KYLIN_DISTRO:
