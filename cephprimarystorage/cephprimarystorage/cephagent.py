@@ -1079,10 +1079,6 @@ class CephAgent(plugin.TaskManager):
         driver = self.get_driver(cmd)
         driver.do_deletion(cmd)
 
-        @linux.retry(times=30, sleep_time=5)
-        def do_deletion():
-            shell.call('rbd rm %s' % path)
-
         def do_zeroed(path):
             try:
                 nbd_dev = nbd.connect(path)
@@ -1095,8 +1091,6 @@ class CephAgent(plugin.TaskManager):
 
         if cmd.zeroed:
             do_zeroed(path)
-            
-        do_deletion()
 
         self._set_capacity_to_response(rsp)
         return jsonobject.dumps(rsp)

@@ -64,7 +64,17 @@ class CephDriver(object):
     def do_deletion(self, cmd):
         path = self._normalize_install_path(cmd.installPath)
 
-        shell.call('rbd rm %s' % path)
+        try:
+            shell.call('rbd rm %s' % path)
+        except shell.ShellError as e:
+            # XSky's librbd_proxy starts async GC on the first rbd rm and
+            # immediately reports the image as gone (XBD result -2), so any
+            # subsequent retry sees ENOENT. The desired end-state is achieved,
+            # treat as idempotent success.
+            if 'No such file or directory' in str(e):
+                logger.warn('rbd image %s already gone, treat delete as success: %s' % (path, str(e)))
+                return
+            raise
 
     def create_snapshot(self, cmd, rsp):
         spath = self._normalize_install_path(cmd.snapshotPath)
