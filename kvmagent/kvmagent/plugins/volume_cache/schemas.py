@@ -208,11 +208,7 @@ class GetPoolCapacityCmd(PoolBaseCmd):
 
 class GcPoolCmd(PoolBaseCmd):
     """Garbage collect unexpected files/directories in pool mount point"""
-    volumes = None  # type: list[VolumeTO] | None
-
-    _nested_types = {
-        'volumes': VolumeTO,
-    }
+    inUseCacheUuids = None  # type: list[str] | None
 
 
 class AllocateCacheCmd(CacheBaseCmd):
