@@ -3758,9 +3758,9 @@ class Vm(object):
                     with misc.ignore_exception(libvirt.libvirtError, disk_is_unplugging):
                         self.domain.detachDeviceFlags(xmlstr, libvirt.VIR_DOMAIN_AFFECT_LIVE)
 
-                    if not linux.wait_callback_success(wait_for_detach, None, 5, 1):
+                    if not linux.wait_callback_success(wait_for_detach, None, 30, 1):
                         raise Exception("unable to detach the volume[uuid:%s] from the vm[uuid:%s];"
-                                        "it's still attached after 5 seconds" %
+                                        "it's still attached after 30 seconds" %
                                         (volume.volumeUuid, self.uuid))
                 except:
                     # check one more time
