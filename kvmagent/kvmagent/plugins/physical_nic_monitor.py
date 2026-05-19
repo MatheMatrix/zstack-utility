@@ -225,12 +225,16 @@ class PhysicalNicMonitor(kvmagent.KvmAgent):
         if self.state:
             ip = iproute.get_iproute()
             ip.bind()
-            while True:
-                if time_lock_now != self.time_lock:
-                    break
-                try:
-                    readable, _, _ = select.select([ip], [], [], 5.0)
-                    if readable:
-                        self.physical_nic_monitor_get(ip)
-                except Exception:
-                    pass
+            try:
+                while True:
+                    if time_lock_now != self.time_lock:
+                        break
+                    try:
+                        readable, _, _ = select.select([ip.fileno()], [], [], 5.0)
+                        if readable:
+                            self.physical_nic_monitor_get(ip)
+                    except Exception as e:
+                        logger.warn("physical_nic_monitor error, exiting loop: %s" % e)
+                        break
+            finally:
+                ip.close()
