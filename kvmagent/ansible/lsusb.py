@@ -3,10 +3,9 @@
 # Displays your USB devices in reasonable form.
 # (c) Kurt Garloff <garloff@suse.de>, 2/2009, GPL v2 or v3.
 # Usage: See usage()
+from __future__ import print_function
 
 import os, sys, re, getopt
-
-# from __future__ import print_function
 
 # Global options
 showint = False
