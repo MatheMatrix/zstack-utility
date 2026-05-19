@@ -2108,8 +2108,8 @@ class HaPlugin(kvmagent.KvmAgent):
     def _persist_fencer_state(self):
         try:
             state_dir = os.path.dirname(self.FENCER_STATE_FILE)
-            if state_dir and not os.path.exists(state_dir):
-                os.makedirs(state_dir, 0o755)
+            if state_dir:
+                os.makedirs(state_dir, 0o755, exist_ok=True)
             tmp = self.FENCER_STATE_FILE + '.tmp'
             with open(tmp, 'w') as f:
                 json.dump(self.run_fencer_timestamp, f)
@@ -2119,6 +2119,31 @@ class HaPlugin(kvmagent.KvmAgent):
         except Exception as e:
             logger.warn('failed to persist fencer state to %s: %s'
                         % (self.FENCER_STATE_FILE, e))
+
+    def _recover_fencers_after_restart(self):
+        if not self.run_fencer_timestamp:
+            return
+        logger.warn('kvmagent restarted with %d persisted fencer entries; '
+                     'recovery deferred until MN reconnect'
+                     % len(self.run_fencer_timestamp))
+        self._fencer_recovery_pending = True
+
+    def _try_recover_fencers(self):
+        if not getattr(self, '_fencer_recovery_pending', False):
+            return
+        if not self.run_fencer_timestamp:
+            self._fencer_recovery_pending = False
+            return
+        try:
+            url, host_uuid = self._get_report_url_and_host_uuid()
+            if not url or not host_uuid:
+                return
+            ps_uuids = list(self.run_fencer_timestamp.keys())
+            logger.info('recovering %d fencers after kvmagent restart' % len(ps_uuids))
+            self.report_self_fencer_state_changed_to_mn(ps_uuids)
+            self._fencer_recovery_pending = False
+        except Exception as e:
+            logger.warn('failed to report fencer recovery to MN: %s' % e)
 
     @kvmagent.replyerror
     def cancel_ceph_self_fencer(self, req):
@@ -3637,6 +3662,7 @@ class HaPlugin(kvmagent.KvmAgent):
 
         http_server.register_async_uri(self.FENCER_STATE_PATH, self.get_fencer_state)
         self._start_ha_network_group_monitor_thread()
+        self._recover_fencers_after_restart()
 
     def stop(self):
         monitor_thread = None
@@ -3746,6 +3772,7 @@ class HaPlugin(kvmagent.KvmAgent):
 
     def setup_fencer(self, ps_uuid, created_time, origin_uuid=None):
         with self.fencer_lock:
+            self._try_recover_fencers()
             logger.debug('setup fencer for ps: %s, create time: %d' % (ps_uuid, created_time))
             self.run_fencer_timestamp[ps_uuid] = created_time
             self._persist_fencer_state()
