@@ -813,6 +813,18 @@ def shell_quote(s):
 def shell_join(*args):
     return ' '.join(shell_quote(arg) for arg in args if arg is not None)
 
+def yaml_single_quote(s):
+    # Render a string as a YAML single-quoted scalar (escape ' as '').
+    s = str(s)
+    return "'" + s.replace("'", "''") + "'"
+
+def yaml_inline_list(items):
+    # Render a list as a YAML inline (flow) sequence of single-quoted scalars.
+    # Used to interpolate an argv list into a generated playbook's
+    # 'command: argv:' field so every argument stays one literal element,
+    # immune to shell word-splitting and Ansible's $-variable expansion.
+    return '[' + ', '.join(yaml_single_quote(i) for i in items if i is not None) + ']'
+
 def mysql_sql_escape(s):
     s = str(s)
     return s.replace("\\", "\\\\").replace("'", "\\'")
@@ -1015,7 +1027,7 @@ class Ansible(object):
         cmd = '''
 #!/bin/bash
 yaml_file=`mktemp`
-cat <<EOF >> $$yaml_file
+cat <<'EOF' >> $$yaml_file
 $yaml
 EOF
 
@@ -3946,13 +3958,17 @@ class InstallDbCmd(Command):
       service: name=mariadb state=restarted enabled=yes
 
     - name: change root password
-      shell: $change_password_cmd
+      command:
+        argv: $change_password_argv
+        expand_argument_vars: false
       register: change_root_result
       ignore_errors: yes
 
     - name: grant remote access
       when: change_root_result.rc == 0
-      shell: $grant_access_cmd
+      command:
+        argv: $grant_access_argv
+        expand_argument_vars: false
 
     - name: rollback MySQL installation on RedHat 6
       when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and change_root_result.rc != 0 and install_result.changed == True
@@ -4091,13 +4107,17 @@ class InstallDbCmd(Command):
       service: name=mysql state=restarted enabled=yes
 
     - name: update root password
-      shell: $change_password_cmd
+      command:
+        argv: $change_password_argv
+        expand_argument_vars: false
       register: change_root_result
       ignore_errors: yes
 
     - name: grant access
       when: change_root_result.rc == 0
-      shell: $grant_access_cmd
+      command:
+        argv: $grant_access_argv
+        expand_argument_vars: false
 
     - name: rollback GreatDB
       when: >
@@ -4124,35 +4144,34 @@ class InstallDbCmd(Command):
 
         if not args.root_password and not args.login_password:
             args.root_password = '''"''"'''
+            new_root_password = ''
             more_cmd = ' '
             for ip in current_host_ips:
                 if not ip:
                     continue
                 more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{}' IDENTIFIED BY '' WITH GRANT OPTION;".format(ip)
-            grant_access_cmd = '''/usr/bin/mysql -u root -e ''' \
-                               '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '' WITH GRANT OPTION; '''\
+            grant_access_sql = '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{}' IDENTIFIED BY '' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'%%' IDENTIFIED BY '' WITH GRANT OPTION; '''\
-                               '''{} FLUSH PRIVILEGES;"'''.format(args.host, more_cmd)
+                               '''{} FLUSH PRIVILEGES;'''.format(args.host, more_cmd)
             if args.choose_database == 'GreatDB':
                 more_cmd = ' '
-                grant_access_cmd = ' '
                 for ip in current_host_ips:
                     if not ip:
                         continue
-                    if args.choose_database == 'GreatDB':
-                        more_cmd += "CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '';".format(host=ip)
-                        more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;".format(host=ip)
-                grant_access_cmd = '''/usr/bin/mysql -u root -e ''' \
-                                   '''"CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED BY '';''' \
+                    more_cmd += "CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '';".format(host=ip)
+                    more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;".format(host=ip)
+                grant_access_sql = '''CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED BY '';''' \
                                    '''CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '';''' \
                                    '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;''' \
                                    '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;''' \
-                                   '''{more_cmd} FLUSH PRIVILEGES;"'''.format(host=host, more_cmd=more_cmd)
+                                   '''{more_cmd} FLUSH PRIVILEGES;'''.format(host=host, more_cmd=more_cmd)
+            grant_access_argv = ['/usr/bin/mysql', '-u', 'root', '-e', grant_access_sql]
 
         else:
             if not args.root_password:
                 args.root_password = args.login_password
+            new_root_password = args.root_password
             escaped_root_password = mysql_sql_escape(args.root_password)
             local_hostname = socket.gethostname()
             more_cmd = "GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; ".format(root_pass=escaped_root_password)
@@ -4166,7 +4185,6 @@ class InstallDbCmd(Command):
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{hostname}' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''{more_cmd} FLUSH PRIVILEGES;'''.format(root_pass=escaped_root_password, hostname=local_hostname, host=args.host, more_cmd=more_cmd)
-            grant_access_cmd = shell_join('/usr/bin/mysql', '-u', 'root', mysql_password_arg(args.root_password), '-e', grant_access_sql)
             if args.choose_database == 'GreatDB':
                 more_cmd = ' '
                 for ip in current_host_ips:
@@ -4179,12 +4197,17 @@ class InstallDbCmd(Command):
                                    '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;''' \
                                    '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;''' \
                                    '''{more_cmd} FLUSH PRIVILEGES;'''.format(root_pass=escaped_root_password, host=args.host, more_cmd=more_cmd)
-                grant_access_cmd = shell_join('/usr/bin/mysql', '-u', 'root', mysql_password_arg(args.root_password), '-e', grant_access_sql)
+            grant_access_argv = [a for a in ['/usr/bin/mysql', '-u', 'root',
+                                             mysql_password_arg(args.root_password), '-e', grant_access_sql]
+                                 if a is not None]
 
-
-        change_root_password_cmd = shell_join('/usr/bin/mysqladmin', '-u', 'root',
-                                              mysql_password_arg(args.login_password), 'password',
-                                              args.root_password or '')
+        # Build the mysql management commands as argv lists. They are executed
+        # via Ansible's command module with an explicit argv (no shell), so the
+        # root password survives verbatim no matter which characters it holds.
+        change_root_password_argv = [a for a in ['/usr/bin/mysqladmin', '-u', 'root',
+                                                 mysql_password_arg(args.login_password), 'password',
+                                                 new_root_password]
+                                     if a is not None]
 
         pre_install_script = '''
 #!/bin/bash
@@ -4237,10 +4260,10 @@ exit 1
             yum_repo = 'false'
         yaml = t.substitute({
             'host': args.host,
-            'change_password_cmd': change_root_password_cmd,
+            'change_password_argv': yaml_inline_list(change_root_password_argv),
             'root_password': args.root_password,
             'login_password': args.login_password,
-            'grant_access_cmd': grant_access_cmd,
+            'grant_access_argv': yaml_inline_list(grant_access_argv),
             'pre_install_script': pre_install_script_path,
             'yum_folder': ctl.zstack_home,
             'yum_repo': yum_repo,
