@@ -2294,7 +2294,8 @@ mimetype.assign = (
                 mac_to_remove = cmd.macOfGatewayToRemove.replace(':', '')
 
                 def is_line_to_delete(line):
-                    return cmd.gatewayToRemove in line and mac_to_remove in line and 'router' in line
+                    expected = 'tag:%s,option:router,%s' % (mac_to_remove, cmd.gatewayToRemove)
+                    return line.strip() == expected
 
                 linux.delete_lines_from_file(option_path, is_line_to_delete)
                 self._refresh_dnsmasq(cmd.namespaceNameOfGatewayToRemove, conf_file_path)
@@ -2820,7 +2821,7 @@ tag:{{o.tag}},option6:domain-search,{{o.domainList}}
                 if "%s," % mac in line:
                     return False
             for ip_addr in ips:
-                if ",%s," % ip_addr in line:
+                if ",%s," % ip_addr in line or ",[%s]," % ip_addr in line:
                     return False
             return True
 

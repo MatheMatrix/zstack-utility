@@ -28,6 +28,7 @@ class TestMevocoDhcpConfig(unittest.TestCase):
 
         with open(self.dhcp_path, 'w') as fd:
             fd.write('fa:16:3e:00:00:01,set:fa163e000001,172.26.104.200,vm1,infinite\n')
+            fd.write('fa:16:3e:00:00:03,set:fa163e000003,[fd00::200],vm3,infinite\n')
             fd.write('fa:16:3e:00:00:02,set:fa163e000002,172.26.104.201,vm2,infinite\n')
             fd.write('\n')
         with open(self.option_path, 'w') as fd:
@@ -54,6 +55,7 @@ class TestMevocoDhcpConfig(unittest.TestCase):
 
         self.assertNotIn('fa:16:3e:00:00:01', dhcp_content)
         self.assertNotIn('172.26.104.200', dhcp_content)
+        self.assertNotIn('fd00::200', dhcp_content)
         self.assertIn('fa:16:3e:00:00:02', dhcp_content)
         self.assertNotIn('fa163e000001', option_content)
         self.assertIn('fa163e000002', option_content)
