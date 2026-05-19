@@ -1036,6 +1036,11 @@ def clean_lvm_archive_files(vgUuid):
     if archive_files > 10:
         bash.bash_r("ls -rt %s | grep %s | head -n %s | xargs -i rm -rf %s/{}" % (LVM_CONFIG_ARCHIVE_PATH, vgUuid, archive_files-10, LVM_CONFIG_ARCHIVE_PATH))
 
+def _sanlock_line_to_args(line):
+    """Convert sanlock status line to release arguments."""
+    return line.replace(" p ", " -p ").replace(" C ", " -C ")
+
+
 @bash.in_bash
 def quitLockServices():
     bash.bash_roe("sanlock client shutdown")
@@ -1053,13 +1058,13 @@ def drop_vg_lock(vgUuid):
         for line in sanlock_locks.strip().splitlines():
             lock_uuid = line.split()[1].split(":")[1]
             if "VGLK" in lock_uuid or "GLLK" in lock_uuid or lock_uuid not in lv_locks:
-                bash.bash_r("sanlock client release -%s" % line.replace(" p ", " -p ").replace(" C ", " -C "))
+                bash.bash_r("sanlock client release -%s" % _sanlock_line_to_args(line))
 
     clear_orphan_locks()
     bash.bash_roe("timeout 30 lvmlockctl --gl-disable %s" % vgUuid)
     r, _, e = bash.bash_roe("timeout 30 lvmlockctl --drop %s" % vgUuid)
     if r != 0:
-        logger.warn("lvmlockctl --drop %s failed (rc=%s, stderr=%s), force-releasing sanlock locks" % (vgUuid, r, e))
+        logger.warning("lvmlockctl --drop %s failed (rc=%s, stderr=%s), force-releasing sanlock locks" % (vgUuid, r, e))
         force_release_locks(vgUuid)
 
 
@@ -1071,7 +1076,7 @@ def force_release_locks(vgUuid):
     for line in o.strip().splitlines():
         if "ADD" in line or "REM" in line:
             continue
-        cmd = "timeout -s SIGKILL 30 sanlock client release -%s" % line.replace(" p ", " -p ").replace(" C ", " -C ")
+        cmd = "timeout -s SIGKILL 30 sanlock client release -%s" % _sanlock_line_to_args(line)
         r, out, err = bash.bash_roe(cmd)
         logger.debug("force_release_locks %s: rc=%s, stdout=%s, stderr=%s" % (line.strip(), r, out, err))
 
@@ -2143,7 +2148,7 @@ def check_stuck_vglk_and_gllk():
             if "ADD" in stucked or "REM" in stucked:
                 continue
             # r lvm_aaf953ae7a984e529cdf53953f236fee:VGLK:/dev/mapper/aaf953ae7a984e529cdf53953f236fee-lvmlock:69206016:2031 C 3
-            cmd = "sanlock client release -%s" % stucked.replace(" p ", " -p ").replace(" C ", " -C ")
+            cmd = "sanlock client release -%s" % _sanlock_line_to_args(stucked)
             r, o, e = bash.bash_roe(cmd)
             logger.warn("find stuck vglk and already released, detail: [return_code: %s, stdout: %s, stderr: %s]" %
                         (r, o, e))
