@@ -243,8 +243,10 @@ class FaultToleranceFecnerPlugin(kvmagent.KvmAgent):
                 logger.debug("network down, need to kill ft vm")
                 failed_vms = kill_fault_tolerance_vms()
                 if failed_vms:
-                    logger.error('FT vm kill failed for %d VM(s): %s; proceeding with fencing'
+                    logger.error('FT vm kill failed for %d VM(s): %s; skipping fencing to avoid split-brain'
                                  % (len(failed_vms), list(failed_vms.keys())))
+                    time.sleep(5)
+                    continue
                 mn_fenced = stop_management_node()
                 secondary_drbd_if_peer_is_primary()
 
