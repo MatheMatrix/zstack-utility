@@ -34,12 +34,36 @@ from zstacklib.utils.ovs import OvsError
 logger = log.get_logger(__name__)
 
 
-@functools.lru_cache(maxsize=1)
+def _lru_cache(maxsize=128):
+    if hasattr(functools, 'lru_cache'):
+        return functools.lru_cache(maxsize=maxsize)
+
+    def decorator(func):
+        cache = {}
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            key = args
+            if kwargs:
+                key = args + tuple(sorted(kwargs.items()))
+
+            if key not in cache:
+                if maxsize is not None and len(cache) >= maxsize:
+                    cache.clear()
+                cache[key] = func(*args, **kwargs)
+            return cache[key]
+
+        return wrapper
+
+    return decorator
+
+
+@_lru_cache(maxsize=1)
 def get_ebtables_cmd():
     return ebtables.get_ebtables_cmd()
 
 
-@functools.lru_cache(maxsize=1)
+@_lru_cache(maxsize=1)
 def get_iptables_cmd():
     return iptables.get_iptables_cmd()
 
