@@ -75,6 +75,9 @@ hw_status_abnormal_list_record = {
     'raid': set()
 }
 
+cpu_status_consecutive_abnormal_count = {}
+CPU_STATUS_ABNORMAL_ALARM_THRESHOLD = 3
+
 # collect domain max memory
 domain_max_memory = {}
 
@@ -1245,13 +1248,17 @@ def collect_equipment_state_from_ipmi():
                 ["CPU%d" % cpu_id], float(cpu_temperature))
         if re.match(cpu_status_pattern, sensor_id):
             cpu_id = int(re.sub(r'\D', '', sensor_id))
-            cpu_status = 0 if "presence detected" == sensor_value or "present" == sensor_value else 10
-            metrics['cpu_status'].add_metric(
-                ["CPU%d" % cpu_id], float(cpu_status))
-            if cpu_status == 10:
-                send_cpu_status_alarm_to_mn(cpu_id, sensor_value)
-            else:
+            is_normal = sensor_value in ("presence detected", "present")
+            if is_normal:
+                metrics['cpu_status'].add_metric(["CPU%d" % cpu_id], 0)
+                cpu_status_consecutive_abnormal_count.pop(cpu_id, None)
                 remove_cpu_status_abnormal(cpu_id)
+            else:
+                cnt = cpu_status_consecutive_abnormal_count.get(cpu_id, 0) + 1
+                cpu_status_consecutive_abnormal_count[cpu_id] = cnt
+                if cnt >= CPU_STATUS_ABNORMAL_ALARM_THRESHOLD:
+                    metrics['cpu_status'].add_metric(["CPU%d" % cpu_id], 10)
+                    send_cpu_status_alarm_to_mn(cpu_id, sensor_value)
 
     return list(metrics.values())
 
