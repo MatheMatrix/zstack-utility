@@ -725,6 +725,12 @@ class GetPciDevicesCmd(kvmagent.AgentCommand):
         self.skipGrubConfig = False
 
 
+class GetBlockDevicesCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(GetBlockDevicesCmd, self).__init__()
+        self.includeInUse = False
+
+
 class GetPciDevicesResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(GetPciDevicesResponse, self).__init__()
@@ -4710,8 +4716,12 @@ done
     @kvmagent.replyerror
     def get_block_devices(self, req):
         rsp = GetBlockDevicesRsp()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+
         all_devices = lvm.get_block_devices() # type: list[lvm.SharedBlockCandidateStruct]
-        rsp.blockDevices = list(filter(lambda dev: not FileSystemCommandWrapper.is_block_device_mounted(dev.name), all_devices))
+        if not cmd.includeInUse:
+            all_devices = list(filter(lambda dev: not FileSystemCommandWrapper.is_block_device_mounted(dev.name), all_devices))
+        rsp.blockDevices = all_devices
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror

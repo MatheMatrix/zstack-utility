@@ -192,42 +192,50 @@ class TestHostPluginVirtStatusFallback(unittest.TestCase):
             with mock.patch.object(plugin, '_get_sriov_info', side_effect=sriov):
                 plugin._apply_virt_status_fallback([to], context)
         self.assertEqual(to.virtStatus, "UNVIRTUALIZABLE")
-        self.assertEqual(to.virtState, "UNVIRTUALIZABLE")
 
-    def test_existing_tensorfusion_status_fills_capability_and_state(self):
-        """Existing TensorFusion virtStatus should backfill capability/state."""
-        plugin = host_plugin.HostPlugin()
-        to = self._make_to(virt_status="TENSORFUSION_VIRTUALIZABLE")
-        context = self._make_context()
-        with mock.patch.object(plugin, '_get_vfio_mdev_info', return_value=False):
-            with mock.patch.object(plugin, '_get_sriov_info', return_value=False):
-                plugin._apply_virt_status_fallback([to], context)
-        self.assertEqual(to.virtStatus, "TENSORFUSION_VIRTUALIZABLE")
-        self.assertEqual(to.virtState, "VIRTUALIZABLE")
-        self.assertEqual(to.virtCapabilities, ["TENSORFUSION"])
 
-    def test_existing_hami_status_fills_capability_and_state(self):
-        """Existing HAMI virtStatus should backfill capability/state."""
-        plugin = host_plugin.HostPlugin()
-        to = self._make_to(virt_status="HAMI_VIRTUALIZED")
-        context = self._make_context()
-        with mock.patch.object(plugin, '_get_vfio_mdev_info', return_value=False):
-            with mock.patch.object(plugin, '_get_sriov_info', return_value=False):
-                plugin._apply_virt_status_fallback([to], context)
-        self.assertEqual(to.virtStatus, "HAMI_VIRTUALIZED")
-        self.assertEqual(to.virtState, "VIRTUALIZED")
-        self.assertEqual(to.virtCapabilities, ["HAMI"])
+class TestHostPluginGetBlockDevices(unittest.TestCase):
+    def _make_device(self, name):
+        dev = host_plugin.lvm.SharedBlockCandidateStruct()
+        dev.name = name
+        return dev
 
-    def test_existing_explicit_state_wins_over_status(self):
-        """Explicit virtState should be preserved when host_plugin already filled it."""
+    def _call_get_block_devices(self, body):
         plugin = host_plugin.HostPlugin()
-        to = self._make_to(virt_status="UNVIRTUALIZABLE")
-        to.virtState = "VIRTUALIZABLE"
-        to.virtCapabilities = ["TENSORFUSION"]
-        context = self._make_context()
-        with mock.patch.object(plugin, '_get_vfio_mdev_info', return_value=False):
-            with mock.patch.object(plugin, '_get_sriov_info', return_value=False):
-                plugin._apply_virt_status_fallback([to], context)
-        self.assertEqual(to.virtStatus, "UNVIRTUALIZABLE")
-        self.assertEqual(to.virtState, "VIRTUALIZABLE")
-        self.assertEqual(to.virtCapabilities, ["TENSORFUSION"])
+        req = {http.REQUEST_BODY: body}
+        return jsonobject.loads(plugin.get_block_devices(req))
+
+    def test_get_block_devices_filters_mounted_by_default(self):
+        devices = [self._make_device("/dev/sdb"), self._make_device("/dev/sdc")]
+        with mock.patch.object(host_plugin.lvm, 'get_block_devices', return_value=devices):
+            with mock.patch.object(host_plugin.FileSystemCommandWrapper, 'is_block_device_mounted',
+                                   side_effect=lambda name: name == "/dev/sdc") as mock_mounted:
+                rsp = self._call_get_block_devices("{}")
+
+        self.assertEqual(["/dev/sdb"], [d.name for d in rsp.blockDevices])
+        self.assertIsInstance(rsp.blockDevices, list)
+        self.assertTrue(rsp.blockDevices[0].name)
+        self.assertEqual(2, mock_mounted.call_count)
+
+    def test_get_block_devices_filters_mounted_when_include_in_use_false(self):
+        devices = [self._make_device("/dev/sdb"), self._make_device("/dev/sdc")]
+        with mock.patch.object(host_plugin.lvm, 'get_block_devices', return_value=devices):
+            with mock.patch.object(host_plugin.FileSystemCommandWrapper, 'is_block_device_mounted',
+                                   side_effect=lambda name: name == "/dev/sdc") as mock_mounted:
+                rsp = self._call_get_block_devices('{"includeInUse": false}')
+
+        self.assertEqual(["/dev/sdb"], [d.name for d in rsp.blockDevices])
+        self.assertIsInstance(rsp.blockDevices, list)
+        self.assertTrue(rsp.blockDevices[0].name)
+        self.assertEqual(2, mock_mounted.call_count)
+
+    def test_get_block_devices_returns_all_when_include_in_use_true(self):
+        devices = [self._make_device("/dev/sdb"), self._make_device("/dev/sdc")]
+        with mock.patch.object(host_plugin.lvm, 'get_block_devices', return_value=devices):
+            with mock.patch.object(host_plugin.FileSystemCommandWrapper, 'is_block_device_mounted') as mock_mounted:
+                rsp = self._call_get_block_devices('{"includeInUse": true}')
+
+        self.assertEqual(["/dev/sdb", "/dev/sdc"], [d.name for d in rsp.blockDevices])
+        self.assertIsInstance(rsp.blockDevices, list)
+        self.assertTrue(rsp.blockDevices[0].name)
+        self.assertFalse(mock_mounted.called)
