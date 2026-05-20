@@ -5,7 +5,6 @@ import argparse
 import hashlib
 import signal
 import getpass
-import re
 import urllib.parse
 import xml.etree.ElementTree as ET
 
@@ -807,130 +806,17 @@ def start_remote_mn( host_post_info):
     logger.debug("[ HOST: %s ] SUCC: shell command: '%s' successfully" % (host_post_info.host, command))
 
 def shell_quote(s):
-    s = str(s)
     return "'" + s.replace("'", "'\\''") + "'"
 
-def shell_join(*args):
-    return ' '.join(shell_quote(arg) for arg in args if arg is not None)
-
-def mysql_sql_escape(s):
-    s = str(s)
-    return s.replace("\\", "\\\\").replace("'", "\\'")
-
-def mysql_password_arg(password):
-    if password is None or password == '':
-        return None
-    return '--password=%s' % password
-
-
-def redact_cmd_args(cmd_args):
-    redacted = []
-    redact_next = False
-    sensitive_flags = {'--password', '--root-password', '--new-password'}
-
-    for arg in cmd_args:
-        if arg is None:
-            continue
-
-        arg = str(arg)
-        if redact_next:
-            redacted.append('******')
-            redact_next = False
-            continue
-
-        if arg in sensitive_flags:
-            redacted.append(arg)
-            redact_next = True
-            continue
-
-        if arg.startswith('--password='):
-            redacted.append('--password=******')
-        elif arg.startswith('--root-password='):
-            redacted.append('--root-password=******')
-        elif arg.startswith('--new-password='):
-            redacted.append('--new-password=******')
-        elif arg.startswith('-password='):
-            redacted.append('-password=******')
-        elif arg.startswith('password='):
-            redacted.append('password=******')
-        elif arg.startswith('-p') and arg != '-p':
-            redacted.append('-p******')
-        else:
-            redacted.append(arg)
-
-    return redacted
-
-
-def redact_sensitive_cmd(cmd):
-    cmd = str(cmd)
-    patterns = [
-        (r'(^|[\s\'"])(--password=)(\S+)', r'\1\2******'),
-        (r'(^|[\s\'"])(--root-password=)(\S+)', r'\1\2******'),
-        (r'(^|[\s\'"])(--new-password=)(\S+)', r'\1\2******'),
-        (r'(^|[\s\'"])(-password=)(\S+)', r'\1\2******'),
-        (r'(\bpassword=)(\S+)', r'\1******'),
-        (r'(^|[\s\'"])(-p)(\S+)', r'\1\2******'),
-        (r'(--password\s+)(\S+)', r'\1******'),
-        (r'(--root-password\s+)(\S+)', r'\1******'),
-        (r'(--new-password\s+)(\S+)', r'\1******'),
-    ]
-    for pattern, replacement in patterns:
-        cmd = re.sub(pattern, replacement, cmd)
-    return cmd
-
-
-def shell_join_redacted(*args):
-    return shell_join(*redact_cmd_args(args))
-
-
-def redact_mysql_sql(sql):
-    sql = str(sql)
-    patterns = [
-        (r"(IDENTIFIED BY\s+')((?:\\.|[^'])*)(')", r"\1******\3"),
-        (r"(PASSWORD\(')((?:\\.|[^'])*)('\))", r"\1******\3"),
-    ]
-    for pattern, replacement in patterns:
-        sql = re.sub(pattern, replacement, sql)
-    return sql
-
-
-def mysql_cmd_args(user, password=None, host=None, port=None, database=None, sql=None, extra_args=None):
-    cmd_args = ['mysql']
-    if extra_args:
-        cmd_args.extend(str(arg) for arg in extra_args if arg is not None)
-    if user is not None:
-        cmd_args.extend(['-u', str(user)])
-    password_arg = mysql_password_arg(password)
-    if password_arg is not None:
-        cmd_args.append(password_arg)
-    if host is not None and host != '':
-        cmd_args.extend(['--host', str(host)])
-    if port is not None and port != '':
-        cmd_args.extend(['--port', str(port)])
-    if database is not None and database != '':
-        cmd_args.append(str(database))
-    if sql is not None:
-        cmd_args.extend(['-e', str(sql)])
-    return cmd_args
-
-
-def mysql_shell_cmd(user, password=None, host=None, port=None, database=None, sql=None, extra_args=None):
-    cmd_args = mysql_cmd_args(user, password=password, host=host, port=port, database=database, sql=sql, extra_args=extra_args)
-    return shell_join(*cmd_args)
-
-
-def mysql_shell_display_cmd(user, password=None, host=None, port=None, database=None, sql=None, extra_args=None):
-    redacted_sql = redact_mysql_sql(sql) if sql is not None else None
-    cmd_args = mysql_cmd_args(user, password=password, host=host, port=port, database=database, sql=redacted_sql, extra_args=extra_args)
-    return shell_join_redacted(*cmd_args)
 
 def run_flyway_precheck(flyway_path, db_user, db_password, db_url, upgrading_schema_dir):
     schema_path = 'filesystem:%s' % upgrading_schema_dir
-    flyway_args = ['bash', flyway_path, 'info', '-outOfOrder=true', '-user=%s' % db_user, '-url=%s' % db_url,
-                   '-locations=%s' % schema_path]
     if db_password:
-        flyway_args.insert(-2, '-password=%s' % db_password)
-    out = shell(shell_join(*flyway_args), display_cmd=shell_join_redacted(*flyway_args))
+        out = shell('bash %s info -outOfOrder=true -user=%s -password=%s -url=%s -locations=%s' % (
+            flyway_path, db_user, db_password, db_url, schema_path))
+    else:
+        out = shell('bash %s info -outOfOrder=true -user=%s -url=%s -locations=%s' % (
+            flyway_path, db_user, db_url, schema_path))
     for line in out.splitlines():
         if '| Fail' in line or '| FutFail' in line:
             raise CtlError('Flyway pre-check failed. There are failed migrations:\n%s' % out)
@@ -940,9 +826,12 @@ def run_flyway_precheck(flyway_path, db_user, db_password, db_url, upgrading_sch
 def run_mysqlcheck_zstack(db_user, db_password, db_hostname, db_port):
     error_if_tool_is_missing('mysqlcheck')
     try:
-        cmd_args = ['mysqlcheck', '-u', db_user, mysql_password_arg(db_password), '--host', db_hostname, '--port',
-                    str(db_port), 'zstack']
-        shell(shell_join(*cmd_args), display_cmd=shell_join_redacted(*cmd_args))
+        if db_password:
+            shell('mysqlcheck -u %s -p%s --host %s --port %s zstack' % (
+                db_user, db_password, db_hostname, db_port))
+        else:
+            shell('mysqlcheck -u %s --host %s --port %s zstack' % (
+                db_user, db_hostname, db_port))
     except Exception as e:
         raise CtlError('Table integrity pre-check (mysqlcheck) failed: %s' % str(e))
 
@@ -1073,9 +962,17 @@ def check_zstack_user():
         raise CtlError('cannot find user account "zstack", your installation seems incomplete')
 
 def check_special_root(s):
+    if re.match(r"[^a-z0-9A-Z\\\_]", s):
+        s = "\\" + s
+    elif re.match(r"[\\]", s):
+        s = r"\\"
     return s
 
 def check_special_new(s):
+    if re.match(r"[^a-z0-9A-Z\\\%\_]", s):
+        s = "\\" + s
+    elif re.match(r"[\\]", s):
+        s = r"\\\\"
     return s
 
 def check_java_version():
@@ -1462,8 +1359,12 @@ class Ctl(object):
 
         errors = []
         for hostname, port in hostname_ports:
-            sql = mysql_shell_cmd(user, password=password, host=hostname, port=port, sql='select 1')
-            cmd = ShellCmd(sql, display_cmd=mysql_shell_display_cmd(user, password=password, host=hostname, port=port, sql='select 1'))
+            if password:
+                sql = 'mysql --host=%s --port=%s --user=%s --password=%s -e "select 1"' % (hostname, port, user, shell_quote(password))
+            else:
+                sql = 'mysql --host=%s --port=%s --user=%s -e "select 1"' % (hostname, port, user)
+
+            cmd = ShellCmd(sql)
             cmd(False)
             if cmd.return_code != 0:
                 errors.append(
@@ -1632,9 +1533,8 @@ def get_process(cmd, workdir, pipe):
         return subprocess.Popen(cmd, shell=True, cwd=workdir)
 
 class ShellCmd(object):
-    def __init__(self, cmd, workdir=None, pipe=True, display_cmd=None):
+    def __init__(self, cmd, workdir=None, pipe=True):
         self.cmd = cmd
-        self.display_cmd = display_cmd or redact_sensitive_cmd(cmd)
         self.process = get_process(cmd, workdir, pipe)
         self.return_code = None
         self.stdout = None
@@ -1642,7 +1542,7 @@ class ShellCmd(object):
 
     def raise_error(self):
         err = []
-        err.append('failed to execute shell command: %s' % self.display_cmd)
+        err.append('failed to execute shell command: %s' % self.cmd)
         err.append('return code: %s' % self.process.returncode)
         err.append('stdout: %s' % self.stdout)
         err.append('stderr: %s' % self.stderr)
@@ -1650,7 +1550,7 @@ class ShellCmd(object):
 
     def __call__(self, is_exception=True):
         if ctl.verbose:
-            info('executing shell command[%s]:' % self.display_cmd)
+            info('executing shell command[%s]:' % self.cmd)
 
         (self.stdout, self.stderr) = self.process.communicate()
         self.stdout = self.stdout.decode() if self.stdout else ''
@@ -1663,7 +1563,7 @@ class ShellCmd(object):
 
         if ctl.verbose:
             info(simplejson.dumps({
-                "shell" : self.display_cmd,
+                "shell" : self.cmd,
                 "return_code" : self.return_code,
                 "stdout": self.stdout,
                 "stderr": self.stderr
@@ -1671,19 +1571,19 @@ class ShellCmd(object):
 
         return self.stdout
 
-def shell(cmd, is_exception=True, display_cmd=None):
-    return ShellCmd(cmd, display_cmd=display_cmd)(is_exception)
+def shell(cmd, is_exception=True):
+    return ShellCmd(cmd)(is_exception)
 
-def shell_no_pipe(cmd, is_exception=True, display_cmd=None):
-    return ShellCmd(cmd, pipe=False, display_cmd=display_cmd)(is_exception)
+def shell_no_pipe(cmd, is_exception=True):
+    return ShellCmd(cmd, pipe=False)(is_exception)
 
 def shell_return(cmd):
     scmd = ShellCmd(cmd)
     scmd(False)
     return scmd.return_code
 
-def shell_return_stdout_stderr(cmd, display_cmd=None):
-    scmd = ShellCmd(cmd, display_cmd=display_cmd)
+def shell_return_stdout_stderr(cmd):
+    scmd = ShellCmd(cmd)
     scmd(False)
     return (scmd.return_code, scmd.stdout, scmd.stderr)
 
@@ -1902,11 +1802,13 @@ class MySqlCommandLineQuery(object):
         assert self.table, 'table cannot be None'
 
         sql = "%s\G" % self.sql
-        cmd = mysql_shell_cmd(self.user, password=self.password, host=self.host, port=self.port, database=self.table,
-                              sql=sql, extra_args=['-t'])
-        output = shell(cmd, display_cmd=mysql_shell_display_cmd(self.user, password=self.password, host=self.host,
-                                                                port=self.port, database=self.table, sql=sql,
-                                                                extra_args=['-t']))
+        if self.password:
+            cmd = '''mysql -u %s -p%s --host %s --port %s -t %s -e "%s"''' % (self.user, shell_quote(self.password), self.host,
+                                                                               self.port, self.table, sql)
+        else:
+            cmd = '''mysql -u %s --host %s --port %s -t %s -e "%s"''' % (self.user, self.host, self.port, self.table, sql)
+
+        output = shell(cmd)
         output = output.strip()
         ret = []
         if not output:
@@ -1952,13 +1854,10 @@ class ShowGrayscaleUpgradeStatusCmd(Command):
         info('checking the status of the grayscale upgrade(current limit %s):' % limit)
 
         def check_if_grayscale_upgrade_is_enabled():
-            sql = "select * from GlobalConfigVO where name='grayscaleUpgrade' and value='true'"
-            cmd = ShellCmd(
-                mysql_shell_cmd(db_user, password=db_password, host=db_hostname, port=db_port, database='zstack',
-                                sql=sql, extra_args=['-t']),
-                display_cmd=mysql_shell_display_cmd(db_user, password=db_password, host=db_hostname, port=db_port,
-                                                    database='zstack', sql=sql, extra_args=['-t'])
-            )
+            if db_password:
+                cmd = ShellCmd('''mysql -u %s -p%s --host %s --port %s -t zstack -e "select * from GlobalConfigVO where name='grayscaleUpgrade' and value='true'"''' % (db_user, shell_quote(db_password), db_hostname, db_port))
+            else:
+                cmd = ShellCmd('''mysql -u %s --host %s --port %s -t zstack -e "select * from GlobalConfigVO where name='grayscaleUpgrade' and value='true'"''' % (db_user, db_hostname, db_port))
 
             cmd(False)
             if cmd.return_code != 0:
@@ -1973,13 +1872,10 @@ class ShowGrayscaleUpgradeStatusCmd(Command):
             return True
 
         def show_host_vo_connection_status():
-            sql = "select uuid,managementIp,status from HostVO where status != 'Connected' and hypervisorType='kvm' limit %s" % limit
-            cmd = ShellCmd(
-                mysql_shell_cmd(db_user, password=db_password, host=db_hostname, port=db_port, database='zstack',
-                                sql=sql, extra_args=['-t']),
-                display_cmd=mysql_shell_display_cmd(db_user, password=db_password, host=db_hostname, port=db_port,
-                                                    database='zstack', sql=sql, extra_args=['-t'])
-            )
+            if db_password:
+                cmd = ShellCmd('''mysql -u %s -p%s --host %s --port %s -t zstack -e "select uuid,managementIp,status from HostVO where status != 'Connected' and hypervisorType='kvm' limit %s"''' % (db_user, shell_quote(db_password), db_hostname, db_port, limit))
+            else:
+                cmd = ShellCmd('''mysql -u %s --host %s --port %s -t zstack -e "select uuid,managementIp,status from HostVO where status != 'Connected' and hypervisorType='kvm' limit %s"''' % (db_user, db_hostname, db_port, limit))
 
             cmd(False)
             if cmd.return_code != 0:
@@ -1997,13 +1893,10 @@ class ShowGrayscaleUpgradeStatusCmd(Command):
                 info(message)
 
         def show_agent_version():
-            sql = "select uuid,managementIp,status from HostVO where uuid not in (select uuid from AgentVersionVO) limit %s" % limit
-            cmd = ShellCmd(
-                mysql_shell_cmd(db_user, password=db_password, host=db_hostname, port=db_port, database='zstack',
-                                sql=sql, extra_args=['-t']),
-                display_cmd=mysql_shell_display_cmd(db_user, password=db_password, host=db_hostname, port=db_port,
-                                                    database='zstack', sql=sql, extra_args=['-t'])
-            )
+            if db_password:
+                cmd = ShellCmd('''mysql -u %s -p%s --host %s --port %s -t zstack -e "select uuid,managementIp,status from HostVO where uuid not in (select uuid from AgentVersionVO) limit %s"''' % (db_user, shell_quote(db_password), db_hostname, db_port, limit))
+            else:
+                cmd = ShellCmd('''mysql -u %s --host %s --port %s -t zstack -e "select uuid,managementIp,status from HostVO where uuid not in (select uuid from AgentVersionVO) limit %s"''' % (db_user, db_hostname, db_port, limit))
 
             cmd(False)
             if cmd.return_code != 0:
@@ -2021,13 +1914,10 @@ class ShowGrayscaleUpgradeStatusCmd(Command):
                 info(message)
 
         def show_vpc_vo_connection_status():
-            sql = "select uuid,applianceVmType from ApplianceVmVO where status != 'Connected' limit %s" % limit
-            cmd = ShellCmd(
-                mysql_shell_cmd(db_user, password=db_password, host=db_hostname, port=db_port, database='zstack',
-                                sql=sql, extra_args=['-t']),
-                display_cmd=mysql_shell_display_cmd(db_user, password=db_password, host=db_hostname, port=db_port,
-                                                    database='zstack', sql=sql, extra_args=['-t'])
-            )
+            if db_password:
+                cmd = ShellCmd('''mysql -u %s -p%s --host %s --port %s -t zstack -e "select uuid,applianceVmType from ApplianceVmVO where status != 'Connected' limit %s"''' % (db_user, shell_quote(db_password), db_hostname, db_port, limit))
+            else:
+                cmd = ShellCmd('''mysql -u %s --host %s --port %s -t zstack -e "select uuid,applianceVmType from ApplianceVmVO where status != 'Connected' limit %s"''' % (db_user, db_hostname, db_port, limit))
 
             cmd(False)
             if cmd.return_code != 0:
@@ -2129,13 +2019,12 @@ class ShowStatusCmd(Command):
                 info('version: %s' % colored('unknown, %s' % str(e).strip(), 'yellow'))
                 return
 
-            sql = "show tables like 'schema_version'"
-            cmd = ShellCmd(
-                mysql_shell_cmd(db_user, password=db_password, host=db_hostname, port=db_port, database='zstack',
-                                sql=sql, extra_args=['-t']),
-                display_cmd=mysql_shell_display_cmd(db_user, password=db_password, host=db_hostname, port=db_port,
-                                                    database='zstack', sql=sql, extra_args=['-t'])
-            )
+            if db_password:
+                cmd = ShellCmd('''mysql -u %s -p%s --host %s --port %s -t zstack -e "show tables like 'schema_version'"''' %
+                            (db_user, shell_quote(db_password), db_hostname, db_port))
+            else:
+                cmd = ShellCmd('''mysql -u %s --host %s --port %s -t zstack -e "show tables like 'schema_version'"''' %
+                            (db_user, db_hostname, db_port))
 
             cmd(False)
             if cmd.return_code != 0:
@@ -2397,19 +2286,18 @@ class DeployDBCmd(Command):
         if not os.path.exists(property_file_path):
             error('cannot find %s, your ZStack installation may have been corrupted, please reinstall it' % property_file_path)
 
-        root_password = args.root_password or ''
-        zstack_password = args.zstack_password or ''
-
-        check_existing_db_args = [
-            'mysql', '--user=root', '--host=%s' % args.host, '--port=%s' % args.port, '-e', 'use zstack'
-        ]
         if args.root_password:
-            check_existing_db_args.insert(2, '--password=%s' % args.root_password)
-        check_existing_db = shell_join(*check_existing_db_args)
+            check_existing_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "use zstack"' % (args.root_password, args.host, args.port)
+        else:
+            check_existing_db = 'mysql --user=root --host=%s --port=%s -e "use zstack"' % (args.host, args.port)
 
         self.update_db_config()
         cmd = ShellCmd(check_existing_db)
         cmd(False)
+        if not args.root_password:
+            args.root_password = "''"
+        if not args.zstack_password:
+            args.zstack_password = "''"
 
         if cmd.return_code == 0 and not args.drop:
             if args.keep_db:
@@ -2417,7 +2305,7 @@ class DeployDBCmd(Command):
             else:
                 raise CtlError('detected existing zstack database; if you are sure to drop it, please append parameter --drop or use --keep-db to keep the database')
         else:
-            cmd = ShellCmd(shell_join('bash', script_path, 'root', root_password, args.host, args.port, zstack_password))
+            cmd = ShellCmd('bash %s root %s %s %s %s' % (script_path, args.root_password, args.host, args.port, args.zstack_password))
             cmd(False)
             if cmd.return_code != 0:
                 if ('ERROR 1044' in cmd.stdout or 'ERROR 1044' in cmd.stderr) or ('Access denied' in cmd.stdout or 'Access denied' in cmd.stderr):
@@ -2430,9 +2318,12 @@ class DeployDBCmd(Command):
                     cmd.raise_error()
 
         if not args.no_update:
+            if args.zstack_password == "''":
+                args.zstack_password = ''
+
             properties = [
                 ("DB.user", "zstack"),
-                ("DB.password", zstack_password),
+                ("DB.password", args.zstack_password),
                 ("DB.url", 'jdbc:mysql://%s:%s' % (args.host, args.port)),
             ]
 
@@ -2481,26 +2372,20 @@ class DeployUIDBCmd(Command):
         if not os.path.exists(script_path):
             error('cannot find %s, your zstack installation may have been corrupted, please reinstall it' % script_path)
 
-        root_password = args.root_password or ''
-        zstack_ui_password = args.zstack_ui_password or ''
-
-        check_existing_db_args = [
-            'mysql', '--user=root', '--host=%s' % args.host, '--port=%s' % args.port, '-e', 'use zstack_ui'
-        ]
-        drop_mini_db_args = [
-            'mysql', '--user=root', '--host=%s' % args.host, '--port=%s' % args.port, '-e', 'DROP DATABASE IF EXISTS zstack_mini;'
-        ]
         if args.root_password:
-            password_arg = '--password=%s' % args.root_password
-            check_existing_db_args.insert(2, password_arg)
-            drop_mini_db_args.insert(2, password_arg)
-
-        check_existing_db = shell_join(*check_existing_db_args)
-        drop_mini_db = shell_join(*drop_mini_db_args)
+            check_existing_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "use zstack_ui"' % (args.root_password, args.host, args.port)
+            drop_mini_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "DROP DATABASE IF EXISTS zstack_mini;"' % (args.root_password, args.host, args.port)
+        else:
+            check_existing_db = 'mysql --user=root --host=%s --port=%s -e "use zstack_ui"' % (args.host, args.port)
+            drop_mini_db = 'mysql --user=root --host=%s --port=%s -e "DROP DATABASE IF EXISTS zstack_mini;"' % (args.host, args.port)
 
         self.update_db_config()
         cmd = ShellCmd(check_existing_db)
         cmd(False)
+        if not args.root_password:
+            args.root_password = "''"
+        if not args.zstack_ui_password:
+            args.zstack_ui_password = "''"
 
         if cmd.return_code == 0 and not args.drop:
             if args.keep_db:
@@ -2508,7 +2393,7 @@ class DeployUIDBCmd(Command):
             else:
                 raise CtlError('detected existing zstack_ui database; if you are sure to drop it, please append parameter --drop or use --keep-db to keep the database')
         else:
-            cmd = ShellCmd(shell_join('bash', script_path, 'root', root_password, args.host, args.port, zstack_ui_password))
+            cmd = ShellCmd('bash %s root %s %s %s %s' % (script_path, args.root_password, args.host, args.port, args.zstack_ui_password))
             cmd(False)
             if cmd.return_code != 0:
                 if ('ERROR 1044' in cmd.stdout or 'ERROR 1044' in cmd.stderr) or ('Access denied' in cmd.stdout or 'Access denied' in cmd.stderr):
@@ -2521,10 +2406,13 @@ class DeployUIDBCmd(Command):
                     cmd.raise_error()
 
         if not args.no_update:
+            if args.zstack_ui_password == "''":
+                args.zstack_ui_password = ''
+
             properties = [
                     ("db_url", 'jdbc:mysql://%s:%s' % (args.host, args.port)),
                     ("db_username", "zstack_ui"),
-                    ("db_password", zstack_ui_password),
+                    ("db_password", args.zstack_ui_password),
             ]
             ctl.write_ui_properties(properties)
         if args.drop:
@@ -3188,10 +3076,7 @@ class StartCmd(Command):
                 raise CtlError('unable to connect to %s:%s, please check if the MySQL is running and the firewall rules' % (db_hostname, db_port))
 
             with on_error('unable to connect to MySQL'):
-                shell(
-                    mysql_shell_cmd(db_user, password=db_password, host=db_hostname, port=db_port, sql='select 1'),
-                    display_cmd=mysql_shell_display_cmd(db_user, password=db_password, host=db_hostname, port=db_port, sql='select 1')
-                )
+                shell('mysql --host=%s --user=%s --password=%s --port=%s -e "select 1"' % (db_hostname, db_user, shell_quote(db_password), db_port))
 
             if args.mysql_process_list:
                 ctl.internal_run('mysql_process_list', '--check')
@@ -3599,12 +3484,8 @@ class MysqlProcessList(Command):
 
     def get_wait_timeout(self):
         (db_hostname, db_port, db_user, db_password) = ctl.get_live_mysql_portal()
-        mysql_cmd = mysql_shell_cmd(db_user, password=db_password, host=db_hostname, port=db_port,
-                                    sql="show variables where variable_name='wait_timeout'")
-        display_cmd = mysql_shell_display_cmd(db_user, password=db_password, host=db_hostname, port=db_port,
-                                              sql="show variables where variable_name='wait_timeout'")
-        sql = '''%s| grep wait_timeout| awk '{print $2}' ''' % mysql_cmd
-        (status, output, stderr) = shell_return_stdout_stderr(sql, display_cmd='''%s| grep wait_timeout| awk '{print $2}' ''' % display_cmd)
+        sql = '''mysql -u %s -p%s --host %s -P %s -e "show variables where variable_name='wait_timeout'"| grep wait_timeout| awk '{print $2}' ''' % (db_user, db_password, db_hostname, db_port)
+        (status, output, stderr) = shell_return_stdout_stderr(sql)
         if status != 0:
             error("get mysql wait timeout error")
         return output.strip('\n')
@@ -3627,16 +3508,8 @@ class MysqlProcessList(Command):
         self.check_argument(args)
 
         if args.check:
-            mysql_cmd = mysql_shell_cmd(
-                db_user, password=db_password, host=db_hostname, port=db_port,
-                sql="select count(*) from information_schema.processlist where command = 'Sleep' and time > (%s * 2)" % self.get_wait_timeout()
-            )
-            display_cmd = mysql_shell_display_cmd(
-                db_user, password=db_password, host=db_hostname, port=db_port,
-                sql="select count(*) from information_schema.processlist where command = 'Sleep' and time > (%s * 2)" % self.get_wait_timeout()
-            )
-            sql = "%s |awk 'NR>1' " % mysql_cmd
-            (status, output, stderr) = shell_return_stdout_stderr(sql, display_cmd="%s |awk 'NR>1' " % display_cmd)
+            sql = '''mysql -u %s -p%s --host %s -P %s -e "select count(*) from information_schema.processlist where command = 'Sleep' and time > (%s * 2)" |awk 'NR>1' ''' % (db_user, db_password, db_hostname, db_port, self.get_wait_timeout())
+            (status, output, stderr) = shell_return_stdout_stderr(sql)
             if status != 0:
                 error(stderr)
             if int(output.strip("\n")) > 0:
@@ -3645,18 +3518,17 @@ class MysqlProcessList(Command):
 
         if args.detail:
             if args.time:
-                query = "select * from information_schema.processlist where command = 'Sleep' and time > %s" % args.time
+                sql = '''mysql -u %s -p%s --host %s -P %s -e "select * from information_schema.processlist where command = 'Sleep' and time > %s''' % (db_user, db_password, db_hostname, db_port, args.time)
             else:
-                query = "select * from information_schema.processlist where command = 'Sleep' and time > (%s * 2)" % self.get_wait_timeout()
+                sql = '''mysql -u %s -p%s --host %s -P %s -e "select * from information_schema.processlist where command = 'Sleep' and time > (%s * 2)''' % (db_user, db_password, db_hostname, db_port, self.get_wait_timeout())
             if args.host:
-                query += " and host like '%%%s%%'" % args.host
+                sql = sql + " and host like'%" + args.host + "%'"
             if args.asc:
-                query += " order by time asc"
+                sql = sql + " order by time asc"
             if args.desc:
-                query += " order by time desc"
-            sql = mysql_shell_cmd(db_user, password=db_password, host=db_hostname, port=db_port, sql=query)
-            redacted_sql = mysql_shell_display_cmd(db_user, password=db_password, host=db_hostname, port=db_port, sql=query)
-            (status, output, stderr) = shell_return_stdout_stderr(sql, display_cmd=redacted_sql)
+                sql = sql + " order by time desc"
+            sql = sql + "\""
+            (status, output, stderr) = shell_return_stdout_stderr(sql)
             if status != 0:
                 error(stderr)
             if output == "":
@@ -3669,14 +3541,13 @@ class MysqlProcessList(Command):
 
         if args.kill:
             if args.time:
-                query = "select id from information_schema.processlist where command = 'Sleep' and time > %s" % args.time
+                sql = '''mysql -u %s -p%s --host %s -P %s -e "select id from information_schema.processlist where command = 'Sleep' and time > %s ''' % (db_user, db_password, db_hostname, db_port, args.time)
             else:
-                query = "select id from information_schema.processlist where command = 'Sleep' and time > (%s * 2)" % self.get_wait_timeout()
+                sql = '''mysql -u %s -p%s --host %s -P %s -e "select id from information_schema.processlist where command = 'Sleep' and time > (%s * 2) ''' % (db_user, db_password, db_hostname, db_port, self.get_wait_timeout())
             if args.host:
-                query += " and host like '%%%s%%'" % args.host
-            sql = "%s|awk 'NR>1'" % mysql_shell_cmd(db_user, password=db_password, host=db_hostname, port=db_port, sql=query)
-            redacted_sql = "%s|awk 'NR>1'" % mysql_shell_display_cmd(db_user, password=db_password, host=db_hostname, port=db_port, sql=query)
-            (status, output, stderr) = shell_return_stdout_stderr(sql, display_cmd=redacted_sql)
+                sql = sql + " and host like'%" + args.host + "%'"
+            sql = sql + "\"" + "|awk 'NR>1'"
+            (status, output, stderr) = shell_return_stdout_stderr(sql)
             if status != 0:
                 error(stderr)
             if output == "":
@@ -3691,9 +3562,8 @@ class MysqlProcessList(Command):
                         info("kill %d wait timeout connection" % count)
                     return
                 info(id)
-                sql = mysql_shell_cmd(db_user, password=db_password, host=db_hostname, port=db_port, sql="kill %s" % id)
-                redacted_sql = mysql_shell_display_cmd(db_user, password=db_password, host=db_hostname, port=db_port, sql="kill %s" % id)
-                (status, output, stderr) = shell_return_stdout_stderr(sql, display_cmd=redacted_sql)
+                sql = '''mysql -u %s -p%s --host %s -P %s -e "kill %s" ''' % (db_user, db_password, db_hostname, db_port, id)
+                (status, output, stderr) = shell_return_stdout_stderr(sql)
                 if status != 0:
                     error("kill mysql connection id[%s] error, because: %s" % (id, stderr))
                 count = count + 1
@@ -3701,24 +3571,10 @@ class MysqlProcessList(Command):
 
         else:
             if args.time:
-                sql = mysql_shell_cmd(
-                    db_user, password=db_password, host=db_hostname, port=db_port,
-                    sql="select count(*) as count from information_schema.processlist where command = 'Sleep' and time > %s" % args.time
-                )
-                redacted_sql = mysql_shell_display_cmd(
-                    db_user, password=db_password, host=db_hostname, port=db_port,
-                    sql="select count(*) as count from information_schema.processlist where command = 'Sleep' and time > %s" % args.time
-                )
+                sql = '''mysql -u %s -p%s --host %s -P %s -e "select count(*) as count from information_schema.processlist where command = 'Sleep' and time > %s" ''' % (db_user, db_password, db_hostname, db_port, args.time)
             else:
-                sql = mysql_shell_cmd(
-                    db_user, password=db_password, host=db_hostname, port=db_port,
-                    sql="select count(*) as count from information_schema.processlist where command = 'Sleep' and time > (%s * 2)" % self.get_wait_timeout()
-                )
-                redacted_sql = mysql_shell_display_cmd(
-                    db_user, password=db_password, host=db_hostname, port=db_port,
-                    sql="select count(*) as count from information_schema.processlist where command = 'Sleep' and time > (%s * 2)" % self.get_wait_timeout()
-                )
-            (status, output, stderr) = shell_return_stdout_stderr(sql, display_cmd=redacted_sql)
+                sql = '''mysql -u %s -p%s --host %s -P %s -e "select count(*) as count from information_schema.processlist where command = 'Sleep' and time > (%s * 2)" ''' % (db_user, db_password, db_hostname, db_port, self.get_wait_timeout())
+            (status, output, stderr) = shell_return_stdout_stderr(sql)
             if status != 0:
                 error(stderr)
             info(output)
@@ -4153,38 +4009,39 @@ class InstallDbCmd(Command):
         else:
             if not args.root_password:
                 args.root_password = args.login_password
-            escaped_root_password = mysql_sql_escape(args.root_password)
-            local_hostname = socket.gethostname()
-            more_cmd = "GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; ".format(root_pass=escaped_root_password)
-            more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'::1' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; ".format(root_pass=escaped_root_password)
-            more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; ".format(root_pass=escaped_root_password)
+            more_cmd = "GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; ".format(root_pass=args.root_password)
+            more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'::1' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; ".format(root_pass=args.root_password)
+            more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; ".format(root_pass=args.root_password)
             for ip in current_host_ips:
                 if not ip:
                     continue
-                more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{}' IDENTIFIED BY '{}' WITH GRANT OPTION;".format(ip, escaped_root_password)
-            grant_access_sql = '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
-                               '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{hostname}' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
+                more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{}' IDENTIFIED BY '{}' WITH GRANT OPTION;".format(ip, args.root_password)
+            grant_access_cmd = '''/usr/bin/mysql -u root -p{root_pass} -e '''\
+                               '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
+                               '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'$(hostname)' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
-                               '''{more_cmd} FLUSH PRIVILEGES;'''.format(root_pass=escaped_root_password, hostname=local_hostname, host=args.host, more_cmd=more_cmd)
-            grant_access_cmd = shell_join('/usr/bin/mysql', '-u', 'root', mysql_password_arg(args.root_password), '-e', grant_access_sql)
+                               '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'%%' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
+                               '''{more_cmd} FLUSH PRIVILEGES;"'''.format(root_pass=args.root_password, host=args.host, more_cmd=more_cmd)
             if args.choose_database == 'GreatDB':
                 more_cmd = ' '
+                grant_access_cmd = ' '
                 for ip in current_host_ips:
                     if not ip:
                         continue
-                    more_cmd += "CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '{root_pass}';".format(host=ip, root_pass=escaped_root_password)
+                    more_cmd += "CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '{root_pass}';".format(host=ip, root_pass=args.root_password)
                     more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;".format(host=ip)
-                grant_access_sql = '''CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED BY '{root_pass}';''' \
+                grant_access_cmd = '''/usr/bin/mysql -u root -p{root_pass} -e ''' \
+                                   '''"CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED BY '{root_pass}';''' \
                                    '''CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '{root_pass}';''' \
                                    '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;''' \
                                    '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;''' \
-                                   '''{more_cmd} FLUSH PRIVILEGES;'''.format(root_pass=escaped_root_password, host=args.host, more_cmd=more_cmd)
-                grant_access_cmd = shell_join('/usr/bin/mysql', '-u', 'root', mysql_password_arg(args.root_password), '-e', grant_access_sql)
+                                   '''{more_cmd} FLUSH PRIVILEGES;"'''.format(root_pass=args.root_password, host=args.host, more_cmd=more_cmd)
 
 
-        change_root_password_cmd = shell_join('/usr/bin/mysqladmin', '-u', 'root',
-                                              mysql_password_arg(args.login_password), 'password',
-                                              args.root_password or '')
+        if args.login_password is not None:
+            change_root_password_cmd = '/usr/bin/mysqladmin -u root -p{{login_password}} password {{root_password}}'
+        else:
+            change_root_password_cmd = '/usr/bin/mysqladmin -u root password {{root_password}}'
 
         pre_install_script = '''
 #!/bin/bash
@@ -6182,11 +6039,10 @@ class MysqlRestrictConnection(Command):
                             help='Set mysql restrict connection including root account')
 
     def check_root_password(self, root_password, remote_ip=None):
-        cmd_args = ['mysql', '-u', 'root', mysql_password_arg(root_password)]
         if remote_ip is not None:
-            cmd_args.extend(['-h', remote_ip])
-        cmd_args.extend(['-e', 'show databases;'])
-        cmd = ShellCmd(shell_join(*cmd_args))
+            cmd = ShellCmd("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
+        else:
+            cmd = ShellCmd("mysql -u root -p%s -e 'show databases;'" % root_password)
 
         cmd(False)
         if cmd.return_code != 0:
@@ -6224,26 +6080,7 @@ class MysqlRestrictConnection(Command):
         except Exception as e:
             return False
 
-    def execute_on_peer_with_ack(self, zsha2_utils, remote_cmd, action):
-        ack_token = str(uuid.uuid4())
-        ack_file = '/tmp/mysql_restrict_connection.%s.ack' % ack_token
-
-        zsha2_utils.execute_on_peer('%s && %s > %s' % (
-            remote_cmd,
-            shell_join('echo', ack_token),
-            shell_quote(ack_file),
-        ))
-
-        remote_ack = zsha2_utils.execute_on_peer(shell_join('cat', ack_file)).strip()
-        zsha2_utils.execute_on_peer(shell_join('rm', '-f', ack_file))
-        if remote_ack != ack_token:
-            error('failed to %s on peer node' % action)
-
     def grant_restrict_privilege(self, db_password, ui_db_password, root_password_, host, include_root):
-        db_password = mysql_sql_escape(db_password)
-        ui_db_password = mysql_sql_escape(ui_db_password)
-        root_password_ = mysql_sql_escape(root_password_)
-
         if self.check_greatsql_existence():
             grant_access_cmd = " DROP USER IF EXISTS 'zstack'@'%s';" % host
             grant_access_cmd += " DROP USER IF EXISTS 'zstack_ui'@'%s';" % host
@@ -6271,10 +6108,6 @@ class MysqlRestrictConnection(Command):
         return grant_access_cmd
 
     def grant_restore_privilege(self, db_password, ui_db_password, root_password_):
-        db_password = mysql_sql_escape(db_password)
-        ui_db_password = mysql_sql_escape(ui_db_password)
-        root_password_ = mysql_sql_escape(root_password_)
-
         if self.check_greatsql_existence():
             grant_access_cmd = (" DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%%';" \
                " DROP USER IF EXISTS 'zstack'@'%%'; CREATE USER 'zstack'@'%%' IDENTIFIED BY '%s';" \
@@ -6300,12 +6133,12 @@ class MysqlRestrictConnection(Command):
         return grant_access_cmd
 
     def grant_views_definer_privilege(self, root_password, remote_ip=None):
-        escaped_root_password = mysql_sql_escape(root_password)
-        cmd_args = ['mysql', '-N', '-u', 'root', mysql_password_arg(root_password)]
         if remote_ip is not None:
-            cmd_args.extend(['-h', remote_ip])
-        cmd_args.extend(['-e', 'select definer from information_schema.VIEWS where table_name like "%s" limit 1;' % "%VO"])
-        status, output = subprocess.getstatusoutput(shell_join(*cmd_args))
+            status, output = subprocess.getstatusoutput(
+                "mysql -N -u root -p%s -h '%s' -e 'select definer from information_schema.VIEWS where table_name like \"%s\" limit 1;'" % (root_password, remote_ip, "%VO"))
+        else:
+            status, output = subprocess.getstatusoutput(
+                "mysql -N -u root -p%s -e 'select definer from information_schema.VIEWS where table_name like \"%s\" limit 1;'" % (root_password, "%VO"))
 
 
         if status != 0:
@@ -6317,11 +6150,11 @@ class MysqlRestrictConnection(Command):
             result = filtered_output[-1]
             user, host = result.split("@")
             if self.check_greatsql_existence():
-                grant_access_sql = "USE mysql; CREATE USER IF NOT EXISTS '%s'@'%s' IDENTIFIED BY '%s';" % (user, host, escaped_root_password)
-                grant_access_sql += " GRANT ALL PRIVILEGES ON *.* TO '%s'@'%s' WITH GRANT OPTION;" % (user, host)
+                grant_access_sql = "USE mysql; CREATE USER IF NOT EXISTS '%s'@'%s' IDENTIFIED BY '%s';" % (user, host, root_password)
+                grant_access_sql += " GRANT ALL PRIVILEGES ON *.* TO '%s'@%s WITH GRANT OPTION;" % (user, host)
                 return grant_access_sql
             else:
-                return "USE mysql;  GRANT USAGE ON *.* TO '%s'@'%s' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (user, host, escaped_root_password)
+                return "USE mysql;  GRANT USAGE ON *.* TO '%s'@%s IDENTIFIED BY '%s' WITH GRANT OPTION;" % (user, host, root_password)
         return ""
 
     def run(self, args):
@@ -6331,7 +6164,7 @@ class MysqlRestrictConnection(Command):
         if args.restrict == False and args.restore == False:
             error("Must select a argument: '--restrict' or '--restore'")
 
-        root_password_ = args.root_password
+        root_password_ = ''.join(map(check_special_root, args.root_password))
         self.check_root_password(root_password_)
 
         db_host, db_port, db_user, db_password = self.get_db_portal()
@@ -6361,26 +6194,18 @@ class MysqlRestrictConnection(Command):
             grant_access_cmd = grant_access_cmd + " FLUSH PRIVILEGES;"
             grant_views_access_cmd = self.grant_views_definer_privilege(root_password_)
 
-            cmd_args = ['mysql', '-u', 'root', mysql_password_arg(root_password_), '-e',
-                        "%s %s" % (grant_views_access_cmd, grant_access_cmd)]
-            cmd = ShellCmd(shell_join(*cmd_args), display_cmd=mysql_shell_display_cmd('root', password=root_password_, sql="%s %s" % (grant_views_access_cmd, grant_access_cmd)))
+            cmd = ShellCmd('''mysql -u root -p%s -e "%s %s"''' % (root_password_, grant_views_access_cmd, grant_access_cmd))
             cmd(False)
             if cmd.return_code != 0:
-                error("grant error grant_access_cmd=%s\nstderr=%s" % (redact_mysql_sql(grant_access_cmd), cmd.stderr))
+                error("grant error grant_access_cmd=%s\nstderr=%s" % (grant_access_cmd, cmd.stderr))
 
             restrict_flags = "root" if args.include_root else "non-root"
             shell("echo %s > %s" % (restrict_flags, self.file))
 
             if is_ha:
                 remote_grant_views_access_cmd = self.grant_views_definer_privilege(root_password_, zsha2_utils.config['peerip'])
-                remote_mysql_cmd = shell_join('mysql', '-u', 'root', mysql_password_arg(root_password_), '-e',
-                                              "%s %s" % (remote_grant_views_access_cmd, grant_access_cmd))
-                remote_status_cmd = "%s > %s" % (shell_join('echo', restrict_flags), shell_quote(self.file))
-                self.execute_on_peer_with_ack(
-                    zsha2_utils,
-                    '%s && %s' % (remote_mysql_cmd, remote_status_cmd),
-                    'set mysql restrict connection',
-                )
+                zsha2_utils.execute_on_peer('''`mysql -u root -p%s -e "%s %s"` \n echo %s > %s''' % (
+                root_password_, remote_grant_views_access_cmd, grant_access_cmd, restrict_flags, self.file))
 
             info("Successfully set mysql restrict connection")
             return
@@ -6389,22 +6214,15 @@ class MysqlRestrictConnection(Command):
             grant_access_cmd = "USE mysql;"
             grant_access_cmd = grant_access_cmd + self.grant_restore_privilege(db_password, ui_db_password, root_password_) + " FLUSH PRIVILEGES;"
 
-            cmd = ShellCmd(
-                shell_join('mysql', '-u', 'root', mysql_password_arg(root_password_), '-e', grant_access_cmd),
-                display_cmd=mysql_shell_display_cmd('root', password=root_password_, sql=grant_access_cmd)
-            )
+            cmd = ShellCmd('''mysql -u root -p%s -e "%s"''' % (root_password_, grant_access_cmd))
             cmd(False)
             if cmd.return_code != 0:
-                error("grant error grant_access_cmd=%s\nstderr=%s" % (redact_mysql_sql(grant_access_cmd), cmd.stderr))
+                error("grant error grant_access_cmd=%s\nstderr=%s" % (grant_access_cmd, cmd.stderr))
             linux.rm_file_force(self.file)
 
             if is_ha:
-                remote_mysql_cmd = shell_join('mysql', '-u', 'root', mysql_password_arg(root_password_), '-e', grant_access_cmd)
-                self.execute_on_peer_with_ack(
-                    zsha2_utils,
-                    '%s && %s' % (remote_mysql_cmd, shell_join('rm', '-f', self.file)),
-                    'restore mysql restrict connection',
-                )
+                zsha2_utils.execute_on_peer(
+                    '''`mysql -u root -p%s -e "%s"`\n rm -f %s''' % (root_password_, grant_access_cmd, self.file))
 
             info("Successfully restore mysql restrict connection")
             return
@@ -6437,11 +6255,10 @@ class ChangeMysqlPasswordCmd(Command):
                             )
 
     def check_username_password(self, root_password, remote_ip):
-        cmd_args = ['mysql', '-u', 'root', mysql_password_arg(root_password)]
         if remote_ip is not None:
-            cmd_args.extend(['-h', remote_ip])
-        cmd_args.extend(['-e', 'show databases;'])
-        cmd = ShellCmd(shell_join(*cmd_args))
+            cmd = ShellCmd("mysql -u root -p%s -h '%s' -e 'show databases;'" % (root_password, remote_ip))
+        else:
+            cmd = ShellCmd("mysql -u root -p%s -e 'show databases;'" % root_password)
 
         cmd(False)
         if cmd.return_code != 0:
@@ -6450,10 +6267,9 @@ class ChangeMysqlPasswordCmd(Command):
     def get_mysql_user_hosts(self, user, root_password, remote_ip):
         if remote_ip is None:
             remote_ip = "localhost"
-        status, output = subprocess.getstatusoutput(shell_join(
-            'mysql', '-u', 'root', mysql_password_arg(root_password), '-h', remote_ip, 'mysql', '-BN', '-e',
-            "select Host from user where User='%s';" % user
-        ))
+        status, output = subprocess.getstatusoutput(
+            '''mysql -u root -p{root_pass} -h{remote_ip} mysql -BN -e \"select Host from user where User='{user}';\"''' \
+                    .format(root_pass=root_password, remote_ip=remote_ip, user=user))
         if status != 0:
             error(output)
 
@@ -6461,10 +6277,9 @@ class ChangeMysqlPasswordCmd(Command):
 
         # in mariadb 10.4, no grants user cannot change password
         for host in output.split("\n"):
-            status, output = subprocess.getstatusoutput(shell_join(
-                'mysql', '-u', 'root', mysql_password_arg(root_password), '-h', remote_ip, 'mysql', '-e',
-                "SHOW GRANTS FOR '%s'@'%s';" % (user, host)
-            ))
+            status, output = subprocess.getstatusoutput(
+                '''mysql -u root -p{root_pass} -h{remote_ip} mysql -e \"SHOW GRANTS FOR '{user}'@'{host}';\"'''\
+                    .format(root_pass=root_password, remote_ip=remote_ip, user=user, host=host))
             if status == 0:
                 hosts.append(host)
         return hosts
@@ -6479,8 +6294,8 @@ class ChangeMysqlPasswordCmd(Command):
 
     def run(self, args):
         info('Check greatsql existence: {}'.format(self.check_greatsql_existence()))
-        root_password_ = args.root_password
-        new_password_ = mysql_sql_escape(args.new_password)
+        root_password_ = ''.join(map(check_special_root, args.root_password))
+        new_password_ = ''.join(map(check_special_new, args.new_password))
         self.check_username_password(root_password_, args.remote_ip)
         if check_pswd_rules(args.new_password) == False:
             error("Failed! The password you entered doesn't meet the password policy requirements.\nA strong password must contain at least 8 characters in length, and include a combination of letters, numbers and special characters.")
@@ -6492,11 +6307,12 @@ class ChangeMysqlPasswordCmd(Command):
                 else:
                     set_password_sql += "SET PASSWORD FOR '{user}'@'{host}' = PASSWORD('{new_pass}');".format(user=args.user_name, host=host, new_pass=new_password_)
             set_password_sql += "FLUSH PRIVILEGES;"
-            cmd_args = ['mysql', '-u', 'root', mysql_password_arg(root_password_)]
             if args.remote_ip is not None:
-                cmd_args.extend(['-h', args.remote_ip])
-            cmd_args.extend(['-e', set_password_sql])
-            status, output = subprocess.getstatusoutput(shell_join(*cmd_args))
+                sql = '''mysql -u root -p{root_pass} -h '{ip}' -e "{sql}" '''.format(root_pass=root_password_, ip=args.remote_ip, sql=set_password_sql)
+            else:
+                sql = '''mysql -u root -p{root_pass} -e "{sql}" '''.format(root_pass=root_password_, sql=set_password_sql)
+
+            status, output = subprocess.getstatusoutput(sql)
             if status != 0:
                 error(output)
             info("Change mysql password for user '%s' successfully! " % args.user_name)
@@ -8068,8 +7884,7 @@ class ChangeIpCmd(Command):
         return shell("ip a | grep -w %s" % ip, False).strip().endswith("zs")
 
     def check_mysql_password(self, user, password):
-        cmd_args = ['mysql', '-u%s' % user, mysql_password_arg(password), '-e', 'show databases;']
-        cmd = ShellCmd(shell_join(*cmd_args), display_cmd=shell_join_redacted(*cmd_args))
+        cmd = ShellCmd("mysql -u%s -p%s -e 'show databases;'" % (user, password))
         cmd(False)
         if cmd.return_code != 0:
             error(cmd.stderr)
@@ -8084,9 +7899,6 @@ class ChangeIpCmd(Command):
     def restoreMysqlConnection(self, host, root_password):
         _, db_user, db_password = ctl.get_database_portal()
         _, ui_db_user, ui_db_password = ctl.get_ui_database_portal()
-        escaped_db_password = mysql_sql_escape(db_password)
-        escaped_ui_db_password = mysql_sql_escape(ui_db_password)
-        escaped_root_password = mysql_sql_escape(root_password)
 
         if db_user != "zstack":
             error("need to set 'DB.user = zstack' in zstack.properties when updating mysql restrict connection")
@@ -8100,8 +7912,8 @@ class ChangeIpCmd(Command):
             grant_access_cmd = " DELETE FROM user WHERE Host != 'localhost' AND Host != '127.0.0.1' AND Host != '::1' AND Host != '%';"
             grant_access_cmd += " DROP USER IF EXISTS 'zstack'@'%s';" % host
             grant_access_cmd += " DROP USER IF EXISTS 'zstack_ui'@'%s';" % host
-            grant_access_cmd += " CREATE USER 'zstack'@'%s' IDENTIFIED BY '%s';" % (host, escaped_db_password)
-            grant_access_cmd += " CREATE USER 'zstack_ui'@'%s' IDENTIFIED BY '%s';" % (host, escaped_ui_db_password)
+            grant_access_cmd += " CREATE USER 'zstack'@'%s' IDENTIFIED BY '%s';" % (host, db_password)
+            grant_access_cmd += " CREATE USER 'zstack_ui'@'%s' IDENTIFIED BY '%s';" % (host, ui_db_password)
             # ZSTAC-73639 When upgrading MN, flyway is called using the zstack@mn_ip and zstack_ui@_ip accounts to execute sql,
             # which contains some statements that must be SYSTEM_USER
             grant_access_cmd += " GRANT SYSTEM_USER ON *.* TO 'zstack'@'%s' WITH GRANT OPTION;" % host
@@ -8113,11 +7925,10 @@ class ChangeIpCmd(Command):
                            " GRANT USAGE ON *.* TO 'zstack'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
                            " GRANT USAGE ON *.* TO 'zstack_ui'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" \
                            " GRANT USAGE ON *.* TO 'root'@'%%' IDENTIFIED BY '%s' WITH GRANT OPTION;" % (
-                               escaped_db_password, escaped_ui_db_password, escaped_root_password)
+                               db_password, ui_db_password, root_password)
 
         grant_access_cmd = "USE mysql;" + grant_access_cmd + " FLUSH PRIVILEGES;"
-        cmd_args = ['mysql', '-u', 'root', mysql_password_arg(root_password), '-e', grant_access_cmd]
-        shell(shell_join(*cmd_args), display_cmd=mysql_shell_display_cmd('root', password=root_password, sql=grant_access_cmd))
+        shell('''mysql -u root -p%s -e "%s"''' % (root_password, grant_access_cmd))
 
     def checkMysqlConnection(self, mysql_ip, root_password):
         (status, output) = subprocess.getstatusoutput("cat %s/mysql_restrict_connection" % ctl.USER_ZSTACK_HOME_DIR)
@@ -8132,11 +7943,9 @@ class ChangeIpCmd(Command):
 
         self.restoreMysqlConnection(mysql_ip, root_password)
         if output == "non-root":
-            cmd_args = ['zstack-ctl', 'mysql_restrict_connection', '--root-password', root_password, '--restrict']
-            shell(shell_join(*cmd_args), display_cmd=shell_join_redacted(*cmd_args))
+            shell("zstack-ctl mysql_restrict_connection --root-password %s --restrict" % root_password)
         elif output == "root":
-            cmd_args = ['zstack-ctl', 'mysql_restrict_connection', '--root-password', root_password, '--restrict', '--include-root']
-            shell(shell_join(*cmd_args), display_cmd=shell_join_redacted(*cmd_args))
+            shell("zstack-ctl mysql_restrict_connection --root-password %s --restrict --include-root" % root_password)
 
         info("update mysql restrict connection successfully")
 
@@ -8220,7 +8029,7 @@ class ChangeIpCmd(Command):
         else:
             mysql_ip = args.ip
         if args.root_password is not None:
-            root_password_ = args.root_password
+            root_password_ = ''.join(map(check_special_root, args.root_password))
             self.check_mysql_password("root", root_password_)
 
         if check_ha():
@@ -9673,42 +9482,42 @@ class UpgradeDbCmd(Command):
 
             db_backup_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'db_backup', time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime()), 'backup.sql')
             shell('mkdir -p %s' % os.path.dirname(db_backup_path))
-            dump_args = ['mysqldump', '-u', db_user, '--host', db_hostname, '--port', str(db_port)]
             if db_password:
-                dump_args.append('-p%s' % db_password)
-            shell('%s > %s' % (
-                shell_join(*(dump_args + ['-d', 'zstack'])),
-                shell_quote(db_backup_path)
-            ))
-            shell('%s >> %s' % (
-                shell_join(*(dump_args + ['zstack'] + mysqldump_skip_tables.split())),
-                shell_quote(db_backup_path)
-            ))
+                shell('mysqldump -u %s -p\'%s\' --host %s --port %s -d zstack > %s' % (db_user, db_password, db_hostname, db_port, db_backup_path))
+                shell('mysqldump -u %s -p\'%s\' --host %s --port %s zstack %s >> %s' % (db_user, db_password, db_hostname, db_port, mysqldump_skip_tables, db_backup_path))
+            else:
+                shell('mysqldump -u %s --host %s --port %s -d zstack > %s' % (db_user, db_hostname, db_port, db_backup_path))
+                shell('mysqldump -u %s --host %s --port %s zstack %s >> %s' % (db_user, db_hostname, db_port, mysqldump_skip_tables, db_backup_path))
 
             info('successfully backup the database to %s' % db_backup_path)
 
         def create_schema_version_table_if_needed():
-            mysql_args = ['mysql', '-u', db_user, '--host', db_hostname, '--port', str(db_port), '-t', 'zstack']
             if db_password:
-                mysql_args.append('-p%s' % db_password)
-            out = shell(shell_join(*(mysql_args + ['-e', "show tables like 'schema_version'"])))
+                out = shell('''mysql -u %s -p%s --host %s --port %s -t zstack -e "show tables like 'schema_version'"''' %
+                            (db_user, db_password, db_hostname, db_port))
+            else:
+                out = shell('''mysql -u %s --host %s --port %s -t zstack -e "show tables like 'schema_version'"''' %
+                            (db_user, db_hostname, db_port))
 
             if 'schema_version' in out:
                 return
 
             info('version table "schema_version" is not existing; initializing a new version table first')
 
-            flyway_args = ['bash', flyway_path, 'baseline', '-baselineVersion=0.6',
-                           '-baselineDescription=0.6 version', '-user=%s' % db_user, '-url=%s' % db_url]
             if db_password:
-                flyway_args.insert(-1, '-password=%s' % db_password)
-            shell_no_pipe(shell_join(*flyway_args))
+                shell_no_pipe('bash %s baseline -baselineVersion=0.6 -baselineDescription="0.6 version" -user=%s -password=%s -url=%s' %
+                      (flyway_path, db_user, db_password, db_url))
+            else:
+                shell_no_pipe('bash %s baseline -baselineVersion=0.6 -baselineDescription="0.6 version" -user=%s -url=%s' %
+                      (flyway_path, db_user, db_url))
 
         def execute_sql(sql):
-            mysql_args = ['mysql', '-u', db_user, '--host', db_hostname, '--port', str(db_port), '-t', 'zstack']
             if db_password:
-                mysql_args.append('-p%s' % db_password)
-            shell(shell_join(*(mysql_args + ['-e', sql])))
+                shell('''mysql -u %s -p%s --host %s --port %s -t zstack -e "%s"''' %
+                            (db_user, db_password, db_hostname, db_port, sql))
+            else:
+                shell('''mysql -u %s --host %s --port %s -t zstack -e "%s"''' %
+                            (db_user, db_hostname, db_port, sql))
 
         def migrate():
             # set wait_timeout to 28800s(8 hours) to avoid 'MySQL has gone away' error
@@ -9718,11 +9527,12 @@ class UpgradeDbCmd(Command):
             try:
                 schema_path = 'filesystem:%s' % upgrading_schema_dir
 
-                flyway_args = ['bash', flyway_path, 'migrate', '-outOfOrder=true',
-                               '-user=%s' % db_user, '-url=%s' % db_url, '-locations=%s' % schema_path]
                 if db_password:
-                    flyway_args.insert(-2, '-password=%s' % db_password)
-                shell_no_pipe(shell_join(*flyway_args))
+                    shell_no_pipe('bash %s migrate -outOfOrder=true -user=%s -password=%s -url=%s -locations=%s' % (
+                    flyway_path, db_user, db_password, db_url, schema_path))
+                else:
+                    shell_no_pipe('bash %s migrate -outOfOrder=true -user=%s -url=%s -locations=%s' % (
+                    flyway_path, db_user, db_url, schema_path))
             except Exception as e:
                 sql = "update schema_version set checksum = 249136114 where script = 'V3.5.0.1__schema.sql' and checksum = -1670610242"
                 execute_sql(sql)
@@ -9798,46 +9608,42 @@ class UpgradeUIDbCmd(Command):
 
             db_backup_path = os.path.join(ctl.USER_ZSTACK_HOME_DIR, 'db_backup', time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime()), 'ui_backup.sql')
             shell('mkdir -p %s' % os.path.dirname(db_backup_path))
-            dump_args = ['mysqldump', '-u', db_user, '--host', db_hostname, '--port', str(db_port)]
             if db_password:
-                dump_args.append('-p%s' % db_password)
-            shell('%s > %s' % (
-                shell_join(*(dump_args + ['zstack_ui'])),
-                shell_quote(db_backup_path)
-            ))
+                shell('mysqldump -u %s -p%s --host %s --port %s zstack_ui > %s' % (db_user, db_password, db_hostname, db_port, db_backup_path))
+            else:
+                shell('mysqldump -u %s --host %s --port %s zstack_ui > %s' % (db_user, db_hostname, db_port, db_backup_path))
 
             info('successfully backup the zstack_ui database to %s' % db_backup_path)
 
         def create_schema_version_table_if_needed():
-            mysql_args = ['mysql', '-u', db_user, '--host', db_hostname, '--port', str(db_port), '-t', 'zstack_ui']
             if db_password:
-                mysql_args.append('-p%s' % db_password)
-            out = shell(shell_join(*(mysql_args + ['-e', "show tables like 'schema_version'"])))
+                out = shell('''mysql -u %s -p%s --host %s --port %s -t zstack_ui -e "show tables like 'schema_version'"''' %
+                            (db_user, db_password, db_hostname, db_port))
+            else:
+                out = shell('''mysql -u %s --host %s --port %s -t zstack_ui -e "show tables like 'schema_version'"''' %
+                            (db_user, db_hostname, db_port))
 
             if 'schema_version' in out:
                 return
 
             info('version table "schema_version" is not existing; initializing a new version table first')
 
-            flyway_args = ['bash', flyway_path, 'baseline', '-baselineVersion=2.3.1',
-                           '-baselineDescription=2.3.1 version', '-user=%s' % db_user, '-url=%s' % db_url]
             if db_password:
-                flyway_args.insert(-1, '-password=%s' % db_password)
-            shell_no_pipe(shell_join(*flyway_args))
+                shell_no_pipe('bash %s baseline -baselineVersion=2.3.1 -baselineDescription="2.3.1 version" -user=%s -password=%s -url=%s' %
+                      (flyway_path, db_user, db_password, db_url))
+            else:
+                shell_no_pipe('bash %s baseline -baselineVersion=2.3.1 -baselineDescription="2.3.1 version" -user=%s -url=%s' %
+                      (flyway_path, db_user, db_url))
 
         def migrate():
             schema_path = 'filesystem:%s' % upgrading_schema_dir
 
-            flyway_args = ['bash', flyway_path, 'migrate', '-outOfOrder=true',
-                           '-user=%s' % db_user, '-url=%s' % db_url, '-locations=%s' % schema_path]
             if db_password:
-                flyway_args.insert(-2, '-password=%s' % db_password)
-                migrate_script_args = ['bash', ctl.ZSTACK_UI_DB_MIGRATE_SH, db_user, db_password, db_hostname, db_port]
+                shell_no_pipe('bash %s migrate -outOfOrder=true -user=%s -password=%s -url=%s -locations=%s' % (flyway_path, db_user, db_password, db_url, schema_path))
+                shell_no_pipe('bash %s %s %s %s %s' % (ctl.ZSTACK_UI_DB_MIGRATE_SH,db_user,db_password, db_hostname,db_port))
             else:
-                migrate_script_args = ['bash', ctl.ZSTACK_UI_DB_MIGRATE_SH, db_user, 'zstack.ui.password', db_hostname, db_port]
-
-            shell_no_pipe(shell_join(*flyway_args))
-            shell_no_pipe(shell_join(*migrate_script_args))
+                shell_no_pipe('bash %s migrate -outOfOrder=true -user=%s -url=%s -locations=%s' % (flyway_path, db_user, db_url, schema_path))
+                shell_no_pipe('bash %s %s %s %s %s' % (ctl.ZSTACK_UI_DB_MIGRATE_SH,db_user,'zstack.ui.password', db_hostname,db_port))
 
             info('Successfully upgraded the zstack_ui database to the latest version.\n')
 
@@ -10093,8 +9899,10 @@ class RollbackDatabaseCmd(Command):
 
         host, port, _, _ = ctl.get_live_mysql_portal()
 
-        test_mysql_args = mysql_cmd_args('root', password=args.root_password, host=host, port=port, sql='select 1')
-        cmd = ShellCmd(shell_join(*test_mysql_args), display_cmd=shell_join_redacted(*test_mysql_args))
+        if args.root_password:
+            cmd = ShellCmd('mysql -u root -p%s --host %s --port %s -e "select 1"' % (args.root_password, host, port))
+        else:
+            cmd = ShellCmd('mysql -u root --host %s --port %s -e "select 1"' % (host, port))
 
         cmd(False)
         if cmd.return_code != 0:
@@ -10103,10 +9911,10 @@ class RollbackDatabaseCmd(Command):
 
         info('start to rollback the database ...')
 
-        rollback_mysql_args = mysql_cmd_args('root', password=args.root_password, host=host, port=port,
-                                             database='zstack', extra_args=['-t'])
-        shell('%s < %s' % (shell_join(*rollback_mysql_args), shell_quote(args.db_dump)),
-              display_cmd='%s < %s' % (shell_join_redacted(*rollback_mysql_args), shell_quote(args.db_dump)))
+        if args.root_password:
+            shell('mysql -u root -p%s --host %s --port %s -t zstack < %s' % (args.root_password, host, port, args.db_dump))
+        else:
+            shell('mysql -u root --host %s --port %s -t zstack < %s' % (host, port, args.db_dump))
 
         info('successfully rollback the database to the dump file %s' % args.db_dump)
 
@@ -10473,22 +10281,23 @@ def mysql(cmd, db_hostname = None):
     db_hostname = db_hostname or db_hostname_origin
     if db_hostname == "localhost" or db_hostname == "127.0.0.1" or (db_hostname in RestoreMysqlCmd.all_local_ip):
         db_hostname = ""
-    command = mysql_shell_cmd('zstack', password=db_password, host=db_hostname, port=db_port, database='zstack', sql=cmd)
-    display_cmd = mysql_shell_display_cmd('zstack', password=db_password, host=db_hostname, port=db_port, database='zstack', sql=cmd)
-    r, o, e = shell_return_stdout_stderr(command, display_cmd=display_cmd)
+    else:
+        db_hostname = "--host %s" % db_hostname
+    command = "mysql -uzstack --password=%s -P %s %s zstack -e \"%s\"" % (shell_quote(db_password), db_port, db_hostname, cmd)
+    r, o, e = shell_return_stdout_stderr(command)
     if r == 0:
         return o.strip()
     elif db_hostname != "":
         err = list()
-        err.append('failed to execute shell command: %s' % display_cmd)
+        err.append('failed to execute shell command: %s' % command)
         err.append('return code: %s' % r)
         err.append('stdout: %s' % o)
         err.append('stderr: %s' % e)
         raise CtlError('\n'.join(err))
     else:
-        command = mysql_shell_cmd('zstack', password=db_password, host=db_hostname_origin, port=db_port, database='zstack', sql=cmd)
-        display_cmd = mysql_shell_display_cmd('zstack', password=db_password, host=db_hostname_origin, port=db_port, database='zstack', sql=cmd)
-        return shell(command, display_cmd=display_cmd).strip()
+        db_hostname = "--host %s" % db_hostname_origin
+        command = "mysql -uzstack --password=%s -P %s %s zstack -e \"%s\"" % (shell_quote(db_password), db_port, db_hostname, cmd)
+        return shell(command).strip()
 
 
 class CleanAnsibleCacheCmd(Command):
@@ -10744,14 +10553,16 @@ class SetDeploymentCmd(Command):
         return '-Xmx%sG %s' % (heap, ' '.join(opts))
 
     def update_global_config(self, category, name, value):
-        sval = mysql_sql_escape(str(value).strip())
+        sval = str(value).strip()
 
         db_hostname, db_port, db_user, db_password = ctl.get_live_mysql_portal()
-        sql = "update GlobalConfigVO set value='%s' where name='%s' and category='%s'" % (sval, name, category)
-        cmd = ShellCmd(
-            mysql_shell_cmd(db_user, password=db_password, host=db_hostname, port=db_port, database='zstack', sql=sql),
-            display_cmd=mysql_shell_display_cmd(db_user, password=db_password, host=db_hostname, port=db_port, database='zstack', sql=sql)
-        )
+
+        if db_password:
+            cmd = ShellCmd('''mysql -u %s -p%s --host %s --port %s zstack -e "update GlobalConfigVO set value='%s' where name='%s' and category='%s'"'''
+                           % (db_user, shell_quote(db_password), db_hostname, db_port, sval, name, category))
+        else:
+            cmd = ShellCmd('''mysql -u %s --host %s --port %s zstack -e "update GlobalConfigVO set value='%s' where name='%s' and category='%s'"'''
+                           % (db_user, db_hostname, db_port, sval, name, category))
         cmd(False)
         if cmd.return_code != 0:
             raise CtlError('failed to update GlobalConfig %s.%s: %s' % (category, name, cmd.stderr))
