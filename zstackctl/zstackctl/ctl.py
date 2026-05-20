@@ -813,6 +813,16 @@ def shell_quote(s):
 def shell_join(*args):
     return ' '.join(shell_quote(arg) for arg in args if arg is not None)
 
+def yaml_single_quote(s):
+    # Wrap a string as a YAML single-quoted scalar. Required when a value is
+    # interpolated into the 'shell:' field of a generated Ansible playbook:
+    # a shell_join() result like "'a' 'b' 'c'" is several quoted scalars and
+    # is rejected by the YAML parser ("expected <block end>, but found
+    # '<scalar>'"). Wrapping it as one YAML scalar keeps the playbook valid;
+    # the YAML layer unquotes once, the shell layer unquotes again.
+    s = str(s)
+    return "'" + s.replace("'", "''") + "'"
+
 def mysql_sql_escape(s):
     s = str(s)
     return s.replace("\\", "\\\\").replace("'", "\\'")
@@ -4237,10 +4247,10 @@ exit 1
             yum_repo = 'false'
         yaml = t.substitute({
             'host': args.host,
-            'change_password_cmd': change_root_password_cmd,
+            'change_password_cmd': yaml_single_quote(change_root_password_cmd),
             'root_password': args.root_password,
             'login_password': args.login_password,
-            'grant_access_cmd': grant_access_cmd,
+            'grant_access_cmd': yaml_single_quote(grant_access_cmd),
             'pre_install_script': pre_install_script_path,
             'yum_folder': ctl.zstack_home,
             'yum_repo': yum_repo,
