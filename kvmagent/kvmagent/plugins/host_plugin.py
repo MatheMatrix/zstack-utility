@@ -129,6 +129,7 @@ class HostFactResponse(kvmagent.AgentResponse):
         self.osVersion = None
         self.osRelease = None
         self.qemuImgVersion = None
+        self.qemuKvmPackageVersion = None
         self.libvirtVersion = None
         self.hvmCpuFlag = None
         self.cpuModelName = None
@@ -1400,6 +1401,8 @@ class HostPlugin(kvmagent.KvmAgent):
                 rsp.powerSupplyMaxPowerCapacity = ''.join(re.findall(r'\d+', power_supply_max_power_capacity.strip()))
 
         rsp.qemuImgVersion = qemu_img_version
+        if self.IS_YUM:
+            rsp.qemuKvmPackageVersion = linux.get_rpm_version("qemu-kvm")
         rsp.libvirtVersion = self.libvirt_version
         rsp.libvirtPackageVersion = linux.get_libvirt_package_version()
         rsp.ipAddresses = ipV4Addrs
