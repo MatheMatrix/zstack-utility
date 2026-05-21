@@ -603,6 +603,13 @@ class VsCtl(object):
         if r != 0:
             raise Exception('failed to install OVS/OVN packages: %s' % e)
 
+        devbind = DevBindBin.strip()
+        if not os.path.exists(devbind):
+            r, o, e = bash.bash_roe("yum --disablerepo=* --enablerepo=zstack-local "
+                                    "--nogpgcheck install -y dpdk-tools")
+            if r != 0:
+                raise Exception('failed to install dpdk-tools: %s' % (e or o))
+
         # change ovs-vswitchd and ovn-controller user to root
         r, o, e = bash.bash_roe("sed -i 's/^OVS_USER_ID=\"openvswitch:hugetlbfs\"/"
                                 "OVS_USER_ID=\"root:root\"/' /etc/sysconfig/openvswitch")
