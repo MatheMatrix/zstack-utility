@@ -127,6 +127,19 @@ def test_build_cherrypy_socket_config_defaults_to_dual_stack_and_reads_env():
     }
 
 
+def test_extract_route_source_address_accepts_ipv4_and_ipv6_src_tokens():
+    assert network_ipv6.extract_route_source_address(
+        '10.0.0.1 via 10.0.0.254 dev eth0 src 10.0.0.10 uid 0'
+    ) == '10.0.0.10'
+    assert network_ipv6.extract_route_source_address(
+        '2001:db8::1 from :: dev eth0 src 2001:db8::10 metric 100'
+    ) == TEST_IPV6_ADDRESS
+    assert network_ipv6.extract_route_source_address(
+        '2001:db8::1 from :: dev eth0 src not-an-ip metric 100'
+    ) is None
+    assert network_ipv6.extract_route_source_address('default via 10.0.0.1 dev eth0') is None
+
+
 def test_reportable_agent_address_filter_rejects_loopback_link_local_and_zs():
     assert not network_ipv6.is_reportable_agent_address('127.0.0.1', 'lo')
     assert not network_ipv6.is_reportable_agent_address('::1', 'lo')

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import ipaddress
 import socket
 
 
@@ -20,6 +21,7 @@ DEFAULT_AGENT_THREAD_POOL = '10'
 CHERRYPY_SOCKET_HOST_KEY = 'server.socket_host'
 CHERRYPY_SOCKET_PORT_KEY = 'server.socket_port'
 CHERRYPY_THREAD_POOL_KEY = 'server.thread_pool'
+ROUTE_SOURCE_TOKEN = 'src'
 
 
 def get_agent_bind_ip(env=None):
@@ -63,6 +65,20 @@ def build_cherrypy_socket_config(port, env=None):
         CHERRYPY_SOCKET_PORT_KEY: port,
         CHERRYPY_THREAD_POOL_KEY: int(env.get(POOLSIZE_ENV, DEFAULT_AGENT_THREAD_POOL)),
     }
+
+
+def extract_route_source_address(route_output):
+    tokens = route_output.split() if route_output else []
+    for index, token in enumerate(tokens[:-1]):
+        if token != ROUTE_SOURCE_TOKEN:
+            continue
+        candidate = tokens[index + 1]
+        try:
+            ipaddress.ip_address(candidate)
+            return candidate
+        except ValueError:
+            return None
+    return None
 
 
 def is_reportable_agent_address(address, ifname):
