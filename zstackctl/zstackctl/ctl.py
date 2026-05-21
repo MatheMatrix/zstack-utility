@@ -23,6 +23,7 @@ from shutil import copyfile
 from shutil import rmtree
 
 from .utils import linux, lock
+from . import management_network_ipv6
 from .zstacklib import *
 from . import log_collector
 import jinja2
@@ -694,59 +695,31 @@ def expand_path(path):
         return os.path.abspath(path)
 
 def validate_ip(s):
-    for af in (socket.AF_INET, socket.AF_INET6):
-        try:
-            socket.inet_pton(af, s)
-            return True
-        except socket.error:
-            pass
-
-    return False
+    return management_network_ipv6.validate_ip(s)
 
 
 def ip_to_hostname(ip):
-    return ip.strip('[]').replace(':', '-').replace('.', '-')
+    return management_network_ipv6.ip_to_hostname(ip)
 
 
 def format_jdbc_host(ip):
-    if ip is None:
-        return ip
-    return '[%s]' % ip if ':' in ip and not ip.startswith('[') else ip
+    return management_network_ipv6.format_host_for_url_or_jdbc(ip)
 
 
 def format_url_host(ip):
-    if ip is None:
-        return ip
-    return '[%s]' % ip if ':' in ip and not ip.startswith('[') else ip
+    return management_network_ipv6.format_host_for_url_or_jdbc(ip)
 
 
 def get_ip_version(ip):
-    if not ip:
-        return None
-    ip = ip.strip('[]')
-    if not validate_ip(ip):
-        return None
-    return 6 if ':' in ip else 4
+    return management_network_ipv6.get_ip_version(ip)
 
 
 def extract_db_url_host(db_url):
-    ipv6_hosts = re.findall(r'\[([0-9a-fA-F:]+)\]', db_url)
-    if ipv6_hosts:
-        return ipv6_hosts[0]
-
-    ipv4_hosts = re.findall(r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost', db_url)
-    return ipv4_hosts[0] if ipv4_hosts else None
+    return management_network_ipv6.extract_db_url_host(db_url)
 
 
 def replace_db_url_host(db_url, new_host):
-    old_host = extract_db_url_host(db_url)
-    if old_host is None:
-        return db_url
-
-    if ':' in old_host:
-        return db_url.replace('[%s]' % old_host, format_jdbc_host(new_host), 1)
-
-    return db_url.replace(old_host, format_jdbc_host(new_host), 1)
+    return management_network_ipv6.replace_db_url_host(db_url, new_host)
 
 
 def check_host_info_format(host_info, with_public_key=False):

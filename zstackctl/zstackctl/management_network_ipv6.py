@@ -1,0 +1,63 @@
+# -*- coding: utf-8 -*-
+import re
+import socket
+
+
+IPV6_SEPARATOR = ':'
+IPV6_BRACKET_PREFIX = '['
+IPV6_BRACKET_SUFFIX = ']'
+HOSTNAME_SEPARATOR = '-'
+IPV4_SEPARATOR = '.'
+JDBC_IPV6_HOST_FORMAT = '[%s]'
+IPV6_DB_HOST_PATTERN = r'\[([0-9a-fA-F:]+)\]'
+IPV4_OR_LOCALHOST_DB_HOST_PATTERN = r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost'
+
+
+def validate_ip(value):
+    for address_family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            socket.inet_pton(address_family, value)
+            return True
+        except socket.error:
+            pass
+
+    return False
+
+
+def ip_to_hostname(ip):
+    return ip.strip('[]').replace(IPV6_SEPARATOR, HOSTNAME_SEPARATOR).replace(IPV4_SEPARATOR, HOSTNAME_SEPARATOR)
+
+
+def format_host_for_url_or_jdbc(ip):
+    if ip is None:
+        return ip
+    return JDBC_IPV6_HOST_FORMAT % ip if IPV6_SEPARATOR in ip and not ip.startswith(IPV6_BRACKET_PREFIX) else ip
+
+
+def get_ip_version(ip):
+    if not ip:
+        return None
+    ip = ip.strip('[]')
+    if not validate_ip(ip):
+        return None
+    return 6 if IPV6_SEPARATOR in ip else 4
+
+
+def extract_db_url_host(db_url):
+    ipv6_hosts = re.findall(IPV6_DB_HOST_PATTERN, db_url)
+    if ipv6_hosts:
+        return ipv6_hosts[0]
+
+    ipv4_hosts = re.findall(IPV4_OR_LOCALHOST_DB_HOST_PATTERN, db_url)
+    return ipv4_hosts[0] if ipv4_hosts else None
+
+
+def replace_db_url_host(db_url, new_host):
+    old_host = extract_db_url_host(db_url)
+    if old_host is None:
+        return db_url
+
+    if IPV6_SEPARATOR in old_host:
+        return db_url.replace(JDBC_IPV6_HOST_FORMAT % old_host, format_host_for_url_or_jdbc(new_host), 1)
+
+    return db_url.replace(old_host, format_host_for_url_or_jdbc(new_host), 1)
