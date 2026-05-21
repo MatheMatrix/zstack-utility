@@ -178,17 +178,12 @@ if [ $? -ne 0 ]; then
 fi
 
 if grep -qi 'Alibaba Cloud Linux' /etc/os-release 2>/dev/null; then
-    grep 'init-file=.*init_fk.sql' $mysql_conf >/dev/null 2>&1
-    if [ $? -ne 0 ]; then
-        echo "foreign_key_checks=0 via init-file (Alinux4 workaround)"
-        init_fk_dir=/var/lib/zstack
-        init_fk_file=$init_fk_dir/init_fk.sql
-        mkdir -p $init_fk_dir
-        echo "SET GLOBAL foreign_key_checks=0;" > $init_fk_file
-        chown mysql:mysql $init_fk_file
-        chmod 644 $init_fk_file
-        sed -i "/\[mysqld\]/a init-file=$init_fk_file" $mysql_conf
+    grep -E '^[[:space:]]*init-file[[:space:]]*=.*init_fk\.sql' $mysql_conf >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        echo "remove obsolete foreign_key_checks init-file workaround"
+        sed -i '\#^[[:space:]]*init-file[[:space:]]*=.*init_fk\.sql#d' $mysql_conf
     fi
+    rm -f /var/lib/zstack/init_fk.sql /var/lib/mysql/init_fk.sql
 fi
 
 if [[ $DB_VERSION == *"GreatSQL"* ]]; then
