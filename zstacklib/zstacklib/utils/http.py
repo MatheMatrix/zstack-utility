@@ -15,6 +15,7 @@ import urllib3
 from zstacklib.utils import jsonobject
 from zstacklib.utils import log
 from zstacklib.utils import linux
+from zstacklib.utils import network_ipv6
 from zstacklib.utils import debug
 
 TASK_UUID = 'taskuuid'
@@ -303,7 +304,7 @@ class HttpServer(object):
 
         cherrypy.engine.autoreload.unsubscribe()
         site_config = {}
-        site_config['server.socket_host'] = os.getenv('AGENT_BIND_IP', '::')
+        site_config['server.socket_host'] = network_ipv6.get_agent_bind_ip()
         site_config['server.socket_port'] = self.port
         site_config['server.thread_pool'] = int(os.getenv('POOLSIZE', '10'))
 

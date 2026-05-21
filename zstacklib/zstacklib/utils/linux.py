@@ -40,6 +40,7 @@ from zstacklib.utils import xmlobject
 from zstacklib.utils import shell
 from zstacklib.utils import log
 from zstacklib.utils import iproute
+from zstacklib.utils import network_ipv6
 
 
 logger = log.get_logger(__name__)
@@ -2485,8 +2486,8 @@ def tcp_port_is_free(port):
     try:
         sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-        sock.bind(('::', port))
+        network_ipv6.configure_dual_stack_socket(sock)
+        sock.bind((network_ipv6.DUAL_STACK_BIND_ADDRESS, port))
         sock.close()
         return True
     except socket.error:
@@ -2520,7 +2521,7 @@ def check_socket_available(host, port, timeout=10):
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
-            family = socket.AF_INET6 if ':' in host else socket.AF_INET
+            family = network_ipv6.get_socket_family(host)
             sock = socket.socket(family, socket.SOCK_STREAM)
             result = sock.connect_ex((host, port))
             sock.close()
@@ -2534,8 +2535,8 @@ def check_socket_available(host, port, timeout=10):
 def is_port_available(port):
     with contextlib.closing(socket.socket(socket.AF_INET6, socket.SOCK_STREAM)) as s:
         try:
-            s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-            s.bind(('::', int(port)))
+            network_ipv6.configure_dual_stack_socket(s)
+            s.bind((network_ipv6.DUAL_STACK_BIND_ADDRESS, int(port)))
             return True
         except:
             with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as ipv4_sock:

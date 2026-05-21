@@ -29,6 +29,7 @@ from zstacklib.utils import http, lvm, ceph, pci, gpu
 from zstacklib.utils import qemu
 from zstacklib.utils import iptables
 from zstacklib.utils import iproute
+from zstacklib.utils import network_ipv6
 from zstacklib.utils import ebtables
 from zstacklib.utils import jsonobject
 from zstacklib.utils import lock
@@ -1353,10 +1354,7 @@ class HostPlugin(kvmagent.KvmAgent):
         qemu_img_version = shell.call(
             "qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1")
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
-        ip_addrs = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if
-                                         x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
-        ip_addrs.extend([chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=6) if
-                                         x.address != '::1' and not x.address.startswith('fe80:') and not x.ifname.endswith('zs')]])
+        ip_addrs = network_ipv6.collect_reportable_agent_addresses(iproute)
 
 
         def run_dmidecode(cmd, default=''):
