@@ -303,7 +303,7 @@ class HttpServer(object):
 
         cherrypy.engine.autoreload.unsubscribe()
         site_config = {}
-        site_config['server.socket_host'] = '0.0.0.0'
+        site_config['server.socket_host'] = os.getenv('AGENT_BIND_IP', '::')
         site_config['server.socket_port'] = self.port
         site_config['server.thread_pool'] = int(os.getenv('POOLSIZE', '10'))
 

@@ -12,7 +12,8 @@ def check_remote_port_whether_open(remote_addr, remote_port):
     :rtype: boolean
     """
 
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    family = socket.AF_INET6 if ':' in remote_addr else socket.AF_INET
+    s = socket.socket(family, socket.SOCK_STREAM)
     ret = s.connect_ex((remote_addr, remote_port))
 
     return ret == 0

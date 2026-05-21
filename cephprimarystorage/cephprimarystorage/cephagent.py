@@ -691,6 +691,7 @@ class CephAgent(plugin.TaskManager):
         rsp.type = ceph.get_ceph_manufacturer()
 
         ip_addresses = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
+        ip_addresses.extend([chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=6) if x.address != '::1' and not x.address.startswith('fe80:') and not x.ifname.endswith('zs')]])
         rsp.ipAddresses = ip_addresses
 
         return jsonobject.dumps(rsp)

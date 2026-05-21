@@ -1353,8 +1353,10 @@ class HostPlugin(kvmagent.KvmAgent):
         qemu_img_version = shell.call(
             "qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1")
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
-        ipV4Addrs = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if
+        ip_addrs = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if
                                          x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
+        ip_addrs.extend([chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=6) if
+                                         x.address != '::1' and not x.address.startswith('fe80:') and not x.ifname.endswith('zs')]])
 
 
         def run_dmidecode(cmd, default=''):
@@ -1400,7 +1402,7 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.qemuImgVersion = qemu_img_version
         rsp.libvirtVersion = self.libvirt_version
         rsp.libvirtPackageVersion = linux.get_libvirt_package_version()
-        rsp.ipAddresses = ipV4Addrs
+        rsp.ipAddresses = ip_addrs
         rsp.cpuArchitecture = platform.machine()
         rsp.uptime = shell.call('uptime -s').strip()
         rsp.iscsiInitiatorName = linux.get_iscsi_initiator_name()

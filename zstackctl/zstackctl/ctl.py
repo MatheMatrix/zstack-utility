@@ -694,16 +694,59 @@ def expand_path(path):
         return os.path.abspath(path)
 
 def validate_ip(s):
-    a = s.split('.')
-    if len(a) != 4:
-        return False
-    for x in a:
-        if not x.isdigit():
-            return False
-        i = int(x)
-        if i < 0 or i > 255:
-            return False
-    return True
+    for af in (socket.AF_INET, socket.AF_INET6):
+        try:
+            socket.inet_pton(af, s)
+            return True
+        except socket.error:
+            pass
+
+    return False
+
+
+def ip_to_hostname(ip):
+    return ip.strip('[]').replace(':', '-').replace('.', '-')
+
+
+def format_jdbc_host(ip):
+    if ip is None:
+        return ip
+    return '[%s]' % ip if ':' in ip and not ip.startswith('[') else ip
+
+
+def format_url_host(ip):
+    if ip is None:
+        return ip
+    return '[%s]' % ip if ':' in ip and not ip.startswith('[') else ip
+
+
+def get_ip_version(ip):
+    if not ip:
+        return None
+    ip = ip.strip('[]')
+    if not validate_ip(ip):
+        return None
+    return 6 if ':' in ip else 4
+
+
+def extract_db_url_host(db_url):
+    ipv6_hosts = re.findall(r'\[([0-9a-fA-F:]+)\]', db_url)
+    if ipv6_hosts:
+        return ipv6_hosts[0]
+
+    ipv4_hosts = re.findall(r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost', db_url)
+    return ipv4_hosts[0] if ipv4_hosts else None
+
+
+def replace_db_url_host(db_url, new_host):
+    old_host = extract_db_url_host(db_url)
+    if old_host is None:
+        return db_url
+
+    if ':' in old_host:
+        return db_url.replace('[%s]' % old_host, format_jdbc_host(new_host), 1)
+
+    return db_url.replace(old_host, format_jdbc_host(new_host), 1)
 
 
 def check_host_info_format(host_info, with_public_key=False):
@@ -1660,13 +1703,24 @@ class Zsha2Utils(object):
         self.config = simplejson.loads(o)
         self.statusConfig = simplejson.loads(out)
         self.ssh_exec_user = self.config.get('execUser', getpass.getuser())
-        self.master = shell_return("ip addr show %s | grep -q '[^0-9]%s[^0-9]'"
+        self.validate_ip_versions()
+        self.master = shell_return("ip addr show %s | grep -q ' %s/'"
                                    % (self.config['nic'], self.config['dbvip'])) == 0
         try:
             if self.statusConfig['peerReachable']:
                 self.execute_on_peer("echo 1 > /dev/null")
         except:
             error('cannot ssh peer node with sshkey')
+
+    def validate_ip_versions(self):
+        versions = set()
+        for name in ('nodeip', 'peerip', 'dbvip'):
+            version = get_ip_version(self.config.get(name, ''))
+            if version is not None:
+                versions.add(version)
+
+        if len(versions) > 1:
+            error('zsha2 nodeip, peerip and dbvip must use the same IP version')
 
     def execute_on_peer(self, cmd, useSudo=False):
         remote_path = '/tmp/%s.sh' % uuid.uuid4()
@@ -1685,7 +1739,7 @@ class Zsha2Utils(object):
 
     def scp_to_peer(self, src_path, dst_path):
         shell("sudo -u %s scp -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no %s %s:%s" % (
-            self.ssh_exec_user, src_path, self.config['peerip'], "/tmp/dst_path"))
+            self.ssh_exec_user, src_path, format_url_host(self.config['peerip']), "/tmp/dst_path"))
         self.execute_on_peer("mv %s %s" % ("/tmp/dst_path", dst_path), True)
 
 
@@ -7869,9 +7923,8 @@ class ChangeIpCmd(Command):
             error("please change to single management before change ip")
 
         zstack_conf_file = ctl.properties_file_path
-        ip_check = re.compile('^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
         for input_ip in [cloudbus_server_ip, mysql_ip]:
-            if not ip_check.match(input_ip):
+            if not validate_ip(input_ip):
                 info("The ip address you input: %s seems not a valid ip" % input_ip)
                 return 1
             if self.isVirtualIp(input_ip):
@@ -7882,13 +7935,13 @@ class ChangeIpCmd(Command):
         if os.path.isfile(zstack_conf_file):
             old_ip = ctl.read_property('management.server.ip')
             if old_ip is not None:
-                if not ip_check.match(old_ip):
+                if not validate_ip(old_ip):
                     info("The ip address[%s] read from [%s] seems not a valid ip" % (old_ip, zstack_conf_file))
                     return 1
 
             # read from env other than /etc/hostname in case of impact of DHCP SERVER
             old_hostname = shell("hostname").replace("\n","")
-            new_hostname = args.ip.replace(".","-")
+            new_hostname = ip_to_hostname(args.ip)
             if old_hostname != "localhost" and old_hostname != "localhost.localdomain":
                new_hostname = old_hostname
 
@@ -7937,9 +7990,9 @@ class ChangeIpCmd(Command):
 
             # update zstack db url
             db_url = ctl.read_property('DB.url')
-            db_old_ip = re.findall(r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost', db_url)
-            if not self.isVirtualIp(db_old_ip[0]) and not db_old_ip[0] == ctl.read_property('management.server.vip'):
-                db_new_url = db_url.split(db_old_ip[0])[0] + mysql_ip + db_url.split(db_old_ip[0])[1]
+            db_old_ip = extract_db_url_host(db_url)
+            if db_old_ip is not None and not self.isVirtualIp(db_old_ip) and not db_old_ip == ctl.read_property('management.server.vip'):
+                db_new_url = replace_db_url_host(db_url, mysql_ip)
                 ctl.write_properties([
                     ('DB.url', db_new_url),
                 ])
@@ -7948,9 +8001,9 @@ class ChangeIpCmd(Command):
             # update zstack_ui db url
             if os.path.isfile(ctl.ui_properties_file_path):
                 db_url = ctl.read_ui_property('db_url')
-                db_old_ip = re.findall(r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost', db_url)
-                if not self.isVirtualIp(db_old_ip[0]) and not db_old_ip[0] == ctl.read_property('management.server.vip'):
-                    db_new_url = db_url.split(db_old_ip[0])[0] + mysql_ip + db_url.split(db_old_ip[0])[1]
+                db_old_ip = extract_db_url_host(db_url)
+                if db_old_ip is not None and not self.isVirtualIp(db_old_ip) and not db_old_ip == ctl.read_property('management.server.vip'):
+                    db_new_url = replace_db_url_host(db_url, mysql_ip)
                     ctl.write_ui_properties([
                         ('db_url', db_new_url),
                     ])
@@ -11832,7 +11885,7 @@ class IamService(ExtraService):
 
         with open(template_path, "r") as f:
             content = f.read()
-        content = content.replace("{{MN1_IP}}", self.zsha2_utils.config['nodeip']).replace("{{MN2_IP}}", self.zsha2_utils.config['peerip']).replace("{{LISTEN_PORT}}", str(self.default_nginx_port))
+        content = content.replace("{{MN1_IP}}", format_url_host(self.zsha2_utils.config['nodeip'])).replace("{{MN2_IP}}", format_url_host(self.zsha2_utils.config['peerip'])).replace("{{LISTEN_PORT}}", str(self.default_nginx_port))
 
         with open(conf_path, "w") as f:
             f.write(content)
@@ -11855,9 +11908,9 @@ class IamService(ExtraService):
 
     def post_start_log(self):
         if self.zsha2_utils:
-            info("IAM service has been started in HA mode. Access it at: http://%s:%s" % (self.zsha2_utils.config['dbvip'], self.default_nginx_port))
+            info("IAM service has been started in HA mode. Access it at: http://%s:%s" % (format_url_host(self.zsha2_utils.config['dbvip']), self.default_nginx_port))
         else:
-            info("IAM service has been started. Access it at: http://%s:%s" % (get_default_ip(), self.default_port))
+            info("IAM service has been started. Access it at: http://%s:%s" % (format_url_host(get_default_ip()), self.default_port))
 
     def _wait_for_keycloak(self, url, timeout=600):
         info_and_debug("Waiting for %s to become available at: %s" % (self.service_name(), url))
@@ -12023,7 +12076,7 @@ WantedBy=multi-user.target
 
     def start(self, do_init=False):
         shell_no_pipe("systemctl start %s" % self.service_name())
-        self._wait_for_morph("http://%s:%d/actuator/health" % (self.default_ip, self.default_port))
+        self._wait_for_morph("http://%s:%d/actuator/health" % (format_url_host(self.default_ip), self.default_port))
         if self.zsha2_utils:
             self.zsha2_utils.execute_on_peer("systemctl start %s" % self.service_name())
 

@@ -2483,13 +2483,21 @@ def get_free_port_in_range(start_port, end_port):
 
 def tcp_port_is_free(port):
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(('', port))
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        sock.bind(('::', port))
         sock.close()
         return True
     except socket.error:
-        return False
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(('', port))
+            sock.close()
+            return True
+        except socket.error:
+            return False
 
 def find_free_port_with_locking(start_port, end_port):
     keep_lock = False
@@ -2512,7 +2520,8 @@ def check_socket_available(host, port, timeout=10):
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            family = socket.AF_INET6 if ':' in host else socket.AF_INET
+            sock = socket.socket(family, socket.SOCK_STREAM)
             result = sock.connect_ex((host, port))
             sock.close()
             if result == 0:
@@ -2523,12 +2532,18 @@ def check_socket_available(host, port, timeout=10):
     return False
 
 def is_port_available(port):
-    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+    with contextlib.closing(socket.socket(socket.AF_INET6, socket.SOCK_STREAM)) as s:
         try:
-            s.bind(('', int(port)))
+            s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            s.bind(('::', int(port)))
             return True
         except:
-            return False
+            with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as ipv4_sock:
+                try:
+                    ipv4_sock.bind(('', int(port)))
+                    return True
+                except:
+                    return False
 
 def get_all_ethernet_device_names():
     return os.listdir('/sys/class/net/')
