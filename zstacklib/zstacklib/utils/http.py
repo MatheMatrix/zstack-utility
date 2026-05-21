@@ -10,7 +10,6 @@ import cherrypy
 from . import thread
 import threading
 
-import os
 import urllib3
 from zstacklib.utils import jsonobject
 from zstacklib.utils import log
@@ -303,10 +302,7 @@ class HttpServer(object):
         self.server_conf = {'request.dispatch': self.mapper}
 
         cherrypy.engine.autoreload.unsubscribe()
-        site_config = {}
-        site_config['server.socket_host'] = network_ipv6.get_agent_bind_ip()
-        site_config['server.socket_port'] = self.port
-        site_config['server.thread_pool'] = int(os.getenv('POOLSIZE', '10'))
+        site_config = network_ipv6.build_cherrypy_socket_config(self.port)
 
         # Set the socket connect timeout to 15 seconds, keeping it consistent with the default value of the control plane.
         site_config['server.socket_timeout'] = 15

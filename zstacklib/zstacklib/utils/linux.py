@@ -2486,15 +2486,14 @@ def tcp_port_is_free(port):
     try:
         sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        network_ipv6.configure_dual_stack_socket(sock)
-        sock.bind((network_ipv6.DUAL_STACK_BIND_ADDRESS, port))
+        network_ipv6.bind_dual_stack_probe_socket(sock, port)
         sock.close()
         return True
     except socket.error:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(('', port))
+            network_ipv6.bind_ipv4_probe_socket(sock, port)
             sock.close()
             return True
         except socket.error:
@@ -2521,8 +2520,7 @@ def check_socket_available(host, port, timeout=10):
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
-            family = network_ipv6.get_socket_family(host)
-            sock = socket.socket(family, socket.SOCK_STREAM)
+            sock = network_ipv6.create_tcp_socket_for_host(host)
             result = sock.connect_ex((host, port))
             sock.close()
             if result == 0:
@@ -2535,13 +2533,12 @@ def check_socket_available(host, port, timeout=10):
 def is_port_available(port):
     with contextlib.closing(socket.socket(socket.AF_INET6, socket.SOCK_STREAM)) as s:
         try:
-            network_ipv6.configure_dual_stack_socket(s)
-            s.bind((network_ipv6.DUAL_STACK_BIND_ADDRESS, int(port)))
+            network_ipv6.bind_dual_stack_probe_socket(s, port)
             return True
         except:
             with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as ipv4_sock:
                 try:
-                    ipv4_sock.bind(('', int(port)))
+                    network_ipv6.bind_ipv4_probe_socket(ipv4_sock, port)
                     return True
                 except:
                     return False
