@@ -3,6 +3,7 @@
 import argparse
 import datetime
 from distutils.version import LooseVersion
+import fcntl
 import os
 import re
 from uuid import uuid4
@@ -220,7 +221,10 @@ def deploy_libvirt_tls_certs(host_post_info):
         "  -CAcreateserial -out {tmp}/clientcert.pem "
         "  -extfile <(printf 'subjectAltName={san}')"
     ).format(tmp=cert_tmp_dir, ca_dir=ca_dir, ip=host_ip, san=san_entries)
-    shell_return = os.system("bash -c '%s'" % command.replace("'", "'\\''"))
+    srl_lock_path = "%s/cacert.srl.lock" % ca_dir
+    with open(srl_lock_path, 'a') as lock_f:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        shell_return = os.system("bash -c '%s'" % command.replace("'", "'\\''"))
     if shell_return != 0:
         error("Failed to generate TLS certs for host %s, cannot continue without certificates" % host_ip)
 
