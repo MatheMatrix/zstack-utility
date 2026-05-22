@@ -687,13 +687,7 @@ class HostNetworkInterfaceInventory(object):
         output = subprocess.check_output(
             ['ip', 'r', 'get', ip_addr]).decode('utf-8')
 
-        pattern = r'src ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
-        match = re.search(pattern, output)
-        if match:
-            src_addr = match.group(1)
-            return src_addr
-        else:
-            return None
+        return network_ipv6.extract_route_source_address(output)
 
 
 class GetNumaTopologyResponse(kvmagent.AgentResponse):
