@@ -4617,6 +4617,12 @@ class InstallHACmd(Command):
             args.host3 = host3_connect_info_list[2]
             args.host3_password = host3_connect_info_list[1]
 
+        ha_ips = [args.host1, args.host2, args.vip]
+        if args.host3_info is not False:
+            ha_ips.append(args.host3)
+        if management_network_ipv6.has_mixed_ip_versions(ha_ips):
+            error("HA nodes must use the same IP version (both IPv4, both IPv6, or both dual-stack)")
+
         # check root password is available
         if args.host1_password != args.host2_password:
             error("Host1 password and Host2 password must be the same, Please change one of them!")

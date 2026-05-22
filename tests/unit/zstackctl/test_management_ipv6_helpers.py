@@ -21,9 +21,22 @@ def test_format_hosts_bracket_ipv6_and_keep_ipv4_unchanged():
 
 
 def test_get_ip_version_accepts_bracketed_ipv6():
-    assert management_network_ipv6.get_ip_version('192.168.10.10') == 4
-    assert management_network_ipv6.get_ip_version('[2001:db8::10]') == 6
+    assert management_network_ipv6.get_ip_version('192.168.10.10') == management_network_ipv6.IPV4_VERSION
+    assert management_network_ipv6.get_ip_version('[2001:db8::10]') == management_network_ipv6.IPV6_VERSION
     assert management_network_ipv6.get_ip_version('invalid') is None
+
+
+def test_has_mixed_ip_versions_detects_ha_node_mismatch():
+    assert management_network_ipv6.has_mixed_ip_versions([
+        '192.168.10.10',
+        '2001:db8::10',
+        '192.168.10.20',
+    ])
+    assert not management_network_ipv6.has_mixed_ip_versions([
+        '2001:db8::10',
+        '[2001:db8::11]',
+        'ha-node-name',
+    ])
 
 
 def test_extract_db_url_host_reads_ipv4_ipv6_and_localhost():
