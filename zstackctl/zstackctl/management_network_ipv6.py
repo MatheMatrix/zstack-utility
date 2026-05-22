@@ -8,6 +8,8 @@ IPV6_BRACKET_PREFIX = '['
 IPV6_BRACKET_SUFFIX = ']'
 HOSTNAME_SEPARATOR = '-'
 IPV4_SEPARATOR = '.'
+IPV4_VERSION = 4
+IPV6_VERSION = 6
 JDBC_IPV6_HOST_FORMAT = '[%s]'
 IPV6_DB_HOST_PATTERN = r'\[([0-9a-fA-F:]+)\]'
 IPV4_OR_LOCALHOST_DB_HOST_PATTERN = r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost'
@@ -40,7 +42,17 @@ def get_ip_version(ip):
     ip = ip.strip('[]')
     if not validate_ip(ip):
         return None
-    return 6 if IPV6_SEPARATOR in ip else 4
+    return IPV6_VERSION if IPV6_SEPARATOR in ip else IPV4_VERSION
+
+
+def has_mixed_ip_versions(ips):
+    versions = set()
+    for ip in ips:
+        version = get_ip_version(ip)
+        if version is not None:
+            versions.add(version)
+
+    return len(versions) > 1
 
 
 def extract_db_url_host(db_url):
