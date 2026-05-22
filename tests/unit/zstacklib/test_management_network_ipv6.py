@@ -3,12 +3,14 @@ import socket
 
 from zstacklib.utils import linux
 from zstacklib.utils import network_ipv6
+from zstacklib.utils import ceph as ceph_utils
 
 TEST_IPV4_ADDRESS = '192.168.10.10'
 TEST_IPV6_ADDRESS = '2001:db8::10'
 TEST_HOSTNAME = 'zstack-mn.example.com'
 TEST_PORT = 7070
 TEST_POOL_SIZE = '32'
+TEST_CEPH_PORT = 6789
 
 
 class FakeAddress(object):
@@ -169,3 +171,11 @@ def test_collect_reportable_agent_addresses_queries_ipv4_and_ipv6():
 
     assert fake_iproute.versions == [4, 6]
     assert addresses == ['192.168.10.10', '2001:db8::10']
+
+
+def test_extract_ceph_mon_host_supports_ipv4_ipv6_and_addrvec_prefixes():
+    assert ceph_utils.extract_mon_host('%s:%s/0' % (TEST_IPV4_ADDRESS, TEST_CEPH_PORT)) == TEST_IPV4_ADDRESS
+    assert ceph_utils.extract_mon_host('[%s]:%s/0' % (TEST_IPV6_ADDRESS, TEST_CEPH_PORT)) == TEST_IPV6_ADDRESS
+    assert ceph_utils.extract_mon_host('v2:[%s]:3300/0' % TEST_IPV6_ADDRESS) == TEST_IPV6_ADDRESS
+    assert ceph_utils.extract_mon_host('v1:%s:%s/0' % (TEST_IPV6_ADDRESS, TEST_CEPH_PORT)) == TEST_IPV6_ADDRESS
+    assert ceph_utils.extract_mon_host(TEST_IPV6_ADDRESS) == TEST_IPV6_ADDRESS
