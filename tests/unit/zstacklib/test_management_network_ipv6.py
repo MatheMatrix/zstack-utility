@@ -123,6 +123,32 @@ def test_bind_ipv4_probe_socket_uses_ipv4_any_address():
     assert fake_socket.bind_address == (network_ipv6.IPV4_BIND_ADDRESS, TEST_PORT)
 
 
+def test_is_port_available_falls_back_to_ipv4_after_ipv6_bind_error(monkeypatch):
+    created_families = []
+
+    class ProbeSocket(FakeSocket):
+        def __init__(self, family, socket_type):
+            super(ProbeSocket, self).__init__()
+            created_families.append((family, socket_type))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(linux.socket, 'socket', ProbeSocket)
+    monkeypatch.setattr(
+        network_ipv6,
+        'bind_dual_stack_probe_socket',
+        lambda sock, port: (_ for _ in ()).throw(OSError('ipv6 disabled')),
+    )
+    monkeypatch.setattr(network_ipv6, 'bind_ipv4_probe_socket', lambda sock, port: None)
+
+    assert linux.is_port_available(TEST_PORT)
+    assert created_families == [
+        (socket.AF_INET6, socket.SOCK_STREAM),
+        (socket.AF_INET, socket.SOCK_STREAM),
+    ]
+
+
 def test_build_cherrypy_socket_config_defaults_to_dual_stack_and_reads_env():
     assert network_ipv6.build_cherrypy_socket_config(TEST_PORT, {}) == {
         network_ipv6.CHERRYPY_SOCKET_HOST_KEY: network_ipv6.DUAL_STACK_BIND_ADDRESS,

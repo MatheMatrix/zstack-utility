@@ -46,6 +46,9 @@ from .timeline import TaskTimeline, __doc__ as timeline_doc
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import pkcs12
 
+DEFAULT_MYSQL_PORT = '3306'
+DEFAULT_SSH_PORT = '22'
+
 mysql_db_config_script='''
 #!/bin/bash
 echo "modify my.cnf"
@@ -521,10 +524,16 @@ def get_detail_version():
         return None
 
 def check_ip_port(host, port):
-    import socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    result = sock.connect_ex((host, int(port)))
-    return result == 0
+    host = host.strip('[]') if host else host
+    family = socket.AF_INET6 if get_ip_version(host) == management_network_ipv6.IPV6_VERSION else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        result = sock.connect_ex((host, int(port)))
+        return result == 0
+    except (socket.error, OSError):
+        return False
+    finally:
+        sock.close()
 
 def get_zstack_version(db_hostname, db_port, db_user, db_password):
     def normalize(v):
@@ -722,6 +731,26 @@ def replace_db_url_host(db_url, new_host):
     return management_network_ipv6.replace_db_url_host(db_url, new_host)
 
 
+def split_host_port_endpoint(endpoint, default_port):
+    endpoint = endpoint.strip() if endpoint else ''
+    if endpoint.startswith('['):
+        host, separator, rest = endpoint[1:].partition(']')
+        if not separator:
+            raise CtlError('invalid host endpoint: %s' % endpoint)
+        if rest and not rest.startswith(':'):
+            raise CtlError('invalid host endpoint: %s' % endpoint)
+        return host, rest[1:] if rest.startswith(':') and rest[1:] else default_port
+
+    if validate_ip(endpoint):
+        return endpoint, default_port
+
+    if endpoint.count(':') == 1:
+        host, port = endpoint.split(':', 1)
+        return host, port if port else default_port
+
+    return endpoint, default_port
+
+
 def check_host_info_format(host_info, with_public_key=False):
     '''check install ha and install multi mn node info format'''
     if '@' not in host_info:
@@ -745,12 +774,7 @@ def check_host_info_format(host_info, with_public_key=False):
                 if user != "root":
                     error("Only root user can be supported, please change user to root")
         # get ip and port
-        if ':' not in host_info.split('@')[1]:
-            ip = host_info.split('@')[1]
-            port = '22'
-        else:
-            ip = host_info.split('@')[1].split(':')[0]
-            port = host_info.split('@')[1].split(':')[1]
+        ip, port = split_host_port_endpoint(host_info.split('@', 1)[1], DEFAULT_SSH_PORT)
 
         if validate_ip(ip) is False:
             error("Ip : %s is invalid" % ip)
@@ -1324,14 +1348,10 @@ class Ctl(object):
         host_name_ports = []
 
         def parse_hostname_ports(prefix):
-            ips = db_url.lstrip(prefix).lstrip('/').split('/')[0]
+            ips = db_url[len(prefix):].lstrip('/').split('/')[0]
             ips = ips.split(',')
             for ip in ips:
-                if ":" in ip:
-                    hostname, port = ip.split(':')
-                    host_name_ports.append((hostname, port))
-                else:
-                    host_name_ports.append((ip, '3306'))
+                host_name_ports.append(split_host_port_endpoint(ip, DEFAULT_MYSQL_PORT))
 
         if db_url.startswith('jdbc:mysql:loadbalance:'):
             parse_hostname_ports('jdbc:mysql:loadbalance:')
@@ -1357,14 +1377,10 @@ class Ctl(object):
         host_name_ports = []
 
         def parse_hostname_ports(prefix):
-            ips = db_url.lstrip(prefix).lstrip('/').split('/')[0]
+            ips = db_url[len(prefix):].lstrip('/').split('/')[0]
             ips = ips.split(',')
             for ip in ips:
-                if ":" in ip:
-                    hostname, port = ip.split(':')
-                    host_name_ports.append((hostname, port))
-                else:
-                    host_name_ports.append((ip, '3306'))
+                host_name_ports.append(split_host_port_endpoint(ip, DEFAULT_MYSQL_PORT))
 
         if db_url.startswith('jdbc:mysql:loadbalance:'):
             parse_hostname_ports('jdbc:mysql:loadbalance:')
@@ -1687,10 +1703,19 @@ class Zsha2Utils(object):
 
     def validate_ip_versions(self):
         versions = set()
+        invalid_ips = []
         for name in ('nodeip', 'peerip', 'dbvip'):
-            version = get_ip_version(self.config.get(name, ''))
-            if version is not None:
-                versions.add(version)
+            value = self.config.get(name, '')
+            if not value:
+                continue
+            version = get_ip_version(value)
+            if version is None:
+                invalid_ips.append('%s=%s' % (name, value))
+                continue
+            versions.add(version)
+
+        if invalid_ips:
+            error('zsha2 nodeip, peerip and dbvip must be valid IP addresses: %s' % ', '.join(invalid_ips))
 
         if len(versions) > 1:
             error('zsha2 nodeip, peerip and dbvip must use the same IP version')

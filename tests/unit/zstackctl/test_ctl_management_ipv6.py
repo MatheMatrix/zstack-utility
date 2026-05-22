@@ -1,0 +1,108 @@
+# -*- coding: utf-8 -*-
+import json
+import socket
+import sys
+import types
+
+import pytest
+
+
+def _install_module_stub(name):
+    if name in sys.modules:
+        return sys.modules[name]
+    module = types.ModuleType(name)
+    sys.modules[name] = module
+    return module
+
+
+simplejson = _install_module_stub('simplejson')
+simplejson.dumps = json.dumps
+simplejson.loads = json.loads
+
+configobj = _install_module_stub('configobj')
+configobj.ConfigObj = dict
+
+termcolor = _install_module_stub('termcolor')
+termcolor.colored = lambda value, *args, **kwargs: value
+
+yaml = _install_module_stub('yaml')
+yaml.load = lambda *args, **kwargs: {}
+yaml.dump = lambda *args, **kwargs: ''
+
+for module_name in ('OpenSSL', 'jinja2'):
+    _install_module_stub(module_name)
+
+for module_name in ('Crypto', 'Crypto.Cipher', 'Crypto.Cipher.AES', 'Crypto.Util', 'Crypto.Util.py3compat'):
+    _install_module_stub(module_name)
+sys.modules['Crypto.Cipher'].AES = sys.modules['Crypto.Cipher.AES']
+sys.modules['Crypto.Util.py3compat'].__all__ = []
+
+for module_name in (
+        'cryptography',
+        'cryptography.hazmat',
+        'cryptography.hazmat.primitives',
+        'cryptography.hazmat.primitives.serialization',
+        'cryptography.hazmat.primitives.serialization.pkcs12'):
+    _install_module_stub(module_name)
+sys.modules['cryptography.hazmat.primitives'].serialization = sys.modules[
+    'cryptography.hazmat.primitives.serialization']
+sys.modules['cryptography.hazmat.primitives.serialization'].pkcs12 = sys.modules[
+    'cryptography.hazmat.primitives.serialization.pkcs12']
+
+from zstackctl import ctl
+
+
+def test_split_host_port_endpoint_supports_bracketed_ipv6():
+    assert ctl.split_host_port_endpoint('[2001:db8::10]:3307', '3306') == ('2001:db8::10', '3307')
+    assert ctl.split_host_port_endpoint('[2001:db8::10]', '3306') == ('2001:db8::10', '3306')
+    assert ctl.split_host_port_endpoint('192.168.10.10:3307', '3306') == ('192.168.10.10', '3307')
+    assert ctl.split_host_port_endpoint('2001:db8::10', '22') == ('2001:db8::10', '22')
+
+
+def test_check_host_info_format_accepts_ipv6_with_port():
+    assert ctl.check_host_info_format('root:password@[2001:db8::10]:2222') == (
+        'root', 'password', '2001:db8::10', '2222')
+    assert ctl.check_host_info_format('root:password@2001:db8::10') == (
+        'root', 'password', '2001:db8::10', ctl.DEFAULT_SSH_PORT)
+
+
+def test_check_ip_port_uses_ipv6_socket_for_ipv6(monkeypatch):
+    calls = []
+
+    class FakeSocket(object):
+        def __init__(self, family, socket_type):
+            calls.append((family, socket_type))
+
+        def connect_ex(self, address):
+            calls.append(address)
+            return 0
+
+        def close(self):
+            calls.append('closed')
+
+    monkeypatch.setattr(ctl.socket, 'socket', FakeSocket)
+
+    assert ctl.check_ip_port('[2001:db8::10]', 3306)
+    assert calls == [
+        (socket.AF_INET6, socket.SOCK_STREAM),
+        ('2001:db8::10', 3306),
+        'closed',
+    ]
+
+
+def test_validate_ip_versions_rejects_invalid_ip(monkeypatch):
+    errors = []
+    monkeypatch.setattr(ctl, 'error', lambda message: errors.append(message))
+
+    zsha = ctl.Zsha2Utils.__new__(ctl.Zsha2Utils)
+    zsha.config = {
+        'nodeip': '2001:db8::10',
+        'peerip': 'invalid-peer',
+        'dbvip': '2001:db8::20',
+    }
+
+    zsha.validate_ip_versions()
+
+    assert errors == [
+        'zsha2 nodeip, peerip and dbvip must be valid IP addresses: peerip=invalid-peer'
+    ]

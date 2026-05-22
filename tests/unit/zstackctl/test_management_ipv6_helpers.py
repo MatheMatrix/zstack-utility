@@ -11,6 +11,8 @@ def test_validate_ip_accepts_ipv4_and_ipv6():
 def test_ip_to_hostname_builds_stable_hostname_from_ipv6():
     assert management_network_ipv6.ip_to_hostname('192.168.10.10') == '192-168-10-10'
     assert management_network_ipv6.ip_to_hostname('[2001:db8::10]') == '2001-db8--10'
+    assert management_network_ipv6.ip_to_hostname(None) == ''
+    assert management_network_ipv6.ip_to_hostname(b'2001:db8::10') == '2001-db8--10'
 
 
 def test_format_hosts_bracket_ipv6_and_keep_ipv4_unchanged():
@@ -43,6 +45,7 @@ def test_extract_db_url_host_reads_ipv4_ipv6_and_localhost():
     assert management_network_ipv6.extract_db_url_host('jdbc:mysql://192.168.10.10:3306/zstack') == '192.168.10.10'
     assert management_network_ipv6.extract_db_url_host('jdbc:mysql://[2001:db8::10]:3306/zstack') == '2001:db8::10'
     assert management_network_ipv6.extract_db_url_host('jdbc:mysql://localhost:3306/zstack') == 'localhost'
+    assert management_network_ipv6.extract_db_url_host('jdbc:mysql://12345.0.0.1:3306/zstack') is None
 
 
 def test_replace_db_url_host_formats_new_host_by_ip_version():

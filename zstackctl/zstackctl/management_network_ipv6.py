@@ -3,6 +3,11 @@ import re
 import socket
 
 
+try:
+    STRING_TYPES = (str, unicode)
+except NameError:
+    STRING_TYPES = (str,)
+
 IPV6_SEPARATOR = ':'
 IPV6_BRACKET_PREFIX = '['
 IPV6_BRACKET_SUFFIX = ']'
@@ -12,7 +17,7 @@ IPV4_VERSION = 4
 IPV6_VERSION = 6
 JDBC_IPV6_HOST_FORMAT = '[%s]'
 IPV6_DB_HOST_PATTERN = r'\[([0-9a-fA-F:]+)\]'
-IPV4_OR_LOCALHOST_DB_HOST_PATTERN = r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost'
+IPV4_OR_LOCALHOST_DB_HOST_PATTERN = r'(?<![0-9A-Za-z_.-])(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|localhost)(?![0-9A-Za-z_.-])'
 
 
 def validate_ip(value):
@@ -27,6 +32,12 @@ def validate_ip(value):
 
 
 def ip_to_hostname(ip):
+    if ip is None:
+        return ''
+    if isinstance(ip, bytes) and bytes not in STRING_TYPES:
+        ip = ip.decode('utf-8')
+    if not isinstance(ip, STRING_TYPES):
+        raise TypeError('ip must be a string')
     return ip.strip('[]').replace(IPV6_SEPARATOR, HOSTNAME_SEPARATOR).replace(IPV4_SEPARATOR, HOSTNAME_SEPARATOR)
 
 

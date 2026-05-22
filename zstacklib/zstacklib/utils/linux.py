@@ -2538,12 +2538,12 @@ def is_port_available(port):
         try:
             network_ipv6.bind_dual_stack_probe_socket(s, port)
             return True
-        except:
+        except (socket.error, OSError):
             with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as ipv4_sock:
                 try:
                     network_ipv6.bind_ipv4_probe_socket(ipv4_sock, port)
                     return True
-                except:
+                except (socket.error, OSError):
                     return False
 
 def get_all_ethernet_device_names():
