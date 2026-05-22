@@ -118,6 +118,72 @@ class TestPxeInit:
         agent._stop_pxe_server.assert_called_once()
         agent._start_pxe_server.assert_called_once()
 
+    @patch("builtins.open", new_callable=mock_open)
+    def test_init_writes_bracketed_ipv6_management_proxy(self, mocked_open):
+        agent = _make_agent()
+        _mock_capacity(agent)
+
+        agent._get_ip_address = MagicMock(return_value="192.168.1.10")
+        agent._get_mac_address = MagicMock(return_value="aa:bb:cc:dd:ee:ff")
+        agent._is_belong_to_same_subnet = MagicMock(return_value=True)
+        agent._start_pxe_server = MagicMock()
+        agent._stop_pxe_server = MagicMock()
+
+        linux_mod = sys.modules["zstacklib.utils.linux"]
+        linux_mod.get_netmask_of_nic = MagicMock(return_value="255.255.255.0")
+
+        module.bash_r = MagicMock(return_value=0)
+        mock_os = MagicMock(wraps=os)
+        mock_os.path.exists = MagicMock(return_value=True)
+        mock_os.path.islink = MagicMock(return_value=True)
+        mock_os.remove = MagicMock()
+        mock_os.symlink = MagicMock()
+        mock_os.makedirs = MagicMock()
+        module.os = mock_os
+
+        result = agent.init(_make_req({
+            "uuid": "pxe-001",
+            "storagePath": "/var/lib/zstack/baremetal/storage",
+            "dhcpInterface": "eth0",
+            "dhcpRangeBegin": "192.168.1.100",
+            "dhcpRangeEnd": "192.168.1.200",
+            "dhcpRangeNetmask": "255.255.255.0",
+            "managementIp": "2001:db8::10",
+            "managementPort": 8080,
+        }))
+
+        rsp = _load_rsp(result)
+        assert rsp["success"] is True
+        mocked_open.assert_any_call("/etc/nginx/conf.d/pxe_mn/zstack_mn.conf", 'w')
+        mocked_open().write.assert_any_call("location / { proxy_pass http://[2001:db8::10]:8080/; }")
+
+    def test_select_interface_ip_prefers_ipv4_address(self):
+        output = """
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0
+    inet6 2001:db8::10/64 scope global
+"""
+
+        assert module.PxeServerAgent._select_interface_ip(output, "eth0") == "192.168.1.10"
+
+    def test_select_interface_ip_uses_global_ipv6_when_ipv4_absent(self):
+        output = """
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet6 fe80::10/64 scope link
+    inet6 2001:db8::10/64 scope global
+"""
+
+        assert module.PxeServerAgent._select_interface_ip(output, "eth0") == "2001:db8::10"
+
+    def test_select_interface_ip_rejects_link_local_only_interface(self):
+        output = """
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet6 fe80::10/64 scope link
+"""
+
+        with pytest.raises(module.PxeServerError):
+            module.PxeServerAgent._select_interface_ip(output, "eth0")
+
     def test_init_fails_when_dhcp_range_not_in_subnet(self):
         agent = _make_agent()
         _mock_capacity(agent)

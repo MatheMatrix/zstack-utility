@@ -8,6 +8,7 @@ import socket
 import fcntl
 import struct
 import hashlib
+import subprocess
 import traceback
 import simplejson
 from jinja2 import Template
@@ -17,6 +18,7 @@ import platform
 import zstacklib.utils.daemon as daemon
 import zstacklib.utils.http as http
 import zstacklib.utils.jsonobject as json_object
+from zstacklib.utils import network_ipv6
 from zstacklib.utils.bash import *
 from .imagestore import ImageStoreClient
 
@@ -118,6 +120,11 @@ class PxeServerAgent(object):
     NOVNC_TOKEN_PATH = NOVNC_INSTALL_PATH + "tokens/"
 
     NMAP_BROADCAST_DHCP_DISCOVER_PATH = "/usr/share/nmap/scripts/broadcast-dhcp-discover.nse"
+    IP_ADDR_COMMAND = "ip"
+    IP_ADDR_INET_TOKEN = "inet"
+    IP_ADDR_INET6_TOKEN = "inet6"
+    IP_ADDR_SCOPE_TOKEN = "scope"
+    IP_ADDR_GLOBAL_SCOPE = "global"
 
     def __init__(self):
         self.uuid = None
@@ -193,12 +200,41 @@ class PxeServerAgent(object):
 
     @staticmethod
     def _get_ip_address(ifname: str) -> str:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        return socket.inet_ntoa(fcntl.ioctl(
-            s.fileno(),
-            0x8915,  # SIOCGIFADDR
-            struct.pack('256s', ifname[:15].encode())
-        )[20:24])
+        try:
+            output = subprocess.check_output(
+                [PxeServerAgent.IP_ADDR_COMMAND, "addr", "show", "dev", ifname]
+            )
+            if isinstance(output, bytes):
+                output = output.decode()
+        except Exception as e:
+            raise PxeServerError("failed to get ip address of interface[%s]: %s" % (ifname, e))
+
+        return PxeServerAgent._select_interface_ip(output, ifname)
+
+    @staticmethod
+    def _select_interface_ip(ip_addr_output: str, ifname: str) -> str:
+        ipv4_addresses = []
+        ipv6_addresses = []
+        for line in ip_addr_output.splitlines():
+            tokens = line.strip().split()
+            if len(tokens) < 2:
+                continue
+
+            address = tokens[1].split("/")[0]
+            if tokens[0] == PxeServerAgent.IP_ADDR_INET_TOKEN:
+                ipv4_addresses.append(address)
+            elif tokens[0] == PxeServerAgent.IP_ADDR_INET6_TOKEN:
+                if PxeServerAgent.IP_ADDR_SCOPE_TOKEN not in tokens:
+                    continue
+                scope_index = tokens.index(PxeServerAgent.IP_ADDR_SCOPE_TOKEN)
+                if len(tokens) > scope_index + 1 and tokens[scope_index + 1] == PxeServerAgent.IP_ADDR_GLOBAL_SCOPE:
+                    ipv6_addresses.append(address)
+
+        if ipv4_addresses:
+            return ipv4_addresses[0]
+        if ipv6_addresses:
+            return ipv6_addresses[0]
+        raise PxeServerError("cannot find IPv4 or global IPv6 address on interface[%s]" % ifname)
 
     @staticmethod
     def _is_belong_to_same_subnet(addr1, addr2, netmask):
@@ -395,7 +431,7 @@ http {
             fw.write(nginx_conf)
 
         # create nginx proxy for http://MN_IP:MN_PORT/zstack/asyncrest/sendcommand
-        content = "location / { proxy_pass http://%s:%s/; }" % (cmd.managementIp, cmd.managementPort)
+        content = "location / { proxy_pass http://%s:%s/; }" % (network_ipv6.format_url_host(cmd.managementIp), cmd.managementPort)
         with open("/etc/nginx/conf.d/pxe_mn/zstack_mn.conf", 'w') as fw:
             fw.write(content)
 
