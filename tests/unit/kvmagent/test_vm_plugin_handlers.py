@@ -32,6 +32,14 @@ vm_plugin.http = http
 vm_plugin.jsonobject = jsonobject
 
 
+def test_console_listen_address_uses_ipv4_default_for_ipv4_host():
+    assert vm_plugin.get_console_listen_address('192.168.1.10') == '0.0.0.0'
+
+
+def test_console_listen_address_uses_dual_stack_for_ipv6_host():
+    assert vm_plugin.get_console_listen_address('2001:db8::10') == '::'
+
+
 def _make_vm_plugin():
     plugin = vm_plugin.VmPlugin.__new__(vm_plugin.VmPlugin)
     plugin.config = {}
