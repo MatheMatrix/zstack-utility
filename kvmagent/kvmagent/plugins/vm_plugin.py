@@ -88,6 +88,10 @@ from zstacklib.utils.libvirt_singleton import LibvirtSingleton
 logger = log.get_logger(__name__)
 
 HOST_ARCH = platform.machine()
+CPU_HARDWARE_VIRT_DISABLED = 'disabled'
+_HOST_HARDWARE_VIRT_FEATURE = None
+_HOST_HARDWARE_VIRT_FEATURE_DETECTED = False
+_HOST_HARDWARE_VIRT_FEATURE_LOCK = threading.Lock()
 
 # CPU hotplug auto-online constants (ZSTAC-81735)
 _CPU_HOTPLUG_OS_WHITELIST = ('ubuntu', 'debian')
@@ -119,6 +123,27 @@ MAX_MEMORY = 34359738368 if (HOST_ARCH != "aarch64") else linux.get_max_vm_ipa_s
 
 MIPS64EL_CPU_MODEL = "Loongson-3A4000-COMP"
 LOONGARCH64_CPU_MODEL = "Loongson-3A5000"
+
+def _get_host_hardware_virtualization_feature():
+    global _HOST_HARDWARE_VIRT_FEATURE
+    global _HOST_HARDWARE_VIRT_FEATURE_DETECTED
+
+    if HOST_ARCH != "x86_64":
+        return None
+
+    if _HOST_HARDWARE_VIRT_FEATURE_DETECTED:
+        return _HOST_HARDWARE_VIRT_FEATURE
+
+    with _HOST_HARDWARE_VIRT_FEATURE_LOCK:
+        if not _HOST_HARDWARE_VIRT_FEATURE_DETECTED:
+            # x86 host has either vmx (Intel) or svm (AMD), never both.
+            if shell.run('grep -qw vmx /proc/cpuinfo') == 0:
+                _HOST_HARDWARE_VIRT_FEATURE = 'vmx'
+            elif shell.run('grep -qw svm /proc/cpuinfo') == 0:
+                _HOST_HARDWARE_VIRT_FEATURE = 'svm'
+            _HOST_HARDWARE_VIRT_FEATURE_DETECTED = True
+
+    return _HOST_HARDWARE_VIRT_FEATURE
 
 LINUX_SCRIPT_LIB_PATH = "/var/lib/zstack/script/"
 WINDOWS_SCRIPT_LIB_PATH = "C:/Program Files/Qemu-ga/script/"
@@ -482,6 +507,7 @@ class StartVmCmd(kvmagent.AgentCommand):
         self.useBootMenu = True
         self.bootMenuSplashTimeout = None
         self.vmCpuModel = None
+        self.cpuHardwareVirtualization = None
         self.emulateHyperV = False
         self.additionalQmp = True
         self.isApplianceVm = False
@@ -5941,6 +5967,11 @@ class Vm(object):
 
                 if cmd.cpuHypervisorFeature is False:
                     e(cpu, 'feature', attrib={'name': 'hypervisor', 'policy': 'disable'})
+
+                if cmd.cpuHardwareVirtualization == CPU_HARDWARE_VIRT_DISABLED:
+                    cpu_hardware_virtualization_feature = _get_host_hardware_virtualization_feature()
+                    if cpu_hardware_virtualization_feature:
+                        e(cpu, 'feature', attrib={'name': cpu_hardware_virtualization_feature, 'policy': 'disable'})
 
             def make_cpu_vendor():
                 if HOST_ARCH != "x86_64":
