@@ -9,6 +9,14 @@ from bm_instance_agent.tests.unit import fake
 
 class TestManager(base.TestCase):
 
+    def test_build_push_gateway_url_brackets_ipv6_host(self):
+        self.assertEqual(
+            'http://[2001:db8::20]:9092',
+            manager.AgentManager.build_push_gateway_url('2001:db8::20'))
+        self.assertEqual(
+            'http://192.168.1.10:9092',
+            manager.AgentManager.build_push_gateway_url('192.168.1.10'))
+
     @mock.patch('bm_instance_agent.systems.base.SystemDriverBase.ping')
     @mock.patch('bm_instance_agent.systems.base.SystemDriverBase.'
                 'update_password')
