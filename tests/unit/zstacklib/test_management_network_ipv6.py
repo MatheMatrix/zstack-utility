@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import socket
 
+from zstacklib.utils import linux
 from zstacklib.utils import network_ipv6
 
 TEST_IPV4_ADDRESS = '192.168.10.10'
@@ -54,6 +55,12 @@ def test_format_url_host_wraps_ipv6_only_once():
     assert network_ipv6.format_url_host(TEST_IPV6_ADDRESS) == '[2001:db8::10]'
     assert network_ipv6.format_url_host('[2001:db8::10]') == '[2001:db8::10]'
     assert network_ipv6.format_url_host(None) is None
+
+
+def test_format_ssh_target_wraps_ipv6_only_once():
+    assert linux.format_ssh_target('root', TEST_IPV4_ADDRESS) == 'root@192.168.10.10'
+    assert linux.format_ssh_target('root', TEST_IPV6_ADDRESS) == 'root@[2001:db8::10]'
+    assert linux.format_ssh_target('root', TEST_HOSTNAME) == 'root@zstack-mn.example.com'
 
 
 def test_extract_url_host_supports_ipv4_ipv6_and_hostnames():

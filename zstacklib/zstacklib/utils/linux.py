@@ -829,18 +829,21 @@ def ssh(hostname, sshkey, cmd, user='root', sshPort=22):
     os.chmod(sshkey_file, 0o600)
 
     try:
-        return shell.call('ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s@%s "%s"' % (sshPort, sshkey_file, user, hostname, cmd))
+        return shell.call('ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s "%s"' % (sshPort, sshkey_file, format_ssh_target(user, hostname), cmd))
     finally:
         if sshkey_file:
             os.remove(sshkey_file)
+
+def format_ssh_target(user, hostname):
+    return '%s@%s' % (user, network_ipv6.format_url_host(hostname))
 
 def sshpass_run(hostname, password, cmd, user='root', port=22):
     sshpass_file = write_to_temp_file(password)
     os.chmod(sshpass_file, 0o600)
 
     try:
-        s = shell.ShellCmd('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s@%s "%s"' % (
-            sshpass_file, port, user, hostname, cmd))
+        s = shell.ShellCmd('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s "%s"' % (
+            sshpass_file, port, format_ssh_target(user, hostname), cmd))
         s(False)
         return s.return_code, s.stdout, s.stderr
     finally:
@@ -851,8 +854,8 @@ def sshpass_call(hostname, password, cmd, user='root', port=22):
     os.chmod(sshpass_file, 0o600)
 
     try:
-        return shell.call('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s@%s "%s"' % (
-            sshpass_file, port, user, hostname, cmd))
+        return shell.call('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s "%s"' % (
+            sshpass_file, port, format_ssh_target(user, hostname), cmd))
     finally:
         rm_file_force(sshpass_file)
 
@@ -893,8 +896,8 @@ def scp_download(hostname, sshkey, src_filepath, dst_filepath, host_account='roo
         dst_dir = os.path.dirname(dst_filepath)
         if not os.path.exists(dst_dir):
             os.makedirs(dst_dir)
-        scp_cmd = 'scp {7} {6} -P {0} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {1} {2}@{3}:{4} {5}'\
-            .format(sshPort, sshkey_file, host_account, hostname, shellquote(src_filepath).replace(" ", "\\ "), dst_filepath, bandWidth, filename_check_option)
+        scp_cmd = 'scp {6} {5} -P {0} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {1} {2}:{3} {4}'\
+            .format(sshPort, sshkey_file, format_ssh_target(host_account, hostname), shellquote(src_filepath).replace(" ", "\\ "), dst_filepath, bandWidth, filename_check_option)
         shell.call(scp_cmd)
         os.chmod(dst_filepath, 0o664)
     finally:
@@ -912,9 +915,9 @@ def scp_upload(hostname, sshkey, src_filepath, dst_filepath, host_account='root'
     os.chmod(sshkey_file, 0o600)
     try:
         dst_dir = os.path.dirname(dst_filepath)
-        ssh_cmd = 'ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s@%s "mkdir -m 777 -p %s"' % (sshPort, sshkey_file, host_account, hostname, dst_dir)
+        ssh_cmd = 'ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s "mkdir -m 777 -p %s"' % (sshPort, sshkey_file, format_ssh_target(host_account, hostname), dst_dir)
         shell.call(ssh_cmd)
-        scp_cmd = 'scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s %s@%s:%s' % (sshPort, sshkey_file, src_filepath, host_account, hostname, dst_filepath)
+        scp_cmd = 'scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s %s:%s' % (sshPort, sshkey_file, src_filepath, format_ssh_target(host_account, hostname), dst_filepath)
         shell.call(scp_cmd)
     finally:
         if sshkey_file:
