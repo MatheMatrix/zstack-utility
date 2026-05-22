@@ -56,6 +56,12 @@ def test_format_url_host_wraps_ipv6_only_once():
     assert network_ipv6.format_url_host(None) is None
 
 
+def test_extract_url_host_supports_ipv4_ipv6_and_hostnames():
+    assert network_ipv6.extract_url_host('http://192.168.10.10:8080/callback') == TEST_IPV4_ADDRESS
+    assert network_ipv6.extract_url_host('http://[2001:db8::10]:8080/callback') == TEST_IPV6_ADDRESS
+    assert network_ipv6.extract_url_host('http://zstack-mn.example.com:8080/callback') == TEST_HOSTNAME
+
+
 def test_get_agent_bind_ip_defaults_to_dual_stack_and_allows_override():
     assert network_ipv6.get_agent_bind_ip({}) == network_ipv6.DUAL_STACK_BIND_ADDRESS
     assert network_ipv6.get_agent_bind_ip({network_ipv6.AGENT_BIND_IP_ENV: '0.0.0.0'}) == '0.0.0.0'

@@ -2,6 +2,10 @@
 import os
 import ipaddress
 import socket
+try:
+    from urllib.parse import urlparse
+except ImportError:
+    from urlparse import urlparse
 
 
 AGENT_BIND_IP_ENV = 'AGENT_BIND_IP'
@@ -22,6 +26,10 @@ CHERRYPY_SOCKET_HOST_KEY = 'server.socket_host'
 CHERRYPY_SOCKET_PORT_KEY = 'server.socket_port'
 CHERRYPY_THREAD_POOL_KEY = 'server.thread_pool'
 ROUTE_SOURCE_TOKEN = 'src'
+
+
+def extract_url_host(url):
+    return urlparse(url).hostname
 
 
 def get_agent_bind_ip(env=None):

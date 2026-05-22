@@ -1234,18 +1234,16 @@ class HostPlugin(kvmagent.KvmAgent):
 
         if self.host_socket is not None:
             self.host_socket.close()
-
-        try:
-            self.host_socket = socket.socket()
-        except socket.error as e:
             self.host_socket = None
 
-        ip_address = cmd.sendCommandUrl.split('/')[2].split(':')[0]
+        ip_address = network_ipv6.extract_url_host(cmd.sendCommandUrl)
         try:
+            self.host_socket = network_ipv6.create_tcp_socket_for_host(ip_address)
             self.host_socket.connect((ip_address, cmd.tcpServerPort))
 
         except socket.error as msg:
-            self.host_socket.close()
+            if self.host_socket is not None:
+                self.host_socket.close()
             self.host_socket = None
 
         self.start_write_to_server()
