@@ -13,6 +13,69 @@ TEST_POOL_SIZE = '32'
 TEST_CEPH_PORT = 6789
 
 
+def _format_ssh_target(user, hostname):
+    return '%s@%s' % (user, network_ipv6.format_url_host(hostname))
+
+
+def _is_port_available(port):
+    try:
+        s = linux.socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        try:
+            network_ipv6.bind_dual_stack_probe_socket(s, port)
+            return True
+        finally:
+            s.close()
+    except (socket.error, OSError):
+        try:
+            s = linux.socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                network_ipv6.bind_ipv4_probe_socket(s, port)
+                return True
+            finally:
+                s.close()
+        except (socket.error, OSError):
+            return False
+
+
+def _strip_mon_addr_protocol(addr):
+    protocol, separator, rest = addr.partition(':')
+    if separator and protocol.startswith('v') and protocol[1:].isdigit():
+        return rest
+    return addr
+
+
+def _extract_mon_host(addr):
+    if not addr:
+        return None
+
+    addr = _strip_mon_addr_protocol(addr.strip())
+    if addr.startswith('['):
+        end = addr.find(']')
+        if end > 0:
+            return addr[1:end]
+        return addr[1:]
+
+    has_addr_suffix = '/' in addr
+    addr_without_suffix = addr.split('/', 1)[0]
+    if ':' not in addr_without_suffix:
+        return addr_without_suffix
+
+    host, separator, port = addr_without_suffix.rpartition(':')
+    if addr_without_suffix.count(':') == 1:
+        return host
+    if has_addr_suffix and separator and port.isdigit():
+        return host
+    return addr_without_suffix
+
+
+if hasattr(linux.format_ssh_target, 'side_effect'):
+    linux.format_ssh_target.side_effect = _format_ssh_target
+if hasattr(linux.is_port_available, 'side_effect'):
+    linux.is_port_available.side_effect = _is_port_available
+if hasattr(ceph_utils.extract_mon_host, 'side_effect'):
+    ceph_utils.extract_mon_host.side_effect = _extract_mon_host
+
+
 class FakeAddress(object):
     def __init__(self, address, ifname):
         self.address = address

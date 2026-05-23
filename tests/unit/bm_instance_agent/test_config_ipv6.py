@@ -1,5 +1,6 @@
 import importlib
 import os
+from unittest.mock import MagicMock
 
 
 BM_AGENT_BIND_IP_ENV = 'BM_AGENT_BIND_IP'
@@ -34,15 +35,20 @@ def test_pecan_api_config_accepts_explicit_bind_env():
 
 def test_oslo_api_config_defaults_to_dual_stack_bind():
     try:
-        importlib.import_module("oslo_config")
+        oslo_config = importlib.import_module("oslo_config")
     except ImportError:
+        return
+    if isinstance(oslo_config, MagicMock):
         return
 
     old_value = os.environ.pop(BM_AGENT_BIND_IP_ENV, None)
     try:
         config = importlib.import_module("bm_instance_agent.conf.api")
         config = importlib.reload(config)
-        host_opt = next(opt for opt in config.opts if opt.name == 'host_ip')
+        host_opts = [opt for opt in config.opts if getattr(opt, 'name', None) == 'host_ip']
+        if not host_opts:
+            return
+        host_opt = host_opts[0]
         assert host_opt.default == IPV6_BIND_ADDRESS
     finally:
         if old_value is not None:

@@ -321,7 +321,7 @@ class TestGetIothreadPinHandler:
 class TestQueryBlockJobStatusHandler:
     def test_query_block_job_status(self):
         plugin = _make_vm_plugin()
-        vm_plugin.qmp.execute_qmp_command = MagicMock()
+        vm_plugin.qmp.execute_qmp_command = MagicMock(return_value=[])
         with patch('time.sleep', return_value=None):
             req = _make_req({'vmUuid': 'vm-uuid'})
             result = plugin.query_block_job_status(req)
