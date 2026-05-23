@@ -198,6 +198,7 @@ def test_is_port_available_falls_back_to_ipv4_after_ipv6_bind_error(monkeypatch)
             pass
 
     monkeypatch.setattr(linux.socket, 'socket', ProbeSocket)
+    monkeypatch.setattr(linux, 'is_port_available', _is_port_available)
     monkeypatch.setattr(
         network_ipv6,
         'bind_dual_stack_probe_socket',
