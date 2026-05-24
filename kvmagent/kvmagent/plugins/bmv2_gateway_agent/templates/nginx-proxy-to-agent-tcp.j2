@@ -2,5 +2,5 @@
 
 server {
     listen {{ gateway_port }};
-    proxy_pass {{ bm_instance_ip }}:{{ bm_instance_vnc_port }};
+    proxy_pass {{ bm_instance_host_port }};
 }

@@ -77,6 +77,7 @@ from zstacklib.gpu.base import VendorEnum
 from zstacklib.utils.plugin import TaskManager, TaskResult
 from zstacklib.utils.qga import *
 from zstacklib.utils import jsonobject
+from zstacklib.utils import network_ipv6
 from zstacklib.utils.job_progress import calculate_detail_speed, normalize_report_speed, summarize_block_job
 from zstacklib.utils.qmp import get_block_node_name_and_file
 from zstacklib.utils.report import *
@@ -129,6 +130,8 @@ PROTOCOL_CBD_PREFIX = "cbd:"
 MAX_NBD_READ_SIZE = 32768000
 LIBVIRT_DEFINED_XML_DIR = "/etc/libvirt/qemu/"
 LIBVIRT_TLS_PORT = 16514
+CONSOLE_LISTEN_IPV4_ADDRESS = '0.0.0.0'
+CONSOLE_LISTEN_IPV6_ADDRESS = network_ipv6.DUAL_STACK_BIND_ADDRESS
 
 
 def _check_tls_ready(dest_ip, vm_uuid):
@@ -1427,6 +1430,13 @@ def find_zstack_metadata_node(root, name):
         return None
 
     return zs.find(name)
+
+
+def get_console_listen_address(host_management_ip):
+    if host_management_ip and network_ipv6.IPV6_SEPARATOR in host_management_ip:
+        return CONSOLE_LISTEN_IPV6_ADDRESS
+    return CONSOLE_LISTEN_IPV4_ADDRESS
+
 
 def find_domain_cdrom_address(domain_xml, target_dev):
     domain_xmlobject = xmlobject.loads(domain_xml)
@@ -6819,21 +6829,23 @@ class Vm(object):
 
         def make_vnc():
             devices = elements['devices']
+            listen_address = get_console_listen_address(cmd.hostManagementIp)
             if cmd.consolePassword == None:
                 vnc = e(devices, 'graphics', None, {'type': 'vnc', 'port': '5900', 'autoport': 'yes'})
             else:
                 vnc = e(devices, 'graphics', None,
                         {'type': 'vnc', 'port': '5900', 'autoport': 'yes', 'passwd': str(cmd.consolePassword)})
-            e(vnc, "listen", None, {'type': 'address', 'address': '0.0.0.0'})
+            e(vnc, "listen", None, {'type': 'address', 'address': listen_address})
 
         def make_spice():
             devices = elements['devices']
+            listen_address = get_console_listen_address(cmd.hostManagementIp)
             if cmd.consolePassword == None:
                 spice = e(devices, 'graphics', None, {'type': 'spice', 'port': '5900', 'autoport': 'yes'})
             else:
                 spice = e(devices, 'graphics', None,
                           {'type': 'spice', 'port': '5900', 'autoport': 'yes', 'passwd': str(cmd.consolePassword)})
-            e(spice, "listen", None, {'type': 'address', 'address': '0.0.0.0'})
+            e(spice, "listen", None, {'type': 'address', 'address': listen_address})
 
             if is_spice_tls() == 0 and cmd.spiceChannels != None:
                 for channel in cmd.spiceChannels:

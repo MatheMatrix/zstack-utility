@@ -29,6 +29,7 @@ from zstacklib.utils import http, lvm, ceph, pci, gpu
 from zstacklib.utils import qemu
 from zstacklib.utils import iptables
 from zstacklib.utils import iproute
+from zstacklib.utils import network_ipv6
 from zstacklib.utils import ebtables
 from zstacklib.utils import jsonobject
 from zstacklib.utils import lock
@@ -486,13 +487,7 @@ class HostNetworkBondingInventory(object):
         output = subprocess.check_output(
             ['ip', 'r', 'get', ip_addr]).decode('utf-8')
 
-        pattern = r'src ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
-        match = re.search(pattern, output)
-        if match:
-            src_addr = match.group(1)
-            return src_addr
-        else:
-            return None
+        return network_ipv6.extract_route_source_address(output)
 
 
 class HostNetworkInterfaceInventory(object):
@@ -692,13 +687,7 @@ class HostNetworkInterfaceInventory(object):
         output = subprocess.check_output(
             ['ip', 'r', 'get', ip_addr]).decode('utf-8')
 
-        pattern = r'src ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
-        match = re.search(pattern, output)
-        if match:
-            src_addr = match.group(1)
-            return src_addr
-        else:
-            return None
+        return network_ipv6.extract_route_source_address(output)
 
 
 class GetNumaTopologyResponse(kvmagent.AgentResponse):
@@ -1245,18 +1234,16 @@ class HostPlugin(kvmagent.KvmAgent):
 
         if self.host_socket is not None:
             self.host_socket.close()
-
-        try:
-            self.host_socket = socket.socket()
-        except socket.error as e:
             self.host_socket = None
 
-        ip_address = cmd.sendCommandUrl.split('/')[2].split(':')[0]
+        ip_address = network_ipv6.extract_url_host(cmd.sendCommandUrl)
         try:
+            self.host_socket = network_ipv6.create_tcp_socket_for_host(ip_address)
             self.host_socket.connect((ip_address, cmd.tcpServerPort))
 
         except socket.error as msg:
-            self.host_socket.close()
+            if self.host_socket is not None:
+                self.host_socket.close()
             self.host_socket = None
 
         self.start_write_to_server()
@@ -1353,8 +1340,7 @@ class HostPlugin(kvmagent.KvmAgent):
         qemu_img_version = shell.call(
             "qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1")
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
-        ipV4Addrs = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if
-                                         x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
+        ip_addrs = network_ipv6.collect_reportable_agent_addresses(iproute)
 
 
         def run_dmidecode(cmd, default=''):
@@ -1400,7 +1386,7 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.qemuImgVersion = qemu_img_version
         rsp.libvirtVersion = self.libvirt_version
         rsp.libvirtPackageVersion = linux.get_libvirt_package_version()
-        rsp.ipAddresses = ipV4Addrs
+        rsp.ipAddresses = ip_addrs
         rsp.cpuArchitecture = platform.machine()
         rsp.uptime = shell.call('uptime -s').strip()
         rsp.iscsiInitiatorName = linux.get_iscsi_initiator_name()

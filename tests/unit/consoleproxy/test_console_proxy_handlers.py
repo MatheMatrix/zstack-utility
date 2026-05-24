@@ -66,6 +66,17 @@ def _load_rsp(result):
     return json.loads(result)
 
 
+@pytest.mark.consoleproxy
+class TestIpv6HostPortFormatting:
+    def test_format_host_port_for_url_brackets_ipv6(self):
+        assert module.format_host_port_for_url("192.168.10.10", 5900) == "192.168.10.10:5900"
+        assert module.format_host_port_for_url("console-proxy.example.com", 5900) == "console-proxy.example.com:5900"
+        assert module.format_host_port_for_url("2001:db8::10", 5900) == "[2001:db8::10]:5900"
+
+    def test_format_host_port_for_grep_escapes_ipv6_brackets(self):
+        assert module.format_host_port_for_grep("2001:db8::10", 5900) == r"\[2001:db8::10\]:5900"
+
+
 # ---------------------------------------------------------------------------
 # ping
 # ---------------------------------------------------------------------------
@@ -345,6 +356,32 @@ class TestEstablishNewVncProxy:
         agent.token_ctrl.submit_delete_token_task.assert_called_once()
         agent.db.set.assert_called_once()
 
+    @patch.object(module, "bash_roe", return_value=(0, "", ""))
+    def test_establish_vnc_proxy_uses_bracketed_ipv6_endpoint(self, mock_bash):
+        agent = _make_agent()
+        token_file_mock = MagicMock()
+        token_file_mock.get_absolute_path.return_value = "/var/lib/zstack/consoleProxy/vm_ipv6_123"
+
+        future_expired = str(int(time.time() * 1000) + 600000)
+
+        with patch.object(module, "ConsoleTokenFile", return_value=token_file_mock):
+            result = agent.establish_new_proxy(_make_req({
+                "targetHostname": "2001:db8::11",
+                "targetPort": 5900,
+                "token": "vm_ipv6_123",
+                "proxyHostname": "2001:db8::10",
+                "proxyPort": 6800,
+                "expiredDate": future_expired,
+                "targetSchema": "vnc",
+                "sslCertFile": None,
+                "idleTimeout": 600,
+            }))
+
+        rsp = _load_rsp(result)
+        assert rsp["success"] is True
+        token_file_mock.flush_write.assert_called_once_with("vm_ipv6_123: [2001:db8::11]:5900")
+        assert any(r"\[2001:db8::10\]:6800" in call_args[0][0] for call_args in mock_bash.call_args_list)
+
 
 # ---------------------------------------------------------------------------
 # establish_new_proxy — HTTP path
@@ -373,6 +410,30 @@ class TestEstablishNewHttpProxy:
         assert rsp["success"] is True
         assert rsp["proxyPort"] == 80
         assert rsp["token"] == "bm_token_123"
+
+    @patch.object(module, "bash_roe", return_value=(0, "", ""))
+    @patch("os.path.exists", return_value=True)
+    def test_establish_http_proxy_uses_bracketed_ipv6_upstream(self, mock_exists, mock_bash):
+        agent = _make_agent()
+        future_expired = str(int(time.time() * 1000) + 600000)
+        mocked_open = mock_open()
+
+        with patch("builtins.open", mocked_open):
+            result = agent.establish_new_proxy(_make_req({
+                "targetHostname": "2001:db8::20",
+                "targetPort": 8080,
+                "token": "bm_token_ipv6",
+                "proxyHostname": "proxy1",
+                "proxyPort": 80,
+                "expiredDate": future_expired,
+                "targetSchema": "http",
+                "vmUuid": "vm-uuid-ipv6",
+            }))
+
+        rsp = _load_rsp(result)
+        assert rsp["success"] is True
+        mocked_open().write.assert_called_once_with(
+            "location ^~/bm_token_ipv6/ { proxy_set_header Host $host; proxy_pass http://[2001:db8::20]:8080; }")
 
 
 # ---------------------------------------------------------------------------

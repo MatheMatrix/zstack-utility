@@ -6,6 +6,7 @@ from zstacklib.utils import daemon
 from zstacklib.utils import linux
 from zstacklib.utils import filedb
 from zstacklib.utils import lock
+from zstacklib.utils import network_ipv6
 from zstacklib.utils.bash import *
 import os
 import os.path
@@ -16,6 +17,19 @@ import functools
 import threading
 
 logger = log.get_logger(__name__)
+
+GREP_OPEN_BRACKET = r'\['
+GREP_CLOSE_BRACKET = r'\]'
+SHELL_HOST_PORT_FORMAT = '%s:%s'
+
+
+def format_host_port_for_url(host, port):
+    return SHELL_HOST_PORT_FORMAT % (network_ipv6.format_url_host(host), port)
+
+
+def format_host_port_for_grep(host, port):
+    return format_host_port_for_url(host, port).replace('[', GREP_OPEN_BRACKET).replace(']', GREP_CLOSE_BRACKET)
+
 
 class AgentResponse(object):
     def __init__(self, success=True, error=None):
@@ -265,8 +279,9 @@ class ConsoleProxyAgent(object):
 
     def _delete_vnc_proxy(self, req):
         def kill_proxy_process():
+            target_host_port = format_host_port_for_grep(cmd.targetHostname, cmd.targetPort)
             out = shell.ShellCmd(
-                "netstat -ntp | grep '%s:%s *ESTABLISHED.*python'" % (cmd.targetHostname, cmd.targetPort))
+                "netstat -ntp | grep '%s *ESTABLISHED.*python'" % target_host_port)
             out(False)
             pids = [line.strip().split(' ')[-1].split('/')[0] for line in out.stdout.splitlines()]
             for pid in pids:
@@ -363,7 +378,8 @@ class ConsoleProxyAgent(object):
 
         conf_path = os.path.join(self.BM2_INSTANCE_NGINX_CONF_DIR, cmd.vmUuid + ".conf")
         with open(conf_path, 'w') as f:
-            content = "location ^~/%s/ { proxy_set_header Host $host; proxy_pass http://%s:%s; }" % (cmd.token, cmd.targetHostname, cmd.targetPort)
+            content = "location ^~/%s/ { proxy_set_header Host $host; proxy_pass http://%s; }" % (
+                cmd.token, format_host_port_for_url(cmd.targetHostname, cmd.targetPort))
             f.write(content)
 
         # reload the service
@@ -378,9 +394,12 @@ class ConsoleProxyAgent(object):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = EstablishProxyRsp()
         log_file = os.path.join(self.PROXY_LOG_DIR, cmd.proxyHostname)
+        proxy_host_port = format_host_port_for_url(cmd.proxyHostname, cmd.proxyPort)
+        proxy_host_port_grep = format_host_port_for_grep(cmd.proxyHostname, cmd.proxyPort)
+        target_host_port = format_host_port_for_url(cmd.targetHostname, cmd.targetPort)
 
         token_file = ConsoleTokenFile(cmd.token)
-        token_file.flush_write('%s: %s:%s' % (cmd.token, cmd.targetHostname, cmd.targetPort))
+        token_file.flush_write('%s: %s' % (cmd.token, target_host_port))
         self.token_ctrl.submit_delete_token_task(token_file, cmd.expiredDate)
 
         info = {
@@ -399,9 +418,9 @@ class ConsoleProxyAgent(object):
 
         ## kill garbage websockify process: same proxyip:proxyport, different cert file
         if not cmd.sslCertFile:
-            command = "ps aux | grep '[z]stack.*websockify_init' | grep '%s:%d' | grep 'cert=' | awk '{ print $2 }'" % (cmd.proxyHostname, cmd.proxyPort)
+            command = "ps aux | grep '[z]stack.*websockify_init' | grep '%s' | grep 'cert=' | awk '{ print $2 }'" % proxy_host_port_grep
         else:
-            command = "ps aux | grep '[z]stack.*websockify_init' | grep '%s:%d' | grep -v '%s' | awk '{ print $2 }'" % (cmd.proxyHostname, cmd.proxyPort, cmd.sslCertFile)
+            command = "ps aux | grep '[z]stack.*websockify_init' | grep '%s' | grep -v '%s' | awk '{ print $2 }'" % (proxy_host_port_grep, cmd.sslCertFile)
         ret,out,err = bash_roe(command)
         for pid in out.splitlines():
             try:
@@ -413,7 +432,7 @@ class ConsoleProxyAgent(object):
         alive = False
         ret,out,err = bash_roe("ps aux | grep '[z]stack.*websockify_init'")
         for o in out.splitlines():
-            if o.find("%s:%d" % (cmd.proxyHostname, cmd.proxyPort)) != -1:
+            if o.find(proxy_host_port) != -1:
                 alive = True
                 break
         if alive:
@@ -427,12 +446,11 @@ class ConsoleProxyAgent(object):
         @in_bash
         def start_proxy():
             LOG_FILE = log_file
-            PROXY_HOST_NAME = cmd.proxyHostname
-            PROXY_PORT = cmd.proxyPort
+            PROXY_HOST_PORT = proxy_host_port
             TOKEN_FILE_DIR = self.TOKEN_FILE_DIR 
             TIMEOUT = timeout
             TLS_VERSION = "--ssl-version=%s" % cmd.tlsVersion if cmd.tlsVersion else ""
-            start_cmd = '''python -c "from zstacklib.utils import log; import websockify; log.configure_log('{{LOG_FILE}}'); websockify.websocketproxy.websockify_init()" {{PROXY_HOST_NAME}}:{{PROXY_PORT}} -D --target-config={{TOKEN_FILE_DIR}} --idle-timeout={{TIMEOUT}} {{TLS_VERSION}}'''
+            start_cmd = '''python -c "from zstacklib.utils import log; import websockify; log.configure_log('{{LOG_FILE}}'); websockify.websocketproxy.websockify_init()" {{PROXY_HOST_PORT}} -D --target-config={{TOKEN_FILE_DIR}} --idle-timeout={{TIMEOUT}} {{TLS_VERSION}}'''
             if cmd.sslCertFile:
                 start_cmd += ' --cert=%s' % cmd.sslCertFile
             ret,out,err = bash_roe(start_cmd)

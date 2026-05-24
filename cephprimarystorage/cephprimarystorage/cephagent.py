@@ -24,6 +24,7 @@ from zstacklib.utils.rollback import rollback, rollbackable
 from zstacklib.utils.plugin import completetask
 import os
 from zstacklib.utils import shell, iproute, remotetarget
+from zstacklib.utils import network_ipv6
 from zstacklib.utils import plugin
 from zstacklib.utils import linux
 from zstacklib.utils import ceph
@@ -690,7 +691,7 @@ class CephAgent(plugin.TaskManager):
         rsp.fsid = ceph.get_fsid()
         rsp.type = ceph.get_ceph_manufacturer()
 
-        ip_addresses = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
+        ip_addresses = network_ipv6.collect_reportable_agent_addresses(iproute)
         rsp.ipAddresses = ip_addresses
 
         return jsonobject.dumps(rsp)
