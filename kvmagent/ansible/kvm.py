@@ -398,8 +398,7 @@ def install_kvm_pkg():
         
         arch_exclude_mapping = {
             'loongarch64': 'edac-utils freeipmi lldpd libcbd',
-            'x86_64_alinux4': 'usbredir-server collectd-virt storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils collectd-disk lldpd edk2.git-ovmf-x64',
-            # aarch64 alinux4: same RAID/x86 firmware exclusions, plus edk2-aarch64 already covered separately
+            'x86_64_alinux4': 'usbredir-server storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils',
             'aarch64_alinux4': 'usbredir-server collectd-virt storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils collectd-disk lldpd edk2.git-ovmf-x64'
         }
 
