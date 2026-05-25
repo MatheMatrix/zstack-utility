@@ -416,18 +416,24 @@ class NetworkPlugin(kvmagent.KvmAgent):
         return True
 
     def _configure_bridge(self, disableIptables):
-        shell.call('modprobe br_netfilter || true')
-        if disableIptables:
-            self.modifySysConfiguration("net.bridge.bridge-nf-call-iptables", 1, 0)
-            self.modifySysConfiguration("net.bridge.bridge-nf-call-ip6tables", 1, 0)
-        else:
-            self.modifySysConfiguration("net.bridge.bridge-nf-call-iptables", 0, 1)
-            self.modifySysConfiguration("net.bridge.bridge-nf-call-ip6tables", 0, 1)
-        linux.write_file('/proc/sys/net/bridge/bridge-nf-call-iptables', '0' if disableIptables else '1')
-        linux.write_file('/proc/sys/net/bridge/bridge-nf-call-ip6tables', '0' if disableIptables else '1')
-        linux.write_file('/proc/sys/net/bridge/bridge-nf-filter-vlan-tagged', '1')
-        linux.write_file('/proc/sys/net/ipv4/conf/default/forwarding', '1')
-        linux.write_file('/proc/sys/net/ipv6/conf/default/forwarding', '1')
+        disableIptables = bool(disableIptables)
+        with lock.NamedLock('bridge-configure'):
+            if getattr(self, '_configured_bridge_disable_iptables', None) == disableIptables:
+                return
+
+            shell.call('modprobe br_netfilter || true')
+            if disableIptables:
+                self.modifySysConfiguration("net.bridge.bridge-nf-call-iptables", 1, 0)
+                self.modifySysConfiguration("net.bridge.bridge-nf-call-ip6tables", 1, 0)
+            else:
+                self.modifySysConfiguration("net.bridge.bridge-nf-call-iptables", 0, 1)
+                self.modifySysConfiguration("net.bridge.bridge-nf-call-ip6tables", 0, 1)
+            linux.write_file('/proc/sys/net/bridge/bridge-nf-call-iptables', '0' if disableIptables else '1')
+            linux.write_file('/proc/sys/net/bridge/bridge-nf-call-ip6tables', '0' if disableIptables else '1')
+            linux.write_file('/proc/sys/net/bridge/bridge-nf-filter-vlan-tagged', '1')
+            linux.write_file('/proc/sys/net/ipv4/conf/default/forwarding', '1')
+            linux.write_file('/proc/sys/net/ipv6/conf/default/forwarding', '1')
+            self._configured_bridge_disable_iptables = disableIptables
 
     def _get_interface_mtu(self, interf):
         try:
@@ -436,6 +442,12 @@ class NetworkPlugin(kvmagent.KvmAgent):
         except Exception as e:
             logger.debug("get mtu of link: %s failed: %s", interf, str(e))
             return 0
+
+    def _get_interface_mtu_if_exists(self, interf):
+        if not os.path.exists('/sys/class/net/%s' % interf):
+            return 0
+
+        return self._get_interface_mtu(interf)
 
     @in_bash
     def _configure_bridge_mtu(self, bridgeName, interf, mtu=None):
@@ -1083,11 +1095,20 @@ configure lldp status rx-only \n
 
         return jsonobject.dumps(rsp)
 
-    @lock.lock('bridge')
     @kvmagent.replyerror
     def create_vlan_bridge(self, req):
         rsp = CreateVlanBridgeResponse()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        with lock.NamedLock(self._get_vlan_bridge_lock_name(cmd)):
+            return self._create_vlan_bridge(cmd, rsp)
+
+    def _get_vlan_bridge_lock_name(self, cmd):
+        if cmd.vlan == 0 or getattr(cmd, 'isolated', False):
+            return 'bridge'
+
+        return 'vlan-bridge-%s-%s' % (cmd.physicalInterfaceName, cmd.vlan)
+
+    def _create_vlan_bridge(self, cmd, rsp):
         if cmd.vlan == 0:
             try:
                 self.create_novlan_bridge(cmd, rsp)
@@ -1100,7 +1121,7 @@ configure lldp status rx-only \n
 
         vlanInterfName = '%s.%s' % (cmd.physicalInterfaceName, cmd.vlan)
 
-        oldMtu = self._get_interface_mtu(vlanInterfName)
+        oldMtu = self._get_interface_mtu_if_exists(vlanInterfName)
         mtu = cmd.mtu
         if oldMtu > cmd.mtu:
             mtu = oldMtu
