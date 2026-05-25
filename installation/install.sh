@@ -3001,6 +3001,16 @@ cs_setup_nfs(){
         chkconfig rpcbind on >>$ZSTACK_INSTALL_LOG 2>&1
         service rpcbind restart >>$ZSTACK_INSTALL_LOG 2>&1
         service nfs restart >>$ZSTACK_INSTALL_LOG 2>&1
+    elif [[ "$OS" = "ALINUX4" ]]; then
+        for service in rpcbind nfs-server; do
+            systemctl enable $service >>$ZSTACK_INSTALL_LOG 2>&1 || fail "failed to setup NFS server"
+            systemctl restart $service >>$ZSTACK_INSTALL_LOG 2>&1 || fail "failed to setup NFS server"
+        done
+        for service in nfs-lock nfs-idmap; do
+            systemctl cat $service >/dev/null 2>&1 || continue
+            systemctl enable $service >>$ZSTACK_INSTALL_LOG 2>&1 || fail "failed to setup NFS server"
+            systemctl restart $service >>$ZSTACK_INSTALL_LOG 2>&1 || fail "failed to setup NFS server"
+        done
     elif [[ $REDHAT_WITHOUT_CENTOS6 =~ $OS ]]; then
         systemctl enable rpcbind >>$ZSTACK_INSTALL_LOG 2>&1
         systemctl enable nfs-server >>$ZSTACK_INSTALL_LOG 2>&1
