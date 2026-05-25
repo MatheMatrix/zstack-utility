@@ -27,18 +27,43 @@ from jinja2 import Template
 import struct
 import socket
 import platform
+import time
 
 from zstacklib.utils.ovs import OvsError
 
 logger = log.get_logger(__name__)
 
 
-@functools.lru_cache(maxsize=1)
+def _lru_cache(maxsize=128):
+    if hasattr(functools, 'lru_cache'):
+        return functools.lru_cache(maxsize=maxsize)
+
+    def decorator(func):
+        cache = {}
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            key = args
+            if kwargs:
+                key = args + tuple(sorted(kwargs.items()))
+
+            if key not in cache:
+                if maxsize is not None and len(cache) >= maxsize:
+                    cache.clear()
+                cache[key] = func(*args, **kwargs)
+            return cache[key]
+
+        return wrapper
+
+    return decorator
+
+
+@_lru_cache(maxsize=1)
 def get_ebtables_cmd():
     return ebtables.get_ebtables_cmd()
 
 
-@functools.lru_cache(maxsize=1)
+@_lru_cache(maxsize=1)
 def get_iptables_cmd():
     return iptables.get_iptables_cmd()
 
@@ -1146,7 +1171,7 @@ class Mevoco(kvmagent.KvmAgent):
     KVM_HOST_PUSHGATEWAY_PORT = "9092"
 
     def __init__(self):
-        self.signal_count = 0
+        self.signal_count = {}
         self.userData_vms = {}
 
     def start(self):
@@ -1173,15 +1198,17 @@ class Mevoco(kvmagent.KvmAgent):
     def stop(self):
         pass
 
-    @lock.lock('dnsmasq')
     @kvmagent.replyerror
     def remove_dns_forward(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = RemoveForwardDnsRsp()
 
-        conf_file_path, dhcp_path, dns_path, option_path, _ = self._make_conf_path(cmd.nameSpace)
-        self._remove_dns_forward(cmd.mac, option_path)
-        self._restart_dnsmasq(cmd.nameSpace, conf_file_path)
+        def remove():
+            conf_file_path, dhcp_path, dns_path, option_path, _ = self._make_conf_path(cmd.nameSpace)
+            self._remove_dns_forward(cmd.mac, option_path)
+            self._restart_dnsmasq(cmd.nameSpace, conf_file_path)
+
+        self._with_dnsmasq_locks([cmd.nameSpace], remove)
 
         return jsonobject.dumps(rsp)
 
@@ -1195,13 +1222,12 @@ sed -i '/^$/d' {{OPTION}};
 ''')
 
 
-    @lock.lock('dnsmasq')
     @kvmagent.replyerror
     def setup_dns_forward(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = SetForwardDnsRsp()
 
-        self._apply_dns_forward(cmd)
+        self._with_dnsmasq_locks([cmd.nameSpace], lambda: self._apply_dns_forward(cmd))
 
         return jsonobject.dumps(rsp)
 
@@ -2252,32 +2278,40 @@ mimetype.assign = (
 
         return jsonobject.dumps(PrepareDhcpRsp())
 
-    @lock.lock('dnsmasq')
     @kvmagent.replyerror
     def reset_default_gateway(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
-        if cmd.namespaceNameOfGatewayToRemove and cmd.macOfGatewayToRemove and cmd.gatewayToRemove:
-            conf_file_path, _, _, option_path, _ = self._make_conf_path(cmd.namespaceNameOfGatewayToRemove)
-            mac_to_remove = cmd.macOfGatewayToRemove.replace(':', '')
+        namespaces = []
+        if cmd.namespaceNameOfGatewayToRemove:
+            namespaces.append(cmd.namespaceNameOfGatewayToRemove)
+        if cmd.namespaceNameOfGatewayToAdd:
+            namespaces.append(cmd.namespaceNameOfGatewayToAdd)
 
-            def is_line_to_delete(line):
-                return cmd.gatewayToRemove in line and mac_to_remove in line and 'router' in line
+        def reset():
+            if cmd.namespaceNameOfGatewayToRemove and cmd.macOfGatewayToRemove and cmd.gatewayToRemove:
+                conf_file_path, _, _, option_path, _ = self._make_conf_path(cmd.namespaceNameOfGatewayToRemove)
+                mac_to_remove = cmd.macOfGatewayToRemove.replace(':', '')
 
-            linux.delete_lines_from_file(option_path, is_line_to_delete)
-            self._refresh_dnsmasq(cmd.namespaceNameOfGatewayToRemove, conf_file_path)
+                def is_line_to_delete(line):
+                    expected = 'tag:%s,option:router,%s' % (mac_to_remove, cmd.gatewayToRemove)
+                    return line.strip() == expected
 
-        if cmd.namespaceNameOfGatewayToAdd and cmd.macOfGatewayToAdd and cmd.gatewayToAdd:
-            conf_file_path, _, _, option_path, _ = self._make_conf_path(cmd.namespaceNameOfGatewayToAdd)
-            option = 'tag:%s,option:router,%s\n' % (cmd.macOfGatewayToAdd.replace(':', ''), cmd.gatewayToAdd)
-            with open(option_path, 'a+') as fd:
-                fd.write(option)
+                linux.delete_lines_from_file(option_path, is_line_to_delete)
+                self._refresh_dnsmasq(cmd.namespaceNameOfGatewayToRemove, conf_file_path)
 
-            self._refresh_dnsmasq(cmd.namespaceNameOfGatewayToAdd, conf_file_path)
+            if cmd.namespaceNameOfGatewayToAdd and cmd.macOfGatewayToAdd and cmd.gatewayToAdd:
+                conf_file_path, _, _, option_path, _ = self._make_conf_path(cmd.namespaceNameOfGatewayToAdd)
+                option = 'tag:%s,option:router,%s\n' % (cmd.macOfGatewayToAdd.replace(':', ''), cmd.gatewayToAdd)
+                with open(option_path, 'a+') as fd:
+                    fd.write(option)
+
+                self._refresh_dnsmasq(cmd.namespaceNameOfGatewayToAdd, conf_file_path)
+
+        self._with_dnsmasq_locks(namespaces, reset)
 
         return jsonobject.dumps(ResetGatewayRsp())
 
-    @lock.lock('dnsmasq')
     @kvmagent.replyerror
     def apply_dhcp(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -2290,12 +2324,12 @@ mimetype.assign = (
                 namespace_dhcp[d.namespaceName] = lst
             lst.append(d)
 
-        self.do_apply_dhcp(namespace_dhcp, cmd.rebuild)
+        self._log_dhcp_apply("apply_dhcp", namespace_dhcp, cmd.rebuild,
+                             lambda: self.do_apply_dhcp(namespace_dhcp, cmd.rebuild))
         rsp = ApplyDhcpRsp()
         return jsonobject.dumps(rsp)
 
 
-    @lock.lock('dnsmasq')
     @kvmagent.replyerror
     def batch_apply_dhcp(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -2310,9 +2344,33 @@ mimetype.assign = (
                     namespace_dhcp[d.namespaceName] = lst
                 lst.append(d)
 
-        self.do_apply_dhcp(namespace_dhcp, cmd.rebuild)
+        self._log_dhcp_apply("batch_apply_dhcp", namespace_dhcp, cmd.rebuild,
+                             lambda: self.do_apply_dhcp(namespace_dhcp, cmd.rebuild))
         rsp = ApplyDhcpRsp()
         return jsonobject.dumps(rsp)
+
+    def _with_dnsmasq_locks(self, namespaces, callback):
+        locks = []
+        try:
+            for namespace in sorted(set([n for n in namespaces if n])):
+                named_lock = lock.NamedLock("dnsmasq-%s" % namespace)
+                named_lock.__enter__()
+                locks.append(named_lock)
+            return callback()
+        finally:
+            for named_lock in reversed(locks):
+                named_lock.__exit__(None, None, None)
+
+    def _log_dhcp_apply(self, action, namespace_dhcp, rebuild, callback):
+        entry_count = sum([len(v) for v in namespace_dhcp.values()])
+        start = time.time()
+        logger.debug("%s starts, entry count[%s], namespace count[%s], rebuild[%s]" %
+                     (action, entry_count, len(namespace_dhcp), rebuild))
+        try:
+            return callback()
+        finally:
+            logger.debug("%s ends, entry count[%s], namespace count[%s], rebuild[%s], cost[%.3fs]" %
+                         (action, entry_count, len(namespace_dhcp), rebuild, time.time() - start))
 
     def do_apply_dhcp(self, namespace_dhcp, rebuild):
         @in_bash
@@ -2466,8 +2524,11 @@ dhcp-range={{g}}
                 dhcp_info['address'] = address
                 info.append(dhcp_info)
 
-                if not rebuild:
-                    self._erase_configurations(d.mac, d.ip, dhcp_path, dns_path, option_path)
+            if not rebuild:
+                erase_start = time.time()
+                self._erase_configurations_batch(dhcp, dhcp_path, dns_path, option_path)
+                logger.debug("erased old dhcp configurations for namespace[%s], entry count[%s], cost[%.3fs]" %
+                             (namespace_name, len(dhcp), time.time() - erase_start))
 
             dhcp_conf = '''\
 {% for d in dhcp -%}
@@ -2544,10 +2605,13 @@ tag:{{o.tag}},option:mtu,{{o.mtu}}
             with open(dns_path, mode) as fd:
                 fd.write(hostname_conf)
 
+            dnsmasq_start = time.time()
             if restart_dnsmasq:
                 self._restart_dnsmasq(namespace_name, conf_file_path)
             else:
                 self._refresh_dnsmasq(namespace_name, conf_file_path)
+            logger.debug("refreshed dnsmasq for namespace[%s], restart[%s], cost[%.3fs]" %
+                         (namespace_name, restart_dnsmasq, time.time() - dnsmasq_start))
 
         @in_bash
         def applyv6(dhcp):
@@ -2621,8 +2685,11 @@ dhcp-range={{range}}
                     dhcp_info['domainList'] = ",".join(d.dnsDomain)
                 info.append(dhcp_info)
 
-                if not rebuild:
-                    self._erase_configurations(d.mac, d.ip, dhcp_path, dns_path, option_path)
+            if not rebuild:
+                erase_start = time.time()
+                self._erase_configurations_batch(dhcp, dhcp_path, dns_path, option_path)
+                logger.debug("erased old dhcp configurations for namespace[%s], entry count[%s], cost[%.3fs]" %
+                             (namespace_name, len(dhcp), time.time() - erase_start))
 
             dhcp_conf = '''\
 {% for d in dhcp -%}
@@ -2669,16 +2736,24 @@ tag:{{o.tag}},option6:domain-search,{{o.domainList}}
             with open(dns_path, mode) as fd:
                 fd.write(hostname_conf)
 
+            dnsmasq_start = time.time()
             if restart_dnsmasq:
                 self._restart_dnsmasq(namespace_name, conf_file_path)
             else:
                 self._refresh_dnsmasq(namespace_name, conf_file_path)
+            logger.debug("refreshed dnsmasq for namespace[%s], restart[%s], cost[%.3fs]" %
+                         (namespace_name, restart_dnsmasq, time.time() - dnsmasq_start))
 
         for k, v in namespace_dhcp.items():
-            if v[0].ipVersion == 4 or v[0].ipVersion == 46:
-                apply(v)
-            else:
-                applyv6(v)
+            namespace_start = time.time()
+            logger.debug("applying dhcp for namespace[%s], entry count[%s], rebuild[%s]" % (k, len(v), rebuild))
+            with lock.NamedLock("dnsmasq-%s" % k):
+                if v[0].ipVersion == 4 or v[0].ipVersion == 46:
+                    apply(v)
+                else:
+                    applyv6(v)
+            logger.debug("applied dhcp for namespace[%s], entry count[%s], rebuild[%s], cost[%.3fs]" %
+                         (k, len(v), rebuild, time.time() - namespace_start))
 
     def _restart_dnsmasq(self, ns_name, conf_file_path):
         pid = linux.find_process_by_cmdline([conf_file_path])
@@ -2697,6 +2772,7 @@ tag:{{o.tag}},option6:domain-search,{{o.domainList}}
 
         if not linux.wait_callback_success(check, None, 5):
             raise Exception('dnsmasq[conf-file:%s] is not running after being started %s seconds' % (conf_file_path, 5))
+        self.signal_count[ns_name] = 0
 
     def _refresh_dnsmasq(self, ns_name, conf_file_path):
         pid = linux.find_process_by_cmdline([conf_file_path])
@@ -2704,34 +2780,95 @@ tag:{{o.tag}},option6:domain-search,{{o.domainList}}
             self._restart_dnsmasq(ns_name, conf_file_path)
             return
 
-        if self.signal_count > 50:
+        signal_count = self.signal_count.get(ns_name, 0)
+        if signal_count > 50:
             self._restart_dnsmasq(ns_name, conf_file_path)
-            self.signal_count = 0
+            self.signal_count[ns_name] = 0
             return
 
         shell.call('kill -1 %s' % pid)
-        self.signal_count += 1
+        self.signal_count[ns_name] = signal_count + 1
 
     def _erase_configurations(self, mac, ip, dhcp_path, dns_path, option_path):
-        MAC = mac
-        TAG = mac.replace(':', '')
-        DHCP = dhcp_path
-        OPTION = option_path
-        IP = ip
-        DNS = dns_path
+        class DhcpInfo(object):
+            pass
 
-        bash_errorout('''\
-sed -i '/{{MAC}},/d' {{DHCP}};
-sed -i '/,{{IP}},/d' {{DHCP}};
-sed -i '/^$/d' {{DHCP}};
-sed -i '/{{TAG}},/d' {{OPTION}};
-sed -i '/^$/d' {{OPTION}};
-sed -i '/^{{IP}} /d' {{DNS}};
-sed -i '/^$/d' {{DNS}}
-''')
+        dhcp_info = DhcpInfo()
+        dhcp_info.mac = mac
+        dhcp_info.ip = ip
+        self._erase_configurations_batch([dhcp_info], dhcp_path, dns_path, option_path)
 
+    def _erase_configurations_batch(self, dhcp_infos, dhcp_path, dns_path, option_path):
+        macs = set()
+        tags = set()
+        ips = set()
+        for dhcp_info in dhcp_infos:
+            mac = getattr(dhcp_info, 'mac', None)
+            ip_addr = getattr(dhcp_info, 'ip', None)
+            ip6_addr = getattr(dhcp_info, 'ip6', None)
+            if mac:
+                macs.add(str(mac))
+                tags.add(str(mac).replace(':', ''))
+            if ip_addr:
+                ips.add(str(ip_addr))
+            if ip6_addr:
+                ips.add(str(ip6_addr))
 
-    @lock.lock('dnsmasq')
+        def keep_dhcp_line(line):
+            if not line.strip():
+                return False
+            for mac in macs:
+                if "%s," % mac in line:
+                    return False
+            for ip_addr in ips:
+                if ",%s," % ip_addr in line or ",[%s]," % ip_addr in line:
+                    return False
+            return True
+
+        def keep_option_line(line):
+            if not line.strip():
+                return False
+            for tag in tags:
+                if "%s," % tag in line:
+                    return False
+            return True
+
+        def keep_dns_line(line):
+            if not line.strip():
+                return False
+            for ip_addr in ips:
+                if line.startswith("%s " % ip_addr):
+                    return False
+            return True
+
+        self._rewrite_lines(dhcp_path, keep_dhcp_line)
+        self._rewrite_lines(option_path, keep_option_line)
+        self._rewrite_lines(dns_path, keep_dns_line)
+
+    def _rewrite_lines(self, path, keep_line):
+        with open(path, 'r') as fd:
+            original_lines = fd.readlines()
+
+        new_lines = [line for line in original_lines if keep_line(line)]
+        if new_lines == original_lines:
+            return
+
+        directory = os.path.dirname(path)
+        fd, tmp_path = tempfile.mkstemp(dir=directory)
+        try:
+            with os.fdopen(fd, 'w') as tmp:
+                tmp.writelines(new_lines)
+            path_stat = os.stat(path)
+            os.chmod(tmp_path, path_stat.st_mode)
+            try:
+                os.chown(tmp_path, path_stat.st_uid, path_stat.st_gid)
+            except OSError:
+                pass
+            os.rename(tmp_path, path)
+        except Exception:
+            linux.rm_file_force(tmp_path)
+            raise
+
     @kvmagent.replyerror
     def release_dhcp(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -2770,16 +2907,20 @@ sed -i '/^$/d' {{DNS}}
 
         @in_bash
         def release(dhcp):
+            if not dhcp:
+                return
+
+            conf_file_path, dhcp_path, dns_path, option_path, _ = self._make_conf_path(dhcp[0].namespaceName)
             for d in dhcp:
                 if d.nicType == "VF":
                     _remove_ebtable_rules_for_vfnics(d)
 
-                conf_file_path, dhcp_path, dns_path, option_path, _ = self._make_conf_path(d.namespaceName)
-                self._erase_configurations(d.mac, d.ip, dhcp_path, dns_path, option_path)
-                self._restart_dnsmasq(d.namespaceName, conf_file_path)
+            self._erase_configurations_batch(dhcp, dhcp_path, dns_path, option_path)
+            self._restart_dnsmasq(dhcp[0].namespaceName, conf_file_path)
 
         for k, v in namespace_dhcp.items():
-            release(v)
+            with lock.NamedLock("dnsmasq-%s" % k):
+                release(v)
 
         rsp = ReleaseDhcpRsp()
         return jsonobject.dumps(rsp)

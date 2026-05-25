@@ -85,6 +85,7 @@ class _NetworkPluginProto(Protocol):
 
     _has_vlan_or_bridge: Callable[[str], bool]
     _get_interface_mtu: Callable[[str], int]
+    _get_interface_mtu_if_exists: Callable[[str], int]
     _add_interface_to_collectd_conf: Callable[..., None]
     _remove_interface_from_collectd_conf: Callable[..., None]
     _restart_collectd: Callable[..., None]
@@ -1012,6 +1013,145 @@ class TestNetworkPluginUpdateVxlanBridge:
 
 @pytest.mark.kvmagent
 class TestNetworkPluginCreateVlanBridge:
+    def test_configure_bridge_is_cached_for_same_iptables_setting(self):
+        plugin = _make_plugin()
+        linux = cast(_LinuxModule, cast(object, importlib.import_module("zstacklib.utils.linux")))
+        shell = cast(_ShellModule, cast(object, importlib.import_module("zstacklib.utils.shell")))
+        os_module = cast(_OsModule, cast(object, importlib.import_module("os")))
+
+        os_module.path.exists = MagicMock(return_value=True)
+        linux.read_file_lines = MagicMock(return_value=[
+            'net.bridge.bridge-nf-call-iptables = 1\n',
+            'net.bridge.bridge-nf-call-ip6tables = 1\n',
+        ])
+        linux.write_file = MagicMock(return_value=True)
+        shell.call = MagicMock()
+
+        plugin._configure_bridge(False)
+        first_write_count = linux.write_file.call_count
+        plugin._configure_bridge(False)
+
+        shell.call.assert_called_once_with('modprobe br_netfilter || true')
+        assert linux.write_file.call_count == first_write_count
+
+        plugin._configure_bridge(True)
+
+        assert shell.call.call_count == 2
+        assert linux.write_file.call_count > first_write_count
+
+    def test_create_vlan_bridge_uses_vlan_specific_lock_for_plain_vlan(self):
+        plugin = _make_plugin()
+        plugin_module = importlib.import_module("kvmagent.plugins.network_plugin")
+        linux = cast(_LinuxModule, cast(object, importlib.import_module("zstacklib.utils.linux")))
+        os_module = cast(_OsModule, cast(object, importlib.import_module("os")))
+        lock_names = []
+
+        class RecordingLock(object):
+            def __init__(self, name):
+                self.name = name
+
+            def __enter__(self):
+                lock_names.append(self.name)
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        os_module.path.exists = MagicMock(return_value=False)
+        setattr(plugin, "_configure_bridge", MagicMock())
+        setattr(plugin, "_configure_bridge_mtu", MagicMock())
+        setattr(plugin, "_configure_bridge_learning", MagicMock())
+        setattr(plugin, "_enable_bridge_igmp_snooping", MagicMock())
+        linux.create_vlan_bridge = MagicMock()
+        linux.set_bridge_alias_using_phy_nic_name = MagicMock()
+        linux.set_device_uuid_alias = MagicMock()
+
+        req = _make_req({
+            'bridgeName': 'br0',
+            'physicalInterfaceName': 'eth0',
+            'vlan': 100,
+            'l2NetworkUuid': 'l2-uuid',
+            'disableIptables': False,
+            'mtu': 1500,
+        })
+        with patch.object(plugin_module.lock, "NamedLock", RecordingLock):
+            result = plugin.create_vlan_bridge(req)
+        rsp = _load_rsp(result)
+
+        assert rsp['success'] is True
+        assert lock_names == ['vlan-bridge-eth0-100']
+
+    def test_create_vlan_bridge_keeps_global_lock_for_isolated_vlan(self):
+        plugin = _make_plugin()
+        plugin_module = importlib.import_module("kvmagent.plugins.network_plugin")
+        linux = cast(_LinuxModule, cast(object, importlib.import_module("zstacklib.utils.linux")))
+        os_module = cast(_OsModule, cast(object, importlib.import_module("os")))
+        lock_names = []
+
+        class RecordingLock(object):
+            def __init__(self, name):
+                self.name = name
+
+            def __enter__(self):
+                lock_names.append(self.name)
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        os_module.path.exists = MagicMock(return_value=False)
+        setattr(plugin, "_configure_bridge", MagicMock())
+        setattr(plugin, "_configure_bridge_mtu", MagicMock())
+        setattr(plugin, "_configure_bridge_learning", MagicMock())
+        setattr(plugin, "_enable_bridge_igmp_snooping", MagicMock())
+        setattr(plugin, "_configure_isolated", MagicMock())
+        linux.create_vlan_bridge = MagicMock()
+        linux.set_bridge_alias_using_phy_nic_name = MagicMock()
+        linux.set_device_uuid_alias = MagicMock()
+
+        req = _make_req({
+            'bridgeName': 'br0',
+            'physicalInterfaceName': 'eth0',
+            'vlan': 100,
+            'l2NetworkUuid': 'l2-uuid',
+            'disableIptables': False,
+            'mtu': 1500,
+            'isolated': True,
+        })
+        with patch.object(plugin_module.lock, "NamedLock", RecordingLock):
+            result = plugin.create_vlan_bridge(req)
+        rsp = _load_rsp(result)
+
+        assert rsp['success'] is True
+        assert lock_names == ['bridge']
+
+    def test_create_vlan_bridge_skips_mtu_query_when_vlan_interface_missing(self):
+        plugin = _make_plugin()
+        linux = cast(_LinuxModule, cast(object, importlib.import_module("zstacklib.utils.linux")))
+        os_module = cast(_OsModule, cast(object, importlib.import_module("os")))
+
+        os_module.path.exists = MagicMock(return_value=False)
+        setattr(plugin, "_get_interface_mtu", MagicMock(return_value=1500))
+        setattr(plugin, "_configure_bridge", MagicMock())
+        setattr(plugin, "_configure_bridge_mtu", MagicMock())
+        setattr(plugin, "_configure_bridge_learning", MagicMock())
+        setattr(plugin, "_enable_bridge_igmp_snooping", MagicMock())
+        linux.create_vlan_bridge = MagicMock()
+        linux.set_bridge_alias_using_phy_nic_name = MagicMock()
+        linux.set_device_uuid_alias = MagicMock()
+
+        req = _make_req({
+            'bridgeName': 'br0',
+            'physicalInterfaceName': 'eth0',
+            'vlan': 100,
+            'l2NetworkUuid': 'l2-uuid',
+            'disableIptables': False,
+            'mtu': 1500,
+        })
+        result = plugin.create_vlan_bridge(req)
+        rsp = _load_rsp(result)
+
+        assert rsp['success'] is True
+        plugin._get_interface_mtu.assert_not_called()
+
     def test_create_vlan_bridge_success(self):
         plugin = _make_plugin()
         linux = cast(_LinuxModule, cast(object, importlib.import_module("zstacklib.utils.linux")))
