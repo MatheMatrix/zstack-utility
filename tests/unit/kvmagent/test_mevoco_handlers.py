@@ -2,6 +2,7 @@ from __future__ import annotations
 # pyright: reportAny=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownLambdaType=false, reportMissingTypeArgument=false, reportPrivateUsage=false, reportAttributeAccessIssue=false, reportGeneralTypeIssues=false, reportReturnType=false, reportSelfClsParameterName=false, reportUnusedVariable=false, reportUnusedCallResult=false
 
 import importlib
+import importlib.util
 import json
 import os
 import pytest
@@ -69,6 +70,9 @@ class _MevocoModule(Protocol):
     in_bash: Callable[[Callable[..., object]], Callable[..., object]]
     lock: "_LockModule"
     getDhcpEbtableChainName: Callable[[str], str]
+    get_ebtables_cmd: Callable[[], str]
+    is_userdata_vm_bridge_port: Callable[[str, str], bool]
+    ensure_userdata_prerouting_rule: Callable[[str, str, str], None]
     EBTABLES_CMD: str
     ReleaseDhcpRsp: type[object]
     Mevoco: type[_MevocoPluginProto]
@@ -173,6 +177,27 @@ class _BashResult:
 
 def _ensure_http() -> None:
     setattr(mevoco, "http", importlib.import_module("zstacklib.utils.http"))
+
+
+def _load_real_ebtables_module() -> object:
+    ebtables_module = importlib.import_module("zstacklib.utils.ebtables")
+    module_path = getattr(ebtables_module, "__file__", None)
+    if module_path is None:
+        for path_entry in sys.path:
+            candidate = os.path.abspath(os.path.join(
+                path_entry, "zstacklib", "zstacklib", "utils", "ebtables.py"
+            ))
+            if os.path.exists(candidate):
+                module_path = candidate
+                break
+    if module_path is None:
+        raise ImportError("Cannot locate real ebtables module")
+    spec = importlib.util.spec_from_file_location("real_zstacklib_utils_ebtables", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError("Cannot load real ebtables module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _snapshot_modules(*modules: object) -> list[tuple[object, dict[str, object]]]:
@@ -816,11 +841,13 @@ class TestMevocoReleaseUserdata:
         linux.rm_dir_force = MagicMock()
 
         req = _make_req({'namespaceName': 'ns_l3-uuid', 'vmIp': '10.0.0.2'})
-        result = plugin.release_userdata(req)
+        with patch.object(mevoco, "cleanup_stale_userdata_prerouting_rules") as cleanup_stale_rules:
+            result = plugin.release_userdata(req)
         rsp = _load_rsp(result)
 
         assert rsp['success'] is True
         assert plugin.userData_vms['l3-uuid'] == []
+        cleanup_stale_rules.assert_called_once_with()
 
 
 @pytest.mark.kvmagent
@@ -832,10 +859,12 @@ class TestMevocoReleaseUserdataMissingL3:
         linux.rm_dir_force = MagicMock()
 
         req = _make_req({'namespaceName': 'ns_l3-uuid', 'vmIp': '10.0.0.2'})
-        result = plugin.release_userdata(req)
+        with patch.object(mevoco, "cleanup_stale_userdata_prerouting_rules") as cleanup_stale_rules:
+            result = plugin.release_userdata(req)
         rsp = _load_rsp(result)
 
         assert rsp['success'] is True
+        cleanup_stale_rules.assert_called_once_with()
 
 
 @pytest.mark.kvmagent
@@ -990,6 +1019,205 @@ class TestMevocoDhcpEnvPrepare:
 
 @pytest.mark.kvmagent
 class TestMevocoApplyUserdataInternals:
+    def test_validate_ebtables_name_rejects_shell_meta(self):
+        ebtables_mod = _load_real_ebtables_module()
+        with pytest.raises(Exception, match="invalid bridge name"):
+            ebtables_mod.validate_name("br_eth0;touch /tmp/pwned", "bridge name")
+
+    def test_has_nat_prerouting_rule_uses_fixed_string(self):
+        ebtables_mod = _load_real_ebtables_module()
+        shell_run = MagicMock(return_value=1)
+
+        with patch.object(ebtables_mod, "get_ebtables_cmd", return_value="ebtables"), \
+                patch.object(ebtables_mod.shell, "run", shell_run):
+            assert not ebtables_mod.has_nat_prerouting_rule("-i vnic5.0 -j UD-br_eth0-326dc516")
+
+        shell_run.assert_called_once_with(
+            "ebtables -t nat -L PREROUTING | grep -F -- '-i vnic5.0 -j UD-br_eth0-326dc516' > /dev/null"
+        )
+
+    def test_is_userdata_vm_bridge_port_filters_non_vm_ports(self):
+        assert mevoco.is_userdata_vm_bridge_port("vnic5.0", "eth0")
+        assert mevoco.is_userdata_vm_bridge_port("tap123", "eth0")
+        assert not mevoco.is_userdata_vm_bridge_port("eth0", "eth0")
+        assert not mevoco.is_userdata_vm_bridge_port("outer5", "eth0")
+        assert not mevoco.is_userdata_vm_bridge_port("ud_outer5", "eth0")
+        assert not mevoco.is_userdata_vm_bridge_port("", "eth0")
+
+    def test_get_userdata_prerouting_chains_for_bridge(self):
+        ebtables_mod = _load_real_ebtables_module()
+        prerouting = "\n".join([
+            "Bridge chain: PREROUTING, entries: 4, policy: ACCEPT",
+            "-i br_eth0 -j UD-br_eth0-326dc516",
+            "--logical-in br_eth0 -j USERDATA-br_eth0-326dc516",
+            "-i br_eth1 -j UD-br_eth1-11111111",
+            "-i vnic5.0 -j UD-br_eth0-326dc516",
+        ])
+
+        with patch.object(mevoco, "ebtables", ebtables_mod), \
+                patch.object(mevoco, "get_ebtables_cmd", return_value="ebtables"), \
+                patch.object(mevoco.shell, "call", return_value=prerouting):
+            assert mevoco.get_userdata_prerouting_chains_for_bridge("br_eth0") == [
+                "UD-br_eth0-326dc516",
+                "USERDATA-br_eth0-326dc516",
+            ]
+
+    def test_get_userdata_prerouting_vm_port_rules(self):
+        ebtables_mod = _load_real_ebtables_module()
+        prerouting = "\n".join([
+            "-i vnic5.0 -j UD-br_eth0-326dc516",
+            "-i tap9 -j USERDATA-br_eth1-326dc516",
+            "-i br_eth0 -j UD-br_eth0-326dc516",
+            "-i outer5 -j UD-br_eth0-326dc516",
+            "--logical-in br_eth0 -j UD-br_eth0-326dc516",
+        ])
+
+        with patch.object(mevoco, "ebtables", ebtables_mod), \
+                patch.object(mevoco, "get_ebtables_cmd", return_value="ebtables"), \
+                patch.object(mevoco.shell, "call", return_value=prerouting):
+            assert mevoco.get_userdata_prerouting_vm_port_rules() == [
+                ("vnic5.0", "UD-br_eth0-326dc516"),
+                ("tap9", "USERDATA-br_eth1-326dc516"),
+            ]
+
+    def test_ensure_userdata_prerouting_rule_adds_vm_ports_for_nft(self):
+        def _has_nat_prerouting_rule(rule: str) -> bool:
+            if rule == "--logical-in br_eth0 -j UD-br_eth0-326dc516":
+                return True
+            if rule == "-i tap9 -j UD-br_eth0-326dc516":
+                return True
+            if rule == "-i vnic5.0 -j UD-br_eth0-326dc516":
+                return False
+            return False
+
+        ebtables_mod = _load_real_ebtables_module()
+        linux = cast(MagicMock, importlib.import_module("zstacklib.utils.linux"))
+        with patch.object(mevoco, "ebtables", ebtables_mod), \
+                patch.object(mevoco, "EBTABLES_CMD", "ebtables", create=True), \
+                patch.object(mevoco, "get_ebtables_cmd", return_value="ebtables"), \
+                patch.object(mevoco, "is_ebtables_nf_tables", return_value=True), \
+                patch.object(ebtables_mod, "has_nat_prerouting_rule",
+                             MagicMock(side_effect=_has_nat_prerouting_rule)), \
+                patch.object(linux, "get_all_bridge_interface",
+                             return_value=["eth0", "outer5", "ud_outer5", "vnic5.0", "tap9"]), \
+                patch.object(mevoco, "bash_errorout") as bash_errorout:
+            mevoco.ensure_userdata_prerouting_rule("br_eth0", "UD-br_eth0-326dc516", "eth0")
+
+        bash_errorout.assert_called_once_with("ebtables -t nat -I PREROUTING -i vnic5.0 -j UD-br_eth0-326dc516")
+
+    def test_delete_userdata_prerouting_rule_for_port_removes_duplicates(self):
+        ebtables_mod = _load_real_ebtables_module()
+
+        with patch.object(mevoco, "ebtables", ebtables_mod), \
+                patch.object(mevoco, "get_ebtables_cmd", return_value="ebtables"), \
+                patch.object(ebtables_mod, "has_nat_prerouting_rule",
+                             MagicMock(side_effect=[True, True, False])), \
+                patch.object(mevoco, "bash_errorout") as bash_errorout:
+            mevoco.delete_userdata_prerouting_rule_for_port("vnic5.0", "UD-br_eth0-326dc516")
+
+        assert bash_errorout.call_count == 2
+        bash_errorout.assert_called_with("ebtables -t nat -D PREROUTING -i vnic5.0 -j UD-br_eth0-326dc516")
+
+    def test_cleanup_stale_userdata_prerouting_rules_removes_absent_ports(self):
+        linux = cast(MagicMock, importlib.import_module("zstacklib.utils.linux"))
+
+        def _is_existing(port_name: str) -> bool:
+            return port_name == "tap9"
+
+        with patch.object(mevoco, "is_ebtables_nf_tables", return_value=True), \
+                patch.object(mevoco, "get_userdata_prerouting_vm_port_rules",
+                             return_value=[
+                                 ("vnic5.0", "UD-br_eth0-326dc516"),
+                                 ("tap9", "UD-br_eth0-326dc516"),
+                             ]), \
+                patch.object(linux, "is_network_device_existing", MagicMock(side_effect=_is_existing)), \
+                patch.object(mevoco, "_delete_userdata_prerouting_rule_for_port") as delete_rule:
+            mevoco.cleanup_stale_userdata_prerouting_rules()
+
+        delete_rule.assert_called_once_with("vnic5.0", "UD-br_eth0-326dc516")
+
+    def test_vm_started_hook_updates_userdata_rules_after_vnic_exists(self):
+        plugin = _make_plugin()
+        vm_plugin_mod = MagicMock()
+        vm_plugin_mod.LibvirtEventManager.EVENT_STARTED = "Started"
+        vm_plugin_mod.LibvirtEventManager.EVENT_STOPPED = "Stopped"
+        vm_plugin_mod.LibvirtEventManager.event_to_string = MagicMock(return_value="Started")
+
+        class _Dom(object):
+            def XMLDesc(self, _flags: int) -> str:
+                return """
+                <domain>
+                  <devices>
+                    <interface type="bridge">
+                      <source bridge="br_eth0"/>
+                      <target dev="vnic5.0"/>
+                    </interface>
+                    <interface type="bridge">
+                      <source bridge="br_eth1"/>
+                      <target dev="eth0"/>
+                    </interface>
+                  </devices>
+                </domain>
+                """
+
+        with patch.dict(sys.modules, {"kvmagent.plugins.vm_plugin": vm_plugin_mod}), \
+                patch.object(mevoco, "is_ebtables_nf_tables", return_value=True), \
+                patch.object(mevoco, "get_userdata_prerouting_chains_for_bridge",
+                             return_value=["UD-br_eth0-326dc516"]) as get_chains, \
+                patch.object(mevoco, "ensure_userdata_prerouting_rule") as ensure_rule:
+            plugin._on_vm_started_update_userdata_ebtables(None, _Dom(), object(), None, None)
+
+        get_chains.assert_called_once_with("br_eth0")
+        ensure_rule.assert_called_once_with("br_eth0", "UD-br_eth0-326dc516", None)
+
+    def test_vm_stopped_hook_cleans_userdata_rules_for_removed_vnic(self):
+        plugin = _make_plugin()
+        vm_plugin_mod = MagicMock()
+        vm_plugin_mod.LibvirtEventManager.EVENT_STARTED = "Started"
+        vm_plugin_mod.LibvirtEventManager.EVENT_STOPPED = "Stopped"
+        vm_plugin_mod.LibvirtEventManager.event_to_string = MagicMock(return_value="Stopped")
+
+        class _Dom(object):
+            def XMLDesc(self, _flags: int) -> str:
+                return """
+                <domain>
+                  <devices>
+                    <interface type="bridge">
+                      <source bridge="br_eth0"/>
+                      <target dev="vnic5.0"/>
+                    </interface>
+                  </devices>
+                </domain>
+                """
+
+        with patch.dict(sys.modules, {"kvmagent.plugins.vm_plugin": vm_plugin_mod}), \
+                patch.object(mevoco, "is_ebtables_nf_tables", return_value=True), \
+                patch.object(mevoco, "get_userdata_prerouting_chains_for_bridge",
+                             return_value=["UD-br_eth0-326dc516"]) as get_chains, \
+                patch.object(mevoco, "delete_userdata_prerouting_rule_for_port") as delete_rule:
+            plugin._on_vm_started_update_userdata_ebtables(None, _Dom(), object(), None, None)
+
+        get_chains.assert_called_once_with("br_eth0")
+        delete_rule.assert_called_once_with("vnic5.0", "UD-br_eth0-326dc516")
+
+    def test_vm_stopped_hook_falls_back_to_stale_cleanup_when_domain_xml_is_gone(self):
+        plugin = _make_plugin()
+        vm_plugin_mod = MagicMock()
+        vm_plugin_mod.LibvirtEventManager.EVENT_STARTED = "Started"
+        vm_plugin_mod.LibvirtEventManager.EVENT_STOPPED = "Stopped"
+        vm_plugin_mod.LibvirtEventManager.event_to_string = MagicMock(return_value="Stopped")
+
+        class _Dom(object):
+            def XMLDesc(self, _flags: int) -> str:
+                raise RuntimeError("domain is gone")
+
+        with patch.dict(sys.modules, {"kvmagent.plugins.vm_plugin": vm_plugin_mod}), \
+                patch.object(mevoco, "is_ebtables_nf_tables", return_value=True), \
+                patch.object(mevoco, "cleanup_stale_userdata_prerouting_rules") as cleanup_stale_rules:
+            plugin._on_vm_started_update_userdata_ebtables(None, _Dom(), object(), None, None)
+
+        cleanup_stale_rules.assert_called_once_with()
+
     def test_apply_userdata_xtables_vmdata_restart_httpd(self, tmp_path: object):
         plugin = _make_plugin()
         _ensure_http()

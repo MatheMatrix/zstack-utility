@@ -27,6 +27,8 @@ from jinja2 import Template
 import struct
 import socket
 import platform
+import traceback
+import xml.etree.ElementTree as etree
 
 from zstacklib.utils.ovs import OvsError
 
@@ -131,10 +133,7 @@ class NamespaceInfraEnv(object):
         if ret != 0:
             bash_errorout(get_ebtables_cmd() + ' -t nat -N {{EBCHAIN_NAME}}')
 
-        if bash_r(get_ebtables_cmd() + " -t nat -L PREROUTING | grep -E -- '(--logical-in|-i) {{BR_NAME}} -j {{EBCHAIN_NAME}}'") != 0:
-            # try --logical-in first; fall back to -i for kernels (e.g. alinux4 >= 6.6.102-5.3) that reject `meta ibrname`
-            if bash_r(get_ebtables_cmd() + ' -t nat -I PREROUTING --logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}') != 0:
-                bash_errorout(get_ebtables_cmd() + ' -t nat -I PREROUTING -i {{BR_NAME}} -j {{EBCHAIN_NAME}}')
+        _ensure_userdata_prerouting_rule(BR_NAME, EBCHAIN_NAME, ETH_NAME)
 
         # ebtables has a bug that will eliminate 0 in MAC, for example, aa:bb:0c will become aa:bb:c
         macAddr = ip.removeZeroFromMacAddress(MAC)
@@ -800,6 +799,108 @@ def is_ebtables_nf_tables():
         raise Exception('Failed to get ebtables version')
     return "nf_tables" in o
 
+
+def is_userdata_vm_bridge_port(port_name, bridge_phy_dev):
+    if not port_name or port_name == bridge_phy_dev:
+        return False
+    if port_name.startswith('outer') or port_name.startswith('ud_outer'):
+        return False
+    return port_name.startswith('vnic') or port_name.startswith('tap')
+
+
+def get_userdata_prerouting_chains_for_bridge(bridge_name):
+    bridge_name = ebtables.validate_name(bridge_name, 'bridge name')
+    chains = set()
+    output = shell.call(get_ebtables_cmd() + " -t nat -L PREROUTING")
+    for line in output.splitlines():
+        line = line.strip()
+        for prefix in ("--logical-in %s -j " % bridge_name, "-i %s -j " % bridge_name):
+            if not line.startswith(prefix):
+                continue
+            chain_name = line[len(prefix):].split()[0]
+            if chain_name.startswith('UD-') or chain_name.startswith('USERDATA-'):
+                chains.add(ebtables.validate_name(chain_name, 'ebtables chain'))
+    return sorted(chains)
+
+
+def get_userdata_prerouting_vm_port_rules():
+    rules = []
+    output = shell.call(get_ebtables_cmd() + " -t nat -L PREROUTING")
+    for line in output.splitlines():
+        items = line.strip().split()
+        if len(items) < 4 or items[0] != '-i' or items[2] != '-j':
+            continue
+        port_name = items[1]
+        chain_name = items[3]
+        if not is_userdata_vm_bridge_port(port_name, None):
+            continue
+        if not chain_name.startswith('UD-') and not chain_name.startswith('USERDATA-'):
+            continue
+        rules.append((
+            ebtables.validate_name(port_name, 'bridge port'),
+            ebtables.validate_name(chain_name, 'ebtables chain')
+        ))
+    return rules
+
+
+def _delete_userdata_prerouting_rule_for_port(port_name, chain_name):
+    port_name = ebtables.validate_name(port_name, 'bridge port')
+    chain_name = ebtables.validate_name(chain_name, 'ebtables chain')
+    rule = "-i %s -j %s" % (port_name, chain_name)
+    for _ in range(20):
+        if not ebtables.has_nat_prerouting_rule(rule):
+            return
+        bash_errorout(get_ebtables_cmd() + ' -t nat -D PREROUTING -i %s -j %s' % (port_name, chain_name))
+
+
+@lock.file_lock('/run/xtables.lock')
+def delete_userdata_prerouting_rule_for_port(port_name, chain_name):
+    _delete_userdata_prerouting_rule_for_port(port_name, chain_name)
+
+
+def _cleanup_stale_userdata_prerouting_rules():
+    if not is_ebtables_nf_tables():
+        return
+    for port_name, chain_name in get_userdata_prerouting_vm_port_rules():
+        if not linux.is_network_device_existing(port_name):
+            _delete_userdata_prerouting_rule_for_port(port_name, chain_name)
+
+
+@lock.file_lock('/run/xtables.lock')
+def cleanup_stale_userdata_prerouting_rules():
+    _cleanup_stale_userdata_prerouting_rules()
+
+
+def _ensure_userdata_prerouting_rule(bridge_name, chain_name, bridge_phy_dev):
+    bridge_name = ebtables.validate_name(bridge_name, 'bridge name')
+    chain_name = ebtables.validate_name(chain_name, 'ebtables chain')
+    if bridge_phy_dev:
+        bridge_phy_dev = ebtables.validate_name(bridge_phy_dev, 'bridge physical device')
+
+    logical_rule = "--logical-in %s -j %s" % (bridge_name, chain_name)
+    iface_rule = "-i %s -j %s" % (bridge_name, chain_name)
+    if not ebtables.has_nat_prerouting_rule(logical_rule) and not ebtables.has_nat_prerouting_rule(iface_rule):
+        if bash_r(get_ebtables_cmd() + ' -t nat -I PREROUTING --logical-in %s -j %s' % (bridge_name, chain_name)) != 0:
+            bash_errorout(get_ebtables_cmd() + ' -t nat -I PREROUTING -i %s -j %s' % (bridge_name, chain_name))
+
+    if not is_ebtables_nf_tables():
+        return
+
+    for port_name in linux.get_all_bridge_interface(bridge_name):
+        if not port_name:
+            continue
+        port_name = ebtables.validate_name(port_name, 'bridge port')
+        if not is_userdata_vm_bridge_port(port_name, bridge_phy_dev):
+            continue
+        if not ebtables.has_nat_prerouting_rule("-i %s -j %s" % (port_name, chain_name)):
+            bash_errorout(get_ebtables_cmd() + ' -t nat -I PREROUTING -i %s -j %s' % (port_name, chain_name))
+
+
+@lock.file_lock('/run/xtables.lock')
+def ensure_userdata_prerouting_rule(bridge_name, chain_name, bridge_phy_dev):
+    _ensure_userdata_prerouting_rule(bridge_name, chain_name, bridge_phy_dev)
+
+
 class UserDataEnv(object):
     def __init__(self, bridge_name, namespace_name, vlan_id):
         self.bridge_name = bridge_name
@@ -1170,10 +1271,71 @@ class Mevoco(kvmagent.KvmAgent):
         http_server.register_async_uri(self.CLEANUP_USER_DATA, self.cleanup_userdata)
         http_server.register_async_uri(self.SET_DNS_FORWARD_PATH, self.setup_dns_forward)
         http_server.register_async_uri(self.REMOVE_DNS_FORWARD_PATH, self.remove_dns_forward)
+        self._register_userdata_vm_lifecycle_hook()
         self.register_dnsmasq_logRotate()
+        try:
+            cleanup_stale_userdata_prerouting_rules()
+        except Exception:
+            logger.warn("failed to cleanup stale userdata ebtables on plugin start: %s" % traceback.format_exc())
 
     def stop(self):
         pass
+
+    def _register_userdata_vm_lifecycle_hook(self):
+        from kvmagent.plugins import vm_plugin
+        import libvirt
+
+        callbacks = vm_plugin.LibvirtAutoReconnect.libvirt_event_callbacks.get(
+            libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, []
+        )
+        if self._on_vm_started_update_userdata_ebtables not in callbacks:
+            vm_plugin.LibvirtAutoReconnect.add_libvirt_callback(
+                libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE,
+                self._on_vm_started_update_userdata_ebtables
+            )
+
+    def _on_vm_started_update_userdata_ebtables(self, conn, dom, event, detail, opaque):
+        try:
+            from kvmagent.plugins import vm_plugin
+
+            event = vm_plugin.LibvirtEventManager.event_to_string(event)
+            if event not in (vm_plugin.LibvirtEventManager.EVENT_STARTED, vm_plugin.LibvirtEventManager.EVENT_STOPPED):
+                return
+
+            if not is_ebtables_nf_tables():
+                return
+
+            bridge_ports = []
+            try:
+                root = etree.fromstring(dom.XMLDesc(0))
+            except Exception:
+                if event == vm_plugin.LibvirtEventManager.EVENT_STOPPED:
+                    cleanup_stale_userdata_prerouting_rules()
+                    return
+                raise
+
+            for iface in root.findall('./devices/interface'):
+                if iface.get('type') != 'bridge':
+                    continue
+                source = iface.find('source')
+                target = iface.find('target')
+                if source is None or target is None:
+                    continue
+                bridge_name = source.get('bridge')
+                port_name = target.get('dev')
+                if bridge_name and is_userdata_vm_bridge_port(port_name, None):
+                    bridge_ports.append((bridge_name, port_name))
+
+            if event == vm_plugin.LibvirtEventManager.EVENT_STARTED:
+                for bridge_name in set([bp[0] for bp in bridge_ports]):
+                    for chain_name in get_userdata_prerouting_chains_for_bridge(bridge_name):
+                        ensure_userdata_prerouting_rule(bridge_name, chain_name, None)
+            else:
+                for bridge_name, port_name in bridge_ports:
+                    for chain_name in get_userdata_prerouting_chains_for_bridge(bridge_name):
+                        delete_userdata_prerouting_rule_for_port(port_name, chain_name)
+        except Exception:
+            logger.warn("failed to update userdata ebtables on VM lifecycle event: %s" % traceback.format_exc())
 
     @lock.lock('dnsmasq')
     @kvmagent.replyerror
@@ -1498,6 +1660,7 @@ tag:{{TAG}},option:dns-server,{{DNS}}
         # this is workaround, for anti-spoofing & distributed virtual routing feature, there is no good way to proccess this reconnect-host case,
         # it's just keep the ebtables rules from libvirt & zsn and remove others when reconnect hosts
         self.restore_ebtables_chain_except_kvmagent()
+        cleanup_stale_userdata_prerouting_rules()
         return jsonobject.dumps(ConnectRsp())
 
     @kvmagent.replyerror
@@ -1689,10 +1852,7 @@ tag:{{TAG}},option:dns-server,{{DNS}}
         if ret != 0:
             bash_errorout(get_ebtables_cmd() + ' -t nat -N {{EBCHAIN_NAME}}')
 
-        if bash_r(get_ebtables_cmd() + " -t nat -L PREROUTING | grep -E -- '(--logical-in|-i) {{BR_NAME}} -j {{EBCHAIN_NAME}}'") != 0:
-            # try --logical-in first; fall back to -i for kernels (e.g. alinux4 >= 6.6.102-5.3) that reject `meta ibrname`
-            if bash_r(get_ebtables_cmd() + ' -t nat -I PREROUTING --logical-in {{BR_NAME}} -j {{EBCHAIN_NAME}}') != 0:
-                bash_errorout(get_ebtables_cmd() + ' -t nat -I PREROUTING -i {{BR_NAME}} -j {{EBCHAIN_NAME}}')
+        _ensure_userdata_prerouting_rule(BR_NAME, EBCHAIN_NAME, ETH_NAME)
 
         # ebtables has a bug that will eliminate 0 in MAC, for example, aa:bb:0c will become aa:bb:c
         cidr = ip.IpAddress(to.vmIp).toCidr(to.netmask)
@@ -2144,6 +2304,10 @@ mimetype.assign = (
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         html_folder = os.path.join(self.USERDATA_ROOT, cmd.namespaceName, 'html', cmd.vmIp)
         linux.rm_dir_force(html_folder)
+        try:
+            cleanup_stale_userdata_prerouting_rules()
+        except Exception:
+            logger.warn("failed to cleanup stale userdata ebtables on userdata release: %s" % traceback.format_exc())
         l3Uuid = get_l3_uuid(cmd.namespaceName)
         if l3Uuid in self.userData_vms and cmd.vmIp in self.userData_vms[l3Uuid]:
             self.userData_vms[l3Uuid].remove(cmd.vmIp)
