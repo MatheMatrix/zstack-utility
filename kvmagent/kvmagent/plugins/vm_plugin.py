@@ -104,6 +104,20 @@ ZS_XML_NAMESPACE = 'http://zstack.org'
 
 etree.register_namespace('zs', ZS_XML_NAMESPACE)
 
+
+def _get_shmem_size_mb(shmem_size):
+    try:
+        shmem_size = int(shmem_size)
+    except (TypeError, ValueError):
+        raise kvmagent.KvmError('invalid shmem size[%s], must be an integer' % shmem_size)
+    if shmem_size <= 0:
+        raise kvmagent.KvmError('invalid shmem size[%s], must be greater than 0' % shmem_size)
+    if shmem_size % (1024 * 1024) != 0:
+        raise kvmagent.KvmError('invalid shmem size[%s], must be aligned to 1MiB' % shmem_size)
+
+    return shmem_size // (1024 * 1024)
+
+
 GUEST_TOOLS_ISO_PATH = "/var/lib/zstack/guesttools/GuestTools.iso"
 GUEST_TOOLS_ISO_LINUX_PATH = "/var/lib/zstack/guesttools/GuestTools_linux.iso"
 
@@ -1030,6 +1044,14 @@ class HotUnplugMdevDeviceCommand(kvmagent.AgentCommand):
 class HotUnplugMdevDeviceRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(HotUnplugMdevDeviceRsp, self).__init__()
+
+class HotPlugVmShmemRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(HotPlugVmShmemRsp, self).__init__()
+
+class HotUnplugVmShmemRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(HotUnplugVmShmemRsp, self).__init__()
 
 class AttachPciDeviceToHostCommand(kvmagent.AgentCommand):
     def __init__(self):
@@ -4828,7 +4850,7 @@ class Vm(object):
     def _wait_vm_run_until_seconds(self, sec):
         vm_pid = linux.find_process_by_cmdline([kvmagent.get_qemu_path(), self.uuid])
         if not vm_pid:
-            raise Exception('cannot find pid for vm[uuid:%s]' % self.uuid)
+            raise kvmagent.KvmError('cannot find pid for vm[uuid:%s]' % self.uuid)
 
         up_time = linux.get_process_up_time_in_second(vm_pid)
 
@@ -4836,8 +4858,9 @@ class Vm(object):
             return linux.get_process_up_time_in_second(vm_pid) > sec
 
         if up_time < sec and not linux.wait_callback_success(wait, timeout=max(60, sec+5)):
-            raise Exception("vm[uuid:%s] seems hang, its process[pid:%s] up-time is not increasing after %s seconds" %
-                            (self.uuid, vm_pid, max(60, sec+5)))
+            raise kvmagent.KvmError(
+                "vm[uuid:%s] seems hang, its process[pid:%s] up-time is not increasing after %s seconds" %
+                (self.uuid, vm_pid, max(60, sec+5)))
 
     def attach_iso(self, cmd):
         iso = cmd.iso
@@ -7108,24 +7131,13 @@ class Vm(object):
                     mem_path = getattr(shmem, 'path', None)
                     shmem_size = getattr(shmem, 'size', None)
                 if not mem_path:
-                    raise kvmagent.KvmError('dGPU shmem path is required but missing in StartVmCmd.addons[pciDevice.dgpu]')
+                    raise kvmagent.KvmError('shmem path is required but missing')
                 normalized_mem_path = os.path.normpath(mem_path)
                 if not re.match(r'^/dev/shm/[a-zA-Z0-9_-]+$', normalized_mem_path):
-                    raise kvmagent.KvmError('invalid dGPU shmem path[%s], expected /dev/shm/*' % mem_path)
+                    raise kvmagent.KvmError('invalid shmem path[%s], expected /dev/shm/*' % mem_path)
                 if normalized_mem_path != mem_path:
-                    raise kvmagent.KvmError('invalid dGPU shmem path[%s], path must be normalized under /dev/shm' % mem_path)
-                try:
-                    shmem_size = int(shmem_size)
-                except (TypeError, ValueError) as ex:
-                    raise kvmagent.KvmError('invalid dGPU shmem size[%s], must be an integer' % shmem_size)
-                if shmem_size <= 0:
-                    raise kvmagent.KvmError('invalid dGPU shmem size[%s], must be greater than 0' % shmem_size)
-                shmem_size_mb = (shmem_size + 1024 * 1024 - 1) // (1024 * 1024)
-                if shmem_size_mb < 1 or (shmem_size_mb & (shmem_size_mb - 1)) != 0:
-                    raise kvmagent.KvmError(
-                        'invalid dGPU shmem size[%s], libvirt requires a power-of-two MiB value >= 1 MiB'
-                        % shmem_size
-                    )
+                    raise kvmagent.KvmError('invalid shmem path[%s], path must be normalized under /dev/shm' % mem_path)
+                shmem_size_mb = _get_shmem_size_mb(shmem_size)
 
                 shmem_name = os.path.basename(normalized_mem_path)
                 shmem_el = e(devices, "shmem", attrib={"name": shmem_name})
@@ -7731,6 +7743,8 @@ class VmPlugin(kvmagent.KvmAgent):
     DETACH_PCI_DEVICE_FROM_HOST = "/pcidevice/detachfromhost"
     HOT_PLUG_MDEV_DEVICE = "/mdevdevice/hotplug"
     HOT_UNPLUG_MDEV_DEVICE = "/mdevdevice/hotunplug"
+    HOT_PLUG_VM_SHMEM = "/vm/shmem/hotplug"
+    HOT_UNPLUG_VM_SHMEM = "/vm/shmem/hotunplug"
     KVM_ATTACH_USB_DEVICE_PATH = "/vm/usbdevice/attach"
     KVM_DETACH_USB_DEVICE_PATH = "/vm/usbdevice/detach"
     RELOAD_USB_REDIRECT_PATH = "/vm/usbdevice/reload"
@@ -10925,6 +10939,130 @@ host side snapshot files chian:
                 return jsonobject.dumps(rsp)
         return jsonobject.dumps(rsp)
 
+    def _build_vm_shmem_xml(self, shmem):
+        if isinstance(shmem, dict):
+            mem_path = shmem.get('path')
+            shmem_size = shmem.get('size')
+        else:
+            mem_path = getattr(shmem, 'path', None)
+            shmem_size = getattr(shmem, 'size', None)
+
+        if not mem_path:
+            raise kvmagent.KvmError('shmem path is required but missing')
+        normalized_mem_path = os.path.normpath(mem_path)
+        if not re.match(r'^/dev/shm/[a-zA-Z0-9_-]+$', normalized_mem_path):
+            raise kvmagent.KvmError('invalid shmem path[%s], expected /dev/shm/*' % mem_path)
+        if normalized_mem_path != mem_path:
+            raise kvmagent.KvmError('invalid shmem path[%s], path must be normalized under /dev/shm' % mem_path)
+        shmem_size_mb = _get_shmem_size_mb(shmem_size)
+
+        shmem_name = os.path.basename(normalized_mem_path)
+        root = etree.Element('shmem', {'name': shmem_name})
+        e(root, 'model', attrib={'type': 'ivshmem-plain'})
+        e(root, 'size', str(shmem_size_mb), attrib={'unit': 'M'})
+        return etree.tostring(root, encoding="unicode"), normalized_mem_path, shmem_name, shmem_size_mb
+
+    def _get_attached_shmem_size_mb(self, shmem):
+        size = shmem.find('size')
+        if size is None or not size.text:
+            return 0
+
+        try:
+            value = int(size.text)
+        except (TypeError, ValueError):
+            return 0
+
+        unit = (size.get('unit') or 'B').upper()
+        if unit in ('M', 'MB', 'MIB'):
+            return value
+        if unit in ('G', 'GB', 'GIB'):
+            return value * 1024
+        if unit in ('K', 'KB', 'KIB'):
+            return (value + 1024 - 1) // 1024
+        return (value + 1024 * 1024 - 1) // (1024 * 1024)
+
+    def _is_vm_shmem_attached(self, vm, shmem_name, shmem_size_mb):
+        domain_xml = vm.domain.XMLDesc(0)
+        root = etree.fromstring(domain_xml)  # noqa: S314
+        for shmem in root.findall('./devices/shmem'):
+            if shmem.get('name') == shmem_name and self._get_attached_shmem_size_mb(shmem) == shmem_size_mb:
+                return True
+        return False
+
+    def _wait_vm_shmem_attached_state(self, vm, shmem_name, shmem_size_mb, attached, timeout=20):
+        return linux.wait_callback_success(
+            lambda _: self._is_vm_shmem_attached(vm, shmem_name, shmem_size_mb) == attached,
+            None,
+            timeout=timeout,
+            interval=1,
+            ignore_exception_in_callback=True
+        )
+
+    @kvmagent.replyerror
+    def hot_plug_vm_shmem(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = HotPlugVmShmemRsp()
+        try:
+            xml, _, shmem_name, shmem_size_mb = self._build_vm_shmem_xml(cmd.shmem)
+            vm = get_vm_by_uuid(cmd.vmUuid)
+            vm._wait_vm_run_until_seconds(60)
+            if self._is_vm_shmem_attached(vm, shmem_name, shmem_size_mb):
+                logger.debug("VM shmem[%s] already attached to vm[uuid:%s]" % (shmem_name, cmd.vmUuid))
+                return jsonobject.dumps(rsp)
+
+            vm.domain.attachDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
+            if not self._wait_vm_shmem_attached_state(vm, shmem_name, shmem_size_mb, True):
+                rsp.success = False
+                rsp.error = "VM shmem %s still not attached to vm %s after 20s" % (shmem_name, cmd.vmUuid)
+                return jsonobject.dumps(rsp)
+
+            logger.debug("attached VM shmem[%s] to vm[uuid:%s]" % (shmem_name, cmd.vmUuid))
+        except Exception as ex:  # noqa: BLE001
+            logger.warn(linux.get_exception_stacktrace())
+            rsp.success = False
+            rsp.error = str(ex)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def hot_unplug_vm_shmem(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = HotUnplugVmShmemRsp()
+        try:
+            xml, mem_path, shmem_name, shmem_size_mb = self._build_vm_shmem_xml(cmd.shmem)
+            vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
+            if not vm or vm.state == Vm.VM_STATE_SHUTDOWN:
+                logger.debug("vm[uuid:%s] is absent or shutdown, no need to detach VM shmem[%s]" %
+                             (cmd.vmUuid, shmem_name))
+                linux.rm_file_force(mem_path)
+                return jsonobject.dumps(rsp)
+
+            try:
+                vm._wait_vm_run_until_seconds(60)
+            except kvmagent.KvmError as ex:
+                rsp.success = False
+                rsp.error = "unable to confirm vm %s runtime state before detaching VM shmem %s: %s" % (
+                    cmd.vmUuid, shmem_name, ex)
+                return jsonobject.dumps(rsp)
+
+            if not self._is_vm_shmem_attached(vm, shmem_name, shmem_size_mb):
+                logger.debug("VM shmem[%s] not found on vm[uuid:%s]" % (shmem_name, cmd.vmUuid))
+                linux.rm_file_force(mem_path)
+                return jsonobject.dumps(rsp)
+
+            vm.domain.detachDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
+            if not self._wait_vm_shmem_attached_state(vm, shmem_name, shmem_size_mb, False):
+                rsp.success = False
+                rsp.error = "VM shmem %s still attached to vm %s after 20s" % (shmem_name, cmd.vmUuid)
+                return jsonobject.dumps(rsp)
+
+            linux.rm_file_force(mem_path)
+            logger.debug("detached VM shmem[%s] from vm[uuid:%s]" % (shmem_name, cmd.vmUuid))
+        except Exception as ex:  # noqa: BLE001
+            logger.warn(linux.get_exception_stacktrace())
+            rsp.success = False
+            rsp.error = str(ex)
+        return jsonobject.dumps(rsp)
+
     @kvmagent.replyerror
     @in_bash
     def attach_pci_device_to_host(self, req):
@@ -12574,6 +12712,8 @@ host side snapshot files chian:
         http_server.register_async_uri(self.DETACH_PCI_DEVICE_FROM_HOST, self.detach_pci_device_from_host)
         http_server.register_async_uri(self.HOT_PLUG_MDEV_DEVICE, self.hot_plug_mdev_device)
         http_server.register_async_uri(self.HOT_UNPLUG_MDEV_DEVICE, self.hot_unplug_mdev_device)
+        http_server.register_async_uri(self.HOT_PLUG_VM_SHMEM, self.hot_plug_vm_shmem)
+        http_server.register_async_uri(self.HOT_UNPLUG_VM_SHMEM, self.hot_unplug_vm_shmem)
         http_server.register_async_uri(self.KVM_ATTACH_USB_DEVICE_PATH, self.kvm_attach_usb_device)
         http_server.register_async_uri(self.KVM_DETACH_USB_DEVICE_PATH, self.kvm_detach_usb_device)
         http_server.register_async_uri(self.RELOAD_USB_REDIRECT_PATH, self.reload_redirect_usb)
