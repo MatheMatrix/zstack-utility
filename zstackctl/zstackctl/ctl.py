@@ -3136,6 +3136,11 @@ class StartCmd(Command):
                 info('use CATALINA_OPTS[%s] set in environment zstack environment variables; check out them by "zstack-ctl getenv"' % co)
                 catalina_opts.extend(co.split(' '))
 
+            catalina_opts = management_network_ipv6.build_java_ip_stack_opts(
+                ctl.read_property('management.server.ip'),
+                catalina_opts,
+            )
+
             def has_opt(prefix):
                 for opt in catalina_opts:
                     if opt.startswith(prefix):
