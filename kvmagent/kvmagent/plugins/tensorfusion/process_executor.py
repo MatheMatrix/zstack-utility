@@ -395,10 +395,9 @@ class ProcessExecutor(WorkerExecutor):
         binary_name = os.path.basename(self.WORKER_BINARY)
         for proc in psutil.process_iter():
             try:
-                if proc.name() != binary_name:
-                    continue
-
                 cmdline = proc.cmdline() or []
+                if not cmdline or os.path.basename(cmdline[0]) != binary_name:
+                    continue
                 try:
                     environ = proc.environ() or {}
                 except (AttributeError, psutil.AccessDenied):
@@ -536,7 +535,8 @@ class ProcessExecutor(WorkerExecutor):
             try:
                 if proc.pid in known_pids:
                     continue
-                if proc.name() != binary_name:
+                cmdline = proc.cmdline() or []
+                if not cmdline or os.path.basename(cmdline[0]) != binary_name:
                     continue
 
                 try:
@@ -548,7 +548,6 @@ class ProcessExecutor(WorkerExecutor):
                     continue
 
                 shared_memory_path = None
-                cmdline = proc.cmdline() or []
                 for i, arg in enumerate(cmdline):
                     if arg == '-m' and i + 1 < len(cmdline):
                         shared_memory_path = self.SHM_PREFIX + cmdline[i + 1].lstrip('/')
