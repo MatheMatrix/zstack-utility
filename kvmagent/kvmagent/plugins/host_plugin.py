@@ -2308,8 +2308,69 @@ class HostPlugin(kvmagent.KvmAgent):
 
     @lock.file_lock('/run/usb_rules.lock')
     def handle_usb_device_events(self):
-        bash_str = """#!/usr/bin/env python3
+        bash_str = """#!/usr/bin/env python3.11
+import os
+import fcntl
+import subprocess
+import sys
+import time
 import urllib.request
+
+EVENT_SCRIPT = "/usr/bin/_report_device_event.py"
+DEFER_ENV = "ZSTACK_USB_EVENT_DEFERRED"
+LOG_FILE = %s
+LOCK_FILE = LOG_FILE[:-4] + ".lock" if LOG_FILE.endswith(".log") else LOG_FILE + ".lock"
+LOG_NAME = %s
+
+
+def log_error(msg):
+    now = time.time()
+    timestamp = time.strftime("%%Y-%%m-%%d %%H:%%M:%%S", time.localtime(now))
+    timestamp = "%%s,%%03d" %% (timestamp, int((now - int(now)) * 1000))
+    line = "%%s ERROR [%%s] zstack usb device event: %%s\\n" %% (
+        timestamp, LOG_NAME, msg)
+    fd = None
+    lock_fd = None
+    try:
+        lock_fd = open(LOCK_FILE, "w")
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+        fd = os.open(LOG_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        os.write(fd, line.encode())
+    except Exception:
+        sys.stderr.write(line)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_fd.close()
+
+
+def defer_to_systemd():
+    if os.environ.get(DEFER_ENV) or not os.environ.get("DEVPATH"):
+        return False
+
+    unit = "zs-usb-evt-%%s" %% int(time.time() * 1000)
+    cmd = [
+        "systemd-run", "--quiet", "--no-block", "--unit", unit,
+        "--property", "Environment=%%s=1" %% DEFER_ENV,
+        EVENT_SCRIPT
+    ]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        stdout, stderr = proc.communicate()
+        if proc.returncode == 0:
+            return True
+        log_error("udev defer failed: return code: %%s, stdout: %%s, stderr: %%s" %% (
+            proc.returncode, stdout.strip(), stderr.strip()))
+        return False
+    except Exception as e:
+        log_error("udev defer failed: %%s" %% e)
+        return False
+
+
 def post_msg(data, post_url):
     headers = {"content-type": "application/json", "commandpath": "/host/reportdeviceevent"}
     req = urllib.request.Request(post_url, data.encode(), headers)
@@ -2317,21 +2378,33 @@ def post_msg(data, post_url):
     response.close()
 
 if __name__ == "__main__":
-    post_msg("{'hostUuid':'%s'}", '%s')
-""" % (self.config.get(kvmagent.HOST_UUID), self.config.get(kvmagent.SEND_COMMAND_URL))
+    if defer_to_systemd():
+        raise SystemExit(0)
+    try:
+        post_msg("{'hostUuid':'%s'}", '%s')
+    except Exception as e:
+        path = "udev fallback" if os.environ.get("DEVPATH") else "direct"
+        log_error("%%s report failed: %%s" %% (path, e))
+        raise
+""" % (repr(log.get_logfile_path()), repr(__name__), self.config.get(kvmagent.HOST_UUID), self.config.get(kvmagent.SEND_COMMAND_URL))
 
         event_report_script = '/usr/bin/_report_device_event.py'
         with open(event_report_script, 'w') as f:
             f.write(bash_str)
         os.chmod(event_report_script, 0o755)
 
-        rule_str = 'ACTION=="add|remove", SUBSYSTEM=="usb", RUN="%s"' % event_report_script
+        rule_str = 'ACTION=="add|remove", SUBSYSTEM=="usb", RUN+="%s"\n' % event_report_script
         rule_path = '/etc/udev/rules.d/'
         rule_file = os.path.join(rule_path, 'usb.rules')
         if not os.path.exists(rule_path):
             os.makedirs(rule_path)
         with open(rule_file, 'w') as f:
             f.write(rule_str)
+        os.chmod(rule_file, 0o644)
+        ret, stdout, stderr = bash_roe("udevadm control --reload-rules")
+        if ret != 0:
+            logger.error("failed to reload udev rules, return code: %s, stdout: %s, stderr: %s",
+                         ret, stdout, stderr)
 
     @thread.AsyncThread
     def save_kvmagent_version(self, version):
