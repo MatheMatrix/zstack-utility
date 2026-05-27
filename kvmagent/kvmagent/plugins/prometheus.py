@@ -1238,7 +1238,7 @@ def collect_node_disk_wwid():
         else:
             disks = [ os.path.basename(pvpath) ]
 
-        return ["/dev/%s" % re.sub('[0-9]$', '', s) for s in disks]
+        return ["/dev/%s" % (re.sub(r'p\d+$', '', s) if s.startswith("nvme") else re.sub(r'[0-9]$', '', s)) for s in disks]
 
     def get_device_from_path(ctx, devpath):
         return pyudev.Device.from_device_file(ctx, devpath)
