@@ -1369,6 +1369,25 @@ class TestHuaweiNpuIsolation(unittest.TestCase):
         self.assertFalse(Huawei.check_npu_isolation("0", []))
         self.assertFalse(Huawei.check_npu_isolation(None, ["0", "1"]))
 
+    def test_get_npu_ids_filters_invalid_ids(self):
+        """Invalid npu-smi placeholders such as -1 must not feed spec collection."""
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        output = """\
+NPU ID                         : -1
+NPU ID                         : 0
+NPU ID                         : abc
+NPU ID                         : 7
+"""
+
+        with patch("zstacklib.gpu.vendors.huawei.bash_roe",
+                   return_value=(0, output, "")):
+            self.assertEqual(Huawei.get_npu_ids(), ["0", "7"])
+
     def test_npu_smi_failure_returns_false(self):
         """When npu-smi fails (e.g. dcmi init error), falls back to topo."""
         try:
@@ -1454,6 +1473,18 @@ class TestHuaweiNpuIsolation(unittest.TestCase):
 
 class TestLegacyNpuIsolation(unittest.TestCase):
     """Test legacy gpu.py check_huawei_npu_is_isolated with topo fallback (ZSTAC-79981)."""
+
+    def test_get_huawei_npu_id_filters_invalid_ids(self):
+        """Legacy Huawei parser filters invalid npu-smi placeholder IDs."""
+        from zstacklib.utils.gpu import get_huawei_npu_id
+
+        output = """\
+NPU ID                         : -1
+NPU ID                         : 2
+NPU ID                         : unknown
+NPU ID                         : 5
+"""
+        self.assertEqual(get_huawei_npu_id(output), ["2", "5"])
 
     def test_hccs_detects_isolated(self):
         """Legacy path: hccs NOK → isolated."""
