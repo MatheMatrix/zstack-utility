@@ -242,7 +242,11 @@ def get_huawei_npu_id(npu_id_output):
         if not line:
             continue
         if "NPU ID" in line:
-            npu_ids.append(line.split(":")[1].strip())
+            npu_id = line.split(":")[1].strip()
+            if not npu_id.isdigit():
+                logger.debug("Ignore invalid Huawei NPU ID: %s" % npu_id)
+                continue
+            npu_ids.append(npu_id)
     return npu_ids
 
 

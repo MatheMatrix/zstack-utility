@@ -88,7 +88,11 @@ class Huawei(GPUBase):
             if "NPU ID" in line:
                 parts = line.split(":")
                 if len(parts) >= 2:
-                    npu_ids.append(parts[1].strip())
+                    npu_id = parts[1].strip()
+                    if not npu_id.isdigit():
+                        logger.debug("Ignore invalid Huawei NPU ID: %s" % npu_id)
+                        continue
+                    npu_ids.append(npu_id)
         return npu_ids
 
     # ==========================================================================
