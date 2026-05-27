@@ -84,3 +84,18 @@ def replace_db_url_host(db_url, new_host):
         return db_url.replace(JDBC_IPV6_HOST_FORMAT % old_host, format_host_for_url_or_jdbc(new_host), 1)
 
     return db_url.replace(old_host, format_host_for_url_or_jdbc(new_host), 1)
+
+
+def ip_addr_output_has_ip(ip, addr_output):
+    if ip is None or addr_output is None:
+        return False
+    if isinstance(ip, bytes) and bytes not in STRING_TYPES:
+        ip = ip.decode('utf-8')
+    if not isinstance(ip, STRING_TYPES):
+        return False
+
+    ip = ip.strip('[]')
+    if not validate_ip(ip):
+        return False
+
+    return re.search(r'\binet6?\s+%s(?:/|\s)' % re.escape(ip), addr_output) is not None
