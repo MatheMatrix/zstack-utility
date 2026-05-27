@@ -731,6 +731,10 @@ def replace_db_url_host(db_url, new_host):
     return management_network_ipv6.replace_db_url_host(db_url, new_host)
 
 
+def local_ip_exists(ip):
+    return management_network_ipv6.ip_addr_output_has_ip(ip, shell("ip addr", False))
+
+
 def split_host_port_endpoint(endpoint, default_port):
     endpoint = endpoint.strip() if endpoint else ''
     if endpoint.startswith('['):
@@ -3058,7 +3062,7 @@ class StartCmd(Command):
             mn_ip = ctl.read_property('management.server.ip')
             if not mn_ip:
                 error("management.server.ip not configured")
-            if 0 != shell_return("ip a | grep 'inet ' | grep -w '%s'" % mn_ip):
+            if not local_ip_exists(mn_ip):
                 error("management.server.ip[%s] is not found on any device" % mn_ip)
 
         def check_ha():
@@ -5959,7 +5963,7 @@ class MysqlRestrictConnection(Command):
         mn_ip = ctl.read_property('management.server.ip')
         if not mn_ip:
             error("management.server.ip not configured")
-        if 0 != shell_return("ip a | grep 'inet ' | grep -w '%s'" % mn_ip):
+        if not local_ip_exists(mn_ip):
             error("management.server.ip[%s] is not found on any device" % mn_ip)
 
         return mn_ip
@@ -7826,7 +7830,7 @@ class ChangeIpCmd(Command):
         if status != 0 or (output != "non-root" and output != "root"):
             return
 
-        if shell_return("ip a | grep 'inet ' | grep -w '%s'" % mysql_ip) != 0:
+        if not local_ip_exists(mysql_ip):
             return
 
         if root_password is None:
