@@ -11,6 +11,17 @@ TEST_HOSTNAME = 'zstack-mn.example.com'
 TEST_PORT = 7070
 TEST_POOL_SIZE = '32'
 TEST_CEPH_PORT = 6789
+TEST_IP_ADDR_OUTPUT = """
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 state UNKNOWN qlen 1000
+    inet 127.0.0.1/8 scope host lo
+    inet6 ::1/128 scope host
+2: ens3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 state UP qlen 1000
+    inet 172.24.194.186/20 brd 172.24.207.255 scope global ens3
+    inet6 fd00:172:24:249::186/64 scope global
+    inet6 fe80::a359:8e69:9e:4e5a/64 scope link
+3: ens4: <BROADCAST,MULTICAST> mtu 1500 state DOWN qlen 1000
+    inet6 fd00:172:24:249::187/64 scope global
+"""
 
 
 def _format_ssh_target(user, hostname):
@@ -275,3 +286,14 @@ def test_extract_ceph_mon_host_supports_ipv4_ipv6_and_addrvec_prefixes():
     assert ceph_utils.extract_mon_host('v2:[%s]:3300/0' % TEST_IPV6_ADDRESS) == TEST_IPV6_ADDRESS
     assert ceph_utils.extract_mon_host('v1:%s:%s/0' % (TEST_IPV6_ADDRESS, TEST_CEPH_PORT)) == TEST_IPV6_ADDRESS
     assert ceph_utils.extract_mon_host(TEST_IPV6_ADDRESS) == TEST_IPV6_ADDRESS
+
+
+def test_get_nics_by_cidr_matches_ipv6_addresses(monkeypatch):
+    monkeypatch.setattr(linux.shell, 'call', lambda cmd: TEST_IP_ADDR_OUTPUT)
+
+    assert linux.get_nics_by_cidr('fd00:172:24:249::/64') == [
+        {'ens3': 'fd00:172:24:249::186'}
+    ]
+    assert linux.get_nics_by_cidr('172.24.192.0/20') == [
+        {'ens3': '172.24.194.186'}
+    ]
