@@ -126,7 +126,11 @@ class PhysicalNicMonitor(kvmagent.KvmAgent):
         self.alarms_to_send[nic] = nic_events
 
     @lock.lock('alarms_to_send')
-    def send_alarms(self):
+    def send_alarms(self, time_lock_now):
+        if time_lock_now != self.time_lock:
+            logger.debug("cancel the current timer for sending physical_nic alarm...")
+            return
+
         for nic, events in self.alarms_to_send.items():
             if len(events) == 0:
                 continue
@@ -178,7 +182,7 @@ class PhysicalNicMonitor(kvmagent.KvmAgent):
             self.state = True  # start thread
             logger.debug("physical_nic monitor settings :state change to %s", jsonobject.dumps(self.state))
             thread.timer(1, self.physical_nic_monitor).start()
-            thread.timer(1, self.send_alarms).start()
+            thread.timer(1, self.send_alarms, args=(self.time_lock, )).start()
         return jsonobject.dumps(AgentRsp())
 
     @linux.retry(times=2, sleep_time=3)
