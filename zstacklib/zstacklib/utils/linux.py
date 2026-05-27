@@ -2715,18 +2715,24 @@ class Interface(object):
                 'name':self.name,
                 'ips':self.ips})
 
+IP_ADDR_INTERFACE_MARKER = 'mtu'
+IP_ADDR_ADDRESS_FAMILIES = ('inet', 'inet6')
+IP_ADDR_LIST_CMD = "ip a | grep -E 'mtu| inet | inet6 '"
+
+
 def get_eth_ips():
-    nics = shell.call("ip a | grep -E 'mtu| inet '")
+    nics = shell.call(IP_ADDR_LIST_CMD)
     result = dict()
     interf = ''
 
     for i in nics.splitlines():
-        if i.find('mtu') >= 0:
+        fields = i.strip().split()
+        if i.find(IP_ADDR_INTERFACE_MARKER) >= 0:
             interf = re.findall(r':\ .*:\ ', i)[0].split(': ')[1]
             status = True if re.findall(r'UP', i) else False
             result[interf] = Interface({'name':interf, 'status':status, 'ips':list()})
-        elif i.find('inet') >= 0:
-            result[interf].ips.append(re.findall(r'inet\ .*\ scope', i)[0].split(' ')[1].split('/')[0])
+        elif fields and fields[0] in IP_ADDR_ADDRESS_FAMILIES:
+            result[interf].ips.append(fields[1].split('/')[0])
 
     return result
 
