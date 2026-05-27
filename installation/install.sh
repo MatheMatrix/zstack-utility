@@ -696,7 +696,7 @@ set_tomcat_config() {
                connectionTimeout="$new_timeout"
                redirectPort="8443"
                maxParameterCount="1000"
-               maxHttpHeaderSize="65536" URIEncoding="UTF-8" useBodyEncodingForURI="UTF-8" />
+               maxHttpHeaderSize="65536" URIEncoding="UTF-8" />
        <Executor name="tomcatThreadPool" namePrefix="catalina-exec-" maxThreads="$new_max_thread_num" minSpareThreads="$new_min_spare_threads" prestartminSpareThreads="true" maxQueueSize="$new_max_queue_size" />
     <Engine name="Catalina" defaultHost="localhost">
 
@@ -1641,8 +1641,8 @@ is_install_general_libs_rh(){
 
     # Just install what is not installed
     deps_list="python3-libselinux \
-            java-1.8.0-openjdk \
-            java-1.8.0-openjdk-devel \
+            java-21-openjdk \
+            java-21-openjdk-devel \
             bridge-utils \
             wget \
             nfs-utils \
@@ -1709,9 +1709,9 @@ is_install_general_libs_rh(){
         fail "install system libraries failed."
     fi
 
-    rpm -q java-1.8.0-openjdk >>$ZSTACK_INSTALL_LOG 2>&1 || java -version 2>&1 |grep 1.8 >/dev/null
+    rpm -q java-21-openjdk >>$ZSTACK_INSTALL_LOG 2>&1 || java -version 2>&1 |grep '"21\.' >/dev/null
     if [ $? -ne 0 ]; then
-        fail "java-1.8.0-openjdk is not installed. Did you forget updating management node local repos to latest ${PRODUCT_NAME} ISO? Please use following steps to update local repos:
+        fail "java-21-openjdk is not installed. Did you forget updating management node local repos to latest ${PRODUCT_NAME} ISO? Please use following steps to update local repos:
         1. # cd /opt
         2. # wget http://cdn.zstack.io/product_downloads/scripts/${PRODUCT_NAME,,}-upgrade
         3. download the latest ${PRODUCT_NAME} ISO from http://www.zstack.io/product_downloads into /opt
@@ -1719,9 +1719,9 @@ is_install_general_libs_rh(){
         "
     else
         #yum clean metadata >/dev/null 2>&1
-        #set java 8 as default jre.
-        update-alternatives --install /usr/bin/java java /usr/lib/jvm/jre-1.8.0/bin/java 0 >>$ZSTACK_INSTALL_LOG 2>&1
-        update-alternatives --set java /usr/lib/jvm/jre-1.8.0/bin/java >>$ZSTACK_INSTALL_LOG 2>&1
+        #set java 21 as default jre.
+        update-alternatives --install /usr/bin/java java /usr/lib/jvm/java-21-openjdk/bin/java 0 >>$ZSTACK_INSTALL_LOG 2>&1
+        update-alternatives --set java /usr/lib/jvm/java-21-openjdk/bin/java >>$ZSTACK_INSTALL_LOG 2>&1
         pass
     fi
 }
@@ -1744,14 +1744,14 @@ is_install_general_libs_deb(){
     id -u nginx >/dev/null 2>&1 || useradd nginx >/dev/null 2>&1
 
     if [[ $DEBIAN_OS =~ $OS ]]; then
-        #install openjdk ppa for openjdk-8
+        #install openjdk ppa for openjdk-21
 
         # add-apt-repository ppa:openjdk-r/ppa -y >>$ZSTACK_INSTALL_LOG 2>&1
         apt-key update >>$ZSTACK_INSTALL_LOG 2>&1
         apt-get update >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     apt-get -y install --allow-unauthenticated \
-        openjdk-8-jdk \
+        openjdk-21-jdk \
         bridge-utils \
         wget \
         auditd \
@@ -1797,10 +1797,10 @@ is_install_general_libs_deb(){
 
     if [ $OS == "UBUNTU14.04" ]; then
         #set java 8 as default jre.
-        update-alternatives --install /usr/bin/java java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java 0 >>$ZSTACK_INSTALL_LOG 2>&1
-        update-alternatives --install /usr/bin/javac javac /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/javac 0 >>$ZSTACK_INSTALL_LOG 2>&1
-        update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java >>$ZSTACK_INSTALL_LOG 2>&1
-        update-alternatives --set javac /usr/lib/jvm/java-8-openjdk-amd64/bin/javac >>$ZSTACK_INSTALL_LOG 2>&1
+        update-alternatives --install /usr/bin/java java /usr/lib/jvm/java-21-openjdk-amd64/bin/java 0 >>$ZSTACK_INSTALL_LOG 2>&1
+        update-alternatives --install /usr/bin/javac javac /usr/lib/jvm/java-21-openjdk-amd64/bin/javac 0 >>$ZSTACK_INSTALL_LOG 2>&1
+        update-alternatives --set java /usr/lib/jvm/java-21-openjdk-amd64/bin/java >>$ZSTACK_INSTALL_LOG 2>&1
+        update-alternatives --set javac /usr/lib/jvm/java-21-openjdk-amd64/bin/javac >>$ZSTACK_INSTALL_LOG 2>&1
         #no service iptables
         [ ! -f /etc/init.d/iptables ] && [ -f /etc/init.d/iptables-persistent ] \
             && ln -s /etc/init.d/iptables-persistent /etc/init.d/iptables

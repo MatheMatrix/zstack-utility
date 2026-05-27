@@ -3064,7 +3064,6 @@ class StartCmd(Command):
                 '-XX:MaxMetaspaceSize=512m',
                 '-XX:+HeapDumpOnOutOfMemoryError',
                 '-XX:HeapDumpPath=%s' % os.path.join(ctl.zstack_home, self.HEAP_DUMP_DIR),
-                '-XX:+UseAltSigs',
                 '-Dlog4j2.formatMsgNoLookups=true'
             ]
 
@@ -8097,17 +8096,17 @@ class InstallManagementNodeCmd(Command):
 
     - name: install dependencies on RedHat OS from user defined repo
       when: ansible_os_family == 'RedHat' and yum_repo != 'false'
-      shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y dmidecode java-1.8.0-openjdk wget python-devel gcc autoconf tar gzip unzip python-pip openssh-clients sshpass bzip2 sudo libselinux-python python-setuptools iptables-services libffi-devel openssl-devel
+      shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y dmidecode java-21-openjdk wget python-devel gcc autoconf tar gzip unzip python-pip openssh-clients sshpass bzip2 sudo libselinux-python python-setuptools iptables-services libffi-devel openssl-devel
 
     - name: install dependencies on RedHat OS from system repos
       when: ansible_os_family == 'RedHat' and yum_repo == 'false'
-      shell: yum clean metadata; yum --nogpgcheck install -y dmidecode java-1.8.0-openjdk wget python-devel gcc autoconf tar gzip unzip python-pip openssh-clients sshpass bzip2 sudo libselinux-python python-setuptools iptables-services libffi-devel openssl-devel
+      shell: yum clean metadata; yum --nogpgcheck install -y dmidecode java-21-openjdk wget python-devel gcc autoconf tar gzip unzip python-pip openssh-clients sshpass bzip2 sudo libselinux-python python-setuptools iptables-services libffi-devel openssl-devel
 
-    - name: set java 8 as default runtime
+    - name: set java 21 as default runtime
       when: ansible_os_family == 'RedHat'
-      shell: update-alternatives --install /usr/bin/java java /usr/lib/jvm/jre-1.8.0/bin/java 0; update-alternatives --set java /usr/lib/jvm/jre-1.8.0/bin/java
+      shell: update-alternatives --install /usr/bin/java java /usr/lib/jvm/java-21-openjdk/bin/java 0; update-alternatives --set java /usr/lib/jvm/java-21-openjdk/bin/java
 
-    - name: add ppa source for openjdk-8 on Ubuntu 14.04
+    - name: add ppa source for openjdk-21 on Ubuntu 14.04
       when: ansible_os_family == 'Debian' and ansible_distribution_version == '14.04'
       shell: add-apt-repository ppa:openjdk-r/ppa -y; apt-get update
 
@@ -8115,17 +8114,17 @@ class InstallManagementNodeCmd(Command):
       when: ansible_os_family == 'Debian' and ansible_distribution_version == '14.04'
       apt: pkg={{item}} update_cache=yes
       with_items:
-        - openjdk-8-jdk
+        - openjdk-21-jdk
 
     - name: install openjdk on Ubuntu 16.04
       when: ansible_os_family == 'Debian' and ansible_distribution_version == '16.04'
       apt: pkg={{item}} update_cache=yes
       with_items:
-        - openjdk-8-jdk
+        - openjdk-21-jdk
 
-    - name: set java 8 as default runtime
+    - name: set java 21 as default runtime
       when: ansible_os_family == 'Debian' and ansible_distribution_version == '14.04'
-      shell: update-alternatives --install /usr/bin/java java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java 0; update-alternatives --install /usr/bin/javac javac /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/javac 0; update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java; update-alternatives --set javac /usr/lib/jvm/java-8-openjdk-amd64/bin/javac
+      shell: update-alternatives --install /usr/bin/java java /usr/lib/jvm/java-21-openjdk-amd64/bin/java 0; update-alternatives --install /usr/bin/javac javac /usr/lib/jvm/java-21-openjdk-amd64/bin/javac 0; update-alternatives --set java /usr/lib/jvm/java-21-openjdk-amd64/bin/java; update-alternatives --set javac /usr/lib/jvm/java-21-openjdk-amd64/bin/javac
 
     - name: install dependencies Debian OS
       when: ansible_os_family == 'Debian'
