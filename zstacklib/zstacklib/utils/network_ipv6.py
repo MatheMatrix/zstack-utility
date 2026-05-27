@@ -45,6 +45,10 @@ def format_url_host(host):
     return URL_IPV6_HOST_FORMAT % host if IPV6_SEPARATOR in host else host
 
 
+def format_host_port(host, port):
+    return '%s:%s' % (format_url_host(host), port)
+
+
 def get_socket_family(host):
     return socket.AF_INET6 if host and IPV6_SEPARATOR in host else socket.AF_INET
 

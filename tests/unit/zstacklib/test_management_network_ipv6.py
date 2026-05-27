@@ -122,6 +122,12 @@ def test_format_url_host_wraps_ipv6_only_once():
     assert network_ipv6.format_url_host(None) is None
 
 
+def test_format_host_port_wraps_ipv6_only_once():
+    assert network_ipv6.format_host_port(TEST_IPV4_ADDRESS, TEST_PORT) == '192.168.10.10:7070'
+    assert network_ipv6.format_host_port(TEST_IPV6_ADDRESS, TEST_PORT) == '[2001:db8::10]:7070'
+    assert network_ipv6.format_host_port('[2001:db8::10]', TEST_PORT) == '[2001:db8::10]:7070'
+
+
 def test_format_ssh_target_wraps_ipv6_only_once():
     assert linux.format_ssh_target('root', TEST_IPV4_ADDRESS) == 'root@192.168.10.10'
     assert linux.format_ssh_target('root', TEST_IPV6_ADDRESS) == 'root@[2001:db8::10]'
