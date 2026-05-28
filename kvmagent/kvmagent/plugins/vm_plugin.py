@@ -1318,6 +1318,10 @@ class ChangeVfNicHaStateRsp(kvmagent.AgentResponse):
 
 
 class VncPortIptableRule(object):
+    IPV4_VERSION = 4
+    IPV6_VERSION = 6
+    IPV6_REJECT_WITH = 'icmp6-adm-prohibited'
+
     def __init__(self):
         self.host_ip = None
         self.port = None
@@ -1332,21 +1336,40 @@ class VncPortIptableRule(object):
         assert self.port is not None
         assert self.vm_internal_id is not None
 
-        ipt = iptables.from_iptables_save()
         chain_name = self._make_chain_name()
         current_ip = linux.get_host_by_name(self.host_ip)
 
-        # get ipv4 subnet
-        current_ip_addr_list = [addr for addr in iproute.query_addresses_by_ip(current_ip, 4) if addr.scope == 'universe']
+        current_ip_addr_list = [
+            addr for addr in iproute.query_addresses_by_ip(current_ip, self.IPV4_VERSION)
+            if addr.scope == 'universe'
+        ]
+        if current_ip_addr_list:
+            ipt = iptables.from_iptables_save()
+            current_ip_with_netmask = '%s/%d' % (current_ip_addr_list[0].address, current_ip_addr_list[0].prefixlen)
+
+            ipt.add_rule('-A INPUT -p tcp -m tcp --dport %s -j %s' % (self.port, chain_name))
+            ipt.add_rule('-A %s -d %s -j ACCEPT' % (chain_name, current_ip_with_netmask))
+            ipt.add_rule('-A %s ! -d %s -j REJECT --reject-with icmp-host-prohibited' % (chain_name, current_ip_with_netmask))
+            ipt.iptable_restore()
+            return
+
+        current_ip_addr_list = [
+            addr for addr in iproute.query_addresses_by_ip(current_ip, self.IPV6_VERSION)
+            if addr.scope == 'universe'
+        ]
         if not current_ip_addr_list:
             err = 'cannot get host ip with netmask for %s' % self.host_ip
             logger.warn(err)
             raise kvmagent.KvmError(err)
+
+        ipt = iptables.from_ip6tables_save()
         current_ip_with_netmask = '%s/%d' % (current_ip_addr_list[0].address, current_ip_addr_list[0].prefixlen)
 
         ipt.add_rule('-A INPUT -p tcp -m tcp --dport %s -j %s' % (self.port, chain_name))
         ipt.add_rule('-A %s -d %s -j ACCEPT' % (chain_name, current_ip_with_netmask))
-        ipt.add_rule('-A %s ! -d %s -j REJECT --reject-with icmp-host-prohibited' % (chain_name, current_ip_with_netmask))
+        ipt.add_rule('-A %s ! -d %s -j REJECT --reject-with %s' % (
+            chain_name, current_ip_with_netmask, self.IPV6_REJECT_WITH
+        ))
         ipt.iptable_restore()
 
     @lock.file_lock('/run/xtables.lock')
@@ -1355,6 +1378,10 @@ class VncPortIptableRule(object):
 
         ipt = iptables.from_iptables_save()
         chain_name = self._make_chain_name()
+        ipt.delete_chain(chain_name)
+        ipt.iptable_restore()
+
+        ipt = iptables.from_ip6tables_save()
         ipt.delete_chain(chain_name)
         ipt.iptable_restore()
 
@@ -1380,25 +1407,24 @@ class VncPortIptableRule(object):
 
     @lock.file_lock('/run/xtables.lock')
     def delete_stale_chains(self):
-        ipt = iptables.from_iptables_save()
-        tbl = ipt.get_table()
-        if not tbl:
-            ipt.iptable_restore()
-            return
-
         vms = get_running_vms()
         internal_ids = self.find_vm_internal_ids(vms)
 
-        # delete all vnc chains
-        chains = tbl.children[:]
-        for chain in chains:
-            if 'vm' in chain.name and 'vnc' in chain.name:
-                vm_internal_id = chain.name.split('-')[1]
-                if vm_internal_id not in internal_ids:
-                    ipt.delete_chain(chain.name)
-                    logger.debug('deleted a stale VNC iptable chain[%s]' % chain.name)
+        for ipt in [iptables.from_iptables_save(), iptables.from_ip6tables_save()]:
+            tbl = ipt.get_table()
+            if not tbl:
+                ipt.iptable_restore()
+                continue
 
-        ipt.iptable_restore()
+            chains = tbl.children[:]
+            for chain in chains:
+                if 'vm' in chain.name and 'vnc' in chain.name:
+                    vm_internal_id = chain.name.split('-')[1]
+                    if vm_internal_id not in internal_ids:
+                        ipt.delete_chain(chain.name)
+                        logger.debug('deleted a stale VNC iptable chain[%s]' % chain.name)
+
+            ipt.iptable_restore()
 
 
 def e(parent, tag, value=None, attrib=None, usenamesapce = False):
