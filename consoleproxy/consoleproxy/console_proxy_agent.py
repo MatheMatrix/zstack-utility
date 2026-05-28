@@ -27,6 +27,12 @@ def format_host_port_for_url(host, port):
     return SHELL_HOST_PORT_FORMAT % (network_ipv6.format_url_host(host), port)
 
 
+def format_host_port_for_websockify_target(host, port):
+    if host.startswith(network_ipv6.IPV6_BRACKET_PREFIX) and host.endswith(network_ipv6.IPV6_BRACKET_SUFFIX):
+        host = host[1:-1]
+    return SHELL_HOST_PORT_FORMAT % (host, port)
+
+
 def format_host_port_for_grep(host, port):
     return format_host_port_for_url(host, port).replace('[', GREP_OPEN_BRACKET).replace(']', GREP_CLOSE_BRACKET)
 
@@ -396,7 +402,7 @@ class ConsoleProxyAgent(object):
         log_file = os.path.join(self.PROXY_LOG_DIR, cmd.proxyHostname)
         proxy_host_port = format_host_port_for_url(cmd.proxyHostname, cmd.proxyPort)
         proxy_host_port_grep = format_host_port_for_grep(cmd.proxyHostname, cmd.proxyPort)
-        target_host_port = format_host_port_for_url(cmd.targetHostname, cmd.targetPort)
+        target_host_port = format_host_port_for_websockify_target(cmd.targetHostname, cmd.targetPort)
 
         token_file = ConsoleTokenFile(cmd.token)
         token_file.flush_write('%s: %s' % (cmd.token, target_host_port))

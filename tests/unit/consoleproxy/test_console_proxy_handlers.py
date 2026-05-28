@@ -73,6 +73,11 @@ class TestIpv6HostPortFormatting:
         assert module.format_host_port_for_url("console-proxy.example.com", 5900) == "console-proxy.example.com:5900"
         assert module.format_host_port_for_url("2001:db8::10", 5900) == "[2001:db8::10]:5900"
 
+    def test_format_host_port_for_websockify_target_uses_socket_host(self):
+        assert module.format_host_port_for_websockify_target("192.168.10.10", 5900) == "192.168.10.10:5900"
+        assert module.format_host_port_for_websockify_target("2001:db8::10", 5900) == "2001:db8::10:5900"
+        assert module.format_host_port_for_websockify_target("[2001:db8::10]", 5900) == "2001:db8::10:5900"
+
     def test_format_host_port_for_grep_escapes_ipv6_brackets(self):
         assert module.format_host_port_for_grep("2001:db8::10", 5900) == r"\[2001:db8::10\]:5900"
 
@@ -357,7 +362,7 @@ class TestEstablishNewVncProxy:
         agent.db.set.assert_called_once()
 
     @patch.object(module, "bash_roe", return_value=(0, "", ""))
-    def test_establish_vnc_proxy_uses_bracketed_ipv6_endpoint(self, mock_bash):
+    def test_establish_vnc_proxy_uses_socket_ipv6_token_target(self, mock_bash):
         agent = _make_agent()
         token_file_mock = MagicMock()
         token_file_mock.get_absolute_path.return_value = "/var/lib/zstack/consoleProxy/vm_ipv6_123"
@@ -379,7 +384,7 @@ class TestEstablishNewVncProxy:
 
         rsp = _load_rsp(result)
         assert rsp["success"] is True
-        token_file_mock.flush_write.assert_called_once_with("vm_ipv6_123: [2001:db8::11]:5900")
+        token_file_mock.flush_write.assert_called_once_with("vm_ipv6_123: 2001:db8::11:5900")
         assert any(r"\[2001:db8::10\]:6800" in call_args[0][0] for call_args in mock_bash.call_args_list)
 
 
