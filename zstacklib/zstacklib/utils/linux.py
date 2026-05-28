@@ -69,6 +69,9 @@ KVM_CHECK_EXTENSION = 44547
 DEFAULT_VM_IPA_SIZE = 40
 LIVE_LIBVIRT_XML_DIR = "/var/run/libvirt/qemu"
 MAX_NBD_READ_SIZE = 32768000
+NFS_URL_SEPARATOR = ':'
+IPV6_HOST_PREFIX = '['
+IPV6_HOST_SUFFIX = ']'
 
 def ignoreerror(func):
     @functools.wraps(func)
@@ -639,13 +642,30 @@ def get_hostname_fqdn():
         return socket.getaddrinfo(socket.gethostname(), 0, 0, 0, 0, socket.AI_CANONNAME)[0][3]
     return socket.getaddrinfo(socket.gethostname(), 0, flags=socket.AI_CANONNAME)[0][3]
 
+def parse_nfs_url(url):
+    if url.startswith(IPV6_HOST_PREFIX):
+        end = url.find(IPV6_HOST_SUFFIX)
+        if end <= 0:
+            raise InvalidNfsUrlError(url, 'IPv6 host must be enclosed by []')
+
+        host = url[len(IPV6_HOST_PREFIX):end]
+        suffix = url[end + len(IPV6_HOST_SUFFIX):]
+        if not suffix.startswith(NFS_URL_SEPARATOR):
+            raise InvalidNfsUrlError(url, 'url should be [IPv6]:/absolute/path')
+
+        return host, suffix[len(NFS_URL_SEPARATOR):]
+
+    ts = url.split(NFS_URL_SEPARATOR)
+    if len(ts) != 2:
+        raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
+
+    return ts[0], ts[1]
+
+
 def is_valid_nfs_url(url):
-    ts = url.split(':')
-    if len(ts) != 2: raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
-    host = ts[0]
-    path = ts[1]
+    host, path = parse_nfs_url(url)
     try:
-        socket.gethostbyname(host)
+        socket.getaddrinfo(host, None)
     except socket.gaierror:
         raise InvalidNfsUrlError(url, '%s cannont resolve to ip address' % host)
 
