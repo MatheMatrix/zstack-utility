@@ -2530,6 +2530,7 @@ def transform_to_tf_uuid(src):
     tmp = [src[:8], src[8:12], src[12:16], src[16:20], src[20:]]
     return '-'.join(tmp)
 
+
 class Vm(object):
     VIR_DOMAIN_NOSTATE = 0
     VIR_DOMAIN_RUNNING = 1
