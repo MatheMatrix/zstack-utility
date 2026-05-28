@@ -1052,6 +1052,7 @@ def set_legacy_iptables_ebtables():
     """set legacy mode if needed; on alinux4 deploy ebtables wrapper for --logical-in compatibility."""
     if releasever == "alinux4" and host_info.distro in RPM_BASED_OS:
         # alinux4 has no ebtables-legacy; deploy wrapper that translates --logical-in to -i
+        # and keep save/restore followers available for kvmagent rule checks.
         wrapper = (
             '#!/bin/bash\n'
             'args=()\n'
@@ -1067,7 +1068,9 @@ def set_legacy_iptables_ebtables():
         command = (
             "printf '%%s' '%s' > /usr/local/sbin/ebtables-wrapper && "
             "chmod +x /usr/local/sbin/ebtables-wrapper && "
-            "alternatives --install /usr/sbin/ebtables ebtables /usr/local/sbin/ebtables-wrapper 200 || true"
+            "alternatives --install /usr/sbin/ebtables ebtables /usr/local/sbin/ebtables-wrapper 200 "
+            "--slave /usr/sbin/ebtables-save ebtables-save /usr/sbin/ebtables-nft-save "
+            "--slave /usr/sbin/ebtables-restore ebtables-restore /usr/sbin/ebtables-nft-restore || true"
         ) % wrapper
         host_post_info.post_label = "ansible.shell.switch.legacy-version"
         host_post_info.post_label_param = None
