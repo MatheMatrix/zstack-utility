@@ -88,10 +88,19 @@ def test_nfs_operations_is_mounted_uses_fixed_string_match_for_ipv6_url(monkeypa
     ]
 
 
-def test_legacy_linux_get_host_by_name_supports_ipv6(monkeypatch):
+def test_legacy_linux_get_host_by_name_returns_ipv6_literal_without_dns(monkeypatch):
     def fake_getaddrinfo(host, port):
-        return [(socket.AF_INET6, socket.SOCK_STREAM, 0, '', (host, 0))]
+        raise AssertionError('literal IP must not be resolved by getaddrinfo')
 
     monkeypatch.setattr(linux.socket, 'getaddrinfo', fake_getaddrinfo)
 
     assert linux.get_host_by_name('fd00:172:24:249::182') == 'fd00:172:24:249::182'
+
+
+def test_legacy_linux_get_host_by_name_resolves_hostname(monkeypatch):
+    def fake_getaddrinfo(host, port):
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 0, '', ('fd00:172:24:249::182', 0))]
+
+    monkeypatch.setattr(linux.socket, 'getaddrinfo', fake_getaddrinfo)
+
+    assert linux.get_host_by_name('host.example.com') == 'fd00:172:24:249::182'
