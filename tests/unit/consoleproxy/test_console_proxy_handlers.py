@@ -395,7 +395,7 @@ class TestEstablishNewVncProxy:
         agent.db.set.assert_called_once()
 
     @patch.object(module, "bash_roe", return_value=(0, "", ""))
-    def test_establish_vnc_proxy_uses_bracketed_ipv6_endpoint(self, mock_bash):
+    def test_establish_vnc_proxy_uses_socket_ipv6_token_target(self, mock_bash):
         agent = _make_agent()
         token_file_mock = MagicMock()
         token_file_mock.get_absolute_path.return_value = "/var/lib/zstack/consoleProxy/vm_ipv6_123"
