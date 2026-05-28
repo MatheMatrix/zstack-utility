@@ -1335,6 +1335,32 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
                     if transport:
                         return transport.strip()
 
+            subsys_root = "/sys/class/nvme-subsystem"
+            for target in nvme_subsystems:
+                subsys_dir = "%s/%s" % (subsys_root, target)
+                if not os.path.exists(subsys_dir):
+                    continue
+                try:
+                    entries = os.listdir(subsys_dir)
+                except OSError:
+                    continue
+                owns_dev = dev_name in entries
+                if not owns_dev:
+                    for fpath in linux.walk(subsys_dir, depth=2):
+                        if os.path.basename(fpath) == dev_name:
+                            owns_dev = True
+                            break
+                if not owns_dev:
+                    continue
+                for entry in entries:
+                    if not entry.startswith("nvme"):
+                        continue
+                    if "n" in entry[len("nvme"):]:
+                        continue
+                    transport = linux.read_file("%s/%s/transport" % (subsys_dir, entry))
+                    if transport:
+                        return transport.strip()
+
         for lun in nvme_luns:
             s = NvmeLunStruct()
             dev_name = os.path.basename(lun.DevicePath)
@@ -1414,7 +1440,10 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         for nqn in discovered_nqns:
             r, o, e = bash.bash_roe("timeout 60 nvme connect -a %s -s %s -t %s --nqn %s" % (cmd.ip, cmd.port, cmd.transport, nqn))
             for controller in self.get_nvme_subsystem_controllers(nqn):
-                if controller.transport == cmd.transport and controller.address == "traddr=%s,trsvcid=%s" % (cmd.ip, cmd.port):
+                expected_addr = "traddr=%s,trsvcid=%s" % (cmd.ip, cmd.port)
+                if controller.transport == cmd.transport and (
+                        controller.address == expected_addr or
+                        controller.address.startswith(expected_addr + ",")):
                     any_nqn_connected = True
                     wwids = wwids.union(controller.wwids)
                     break
@@ -1439,7 +1468,10 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
 
         for nqn in discovered_nqns:
             for controller in self.get_nvme_subsystem_controllers(nqn):
-                if controller.transport == cmd.transport and controller.address == "traddr=%s,trsvcid=%s" % (cmd.ip, cmd.port):
+                expected_addr = "traddr=%s,trsvcid=%s" % (cmd.ip, cmd.port)
+                if controller.transport == cmd.transport and (
+                        controller.address == expected_addr or
+                        controller.address.startswith(expected_addr + ",")):
                     r, o, e = bash.bash_roe("timeout 60 nvme disconnect -d %s" % controller.name)
                     if r != 0:
                         logger.warn("disconnect nvme nqn[%s] failed: %s" % (nqn, e))
