@@ -56,3 +56,33 @@ def test_legacy_linux_nfs_url_parser_supports_bracketed_ipv6(monkeypatch):
     )
     assert linux.is_valid_nfs_url(IPV6_NFS_URL)
     assert resolved_hosts == [('fd00:172:24:249::182', None)]
+
+
+def test_legacy_linux_is_mounted_uses_fixed_string_match_for_ipv6_url(monkeypatch):
+    commands = []
+
+    def fake_run(command):
+        commands.append(command)
+        return 0
+
+    monkeypatch.setattr(linux.shell, 'run', fake_run)
+
+    assert linux.is_mounted('/mnt/nfs', IPV6_NFS_URL)
+    assert commands == [
+        "mount | grep -F '[fd00:172:24:249::182]:/export/zstack-nfs-ps on ' | grep -F '/mnt/nfs ' "
+    ]
+
+
+def test_nfs_operations_is_mounted_uses_fixed_string_match_for_ipv6_url(monkeypatch):
+    commands = []
+
+    def fake_run(command):
+        commands.append(command)
+        return 0
+
+    monkeypatch.setattr(operations.shell, 'run', fake_run)
+
+    assert operations.is_mounted('/mnt/nfs', IPV6_NFS_URL)
+    assert commands == [
+        "mount | grep -F '[fd00:172:24:249::182]:/export/zstack-nfs-ps on ' | grep -F '/mnt/nfs ' "
+    ]
