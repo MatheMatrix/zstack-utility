@@ -134,6 +134,14 @@ CONSOLE_LISTEN_IPV4_ADDRESS = '0.0.0.0'
 CONSOLE_LISTEN_IPV6_ADDRESS = network_ipv6.DUAL_STACK_BIND_ADDRESS
 
 
+def build_libvirt_system_uri(proto, host):
+    return '%s://%s/system' % (proto, network_ipv6.format_url_host(host))
+
+
+def build_libvirt_tcp_uri(host):
+    return 'tcp://%s' % network_ipv6.format_url_host(host)
+
+
 def _check_tls_ready(dest_ip, vm_uuid):
     """Check if TLS migration is actually possible.
 
@@ -2356,7 +2364,7 @@ class VmVolumesRecoveryTask(plugin.TaskDaemon):
 @linux.retry(times=3, sleep_time=1)
 def get_connect(src_host_ip, use_tls=False):
     proto = 'qemu+tls' if use_tls else 'qemu+tcp'
-    uri = '{0}://{1}/system'.format(proto, src_host_ip)
+    uri = build_libvirt_system_uri(proto, src_host_ip)
     conn = libvirt.open(uri)
     if conn is None:
         logger.warn('unable to connect qemu on host {0} via {1}'.format(src_host_ip, proto))
@@ -4437,11 +4445,11 @@ class Vm(object):
         if use_tls:
             use_tls = _check_tls_ready(dest_ctrl_ip, cmd.vmUuid)
         migrate_proto = 'qemu+tls' if use_tls else 'qemu+tcp'
-        destUrl = "{0}://{1}/system".format(migrate_proto, dest_ctrl_ip)
+        destUrl = build_libvirt_system_uri(migrate_proto, dest_ctrl_ip)
         # Data channel URI must always use tcp:// scheme.
         # When TLS is enabled, encryption is activated via VIR_MIGRATE_TLS flag,
         # not by changing the URI scheme.
-        tcpUri = "tcp://{0}".format(cmd.destHostIp)
+        tcpUri = build_libvirt_tcp_uri(cmd.destHostIp)
         bandwidth = cmd.bandwidth if cmd.bandwidth > 0 else 0
 
         storage_migration_required = cmd.disks and len(cmd.disks.__dict__) != 0
@@ -9402,10 +9410,10 @@ class VmPlugin(kvmagent.KvmAgent):
         # TLS control-plane URI must use management IP (cert SAN matches
         # management address); data-plane uses tls:// when TLS is enabled.
         dst_ctrl_ip = dstHostManagementIp or dstHostIp
-        dst = '{0}://{1}/system'.format(migrate_proto, dst_ctrl_ip)
+        dst = build_libvirt_system_uri(migrate_proto, dst_ctrl_ip)
         # Data channel URI must always use tcp:// scheme.
         # When TLS is enabled, virsh --tls flag handles encryption.
-        migurl = 'tcp://{0}'.format(dstHostIp)
+        migurl = build_libvirt_tcp_uri(dstHostIp)
         diskstr = ','.join(disks)
 
         flags = "--live --p2p --copy-storage-all --persistent"
