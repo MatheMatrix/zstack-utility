@@ -625,13 +625,13 @@ def is_valid_hostname(hostname):
         return True
 
     try:
-        socket.gethostbyname(hostname)
+        socket.getaddrinfo(hostname, None)
         return True
     except socket.error:
         return False
 
 def get_host_by_name(host):
-    return socket.gethostbyname(host)
+    return socket.getaddrinfo(host, None)[0][4][0]
 
 def get_hostname():
     return socket.gethostname()

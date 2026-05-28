@@ -86,3 +86,12 @@ def test_nfs_operations_is_mounted_uses_fixed_string_match_for_ipv6_url(monkeypa
     assert commands == [
         "mount | grep -F '[fd00:172:24:249::182]:/export/zstack-nfs-ps on ' | grep -F '/mnt/nfs ' "
     ]
+
+
+def test_legacy_linux_get_host_by_name_supports_ipv6(monkeypatch):
+    def fake_getaddrinfo(host, port):
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 0, '', (host, 0))]
+
+    monkeypatch.setattr(linux.socket, 'getaddrinfo', fake_getaddrinfo)
+
+    assert linux.get_host_by_name('fd00:172:24:249::182') == 'fd00:172:24:249::182'
