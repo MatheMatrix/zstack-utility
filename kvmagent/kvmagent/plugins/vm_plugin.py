@@ -2531,6 +2531,7 @@ def transform_to_tf_uuid(src):
     return '-'.join(tmp)
 
 
+
 class Vm(object):
     VIR_DOMAIN_NOSTATE = 0
     VIR_DOMAIN_RUNNING = 1
