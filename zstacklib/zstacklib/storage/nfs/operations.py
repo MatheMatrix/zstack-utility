@@ -49,11 +49,11 @@ def is_mounted(path: str | None = None, url: str | None = None) -> bool:
         url = re.sub(r'/{2,}', '/', url.rstrip('/'))
 
     if url and path:
-        cmdstr = f"mount | grep '{url} on ' | grep '{path} ' "
+        cmdstr = f"mount | grep -F '{url} on ' | grep -F '{path} ' "
     elif not url:
-        cmdstr = f"mount | grep '{path} '"
+        cmdstr = f"mount | grep -F '{path} '"
     elif not path:
-        cmdstr = f"mount | grep '{url} on '"
+        cmdstr = f"mount | grep -F '{url} on '"
     else:
         raise ValueError('path and url cannot both be None')
 

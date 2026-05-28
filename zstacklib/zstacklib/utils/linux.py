@@ -508,11 +508,11 @@ def is_mounted(path=None, url=None):
         url = re.sub(r'/{2,}','/',url.rstrip('/'))
 
     if url and path:
-        cmdstr = "mount | grep -E '%s[ /]+on' | grep '%s ' " % (url, path)
+        cmdstr = "mount | grep -F '%s on ' | grep -F '%s ' " % (url, path)
     elif not url:
-        cmdstr = "mount | grep '%s '" % path
+        cmdstr = "mount | grep -F '%s '" % path
     elif not path:
-        cmdstr = "mount | grep -E '%s[ /]+on'" % url
+        cmdstr = "mount | grep -F '%s on '" % url
     else:
         raise Exception('path and url cannot both be None')
 
