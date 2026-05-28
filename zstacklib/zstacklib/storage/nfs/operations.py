@@ -17,6 +17,30 @@ from .exceptions import (
 
 
 MOUNT_TIMEOUT = 180
+NFS_URL_SEPARATOR = ':'
+IPV6_HOST_PREFIX = '['
+IPV6_HOST_SUFFIX = ']'
+
+
+def parse_nfs_url(url: str) -> tuple[str, str]:
+    """Parse nfs url into host and absolute path."""
+    if url.startswith(IPV6_HOST_PREFIX):
+        end = url.find(IPV6_HOST_SUFFIX)
+        if end <= 0:
+            raise InvalidNfsUrlError(url, 'IPv6 host must be enclosed by []')
+
+        host = url[len(IPV6_HOST_PREFIX):end]
+        suffix = url[end + len(IPV6_HOST_SUFFIX):]
+        if not suffix.startswith(NFS_URL_SEPARATOR):
+            raise InvalidNfsUrlError(url, 'url should be [IPv6]:/absolute/path')
+
+        return host, suffix[len(NFS_URL_SEPARATOR):]
+
+    ts = url.split(NFS_URL_SEPARATOR)
+    if len(ts) != 2:
+        raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
+
+    return ts[0], ts[1]
 
 
 def is_mounted(path: str | None = None, url: str | None = None) -> bool:
@@ -50,15 +74,10 @@ def is_mounted_with_alternate_format(path: str | None = None, url: str | None = 
 
 def validate_nfs_url(url: str) -> bool:
     """Validate nfs url."""
-    ts = url.split(':')
-    if len(ts) != 2:
-        raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
-
-    host = ts[0]
-    path = ts[1]
+    host, path = parse_nfs_url(url)
 
     try:
-        socket.gethostbyname(host)
+        socket.getaddrinfo(host, None)
     except socket.gaierror:
         raise InvalidNfsUrlError(url, f'{host} cannot resolve to ip address')
 
@@ -73,13 +92,9 @@ def check_mount_status(url: str, path: str, info: str | None = None) -> None:
     if not url or not path:
         raise ValueError('url and path are required')
 
-    ts = url.split(':')
-    if len(ts) != 2:
-        raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
-
-    host = ts[0]
+    host, _ = parse_nfs_url(url)
     try:
-        socket.gethostbyname(host)
+        socket.getaddrinfo(host, None)
     except socket.gaierror:
         raise InvalidMountDomainError(url, f'{host} cannot resolve to ip address')
 
