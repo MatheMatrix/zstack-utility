@@ -18,6 +18,8 @@ IPV6_VERSION = 6
 JDBC_IPV6_HOST_FORMAT = '[%s]'
 IPV6_DB_HOST_PATTERN = r'\[([0-9a-fA-F:]+)\]'
 IPV4_OR_LOCALHOST_DB_HOST_PATTERN = r'(?<![0-9A-Za-z_.-])(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|localhost)(?![0-9A-Za-z_.-])'
+JAVA_PREFER_IPV4_STACK_PREFIX = '-Djava.net.preferIPv4Stack='
+JAVA_PREFER_IPV6_ADDRESSES_PREFIX = '-Djava.net.preferIPv6Addresses='
 
 
 def validate_ip(value):
@@ -84,3 +86,34 @@ def replace_db_url_host(db_url, new_host):
         return db_url.replace(JDBC_IPV6_HOST_FORMAT % old_host, format_host_for_url_or_jdbc(new_host), 1)
 
     return db_url.replace(old_host, format_host_for_url_or_jdbc(new_host), 1)
+
+
+def ip_addr_output_has_ip(ip, addr_output):
+    if ip is None or addr_output is None:
+        return False
+    if isinstance(ip, bytes) and bytes not in STRING_TYPES:
+        ip = ip.decode('utf-8')
+    if not isinstance(ip, STRING_TYPES):
+        return False
+
+    ip = ip.strip('[]')
+    if not validate_ip(ip):
+        return False
+
+    return re.search(r'\binet6?\s+%s(?:/|\s)' % re.escape(ip), addr_output) is not None
+
+
+def build_java_ip_stack_opts(management_ip, catalina_opts):
+    if get_ip_version(management_ip) != IPV6_VERSION:
+        return list(catalina_opts)
+
+    opts = [
+        opt for opt in catalina_opts
+        if not opt.startswith(JAVA_PREFER_IPV4_STACK_PREFIX)
+        and not opt.startswith(JAVA_PREFER_IPV6_ADDRESSES_PREFIX)
+    ]
+    opts.extend([
+        JAVA_PREFER_IPV4_STACK_PREFIX + 'false',
+        JAVA_PREFER_IPV6_ADDRESSES_PREFIX + 'true',
+    ])
+    return opts

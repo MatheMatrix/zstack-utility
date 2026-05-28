@@ -57,3 +57,42 @@ def test_replace_db_url_host_formats_new_host_by_ip_version():
         'jdbc:mysql://[2001:db8::10]:3306/zstack',
         '192.168.10.20',
     ) == 'jdbc:mysql://192.168.10.20:3306/zstack'
+
+
+def test_ip_addr_output_has_ip_accepts_ipv4_and_ipv6_addresses():
+    addr_output = '''
+2: br_eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 172.24.246.247/16 brd 172.24.255.255 scope global br_eth0
+       valid_lft forever preferred_lft forever
+    inet6 fd00:172:24:246::247/64 scope global
+       valid_lft forever preferred_lft forever
+'''
+    assert management_network_ipv6.ip_addr_output_has_ip('172.24.246.247', addr_output)
+    assert management_network_ipv6.ip_addr_output_has_ip('fd00:172:24:246::247', addr_output)
+    assert management_network_ipv6.ip_addr_output_has_ip('[fd00:172:24:246::247]', addr_output)
+    assert not management_network_ipv6.ip_addr_output_has_ip('fd00:172:24:246::248', addr_output)
+    assert not management_network_ipv6.ip_addr_output_has_ip('not-an-ip', addr_output)
+
+
+def test_build_java_ip_stack_opts_switches_to_ipv6_stack_for_ipv6_mn():
+    opts = management_network_ipv6.build_java_ip_stack_opts('fd00:172:24:246::247', [
+        '-Djdk.tls.trustNameService=true',
+        '-Djava.net.preferIPv4Stack=true',
+        '-Djava.net.preferIPv6Addresses=false',
+        '-Xmx12288M',
+    ])
+
+    assert '-Djava.net.preferIPv4Stack=true' not in opts
+    assert '-Djava.net.preferIPv6Addresses=false' not in opts
+    assert '-Djava.net.preferIPv4Stack=false' in opts
+    assert '-Djava.net.preferIPv6Addresses=true' in opts
+    assert '-Xmx12288M' in opts
+
+
+def test_build_java_ip_stack_opts_keeps_ipv4_defaults_for_ipv4_mn():
+    opts = [
+        '-Djava.net.preferIPv4Stack=true',
+        '-Xmx12288M',
+    ]
+
+    assert management_network_ipv6.build_java_ip_stack_opts('172.24.246.247', opts) == opts
