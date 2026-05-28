@@ -614,11 +614,13 @@ def fumount(mountpoint, timeout = 10):
     return shell.run("timeout %s fusermount -u %s" % (timeout, mountpoint))
 
 def is_valid_address(address):
-    try:
-        socket.inet_aton(address)
-        return True
-    except socket.error:
-        return False
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            socket.inet_pton(family, address)
+            return True
+        except socket.error:
+            pass
+    return False
 
 def is_valid_hostname(hostname):
     if is_valid_address(hostname):
@@ -631,6 +633,8 @@ def is_valid_hostname(hostname):
         return False
 
 def get_host_by_name(host):
+    if is_valid_address(host):
+        return host
     return socket.getaddrinfo(host, None)[0][4][0]
 
 def get_hostname():
