@@ -617,6 +617,8 @@ class AttachDataVolumeResponse(kvmagent.AgentResponse):
         self.virtualDeviceInfoList = []  # type:list[VirtualDeviceInfo]
 
 
+
+
 class DetachDataVolumeCmd(kvmagent.AgentCommand):
     def __init__(self):
         super(DetachDataVolumeCmd, self).__init__()
