@@ -111,18 +111,14 @@ def ip_addr_output_has_ip(ip, addr_output):
 
 
 def build_java_ip_stack_opts(management_ip, catalina_opts):
-    if get_ip_version(management_ip) != IPV6_VERSION:
-        return list(catalina_opts)
-
     opts = [
         opt for opt in catalina_opts
         if not opt.startswith(JAVA_PREFER_IPV4_STACK_PREFIX)
         and not opt.startswith(JAVA_PREFER_IPV6_ADDRESSES_PREFIX)
     ]
-    opts.extend([
-        JAVA_PREFER_IPV4_STACK_PREFIX + 'false',
-        JAVA_PREFER_IPV6_ADDRESSES_PREFIX + 'true',
-    ])
+    opts.append(JAVA_PREFER_IPV4_STACK_PREFIX + 'false')
+    if get_ip_version(management_ip) == IPV6_VERSION:
+        opts.append(JAVA_PREFER_IPV6_ADDRESSES_PREFIX + 'true')
     return opts
 
 

@@ -79,7 +79,7 @@ def build_management_server_ip_stack_opts(properties):
     if management_server_should_listen_ipv6(properties):
         return [JAVA_PREFER_IPV4_STACK_FALSE, JAVA_PREFER_IPV6_ADDRESSES_TRUE]
 
-    return [JAVA_PREFER_IPV4_STACK_TRUE]
+    return [JAVA_PREFER_IPV4_STACK_FALSE]
 
 
 def ui_should_listen_ipv6(listen_host):
