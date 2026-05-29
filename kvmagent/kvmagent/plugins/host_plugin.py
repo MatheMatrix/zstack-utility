@@ -1838,14 +1838,15 @@ class HostPlugin(kvmagent.KvmAgent):
                 rsp.powerSupplyMaxPowerCapacity = ''.join(re.findall(r'\d+', power_supply_max_power_capacity.strip()))
 
         rsp.qemuImgVersion = qemu_img_version
+        qemu_package_name = "qemu" if IS_AARCH64 else "qemu-kvm"
         if self.IS_YUM:
             try:
-                rsp.qemuKvmPackageVersion = linux.get_rpm_version("qemu-kvm")
+                rsp.qemuKvmPackageVersion = linux.get_rpm_version(qemu_package_name)
             except Exception as e:
-                logger.error("failed to get qemu-kvm rpm version for host[uuid:%s]: %s" % (self.host_uuid, str(e)))
+                logger.error("failed to get %s rpm version for host[uuid:%s]: %s" % (qemu_package_name, self.host_uuid, str(e)))
                 rsp.qemuKvmPackageVersion = None
         else:
-            logger.debug("qemu-kvm package version is only reported on RPM-based host[uuid:%s]; automatic IOThread VQ mapping capability will not be enabled" % self.host_uuid)
+            logger.debug("%s package version is only reported on RPM-based host[uuid:%s]; automatic IOThread VQ mapping capability will not be enabled" % (qemu_package_name, self.host_uuid))
         rsp.libvirtVersion = self.libvirt_version
         rsp.libvirtPackageVersion = linux.get_libvirt_package_version()
         rsp.ipAddresses = ip_addrs
