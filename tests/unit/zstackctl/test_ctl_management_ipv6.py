@@ -118,12 +118,12 @@ def test_management_server_ip_stack_opts_enable_dual_stack_for_ip6():
     assert '-Djava.net.preferIPv6Addresses=true' in opts
 
 
-def test_management_server_ip_stack_opts_keep_ipv4_default():
+def test_management_server_ip_stack_opts_enable_dual_stack_for_ipv4_primary():
     opts = ctl.build_management_server_ip_stack_opts({
         'management.server.ip': '172.24.196.95',
     })
 
-    assert opts == ['-Djava.net.preferIPv4Stack=true']
+    assert opts == ['-Djava.net.preferIPv4Stack=false']
 
 
 def test_ui_ipv6_listen_helpers_update_nginx_conf(tmp_path):

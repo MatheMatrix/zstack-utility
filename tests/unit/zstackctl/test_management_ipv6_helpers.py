@@ -89,13 +89,19 @@ def test_build_java_ip_stack_opts_switches_to_ipv6_stack_for_ipv6_mn():
     assert '-Xmx12288M' in opts
 
 
-def test_build_java_ip_stack_opts_keeps_ipv4_defaults_for_ipv4_mn():
+def test_build_java_ip_stack_opts_keeps_ipv4_preference_but_enables_dual_stack():
     opts = [
         '-Djava.net.preferIPv4Stack=true',
+        '-Djava.net.preferIPv6Addresses=true',
         '-Xmx12288M',
     ]
 
-    assert management_network_ipv6.build_java_ip_stack_opts('172.24.246.247', opts) == opts
+    actual = management_network_ipv6.build_java_ip_stack_opts('172.24.246.247', opts)
+
+    assert '-Djava.net.preferIPv4Stack=true' not in actual
+    assert '-Djava.net.preferIPv6Addresses=true' not in actual
+    assert '-Djava.net.preferIPv4Stack=false' in actual
+    assert '-Xmx12288M' in actual
 
 
 def test_add_ip6_accepts_ipv6_without_nic():
