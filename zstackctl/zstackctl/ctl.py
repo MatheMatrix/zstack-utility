@@ -8145,6 +8145,45 @@ class ChangeIpCmd(Command):
         info("Change ip successfully")
 
 
+class AddIp6Cmd(Command):
+    def __init__(self):
+        super(AddIp6Cmd, self).__init__()
+        self.name = "add_ip6"
+        self.description = "add an IPv6 address to the current management node"
+        ctl.register_command(self)
+
+    def install_argparse_arguments(self, parser):
+        parser.add_argument('--ip', help='The IPv6 address to add to the current management node.', required=True)
+        parser.add_argument('--prefix', help='The IPv6 prefix length, from 0 to 128.', required=True)
+        parser.add_argument('--nic', help='The network interface to configure. By default zstack-ctl selects the current management interface.', required=False)
+
+    def run(self, args):
+        if not management_network_ipv6.validate_ipv6(args.ip):
+            error('add_ip6 requires a valid IPv6 address')
+
+        prefix_length = management_network_ipv6.normalize_ipv6_prefix(args.prefix)
+        if prefix_length is None:
+            error('add_ip6 requires an IPv6 prefix length from 0 to 128')
+
+        if local_ip_exists(args.ip):
+            info('IPv6 address %s already exists, skip' % args.ip)
+            return
+
+        management_ip = ctl.read_property('management.server.ip')
+        addr_output = shell('ip -o addr show', False)
+        route_output = shell('ip route show default', False)
+        nic = management_network_ipv6.select_add_ip6_interface(args.nic, management_ip, route_output, addr_output)
+        if nic is None:
+            error('cannot decide which interface to configure, please pass --nic explicitly')
+
+        command = management_network_ipv6.build_add_ip6_command(args.ip, prefix_length, nic)
+        if command is None:
+            error('failed to build add_ip6 command from input')
+
+        shell_no_pipe(' '.join(command))
+        info('Add IPv6 address %s/%s to interface %s successfully' % (args.ip, prefix_length, nic))
+
+
 class InstallManagementNodeCmd(Command):
     def __init__(self):
         super(InstallManagementNodeCmd, self).__init__()
@@ -12482,6 +12521,7 @@ class AIOSSetUpSystemServicesCmd(Command):
 
 
 def main():
+    AddIp6Cmd()
     AddManagementNodeCmd()
     BootstrapCmd()
     ChangeIpCmd()
