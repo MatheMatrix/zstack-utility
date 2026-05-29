@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import os
 import signal
 import getpass
 import urllib.parse
@@ -48,6 +49,82 @@ from cryptography.hazmat.primitives.serialization import pkcs12
 
 DEFAULT_MYSQL_PORT = '3306'
 DEFAULT_SSH_PORT = '22'
+UI_LISTEN_HOST_PROPERTY = 'listen.host'
+UI_IPV6_ANY_LISTEN_HOSTS = ('::', '[::]')
+JAVA_PREFER_IPV4_STACK_OPT = '-Djava.net.preferIPv4Stack'
+JAVA_PREFER_IPV4_STACK_TRUE = JAVA_PREFER_IPV4_STACK_OPT + '=true'
+JAVA_PREFER_IPV4_STACK_FALSE = JAVA_PREFER_IPV4_STACK_OPT + '=false'
+JAVA_PREFER_IPV6_ADDRESSES_TRUE = '-Djava.net.preferIPv6Addresses=true'
+
+
+def is_ipv6_literal(address):
+    if not address:
+        return False
+
+    try:
+        socket.inet_pton(socket.AF_INET6, address.strip('[]'))
+        return True
+    except socket.error:
+        return False
+
+
+def management_server_should_listen_ipv6(properties):
+    if properties.get('management.server.ip6') or properties.get('management.server.vip6'):
+        return True
+
+    return is_ipv6_literal(properties.get('management.server.ip'))
+
+
+def build_management_server_ip_stack_opts(properties):
+    if management_server_should_listen_ipv6(properties):
+        return [JAVA_PREFER_IPV4_STACK_FALSE, JAVA_PREFER_IPV6_ADDRESSES_TRUE]
+
+    return [JAVA_PREFER_IPV4_STACK_TRUE]
+
+
+def ui_should_listen_ipv6(listen_host):
+    if not listen_host:
+        return False
+
+    return listen_host.strip() in UI_IPV6_ANY_LISTEN_HOSTS
+
+
+def build_ui_nginx_ipv6_listen_line(server_port, enable_ssl=False, enable_http2=False):
+    suffix = ''
+    if enable_ssl:
+        suffix = ' ssl'
+        if str(enable_http2).lower() == 'true':
+            suffix += ' http2'
+
+    return '        listen [::]:%s%s;' % (server_port, suffix)
+
+
+def ensure_ui_nginx_ipv6_listen_conf(conf_path, server_port, enable_ssl=False, enable_http2=False):
+    if not os.path.exists(conf_path):
+        return False
+
+    listen_line = build_ui_nginx_ipv6_listen_line(server_port, enable_ssl, enable_http2)
+    with open(conf_path, 'r') as fd:
+        content = fd.read()
+
+    if listen_line in content:
+        return False
+
+    lines = content.splitlines()
+    insert_at = None
+    for idx, line in enumerate(lines):
+        if line.strip().startswith('listen '):
+            insert_at = idx + 1
+            break
+
+    if insert_at is None:
+        lines.insert(0, listen_line)
+    else:
+        lines.insert(insert_at, listen_line)
+
+    with open(conf_path, 'w') as fd:
+        fd.write('\n'.join(lines) + '\n')
+    return True
 
 mysql_db_config_script='''
 #!/bin/bash
@@ -3113,7 +3190,6 @@ class StartCmd(Command):
             setenv_path = os.path.join(ctl.zstack_home, self.SET_ENV_SCRIPT)
             catalina_opts = [
                 '-Djdk.tls.trustNameService=true',
-                '-Djava.net.preferIPv4Stack=true',
                 '-Dcom.sun.management.jmxremote=true',
                 '-Djava.security.egd=file:/dev/./urandom',
                 '-XX:-OmitStackTraceInFastThrow',
@@ -3123,6 +3199,11 @@ class StartCmd(Command):
                 '-XX:+UseAltSigs',
                 '-Dlog4j2.formatMsgNoLookups=true'
             ]
+            catalina_opts.extend(build_management_server_ip_stack_opts({
+                'management.server.ip': ctl.read_property('management.server.ip'),
+                'management.server.ip6': ctl.read_property('management.server.ip6'),
+                'management.server.vip6': ctl.read_property('management.server.vip6'),
+            }))
 
             if ctl.extra_arguments:
                 catalina_opts.extend(ctl.extra_arguments)
@@ -10784,6 +10865,7 @@ class StartUiCmd(Command):
         cfg_ssl_keystore_password = ctl.read_ui_property("ssl_keystore_password")
         cfg_catalina_opts = ctl.read_ui_property("catalina_opts")
         cfg_redis_password = ctl.read_ui_property("redis_password")
+        cfg_listen_host = ctl.read_ui_property(UI_LISTEN_HOST_PROPERTY)
 
         custom_props = ""
         predefined_props = ["db_url", "db_username", "db_password", "mn_host", "mn_port", "webhook_host", "webhook_port", "server_port", "log", "enable_ssl", "ssl_keyalias", "ssl_keystore", "ssl_keystore_type", "ssl_keystore_password", "catalina_opts"]
@@ -10923,6 +11005,7 @@ class StartUiCmd(Command):
 
         shell("ps aux| grep zstack-ui/scripts/start.sh | awk '{print $2}'|xargs kill -9",is_exception=False)
         script(scmd, no_pipe=True)
+        self._configure_nginx_ipv6_listen(args.server_port, args.enable_ssl, args.enable_http2, cfg_listen_host)
         os.system('mkdir -p /var/run/zstack/')
         with open(StartUiCmd.PORT_FILE, 'w') as fd:
             fd.write(args.server_port)
@@ -10953,6 +11036,20 @@ class StartUiCmd(Command):
             info('successfully started UI server on the local host')
         else:
             info('successfully started UI server on the local host %s://%s:%s' % ('https' if args.enable_ssl else 'http', default_ip, args.server_port))
+
+    def _configure_nginx_ipv6_listen(self, server_port, enable_ssl, enable_http2, listen_host):
+        if not ui_should_listen_ipv6(listen_host):
+            return
+
+        conf_path = os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'extend.server.nginx.conf')
+        if ensure_ui_nginx_ipv6_listen_conf(conf_path, server_port, enable_ssl, enable_http2):
+            shell('/usr/sbin/nginx -c %s -t && /usr/sbin/nginx -c %s -s reload' %
+                  (os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'nginx.conf'),
+                   os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'nginx.conf')))
+
+        if shell_return('which ip6tables >/dev/null 2>&1') == 0:
+            shell('ip6tables-save | grep -- "-A INPUT -p tcp -m tcp --dport %s -j ACCEPT" > /dev/null || ip6tables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT ' %
+                  (server_port, server_port))
 
     def run_mini_ui(self):
         shell_return("systemctl start zstack-mini")
@@ -11019,6 +11116,7 @@ class ConfigUiCmd(Command):
         parser.add_argument('--webhook-port', help="Webhook Host port. [DEFAULT] 5001")
         parser.add_argument('--server-port', help="UI server port. [DEFAULT] 5000")
         parser.add_argument('--ui-address', help="ZStack UI Address.")
+        parser.add_argument('--listen-host', '--listen.host', dest='listen_host', help="UI listen host.")
         parser.add_argument('--log', help="UI log folder. [DEFAULT] %s" % ui_logging_path)
         parser.add_argument('--catalina-opts', help="UI catalina options, seperated by `,`")
 
@@ -11217,6 +11315,8 @@ class ConfigUiCmd(Command):
         # ui_address
         if args.ui_address:
             ctl.write_ui_property("ui_address", args.ui_address.strip())
+        if args.listen_host:
+            ctl.write_ui_property(UI_LISTEN_HOST_PROPERTY, args.listen_host.strip())
 
         # catalina opts
         if args.catalina_opts:
