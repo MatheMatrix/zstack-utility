@@ -1755,9 +1755,9 @@ def move_dev_route(src_dev, dest_dev):
     - src_dev: The source device from which the IP and routes will be moved.
     - dest_dev: The destination device to which the IP and routes will be moved.
     """
-    # Check if the source device has an IP address set
-    out = shell.call('ip addr show dev %s | grep "inet "' % src_dev, exception=False)
-    if not out:
+    ipv4_out = shell.call('ip addr show dev %s | grep "inet "' % src_dev, exception=False)
+    ipv6_out = shell.call('ip addr show dev %s | grep "inet6 " | grep -v " scope link"' % src_dev, exception=False)
+    if not ipv4_out and not ipv6_out:
         logger.debug("Source device %s doesn't have an IP address set. No need to move routes." % src_dev)
         return
 
@@ -1769,16 +1769,35 @@ def move_dev_route(src_dev, dest_dev):
             routes.append(line)
             shell.call('ip route del %s' % line)
 
-    # Move IP address from the source device to the destination device
-    ip = out.strip().split()[1]
-    shell.call('ip addr del %s dev %s' % (ip, src_dev))
-    r_out = shell.call('ip addr show dev %s | grep "inet %s"' % (dest_dev, ip), exception=False)
-    if not r_out:
-        shell.call('ip addr add %s dev %s' % (ip, dest_dev))
+    routes6 = []
+    r_out = shell.call("ip -6 route show dev %s | grep via | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            routes6.append(line)
+            shell.call('ip -6 route del %s' % line)
+
+    for ip in _parse_ip_addresses(ipv4_out):
+        _move_ip_address(ip, src_dev, dest_dev, "inet")
+
+    for ip in _parse_ip_addresses(ipv6_out):
+        _move_ip_address(ip, src_dev, dest_dev, "inet6")
 
     # Restore routes on the destination device
     for r in routes:
         shell.call('ip route add %s' % r)
+    for r in routes6:
+        shell.call('ip -6 route add %s' % r)
+
+
+def _parse_ip_addresses(ip_addr_output):
+    return [line.strip().split()[1] for line in ip_addr_output.split('\n') if line.strip()]
+
+
+def _move_ip_address(ip, src_dev, dest_dev, family):
+    shell.call('ip addr del %s dev %s' % (ip, src_dev))
+    r_out = shell.call('ip addr show dev %s | grep "%s %s"' % (dest_dev, family, ip), exception=False)
+    if not r_out:
+        shell.call('ip addr add %s dev %s' % (ip, dest_dev))
 
 def pretty_xml(xmlstr):
     # dom cannot handle namespace tag like <qemu:commandline>
