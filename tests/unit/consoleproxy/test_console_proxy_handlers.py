@@ -73,6 +73,20 @@ class TestIpv6HostPortFormatting:
         assert module.format_host_port_for_url("console-proxy.example.com", 5900) == "console-proxy.example.com:5900"
         assert module.format_host_port_for_url("2001:db8::10", 5900) == "[2001:db8::10]:5900"
 
+    def test_format_host_port_for_websockify_target_uses_socket_host(self):
+        assert module.format_host_port_for_websockify_target("192.168.10.10", 5900) == "192.168.10.10:5900"
+        assert module.format_host_port_for_websockify_target("2001:db8::10", 5900) == "2001:db8::10:5900"
+        assert module.format_host_port_for_websockify_target("[2001:db8::10]", 5900) == "2001:db8::10:5900"
+
+    @patch("os.path.exists", return_value=True)
+    def test_websockify_bind_uses_ipv6_wildcard_when_stack_exists(self, mock_exists):
+        assert module.format_host_port_for_websockify_bind("0.0.0.0", 6800) == "[::]:6800"
+        assert module.format_host_port_for_websockify_bind("192.168.10.10", 6800) == "192.168.10.10:6800"
+
+    @patch("os.path.exists", return_value=False)
+    def test_websockify_bind_keeps_ipv4_wildcard_without_ipv6_stack(self, mock_exists):
+        assert module.format_host_port_for_websockify_bind("0.0.0.0", 6800) == "0.0.0.0:6800"
+
     def test_format_host_port_for_grep_escapes_ipv6_brackets(self):
         assert module.format_host_port_for_grep("2001:db8::10", 5900) == r"\[2001:db8::10\]:5900"
 
@@ -379,8 +393,35 @@ class TestEstablishNewVncProxy:
 
         rsp = _load_rsp(result)
         assert rsp["success"] is True
-        token_file_mock.flush_write.assert_called_once_with("vm_ipv6_123: [2001:db8::11]:5900")
+        token_file_mock.flush_write.assert_called_once_with("vm_ipv6_123: 2001:db8::11:5900")
         assert any(r"\[2001:db8::10\]:6800" in call_args[0][0] for call_args in mock_bash.call_args_list)
+
+    @patch("os.path.exists", return_value=True)
+    @patch.object(module, "bash_roe", return_value=(0, "", ""))
+    def test_establish_vnc_proxy_binds_ipv6_wildcard_for_dual_stack(self, mock_bash, mock_exists):
+        agent = _make_agent()
+        token_file_mock = MagicMock()
+        token_file_mock.get_absolute_path.return_value = "/var/lib/zstack/consoleProxy/vm_dual_stack_123"
+
+        future_expired = str(int(time.time() * 1000) + 600000)
+
+        with patch.object(module, "ConsoleTokenFile", return_value=token_file_mock):
+            result = agent.establish_new_proxy(_make_req({
+                "targetHostname": "2001:db8::11",
+                "targetPort": 5900,
+                "token": "vm_dual_stack_123",
+                "proxyHostname": "0.0.0.0",
+                "proxyPort": 6800,
+                "expiredDate": future_expired,
+                "targetSchema": "vnc",
+                "sslCertFile": None,
+                "idleTimeout": 600,
+            }))
+
+        rsp = _load_rsp(result)
+        assert rsp["success"] is True
+        token_file_mock.flush_write.assert_called_once_with("vm_dual_stack_123: 2001:db8::11:5900")
+        assert any(r"\[::\]:6800" in call_args[0][0] for call_args in mock_bash.call_args_list)
 
 
 # ---------------------------------------------------------------------------
