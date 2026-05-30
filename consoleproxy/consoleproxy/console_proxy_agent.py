@@ -18,13 +18,11 @@ import threading
 
 logger = log.get_logger(__name__)
 
-GREP_OPEN_BRACKET = r'\['
-GREP_CLOSE_BRACKET = r'\]'
 SHELL_HOST_PORT_FORMAT = '%s:%s'
 IPV4_WILDCARD_ADDRESS = '0.0.0.0'
 IPV6_WILDCARD_ADDRESS = '::'
 IPV6_INTERFACE_PROC_PATH = '/proc/net/if_inet6'
-WEBSOCKIFY_PROCESS_PATTERN = '[z]stack.*websockify_init'
+IPV6_V6ONLY_PROC_PATH = '/proc/sys/net/ipv6/bindv6only'
 SSL_CERT_PROCESS_FLAG = 'cert='
 
 
@@ -36,8 +34,19 @@ def is_ipv6_stack_available():
     return os.path.exists(IPV6_INTERFACE_PROC_PATH)
 
 
+def is_dual_stack_wildcard_supported():
+    if not is_ipv6_stack_available():
+        return False
+
+    try:
+        with open(IPV6_V6ONLY_PROC_PATH) as fd:
+            return fd.read().strip() == '0'
+    except (IOError, OSError):
+        return False
+
+
 def get_websockify_bind_host(proxy_hostname):
-    if proxy_hostname == IPV4_WILDCARD_ADDRESS and is_ipv6_stack_available():
+    if proxy_hostname == IPV4_WILDCARD_ADDRESS and is_dual_stack_wildcard_supported():
         return IPV6_WILDCARD_ADDRESS
     return proxy_hostname
 
@@ -52,12 +61,24 @@ def format_host_port_for_websockify_target(host, port):
     return SHELL_HOST_PORT_FORMAT % (host, port)
 
 
-def format_host_port_for_grep(host, port):
-    return format_host_port_for_url(host, port).replace('[', GREP_OPEN_BRACKET).replace(']', GREP_CLOSE_BRACKET)
+def get_websockify_processes():
+    _, out, _ = bash_roe("ps -eo pid,args")
+    processes = []
+    for line in out.splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) != 2:
+            continue
 
+        pid, args = fields
+        if 'zstack' not in args or 'websockify.websocketproxy.websockify_init' not in args:
+            continue
 
-def format_websockify_bind_for_grep(host, port):
-    return format_host_port_for_websockify_bind(host, port).replace('[', GREP_OPEN_BRACKET).replace(']', GREP_CLOSE_BRACKET)
+        try:
+            processes.append((int(pid), args))
+        except ValueError:
+            continue
+
+    return processes
 
 
 class AgentResponse(object):
@@ -424,8 +445,7 @@ class ConsoleProxyAgent(object):
         rsp = EstablishProxyRsp()
         log_file = os.path.join(self.PROXY_LOG_DIR, cmd.proxyHostname)
         proxy_host_port = format_host_port_for_websockify_bind(cmd.proxyHostname, cmd.proxyPort)
-        proxy_host_port_grep = format_websockify_bind_for_grep(cmd.proxyHostname, cmd.proxyPort)
-        request_proxy_host_port_grep = format_host_port_for_grep(cmd.proxyHostname, cmd.proxyPort)
+        request_proxy_host_port = format_host_port_for_url(cmd.proxyHostname, cmd.proxyPort)
         target_host_port = format_host_port_for_websockify_target(cmd.targetHostname, cmd.targetPort)
 
         token_file = ConsoleTokenFile(cmd.token)
@@ -447,39 +467,38 @@ class ConsoleProxyAgent(object):
         logger.debug('successfully add new vnc proxy token file %s' % info_str)
 
         ## kill garbage websockify process: same proxyip:proxyport, different cert file
-        def kill_websockify_process(host_port_grep):
-            command = "ps aux | grep '%s' | grep '%s' | awk '{ print $2 }'" % (
-                WEBSOCKIFY_PROCESS_PATTERN, host_port_grep)
-            ret,out,err = bash_roe(command)
-            for pid in out.splitlines():
+        def kill_websockify_process(host_port):
+            for pid, args in get_websockify_processes():
+                if host_port not in args:
+                    continue
+
                 try:
-                    os.kill(int(pid), 15)
+                    os.kill(pid, 15)
                 except OSError:
                     continue
 
-        def kill_garbage_websockify_process(host_port_grep):
-            if not cmd.sslCertFile:
-                command = "ps aux | grep '%s' | grep '%s' | grep '%s' | awk '{ print $2 }'" % (
-                    WEBSOCKIFY_PROCESS_PATTERN, host_port_grep, SSL_CERT_PROCESS_FLAG)
-            else:
-                command = "ps aux | grep '%s' | grep '%s' | grep -v '%s' | awk '{ print $2 }'" % (
-                    WEBSOCKIFY_PROCESS_PATTERN, host_port_grep, cmd.sslCertFile)
-            ret,out,err = bash_roe(command)
-            for pid in out.splitlines():
+        def kill_garbage_websockify_process(host_port):
+            for pid, args in get_websockify_processes():
+                if host_port not in args:
+                    continue
+                if cmd.sslCertFile and cmd.sslCertFile in args:
+                    continue
+                if not cmd.sslCertFile and SSL_CERT_PROCESS_FLAG not in args:
+                    continue
+
                 try:
-                    os.kill(int(pid), 15)
+                    os.kill(pid, 15)
                 except OSError:
                     continue
 
-        kill_garbage_websockify_process(proxy_host_port_grep)
-        if request_proxy_host_port_grep != proxy_host_port_grep:
-            kill_websockify_process(request_proxy_host_port_grep)
+        kill_garbage_websockify_process(proxy_host_port)
+        if request_proxy_host_port != proxy_host_port:
+            kill_websockify_process(request_proxy_host_port)
 
         ## if websockify process exists, then return
         alive = False
-        ret,out,err = bash_roe("ps aux | grep '%s'" % WEBSOCKIFY_PROCESS_PATTERN)
-        for o in out.splitlines():
-            if o.find(proxy_host_port) != -1:
+        for _, args in get_websockify_processes():
+            if args.find(proxy_host_port) != -1:
                 alive = True
                 break
         if alive:
