@@ -149,6 +149,21 @@ def test_ui_ipv6_listen_helpers_accept_literal_ipv6(tmp_path):
     assert not ctl.ensure_ui_nginx_ipv6_listen_conf(str(conf), '5000', False, False, '2001:db8::10')
 
 
+def test_ui_ipv6_listen_helpers_replace_obsolete_ipv6_listen(tmp_path):
+    conf = tmp_path / 'extend.server.nginx.conf'
+    conf.write_text(
+        '        listen 5000;\n'
+        '        listen [::]:5000;\n'
+        '        add_header zs-version 5.5.16;\n'
+    )
+
+    assert ctl.ensure_ui_nginx_ipv6_listen_conf(str(conf), '5000', False, False, '2001:db8::10')
+
+    content = conf.read_text()
+    assert 'listen [2001:db8::10]:5000;' in content
+    assert 'listen [::]:5000;' not in content
+
+
 def test_ui_ipv6_ssl_listen_line_includes_http2():
     assert ctl.build_ui_nginx_ipv6_listen_line('5443', True, 'true') == \
         '        listen [::]:5443 ssl http2;'

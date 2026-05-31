@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import os
+import re
 import signal
 import getpass
 import urllib.parse
@@ -52,6 +53,7 @@ DEFAULT_SSH_PORT = '22'
 UI_LISTEN_HOST_PROPERTY = 'listen.host'
 UI_IPV6_ANY_LISTEN_HOSTS = ('::', '[::]')
 UI_IPV6_ANY_NGINX_LISTEN_HOST = '[::]'
+UI_NGINX_LISTEN_KEYWORD = 'listen '
 JAVA_PREFER_IPV4_STACK_OPT = '-Djava.net.preferIPv4Stack'
 JAVA_PREFER_IPV4_STACK_TRUE = JAVA_PREFER_IPV4_STACK_OPT + '=true'
 JAVA_PREFER_IPV4_STACK_FALSE = JAVA_PREFER_IPV4_STACK_OPT + '=false'
@@ -113,6 +115,11 @@ def build_ui_nginx_ipv6_listen_line(server_port, enable_ssl=False, enable_http2=
     return '        listen %s:%s%s;' % (listen_host, server_port, suffix)
 
 
+def is_ui_nginx_ipv6_listen_line(line, server_port):
+    pattern = r'^\s*listen\s+\[[0-9A-Fa-f:]+\]:%s(?:\s+[^;]+)?;\s*$' % re.escape(str(server_port))
+    return re.match(pattern, line) is not None
+
+
 def ensure_ui_nginx_ipv6_listen_conf(conf_path, server_port, enable_ssl=False, enable_http2=False, listen_host='::'):
     if not os.path.exists(conf_path):
         return False
@@ -121,23 +128,44 @@ def ensure_ui_nginx_ipv6_listen_conf(conf_path, server_port, enable_ssl=False, e
     with open(conf_path, 'r') as fd:
         content = fd.read()
 
-    if listen_line in content:
+    lines = content.splitlines()
+    desired_listen = listen_line.strip()
+    cleaned_lines = []
+    found_desired_listen = False
+    changed = False
+
+    for line in lines:
+        stripped = line.strip()
+        if is_ui_nginx_ipv6_listen_line(line, server_port):
+            if stripped == desired_listen and not found_desired_listen:
+                cleaned_lines.append(line)
+                found_desired_listen = True
+            else:
+                changed = True
+            continue
+
+        cleaned_lines.append(line)
+
+    if found_desired_listen:
+        if changed:
+            with open(conf_path, 'w') as fd:
+                fd.write('\n'.join(cleaned_lines) + '\n')
+            return True
         return False
 
-    lines = content.splitlines()
     insert_at = None
-    for idx, line in enumerate(lines):
-        if line.strip().startswith('listen '):
+    for idx, line in enumerate(cleaned_lines):
+        if line.strip().startswith(UI_NGINX_LISTEN_KEYWORD):
             insert_at = idx + 1
             break
 
     if insert_at is None:
-        lines.insert(0, listen_line)
+        cleaned_lines.insert(0, listen_line)
     else:
-        lines.insert(insert_at, listen_line)
+        cleaned_lines.insert(insert_at, listen_line)
 
     with open(conf_path, 'w') as fd:
-        fd.write('\n'.join(lines) + '\n')
+        fd.write('\n'.join(cleaned_lines) + '\n')
     return True
 
 mysql_db_config_script='''
