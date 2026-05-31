@@ -1811,7 +1811,7 @@ def move_dev_route(src_dev, dest_dev):
     for ip in _parse_ip_addresses(ipv6_out):
         _move_ip_address(ip, src_dev, dest_dev, "inet6")
     for r in connected_routes6:
-        shell.call('ip -6 route del %s' % r)
+        shell.call('ip -6 route del %s' % r, exception=False)
 
     # Restore routes on the destination device
     for r in routes:
