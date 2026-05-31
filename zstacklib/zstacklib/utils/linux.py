@@ -1799,12 +1799,19 @@ def move_dev_route(src_dev, dest_dev):
         if line != "":
             routes6.append(line)
             shell.call('ip -6 route del %s' % line)
+    connected_routes6 = []
+    r_out = shell.call("ip -6 route show dev %s proto kernel | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            connected_routes6.append(line)
 
     for ip in _parse_ip_addresses(ipv4_out):
         _move_ip_address(ip, src_dev, dest_dev, "inet")
 
     for ip in _parse_ip_addresses(ipv6_out):
         _move_ip_address(ip, src_dev, dest_dev, "inet6")
+    for r in connected_routes6:
+        shell.call('ip -6 route del %s' % r)
 
     # Restore routes on the destination device
     for r in routes:
