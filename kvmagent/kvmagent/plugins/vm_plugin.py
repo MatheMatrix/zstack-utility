@@ -1338,6 +1338,14 @@ class VncPortIptableRule(object):
     def _make_chain_name(self):
         return "vm-%s-vnc" % self.vm_internal_id
 
+    def _load_cleanup_iptables(self):
+        iptables_list = [iptables.from_iptables_save()]
+        try:
+            iptables_list.append(iptables.from_ip6tables_save())
+        except Exception as e:
+            logger.debug('skip IPv6 VNC iptables cleanup because ip6tables is unavailable: %s' % e)
+        return iptables_list
+
     @lock.file_lock('/run/xtables.lock')
     def apply(self):
         assert self.host_ip is not None
@@ -1384,14 +1392,10 @@ class VncPortIptableRule(object):
     def delete(self):
         assert self.vm_internal_id is not None
 
-        ipt = iptables.from_iptables_save()
         chain_name = self._make_chain_name()
-        ipt.delete_chain(chain_name)
-        ipt.iptable_restore()
-
-        ipt = iptables.from_ip6tables_save()
-        ipt.delete_chain(chain_name)
-        ipt.iptable_restore()
+        for ipt in self._load_cleanup_iptables():
+            ipt.delete_chain(chain_name)
+            ipt.iptable_restore()
 
     def find_vm_internal_ids(self, vms):
         internal_ids = []
@@ -1418,7 +1422,7 @@ class VncPortIptableRule(object):
         vms = get_running_vms()
         internal_ids = self.find_vm_internal_ids(vms)
 
-        for ipt in [iptables.from_iptables_save(), iptables.from_ip6tables_save()]:
+        for ipt in self._load_cleanup_iptables():
             tbl = ipt.get_table()
             if not tbl:
                 ipt.iptable_restore()

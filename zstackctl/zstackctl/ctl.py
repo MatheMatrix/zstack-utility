@@ -51,6 +51,7 @@ DEFAULT_MYSQL_PORT = '3306'
 DEFAULT_SSH_PORT = '22'
 UI_LISTEN_HOST_PROPERTY = 'listen.host'
 UI_IPV6_ANY_LISTEN_HOSTS = ('::', '[::]')
+UI_IPV6_ANY_NGINX_LISTEN_HOST = '[::]'
 JAVA_PREFER_IPV4_STACK_OPT = '-Djava.net.preferIPv4Stack'
 JAVA_PREFER_IPV4_STACK_TRUE = JAVA_PREFER_IPV4_STACK_OPT + '=true'
 JAVA_PREFER_IPV4_STACK_FALSE = JAVA_PREFER_IPV4_STACK_OPT + '=false'
@@ -83,27 +84,40 @@ def build_management_server_ip_stack_opts(properties):
 
 
 def ui_should_listen_ipv6(listen_host):
+    return normalize_ui_ipv6_listen_host(listen_host) is not None
+
+
+def normalize_ui_ipv6_listen_host(listen_host):
     if not listen_host:
-        return False
+        return None
 
-    return listen_host.strip() in UI_IPV6_ANY_LISTEN_HOSTS
+    host = listen_host.strip()
+    if host in UI_IPV6_ANY_LISTEN_HOSTS:
+        return UI_IPV6_ANY_NGINX_LISTEN_HOST
+
+    host = host.strip('[]')
+    if is_ipv6_literal(host):
+        return '[%s]' % host
+
+    return None
 
 
-def build_ui_nginx_ipv6_listen_line(server_port, enable_ssl=False, enable_http2=False):
+def build_ui_nginx_ipv6_listen_line(server_port, enable_ssl=False, enable_http2=False, listen_host='::'):
     suffix = ''
     if enable_ssl:
         suffix = ' ssl'
         if str(enable_http2).lower() == 'true':
             suffix += ' http2'
 
-    return '        listen [::]:%s%s;' % (server_port, suffix)
+    listen_host = normalize_ui_ipv6_listen_host(listen_host) or UI_IPV6_ANY_NGINX_LISTEN_HOST
+    return '        listen %s:%s%s;' % (listen_host, server_port, suffix)
 
 
-def ensure_ui_nginx_ipv6_listen_conf(conf_path, server_port, enable_ssl=False, enable_http2=False):
+def ensure_ui_nginx_ipv6_listen_conf(conf_path, server_port, enable_ssl=False, enable_http2=False, listen_host='::'):
     if not os.path.exists(conf_path):
         return False
 
-    listen_line = build_ui_nginx_ipv6_listen_line(server_port, enable_ssl, enable_http2)
+    listen_line = build_ui_nginx_ipv6_listen_line(server_port, enable_ssl, enable_http2, listen_host)
     with open(conf_path, 'r') as fd:
         content = fd.read()
 
@@ -3199,11 +3213,12 @@ class StartCmd(Command):
                 '-XX:+UseAltSigs',
                 '-Dlog4j2.formatMsgNoLookups=true'
             ]
-            catalina_opts.extend(build_management_server_ip_stack_opts({
+            management_ip_properties = {
                 'management.server.ip': ctl.read_property('management.server.ip'),
                 'management.server.ip6': ctl.read_property('management.server.ip6'),
                 'management.server.vip6': ctl.read_property('management.server.vip6'),
-            }))
+            }
+            catalina_opts.extend(build_management_server_ip_stack_opts(management_ip_properties))
 
             if ctl.extra_arguments:
                 catalina_opts.extend(ctl.extra_arguments)
@@ -3218,7 +3233,9 @@ class StartCmd(Command):
                 catalina_opts.extend(co.split(' '))
 
             catalina_opts = management_network_ipv6.build_java_ip_stack_opts(
-                ctl.read_property('management.server.ip'),
+                management_ip_properties.get('management.server.ip6') or
+                management_ip_properties.get('management.server.vip6') or
+                management_ip_properties.get('management.server.ip'),
                 catalina_opts,
             )
 
@@ -8169,9 +8186,15 @@ class AddIp6Cmd(Command):
             info('IPv6 address %s already exists, skip' % args.ip)
             return
 
-        management_ip = ctl.read_property('management.server.ip')
-        addr_output = shell('ip -o addr show', False)
-        route_output = shell('ip route show default', False)
+        management_ip = ctl.read_property('management.server.ip6') or ctl.read_property('management.server.ip')
+        addr_output = '\n'.join(filter(None, [
+            shell('ip -o addr show', False).strip(),
+            shell('ip -6 -o addr show', False).strip(),
+        ]))
+        route_output = '\n'.join(filter(None, [
+            shell('ip route show default', False).strip(),
+            shell('ip -6 route show default', False).strip(),
+        ]))
         nic = management_network_ipv6.select_add_ip6_interface(args.nic, management_ip, route_output, addr_output)
         if nic is None:
             error('cannot decide which interface to configure, please pass --nic explicitly')
@@ -11081,7 +11104,7 @@ class StartUiCmd(Command):
             return
 
         conf_path = os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'extend.server.nginx.conf')
-        if ensure_ui_nginx_ipv6_listen_conf(conf_path, server_port, enable_ssl, enable_http2):
+        if ensure_ui_nginx_ipv6_listen_conf(conf_path, server_port, enable_ssl, enable_http2, listen_host):
             shell('/usr/sbin/nginx -c %s -t && /usr/sbin/nginx -c %s -s reload' %
                   (os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'nginx.conf'),
                    os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'nginx.conf')))

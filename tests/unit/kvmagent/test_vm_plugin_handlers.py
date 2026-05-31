@@ -301,6 +301,18 @@ class TestDeleteConsoleFirewallRuleHandler:
 
 
 @pytest.mark.kvmagent
+class TestVncPortIptableRule:
+    def test_cleanup_iptables_skips_missing_ip6tables(self):
+        ipv4_iptables = MagicMock()
+
+        with patch.object(vm_plugin.iptables, 'from_iptables_save', return_value=ipv4_iptables), \
+                patch.object(vm_plugin.iptables, 'from_ip6tables_save', side_effect=RuntimeError('no ip6tables')):
+            rule = vm_plugin.VncPortIptableRule()
+
+            assert rule._load_cleanup_iptables() == [ipv4_iptables]
+
+
+@pytest.mark.kvmagent
 class TestGetIothreadPinHandler:
     def test_get_iothread_pin(self):
         plugin = _make_vm_plugin()

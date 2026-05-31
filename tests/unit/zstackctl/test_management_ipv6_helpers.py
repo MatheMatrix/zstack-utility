@@ -126,11 +126,36 @@ def test_add_ip6_accepts_ipv6_without_nic():
     ) == ['ip', '-6', 'addr', 'add', 'fd00:172:24:249::182/64', 'dev', 'br_eth0']
 
 
+def test_add_ip6_selects_interface_from_ipv6_management_ip():
+    addr_output = '''
+2: br_eth0    inet6 fd00:172:24:249::182/64 scope global
+3: eth1    inet6 fd00:10:10::10/64 scope global
+'''
+
+    nic = management_network_ipv6.select_add_ip6_interface(
+        None,
+        'fd00:172:24:249::182',
+        '',
+        addr_output,
+    )
+
+    assert nic == 'br_eth0'
+
+
 def test_add_ip6_falls_back_to_default_route_interface():
     assert management_network_ipv6.select_add_ip6_interface(
         None,
         None,
         'default via 172.24.0.1 dev br_eth0 proto static metric 100',
+        '',
+    ) == 'br_eth0'
+
+
+def test_add_ip6_falls_back_to_ipv6_default_route_interface():
+    assert management_network_ipv6.select_add_ip6_interface(
+        None,
+        None,
+        'default via fd00:172:24::1 dev br_eth0 proto ra metric 100',
         '',
     ) == 'br_eth0'
 
