@@ -169,3 +169,84 @@ def test_add_ip6_rejects_invalid_input():
     assert management_network_ipv6.build_add_ip6_command('172.24.249.182', '64', 'br_eth0') is None
     assert management_network_ipv6.build_add_ip6_command('fd00:172:24:249::182', '129', 'br_eth0') is None
     assert management_network_ipv6.build_add_ip6_command('fd00:172:24:249::182', '64', 'br eth0') is None
+
+
+def test_management_server_requires_ipv6_stack_only_for_ipv6_management_config():
+    assert management_network_ipv6.management_server_requires_ipv6_stack({
+        'management.server.ip': '172.24.249.182',
+    }) is False
+    assert management_network_ipv6.management_server_requires_ipv6_stack({
+        'management.server.ip': 'fd00:172:24:249::182',
+    }) is True
+    assert management_network_ipv6.management_server_requires_ipv6_stack({
+        'management.server.ip': '172.24.249.182',
+        'management.server.ip6': 'fd00:172:24:249::182',
+    }) is True
+    assert management_network_ipv6.management_server_requires_ipv6_stack({
+        'management.server.ip': '172.24.249.182',
+        'management.server.vip6': 'fd00:172:24:249::180',
+    }) is True
+
+
+def test_prepare_ipv6_system_parameters_sets_required_sysctls():
+    commands = []
+
+    management_network_ipv6.prepare_ipv6_system_parameters(
+        commands.append,
+        proc_exists_func=lambda path: path == management_network_ipv6.IPV6_SYSCTL_PROC_DIR,
+        read_file_func=lambda path: 'BOOT_IMAGE=/vmlinuz root=/dev/mapper/root ro',
+        read_sysctl_func=lambda name: '1',
+    )
+
+    assert commands == [
+        ['sysctl', '-w', 'net.ipv6.conf.all.disable_ipv6=0'],
+        ['sysctl', '-w', 'net.ipv6.conf.default.disable_ipv6=0'],
+        ['sysctl', '-w', 'net.ipv6.bindv6only=0'],
+    ]
+
+
+def test_prepare_ipv6_system_parameters_fails_when_kernel_disables_ipv6():
+    try:
+        management_network_ipv6.prepare_ipv6_system_parameters(
+            lambda command: None,
+            proc_exists_func=lambda path: True,
+            read_file_func=lambda path: 'BOOT_IMAGE=/vmlinuz ipv6.disable=1',
+        )
+    except management_network_ipv6.IPv6SystemParameterError as e:
+        assert 'ipv6.disable=1' in str(e)
+    else:
+        raise AssertionError('expected IPv6SystemParameterError')
+
+
+def test_prepare_ipv6_system_parameters_rolls_back_applied_sysctls_on_failure():
+    commands = []
+    logs = []
+
+    def shell_func(command):
+        commands.append(command)
+        if command == ['sysctl', '-w', 'net.ipv6.conf.default.disable_ipv6=0']:
+            raise RuntimeError('sysctl failed')
+
+    try:
+        management_network_ipv6.prepare_ipv6_system_parameters(
+            shell_func,
+            proc_exists_func=lambda path: path == management_network_ipv6.IPV6_SYSCTL_PROC_DIR,
+            read_file_func=lambda path: 'BOOT_IMAGE=/vmlinuz root=/dev/mapper/root ro',
+            read_sysctl_func=lambda name: {
+                'net.ipv6.conf.all.disable_ipv6': '1',
+                'net.ipv6.conf.default.disable_ipv6': '1',
+                'net.ipv6.bindv6only': '1',
+            }[name],
+            logger_func=logs.append,
+        )
+    except management_network_ipv6.IPv6SystemParameterError as e:
+        assert 'net.ipv6.conf.default.disable_ipv6' in str(e)
+    else:
+        raise AssertionError('expected IPv6SystemParameterError')
+
+    assert commands == [
+        ['sysctl', '-w', 'net.ipv6.conf.all.disable_ipv6=0'],
+        ['sysctl', '-w', 'net.ipv6.conf.default.disable_ipv6=0'],
+        ['sysctl', '-w', 'net.ipv6.conf.all.disable_ipv6=1'],
+    ]
+    assert 'rollback sysctl net.ipv6.conf.all.disable_ipv6 to 1' in logs

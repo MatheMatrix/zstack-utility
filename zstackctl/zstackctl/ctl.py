@@ -3296,6 +3296,23 @@ class StartCmd(Command):
             if not local_ip_exists(mn_ip):
                 error("management.server.ip[%s] is not found on any device" % mn_ip)
 
+        def prepare_ipv6_system_parameters_if_needed():
+            management_ip_properties = {
+                'management.server.ip': ctl.read_property('management.server.ip'),
+                'management.server.ip6': ctl.read_property('management.server.ip6'),
+                'management.server.vip6': ctl.read_property('management.server.vip6'),
+            }
+            if not management_network_ipv6.management_server_requires_ipv6_stack(management_ip_properties):
+                return
+
+            try:
+                management_network_ipv6.prepare_ipv6_system_parameters(
+                    lambda command: shell_no_pipe(' '.join(command)),
+                    logger_func=lambda message: info(message),
+                )
+            except management_network_ipv6.IPv6SystemParameterError as e:
+                error(str(e))
+
         def check_ha():
             if is_ha_installed():
                 error("please use 'zsha2 start-node'")
@@ -3500,6 +3517,7 @@ class StartCmd(Command):
         check_prometheus_port()
         check_msyql()
         check_ha()
+        prepare_ipv6_system_parameters_if_needed()
         check_mn_ip()
         check_chrony()
         restart_console_proxy()
