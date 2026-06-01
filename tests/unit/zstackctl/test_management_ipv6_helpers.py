@@ -22,6 +22,11 @@ def test_format_hosts_bracket_ipv6_and_keep_ipv4_unchanged():
     assert management_network_ipv6.format_host_for_url_or_jdbc(None) is None
 
 
+def test_build_mysql_jdbc_url_brackets_ipv6_host():
+    assert management_network_ipv6.build_mysql_jdbc_url('192.168.10.10', 3306) == 'jdbc:mysql://192.168.10.10:3306'
+    assert management_network_ipv6.build_mysql_jdbc_url('2001:db8::10', 3306) == 'jdbc:mysql://[2001:db8::10]:3306'
+
+
 def test_get_ip_version_accepts_bracketed_ipv6():
     assert management_network_ipv6.get_ip_version('192.168.10.10') == management_network_ipv6.IPV4_VERSION
     assert management_network_ipv6.get_ip_version('[2001:db8::10]') == management_network_ipv6.IPV6_VERSION
