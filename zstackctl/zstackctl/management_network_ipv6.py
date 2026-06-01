@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import re
 import socket
+import os
 
 
 try:
@@ -27,6 +28,23 @@ IPV6_ADDR_ADD_ARGUMENTS = ('-6', 'addr', 'add')
 IPV6_DEVICE_ARGUMENT = 'dev'
 INTERFACE_NAME_PATTERN = r'^[0-9A-Za-z_.:-]+$'
 DEFAULT_ROUTE_INTERFACE_PATTERN = r'\bdev\s+([0-9A-Za-z_.:-]+)'
+IPV6_SYSCTL_PROC_DIR = '/proc/sys/net/ipv6'
+PROC_CMDLINE_PATH = '/proc/cmdline'
+KERNEL_IPV6_DISABLED_ARGUMENT = 'ipv6.disable=1'
+MANAGEMENT_IPV6_PROPERTY_KEYS = (
+    'management.server.ip6',
+    'management.server.vip6',
+)
+MANAGEMENT_IP_PROPERTY_KEY = 'management.server.ip'
+MN_IPV6_SYSCTL_SETTINGS = (
+    ('net.ipv6.conf.all.disable_ipv6', '0'),
+    ('net.ipv6.conf.default.disable_ipv6', '0'),
+    ('net.ipv6.bindv6only', '0'),
+)
+
+
+class IPv6SystemParameterError(RuntimeError):
+    pass
 
 
 def validate_ip(value):
@@ -195,3 +213,51 @@ def build_add_ip6_command(ip, prefix, nic):
         IPV6_DEVICE_ARGUMENT,
         nic,
     ]
+
+
+def management_server_requires_ipv6_stack(properties):
+    for key in MANAGEMENT_IPV6_PROPERTY_KEYS:
+        if properties.get(key):
+            return True
+
+    return get_ip_version(properties.get(MANAGEMENT_IP_PROPERTY_KEY)) == IPV6_VERSION
+
+
+def kernel_cmdline_disables_ipv6(cmdline):
+    return KERNEL_IPV6_DISABLED_ARGUMENT in (cmdline or '').split()
+
+
+def build_sysctl_set_command(name, value):
+    return ['sysctl', '-w', '%s=%s' % (name, value)]
+
+
+def build_ipv6_sysctl_set_commands(settings=MN_IPV6_SYSCTL_SETTINGS):
+    return [build_sysctl_set_command(name, value) for name, value in settings]
+
+
+def prepare_ipv6_system_parameters(shell_func, proc_exists_func=os.path.exists,
+                                   read_file_func=None, settings=MN_IPV6_SYSCTL_SETTINGS):
+    if read_file_func is None:
+        def read_file_func(path):
+            with open(path, 'r') as fd:
+                return fd.read()
+
+    if not proc_exists_func(IPV6_SYSCTL_PROC_DIR):
+        raise IPv6SystemParameterError(
+            'IPv6 sysctl path %s is missing; please make sure IPv6 is enabled in the kernel'
+            % IPV6_SYSCTL_PROC_DIR
+        )
+
+    try:
+        cmdline = read_file_func(PROC_CMDLINE_PATH)
+    except (IOError, OSError):
+        cmdline = ''
+
+    if kernel_cmdline_disables_ipv6(cmdline):
+        raise IPv6SystemParameterError(
+            'kernel argument %s disables IPv6; please remove it and reboot before starting IPv6 management node'
+            % KERNEL_IPV6_DISABLED_ARGUMENT
+        )
+
+    for command in build_ipv6_sysctl_set_commands(settings):
+        shell_func(command)

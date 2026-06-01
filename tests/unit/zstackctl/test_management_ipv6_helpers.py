@@ -169,3 +169,49 @@ def test_add_ip6_rejects_invalid_input():
     assert management_network_ipv6.build_add_ip6_command('172.24.249.182', '64', 'br_eth0') is None
     assert management_network_ipv6.build_add_ip6_command('fd00:172:24:249::182', '129', 'br_eth0') is None
     assert management_network_ipv6.build_add_ip6_command('fd00:172:24:249::182', '64', 'br eth0') is None
+
+
+def test_management_server_requires_ipv6_stack_only_for_ipv6_management_config():
+    assert management_network_ipv6.management_server_requires_ipv6_stack({
+        'management.server.ip': '172.24.249.182',
+    }) is False
+    assert management_network_ipv6.management_server_requires_ipv6_stack({
+        'management.server.ip': 'fd00:172:24:249::182',
+    }) is True
+    assert management_network_ipv6.management_server_requires_ipv6_stack({
+        'management.server.ip': '172.24.249.182',
+        'management.server.ip6': 'fd00:172:24:249::182',
+    }) is True
+    assert management_network_ipv6.management_server_requires_ipv6_stack({
+        'management.server.ip': '172.24.249.182',
+        'management.server.vip6': 'fd00:172:24:249::180',
+    }) is True
+
+
+def test_prepare_ipv6_system_parameters_sets_required_sysctls():
+    commands = []
+
+    management_network_ipv6.prepare_ipv6_system_parameters(
+        commands.append,
+        proc_exists_func=lambda path: path == management_network_ipv6.IPV6_SYSCTL_PROC_DIR,
+        read_file_func=lambda path: 'BOOT_IMAGE=/vmlinuz root=/dev/mapper/root ro',
+    )
+
+    assert commands == [
+        ['sysctl', '-w', 'net.ipv6.conf.all.disable_ipv6=0'],
+        ['sysctl', '-w', 'net.ipv6.conf.default.disable_ipv6=0'],
+        ['sysctl', '-w', 'net.ipv6.bindv6only=0'],
+    ]
+
+
+def test_prepare_ipv6_system_parameters_fails_when_kernel_disables_ipv6():
+    try:
+        management_network_ipv6.prepare_ipv6_system_parameters(
+            lambda command: None,
+            proc_exists_func=lambda path: True,
+            read_file_func=lambda path: 'BOOT_IMAGE=/vmlinuz ipv6.disable=1',
+        )
+    except management_network_ipv6.IPv6SystemParameterError as e:
+        assert 'ipv6.disable=1' in str(e)
+    else:
+        assert False, 'expected IPv6SystemParameterError'
