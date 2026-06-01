@@ -89,10 +89,83 @@ def test_build_java_ip_stack_opts_switches_to_ipv6_stack_for_ipv6_mn():
     assert '-Xmx12288M' in opts
 
 
-def test_build_java_ip_stack_opts_keeps_ipv4_defaults_for_ipv4_mn():
+def test_build_java_ip_stack_opts_keeps_ipv4_preference_but_enables_dual_stack():
     opts = [
         '-Djava.net.preferIPv4Stack=true',
+        '-Djava.net.preferIPv6Addresses=true',
         '-Xmx12288M',
     ]
 
-    assert management_network_ipv6.build_java_ip_stack_opts('172.24.246.247', opts) == opts
+    actual = management_network_ipv6.build_java_ip_stack_opts('172.24.246.247', opts)
+
+    assert '-Djava.net.preferIPv4Stack=true' not in actual
+    assert '-Djava.net.preferIPv6Addresses=true' not in actual
+    assert '-Djava.net.preferIPv4Stack=false' in actual
+    assert '-Xmx12288M' in actual
+
+
+def test_add_ip6_accepts_ipv6_without_nic():
+    addr_output = '''
+2: br_eth0    inet 172.24.249.182/16 brd 172.24.255.255 scope global br_eth0
+3: eth1    inet 10.10.10.10/24 brd 10.10.10.255 scope global eth1
+'''
+    route_output = 'default via 172.24.0.1 dev eth1 proto static metric 100'
+
+    nic = management_network_ipv6.select_add_ip6_interface(
+        None,
+        '172.24.249.182',
+        route_output,
+        addr_output,
+    )
+
+    assert nic == 'br_eth0'
+    assert management_network_ipv6.build_add_ip6_command(
+        'fd00:172:24:249::182',
+        '64',
+        nic,
+    ) == ['ip', '-6', 'addr', 'add', 'fd00:172:24:249::182/64', 'dev', 'br_eth0']
+
+
+def test_add_ip6_selects_interface_from_ipv6_management_ip():
+    addr_output = '''
+2: br_eth0    inet6 fd00:172:24:249::182/64 scope global
+3: eth1    inet6 fd00:10:10::10/64 scope global
+'''
+
+    nic = management_network_ipv6.select_add_ip6_interface(
+        None,
+        'fd00:172:24:249::182',
+        '',
+        addr_output,
+    )
+
+    assert nic == 'br_eth0'
+
+
+def test_add_ip6_falls_back_to_default_route_interface():
+    assert management_network_ipv6.select_add_ip6_interface(
+        None,
+        None,
+        'default via 172.24.0.1 dev br_eth0 proto static metric 100',
+        '',
+    ) == 'br_eth0'
+
+
+def test_add_ip6_falls_back_to_ipv6_default_route_interface():
+    assert management_network_ipv6.select_add_ip6_interface(
+        None,
+        None,
+        'default via fd00:172:24::1 dev br_eth0 proto ra metric 100',
+        '',
+    ) == 'br_eth0'
+
+
+def test_add_ip6_rejects_invalid_input():
+    assert not management_network_ipv6.validate_ipv6('172.24.249.182')
+    assert not management_network_ipv6.validate_ipv6('not-an-ip')
+    assert management_network_ipv6.normalize_ipv6_prefix('129') is None
+    assert management_network_ipv6.normalize_ipv6_prefix('-1') is None
+    assert management_network_ipv6.normalize_ipv6_prefix('64') == 64
+    assert management_network_ipv6.build_add_ip6_command('172.24.249.182', '64', 'br_eth0') is None
+    assert management_network_ipv6.build_add_ip6_command('fd00:172:24:249::182', '129', 'br_eth0') is None
+    assert management_network_ipv6.build_add_ip6_command('fd00:172:24:249::182', '64', 'br eth0') is None

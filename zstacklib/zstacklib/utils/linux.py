@@ -69,6 +69,9 @@ KVM_CHECK_EXTENSION = 44547
 DEFAULT_VM_IPA_SIZE = 40
 LIVE_LIBVIRT_XML_DIR = "/var/run/libvirt/qemu"
 MAX_NBD_READ_SIZE = 32768000
+NFS_URL_SEPARATOR = ':'
+IPV6_HOST_PREFIX = '['
+IPV6_HOST_SUFFIX = ']'
 
 def ignoreerror(func):
     @functools.wraps(func)
@@ -505,11 +508,11 @@ def is_mounted(path=None, url=None):
         url = re.sub(r'/{2,}','/',url.rstrip('/'))
 
     if url and path:
-        cmdstr = "mount | grep -E '%s[ /]+on' | grep '%s ' " % (url, path)
+        cmdstr = "mount | grep -F '%s on ' | grep -F '%s ' " % (url, path)
     elif not url:
-        cmdstr = "mount | grep '%s '" % path
+        cmdstr = "mount | grep -F '%s '" % path
     elif not path:
-        cmdstr = "mount | grep -E '%s[ /]+on'" % url
+        cmdstr = "mount | grep -F '%s on '" % url
     else:
         raise Exception('path and url cannot both be None')
 
@@ -611,24 +614,28 @@ def fumount(mountpoint, timeout = 10):
     return shell.run("timeout %s fusermount -u %s" % (timeout, mountpoint))
 
 def is_valid_address(address):
-    try:
-        socket.inet_aton(address)
-        return True
-    except socket.error:
-        return False
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            socket.inet_pton(family, address)
+            return True
+        except socket.error:
+            pass
+    return False
 
 def is_valid_hostname(hostname):
     if is_valid_address(hostname):
         return True
 
     try:
-        socket.gethostbyname(hostname)
+        socket.getaddrinfo(hostname, None)
         return True
     except socket.error:
         return False
 
 def get_host_by_name(host):
-    return socket.gethostbyname(host)
+    if is_valid_address(host):
+        return host
+    return socket.getaddrinfo(host, None)[0][4][0]
 
 def get_hostname():
     return socket.gethostname()
@@ -639,13 +646,30 @@ def get_hostname_fqdn():
         return socket.getaddrinfo(socket.gethostname(), 0, 0, 0, 0, socket.AI_CANONNAME)[0][3]
     return socket.getaddrinfo(socket.gethostname(), 0, flags=socket.AI_CANONNAME)[0][3]
 
+def parse_nfs_url(url):
+    if url.startswith(IPV6_HOST_PREFIX):
+        end = url.find(IPV6_HOST_SUFFIX)
+        if end <= 0:
+            raise InvalidNfsUrlError(url, 'IPv6 host must be enclosed by []')
+
+        host = url[len(IPV6_HOST_PREFIX):end]
+        suffix = url[end + len(IPV6_HOST_SUFFIX):]
+        if not suffix.startswith(NFS_URL_SEPARATOR):
+            raise InvalidNfsUrlError(url, 'url should be [IPv6]:/absolute/path')
+
+        return host, suffix[len(NFS_URL_SEPARATOR):]
+
+    ts = url.split(NFS_URL_SEPARATOR)
+    if len(ts) != 2:
+        raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
+
+    return ts[0], ts[1]
+
+
 def is_valid_nfs_url(url):
-    ts = url.split(':')
-    if len(ts) != 2: raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
-    host = ts[0]
-    path = ts[1]
+    host, path = parse_nfs_url(url)
     try:
-        socket.gethostbyname(host)
+        socket.getaddrinfo(host, None)
     except socket.gaierror:
         raise InvalidNfsUrlError(url, '%s cannont resolve to ip address' % host)
 
@@ -1775,12 +1799,19 @@ def move_dev_route(src_dev, dest_dev):
         if line != "":
             routes6.append(line)
             shell.call('ip -6 route del %s' % line)
+    connected_routes6 = []
+    r_out = shell.call("ip -6 route show dev %s proto kernel | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            connected_routes6.append(line)
 
     for ip in _parse_ip_addresses(ipv4_out):
         _move_ip_address(ip, src_dev, dest_dev, "inet")
 
     for ip in _parse_ip_addresses(ipv6_out):
         _move_ip_address(ip, src_dev, dest_dev, "inet6")
+    for r in connected_routes6:
+        shell.call('ip -6 route del %s' % r, exception=False)
 
     # Restore routes on the destination device
     for r in routes:
@@ -2715,18 +2746,24 @@ class Interface(object):
                 'name':self.name,
                 'ips':self.ips})
 
+IP_ADDR_INTERFACE_MARKER = 'mtu'
+IP_ADDR_ADDRESS_FAMILIES = ('inet', 'inet6')
+IP_ADDR_LIST_CMD = "ip a | grep -E 'mtu| inet | inet6 '"
+
+
 def get_eth_ips():
-    nics = shell.call("ip a | grep -E 'mtu| inet '")
+    nics = shell.call(IP_ADDR_LIST_CMD)
     result = dict()
     interf = ''
 
     for i in nics.splitlines():
-        if i.find('mtu') >= 0:
+        fields = i.strip().split()
+        if i.find(IP_ADDR_INTERFACE_MARKER) >= 0:
             interf = re.findall(r':\ .*:\ ', i)[0].split(': ')[1]
             status = True if re.findall(r'UP', i) else False
             result[interf] = Interface({'name':interf, 'status':status, 'ips':list()})
-        elif i.find('inet') >= 0:
-            result[interf].ips.append(re.findall(r'inet\ .*\ scope', i)[0].split(' ')[1].split('/')[0])
+        elif fields and fields[0] in IP_ADDR_ADDRESS_FAMILIES:
+            result[interf].ips.append(fields[1].split('/')[0])
 
     return result
 

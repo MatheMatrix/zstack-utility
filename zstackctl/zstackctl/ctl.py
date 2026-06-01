@@ -3,6 +3,8 @@
 
 import argparse
 import hashlib
+import os
+import re
 import signal
 import getpass
 import urllib.parse
@@ -48,6 +50,123 @@ from cryptography.hazmat.primitives.serialization import pkcs12
 
 DEFAULT_MYSQL_PORT = '3306'
 DEFAULT_SSH_PORT = '22'
+UI_LISTEN_HOST_PROPERTY = 'listen.host'
+UI_IPV6_ANY_LISTEN_HOSTS = ('::', '[::]')
+UI_IPV6_ANY_NGINX_LISTEN_HOST = '[::]'
+UI_NGINX_LISTEN_KEYWORD = 'listen '
+JAVA_PREFER_IPV4_STACK_OPT = '-Djava.net.preferIPv4Stack'
+JAVA_PREFER_IPV4_STACK_TRUE = JAVA_PREFER_IPV4_STACK_OPT + '=true'
+JAVA_PREFER_IPV4_STACK_FALSE = JAVA_PREFER_IPV4_STACK_OPT + '=false'
+JAVA_PREFER_IPV6_ADDRESSES_TRUE = '-Djava.net.preferIPv6Addresses=true'
+
+
+def is_ipv6_literal(address):
+    if not address:
+        return False
+
+    try:
+        socket.inet_pton(socket.AF_INET6, address.strip('[]'))
+        return True
+    except socket.error:
+        return False
+
+
+def management_server_should_listen_ipv6(properties):
+    if properties.get('management.server.ip6') or properties.get('management.server.vip6'):
+        return True
+
+    return is_ipv6_literal(properties.get('management.server.ip'))
+
+
+def build_management_server_ip_stack_opts(properties):
+    if management_server_should_listen_ipv6(properties):
+        return [JAVA_PREFER_IPV4_STACK_FALSE, JAVA_PREFER_IPV6_ADDRESSES_TRUE]
+
+    return [JAVA_PREFER_IPV4_STACK_FALSE]
+
+
+def ui_should_listen_ipv6(listen_host):
+    return normalize_ui_ipv6_listen_host(listen_host) is not None
+
+
+def normalize_ui_ipv6_listen_host(listen_host):
+    if not listen_host:
+        return None
+
+    host = listen_host.strip()
+    if host in UI_IPV6_ANY_LISTEN_HOSTS:
+        return UI_IPV6_ANY_NGINX_LISTEN_HOST
+
+    host = host.strip('[]')
+    if is_ipv6_literal(host):
+        return '[%s]' % host
+
+    return None
+
+
+def build_ui_nginx_ipv6_listen_line(server_port, enable_ssl=False, enable_http2=False, listen_host='::'):
+    suffix = ''
+    if enable_ssl:
+        suffix = ' ssl'
+        if str(enable_http2).lower() == 'true':
+            suffix += ' http2'
+
+    listen_host = normalize_ui_ipv6_listen_host(listen_host) or UI_IPV6_ANY_NGINX_LISTEN_HOST
+    return '        listen %s:%s%s;' % (listen_host, server_port, suffix)
+
+
+def is_ui_nginx_ipv6_listen_line(line, server_port):
+    pattern = r'^\s*listen\s+\[[0-9A-Fa-f:]+\]:%s(?:\s+[^;]+)?;\s*$' % re.escape(str(server_port))
+    return re.match(pattern, line) is not None
+
+
+def ensure_ui_nginx_ipv6_listen_conf(conf_path, server_port, enable_ssl=False, enable_http2=False, listen_host='::'):
+    if not os.path.exists(conf_path):
+        return False
+
+    listen_line = build_ui_nginx_ipv6_listen_line(server_port, enable_ssl, enable_http2, listen_host)
+    with open(conf_path, 'r') as fd:
+        content = fd.read()
+
+    lines = content.splitlines()
+    desired_listen = listen_line.strip()
+    cleaned_lines = []
+    found_desired_listen = False
+    changed = False
+
+    for line in lines:
+        stripped = line.strip()
+        if is_ui_nginx_ipv6_listen_line(line, server_port):
+            if stripped == desired_listen and not found_desired_listen:
+                cleaned_lines.append(line)
+                found_desired_listen = True
+            else:
+                changed = True
+            continue
+
+        cleaned_lines.append(line)
+
+    if found_desired_listen:
+        if changed:
+            with open(conf_path, 'w') as fd:
+                fd.write('\n'.join(cleaned_lines) + '\n')
+            return True
+        return False
+
+    insert_at = None
+    for idx, line in enumerate(cleaned_lines):
+        if line.strip().startswith(UI_NGINX_LISTEN_KEYWORD):
+            insert_at = idx + 1
+            break
+
+    if insert_at is None:
+        cleaned_lines.insert(0, listen_line)
+    else:
+        cleaned_lines.insert(insert_at, listen_line)
+
+    with open(conf_path, 'w') as fd:
+        fd.write('\n'.join(cleaned_lines) + '\n')
+    return True
 
 mysql_db_config_script='''
 #!/bin/bash
@@ -3113,7 +3232,6 @@ class StartCmd(Command):
             setenv_path = os.path.join(ctl.zstack_home, self.SET_ENV_SCRIPT)
             catalina_opts = [
                 '-Djdk.tls.trustNameService=true',
-                '-Djava.net.preferIPv4Stack=true',
                 '-Dcom.sun.management.jmxremote=true',
                 '-Djava.security.egd=file:/dev/./urandom',
                 '-XX:-OmitStackTraceInFastThrow',
@@ -3123,6 +3241,12 @@ class StartCmd(Command):
                 '-XX:+UseAltSigs',
                 '-Dlog4j2.formatMsgNoLookups=true'
             ]
+            management_ip_properties = {
+                'management.server.ip': ctl.read_property('management.server.ip'),
+                'management.server.ip6': ctl.read_property('management.server.ip6'),
+                'management.server.vip6': ctl.read_property('management.server.vip6'),
+            }
+            catalina_opts.extend(build_management_server_ip_stack_opts(management_ip_properties))
 
             if ctl.extra_arguments:
                 catalina_opts.extend(ctl.extra_arguments)
@@ -3137,7 +3261,9 @@ class StartCmd(Command):
                 catalina_opts.extend(co.split(' '))
 
             catalina_opts = management_network_ipv6.build_java_ip_stack_opts(
-                ctl.read_property('management.server.ip'),
+                management_ip_properties.get('management.server.ip6') or
+                management_ip_properties.get('management.server.vip6') or
+                management_ip_properties.get('management.server.ip'),
                 catalina_opts,
             )
 
@@ -8064,6 +8190,51 @@ class ChangeIpCmd(Command):
         info("Change ip successfully")
 
 
+class AddIp6Cmd(Command):
+    def __init__(self):
+        super(AddIp6Cmd, self).__init__()
+        self.name = "add_ip6"
+        self.description = "add an IPv6 address to the current management node"
+        ctl.register_command(self)
+
+    def install_argparse_arguments(self, parser):
+        parser.add_argument('--ip', help='The IPv6 address to add to the current management node.', required=True)
+        parser.add_argument('--prefix', help='The IPv6 prefix length, from 0 to 128.', required=True)
+        parser.add_argument('--nic', help='The network interface to configure. By default zstack-ctl selects the current management interface.', required=False)
+
+    def run(self, args):
+        if not management_network_ipv6.validate_ipv6(args.ip):
+            error('add_ip6 requires a valid IPv6 address')
+
+        prefix_length = management_network_ipv6.normalize_ipv6_prefix(args.prefix)
+        if prefix_length is None:
+            error('add_ip6 requires an IPv6 prefix length from 0 to 128')
+
+        if local_ip_exists(args.ip):
+            info('IPv6 address %s already exists, skip' % args.ip)
+            return
+
+        management_ip = ctl.read_property('management.server.ip6') or ctl.read_property('management.server.ip')
+        addr_output = '\n'.join(filter(None, [
+            shell('ip -o addr show', False).strip(),
+            shell('ip -6 -o addr show', False).strip(),
+        ]))
+        route_output = '\n'.join(filter(None, [
+            shell('ip route show default', False).strip(),
+            shell('ip -6 route show default', False).strip(),
+        ]))
+        nic = management_network_ipv6.select_add_ip6_interface(args.nic, management_ip, route_output, addr_output)
+        if nic is None:
+            error('cannot decide which interface to configure, please pass --nic explicitly')
+
+        command = management_network_ipv6.build_add_ip6_command(args.ip, prefix_length, nic)
+        if command is None:
+            error('failed to build add_ip6 command from input')
+
+        shell_no_pipe(' '.join(command))
+        info('Add IPv6 address %s/%s to interface %s successfully' % (args.ip, prefix_length, nic))
+
+
 class InstallManagementNodeCmd(Command):
     def __init__(self):
         super(InstallManagementNodeCmd, self).__init__()
@@ -10784,6 +10955,7 @@ class StartUiCmd(Command):
         cfg_ssl_keystore_password = ctl.read_ui_property("ssl_keystore_password")
         cfg_catalina_opts = ctl.read_ui_property("catalina_opts")
         cfg_redis_password = ctl.read_ui_property("redis_password")
+        cfg_listen_host = ctl.read_ui_property(UI_LISTEN_HOST_PROPERTY)
 
         custom_props = ""
         predefined_props = ["db_url", "db_username", "db_password", "mn_host", "mn_port", "webhook_host", "webhook_port", "server_port", "log", "enable_ssl", "ssl_keyalias", "ssl_keystore", "ssl_keystore_type", "ssl_keystore_password", "catalina_opts"]
@@ -10923,6 +11095,7 @@ class StartUiCmd(Command):
 
         shell("ps aux| grep zstack-ui/scripts/start.sh | awk '{print $2}'|xargs kill -9",is_exception=False)
         script(scmd, no_pipe=True)
+        self._configure_nginx_ipv6_listen(args.server_port, args.enable_ssl, args.enable_http2, cfg_listen_host)
         os.system('mkdir -p /var/run/zstack/')
         with open(StartUiCmd.PORT_FILE, 'w') as fd:
             fd.write(args.server_port)
@@ -10953,6 +11126,20 @@ class StartUiCmd(Command):
             info('successfully started UI server on the local host')
         else:
             info('successfully started UI server on the local host %s://%s:%s' % ('https' if args.enable_ssl else 'http', default_ip, args.server_port))
+
+    def _configure_nginx_ipv6_listen(self, server_port, enable_ssl, enable_http2, listen_host):
+        if not ui_should_listen_ipv6(listen_host):
+            return
+
+        conf_path = os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'extend.server.nginx.conf')
+        if ensure_ui_nginx_ipv6_listen_conf(conf_path, server_port, enable_ssl, enable_http2, listen_host):
+            shell('/usr/sbin/nginx -c %s -t && /usr/sbin/nginx -c %s -s reload' %
+                  (os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'nginx.conf'),
+                   os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'nginx.conf')))
+
+        if shell_return('which ip6tables >/dev/null 2>&1') == 0:
+            shell('ip6tables-save | grep -- "-A INPUT -p tcp -m tcp --dport %s -j ACCEPT" > /dev/null || ip6tables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT ' %
+                  (server_port, server_port))
 
     def run_mini_ui(self):
         shell_return("systemctl start zstack-mini")
@@ -11019,6 +11206,7 @@ class ConfigUiCmd(Command):
         parser.add_argument('--webhook-port', help="Webhook Host port. [DEFAULT] 5001")
         parser.add_argument('--server-port', help="UI server port. [DEFAULT] 5000")
         parser.add_argument('--ui-address', help="ZStack UI Address.")
+        parser.add_argument('--listen-host', '--listen.host', dest='listen_host', help="UI listen host.")
         parser.add_argument('--log', help="UI log folder. [DEFAULT] %s" % ui_logging_path)
         parser.add_argument('--catalina-opts', help="UI catalina options, seperated by `,`")
 
@@ -11217,6 +11405,8 @@ class ConfigUiCmd(Command):
         # ui_address
         if args.ui_address:
             ctl.write_ui_property("ui_address", args.ui_address.strip())
+        if args.listen_host:
+            ctl.write_ui_property(UI_LISTEN_HOST_PROPERTY, args.listen_host.strip())
 
         # catalina opts
         if args.catalina_opts:
@@ -12382,6 +12572,7 @@ class AIOSSetUpSystemServicesCmd(Command):
 
 
 def main():
+    AddIp6Cmd()
     AddManagementNodeCmd()
     BootstrapCmd()
     ChangeIpCmd()

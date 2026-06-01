@@ -38,7 +38,7 @@ def test_move_dev_route_moves_ipv6_address_and_routes():
     calls = []
 
     def shell_call(cmd, exception=True):
-        calls.append(cmd)
+        calls.append((cmd, exception))
         if cmd == 'ip addr show dev ens4 | grep "inet "':
             return ""
         if cmd == 'ip addr show dev ens4 | grep "inet6 " | grep -v " scope link"':
@@ -47,6 +47,8 @@ def test_move_dev_route_moves_ipv6_address_and_routes():
             return ""
         if cmd == "ip -6 route show dev ens4 | grep via | sed 's/onlink//g'":
             return "default via 2026:3:3:1::1 proto static metric 101\n"
+        if cmd == "ip -6 route show dev ens4 proto kernel | grep -v '^fe80::' | sed 's/onlink//g'":
+            return "2026:3:3:1::/64 proto kernel metric 101 pref medium\n"
         if cmd == 'ip addr show dev br_ens4 | grep "inet6 2026:3:3:1::4b:3364/64"':
             return ""
         return ""
@@ -55,7 +57,8 @@ def test_move_dev_route_moves_ipv6_address_and_routes():
 
     linux.move_dev_route("ens4", "br_ens4")
 
-    assert "ip -6 route del default via 2026:3:3:1::1 proto static metric 101" in calls
-    assert "ip addr del 2026:3:3:1::4b:3364/64 dev ens4" in calls
-    assert "ip addr add 2026:3:3:1::4b:3364/64 dev br_ens4" in calls
-    assert "ip -6 route add default via 2026:3:3:1::1 proto static metric 101" in calls
+    assert ("ip -6 route del default via 2026:3:3:1::1 proto static metric 101", True) in calls
+    assert ("ip addr del 2026:3:3:1::4b:3364/64 dev ens4", True) in calls
+    assert ("ip -6 route del 2026:3:3:1::/64 proto kernel metric 101 pref medium", False) in calls
+    assert ("ip addr add 2026:3:3:1::4b:3364/64 dev br_ens4", True) in calls
+    assert ("ip -6 route add default via 2026:3:3:1::1 proto static metric 101", True) in calls

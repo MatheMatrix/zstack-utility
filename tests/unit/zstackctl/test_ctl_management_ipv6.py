@@ -106,3 +106,69 @@ def test_validate_ip_versions_rejects_invalid_ip(monkeypatch):
     assert errors == [
         'zsha2 nodeip, peerip and dbvip must be valid IP addresses: peerip=invalid-peer'
     ]
+
+
+def test_management_server_ip_stack_opts_enable_dual_stack_for_ip6():
+    opts = ctl.build_management_server_ip_stack_opts({
+        'management.server.ip': '172.24.196.95',
+        'management.server.ip6': 'fd00:172:24:249::95',
+    })
+
+    assert '-Djava.net.preferIPv4Stack=false' in opts
+    assert '-Djava.net.preferIPv6Addresses=true' in opts
+
+
+def test_management_server_ip_stack_opts_enable_dual_stack_for_ipv4_primary():
+    opts = ctl.build_management_server_ip_stack_opts({
+        'management.server.ip': '172.24.196.95',
+    })
+
+    assert opts == ['-Djava.net.preferIPv4Stack=false']
+
+
+def test_ui_ipv6_listen_helpers_update_nginx_conf(tmp_path):
+    conf = tmp_path / 'extend.server.nginx.conf'
+    conf.write_text('        listen 5000;\n        add_header zs-version 5.5.16;\n')
+
+    assert ctl.ui_should_listen_ipv6('::')
+    assert ctl.ensure_ui_nginx_ipv6_listen_conf(str(conf), '5000')
+    assert 'listen [::]:5000;' in conf.read_text()
+
+    assert not ctl.ensure_ui_nginx_ipv6_listen_conf(str(conf), '5000')
+
+
+def test_ui_ipv6_listen_helpers_accept_literal_ipv6(tmp_path):
+    conf = tmp_path / 'extend.server.nginx.conf'
+    conf.write_text('        listen 5000;\n        add_header zs-version 5.5.16;\n')
+
+    assert ctl.ui_should_listen_ipv6('2001:db8::10')
+    assert ctl.ui_should_listen_ipv6('[2001:db8::10]')
+    assert ctl.ensure_ui_nginx_ipv6_listen_conf(str(conf), '5000', False, False, '2001:db8::10')
+    assert 'listen [2001:db8::10]:5000;' in conf.read_text()
+
+    assert not ctl.ensure_ui_nginx_ipv6_listen_conf(str(conf), '5000', False, False, '2001:db8::10')
+
+
+def test_ui_ipv6_listen_helpers_replace_obsolete_ipv6_listen(tmp_path):
+    conf = tmp_path / 'extend.server.nginx.conf'
+    conf.write_text(
+        '        listen 5000;\n'
+        '        listen [::]:5000;\n'
+        '        add_header zs-version 5.5.16;\n'
+    )
+
+    assert ctl.ensure_ui_nginx_ipv6_listen_conf(str(conf), '5000', False, False, '2001:db8::10')
+
+    content = conf.read_text()
+    assert 'listen [2001:db8::10]:5000;' in content
+    assert 'listen [::]:5000;' not in content
+
+
+def test_ui_ipv6_ssl_listen_line_includes_http2():
+    assert ctl.build_ui_nginx_ipv6_listen_line('5443', True, 'true') == \
+        '        listen [::]:5443 ssl http2;'
+
+
+def test_ui_ipv6_ssl_listen_line_accepts_literal_ipv6():
+    assert ctl.build_ui_nginx_ipv6_listen_line('5443', True, 'true', '2001:db8::10') == \
+        '        listen [2001:db8::10]:5443 ssl http2;'
