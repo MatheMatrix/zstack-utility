@@ -75,6 +75,12 @@ def has_mixed_ip_versions(ips):
     return len(versions) > 1
 
 
+def is_same_ip_version_transition(old_ip, new_ip):
+    old_version = get_ip_version(old_ip)
+    new_version = get_ip_version(new_ip)
+    return old_version is not None and new_version is not None and old_version == new_version
+
+
 def extract_db_url_host(db_url):
     ipv6_hosts = re.findall(IPV6_DB_HOST_PATTERN, db_url)
     if ipv6_hosts:

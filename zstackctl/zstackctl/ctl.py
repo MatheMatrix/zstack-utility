@@ -7888,6 +7888,10 @@ class ConfiguredCollectLogCmd(Command):
 
 
 class ChangeIpCmd(Command):
+    ADDRESS_FAMILY_CHANGE_ERROR = (
+        'changing management.server.ip address family is not supported: old_ip=%s, new_ip=%s'
+    )
+
     def __init__(self):
         super(ChangeIpCmd, self).__init__()
         self.name = "change_ip"
@@ -8062,7 +8066,7 @@ class ChangeIpCmd(Command):
             error("please change to single management before change ip")
 
         zstack_conf_file = ctl.properties_file_path
-        for input_ip in [cloudbus_server_ip, mysql_ip]:
+        for input_ip in [args.ip, cloudbus_server_ip, mysql_ip]:
             if not validate_ip(input_ip):
                 info("The ip address you input: %s seems not a valid ip" % input_ip)
                 return 1
@@ -8077,6 +8081,8 @@ class ChangeIpCmd(Command):
                 if not validate_ip(old_ip):
                     info("The ip address[%s] read from [%s] seems not a valid ip" % (old_ip, zstack_conf_file))
                     return 1
+                if not management_network_ipv6.is_same_ip_version_transition(old_ip, args.ip):
+                    error(self.ADDRESS_FAMILY_CHANGE_ERROR % (old_ip, args.ip))
 
             # read from env other than /etc/hostname in case of impact of DHCP SERVER
             old_hostname = shell("hostname").replace("\n","")

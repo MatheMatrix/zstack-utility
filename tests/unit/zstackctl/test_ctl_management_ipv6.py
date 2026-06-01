@@ -3,6 +3,7 @@ import json
 import socket
 import sys
 import types
+from types import SimpleNamespace
 
 import pytest
 
@@ -172,3 +173,35 @@ def test_ui_ipv6_ssl_listen_line_includes_http2():
 def test_ui_ipv6_ssl_listen_line_accepts_literal_ipv6():
     assert ctl.build_ui_nginx_ipv6_listen_line('5443', True, 'true', '2001:db8::10') == \
         '        listen [2001:db8::10]:5443 ssl http2;'
+
+
+def test_change_ip_rejects_management_ip_address_family_switch(monkeypatch):
+    class ChangeIpRejected(Exception):
+        pass
+
+    errors = []
+
+    def fail(message):
+        errors.append(message)
+        raise ChangeIpRejected(message)
+
+    monkeypatch.setattr(ctl, 'check_ha', lambda: False)
+    monkeypatch.setattr(ctl.os.path, 'isfile', lambda path: True)
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: '172.24.249.182')
+    monkeypatch.setattr(ctl, 'error', fail)
+
+    cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
+    monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
+
+    with pytest.raises(ChangeIpRejected):
+        cmd.run(SimpleNamespace(
+            ip='fd00:172:24:249::182',
+            cloudbus_server_ip=None,
+            mysql_ip=None,
+            root_password=None,
+        ))
+
+    assert errors == [
+        'changing management.server.ip address family is not supported: '
+        'old_ip=172.24.249.182, new_ip=fd00:172:24:249::182'
+    ]
