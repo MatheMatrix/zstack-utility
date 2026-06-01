@@ -61,10 +61,6 @@ JAVA_PREFER_IPV6_ADDRESSES_TRUE = '-Djava.net.preferIPv6Addresses=true'
 IPTABLES_INPUT_CHAIN = 'INPUT'
 IPTABLES_COMMAND = 'iptables'
 IP6TABLES_COMMAND = 'ip6tables'
-IPTABLES_SAVE_COMMAND = '/sbin/iptables-save'
-IP6TABLES_SAVE_COMMAND = '/sbin/ip6tables-save'
-IPTABLES_RESTORE_COMMAND = '/sbin/iptables-restore'
-IP6TABLES_RESTORE_COMMAND = '/sbin/ip6tables-restore'
 IPTABLES_IPV4_LOOPBACK = '127.0.0.1'
 IPTABLES_IPV6_LOOPBACK = '::1'
 
@@ -851,22 +847,6 @@ def get_ip_version(ip):
     return management_network_ipv6.get_ip_version(ip)
 
 
-def build_change_ip_ipv4_firewall_rule_pattern(ports):
-    return '\\|'.join('dport %s ' % port for port in ports)
-
-
-def build_change_ip_ipv4_firewall_find_command(ports):
-    return "%s | grep %s | grep '%s'" % (
-        IPTABLES_SAVE_COMMAND,
-        IPTABLES_INPUT_CHAIN,
-        build_change_ip_ipv4_firewall_rule_pattern(ports),
-    )
-
-
-def build_change_ip_ipv4_firewall_restore_command(restore_file):
-    return '%s < %s' % (IPTABLES_RESTORE_COMMAND, restore_file)
-
-
 def build_change_ip_ipv4_firewall_accept_commands(management_ip, ports):
     commands = []
     for port in ports:
@@ -882,28 +862,28 @@ def build_change_ip_ipv4_firewall_accept_commands(management_ip, ports):
     return commands
 
 
-def cleanup_change_ip_ipv4_firewall_rules(ports):
-    o = ShellCmd(build_change_ip_ipv4_firewall_find_command(ports))
-    o(False)
-    old_rules = o.stdout.splitlines() if o.return_code == 0 else []
+def build_change_ip_ipv4_firewall_delete_commands(management_ip, ports):
+    commands = []
+    if management_network_ipv6.get_ip_version(management_ip) != management_network_ipv6.IPV4_VERSION:
+        return commands
 
-    iptstrs = shell(IPTABLES_SAVE_COMMAND).splitlines()
-    for rule in old_rules:
-        if rule in iptstrs:
-            iptstrs.remove(rule)
-
-    tmp_fd, tmp_path = tempfile.mkstemp()
-    try:
-        with os.fdopen(tmp_fd, 'w') as fd:
-            fd.write('\n'.join(iptstrs))
-        shell(build_change_ip_ipv4_firewall_restore_command(tmp_path))
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    for port in ports:
+        commands.append('%s -D %s -p tcp --dport %s -d %s -j ACCEPT' % (
+            IPTABLES_COMMAND, IPTABLES_INPUT_CHAIN, port, management_ip
+        ))
+        commands.append('%s -D %s -p tcp --dport %s -d %s -j ACCEPT' % (
+            IPTABLES_COMMAND, IPTABLES_INPUT_CHAIN, port, IPTABLES_IPV4_LOOPBACK
+        ))
+    return commands
 
 
-def update_change_ip_ipv4_firewall_rules(management_ip, mysql_ip, mysql_ports):
-    cleanup_change_ip_ipv4_firewall_rules(mysql_ports)
+def cleanup_change_ip_ipv4_firewall_rules(management_ip, ports):
+    for command in build_change_ip_ipv4_firewall_delete_commands(management_ip, ports):
+        shell_return(command)
+
+
+def update_change_ip_ipv4_firewall_rules(management_ip, mysql_ip, old_management_ip, mysql_ports):
+    cleanup_change_ip_ipv4_firewall_rules(old_management_ip, mysql_ports)
 
     ports = set(mysql_ports)
     if mysql_ip != management_ip:
@@ -911,22 +891,6 @@ def update_change_ip_ipv4_firewall_rules(management_ip, mysql_ip, mysql_ports):
 
     for command in build_change_ip_ipv4_firewall_accept_commands(management_ip, ports):
         shell(command)
-
-
-def build_change_ip_ipv6_firewall_rule_pattern(ports):
-    return '\\|'.join('dport %s ' % port for port in ports)
-
-
-def build_change_ip_ipv6_firewall_find_command(ports):
-    return "%s | grep %s | grep '%s'" % (
-        IP6TABLES_SAVE_COMMAND,
-        IPTABLES_INPUT_CHAIN,
-        build_change_ip_ipv6_firewall_rule_pattern(ports),
-    )
-
-
-def build_change_ip_ipv6_firewall_restore_command(restore_file):
-    return '%s < %s' % (IP6TABLES_RESTORE_COMMAND, restore_file)
 
 
 def build_change_ip_ipv6_firewall_accept_commands(management_ip, ports):
@@ -944,29 +908,29 @@ def build_change_ip_ipv6_firewall_accept_commands(management_ip, ports):
     return commands
 
 
-def cleanup_change_ip_ipv6_firewall_rules(ports):
-    o = ShellCmd(build_change_ip_ipv6_firewall_find_command(ports))
-    o(False)
-    old_rules = o.stdout.splitlines() if o.return_code == 0 else []
+def build_change_ip_ipv6_firewall_delete_commands(management_ip, ports):
+    commands = []
+    if management_network_ipv6.get_ip_version(management_ip) != management_network_ipv6.IPV6_VERSION:
+        return commands
 
-    iptstrs = shell(IP6TABLES_SAVE_COMMAND).splitlines()
-    for rule in old_rules:
-        if rule in iptstrs:
-            iptstrs.remove(rule)
-
-    tmp_fd, tmp_path = tempfile.mkstemp()
-    try:
-        with os.fdopen(tmp_fd, 'w') as fd:
-            fd.write('\n'.join(iptstrs))
-        shell(build_change_ip_ipv6_firewall_restore_command(tmp_path))
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    for port in ports:
+        commands.append('%s -D %s -p tcp --dport %s -d %s -j ACCEPT' % (
+            IP6TABLES_COMMAND, IPTABLES_INPUT_CHAIN, port, management_ip
+        ))
+        commands.append('%s -D %s -p tcp --dport %s -d %s -j ACCEPT' % (
+            IP6TABLES_COMMAND, IPTABLES_INPUT_CHAIN, port, IPTABLES_IPV6_LOOPBACK
+        ))
+    return commands
 
 
-def update_change_ip_ipv6_firewall_rules(management_ip, mysql_ip, mysql_ports):
-    cleanup_change_ip_ipv4_firewall_rules(mysql_ports)
-    cleanup_change_ip_ipv6_firewall_rules(mysql_ports)
+def cleanup_change_ip_ipv6_firewall_rules(management_ip, ports):
+    for command in build_change_ip_ipv6_firewall_delete_commands(management_ip, ports):
+        shell_return(command)
+
+
+def update_change_ip_ipv6_firewall_rules(management_ip, mysql_ip, old_management_ip, mysql_ports):
+    cleanup_change_ip_ipv4_firewall_rules(old_management_ip, mysql_ports)
+    cleanup_change_ip_ipv6_firewall_rules(old_management_ip, mysql_ports)
 
     ports = set(mysql_ports)
     if mysql_ip != management_ip:
@@ -976,14 +940,14 @@ def update_change_ip_ipv6_firewall_rules(management_ip, mysql_ip, mysql_ports):
         shell(command)
 
 
-def update_change_ip_firewall_rules(management_ip, mysql_ip, mysql_ports):
+def update_change_ip_firewall_rules(management_ip, mysql_ip, old_management_ip, mysql_ports):
     ip_version = get_ip_version(management_ip)
     if ip_version == management_network_ipv6.IPV4_VERSION:
-        update_change_ip_ipv4_firewall_rules(management_ip, mysql_ip, mysql_ports)
+        update_change_ip_ipv4_firewall_rules(management_ip, mysql_ip, old_management_ip, mysql_ports)
         return
 
     if ip_version == management_network_ipv6.IPV6_VERSION:
-        update_change_ip_ipv6_firewall_rules(management_ip, mysql_ip, mysql_ports)
+        update_change_ip_ipv6_firewall_rules(management_ip, mysql_ip, old_management_ip, mysql_ports)
         return
 
     error('management ip[%s] is not a valid ip' % management_ip)
@@ -8301,7 +8265,7 @@ class ChangeIpCmd(Command):
             info("Didn't find %s, skip update new ip" % zstack_conf_file  )
             return 1
 
-        update_change_ip_firewall_rules(args.ip, mysql_ip, {DEFAULT_MYSQL_PORT})
+        update_change_ip_firewall_rules(args.ip, mysql_ip, old_ip, {DEFAULT_MYSQL_PORT})
 
         self.update_morph_config(args.ip)
 

@@ -175,10 +175,10 @@ def test_ui_ipv6_ssl_listen_line_accepts_literal_ipv6():
 
 
 def test_change_ip_firewall_commands_keep_ipv4_iptables():
-    assert ctl.build_change_ip_ipv4_firewall_find_command({'3306'}) == \
-        "/sbin/iptables-save | grep INPUT | grep 'dport 3306 '"
-    assert ctl.build_change_ip_ipv4_firewall_restore_command('/tmp/rules') == \
-        '/sbin/iptables-restore < /tmp/rules'
+    assert ctl.build_change_ip_ipv4_firewall_delete_commands('172.24.246.1', {'3306'}) == [
+        'iptables -D INPUT -p tcp --dport 3306 -d 172.24.246.1 -j ACCEPT',
+        'iptables -D INPUT -p tcp --dport 3306 -d 127.0.0.1 -j ACCEPT',
+    ]
     assert ctl.build_change_ip_ipv4_firewall_accept_commands('172.24.246.247', {'3306'}) == [
         'iptables -A INPUT -p tcp --dport 3306 -j REJECT',
         'iptables -I INPUT -p tcp --dport 3306 -d 172.24.246.247 -j ACCEPT',
@@ -187,10 +187,10 @@ def test_change_ip_firewall_commands_keep_ipv4_iptables():
 
 
 def test_change_ip_firewall_commands_use_ip6tables_for_ipv6():
-    assert ctl.build_change_ip_ipv6_firewall_find_command({'3306'}) == \
-        "/sbin/ip6tables-save | grep INPUT | grep 'dport 3306 '"
-    assert ctl.build_change_ip_ipv6_firewall_restore_command('/tmp/rules') == \
-        '/sbin/ip6tables-restore < /tmp/rules'
+    assert ctl.build_change_ip_ipv6_firewall_delete_commands('fd00:172:24:246::1', {'3306'}) == [
+        'ip6tables -D INPUT -p tcp --dport 3306 -d fd00:172:24:246::1 -j ACCEPT',
+        'ip6tables -D INPUT -p tcp --dport 3306 -d ::1 -j ACCEPT',
+    ]
     assert ctl.build_change_ip_ipv6_firewall_accept_commands('fd00:172:24:246::247', {'3306'}) == [
         'ip6tables -A INPUT -p tcp --dport 3306 -j REJECT',
         'ip6tables -I INPUT -p tcp --dport 3306 -d fd00:172:24:246::247 -j ACCEPT',
