@@ -884,6 +884,7 @@ def cleanup_change_ip_ipv4_firewall_rules(management_ip, ports):
 
 def update_change_ip_ipv4_firewall_rules(management_ip, mysql_ip, old_management_ip, mysql_ports):
     cleanup_change_ip_ipv4_firewall_rules(old_management_ip, mysql_ports)
+    cleanup_change_ip_ipv6_firewall_rules(old_management_ip, mysql_ports)
 
     ports = set(mysql_ports)
     if mysql_ip != management_ip:
