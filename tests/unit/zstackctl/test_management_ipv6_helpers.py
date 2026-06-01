@@ -41,6 +41,14 @@ def test_has_mixed_ip_versions_detects_ha_node_mismatch():
     ])
 
 
+def test_same_ip_version_transition_rejects_family_switch():
+    assert management_network_ipv6.is_same_ip_version_transition('192.168.10.10', '192.168.10.20')
+    assert management_network_ipv6.is_same_ip_version_transition('2001:db8::10', '[2001:db8::20]')
+    assert not management_network_ipv6.is_same_ip_version_transition('192.168.10.10', '2001:db8::20')
+    assert not management_network_ipv6.is_same_ip_version_transition('2001:db8::10', '192.168.10.20')
+    assert not management_network_ipv6.is_same_ip_version_transition('192.168.10.10', 'not-an-ip')
+
+
 def test_extract_db_url_host_reads_ipv4_ipv6_and_localhost():
     assert management_network_ipv6.extract_db_url_host('jdbc:mysql://192.168.10.10:3306/zstack') == '192.168.10.10'
     assert management_network_ipv6.extract_db_url_host('jdbc:mysql://[2001:db8::10]:3306/zstack') == '2001:db8::10'
