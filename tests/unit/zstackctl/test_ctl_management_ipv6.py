@@ -172,3 +172,44 @@ def test_ui_ipv6_ssl_listen_line_includes_http2():
 def test_ui_ipv6_ssl_listen_line_accepts_literal_ipv6():
     assert ctl.build_ui_nginx_ipv6_listen_line('5443', True, 'true', '2001:db8::10') == \
         '        listen [2001:db8::10]:5443 ssl http2;'
+
+
+def test_change_ip_firewall_commands_keep_ipv4_iptables():
+    assert ctl.build_change_ip_ipv4_firewall_delete_commands('172.24.246.1', {'3306'}) == [
+        'iptables -D INPUT -p tcp --dport 3306 -d 172.24.246.1 -j ACCEPT',
+        'iptables -D INPUT -p tcp --dport 3306 -d 127.0.0.1 -j ACCEPT',
+    ]
+    assert ctl.build_change_ip_ipv4_firewall_accept_commands('172.24.246.247', {'3306'}) == [
+        'iptables -A INPUT -p tcp --dport 3306 -j REJECT',
+        'iptables -I INPUT -p tcp --dport 3306 -d 172.24.246.247 -j ACCEPT',
+        'iptables -I INPUT -p tcp --dport 3306 -d 127.0.0.1 -j ACCEPT',
+    ]
+
+
+def test_change_ip_firewall_commands_use_ip6tables_for_ipv6():
+    assert ctl.build_change_ip_ipv6_firewall_delete_commands('fd00:172:24:246::1', {'3306'}) == [
+        'ip6tables -D INPUT -p tcp --dport 3306 -d fd00:172:24:246::1 -j ACCEPT',
+        'ip6tables -D INPUT -p tcp --dport 3306 -d ::1 -j ACCEPT',
+    ]
+    assert ctl.build_change_ip_ipv6_firewall_accept_commands('fd00:172:24:246::247', {'3306'}) == [
+        'ip6tables -A INPUT -p tcp --dport 3306 -j REJECT',
+        'ip6tables -I INPUT -p tcp --dport 3306 -d fd00:172:24:246::247 -j ACCEPT',
+        'ip6tables -I INPUT -p tcp --dport 3306 -d ::1 -j ACCEPT',
+    ]
+
+
+def test_change_ip_ipv4_path_cleans_old_ipv6_rules(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ctl, 'shell_return', lambda command: calls.append(command))
+    monkeypatch.setattr(ctl, 'shell', lambda command: calls.append(command))
+
+    ctl.update_change_ip_ipv4_firewall_rules(
+        '172.24.246.247', '172.24.246.247', 'fd00:172:24:246::247', {'3306'})
+
+    assert calls == [
+        'ip6tables -D INPUT -p tcp --dport 3306 -d fd00:172:24:246::247 -j ACCEPT',
+        'ip6tables -D INPUT -p tcp --dport 3306 -d ::1 -j ACCEPT',
+        'iptables -A INPUT -p tcp --dport 3306 -j REJECT',
+        'iptables -I INPUT -p tcp --dport 3306 -d 172.24.246.247 -j ACCEPT',
+        'iptables -I INPUT -p tcp --dport 3306 -d 127.0.0.1 -j ACCEPT',
+    ]
