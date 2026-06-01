@@ -1017,6 +1017,13 @@ def check_equipment_state_from_ipmitool(metrics):
                 remove_memory_status_abnormal(sensor_name)
 
 
+def to_float_or_none(value):
+    try:
+        return float(value)
+    except Exception as e:
+        return None
+
+
 def get_power_info_from_ipmi(sensor_info, metrics):
     power_list = []
     for info in form.load('id|name|type|value|units|event\n' + sensor_info, sep='|'):
@@ -1038,7 +1045,10 @@ def get_power_info_from_ipmi(sensor_info, metrics):
             ps_id = name.strip().split(" ")[0].split("_")[0]
             if "pout" in name and ps_id in power_list:
                 continue
-            metrics['power_supply_current_output_power'].add_metric([ps_id], float(value))
+            power_value = to_float_or_none(value)
+            if power_value is None:
+                continue
+            metrics['power_supply_current_output_power'].add_metric([ps_id], power_value)
             power_list.append(ps_id)
 
 
