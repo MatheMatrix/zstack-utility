@@ -195,6 +195,7 @@ def test_prepare_ipv6_system_parameters_sets_required_sysctls():
         commands.append,
         proc_exists_func=lambda path: path == management_network_ipv6.IPV6_SYSCTL_PROC_DIR,
         read_file_func=lambda path: 'BOOT_IMAGE=/vmlinuz root=/dev/mapper/root ro',
+        read_sysctl_func=lambda name: '1',
     )
 
     assert commands == [
@@ -214,4 +215,38 @@ def test_prepare_ipv6_system_parameters_fails_when_kernel_disables_ipv6():
     except management_network_ipv6.IPv6SystemParameterError as e:
         assert 'ipv6.disable=1' in str(e)
     else:
-        assert False, 'expected IPv6SystemParameterError'
+        raise AssertionError('expected IPv6SystemParameterError')
+
+
+def test_prepare_ipv6_system_parameters_rolls_back_applied_sysctls_on_failure():
+    commands = []
+    logs = []
+
+    def shell_func(command):
+        commands.append(command)
+        if command == ['sysctl', '-w', 'net.ipv6.conf.default.disable_ipv6=0']:
+            raise RuntimeError('sysctl failed')
+
+    try:
+        management_network_ipv6.prepare_ipv6_system_parameters(
+            shell_func,
+            proc_exists_func=lambda path: path == management_network_ipv6.IPV6_SYSCTL_PROC_DIR,
+            read_file_func=lambda path: 'BOOT_IMAGE=/vmlinuz root=/dev/mapper/root ro',
+            read_sysctl_func=lambda name: {
+                'net.ipv6.conf.all.disable_ipv6': '1',
+                'net.ipv6.conf.default.disable_ipv6': '1',
+                'net.ipv6.bindv6only': '1',
+            }[name],
+            logger_func=logs.append,
+        )
+    except management_network_ipv6.IPv6SystemParameterError as e:
+        assert 'net.ipv6.conf.default.disable_ipv6' in str(e)
+    else:
+        raise AssertionError('expected IPv6SystemParameterError')
+
+    assert commands == [
+        ['sysctl', '-w', 'net.ipv6.conf.all.disable_ipv6=0'],
+        ['sysctl', '-w', 'net.ipv6.conf.default.disable_ipv6=0'],
+        ['sysctl', '-w', 'net.ipv6.conf.all.disable_ipv6=1'],
+    ]
+    assert 'rollback sysctl net.ipv6.conf.all.disable_ipv6 to 1' in logs

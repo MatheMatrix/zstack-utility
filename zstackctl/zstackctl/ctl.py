@@ -3307,7 +3307,8 @@ class StartCmd(Command):
 
             try:
                 management_network_ipv6.prepare_ipv6_system_parameters(
-                    lambda command: shell_no_pipe(' '.join(command))
+                    lambda command: shell_no_pipe(' '.join(command)),
+                    logger_func=lambda message: info(message),
                 )
             except management_network_ipv6.IPv6SystemParameterError as e:
                 error(str(e))
@@ -3516,8 +3517,8 @@ class StartCmd(Command):
         check_prometheus_port()
         check_msyql()
         check_ha()
-        check_mn_ip()
         prepare_ipv6_system_parameters_if_needed()
+        check_mn_ip()
         check_chrony()
         restart_console_proxy()
         prepare_qemu_kvm_repo()

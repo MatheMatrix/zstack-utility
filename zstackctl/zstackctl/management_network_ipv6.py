@@ -29,8 +29,12 @@ IPV6_DEVICE_ARGUMENT = 'dev'
 INTERFACE_NAME_PATTERN = r'^[0-9A-Za-z_.:-]+$'
 DEFAULT_ROUTE_INTERFACE_PATTERN = r'\bdev\s+([0-9A-Za-z_.:-]+)'
 IPV6_SYSCTL_PROC_DIR = '/proc/sys/net/ipv6'
+SYSCTL_PROC_ROOT = '/proc/sys'
 PROC_CMDLINE_PATH = '/proc/cmdline'
 KERNEL_IPV6_DISABLED_ARGUMENT = 'ipv6.disable=1'
+SYSCTL_COMMAND = 'sysctl'
+SYSCTL_WRITE_ARGUMENT = '-w'
+SYSCTL_NAME_SEPARATOR = '.'
 MANAGEMENT_IPV6_PROPERTY_KEYS = (
     'management.server.ip6',
     'management.server.vip6',
@@ -228,15 +232,46 @@ def kernel_cmdline_disables_ipv6(cmdline):
 
 
 def build_sysctl_set_command(name, value):
-    return ['sysctl', '-w', '%s=%s' % (name, value)]
+    return [SYSCTL_COMMAND, SYSCTL_WRITE_ARGUMENT, '%s=%s' % (name, value)]
 
 
 def build_ipv6_sysctl_set_commands(settings=MN_IPV6_SYSCTL_SETTINGS):
     return [build_sysctl_set_command(name, value) for name, value in settings]
 
 
+def sysctl_name_to_proc_path(name):
+    return os.path.join(SYSCTL_PROC_ROOT, *name.split(SYSCTL_NAME_SEPARATOR))
+
+
+def read_sysctl_value(name, read_sysctl_func=None):
+    if read_sysctl_func:
+        return read_sysctl_func(name).strip()
+
+    with open(sysctl_name_to_proc_path(name), 'r') as fd:
+        return fd.read().strip()
+
+
+def rollback_ipv6_system_parameters(shell_func, original_values, applied_names, logger_func=None):
+    rollback_errors = []
+    for name in reversed(applied_names):
+        original_value = original_values.get(name)
+        if original_value is None:
+            continue
+
+        rollback_command = build_sysctl_set_command(name, original_value)
+        if logger_func:
+            logger_func('rollback sysctl %s to %s' % (name, original_value))
+        try:
+            shell_func(rollback_command)
+        except Exception as e:
+            rollback_errors.append('%s: %s' % (name, str(e)))
+
+    return rollback_errors
+
+
 def prepare_ipv6_system_parameters(shell_func, proc_exists_func=os.path.exists,
-                                   read_file_func=None, settings=MN_IPV6_SYSCTL_SETTINGS):
+                                   read_file_func=None, settings=MN_IPV6_SYSCTL_SETTINGS,
+                                   read_sysctl_func=None, logger_func=None):
     if read_file_func is None:
         def read_file_func(path):
             with open(path, 'r') as fd:
@@ -259,5 +294,28 @@ def prepare_ipv6_system_parameters(shell_func, proc_exists_func=os.path.exists,
             % KERNEL_IPV6_DISABLED_ARGUMENT
         )
 
-    for command in build_ipv6_sysctl_set_commands(settings):
-        shell_func(command)
+    original_values = {}
+    for name, _ in settings:
+        try:
+            original_values[name] = read_sysctl_value(name, read_sysctl_func)
+            if logger_func:
+                logger_func('original sysctl %s is %s' % (name, original_values[name]))
+        except (IOError, OSError):
+            original_values[name] = None
+            if logger_func:
+                logger_func('original sysctl %s is not readable' % name)
+
+    applied_names = []
+    for name, value in settings:
+        command = build_sysctl_set_command(name, value)
+        try:
+            shell_func(command)
+            applied_names.append(name)
+        except Exception as e:
+            rollback_errors = rollback_ipv6_system_parameters(
+                shell_func, original_values, applied_names, logger_func
+            )
+            message = 'failed to prepare IPv6 system parameter %s: %s' % (name, str(e))
+            if rollback_errors:
+                message += '; rollback failed: %s' % '; '.join(rollback_errors)
+            raise IPv6SystemParameterError(message)
