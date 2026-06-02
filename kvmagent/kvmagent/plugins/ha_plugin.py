@@ -68,6 +68,22 @@ class GetVmFencerRuleRsp(AgentRsp):
         self.allowRules = None
         self.blockRules = None
 
+class FenceVmOnSuspectHostCmd(kvmagent.AgentCommand):
+    @log.sensitive_fields("targetHostPrivateKey")
+    def __init__(self):
+        super(FenceVmOnSuspectHostCmd, self).__init__()
+        self.vmUuid = None
+        self.targetHostUuid = None
+        self.targetHostIp = None
+        self.targetHostUsername = None
+        self.targetHostPrivateKey = None
+        self.targetHostSshPort = None
+        self.sshTimeoutSec = None
+
+class FenceVmOnSuspectHostRsp(AgentRsp):
+    def __init__(self):
+        super(FenceVmOnSuspectHostRsp, self).__init__()
+
 class DelVpcHaFromHostRsp(AgentRsp):
     def __init__(self):
         super(DelVpcHaFromHostRsp, self).__init__()
@@ -1408,6 +1424,7 @@ class HaPlugin(kvmagent.KvmAgent):
     ADD_VM_FENCER_RULE_TO_HOST = "/add/vm/fencer/rule/to/host"
     REMOVE_VM_FENCER_RULE_FROM_HOST = "/remove/vm/fencer/rule/from/host"
     GET_VM_FENCER_RULE = "/get/vm/fencer/rule/"
+    FENCE_VM_ON_SUSPECT_HOST_PATH = "/ha/vm/fenceonsuspecthost"
 
 
     RET_SUCCESS = "success"
@@ -2051,6 +2068,84 @@ class HaPlugin(kvmagent.KvmAgent):
         rsp.vmUuids = list(set(runningVms))
         return jsonobject.dumps(rsp)
 
+    def _is_pre_fence_ssh_unreachable(self, rc, out, err):
+        if rc != 255:
+            return False
+
+        output = "%s\n%s" % (out if out else "", err if err else "")
+        unreachable_errors = [
+            "Connection timed out",
+            "No route to host",
+            "Connection refused",
+        ]
+        return any(e in output for e in unreachable_errors)
+
+    @kvmagent.replyerror
+    def fence_vm_on_suspect_host(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = FenceVmOnSuspectHostRsp()
+
+        vm_uuid = cmd.vmUuid
+        target_ip = cmd.targetHostIp.strip() if cmd.targetHostIp else ""
+        if not target_ip:
+            rsp.success = False
+            rsp.error = "targetHostIp is required to fence vm[%s] on suspect host" % vm_uuid
+            logger.warn(rsp.error)
+            return jsonobject.dumps(rsp)
+
+        target_user = cmd.targetHostUsername if cmd.targetHostUsername else "root"
+        target_port = int(cmd.targetHostSshPort) if cmd.targetHostSshPort else 22
+        target_private_key = cmd.targetHostPrivateKey
+        ssh_timeout = int(cmd.sshTimeoutSec) if cmd.sshTimeoutSec else 20
+
+        remote_cmd = (
+            "(timeout 8 virsh destroy {uuid} >/dev/null 2>&1 || true); "
+            "pkill -9 -f '[q]emu-[ks].*{uuid}' >/dev/null 2>&1 || true; "
+            "sleep 1; "
+            "if pgrep -f '[q]emu-[ks].*{uuid}' >/dev/null 2>&1; then echo QEMU_ALIVE; exit 2; fi; "
+            "echo QEMU_DEAD"
+        ).format(uuid=vm_uuid)
+
+        private_key_file = linux.write_to_temp_file(target_private_key if target_private_key else "")
+        os.chmod(private_key_file, 0o600)
+        ssh_argv = (
+            "timeout %d ssh -i %s -p %d "
+            "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            "-o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 "
+            "-o BatchMode=no %s@%s %s"
+        ) % (ssh_timeout, private_key_file, target_port, target_user, target_ip,
+             linux.shellquote(remote_cmd))
+
+        logger.info("fence vm[%s] on suspect host[%s] via this peer" % (vm_uuid, target_ip))
+        try:
+            try:
+                s = shell.ShellCmd(ssh_argv)
+                s(False)
+            except Exception as e:
+                rsp.success = False
+                rsp.error = "failed to execute ssh command for suspect host[%s]: %s" % (target_ip, str(e))
+                logger.warn(rsp.error)
+                return jsonobject.dumps(rsp)
+            rc, out, err = s.return_code, s.stdout, s.stderr
+
+            if rc == 0:
+                logger.info("vm[%s] confirmed dead on suspect host[%s]" % (vm_uuid, target_ip))
+            elif rc == 2:
+                rsp.success = False
+                rsp.error = "qemu still alive on %s after force-destroy attempt" % target_ip
+            elif self._is_pre_fence_ssh_unreachable(rc, out, err):
+                logger.info("ssh to suspect host[%s] failed (rc=%s, err=%s), treat as unreachable"
+                            % (target_ip, rc, err))
+            else:
+                rsp.success = False
+                rsp.error = "failed to fence vm[%s] on suspect host[%s], ssh rc=%s, stdout=%s, stderr=%s" % (
+                    vm_uuid, target_ip, rc, out, err)
+                logger.warn(rsp.error)
+        finally:
+            linux.rm_file_force(private_key_file)
+
+        return jsonobject.dumps(rsp)
+
     @kvmagent.replyerror
     def sanlock_scan_host(self, req):
         def parseLockspaceHostIdPair(s):
@@ -2152,6 +2247,8 @@ class HaPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.ADD_VM_FENCER_RULE_TO_HOST, self.add_vm_fencer_rule_to_host)
         http_server.register_async_uri(self.REMOVE_VM_FENCER_RULE_FROM_HOST, self.remove_vm_fencer_rule_from_host)
         http_server.register_async_uri(self.GET_VM_FENCER_RULE, self.get_vm_fencer_rule)
+        http_server.register_async_uri(self.FENCE_VM_ON_SUSPECT_HOST_PATH, self.fence_vm_on_suspect_host,
+                                       cmd=FenceVmOnSuspectHostCmd())
 
 
     def stop(self):
