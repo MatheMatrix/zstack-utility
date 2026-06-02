@@ -205,6 +205,19 @@ is_local_ip_address() {
     } END { exit found ? 0 : 1 }'
 }
 
+get_local_ip_interface() {
+    local ip_addr="$1"
+    ip_addr="${ip_addr#[}"
+    ip_addr="${ip_addr%]}"
+    ip -o addr show 2>/dev/null | awk -v target="$ip_addr" '{
+        split($4, addr, "/")
+        if (addr[1] == target) {
+            print $NF
+            exit
+        }
+    }'
+}
+
 format_host_for_url() {
     case "$1" in
         *:*) echo "[$1]" ;;
@@ -270,12 +283,26 @@ normalize_management_ip6() {
     if [ x"$MANAGEMENT_IP6" = x"$MANAGEMENT_IP" ]; then
         fail2 "management.server.ip6 cannot be the same as management.server.ip."
     fi
+
+    if is_ipv6_address "$MANAGEMENT_IP"; then
+        fail2 "--management-ip6 is only supported when the primary management node IP address is IPv4."
+    fi
 }
 
 configure_management_ip6() {
     [ -z "$MANAGEMENT_IP6" ] && return
 
     normalize_management_ip6
+
+    local management_ip_interface=`get_local_ip_interface "$MANAGEMENT_IP"`
+    if [ -z "$management_ip_interface" ]; then
+        fail2 "Cannot find the network interface of primary management node IP address $MANAGEMENT_IP."
+    fi
+
+    local management_ip6_interface=`get_local_ip_interface "$MANAGEMENT_IP6"`
+    if [ -n "$management_ip6_interface" ] && [ x"$management_ip_interface" != x"$management_ip6_interface" ]; then
+        fail2 "IPv4 management node IP address $MANAGEMENT_IP is on $management_ip_interface, but IPv6 management node IP address $MANAGEMENT_IP6 is on $management_ip6_interface. Please use IPv4 and IPv6 addresses on the same management interface."
+    fi
 
     if ! is_local_ip_address "$MANAGEMENT_IP6"; then
         if [ -z "$MANAGEMENT_IP6_PREFIX" ]; then
