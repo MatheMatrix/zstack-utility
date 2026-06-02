@@ -246,3 +246,80 @@ def test_change_ip_rejects_management_ip_address_family_switch(monkeypatch):
         'changing management.server.ip address family is not supported: '
         'old_ip=172.24.249.182, new_ip=fd00:172:24:249::182'
     ]
+
+
+def test_add_ip6_sets_management_server_ip6_without_configuring_nic(monkeypatch):
+    writes = []
+    shell_calls = []
+
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: None)
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: True)
+    monkeypatch.setattr(ctl, 'shell', lambda *args, **kwargs: shell_calls.append(args))
+    monkeypatch.setattr(ctl, 'shell_no_pipe', lambda command: shell_calls.append(command))
+
+    cmd = ctl.AddIp6Cmd.__new__(ctl.AddIp6Cmd)
+    cmd.run(SimpleNamespace(
+        ip='fd00:172:24:249::182',
+        prefix='64',
+        nic='br_eth0',
+    ))
+
+    assert writes == [('management.server.ip6', 'fd00:172:24:249::182')]
+    assert shell_calls == []
+
+
+def test_add_ip6_requires_local_ipv6_address(monkeypatch):
+    class AddIp6Rejected(Exception):
+        pass
+
+    errors = []
+
+    def fail(message):
+        errors.append(message)
+        raise AddIp6Rejected(message)
+
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: None)
+    monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: False)
+    monkeypatch.setattr(ctl, 'error', fail)
+
+    cmd = ctl.AddIp6Cmd.__new__(ctl.AddIp6Cmd)
+    with pytest.raises(AddIp6Rejected):
+        cmd.run(SimpleNamespace(
+            ip='fd00:172:24:249::182',
+            prefix=None,
+            nic=None,
+        ))
+
+    assert errors == [
+        'IPv6 address fd00:172:24:249::182 is not found on any device; '
+        'please configure the OS network address before running add_ip6'
+    ]
+
+
+def test_add_ip6_rejects_existing_different_management_server_ip6(monkeypatch):
+    class AddIp6Rejected(Exception):
+        pass
+
+    errors = []
+
+    def fail(message):
+        errors.append(message)
+        raise AddIp6Rejected(message)
+
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: 'fd00:172:24:249::181')
+    monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: True)
+    monkeypatch.setattr(ctl, 'error', fail)
+
+    cmd = ctl.AddIp6Cmd.__new__(ctl.AddIp6Cmd)
+    with pytest.raises(AddIp6Rejected):
+        cmd.run(SimpleNamespace(
+            ip='fd00:172:24:249::182',
+            prefix=None,
+            nic=None,
+        ))
+
+    assert errors == [
+        'management.server.ip6 already configured as fd00:172:24:249::181, '
+        'cannot add fd00:172:24:249::182'
+    ]
