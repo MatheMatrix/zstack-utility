@@ -8314,25 +8314,33 @@ class AddIp6Cmd(Command):
         parser.add_argument('--prefix', help='Deprecated compatibility option. add_ip6 no longer configures OS network addresses.', required=False)
         parser.add_argument('--nic', help='Deprecated compatibility option. add_ip6 no longer configures OS network interfaces.', required=False)
 
+    def add_management_server_ip6_under_lock(self, ip):
+        ip6_property_key = management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY
+        existing_ip6 = ctl.read_property(ip6_property_key)
+        if existing_ip6:
+            if existing_ip6 == ip:
+                info('%s %s already configured, skip' % (ip6_property_key, ip))
+                return False
+            error('%s already configured as %s, cannot add %s' % (ip6_property_key, existing_ip6, ip))
+
+        if not local_ip_exists(ip):
+            error('IPv6 address %s is not found on any device; please configure the OS network address before running add_ip6' % ip)
+
+        ctl.write_properties([
+            (ip6_property_key, ip),
+        ])
+        return True
+
+    @lock.file_lock('/run/zstack.properties.lock')
+    def add_management_server_ip6(self, ip):
+        return self.add_management_server_ip6_under_lock(ip)
+
     def run(self, args):
         if not management_network_ipv6.validate_ipv6(args.ip):
             error('add_ip6 requires a valid IPv6 address')
 
-        ip6_property_key = management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY
-        existing_ip6 = ctl.read_property(ip6_property_key)
-        if existing_ip6:
-            if existing_ip6 == args.ip:
-                info('%s %s already configured, skip' % (ip6_property_key, args.ip))
-                return
-            error('%s already configured as %s, cannot add %s' % (ip6_property_key, existing_ip6, args.ip))
-
-        if not local_ip_exists(args.ip):
-            error('IPv6 address %s is not found on any device; please configure the OS network address before running add_ip6' % args.ip)
-
-        ctl.write_properties([
-            (ip6_property_key, args.ip),
-        ])
-        info('Add IPv6 management address %s successfully; restart management node to enable dual-stack' % args.ip)
+        if self.add_management_server_ip6(args.ip):
+            info('Add IPv6 management address %s successfully; restart management node to enable dual-stack' % args.ip)
 
 
 class InstallManagementNodeCmd(Command):

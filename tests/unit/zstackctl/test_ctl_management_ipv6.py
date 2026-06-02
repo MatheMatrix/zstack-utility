@@ -259,11 +259,7 @@ def test_add_ip6_sets_management_server_ip6_without_configuring_nic(monkeypatch)
     monkeypatch.setattr(ctl, 'shell_no_pipe', lambda command: shell_calls.append(command))
 
     cmd = ctl.AddIp6Cmd.__new__(ctl.AddIp6Cmd)
-    cmd.run(SimpleNamespace(
-        ip='fd00:172:24:249::182',
-        prefix='64',
-        nic='br_eth0',
-    ))
+    assert cmd.add_management_server_ip6_under_lock('fd00:172:24:249::182')
 
     assert writes == [('management.server.ip6', 'fd00:172:24:249::182')]
     assert shell_calls == []
@@ -285,11 +281,7 @@ def test_add_ip6_requires_local_ipv6_address(monkeypatch):
 
     cmd = ctl.AddIp6Cmd.__new__(ctl.AddIp6Cmd)
     with pytest.raises(AddIp6Rejected):
-        cmd.run(SimpleNamespace(
-            ip='fd00:172:24:249::182',
-            prefix=None,
-            nic=None,
-        ))
+        cmd.add_management_server_ip6_under_lock('fd00:172:24:249::182')
 
     assert errors == [
         'IPv6 address fd00:172:24:249::182 is not found on any device; '
@@ -313,13 +305,22 @@ def test_add_ip6_rejects_existing_different_management_server_ip6(monkeypatch):
 
     cmd = ctl.AddIp6Cmd.__new__(ctl.AddIp6Cmd)
     with pytest.raises(AddIp6Rejected):
-        cmd.run(SimpleNamespace(
-            ip='fd00:172:24:249::182',
-            prefix=None,
-            nic=None,
-        ))
+        cmd.add_management_server_ip6_under_lock('fd00:172:24:249::182')
 
     assert errors == [
         'management.server.ip6 already configured as fd00:172:24:249::181, '
         'cannot add fd00:172:24:249::182'
     ]
+
+
+def test_add_ip6_skips_existing_same_management_server_ip6(monkeypatch):
+    writes = []
+
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: 'fd00:172:24:249::182')
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: True)
+
+    cmd = ctl.AddIp6Cmd.__new__(ctl.AddIp6Cmd)
+
+    assert not cmd.add_management_server_ip6_under_lock('fd00:172:24:249::182')
+    assert writes == []
