@@ -62,3 +62,35 @@ def test_move_dev_route_moves_ipv6_address_and_routes():
     assert ("ip -6 route del 2026:3:3:1::/64 proto kernel metric 101 pref medium", False) in calls
     assert ("ip addr add 2026:3:3:1::4b:3364/64 dev br_ens4", True) in calls
     assert ("ip -6 route add default via 2026:3:3:1::1 proto static metric 101", True) in calls
+
+
+def test_move_dev_route_moves_ipv6_direct_static_route():
+    linux = _load_linux_module()
+    calls = []
+
+    def shell_call(cmd, exception=True):
+        calls.append((cmd, exception))
+        if cmd == 'ip addr show dev ens4 | grep "inet "':
+            return ""
+        if cmd == 'ip addr show dev ens4 | grep "inet6 " | grep -v " scope link"':
+            return "    inet6 fd00:5:5:28::62:d0e5/128 scope global noprefixroute\n"
+        if cmd == "ip route show dev ens4 | grep via | sed 's/onlink//g'":
+            return ""
+        if cmd == "ip -6 route show dev ens4 | grep via | sed 's/onlink//g'":
+            return ""
+        if cmd == "ip -6 route show dev ens4 | grep -v via | grep -v ' proto kernel ' | grep -v '^fe80::' | sed 's/onlink//g'":
+            return "fd00:5:5:28::/64 proto static metric 101 pref medium\n"
+        if cmd == "ip -6 route show dev ens4 proto kernel | grep -v '^fe80::' | sed 's/onlink//g'":
+            return "fd00:5:5:28::62:d0e5 proto kernel metric 101 pref medium\n"
+        if cmd == 'ip addr show dev br_ens4 | grep "inet6 fd00:5:5:28::62:d0e5/128"':
+            return ""
+        return ""
+
+    linux.shell.call = MagicMock(side_effect=shell_call)
+
+    linux.move_dev_route("ens4", "br_ens4")
+
+    assert ("ip -6 route del fd00:5:5:28::/64 dev ens4 proto static metric 101 pref medium", True) in calls
+    assert ("ip addr del fd00:5:5:28::62:d0e5/128 dev ens4", True) in calls
+    assert ("ip addr add fd00:5:5:28::62:d0e5/128 dev br_ens4", True) in calls
+    assert ("ip -6 route add fd00:5:5:28::/64 dev br_ens4 proto static metric 101 pref medium", True) in calls
