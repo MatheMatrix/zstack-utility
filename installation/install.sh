@@ -99,6 +99,8 @@ ONLY_INSTALL_ZSTACK=''
 NOT_START_ZSTACK=''
 NEED_SET_MN_IP=''
 MANAGEMENT_INTERFACE=''
+MANAGEMENT_IP6=''
+MANAGEMENT_IP6_PREFIX=''
 MANAGEMENT_ROUTE_FAMILY=''
 MANAGEMENT_ROUTE_FAMILY_IPV4='4'
 MANAGEMENT_ROUTE_FAMILY_IPV6='6'
@@ -183,6 +185,14 @@ is_ipv6_address() {
     esac
 }
 
+is_ipv6_prefix_length() {
+    local prefix="$1"
+    case "$prefix" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$prefix" -ge 0 ] && [ "$prefix" -le 128 ]
+}
+
 is_local_ip_address() {
     local ip_addr="$1"
     ip_addr="${ip_addr#[}"
@@ -237,6 +247,44 @@ resolve_management_ip() {
     fi
 
     MANAGEMENT_IP="$ip_addr"
+}
+
+normalize_management_ip6() {
+    [ -z "$MANAGEMENT_IP6" ] && return
+
+    MANAGEMENT_IP6="${MANAGEMENT_IP6#[}"
+    MANAGEMENT_IP6="${MANAGEMENT_IP6%]}"
+
+    if ! is_ipv6_address "$MANAGEMENT_IP6"; then
+        fail2 "$MANAGEMENT_IP6 is not a valid IPv6 management node IP address."
+    fi
+
+    if is_link_local_ipv6 "$MANAGEMENT_IP6"; then
+        fail2 "$MANAGEMENT_IP6 is an IPv6 link-local address and cannot be used as management node IP address."
+    fi
+
+    if [ -n "$MANAGEMENT_IP6_PREFIX" ] && ! is_ipv6_prefix_length "$MANAGEMENT_IP6_PREFIX"; then
+        fail2 "$MANAGEMENT_IP6_PREFIX is not a valid IPv6 prefix length. It must be from 0 to 128."
+    fi
+
+    if [ x"$MANAGEMENT_IP6" = x"$MANAGEMENT_IP" ]; then
+        fail2 "management.server.ip6 cannot be the same as management.server.ip."
+    fi
+}
+
+configure_management_ip6() {
+    [ -z "$MANAGEMENT_IP6" ] && return
+
+    normalize_management_ip6
+
+    if ! is_local_ip_address "$MANAGEMENT_IP6"; then
+        if [ -z "$MANAGEMENT_IP6_PREFIX" ]; then
+            fail2 "$MANAGEMENT_IP6 is not configured on this machine. Please set --management-ip6-prefix to add it during installation."
+        fi
+        zstack-ctl add_ip6 --ip "$MANAGEMENT_IP6" --prefix "$MANAGEMENT_IP6_PREFIX" || fail2 "Failed to add IPv6 management node IP address $MANAGEMENT_IP6."
+    fi
+
+    zstack-ctl configure management.server.ip6="${MANAGEMENT_IP6}" || fail2 "Failed to configure management.server.ip6."
 }
 
 YUM_ONLINE_REPO='y'
@@ -1519,6 +1567,7 @@ upgrade_zstack(){
     # configure management.server.ip if not exists
     zstack-ctl show_configuration | grep '^[[:space:]]*management.server.ip' >/dev/null 2>&1
     [ $? -ne 0 ] && zstack-ctl configure management.server.ip="${MANAGEMENT_IP}"
+    configure_management_ip6
 
     # configure chrony.serverIp if not exists
     if [ -n "$CHRONY_SERVER_IP" ]; then
@@ -4063,15 +4112,24 @@ Options:
         ${PRODUCT_NAME} won't automatically be started when use '-i'.
 
   -I MANAGEMENT_NODE_NETWORK_INTERFACE | MANAGEMENT_NODE_IP_ADDRESS
-        e.g. -I eth0, -I eth0:1, -I 192.168.0.1
+        e.g. -I eth0, -I eth0:1, -I 192.168.0.1, -I fd00::10
         the network interface (e.g. eth0) or IP address for management network.
         The IP address of this interface will be configured as IP of MySQL 
         server, if they are installed on this machine.
         Remote ${PRODUCT_NAME} managemet nodes will use this IP to access MySQL.
         By default, the installer script will grab the IP of
-        interface providing default routing from routing table. 
+        interface providing default routing from routing table.
         If multiple IP addresses share same net device, e.g. em1, em1:1, em1:2.
         The network interface should be the exact name, like -I em1:1
+
+  --management-ip6 MANAGEMENT_NODE_IPV6_ADDRESS
+        configure an additional IPv6 address for a dual-stack management node.
+        The address will be written to management.server.ip6. IPv6 link-local
+        addresses are not supported.
+
+  --management-ip6-prefix MANAGEMENT_NODE_IPV6_PREFIX
+        IPv6 prefix length used when --management-ip6 needs to add the IPv6
+        address to the current management interface during installation.
 
   -k    keep previous ${PRODUCT_NAME,,} DB if it exists. If using -k with -u, will not upgrade database or start management node. Do not use this option unless you really know what is means.
 
@@ -4202,7 +4260,7 @@ load_install_conf() {
 
 load_install_conf
 OPTIND=1
-TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDEFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum,choose-database:,precheck -- "$@"`
+TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDEFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum,choose-database:,precheck,management-ip6:,management-ip6-prefix: -- "$@"`
 if [ $? != 0 ]; then
     usage
 fi
@@ -4258,6 +4316,8 @@ do
         -y ) check_myarg $1 $2;HTTP_PROXY=$2;shift 2;;
         -z ) NOT_START_ZSTACK='y';shift;;
         --chrony-server-ip ) check_myarg $1 $2;CHRONY_SERVER_IP=$2;shift 2;;
+        --management-ip6 ) check_myarg $1 $2;MANAGEMENT_IP6=$2;shift 2;;
+        --management-ip6-prefix ) check_myarg $1 $2;MANAGEMENT_IP6_PREFIX=$2;shift 2;;
         --grayscale ) check_myarg $1 $2;GRAYSCALE_UPGRADE=$2;shift 2;;
         --mini) MINI_INSTALL='y';shift;;
         --zsv) ZSV_INSTALL='y';shift;;
@@ -4831,6 +4891,7 @@ if [ -n "$NEED_DROP_DB" ]; then
 fi
 
 zstack-ctl configure management.server.ip="${MANAGEMENT_IP}"
+configure_management_ip6
 
 zstack-ctl configure RepoVersion.Strategy="permissive"
 
