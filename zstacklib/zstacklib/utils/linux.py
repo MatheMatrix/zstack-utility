@@ -1799,6 +1799,12 @@ def move_dev_route(src_dev, dest_dev):
         if line != "":
             routes6.append(line)
             shell.call('ip -6 route del %s' % line)
+    direct_routes6 = []
+    r_out = shell.call("ip -6 route show dev %s | grep -v via | grep -v ' proto kernel ' | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            direct_routes6.append(line)
+            shell.call('ip -6 route del %s' % _route_with_dev(line, src_dev))
     connected_routes6 = []
     r_out = shell.call("ip -6 route show dev %s proto kernel | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
     for line in r_out.split('\n'):
@@ -1818,6 +1824,8 @@ def move_dev_route(src_dev, dest_dev):
         shell.call('ip route add %s' % r)
     for r in routes6:
         shell.call('ip -6 route add %s' % r)
+    for r in direct_routes6:
+        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
 
 
 def _parse_ip_addresses(ip_addr_output):
@@ -1829,6 +1837,18 @@ def _move_ip_address(ip, src_dev, dest_dev, family):
     r_out = shell.call('ip addr show dev %s | grep "%s %s"' % (dest_dev, family, ip), exception=False)
     if not r_out:
         shell.call('ip addr add %s dev %s' % (ip, dest_dev))
+
+
+def _route_with_dev(route, dev):
+    parts = route.split()
+    if not parts:
+        return route
+    if 'dev' in parts:
+        index = parts.index('dev')
+        if index + 1 < len(parts):
+            parts[index + 1] = dev
+        return ' '.join(parts)
+    return ' '.join([parts[0], 'dev', dev] + parts[1:])
 
 def pretty_xml(xmlstr):
     # dom cannot handle namespace tag like <qemu:commandline>
