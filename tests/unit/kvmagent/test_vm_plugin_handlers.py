@@ -20,6 +20,7 @@ from unittest.mock import patch, MagicMock
 from xml.etree import ElementTree as ET
 
 from zstacklib.utils import http, jsonobject
+from kvmagent.plugins import vm_artifact
 from kvmagent.plugins import vm_plugin
 
 
@@ -2837,6 +2838,143 @@ class TestVmStartCmdXmlBuild:
                     {'nodeID': 0, 'hostNodeID': 0, 'cpus': '0-3', 'memorySize': 1024 * 1024, 'distance': [10, 20]}
                 ]
         return jsonobject.loads(json.dumps(cmd_dict))
+
+    def _build_start_vm_xml(self, cmd):
+        vm_plugin.ovs.OvsDpdkSupportVnic = []
+        vm_plugin.pci.need_config_pcimmio = MagicMock(return_value=True)
+        vm_plugin.pci.get_bars_max_addressable_memory = MagicMock(return_value=256)
+        vm_plugin.linux.get_cpu_model = MagicMock(return_value=('GenuineIntel', 'Intel'))
+        vm_plugin.is_hv_freq_supported = MagicMock(return_value=True)
+        vm_plugin.is_hv_synic_supported = MagicMock(return_value=True)
+        vm_plugin.is_ioapic_supported = MagicMock(return_value=True)
+        vm_plugin.is_spice_tls = MagicMock(return_value=0)
+        vm_plugin.is_spiceport_driver_supported = MagicMock(return_value=True)
+        vm_plugin.notify_vrouter = MagicMock()
+        vm_plugin.VmPlugin.clean_vm_firmware_flash = MagicMock()
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        vm_plugin.linux.VmUsbManager = MagicMock(return_value=MagicMock(request_slot=MagicMock(return_value=1)))
+        vm_plugin.netaddr.IPAddress = MagicMock(side_effect=lambda addr: MagicMock(version=4))
+        vm_plugin.uuidhelper.to_full_uuid = MagicMock(side_effect=lambda value: value)
+        def _real_parse_url(uri):
+            normalized = vm_plugin.re.sub(r'^([a-zA-Z]+:)(?!/{2})', r'\1//', uri, count=1)
+            return urllib.parse.urlparse(normalized)
+
+        def _e_with_text(parent, tag, value=None, attrib=None, usenamesapce=False):
+            _ = usenamesapce
+            if attrib is None:
+                attrib = {}
+            attrib = {k: str(v) for k, v in attrib.items()}
+            elem = vm_plugin.etree.SubElement(parent, tag, attrib)
+            if value:
+                elem.text = str(value)
+            return elem
+
+        orig_tostring = vm_plugin.etree.tostring
+        with patch('os.path.exists', return_value=True), \
+                patch.object(vm_plugin, 'parse_url', side_effect=_real_parse_url), \
+                patch.object(vm_plugin, 'xrange', range, create=True), \
+                patch.object(vm_plugin, 'range', self._RangeCompat), \
+                patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
+                patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
+            vm = vm_plugin.Vm.from_StartVmCmd(cmd)
+        return vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
+
+    def _add_vm_artifact_view(self, cmd, tmp_path, monkeypatch):
+        view_root = tmp_path / 'vm-views'
+        view_path = view_root / cmd.vmInstanceUuid
+        view_path.mkdir(parents=True)
+        monkeypatch.setattr(vm_artifact, 'VM_VIEW_ROOT', str(view_root))
+        cmd.addons.vmArtifactViews = [{
+            'vmInstanceUuid': cmd.vmInstanceUuid,
+            'tag': 'artifact-view',
+            'sourcePath': str(view_path),
+        }]
+        return view_path
+
+    def test_memory_backing_shared_memaccess_only(self):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.MemAccess = 'shared'
+        cmd.useHugePage = False
+        cmd.noSharePages = False
+
+        xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<memoryBacking>' in xml_str
+        assert '<source type="memfd"' in xml_str
+        assert '<access mode="shared"' in xml_str
+        assert '<hugepages' not in xml_str
+        assert '<nosharepages' not in xml_str
+
+    def test_memory_backing_memaccess_does_not_substring_match(self):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.MemAccess = 'sh'
+        cmd.useHugePage = False
+        cmd.noSharePages = False
+
+        xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<memoryBacking>' not in xml_str
+        assert '<access mode="shared"' not in xml_str
+
+    def test_vm_artifact_views_force_shared_memory_backing(self, tmp_path, monkeypatch):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.MemAccess = 'private'
+        cmd.useHugePage = False
+        cmd.noSharePages = False
+        self._add_vm_artifact_view(cmd, tmp_path, monkeypatch)
+
+        xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<filesystem type="mount" accessmode="passthrough">' in xml_str
+        assert '<target dir="artifact-view"' in xml_str
+        assert '<memoryBacking>' in xml_str
+        assert '<source type="memfd"' in xml_str
+        assert '<access mode="shared"' in xml_str
+
+    def test_vm_artifact_views_keep_explicit_shared_memory_backing(self, tmp_path, monkeypatch):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.MemAccess = 'shared'
+        cmd.useHugePage = False
+        cmd.noSharePages = False
+        self._add_vm_artifact_view(cmd, tmp_path, monkeypatch)
+
+        xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<filesystem type="mount" accessmode="passthrough">' in xml_str
+        assert '<driver type="virtiofs" queue="1024"' in xml_str
+        assert '<cache mode="none"' in xml_str
+        assert '<readonly' in xml_str
+        assert '<memoryBacking>' in xml_str
+        assert '<access mode="shared"' in xml_str
+
+    def test_memory_backing_hugepage_only(self):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.MemAccess = 'private'
+        cmd.useHugePage = True
+        cmd.noSharePages = False
+
+        xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<memoryBacking>' in xml_str
+        assert '<hugepages' in xml_str
+        assert '<allocation mode="immediate"' in xml_str
+        assert '<nosharepages' in xml_str
+        assert '<access mode="shared"' not in xml_str
+        assert '<source type="memfd"' not in xml_str
+
+    def test_memory_backing_nosharepages_only(self):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.MemAccess = 'private'
+        cmd.useHugePage = False
+        cmd.noSharePages = True
+
+        xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<memoryBacking>' in xml_str
+        assert '<nosharepages' in xml_str
+        assert '<hugepages' not in xml_str
+        assert '<access mode="shared"' not in xml_str
+        assert '<source type="memfd"' not in xml_str
 
     def test_from_start_vm_cmd_builds_xml_with_features(self):
         vm_plugin.ovs.OvsDpdkSupportVnic = []
