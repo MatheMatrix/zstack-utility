@@ -38,28 +38,29 @@ def _make_eip(ipVersion=4):
 def _make_fake_process(executed_cmds):
     """Create a fake shell.get_process that captures resolved commands."""
 
-    def fake_get_process(cmd_path, pipe=True):
+    def fake_get_process(*args, **kwargs):
+        cmd_path = args[0] if args else kwargs.get("cmd_path")
         proc = mock.MagicMock()
 
-        def communicate(cmd_str):
-            executed_cmds.append(cmd_str)
+        def communicate(*args, **kwargs):
+            executed_cmds.append(cmd_path)
             # ip link show -> return a MAC for GATEWAY_MAC resolution
-            if "ip link show" in cmd_str and "awk" in cmd_str:
+            if "ip link show" in cmd_path and "awk" in cmd_path:
                 proc.returncode = 0
                 return ("    link/ether aa:bb:cc:dd:ee:ff brd ff:ff:ff:ff:ff:ff\n", "")
             # ip -o -f inet addr show -> return a CIDR for perf monitor
-            if "ip -o -f inet addr show" in cmd_str:
+            if "ip -o -f inet addr show" in cmd_path:
                 proc.returncode = 0
                 return (
                     "2: eth0    inet 10.0.0.100/24 brd 10.0.0.255 scope global eth0\n",
                     "",
                 )
             # ip -o -f inet6 addr show
-            if "ip -o -f inet6 addr show" in cmd_str:
+            if "ip -o -f inet6 addr show" in cmd_path:
                 proc.returncode = 0
                 return ("2: eth0    inet6 fd00::100/64 scope global\n", "")
             # ebtables -L ... --Lx -> return empty (no existing jump rules to old chains)
-            if "--Lx" in cmd_str:
+            if "--Lx" in cmd_path:
                 proc.returncode = 0
                 return ("", "")
             # default: success with empty output
@@ -423,6 +424,9 @@ class _DeleteEipTestBase(unittest.TestCase):
 
         self.patcher_iproute = mock.patch("kvmagent.plugins.deip.iproute")
         self.mock_iproute = self.patcher_iproute.start()
+        self.mock_iproute.IpNetnsShell.list_netns.return_value = [
+            "br_eth0_192_168_1_100"
+        ]
 
         self.patcher_linux = mock.patch("kvmagent.plugins.deip.linux")
         self.mock_linux = self.patcher_linux.start()
@@ -517,6 +521,63 @@ class TestDeleteIpv6RulesLegacyCleanup(_DeleteEipTestBase):
             len(legacy_cmds) > 0,
             "Expected cleanup for legacy 'vnic1.0-gw' in IPv6 delete path",
         )
+
+
+class TestDeleteEipWithMissingNamespace(unittest.TestCase):
+    def _call_delete_eip_with_ns(self, del_netns_side_effect=None):
+        patchers = [
+            mock.patch("kvmagent.plugins.deip.iproute"),
+            mock.patch("kvmagent.plugins.deip.linux"),
+            mock.patch("zstacklib.utils.shell.get_process"),
+        ]
+        mock_iproute = patchers[0].start()
+        mock_linux = patchers[1].start()
+        mock_get_process = patchers[2].start()
+        try:
+            mock_linux.is_network_device_existing.return_value = False
+            mock_get_process.side_effect = _make_fake_process([])
+            mock_iproute.IpNetnsShell.return_value.del_netns.side_effect = (
+                del_netns_side_effect
+            )
+
+            eip_cmd = Eip()
+            method = type(eip_cmd).delete_eip_with_ns
+            inspect.unwrap(method)(
+                eip_cmd,
+                ns="br_eth0_192_168_1_100",
+                eip_uuid="abcdef123456789",
+                version=4,
+                nic_name="vnic1.0",
+            )
+
+            mock_iproute.IpNetnsShell.return_value.del_netns.assert_called_once()
+        finally:
+            for patcher in patchers:
+                patcher.stop()
+
+    def test_missing_namespace_is_idempotent(self):
+        self._call_delete_eip_with_ns(
+            del_netns_side_effect=Exception(
+                'Cannot remove namespace file "/run/netns/br_eth0_192_168_1_100": '
+                "No such file or directory"
+            )
+        )
+
+    def test_missing_namespace_exception_is_idempotent(self):
+        self._call_delete_eip_with_ns(
+            del_netns_side_effect=Exception(
+                "Network namespace : br_eth0_192_168_1_100 could not be found."
+            )
+        )
+
+    def test_unexpected_namespace_delete_error_is_raised(self):
+        with self.assertRaisesRegex(Exception, "Permission denied"):
+            self._call_delete_eip_with_ns(
+                del_netns_side_effect=Exception(
+                    'Cannot remove namespace file "/run/netns/br_eth0_192_168_1_100": '
+                    "Permission denied"
+                )
+            )
 
 
 if __name__ == "__main__":
