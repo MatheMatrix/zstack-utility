@@ -8306,45 +8306,41 @@ class AddIp6Cmd(Command):
     def __init__(self):
         super(AddIp6Cmd, self).__init__()
         self.name = "add_ip6"
-        self.description = "add an IPv6 address to the current management node"
+        self.description = "add an IPv6 management address to the current management node"
         ctl.register_command(self)
 
     def install_argparse_arguments(self, parser):
-        parser.add_argument('--ip', help='The IPv6 address to add to the current management node.', required=True)
-        parser.add_argument('--prefix', help='The IPv6 prefix length, from 0 to 128.', required=True)
-        parser.add_argument('--nic', help='The network interface to configure. By default zstack-ctl selects the current management interface.', required=False)
+        parser.add_argument('--ip', help='The IPv6 management address to add to the current management node.', required=True)
+        parser.add_argument('--prefix', help='Deprecated compatibility option. add_ip6 no longer configures OS network addresses.', required=False)
+        parser.add_argument('--nic', help='Deprecated compatibility option. add_ip6 no longer configures OS network interfaces.', required=False)
+
+    def add_management_server_ip6_under_lock(self, ip):
+        ip6_property_key = management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY
+        existing_ip6 = ctl.read_property(ip6_property_key)
+        if existing_ip6:
+            if existing_ip6 == ip:
+                info('%s %s already configured, skip' % (ip6_property_key, ip))
+                return False
+            error('%s already configured as %s, cannot add %s' % (ip6_property_key, existing_ip6, ip))
+
+        if not local_ip_exists(ip):
+            error('IPv6 address %s is not found on any device; please configure the OS network address before running add_ip6' % ip)
+
+        ctl.write_properties([
+            (ip6_property_key, ip),
+        ])
+        return True
+
+    @lock.file_lock('/run/zstack.properties.lock')
+    def add_management_server_ip6(self, ip):
+        return self.add_management_server_ip6_under_lock(ip)
 
     def run(self, args):
         if not management_network_ipv6.validate_ipv6(args.ip):
             error('add_ip6 requires a valid IPv6 address')
 
-        prefix_length = management_network_ipv6.normalize_ipv6_prefix(args.prefix)
-        if prefix_length is None:
-            error('add_ip6 requires an IPv6 prefix length from 0 to 128')
-
-        if local_ip_exists(args.ip):
-            info('IPv6 address %s already exists, skip' % args.ip)
-            return
-
-        management_ip = ctl.read_property('management.server.ip6') or ctl.read_property('management.server.ip')
-        addr_output = '\n'.join(filter(None, [
-            shell('ip -o addr show', False).strip(),
-            shell('ip -6 -o addr show', False).strip(),
-        ]))
-        route_output = '\n'.join(filter(None, [
-            shell('ip route show default', False).strip(),
-            shell('ip -6 route show default', False).strip(),
-        ]))
-        nic = management_network_ipv6.select_add_ip6_interface(args.nic, management_ip, route_output, addr_output)
-        if nic is None:
-            error('cannot decide which interface to configure, please pass --nic explicitly')
-
-        command = management_network_ipv6.build_add_ip6_command(args.ip, prefix_length, nic)
-        if command is None:
-            error('failed to build add_ip6 command from input')
-
-        shell_no_pipe(' '.join(command))
-        info('Add IPv6 address %s/%s to interface %s successfully' % (args.ip, prefix_length, nic))
+        if self.add_management_server_ip6(args.ip):
+            info('Add IPv6 management address %s successfully; restart management node to enable dual-stack' % args.ip)
 
 
 class InstallManagementNodeCmd(Command):

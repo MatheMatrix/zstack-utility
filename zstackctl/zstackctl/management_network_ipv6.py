@@ -21,13 +21,6 @@ IPV6_DB_HOST_PATTERN = r'\[([0-9a-fA-F:]+)\]'
 IPV4_OR_LOCALHOST_DB_HOST_PATTERN = r'(?<![0-9A-Za-z_.-])(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|localhost)(?![0-9A-Za-z_.-])'
 JAVA_PREFER_IPV4_STACK_PREFIX = '-Djava.net.preferIPv4Stack='
 JAVA_PREFER_IPV6_ADDRESSES_PREFIX = '-Djava.net.preferIPv6Addresses='
-MIN_IPV6_PREFIX_LENGTH = 0
-MAX_IPV6_PREFIX_LENGTH = 128
-IP_COMMAND = 'ip'
-IPV6_ADDR_ADD_ARGUMENTS = ('-6', 'addr', 'add')
-IPV6_DEVICE_ARGUMENT = 'dev'
-INTERFACE_NAME_PATTERN = r'^[0-9A-Za-z_.:-]+$'
-DEFAULT_ROUTE_INTERFACE_PATTERN = r'\bdev\s+([0-9A-Za-z_.:-]+)'
 IPV6_SYSCTL_PROC_DIR = '/proc/sys/net/ipv6'
 SYSCTL_PROC_ROOT = '/proc/sys'
 PROC_CMDLINE_PATH = '/proc/cmdline'
@@ -35,9 +28,11 @@ KERNEL_IPV6_DISABLED_ARGUMENT = 'ipv6.disable=1'
 SYSCTL_COMMAND = 'sysctl'
 SYSCTL_WRITE_ARGUMENT = '-w'
 SYSCTL_NAME_SEPARATOR = '.'
+MANAGEMENT_IP6_PROPERTY_KEY = 'management.server.ip6'
+MANAGEMENT_VIP6_PROPERTY_KEY = 'management.server.vip6'
 MANAGEMENT_IPV6_PROPERTY_KEYS = (
-    'management.server.ip6',
-    'management.server.vip6',
+    MANAGEMENT_IP6_PROPERTY_KEY,
+    MANAGEMENT_VIP6_PROPERTY_KEY,
 )
 MANAGEMENT_IP_PROPERTY_KEY = 'management.server.ip'
 MN_IPV6_SYSCTL_SETTINGS = (
@@ -156,77 +151,6 @@ def build_java_ip_stack_opts(management_ip, catalina_opts):
 
 def validate_ipv6(value):
     return get_ip_version(value) == IPV6_VERSION
-
-
-def normalize_ipv6_prefix(prefix):
-    try:
-        prefix_length = int(prefix)
-    except (TypeError, ValueError):
-        return None
-
-    if MIN_IPV6_PREFIX_LENGTH <= prefix_length <= MAX_IPV6_PREFIX_LENGTH:
-        return prefix_length
-    return None
-
-
-def validate_interface_name(nic):
-    return isinstance(nic, STRING_TYPES) and re.match(INTERFACE_NAME_PATTERN, nic) is not None
-
-
-def strip_interface_suffix(nic):
-    return nic.split('@', 1)[0] if nic else nic
-
-
-def find_interface_by_ip(ip, addr_output):
-    if not validate_ip(ip) or not addr_output:
-        return None
-
-    ip = ip.strip('[]')
-    for line in addr_output.splitlines():
-        match = re.match(r'^\d+:\s+([^:\s]+).*?\s+inet6?\s+%s(?:/|\s)' % re.escape(ip), line.strip())
-        if match:
-            return strip_interface_suffix(match.group(1))
-
-    return None
-
-
-def find_default_route_interface(route_output):
-    if not route_output:
-        return None
-
-    for line in route_output.splitlines():
-        if not line.startswith('default '):
-            continue
-        match = re.search(DEFAULT_ROUTE_INTERFACE_PATTERN, line)
-        if match:
-            return strip_interface_suffix(match.group(1))
-
-    return None
-
-
-def select_add_ip6_interface(explicit_nic, management_ip, route_output, addr_output):
-    if explicit_nic:
-        return explicit_nic if validate_interface_name(explicit_nic) else None
-
-    if management_ip:
-        nic = find_interface_by_ip(management_ip, addr_output)
-        if nic:
-            return nic
-
-    nic = find_default_route_interface(route_output)
-    return nic if validate_interface_name(nic) else None
-
-
-def build_add_ip6_command(ip, prefix, nic):
-    prefix_length = normalize_ipv6_prefix(prefix)
-    if not validate_ipv6(ip) or prefix_length is None or not validate_interface_name(nic):
-        return None
-
-    return [IP_COMMAND] + list(IPV6_ADDR_ADD_ARGUMENTS) + [
-        '%s/%s' % (ip.strip('[]'), prefix_length),
-        IPV6_DEVICE_ARGUMENT,
-        nic,
-    ]
 
 
 def management_server_requires_ipv6_stack(properties):
