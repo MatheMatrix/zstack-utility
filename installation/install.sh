@@ -51,7 +51,6 @@ CUBE_INSTALL='n'
 SANYUAN_INSTALL='n'
 SDS_INSTALL='n'
 SKIP_PJNUM_CHECK='n'
-MANAGEMENT_INTERFACE=`ip route | grep default | head -n 1 | cut -d ' ' -f 5`
 ZSTACK_INSTALL_LOG="/tmp/zstack_installation-$(date +%Y-%m-%d-%H:%M:%S).log"
 ZSTACKCTL_INSTALL_LOG="/tmp/zstack_ctl_installation-$(date +%Y-%m-%d-%H:%M:%S).log"
 ZSTACK_TIMESTAMP_LOG="/tmp/zstack_installation_timestamp-$(date +%Y-%m-%d-%H:%M:%S).log"
@@ -99,6 +98,10 @@ ONLY_INSTALL_LIBS=''
 ONLY_INSTALL_ZSTACK=''
 NOT_START_ZSTACK=''
 NEED_SET_MN_IP=''
+MANAGEMENT_INTERFACE=''
+MANAGEMENT_ROUTE_FAMILY=''
+MANAGEMENT_ROUTE_FAMILY_IPV4='4'
+MANAGEMENT_ROUTE_FAMILY_IPV6='6'
 INSTALL_ENTERPRISE='n'
 REPO_MATCHED='true'
 
@@ -108,6 +111,133 @@ MYSQL_NEW_ROOT_PASSWORD='zstack.mysql.password'
 MYSQL_USER_PASSWORD='zstack.password'
 MYSQL_UI_USER_PASSWORD='zstack.ui.password'
 CHOOSE_DATABASE='MariaDB'
+
+get_default_route_interface_by_family() {
+    local family="$1"
+    ip -"$family" route show default 2>/dev/null | awk '{
+        for (i = 1; i <= NF; i++) {
+            if ($i == "dev" && (i + 1) <= NF) {
+                print $(i + 1)
+                exit
+            }
+        }
+    }'
+}
+
+select_default_management_interface() {
+    MANAGEMENT_INTERFACE=`get_default_route_interface_by_family "$MANAGEMENT_ROUTE_FAMILY_IPV4"`
+    if [ -n "$MANAGEMENT_INTERFACE" ]; then
+        MANAGEMENT_ROUTE_FAMILY="$MANAGEMENT_ROUTE_FAMILY_IPV4"
+        return 0
+    fi
+
+    MANAGEMENT_INTERFACE=`get_default_route_interface_by_family "$MANAGEMENT_ROUTE_FAMILY_IPV6"`
+    if [ -n "$MANAGEMENT_INTERFACE" ]; then
+        MANAGEMENT_ROUTE_FAMILY="$MANAGEMENT_ROUTE_FAMILY_IPV6"
+        return 0
+    fi
+
+    return 1
+}
+
+get_interface_ip_by_family() {
+    local interface="$1"
+    local family="$2"
+    ip -"$family" -o addr show dev "$interface" scope global 2>/dev/null | awk '{
+        split($4, addr, "/")
+        if (addr[1] != "" && addr[1] !~ /^fe80:/) {
+            print addr[1]
+            exit
+        }
+    }'
+}
+
+get_interface_management_ip() {
+    local interface="$1"
+    local route_family="$2"
+    local ip_addr=''
+
+    if [ x"$route_family" = x"$MANAGEMENT_ROUTE_FAMILY_IPV6" ]; then
+        ip_addr=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV6"`
+        [ -n "$ip_addr" ] && echo "$ip_addr" && return
+    fi
+
+    ip_addr=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV4"`
+    [ -n "$ip_addr" ] && echo "$ip_addr" && return
+
+    ip_addr=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV6"`
+    [ -n "$ip_addr" ] && echo "$ip_addr"
+}
+
+is_link_local_ipv6() {
+    case "$1" in
+        fe80:*|FE80:*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_ipv6_address() {
+    case "$1" in
+        *:*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_local_ip_address() {
+    local ip_addr="$1"
+    ip_addr="${ip_addr#[}"
+    ip_addr="${ip_addr%]}"
+    ip -o addr show 2>/dev/null | awk -v target="$ip_addr" '{
+        split($4, addr, "/")
+        if (addr[1] == target) {
+            found = 1
+        }
+    } END { exit found ? 0 : 1 }'
+}
+
+format_host_for_url() {
+    case "$1" in
+        *:*) echo "[$1]" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+format_host_for_path() {
+    format_host_for_url "$1"
+}
+
+management_ip_to_hostname() {
+    echo "$1" | tr '.:' '--'
+}
+
+resolve_management_ip() {
+    if [ -z "$MANAGEMENT_INTERFACE" ]; then
+        select_default_management_interface || fail2 "Cannot identify default network interface. Please set management
+   node IP address by '-I MANAGEMENT_NODE_IP_ADDRESS'."
+    fi
+
+    if ip addr show dev "$MANAGEMENT_INTERFACE" >/dev/null 2>&1; then
+        MANAGEMENT_IP=`get_interface_management_ip "$MANAGEMENT_INTERFACE" "$MANAGEMENT_ROUTE_FAMILY"`
+        echo "Management node network interface: $MANAGEMENT_INTERFACE" >> $ZSTACK_INSTALL_LOG
+        if [ -z "$MANAGEMENT_IP" ]; then
+            fail2 "Can not identify IP address for interface: $MANAGEMENT_INTERFACE. Please assign correct interface by '-I MANAGEMENT_NODE_IP_ADDRESS', which has IP address. Use 'ip addr' to show all interface and IP address."
+        fi
+        return
+    fi
+
+    local ip_addr="$MANAGEMENT_INTERFACE"
+    ip_addr="${ip_addr#[}"
+    ip_addr="${ip_addr%]}"
+    if is_link_local_ipv6 "$ip_addr"; then
+        fail2 "$ip_addr is an IPv6 link-local address and cannot be used as management node IP address."
+    fi
+
+    if ! is_local_ip_address "$ip_addr"; then
+        fail2 "$MANAGEMENT_INTERFACE is not a recognized IP address or network interface name. Please assign correct IP address by '-I MANAGEMENT_NODE_IP_ADDRESS'. Use 'ip addr' to show all interface and IP address."
+    fi
+
+    MANAGEMENT_IP="$ip_addr"
+}
 
 YUM_ONLINE_REPO='y'
 INSTALL_MONITOR=''
@@ -728,7 +858,7 @@ cs_check_hostname_zstack(){
     [ $? -ne 0 ] && return 
 
     current_hostname=`hostname`
-    CHANGE_HOSTNAME=`echo $MANAGEMENT_IP | sed 's/\./-/g'`
+    CHANGE_HOSTNAME=`management_ip_to_hostname "$MANAGEMENT_IP"`
     CURRENT_HOST_ITEM="$MANAGEMENT_IP $current_hostname"
     HOSTS_ITEM="$MANAGEMENT_IP $CHANGE_HOSTNAME"
 
@@ -2900,16 +3030,25 @@ cs_append_iptables(){
     echo_subtitle "Append iptables"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     if [ "$NEED_SET_MN_IP" == "y" ]; then
-        management_addr=`ip addr show |grep ${MANAGEMENT_IP}|awk '{print $2}'`
         ports=(3306)
         for port in ${ports[@]}
         do
-            iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport $port -j REJECT" || iptables -A INPUT -p tcp --dport $port -j REJECT >>$ZSTACK_INSTALL_LOG 2>&1
-            iptables-save | grep -- "-A INPUT -d $management_addr/32 -p tcp -m tcp --dport $port -j ACCEPT" || iptables -I INPUT -p tcp --dport $port -d $management_addr -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
-            iptables-save | grep -- "-A INPUT -d $management_addr/32 -p tcp -m tcp --dport $port -j ACCEPT" || iptables -I INPUT -p tcp --dport $port -d 127.0.0.1 -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
+            if is_ipv6_address "$MANAGEMENT_IP"; then
+                ip6tables-save | grep -- "-A INPUT -p tcp -m tcp --dport $port -j REJECT" || ip6tables -A INPUT -p tcp --dport $port -j REJECT >>$ZSTACK_INSTALL_LOG 2>&1
+                ip6tables-save | grep -- "-A INPUT -d $MANAGEMENT_IP/128 -p tcp -m tcp --dport $port -j ACCEPT" || ip6tables -I INPUT -p tcp --dport $port -d "$MANAGEMENT_IP" -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
+                ip6tables-save | grep -- "-A INPUT -d ::1/128 -p tcp -m tcp --dport $port -j ACCEPT" || ip6tables -I INPUT -p tcp --dport $port -d ::1 -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
+                continue
+            fi
 
+            iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport $port -j REJECT" || iptables -A INPUT -p tcp --dport $port -j REJECT >>$ZSTACK_INSTALL_LOG 2>&1
+            iptables-save | grep -- "-A INPUT -d $MANAGEMENT_IP/32 -p tcp -m tcp --dport $port -j ACCEPT" || iptables -I INPUT -p tcp --dport $port -d "$MANAGEMENT_IP" -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
+            iptables-save | grep -- "-A INPUT -d 127.0.0.1/32 -p tcp -m tcp --dport $port -j ACCEPT" || iptables -I INPUT -p tcp --dport $port -d 127.0.0.1 -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
         done
-        service iptables save >> $ZSTACK_INSTALL_LOG 2>&1
+        if is_ipv6_address "$MANAGEMENT_IP"; then
+            service ip6tables save >> $ZSTACK_INSTALL_LOG 2>&1
+        else
+            service iptables save >> $ZSTACK_INSTALL_LOG 2>&1
+        fi
     fi
 
     pass
@@ -4218,33 +4357,14 @@ else
     zstore_bin="${ZSTACK_INSTALL_ROOT}/${CATALINA_ZSTACK_CLASSES}/ansible/imagestorebackupstorage/zstack-store.$(uname -m).bin"
 fi
 
-if [ -z $MANAGEMENT_INTERFACE ]; then
-    fail2 "Cannot identify default network interface. Please set management
-   node IP address by '-I MANAGEMENT_NODE_IP_ADDRESS'."
-fi
-
 if [ x"$UPGRADE" = x"y" ] && [ x"$NEED_SET_MN_IP" != x"y" ]; then
     # If -I is not set during the upgrade, ensure that MANAGEMENT_IP is the same as the current management.server.ip
     zstack-ctl show_configuration | grep 'management.server.ip' >/dev/null 2>&1
     [ $? -eq 0 ] && MANAGEMENT_IP=$(zstack-ctl get_configuration management.server.ip)
 fi
 
-if [ -z $MANAGEMENT_IP ]; then
-    ip addr show $MANAGEMENT_INTERFACE >/dev/null 2>&1
-
-    if [ $? -ne 0 ];then
-        ip addr show | grep $MANAGEMENT_INTERFACE | grep inet >/dev/null 2>&1
-        if [ $? -ne 0 ]; then
-            fail2 "$MANAGEMENT_INTERFACE is not a recognized IP address or network interface name. Please assign correct IP address by '-I MANAGEMENT_NODE_IP_ADDRESS'. Use 'ip addr' to show all interface and IP address." 
-        fi
-        MANAGEMENT_IP=$MANAGEMENT_INTERFACE
-    else
-        MANAGEMENT_IP=`ip -4 addr show ${MANAGEMENT_INTERFACE} | grep inet | head -1 | awk '{print $2}' | cut -f1  -d'/'`
-        echo "Management node network interface: $MANAGEMENT_INTERFACE" >> $ZSTACK_INSTALL_LOG
-        if [ -z $MANAGEMENT_IP ]; then
-            fail2 "Can not identify IP address for interface: $MANAGEMENT_INTERFACE. Please assign correct interface by '-I MANAGEMENT_NODE_IP_ADDRESS', which has IP address. Use 'ip addr' to show all interface and IP address."
-        fi
-    fi
+if [ -z "$MANAGEMENT_IP" ]; then
+    resolve_management_ip
 fi
 
 echo "Management ip address: $MANAGEMENT_IP" >> $ZSTACK_INSTALL_LOG
@@ -4821,9 +4941,11 @@ install_zops
 echo ""
 echo_star_line
 touch $README
+MANAGEMENT_URL_HOST=`format_host_for_url "$MANAGEMENT_IP"`
+MANAGEMENT_PATH_HOST=`format_host_for_path "$MANAGEMENT_IP"`
 
 echo -e "${PRODUCT_NAME} All In One ${VERSION} Installation Completed:
- - UI is running, visit $(tput setaf 4)http://$MANAGEMENT_IP:$DEFAULT_UI_PORT$(tput sgr0) in Chrome
+ - UI is running, visit $(tput setaf 4)http://$MANAGEMENT_URL_HOST:$DEFAULT_UI_PORT$(tput sgr0) in Chrome
       Use $(tput setaf 3)${PRODUCT_NAME,,}-ctl [stop_ui|start_ui]$(tput sgr0) to stop/start the UI service
 
  - Management node is running
@@ -4835,7 +4957,7 @@ echo -e "${PRODUCT_NAME} All In One ${VERSION} Installation Completed:
  - For system security, change the mysql default password for 'root' user using \`mysqladmin -u root --password=OLD_PASSWORD password NEW_PASSWORD\`" | tee -a $README
 
 if [ x"$SDS_INSTALL" = x"y" ];then
-    echo " - SDS successfully installed, Please visit http://${MANAGEMENT_IP}:8056 to continue the installation"
+    echo " - SDS successfully installed, Please visit http://${MANAGEMENT_URL_HOST}:8056 to continue the installation"
 fi
 
 if [ ! -z QUIET_INSTALLATION ]; then
@@ -4858,8 +4980,8 @@ if [ ! -z QUIET_INSTALLATION ]; then
         echo -e "$(tput sgr0)\n"
     fi
 fi
-[ ! -z $NEED_NFS ] && echo -e "$(tput setaf 7) - $MANAGEMENT_IP:$NFS_FOLDER is configured for primary storage as an EXAMPLE$(tput sgr0)"
-[ ! -z $NEED_HTTP ] && echo -e "$(tput setaf 7) - http://$MANAGEMENT_IP/image is ready for storing images as an EXAMPLE.  After copy your_image_name to the folder $HTTP_FOLDER, your image local url is http://$MANAGEMENT_IP/image/your_image_name$(tput sgr0)"
+[ ! -z $NEED_NFS ] && echo -e "$(tput setaf 7) - $MANAGEMENT_PATH_HOST:$NFS_FOLDER is configured for primary storage as an EXAMPLE$(tput sgr0)"
+[ ! -z $NEED_HTTP ] && echo -e "$(tput setaf 7) - http://$MANAGEMENT_URL_HOST/image is ready for storing images as an EXAMPLE.  After copy your_image_name to the folder $HTTP_FOLDER, your image local url is http://$MANAGEMENT_URL_HOST/image/your_image_name$(tput sgr0)"
 
 echo_chrony_server_warning_if_need
 # check_ha_need_upgrade

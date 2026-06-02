@@ -78,6 +78,10 @@ def format_host_for_url_or_jdbc(ip):
     return JDBC_IPV6_HOST_FORMAT % ip if IPV6_SEPARATOR in ip and not ip.startswith(IPV6_BRACKET_PREFIX) else ip
 
 
+def build_mysql_jdbc_url(host, port):
+    return 'jdbc:mysql://%s:%s' % (format_host_for_url_or_jdbc(host), port)
+
+
 def get_ip_version(ip):
     if not ip:
         return None

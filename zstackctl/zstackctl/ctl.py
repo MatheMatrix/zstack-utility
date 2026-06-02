@@ -843,6 +843,10 @@ def format_url_host(ip):
     return management_network_ipv6.format_host_for_url_or_jdbc(ip)
 
 
+def build_mysql_jdbc_url(host, port):
+    return management_network_ipv6.build_mysql_jdbc_url(host, port)
+
+
 def get_ip_version(ip):
     return management_network_ipv6.get_ip_version(ip)
 
@@ -2514,7 +2518,7 @@ class DeployDBCmd(Command):
             properties = [
                 ("DB.user", "zstack"),
                 ("DB.password", args.zstack_password),
-                ("DB.url", 'jdbc:mysql://%s:%s' % (args.host, args.port)),
+                ("DB.url", build_mysql_jdbc_url(args.host, args.port)),
             ]
 
             ctl.write_properties(properties)
@@ -2600,7 +2604,7 @@ class DeployUIDBCmd(Command):
                 args.zstack_ui_password = ''
 
             properties = [
-                    ("db_url", 'jdbc:mysql://%s:%s' % (args.host, args.port)),
+                    ("db_url", build_mysql_jdbc_url(args.host, args.port)),
                     ("db_username", "zstack_ui"),
                     ("db_password", args.zstack_ui_password),
             ]
