@@ -72,7 +72,9 @@ def execute_qmp_command_raw(domain_id, command, raise_exception=False):
     This wrapper is kept for backward compatibility and to preserve the
     default ``raise_exception=False`` used by ZRM bitmap operations.
     """
-    return qmp.execute_qmp_command_raw(domain_id, command, raise_exception=raise_exception)
+    if hasattr(qmp, 'execute_qmp_command_raw'):
+        return qmp.execute_qmp_command_raw(domain_id, command, raise_exception=raise_exception)
+    return qmp._execute_qmp_command(domain_id, command, raise_exception=raise_exception)
 
 
 class ZrmAgentRsp(object):
@@ -488,6 +490,24 @@ class ZrmPlugin(kvmagent.KvmAgent):
             return {}
         return {k: v for k, v in by_dev.items() if k and (k.startswith("zrm-mirror-"))}
 
+    def _query_zrm_block_jobs(self, vm_uuid):
+        """
+        Query all ZR mirror jobs and preserve observation failures.
+
+        Returns a tuple ``(jobs, error_text)`` so callers that must distinguish
+        "job missing" from "query path temporarily blocked" do not have to
+        infer that from an empty map.
+        """
+        try:
+            by_dev = qmp.query_block_jobs_by_device(vm_uuid)
+        except Exception as e:
+            err = str(e)
+            logger.debug("ZRM query-block-jobs failed for vm %s: %s" % (vm_uuid, err))
+            return {}, err
+        if not by_dev:
+            return {}, None
+        return ({k: v for k, v in by_dev.items() if k and (k.startswith("zrm-mirror-"))}, None)
+
     def _collect_bitmap_status(self, vm_uuid):
         """
         Collect dirty bitmap status for all ZRM bitmaps on this VM.
@@ -528,23 +548,55 @@ class ZrmPlugin(kvmagent.KvmAgent):
         Wait for initial full mirror completion of the specified volumes.
 
         All zrm-mirror-* jobs for the volumes must reach a ready state
-        (job.ready is True or status == "ready"). Returns None on success,
-        or an error string on timeout or when jobs are missing.
+        (job.ready is True or status == "ready"). Returns a ZrmAgentRsp so
+        the caller can distinguish ordinary timeout/not-ready from terminal
+        concluded-job failures and missing-job conditions.
         """
         if isinstance(volume_uuids, (str, bytes)):
             volume_uuids = [volume_uuids] if volume_uuids else []
         vols = [v.strip() for v in (volume_uuids or []) if (v or "").strip()]
         if not vols:
-            return "no volumeUuids specified for initial full sync wait"
+            return ZrmAgentRsp(success=False, error="no volumeUuids specified for initial full sync wait")
         job_ids = ["zrm-mirror-%s" % v[:MIRROR_JOB_UUID_TRUNCATE_LEN] for v in vols]
         # Enforce a deadline to prevent indefinite thread blocking.
         effective_timeout = timeout_seconds if (timeout_seconds and timeout_seconds > 0) else _DEFAULT_MAX_WAIT_TIMEOUT
         deadline = time.time() + effective_timeout
         last_log_ts = 0.0
         while True:
-            jobs = self._get_zrm_block_jobs(vm_uuid)
+            jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
+            if query_error:
+                now = time.time()
+                if now >= deadline:
+                    err = "initial full sync observation failed for vm=%s: query-block-jobs error=%s" % (
+                        vm_uuid, query_error)
+                    logger.warn("ZRM initial full sync wait: %s" % err)
+                    return ZrmAgentRsp(
+                        success=False,
+                        error=err,
+                        queryBlockJobsFailed=True,
+                        queryBlockJobsError=query_error,
+                        queryBlockJobsRetriable=True,
+                        readyJobCount=0,
+                        runningJobCount=0,
+                        concludedJobCount=0,
+                        concludedJobErrors=[],
+                        not_ready=[],
+                        missing=[]
+                    )
+                if now - last_log_ts >= WAIT_INITIAL_LOG_INTERVAL:
+                    logger.info("ZRM initial full sync wait: vm=%s query-block-jobs observation failed: %s" %
+                                (vm_uuid, query_error))
+                    last_log_ts = now
+                time.sleep(1.0)
+                continue
             not_ready = []
             missing = []
+            ready_count = 0
+            running_count = 0
+            concluded_count = 0
+            concluded_errors = []
+            synced_bytes = 0
+            target_bytes = 0
             for job_id in job_ids:
                 job = jobs.get(job_id)
                 if not job:
@@ -552,18 +604,78 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     continue
                 status = (job.get("status") or "").lower()
                 ready = job.get("ready") is True or status == "ready"
+                off = _to_long(job.get("offset"))
+                ln = _to_long(job.get("len"))
+                if off is not None and off > 0:
+                    synced_bytes += off
+                if ln is not None and ln > 0:
+                    target_bytes += ln
                 if not ready:
                     not_ready.append(job_id)
+                    if status == "running":
+                        running_count += 1
+                    elif status == "concluded":
+                        concluded_count += 1
+                        err_text = job.get("error") or "no error detail"
+                        concluded_errors.append({"device": job_id, "error": str(err_text)})
+                        try:
+                            qmp.execute_qmp_command(vm_uuid, "block-job-dismiss",
+                                                    raise_exception=False, id=job_id)
+                        except Exception:
+                            pass
+                else:
+                    ready_count += 1
+            if concluded_count > 0:
+                err = "mirror job concluded during initial full sync for vm=%s: %s" % (
+                    vm_uuid, concluded_errors)
+                logger.warn("ZRM initial full sync wait: %s" % err)
+                return ZrmAgentRsp(
+                    success=False,
+                    error=err,
+                    lastSyncDataBytes=synced_bytes if synced_bytes > 0 else 0,
+                    lastSyncBytes=synced_bytes if synced_bytes > 0 else 0,
+                    totalSyncTargetBytes=target_bytes if target_bytes > 0 else 0,
+                    readyJobCount=ready_count,
+                    runningJobCount=running_count,
+                    concludedJobCount=concluded_count,
+                    concludedJobErrors=concluded_errors,
+                    totalJobs=len(job_ids),
+                    not_ready=not_ready,
+                    missing=missing
+                )
             now = time.time()
             if not not_ready and not missing:
                 logger.info("ZRM initial full sync wait: all jobs ready for vm=%s volumes=%s" %
                             (vm_uuid, ",".join([v[:MIRROR_JOB_UUID_TRUNCATE_LEN] for v in vols])))
-                return None
+                return ZrmAgentRsp(
+                    success=True,
+                    lastSyncDataBytes=synced_bytes if synced_bytes > 0 else 0,
+                    lastSyncBytes=synced_bytes if synced_bytes > 0 else 0,
+                    totalSyncTargetBytes=target_bytes if target_bytes > 0 else 0,
+                    readyJobCount=ready_count,
+                    runningJobCount=running_count,
+                    concludedJobCount=0,
+                    concludedJobErrors=[],
+                    totalJobs=len(job_ids)
+                )
             if now >= deadline:
                 err = "initial full sync timeout for vm=%s, not_ready=%s, missing=%s" % (
                     vm_uuid, ",".join(not_ready), ",".join(missing))
                 logger.warn("ZRM initial full sync wait: %s" % err)
-                return err
+                return ZrmAgentRsp(
+                    success=False,
+                    error=err,
+                    lastSyncDataBytes=synced_bytes if synced_bytes > 0 else 0,
+                    lastSyncBytes=synced_bytes if synced_bytes > 0 else 0,
+                    totalSyncTargetBytes=target_bytes if target_bytes > 0 else 0,
+                    readyJobCount=ready_count,
+                    runningJobCount=running_count,
+                    concludedJobCount=concluded_count,
+                    concludedJobErrors=concluded_errors,
+                    totalJobs=len(job_ids),
+                    not_ready=not_ready,
+                    missing=missing
+                )
             if now - last_log_ts >= WAIT_INITIAL_LOG_INTERVAL:
                 logger.info("ZRM initial full sync wait: vm=%s not_ready=%s missing=%s" %
                             (vm_uuid, ",".join(not_ready), ",".join(missing)))
@@ -1107,11 +1219,9 @@ class ZrmPlugin(kvmagent.KvmAgent):
             timeout_seconds = getattr(cmd, "timeoutSeconds", None)
             if timeout_seconds is None:
                 timeout_seconds = 0
-            err = self._wait_initial_full_sync(vm_uuid, vol_uuids,
+            rsp = self._wait_initial_full_sync(vm_uuid, vol_uuids,
                                                int(timeout_seconds) if timeout_seconds else 0)
-            if err:
-                return jsonobject.dumps(ZrmAgentRsp(success=False, error=err))
-            return jsonobject.dumps(ZrmAgentRsp())
+            return jsonobject.dumps(rsp or ZrmAgentRsp())
         except Exception as e:
             logger.exception("ZRM replication wait-initial failed")
             return jsonobject.dumps(ZrmAgentRsp(success=False, error=str(e)))
