@@ -122,7 +122,7 @@ class IscsiBackingVolume(BackingVolume):
         return base_url
 
     def __init__(self, volume):
-        super().__init__(volume)
+        super(IscsiBackingVolume, self).__init__(volume)
         self.__parse_iscsi_url()
     
     def __parse_iscsi_url(self):
@@ -174,7 +174,7 @@ class CephBackingVolume(BackingVolume):
             
     
     def __init__(self, volume):
-        super().__init__(volume)
+        super(CephBackingVolume, self).__init__(volume)
         self.__parse_ceph_url()
 
     def __parse_ceph_url(self):
@@ -238,7 +238,7 @@ class CbdBackingVolume(BackingVolume):
     
     @property
     def source_path(self):
-        return self.make_cbd_conf(super().source_path)
+        return self.make_cbd_conf(super(CbdBackingVolume, self).source_path)
 
 supported_backing_volume_classes = {
     BackingVolumeDeviceType.ISCSI: IscsiBackingVolume,
