@@ -132,6 +132,9 @@ LIBVIRT_DEFINED_XML_DIR = "/etc/libvirt/qemu/"
 LIBVIRT_TLS_PORT = 16514
 CONSOLE_LISTEN_IPV4_ADDRESS = '0.0.0.0'
 CONSOLE_LISTEN_IPV6_ADDRESS = network_ipv6.DUAL_STACK_BIND_ADDRESS
+MIGRATION_HOSTNAME_DOMAIN = 'zstack.org'
+HOSTNAME_LABEL_SEPARATOR = '-'
+IPV4_SEPARATOR = '.'
 
 
 def build_libvirt_system_uri(proto, host):
@@ -140,6 +143,13 @@ def build_libvirt_system_uri(proto, host):
 
 def build_libvirt_tcp_uri(host):
     return 'tcp://%s' % network_ipv6.format_url_host(host)
+
+
+def build_migration_hostname(host_ip):
+    host = host_ip.strip(network_ipv6.IPV6_BRACKET_PREFIX + network_ipv6.IPV6_BRACKET_SUFFIX)
+    hostname = host.replace(IPV4_SEPARATOR, HOSTNAME_LABEL_SEPARATOR).replace(
+        network_ipv6.IPV6_SEPARATOR, HOSTNAME_LABEL_SEPARATOR)
+    return '%s.%s' % (hostname, MIGRATION_HOSTNAME_DOMAIN)
 
 
 def _check_tls_ready(dest_ip, vm_uuid):
@@ -4436,13 +4446,13 @@ class Vm(object):
 
         current_hostname = linux.get_host_name()
         if cmd.migrateFromDestination:
-            hostname = cmd.destHostIp.replace('.', '-')
+            hostname = build_migration_hostname(cmd.destHostIp)
         else:
-            hostname = cmd.srcHostIp.replace('.', '-')
+            hostname = build_migration_hostname(cmd.srcHostIp)
 
         if current_hostname == 'localhost.localdomain' or current_hostname == 'localhost':
             # set the hostname, otherwise the migration will fail
-            shell.call('hostname %s.zstack.org' % hostname)
+            shell.call('hostname %s' % hostname)
 
         dest_ctrl_ip = getattr(cmd, 'destHostManagementIp', None) or cmd.destHostIp
         use_tls = getattr(cmd, 'useTls', False)
