@@ -50,9 +50,9 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.imagestore import ImageStoreClient
+from kvmagent.plugins.shared_block_plugin import MAX_ACTUAL_SIZE_FACTOR
 from kvmagent.plugins.volume_cache.command_wrapper.virsh import VirshCommandWrapper as CacheVirshWrapper
 from kvmagent.plugins.volume_cache.command_wrapper.qemu_img import BackingVolumeDeviceType, supported_backing_volume_classes
-
 from zstacklib.utils import bash, plugin, iscsi, gpu
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import lvm
@@ -3805,7 +3805,7 @@ class Vm(object):
         Vm.set_volume_serial_id(volume.volumeUuid, disk_element)
         volume_native_aio(disk_element)
         add_caching_store(disk_element, volume)
-        xml = etree.tostring(disk_element)
+        xml = etree.tostring(disk_element, encoding="unicode")
         logger.debug('attaching volume[%s] to vm[uuid:%s]:\n%s' % (volume.installPath, self.uuid, xml))
         try:
             # libvirt has a bug that if attaching volume just after vm created, it likely fails. So we retry three time here
@@ -3935,7 +3935,15 @@ class Vm(object):
                         logger.debug("detach timeout, record volume install path: %s" % volume.installPath)
                         raise
 
-            detach()
+            try:
+                detach()
+            except libvirt.libvirtError:
+                me = get_vm_by_uuid(self.uuid)
+                disk, _ = me._get_target_disk(volume, is_exception=False)
+                if disk:
+                    raise
+                logger.debug('volume[%s] detached after libvirt reported an async unplug error' %
+                             volume.installPath)
 
             if self._volume_detach_timed_out(volume):
                 self._clean_timeout_record(volume)
@@ -4104,7 +4112,7 @@ class Vm(object):
             # block
             if disk.source.dev__ and disk.source.dev_ in installPath:
                 return disk, disk.target.dev_
-            
+
             # vhost
             if disk.source.path__ and disk.source.path_ == installPath:
                 return disk, disk.target.dev_
@@ -4330,7 +4338,7 @@ class Vm(object):
         except Exception as e:
             logger.debug("deactivate volume %s for memory snapshot failed on vm %s failed, %s" % (
                 install_path, self.uuid, str(e)))
-        
+
 
 
     def do_block_commit(self, task_spec, volume):
@@ -4545,8 +4553,8 @@ class Vm(object):
           <target dev='vda' bus='virtio'/>
           <address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/>
         </disk>
-        
-        An empty <backingStore/> element signals the end of the chain. 
+
+        An empty <backingStore/> element signals the end of the chain.
         '''
 
         def get_backing_store_source(backingStore):
@@ -4702,7 +4710,7 @@ class Vm(object):
 
         def is_external_shared_storage():
             from zstacklib.utils.linux import get_fs_type
-            share_list_type = ["fuseblk", "gpfs"] 
+            share_list_type = ["fuseblk", "gpfs"]
             vdisk_source_type = (get_fs_type(s) for s in self.list_blk_sources())
             if any(s.startswith('/dev/') for s in self.list_blk_sources()) or any(item in share_list_type for item in vdisk_source_type):
                 return True
@@ -6115,7 +6123,7 @@ class Vm(object):
             def make_cpu_vendor():
                 if HOST_ARCH != "x86_64":
                     return
-                
+
                 if cmd.vmCpuVendorId and cmd.vmCpuVendorId != "None":
                     if cmd.nestedVirtualization in ['host-model', 'custom']:
                         model = root.find('cpu/model')
@@ -6792,7 +6800,7 @@ class Vm(object):
                     driver_elements["iothread"] = str(_v.ioThreadId)
                 e(disk, 'driver', None, driver_elements)
                 e(disk, 'source', None, {'dev': _v.installPath})
-                
+
                 if _v.shareable:
                     e(disk, 'shareable')
 
@@ -6812,7 +6820,7 @@ class Vm(object):
             def vhost_volume(_dev_letter, _v):
                 if not os.path.exists(_v.installPath):
                     raise Exception("vhostuser disk %s does not exist" % _v.installPath)
-            
+
                 disk = etree.Element('disk', {'type': 'vhostuser', 'device': 'disk', 'snapshot': 'no'})
 
                 driver_elements = {'name': 'qemu', 'type': _v.format}
@@ -7457,12 +7465,12 @@ class Vm(object):
 
             if cmd.nestedVirtualization not in ['host-passthrough', 'none']:
                 return
-            
+
             root = elements['root']
             libvirtXml = etree.tostring(root, encoding="unicode")
             cpuFlags = get_cpu_flags_from_xml(libvirtXml)
 
-            # qemu64 is used for x86_64 guests, when no -cpu argument is given to QEMU, 
+            # qemu64 is used for x86_64 guests, when no -cpu argument is given to QEMU,
             # or no <cpu> is provided in libvirt XML.
             if not cpuFlags and cmd.nestedVirtualization == 'none':
                 cpuFlags = "qemu64"
@@ -7507,7 +7515,7 @@ class Vm(object):
             make_memory_backing()
 
         if HOST_ARCH == "x86_64" and cmd.vmCpuVendorId and cmd.vmCpuVendorId != "None":
-            add_cpu_vendor_id_to_cpu_flags()    
+            add_cpu_vendor_id_to_cpu_flags()
 
         root = elements['root']
         xml = etree.tostring(root, encoding="unicode")
@@ -8244,7 +8252,7 @@ class VmPlugin(kvmagent.KvmAgent):
                 ]
                 notify_vrouter(vrouter_cmd)
         return jsonobject.dumps(rsp)
-    
+
     @kvmagent.replyerror
     def update_nic(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -8357,7 +8365,7 @@ class VmPlugin(kvmagent.KvmAgent):
             if not s or s == Vm.VM_STATE_RUNNING:
                 s = self.get_vm_stat_with_ps(uuid)
             rsp.states[uuid] = s
-        
+
         return jsonobject.dumps(rsp)
 
     def _escape(self, size):
@@ -8801,7 +8809,7 @@ class VmPlugin(kvmagent.KvmAgent):
         libvirt_running_vms = list(rsp.states.keys())
         no_qemu_process_running_vms = list(set(libvirt_running_vms).difference(set(states_from_qemu_process.keys())))
         state_cached_vms = list(states_from_cache.keys())
-        # if vm cached means kvmagent manually control the sync result, should be used 
+        # if vm cached means kvmagent manually control the sync result, should be used
         # as filter.
         # if vm not have qemu process means libvirt and qemu is inconsistent use filter
         # to make sure the vm state is correct.
@@ -8964,7 +8972,7 @@ class VmPlugin(kvmagent.KvmAgent):
     def take_console_screenshot(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = TakeVmConsoleScreenshotRsp()
-        
+
         @LibvirtAutoReconnect
         def create_stream(conn):
             return conn.newStream()
@@ -8973,13 +8981,13 @@ class VmPlugin(kvmagent.KvmAgent):
             with open(file_path, 'wb') as f:
                 for data in iter(lambda: stream.recv(262120), b''):
                     f.write(data)
-        
+
         stream = create_stream()
         if stream is None:
             rsp.success = False
             rsp.error = "failed to create libvirt stream"
             return jsonobject.dumps(rsp)
-        
+
         tmp_ppm = "/tmp/%s.ppm" % cmd.vmUuid
         tmp_img = "/tmp/%s.png" % cmd.vmUuid
         try:
@@ -11003,7 +11011,7 @@ host side snapshot files chian:
                 gpu_info_map = gpu.get_all_gpu_infos_by_pci()
                 normalized_pci = pci.normalize_pci_address(cmd.pciDeviceAddress)
                 is_gpu_device = normalized_pci in gpu_info_map if normalized_pci else False
-            
+
             if is_gpu_device:
                 return_code, output = gpu.pre_detach_from_vm(vm_domain, cmd.vmUuid, cmd.vendor)
                 if return_code != 0:

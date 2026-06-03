@@ -121,4 +121,3 @@ class VirshCommandWrapper:
             callback_thread.join()
         else:
             cmd(True)
-

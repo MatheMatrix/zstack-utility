@@ -25,11 +25,11 @@ logger = log.get_logger(__name__)
 class ConnectCmd(kvmagent.AgentCommand):
     def __init__(self):
         self.hostUuid = uuidhelper.uuid()
-        
+
 class HostFactCmd(kvmagent.AgentCommand): pass
 
 
-        
+
 class TestHostPlugin(unittest.TestCase):
     @classmethod
     def setUpClass(self):
@@ -48,7 +48,7 @@ class TestHostPlugin(unittest.TestCase):
         ret = http.json_dump_post(url, body=ConnectCmd())
         rsp = jsonobject.loads(ret)
         self.assertTrue(rsp.success)
-        
+
     @mock.patch('subprocess.Popen')
     def test_hostfact(self, mock_popen):
         url = kvmagent._build_url_for_test([host_plugin.HostPlugin.FACT_PATH])
@@ -192,6 +192,45 @@ class TestHostPluginVirtStatusFallback(unittest.TestCase):
             with mock.patch.object(plugin, '_get_sriov_info', side_effect=sriov):
                 plugin._apply_virt_status_fallback([to], context)
         self.assertEqual(to.virtStatus, "UNVIRTUALIZABLE")
+        self.assertEqual(to.virtState, "UNVIRTUALIZABLE")
+
+    def test_existing_tensorfusion_status_fills_capability_and_state(self):
+        """Existing TensorFusion virtStatus should backfill capability/state."""
+        plugin = host_plugin.HostPlugin()
+        to = self._make_to(virt_status="TENSORFUSION_VIRTUALIZABLE")
+        context = self._make_context()
+        with mock.patch.object(plugin, '_get_vfio_mdev_info', return_value=False):
+            with mock.patch.object(plugin, '_get_sriov_info', return_value=False):
+                plugin._apply_virt_status_fallback([to], context)
+        self.assertEqual(to.virtStatus, "TENSORFUSION_VIRTUALIZABLE")
+        self.assertEqual(to.virtState, "VIRTUALIZABLE")
+        self.assertEqual(to.virtCapabilities, ["TENSORFUSION"])
+
+    def test_existing_hami_status_fills_capability_and_state(self):
+        """Existing HAMI virtStatus should backfill capability/state."""
+        plugin = host_plugin.HostPlugin()
+        to = self._make_to(virt_status="HAMI_VIRTUALIZED")
+        context = self._make_context()
+        with mock.patch.object(plugin, '_get_vfio_mdev_info', return_value=False):
+            with mock.patch.object(plugin, '_get_sriov_info', return_value=False):
+                plugin._apply_virt_status_fallback([to], context)
+        self.assertEqual(to.virtStatus, "HAMI_VIRTUALIZED")
+        self.assertEqual(to.virtState, "VIRTUALIZED")
+        self.assertEqual(to.virtCapabilities, ["HAMI"])
+
+    def test_existing_explicit_state_wins_over_status(self):
+        """Explicit virtState should be preserved when host_plugin already filled it."""
+        plugin = host_plugin.HostPlugin()
+        to = self._make_to(virt_status="UNVIRTUALIZABLE")
+        to.virtState = "VIRTUALIZABLE"
+        to.virtCapabilities = ["TENSORFUSION"]
+        context = self._make_context()
+        with mock.patch.object(plugin, '_get_vfio_mdev_info', return_value=False):
+            with mock.patch.object(plugin, '_get_sriov_info', return_value=False):
+                plugin._apply_virt_status_fallback([to], context)
+        self.assertEqual(to.virtStatus, "UNVIRTUALIZABLE")
+        self.assertEqual(to.virtState, "VIRTUALIZABLE")
+        self.assertEqual(to.virtCapabilities, ["TENSORFUSION"])
 
 
 class TestHostPluginGetBlockDevices(unittest.TestCase):

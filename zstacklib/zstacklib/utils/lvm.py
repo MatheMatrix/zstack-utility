@@ -62,7 +62,7 @@ LVM_LOCKSPACE_BACKUP_PATH = "/var/lib/lvm/"
 
 '''
 If the lvm command with locking is hung, it will always occupy the lock and cannot be released.
-And in scenarios where storage IO is slow and lock contention occurs, it may take longer to execute, 
+And in scenarios where storage IO is slow and lock contention occurs, it may take longer to execute,
 so we need to set a timeout that can tolerate this scenario.
 '''
 lvm_cmd_timeout_with_locking = 210
@@ -751,7 +751,7 @@ WantedBy=multi-user.target
     os.chmod(lvmlockd_service_path, 0o644)
 
     if os.path.exists("/etc/rsyslog.d") and not os.path.exists(LVMLOCKD_LOG_RSYSLOG_PATH):
-        content = """if $programname == 'lvmlockd' then %s 
+        content = """if $programname == 'lvmlockd' then %s
 & stop
 """ % LVMLOCKD_LOG_FILE_PATH
         with open(LVMLOCKD_LOG_RSYSLOG_PATH, 'w') as f:
@@ -2816,10 +2816,27 @@ def report_config_changed():
     shell.run("touch %s" % LVM_CONFIG_CHANGED_FILE)
 
 
-def subcmd(cmd, timeout=lvm_cmd_timeout_with_locking):
-    if cmd in ["lvs", "pvs", "vgs"]:
-        return "%s --nolocking -t" % cmd
-    elif cmd in ["lvchange", "lvcreate", "lvrename", "lvresize", "lvextend", "lvremove",
-                 "pvck", "vgck"]:
-        return "timeout -s SIGKILL %s %s"% (timeout, cmd)
-    return cmd
+NOLOCK_CMDS = {"lvs", "pvs", "vgs"}
+TIMEOUT_CMDS = {"lvchange", "lvcreate", "lvrename", "lvresize", "lvextend", "lvremove", "pvck", "vgck"}
+REPAIR_LV_CMDS = {"lvchange", "lvrename", "lvresize", "lvextend", "lvremove"}
+REPAIR_VG_CMDS = {"vgchange"}
+def subcmd(cmd, timeout=lvm_cmd_timeout_with_locking, lockopts: list[str] | None = None):
+    argv = [cmd]
+    lockopts = list(lockopts) if lockopts is not None else []
+
+    if cmd in NOLOCK_CMDS:
+        argv += ["--nolocking", "-t"]
+    else:
+        if cmd in TIMEOUT_CMDS:
+            argv = ["timeout", "-s", "SIGKILL", str(timeout)] + argv
+        if cmd in REPAIR_LV_CMDS:
+            lockopts.append("repairlv")
+        if cmd in REPAIR_VG_CMDS:
+            lockopts.append("repair")
+
+    lockopts = list(dict.fromkeys(lockopts))
+
+    if lockopts:
+        argv += ["--lockopt", ",".join(lockopts)]
+
+    return " ".join(argv)

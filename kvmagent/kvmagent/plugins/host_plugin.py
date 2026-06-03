@@ -1601,6 +1601,8 @@ class HostPlugin(kvmagent.KvmAgent):
     ATTACH_VOLUME_PATH = "/host/volume/attach"
     DETACH_VOLUME_PATH = "/host/volume/detach"
     UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH = "/host/vm/updateConsolePassword/live"
+    SETUP_VM_HA_ENABLED_METADATA_LIVE_PATH = '/host/vm/setupHaEnabledMetadata/live'
+    RECONCILE_VM_HA_ENABLED_METADATA_LIVE_PATH = '/host/vm/reconcileHaEnabledMetadata/live'
     GET_BLOCK_DEVICES_PATH = "/host/blockdevices"
 
     def __init__(self):
@@ -5175,6 +5177,10 @@ done
             self.DETACH_VOLUME_PATH, self.detach_volume__path)
         http_server.register_async_uri(
             self.UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH, self.update_vm_console_password_live)
+        http_server.register_async_uri(
+            self.SETUP_VM_HA_ENABLED_METADATA_LIVE_PATH, self.setup_vm_ha_enabled_metadata_live)
+        http_server.register_async_uri(
+            self.RECONCILE_VM_HA_ENABLED_METADATA_LIVE_PATH, self.reconcile_vm_ha_enabled_metadata_live)
         http_server.register_async_uri(
             self.GET_BLOCK_DEVICES_PATH, self.get_block_devices)
 

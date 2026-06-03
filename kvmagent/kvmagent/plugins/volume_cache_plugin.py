@@ -566,7 +566,7 @@ class PoolProcessor(object):
         pvs = self.__create_pvs(device_paths=device_paths,
                                 metadata_size=_metadata_size,
                                 force=force)
-        
+
         rollback_create_vg()
         vg = self.__create_vg(pvs=pvs, metadata_size=_metadata_size)
 
@@ -622,7 +622,7 @@ class PoolProcessor(object):
         additional_pvs = self.__create_pvs(device_paths=additional_device_paths,
                                             metadata_size=self.vg_metadata_size,
                                             force=force)
-        
+
 
         self.__extend_vg(self.vg, additional_pvs)
         self.__extend_lv_full_size(self.lv)
@@ -753,7 +753,7 @@ class CacheProcessor(object):
     @property
     def cache_file(self):
         return self.__cache_file
-    
+
     @property
     def backing_volume(self):
         return self.__backing_volume
@@ -817,7 +817,7 @@ class CacheProcessor(object):
             logger.error(traceback.format_exc())
             if is_exception:
                 raise CacheOperationError("Failed to remove cache file %s: %s" % (self.install_path, str(e)))
-    
+
     def __get_capacity(self):
         # type: () -> tuple[int, int]
         """ Get capacity of the cache file based on its virtual size """
@@ -836,10 +836,10 @@ class CacheProcessor(object):
         rollback_create_cache_file()
         assert self.volume.size
         self.__create_cache_file(self.volume.size)
-    
+
     def delete(self):
         self.__remove_cache_file(is_exception=True)
-    
+
     def flush(self, on_progress_callback=None):
         if not self.is_instantiated:
             raise CacheNotInstantiatedError("Cache file is not instantiated at path %s, cannot flush" % self.install_path)
@@ -848,7 +848,7 @@ class CacheProcessor(object):
 
         bitmap_name = self.BITMAP_NAME
         bitmaps = QemuImgCommandWrapper.get_qcow2_bitmaps(self.install_path)
-        
+
         if list(filter(lambda b: b["name"] == bitmap_name, bitmaps)):
             # Found existing bitmap with the same name, try to flush the bitmap to backing volume
             logger.info("Found existing bitmap with name %s in cache file %s, try to flush bitmap to backing volume %s"
@@ -1204,5 +1204,5 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
     @ensure_pool(initialized=True)
     def get_cache_capacity(self, cmd, pool):
         # type: (GetCacheCapacityCmd, PoolProcessor) -> CacheRsp
-        cache = pool.init_cache(volume=cmd.volume)
+        cache = CacheProcessor(pool, cmd.volume, auto_create=False)
         return self._to_cache_rsp(cache)

@@ -124,7 +124,7 @@ class IscsiBackingVolume(BackingVolume):
     def __init__(self, volume):
         super(IscsiBackingVolume, self).__init__(volume)
         self.__parse_iscsi_url()
-    
+
     def __parse_iscsi_url(self):
         assert self.volume, "volume must be set"
         assert self.volume.installPath, "volume.installPath must be set"
@@ -141,7 +141,7 @@ class FileBackingVolume(BackingVolume):
     @property
     def output_format(self):
         return QemuImgOutputFormat(self.volume_format.value)
-    
+
 class CephBackingVolume(BackingVolume):
     device_type = BackingVolumeDeviceType.CEPH
 
@@ -150,7 +150,7 @@ class CephBackingVolume(BackingVolume):
     secret_uuid = None # type: str | None
     secret_key = None # type: str | None
     mon_infos = None # type: list[tuple[str, int]] | None
-    
+
     @property
     def volume_format(self):
         return QemuImgImageFormat.RAW
@@ -158,7 +158,7 @@ class CephBackingVolume(BackingVolume):
     @property
     def output_format(self):
         return QemuImgOutputFormat.RBD
-    
+
     @property
     def source_path(self):
         assert self.volume, "volume must be set"
@@ -171,8 +171,8 @@ class CephBackingVolume(BackingVolume):
             auth_str = "id=%s:key=%s:auth_supported=cephx;none" % ("zstack", self.secret_key)
             return ":".join([portal_str, img_info_str, mon_host_str, auth_str])
         return ":".join([portal_str, img_info_str, mon_host_str])
-            
-    
+
+
     def __init__(self, volume):
         super(CephBackingVolume, self).__init__(volume)
         self.__parse_ceph_url()
@@ -192,14 +192,14 @@ class CephBackingVolume(BackingVolume):
         assert self.volume.monInfo, "volume.monInfo must be set"
         mon_infos = [(mon_info.hostname, mon_info.port) for mon_info in self.volume.monInfo] # type: list[tuple[str, int]]
         return mon_infos
-    
+
     def __get_secret_key(self):
         assert self.secret_uuid, "secret_uuid must be set"
         return VirshCommandWrapper.get_secret_value(self.secret_uuid)
 
 class ScsiLunBackingVolume(BackingVolume):
     device_type = BackingVolumeDeviceType.SCSILUN
-    
+
     @property
     def volume_format(self):
         return QemuImgImageFormat.RAW
@@ -216,14 +216,14 @@ class BlockBackingVolume(BackingVolume):
 
 class SpoolBackingVolume(BackingVolume):
     device_type = BackingVolumeDeviceType.SPOOL
-    
+
     @property
     def output_format(self):
         return QemuImgOutputFormat(self.volume_format.value)
 
 class CbdBackingVolume(BackingVolume):
     device_type = BackingVolumeDeviceType.CBD
-    
+
     def make_cbd_conf(self, install_path):
         # type: (str) -> str
         return install_path[len(PROTOCOL_CBD_PREFIX):] + "_" + DEFAULT_ZBS_USER_NAME + "_:" + DEFAULT_ZBS_CONF_PATH
@@ -235,7 +235,7 @@ class CbdBackingVolume(BackingVolume):
     @property
     def output_format(self):
         return QemuImgOutputFormat.CBD
-    
+
     @property
     def source_path(self):
         return self.make_cbd_conf(super(CbdBackingVolume, self).source_path)
@@ -271,23 +271,23 @@ class QemuImgCommandWrapper(object):
         # type: (str) -> int
         virtual_size, _ = linux.qcow2_size_and_actual_size(image_path)
         return virtual_size if virtual_size else 0
-    
+
     @staticmethod
     def get_qcow2_actual_size(image_path):
         # type: (str) -> int
         _, actual_size = linux.qcow2_size_and_actual_size(image_path)
         return actual_size
-    
+
     @staticmethod
     def get_qcow2_cluster_size(image_path):
         # type: (str) -> int
         return linux.qcow2_get_cluster_size(image_path)
-    
+
     @staticmethod
     def get_img_fmt(image_path):
         # type: (str) -> str
         return linux.get_img_fmt(image_path)
-    
+
     @staticmethod
     def get_qcow2_bitmaps(image_path):
         # type: (str) -> list[dict]
@@ -297,7 +297,7 @@ class QemuImgCommandWrapper(object):
             raise Exception("failed to get qcow2 bitmaps for image[%s], because %s" % (image_path, cmd.stderr))
         info = json.loads(cmd.stdout)
         return info.get("format-specific",{}).get("data",{}).get("bitmaps",[])
-    
+
     @staticmethod
     def _parse_flush_progress(stdout_stream, stderr_stream):
         # type: (IO[str], IO[str]) -> Generator[float, None, None]
@@ -305,7 +305,7 @@ class QemuImgCommandWrapper(object):
         while True:
             ch = stdout_stream.read(1)
             if not ch:
-                # EOF, process finished                    
+                # EOF, process finished
                 if buf.strip():
                     try:
                         progress = float(buf.strip().replace("(", "").replace(")", "").split("/").pop(0))

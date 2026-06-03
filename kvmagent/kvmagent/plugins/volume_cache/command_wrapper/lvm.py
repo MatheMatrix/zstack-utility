@@ -154,7 +154,7 @@ class LVInfoFields(Enum):
     LV_HOST = "lv_host"
     LV_MODULES = "lv_modules"
     LV_HISTORICAL = "lv_historical"
-   
+
     # Logical Volume Device Info Fields
     LV_KERNEL_MAJOR = "lv_kernel_major"
     LV_KERNEL_MINOR = "lv_kernel_minor"
@@ -419,7 +419,7 @@ class LvmCommandWrapper:
         if tags:
             LvmCommandWrapper.tag_lvm_object(LvmObjectType.VG, vg_name, tags)
         return vg_created.get(VGInfoFields.VG_UUID.value) # type: ignore
-    
+
     @staticmethod
     def extend_vg(vg_name, pv_names, metadata_size=None):
         # type: (str, list[str], str|None) -> None
@@ -494,7 +494,7 @@ class LvmCommandWrapper:
         args = ["-qq", "--yes", "--activate", "y", "%s/%s" % (vg_name, lv_name)]
         cmd = shell.ShellCmd("%s %s" % (lvm.subcmd("lvchange"), ' '.join(args)))
         cmd(is_exception=True)
-    
+
     @staticmethod
     def deactive_lv(lv_name, vg_name):
         args = ["-qq", "--yes", "--activate", "n", "%s/%s" % (vg_name, lv_name)]
@@ -543,4 +543,3 @@ class LvmCommandWrapper:
         args = ["-qq", "--yes", "--ignorelockingfailure", "--all"]
         cmd = shell.ShellCmd("%s %s" % (lvm.subcmd("lvscan"), ' '.join(args)))
         cmd(is_exception=True)
-

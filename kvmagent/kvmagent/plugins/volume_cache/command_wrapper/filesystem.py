@@ -100,7 +100,7 @@ class FileSystemCommandWrapper:
         if cmd.stdout.strip() != "":
             return True
         return False
-    
+
     @staticmethod
     def wipe_block_device_superblock(device_path, force=False):
         # type: (str, bool) -> None
@@ -157,7 +157,7 @@ class FileSystemCommandWrapper:
         if cmd.return_code != 0 or not cmd.stdout.strip():
             return None
         return FileSystemCommandWrapper.parse_findmnt_output(cmd.stdout)
-    
+
     @staticmethod
     def get_mount_point(filesystem_uuid, mount_path):
         # type: (str, str) -> dict[str, str] | None
@@ -171,7 +171,7 @@ class FileSystemCommandWrapper:
         if not mount_points:
             return None
         return mount_points.pop()
-        
+
     @staticmethod
     def mount_filesystem(filesystem_uuid, mount_path, force=False):
         # type: (str, str, bool) -> None
@@ -232,7 +232,7 @@ class FileSystemCommandWrapper:
             except:
                 pass
             return False
-    
+
     @staticmethod
     def get_all_files(directory):
         # type: (str) -> list[str]

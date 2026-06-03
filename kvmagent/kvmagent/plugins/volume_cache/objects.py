@@ -20,7 +20,7 @@ class LvmObjectInfoMeta(type):
             raise Exception("LvmObjectInfo subclass must define _object_type class variable")
         if object_type not in mcs.object_type_map:
             raise Exception("Unsupported LVM object type: %s" % object_type)
-        
+
         setattr(cls, "_fields", mcs.object_type_map[object_type]["fields"])
         setattr(cls, "_loader", mcs.object_type_map[object_type]["loader"])
 
@@ -69,7 +69,7 @@ class LvmObjectInfo(object):
         if not self.__info:
             self.__info = self._load()
         return len(self.__info)
-    
+
     def __hash__(self):
         return hash(self._uuid)
 
@@ -78,7 +78,7 @@ class PVInfo(LvmObjectInfo):
 
     def __str__(self):
         return "<pv_uuid=%s, pv_name=%s>" % (self._uuid, self[PVInfoFields.PV_NAME])
-    
+
     def __repr__(self):
         return self.__str__()
 
@@ -87,7 +87,7 @@ class VGInfo(LvmObjectInfo):
 
     def __str__(self):
         return "<vg_uuid=%s, vg_name=%s>" % (self._uuid, self[VGInfoFields.VG_NAME])
-    
+
     def __repr__(self):
         return self.__str__()
 
@@ -96,7 +96,7 @@ class LVInfo(LvmObjectInfo):
 
     def __str__(self):
         return "<lv_uuid=%s, lv_name=%s>" % (self._uuid, self[LVInfoFields.LV_NAME])
-    
+
     def __repr__(self):
         return self.__str__()
 
@@ -108,7 +108,7 @@ class FileSystemInfo(object):
     def __init__(self, block_device):
         # type: (str) -> None
         self.block_device = block_device
-    
+
     def reload(self):
         # type: () -> None
         self.__info = None
@@ -121,7 +121,7 @@ class FileSystemInfo(object):
         if not info:
             raise Exception("No filesystem found on block device: %s" % self.block_device)
         return info
-    
+
     def __getitem__(self, name):
         # type: (str|FileSystemInfoFields) -> str
         key = name.value if isinstance(name, FileSystemInfoFields) else name
@@ -130,7 +130,7 @@ class FileSystemInfo(object):
         if key not in FileSystemInfoFields._value2member_map_:
             raise KeyError("No such field: %s" % name)
         return self.__info.get(key, "")
-    
+
     def __len__(self):
         if not self.__info:
             self.__info = self._load()
@@ -138,10 +138,10 @@ class FileSystemInfo(object):
 
     def __str__(self):
         return "<block_device=%s, type=%s>" % (self.block_device, self[FileSystemInfoFields.TYPE])
-    
+
     def __repr__(self):
         return self.__str__()
-    
+
     def __hash__(self):
         return hash(self[FileSystemInfoFields.UUID])
 
@@ -179,7 +179,7 @@ class MountPointInfo(object):
         # type: (str, str) -> None
         self.filesystem_uuid = filesystem_uuid
         self.mount_path = mount_path
-    
+
     def reload(self):
         # type: () -> None
         self.__info = None
@@ -194,10 +194,10 @@ class MountPointInfo(object):
         allocated_size = 0
         dirty_size = 0
         if qcow2_files:
-            allocated_size = reduce(lambda x, y: x + y, 
+            allocated_size = reduce(lambda x, y: x + y,
                                     map(lambda file_path: QemuImgCommandWrapper.get_qcow2_virtual_size(file_path),
                                         qcow2_files))
-            dirty_size = reduce(lambda x, y: x + y, 
+            dirty_size = reduce(lambda x, y: x + y,
                                 map(lambda file_path: QemuImgCommandWrapper.get_qcow2_actual_size(file_path),
                                     qcow2_files))
         return PoolCapacityInfo(total=self[MountPointInfoFields.SIZE],
@@ -214,7 +214,7 @@ class MountPointInfo(object):
         if not info:
             raise Exception("No mount point found for device %s on mount path: %s" % (self.filesystem_uuid, self.mount_path))
         return info
-    
+
     def __getitem__(self, name):
         # type: (str|MountPointInfoFields) -> str
         key = name.value if isinstance(name, MountPointInfoFields) else name
@@ -223,7 +223,7 @@ class MountPointInfo(object):
         if key not in MountPointInfoFields._value2member_map_:
             raise KeyError("No such field: %s" % name)
         return self.__info.get(key, "")
-    
+
     def __len__(self):
         if not self.__info:
             self.__info = self._load()
@@ -231,10 +231,10 @@ class MountPointInfo(object):
 
     def __str__(self):
         return "<filesystem_uuid=%s, mount_path=%s>" % (self.filesystem_uuid, self.mount_path)
-    
+
     def __repr__(self):
         return self.__str__()
-    
+
     def __hash__(self):
         return hash("%s:%s" % (self.filesystem_uuid, self.mount_path))
 
@@ -245,19 +245,19 @@ class Qcow2FileInfo(object):
     def __init__(self, file_path):
         # type: (str) -> None
         self.file_path = file_path
-    
+
     @property
     def virtual_size(self):
         # type: () -> int
         assert self.file_path
         return QemuImgCommandWrapper.get_qcow2_virtual_size(self.file_path)
-    
+
     @property
     def actual_size(self):
         # type: () -> int
         assert self.file_path
         return QemuImgCommandWrapper.get_qcow2_actual_size(self.file_path)
-    
+
     @property
     def cluster_size(self):
         # type: () -> int
