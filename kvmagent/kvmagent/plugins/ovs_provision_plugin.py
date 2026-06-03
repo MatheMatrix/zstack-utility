@@ -27,6 +27,7 @@ PORT_ROLE_BOND = 'bond'
 HOST_UUID_KEY = 'host-uuid'
 UPLINK_PROFILE_UUID_KEY = 'uplink-profile-uuid'
 SDN_CONTROLLER_UUID_KEY = 'sdn-controller-uuid'
+OVS_SYSTEM_ID_CONF_PATH = '/etc/openvswitch/system-id.conf'
 
 MANAGED_OVS_EXTERNAL_ID_KEYS = frozenset({
     'ovn-remote', 'ovn-encap-type', 'ovn-encap-ip',
@@ -741,6 +742,7 @@ class OvsReconciler(object):
 
     def reconcile(self, desired, actual):
         """Execute all reconciliation phases in order."""
+        ovsdb_system_id_changed = self._ovsdb_system_id_changed(desired, actual)
         self._reconcile_managed_bridges_delete(desired, actual)
         recreated = self._reconcile_infra_bridges_create(desired, actual)
         for br_name in recreated:
@@ -748,8 +750,75 @@ class OvsReconciler(object):
         self._reconcile_bonds(desired, actual)
         self._reconcile_vlan_tags(desired)
         self._reconcile_ip_addresses(desired, actual)
+        self._reconcile_ovs_system_id_conf(desired)
         self._reconcile_ovs_external_ids(desired, actual)
+        if ovsdb_system_id_changed:
+            self._restart_ovn_controller_after_system_id_change(desired, actual)
         self._reconcile_tunnel_mtu(desired)
+
+    @staticmethod
+    def _ovsdb_system_id_changed(desired, actual):
+        desired_system_id = desired.ovs_external_ids.get('system-id')
+        if not desired_system_id:
+            return False
+        return actual.ovs_external_ids.get('system-id') != desired_system_id
+
+    @staticmethod
+    def _reconcile_ovs_system_id_conf(desired):
+        desired_system_id = desired.ovs_external_ids.get('system-id')
+        if not desired_system_id:
+            return
+
+        _validate_external_id_value(desired_system_id)
+        current_system_id = None
+        if os.path.exists(OVS_SYSTEM_ID_CONF_PATH):
+            with open(OVS_SYSTEM_ID_CONF_PATH, 'r') as f:
+                current_system_id = f.read().strip()
+
+        if current_system_id == desired_system_id:
+            return
+
+        conf_dir = os.path.dirname(OVS_SYSTEM_ID_CONF_PATH)
+        if not os.path.isdir(conf_dir):
+            os.makedirs(conf_dir)
+
+        tmp_path = OVS_SYSTEM_ID_CONF_PATH + '.tmp'
+        with open(tmp_path, 'w') as f:
+            f.write(desired_system_id + '\n')
+        os.rename(tmp_path, OVS_SYSTEM_ID_CONF_PATH)
+        logger.info('updated %s with OVS system-id %s'
+                    % (OVS_SYSTEM_ID_CONF_PATH, desired_system_id))
+
+    @staticmethod
+    def _restart_ovn_controller_after_system_id_change(desired, actual):
+        old_system_id = actual.ovs_external_ids.get('system-id')
+        ovn_remote = desired.ovs_external_ids.get('ovn-remote')
+
+        r, o, e = bash.bash_roe('systemctl stop ovn-controller')
+        if r != 0:
+            raise Exception('failed to stop ovn-controller after OVS system-id change: %s' % e)
+
+        OvsReconciler._delete_stale_ovn_chassis(old_system_id, ovn_remote)
+
+        r, o, e = bash.bash_roe('systemctl start ovn-controller')
+        if r != 0:
+            raise Exception('failed to start ovn-controller after OVS system-id change: %s' % e)
+        logger.info('restarted ovn-controller after OVS system-id change')
+
+    @staticmethod
+    def _delete_stale_ovn_chassis(old_system_id, ovn_remote):
+        if not old_system_id or not ovn_remote:
+            return
+
+        _validate_external_id_value(old_system_id)
+        _validate_external_id_value(ovn_remote)
+        cmd = 'ovn-sbctl --timeout=5 --db=%s chassis-del %s' % (
+            _quote_ovs_value(ovn_remote), _quote_ovs_value(old_system_id))
+        r, o, e = bash.bash_roe(cmd)
+        if r != 0:
+            logger.warn('failed to delete stale OVN chassis %s: %s' % (old_system_id, e))
+            return
+        logger.info('deleted stale OVN chassis %s after OVS system-id change' % old_system_id)
 
     @staticmethod
     def _reconcile_managed_bridges_delete(desired, actual):
