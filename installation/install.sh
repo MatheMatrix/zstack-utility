@@ -387,10 +387,7 @@ configure_management_ip6() {
     fi
 
     if ! is_local_ip_address "$MANAGEMENT_IP6"; then
-        if [ -z "$MANAGEMENT_IP6_PREFIX" ]; then
-            fail2 "$MANAGEMENT_IP6 is not configured on this machine. Please set --management-ip6-prefix to add it during installation."
-        fi
-        zstack-ctl add_ip6 --ip "$MANAGEMENT_IP6" --prefix "$MANAGEMENT_IP6_PREFIX" || fail2 "Failed to add IPv6 management node IP address $MANAGEMENT_IP6."
+        fail2 "$MANAGEMENT_IP6 is not configured on this machine. Please configure the OS network address before installation."
     fi
 
     zstack-ctl configure management.server.ip6="${MANAGEMENT_IP6}" || fail2 "Failed to configure management.server.ip6."
@@ -4237,8 +4234,8 @@ Options:
         addresses are not supported.
 
   --management-ip6-prefix MANAGEMENT_NODE_IPV6_PREFIX
-        IPv6 prefix length used when --management-ip6 needs to add the IPv6
-        address to the current management interface during installation.
+        Deprecated compatibility option. The installer no longer configures
+        OS IPv6 addresses. --management-ip6 must already exist on this machine.
 
   -k    keep previous ${PRODUCT_NAME,,} DB if it exists. If using -k with -u, will not upgrade database or start management node. Do not use this option unless you really know what is means.
 
