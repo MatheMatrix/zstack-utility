@@ -104,6 +104,10 @@ MANAGEMENT_IP6_PREFIX=''
 MANAGEMENT_ROUTE_FAMILY=''
 MANAGEMENT_ROUTE_FAMILY_IPV4='4'
 MANAGEMENT_ROUTE_FAMILY_IPV6='6'
+MANAGEMENT_ADDRESS_MODE_IPV4='ipv4'
+MANAGEMENT_ADDRESS_MODE_IPV6='ipv6'
+MANAGEMENT_ADDRESS_MODE_DUAL_STACK='dual-stack'
+MANAGEMENT_ADDRESS_MODE_PROMPT_TIMEOUT=30
 INSTALL_ENTERPRISE='n'
 REPO_MATCHED='true'
 
@@ -169,6 +173,84 @@ get_interface_management_ip() {
 
     ip_addr=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV6"`
     [ -n "$ip_addr" ] && echo "$ip_addr"
+}
+
+normalize_management_address_mode() {
+    local mode="$1"
+    mode=`echo "$mode" | tr '[:upper:]_' '[:lower:]-'`
+    case "$mode" in
+        4|ipv4) echo "$MANAGEMENT_ADDRESS_MODE_IPV4" ;;
+        6|ipv6) echo "$MANAGEMENT_ADDRESS_MODE_IPV6" ;;
+        dual|dualstack|dual-stack) echo "$MANAGEMENT_ADDRESS_MODE_DUAL_STACK" ;;
+        *) echo "" ;;
+    esac
+}
+
+select_management_address_mode() {
+    local ipv4="$1"
+    local ipv6="$2"
+    local mode=`normalize_management_address_mode "${MANAGEMENT_ADDRESS_MODE:-${ZS_AUTO_INSTALL_MANAGEMENT_MODE:-}}"`
+    local answer=''
+
+    if [ -n "$mode" ]; then
+        echo "$mode"
+        return
+    fi
+
+    if [ ! -t 0 ]; then
+        echo ""
+        return
+    fi
+
+    echo "" >&2
+    echo "Detected dual-stack management network." >&2
+    echo "Management Node Address Mode" >&2
+    echo "  1) IPv4 only: $ipv4 (default)" >&2
+    echo "  2) IPv6 only: $ipv6" >&2
+    echo "  3) Dual stack: $ipv4 + $ipv6" >&2
+    echo -n "Select management node address mode [1/2/3], default 1 in ${MANAGEMENT_ADDRESS_MODE_PROMPT_TIMEOUT} seconds: " >&2
+    read -t "$MANAGEMENT_ADDRESS_MODE_PROMPT_TIMEOUT" -r answer || true
+    echo "" >&2
+
+    case "$answer" in
+        2) echo "$MANAGEMENT_ADDRESS_MODE_IPV6" ;;
+        3) echo "$MANAGEMENT_ADDRESS_MODE_DUAL_STACK" ;;
+        *) echo "$MANAGEMENT_ADDRESS_MODE_IPV4" ;;
+    esac
+}
+
+resolve_interface_management_ip() {
+    local interface="$1"
+    local route_family="$2"
+    local ipv4=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV4"`
+    local ipv6=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV6"`
+    local mode=''
+
+    if [ -n "$MANAGEMENT_IP6" ] && [ -n "$ipv4" ]; then
+        MANAGEMENT_IP="$ipv4"
+        return
+    fi
+
+    if [ -n "$ipv4" ] && [ -n "$ipv6" ]; then
+        mode=`select_management_address_mode "$ipv4" "$ipv6"`
+        case "$mode" in
+            "$MANAGEMENT_ADDRESS_MODE_IPV6")
+                MANAGEMENT_IP="$ipv6"
+                return
+                ;;
+            "$MANAGEMENT_ADDRESS_MODE_DUAL_STACK")
+                MANAGEMENT_IP="$ipv4"
+                [ -z "$MANAGEMENT_IP6" ] && MANAGEMENT_IP6="$ipv6"
+                return
+                ;;
+            "$MANAGEMENT_ADDRESS_MODE_IPV4")
+                MANAGEMENT_IP="$ipv4"
+                return
+                ;;
+        esac
+    fi
+
+    MANAGEMENT_IP=`get_interface_management_ip "$interface" "$route_family"`
 }
 
 is_link_local_ipv6() {
@@ -240,7 +322,7 @@ resolve_management_ip() {
     fi
 
     if ip addr show dev "$MANAGEMENT_INTERFACE" >/dev/null 2>&1; then
-        MANAGEMENT_IP=`get_interface_management_ip "$MANAGEMENT_INTERFACE" "$MANAGEMENT_ROUTE_FAMILY"`
+        resolve_interface_management_ip "$MANAGEMENT_INTERFACE" "$MANAGEMENT_ROUTE_FAMILY"
         echo "Management node network interface: $MANAGEMENT_INTERFACE" >> $ZSTACK_INSTALL_LOG
         if [ -z "$MANAGEMENT_IP" ]; then
             fail2 "Can not identify IP address for interface: $MANAGEMENT_INTERFACE. Please assign correct interface by '-I MANAGEMENT_NODE_IP_ADDRESS', which has IP address. Use 'ip addr' to show all interface and IP address."
