@@ -988,33 +988,113 @@ def collect_ipmi_state():
     collect_equipment_state_last_result = metrics.values()
     return collect_equipment_state_last_result
 
-@thread.AsyncThread
-def check_equipment_state_from_ipmitool(metrics):
+class IpmiSensorCache(object):
+    # ipmi-sensors is slow, so it runs in a background thread and the collect
+    # path only reads the cache. TTL expires stale data into unknown when the
+    # sensor can no longer be read. No warmup: the metric is briefly absent on
+    # the first refresh after restart and self-heals once it finishes.
+    TTL = 300
+
+    def __init__(self):
+        self._sensors = None
+        self._update_time = 0.0
+        self._lock = threading.RLock()
+        self._refreshing = False
+
+    def get_fresh_sensors(self):
+        with self._lock:
+            if self._sensors is None or time.time() - self._update_time > self.TTL:
+                return None
+            return self._sensors
+
+    def trigger_refresh(self):
+        with self._lock:
+            if self._refreshing:
+                return
+            self._refreshing = True
+        try:
+            thread.ThreadFacade.run_in_thread(self._refresh)
+        except Exception as e:
+            # spawn failed, so _refresh never runs; clear the flag here or the
+            # guard wedges and the cache expires into permanent unknown.
+            with self._lock:
+                self._refreshing = False
+            logger.warn("spawn ipmi sensor refresh failed: %s" % e)
+
+    def _refresh(self):
+        try:
+            # "timeout 120" is required: a hung ipmi-sensors would otherwise
+            # never return, the finally never clears _refreshing, and the guard
+            # wedges forever.
+            r, sensor_infos = bash_ro("timeout 120 ipmi-sensors --sensor-types=Memory,fan,Power_Supply -Q --ignore-unrecognized-events --comma-separated-output "
+                                      "--no-header-output --sdr-cache-recreate --output-sensor-state")
+            if r != 0:
+                return
+
+            parsed = []
+            for sensor_info in sensor_infos.splitlines():
+                try:
+                    sensor = sensor_info.split(",")
+                    sensor_name = sensor[1].strip()
+                    sensor_type = sensor[2].strip()
+                    sensor_state = sensor[3].strip()
+                    parsed.append({"name": sensor_name, "type": sensor_type, "state": sensor_state})
+                except Exception:
+                    continue
+
+            # keep the last good data on an empty result; TTL still ages it out
+            # to unknown if ipmi-sensors keeps returning nothing.
+            if not parsed:
+                return
+
+            report_equipment_state_alarm(parsed)
+
+            with self._lock:
+                self._sensors = parsed
+                self._update_time = time.time()
+        except Exception as e:
+            logger.warn("refresh ipmi sensor cache failed: %s" % e)
+        finally:
+            with self._lock:
+                self._refreshing = False
+
+
+ipmi_sensor_cache = IpmiSensorCache()
+
+
+def report_equipment_state_alarm(sensors):
     sensor_handlers = {
         "Memory": send_physical_memory_status_alarm_to_mn,
         "Fan": send_physical_fan_status_alarm_to_mn,
         "Power Supply": send_physical_power_supply_status_alarm_to_mn
     }
-
-    r, sensor_infos = bash_ro("ipmi-sensors --sensor-types=Memory,fan,Power_Supply -Q --ignore-unrecognized-events --comma-separated-output "
-                              "--no-header-output --sdr-cache-recreate --output-sensor-state")
-    if r == 0:
-        for sensor_info in sensor_infos.splitlines():
-            sensor = sensor_info.split(",")
-            sensor_name = sensor[1].strip()
-            sensor_type = sensor[2].strip()
-            sensor_state = sensor[3].strip()
-            sensor_event = sensor[6].strip()
-
-            if sensor_type == "Memory":
-                metrics['ipmi_memory_status'].add_metric([sensor_name, sensor_type], 0 if sensor_state == 'Nominal' else 1)
-
+    for sensor in sensors:
+        sensor_name = sensor["name"]
+        sensor_type = sensor["type"]
+        sensor_state = sensor["state"]
+        try:
             if sensor_state.lower() == "critical" and sensor_type in sensor_handlers:
                 sensor_handlers[sensor_type](sensor_name, sensor_state)
             else:
                 remove_fan_status_abnormal(sensor_name)
                 remove_power_supply_status_abnormal(sensor_name)
                 remove_memory_status_abnormal(sensor_name)
+        except Exception as e:
+            logger.warn("report equipment state alarm for %s failed: %s" % (sensor_name, e))
+
+
+def check_equipment_state_from_ipmitool(metrics):
+    ipmi_sensor_cache.trigger_refresh()
+
+    sensors = ipmi_sensor_cache.get_fresh_sensors()
+    if not sensors:
+        return
+
+    for sensor in sensors:
+        if sensor["type"] != "Memory":
+            continue
+        metrics['ipmi_memory_status'].add_metric(
+            [sensor["name"], sensor["type"]], 0 if sensor["state"] == 'Nominal' else 1)
 
 
 def to_float_or_none(value):
