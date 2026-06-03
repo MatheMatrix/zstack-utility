@@ -1817,14 +1817,14 @@ def move_dev_route(src_dev, dest_dev):
     for ip in _parse_ip_addresses(ipv6_out):
         _move_ip_address(ip, src_dev, dest_dev, "inet6")
     for r in connected_routes6:
-        shell.call('ip -6 route del %s' % r, exception=False)
+        shell.call('ip -6 route del %s' % _route_with_dev(r, src_dev), exception=False)
 
     # Restore routes on the destination device
     for r in routes:
-        shell.call('ip route add %s' % r)
-    for r in routes6:
-        shell.call('ip -6 route add %s' % r)
+        shell.call('ip route add %s' % _route_with_dev(r, dest_dev))
     for r in direct_routes6:
+        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
+    for r in routes6:
         shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
 
 
@@ -1833,7 +1833,7 @@ def _parse_ip_addresses(ip_addr_output):
 
 
 def _move_ip_address(ip, src_dev, dest_dev, family):
-    shell.call('ip addr del %s dev %s' % (ip, src_dev))
+    shell.call('ip addr del %s dev %s' % (ip, src_dev), exception=False)
     r_out = shell.call('ip addr show dev %s | grep "%s %s"' % (dest_dev, family, ip), exception=False)
     if not r_out:
         shell.call('ip addr add %s dev %s' % (ip, dest_dev))
@@ -1848,6 +1848,10 @@ def _route_with_dev(route, dev):
         if index + 1 < len(parts):
             parts[index + 1] = dev
         return ' '.join(parts)
+    if 'via' in parts:
+        index = parts.index('via')
+        if index + 1 < len(parts):
+            return ' '.join(parts[:index + 2] + ['dev', dev] + parts[index + 2:])
     return ' '.join([parts[0], 'dev', dev] + parts[1:])
 
 def pretty_xml(xmlstr):
