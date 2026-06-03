@@ -40,6 +40,20 @@ def test_console_listen_address_uses_dual_stack_for_ipv6_host():
     assert vm_plugin.get_console_listen_address('2001:db8::10') == '::'
 
 
+def test_build_migration_hostname_supports_ipv4():
+    assert vm_plugin.build_migration_hostname('172.24.1.2') == '172-24-1-2.zstack.org'
+
+
+def test_build_migration_hostname_supports_ipv6():
+    assert vm_plugin.build_migration_hostname('fd00:5:5:28::62:d0e5') == \
+        'fd00-5-5-28--62-d0e5.zstack.org'
+
+
+def test_build_migration_hostname_supports_bracketed_ipv6():
+    assert vm_plugin.build_migration_hostname('[fd00:5:5:28::62:d0e5]') == \
+        'fd00-5-5-28--62-d0e5.zstack.org'
+
+
 def _make_vm_plugin():
     plugin = vm_plugin.VmPlugin.__new__(vm_plugin.VmPlugin)
     plugin.config = {}
