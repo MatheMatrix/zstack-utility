@@ -228,6 +228,69 @@ def test_reconcile_ip_addresses_updates_when_desired_address_missing():
 
 
 @pytest.mark.unit
+def test_reconcile_system_id_conf_without_ovsdb_change_does_not_restart_ovn_controller(tmp_path):
+    plugin = _load_plugin()
+    plugin.OVS_SYSTEM_ID_CONF_PATH = str(tmp_path / "system-id.conf")
+    desired = plugin.OvsDesiredState()
+    actual = plugin.OvsActualState()
+    desired.ovs_external_ids["system-id"] = "host-uuid"
+    actual.ovs_external_ids["system-id"] = "host-uuid"
+
+    calls = []
+    plugin.bash.bash_roe = lambda cmd: calls.append(cmd) or (0, "", "")
+
+    plugin.OvsReconciler().reconcile(desired, actual)
+
+    assert pathlib.Path(plugin.OVS_SYSTEM_ID_CONF_PATH).read_text() == "host-uuid\n"
+    assert "systemctl restart ovn-controller" not in calls
+
+
+@pytest.mark.unit
+def test_reconcile_system_id_restarts_ovn_controller_when_ovsdb_changes(tmp_path):
+    plugin = _load_plugin()
+    plugin.OVS_SYSTEM_ID_CONF_PATH = str(tmp_path / "system-id.conf")
+    desired = plugin.OvsDesiredState()
+    actual = plugin.OvsActualState()
+    desired.ovs_external_ids["system-id"] = "host-uuid"
+    actual.ovs_external_ids["system-id"] = "old-random-uuid"
+
+    calls = []
+    plugin.bash.bash_roe = lambda cmd: calls.append(cmd) or (0, "", "")
+
+    plugin.OvsReconciler().reconcile(desired, actual)
+
+    assert pathlib.Path(plugin.OVS_SYSTEM_ID_CONF_PATH).read_text() == "host-uuid\n"
+    assert calls == [
+        "ovs-vsctl set Open_vSwitch . external_ids:system-id=host-uuid",
+        "systemctl stop ovn-controller",
+        "systemctl start ovn-controller",
+    ]
+
+
+@pytest.mark.unit
+def test_reconcile_system_id_deletes_stale_chassis_when_ovn_remote_exists(tmp_path):
+    plugin = _load_plugin()
+    plugin.OVS_SYSTEM_ID_CONF_PATH = str(tmp_path / "system-id.conf")
+    desired = plugin.OvsDesiredState()
+    actual = plugin.OvsActualState()
+    desired.ovs_external_ids["system-id"] = "host-uuid"
+    desired.ovs_external_ids["ovn-remote"] = "tcp:172.20.13.51:6642"
+    actual.ovs_external_ids["system-id"] = "old-random-uuid"
+
+    calls = []
+    plugin.bash.bash_roe = lambda cmd: calls.append(cmd) or (0, "", "")
+
+    plugin.OvsReconciler().reconcile(desired, actual)
+
+    assert calls == [
+        "ovs-vsctl set Open_vSwitch . external_ids:system-id=host-uuid external_ids:ovn-remote=tcp:172.20.13.51:6642",
+        "systemctl stop ovn-controller",
+        "ovn-sbctl --timeout=5 --db=tcp:172.20.13.51:6642 chassis-del old-random-uuid",
+        "systemctl start ovn-controller",
+    ]
+
+
+@pytest.mark.unit
 def test_deprovision_ownership_check_fails_closed_on_read_error():
     plugin = _load_plugin()
 
