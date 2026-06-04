@@ -51,6 +51,7 @@ SUPPORTED_ARCH = ['x86_64', 'aarch64', 'mips64el', 'loongarch64']
 DIST_WITH_RPM_DEB = ['kylin']
 HOST_ARCH = platform.machine()
 tcp_port_lock = threading.Lock()
+LOONGSON_3C5000L_CORES_PER_SOCKET = 16
 
 
 '''
@@ -1907,6 +1908,9 @@ def get_cpu_num():
 
 def get_cpu_core_num():
     sockets = get_socket_num()
+    if is_loongson_3c5000l_cpu():
+        return LOONGSON_3C5000L_CORES_PER_SOCKET * sockets
+
     cpu_cores_per_socket = shell.call("lscpu | awk -F':' '/per socket/{print $NF}'")
     return int(cpu_cores_per_socket.strip()) * sockets
 
@@ -1915,7 +1919,19 @@ def get_cpu_model():
     model_name = shell.call("lscpu |awk -F':' '{IGNORECASE=1}/^ *Model name/{print $2}'").strip()
     return vendor_id, model_name
 
+def is_loongson_3c5000l_cpu(model_name=None):
+    if model_name is None:
+        _, model_name = get_cpu_model()
+    return "3C5000L" in (model_name or "").upper()
+
+def get_loongson_3c5000l_socket_num():
+    cpu_num = get_cpu_num()
+    return max(1, (cpu_num + LOONGSON_3C5000L_CORES_PER_SOCKET - 1) // LOONGSON_3C5000L_CORES_PER_SOCKET)
+
 def get_socket_num():
+    if is_loongson_3c5000l_cpu():
+        return get_loongson_3c5000l_socket_num()
+
     num_dmidecode = int(shell.call("dmidecode -t processor | grep 'Socket Designation' | wc -l").strip())
     num_lscpu = int(shell.call("lscpu | awk '/Socket\(s\)/{print $2}'").strip())
     num_cpuinfo = int(shell.call("grep 'physical id' /proc/cpuinfo | sort -u | wc -l").strip())
