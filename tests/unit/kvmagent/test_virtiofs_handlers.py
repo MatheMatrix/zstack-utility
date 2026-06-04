@@ -25,6 +25,7 @@ sys.modules['jsonobject'] = _jo
 from zstacklib.utils import http
 
 # Import the module under test
+from kvmagent.plugins import virtiofs_device
 from kvmagent.plugins import virtiofs_plugin
 
 
@@ -437,6 +438,9 @@ class TestVirtiofsAttachHandler:
 
 class TestBuildVirtiofsXml:
     """Test build_virtiofs_xml function."""
+
+    def test_sanitize_tag_limits_qemu_virtiofs_tag_length(self):
+        assert len(virtiofs_device.sanitize_tag("a" * 64)) == virtiofs_device.MAX_TAG_LENGTH
 
     @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
     def test_build_xml_contains_required_elements(self, mock_path):
