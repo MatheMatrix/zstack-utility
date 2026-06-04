@@ -164,62 +164,53 @@ class PoolProcessor(object):
         self.mount_path = mount_path
 
     @classmethod
-    def load_local_pools(cls):
-        # type: () -> list[PoolProcessor]
-        """ Load all local volume cache pools on host by scanning LVM objects tagged with pool UUID and return list of PoolProcessor"""
+    def discover_local_pool(cls, pool_uuid):
+        # type: (str) -> PoolProcessor|None
         LvmCommandWrapper.rescan_pv()
         LvmCommandWrapper.rescan_vg()
         LvmCommandWrapper.rescan_lv()
-        pool_processors = []
 
-        # Match both the canonical (new) and legacy "managed" tags so that
-        # hosts upgraded from older releases -- whose LVM metadata still carries
-        # the old ``zs::vm_local_volume_cache_pool::managed`` tag -- continue to
-        # surface their pools. De-duplicate by LV UUID across the two lookups.
         lv_objects_by_uuid = {}
-        for managed_tag in (cls.VM_LOCAL_VOLUME_CACHE_POOL_MANAGED_LVM_TAG,
-                            cls.LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_MANAGED_LVM_TAG):
+        for pool_uuid_tag in (cls.VM_LOCAL_VOLUME_CACHE_POOL_UUID_LVM_TAG_PREFIX + "::" + pool_uuid,
+                              cls.LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_UUID_LVM_TAG_PREFIX + "::" + pool_uuid):
             found = LvmCommandWrapper.get_lvm_objects_by_tag(
-                LvmObjectType.LV, managed_tag,
+                LvmObjectType.LV, pool_uuid_tag,
                 [LVInfoFields.LV_UUID, LVInfoFields.LV_NAME, LVInfoFields.LV_TAGS, VGInfoFields.VG_NAME])
             if not found:
                 continue
             for lv_object in found:
+                if not cls._is_managed_lv_object(lv_object):
+                    continue
                 lv_objects_by_uuid.setdefault(lv_object[LVInfoFields.LV_UUID.value], lv_object)
 
         if not lv_objects_by_uuid:
-            return pool_processors
+            return None
+        if len(lv_objects_by_uuid) > 1:
+            raise PoolOperationError("Multiple local volume cache LVs found for pool UUID %s" % pool_uuid)
 
-        # Prefixes to probe on each LV -- new first (preferred), legacy second.
-        pool_uuid_prefixes = (cls.VM_LOCAL_VOLUME_CACHE_POOL_UUID_LVM_TAG_PREFIX,
-                              cls.LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_UUID_LVM_TAG_PREFIX)
+        lv_object = list(lv_objects_by_uuid.values())[0]
+        mount_path_tag = cls._get_mount_path_tag_from_lv_object(lv_object)
+        if not mount_path_tag:
+            raise PoolOperationError("LV %s in VG %s is tagged for pool UUID %s but missing mount path tag" % (
+                lv_object[LVInfoFields.LV_NAME.value], lv_object[VGInfoFields.VG_NAME.value], pool_uuid))
+
+        return cls(pool_uuid, mount_path_tag.split("::", 3)[-1])
+
+    @classmethod
+    def _get_mount_path_tag_from_lv_object(cls, lv_object):
+        # type: (dict[str, Any]) -> str|None
+        lv_tags = lv_object[LVInfoFields.LV_TAGS.value].split(",")
         mount_path_prefixes = (cls.VM_LOCAL_VOLUME_CACHE_POOL_MOUNT_PATH_LVM_TAG_PREFIX,
                                cls.LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_MOUNT_PATH_LVM_TAG_PREFIX)
+        return next((tag for prefix in mount_path_prefixes for tag in lv_tags if tag.startswith(prefix + "::")), None)
 
-        for lv_object in lv_objects_by_uuid.values():
-            lv_tags = lv_object[LVInfoFields.LV_TAGS.value].split(",")
-            pool_uuid_tag = next(
-                (tag for prefix in pool_uuid_prefixes for tag in lv_tags if tag.startswith(prefix + "::")),
-                None)
-            mount_path_tag = next(
-                (tag for prefix in mount_path_prefixes for tag in lv_tags if tag.startswith(prefix + "::")),
-                None)
-            if not pool_uuid_tag:
-                logger.warning("LV %s in VG %s is tagged as managed but missing pool UUID tag, skip loading this LV as a cache pool",
-                               lv_object[LVInfoFields.LV_NAME.value], lv_object[VGInfoFields.VG_NAME.value])
-                continue
-            if not mount_path_tag:
-                logger.warning("LV %s in VG %s is tagged as managed but missing mount path tag, skip loading this LV as a cache pool",
-                               lv_object[LVInfoFields.LV_NAME.value], lv_object[VGInfoFields.VG_NAME.value])
-                continue
-            # Strip whichever prefix matched (new or legacy) to recover the raw value.
-            pool_uuid = pool_uuid_tag.split("::", 3)[-1]
-            mount_path = mount_path_tag.split("::", 3)[-1]
-            pool = cls(pool_uuid, mount_path)
-            pool.connect_pool()
-            pool_processors.append(pool)
-
-        return pool_processors
+    @classmethod
+    def _is_managed_lv_object(cls, lv_object):
+        # type: (dict[str, Any]) -> bool
+        lv_tags = lv_object[LVInfoFields.LV_TAGS.value].split(",")
+        managed_tags = (cls.VM_LOCAL_VOLUME_CACHE_POOL_MANAGED_LVM_TAG,
+                        cls.LEGACY_VM_LOCAL_VOLUME_CACHE_POOL_MANAGED_LVM_TAG)
+        return any(tag in lv_tags for tag in managed_tags)
 
     def __create_pvs(self, device_paths, metadata_size=None, force=False):
         # type: (list[str], str|None, bool) -> list[PVInfo]
@@ -954,7 +945,7 @@ def ensure_pool(initialized=False):
             # type: (VolumeCachePlugin, T_Cmd) -> T_Rsp
             pool_processor = self.pool_processors.get(cmd.poolUuid)
             if not pool_processor:
-                raise PoolNotFoundError("No pool processor found for pool UUID %s" % cmd.poolUuid)
+                pool_processor = self._load_pool_on_demand(cmd.poolUuid)
             if initialized and not pool_processor.is_initialized:
                 raise PoolNotInitializedError("Pool processor for pool UUID %s is not initialized" % cmd.poolUuid)
             return func(self, cmd, pool_processor)
@@ -998,14 +989,23 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
         super(VolumeCachePlugin, self).__init__()
         self.pool_processors = {}
 
-    def __load_pool_processors(self):
-        pool_processors = PoolProcessor.load_local_pools()
-        for pool_processor in pool_processors:
-            self.pool_processors.setdefault(pool_processor.pool_uuid, pool_processor)
+    def _load_pool_on_demand(self, pool_uuid):
+        # type: (str) -> PoolProcessor
+        pool = self.pool_processors.get(pool_uuid)
+        if pool:
+            return pool
+
+        pool = PoolProcessor.discover_local_pool(pool_uuid)
+        if not pool:
+            raise PoolNotFoundError("No local volume cache pool found for pool UUID %s" % pool_uuid)
+
+        pool.connect_pool()
+        self.pool_processors[pool_uuid] = pool
+        logger.info("Connected local volume cache pool %s on mount path %s" % (
+            pool.pool_uuid, pool.mount_path))
+        return pool
 
     def start(self):
-        self.__load_pool_processors()
-
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.INIT_POOL_PATH, self.init_pool)
         http_server.register_async_uri(self.CONNECT_POOL_PATH, self.connect_pool)
@@ -1113,10 +1113,13 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
 
     @kvmagent.replyerror
     @auto_serialize(ConnectPoolCmd, ConnectPoolRsp)
-    @ensure_pool(initialized=False)
-    def connect_pool(self, cmd, pool):
-        # type: (ConnectPoolCmd, PoolProcessor) -> ConnectPoolRsp
-        pool.connect_pool()
+    def connect_pool(self, cmd):
+        # type: (ConnectPoolCmd) -> ConnectPoolRsp
+        pool = self.pool_processors.get(cmd.poolUuid)
+        if pool:
+            pool.connect_pool()
+        else:
+            pool = self._load_pool_on_demand(cmd.poolUuid)
         return self._to_pool_rsp(pool)
 
     @kvmagent.replyerror
@@ -1135,7 +1138,7 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
     def delete_pool(self, cmd, pool):
         # type: (DeletePoolCmd, PoolProcessor) -> DeletePoolRsp
         pool.delete_pool()
-        del self.pool_processors[cmd.poolUuid]
+        self.pool_processors.pop(cmd.poolUuid, None)
         return DeletePoolRsp()
 
     @kvmagent.replyerror
