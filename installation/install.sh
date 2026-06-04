@@ -191,26 +191,34 @@ select_management_address_mode() {
     local ipv6="$2"
     local mode=`normalize_management_address_mode "${MANAGEMENT_ADDRESS_MODE:-${ZS_AUTO_INSTALL_MANAGEMENT_MODE:-}}"`
     local answer=''
+    local prompt_input=''
+    local prompt_output=''
 
     if [ -n "$mode" ]; then
         echo "$mode"
         return
     fi
 
-    if [ ! -t 0 ]; then
+    if [ -t 0 ]; then
+        prompt_input="/dev/stdin"
+        prompt_output="/dev/stderr"
+    elif { : < /dev/tty > /dev/tty; } 2>/dev/null; then
+        prompt_input="/dev/tty"
+        prompt_output="/dev/tty"
+    else
         echo ""
         return
     fi
 
-    echo "" >&2
-    echo "Detected dual-stack management network." >&2
-    echo "Management Node Address Mode" >&2
-    echo "  1) IPv4 only: $ipv4 (default)" >&2
-    echo "  2) IPv6 only: $ipv6" >&2
-    echo "  3) Dual stack: $ipv4 + $ipv6" >&2
-    echo -n "Select management node address mode [1/2/3], default 1 in ${MANAGEMENT_ADDRESS_MODE_PROMPT_TIMEOUT} seconds: " >&2
-    read -t "$MANAGEMENT_ADDRESS_MODE_PROMPT_TIMEOUT" -r answer || true
-    echo "" >&2
+    echo "" > "$prompt_output"
+    echo "Detected dual-stack management network." > "$prompt_output"
+    echo "Management Node Address Mode" > "$prompt_output"
+    echo "  1) IPv4 only: $ipv4 (default)" > "$prompt_output"
+    echo "  2) IPv6 only: $ipv6" > "$prompt_output"
+    echo "  3) Dual stack: $ipv4 + $ipv6" > "$prompt_output"
+    echo -n "Select management node address mode [1/2/3], default 1 in ${MANAGEMENT_ADDRESS_MODE_PROMPT_TIMEOUT} seconds: " > "$prompt_output"
+    read -t "$MANAGEMENT_ADDRESS_MODE_PROMPT_TIMEOUT" -r answer < "$prompt_input" || true
+    echo "" > "$prompt_output"
 
     case "$answer" in
         2) echo "$MANAGEMENT_ADDRESS_MODE_IPV6" ;;
