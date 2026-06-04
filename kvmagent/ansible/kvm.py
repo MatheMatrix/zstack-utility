@@ -43,6 +43,7 @@ zstack_lib_dir = "/var/lib/zstack"
 zstack_libvirt_nwfilter_dir = "%s/nwfilter" % zstack_lib_dir
 disableIp6Tables = 'false'
 bridgeDisableIptables = 'false'
+enableIpv6 = 'true'
 isBareMetal2Gateway='false'
 releasever = ''
 unsupported_iproute_list = ["nfs4", "alinux4"]
@@ -787,6 +788,15 @@ def copy_kvm_files():
     command = 'sysctl -w net.ipv4.ip_local_reserved_ports=%s,`cat /proc/sys/net/ipv4/ip_local_reserved_ports`' % reserved_ports
     run_remote_command(command, host_post_info)
 
+
+def configure_host_ipv6():
+    disable_ipv6 = '0' if enableIpv6 == 'true' else '1'
+
+    update_file("/etc/sysctl.conf", "regexp='^net.ipv6.conf.all.disable_ipv6\\s*=.*' line='net.ipv6.conf.all.disable_ipv6 = %s'" % disable_ipv6, host_post_info)
+    update_file("/etc/sysctl.conf", "regexp='^net.ipv6.conf.default.disable_ipv6\\s*=.*' line='net.ipv6.conf.default.disable_ipv6 = %s'" % disable_ipv6, host_post_info)
+    run_remote_command("sysctl -w net.ipv6.conf.all.disable_ipv6=%s" % disable_ipv6, host_post_info)
+    run_remote_command("sysctl -w net.ipv6.conf.default.disable_ipv6=%s" % disable_ipv6, host_post_info)
+
 def copy_gpudriver():
     """copy mxgpu driver"""
     _src = "{}/mxgpu_driver.tar.gz".format(file_root)
@@ -1232,6 +1242,7 @@ create_virtio_driver_directory()
 set_max_performance()
 do_libvirt_qemu_config()
 do_network_config()
+configure_host_ipv6()
 copy_spice_certificates_to_host()
 install_virtualenv()
 set_legacy_iptables_ebtables()
