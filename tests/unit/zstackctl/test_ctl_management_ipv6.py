@@ -248,64 +248,126 @@ def test_change_ip_rejects_management_ip_address_family_switch(monkeypatch):
     ]
 
 
-def test_add_ip6_sets_management_server_ip6_without_configuring_nic(monkeypatch):
+def test_change_ip_allows_confirmed_family_switch_and_preserves_old_primary(monkeypatch):
     writes = []
     shell_calls = []
 
-    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: None)
+    properties = {
+        'management.server.ip': '172.24.249.182',
+        'DB.url': 'jdbc:mysql://172.24.249.182:3306/zstack',
+        'consoleProxyOverriddenIp': '172.24.249.182',
+    }
+
+    monkeypatch.setattr(ctl, 'check_ha', lambda: False)
+    monkeypatch.setattr(ctl.os.path, 'isfile', lambda path: True)
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: properties.get(name))
+    monkeypatch.setattr(ctl.ctl, 'read_property_list', lambda prefix: [])
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl.ctl, 'write_property', lambda key, value: writes.append((key, value)))
+    monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda name: 'jdbc:mysql://172.24.249.182:3306/zstack_ui')
+    monkeypatch.setattr(ctl.ctl, 'write_ui_properties', writes.extend)
+    monkeypatch.setattr(ctl, 'shell', lambda command, *args, **kwargs: 'mn-host\n' if command == 'hostname' else shell_calls.append(command) or '')
+    monkeypatch.setattr(ctl, 'update_change_ip_firewall_rules', lambda *args: shell_calls.append(args))
+
+    cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
+    monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
+    monkeypatch.setattr(cmd, 'checkMysqlConnection', lambda *args: None)
+    monkeypatch.setattr(cmd, 'update_morph_config', lambda ip: shell_calls.append(('morph', ip)))
+
+    cmd.run(SimpleNamespace(
+        ip='fd00:172:24:249::182',
+        cloudbus_server_ip=None,
+        mysql_ip=None,
+        root_password=None,
+        allow_management_ip_family_change=True,
+        yes_i_understand_management_network_risk=True,
+    ))
+
+    assert ('management.server.ip', 'fd00:172:24:249::182') in writes
+    assert ('management.server.ip4', '172.24.249.182') in writes
+    assert ('DB.url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack') in writes
+
+
+def test_add_ip_sets_management_server_ip6_without_configuring_nic(monkeypatch):
+    writes = []
+    shell_calls = []
+
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: {
+        'management.server.ip': '172.24.249.182',
+    }.get(name))
     monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
     monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: True)
     monkeypatch.setattr(ctl, 'shell', lambda *args, **kwargs: shell_calls.append(args))
     monkeypatch.setattr(ctl, 'shell_no_pipe', lambda command: shell_calls.append(command))
 
-    cmd = ctl.AddIp6Cmd.__new__(ctl.AddIp6Cmd)
-    assert cmd.add_management_server_ip6_under_lock('fd00:172:24:249::182')
+    cmd = ctl.AddIpCmd.__new__(ctl.AddIpCmd)
+    assert cmd.add_management_server_ip_under_lock('fd00:172:24:249::182')
 
     assert writes == [('management.server.ip6', 'fd00:172:24:249::182')]
     assert shell_calls == []
 
 
-def test_add_ip6_requires_local_ipv6_address(monkeypatch):
-    class AddIp6Rejected(Exception):
+def test_add_ip_sets_management_server_ip4_for_ipv6_primary(monkeypatch):
+    writes = []
+
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: {
+        'management.server.ip': 'fd00:172:24:249::182',
+    }.get(name))
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: True)
+
+    cmd = ctl.AddIpCmd.__new__(ctl.AddIpCmd)
+    assert cmd.add_management_server_ip_under_lock('172.24.249.182')
+
+    assert writes == [('management.server.ip4', '172.24.249.182')]
+
+
+def test_add_ip_requires_local_address(monkeypatch):
+    class AddIpRejected(Exception):
         pass
 
     errors = []
 
     def fail(message):
         errors.append(message)
-        raise AddIp6Rejected(message)
+        raise AddIpRejected(message)
 
-    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: None)
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: {
+        'management.server.ip': '172.24.249.182',
+    }.get(name))
     monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: False)
     monkeypatch.setattr(ctl, 'error', fail)
 
-    cmd = ctl.AddIp6Cmd.__new__(ctl.AddIp6Cmd)
-    with pytest.raises(AddIp6Rejected):
-        cmd.add_management_server_ip6_under_lock('fd00:172:24:249::182')
+    cmd = ctl.AddIpCmd.__new__(ctl.AddIpCmd)
+    with pytest.raises(AddIpRejected):
+        cmd.add_management_server_ip_under_lock('fd00:172:24:249::182')
 
     assert errors == [
-        'IPv6 address fd00:172:24:249::182 is not found on any device; '
-        'please configure the OS network address before running add_ip6'
+        'IP address fd00:172:24:249::182 is not found on any device; '
+        'please configure the OS network address before running add_ip'
     ]
 
 
-def test_add_ip6_rejects_existing_different_management_server_ip6(monkeypatch):
-    class AddIp6Rejected(Exception):
+def test_add_ip_rejects_existing_different_management_server_ip6(monkeypatch):
+    class AddIpRejected(Exception):
         pass
 
     errors = []
 
     def fail(message):
         errors.append(message)
-        raise AddIp6Rejected(message)
+        raise AddIpRejected(message)
 
-    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: 'fd00:172:24:249::181')
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: {
+        'management.server.ip': '172.24.249.182',
+        'management.server.ip6': 'fd00:172:24:249::181',
+    }.get(name))
     monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: True)
     monkeypatch.setattr(ctl, 'error', fail)
 
-    cmd = ctl.AddIp6Cmd.__new__(ctl.AddIp6Cmd)
-    with pytest.raises(AddIp6Rejected):
-        cmd.add_management_server_ip6_under_lock('fd00:172:24:249::182')
+    cmd = ctl.AddIpCmd.__new__(ctl.AddIpCmd)
+    with pytest.raises(AddIpRejected):
+        cmd.add_management_server_ip_under_lock('fd00:172:24:249::182')
 
     assert errors == [
         'management.server.ip6 already configured as fd00:172:24:249::181, '
@@ -313,14 +375,17 @@ def test_add_ip6_rejects_existing_different_management_server_ip6(monkeypatch):
     ]
 
 
-def test_add_ip6_skips_existing_same_management_server_ip6(monkeypatch):
+def test_add_ip_skips_existing_same_management_server_ip6(monkeypatch):
     writes = []
 
-    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: 'fd00:172:24:249::182')
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: {
+        'management.server.ip': '172.24.249.182',
+        'management.server.ip6': 'fd00:172:24:249::182',
+    }.get(name))
     monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
     monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: True)
 
-    cmd = ctl.AddIp6Cmd.__new__(ctl.AddIp6Cmd)
+    cmd = ctl.AddIpCmd.__new__(ctl.AddIpCmd)
 
-    assert not cmd.add_management_server_ip6_under_lock('fd00:172:24:249::182')
+    assert not cmd.add_management_server_ip_under_lock('fd00:172:24:249::182')
     assert writes == []
