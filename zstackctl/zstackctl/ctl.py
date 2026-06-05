@@ -8245,12 +8245,14 @@ class ChangeIpCmd(Command):
         if os.path.isfile(zstack_conf_file):
             old_ip = ctl.read_property('management.server.ip')
             preserve_old_ip_property = None
+            cleanup_secondary_ip_property = None
             if old_ip is not None:
                 if not validate_ip(old_ip):
                     info("The ip address[%s] read from [%s] seems not a valid ip" % (old_ip, zstack_conf_file))
                     return 1
                 if self.check_management_ip_family_change(args, old_ip, args.ip):
                     preserve_old_ip_property = self.secondary_management_ip_property_for(old_ip)
+                    cleanup_secondary_ip_property = self.secondary_management_ip_property_for(args.ip)
 
             # read from env other than /etc/hostname in case of impact of DHCP SERVER
             old_hostname = shell("hostname").replace("\n","")
@@ -8288,6 +8290,10 @@ class ChangeIpCmd(Command):
             ])
             info("Update management server ip %s in %s " % (args.ip, zstack_conf_file))
             if preserve_old_ip_property is not None:
+                if cleanup_secondary_ip_property is not None:
+                    ctl.delete_properties([cleanup_secondary_ip_property])
+                    info("Remove stale secondary management server ip property %s in %s " % (
+                        cleanup_secondary_ip_property, zstack_conf_file))
                 ctl.write_properties([
                     (preserve_old_ip_property, old_ip),
                 ])

@@ -250,6 +250,7 @@ def test_change_ip_rejects_management_ip_address_family_switch(monkeypatch):
 
 def test_change_ip_allows_confirmed_family_switch_and_preserves_old_primary(monkeypatch):
     writes = []
+    deletes = []
     shell_calls = []
 
     properties = {
@@ -264,6 +265,7 @@ def test_change_ip_allows_confirmed_family_switch_and_preserves_old_primary(monk
     monkeypatch.setattr(ctl.ctl, 'read_property_list', lambda prefix: [])
     monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
     monkeypatch.setattr(ctl.ctl, 'write_property', lambda key, value: writes.append((key, value)))
+    monkeypatch.setattr(ctl.ctl, 'delete_properties', deletes.extend)
     monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda name: 'jdbc:mysql://172.24.249.182:3306/zstack_ui')
     monkeypatch.setattr(ctl.ctl, 'write_ui_properties', writes.extend)
     monkeypatch.setattr(ctl, 'shell', lambda command, *args, **kwargs: 'mn-host\n' if command == 'hostname' else shell_calls.append(command) or '')
@@ -285,7 +287,50 @@ def test_change_ip_allows_confirmed_family_switch_and_preserves_old_primary(monk
 
     assert ('management.server.ip', 'fd00:172:24:249::182') in writes
     assert ('management.server.ip4', '172.24.249.182') in writes
+    assert deletes == ['management.server.ip6']
     assert ('DB.url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack') in writes
+
+
+def test_change_ip_cleans_stale_secondary_same_family(monkeypatch):
+    writes = []
+    deletes = []
+    shell_calls = []
+
+    properties = {
+        'management.server.ip': '172.24.249.182',
+        'management.server.ip6': 'fd00:172:24:249::181',
+        'DB.url': 'jdbc:mysql://172.24.249.182:3306/zstack',
+    }
+
+    monkeypatch.setattr(ctl, 'check_ha', lambda: False)
+    monkeypatch.setattr(ctl.os.path, 'isfile', lambda path: True)
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: properties.get(name))
+    monkeypatch.setattr(ctl.ctl, 'read_property_list', lambda prefix: [])
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl.ctl, 'write_property', lambda key, value: writes.append((key, value)))
+    monkeypatch.setattr(ctl.ctl, 'delete_properties', deletes.extend)
+    monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda name: 'jdbc:mysql://172.24.249.182:3306/zstack_ui')
+    monkeypatch.setattr(ctl.ctl, 'write_ui_properties', writes.extend)
+    monkeypatch.setattr(ctl, 'shell', lambda command, *args, **kwargs: 'mn-host\n' if command == 'hostname' else shell_calls.append(command) or '')
+    monkeypatch.setattr(ctl, 'update_change_ip_firewall_rules', lambda *args: shell_calls.append(args))
+
+    cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
+    monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
+    monkeypatch.setattr(cmd, 'checkMysqlConnection', lambda *args: None)
+    monkeypatch.setattr(cmd, 'update_morph_config', lambda ip: shell_calls.append(('morph', ip)))
+
+    cmd.run(SimpleNamespace(
+        ip='fd00:172:24:249::182',
+        cloudbus_server_ip=None,
+        mysql_ip=None,
+        root_password=None,
+        allow_management_ip_family_change=True,
+        yes_i_understand_management_network_risk=True,
+    ))
+
+    assert ('management.server.ip', 'fd00:172:24:249::182') in writes
+    assert ('management.server.ip4', '172.24.249.182') in writes
+    assert deletes == ['management.server.ip6']
 
 
 def test_add_ip_sets_management_server_ip6_without_configuring_nic(monkeypatch):
