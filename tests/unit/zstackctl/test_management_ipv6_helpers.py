@@ -117,9 +117,10 @@ def test_build_java_ip_stack_opts_keeps_ipv4_preference_but_enables_dual_stack()
     assert '-Xmx12288M' in actual
 
 
-def test_add_ip6_rejects_invalid_input():
-    assert not management_network_ipv6.validate_ipv6('172.24.249.182')
-    assert not management_network_ipv6.validate_ipv6('not-an-ip')
+def test_add_ip_rejects_invalid_input():
+    assert management_network_ipv6.validate_ip('172.24.249.182')
+    assert management_network_ipv6.validate_ipv6('fd00:172:24:249::182')
+    assert not management_network_ipv6.validate_ip('not-an-ip')
 
 
 def test_management_server_requires_ipv6_stack_only_for_ipv6_management_config():

@@ -8025,6 +8025,11 @@ class ChangeIpCmd(Command):
     ADDRESS_FAMILY_CHANGE_ERROR = (
         'changing management.server.ip address family is not supported: old_ip=%s, new_ip=%s'
     )
+    ADDRESS_FAMILY_CHANGE_RISK = (
+        'Changing management.server.ip address family may disconnect or lose management of '
+        'hosts, primary storage, backup storage, VPC routers, console proxy, and external '
+        'agents that still use the old IP version.'
+    )
 
     def __init__(self):
         super(ChangeIpCmd, self).__init__()
@@ -8043,6 +8048,12 @@ class ChangeIpCmd(Command):
         parser.add_argument('--root-password',
                             help='When mysql_restrict_connection is enabled, --root-password needs to be set ',
                             required=False)
+        parser.add_argument('--allow-management-ip-family-change',
+                            help='Allow high-risk management.server.ip IPv4/IPv6 family switch.',
+                            action='store_true', default=False)
+        parser.add_argument('--yes-i-understand-management-network-risk',
+                            help='Confirm that resources using the old IP version may disconnect after change_ip.',
+                            action='store_true', default=False)
 
     def isVirtualIp(self, ip):
         return shell("ip a | grep -w %s" % ip, False).strip().endswith("zs")
@@ -8181,6 +8192,28 @@ class ChangeIpCmd(Command):
         else:
             info("morph cannot find skip")
 
+    def check_management_ip_family_change(self, args, old_ip, new_ip):
+        if management_network_ipv6.is_same_ip_version_transition(old_ip, new_ip):
+            return False
+
+        if not getattr(args, 'allow_management_ip_family_change', False):
+            error(self.ADDRESS_FAMILY_CHANGE_ERROR % (old_ip, new_ip))
+
+        if not getattr(args, 'yes_i_understand_management_network_risk', False):
+            error('%s Re-run with --yes-i-understand-management-network-risk if you have verified the risk.'
+                  % self.ADDRESS_FAMILY_CHANGE_RISK)
+
+        info(self.ADDRESS_FAMILY_CHANGE_RISK)
+        return True
+
+    def secondary_management_ip_property_for(self, ip):
+        ip_version = get_ip_version(ip)
+        if ip_version == management_network_ipv6.IPV4_VERSION:
+            return management_network_ipv6.MANAGEMENT_IP4_PROPERTY_KEY
+        if ip_version == management_network_ipv6.IPV6_VERSION:
+            return management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY
+        error('management ip[%s] is not a valid ip' % ip)
+
     def run(self, args):
         if args.ip == '0.0.0.0':
             raise CtlError('for your data safety, please do NOT use 0.0.0.0 as the listen address')
@@ -8211,12 +8244,15 @@ class ChangeIpCmd(Command):
         # Update /etc/hosts
         if os.path.isfile(zstack_conf_file):
             old_ip = ctl.read_property('management.server.ip')
+            preserve_old_ip_property = None
+            cleanup_secondary_ip_property = None
             if old_ip is not None:
                 if not validate_ip(old_ip):
                     info("The ip address[%s] read from [%s] seems not a valid ip" % (old_ip, zstack_conf_file))
                     return 1
-                if not management_network_ipv6.is_same_ip_version_transition(old_ip, args.ip):
-                    error(self.ADDRESS_FAMILY_CHANGE_ERROR % (old_ip, args.ip))
+                if self.check_management_ip_family_change(args, old_ip, args.ip):
+                    preserve_old_ip_property = self.secondary_management_ip_property_for(old_ip)
+                    cleanup_secondary_ip_property = self.secondary_management_ip_property_for(args.ip)
 
             # read from env other than /etc/hostname in case of impact of DHCP SERVER
             old_hostname = shell("hostname").replace("\n","")
@@ -8253,6 +8289,16 @@ class ChangeIpCmd(Command):
               ('management.server.ip', args.ip),
             ])
             info("Update management server ip %s in %s " % (args.ip, zstack_conf_file))
+            if preserve_old_ip_property is not None:
+                if cleanup_secondary_ip_property is not None:
+                    ctl.delete_properties([cleanup_secondary_ip_property])
+                    info("Remove stale secondary management server ip property %s in %s " % (
+                        cleanup_secondary_ip_property, zstack_conf_file))
+                ctl.write_properties([
+                    (preserve_old_ip_property, old_ip),
+                ])
+                info("Preserve old management server ip %s as %s in %s " % (
+                    old_ip, preserve_old_ip_property, zstack_conf_file))
 
             cpo_ip = ctl.read_property('consoleProxyOverriddenIp')
             if cpo_ip is None or cpo_ip == '' or cpo_ip == old_ip:
@@ -8302,45 +8348,63 @@ class ChangeIpCmd(Command):
         info("Change ip successfully")
 
 
-class AddIp6Cmd(Command):
+class AddIpCmd(Command):
     def __init__(self):
-        super(AddIp6Cmd, self).__init__()
-        self.name = "add_ip6"
-        self.description = "add an IPv6 management address to the current management node"
+        super(AddIpCmd, self).__init__()
+        self.name = "add_ip"
+        self.description = "add a secondary management address to the current management node"
         ctl.register_command(self)
 
     def install_argparse_arguments(self, parser):
-        parser.add_argument('--ip', help='The IPv6 management address to add to the current management node.', required=True)
-        parser.add_argument('--prefix', help='Deprecated compatibility option. add_ip6 no longer configures OS network addresses.', required=False)
-        parser.add_argument('--nic', help='Deprecated compatibility option. add_ip6 no longer configures OS network interfaces.', required=False)
+        parser.add_argument('--ip', help='The secondary management address to add to the current management node.', required=True)
+        parser.add_argument('--prefix', help='Deprecated compatibility option. add_ip no longer configures OS network addresses.', required=False)
+        parser.add_argument('--nic', help='Deprecated compatibility option. add_ip no longer configures OS network interfaces.', required=False)
 
-    def add_management_server_ip6_under_lock(self, ip):
-        ip6_property_key = management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY
-        existing_ip6 = ctl.read_property(ip6_property_key)
-        if existing_ip6:
-            if existing_ip6 == ip:
-                info('%s %s already configured, skip' % (ip6_property_key, ip))
+    def secondary_management_ip_property_for(self, ip):
+        ip_version = get_ip_version(ip)
+        if ip_version == management_network_ipv6.IPV4_VERSION:
+            return management_network_ipv6.MANAGEMENT_IP4_PROPERTY_KEY
+        if ip_version == management_network_ipv6.IPV6_VERSION:
+            return management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY
+        error('add_ip requires a valid IP address')
+
+    def add_management_server_ip_under_lock(self, ip):
+        primary_ip = ctl.read_property(management_network_ipv6.MANAGEMENT_IP_PROPERTY_KEY)
+        if primary_ip is None or not validate_ip(primary_ip):
+            error('management.server.ip is not configured with a valid IP address')
+
+        primary_version = get_ip_version(primary_ip)
+        ip_version = get_ip_version(ip)
+        if primary_version == ip_version:
+            error('management.server.ip is already IPv%s, cannot add another IPv%s management address'
+                  % (primary_version, ip_version))
+
+        property_key = self.secondary_management_ip_property_for(ip)
+        existing_ip = ctl.read_property(property_key)
+        if existing_ip:
+            if existing_ip == ip:
+                info('%s %s already configured, skip' % (property_key, ip))
                 return False
-            error('%s already configured as %s, cannot add %s' % (ip6_property_key, existing_ip6, ip))
+            error('%s already configured as %s, cannot add %s' % (property_key, existing_ip, ip))
 
         if not local_ip_exists(ip):
-            error('IPv6 address %s is not found on any device; please configure the OS network address before running add_ip6' % ip)
+            error('IP address %s is not found on any device; please configure the OS network address before running add_ip' % ip)
 
         ctl.write_properties([
-            (ip6_property_key, ip),
+            (property_key, ip),
         ])
         return True
 
     @lock.file_lock('/run/zstack.properties.lock')
-    def add_management_server_ip6(self, ip):
-        return self.add_management_server_ip6_under_lock(ip)
+    def add_management_server_ip(self, ip):
+        return self.add_management_server_ip_under_lock(ip)
 
     def run(self, args):
-        if not management_network_ipv6.validate_ipv6(args.ip):
-            error('add_ip6 requires a valid IPv6 address')
+        if not validate_ip(args.ip):
+            error('add_ip requires a valid IP address')
 
-        if self.add_management_server_ip6(args.ip):
-            info('Add IPv6 management address %s successfully; restart management node to enable dual-stack' % args.ip)
+        if self.add_management_server_ip(args.ip):
+            info('Add secondary management address %s successfully; restart management node to enable dual-stack' % args.ip)
 
 
 class InstallManagementNodeCmd(Command):
@@ -12680,7 +12744,7 @@ class AIOSSetUpSystemServicesCmd(Command):
 
 
 def main():
-    AddIp6Cmd()
+    AddIpCmd()
     AddManagementNodeCmd()
     BootstrapCmd()
     ChangeIpCmd()
