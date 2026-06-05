@@ -2646,6 +2646,10 @@ class TestVmStartCmdXmlBuild:
         assert 'protocol="rbd"' in xml_str
         assert 'clean-traffic' in xml_str
         assert 'net0-slave1' in xml_str
+        root = vm_plugin.etree.fromstring(xml_str)
+        iothread_ids = {iothread.get('id') for iothread in root.findall('./iothreadids/iothread')}
+        assert iothread_ids == {'1', '2'}
+        assert root.find('iothreads').text == '2'
 
     def test_from_start_vm_cmd_builds_xml_with_numa(self):
         vm_plugin.ovs.OvsDpdkSupportVnic = []
