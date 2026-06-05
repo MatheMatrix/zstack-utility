@@ -674,8 +674,8 @@ class CephAgent(object):
     # options:
     # - header X-SLICE-OFFSET
     # - header X-SLICE-SIZE
-    # - header X-SLICE-INDEX
-    # - header X-SLICE-MD5
+    # - header X-SLICE-HASH
+    # - header X-HASH-ALGORITHM
     def upload(self, req):
         # type: (Request) -> None
 
@@ -734,7 +734,8 @@ class CephAgent(object):
             rsp.size = self._get_file_size(task.dstPath)
             rsp.progress = 100
         else:
-            rsp.progress = min(90, task.downloadSize * 90 // task.expectedSize)
+            logger.debug("image %s uploaded range : %s" % (cmd.imageUuid, task.slice_uploaded))
+            rsp.progress = min(90, len(task.slice_uploaded) * 90 // task.expectedSize)
 
         if task.lastError is not None:
             rsp.success = False
