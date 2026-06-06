@@ -113,6 +113,11 @@ MYSQL_NEW_ROOT_PASSWORD='zstack.mysql.password'
 MYSQL_USER_PASSWORD='zstack.password'
 MYSQL_UI_USER_PASSWORD='zstack.ui.password'
 CHOOSE_DATABASE='MariaDB'
+LICENSE_SERVER_DB_NAME='zstack_license_server'
+LICENSE_SERVER_DB_USER='license_server'
+LICENSE_SERVER_DEFAULT_DB_PASSWORD='zstack.ls.password'
+LICENSE_SERVER_DATA_DIR='/var/lib/zstack/zstack-license-server'
+LICENSE_SERVER_SERVICE_PATH='/usr/lib/systemd/system/zstack-license-server.service'
 
 YUM_ONLINE_REPO='y'
 INSTALL_MONITOR=''
@@ -2573,6 +2578,141 @@ install_morph_server(){
   systemctl is-enabled morph &>/dev/null && systemctl restart morph || true
 }
 
+license_server_installer_bin() {
+    local license_server_dir="$ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_CLASSES/ansible/license-server"
+    local installer_bin=''
+
+    [ ! -d "$license_server_dir" ] && return 0
+    installer_bin=`find "$license_server_dir" -maxdepth 1 -type f -name "zstack-license-server.${BASEARCH}.bin" | head -n 1`
+    echo "$installer_bin"
+}
+
+license_server_installed() {
+    local admin_password="$MYSQL_NEW_ROOT_PASSWORD"
+    local query_output=''
+    local query_ret=0
+
+    [ -f "$LICENSE_SERVER_SERVICE_PATH" ] || return 1
+    [ -n "$MYSQL_ROOT_PASSWORD" ] && admin_password="$MYSQL_ROOT_PASSWORD"
+    query_output=`mysql -uroot --password="$admin_password" --host="$MANAGEMENT_IP" --port="$MYSQL_PORT" \
+        --batch --skip-column-names -e "SHOW DATABASES LIKE '$LICENSE_SERVER_DB_NAME'" 2>&1`
+    query_ret=$?
+    if [ $query_ret -ne 0 ]; then
+        echo "Failed to check License Server database:" >>$ZSTACK_INSTALL_LOG
+        printf '%s\n' "$query_output" | sed 's/^/  /' >>$ZSTACK_INSTALL_LOG
+        fail "failed to check license server database. Please check mysql accessibility and root password."
+    fi
+
+    printf '%s\n' "$query_output" | grep -Fx "$LICENSE_SERVER_DB_NAME" >/dev/null 2>&1
+}
+
+license_server_yaml_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf '%s' "$value"
+}
+
+render_license_server_install_config() {
+    local config_file="$1"
+    local admin_password="$MYSQL_NEW_ROOT_PASSWORD"
+    local reset_database='false'
+
+    [ -n "$MYSQL_ROOT_PASSWORD" ] && admin_password="$MYSQL_ROOT_PASSWORD"
+    [ -n "$NEED_DROP_DB" ] && reset_database='true'
+
+    admin_password=`license_server_yaml_escape "$admin_password"`
+
+    cat > "$config_file" <<EOF
+install:
+  install_dir: "${ZSTACK_INSTALL_ROOT}/license-server"
+  data_dir: "${LICENSE_SERVER_DATA_DIR}"
+  service_path: "${LICENSE_SERVER_SERVICE_PATH}"
+  start: false
+database:
+  driver: "mysql"
+  url: "${MANAGEMENT_IP}:${MYSQL_PORT}"
+  name: "${LICENSE_SERVER_DB_NAME}"
+  user: "${LICENSE_SERVER_DB_USER}"
+  password: "${LICENSE_SERVER_DEFAULT_DB_PASSWORD}"
+  prepare: true
+  admin_user: "root"
+  admin_password: "${admin_password}"
+  reset_database: ${reset_database}
+server:
+  management_ip: "${MANAGEMENT_IP}"
+EOF
+    [ $? -ne 0 ] && fail "failed to render license server install config"
+    chmod 600 "$config_file" || fail "failed to protect license server install config"
+}
+
+append_license_server_installer_output() {
+    local output_file="$1"
+
+    [ -s "$output_file" ] || return 0
+    echo "" >>$ZSTACK_INSTALL_LOG
+    echo "    License Server installer output:" >>$ZSTACK_INSTALL_LOG
+    sed 's/^/      /' "$output_file" >>$ZSTACK_INSTALL_LOG
+}
+
+install_license_server() {
+    local installer_bin=`license_server_installer_bin`
+    local install_config=''
+    if [ -z "$installer_bin" ]; then
+        fail "license server installer package for $BASEARCH not found"
+    fi
+
+    echo_title "Install License Server"
+    echo ""
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+
+    LICENSE_SERVER_INSTALL_OUTPUT=`mktemp`
+    if [ x"$UPGRADE" = x"y" ] && [ -z "$NEED_DROP_DB" ] && license_server_installed; then
+        show_spinner is_upgrade_license_server "$installer_bin"
+    else
+        install_config=`mktemp`
+        render_license_server_install_config "$install_config"
+        show_spinner is_install_license_server "$installer_bin" "$install_config"
+    fi
+    append_license_server_installer_output "$LICENSE_SERVER_INSTALL_OUTPUT"
+    rm -f "$LICENSE_SERVER_INSTALL_OUTPUT"
+    [ -n "$install_config" ] && rm -f "$install_config"
+}
+
+is_upgrade_license_server() {
+    echo_subtitle "Upgrade License Server files"
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+
+    local installer_bin="$1"
+    local installer_output="${LICENSE_SERVER_INSTALL_OUTPUT:-$ZSTACK_INSTALL_LOG}"
+
+    bash "$installer_bin" --upgrade >"$installer_output" 2>&1
+    if [ $? -ne 0 ]; then
+        append_license_server_installer_output "$installer_output"
+        fail "failed to upgrade license server"
+    fi
+
+    pass
+}
+
+is_install_license_server() {
+    echo_subtitle "Install License Server files"
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+
+    local installer_bin="$1"
+    local install_config="$2"
+    local installer_output="${LICENSE_SERVER_INSTALL_OUTPUT:-$ZSTACK_INSTALL_LOG}"
+
+    trap 'rm -f "$install_config"' EXIT
+    bash "$installer_bin" --config "$install_config" >"$installer_output" 2>&1
+    if [ $? -ne 0 ]; then
+        append_license_server_installer_output "$installer_output"
+        fail "failed to install license server"
+    fi
+
+    pass
+}
+
 is_extract_morph_tar(){
   echo_subtitle "Extract morph tar"
   local src="${1}"
@@ -4632,6 +4772,11 @@ if [ x"$UPGRADE" = x'y' ]; then
     #only upgrade zstack
     upgrade_zstack
 
+    #Install or upgrade license server after the new management node package is in place
+    if [ -z "$ONLY_UPGRADE_CTL" ]; then
+        install_license_server
+    fi
+
     #Upgrade or install zops
     install_zops
 
@@ -4815,6 +4960,8 @@ install_fluentbit_server
 install_keycloak_server
 
 install_morph_server
+
+install_license_server
 
 #Start ${PRODUCT_NAME} 
 if [ -z $NOT_START_ZSTACK ]; then
