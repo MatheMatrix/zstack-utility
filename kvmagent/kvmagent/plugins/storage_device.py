@@ -25,6 +25,26 @@ ISCSI_LOGIN_DEFAULT_TIMEOUT = 180
 ISCSID_CONFIG_PATH = "/etc/iscsi/iscsid.conf"
 
 
+def _normalize_iscsi_server_ip(iscsi_server_ip):
+    if iscsi_server_ip and iscsi_server_ip.startswith("[") and iscsi_server_ip.endswith("]"):
+        return iscsi_server_ip[1:-1]
+    return iscsi_server_ip
+
+
+def _format_iscsi_portal(iscsi_server_ip, iscsi_server_port):
+    ip = _normalize_iscsi_server_ip(iscsi_server_ip)
+    if ":" in ip:
+        return "[%s]:%s" % (ip, iscsi_server_port)
+    return "%s:%s" % (ip, iscsi_server_port)
+
+
+def _format_iscsi_portal_patterns(iscsi_server_ip, iscsi_server_port):
+    ip = _normalize_iscsi_server_ip(iscsi_server_ip)
+    portal = _format_iscsi_portal(ip, iscsi_server_port)
+    legacy_portal = "%s:%s" % (ip, iscsi_server_port)
+    return [portal] if portal == legacy_portal else [portal, legacy_portal]
+
+
 class RetryException(Exception):
     pass
 
@@ -439,7 +459,8 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         bash.bash_r("udevadm trigger --subsystem-match=block")
 
     def get_iqn_login_timeout(self, iqn, server_ip, server_port):
-        r, o = bash.bash_ro('iscsiadm --mode node --targetname "%s" -p %s:%s --op=show' % (iqn, server_ip, server_port))
+        portal = _format_iscsi_portal(server_ip, server_port)
+        r, o = bash.bash_ro('iscsiadm --mode node --targetname "%s" -p %s --op=show' % (iqn, linux.shellquote(portal)))
         if r != 0:
             return ISCSI_LOGIN_DEFAULT_TIMEOUT
         login_timeout = None
@@ -460,21 +481,21 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
 
         @linux.retry(times=5, sleep_time=1)
         def discovery_iscsi(iscsiServerIp, iscsiServerPort):
+            portal = _format_iscsi_portal(iscsiServerIp, iscsiServerPort)
             r, o, e = bash.bash_roe(
-                "timeout 10 iscsiadm -m discovery --type sendtargets --portal %s:%s" % (
-                    iscsiServerIp, iscsiServerPort))
+                "timeout 10 iscsiadm -m discovery --type sendtargets --portal %s" % linux.shellquote(portal))
             if r != 0:
-                raise RetryException("can not discovery iscsi portal %s:%s, cause %s" % (iscsiServerIp, iscsiServerPort, e))
+                raise RetryException("can not discovery iscsi portal %s, cause %s" % (portal, e))
 
             iqns = []
             for i in o.splitlines():
-                if i.startswith("%s:%s," % (iscsiServerIp, iscsiServerPort)):
+                if i.startswith("%s," % portal):
                     iqns.append(i.strip().split(" ")[-1])
             return iqns
 
         def list_iscsi_disks(iscsiServerIp, iscsiServerPort, iscsiIqn):
-            s = "%s:%s" % (iscsiServerIp, iscsiServerPort)
-            return [ f for f in os.listdir("/dev/disk/by-path") if s in f and iscsiIqn in f ]
+            portals = _format_iscsi_portal_patterns(iscsiServerIp, iscsiServerPort)
+            return [f for f in os.listdir("/dev/disk/by-path") if any(p in f for p in portals) and iscsiIqn in f]
 
         def refresh_mpath(disks_by_path):
             devpaths = [os.path.realpath(os.path.join("/dev/disk/by-path", s)) for s in disks_by_path]
@@ -502,7 +523,12 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
 
             lsscsi_retry_counter = [0]
             disks_by_dev = list_iscsi_disks(iscsiServerIp, iscsiServerPort, iscsiIqn)
-            sid = bash.bash_o("iscsiadm -m session | grep %s:%s | grep %s | awk '{print $2}'" % (iscsiServerIp, iscsiServerPort, iscsiIqn)).strip("[]\n ")
+            sid = ""
+            for portal in _format_iscsi_portal_patterns(iscsiServerIp, iscsiServerPort):
+                sid = bash.bash_o("iscsiadm -m session | grep -F %s | grep -F %s | awk '{print $2}'" % (
+                    linux.shellquote(portal), linux.shellquote(iscsiIqn))).strip("[]\n ")
+                if sid:
+                    break
             if sid == "" or sid is None:
                 err = "sid not found, this may because chap authentication failed"
                 if e != None and e != "":
@@ -548,18 +574,20 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
             t.iqn = iqn
             try:
                 if cmd.iscsiChapUserName and cmd.iscsiChapUserPassword:
+                    portal = _format_iscsi_portal(cmd.iscsiServerIp, cmd.iscsiServerPort)
                     bash.bash_o(
-                        'iscsiadm --mode node --targetname "%s" -p %s:%s --op=update --name node.session.auth.authmethod --value=CHAP' % (
-                            iqn, cmd.iscsiServerIp, cmd.iscsiServerPort))
+                        'iscsiadm --mode node --targetname "%s" -p %s --op=update --name node.session.auth.authmethod --value=CHAP' % (
+                            iqn, linux.shellquote(portal)))
                     bash.bash_o(
-                        'iscsiadm --mode node --targetname "%s" -p %s:%s --op=update --name node.session.auth.username --value=%s' % (
-                            iqn, cmd.iscsiServerIp, cmd.iscsiServerPort, cmd.iscsiChapUserName))
+                        'iscsiadm --mode node --targetname "%s" -p %s --op=update --name node.session.auth.username --value=%s' % (
+                            iqn, linux.shellquote(portal), cmd.iscsiChapUserName))
                     bash.bash_o(
-                        'iscsiadm --mode node --targetname "%s" -p %s:%s --op=update --name node.session.auth.password --value=%s' % (
-                            iqn, cmd.iscsiServerIp, cmd.iscsiServerPort, linux.shellquote(cmd.iscsiChapUserPassword)))
+                        'iscsiadm --mode node --targetname "%s" -p %s --op=update --name node.session.auth.password --value=%s' % (
+                            iqn, linux.shellquote(portal), linux.shellquote(cmd.iscsiChapUserPassword)))
                 timeout = self.get_iqn_login_timeout(iqn, cmd.iscsiServerIp, cmd.iscsiServerPort)
-                r, o, e = bash.bash_roe('timeout -s SIGKILL %s iscsiadm --mode node --targetname "%s" -p %s:%s --login' %
-                            (timeout, iqn, cmd.iscsiServerIp, cmd.iscsiServerPort))
+                portal = _format_iscsi_portal(cmd.iscsiServerIp, cmd.iscsiServerPort)
+                r, o, e = bash.bash_roe('timeout -s SIGKILL %s iscsiadm --mode node --targetname "%s" -p %s --login' %
+                            (timeout, iqn, linux.shellquote(portal)))
                 wait_iscsi_mknode(cmd.iscsiServerIp, cmd.iscsiServerPort, iqn, e)
             except Exception:
                 login_failed = login_failed + 1
@@ -588,7 +616,9 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
     @staticmethod
     def clean_iscsi_cache_configuration(path, iscsiServerIp, iscsiServerPort):
         # clean cache configuration file:/var/lib/iscsi/nodes/iqnxxx/ip,port
-        results = bash.bash_o(("ls %s/*/ | grep %s | grep %s" % (path, iscsiServerIp, iscsiServerPort))).strip().splitlines()
+        results = []
+        for portal in _format_iscsi_portal_patterns(iscsiServerIp, iscsiServerPort):
+            results.extend(bash.bash_o(("ls %s/*/ | grep -F %s" % (path, linux.shellquote(portal)))).strip().splitlines())
         if results is None or len(results) == 0:
             return
         for result in results:
@@ -635,18 +665,22 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
 
         iqns = cmd.iscsiTargets
         if iqns is None or len(iqns) == 0:
-            iqns = shell.call("timeout 10 iscsiadm -m discovery --type sendtargets --portal %s:%s | awk '{print $2}'" % (
-                cmd.iscsiServerIp, cmd.iscsiServerPort)).strip().splitlines()
+            portal = _format_iscsi_portal(cmd.iscsiServerIp, cmd.iscsiServerPort)
+            iqns = shell.call("timeout 10 iscsiadm -m discovery --type sendtargets --portal %s | awk '{print $2}'" %
+                              linux.shellquote(portal)).strip().splitlines()
 
         if iqns is None or len(iqns) == 0:
             rsp.iscsiTargetStructList = []
             return jsonobject.dumps(rsp)
 
         for iqn in iqns:
-            r = bash.bash_r("iscsiadm -m session | grep %s:%s | grep %s" % (cmd.iscsiServerIp, cmd.iscsiServerPort, iqn))
-            if r == 0:
-                shell.call('timeout 10 iscsiadm --mode node --targetname "%s" -p %s:%s --logout' % (iqn, cmd.iscsiServerIp, cmd.iscsiServerPort))
-                shell.call('timeout 10 iscsiadm -m node -o delete -T "%s" -p %s:%s' % (iqn, cmd.iscsiServerIp, cmd.iscsiServerPort))
+            for portal in _format_iscsi_portal_patterns(cmd.iscsiServerIp, cmd.iscsiServerPort):
+                r = bash.bash_r("iscsiadm -m session | grep -F %s | grep -F %s" % (
+                    linux.shellquote(portal), linux.shellquote(iqn)))
+                if r == 0:
+                    shell.call('timeout 10 iscsiadm --mode node --targetname "%s" -p %s --logout' % (iqn, linux.shellquote(portal)))
+                    shell.call('timeout 10 iscsiadm -m node -o delete -T "%s" -p %s' % (iqn, linux.shellquote(portal)))
+                    break
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -1834,5 +1868,3 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
 
         drive = self.get_megaraid_device_info_storcli("/dev/bus/%d -d megaraid,%d" % (bus_number, device_number), vd_info, pd_info)
         return drive
-
-
