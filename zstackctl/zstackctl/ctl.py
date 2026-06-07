@@ -990,6 +990,21 @@ def split_host_port_endpoint(endpoint, default_port):
     return endpoint, default_port
 
 
+def format_mysql_host(host):
+    if host.startswith('[') and host.endswith(']'):
+        return host[1:-1]
+    return host
+
+
+def parse_jdbc_hostname_port(host_port):
+    return split_host_port_endpoint(host_port, DEFAULT_MYSQL_PORT)
+
+
+def parse_jdbc_hostname_ports(db_url, prefix):
+    host_ports = db_url[len(prefix):].lstrip('/').split('/')[0]
+    return [parse_jdbc_hostname_port(host_port) for host_port in host_ports.split(',')]
+
+
 def check_host_info_format(host_info, with_public_key=False):
     '''check install ha and install multi mn node info format'''
     if '@' not in host_info:
@@ -1400,7 +1415,7 @@ class Ctl(object):
         # check the ip address
         cmd_name = args.sub_command_name
         if cmd_name == "status" or cmd_name == "start" or cmd_name == "start_node" or cmd_name == "restart_node":
-            ip_info = shell("ip a | grep 'inet ' | grep -v 127.0.0.1", False).strip()
+            ip_info = shell("ip -o addr show scope global | grep -E 'inet |inet6 '", False).strip()
             if ip_info is None or ip_info == '':
                 if cmd_name == "status":
                     error_not_exit("Please configure the IP address of this management server correctly.")
@@ -1587,10 +1602,7 @@ class Ctl(object):
         host_name_ports = []
 
         def parse_hostname_ports(prefix):
-            ips = db_url[len(prefix):].lstrip('/').split('/')[0]
-            ips = ips.split(',')
-            for ip in ips:
-                host_name_ports.append(split_host_port_endpoint(ip, DEFAULT_MYSQL_PORT))
+            host_name_ports.extend(parse_jdbc_hostname_ports(db_url, prefix))
 
         if db_url.startswith('jdbc:mysql:loadbalance:'):
             parse_hostname_ports('jdbc:mysql:loadbalance:')
@@ -1616,10 +1628,7 @@ class Ctl(object):
         host_name_ports = []
 
         def parse_hostname_ports(prefix):
-            ips = db_url[len(prefix):].lstrip('/').split('/')[0]
-            ips = ips.split(',')
-            for ip in ips:
-                host_name_ports.append(split_host_port_endpoint(ip, DEFAULT_MYSQL_PORT))
+            host_name_ports.extend(parse_jdbc_hostname_ports(db_url, prefix))
 
         if db_url.startswith('jdbc:mysql:loadbalance:'):
             parse_hostname_ports('jdbc:mysql:loadbalance:')
@@ -2480,10 +2489,11 @@ class DeployDBCmd(Command):
         if not os.path.exists(property_file_path):
             error('cannot find %s, your ZStack installation may have been corrupted, please reinstall it' % property_file_path)
 
+        mysql_host = format_mysql_host(args.host)
         if args.root_password:
-            check_existing_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "use zstack"' % (args.root_password, args.host, args.port)
+            check_existing_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "use zstack"' % (args.root_password, mysql_host, args.port)
         else:
-            check_existing_db = 'mysql --user=root --host=%s --port=%s -e "use zstack"' % (args.host, args.port)
+            check_existing_db = 'mysql --user=root --host=%s --port=%s -e "use zstack"' % (mysql_host, args.port)
 
         self.update_db_config()
         cmd = ShellCmd(check_existing_db)
@@ -2499,7 +2509,7 @@ class DeployDBCmd(Command):
             else:
                 raise CtlError('detected existing zstack database; if you are sure to drop it, please append parameter --drop or use --keep-db to keep the database')
         else:
-            cmd = ShellCmd('bash %s root %s %s %s %s' % (script_path, args.root_password, args.host, args.port, args.zstack_password))
+            cmd = ShellCmd('bash %s root %s %s %s %s' % (script_path, args.root_password, mysql_host, args.port, args.zstack_password))
             cmd(False)
             if cmd.return_code != 0:
                 if ('ERROR 1044' in cmd.stdout or 'ERROR 1044' in cmd.stderr) or ('Access denied' in cmd.stdout or 'Access denied' in cmd.stderr):
@@ -2566,12 +2576,13 @@ class DeployUIDBCmd(Command):
         if not os.path.exists(script_path):
             error('cannot find %s, your zstack installation may have been corrupted, please reinstall it' % script_path)
 
+        mysql_host = format_mysql_host(args.host)
         if args.root_password:
-            check_existing_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "use zstack_ui"' % (args.root_password, args.host, args.port)
-            drop_mini_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "DROP DATABASE IF EXISTS zstack_mini;"' % (args.root_password, args.host, args.port)
+            check_existing_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "use zstack_ui"' % (args.root_password, mysql_host, args.port)
+            drop_mini_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "DROP DATABASE IF EXISTS zstack_mini;"' % (args.root_password, mysql_host, args.port)
         else:
-            check_existing_db = 'mysql --user=root --host=%s --port=%s -e "use zstack_ui"' % (args.host, args.port)
-            drop_mini_db = 'mysql --user=root --host=%s --port=%s -e "DROP DATABASE IF EXISTS zstack_mini;"' % (args.host, args.port)
+            check_existing_db = 'mysql --user=root --host=%s --port=%s -e "use zstack_ui"' % (mysql_host, args.port)
+            drop_mini_db = 'mysql --user=root --host=%s --port=%s -e "DROP DATABASE IF EXISTS zstack_mini;"' % (mysql_host, args.port)
 
         self.update_db_config()
         cmd = ShellCmd(check_existing_db)
@@ -2587,7 +2598,7 @@ class DeployUIDBCmd(Command):
             else:
                 raise CtlError('detected existing zstack_ui database; if you are sure to drop it, please append parameter --drop or use --keep-db to keep the database')
         else:
-            cmd = ShellCmd('bash %s root %s %s %s %s' % (script_path, args.root_password, args.host, args.port, args.zstack_ui_password))
+            cmd = ShellCmd('bash %s root %s %s %s %s' % (script_path, args.root_password, mysql_host, args.port, args.zstack_ui_password))
             cmd(False)
             if cmd.return_code != 0:
                 if ('ERROR 1044' in cmd.stdout or 'ERROR 1044' in cmd.stderr) or ('Access denied' in cmd.stdout or 'Access denied' in cmd.stderr):

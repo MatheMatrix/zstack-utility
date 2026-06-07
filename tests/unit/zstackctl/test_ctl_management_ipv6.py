@@ -60,6 +60,18 @@ def test_split_host_port_endpoint_supports_bracketed_ipv6():
     assert ctl.split_host_port_endpoint('2001:db8::10', '22') == ('2001:db8::10', '22')
 
 
+def test_parse_jdbc_hostname_ports_supports_bracketed_ipv6():
+    assert ctl.parse_jdbc_hostname_ports(
+        'jdbc:mysql://[2001:db8::10]:3307,[2001:db8::11]/zstack',
+        'jdbc:mysql:',
+    ) == [('2001:db8::10', '3307'), ('2001:db8::11', ctl.DEFAULT_MYSQL_PORT)]
+
+
+def test_format_mysql_host_strips_ipv6_jdbc_brackets():
+    assert ctl.format_mysql_host('[2001:db8::10]') == '2001:db8::10'
+    assert ctl.format_mysql_host('192.168.10.10') == '192.168.10.10'
+
+
 def test_check_host_info_format_accepts_ipv6_with_port():
     assert ctl.check_host_info_format('root:password@[2001:db8::10]:2222') == (
         'root', 'password', '2001:db8::10', '2222')
