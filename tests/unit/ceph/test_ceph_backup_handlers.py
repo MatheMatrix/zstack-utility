@@ -55,6 +55,28 @@ def _mock_capacity(agent, total=10**12, avail=5 * 10**11):
 
 
 # ---------------------------------------------------------------------------
+# SFTP command formatting
+# ---------------------------------------------------------------------------
+@pytest.mark.ceph
+class TestCephBackupSftpCommandFormatting:
+    def test_sftp_targets_wrap_ipv6_hostname(self):
+        assert module.build_sftp_target("root", "2001:db8::10") == "root@[2001:db8::10]"
+        assert module.build_sftp_target("root", "192.168.10.10") == "root@192.168.10.10"
+
+    def test_sftp_commands_use_bracketed_ipv6_target(self):
+        scp_cmd = module.build_sftp_scp_to_pipe_cmd(
+            22,
+            "root",
+            "2001:db8::10",
+            "/backup/image.qcow2",
+            "/tmp/image.fifo")
+        sftp_cmd = module.build_sftp_batch_cmd(22, "root", "2001:db8::10")
+
+        assert "root@[2001:db8::10]:/backup/image.qcow2" in scp_cmd
+        assert sftp_cmd.endswith("root@[2001:db8::10]")
+
+
+# ---------------------------------------------------------------------------
 # echo
 # ---------------------------------------------------------------------------
 @pytest.mark.ceph

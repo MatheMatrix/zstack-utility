@@ -77,6 +77,7 @@ from zstacklib.gpu.base import VendorEnum
 from zstacklib.utils.plugin import TaskManager, TaskResult
 from zstacklib.utils.qga import *
 from zstacklib.utils import jsonobject
+from zstacklib.utils import network_ipv6
 from zstacklib.utils.job_progress import calculate_detail_speed, normalize_report_speed, summarize_block_job
 from zstacklib.utils.qmp import get_block_node_name_and_file
 from zstacklib.utils.report import *
@@ -129,6 +130,26 @@ PROTOCOL_CBD_PREFIX = "cbd:"
 MAX_NBD_READ_SIZE = 32768000
 LIBVIRT_DEFINED_XML_DIR = "/etc/libvirt/qemu/"
 LIBVIRT_TLS_PORT = 16514
+CONSOLE_LISTEN_IPV4_ADDRESS = '0.0.0.0'
+CONSOLE_LISTEN_IPV6_ADDRESS = network_ipv6.DUAL_STACK_BIND_ADDRESS
+MIGRATION_HOSTNAME_DOMAIN = 'zstack.org'
+HOSTNAME_LABEL_SEPARATOR = '-'
+IPV4_SEPARATOR = '.'
+
+
+def build_libvirt_system_uri(proto, host):
+    return '%s://%s/system' % (proto, network_ipv6.format_url_host(host))
+
+
+def build_libvirt_tcp_uri(host):
+    return 'tcp://%s' % network_ipv6.format_url_host(host)
+
+
+def build_migration_hostname(host_ip):
+    host = host_ip.strip(network_ipv6.IPV6_BRACKET_PREFIX + network_ipv6.IPV6_BRACKET_SUFFIX)
+    hostname = host.replace(IPV4_SEPARATOR, HOSTNAME_LABEL_SEPARATOR).replace(
+        network_ipv6.IPV6_SEPARATOR, HOSTNAME_LABEL_SEPARATOR)
+    return '%s.%s' % (hostname, MIGRATION_HOSTNAME_DOMAIN)
 
 
 def _check_tls_ready(dest_ip, vm_uuid):
@@ -1315,6 +1336,10 @@ class ChangeVfNicHaStateRsp(kvmagent.AgentResponse):
 
 
 class VncPortIptableRule(object):
+    IPV4_VERSION = 4
+    IPV6_VERSION = 6
+    IPV6_REJECT_WITH = 'icmp6-adm-prohibited'
+
     def __init__(self):
         self.host_ip = None
         self.port = None
@@ -1323,37 +1348,64 @@ class VncPortIptableRule(object):
     def _make_chain_name(self):
         return "vm-%s-vnc" % self.vm_internal_id
 
+    def _load_cleanup_iptables(self):
+        iptables_list = [iptables.from_iptables_save()]
+        try:
+            iptables_list.append(iptables.from_ip6tables_save())
+        except Exception as e:
+            logger.debug('skip IPv6 VNC iptables cleanup because ip6tables is unavailable: %s' % e)
+        return iptables_list
+
     @lock.file_lock('/run/xtables.lock')
     def apply(self):
         assert self.host_ip is not None
         assert self.port is not None
         assert self.vm_internal_id is not None
 
-        ipt = iptables.from_iptables_save()
         chain_name = self._make_chain_name()
         current_ip = linux.get_host_by_name(self.host_ip)
 
-        # get ipv4 subnet
-        current_ip_addr_list = [addr for addr in iproute.query_addresses_by_ip(current_ip, 4) if addr.scope == 'universe']
+        current_ip_addr_list = [
+            addr for addr in iproute.query_addresses_by_ip(current_ip, self.IPV4_VERSION)
+            if addr.scope == 'universe'
+        ]
+        if current_ip_addr_list:
+            ipt = iptables.from_iptables_save()
+            current_ip_with_netmask = '%s/%d' % (current_ip_addr_list[0].address, current_ip_addr_list[0].prefixlen)
+
+            ipt.add_rule('-A INPUT -p tcp -m tcp --dport %s -j %s' % (self.port, chain_name))
+            ipt.add_rule('-A %s -d %s -j ACCEPT' % (chain_name, current_ip_with_netmask))
+            ipt.add_rule('-A %s ! -d %s -j REJECT --reject-with icmp-host-prohibited' % (chain_name, current_ip_with_netmask))
+            ipt.iptable_restore()
+            return
+
+        current_ip_addr_list = [
+            addr for addr in iproute.query_addresses_by_ip(current_ip, self.IPV6_VERSION)
+            if addr.scope == 'universe'
+        ]
         if not current_ip_addr_list:
             err = 'cannot get host ip with netmask for %s' % self.host_ip
             logger.warn(err)
             raise kvmagent.KvmError(err)
+
+        ipt = iptables.from_ip6tables_save()
         current_ip_with_netmask = '%s/%d' % (current_ip_addr_list[0].address, current_ip_addr_list[0].prefixlen)
 
         ipt.add_rule('-A INPUT -p tcp -m tcp --dport %s -j %s' % (self.port, chain_name))
         ipt.add_rule('-A %s -d %s -j ACCEPT' % (chain_name, current_ip_with_netmask))
-        ipt.add_rule('-A %s ! -d %s -j REJECT --reject-with icmp-host-prohibited' % (chain_name, current_ip_with_netmask))
+        ipt.add_rule('-A %s ! -d %s -j REJECT --reject-with %s' % (
+            chain_name, current_ip_with_netmask, self.IPV6_REJECT_WITH
+        ))
         ipt.iptable_restore()
 
     @lock.file_lock('/run/xtables.lock')
     def delete(self):
         assert self.vm_internal_id is not None
 
-        ipt = iptables.from_iptables_save()
         chain_name = self._make_chain_name()
-        ipt.delete_chain(chain_name)
-        ipt.iptable_restore()
+        for ipt in self._load_cleanup_iptables():
+            ipt.delete_chain(chain_name)
+            ipt.iptable_restore()
 
     def find_vm_internal_ids(self, vms):
         internal_ids = []
@@ -1377,25 +1429,24 @@ class VncPortIptableRule(object):
 
     @lock.file_lock('/run/xtables.lock')
     def delete_stale_chains(self):
-        ipt = iptables.from_iptables_save()
-        tbl = ipt.get_table()
-        if not tbl:
-            ipt.iptable_restore()
-            return
-
         vms = get_running_vms()
         internal_ids = self.find_vm_internal_ids(vms)
 
-        # delete all vnc chains
-        chains = tbl.children[:]
-        for chain in chains:
-            if 'vm' in chain.name and 'vnc' in chain.name:
-                vm_internal_id = chain.name.split('-')[1]
-                if vm_internal_id not in internal_ids:
-                    ipt.delete_chain(chain.name)
-                    logger.debug('deleted a stale VNC iptable chain[%s]' % chain.name)
+        for ipt in self._load_cleanup_iptables():
+            tbl = ipt.get_table()
+            if not tbl:
+                ipt.iptable_restore()
+                continue
 
-        ipt.iptable_restore()
+            chains = tbl.children[:]
+            for chain in chains:
+                if 'vm' in chain.name and 'vnc' in chain.name:
+                    vm_internal_id = chain.name.split('-')[1]
+                    if vm_internal_id not in internal_ids:
+                        ipt.delete_chain(chain.name)
+                        logger.debug('deleted a stale VNC iptable chain[%s]' % chain.name)
+
+            ipt.iptable_restore()
 
 
 def e(parent, tag, value=None, attrib=None, usenamesapce = False):
@@ -1427,6 +1478,13 @@ def find_zstack_metadata_node(root, name):
         return None
 
     return zs.find(name)
+
+
+def get_console_listen_address(host_management_ip):
+    if host_management_ip and network_ipv6.IPV6_SEPARATOR in host_management_ip:
+        return CONSOLE_LISTEN_IPV6_ADDRESS
+    return CONSOLE_LISTEN_IPV4_ADDRESS
+
 
 def find_domain_cdrom_address(domain_xml, target_dev):
     domain_xmlobject = xmlobject.loads(domain_xml)
@@ -2320,7 +2378,7 @@ class VmVolumesRecoveryTask(plugin.TaskDaemon):
 @linux.retry(times=3, sleep_time=1)
 def get_connect(src_host_ip, use_tls=False):
     proto = 'qemu+tls' if use_tls else 'qemu+tcp'
-    uri = '{0}://{1}/system'.format(proto, src_host_ip)
+    uri = build_libvirt_system_uri(proto, src_host_ip)
     conn = libvirt.open(uri)
     if conn is None:
         logger.warn('unable to connect qemu on host {0} via {1}'.format(src_host_ip, proto))
@@ -4388,24 +4446,24 @@ class Vm(object):
 
         current_hostname = linux.get_host_name()
         if cmd.migrateFromDestination:
-            hostname = cmd.destHostIp.replace('.', '-')
+            hostname = build_migration_hostname(cmd.destHostIp)
         else:
-            hostname = cmd.srcHostIp.replace('.', '-')
+            hostname = build_migration_hostname(cmd.srcHostIp)
 
         if current_hostname == 'localhost.localdomain' or current_hostname == 'localhost':
             # set the hostname, otherwise the migration will fail
-            shell.call('hostname %s.zstack.org' % hostname)
+            shell.call('hostname %s' % hostname)
 
         dest_ctrl_ip = getattr(cmd, 'destHostManagementIp', None) or cmd.destHostIp
         use_tls = getattr(cmd, 'useTls', False)
         if use_tls:
             use_tls = _check_tls_ready(dest_ctrl_ip, cmd.vmUuid)
         migrate_proto = 'qemu+tls' if use_tls else 'qemu+tcp'
-        destUrl = "{0}://{1}/system".format(migrate_proto, dest_ctrl_ip)
+        destUrl = build_libvirt_system_uri(migrate_proto, dest_ctrl_ip)
         # Data channel URI must always use tcp:// scheme.
         # When TLS is enabled, encryption is activated via VIR_MIGRATE_TLS flag,
         # not by changing the URI scheme.
-        tcpUri = "tcp://{0}".format(cmd.destHostIp)
+        tcpUri = build_libvirt_tcp_uri(cmd.destHostIp)
         bandwidth = cmd.bandwidth if cmd.bandwidth > 0 else 0
 
         storage_migration_required = cmd.disks and len(cmd.disks.__dict__) != 0
@@ -6819,21 +6877,23 @@ class Vm(object):
 
         def make_vnc():
             devices = elements['devices']
+            listen_address = get_console_listen_address(cmd.hostManagementIp)
             if cmd.consolePassword == None:
                 vnc = e(devices, 'graphics', None, {'type': 'vnc', 'port': '5900', 'autoport': 'yes'})
             else:
                 vnc = e(devices, 'graphics', None,
                         {'type': 'vnc', 'port': '5900', 'autoport': 'yes', 'passwd': str(cmd.consolePassword)})
-            e(vnc, "listen", None, {'type': 'address', 'address': '0.0.0.0'})
+            e(vnc, "listen", None, {'type': 'address', 'address': listen_address})
 
         def make_spice():
             devices = elements['devices']
+            listen_address = get_console_listen_address(cmd.hostManagementIp)
             if cmd.consolePassword == None:
                 spice = e(devices, 'graphics', None, {'type': 'spice', 'port': '5900', 'autoport': 'yes'})
             else:
                 spice = e(devices, 'graphics', None,
                           {'type': 'spice', 'port': '5900', 'autoport': 'yes', 'passwd': str(cmd.consolePassword)})
-            e(spice, "listen", None, {'type': 'address', 'address': '0.0.0.0'})
+            e(spice, "listen", None, {'type': 'address', 'address': listen_address})
 
             if is_spice_tls() == 0 and cmd.spiceChannels != None:
                 for channel in cmd.spiceChannels:
@@ -9364,10 +9424,10 @@ class VmPlugin(kvmagent.KvmAgent):
         # TLS control-plane URI must use management IP (cert SAN matches
         # management address); data-plane uses tls:// when TLS is enabled.
         dst_ctrl_ip = dstHostManagementIp or dstHostIp
-        dst = '{0}://{1}/system'.format(migrate_proto, dst_ctrl_ip)
+        dst = build_libvirt_system_uri(migrate_proto, dst_ctrl_ip)
         # Data channel URI must always use tcp:// scheme.
         # When TLS is enabled, virsh --tls flag handles encryption.
-        migurl = 'tcp://{0}'.format(dstHostIp)
+        migurl = build_libvirt_tcp_uri(dstHostIp)
         diskstr = ','.join(disks)
 
         flags = "--live --p2p --copy-storage-all --persistent"

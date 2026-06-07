@@ -32,6 +32,28 @@ vm_plugin.http = http
 vm_plugin.jsonobject = jsonobject
 
 
+def test_console_listen_address_uses_ipv4_default_for_ipv4_host():
+    assert vm_plugin.get_console_listen_address('192.168.1.10') == '0.0.0.0'
+
+
+def test_console_listen_address_uses_dual_stack_for_ipv6_host():
+    assert vm_plugin.get_console_listen_address('2001:db8::10') == '::'
+
+
+def test_build_migration_hostname_supports_ipv4():
+    assert vm_plugin.build_migration_hostname('172.24.1.2') == '172-24-1-2.zstack.org'
+
+
+def test_build_migration_hostname_supports_ipv6():
+    assert vm_plugin.build_migration_hostname('fd00:5:5:28::62:d0e5') == \
+        'fd00-5-5-28--62-d0e5.zstack.org'
+
+
+def test_build_migration_hostname_supports_bracketed_ipv6():
+    assert vm_plugin.build_migration_hostname('[fd00:5:5:28::62:d0e5]') == \
+        'fd00-5-5-28--62-d0e5.zstack.org'
+
+
 def _make_vm_plugin():
     plugin = vm_plugin.VmPlugin.__new__(vm_plugin.VmPlugin)
     plugin.config = {}
@@ -293,6 +315,18 @@ class TestDeleteConsoleFirewallRuleHandler:
 
 
 @pytest.mark.kvmagent
+class TestVncPortIptableRule:
+    def test_cleanup_iptables_skips_missing_ip6tables(self):
+        ipv4_iptables = MagicMock()
+
+        with patch.object(vm_plugin.iptables, 'from_iptables_save', return_value=ipv4_iptables), \
+                patch.object(vm_plugin.iptables, 'from_ip6tables_save', side_effect=RuntimeError('no ip6tables')):
+            rule = vm_plugin.VncPortIptableRule()
+
+            assert rule._load_cleanup_iptables() == [ipv4_iptables]
+
+
+@pytest.mark.kvmagent
 class TestGetIothreadPinHandler:
     def test_get_iothread_pin(self):
         plugin = _make_vm_plugin()
@@ -313,7 +347,7 @@ class TestGetIothreadPinHandler:
 class TestQueryBlockJobStatusHandler:
     def test_query_block_job_status(self):
         plugin = _make_vm_plugin()
-        vm_plugin.qmp.execute_qmp_command = MagicMock()
+        vm_plugin.qmp.execute_qmp_command = MagicMock(return_value=[])
         with patch('time.sleep', return_value=None):
             req = _make_req({'vmUuid': 'vm-uuid'})
             result = plugin.query_block_job_status(req)

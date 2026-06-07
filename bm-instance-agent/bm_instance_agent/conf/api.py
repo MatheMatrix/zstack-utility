@@ -1,9 +1,15 @@
+import os
+
 from oslo_config import cfg
+from zstacklib.utils import network_ipv6
+
+
+BM_AGENT_BIND_IP_ENV = 'BM_AGENT_BIND_IP'
 
 
 opts = [
     cfg.HostAddressOpt('host_ip',
-                       default='0.0.0.0',
+                       default=os.environ.get(BM_AGENT_BIND_IP_ENV, network_ipv6.DUAL_STACK_BIND_ADDRESS),
                        help='''
 The ip address on which bm-instance-agent listens.
 '''),
