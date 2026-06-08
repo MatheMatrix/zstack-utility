@@ -1532,15 +1532,22 @@ class Command(object):
     def run(self, args):
         raise CtlError('the command is not implemented')
 
+def format_url_host(host):
+    host = host.strip('[]')
+    if ':' in host:
+        return '[%s]' % host
+    return host
+
 def create_check_ui_status_command(timeout=10, ui_ip='127.0.0.1', ui_port='5000', if_https=False):
     protocol = 'https' if if_https else 'http'
+    ui_host = format_url_host(ui_ip)
     if shell_return('which wget') == 0:
         return ShellCmd(
-            '''wget --no-proxy -O- --tries=%s --no-check-certificate --timeout=1 %s://%s:%s/health''' % (timeout, protocol, ui_ip, ui_port))
+            '''wget --no-proxy -O- --tries=%s --no-check-certificate --timeout=1 %s://%s:%s/health''' % (timeout, protocol, ui_host, ui_port))
     elif shell_return('which curl') == 0:
             return ShellCmd(
                 '''curl -k --noproxy --connect-timeout=1 --retry %s --retry-delay 0 --retry-max-time %s --max-time %s %s://%s:%s/health''' % (
-                    timeout, timeout, timeout, protocol, ui_ip, ui_port))
+                    timeout, timeout, timeout, protocol, ui_host, ui_port))
     else:
         return None
 
@@ -9196,7 +9203,7 @@ class DashboardStatusCmd(Command):
                         with open(ha_info_file, 'r') as fd2:
                             ha_conf = yaml.load(fd2)
                             if check_ip_port(ha_conf['vip'], 8888):
-                                info('UI status: %s [PID:%s] http://%s:8888' % (colored('Running', 'green'), pid, ha_conf['vip']))
+                                info('UI status: %s [PID:%s] http://%s:8888' % (colored('Running', 'green'), pid, format_url_host(ha_conf['vip'])))
                             else:
                                 info('UI status: %s' % colored('Unknown', 'yellow'))
                             return
@@ -9210,7 +9217,7 @@ class DashboardStatusCmd(Command):
                                 port = port.strip(' \t\n\r')
                         else:
                             port = 5000
-                        info('UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, default_ip, port))
+                        info('UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, format_url_host(default_ip), port))
                     return
 
         pid = find_process_by_cmdline('zstack_dashboard')
@@ -9304,7 +9311,7 @@ class UiStatusCmd(Command):
                 else:
                     http = 'https' if '--ssl.enabled=true' in output else 'http'
                     info('UI status: %s [PID:%s] %s://%s:%s' % (
-                        colored('Running', 'green'), pid, http, default_ip, port))
+                        colored('Running', 'green'), pid, http, format_url_host(default_ip), port))
             else:
                 write_status(colored('Unknown', 'yellow'))
             return True
@@ -9332,7 +9339,7 @@ class UiStatusCmd(Command):
                         protcol = fd2.readline()
                         protcol = protcol.strip(' \t\n\r')
                         info('UI status: %s [PID:%s] %s://%s:%s' % (
-                            colored('Running', 'green'),output, protcol, default_ip, port))
+                            colored('Running', 'green'),output, protcol, format_url_host(default_ip), port))
 
 # For VDI UI 2.1
 class VDIUiStatusCmd(Command):
