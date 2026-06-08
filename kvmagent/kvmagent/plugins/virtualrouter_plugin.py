@@ -44,7 +44,12 @@ class DeleteVirtualRouterBootstrapIsoRsp(kvmagent.AgentResponse):
 class PrepareBootstrapInfoRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(PrepareBootstrapInfoRsp, self).__init__()
-        
+
+class PrepareBootstrapInfoCmd(kvmagent.AgentCommand):
+    @log.sensitive_fields("info.vyosPassword")
+    def __init__(self):
+        super(PrepareBootstrapInfoCmd, self).__init__()
+
 logger = log.get_logger(__name__)
 
 class VirtualRouterPlugin(kvmagent.KvmAgent):
@@ -56,7 +61,7 @@ class VirtualRouterPlugin(kvmagent.KvmAgent):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.VR_KVM_CREATE_BOOTSTRAP_ISO_PATH, self.create_bootstrap_iso)
         http_server.register_async_uri(self.VR_KVM_DELETE_BOOTSTRAP_ISO_PATH, self.delete_bootstrap_iso)
-        http_server.register_async_uri(self.VR_KVM_SET_BOOTSTRAP_INFO_PATH, self.set_bootstrap_info)
+        http_server.register_async_uri(self.VR_KVM_SET_BOOTSTRAP_INFO_PATH, self.set_bootstrap_info, cmd=PrepareBootstrapInfoCmd())
     
     def stop(self):
         pass
@@ -77,15 +82,15 @@ class VirtualRouterPlugin(kvmagent.KvmAgent):
         # as there is no fflush() in python, we have to create a message
         # matching to the socket buffer to force it to send the message immediately
         if info_len % buf_size != 0:
-            padding_len = buf_size * ((info_len / buf_size) + 1) - info_len
+            padding_len = buf_size * ((info_len // buf_size) + 1) - info_len
             padding = ' ' * padding_len
             info = '%s%s' % (info, padding)
 
         try:
-            logger.debug('send appliance vm bootstrap info to %s ,buffer size %d \nsize:%d\n%s' %
-                         (socket_path, buf_size, len(info), info))
+            logger.debug('send appliance vm bootstrap info to %s, buffer size %d, size:%d' %
+                         (socket_path, buf_size, len(info)))
             s.connect(socket_path)
-            s.sendall(info)
+            s.sendall(info.encode())
         finally:
             s.close()
         

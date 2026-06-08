@@ -26,6 +26,10 @@ import fcntl
 import simplejson
 import xxhash
 import glob
+import sys
+import ctypes
+import ctypes.util
+import stat
 
 from inspect import stack
 import xml.etree.ElementTree as etree
@@ -36,16 +40,18 @@ from zstacklib.utils import xmlobject
 from zstacklib.utils import shell
 from zstacklib.utils import log
 from zstacklib.utils import iproute
+from zstacklib.utils import network_ipv6
 
 
 logger = log.get_logger(__name__)
 
-RPM_BASED_OS = ['redhat', 'centos', 'alibaba', 'kylin10', 'rocky']
+RPM_BASED_OS = ['redhat', 'centos', 'alibaba', 'kylin10', 'rocky', 'helix']
 DEB_BASED_OS = ['uos', 'kylin4.0.2', 'debian', 'ubuntu', 'uniontech']
 ARM_ACPI_SUPPORT_OS = ['kylin10', 'openEuler20.03', 'openEuler22.03']
 SUPPORTED_ARCH = ['x86_64', 'aarch64', 'mips64el', 'loongarch64']
 DIST_WITH_RPM_DEB = ['kylin']
 HOST_ARCH = platform.machine()
+tcp_port_lock = threading.Lock()
 
 
 '''
@@ -62,6 +68,10 @@ KVM_CAP_ARM_VM_IPA_SIZE = 165
 KVM_CHECK_EXTENSION = 44547
 DEFAULT_VM_IPA_SIZE = 40
 LIVE_LIBVIRT_XML_DIR = "/var/run/libvirt/qemu"
+MAX_NBD_READ_SIZE = 32768000
+NFS_URL_SEPARATOR = ':'
+IPV6_HOST_PREFIX = '['
+IPV6_HOST_SUFFIX = ']'
 
 def ignoreerror(func):
     @functools.wraps(func)
@@ -135,6 +145,8 @@ class VmStruct(object):
                         path = e.attrib["file"]
                     elif "dev" in e.attrib:
                         path = e.attrib["dev"]
+                    elif "protocol" in e.attrib and "name" in e.attrib:
+                        path = "%s:%s" % (e.attrib["protocol"], e.attrib["name"])
                     if path and path.startswith("/dev/"):
                         self.volumes.append(path)
 
@@ -186,6 +198,23 @@ def retry_if_unexpected_value(unexpected_value, times=3, sleep_time=3):
                 except Exception as e:
                     time.sleep(sleep_time)
             return ret
+
+        return inner
+    return wrap
+
+def ignore_error_retry(times=3, sleep_time=3, return_after_exception=None):
+    def wrap(f):
+        @functools.wraps(f)
+        def inner(*args, **kwargs):
+            orig_except = None
+            for i in range(0, times):
+                try:
+                    return f(*args, **kwargs)
+                except Exception as e:
+                    orig_except = e
+                    time.sleep(sleep_time)
+            logger.warn(str(orig_except))
+            return return_after_exception
 
         return inner
     return wrap
@@ -406,7 +435,7 @@ def get_ethernet_info():
             eth.broadcast_address = brd
             eth.netmask = netmask
 
-    return devices.values()
+    return list(devices.values())
 
 # only for novlan and vlan networks
 def set_bridge_alias_using_phy_nic_name(bridge_name, nic_name):
@@ -437,11 +466,11 @@ def get_used_disk_size(dir_path):
 
 def get_used_disk_apparent_size(dir_path, max_depth = 1, block_size = 1):
     output = shell.call('du --apparent-size --block-size=%s --max-depth=%s %s | tail -1' % (block_size, max_depth, dir_path))
-    return long(output.split()[0])
+    return int(output.split()[0])
 
 def get_directory_used_physical_size(dir_path, max_depth = 1, block_size = 1):
     output = shell.call('du --block-size=%s --max-depth=%s %s | tail -1' % (block_size, max_depth, dir_path))
-    return long(output.split()[0])
+    return int(output.split()[0])
 
 def get_total_file_size(paths):
     total = 0
@@ -456,7 +485,7 @@ def get_total_file_size(paths):
 
 def get_disk_capacity_by_df(dir_path):
     total, avail = shell.call("df %s|tail -1|awk '{print $(NF-4), $(NF-2)}'" % dir_path).split()
-    return long(total) * 1024, long(avail) * 1024
+    return int(total) * 1024, int(avail) * 1024
 
 def get_folder_size(path = "."):
     total_size = 0
@@ -479,11 +508,11 @@ def is_mounted(path=None, url=None):
         url = re.sub(r'/{2,}','/',url.rstrip('/'))
 
     if url and path:
-        cmdstr = "mount | grep -E '%s[ /]+on' | grep '%s ' " % (url, path)
+        cmdstr = "mount | grep -F '%s on ' | grep -F '%s ' " % (url, path)
     elif not url:
-        cmdstr = "mount | grep '%s '" % path
+        cmdstr = "mount | grep -F '%s '" % path
     elif not path:
-        cmdstr = "mount | grep -E '%s[ /]+on'" % url
+        cmdstr = "mount | grep -F '%s on '" % url
     else:
         raise Exception('path and url cannot both be None')
 
@@ -495,7 +524,11 @@ def mount(url, path, options=None, fstype=None):
     if cmd.return_code == 0: raise MountError(url, '%s is occupied by another device. Details[%s]' % (path, cmd.stdout))
 
     if not os.path.exists(path):
-        os.makedirs(path, 0775)
+        try:
+            os.makedirs(path, 0o775)
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                raise
 
     cmdstr = "mount"
 
@@ -556,53 +589,53 @@ def sshfs_mount(username, hostname, port, password, url, mountpoint, writebandwi
     os.chmod(fname, 0o500)
 
     if not writebandwidth:
-        os.write(fd,
-                 "#!/bin/bash\n/usr/bin/sshpass -p %s ssh "
-                 "-o StrictHostKeyChecking=no "
-                 "-o UserKnownHostsFile=/dev/null -p %d $*\n" % (
-                 shellquote(password), port))
+        content = "#!/bin/bash\n/usr/bin/sshpass -p %s ssh " \
+                  "-o StrictHostKeyChecking=no " \
+                  "-o UserKnownHostsFile=/dev/null -p %d $*\n" % (
+                      shellquote(password), port)
     else:
-        os.write(fd,
-                 "#!/bin/bash\n/usr/bin/sshpass -p %s ssh "
-                 "-o 'ProxyCommand pv -q -L %sk | nc %s %s' "
-                 "-o StrictHostKeyChecking=no "
-                 "-o UserKnownHostsFile=/dev/null -p %d $*\n" % (
-                     shellquote(password), writebandwidth / 1024 / 8, hostname, port, port))
-
+        content = "#!/bin/bash\n/usr/bin/sshpass -p %s ssh " \
+                  "-o 'ProxyCommand pv -q -L %sk | nc %s %s' " \
+                  "-o StrictHostKeyChecking=no " \
+                  "-o UserKnownHostsFile=/dev/null -p %d $*\n" % (
+                      shellquote(password), writebandwidth // 1024 // 8, hostname, port, port)
+    os.write(fd, content.encode())
     os.close(fd)
 
     allow = 'allow_root' if uid == 0 else 'allow_other'
+    direct_io_opt = 'direct_io,' if direct_io else ''
     try:
-        if direct_io:
-            ret = shell.check_run("/usr/bin/sshfs %s@%s:%s %s -o %s,direct_io,compression=no,ssh_command='%s'" % (username, hostname, url, mountpoint, allow, fname))
-        else:
-            ret = shell.check_run("/usr/bin/sshfs %s@%s:%s %s -o %s,compression=no,ssh_command='%s'" % (username, hostname, url, mountpoint, allow, fname))
+        return shell.check_run("/usr/bin/sshfs %s@%s:%s %s -o %s%s,compression=no,ConnectTimeout=30,ssh_command='%s'" % (
+            username, hostname, url, mountpoint, direct_io_opt, allow, fname))
     finally:
         os.remove(fname)
-    return ret
 
 def fumount(mountpoint, timeout = 10):
     return shell.run("timeout %s fusermount -u %s" % (timeout, mountpoint))
 
 def is_valid_address(address):
-    try:
-        socket.inet_aton(address)
-        return True
-    except socket.error:
-        return False
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            socket.inet_pton(family, address)
+            return True
+        except socket.error:
+            pass
+    return False
 
 def is_valid_hostname(hostname):
     if is_valid_address(hostname):
         return True
 
     try:
-        socket.gethostbyname(hostname)
+        socket.getaddrinfo(hostname, None)
         return True
     except socket.error:
         return False
 
 def get_host_by_name(host):
-    return socket.gethostbyname(host)
+    if is_valid_address(host):
+        return host
+    return socket.getaddrinfo(host, None)[0][4][0]
 
 def get_hostname():
     return socket.gethostname()
@@ -613,13 +646,30 @@ def get_hostname_fqdn():
         return socket.getaddrinfo(socket.gethostname(), 0, 0, 0, 0, socket.AI_CANONNAME)[0][3]
     return socket.getaddrinfo(socket.gethostname(), 0, flags=socket.AI_CANONNAME)[0][3]
 
+def parse_nfs_url(url):
+    if url.startswith(IPV6_HOST_PREFIX):
+        end = url.find(IPV6_HOST_SUFFIX)
+        if end <= 0:
+            raise InvalidNfsUrlError(url, 'IPv6 host must be enclosed by []')
+
+        host = url[len(IPV6_HOST_PREFIX):end]
+        suffix = url[end + len(IPV6_HOST_SUFFIX):]
+        if not suffix.startswith(NFS_URL_SEPARATOR):
+            raise InvalidNfsUrlError(url, 'url should be [IPv6]:/absolute/path')
+
+        return host, suffix[len(NFS_URL_SEPARATOR):]
+
+    ts = url.split(NFS_URL_SEPARATOR)
+    if len(ts) != 2:
+        raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
+
+    return ts[0], ts[1]
+
+
 def is_valid_nfs_url(url):
-    ts = url.split(':')
-    if len(ts) != 2: raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
-    host = ts[0]
-    path = ts[1]
+    host, path = parse_nfs_url(url)
     try:
-        socket.gethostbyname(host)
+        socket.getaddrinfo(host, None)
     except socket.gaierror:
         raise InvalidNfsUrlError(url, '%s cannont resolve to ip address' % host)
 
@@ -673,14 +723,14 @@ def get_file_size_by_http_head(url):
     for l in output.split('\n'):
         if 'Content-Length' in l:
             filesize = l.split(':')[1].strip()
-            return long(filesize)
+            return int(filesize)
     return None
 
-def shellquote(s):
+def shellquote(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
 
-def remote_shell_quote(s):
-    return ("\\''" + s.replace("'", "'\\''") + "'\\'").encode('utf8')
+def remote_shell_quote(s: str) -> str:
+    return ("\\''" + s.replace("'", "'\\''") + "'\\'")
 
 def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callback_data=None, cert_check=False):
     def get_percentage(filesize, dst):
@@ -697,7 +747,7 @@ def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callba
         for l in output.split('\n'):
             if 'Content-Length' in l:
                 filesize = l.split(':')[1].strip()
-                return True, long(filesize)
+                return True, int(filesize)
         return False, 0
 
     cmdlst = ['wget']
@@ -782,8 +832,8 @@ def mkdir(path, mode=0o755):
     return False
 
 
-def create_temp_file():
-    tmp_fd, tmp_path = tempfile.mkstemp()
+def create_temp_file(dir=None):
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=dir)
     os.close(tmp_fd)
     return tmp_path
 
@@ -803,18 +853,21 @@ def ssh(hostname, sshkey, cmd, user='root', sshPort=22):
     os.chmod(sshkey_file, 0o600)
 
     try:
-        return shell.call('ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s@%s "%s"' % (sshPort, sshkey_file, user, hostname, cmd))
+        return shell.call('ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s "%s"' % (sshPort, sshkey_file, format_ssh_target(user, hostname), cmd))
     finally:
         if sshkey_file:
             os.remove(sshkey_file)
+
+def format_ssh_target(user, hostname):
+    return '%s@%s' % (user, network_ipv6.format_url_host(hostname))
 
 def sshpass_run(hostname, password, cmd, user='root', port=22):
     sshpass_file = write_to_temp_file(password)
     os.chmod(sshpass_file, 0o600)
 
     try:
-        s = shell.ShellCmd('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s@%s "%s"' % (
-            sshpass_file, port, user, hostname, cmd))
+        s = shell.ShellCmd('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s "%s"' % (
+            sshpass_file, port, format_ssh_target(user, hostname), cmd))
         s(False)
         return s.return_code, s.stdout, s.stderr
     finally:
@@ -825,8 +878,8 @@ def sshpass_call(hostname, password, cmd, user='root', port=22):
     os.chmod(sshpass_file, 0o600)
 
     try:
-        return shell.call('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s@%s "%s"' % (
-            sshpass_file, port, user, hostname, cmd))
+        return shell.call('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s "%s"' % (
+            sshpass_file, port, format_ssh_target(user, hostname), cmd))
     finally:
         rm_file_force(sshpass_file)
 
@@ -855,7 +908,7 @@ def scp_download(hostname, sshkey, src_filepath, dst_filepath, host_account='roo
 
     # scp bandwidth limit
     if bandWidth is not None:
-        bandWidth = '-l %s' % (long(bandWidth) / 1024)
+        bandWidth = '-l %s' % (int(bandWidth) // 1024)
     else:
         bandWidth = ''
 
@@ -867,8 +920,8 @@ def scp_download(hostname, sshkey, src_filepath, dst_filepath, host_account='roo
         dst_dir = os.path.dirname(dst_filepath)
         if not os.path.exists(dst_dir):
             os.makedirs(dst_dir)
-        scp_cmd = 'scp {7} {6} -P {0} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {1} {2}@{3}:{4} {5}'\
-            .format(sshPort, sshkey_file, host_account, hostname, shellquote(src_filepath).replace(" ", "\\ "), dst_filepath, bandWidth, filename_check_option)
+        scp_cmd = 'scp {6} {5} -P {0} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {1} {2}:{3} {4}'\
+            .format(sshPort, sshkey_file, format_ssh_target(host_account, hostname), shellquote(src_filepath).replace(" ", "\\ "), dst_filepath, bandWidth, filename_check_option)
         shell.call(scp_cmd)
         os.chmod(dst_filepath, 0o664)
     finally:
@@ -886,9 +939,9 @@ def scp_upload(hostname, sshkey, src_filepath, dst_filepath, host_account='root'
     os.chmod(sshkey_file, 0o600)
     try:
         dst_dir = os.path.dirname(dst_filepath)
-        ssh_cmd = 'ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s@%s "mkdir -m 777 -p %s"' % (sshPort, sshkey_file, host_account, hostname, dst_dir)
+        ssh_cmd = 'ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s "mkdir -m 777 -p %s"' % (sshPort, sshkey_file, format_ssh_target(host_account, hostname), dst_dir)
         shell.call(ssh_cmd)
-        scp_cmd = 'scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s %s@%s:%s' % (sshPort, sshkey_file, src_filepath, host_account, hostname, dst_filepath)
+        scp_cmd = 'scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s %s:%s' % (sshPort, sshkey_file, src_filepath, format_ssh_target(host_account, hostname), dst_filepath)
         shell.call(scp_cmd)
     finally:
         if sshkey_file:
@@ -908,7 +961,7 @@ def sftp_get(hostname, sshkey, filename, download_to, timeout=0, interval=1, cal
             output = cmd.stdout.strip()
             outputs = output.split('\n')
             size_pair = outputs[0]
-            return long(size_pair.split()[0])
+            return int(size_pair.split()[0])
         finally:
             if keyfile_path:
                 os.remove(keyfile_path)
@@ -982,12 +1035,12 @@ def qcow2_size_and_actual_size(file_path):
 
     logger.debug('qcow2_info: %s' % cmd.stdout)
 
-    out = json.loads(cmd.stdout.strip(" \t\n\r"))
+    out = json.loads(cmd.stdout.strip())
     virtual_size, actual_size = out.get('virtual-size'), out.get('actual-size')
     if not virtual_size and not actual_size:
         raise Exception('cannot get the virtual/actual size of the file[%s], %s %s' % (shellquote(file_path), cmd.stdout, cmd.stderr))
 
-    virtual_size = long(virtual_size) if virtual_size else None
+    virtual_size = int(virtual_size) if virtual_size else None
     return virtual_size, actual_size
 
 '''  
@@ -1011,17 +1064,17 @@ def get_img_fmt(src):
 
     fmt = shell.call(
         "set -o pipefail; %s %s | grep -w '^file format' | awk '{print $3}'" % (qemu_img.subcmd('info'), src))
-    fmt = fmt.strip(' \t\r\n')
+    fmt = fmt.strip()
     if fmt not in ['raw', 'qcow2', 'vmdk']:
         logger.debug("/usr/bin/qemu-img info %s" % src)
         raise Exception('unknown format[%s] of the image file[%s]' % (fmt, src))
     return fmt
 
 
-def get_fmt_from_magic(magic):
-    if magic == 'QFI\xfb':
+def get_fmt_from_magic(magic: bytes):
+    if magic == b'QFI\xfb':
         return 'qcow2'
-    elif magic == 'KDMV':
+    elif magic == b'KDMV':
         return 'vmdk'
     else:
         return 'raw'
@@ -1052,9 +1105,11 @@ def raw_clone(src, dst):
     shell.check_run('/usr/bin/qemu-img create -b %s -f raw %s' % (src, dst))
     os.chmod(dst, 0o660)
 
-def qcow2_create(dst, size):
+
+def qcow2_create(dst, size, chmod=True):
     shell.check_run('/usr/bin/qemu-img create -f qcow2 %s %s' % (dst, size))
-    os.chmod(dst, 0o660)
+    if (chmod):
+        os.chmod(dst, 0o660)
 
 def qemu_img_resize(target, size, fmt='qcow2', force=False):
     fmt_option = '-f %s' % fmt
@@ -1176,19 +1231,21 @@ def qcow2_virtualsize(file_path):
     cmd(False)
     if cmd.return_code != 0:
         raise Exception('cannot get the virtual size of the file[%s], %s %s' % (file_path, cmd.stdout, cmd.stderr))
-    out = cmd.stdout.strip(' \t\r\n')
-    return long(out)
+    out = cmd.stdout.strip()
+    return int(out)
 
 def qcow2_get_backing_file(path):
-    if not os.path.exists(path):
-        # for rbd image
-        out = shell.call("%s %s | grep 'backing file:' | cut -d ':' -f 2" %
-                (qemu_img.subcmd('info'), path))
-        return out.strip(' \t\r\n')
+    if not os.path.exists(path) and ":" in path:
+        # find through protocol
+        out = shell.call("%s %s" %(qemu_img.subcmd('info'), path))
+        for line in out.splitlines():
+            if "backing file:" in line:
+                return line.replace("backing file:", "", 1).strip()
+        return ""
 
-    with open(path, 'r') as resp:
+    with open(path, 'rb') as resp:
         magic = resp.read(4)
-        if magic != 'QFI\xfb':
+        if magic != b'QFI\xfb':
             return ""
 
         # read backing file info from header
@@ -1200,7 +1257,7 @@ def qcow2_get_backing_file(path):
 
         backing_file_size = struct.unpack('>L', backing_file_info[8:])[0]
         resp.seek(backing_file_offset)
-        return resp.read(backing_file_size)
+        return resp.read(backing_file_size).decode()
 
 def qcow2_get_virtual_size(path):
     # type: (str) -> int
@@ -1210,9 +1267,9 @@ def qcow2_get_virtual_size(path):
                 (qemu_img.subcmd('info'), path))
         return int(out.strip())
 
-    with open(path, 'r') as resp:
+    with open(path, 'rb') as resp:
         magic = resp.read(4)
-        if magic != 'QFI\xfb':
+        if magic != b'QFI\xfb':
             return os.path.getsize(path)
 
         # read virtual size info from header
@@ -1220,9 +1277,9 @@ def qcow2_get_virtual_size(path):
         return struct.unpack('>Q', resp.read(8))[0]
 
 def qcow2_direct_get_backing_file(path):
-    o = shell.call('dd if=%s bs=4k count=1 iflag=direct' % path)
+    o = shell.call('dd if=%s bs=4k count=1 iflag=direct' % path, output_bytes=True)
     magic = o[:4]
-    if magic != 'QFI\xfb':
+    if magic != b'QFI\xfb':
         return ""
 
     # read backing file info from header
@@ -1232,7 +1289,7 @@ def qcow2_direct_get_backing_file(path):
         return ""
 
     backing_file_size = struct.unpack('>L', backing_file_info[8:])[0]
-    return o[backing_file_offset:backing_file_offset+backing_file_size]
+    return o[backing_file_offset:backing_file_offset+backing_file_size].decode()
 
 # Get derived file and all its backing files
 def qcow2_get_file_chain(path):
@@ -1252,7 +1309,7 @@ def qcow2_get_backing_chain(path):
 
 def get_qcow2_file_chain_size(path):
     chain = qcow2_get_file_chain(path)
-    size = 0L
+    size = 0
     for path in chain:
         size += get_local_file_disk_usage(path)
     return size
@@ -1285,7 +1342,7 @@ def qcow2_measure_required_size(path, cluster_size=0):
     opts = "" if cluster_size == 0 else "-o cluster_size=%s" % cluster_size
 
     out = shell.call("%s --output=json -f qcow2 -O qcow2 %s %s" % (qemu_img.subcmd('measure'), opts, path))
-    return long(simplejson.loads(out)["required"])
+    return int(simplejson.loads(out)["required"])
 
 
 def qcow2_get_cluster_size(path):
@@ -1305,24 +1362,37 @@ qemu-io -c "discard $[i*2145386496] 2145386496" -f qcow2 -d unmap {1}
 let i+=1
 done
 qemu-io -c "discard $[i*2145386496] {2}" -f qcow2 -d unmap {1}
-    '''.format(virtual_size / 2145386496, path, virtual_size % 2145386496))
+    '''.format(virtual_size // 2145386496, path, virtual_size % 2145386496))
 
     cmd(False)
     logger.debug("qcow2 discard return code: %s, stderr: %s" % (cmd.return_code, cmd.stderr))
 
 def get_block_discard_max_bytes(path):
-    if not os.path.exists(path):
-        raise Exception("block device %s not exists" % path)
+    base_name = os.path.basename(path)
+    file_max_bytes = "/sys/class/block/%s/queue/discard_max_bytes" % base_name
+    if not os.path.exists(path) or not os.path.exists(file_max_bytes):
+        raise Exception("cannot get block %s discard max bytes" % path)
 
-    discard_max_bytes = read_file('/sys/class/block/%s/queue/discard_max_bytes' % os.path.basename(path))
-    return 0 if discard_max_bytes is None else long(discard_max_bytes)
+    return int(read_file(file_max_bytes))
+
+def get_block_discard_granularity(path):
+    base_name = os.path.basename(path)
+    file_granularity = "/sys/class/block/%s/queue/discard_granularity" % base_name
+    if not os.path.exists(path) or not os.path.exists(file_granularity):
+        raise Exception("cannot get block %s discard granularity" % path)
+
+    return int(read_file(file_granularity))
 
 def support_blkdiscard(path):
     return get_block_discard_max_bytes(path) > 0
 
-class AbstractFileConverter(object):
-    __metaclass__ = abc.ABCMeta
 
+def pkill_by_pattern(*args):
+    command = "pkill -15 -f '%s'" % "' '".join(str(arg) for arg in args)
+    return shell.run(command)
+
+
+class AbstractFileConverter(object, metaclass=abc.ABCMeta):
     def __init__(self):
         pass
 
@@ -1457,7 +1527,7 @@ def get_all_bridge_interface(bridge_name):
     cmd = shell.ShellCmd("brctl show %s|sed -n '2,$p'|cut -f 6-10" % bridge_name)
     cmd(is_exception=False)
     vifs = cmd.stdout.split('\n')
-    return [v.strip(" \t\r\n") for v in vifs]
+    return [v.strip() for v in vifs]
 
 def get_vf_index_by_pci_address(pci_address):
     if not pci_address:
@@ -1493,6 +1563,14 @@ def delete_bridge(bridge_name):
     shell.run("ip link set %s down" % bridge_name)
     shell.run("brctl delbr %s" % bridge_name)
 
+def check_interface_configuration_exist(ifnames):
+    existing_interfaces = []
+    for ifname in ifnames:
+        config_path = os.path.join("/etc/sysconfig/network-scripts", "ifcfg-%s" % ifname)
+        if os.path.exists(config_path):
+            existing_interfaces.append(ifname)
+    return existing_interfaces
+
 def check_bridge_with_interface(vlan_interface, expected_bridge_name):
     bridge_name = find_bridge_having_physical_interface(vlan_interface)
     if bridge_name and bridge_name != expected_bridge_name:
@@ -1501,9 +1579,24 @@ def check_bridge_with_interface(vlan_interface, expected_bridge_name):
 
 def update_bridge_interface_configuration(old_interface, new_interface, bridge_name, l2_network_uuid):
     check_bridge_with_interface(old_interface, bridge_name)
+    # Check if configuration files exist for the old or new interface to prevent conflicts due to automatic reload
+    interfaces_conf_exist = check_interface_configuration_exist([new_interface, old_interface])
+    if interfaces_conf_exist:
+        raise Exception(
+            "Detected static config files for interfaces: [%s]. "
+            "Please manually verify the '/etc/sysconfig/network-scripts/ifcfg-*' directory to ensure no outdated configurations exist, "
+            "as they may cause conflicts after the update."
+            % ", ".join(interfaces_conf_exist)
+        )
+    if get_device_ip(bridge_name) is not None:
+        raise Exception(
+            "The bridge [%s] is currently assigned an IP address. "
+            "Modifying the bridge binding while it has an active IP may cause network disruptions. "
+            "Please manually remove the IP configuration before proceeding."
+            % bridge_name
+        )
     ip_link_set_net_device_nomaster(old_interface)
     ip_link_set_net_device_master(new_interface, bridge_name)
-    set_bridge_alias_using_phy_nic_name(bridge_name, new_interface)
     set_device_uuid_alias(new_interface, l2_network_uuid)
 
 
@@ -1542,8 +1635,53 @@ def get_interface_ip_addresses(interface):
     output = shell.call("ip -4 -o a show %s | awk '{print $4}'" % interface.strip())
     return output.splitlines() if output else []
 
+def is_uplink_interface(iface):
+    if iface.startswith('vxlan'):
+        return True
+    sys_net_path = "/sys/class/net/%s" % iface
+    if not os.path.exists(sys_net_path):
+        return False
+    try:
+        if os.path.islink(sys_net_path):
+            link_target = os.readlink(sys_net_path)
+            if link_target and 'virtual' not in link_target:
+                return True
+    except OSError:
+        return False
+    uevent_file = os.path.join(sys_net_path, 'uevent')
+    if os.path.isfile(uevent_file):
+        with open(uevent_file, 'r') as f:
+            for line in f:
+                if line.strip().startswith('DEVTYPE=') and 'vlan' in line:
+                    return True
+    return False
+
+def get_bridge_lower_interfaces(bridge):
+    result = []
+    sys_bridge_dir = "/sys/class/net/%s" % bridge
+    if not os.path.isdir(sys_bridge_dir):
+        return result
+
+    try:
+        for entry in os.listdir(sys_bridge_dir):
+            if entry.startswith("lower_"):
+                iface = entry.replace("lower_", "", 1)
+                result.append(iface)
+    except OSError:
+        pass
+    return result
+
 @retry(times=2, sleep_time=1)
 def ip_link_set_net_device_master(net_device, master):
+    lower_ifaces = get_bridge_lower_interfaces(master)
+    for iface in lower_ifaces:
+        if iface != net_device and is_uplink_interface(iface):
+            raise Exception(
+                "Bridge [%s] already has another uplink interface [%s] "
+                "besides [%s], cannot add set it now!" %
+                (master, iface, net_device)
+            )
+
     shell.call("ip link set %s master %s" % (net_device, master))
 
     # double check, because sometimes the master is not set successfully, see jira: ZSTAC-54905, ZSV-3260
@@ -1641,9 +1779,9 @@ def move_dev_route(src_dev, dest_dev):
     - src_dev: The source device from which the IP and routes will be moved.
     - dest_dev: The destination device to which the IP and routes will be moved.
     """
-    # Check if the source device has an IP address set
-    out = shell.call('ip addr show dev %s | grep "inet "' % src_dev, exception=False)
-    if not out:
+    ipv4_out = shell.call('ip addr show dev %s | grep "inet "' % src_dev, exception=False)
+    ipv6_out = shell.call('ip addr show dev %s | grep "inet6 " | grep -v " scope link"' % src_dev, exception=False)
+    if not ipv4_out and not ipv6_out:
         logger.debug("Source device %s doesn't have an IP address set. No need to move routes." % src_dev)
         return
 
@@ -1655,16 +1793,66 @@ def move_dev_route(src_dev, dest_dev):
             routes.append(line)
             shell.call('ip route del %s' % line)
 
-    # Move IP address from the source device to the destination device
-    ip = out.strip().split()[1]
-    shell.call('ip addr del %s dev %s' % (ip, src_dev))
-    r_out = shell.call('ip addr show dev %s | grep "inet %s"' % (dest_dev, ip), exception=False)
-    if not r_out:
-        shell.call('ip addr add %s dev %s' % (ip, dest_dev))
+    routes6 = []
+    r_out = shell.call("ip -6 route show dev %s | grep via | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            routes6.append(line)
+            shell.call('ip -6 route del %s' % line)
+    direct_routes6 = []
+    r_out = shell.call("ip -6 route show dev %s | grep -v via | grep -v ' proto kernel ' | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            direct_routes6.append(line)
+            shell.call('ip -6 route del %s' % _route_with_dev(line, src_dev))
+    connected_routes6 = []
+    r_out = shell.call("ip -6 route show dev %s proto kernel | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            connected_routes6.append(line)
+
+    for ip in _parse_ip_addresses(ipv4_out):
+        _move_ip_address(ip, src_dev, dest_dev, "inet")
+
+    for ip in _parse_ip_addresses(ipv6_out):
+        _move_ip_address(ip, src_dev, dest_dev, "inet6")
+    for r in connected_routes6:
+        shell.call('ip -6 route del %s' % _route_with_dev(r, src_dev), exception=False)
 
     # Restore routes on the destination device
     for r in routes:
-        shell.call('ip route add %s' % r)
+        shell.call('ip route add %s' % _route_with_dev(r, dest_dev))
+    for r in direct_routes6:
+        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
+    for r in routes6:
+        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
+
+
+def _parse_ip_addresses(ip_addr_output):
+    return [line.strip().split()[1] for line in ip_addr_output.split('\n') if line.strip()]
+
+
+def _move_ip_address(ip, src_dev, dest_dev, family):
+    shell.call('ip addr del %s dev %s' % (ip, src_dev), exception=False)
+    r_out = shell.call('ip addr show dev %s | grep "%s %s"' % (dest_dev, family, ip), exception=False)
+    if not r_out:
+        shell.call('ip addr add %s dev %s' % (ip, dest_dev))
+
+
+def _route_with_dev(route, dev):
+    parts = route.split()
+    if not parts:
+        return route
+    if 'dev' in parts:
+        index = parts.index('dev')
+        if index + 1 < len(parts):
+            parts[index + 1] = dev
+        return ' '.join(parts)
+    if 'via' in parts:
+        index = parts.index('via')
+        if index + 1 < len(parts):
+            return ' '.join(parts[:index + 2] + ['dev', dev] + parts[index + 2:])
+    return ' '.join([parts[0], 'dev', dev] + parts[1:])
 
 def pretty_xml(xmlstr):
     # dom cannot handle namespace tag like <qemu:commandline>
@@ -1730,9 +1918,29 @@ def get_process_up_time_in_second(pid):
     return day * 24 * 3600 + hour * 3600 + minute * 60 + second
 
 
+def get_process_start_time(pid):
+    if not os.path.exists('/proc/%s/stat' % pid):
+        return
+
+    with open('/proc/%s/stat' % pid, 'r') as f:
+        stats = f.read().split()
+    start_time = float(stats[21]) / os.sysconf('SC_CLK_TCK')
+
+    with open('/proc/uptime', 'r') as f:
+        uptime = float(f.read().split()[0])
+    current_time = time.time()
+    boot_time = current_time - uptime
+    return boot_time + start_time
+
+
 def get_cpu_num():
     out = shell.call("grep -c processor /proc/cpuinfo")
     return int(out)
+
+def get_cpu_core_num():
+    sockets = get_socket_num()
+    cpu_cores_per_socket = shell.call("lscpu | awk -F':' '/per socket/{print $NF}'")
+    return int(cpu_cores_per_socket.strip()) * sockets
 
 def get_cpu_model():
     vendor_id = shell.call("lscpu |awk -F':' '{IGNORECASE=1}/^ *Vendor ID/{print $2}'").strip()
@@ -1763,7 +1971,7 @@ def get_socket_num():
 def get_cpu_speed():
     max_freq = '/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq'
     if os.path.exists(max_freq):
-        out = file(max_freq).read()
+        out = open(max_freq).read()
         return int(float(out) / 1000)
 
     if platform.machine() == 'aarch64':
@@ -1798,7 +2006,7 @@ def get_pid_by_process_param(param):
     output = cmd(False)
     if cmd.return_code != 0:
         return None
-    output = output.strip(" \t\n\r")
+    output = output.strip()
     return int(output)
 
 def get_pid_by_process_name(name):
@@ -2037,8 +2245,8 @@ def find_process_by_cmdline(cmdlines):
     pids = [pid for pid in os.listdir('/proc') if pid.isdigit()]
     for pid in pids:
         try:
-            with open(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
-                cmdline = fd.read()
+            with open(os.path.join('/proc', pid, 'cmdline'), 'rb') as fd:
+                cmdline = fd.read().decode('utf-8', errors='replace')
 
             is_find = True
             for c in cmdlines:
@@ -2060,8 +2268,8 @@ def find_all_process_by_cmdline(cmdlines):
     pids = [pid for pid in os.listdir('/proc') if pid.isdigit()]
     for pid in pids:
         try:
-            with open(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
-                cmdline = fd.read()
+            with open(os.path.join('/proc', pid, 'cmdline'), 'rb') as fd:
+                cmdline = fd.read().decode('utf-8', errors='replace')
 
             is_find = True
             for c in cmdlines:
@@ -2092,13 +2300,39 @@ def find_process_by_command(comm, cmdlines=None):
             if not cmdlines:
                 return pid
 
-            with open(os.path.join('/proc', pid, 'cmdline'), 'r') as fd:
-                cmdline = fd.read().replace('\x00', ' ').strip()
+            with open(os.path.join('/proc', pid, 'cmdline'), 'rb') as fd:
+                cmdline = fd.read().replace(b'\x00', b' ').decode('utf-8', errors='replace').strip()
                 if all(c in cmdline for c in cmdlines):
                     return pid
         except (IOError, OSError):
             continue
     return None
+
+
+def find_process_list_by_command(comm, cmdlines=None):
+    pids = [pid for pid in os.listdir('/proc') if pid.isdigit()]
+    match_pids = []
+    for pid in pids:
+        try:
+            comm_path = os.readlink(os.path.join('/proc', pid, 'exe')).split(";")[0]
+            if comm_path.endswith("(deleted)") and not os.path.exists(comm_path):
+                comm_path = comm_path[0:-9].strip()
+
+            if comm_path != comm and os.path.basename(comm_path) != comm:
+                continue
+
+            if not cmdlines:
+                match_pids.append(pid)
+                continue
+
+            with open(os.path.join('/proc', pid, 'cmdline'), 'rb') as fd:
+                cmdline = fd.read().replace(b'\x00', b' ').decode('utf-8', errors='replace').strip()
+                if all(c in cmdline for c in cmdlines):
+                    match_pids.append(pid)
+                    continue
+        except (IOError, OSError):
+            continue
+    return match_pids
 
 def error_if_path_missing(path):
     if not os.path.exists(path):
@@ -2124,7 +2358,8 @@ def property_file_to_list(filepath):
     return ps
 
 def get_command_by_pid(pid):
-    return open(os.path.join('/proc', str(pid), 'cmdline'), 'r').read()
+    with open(os.path.join('/proc', str(pid), 'cmdline'), 'rb') as fd:
+        return fd.read().decode('utf-8', errors='replace')
 
 def get_netmask_of_nic(nic_name):
     nic_addrs = iproute.query_addresses_by_ifname(nic_name)
@@ -2316,27 +2551,74 @@ def get_free_port():
     s.close()
     return port
 
+@lock.lock('port_lock')
 def get_free_port_in_range(start_port, end_port):
     for port in range(start_port, end_port):
-        try:
-            s = socket.socket()
-            s.bind(('', port))
-            s.close()
+        if tcp_port_is_free(port):
             return port
-        except socket.error as e:
-            if e.errno == errno.EADDRINUSE:
-                continue
-            else:
-                raise
+
     raise Exception("no free port found in range[%d, %d]" % (start_port, end_port))
 
-def is_port_available(port):
-    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+def tcp_port_is_free(port):
+    try:
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        network_ipv6.bind_dual_stack_probe_socket(sock, port)
+        sock.close()
+        return True
+    except socket.error:
         try:
-            s.bind(('', int(port)))
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            network_ipv6.bind_ipv4_probe_socket(sock, port)
+            sock.close()
             return True
-        except:
+        except socket.error:
             return False
+
+def find_free_port_with_locking(start_port, end_port):
+    keep_lock = False
+    tcp_port_lock.acquire()
+    try:
+        for p in range(start_port, end_port + 1):
+            if tcp_port_is_free(p):
+                keep_lock = True
+                return p, tcp_port_lock
+        raise Exception("no free port found in range[%d, %d]" % (start_port, end_port))
+    finally:
+        if not keep_lock:
+            tcp_port_lock.release()
+
+def parse_port_range(port_range):
+    start_port, end_port = map(int, port_range.split(':'))
+    return start_port, end_port
+
+def check_socket_available(host, port, timeout=10):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            sock = network_ipv6.create_tcp_socket_for_host(host)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            if result == 0:
+                return True
+        except:
+            pass
+        time.sleep(1)
+    return False
+
+def is_port_available(port):
+    with contextlib.closing(socket.socket(socket.AF_INET6, socket.SOCK_STREAM)) as s:
+        try:
+            network_ipv6.bind_dual_stack_probe_socket(s, port)
+            return True
+        except (socket.error, OSError):
+            with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as ipv4_sock:
+                try:
+                    network_ipv6.bind_ipv4_probe_socket(ipv4_sock, port)
+                    return True
+                except (socket.error, OSError):
+                    return False
 
 def get_all_ethernet_device_names():
     return os.listdir('/sys/class/net/')
@@ -2358,7 +2640,7 @@ class TimeoutObject(object):
         self.objects[name] = (val, time.time() + timeout)
 
     def has(self, name):
-        return name in self.objects.keys()
+        return name in list(self.objects.keys())
 
     def get(self, name):
         return self.objects.get(name)
@@ -2395,7 +2677,7 @@ class TimeoutObject(object):
     def _start(self):
         def clean_timeout_object():
             current_time = time.time()
-            for name, obj in self.objects.items():
+            for name, obj in list(self.objects.items()):
                 timeout = obj[1]
                 if current_time >= timeout:
                     del self.objects[name]
@@ -2488,25 +2770,31 @@ class Interface(object):
                 'name':self.name,
                 'ips':self.ips})
 
+IP_ADDR_INTERFACE_MARKER = 'mtu'
+IP_ADDR_ADDRESS_FAMILIES = ('inet', 'inet6')
+IP_ADDR_LIST_CMD = "ip a | grep -E 'mtu| inet | inet6 '"
+
+
 def get_eth_ips():
-    nics = shell.call("ip a | grep -E 'mtu| inet '")
+    nics = shell.call(IP_ADDR_LIST_CMD)
     result = dict()
     interf = ''
 
     for i in nics.splitlines():
-        if i.find('mtu') >= 0:
+        fields = i.strip().split()
+        if i.find(IP_ADDR_INTERFACE_MARKER) >= 0:
             interf = re.findall(r':\ .*:\ ', i)[0].split(': ')[1]
             status = True if re.findall(r'UP', i) else False
             result[interf] = Interface({'name':interf, 'status':status, 'ips':list()})
-        elif i.find('inet') >= 0:
-            result[interf].ips.append(re.findall(r'inet\ .*\ scope', i)[0].split(' ')[1].split('/')[0])
+        elif fields and fields[0] in IP_ADDR_ADDRESS_FAMILIES:
+            result[interf].ips.append(fields[1].split('/')[0])
 
     return result
 
 def get_nics_by_cidr(cidr):
     eths = get_eth_ips()
     nics = []
-    for e in eths.itervalues():
+    for e in eths.values():
         if e.status == False:
             continue
         for ip in e.ips:
@@ -2567,8 +2855,7 @@ def create_vxlan_bridge(interf, bridgeName, ips):
     if not is_bridge(bridgeName):
         create_bridge(bridgeName, interf, False)
     elif is_vif_on_bridge(bridgeName, interf) is None:
-        cmd = shell.ShellCmd("brctl addif %s %s" % (bridgeName, interf))
-        cmd(is_exception=False)
+        ip_link_set_net_device_master(interf, bridgeName)
 
     # Fix ZSTAC-54704. It is expected that the bridge to be reset when the host reconnects. However, the above code
     # does not necessarily execute create_bridge(), and additional testing is required if it must be executed.
@@ -2679,6 +2966,10 @@ class TempAccessible(object):
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.fmode is not None:
             os.chmod(self.fpath, self.fmode)
+
+
+def get_libvirt_package_version():
+    return shell.call("rpm -q libvirt --qf ' %{VERSION}-%{RELEASE}'")
 
 
 def get_libvirt_version():
@@ -2872,7 +3163,7 @@ def link(source, link_name):
         return
 
     if not os.path.exists(os.path.dirname(link_name)):
-        os.makedirs(os.path.dirname(link_name), 0755)
+        os.makedirs(os.path.dirname(link_name), 0o755)
 
     os.link(source, link_name)
     logger.debug("link %s to %s" % (source, link_name))
@@ -2887,7 +3178,7 @@ def tail_1(path, split=b"\n"):
         f.seek(-2, os.SEEK_END)
         while f.tell() > 0 and f.read(1) != split:
             f.seek(-2, os.SEEK_CUR)
-        return f.readline()
+        return f.readline().decode('utf-8', errors='replace')
 
 
 # check if file 'fpath' contains .conf style configurations
@@ -2921,7 +3212,7 @@ def fake_dead(name):
     fakedead_file = '/tmp/fakedead-%s' % name
     if not os.path.exists(fakedead_file):
         return False
-    ctx = file(fakedead_file).read().strip()
+    ctx = open(fakedead_file).read().strip()
     if ctx == 'fakedead':
         return True
     return False
@@ -2932,15 +3223,14 @@ def recover_fake_dead(name):
         os.remove(fakedead_file)
 
 def get_agent_pid_by_name(name):
-    cmd = shell.ShellCmd('ps -aux | grep \'%s\' | grep -E \'start|restart\' | grep -v grep | awk \'{print $2}\'' % name)
+    cmd = shell.ShellCmd('ps -auxww | grep \'%s\' | grep -E \'start|restart\' | grep -v grep | awk \'{print $2}\'' % name)
     output = cmd(False)
-    print output
+    print(output)
     if cmd.return_code != 0:
         return None
     output = output.strip(" \t\r")
     return output
 
-import ctypes
 libc = ctypes.CDLL("libc.so.6")
 
 def sync_file(fpath):
@@ -2978,8 +3268,7 @@ def set_fail_if_no_path():
         s(is_exception=False, logcmd=True)
 
 
-def get_physical_disk(disk=None, logCommand=True):
-    # type: () -> list[str]
+def get_physical_disk(disk=None, logCommand=True) -> list[str]:
     def remove_digits(str_list):
         pattern = '[0-9]'
         str_list = [re.sub(pattern, '', i) for i in str_list]
@@ -3029,7 +3318,7 @@ def write_uuids(type, str):
 
 def get_max_vm_ipa_size():
     try:
-        with open(KVM_DEVICE, 'rwb') as kvm_fd:
+        with open(KVM_DEVICE, 'r+b') as kvm_fd:
             ipa_max = fcntl.ioctl(kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_ARM_VM_IPA_SIZE)
             ipa_max = ipa_max if (ipa_max > 0) else DEFAULT_VM_IPA_SIZE
             return pow(2, ipa_max)
@@ -3049,7 +3338,7 @@ def hdev_get_max_transfer_via_segments(blk_path):
         os.path.realpath(blk_path))
     if not os.path.exists(segments_path):
         return 0
-    with open(segments_path, 'ro') as f:
+    with open(segments_path, 'r') as f:
         max_segments = int(f.read())
     return max_segments * resource.getpagesize()
 
@@ -3106,7 +3395,7 @@ def compare_segmented_xxhash(src_path, dst_path, total_size, raise_exception=Fal
         return True
 
     seg_size = 2*1024**3 ## 2G
-    seg_offset = [total_size/5*x for x in range(0, 5)]
+    seg_offset = [total_size//5*x for x in range(0, 5)]
     def _get_seg_xxhash(fd, offset):
         hasher = xxhash.xxh64()
         fd.seek(offset)
@@ -3116,8 +3405,8 @@ def compare_segmented_xxhash(src_path, dst_path, total_size, raise_exception=Fal
             buf = fd.read(blocksize)
         return hasher.hexdigest()
 
-    with open(src_path, 'r') as srcFile:
-        with open(dst_path, 'r') as dstFile:
+    with open(src_path, 'rb') as srcFile:
+        with open(dst_path, 'rb') as dstFile:
             for offset in seg_offset:
                 src_hash = _get_seg_xxhash(srcFile, offset)
                 dst_hash = _get_seg_xxhash(dstFile, offset)
@@ -3132,6 +3421,17 @@ def check_unixsock_connection(socket_path, timeout=10):
     # NOTE: -z option may not be supported in some lower versions of Ncat, such as 6.40
     return shell.run("nc -z -U %s -w %s" % (socket_path, timeout))
 
+def is_virtual_machine():
+    virtual_machine_names = ["KVM Virtual Machine", "KVM", "vmware"]
+    product_name = shell.call("dmidecode -s system-product-name").strip()
+    return any(name.lower() in product_name.lower() for name in virtual_machine_names)
+
+def is_support_bmc():
+    cmd = shell.ShellCmd("ipmitool mc info")
+    cmd(is_exception=False)
+    if cmd.return_code != 0:
+        return False
+    return True
 
 class VmUsbManager(object):
     def __init__(self):
@@ -3147,7 +3447,7 @@ class VmUsbManager(object):
         }
 
     def request_slot(self, usb_type):
-        if usb_type not in self.usb_version_map.keys():
+        if usb_type not in list(self.usb_version_map.keys()):
             raise Exception("Invalid USB type: %s" % usb_type)
 
         bus_set = self.usb_version_map.get(usb_type)
@@ -3161,5 +3461,196 @@ class VmUsbManager(object):
 
     def print_status(self):
         logger.info("Current USB slot status:")
-        for usb_type, count in self.usb_slots.iteritems():
+        for usb_type, count in self.usb_slots.items():
             logger.info("bus:%s: %d" % (usb_type, count))
+
+
+def is_rpm_installed(rpm_name):
+    cmd = shell.ShellCmd('rpm -q %s' % rpm_name)
+    cmd(False)
+    if ('not installed' in cmd.stdout or 'command not found' in cmd.stdout or
+        cmd.return_code != 0):
+        return False
+    return True
+
+
+def get_rpm_version(rpm_name):
+    return shell.call(
+        'rpm -q --queryformat "%%{VERSION}-%%{RELEASE}" %s' % rpm_name)
+
+class timespec(ctypes.Structure):
+    _fields_ = [
+        ('tv_sec', ctypes.c_long),
+        ('tv_nsec', ctypes.c_long)
+    ]
+
+CLOCK_MONOTONIC = 1
+librt = None
+try:
+    libname = ctypes.util.find_library('rt')
+    if not libname:
+        raise OSError("unable to find librt library")
+    librt = ctypes.CDLL(libname, use_errno=True)
+except Exception as e:
+    logger.debug("load librt library err: %s" % str(e))
+
+def monotime():
+    if sys.version_info[:2] >= (3, 3):
+        return time.monotonic()
+
+    if librt is None:
+        raise Exception("librt library is not found")
+
+    t = timespec()
+    if librt.clock_gettime(CLOCK_MONOTONIC, ctypes.byref(t)) != 0:
+        errno = ctypes.get_errno()
+        raise OSError(errno, os.strerror(errno))
+    return t.tv_sec + t.tv_nsec / 1e9
+
+def catch_bad_alloc_exception(return_code, error_detail):
+    if return_code == 134 and 'std::bad_alloc' in error_detail:
+        logger.warn('insufficient allocatable physical memory, error[%s]' % error_detail)
+        return True
+    
+    return False
+
+def get_free_memory():
+    """ example
+# cat /proc/meminfo
+MemTotal:       16247260 kB
+MemFree:         7344348 kB
+MemAvailable:   14068964 kB
+Buffers:            2108 kB
+Cached:          6403684 kB
+SwapCached:            0 kB
+Active:          4667796 kB
+Inactive:        2498796 kB
+Active(anon):     713080 kB
+Inactive(anon):    49308 kB
+Active(file):    3954716 kB
+Inactive(file):  2449488 kB
+Unevictable:           0 kB
+Mlocked:               0 kB
+SwapTotal:       8257532 kB
+SwapFree:        8257532 kB
+Dirty:                28 kB
+Writeback:             0 kB
+AnonPages:        760384 kB
+Mapped:            93788 kB
+Shmem:              1588 kB
+Slab:            1033048 kB
+SReclaimable:     658676 kB
+SUnreclaim:       374372 kB
+KernelStack:        7568 kB
+PageTables:        16160 kB
+NFS_Unstable:          0 kB
+Bounce:                0 kB
+WritebackTmp:          0 kB
+CommitLimit:    16381160 kB
+Committed_AS:    1915944 kB
+VmallocTotal:   34359738367 kB
+VmallocUsed:      201560 kB
+VmallocChunk:   34359375868 kB
+Percpu:            27648 kB
+HardwareCorrupted:     0 kB
+AnonHugePages:    366592 kB
+CmaTotal:              0 kB
+CmaFree:               0 kB
+HugePages_Total:       0
+HugePages_Free:        0
+HugePages_Rsvd:        0
+HugePages_Surp:        0
+Hugepagesize:       2048 kB
+DirectMap4k:      139104 kB
+DirectMap2M:     5103616 kB
+DirectMap1G:    13631488 kB
+    """
+    try:
+        mem_available = None
+        memfree = buffers = cached = 0
+
+        with open('/proc/meminfo') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    mem_available = int(line.split()[1]) * 1024  # kB -> bytes
+                elif line.startswith('MemFree:'):
+                    memfree = int(line.split()[1]) * 1024
+                elif line.startswith('Buffers:'):
+                    buffers = int(line.split()[1]) * 1024
+                elif line.startswith('Cached:'):
+                    cached = int(line.split()[1]) * 1024
+
+        # if MemAvailable is not existed, return MemFree + Buffers + Cached
+        if mem_available is not None:
+            return mem_available
+        return memfree + buffers + cached
+
+    except Exception as e:
+        logger.warn("failed to parse /proc/meminfo: %s" % e)
+        return 0
+
+class _CrashSafeFileContent:
+    def __init__(self, text):
+        self.text = text
+
+class CrashSafeFileEditor(object):
+    def __init__(self, dest):
+        self.dest = dest
+
+    def __enter__(self):
+        if not os.path.exists(self.dest):
+            raise Exception("write file failed because file %s not exist" % self.dest)
+
+        self.old_content = read_file(self.dest)
+        self.buffer = _CrashSafeFileContent(self.old_content)
+        return self.buffer
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            logger.debug("exception found when edit file %s, %s" % (self.dest, str(exc)))
+            traceback.print_tb(tb)
+            return
+
+        new_content = self.buffer.text
+        if new_content == self.old_content:
+            logger.debug("%s file not changed, skip overwrite" % self.dest)
+            return
+
+        st = os.stat(self.dest)
+        mode = stat.S_IMODE(st.st_mode)
+        uid = st.st_uid
+        gid = st.st_gid
+        dirpath = os.path.dirname(self.dest) or "."
+        tmp_path = create_temp_file(dir=dirpath)
+        renamed = False
+        try:
+            os.chmod(tmp_path, mode)
+            if uid != -1 and gid != -1:
+                os.chown(tmp_path, uid, gid)
+
+            write_file(tmp_path, str(new_content))
+
+            os.rename(tmp_path, self.dest)
+            renamed = True
+            dir_fd = os.open(dirpath, os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            except OSError:
+                pass
+            finally:
+                os.close(dir_fd)
+
+        finally:
+            if not renamed:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+BLKSSZGET = 0x1268  # get dev sector size
+def get_dev_sector_size(dev_path):
+    with open(dev_path, 'rb') as f:
+        fd = f.fileno()
+        buf = fcntl.ioctl(fd, BLKSSZGET, "    ")
+        sector_size = struct.unpack('I', buf)[0]
+        return sector_size

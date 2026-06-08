@@ -1,15 +1,15 @@
 import math
 import tempfile
+import time
 
 __author__ = 'frank'
 
 import pprint
 import traceback
-import cephprimarystorage
-import urlparse
+import urllib.parse
 import rados
 import rbd
-import Queue
+import queue
 import threading
 import simplejson
 
@@ -24,6 +24,7 @@ from zstacklib.utils.rollback import rollback, rollbackable
 from zstacklib.utils.plugin import completetask
 import os
 from zstacklib.utils import shell, iproute, remotetarget
+from zstacklib.utils import network_ipv6
 from zstacklib.utils import plugin
 from zstacklib.utils import linux
 from zstacklib.utils import ceph
@@ -32,12 +33,12 @@ from zstacklib.utils import qemu_img
 from zstacklib.utils import traceable_shell
 from zstacklib.utils import nbd_client
 from zstacklib.utils import thread
-from imagestore import ImageStoreClient
+from .imagestore import ImageStoreClient
 from zstacklib.utils.linux import remote_shell_quote
-from cephdriver import CephDriver
-from thirdpartycephdriver import ThirdpartyCephDriver
+from .cephdriver import CephDriver
+from .thirdpartycephdriver import ThirdpartyCephDriver
 from zstacklib.utils.misc import IgnoreError
-from distutils.version import LooseVersion
+from zstacklib.utils.version import NumericVersion
 
 log.configure_log('/var/log/zstack/ceph-primarystorage.log')
 logger = log.get_logger(__name__)
@@ -101,6 +102,7 @@ class CheckIsBitsExistingRsp(AgentResponse):
 
 class SetPasswordResponse(AgentResponse):
     def __init__(self):
+        super().__init__()
         self.cephInstallPath = None
         self.vmUuid = None
         self.account = None
@@ -126,6 +128,8 @@ class CloneRsp(AgentResponse):
         self.size = None
         self.actualSize = None
         self.installPath = None
+        self.volumeId = None
+        self.volumeStatus = None
 
 
 class CpRsp(AgentResponse):
@@ -332,6 +336,10 @@ class CephAgent(plugin.TaskManager):
     GET_VOLUME_SNAPINFOS_PATH = "/ceph/primarystorage/volume/getsnapinfos"
     UPLOAD_IMAGESTORE_PATH = "/ceph/primarystorage/imagestore/backupstorage/commit"
     DOWNLOAD_IMAGESTORE_PATH = "/ceph/primarystorage/imagestore/backupstorage/download"
+    STORAGE_BACKUP_PATH = "/ceph/primarystorage/volume/takebackup"
+    CANCEL_STORAGE_BACKUP_PATH = "/ceph/primarystorage/volume/cancelbackup"
+    GET_STORAGE_BACKUP_MODE_PATH = "/ceph/primarystorage/volume/getbackupmode"
+    CLEAN_STORAGE_BACKUP_CACHE_PATH = "/ceph/primarystorage/volume/cleanbackupcache"
     DOWNLOAD_BITS_FROM_KVM_HOST_PATH = "/ceph/primarystorage/kvmhost/download"
     DOWNLOAD_BITS_FROM_NBD_EXPT_PATH = "/ceph/primarystorage/nbd/download"
     CLAEN_TRASH_PATH = "/ceph/primarystorage/trash/clean"
@@ -347,6 +355,7 @@ class CephAgent(plugin.TaskManager):
     XSKY_UPDATE_BLOCK_VOLUME_SNAPSHOT = "/xsky/ceph/primarystorage/volume/snapshot/update"
 
     CEPH_CONF_PATH = "/etc/ceph/ceph.conf"
+    BACKUP_SNAPSHOT_PREFIX = "rbd-storage-backup-"
 
     http_server = http.HttpServer(port=7762)
     http_server.logfile_path = log.get_logfile_path()
@@ -393,7 +402,10 @@ class CephAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.CP_PATH, self.cp)
         self.http_server.register_async_uri(self.UPLOAD_IMAGESTORE_PATH, self.upload_imagestore)
         self.http_server.register_async_uri(self.DOWNLOAD_IMAGESTORE_PATH, self.download_imagestore)
-        self.http_server.register_async_uri(self.DELETE_POOL_PATH, self.delete_pool)
+        self.http_server.register_async_uri(self.STORAGE_BACKUP_PATH, self.take_storage_backup)
+        self.http_server.register_async_uri(self.CANCEL_STORAGE_BACKUP_PATH, self.cancel_storage_backup)
+        self.http_server.register_async_uri(self.GET_STORAGE_BACKUP_MODE_PATH, self.get_storage_backup_mode)
+        self.http_server.register_async_uri(self.CLEAN_STORAGE_BACKUP_CACHE_PATH, self.clean_storage_backup_cache)
         self.http_server.register_async_uri(self.GET_VOLUME_SIZE_PATH, self.get_volume_size)
         self.http_server.register_async_uri(self.BATCH_GET_VOLUME_SIZE_PATH, self.batch_get_volume_size)
         self.http_server.register_async_uri(self.GET_VOLUME_WATCHES_PATH, self.get_volume_watchers)
@@ -476,7 +488,7 @@ class CephAgent(plugin.TaskManager):
         else:
             xms_version = None
             logger.warn('can not get xms version, the xms-cli version output is: %s' % o)
-        if xms_version and LooseVersion(xms_version) >= LooseVersion('5.2.106.2.230330'):
+        if xms_version and NumericVersion(xms_version) >= NumericVersion('5.2.106.2.230330'):
             return
 
         regex = 'grep -v 3.10.0-'
@@ -496,16 +508,16 @@ class CephAgent(plugin.TaskManager):
         df = jsonobject.loads(o)
 
         if df.stats.total_bytes__ is not None:
-            total = long(df.stats.total_bytes_)
+            total = int(df.stats.total_bytes_)
         elif df.stats.total_space__ is not None:
-            total = long(df.stats.total_space__) * 1024
+            total = int(df.stats.total_space__) * 1024
         else:
             raise Exception('unknown ceph df output: %s' % o)
 
         if df.stats.total_avail_bytes__ is not None:
-            avail = long(df.stats.total_avail_bytes_)
+            avail = int(df.stats.total_avail_bytes_)
         elif df.stats.total_avail__ is not None:
-            avail = long(df.stats.total_avail_) * 1024
+            avail = int(df.stats.total_avail_) * 1024
         else:
             raise Exception('unknown ceph df output: %s' % o)
 
@@ -530,10 +542,8 @@ class CephAgent(plugin.TaskManager):
 
     @in_bash
     def _get_file_actual_size(self, path):
-        fast_diff_enabled = shell.run("rbd --format json info %s | grep fast-diff | grep -qv 'fast diff invalid'" % path) == 0
-
         # if no fast-diff supported and not xsky ceph skip actual size check
-        if not fast_diff_enabled and not ceph.is_xsky():
+        if not self._fast_diff_enabled(path) and not ceph.is_xsky():
             return None
 
         # use json format result first
@@ -556,10 +566,37 @@ class CephAgent(plugin.TaskManager):
 
         return sizeunit.get_size(size)
 
+    def _fast_diff_enabled(self, path):
+        return shell.run("rbd --format json info %s | grep fast-diff | grep -qv 'fast diff invalid'" % path) == 0
+
+    #TODO: check that ceph supports json versions
+    @in_bash
+    def _get_snapshot_actual_size(self, path):
+        if ceph.is_xsky():
+            # xsky can not separate snapshot size, return a minimum value
+            return 1
+
+        # if no fast-diff supported skip actual size check
+        if not self._fast_diff_enabled(path):
+            return None
+
+        r, jstr = bash.bash_ro("rbd du %s --format json" % path)
+        if r != 0 or bool(jstr) is False:
+            return None
+
+        result = jsonobject.loads(jstr)
+        if result.images is None:
+            return None
+
+        snapshot = path.split('@')[-1]
+        for item in result.images:
+            if item.snapshot == snapshot:
+                return int(item.used_size)
+
     def _get_file_size(self, path):
         o = shell.call('rbd --format json info %s' % path)
         o = jsonobject.loads(o)
-        return long(o.size_)
+        return int(o.size_)
 
     @staticmethod
     def _get_parent(path):
@@ -599,7 +636,7 @@ class CephAgent(plugin.TaskManager):
             return jsonobject.dumps(rsp)
 
         o = bash_o('rbd children {{SP_PATH}}')
-        o = o.strip(' \t\r\n')
+        o = o.strip()
         if o:
             raise Exception('the image cache[%s] is still in used' % cmd.imagePath)
 
@@ -654,8 +691,7 @@ class CephAgent(plugin.TaskManager):
         rsp.fsid = ceph.get_fsid()
         rsp.type = ceph.get_ceph_manufacturer()
 
-        ip_addresses = [chunk.address for chunk in filter(
-            lambda x: x.address != '127.0.0.1' and not x.ifname.endswith('zs'), iproute.query_addresses(ip_version=4))]
+        ip_addresses = network_ipv6.collect_reportable_agent_addresses(iproute)
         rsp.ipAddresses = ip_addresses
 
         return jsonobject.dumps(rsp)
@@ -686,13 +722,15 @@ class CephAgent(plugin.TaskManager):
             def wrap(f):
                 @functools.wraps(f)
                 def inner(*args, **kwargs):
+                    ex = None
                     for i in range(0, times):
                         try:
                             return f(*args, **kwargs)
                         except Exception as e:
+                            ex = traceback.format_exc()
                             logger.error(e)
                             time.sleep(sleep_time)
-                    rsp.error = ("Still failed after retry. Below is detail:\n %s" % e)
+                    rsp.error = ("Still failed after retry. Below is detail:\n %s" % ex)
 
                 return inner
 
@@ -734,7 +772,7 @@ class CephAgent(plugin.TaskManager):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GetBatchVolumeSizeRsp()
 
-        for uuid, installPath in cmd.volumeUuidInstallPaths.__dict__.items():
+        for uuid, installPath in list(cmd.volumeUuidInstallPaths.__dict__.items()):
             with IgnoreError():
                 path = self._normalize_install_path(installPath)
                 rsp.actualSizes[uuid] = self._get_file_actual_size(path)
@@ -764,7 +802,7 @@ class CephAgent(plugin.TaskManager):
         path = self._normalize_install_path(cmd.installPath)
         rsp = GetVolumeSnapshotSizeRsp()
         rsp.size = self._get_file_size(path)
-        rsp.actualSize = self._get_file_actual_size(path)
+        rsp.actualSize = self._get_snapshot_actual_size(path)
         return jsonobject.dumps(rsp)
 
     @replyerror
@@ -860,6 +898,52 @@ class CephAgent(plugin.TaskManager):
         return self.imagestore_client.upload_imagestore(cmd, req)
 
     @replyerror
+    def take_storage_backup(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        return self.imagestore_client.storage_backup(cmd)
+
+    @replyerror
+    def cancel_storage_backup(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        return self.imagestore_client.cancel_storage_backup(cmd)
+
+    @replyerror
+    def get_storage_backup_mode(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+        mode = 'incremental'
+        if not cmd.lastBackupUuid:
+            mode = 'full'
+        if shell.run('rbd info %s@%s%s' % (
+                cmd.volumePath.replace('ceph://', ''), self.BACKUP_SNAPSHOT_PREFIX, cmd.lastBackupUuid)) != 0:
+            mode = 'full'
+
+        rsp.mode = mode
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def clean_storage_backup_cache(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+
+        vpath = self._normalize_install_path(cmd.volumePath)
+
+        snaps = self._get_snapshots(vpath)
+        if not snaps:
+            return jsonobject.dumps(rsp)
+
+        target_snaps = [s for s in snaps if s.name.startswith(self.BACKUP_SNAPSHOT_PREFIX)]
+
+        if not target_snaps:
+            return jsonobject.dumps(rsp)
+
+        for snap in target_snaps:
+            full_snap_name = vpath + '@' + snap.name
+            shell.call('rbd snap rm %s' % full_snap_name)
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
     def commit_image(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         spath = self._normalize_install_path(cmd.snapshotPath)
@@ -909,7 +993,7 @@ class CephAgent(plugin.TaskManager):
         if do_create:
             driver = self.get_driver(cmd)
             rsp = driver.create_snapshot(cmd, rsp)
-            rsp.actualSize = self._get_file_actual_size(spath)
+            rsp.actualSize = self._get_snapshot_actual_size(spath)
 
         self._set_capacity_to_response(rsp)
         return jsonobject.dumps(rsp)
@@ -922,7 +1006,7 @@ class CephAgent(plugin.TaskManager):
             return
 
         o = bash_o('rbd children %s' % path)
-        o = o.strip(' \t\r\n')
+        o = o.strip()
         if o:
             raise Exception("the snapshot[%s] is still in used, children: %s" % (snapshot_path, o))
 
@@ -1109,6 +1193,7 @@ class CephAgent(plugin.TaskManager):
 
         return jsonobject.dumps(rsp)
 
+    @replyerror
     def connect(self, req):
         rsp = AgentResponse()
         self.reconnect_cluster()
@@ -1191,7 +1276,10 @@ class CephAgent(plugin.TaskManager):
 
         try:
             rbd_check_rm(pool, tmp_image_name)
-            shell.call(self._wrap_shareable_cmd(cmd, 'set -o pipefail; ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s cat %s | %s rbd import --image-format 2 - %s/%s' % (port, prikey_file, hostname, remote_shell_quote(cmd.backupStorageInstallPath), bandWidth, pool, tmp_image_name)))
+            shell.call(self._wrap_shareable_cmd(
+                cmd, 'set -o pipefail; ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s root@%s '
+                     'cat %s | %s rbd import --image-format 2 - %s/%s' %
+                     (port, prikey_file, hostname, remote_shell_quote(cmd.backupStorageInstallPath), bandWidth, pool, tmp_image_name)))
         finally:
             os.remove(prikey_file)
 
@@ -1298,7 +1386,7 @@ class CephAgent(plugin.TaskManager):
     def _get_dst_volume_size(self, dst_install_path, dst_mon_addr, dst_mon_user, dst_mon_passwd, dst_mon_port):
         o = linux.sshpass_call(dst_mon_addr, dst_mon_passwd, "rbd --format json info %s" % dst_install_path, dst_mon_user, dst_mon_port)
         o = jsonobject.loads(o)
-        return long(o.size_)
+        return int(o.size_)
 
     def _resize_dst_volume(self, dst_install_path, size, dst_mon_addr, dst_mon_user, dst_mon_passwd, dst_mon_port):
         r, _, e = linux.sshpass_run(dst_mon_addr, dst_mon_passwd, "qemu-img resize -f raw rbd:%s %s" % (dst_install_path, size), dst_mon_user, dst_mon_port)
@@ -1315,11 +1403,11 @@ class CephAgent(plugin.TaskManager):
         traceable_bash = traceable_shell.get_shell(cmd)
         ssh_cmd, tmp_file = linux.build_sshpass_cmd(dst_mon_addr, dst_mon_passwd, "tee >(md5sum >/tmp/%s_dst_md5) | rbd import-diff - %s"
                                                     % (resource_uuid, dst_install_path), dst_mon_user, dst_mon_port)
-        r, _, e = traceable_bash.bash_roe('set -o pipefail; rbd export-diff {FROM_SNAP} {SRC_INSTALL_PATH} - | tee >(md5sum >/tmp/{RESOURCE_UUID}_src_md5) | {SSH_CMD}'.format(
+        r, _, e = traceable_bash.bash_roe('rbd export-diff {FROM_SNAP} {SRC_INSTALL_PATH} - | tee >(md5sum >/tmp/{RESOURCE_UUID}_src_md5) | {SSH_CMD}'.format(
             RESOURCE_UUID=resource_uuid,
             SSH_CMD=ssh_cmd,
             SRC_INSTALL_PATH=src_install_path,
-            FROM_SNAP='--from-snap ' + parent_uuid if parent_uuid != '' else ''))
+            FROM_SNAP='--from-snap ' + parent_uuid if parent_uuid != '' else ''), pipe_fail=True)
         linux.rm_file_force(tmp_file)
         if r != 0:
             logger.error('failed to migrate volume %s: %s' % (src_install_path, e))
@@ -1407,21 +1495,27 @@ class CephAgent(plugin.TaskManager):
     def delete_volume_backing_chain(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
+        rsp.undeletedInstallPaths = cmd.installPaths[:]
 
-        driver = self.get_driver(cmd)
-        for path in cmd.installPaths:
-            path = self._normalize_install_path(path)
-            if "@" in path:
-                vol_path = path.split("@")[0]
-                shell.run('rbd snap unprotect %s' % path)
-                shell.call('rbd snap rm %s' % path)
-            else:
-                vol_path = path
-            self._ensure_existing_volume_has_no_snapshot(vol_path)
-            watchers = self._get_watcher(vol_path)
-            if watchers:
-                raise Exception('volume %s has watchers %s, can not delete it' % (vol_path, watchers))
-            driver.do_deletion(cmd, vol_path)
+        try:
+            driver = self.get_driver(cmd)
+            for installPath in cmd.installPaths:
+                path = self._normalize_install_path(installPath)
+                if "@" in path:
+                    vol_path = path.split("@")[0]
+                    shell.run('rbd snap unprotect %s' % path)
+                    shell.call('rbd snap rm %s' % path)
+                    rsp.undeletedInstallPaths[rsp.undeletedInstallPaths.index(installPath)] = installPath.split("@")[0]
+                else:
+                    vol_path = path
+                self._ensure_existing_volume_has_no_snapshot(vol_path)
+                watchers = self._get_watcher(vol_path)
+                if watchers:
+                    raise Exception('volume %s has watchers %s, can not delete it' % (vol_path, watchers))
+                driver.do_deletion(cmd, vol_path)
+                rsp.undeletedInstallPaths.remove(installPath.split("@")[0])
+        except Exception:
+            logger.warn(traceback.format_exc())
 
         return jsonobject.dumps(rsp)
 
@@ -1469,7 +1563,7 @@ class CephAgent(plugin.TaskManager):
                 continue
             size = self._get_file_actual_size(path)
             if size is not None:
-                totalSize += long(size)
+                totalSize += int(size)
 
         rsp.totalSize = totalSize
         return jsonobject.dumps(rsp)
@@ -1503,7 +1597,7 @@ class CephAgent(plugin.TaskManager):
         poolname, imagename = rbdtarget.split('/')
         client = nbd_client.NBDClient()
         client.connect(hostname, port, None, export_name)
-        cqueue = Queue.Queue(8)
+        cqueue = queue.Queue(8)
         offset, disk_size = 0, client.get_block_size()
         last_report_time = time.time()
 
@@ -1516,14 +1610,14 @@ class CephAgent(plugin.TaskManager):
                     logger.info('volume resized to %d' % disk_size)
 
                 chunk_size = 1048576
-                zero_chunk = '\x00' * chunk_size
+                zero_chunk = b'\x00' * chunk_size
                 remainder_size = disk_size % chunk_size
 
                 thread.ThreadFacade.run_in_thread(queue_consumer, [cqueue, image, rsp])
 
                 while offset < disk_size:
                     if offset + chunk_size > disk_size:
-                        chunk_size, zero_chunk = remainder_size, '\x00' * remainder_size
+                        chunk_size, zero_chunk = remainder_size, b'\x00' * remainder_size
 
                     data  = client.read(offset, chunk_size) # client has 'read all' semantic
                     if len(data) != chunk_size:
@@ -1543,8 +1637,8 @@ class CephAgent(plugin.TaskManager):
                 while not rsp.error and not cqueue.empty():
                     time.sleep(0.1)
                 image.flush()
-        except Queue.Full:
-            rsp.srror = 'rbd write timed out at offset: %d' % offset
+        except queue.Full:
+            rsp.error = 'rbd write timed out at offset: %d' % offset
         finally:
             logger.info("xxx: bytes written: "+str(offset))
 
@@ -1561,7 +1655,7 @@ class CephAgent(plugin.TaskManager):
         nbdexpurl = cmd.nbdExportUrl
         rbdtarget = cmd.primaryStorageInstallPath
 
-        u = urlparse.urlparse(nbdexpurl)
+        u = urllib.parse.urlparse(nbdexpurl)
         if u.scheme != 'nbd':
             rsp.error = 'unexpected protocol: %s' % nbdexpurl
             return jsonobject.dumps(rsp)
@@ -1639,6 +1733,8 @@ class CephAgent(plugin.TaskManager):
     def delete_block_volume(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         path = self._normalize_install_path(cmd.installPath)
+        driver = self.get_third_party_driver(cmd)
+        driver.delete_rollback_backup_snapshot(cmd)
 
         rsp = AgentResponse()
         if not self._ensure_existing_volume_has_no_snapshot(path):
@@ -1651,7 +1747,6 @@ class CephAgent(plugin.TaskManager):
             logger.debug("the block volume[%s] still has watchers, unable to delete" % cmd.installPath)
             return jsonobject.dumps(rsp)
 
-        driver = self.get_third_party_driver(cmd)
         driver.do_deletion(cmd, path)
         return jsonobject.dumps(rsp)
 

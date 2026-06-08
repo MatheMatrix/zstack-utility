@@ -2,7 +2,7 @@ import ast
 import json
 import os
 import shutil
-import commands
+import subprocess
 import tempfile
 
 from jinja2 import Template
@@ -14,6 +14,7 @@ from zstacklib.utils import iptables
 from zstacklib.utils import iproute
 from zstacklib.utils import lock
 from zstacklib.utils import log
+from zstacklib.utils import network_ipv6
 from zstacklib.utils import shell
 
 from kvmagent import kvmagent
@@ -26,6 +27,22 @@ from kvmagent.plugins.bmv2_gateway_agent import volume
 
 
 logger = log.get_logger(__name__)
+
+HTTP_SCHEME = 'http'
+PROXY_PASS_TOKEN = 'proxy_pass'
+
+
+def format_host_port_for_url(host, port):
+    return '%s:%s' % (network_ipv6.format_url_host(host), port)
+
+
+def build_http_url(host, port, path=''):
+    return '%s://%s%s' % (HTTP_SCHEME, format_host_port_for_url(host, port), path)
+
+
+def parse_proxy_pass_port(line):
+    target = line.strip().split(PROXY_PASS_TOKEN, 1)[1].strip().rstrip(';')
+    return int(target.rsplit(':', 1)[1])
 
 
 class AccessPathInfo():
@@ -145,7 +162,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         yum_release = kvmagent.get_host_yum_release()
 
         _extra_x86_64 = ['syslinux', 'python-docutils']
-        if yum_release in ['rl84', 'h84r']:
+        if yum_release in ['rl84', 'h84r', 'uos20r']:
             _extra_x86_64 = ['syslinux', 'python2-docutils']
 
         extra_rpm_mapping = {
@@ -196,8 +213,9 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         if kvmagent.host_arch == "x86_64":
             shutil.copy('/usr/share/syslinux/pxelinux.0', self.TFTPBOOT_DIR)
 
-        # Copy grubaa64.efi
-        shutil.copy('/tmp/grubaa64.efi', self.TFTPBOOT_DIR)
+        # Check grubaa64.efi
+        if not os.path.exists(os.path.join(self.TFTPBOOT_DIR, 'grubaa64.efi')):
+            raise Exception("grubaa64.efi not found in " + self.TFTPBOOT_DIR)
 
         # Prepare httpboot, copy kernel&initramfs
         if os.path.islink(self.BM_IMGS_DIR):
@@ -211,8 +229,10 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
 
         # download pxe images from management node
         # static repo url like: http://10.10.0.1:8080/zstack/static/zstack-repo/x86_64/c76
-        mn_repo_url = 'http://{ip}:{port}/zstack/static/zstack-repo'.format(
-            ip=network_obj.callback_ip, port=network_obj.callback_port)
+        mn_repo_url = build_http_url(
+            network_obj.callback_ip,
+            network_obj.callback_port,
+            '/zstack/static/zstack-repo')
 
         bm_temp_dir = tempfile.mkdtemp()
         try:
@@ -288,6 +308,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             return Template(f.read())
 
     def _prepare_provision_network(self, network_obj):
+        # type: (NetworkObj) -> None
         """ Prepare provision network
 
         :param network_obj: The network obj
@@ -397,15 +418,28 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             ip_addr=instance_obj.provision_ip,
             uuid=instance_obj.uuid)
 
-        with open(self.DNSMASQ_HOSTS_PATH, 'a+r') as f:
+        with open(self.DNSMASQ_HOSTS_PATH, 'a+') as f:
+            f.seek(0)
             if host not in f.read():
                 f.write(host)
+
+        if len(instance_obj.extra_provision_nic_infos) > 0:
+            for info in instance_obj.extra_provision_nic_infos:
+                host = '{mac_addr},{ip_addr},set:instance,set:{uuid}\n'.format(
+                    mac_addr=info.provision_mac,
+                    ip_addr=info.provision_ip,
+                    uuid=instance_obj.uuid)
+                with open(self.DNSMASQ_HOSTS_PATH, 'a+') as f:
+                    f.seek(0)
+                    if host not in f.read():
+                        f.write(host)
 
         opts_template = self._load_template('dnsmasq.opts')
         opts = opts_template.render(
             uuid=instance_obj.uuid,
             tftp_server_address=instance_obj.gateway_ip)
-        with open(self.DNSMASQ_OPTS_PATH, 'a+r') as f:
+        with open(self.DNSMASQ_OPTS_PATH, 'a+') as f:
+            f.seek(0)
             if opts not in f.read():
                 f.write(opts)
                 f.write('\n')
@@ -520,8 +554,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         """
         self._prepare_nginx_basic(network_obj)
         template = self._load_template('nginx_proxy_to_mn')
-        mn_callback_uri = 'http://{ip}:{port}'.format(
-            ip=network_obj.callback_ip, port=network_obj.callback_port)
+        mn_callback_uri = build_http_url(network_obj.callback_ip, network_obj.callback_port)
         conf = template.render(
             mn_callback_uri=mn_callback_uri,
             bm_gateway_httpboot=self.BAREMETAL_LIB_DIR,
@@ -557,18 +590,14 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             linux.mkdir(self.NGINX_BM_AGENT_PROXY_CONF_DIR)
 
         template = self._load_template('nginx_proxy_to_agent_http')
-        bm_gateway_callback_uri = (
-            'http://{gw_ip}:{gw_port}/baremetal_instance_agent/v2/callback'
-            ).format(
-                gw_ip=network_obj.provision_nic_ip,
-                gw_port=network_obj.baremetal_instance_proxy_port
-            )
-        bm_agent_api_uri = (
-            'http://{bm_instance_ip}:{bm_instance_port}/v2').format(
-                bm_instance_ip=instance_obj.provision_ip,
-                bm_instance_port=\
-                    self.BAREMETAL_INSTANCE_AGENT_PORT
-            )
+        bm_gateway_callback_uri = build_http_url(
+            network_obj.provision_nic_ip,
+            network_obj.baremetal_instance_proxy_port,
+            '/baremetal_instance_agent/v2/callback')
+        bm_agent_api_uri = build_http_url(
+            instance_obj.provision_ip,
+            self.BAREMETAL_INSTANCE_AGENT_PORT,
+            '/v2')
         conf = template.render(
             bm_instance_uuid=instance_obj.uuid,
             bm_gateway_callback_uri=bm_gateway_callback_uri,
@@ -613,7 +642,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
                     if 'listen' in line:
                         local_port = int(line.split()[-1].strip()[:-1])
                     if 'proxy_pass' in line:
-                        remote_port = int(line.split(':')[-1].strip()[:-1])
+                        remote_port = parse_proxy_pass_port(line)
             if remote_port and local_port:
                 self._remove_iptables_rule('tcp', local_port)
             linux.rm_file_force(file_path)
@@ -745,7 +774,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
                     if 'listen' in line:
                         local_port = int(line.split()[-1].strip()[:-1])
                     if 'proxy_pass' in line:
-                        remote_port = int(line.split(':')[-1].strip()[:-1])
+                        remote_port = parse_proxy_pass_port(line)
 
             # Test wether the port can be reach
             if remote_port and linux_v2.check_remote_port_whether_open(
@@ -753,10 +782,10 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
                 return 'http' if remote_port == 4200 else 'vnc', local_port
 
         # If the conf not exist
-        uri = 'http://{addr}:{port}/v2/console/prepare'.format(
-            addr=instance_obj.provision_ip,
-            port=self.BAREMETAL_INSTANCE_AGENT_PORT,
-            uuid=instance_obj.uuid)
+        uri = build_http_url(
+            instance_obj.provision_ip,
+            self.BAREMETAL_INSTANCE_AGENT_PORT,
+            '/v2/console/prepare')
         ret = http.json_post(uri, method='GET')
         ret = json.loads(ret) if isinstance(ret, str) else ret
         if not isinstance(ret, dict):
@@ -774,7 +803,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         template = self._load_template('nginx_proxy_to_agent_tcp')
         conf = template.render(
             gateway_port=gw_port,
-            bm_instance_ip=instance_obj.provision_ip,
+            bm_instance_host_port=format_host_port_for_url(instance_obj.provision_ip, port),
             bm_instance_vnc_port=port)
 
         with open(file_path, 'w') as f:
@@ -793,9 +822,10 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         :param network_obj: The network obj
         :type network_obj: NetworkObj
         """
-        inspect_ks_cfg_uri = ('http://{ip}:{port}/bmv2httpboot/ks/inspector_ks_aarch64.cfg').format(
-                ip=network_obj.provision_nic_ip,
-                port=network_obj.baremetal_instance_proxy_port)
+        inspect_ks_cfg_uri = build_http_url(
+            network_obj.provision_nic_ip,
+            network_obj.baremetal_instance_proxy_port,
+            '/bmv2httpboot/ks/inspector_ks_aarch64.cfg')
 
         title = "ZStack Get Bare Metal Chassis Hardware Info"
         grub_template = self._load_template('grub.cfg')
@@ -824,16 +854,16 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
                     nbd_id = volume_driver.nbd_id
                     break
 
-            status,output = commands.getstatusoutput('guestmount --ro -a /dev/nbd%s -m /dev/sda2 %s' % (nbd_id, tempdir))
+            status,output = subprocess.getstatusoutput('guestmount --ro -a /dev/nbd%s -m /dev/sda2 %s' % (nbd_id, tempdir))
             if not os.path.exists(os.path.join(tempdir, 'baremetal2/vmlinuz')) or \
                     not os.path.exists(os.path.join(tempdir, 'baremetal2/initrd.img')) or \
                     not os.path.exists(os.path.join(tempdir, 'baremetal2/root_uuid')):
-                commands.getoutput('umount %s; rm -rf %s' % (tempdir, tempdir))
+                subprocess.getoutput('umount %s; rm -rf %s' % (tempdir, tempdir))
 
             shutil.copy(os.path.join(tempdir, 'baremetal2/vmlinuz'), image_dir)
             shutil.copy(os.path.join(tempdir, 'baremetal2/initrd.img'), image_dir)
             shutil.copy(os.path.join(tempdir, 'baremetal2/root_uuid'), image_dir)
-            commands.getoutput('chmod 0777 %s/*; umount %s; rm -rf %s' % (image_dir, tempdir, tempdir))
+            subprocess.getoutput('chmod 0777 %s/*; umount %s; rm -rf %s' % (image_dir, tempdir, tempdir))
 
         root_uuid = ''
         if os.path.exists(os.path.join(image_dir, 'root_uuid')):
@@ -888,8 +918,10 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         """
         inspect_kernel_uri = 'x86_64/vmlinuz'
         inspect_initrd_uri = 'x86_64/initrd.img'
-        inspect_ks_cfg_uri = 'http://{ip}:{port}/bmv2httpboot/ks/inspector_ks_x86_64.cfg'.format(
-                ip=network_obj.provision_nic_ip, port=network_obj.baremetal_instance_proxy_port)
+        inspect_ks_cfg_uri = build_http_url(
+            network_obj.provision_nic_ip,
+            network_obj.baremetal_instance_proxy_port,
+            '/bmv2httpboot/ks/inspector_ks_x86_64.cfg')
 
         ipxe_template = self._load_template('boot.ipxe')
         if network_obj.extra_boot_params is None:
@@ -931,16 +963,20 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         architecture = instance_obj.architecture
 
         # create import-data-ks.cfg
-        network_inst_uri = "http://{ip}:{port}/bmv2httpboot/bmimgs/{architecture}/".format(
-            ip=instance_obj.gateway_ip, port=cmd.port, architecture=architecture)
+        network_inst_uri = build_http_url(
+            instance_obj.gateway_ip,
+            cmd.port,
+            '/bmv2httpboot/bmimgs/%s/' % architecture)
 
-        send_hardware_infos_uri = (
-            'http://{ip}:{port}/baremetal_instance_agent/v2/hardwareinfos'
-        ).format(ip=volume_driver.instance_obj.gateway_ip, port=cmd.port)
+        send_hardware_infos_uri = build_http_url(
+            volume_driver.instance_obj.gateway_ip,
+            cmd.port,
+            '/baremetal_instance_agent/v2/hardwareinfos')
 
-        send_progress_info_uri = (
-            'http://{ip}:{port}/baremetal_instance_agent/v2/reportProgress'
-        ).format(ip=volume_driver.instance_obj.gateway_ip, port=cmd.port)
+        send_progress_info_uri = build_http_url(
+            volume_driver.instance_obj.gateway_ip,
+            cmd.port,
+            '/baremetal_instance_agent/v2/reportProgress')
 
         if cmd.extraBootParams is None:
             cmd.extraBootParams = ""
@@ -965,8 +1001,10 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
 
         inspect_kernel_uri = '../{}/vmlinuz'.format(architecture)
         inspect_initrd_uri = '../{}/initrd.img'.format(architecture)
-        import_data_ks_cfg_uri = 'http://{ip}:{port}/bmv2httpboot/ks/{import_data_ks}'.format(
-            ip=instance_obj.gateway_ip, port=cmd.port, import_data_ks=ks_file_name)
+        import_data_ks_cfg_uri = build_http_url(
+            instance_obj.gateway_ip,
+            cmd.port,
+            '/bmv2httpboot/ks/%s' % ks_file_name)
 
         # configure ipxe if x86_64 else configure grub
         if architecture == "x86_64":
@@ -1008,10 +1046,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         volumes = {}
         for volume_driver in volume_drivers:
             if volume_driver.volume_obj.type == 'Root':
-                uri = 'iscsi:{gw_ip}:::{lun_id}:{target}'.format(
-                    gw_ip=self.provision_network_conf.provision_nic_ip,
-                    lun_id=volume_driver.iscsi_lun,
-                    target=volume_driver.iscsi_target)
+                uri = volume_driver.build_iscsi_uri(self.provision_network_conf.provision_nic_ip)
                 drive_id = '0x%x' % (128 + volume_driver.iscsi_lun)
                 volumes[uri] = drive_id
 
@@ -1112,15 +1147,18 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
         """
         port = network_obj.baremetal_instance_proxy_port
 
-        send_hardware_infos_uri = (
-            'http://{ip}:{port}/baremetal_instance_agent/v2/hardwareinfos'
-            ).format(ip=network_obj.provision_nic_ip, port=port)
+        send_hardware_infos_uri = build_http_url(
+            network_obj.provision_nic_ip,
+            port,
+            '/baremetal_instance_agent/v2/hardwareinfos')
 
         template = self._load_template('inspector.ks')
 
         # create inspector_ks_x86_64.cfg
-        network_inst_uri = "http://{ip}:{port}/bmv2httpboot/bmimgs/x86_64/".format(
-                ip=network_obj.provision_nic_ip, port=port)
+        network_inst_uri = build_http_url(
+            network_obj.provision_nic_ip,
+            port,
+            '/bmv2httpboot/bmimgs/x86_64/')
 
         conf = template.render(
             network_inst_uri=network_inst_uri,
@@ -1132,8 +1170,10 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
             f.write(conf)
 
         # create inspector_ks_aarch64.cfg
-        network_inst_uri = "http://{ip}:{port}/bmv2httpboot/bmimgs/aarch64/".format(
-                ip=network_obj.provision_nic_ip, port=port)
+        network_inst_uri = build_http_url(
+            network_obj.provision_nic_ip,
+            port,
+            '/bmv2httpboot/bmimgs/aarch64/')
 
         conf = template.render(
             network_inst_uri=network_inst_uri,
@@ -1676,5 +1716,7 @@ class BaremetalV2GatewayAgentPlugin(kvmagent.KvmAgent):
     def stop(self):
         pass
 
-    def configure(self, config):
+    def configure(self, config=None):
+        if config is None:
+            config = {}
         self.config = config

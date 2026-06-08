@@ -40,6 +40,7 @@ kvmagent/test/shareblock_testsuite/test_sharedblock_volume_migrate.py
 kvmagent/test/shareblock_testsuite/test_shareblock_create_data_volume_with_backing.py
 kvmagent/test/shareblock_testsuite/test_sharedblock_check_lock.py
 kvmagent/test/shareblock_testsuite/test_shareblock_get_qcow2_hashvalue.py
+kvmagent/test/shareblock_testsuite/test_sharedblock_metadata_auto_repair.py
 kvmagent/test/vm_plugin_testsuite/test_vm_cpu_model.py
 kvmagent/test/vm_plugin_testsuite/test_vm_max_vcpu.py
 kvmagent/test/nfs_testsuit/test_ha_nfs.py
@@ -54,3 +55,5 @@ kvmagent/test/localstorage_testsuite/test_create_empty_volume
 kvmagent/test/localstorage_testsuite/test_create_folder
 kvmagent/test/localstorage_testsuite/test_get_physical_capacity
 kvmagent/test/localstorage_testsuite/test_localstorage_init
+kvmagent/test/libvirt_testsuite/test_hyperv_params.py
+kvmagent/test/libvirt_testsuite/test_edk2_ovmf.py

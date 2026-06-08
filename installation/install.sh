@@ -35,12 +35,14 @@ export TERM=xterm
 
 OS=''
 IS_UBUNTU='n'
-REDHAT_OS="CENTOS6 CENTOS7 RHEL7 HELIX7 HELIX8 ALIOS7 ISOFT4 KYLIN10 EULER20 UOS1020A NFS4 ROCKY8 OE2203 H2203SP1O"
+REDHAT_OS="CENTOS6 CENTOS7 RHEL7 HELIX7 HELIX8 ALIOS7 ISOFT4 KYLIN10 EULER20 UOS1020A NFS4 ROCKY8 OE2203 H2203SP1O UOS20R OE2403"
 DEBIAN_OS="UBUNTU14.04 UBUNTU16.04 UBUNTU KYLIN4.0.2 DEBIAN9 UOS20"
-KYLIN_V10_OS="ky10sp1 ky10sp2 ky10sp3"
+KYLIN_V10_OS="ky10sp1 ky10sp2 ky10sp3 ky10sp3.2403"
 XINCHUANG_OS="$KYLIN10_OS uos20"
 SUPPORTED_OS="$REDHAT_OS $DEBIAN_OS"
 REDHAT_WITHOUT_CENTOS6=`echo $REDHAT_OS |sed s/CENTOS6//`
+REGION_MANAGER_OS="h84r uos20r ky10sp3"
+REGION_MANAGER_ARCH="x86_64 aarch64"
 
 UPGRADE='n'
 FORCE='n'
@@ -49,7 +51,6 @@ CUBE_INSTALL='n'
 SANYUAN_INSTALL='n'
 SDS_INSTALL='n'
 SKIP_PJNUM_CHECK='n'
-MANAGEMENT_INTERFACE=`ip route | grep default | head -n 1 | cut -d ' ' -f 5`
 ZSTACK_INSTALL_LOG="/tmp/zstack_installation-$(date +%Y-%m-%d-%H:%M:%S).log"
 ZSTACKCTL_INSTALL_LOG="/tmp/zstack_ctl_installation-$(date +%Y-%m-%d-%H:%M:%S).log"
 ZSTACK_TIMESTAMP_LOG="/tmp/zstack_installation_timestamp-$(date +%Y-%m-%d-%H:%M:%S).log"
@@ -97,6 +98,16 @@ ONLY_INSTALL_LIBS=''
 ONLY_INSTALL_ZSTACK=''
 NOT_START_ZSTACK=''
 NEED_SET_MN_IP=''
+MANAGEMENT_INTERFACE=''
+MANAGEMENT_IP6=''
+MANAGEMENT_IP6_PREFIX=''
+MANAGEMENT_ROUTE_FAMILY=''
+MANAGEMENT_ROUTE_FAMILY_IPV4='4'
+MANAGEMENT_ROUTE_FAMILY_IPV6='6'
+MANAGEMENT_ADDRESS_MODE_IPV4='ipv4'
+MANAGEMENT_ADDRESS_MODE_IPV6='ipv6'
+MANAGEMENT_ADDRESS_MODE_DUAL_STACK='dual-stack'
+MANAGEMENT_ADDRESS_MODE_PROMPT_TIMEOUT=30
 INSTALL_ENTERPRISE='n'
 REPO_MATCHED='true'
 
@@ -105,6 +116,290 @@ MYSQL_PORT='3306'
 MYSQL_NEW_ROOT_PASSWORD='zstack.mysql.password'
 MYSQL_USER_PASSWORD='zstack.password'
 MYSQL_UI_USER_PASSWORD='zstack.ui.password'
+CHOOSE_DATABASE='MariaDB'
+
+get_default_route_interface_by_family() {
+    local family="$1"
+    ip -"$family" route show default 2>/dev/null | awk '{
+        for (i = 1; i <= NF; i++) {
+            if ($i == "dev" && (i + 1) <= NF) {
+                print $(i + 1)
+                exit
+            }
+        }
+    }'
+}
+
+select_default_management_interface() {
+    MANAGEMENT_INTERFACE=`get_default_route_interface_by_family "$MANAGEMENT_ROUTE_FAMILY_IPV4"`
+    if [ -n "$MANAGEMENT_INTERFACE" ]; then
+        MANAGEMENT_ROUTE_FAMILY="$MANAGEMENT_ROUTE_FAMILY_IPV4"
+        return 0
+    fi
+
+    MANAGEMENT_INTERFACE=`get_default_route_interface_by_family "$MANAGEMENT_ROUTE_FAMILY_IPV6"`
+    if [ -n "$MANAGEMENT_INTERFACE" ]; then
+        MANAGEMENT_ROUTE_FAMILY="$MANAGEMENT_ROUTE_FAMILY_IPV6"
+        return 0
+    fi
+
+    return 1
+}
+
+get_interface_ip_by_family() {
+    local interface="$1"
+    local family="$2"
+    ip -"$family" -o addr show dev "$interface" scope global 2>/dev/null | awk '{
+        split($4, addr, "/")
+        if (addr[1] != "" && addr[1] !~ /^fe80:/) {
+            print addr[1]
+            exit
+        }
+    }'
+}
+
+get_interface_management_ip() {
+    local interface="$1"
+    local route_family="$2"
+    local ip_addr=''
+
+    if [ x"$route_family" = x"$MANAGEMENT_ROUTE_FAMILY_IPV6" ]; then
+        ip_addr=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV6"`
+        [ -n "$ip_addr" ] && echo "$ip_addr" && return
+    fi
+
+    ip_addr=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV4"`
+    [ -n "$ip_addr" ] && echo "$ip_addr" && return
+
+    ip_addr=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV6"`
+    [ -n "$ip_addr" ] && echo "$ip_addr"
+}
+
+normalize_management_address_mode() {
+    local mode="$1"
+    mode=`echo "$mode" | tr '[:upper:]_' '[:lower:]-'`
+    case "$mode" in
+        4|ipv4) echo "$MANAGEMENT_ADDRESS_MODE_IPV4" ;;
+        6|ipv6) echo "$MANAGEMENT_ADDRESS_MODE_IPV6" ;;
+        dual|dualstack|dual-stack) echo "$MANAGEMENT_ADDRESS_MODE_DUAL_STACK" ;;
+        *) echo "" ;;
+    esac
+}
+
+select_management_address_mode() {
+    local ipv4="$1"
+    local ipv6="$2"
+    local mode=`normalize_management_address_mode "${MANAGEMENT_ADDRESS_MODE:-${ZS_AUTO_INSTALL_MANAGEMENT_MODE:-}}"`
+    local answer=''
+    local prompt_input=''
+    local prompt_output=''
+
+    if [ -n "$mode" ]; then
+        echo "$mode"
+        return
+    fi
+
+    if [ -t 0 ]; then
+        prompt_input="/dev/stdin"
+        prompt_output="/dev/stderr"
+    elif { : < /dev/tty > /dev/tty; } 2>/dev/null; then
+        prompt_input="/dev/tty"
+        prompt_output="/dev/tty"
+    else
+        echo ""
+        return
+    fi
+
+    echo "" > "$prompt_output"
+    echo "Detected dual-stack management network." > "$prompt_output"
+    echo "Management Node Address Mode" > "$prompt_output"
+    echo "  1) IPv4 only: $ipv4 (default)" > "$prompt_output"
+    echo "  2) IPv6 only: $ipv6" > "$prompt_output"
+    echo "  3) Dual stack: $ipv4 + $ipv6" > "$prompt_output"
+    echo -n "Select management node address mode [1/2/3], default 1 in ${MANAGEMENT_ADDRESS_MODE_PROMPT_TIMEOUT} seconds: " > "$prompt_output"
+    read -t "$MANAGEMENT_ADDRESS_MODE_PROMPT_TIMEOUT" -r answer < "$prompt_input" || true
+    echo "" > "$prompt_output"
+
+    case "$answer" in
+        2) echo "$MANAGEMENT_ADDRESS_MODE_IPV6" ;;
+        3) echo "$MANAGEMENT_ADDRESS_MODE_DUAL_STACK" ;;
+        *) echo "$MANAGEMENT_ADDRESS_MODE_IPV4" ;;
+    esac
+}
+
+resolve_interface_management_ip() {
+    local interface="$1"
+    local route_family="$2"
+    local ipv4=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV4"`
+    local ipv6=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV6"`
+    local mode=''
+
+    if [ -n "$MANAGEMENT_IP6" ] && [ -n "$ipv4" ]; then
+        MANAGEMENT_IP="$ipv4"
+        return
+    fi
+
+    if [ -n "$ipv4" ] && [ -n "$ipv6" ]; then
+        mode=`select_management_address_mode "$ipv4" "$ipv6"`
+        case "$mode" in
+            "$MANAGEMENT_ADDRESS_MODE_IPV6")
+                MANAGEMENT_IP="$ipv6"
+                return
+                ;;
+            "$MANAGEMENT_ADDRESS_MODE_DUAL_STACK")
+                MANAGEMENT_IP="$ipv4"
+                [ -z "$MANAGEMENT_IP6" ] && MANAGEMENT_IP6="$ipv6"
+                return
+                ;;
+            "$MANAGEMENT_ADDRESS_MODE_IPV4")
+                MANAGEMENT_IP="$ipv4"
+                return
+                ;;
+        esac
+    fi
+
+    MANAGEMENT_IP=`get_interface_management_ip "$interface" "$route_family"`
+}
+
+is_link_local_ipv6() {
+    case "$1" in
+        fe80:*|FE80:*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_ipv6_address() {
+    case "$1" in
+        *:*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_ipv6_prefix_length() {
+    local prefix="$1"
+    case "$prefix" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$prefix" -ge 0 ] && [ "$prefix" -le 128 ]
+}
+
+is_local_ip_address() {
+    local ip_addr="$1"
+    ip_addr="${ip_addr#[}"
+    ip_addr="${ip_addr%]}"
+    ip -o addr show 2>/dev/null | awk -v target="$ip_addr" '{
+        split($4, addr, "/")
+        if (addr[1] == target) {
+            found = 1
+        }
+    } END { exit found ? 0 : 1 }'
+}
+
+get_local_ip_interface() {
+    local ip_addr="$1"
+    ip_addr="${ip_addr#[}"
+    ip_addr="${ip_addr%]}"
+    ip -o addr show 2>/dev/null | awk -v target="$ip_addr" '{
+        split($4, addr, "/")
+        if (addr[1] == target) {
+            print $NF
+            exit
+        }
+    }'
+}
+
+format_host_for_url() {
+    case "$1" in
+        *:*) echo "[$1]" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+format_host_for_path() {
+    format_host_for_url "$1"
+}
+
+management_ip_to_hostname() {
+    echo "$1" | tr '.:' '--'
+}
+
+resolve_management_ip() {
+    if [ -z "$MANAGEMENT_INTERFACE" ]; then
+        select_default_management_interface || fail2 "Cannot identify default network interface. Please set management
+   node IP address by '-I MANAGEMENT_NODE_IP_ADDRESS'."
+    fi
+
+    if ip addr show dev "$MANAGEMENT_INTERFACE" >/dev/null 2>&1; then
+        resolve_interface_management_ip "$MANAGEMENT_INTERFACE" "$MANAGEMENT_ROUTE_FAMILY"
+        echo "Management node network interface: $MANAGEMENT_INTERFACE" >> $ZSTACK_INSTALL_LOG
+        if [ -z "$MANAGEMENT_IP" ]; then
+            fail2 "Can not identify IP address for interface: $MANAGEMENT_INTERFACE. Please assign correct interface by '-I MANAGEMENT_NODE_IP_ADDRESS', which has IP address. Use 'ip addr' to show all interface and IP address."
+        fi
+        return
+    fi
+
+    local ip_addr="$MANAGEMENT_INTERFACE"
+    ip_addr="${ip_addr#[}"
+    ip_addr="${ip_addr%]}"
+    if is_link_local_ipv6 "$ip_addr"; then
+        fail2 "$ip_addr is an IPv6 link-local address and cannot be used as management node IP address."
+    fi
+
+    if ! is_local_ip_address "$ip_addr"; then
+        fail2 "$MANAGEMENT_INTERFACE is not a recognized IP address or network interface name. Please assign correct IP address by '-I MANAGEMENT_NODE_IP_ADDRESS'. Use 'ip addr' to show all interface and IP address."
+    fi
+
+    MANAGEMENT_IP="$ip_addr"
+}
+
+normalize_management_ip6() {
+    [ -z "$MANAGEMENT_IP6" ] && return
+
+    MANAGEMENT_IP6="${MANAGEMENT_IP6#[}"
+    MANAGEMENT_IP6="${MANAGEMENT_IP6%]}"
+
+    if ! is_ipv6_address "$MANAGEMENT_IP6"; then
+        fail2 "$MANAGEMENT_IP6 is not a valid IPv6 management node IP address."
+    fi
+
+    if is_link_local_ipv6 "$MANAGEMENT_IP6"; then
+        fail2 "$MANAGEMENT_IP6 is an IPv6 link-local address and cannot be used as management node IP address."
+    fi
+
+    if [ -n "$MANAGEMENT_IP6_PREFIX" ] && ! is_ipv6_prefix_length "$MANAGEMENT_IP6_PREFIX"; then
+        fail2 "$MANAGEMENT_IP6_PREFIX is not a valid IPv6 prefix length. It must be from 0 to 128."
+    fi
+
+    if [ x"$MANAGEMENT_IP6" = x"$MANAGEMENT_IP" ]; then
+        fail2 "management.server.ip6 cannot be the same as management.server.ip."
+    fi
+
+    if is_ipv6_address "$MANAGEMENT_IP"; then
+        fail2 "--management-ip6 is only supported when the primary management node IP address is IPv4."
+    fi
+}
+
+configure_management_ip6() {
+    [ -z "$MANAGEMENT_IP6" ] && return
+
+    normalize_management_ip6
+
+    local management_ip_interface=`get_local_ip_interface "$MANAGEMENT_IP"`
+    if [ -z "$management_ip_interface" ]; then
+        fail2 "Cannot find the network interface of primary management node IP address $MANAGEMENT_IP."
+    fi
+
+    local management_ip6_interface=`get_local_ip_interface "$MANAGEMENT_IP6"`
+    if [ -n "$management_ip6_interface" ] && [ x"$management_ip_interface" != x"$management_ip6_interface" ]; then
+        fail2 "IPv4 management node IP address $MANAGEMENT_IP is on $management_ip_interface, but IPv6 management node IP address $MANAGEMENT_IP6 is on $management_ip6_interface. Please use IPv4 and IPv6 addresses on the same management interface."
+    fi
+
+    if ! is_local_ip_address "$MANAGEMENT_IP6"; then
+        fail2 "$MANAGEMENT_IP6 is not configured on this machine. Please configure the OS network address before installation."
+    fi
+
+    zstack-ctl configure management.server.ip6="${MANAGEMENT_IP6}" || fail2 "Failed to configure management.server.ip6."
+}
 
 YUM_ONLINE_REPO='y'
 INSTALL_MONITOR=''
@@ -125,7 +420,7 @@ MIRROR_ALI_YUM_REPOS='alibase,aliupdates,aliextras,aliepel,ali-qemu-ev'
 MIRROR_ALI_YUM_WEBSITE='mirrors.aliyun.com'
 #used for zstack.properties Ansible.var.zstack_repo
 ZSTACK_PROPERTIES_REPO=''
-ZSTACK_ANSIBLE_EXECUTABLE='python2'
+ZSTACK_ANSIBLE_EXECUTABLE='python3.11'
 ZSTACK_OFFLINE_INSTALL='n'
 
 QUIET_INSTALLATION=''
@@ -225,6 +520,9 @@ declare -a upgrade_params_array=(
     '4.7.21,-DupgradeSecurityGroup=true'
     '4.7.21,-DupgradeSshKeyPairFromSystemTag=true'
     '5.1.8,-DupgradeFlatDhcpServerIp=true'
+    '5.3.28,-DupgradeLogLabelToLogServer=true'
+    '5.3.52,-DupgradeModelServiceYaml5352=true'
+    "5.5.6,-DupgradeLoadBalancerRedirectRule=true"
 )
 #other than the upon params_array, this one could be persisted in zstack.properties
 declare -a upgrade_persist_params_array=(
@@ -662,6 +960,9 @@ set_tomcat_config() {
     new_max_thread_num=400
     new_min_spare_threads=50
     new_max_queue_size=100
+    # call fun, get mn port
+    get_mn_port
+    local current_port=$MN_PORT
     tomcat_config_path=$ZSTACK_INSTALL_ROOT/apache-tomcat/conf
     cp $tomcat_config_path/server.xml $tomcat_config_path/server.xml.bak || true
 
@@ -683,7 +984,7 @@ set_tomcat_config() {
   </GlobalNamingResources>
 
   <Service name="Catalina">
-    <Connector executor="tomcatThreadPool" port="8080" protocol="HTTP/1.1"
+    <Connector executor="tomcatThreadPool" port="$current_port" protocol="HTTP/1.1"
                connectionTimeout="$new_timeout"
                redirectPort="8443"
                maxParameterCount="1000"
@@ -719,7 +1020,7 @@ cs_check_hostname_zstack(){
     [ $? -ne 0 ] && return 
 
     current_hostname=`hostname`
-    CHANGE_HOSTNAME=`echo $MANAGEMENT_IP | sed 's/\./-/g'`
+    CHANGE_HOSTNAME=`management_ip_to_hostname "$MANAGEMENT_IP"`
     CURRENT_HOST_ITEM="$MANAGEMENT_IP $current_hostname"
     HOSTS_ITEM="$MANAGEMENT_IP $CHANGE_HOSTNAME"
 
@@ -889,7 +1190,7 @@ check_system(){
     echo_title "Check System"
     echo ""
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    cat /etc/*-release |egrep -i -h "centos |Helix|Red Hat Enterprise|Alibaba|NeoKylin|Kylin Linux Advanced Server release V10|openEuler|UnionTech OS Server release 20 \(kongzi\)|NFSChina Server release 4.0.220727 \(RTM3\)|Rocky Linux" >>$ZSTACK_INSTALL_LOG 2>&1
+    cat /etc/*-release |egrep -i -h "centos |Helix|Red Hat Enterprise|Alibaba|NeoKylin|Kylin Linux Advanced Server release V10|openEuler|UnionTech OS release 20.06r|UnionTech OS Server release 20 \(kongzi\)|NFSChina Server release 4.0.220727 \(RTM3\)|Rocky Linux" >>$ZSTACK_INSTALL_LOG 2>&1
     if [ $? -eq 0 ]; then
         grep -qi 'CentOS release 6' /etc/system-release && OS="CENTOS6"
         grep -qi 'CentOS Linux release 7' /etc/system-release && OS="CENTOS7"
@@ -900,12 +1201,14 @@ check_system(){
         grep -qi 'Kylin Linux Advanced Server release V10' /etc/system-release && OS="KYLIN10"
         grep -qi 'openEuler release 20.03 (LTS-SP1)' /etc/system-release && OS="EULER20"
         grep -qi 'openEuler release 22.03 (LTS-SP1)' /etc/system-release && OS="OE2203"
+        grep -qi 'openEuler release 24.03 (LTS-SP1)' /etc/system-release && OS="OE2403"
         grep -qi 'helix release 22.03 (LTS-SP1)' /etc/system-release && OS="H2203SP1O"
         grep -qi 'UnionTech OS Server release 20 (kongzi)' /etc/system-release && OS="UOS1020A"
         grep -qi 'NFSChina Server release 4.0.220727 (RTM3)' /etc/system-release && OS="NFS4"
         grep -qi 'Rocky Linux release 8.4 (Green Obsidian)' /etc/system-release && OS="ROCKY8"
         grep -qi 'Helix release 7' /etc/system-release && OS="HELIX7"
         grep -qi 'Helix release 8.4r (Green Obsidian)' /etc/system-release && OS="HELIX8"
+        grep -qi 'UnionTech OS release 20.06r' /etc/system-release && OS="UOS20R"
         if [[ -z "$OS" ]];then
             fail2 "Host OS checking failure: your system is: `cat /etc/redhat-release`, $PRODUCT_NAME management node only supports $SUPPORTED_OS currently"
         elif [[ $OS == "CENTOS7" ]];then
@@ -980,10 +1283,10 @@ cs_create_repo(){
 
 cs_check_python_installed(){
     # ansible1.9.6 is depended on by python2
-    which python2 >/dev/null 2>&1
-    [ $? -ne 0 ] && yum --disablerepo=* --enablerepo=zstack-local install -y python2 >/dev/null 2>&1
-    [ ! -f /usr/bin/python -a -f /usr/bin/python2 ] && ln -s /usr/bin/python2 /usr/bin/python
-    [ ! -f /usr/bin/easy_install -a -f /usr/bin/easy_install-2 ] && ln -s /usr/bin/easy_install-2 /usr/bin/easy_install
+    which python3.11 >/dev/null 2>&1
+    [ $? -ne 0 ] && yum --disablerepo=* --enablerepo=zstack-local install -y python3.11 >/dev/null 2>&1
+    [ ! -f /usr/bin/python -a -f /usr/bin/python3.11 ] && ln -s /usr/bin/python3.11 /usr/bin/python
+    [ ! -f /usr/bin/easy_install -a -f /usr/bin/easy_install-3 ] && ln -s /usr/bin/easy_install-3 /usr/bin/easy_install
 }
 
 cs_check_epel(){
@@ -1085,7 +1388,7 @@ do_check_system(){
 
         # kill zstack if it's still running
         ZSTACK_PID=`ps aux | grep 'appName=zstack' | grep -v 'grep' | awk '{ print $2 }'`
-        [ ! -z $ZSTACK_PID ] && pkill -9 $ZSTACK_PID
+        [ ! -z "$ZSTACK_PID" ] && kill -9 $ZSTACK_PID
     elif [ ! -d $ZSTACK_INSTALL_ROOT -a ! -f $ZSTACK_INSTALL_ROOT ]; then
         fail "$ZSTACK_INSTALL_ROOT does not exist, maybe you need to install a new ${PRODUCT_NAME} instead of upgrading an old one."
     fi
@@ -1180,8 +1483,9 @@ ia_check_ip_hijack(){
 ia_install_python_gcc_rh(){
     echo_subtitle "Install Python and GCC"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    req_pkgs='python2 python2-devel gcc'
-    [ ! -d /usr/lib64/python2.7/site-packages/pycrypto-2.6.1-py2.7.egg-info ] && req_pkgs=${req_pkgs}" python2-crypto"
+    req_pkgs='python3.11 python3.11-devel python3.11-pip gcc'
+    # TODO py3
+    # [ ! -d /usr/lib64/python2.7/site-packages/pycrypto-2.6.1-py2.7.egg-info ] && req_pkgs=${req_pkgs}" python2-crypto"
     if [ ! -z $ZSTACK_YUM_REPOS ];then
         if [ -z $DEBUG ];then
             yum clean metadata >/dev/null 2>&1
@@ -1211,12 +1515,12 @@ ia_install_python_gcc_rh(){
 ia_install_pip(){
     echo_subtitle "Install PIP"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    which pip >/dev/null 2>&1 && which pip2 >/dev/null && return
+    which pip >/dev/null 2>&1 && which pip3.11 >/dev/null && return
 
     if [ ! -z $DEBUG ]; then
         easy_install -i $pypi_source_easy_install --upgrade pip
     else
-        easy_install -i $pypi_source_easy_install --upgrade pip >>$ZSTACK_INSTALL_LOG 2>&1
+        easy_install -i $pypi_source_easy_install --upgrade pip3.11 >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     [ $? -ne 0 ] && fail "install PIP failed"
     pass
@@ -1226,9 +1530,9 @@ ia_install_python_gcc_db(){
     echo_subtitle "Install Python GCC."
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     if [ ! -z $DEBUG ]; then
-        apt-get -y install python python-dev gcc
+        apt-get -y install python3.11 python3.11-dev python3.11-pip gcc
     else
-        apt-get -y install python python-dev gcc >>$ZSTACK_INSTALL_LOG 2>&1
+        apt-get -y install python3.11 python3.11-dev python3.11-pip gcc >>$ZSTACK_INSTALL_LOG 2>&1
     fi
     [ $? -ne 0 ] && fail "Install python and gcc fail."
     pass
@@ -1377,6 +1681,7 @@ upgrade_zstack(){
     # configure management.server.ip if not exists
     zstack-ctl show_configuration | grep '^[[:space:]]*management.server.ip' >/dev/null 2>&1
     [ $? -ne 0 ] && zstack-ctl configure management.server.ip="${MANAGEMENT_IP}"
+    configure_management_ip6
 
     # configure chrony.serverIp if not exists
     if [ -n "$CHRONY_SERVER_IP" ]; then
@@ -1394,11 +1699,9 @@ upgrade_zstack(){
     if [ ! -z $ONLY_UPGRADE_CTL ]; then
         return
     fi
-    #rerun install system libs, upgrade might need new libs
-    is_install_system_libs
+
     do_config_ansible
     do_config_systemd
-    show_spinner is_enable_chronyd
     show_spinner uz_stop_zstack
     show_spinner prepare_zops_user_and_db
     show_spinner uz_upgrade_zstack
@@ -1447,7 +1750,7 @@ upgrade_zstack(){
         fi
     elif [ -f /etc/init.d/zstack-ui ]; then
         # fill CATALINA_ZSTACK_TOOLS with old zstack_ui.bin if not exists
-        /bin/cp -n $ZSTACK_INSTALL_ROOT/zstack-ui/zstack_ui.bin $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS >/dev/null 2>&1
+        /usr/bin/rsync -a --ignore-existing $ZSTACK_INSTALL_ROOT/zstack-ui/zstack_ui.bin $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS >/dev/null 2>&1
     fi
 
     #check old license folder and copy old license files to new folder.
@@ -1624,13 +1927,13 @@ is_install_general_libs_rh(){
 
     # Fix upgrade dependency conflicts
     if [[ "$KYLIN_V10_OS" =~ "$ZSTACK_RELEASE" ]]; then
-      vercomp "14.16.0" `rpm -q nodejs | awk -F '-' '{print $2}'`
+      vercomp "20.16.0" `rpm -q nodejs | awk -F '-' '{print $2}'`
       [ $? -eq 1 ] && removeable="nodejs" || removeable=""
       yum remove -y redis5 $removeable >>$ZSTACK_INSTALL_LOG 2>&1
     fi
 
     # Just install what is not installed
-    deps_list="libselinux-python \
+    deps_list="python3-libselinux \
             java-1.8.0-openjdk \
             java-1.8.0-openjdk-devel \
             bridge-utils \
@@ -1638,7 +1941,6 @@ is_install_general_libs_rh(){
             nfs-utils \
             rpcbind \
             vim-minimal \
-            python2-devel \
             gcc \
             grafana \
             autoconf \
@@ -1665,8 +1967,6 @@ is_install_general_libs_rh(){
             nginx \
             nginx-all-modules \
             psmisc \
-            python2-backports-ssl_match_hostname \
-            python2-setuptools \
             avahi \
             gnutls-utils \
             avahi-tools \
@@ -1677,6 +1977,12 @@ is_install_general_libs_rh(){
     if [ "$BASEARCH" == "x86_64" ]; then
       deps_list="${deps_list} mcelog"
     fi
+
+    if [[ $REGION_MANAGER_OS =~ $ZSTACK_RELEASE ]] &&
+       [[ $REGION_MANAGER_ARCH =~ $BASEARCH ]]; then
+        deps_list="${deps_list} java-21-openjdk-devel"
+    fi
+
     always_update_list="openssh"
     missing_list=`LANG=en_US.UTF-8 && rpm -q $deps_list | grep 'not installed' | awk 'BEGIN{ORS=" "}{ print $2 }'`
 
@@ -1687,7 +1993,7 @@ is_install_general_libs_rh(){
         yum install --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y $always_update_list $missing_list >>$ZSTACK_INSTALL_LOG 2>&1
     else
         yum clean metadata >/dev/null 2>&1
-        echo "yum install -y libselinux-python java ..." >>$ZSTACK_INSTALL_LOG
+        echo "yum install -y python3-libselinux libselinux-python java ..." >>$ZSTACK_INSTALL_LOG
         yum install -y $always_update_list $missing_list >>$ZSTACK_INSTALL_LOG 2>&1
     fi
 
@@ -1819,13 +2125,11 @@ install_system_libs(){
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     is_install_system_libs
     #mysql will be installed by zstack-ctl later
-    show_spinner ia_install_pip
-    show_spinner is_install_virtualenv
     #enable chronyd
     show_spinner is_enable_chronyd
 
     if [[ $REDHAT_OS =~ $OS ]]; then
-        show_spinner ia_disable_selinux
+        [ x"$UPGRADE" != x'y' ] && show_spinner ia_disable_selinux
         show_spinner ia_install_python_gcc_rh
     elif [[ $DEBIAN_OS =~ $OS ]]; then
         #if [ -z $ZSTACK_PKG_MIRROR ]; then
@@ -2418,7 +2722,7 @@ cp_third_party_tools(){
     echo_subtitle "Copy third-party tools to ${PRODUCT_NAME} install path"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     if [ -d "/opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/tools" ]; then
-        /bin/cp -rn /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/tools/* $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS >/dev/null 2>&1
+        /usr/bin/rsync -a --ignore-existing /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/tools/* $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS >/dev/null 2>&1
         chown -R zstack.zstack $ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_TOOLS/*
     fi
     cp_virtio_drivers
@@ -2512,6 +2816,68 @@ install_zops(){
     fi
 }
 
+install_keycloak_server(){
+    keycloak_installer_tar=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "keycloak.tar.gz" | head -n 1`
+    [[ x"$keycloak_installer_tar" = x ]] && return
+    echo_title "Install keycloak server"
+    echo ""
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    show_spinner is_extract_keycloak_tar "$keycloak_installer_tar"
+    show_spinner prepare_keycloak_user_and_db
+}
+
+is_extract_keycloak_tar(){
+    echo_subtitle "Extract keycloak tar"
+    local src="${1}"
+    [ -z "$src" ] && src=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "keycloak.tar.gz" | head -n 1`
+    [ -f "$src" ] || return 0
+    mkdir -p /var/lib/zstack
+    cp "$src" /var/lib/zstack/keycloak.tar.gz >>$ZSTACK_INSTALL_LOG 2>&1
+    tar -zxf /var/lib/zstack/keycloak.tar.gz -C /var/lib/zstack/ >>$ZSTACK_INSTALL_LOG 2>&1
+    if [ $? -ne 0 ]; then
+        fail "Extracting the keycloak.tar.gz package failed."
+    fi
+    rm -f /var/lib/zstack/keycloak.tar.gz
+    [ $? -eq 0 ] && pass
+}
+
+install_morph_server(){
+  morph_package_tar=$(find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "morph_all.tar.gz" | head -n 1)
+  [ -z "$morph_package_tar" ] && return
+  echo_title "Install morph server"
+  echo ""
+  trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+  show_spinner is_extract_morph_tar "$morph_package_tar"
+  show_spinner prepare_morph_user_and_db
+  
+  systemctl is-enabled morph &>/dev/null && systemctl restart morph || true
+}
+
+is_extract_morph_tar(){
+  echo_subtitle "Extract morph tar"
+  local src="${1}"
+  [ -z "$src" ] && src=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "morph_all.tar.gz" | head -n 1`
+  [ -f "$src" ] || return 0
+  mkdir -p /var/lib/zstack
+  cp "$src" /var/lib/zstack/morph_all.tar.gz >>$ZSTACK_INSTALL_LOG 2>&1
+  mkdir -p /var/lib/zstack/morph
+
+  [ -f /var/lib/zstack/morph/region_config.yml ] && \
+    \cp -a /var/lib/zstack/morph/region_config.yml /var/lib/zstack/morph/region_config.yml.back
+
+  tar -zxf /var/lib/zstack/morph_all.tar.gz -C /var/lib/zstack/morph/ >>$ZSTACK_INSTALL_LOG 2>&1
+  if [ $? -ne 0 ]; then
+      fail "Extracting the morph_all.tar.gz package failed."
+  fi
+
+  if [ -f /var/lib/zstack/morph/region_config.yml.back ]; then
+    \mv -f /var/lib/zstack/morph/region_config.yml.back /var/lib/zstack/morph/region_config.yml
+  fi
+
+  rm -f /var/lib/zstack/morph_all.tar.gz
+  [ $? -eq 0 ] && pass
+}
+
 install_marketplace_server(){
     marketplace_installer_bin=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "marketplace-server.bin" | head -n 1`
     [[ x"$marketplace_installer_bin" = x ]] && return
@@ -2519,6 +2885,15 @@ install_marketplace_server(){
     echo ""
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     show_spinner is_install_marketplace_server
+}
+
+install_fluentbit_server(){
+    fluentbit_installer_tools=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE -name "fluent-bit.tar.gz" | head -n 1`
+    [[ x"$fluentbit_installer_tools" = x ]] && return
+    echo_title "Install or upgrade fluentbit server"
+    echo ""
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    show_spinner is_install_fluentbit_server
 }
 
 setup_install_param(){
@@ -2741,17 +3116,22 @@ cs_install_mysql(){
     echo_subtitle "Install Mysql Server"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     rsa_key_file=$1/id_rsa
+
     if [ -z $ZSTACK_YUM_REPOS ];then
         if [ -z $MYSQL_ROOT_PASSWORD ]; then
-            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --root-password="$MYSQL_NEW_ROOT_PASSWORD" --debug >>$ZSTACK_INSTALL_LOG 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --root-password="$MYSQL_NEW_ROOT_PASSWORD" --choose-database="$CHOOSE_DATABASE" --debug >>$ZSTACK_INSTALL_LOG 2>&1
         else
-            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --debug >>$ZSTACK_INSTALL_LOG 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --choose-database="$CHOOSE_DATABASE" --debug >>$ZSTACK_INSTALL_LOG 2>&1
         fi
     else
+        local db_yum_repos="$ZSTACK_YUM_REPOS"
+        if [ "$CHOOSE_DATABASE" = "GreatDB" ]; then
+            db_yum_repos="$db_yum_repos,zstack-local-greatdb"
+        fi
         if [ -z $MYSQL_ROOT_PASSWORD ]; then
-            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS --root-password="$MYSQL_NEW_ROOT_PASSWORD" >>$ZSTACK_INSTALL_LOG --debug 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --ssh-key=$rsa_key_file --yum=$db_yum_repos --root-password="$MYSQL_NEW_ROOT_PASSWORD" >>$ZSTACK_INSTALL_LOG --choose-database="$CHOOSE_DATABASE" --debug 2>&1
         else
-            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --yum=$ZSTACK_YUM_REPOS --debug >>$ZSTACK_INSTALL_LOG 2>&1
+            zstack-ctl install_db --host=$MANAGEMENT_IP --login-password="$MYSQL_ROOT_PASSWORD" --root-password="$MYSQL_NEW_ROOT_PASSWORD" --ssh-key=$rsa_key_file --yum=$db_yum_repos --debug --choose-database="$CHOOSE_DATABASE" >>$ZSTACK_INSTALL_LOG 2>&1
         fi
     fi
     if [ $? -ne 0 ];then
@@ -2813,16 +3193,25 @@ cs_append_iptables(){
     echo_subtitle "Append iptables"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     if [ "$NEED_SET_MN_IP" == "y" ]; then
-        management_addr=`ip addr show |grep ${MANAGEMENT_IP}|awk '{print $2}'`
         ports=(3306)
         for port in ${ports[@]}
         do
-            iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport $port -j REJECT" || iptables -A INPUT -p tcp --dport $port -j REJECT >>$ZSTACK_INSTALL_LOG 2>&1
-            iptables-save | grep -- "-A INPUT -d $management_addr/32 -p tcp -m tcp --dport $port -j ACCEPT" || iptables -I INPUT -p tcp --dport $port -d $management_addr -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
-            iptables-save | grep -- "-A INPUT -d $management_addr/32 -p tcp -m tcp --dport $port -j ACCEPT" || iptables -I INPUT -p tcp --dport $port -d 127.0.0.1 -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
+            if is_ipv6_address "$MANAGEMENT_IP"; then
+                ip6tables-save | grep -- "-A INPUT -p tcp -m tcp --dport $port -j REJECT" || ip6tables -A INPUT -p tcp --dport $port -j REJECT >>$ZSTACK_INSTALL_LOG 2>&1
+                ip6tables-save | grep -- "-A INPUT -d $MANAGEMENT_IP/128 -p tcp -m tcp --dport $port -j ACCEPT" || ip6tables -I INPUT -p tcp --dport $port -d "$MANAGEMENT_IP" -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
+                ip6tables-save | grep -- "-A INPUT -d ::1/128 -p tcp -m tcp --dport $port -j ACCEPT" || ip6tables -I INPUT -p tcp --dport $port -d ::1 -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
+                continue
+            fi
 
+            iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport $port -j REJECT" || iptables -A INPUT -p tcp --dport $port -j REJECT >>$ZSTACK_INSTALL_LOG 2>&1
+            iptables-save | grep -- "-A INPUT -d $MANAGEMENT_IP/32 -p tcp -m tcp --dport $port -j ACCEPT" || iptables -I INPUT -p tcp --dport $port -d "$MANAGEMENT_IP" -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
+            iptables-save | grep -- "-A INPUT -d 127.0.0.1/32 -p tcp -m tcp --dport $port -j ACCEPT" || iptables -I INPUT -p tcp --dport $port -d 127.0.0.1 -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
         done
-        service iptables save >> $ZSTACK_INSTALL_LOG 2>&1
+        if is_ipv6_address "$MANAGEMENT_IP"; then
+            service ip6tables save >> $ZSTACK_INSTALL_LOG 2>&1
+        else
+            service iptables save >> $ZSTACK_INSTALL_LOG 2>&1
+        fi
     fi
 
     pass
@@ -3056,6 +3445,10 @@ start_zstack(){
     echo_title "Start ${PRODUCT_NAME} Server"
     echo ""
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    # update consoleProxyCertFile if necessary
+    certfile=`zstack-ctl show_configuration | grep consoleProxyCertFile | grep /usr/local/zstack/zstack-ui/ | awk -F '=' '{ print $NF }'`
+    [ x"$certfile" != x"" ] && zstack-ctl configure consoleProxyCertFile=`echo $certfile | sed "s~/usr/local/zstack/~$ZSTACK_INSTALL_ROOT/~g"`
+
     show_spinner sz_start_zstack
 }
 
@@ -3247,6 +3640,45 @@ is_upgrade_zops(){
 is_install_marketplace_server(){
     echo_subtitle "Install marketplace server"
     bash /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/marketplace-server.bin >>$ZSTACK_INSTALL_LOG 2>&1
+    [ $? -eq 0 ] && pass
+}
+
+is_install_fluentbit_server(){
+    echo_subtitle "Install fluentbit server"
+    if [ "$BASEARCH" = "x86_64" ]; then
+        if [ "$ZSTACK_RELEASE" = "h84r" ] || [ "$ZSTACK_RELEASE" = "uos20r" ]; then
+            echo "Installing libpq for fluent-bit..." >> $ZSTACK_INSTALL_LOG
+            yum install libpq --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y >> $ZSTACK_INSTALL_LOG 2>&1
+            if [ $? -ne 0 ]; then
+                fail "install libpq for fluent-bit failed."
+            fi
+        else
+            echo "Installing postgresql-libs for fluent-bit..." >> $ZSTACK_INSTALL_LOG
+            yum install postgresql-libs --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y >> $ZSTACK_INSTALL_LOG 2>&1
+            if [ $? -ne 0 ]; then
+                fail "install postgresql-libs for fluent-bit failed."
+            fi
+        fi
+    fi
+
+    if [ "$BASEARCH" = "aarch64" ]; then
+        echo "Installing compat-openssl10 for fluent-bit..." >> $ZSTACK_INSTALL_LOG
+        yum install compat-openssl10 --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y >> $ZSTACK_INSTALL_LOG 2>&1
+        if [ $? -ne 0 ]; then
+            fail "install compat-openssl10 for fluent-bit failed."
+        fi
+    fi
+
+    if [ ! -d "/var/lib/zstack" ]; then
+        mkdir -p /var/lib/zstack
+    fi
+
+    cp /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/fluent-bit.tar.gz /var/lib/zstack/
+    tar -zxvf /var/lib/zstack/fluent-bit.tar.gz -C /var/lib/zstack/ > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        fail "Extracting the fluent-bit.tar.gz package failed."
+    fi
+    rm -f /var/lib/zstack/fluent-bit.tar.gz
     [ $? -eq 0 ] && pass
 }
 
@@ -3477,7 +3909,7 @@ get_zstack_repo(){
 install_sync_repo_dependences() {
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     pkg_list="createrepo curl rsync"
-    if [ x"$OS" != x"KYLIN10" -a x"$OS" != x"EULER20" -a x"$OS" != x"OE2203" -a x"$OS" != x"H2203SP1O" ]; then
+    if [ x"$OS" != x"KYLIN10" -a x"$OS" != x"EULER20" -a x"$OS" != x"OE2203" -a x"$OS" != x"H2203SP1O" -a x"$OS" != x"OE2403" ]; then
         pkg_list="$pkg_list yum-utils"
     fi
     missing_list=`LANG=en_US.UTF-8 && rpm -q $pkg_list | grep 'not installed' | awk 'BEGIN{ORS=" "}{ print $2 }'`
@@ -3487,6 +3919,17 @@ install_sync_repo_dependences() {
 create_local_repo_files() {
 trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
 mkdir -p /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/Extra/{qemu-kvm-ev,ceph,galera,virtio-win}
+
+repo_file=/etc/yum.repos.d/zstack-local-greatdb.repo
+echo "create $repo_file" >> $ZSTACK_INSTALL_LOG
+cat > $repo_file << EOF
+[zstack-local-greatdb]
+name=zstack-local-greatdb
+baseurl=file:///opt/zstack-dvd/\$basearch/\$YUM0/Extra/zstack-experimental/
+gpgcheck=0
+enabled=0
+module_hotfixes=true
+EOF
 
 repo_file=/etc/yum.repos.d/zstack-local.repo
 echo "create $repo_file" >> $ZSTACK_INSTALL_LOG
@@ -3594,11 +4037,51 @@ check_sync_local_repos() {
   if [ x"$REPO_MATCHED" = x"true" ]; then
       return 0
   else
-      echo " ... $(tput setaf 1)NOT MATCH$(tput sgr0)" | tee -a $ZSTAC_INSTALL_LOG
+      echo " ... $(tput setaf 1)NOT MATCH$(tput sgr0)" | tee -a $ZSTACK_INSTALL_LOG
       echo_hints_to_upgrade_iso
   fi
 }
 
+prepare_morph_user_and_db(){
+  echo_subtitle "Prepare morph db and user"
+  get_mysql_conf_file
+  MYSQL_DATA_DIR=`cat $MYSQL_CONF_FILE | grep datadir | cut -d '=' -f 2`
+  [ -z "$MYSQL_DATA_DIR" ] && MYSQL_DATA_DIR="/var/lib/mysql"
+  db='morph'
+  user='morph'
+  morph_encrypt_password="morph123"
+
+  [ -f $MYSQL_DATA_DIR/$db/db.opt ] && return 0
+  mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e 'exit' >/dev/null 2>&1
+  if [ $? -eq 0 ]; then
+    mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e "CREATE USER IF NOT EXISTS 'morph'@'%' IDENTIFIED BY '$morph_encrypt_password';
+      CREATE DATABASE IF NOT EXISTS $db;
+      GRANT ALL PRIVILEGES ON $db.* TO 'morph'@'%';
+      FLUSH PRIVILEGES;"
+    return 0
+  fi
+  fail2 "\nCannot login mysql! It seems that the default root user password has been changed, If you have mysql root password, please add option '-P MYSQL_ROOT_PASSWORD'.\n"
+}
+
+
+prepare_keycloak_user_and_db() {
+    echo_subtitle "Prepare keycloak db and user"
+    get_mysql_conf_file
+    db='keycloak'
+    user='keycloak'
+    keycloak_encrypt_password="password"
+
+    [ -f $MYSQL_DATA_DIR/$db/db.opt ] && return 0
+    mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e 'exit' >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+      mysql -u root --password=$MYSQL_NEW_ROOT_PASSWORD -e "CREATE USER IF NOT EXISTS 'keycloak'@'%' IDENTIFIED BY '$keycloak_encrypt_password';
+        CREATE DATABASE IF NOT EXISTS $db;
+        GRANT ALL PRIVILEGES ON $db.* TO 'keycloak'@'%';
+        FLUSH PRIVILEGES;"
+      return 0
+    fi
+    fail2 "\nCannot login mysql! It seems that the default root user password has been changed, If you have mysql root password, please add option '-P MYSQL_ROOT_PASSWORD'.\n"
+}
 
 prepare_zops_user_and_db() {
     echo_subtitle "Prepare zops db and user"
@@ -3743,15 +4226,24 @@ Options:
         ${PRODUCT_NAME} won't automatically be started when use '-i'.
 
   -I MANAGEMENT_NODE_NETWORK_INTERFACE | MANAGEMENT_NODE_IP_ADDRESS
-        e.g. -I eth0, -I eth0:1, -I 192.168.0.1
+        e.g. -I eth0, -I eth0:1, -I 192.168.0.1, -I fd00::10
         the network interface (e.g. eth0) or IP address for management network.
         The IP address of this interface will be configured as IP of MySQL 
         server, if they are installed on this machine.
         Remote ${PRODUCT_NAME} managemet nodes will use this IP to access MySQL.
         By default, the installer script will grab the IP of
-        interface providing default routing from routing table. 
+        interface providing default routing from routing table.
         If multiple IP addresses share same net device, e.g. em1, em1:1, em1:2.
         The network interface should be the exact name, like -I em1:1
+
+  --management-ip6 MANAGEMENT_NODE_IPV6_ADDRESS
+        configure an additional IPv6 address for a dual-stack management node.
+        The address will be written to management.server.ip6. IPv6 link-local
+        addresses are not supported.
+
+  --management-ip6-prefix MANAGEMENT_NODE_IPV6_PREFIX
+        Deprecated compatibility option. The installer no longer configures
+        OS IPv6 addresses. --management-ip6 must already exist on this machine.
 
   -k    keep previous ${PRODUCT_NAME,,} DB if it exists. If using -k with -u, will not upgrade database or start management node. Do not use this option unless you really know what is means.
 
@@ -3800,6 +4292,9 @@ Options:
   -z    Only install ${PRODUCT_NAME}, without start ${PRODUCT_NAME} management node.
 
   --skip-pjnum    Ignore customized version checking.
+
+  --choose-database CHOOSE_DATABASE
+        Choose database to install. Default is MariaDB.
 ------------
 Example:
 
@@ -3848,6 +4343,14 @@ Following command installs ${PRODUCT_NAME} management node and monitor. It will 
 
 # ${PROGNAME} -m -R aliyun -q
 
+--
+
+Chose database
+
+# ${PROGNAME} --choose-database MariaDB
+
+# ${PROGNAME} --choose-database GreatDB
+
 ------------
 "
     exit 1
@@ -3871,7 +4374,7 @@ load_install_conf() {
 
 load_install_conf
 OPTIND=1
-TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDEFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum -- "$@"`
+TEMP=`getopt -o f:H:I:n:p:P:r:R:t:y:acC:L:T:dDEFhiklmMNoOqsuz --long chrony-server-ip:,grayscale:,mini,zsv,cube,SY,sds,no-zops,skip-pjnum,choose-database:,precheck,management-ip6:,management-ip6-prefix: -- "$@"`
 if [ $? != 0 ]; then
     usage
 fi
@@ -3927,6 +4430,8 @@ do
         -y ) check_myarg $1 $2;HTTP_PROXY=$2;shift 2;;
         -z ) NOT_START_ZSTACK='y';shift;;
         --chrony-server-ip ) check_myarg $1 $2;CHRONY_SERVER_IP=$2;shift 2;;
+        --management-ip6 ) check_myarg $1 $2;MANAGEMENT_IP6=$2;shift 2;;
+        --management-ip6-prefix ) check_myarg $1 $2;MANAGEMENT_IP6_PREFIX=$2;shift 2;;
         --grayscale ) check_myarg $1 $2;GRAYSCALE_UPGRADE=$2;shift 2;;
         --mini) MINI_INSTALL='y';shift;;
         --zsv) ZSV_INSTALL='y';shift;;
@@ -3935,6 +4440,15 @@ do
         --sds) SDS_INSTALL='y';shift;;
         --no-zops) SKIP_ZOPS_INSTALL='y';shift;;
         --skip-pjnum) SKIP_PJNUM_CHECK='y';shift;;
+        --precheck) PRECHECK='y';UPGRADE='y';shift;;
+        --choose-database )
+            check_myarg $1 $2;
+            if [[ "$2" != "MariaDB" && "$2" != "GreatDB" ]]; then
+                echo "Error: Invalid value for --choose-database. Valid options are 'MariaDB' or 'GreatDB'."
+                exit 1
+            fi
+            CHOOSE_DATABASE=$2;
+            shift 2;;
         --) shift;;
         * ) usage;;
     esac
@@ -4011,13 +4525,10 @@ unzip_el6_rpm="${ZSTACK_INSTALL_ROOT}/libs/unzip*el6*.rpm"
 
 if [ `uname -m` == "x86_64" ]; then
     zstore_bin="${ZSTACK_INSTALL_ROOT}/${CATALINA_ZSTACK_CLASSES}/ansible/imagestorebackupstorage/zstack-store.bin"
+elif [ x"${OS}" == x"OE2403" ]; then
+    zstore_bin="${ZSTACK_INSTALL_ROOT}/${CATALINA_ZSTACK_CLASSES}/ansible/imagestorebackupstorage/zstack-store.$(uname -m).abi2.bin"
 else
     zstore_bin="${ZSTACK_INSTALL_ROOT}/${CATALINA_ZSTACK_CLASSES}/ansible/imagestorebackupstorage/zstack-store.$(uname -m).bin"
-fi
-
-if [ -z $MANAGEMENT_INTERFACE ]; then
-    fail2 "Cannot identify default network interface. Please set management
-   node IP address by '-I MANAGEMENT_NODE_IP_ADDRESS'."
 fi
 
 if [ x"$UPGRADE" = x"y" ] && [ x"$NEED_SET_MN_IP" != x"y" ]; then
@@ -4026,22 +4537,8 @@ if [ x"$UPGRADE" = x"y" ] && [ x"$NEED_SET_MN_IP" != x"y" ]; then
     [ $? -eq 0 ] && MANAGEMENT_IP=$(zstack-ctl get_configuration management.server.ip)
 fi
 
-if [ -z $MANAGEMENT_IP ]; then
-    ip addr show $MANAGEMENT_INTERFACE >/dev/null 2>&1
-
-    if [ $? -ne 0 ];then
-        ip addr show | grep $MANAGEMENT_INTERFACE | grep inet >/dev/null 2>&1
-        if [ $? -ne 0 ]; then
-            fail2 "$MANAGEMENT_INTERFACE is not a recognized IP address or network interface name. Please assign correct IP address by '-I MANAGEMENT_NODE_IP_ADDRESS'. Use 'ip addr' to show all interface and IP address." 
-        fi
-        MANAGEMENT_IP=$MANAGEMENT_INTERFACE
-    else
-        MANAGEMENT_IP=`ip -4 addr show ${MANAGEMENT_INTERFACE} | grep inet | head -1 | awk '{print $2}' | cut -f1  -d'/'`
-        echo "Management node network interface: $MANAGEMENT_INTERFACE" >> $ZSTACK_INSTALL_LOG
-        if [ -z $MANAGEMENT_IP ]; then
-            fail2 "Can not identify IP address for interface: $MANAGEMENT_INTERFACE. Please assign correct interface by '-I MANAGEMENT_NODE_IP_ADDRESS', which has IP address. Use 'ip addr' to show all interface and IP address."
-        fi
-    fi
+if [ -z "$MANAGEMENT_IP" ]; then
+    resolve_management_ip
 fi
 
 echo "Management ip address: $MANAGEMENT_IP" >> $ZSTACK_INSTALL_LOG
@@ -4305,6 +4802,14 @@ source ~/.bashrc >/dev/null 2>&1
 #Do preinstallation checking for CentOS and Ubuntu
 check_system
 
+if [ x"$PRECHECK" = x'y' ]; then
+    iptables -L INPUT | grep -q 'zstack allow login mysql from 127.0.0.1' && post_scripts_to_restore_iptables_rules
+    [ -n "$upgrade_folder" ] && rm -rf "$upgrade_folder"
+    cleanup_function
+    echo "Pre-upgrade checks passed."
+    exit 0
+fi
+
 if [ "$IS_YUM" = "y" ]; then
      install_sync_repo_dependences
 fi
@@ -4336,6 +4841,16 @@ download_zstack
 if [ x"$UPGRADE" = x'y' ]; then
     #Install marketplace server
     install_marketplace_server
+
+    #Install marketplace server
+    install_fluentbit_server
+
+    install_keycloak_server
+
+    install_morph_server
+
+    #rerun install system libs, upgrade might need new libs
+    install_system_libs
 
     #only upgrade zstack
     upgrade_zstack
@@ -4478,6 +4993,10 @@ setup_install_param
 
 #Delete old monitoring data if NEED_DROP_DB
 if [ -n "$NEED_DROP_DB" ]; then
+  # Stop mn process before dropping DB to avoid DB operation failures
+  zstack-ctl stop_node 2>/dev/null || true
+  ZSTACK_PID=`ps aux | grep 'appName=zstack' | grep -v 'grep' | awk '{ print $2 }'`
+  [ -n "$ZSTACK_PID" ] && kill -9 $ZSTACK_PID 2>/dev/null || true
   kill -9 `ps aux | grep "/var/lib/zstack/prometheus/data" | grep -v 'grep' | awk -F ' ' '{ print $2 }'` 2>/dev/null
   pkill -9 influxd 2>/dev/null
   rm -rf /var/lib/zstack/prometheus/data/*
@@ -4486,6 +5005,7 @@ if [ -n "$NEED_DROP_DB" ]; then
 fi
 
 zstack-ctl configure management.server.ip="${MANAGEMENT_IP}"
+configure_management_ip6
 
 zstack-ctl configure RepoVersion.Strategy="permissive"
 
@@ -4512,6 +5032,13 @@ install_license
 
 #Install marketplace server
 install_marketplace_server
+
+#Install fluentbit server
+install_fluentbit_server
+
+install_keycloak_server
+
+install_morph_server
 
 #Start ${PRODUCT_NAME} 
 if [ -z $NOT_START_ZSTACK ]; then
@@ -4589,9 +5116,11 @@ install_zops
 echo ""
 echo_star_line
 touch $README
+MANAGEMENT_URL_HOST=`format_host_for_url "$MANAGEMENT_IP"`
+MANAGEMENT_PATH_HOST=`format_host_for_path "$MANAGEMENT_IP"`
 
 echo -e "${PRODUCT_NAME} All In One ${VERSION} Installation Completed:
- - UI is running, visit $(tput setaf 4)http://$MANAGEMENT_IP:$DEFAULT_UI_PORT$(tput sgr0) in Chrome
+ - UI is running, visit $(tput setaf 4)http://$MANAGEMENT_URL_HOST:$DEFAULT_UI_PORT$(tput sgr0) in Chrome
       Use $(tput setaf 3)${PRODUCT_NAME,,}-ctl [stop_ui|start_ui]$(tput sgr0) to stop/start the UI service
 
  - Management node is running
@@ -4603,7 +5132,7 @@ echo -e "${PRODUCT_NAME} All In One ${VERSION} Installation Completed:
  - For system security, change the mysql default password for 'root' user using \`mysqladmin -u root --password=OLD_PASSWORD password NEW_PASSWORD\`" | tee -a $README
 
 if [ x"$SDS_INSTALL" = x"y" ];then
-    echo " - SDS successfully installed, Please visit http://${MANAGEMENT_IP}:8056 to continue the installation"
+    echo " - SDS successfully installed, Please visit http://${MANAGEMENT_URL_HOST}:8056 to continue the installation"
 fi
 
 if [ ! -z QUIET_INSTALLATION ]; then
@@ -4626,8 +5155,8 @@ if [ ! -z QUIET_INSTALLATION ]; then
         echo -e "$(tput sgr0)\n"
     fi
 fi
-[ ! -z $NEED_NFS ] && echo -e "$(tput setaf 7) - $MANAGEMENT_IP:$NFS_FOLDER is configured for primary storage as an EXAMPLE$(tput sgr0)"
-[ ! -z $NEED_HTTP ] && echo -e "$(tput setaf 7) - http://$MANAGEMENT_IP/image is ready for storing images as an EXAMPLE.  After copy your_image_name to the folder $HTTP_FOLDER, your image local url is http://$MANAGEMENT_IP/image/your_image_name$(tput sgr0)"
+[ ! -z $NEED_NFS ] && echo -e "$(tput setaf 7) - $MANAGEMENT_PATH_HOST:$NFS_FOLDER is configured for primary storage as an EXAMPLE$(tput sgr0)"
+[ ! -z $NEED_HTTP ] && echo -e "$(tput setaf 7) - http://$MANAGEMENT_URL_HOST/image is ready for storing images as an EXAMPLE.  After copy your_image_name to the folder $HTTP_FOLDER, your image local url is http://$MANAGEMENT_URL_HOST/image/your_image_name$(tput sgr0)"
 
 echo_chrony_server_warning_if_need
 # check_ha_need_upgrade

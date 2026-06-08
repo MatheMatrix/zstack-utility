@@ -5,7 +5,6 @@
 from zstacklib.utils import ipset
 
 from kvmagent import kvmagent
-from kvmagent.plugins import vm_plugin
 from zstacklib.utils import bash
 from zstacklib.utils import jsonobject
 from zstacklib.utils import http
@@ -16,8 +15,6 @@ from zstacklib.utils import linux
 from zstacklib.utils import iptables_v2 as iptables
 from zstacklib.utils import misc
 from zstacklib.utils import ip
-import os.path
-import re
 
 logger = log.get_logger(__name__)
 
@@ -43,7 +40,7 @@ class VmNicSecurityTO(object):
         ref_data = refs.to_dict()
         if not ref_data:
             return []
-        sorted_refs = sorted(ref_data.items(), key=lambda x: x[1])
+        sorted_refs = sorted(list(ref_data.items()), key=lambda x: x[1])
         return [item[0] for item in sorted_refs]
 
 
@@ -60,14 +57,14 @@ class SecurityGroup(object):
     def add_rule(self, rule):
         rto = RuleTO(rule)
         if rto.version == 4:
-            if rto.type == RULE_TYPE_INGRESS:
+            if rto.ruleType == RULE_TYPE_INGRESS:
                 self.ingress_rules.append(rto)
-            elif rto.type == RULE_TYPE_EGRESS:
+            elif rto.ruleType == RULE_TYPE_EGRESS:
                 self.egress_rules.append(rto)
         if rto.version == 6:
-            if rto.type == RULE_TYPE_INGRESS:
+            if rto.ruleType == RULE_TYPE_INGRESS:
                 self.ip6_ingress_rules.append(rto)
-            elif rto.type == RULE_TYPE_EGRESS:
+            elif rto.ruleType == RULE_TYPE_EGRESS:
                 self.ip6_egress_rules.append(rto)
 
     def set_uuid(self, uuid):
@@ -98,7 +95,7 @@ class SecurityGroup(object):
 class RuleTO(object):
     def __init__(self, ruleTO):
         self.priority = ruleTO.priority
-        self.type = ruleTO.type
+        self.ruleType = ruleTO.ruleType
         self.state = ruleTO.state
         self.version = ruleTO.ipVersion
         self.protocol = ruleTO.protocol
@@ -156,7 +153,7 @@ class ApplySecurityGroupRuleCmd(kvmagent.AgentCommand):
         rule_dict = cmd.ruleTOs.to_dict()
         rule6_dict = cmd.ip6RuleTOs.to_dict()
 
-        for uuid, rules in rule_dict.items():
+        for uuid, rules in list(rule_dict.items()):
             sg = self.get_security_group_by_uuid(uuid)
             if not sg:
                 sg = SecurityGroup(uuid)
@@ -167,7 +164,7 @@ class ApplySecurityGroupRuleCmd(kvmagent.AgentCommand):
             for rule in rules:
                 sg.add_rule(rule)
 
-        for uuid, ip6rules in rule6_dict.items():
+        for uuid, ip6rules in list(rule6_dict.items()):
             sg = self.get_security_group_by_uuid(uuid)
             if not sg:
                 sg = SecurityGroup(uuid)
@@ -426,7 +423,7 @@ class SecurityGroupPlugin(kvmagent.KvmAgent):
                 else:
                     rule_str.extend(['-s', rto.src_ips])
             else:
-                ipset_name = self._make_sg_rule_ipset_name(sg_uuid, rto.type, rto.priority)
+                ipset_name = self._make_sg_rule_ipset_name(sg_uuid, rto.ruleType, rto.priority)
                 ipset_mn.create_set(name=ipset_name, match_ips=rto.src_ips.split(self.IP_SPLIT), ip_version=self.ZSTACK_IPSET_FAMILYS[ip_version])
                 rule_str.extend(['-m set --match-set', ipset_name, 'src'])
         if rto.dst_ips:
@@ -436,13 +433,13 @@ class SecurityGroupPlugin(kvmagent.KvmAgent):
                 else:
                     rule_str.extend(['-d', rto.dst_ips])
             else:
-                ipset_name = self._make_sg_rule_ipset_name(sg_uuid, rto.type, rto.priority)
+                ipset_name = self._make_sg_rule_ipset_name(sg_uuid, rto.ruleType, rto.priority)
                 ipset_mn.create_set(name=ipset_name, match_ips=rto.dst_ips.split(self.IP_SPLIT), ip_version=self.ZSTACK_IPSET_FAMILYS[ip_version])
                 rule_str.extend(['-m set --match-set', ipset_name, 'dst'])
         if rto.remote_group_uuid:
             zstack_ipset_name = self._make_security_group_ipset_name(rto.remote_group_uuid, ip_version)
             ipset_mn.create_set(name=zstack_ipset_name, match_ips=rto.remote_group_vm_ips, ip_version=self.ZSTACK_IPSET_FAMILYS[ip_version])
-            if rto.type == RULE_TYPE_INGRESS:
+            if rto.ruleType == RULE_TYPE_INGRESS:
                 rule_str.extend(['-m state --state NEW', '-m set --match-set', zstack_ipset_name, 'src'])
             else:
                 rule_str.extend(['-m state --state NEW', '-m set --match-set', zstack_ipset_name, 'dst'])
@@ -459,7 +456,7 @@ class SecurityGroupPlugin(kvmagent.KvmAgent):
         if rto.dst_ports:
             rule_str.append(rto.dst_ports.replace(self.RANGE_SPLIT, self.PORT_SPLIT))
 
-        rule_comment = self._make_sg_rule_comment(rto.type, rto.priority)
+        rule_comment = self._make_sg_rule_comment(rto.ruleType, rto.priority)
         rule_str.extend(['-m comment --comment', rule_comment])
 
         if rto.action:
@@ -648,8 +645,8 @@ class SecurityGroupPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     def _cleanup_stale_chains(self, ipt):
-        all_nics = linux.get_all_ethernet_device_names()
-        ipt.cleanup_unused_chain(self._cleanup_iptable_chains, data=all_nics)
+        # TODO implement this
+        pass
 
     @lock.file_lock('/run/xtables.lock')
     @kvmagent.replyerror
@@ -658,7 +655,7 @@ class SecurityGroupPlugin(kvmagent.KvmAgent):
         rsp = CleanupUnusedRulesOnHostResponse()
 
         self._cleanup_unused_chain(self.IPV4)
-        if not cmd.skipIpv6:
+        if not cmd.disableIp6Tables:
             self._cleanup_unused_chain(self.IPV6)
 
         self._cleanup_unused_ipset()
@@ -715,7 +712,7 @@ class SecurityGroupPlugin(kvmagent.KvmAgent):
         filter_table = iptables.from_iptables_save()
         self._check_sg_default_rules(filter_table, self.IPV4)
 
-        if not cmd.skipIpv6:
+        if not cmd.disableIp6Tables:
             filter6_table = iptables.from_iptables_save(version=self.IPV6)
             self._check_sg_default_rules(filter6_table, self.IPV6)
 

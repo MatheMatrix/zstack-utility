@@ -7,20 +7,51 @@ import sys
 import os.path
 import gzip
 import shutil
+import threading
 
 import simplejson
-from concurrentlog_handler import ConcurrentRotatingFileHandler
+from .concurrentlog_handler import ConcurrentRotatingFileHandler
 from random import randint
+
+class ZstackLoggingContext(object):
+    def __init__(self):
+        self.tl = threading.local()
+
+    def set_task_uuid(self, uuid):
+        self.tl.task_uuid = uuid
+
+    def get_task_uuid(self):
+        try:
+            return self.tl.task_uuid
+        except AttributeError:
+            return None
+
+_zstack_logging_context = ZstackLoggingContext()
+
+def set_task_uuid(task_uuid):
+    _zstack_logging_context.set_task_uuid(task_uuid)
+
+def get_task_uuid():
+    return _zstack_logging_context.get_task_uuid()
+
+class TaskUuidFilter(logging.Filter):
+    def filter(self, record):
+        uuid = get_task_uuid()
+        if uuid:
+            record.task_uuid = uuid
+        else:
+            record.task_uuid = 'None'
+        return True
 
 class ZstackRotatingFileHandler(ConcurrentRotatingFileHandler):
     def __init__(self, filename, **kws):
+        super(ZstackRotatingFileHandler, self).__init__(filename, **kws)
         backupCount = kws.get('backupCount', 0)
         self.backup_count = backupCount
-        ConcurrentRotatingFileHandler.__init__(self, filename, **kws)
 
     def doArchive(self, old_log):
         try:
-            with open(old_log) as log:
+            with open(old_log, 'rb') as log:
                 with gzip.open(old_log + '.gz', 'wb') as comp_log:
                     shutil.copyfileobj(log, comp_log)
         except:
@@ -90,11 +121,11 @@ class LogConfig(object):
     instance = None
 
     LOG_FOLER = '/var/log/zstack'
-    LOG_FORMAT = '%(asctime)s %(thread)d %(levelname)s [%(name)s] %(message)s'
+    LOG_FORMAT = '%(asctime)s %(thread)d [task=%(task_uuid)s] %(levelname)s [%(name)s] %(message)s'
 
     def __init__(self):
         if not os.path.exists(self.LOG_FOLER):
-            os.makedirs(self.LOG_FOLER, 0755)
+            os.makedirs(self.LOG_FOLER, 0o755)
         self.log_path = os.path.join(self.LOG_FOLER, 'zstack.log')
         self.log_level = logging.DEBUG
         self.log_to_console = True
@@ -115,7 +146,7 @@ class LogConfig(object):
     def configure(self):
         dirname = os.path.dirname(self.log_path)
         if not os.path.exists(dirname):
-            os.makedirs(dirname, 0755)
+            os.makedirs(dirname, 0o755)
 
     def get_logger(self, name, logfd=None):
         logger = logging.getLogger(name)
@@ -123,6 +154,7 @@ class LogConfig(object):
             return logger
 
         logger.setLevel(logging.DEBUG)
+        logger.addFilter(TaskUuidFilter())
         max_rotate_handler = ZstackRotatingFileHandler(self.log_path, maxBytes=30*1024*1024, backupCount=30)
         formatter = logging.Formatter(self.LOG_FORMAT)
         max_rotate_handler.setFormatter(formatter)
@@ -163,11 +195,11 @@ def get_logger(name, logfd=None):
     return LogConfig.get_log_config().get_logger(name, logfd)
 
 def cleanup_log(hostname, username, password, port = 22):
-    import ssh
+    from . import ssh
     ssh.execute('''cd /var/log/zstack; tar --ignore-failed-read -zcf zstack-logs-`date +%y%m%d-%H%M%S`.tgz *.log.* *.log; find . -name "*.log"|while read file; do echo "" > $file; done''', hostname, username, password, port=port)
 
 def cleanup_local_log():
-    import shell
+    from . import shell
     shell.call('''cd /var/log/zstack; tar --ignore-failed-read -zcf zstack-logs-`date +%y%m%d-%H%M%S`.tgz *.log.* *.log; find . -name "*.log"|while read file; do echo "" > $file; done''')
 
 
@@ -197,7 +229,7 @@ def mask_sensitive_field(cmd, cmd_str):
     if isinstance(obj, dict):
         for path in field_paths:
             try:
-                exec ("if {0}: {0}='*****'".format(path)) in {'obj': obj}
+                exec(("if {0}: {0}='*****'".format(path)), {'obj': obj})
             except:
                 pass
         if SENSITIVE_FIELD_NAME in obj:

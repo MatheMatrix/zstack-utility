@@ -1,6 +1,6 @@
 import zstacklib.utils.jsonobject as jsonobject
 from zstacklib.utils import shell, bash
-from distutils.version import LooseVersion
+from zstacklib.utils.version import NumericVersion
 
 class ZStoneCephPoolCapacityGetter():
     def fill_pool_capacity(self, result):
@@ -20,14 +20,14 @@ class ZStoneCephPoolCapacityGetter():
             return
         ratio = get_full_ratio()
         for pool_capacity in result:
-            pool_capacity.pool_total_size = long(pool_capacity.pool_total_size / ratio)
-            pool_capacity.available_capacity = long(pool_capacity.available_capacity + pool_capacity.pool_total_size * (1-ratio))
+            pool_capacity.pool_total_size = int(pool_capacity.pool_total_size / ratio)
+            pool_capacity.available_capacity = int(pool_capacity.available_capacity + pool_capacity.pool_total_size * (1-ratio))
             pool_capacity.used_capacity = pool_capacity.pool_total_size - pool_capacity.available_capacity
 
 
 
 def calc_capacity_with_ratio():
-    return LooseVersion(get_zstone_version()) >= LooseVersion("4.3.6")
+    return NumericVersion(get_zstone_version()) >= NumericVersion("4.3.6")
 
 
 def get_zstone_version():

@@ -1,5 +1,3 @@
-import re
-import tempfile
 import os
 import os.path
 import platform
@@ -9,6 +7,7 @@ from kvmagent import kvmagent
 from zstacklib.utils import jsonobject
 from zstacklib.utils import shell
 from zstacklib.utils import traceable_shell
+from zstacklib.utils import network_ipv6
 from zstacklib.utils.bash import bash_progress_1, in_bash, bash_r, bash_roe
 from zstacklib.utils.report import *
 
@@ -48,6 +47,9 @@ class ImageStoreClient(object):
     def _build_install_path(self, name, imgid):
         return "{0}{1}/{2}".format(self.ZSTORE_PROTOSTR, name, imgid)
 
+    def _build_registry_url(self, hostname):
+        return network_ipv6.format_host_port(hostname, self.ZSTORE_DEF_PORT)
+
     def upload_image(self, hostname, fpath, concurrency=None):
         imf = self.commit_image(fpath)
 
@@ -55,7 +57,7 @@ class ImageStoreClient(object):
         if concurrency and concurrency > 1:
             extra_param += "-concurrency=%d " % concurrency
 
-        cmdstr = '%s -url %s:%s push %s %s' % (self.ZSTORE_CLI_PATH, hostname, self.ZSTORE_DEF_PORT, extra_param, fpath)
+        cmdstr = '%s -url %s push %s %s' % (self.ZSTORE_CLI_PATH, self._build_registry_url(hostname), extra_param, fpath)
         logger.debug('pushing %s to image store' % fpath)
         shell.check_run(cmdstr)
         logger.debug('%s pushed to image store' % fpath)
@@ -65,7 +67,7 @@ class ImageStoreClient(object):
     def commit_image(self, fpath):
         cmdstr = '%s -json add -file %s' % (self.ZSTORE_CLI_PATH, fpath)
         logger.debug('adding %s to local image store' % fpath)
-        output = shell.call(cmdstr.encode(encoding="utf-8"))
+        output = shell.call(cmdstr)
         logger.debug('%s added to local image store' % fpath)
 
         return jsonobject.loads(output.splitlines()[-1])
@@ -136,6 +138,55 @@ class ImageStoreClient(object):
             if err:
                 raise Exception('fail to mirror volume %s, because %s' % (vm, str(err)))
 
+    def cbt_backup_volume(self, vm, volume_infos, bitmapTimestamp, portRange):
+        def _parse_json_and_update_mode(volume_infos, json_data):
+            json_list = json.loads(json_data)
+            infos = []
+
+            for info in volume_infos:
+                target_disk, _ = vm._get_target_disk(info.volume)
+                node_name = self.get_disk_device_name(target_disk)
+                for item in json_list:
+                    if item['device'] == node_name:
+                        info.mode = item['mode']
+                        info.scratchNodeName = item['scratchNodeName']
+                        info.nbdPort = item['nbdPort']
+                        info.bitmapName = item['bitmap']
+                        infos.append(info)
+                        continue
+            return infos
+
+
+        volumes = ""
+        for volume_info in volume_infos:
+            target_disk, _ = vm._get_target_disk(volume_info.volume)
+            node_name = self.get_disk_device_name(target_disk)
+
+            target_install_path = volume_info.target
+            volumes += ",".join([node_name, target_install_path]) + ";"
+
+        PFILE = linux.create_temp_file()
+        with linux.ShowLibvirtErrorOnException(vm):
+            cmdstr = '%s cbtbak -domain %s -volumes "%s" -bitmap "%s" -portrange "%s" > %s' % \
+                     (self.ZSTORE_CLI_PATH, vm.uuid, volumes, bitmapTimestamp, portRange, PFILE)
+            shell.call(cmdstr)
+            with open(PFILE) as fd:
+                linux.rm_file_force(PFILE)
+                json_data = fd.read()
+                return  _parse_json_and_update_mode(volume_infos, json_data)
+
+    def stop_vm_cbt_backup_jobs(self, vm, records, force=False):
+        infos = ""
+        bitmapName = ""
+        for record in records:
+            infos += ",".join([record.scratchNodeName, record.target]) + ";"
+            if record.lastBitmapName:
+                bitmapName = record.lastBitmapName
+        with linux.ShowLibvirtErrorOnException(vm):
+            cmdstr = '%s stopcbtbak -force=%s -domain %s -volumes "%s" -bitmap "%s"' % \
+                     (self.ZSTORE_CLI_PATH, force, vm, infos, bitmapName)
+            return shell.call(cmdstr).strip()
+
     def query_vm_mirror_latencies_boundary(self, vm, times):
         with linux.ShowLibvirtErrorOnException(vm):
             infosMaps = []
@@ -154,7 +205,7 @@ class ImageStoreClient(object):
                 for line in fd.readlines():
                     infosMap = {}
                     j = jsonobject.loads(line.strip())
-                    for key, val in j.__dict__.iteritems():
+                    for key, val in j.__dict__.items():
                         infosMap[key] = val
                     infosMaps.append(infosMap)
                     maxLatencies.append(max(infosMap.values()))
@@ -163,12 +214,12 @@ class ImageStoreClient(object):
                     maxLatency = max(maxLatencies)
                     minLatency = min(maxLatencies)
                     for infoMap in infosMaps:
-                        k = [k for k, v in infoMap.items() if v == maxLatency]
+                        k = [k for k, v in list(infoMap.items()) if v == maxLatency]
                         if k:
                             maxInfoMap = infoMap
                             break
                     for infoMap in infosMaps:
-                        values = infoMap.values()
+                        values = list(infoMap.values())
                         if values and all(i <= minLatency for i in values):
                             minInfoMap = infoMap
                             break
@@ -237,7 +288,7 @@ class ImageStoreClient(object):
             return mode.strip()
 
     def image_already_pushed(self, hostname, imf):
-        cmdstr = '%s -url %s:%s info %s' % (self.ZSTORE_CLI_PATH, hostname, self.ZSTORE_DEF_PORT, self._build_install_path(imf.name, imf.id))
+        cmdstr = '%s -url %s info %s' % (self.ZSTORE_CLI_PATH, self._build_registry_url(hostname), self._build_install_path(imf.name, imf.id))
         if shell.run(cmdstr) != 0:
             return False
         return True
@@ -259,8 +310,8 @@ class ImageStoreClient(object):
         if cmd.concurrency and cmd.concurrency > 1:
             push_ext_param += " -concurrency %d" % cmd.concurrency
 
-        cmdstr = '%s -url %s:%s -callbackurl %s -taskid %s -imageUuid %s %s push %s %s' % (
-            self.ZSTORE_CLI_PATH, cmd.hostname, self.ZSTORE_DEF_PORT, req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
+        cmdstr = '%s -url %s -callbackurl %s -taskid %s -imageUuid %s %s push %s %s' % (
+            self.ZSTORE_CLI_PATH, self._build_registry_url(cmd.hostname), req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
             taskid, cmd.imageUuid, extpara, push_ext_param, cmd.primaryStorageInstallPath)
         logger.debug('pushing %s to image store' % cmd.primaryStorageInstallPath)
         shell = traceable_shell.get_shell(cmd)
@@ -284,7 +335,7 @@ class ImageStoreClient(object):
         cmdstr = '%s -json  -callbackurl %s -taskid %s -imageUuid %s add -desc \'%s\' -file %s' % (self.ZSTORE_CLI_PATH, req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
                 req[http.REQUEST_HEADER].get(http.TASK_UUID), cmd.imageUuid, cmd.description, fpath)
         logger.debug('adding %s to local image store' % fpath)
-        output = shell.call(cmdstr.encode(encoding="utf-8"))
+        output = shell.call(cmdstr)
         logger.debug('%s added to local image store' % fpath)
 
         imf = jsonobject.loads(output.splitlines()[-1])
@@ -307,8 +358,8 @@ class ImageStoreClient(object):
         pull_extra_param = ""
         if concurrency and concurrency > 1:
             pull_extra_param += " -concurrency=%d" % concurrency
-        cmdstr = '%s -url %s:%s %s pull %s -installpath %s %s:%s' % \
-                 (self.ZSTORE_CLI_PATH, host, self.ZSTORE_DEF_PORT, extra_param, pull_extra_param, ps_path, name, imageid)
+        cmdstr = '%s -url %s %s pull %s -installpath %s %s:%s' % \
+                 (self.ZSTORE_CLI_PATH, self._build_registry_url(host), extra_param, pull_extra_param, ps_path, name, imageid)
         logger.debug('pulling %s:%s from image store' % (name, imageid))
 
         try:
@@ -326,7 +377,7 @@ class ImageStoreClient(object):
     def image_info(self, host, install_path):
         self._check_zstore_cli()
         name, imageid = self._parse_image_reference(install_path)
-        cmd = "%s -url %s:%s -json info %s:%s" % (self.ZSTORE_CLI_PATH, host, self.ZSTORE_DEF_PORT, name, imageid)
+        cmd = "%s -url %s -json info %s:%s" % (self.ZSTORE_CLI_PATH, self._build_registry_url(host), name, imageid)
         s = shell.ShellCmd(cmd)
         s(False)
         if s.return_code == 0:
@@ -355,3 +406,7 @@ class ImageStoreClient(object):
         rsp = kvmagent.AgentResponse()
         rsp.destPath = destPath
         return jsonobject.dumps(rsp)
+
+    def get_disk_device_name(self, disk):
+        # The disk type on FT-backup_vm is quorom
+        return ('' if disk.type_ == 'quorum' else 'drive-') + disk.alias.name_

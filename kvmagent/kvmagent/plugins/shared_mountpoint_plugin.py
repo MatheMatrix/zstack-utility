@@ -1,5 +1,4 @@
 import os.path
-import traceback
 
 from zstacklib.utils import lock
 
@@ -124,6 +123,17 @@ class GetBackingChainRsp(AgentRsp):
         self.totalSize = 0
         self.backingChain = []
 
+class OfflineMergeSnapshotRsp(AgentRsp):
+    def __init__(self):
+        super(OfflineMergeSnapshotRsp, self).__init__()
+        self.actualSize = None
+
+
+class OfflineCommitSnapshotRsp(AgentRsp):
+    def __init__(self):
+        super(OfflineCommitSnapshotRsp, self).__init__()
+        self.actualSize = None
+
 class SharedMountPointPrimaryStoragePlugin(kvmagent.KvmAgent):
 
     CONNECT_PATH = "/sharedmountpointprimarystorage/connect"
@@ -142,6 +152,7 @@ class SharedMountPointPrimaryStoragePlugin(kvmagent.KvmAgent):
     REVERT_VOLUME_FROM_SNAPSHOT_PATH = "/sharedmountpointprimarystorage/volume/revertfromsnapshot"
     MERGE_SNAPSHOT_PATH = "/sharedmountpointprimarystorage/snapshot/merge"
     OFFLINE_MERGE_SNAPSHOT_PATH = "/sharedmountpointprimarystorage/snapshot/offlinemerge"
+    OFFLINE_COMMIT_SNAPSHOT_PATH = "/sharedmountpointprimarystorage/snapshot/offlinecommit"
     CREATE_EMPTY_VOLUME_PATH = "/sharedmountpointprimarystorage/volume/createempty"
     CREATE_FOLDER_PATH = "/sharedmountpointprimarystorage/volume/createfolder"
     CHECK_BITS_PATH = "/sharedmountpointprimarystorage/bits/check"
@@ -173,6 +184,7 @@ class SharedMountPointPrimaryStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.REVERT_VOLUME_FROM_SNAPSHOT_PATH, self.revert_volume_from_snapshot)
         http_server.register_async_uri(self.MERGE_SNAPSHOT_PATH, self.merge_snapshot)
         http_server.register_async_uri(self.OFFLINE_MERGE_SNAPSHOT_PATH, self.offline_merge_snapshots)
+        http_server.register_async_uri(self.OFFLINE_COMMIT_SNAPSHOT_PATH, self.offline_commit_snapshots)
         http_server.register_async_uri(self.CREATE_EMPTY_VOLUME_PATH, self.create_empty_volume)
         http_server.register_async_uri(self.CREATE_FOLDER_PATH, self.create_folder)
         http_server.register_async_uri(self.CHECK_BITS_PATH, self.check_bits)
@@ -295,7 +307,7 @@ class SharedMountPointPrimaryStoragePlugin(kvmagent.KvmAgent):
     def do_create_volume_with_backing(backing_path, vol_path, cmd):
         dirname = os.path.dirname(vol_path)
         if not os.path.exists(dirname):
-            os.makedirs(dirname, 0775)
+            os.makedirs(dirname, 0o775)
 
         linux.qcow2_clone_with_cmd(backing_path, vol_path, cmd)
 
@@ -343,7 +355,7 @@ class SharedMountPointPrimaryStoragePlugin(kvmagent.KvmAgent):
         rsp = CreateTemplateFromVolumeRsp()
         dirname = os.path.dirname(cmd.installPath)
         if not os.path.exists(dirname):
-            os.makedirs(dirname, 0755)
+            os.makedirs(dirname, 0o755)
 
         @rollback.rollbackable
         def _0():
@@ -430,7 +442,7 @@ class SharedMountPointPrimaryStoragePlugin(kvmagent.KvmAgent):
         install_path = cmd.imageInstallPath
         dirname = os.path.dirname(cmd.volumeInstallPath)
         if not os.path.exists(dirname):
-            os.makedirs(dirname, 0775)
+            os.makedirs(dirname, 0o775)
 
         new_volume_path = os.path.join(dirname, '{0}.qcow2'.format(uuidhelper.uuid()))
         linux.qcow2_clone_with_cmd(install_path, new_volume_path, cmd)
@@ -469,10 +481,11 @@ class SharedMountPointPrimaryStoragePlugin(kvmagent.KvmAgent):
     @kvmagent.replyerror
     def offline_merge_snapshots(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = AgentRsp()
+        rsp = OfflineMergeSnapshotRsp()
 
         src_path = cmd.srcPath if not cmd.fullRebase else ""
         if linux.qcow2_get_backing_file(cmd.destPath) == src_path:
+            _, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.destPath)
             rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.mountPoint)
             return jsonobject.dumps(rsp)
 
@@ -482,7 +495,27 @@ class SharedMountPointPrimaryStoragePlugin(kvmagent.KvmAgent):
             tmp = os.path.join(os.path.dirname(cmd.destPath), '%s.qcow2' % uuidhelper.uuid())
             qcow2.create_template_with_task_daemon(cmd.destPath, tmp, task_spec=cmd)
             shell.call("mv %s %s" % (tmp, cmd.destPath))
+        self.imagestore_client.clean_meta(cmd.destPath)
 
+        _, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.destPath)
+        rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.mountPoint)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def offline_commit_snapshots(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = OfflineCommitSnapshotRsp()
+
+        if linux.qcow2_get_backing_file(cmd.top) != linux.qcow2_get_backing_file(cmd.base):
+            linux.qcow2_commit(cmd.top, cmd.base)
+
+        if cmd.topChildrenInstallPathInDb:
+            for children in cmd.topChildrenInstallPathInDb:
+                if linux.qcow2_get_backing_file(children) != cmd.base:
+                    linux.qcow2_rebase_no_check(cmd.base, children)
+        self.imagestore_client.clean_meta(cmd.base)
+
+        _, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.base)
         rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.mountPoint)
         return jsonobject.dumps(rsp)
 
@@ -581,7 +614,7 @@ class SharedMountPointPrimaryStoragePlugin(kvmagent.KvmAgent):
                 linux.link(backing_file, dst_file)
                 linux.qcow2_rebase_no_check(dst_file, f)
 
-        for src_file, dst_file in src_dst_dict.iteritems():
+        for src_file, dst_file in src_dst_dict.items():
             linux.link(src_file, dst_file)
 
     @kvmagent.replyerror

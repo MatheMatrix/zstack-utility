@@ -6,7 +6,7 @@ import libvirt
 import libvirt_qemu
 import xml.etree.ElementTree as ET
 
-import log
+from . import log
 
 logger = log.get_logger(__name__)
 
@@ -48,13 +48,21 @@ qga_channel_state_disconnected = 'disconnected'
 encodings = ['utf-8', 'GB2312', 'ISO-8859-1']
 
 
-def decode_with_fallback(encoded_bytes):
+def decode_with_fallback(encoded_bytes) -> str:
+    if not isinstance(encoded_bytes, bytes):
+        return encoded_bytes
+
+    errs = []
     for encoding in encodings:
         try:
-            return encoded_bytes.decode(encoding).encode('utf-8')
-        except UnicodeDecodeError:
+            return encoded_bytes.decode(encoding)
+        except UnicodeDecodeError as e:
+            errs.append((encoding, str(e)))
             continue
-    raise UnicodeDecodeError("Unable to decode bytes using provided encodings")
+
+    error_details = "\n".join([f"{enc}: {err}" for enc, err in errs])
+    raise Exception(
+        f"Unable to decode bytes using provided encodings. Attempted encodings and errors:\n{error_details}")
 
 def merge_cmd(cmd_str, args):
     for sub_key in args:
@@ -149,14 +157,17 @@ class VmQga(object):
         cmd = {'execute': command}
         if args:
             if 'buf-b64' in args:
-                args['buf-b64'] = base64.b64encode(args['buf-b64'])
+                content = args['buf-b64']
+                if isinstance(content, str):
+                    content = content.encode()
+                args['buf-b64'] = base64.b64encode(content).decode()
             cmd['arguments'] = args
         cmd = json.dumps(cmd)
         try:
             ret = libvirt_qemu.qemuAgentCommand(self.domain, cmd,
                                                 timeout, 0)
         except libvirt.libvirtError as e:
-            message = 'exec qga command[{}] args[{}] error: {}'.format(cmd, args, e.message)
+            message = 'exec qga command[{}] args[{}] error: {}'.format(cmd, args, str(e))
             raise Exception(message)
 
         try:
@@ -173,11 +184,11 @@ class VmQga(object):
         parsedRet = parsed['return']
         if isinstance(parsedRet, dict):
             if 'out-data' in parsedRet:
-                parsedRet['out-data'] = base64.b64decode(parsedRet['out-data'])
+                parsedRet['out-data'] = decode_with_fallback(base64.b64decode(parsedRet['out-data']))
             if 'err-data' in parsedRet:
-                parsedRet['err-data'] = base64.b64decode(parsedRet['err-data'])
+                parsedRet['err-data'] = decode_with_fallback(base64.b64decode(parsedRet['err-data']))
             if 'buf-b64' in parsedRet:
-                parsedRet['buf-b64'] = base64.b64decode(parsedRet['buf-b64'])
+                parsedRet['buf-b64'] = decode_with_fallback(base64.b64decode(parsedRet['buf-b64']))
 
         return parsedRet
 
@@ -256,6 +267,67 @@ class VmQga(object):
 
         if not ret or not ret.get('exited'):
             raise Exception('qga exec cmd {} timeout for vm {}'.format(merge_cmd("cmd", args), self.vm_uuid))
+
+        exit_code = ret.get('exitcode')
+        s_ret_data = None
+        e_ret_data = None
+        if 'out-data' in ret:
+            s_ret_data = decode_with_fallback(ret['out-data'])
+        if 'err-data' in ret:
+            e_ret_data = decode_with_fallback(ret['err-data'])
+
+        return exit_code, s_ret_data, e_ret_data
+
+    def guest_exec_command(self, path, args=None, output=True, wait=qga_exec_wait_interval, retry=qga_exec_wait_retry):
+        """
+        Execute a command with arguments safely without shell injection risks.
+
+        This method directly passes arguments as an array to avoid shell injection vulnerabilities.
+        Use this instead of guest_exec_bash when you need to execute commands with user-provided input.
+
+        Args:
+            path: The executable path (e.g., "rm", "mkdir", "touch")
+            args: List of arguments (e.g., ["-f", "/path/to/file"])
+            output: Whether to capture command output
+            wait: Wait interval between status checks
+            retry: Number of retries for status check
+
+        Returns:
+            tuple: (exit_code, stdout_data, stderr_data)
+            - When output=True: Returns (exit_code, stdout_data, stderr_data)
+            - When output=False: Returns (0, None, None)
+
+        Example:
+            # Safe: Arguments are passed as array, no shell interpretation
+            exit_code, stdout, stderr = qga.guest_exec_command("rm", ["-f", user_file_path])
+
+            # Create directory safely
+            exit_code, _, _ = qga.guest_exec_command("mkdir", ["-p", user_dir_path])
+        """
+        if args is None:
+            args = []
+
+        ret = self.guest_exec(
+            {"path": path, "arg": args, "capture-output": output})
+        if ret and "pid" in ret:
+            pid = ret["pid"]
+        else:
+            raise Exception('qga exec command {} {} failed for vm {}'.format(path, args, self.vm_uuid))
+
+        if not output:
+            logger.debug("run qga command: {} {} no output".format(path, args))
+            return 0, None, None
+
+        ret = None
+        for i in range(retry):
+            time.sleep(wait)
+            ret = self.guest_exec_status(pid)
+            # format: {"return":{"exited":false}}
+            if ret['exited']:
+                break
+
+        if not ret or not ret.get('exited'):
+            raise Exception('qga exec command {} {} timeout for vm {}'.format(path, args, self.vm_uuid))
 
         exit_code = ret.get('exitcode')
         s_ret_data = None
@@ -347,10 +419,14 @@ class VmQga(object):
 
         return exit_code, s_ret_data, e_ret_data
 
-    def guest_exec_zs_tools(self, operate, config, output=True, wait=qga_exec_wait_interval, retry=zs_tools_wait_retry):
+    def guest_exec_zs_tools(self, operate, config, output=True, wait=qga_exec_wait_interval, retry=zs_tools_wait_retry
+                            , skip_cleanup=False):
         if operate == 'net':
+            args = [operate, "--config", config]
+            if skip_cleanup:
+                args.append("--skip-cleanup")
             ret = self.guest_exec(
-                {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--config", config], "capture-output": output})
+                {"path": self.ZS_TOOLS_PATN_WIN, "arg": args, "capture-output": output})
         elif operate == 'host':
             ret = self.guest_exec(
                 {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--name", config], "capture-output": output})
@@ -654,7 +730,7 @@ class VmQga(object):
         try:
             handle = self.call_qga_command("guest-file-open", args={"path": path, "mode": 'r'})
         except Exception as e:
-            if 'No such file' in e.message and not not_exist_exception:
+            if 'No such file' in str(e) and not not_exist_exception:
                 return 0, None
             raise e
 
@@ -694,7 +770,7 @@ class VmQga(object):
             'username': 'root',
             'keys': [public_key]
         }
-        ret = self.call_qga_command('guest-ssh-add-authorized_keys', args)
+        ret = self.call_qga_command('guest-ssh-add-authorized-keys', args)
         return ret
 
     def guest_ssh_remove_authorized_keys(self, public_key):
@@ -702,5 +778,5 @@ class VmQga(object):
             'username': 'root',
             'keys': [public_key]
         }
-        ret = self.call_qga_command('guest-ssh-remove-authorized_keys', args)
+        ret = self.call_qga_command('guest-ssh-remove-authorized-keys', args)
         return ret

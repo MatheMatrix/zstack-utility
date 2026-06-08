@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 import sys, os
 
-version = '5.2.0'
+version = '5.5.0'
 
 setup(name='zstackcli',
       version=version,
@@ -23,5 +23,6 @@ zstack cli console""",
       entry_points="""
       # -*- Entry points: -*-
       """,
+      scripts=['zstack-cli'],
       data_files=[('/usr/bin', ['zstack-cli'])]
       )

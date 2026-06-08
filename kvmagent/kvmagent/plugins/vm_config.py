@@ -1,11 +1,14 @@
+import base64
 import libvirt
 from kvmagent.plugins import vm_plugin
 from zstacklib.utils import http
 from zstacklib.utils import jsonobject
 from zstacklib.utils import lock
 from zstacklib.utils import log
+from zstacklib.utils.gpu import VmGpuStatus
 from zstacklib.utils.qga import VmQga
 from zstacklib.utils import pci
+from zstacklib.gpu.base import VendorEnum
 from zstacklib.utils import gpu
 
 from kvmagent import kvmagent
@@ -135,6 +138,7 @@ class GetGuestToolsStateResponse(kvmagent.AgentResponse):
         super(GetGuestToolsStateResponse, self).__init__()
         self.states = None
 
+
 class GetVmGpuInfoResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(GetVmGpuInfoResponse, self).__init__()
@@ -146,6 +150,8 @@ class VmConfigPlugin(kvmagent.KvmAgent):
     VM_GUEST_TOOLS_STATE = "/vm/guesttools/state"
     VM_SET_HOSTNAME = "/vm/set/hostname"
     VM_GPU_INFO_SYNC = "/vm/gpuinfo/sync"
+    VM_WRITE_FILE = "/vm/write/file"
+    VM_DELETE_FILE = "/vm/delete/file"
 
     VM_QGA_PARAM_FILE = "/usr/local/zstack/zs-nics.json"
     VM_QGA_CONFIG_LINUX_CMD = "/usr/local/zstack/zs-tools/config_linux.py"
@@ -181,7 +187,9 @@ class VmConfigPlugin(kvmagent.KvmAgent):
 
         # configure windows by zs-tools
         if qga.os == VmQga.VM_OS_WINDOWS:
-            ret, msg = qga.guest_exec_zs_tools(operate='net', config=jsonobject.dumps(nicParams))
+            skip_cleanup = getattr(nicParams, "optionalConfiguration", False) is True
+            ret, msg = qga.guest_exec_zs_tools(operate='net', config=jsonobject.dumps(nicParams)
+                                               , skip_cleanup=skip_cleanup)
             if ret != 0:
                 logger.debug("config vm {} by qga failed, detail info {}".format(vm_uuid, msg))
             return ret, msg
@@ -295,8 +303,20 @@ class VmConfigPlugin(kvmagent.KvmAgent):
             if pci_device_address not in pci_mapping:
                 continue
             gpuinfo["pciAddress"] = pci_mapping[pci_device_address]
+            gpuinfo["gpuStatus"] = self.get_vm_gpu_status(pci_device_address, qga)
             gpus.append(gpuinfo)
         return gpus
+
+    def get_vm_gpu_status(self, pci_device_address, qga):
+        cmd = gpu.get_gpu_status_cmd(pci_device_address, "mswindows" in qga.os)
+        gpu_status_output = qga.guest_exec_cmd_no_exitcode(cmd)
+        if gpu_status_output is None:
+            return VmGpuStatus.NOT_EXIST.value
+
+        if 'rev ff' in gpu_status_output:
+            return VmGpuStatus.CRITICAL_FAULT.value
+
+        return VmGpuStatus.NOMINAL.value
 
     def get_vm_nvidia_gpu_info_by_guesttool(self, qga):
         cmd = gpu.get_nvidia_gpu_basic_info_cmd("mswindows" in qga.os)
@@ -326,12 +346,56 @@ class VmConfigPlugin(kvmagent.KvmAgent):
 
     def get_vm_tianshu_gpu_info_by_guesttool(self, qga):
         gpuinfos = []
-        cmd = gpu.get_tianshu_gpu_basic_info_cmd("mswindows" in qga.os)
+        version = qga.guest_exec_cmd_no_exitcode(gpu.is_tianshu_v1("mswindows" in qga.os))
+        if version is None:
+            cmd = gpu.get_tianshu_gpu_basic_info_cmd_v2("mswindows" in qga.os)
+        else:
+            cmd = gpu.get_tianshu_gpu_basic_info_cmd_v1("mswindows" in qga.os)
         gpu_info_output = qga.guest_exec_cmd_no_exitcode(cmd)
         if gpu_info_output is None:
             return gpuinfos
 
         return self.map_pci_addresses_in_gpu_info(gpu.parse_tianshu_gpu_output(gpu_info_output), qga)
+
+    def get_vm_enflame_gpu_info_by_guesttool(self, qga):
+        gpuinfos = []
+        cmd = gpu.get_enflame_gpu_info_cmd()
+        gpu_info_output = qga.guest_exec_cmd_no_exitcode(cmd)
+        if gpu_info_output is None:
+            return gpuinfos
+
+        return self.map_pci_addresses_in_gpu_info(gpu.parse_enflame_gpu_output(gpu_info_output), qga)
+
+    def get_vm_alibaba_ppu_info_by_guesttool(self, qga):
+        gpuinfos = []
+        cmd = gpu.get_alibaba_ppu_basic_info_cmd("mswindows" in qga.os)
+        gpu_info_output = qga.guest_exec_cmd_no_exitcode(cmd)
+        if gpu_info_output is None:
+            return gpuinfos
+
+        return self.map_pci_addresses_in_gpu_info(gpu.parse_alibaba_ppu_output(gpu_info_output), qga)
+
+
+    def get_vm_kunlunxin_gpu_info_by_guesttool(self, qga):
+        gpuinfos = []
+        cmd = gpu.get_kunlunxin_gpu_xpu_id_cmd()
+        xpu_ids_out = qga.guest_exec_cmd_no_exitcode(cmd)
+        if xpu_ids_out is None:
+            return gpuinfos
+        xpu_ids = gpu.get_kunlunxin_xpu_id(xpu_ids_out)
+        if len(xpu_ids) == 0:
+            return gpuinfos
+
+        xpu_infos = []
+        for xpu_id in xpu_ids:
+            xpu_cmd = gpu.get_kunlunxin_gpu_basic_info_cmd(xpu_id)
+            xpu_info = qga.guest_exec_cmd_no_exitcode(xpu_cmd)
+            if xpu_info is None:
+                break
+
+            xpu_infos.extend(gpu.parse_kunlunxin_gpu_output_by_npu_id(xpu_info))
+
+        return self.map_pci_addresses_in_gpu_info(xpu_infos, qga)
 
     def get_vm_hauwei_gpu_info_by_guesttool(self, qga):
         gpuinfos = []
@@ -339,15 +403,19 @@ class VmConfigPlugin(kvmagent.KvmAgent):
         if npu_id_output is None:
             return gpuinfos
 
-        npu_id = gpu.get_huawei_npu_id(npu_id_output)
-        if npu_id is None:
+        npu_ids = gpu.get_huawei_npu_id(npu_id_output)
+        if len(npu_ids) == 0:
             return gpuinfos
 
-        npu_info_board_output = qga.guest_exec_cmd_no_exitcode(gpu.get_huawei_gpu_basic_info_cmd(npu_id))
-        if npu_info_board_output is None:
-            return gpuinfos
+        npu_infos = []
+        for npu_id in npu_ids:
+            npu_info_board_output = qga.guest_exec_cmd_no_exitcode(gpu.get_huawei_gpu_basic_info_cmd(npu_id))
+            if npu_info_board_output is None:
+                continue
 
-        return self.map_pci_addresses_in_gpu_info(gpu.parse_huawei_gpu_output_by_npu_id(npu_info_board_output), qga)
+            npu_infos.extend(gpu.parse_huawei_gpu_output_by_npu_id(npu_info_board_output))
+
+        return self.map_pci_addresses_in_gpu_info(npu_infos, qga)
 
     def get_vm_gpu_info_by_guesttool(self, domain, vendors):
         vm_uuid = domain.name()
@@ -355,22 +423,27 @@ class VmConfigPlugin(kvmagent.KvmAgent):
         if qga.state != VmQga.QGA_STATE_RUNNING:
             return 1, "qga is not running for vm {}".format(vm_uuid)
 
-        if qga.os not in VmConfigPlugin.VM_CONFIG_SYNC_OS_VERSION_SUPPORT.keys() or \
+        if qga.os not in list(VmConfigPlugin.VM_CONFIG_SYNC_OS_VERSION_SUPPORT.keys()) or \
                 qga.os_version not in VmConfigPlugin.VM_CONFIG_SYNC_OS_VERSION_SUPPORT[qga.os]:
             return 1, "not support for os {} version {}".format(qga.os, qga.os_version)
         gpuinfos = []
         vendor_method_map = {
-            "NVIDIA": self.get_vm_nvidia_gpu_info_by_guesttool,
-            "AMD": self.get_vm_amd_gpu_info_by_guesttool,
-            "Haiguang": self.get_vm_hy_gpu_info_by_guesttool,
-            "Huawei": self.get_vm_hauwei_gpu_info_by_guesttool,
-            "TianShu": self.get_vm_tianshu_gpu_info_by_guesttool,
+            VendorEnum.NVIDIA: self.get_vm_nvidia_gpu_info_by_guesttool,
+            VendorEnum.AMD: self.get_vm_amd_gpu_info_by_guesttool,
+            VendorEnum.HAIGUANG: self.get_vm_hy_gpu_info_by_guesttool,
+            VendorEnum.HUAWEI: self.get_vm_hauwei_gpu_info_by_guesttool,
+            VendorEnum.TIANSHU: self.get_vm_tianshu_gpu_info_by_guesttool,
+            VendorEnum.ENFLAME: self.get_vm_enflame_gpu_info_by_guesttool,
+            VendorEnum.ALIBABA: self.get_vm_alibaba_ppu_info_by_guesttool,
+            VendorEnum.KUNLUNXIN: self.get_vm_kunlunxin_gpu_info_by_guesttool,
         }
 
         for vendor in vendors:
             if vendor in vendor_method_map:
                 gpus = vendor_method_map[vendor](qga)
                 if any(gpus):
+                    for g in gpus:
+                        g["isDriverLoaded"] = True
                     gpuinfos.extend(gpus)
 
         return 0, gpuinfos
@@ -395,12 +468,71 @@ class VmConfigPlugin(kvmagent.KvmAgent):
         rsp.gpuInfos = ret
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def vm_write_file(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+
+        domain = get_virt_domain(cmd.vmUuid)
+        if not domain or not domain.isActive():
+            rsp.success = False
+            rsp.error = 'vm {} not running'.format(cmd.vmUuid)
+            return jsonobject.dumps(rsp)
+
+        qga = VmQga(domain)
+        if qga.state != VmQga.QGA_STATE_RUNNING:
+            rsp.success = False
+            rsp.error = "qga is not running for vm {}".format(cmd.vmUuid)
+            return jsonobject.dumps(rsp)
+
+        base64content = cmd.base64Content
+        content = base64.b64decode(base64content)
+
+        ret = qga.guest_file_write(cmd.filePath, content)
+        if ret == 0:
+            rsp.success = False
+            rsp.error = "write file {} failed for vm {}".format(cmd.filePath, cmd.vmUuid)
+            return jsonobject.dumps(rsp)
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def vm_delete_file(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+
+        domain = get_virt_domain(cmd.vmUuid)
+        if not domain or not domain.isActive():
+            rsp.success = False
+            rsp.error = 'vm {} not running'.format(cmd.vmUuid)
+            return jsonobject.dumps(rsp)
+
+        qga = VmQga(domain)
+        if qga.state != VmQga.QGA_STATE_RUNNING:
+            rsp.success = False
+            rsp.error = "qga is not running for vm {}".format(cmd.vmUuid)
+            return jsonobject.dumps(rsp)
+
+        # Use guest_exec_command for safe execution without shell injection risks
+        # Arguments are passed as array, not through shell interpretation
+        exit_code, _, err_data = qga.guest_exec_command("rm", ["-f", cmd.filePath])
+        if exit_code != 0:
+            rsp.success = False
+            error_msg = err_data if err_data else "unknown error"
+            rsp.error = "delete file {} failed for vm {}: {}".format(cmd.filePath, cmd.vmUuid, error_msg)
+            return jsonobject.dumps(rsp)
+
+        return jsonobject.dumps(rsp)
+
+
     def start(self):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.VM_CONFIG_PORTS, self.vm_config_ports)
         http_server.register_async_uri(self.VM_GUEST_TOOLS_STATE, self.vm_guest_tools_state)
         http_server.register_async_uri(self.VM_SET_HOSTNAME, self.vm_set_hostname)
         http_server.register_async_uri(self.VM_GPU_INFO_SYNC, self.vm_gpu_info_sync)
+        http_server.register_async_uri(self.VM_WRITE_FILE, self.vm_write_file)
+        http_server.register_async_uri(self.VM_DELETE_FILE, self.vm_delete_file)
 
     def stop(self):
         pass
@@ -466,6 +598,6 @@ if __name__ == "__main__":
         print("ports_config start.")
         config_driver.config_ports(cmd.portsConfig)
     except QgaException as e:
-        print("result error: code=%s, message=%s." % (e.error_code, e.message))
+        print("result error: code=%s, message=%s." % (e.error_code, str(e)))
     """
     print('config success')

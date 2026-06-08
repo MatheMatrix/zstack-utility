@@ -1,6 +1,8 @@
-import singleton
+import traceback
+
+from . import singleton
 import libvirt
-import thread
+from . import thread
 from zstacklib.utils import log
 from zstacklib.utils import singleton
 
@@ -8,7 +10,8 @@ logger = log.get_logger(__name__)
 
 @singleton.singleton
 class LibvirtSingleton(object):
-    conn = libvirt.open('qemu:///system')
+    def __init__(self):
+        self.conn = libvirt.open('qemu:///system')
     libvirt_event_callbacks = {}
 
 @singleton.singleton
@@ -26,8 +29,6 @@ class LibvirtEventManagerSingleton(object):
                 except:
                     content = traceback.format_exc()
                     logger.warn(content)
-
-            logger.debug("virEventRunDefaultImpl stopped")
 
         run()
 

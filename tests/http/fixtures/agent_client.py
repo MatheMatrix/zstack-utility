@@ -1,0 +1,116 @@
+# -*- coding: utf-8 -*-
+"""HTTP client fixtures for agent API testing."""
+
+from __future__ import annotations
+
+from typing import Optional
+
+import pytest
+import requests
+
+
+# Agent port mapping (must match conftest.py AGENT_PORTS)
+AGENT_PORTS = {
+    'kvmagent': 7070,
+    'virtualrouter': 7272,
+    'appliancevm': 7759,
+    'cephbackup': 7761,
+    'cephprimary': 7762,
+}
+
+
+class AgentClient:
+    """
+    HTTP client for agent API requests.
+    
+    Uses requests.Session for connection pooling and persistence.
+    Connects via SSH tunnel (localhost) or directly to remote host.
+    """
+    
+    def __init__(self, base_url: str):
+        """
+        Initialize agent client.
+        
+        Args:
+            base_url: Base URL for agent (e.g., http://127.0.0.1:7070)
+        """
+        self.base_url = base_url
+        self.session = requests.Session()
+    
+    def post(
+        self,
+        path: str,
+        data: Optional[dict] = None,
+        headers: Optional[dict] = None,
+        timeout: float = 10.0
+    ) -> requests.Response:
+        """
+        Send POST request to agent endpoint.
+        
+        Args:
+            path: API path (e.g., /host/ping)
+            data: JSON request body
+            headers: Additional HTTP headers
+            timeout: Request timeout in seconds
+        
+        Returns:
+            requests.Response object
+        """
+        url = f"{self.base_url}{path}"
+        return self.session.post(
+            url,
+            json=data or {},
+            headers=headers or {},
+            timeout=timeout
+        )
+    
+    def close(self):
+        """Close the HTTP session."""
+        self.session.close()
+
+
+# Agent client fixtures (one per agent)
+
+@pytest.fixture
+def kvmagent_client(ssh_tunnel, agent_host):
+    """
+    HTTP client for kvmagent.
+    
+    Depends on ssh_tunnel (for tunnel mode) and agent_host (for URL routing).
+    In direct mode, agent_host is the remote IP; in tunnel mode, it's 127.0.0.1.
+    """
+    client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['kvmagent']}")
+    yield client
+    client.close()
+
+
+@pytest.fixture
+def virtualrouter_client(ssh_tunnel, agent_host):
+    """HTTP client for virtualrouter agent."""
+    client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['virtualrouter']}")
+    yield client
+    client.close()
+
+
+@pytest.fixture
+def appliancevm_client(ssh_tunnel, agent_host):
+    """HTTP client for appliancevm agent."""
+    client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['appliancevm']}")
+    yield client
+    client.close()
+
+
+@pytest.fixture
+def cephbackup_client(ssh_tunnel, agent_host):
+    """HTTP client for ceph backup storage agent."""
+    client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['cephbackup']}")
+    yield client
+    client.close()
+
+
+@pytest.fixture
+def cephprimary_client(ssh_tunnel, agent_host):
+    """HTTP client for ceph primary storage agent."""
+    client = AgentClient(f"http://{agent_host}:{AGENT_PORTS['cephprimary']}")
+    yield client
+    client.close()

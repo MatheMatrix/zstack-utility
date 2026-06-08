@@ -2,7 +2,6 @@
 # encoding=utf-8
 import argparse
 import datetime
-from distutils.version import LooseVersion
 import os
 import re
 from uuid import uuid4
@@ -41,18 +40,18 @@ extra_packages = ""
 update_packages = 'false'
 zstack_lib_dir = "/var/lib/zstack"
 zstack_libvirt_nwfilter_dir = "%s/nwfilter" % zstack_lib_dir
-skipIpv6 = 'false'
+disableIp6Tables = 'false'
 bridgeDisableIptables = 'false'
 isBareMetal2Gateway='false'
 releasever = ''
 unsupported_iproute_list = ["nfs4"]
 unittest_flag = 'false'
-mn_ip = None
-isInstallHostShutdownHook = 'false'
 isEnableKsm = 'none'
 restart_libvirtd = 'false'
 enable_spice_tls = None
 enable_cgroup_device_acl = None
+isRemoteCube = False
+reserved_ports = "49152-49215"
 
 
 # get parameter from shell
@@ -98,11 +97,9 @@ IS_MIPS64EL = host_info.host_arch == 'mips64el'
 IS_LOONGARCH64 = host_info.host_arch == 'loongarch64'
 
 repo_dir = "/opt/zstack-dvd/{}".format(host_info.host_arch)
-if not os.path.isdir(repo_dir):
+if unittest_flag != 'true' and not os.path.isdir(repo_dir):
     error("Missing directory '{}', please try 'zstack-upgrade -a {}_iso'".format(repo_dir, host_info.host_arch))
 
-# check is cube env
-isCube = True if os.path.exists("/usr/local/hyperconverged") else False
 
 
 def update_libvirtd_config(host_post_info):
@@ -114,6 +111,151 @@ def update_libvirtd_config(host_post_info):
     replace_content(libvirtd_conf_file, "regexp='#host_uuid.*' replace='host_uuid=\"%s\"'" % uuid4(), host_post_info)
 
     return file_changed_flag
+
+
+def deploy_libvirt_tls_certs(host_post_info):
+    """Deploy TLS certificates for libvirt on the host.
+
+    Generates a self-signed CA on the management node (if not present),
+    then issues server and client certs for the KVM host and copies them
+    to the standard libvirt PKI paths.
+    """
+    ca_dir = "%s/pki/CA" % zstack_lib_dir
+    libvirt_pki_dir = "%s/pki/libvirt" % zstack_lib_dir
+
+    # Step 1: CA should already exist on the management node (generated and
+    # persisted by Java at MN startup via JsonLabelVO).
+    command = "mkdir -p {ca_dir} {libvirt_pki_dir}".format(ca_dir=ca_dir, libvirt_pki_dir=libvirt_pki_dir)
+    shell_return = os.system(command)
+    if shell_return != 0:
+        error("Failed to create local PKI directories for libvirt TLS")
+
+    if not os.path.isfile("%s/cacert.pem" % ca_dir) or not os.path.isfile("%s/cakey.pem" % ca_dir):
+        handle_ansible_info("Libvirt TLS CA not found at %s, skipping cert deployment" % ca_dir,
+                            host_post_info, "WARNING")
+        return
+
+    host_ip = host_post_info.host
+    cert_tmp_dir = "/tmp/zstack-libvirt-tls-%s" % host_ip.replace('.', '_')
+
+    # Collect all IPs for certificate SAN (management + migration network)
+    # tls_cert_ips is passed from Java as "ip1,ip2,ip3" via argument_dict
+    all_ips = [host_ip]
+    tls_cert_ips_val = globals().get('tls_cert_ips')
+    if tls_cert_ips_val:
+        all_ips = [ip.strip() for ip in tls_cert_ips_val.split(',') if ip.strip()]
+        if host_ip not in all_ips:
+            all_ips.insert(0, host_ip)
+    # deduplicate while preserving order
+    all_ips = list(dict.fromkeys(all_ips))
+    san_entries = ','.join(['IP:%s' % ip for ip in all_ips])
+
+    # Step 2: Check if the host already has a complete and valid cert set.
+    # Both server and client certs are required for TLS migration.
+    required_remote_files = [
+        "/etc/pki/CA/cacert.pem",
+        "/etc/pki/libvirt/servercert.pem",
+        "/etc/pki/libvirt/private/serverkey.pem",
+        "/etc/pki/libvirt/clientcert.pem",
+        "/etc/pki/libvirt/private/clientkey.pem",
+        # QEMU TLS migration data-plane certs
+        "/etc/pki/qemu/ca-cert.pem",
+        "/etc/pki/qemu/client-cert.pem",
+        "/etc/pki/qemu/client-key.pem",
+    ]
+    check_cmd = " && ".join(["test -f %s" % f for f in required_remote_files])
+    (status, _) = run_remote_command(check_cmd, host_post_info, return_status=True, return_output=True)
+    if status == 0:
+        # All files present – verify both server and client certs against
+        # the *management-node* CA so we detect a stale / foreign CA.
+        local_ca_md5 = os.popen("md5sum %s/cacert.pem | awk '{print $1}'" % ca_dir).read().strip()
+        (_, remote_ca_md5) = run_remote_command(
+            "md5sum /etc/pki/CA/cacert.pem | awk '{print $1}'",
+            host_post_info, return_status=True, return_output=True)
+        remote_ca_md5 = remote_ca_md5.strip()
+        if local_ca_md5 == remote_ca_md5:
+            verify_cmd = (
+                "openssl verify -CAfile /etc/pki/CA/cacert.pem /etc/pki/libvirt/servercert.pem 2>&1 | grep -q ': OK' && "
+                "openssl verify -CAfile /etc/pki/CA/cacert.pem /etc/pki/libvirt/clientcert.pem 2>&1 | grep -q ': OK'"
+            )
+            (verify_status, _) = run_remote_command(verify_cmd, host_post_info, return_status=True, return_output=True)
+            if verify_status == 0:
+                # Also check if cert SAN covers all required IPs
+                san_check_cmd = "openssl x509 -in /etc/pki/libvirt/servercert.pem -noout -ext subjectAltName 2>/dev/null"
+                (san_st, san_out) = run_remote_command(san_check_cmd, host_post_info, return_status=True, return_output=True)
+                san_complete = True
+                if san_st == 0 and san_out:
+                    for ip in all_ips:
+                        if 'IP Address:%s' % ip not in san_out:
+                            handle_ansible_info("Cert SAN missing IP %s, re-deploying" % ip, host_post_info, "INFO")
+                            san_complete = False
+                            break
+                if san_complete:
+                    handle_ansible_info("Libvirt TLS certs already valid on host, skipping", host_post_info, "INFO")
+                    return
+        handle_ansible_info("Remote certs incomplete or CA mismatch, re-deploying", host_post_info, "INFO")
+
+    # Step 3: Generate server and client certificates for this host
+    command = (
+        "mkdir -p {tmp} && "
+        "openssl genrsa -out {tmp}/serverkey.pem 4096 && "
+        "openssl req -new -key {tmp}/serverkey.pem "
+        "  -out {tmp}/server.csr -subj '/O=ZStack/CN={ip}' && "
+        "openssl x509 -req -days 3650 -in {tmp}/server.csr "
+        "  -CA {ca_dir}/cacert.pem -CAkey {ca_dir}/cakey.pem "
+        "  -CAcreateserial -out {tmp}/servercert.pem "
+        "  -extfile <(printf 'subjectAltName={san}') && "
+        "openssl genrsa -out {tmp}/clientkey.pem 4096 && "
+        "openssl req -new -key {tmp}/clientkey.pem "
+        "  -out {tmp}/client.csr -subj '/O=ZStack/CN={ip}' && "
+        "openssl x509 -req -days 3650 -in {tmp}/client.csr "
+        "  -CA {ca_dir}/cacert.pem -CAkey {ca_dir}/cakey.pem "
+        "  -CAcreateserial -out {tmp}/clientcert.pem "
+        "  -extfile <(printf 'subjectAltName={san}')"
+    ).format(tmp=cert_tmp_dir, ca_dir=ca_dir, ip=host_ip, san=san_entries)
+    shell_return = os.system("bash -c '%s'" % command.replace("'", "'\\''"))
+    if shell_return != 0:
+        error("Failed to generate TLS certs for host %s, cannot continue without certificates" % host_ip)
+
+    # Step 4: Create directories and copy certs to the remote host
+    # /etc/pki/qemu/ is required by QEMU for TLS migration data-plane
+    # (VIR_MIGRATE_TLS flag). QEMU looks for ca-cert.pem, client-cert.pem,
+    # client-key.pem under /etc/pki/qemu/ by default.
+    command = "mkdir -p /etc/pki/CA /etc/pki/libvirt/private /etc/pki/qemu"
+    run_remote_command(command, host_post_info)
+
+    for src_file, dest_file in [
+        ("%s/cacert.pem" % ca_dir, "/etc/pki/CA/cacert.pem"),
+        ("%s/servercert.pem" % cert_tmp_dir, "/etc/pki/libvirt/servercert.pem"),
+        ("%s/serverkey.pem" % cert_tmp_dir, "/etc/pki/libvirt/private/serverkey.pem"),
+        ("%s/clientcert.pem" % cert_tmp_dir, "/etc/pki/libvirt/clientcert.pem"),
+        ("%s/clientkey.pem" % cert_tmp_dir, "/etc/pki/libvirt/private/clientkey.pem"),
+        # QEMU TLS migration certs (data-plane)
+        ("%s/cacert.pem" % ca_dir, "/etc/pki/qemu/ca-cert.pem"),
+        ("%s/servercert.pem" % cert_tmp_dir, "/etc/pki/qemu/server-cert.pem"),
+        ("%s/serverkey.pem" % cert_tmp_dir, "/etc/pki/qemu/server-key.pem"),
+        ("%s/clientcert.pem" % cert_tmp_dir, "/etc/pki/qemu/client-cert.pem"),
+        ("%s/clientkey.pem" % cert_tmp_dir, "/etc/pki/qemu/client-key.pem"),
+    ]:
+        copy_arg = CopyArg()
+        copy_arg.src = src_file
+        copy_arg.dest = dest_file
+        copy(copy_arg, host_post_info)
+
+    # Step 5: Set proper permissions
+    command = (
+        "chmod 600 /etc/pki/libvirt/private/*.pem && "
+        "chmod 644 /etc/pki/libvirt/*.pem /etc/pki/CA/cacert.pem && "
+        "chmod 600 /etc/pki/qemu/*-key.pem && "
+        "chmod 644 /etc/pki/qemu/ca-cert.pem /etc/pki/qemu/server-cert.pem /etc/pki/qemu/client-cert.pem"
+    )
+    run_remote_command(command, host_post_info)
+
+    # Step 6: Cleanup temp dir
+    command = "rm -rf %s" % cert_tmp_dir
+    os.system(command)
+
+    handle_ansible_info("Deployed TLS certs for libvirt on host %s (SAN: %s)" % (host_ip, san_entries), host_post_info, "INFO")
 
 @with_arch(todo_list=['x86_64'], host_arch=host_info.host_arch)
 def check_nested_kvm(host_post_info):
@@ -200,7 +342,7 @@ run_remote_command("rm -rf {}/*; mkdir -p /usr/local/zstack/ || true".format(kvm
 def install_kvm_pkg():
     def rpm_based_install():
         os_base_dep = "bridge-utils chrony conntrack-tools cyrus-sasl-md5 device-mapper-multipath expect ipmitool iproute ipset \
-                        usbredir-server iputils libvirt libvirt-client libvirt-python lighttpd lsof net-tools nfs-utils nmap openssh-clients \
+                        usbredir-server iputils libvirt libvirt-client lighttpd lsof net-tools nfs-utils nmap openssh-clients \
                         smartmontools sshpass usbutils wget audit collectd-virt storcli nvme-cli pv rsync sed pciutils tar"
 
         distro_mapping = {
@@ -211,23 +353,30 @@ def install_kvm_pkg():
         }
 
         helix_rhel_rpms = ('iscsi-initiator-utils OpenIPMI-modalias mcelog '
-                           'MegaCli Arcconf python-pyudev kernel-devel '
+                           'MegaCli Arcconf kernel-devel '
                            'edac-utils')
+
+        py3_rpms = 'python3.11 python3.11-devel python3.11-pip libffi-devel openssl-devel'
 
         releasever_mapping = {
             'c74': 'qemu-kvm',
-            'c76': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel freeipmi',
-            'c79': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel freeipmi',
+            'c76': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel freeipmi %s' % py3_rpms,
+            'c79': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel freeipmi %s' % py3_rpms,
             'h76c': ('%s qemu-kvm libvirt-admin seabios-bin nping freeipmi '
-                     'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
+                     'elfutils-libelf-devel vconfig OVMF libicu %s') % (helix_rhel_rpms, py3_rpms),
             'h79c': ('%s qemu-kvm libvirt-admin seabios-bin nping freeipmi '
-                     'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
+                     'elfutils-libelf-devel vconfig OVMF libicu %s') % (helix_rhel_rpms, py3_rpms),
             'h84r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm freeipmi '
-                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump') % helix_rhel_rpms,
+                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump %s') % (helix_rhel_rpms, py3_rpms),
+            'uos20r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm freeipmi '
+                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump %s') % (helix_rhel_rpms, py3_rpms),
             'rl84': 'qemu-kvm libvirt-daemon libvirt-daemon-kvm seabios-bin elfutils-libelf-devel lldpd',
             'euler20': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk',
             'oe2203sp1': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk edac-utils lldpd tcpdump',
-            'h2203sp1o': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk edac-utils freeipmi lldpd tcpdump',
+            'oe2403sp1': 'vconfig open-iscsi qemu collectd-disk tcpdump %s' % py3_rpms,
+            'ky10sp3': py3_rpms,
+            'ky10sp3.2403': py3_rpms,
+            'h2203sp1o': 'vconfig open-iscsi OpenIPMI-modalias qemu python2-pyudev collectd-disk edac-utils freeipmi lldpd tcpdump %s' % py3_rpms,
             'nfs4': 'vconfig iscsi-initiator-utils OpenIPMI nettle libselinux-devel iptables iptables-services qemu-kvm python2-pyudev collectd-disk'
         }
 
@@ -235,15 +384,36 @@ def install_kvm_pkg():
             'x86_64': 'edk2-ovmf edk2.git-ovmf-x64',
             'aarch64': 'edk2-aarch64'
         }
+        
+        arch_exclude_mapping = {
+            'loongarch64': 'edac-utils freeipmi lldpd libcbd'
+        }
+
+        arch_release_mapping = {
+            'loongarch64_oe2403sp1': 'edk2-ovmf-loongarch64'
+        }
+
+        cube_distro_mapping = {
+            'x86_64_centos': "lm_sensors",
+            'aarch64_kylin': "lm_sensors edac-utils",
+            'x86_64_kylin': "lm_sensors edac-utils Arcconf",
+        }
+
+        cube_releasever_mapping = {
+            'h84r': "lm_sensors",
+            'uos20r': "lm_sensors"
+        }
 
         # handle zstack_repo
         if zstack_repo != 'false':
             distro_head = host_info.distro.split("_")[0] if releasever in kylin or releasever in uos else host_info.distro
-            common_dep_list = "%s %s %s %s" % (
+            arch_release = "%s_%s" % (host_info.host_arch, releasever)
+            common_dep_list = "%s %s %s %s %s" % (
                 os_base_dep,
                 distro_mapping.get(distro_head, ''),
                 releasever_mapping.get(releasever, ''),
-                edk2_mapping.get(host_info.host_arch, ''))
+                edk2_mapping.get(host_info.host_arch, ''),
+                arch_release_mapping.get(arch_release, ''))
             # common kvmagent deps of x86 and arm that need to update
             common_update_list = ("sanlock sysfsutils hwdata sg3_utils lvm2"
                                   " lvm2-libs lvm2-lockd systemd openssh"
@@ -252,11 +422,9 @@ def install_kvm_pkg():
             # common kvmagent deps of x86 and arm that no need to update
             common_dep_list = "%s %s" % (common_dep_list, common_update_list)
 
-            if isCube:
-                cube_dep_list = " lm_sensors"
-                if releasever not in kylin:
-                    cube_dep_list += " lm_sensors-libs"
-                common_dep_list += cube_dep_list
+            if isRemoteCube:
+                cube_distro_info = host_info.host_arch + "_" + distro_head
+                common_dep_list = "%s %s %s" % (common_dep_list, cube_distro_mapping.get(cube_distro_info, ''), cube_releasever_mapping.get(releasever, ''))
 
             dep_list = common_dep_list
             update_list = common_update_list
@@ -268,19 +436,26 @@ def install_kvm_pkg():
             host_post_info.post_label_param = "libvirt"
             (status, output) = run_remote_command(command, host_post_info, True, True)
             if output:
-            	# libvirt-python installation does not affect the libvirt installation
-            	command = ("yum --disablerepo=* --enablerepo={0} --assumeno install libvirt-python |awk '{{print $1}}' | grep -Ew '^\s*libvirt\s*$'").format(zstack_repo)
-            	host_post_info.post_label = "ansible.shell.install.pkg"
-            	host_post_info.post_label_param = "libvirt-python"
-            	(status, output) = run_remote_command(command, host_post_info, True, True)
-            	if status is True:
-                    dep_list = ' '.join([pkg for pkg in dep_list.split() if not pkg.startswith("libvirt")])
+                # python3-libvirt installation does not affect the libvirt installation
+                command = (
+                    "yum --disablerepo=* --enablerepo={0} --assumeno install python3-libvirt |awk '{{print $1}}' | grep -Ew '^\s*libvirt\s*$'").format(
+                    zstack_repo)
+                host_post_info.post_label = "ansible.shell.install.pkg"
+                host_post_info.post_label_param = "python3-libvirt"
+                (status, output) = run_remote_command(command, host_post_info, True, True)
+                is_libvirt = lambda x: x.startswith("libvirt") and not x.startswith("libvirt-devel")
+                if status is True:
+                    dep_list = ' '.join([pkg for pkg in dep_list.split() if not is_libvirt(pkg)])
                 else:
-                    dep_list = ' '.join([pkg for pkg in dep_list.split() if pkg == 'libvirt-python' or not pkg.startswith("libvirt")])
+                    dep_list = ' '.join([pkg for pkg in dep_list.split() if pkg == 'python3-libvirt' or not is_libvirt(pkg)])
 
             # add extra package
             if extra_packages != '':
                 dep_list = dep_list + " " + extra_packages
+
+            exclude_pkgs = arch_exclude_mapping.get(host_info.host_arch, "")
+            if exclude_pkgs:
+                dep_list = ' '.join([pkg for pkg in dep_list.split() if pkg not in exclude_pkgs.split()])
 
             # skip these packages when connect host
             _skip_list = re.split(r'[|;,\s]\s*', skip_packages)
@@ -304,7 +479,7 @@ def install_kvm_pkg():
                 run_remote_command(command, host_post_info)
         else:
             # name: install kvm related packages on RedHat based OS from online
-            for pkg in ['zstack-release', 'openssh-clients', 'bridge-utils', 'wget', 'chrony', 'sed', 'libvirt-python', 'libvirt', 'nfs-utils', 'vconfig',
+            for pkg in ['zstack-release', 'openssh-clients', 'bridge-utils', 'wget', 'chrony', 'sed', 'libvirt', 'nfs-utils', 'vconfig',
                         'libvirt-client', 'net-tools', 'iscsi-initiator-utils', 'lighttpd', 'iproute', 'sshpass',
                         'libguestfs-winsupport', 'libguestfs-tools', 'pv', 'rsync', 'nmap', 'ipset', 'usbutils', 'pciutils', 'expect',
                         'lvm2', 'lvm2-lockd', 'sanlock', 'sysfsutils', 'smartmontools', 'device-mapper-multipath', 'hwdata', 'sg3_utils']:
@@ -376,10 +551,13 @@ def install_kvm_pkg():
 
         #we should check libvirtd config file status before restart the service
         libvirtd_conf_status = update_libvirtd_config(host_post_info)
+        # deploy TLS certificates unconditionally - the function has built-in
+        # idempotency checks and will skip if certs are already valid
+        deploy_libvirt_tls_certs(host_post_info)
         # in the libvirtd 5.6.0 and later, the libvirtd daemon now prefers to uses systemd socket activation
         command = "libvirtd --version | grep 'libvirtd (libvirt) ' | cut -d ' ' -f 3 | cut -d '(' -f 1"
         (status, libvirtd_version) = run_remote_command(command, host_post_info, False, True)
-        if LooseVersion(libvirtd_version) >= LooseVersion('5.6.0'):
+        if NumericVersion(libvirtd_version) >= NumericVersion('5.6.0'):
             command = 'systemctl mask libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket libvirtd-tls.socket libvirtd-tcp.socket'
             run_remote_command(command, host_post_info)
         if chroot_env == 'false':
@@ -404,7 +582,7 @@ def install_kvm_pkg():
         (status, qemu_img_version) = get_qemu_img_version(host_post_info)
         if qemu_img_version is None or qemu_img_version == '':
             error('cannot get qemu-img version!')
-        if LooseVersion(qemu_img_version) < LooseVersion('2.12.0'):
+        if NumericVersion(qemu_img_version) < NumericVersion('2.12.0'):
             qemu_img_src = '{}/{}'.format(file_root, "qemu-img" if host_info.host_arch == 'x86_64' else "qemu-img_"+host_info.host_arch )
             qemu_img_dst = '{}/{}'.format(kvm_root, 'qemu-img')
             copy_to_remote(qemu_img_src, qemu_img_dst, None, host_post_info)
@@ -416,7 +594,7 @@ def install_kvm_pkg():
 
     def deb_based_install():
         # name: install kvm related packages on Debian based OS
-        install_pkg_list = ['curl', 'qemu', 'qemu-system', 'bridge-utils', 'wget', 'qemu-utils', 'python-libvirt',
+        install_pkg_list = ['curl', 'qemu', 'qemu-system', 'bridge-utils', 'wget', 'qemu-utils', 'python3-libvirt',
                             'libvirt-daemon-system', 'libfdt-dev', 'libvirt-dev', 'libvirt-clients', 'chrony','vlan',
                             'libguestfs-tools', 'sed', 'nfs-common', 'open-iscsi','ebtables', 'pv', 'usbutils',
                             'pciutils', 'expect', 'lighttpd', 'sshpass', 'rsync', 'iputils-arping', 'nmap', 'collectd',
@@ -436,9 +614,11 @@ def install_kvm_pkg():
         host_post_info.post_label = "ansible.shell.enable.module"
         host_post_info.post_label_param = "br_netfilter"
         run_remote_command(command, host_post_info)
-        update_pkg_list = ['ebtables', 'python-libvirt', 'qemu-system-arm']
+        update_pkg_list = ['ebtables', 'python3-libvirt', 'qemu-system-arm']
         apt_update_packages(update_pkg_list, host_post_info)
         libvirtd_conf_status = update_libvirtd_config(host_post_info)
+        # deploy TLS certificates unconditionally - idempotent, skips if valid
+        deploy_libvirt_tls_certs(host_post_info)
         if chroot_env == 'false':
             # name: enable libvirt daemon on RedHat based OS
             service_status("libvirtd", "state=started enabled=yes", host_post_info)
@@ -455,13 +635,17 @@ def install_kvm_pkg():
             "x86_64_c74": "",
         }
 
-        rpm_deprecated_list = rpm_deprecated.get(host_info.host_arch + releasever, "")
+        rpm_deprecated_list = rpm_deprecated.get(host_info.host_arch + "_" + releasever, "")
         # new-add host
         if releasever in ['c76', 'c79', 'h76c', 'h79c', 'c74'] and "qemu-kvm" not in skip_packages:
             rpm_deprecated_list += " qemu-img-ev qemu-kvm-ev qemu-kvm-common-ev"
 
-        for rpm in rpm_deprecated_list.split():
-            yum_remove_package(rpm, host_post_info)
+        rpm_deprecated_list += " lvm2-help"
+        rpm_deprecated_list += " device-mapper-devel device-mapper-event-devel"
+
+        if rpm_deprecated_list.strip():
+            command = "yum --disablerepo=* remove %s -y;" % rpm_deprecated_list
+            run_remote_command(command, host_post_info)
 
     if host_info.distro in RPM_BASED_OS:
         rpm_based_deprecated()
@@ -474,10 +658,14 @@ def install_kvm_pkg():
 def copy_tools():
     """copy binary tools"""
     tool_list = ['collectd_exporter', 'node_exporter', 'ipmi_exporter', 'dnsmasq', 'zwatch-vm-agent', 'zwatch-vm-agent_freebsd_amd64', 'pushgateway', 'sas3ircu', 'zs-raid-heartbeat']
+
     for tool in tool_list:
         arch_lable = '' if host_info.host_arch == 'x86_64' else '_' + host_info.host_arch
         real_name = tool + arch_lable
+        if releasever == "oe2403sp1":
+            real_name = real_name + '_abi2'
         pkg_path = os.path.join(file_root, real_name)
+
         if tool == "dnsmasq":
             pkg_dest_path = "/usr/local/zstack/dnsmasq"
         elif tool == "sas3ircu":
@@ -496,7 +684,7 @@ def copy_kvm_files():
     global qemu_conf_status, copy_zstacklib_status, copy_kvmagent_status, copy_smart_nics_status
 
     # copy agent files
-    file_list = ["vm-tools.sh", "agent_version", "kvmagent-iptables"]
+    file_list = ["vm-tools.sh", "agent_version", "kvmagent-iptables", "shutdown_vm"]
     for file in file_list:
         _src = os.path.join(file_root, file)
         _dst = os.path.join(workplace, file)
@@ -527,6 +715,26 @@ def copy_kvm_files():
             formatted_devices = ',\\n    '.join('\\"%s\\"' % device for device in infiniband_devices)
             add_infiniband_devices_args = "regexp='(cgroup_device_acl\s*=\s*\[[^\]]*?,\s*)' replace='\\1" + formatted_devices + ",\\n    '"
             replace_content(qemu_conf_dst, add_infiniband_devices_args, host_post_info)
+
+        # Add Hygon vfio and mdev devices to cgroup_device_acl (only for Hygon hosts)
+        # Check if /dev/hygon_psp_config exists to determine if this is a Hygon host
+        (is_hygon_host, _) = run_remote_command("test -e /dev/hygon_psp_config", host_post_info, return_status=True, return_output=True)
+        if is_hygon_host is True:
+            # Pre-write a fixed range of /dev/vfio/1 to /dev/vfio/5000 to cover all possible iommu_group numbers
+            # This avoids the chicken-and-egg problem where mdev devices don't exist yet during ansible deploy
+            vfio_devices = ['/dev/vfio/%d' % i for i in range(1, 5001)]
+            vfio_devices.append('/dev/vfio/vfio')
+            vfio_devices.append('/dev/hygon_psp_config')
+            vfio_devices.append('/dev/hct_share')
+
+            # Format devices with 15 per line for better readability
+            lines = []
+            for i in range(0, len(vfio_devices), 15):
+                chunk = vfio_devices[i:i+15]
+                lines.append(', '.join('\\"%s\\"' % d for d in chunk))
+            formatted_devices = ',\\n    '.join(lines)
+            add_vfio_devices_args = "regexp='(cgroup_device_acl\s*=\s*\[[^\]]*?,\s*)' replace='\\1" + formatted_devices + ",\\n    '"
+            replace_content(qemu_conf_dst, add_vfio_devices_args, host_post_info)
 
     # copy zstacklib pkg
     zslib_src = os.path.join("files/zstacklib", pkg_zstacklib)
@@ -559,21 +767,8 @@ def copy_kvm_files():
     command = 'sysctl -p /var/lib/zstack/kvm/sysctl/default.conf'
     run_remote_command(command, host_post_info)
 
-def copy_kvmagshutdown():
-    if isInstallHostShutdownHook == 'true':
-        kvmagshutdown_src = "files/kvm/shutdown_vm"
-        kvmagshutdown_dst = "/etc/init.d/"
-        copy_to_remote(kvmagshutdown_src, kvmagshutdown_dst, "mode=755", host_post_info)
-        run_remote_command("sed -i 's/mn_ip/%s/g; s/host_ip/%s/g' /etc/init.d/shutdown_vm" % (mn_ip, host) +
-                           " && ln -s -f /etc/init.d/shutdown_vm /etc/rc1.d/K01shutdown_vm "
-                           "&& ln -s -f /etc/init.d/shutdown_vm /etc/rc6.d/K01shutdown_vm "
-                           "&& ln -s -f /etc/init.d/shutdown_vm /etc/rc0.d/K01shutdown_vm "
-                           "&& chkconfig shutdown_vm on",
-                           host_post_info)
-    else:
-        run_remote_command("rm -rf /etc/init.d/shutdown_vm && rm -rf /etc/rc1.d/K01shutdown_vm && "
-                           "rm -rf /etc/rc6.d/K01shutdown_vm && rm -rf /etc/rc0.d/K01shutdown_vm", host_post_info)
-
+    command = 'sysctl -w net.ipv4.ip_local_reserved_ports=%s,`cat /proc/sys/net/ipv4/ip_local_reserved_ports`' % reserved_ports
+    run_remote_command(command, host_post_info)
 
 def copy_gpudriver():
     """copy mxgpu driver"""
@@ -591,6 +786,17 @@ def copy_ovmf_tools():
     _dst = "/usr/share/OVMF/"
     copy_to_remote(_src, _dst, None, host_post_info)
 
+
+def copy_exporter_tools():
+    """copy zs-exporter from mn_node to host_node"""
+    file_list = ["process_exporter", "zstack_service_exporter"]
+    for file in file_list:
+        _src = '/opt/zstack-dvd/{}/{}/tools/{}'.format(host_info.host_arch, releasever, file)
+        if os.path.exists(_src):
+            _dst = os.path.join(workplace, file)
+            copy_to_remote(_src, _dst, "mode=755", host_post_info)
+
+
 def copy_lsusb_scripts():
     _src = os.path.join(file_root, "lsusb.py")
     _dst = "/usr/local/bin/"
@@ -607,7 +813,7 @@ def copy_zs_scripts():
 def copy_grubaa64_efi():
     """copy grubaa64.efi from mn_node to bm2 gateway"""
     _src = os.path.join(file_root, "grubaa64.efi")
-    _dst = "/tmp/"
+    _dst = "/var/lib/zstack/baremetalv2/tftpboot/"
     copy_to_remote(_src, _dst, "mode=755", host_post_info)
 
 
@@ -629,11 +835,9 @@ def copy_bond_conf():
 
 def copy_cube_tools():
     """copy cube required tools from mn_node to host_node"""
-    if not isCube:
-        return
     cube_root_dst = "/usr/local/hyperconverged/"
     _src = os.path.join(cube_root_dst, "tools/hd_ctl")
-    if os.path.exists(_src):
+    if isRemoteCube and os.path.exists(_src):
         _dst = os.path.join(cube_root_dst, "tools")
         copy_to_remote(_src, _dst, "mode=755", host_post_info)
         command = "ln -sf /usr/local/hyperconverged/tools/hd_ctl/hd_ctl /bin/"
@@ -670,7 +874,7 @@ def do_network_config():
         host_post_info.post_label_param = "bridge forward"
         run_remote_command(command, host_post_info)
 
-    if skipIpv6 != 'true':
+    if disableIp6Tables != 'true':
         if host_info.distro in RPM_BASED_OS:
             # name: copy ip6tables initial rules in RedHat
             IP6TABLE_SERVICE_FILE = '/usr/lib/systemd/system/ip6tables.service'
@@ -678,6 +882,7 @@ def do_network_config():
             copy_arg.src = "%s/ip6tables" % file_root
             copy_arg.dest = "/etc/sysconfig/ip6tables"
             copy(copy_arg, host_post_info)
+            run_remote_command('mkdir -p /var/lock/subsys/', host_post_info)
             replace_content(IP6TABLE_SERVICE_FILE, "regexp='syslog.target,iptables.service' replace='syslog.target iptables.service'", host_post_info)
             service_status("ip6tables", "state=restarted enabled=yes", host_post_info)
         elif host_info.distro in DEB_BASED_OS:
@@ -740,28 +945,22 @@ def copy_spice_certificates_to_host():
 def install_virtualenv():
     """install virtualenv"""
 
-    virtual_env_status = check_and_install_virtual_env(virtualenv_version, trusted_host, pip_url, host_post_info)
-    if virtual_env_status is False:
-        command = "rm -rf %s && rm -rf %s" % (virtenv_path, kvm_root)
+    py_version = get_virtualenv_python_version(virtenv_path, host_post_info)
+    if py_version and not py_version.startswith("3.11"):
+        command = "rm -rf %s" % virtenv_path
         host_post_info.post_label = "ansible.shell.remove.file"
         host_post_info.post_label_param = "%s, %s" % (virtenv_path, kvm_root)
         run_remote_command(command, host_post_info)
-        sys.exit(1)
-    # name: make sure virtualenv has been setup
-    virtenv_flag = "--system-site-packages"
-    # virtenv_flag = "" if unittest_flag == 'true' else "--system-site-packages"
-    command = "[ -f %s/bin/python ] || virtualenv-2.7 %s %s " % (virtenv_path, virtenv_flag, virtenv_path)
-    host_post_info.post_label = "ansible.shell.check.virtualenv"
-    host_post_info.post_label_param = None
-    run_remote_command(command, host_post_info)
+        py_version = None
 
-def install_python_pkg():
-    extra_args = "\"--trusted-host %s -i %s \"" % (trusted_host, pip_url)
-    pip_install_arg = PipInstallArg()
-    pip_install_arg.extra_args = extra_args
-    pip_install_arg.name = "python-cephlibs"
-    pip_install_arg.virtualenv = virtenv_path
-    pip_install_package(pip_install_arg, host_post_info)
+    if not py_version:
+        # name: make sure virtualenv has been setup
+        virtenv_flag = "--system-site-packages"
+        # virtenv_flag = "" if unittest_flag == 'true' else "--system-site-packages"
+        command = "python3.11 -m venv %s %s " % (virtenv_path, virtenv_flag)
+        host_post_info.post_label = "ansible.shell.check.virtualenv"
+        host_post_info.post_label_param = None
+        run_remote_command(command, host_post_info)
 
 def install_agent_pkg():
     """install zstacklib and kvmagent on host"""
@@ -810,6 +1009,29 @@ def copy_ovs_tools():
 
     command = "tar -xzf %s -C %s/" % (_dst, zs_network_path)
     run_remote_command(command, host_post_info)
+
+
+def copy_juicefs():
+    """copy juicefs binary for Model Center storage mounting (ZSTAC-83157)"""
+    if host_info.host_arch == 'aarch64':
+        juicefs_binary = "juicefs-arm64"
+    else:
+        juicefs_binary = "juicefs-amd64"
+
+    _src = os.path.join(file_root, juicefs_binary)
+    if not os.path.exists(_src):
+        handle_ansible_info("juicefs binary [%s] not found, skip copying" % _src, host_post_info, "WARNING")
+        return
+
+    _dst = "/usr/local/bin/juicefs"
+    copy_to_remote(_src, _dst, "mode=755", host_post_info)
+
+    command = "mkdir -p /var/cache/virtiofs/juicefs"
+    host_post_info.post_label = "ansible.shell.juicefs.cache"
+    host_post_info.post_label_param = None
+    run_remote_command(command, host_post_info)
+
+    handle_ansible_info("Successfully copied juicefs binary to %s" % _dst, host_post_info, "INFO")
 
 
 @on_debian_based(host_info.distro, exclude=['Kylin'])
@@ -915,23 +1137,28 @@ def modprobe_mpci_module():
     run_remote_command(command, host_post_info)
 
 
-@with_arch(todo_list=['aarch64'], host_arch=host_info.host_arch)
 def set_gpu_blacklist():
-    if releasever not in kylin:
-        return
-
     gpu_name_list = "snd_hda_intel nouveau amdgpu"
 
     command = "for gpu_name in %s; \
-        do cat /etc/modprobe.d/${gpu_name}-blacklist.conf | grep \"blacklist ${gpu_name}\" \
-        || echo \"blacklist ${gpu_name}\" >> /etc/modprobe.d/${gpu_name}-blacklist.conf; done" % gpu_name_list
+        do cat /etc/modprobe.d/${gpu_name}-blacklist.conf | grep \"install ${gpu_name} /bin/false\" \
+        || echo \"install ${gpu_name} /bin/false\" >> /etc/modprobe.d/${gpu_name}-blacklist.conf; done" % gpu_name_list
     run_remote_command(command, host_post_info)
 
 
+def check_is_remote_cube():
+    command = "ls /usr/local/hyperconverged"
+    status = run_remote_command(command, host_post_info, return_status=True)
+    global isRemoteCube
+    isRemoteCube = status
+
+
+check_is_remote_cube()
 check_nested_kvm(host_post_info)
 install_kvm_pkg()
 copy_tools()
 copy_kvm_files()
+copy_exporter_tools()
 copy_gpudriver()
 copy_ovmf_tools()
 copy_lsusb_scripts()
@@ -940,15 +1167,14 @@ copy_grubaa64_efi()
 copy_bond_conf()
 copy_i40e_driver()
 copy_cube_tools()
-copy_kvmagshutdown()
 copy_ovs_tools()
+copy_juicefs()
 create_virtio_driver_directory()
 set_max_performance()
 do_libvirt_qemu_config()
 do_network_config()
 copy_spice_certificates_to_host()
 install_virtualenv()
-install_python_pkg()
 set_legacy_iptables_ebtables()
 install_agent_pkg()
 do_auditd_config()

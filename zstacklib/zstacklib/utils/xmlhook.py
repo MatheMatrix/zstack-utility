@@ -69,20 +69,44 @@ class XmlHook:
     def delete_element_from_parent(self, child_xmlbranch, parent_xmlbranch):
         parent_xmlbranch.remove(child_xmlbranch)
 
-    def add_element_to_parent(self, child_xmlbranch, parent_xmlbranch, index = -1):
+    def add_element_to_parent(self, child_xmlbranch, parent_xmlbranch, index=-1):
         if index >= 0:
             parent_xmlbranch.insert(index, child_xmlbranch)
             return
+
         if child_xmlbranch is None:
             return
-        for element in parent_xmlbranch:
-            if element.attrib and element.attrib == child_xmlbranch.attrib:
-                raise Exception(
-                    "attributes: %s exist in the original xml, contact operations engineer to check the xml hooks" % element.attrib)
+
+        child_attrib = child_xmlbranch.attrib
+        if parent_xmlbranch.tag == '{http://libvirt.org/schemas/domain/qemu/1.0}commandline':
+            child_value = child_attrib.get('value')
+
+            for i, element in enumerate(parent_xmlbranch):
+                element_value = element.attrib.get('value')
+                if element_value == child_value:
+                    is_param_name = False
+                    if child_value and child_value.startswith('-'):
+                        if i + 1 < len(parent_xmlbranch):
+                            next_element = parent_xmlbranch[i + 1]
+                            if next_element.attrib.get('value') and not next_element.attrib.get('value').startswith(
+                                    '-'):
+                                is_param_name = True
+
+                    if is_param_name:
+                        continue
+                    raise Exception(
+                        "attributes: %s exist in the original xml, contact operations engineer to check the xml hooks" % child_attrib
+                    )
+        else:
+            for element in parent_xmlbranch:
+                if element.attrib and element.attrib == child_attrib:
+                    raise Exception(
+                        "attributes: %s exist in the original xml, contact operations engineer to check the xml hooks" % child_attrib
+                    )
         parent_xmlbranch.append(child_xmlbranch)
 
     def get_changed_xmlstr(self, root_xmlbranch):
-        changed_xmlstr = tostring(root_xmlbranch)
+        changed_xmlstr = tostring(root_xmlbranch, encoding="unicode")
         pretty_xmldom = minidom.parseString(changed_xmlstr)
         pretty_xmlstr = pretty_xmldom.toprettyxml()
         return os.linesep.join([s for s in pretty_xmlstr.splitlines() if s.strip()])

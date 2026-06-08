@@ -3,13 +3,16 @@ import multiprocessing
 import os
 import platform
 import yaml
+import re
 from oslo_concurrency import processutils
 from oslo_log import log as logging
 from stevedore import driver
+from zstacklib.utils import network_ipv6
 
-from __init__ import __version__
+from .__init__ import __version__
 from bm_instance_agent.common import utils as bm_utils
 from bm_instance_agent.common import gpu
+from bm_instance_agent.common.gpu import VendorEnum
 from bm_instance_agent import exception
 from bm_instance_agent.objects import BmInstanceObj, PortObj
 from bm_instance_agent.objects import NetworkObj
@@ -28,15 +31,6 @@ units_mapping = {
     'mb': 1024 * 1024,
     'gb': 1024 * 1024 * 1024
 }
-
-
-class VendorEnum:
-    INTEL = "Intel"
-    AMD = "AMD"
-    NVIDIA = "NVIDIA"
-    HAIGUANG = "Haiguang"
-    HUAWEI = "Huawei"
-    TIANSHU = "TianShu"
 
 
 class AgentManager(object):
@@ -61,7 +55,7 @@ class AgentManager(object):
                 exist_instance_uuid=BM_INSTANCE_UUID)
 
     def _check_gateway_ip(self, instance_obj):
-        push_gateway_url = "http://%s:9092" % instance_obj.gateway_ip
+        push_gateway_url = self.build_push_gateway_url(instance_obj.gateway_ip)
         with open(ZWATCH_AGENT_CONF_PATH) as f:
             doc = yaml.load(f)
 
@@ -83,6 +77,10 @@ class AgentManager(object):
         cmd = 'service zwatch-vm-agent restart'
         processutils.execute(cmd, shell=True)
 
+    @staticmethod
+    def build_push_gateway_url(gateway_ip):
+        return "http://%s:9092" % network_ipv6.format_url_host(gateway_ip)
+
     def ping(self, bm_instance, iqn_target_ip_map):
         instance_obj = BmInstanceObj.from_json(bm_instance)
 
@@ -93,7 +91,7 @@ class AgentManager(object):
         self.driver.ping(instance_obj)
         self.driver.discovery_target(instance_obj)
         if iqn_target_ip_map:
-            for key, values in iqn_target_ip_map.items():
+            for key, values in list(iqn_target_ip_map.items()):
                 self.driver.discovery_target_through_access_path_gateway_ips(key, values)
         self._check_gateway_ip(instance_obj)
         return {'version': __version__, 'ping': {'bmInstanceUuid': BM_INSTANCE_UUID}}
@@ -258,6 +256,9 @@ class AgentManager(object):
         for net_dev in os.listdir('/sys/class/net'):
             abspath = os.path.join('/sys/class/net', net_dev)
 
+            if not os.path.isdir(abspath):
+                continue
+
             realpath = os.path.realpath(abspath)
             if 'virtual' in realpath or (net_dev == 'lo'):
                 continue
@@ -376,12 +377,20 @@ class AgentManager(object):
             elif any(vendor in description for vendor in gpu_vendors) \
                     and ('3D controller' in gpu_type):
                 gpu_type = "GPU_3D_Controller"
-            elif "Processing accelerators" in gpu_type and 'Device' in device:
+            elif "Processing accelerators" in gpu_type and gpu.is_valid_processing_accelerator(device):
                 gpu_type = "GPU_Processing_Accelerators"
             else:
                 gpu_type = "Generic"
 
-            addonInfo = self._collect_gpu_addoninfo(gpu_type, pci_device_address, vendor_name)
+            addonInfo = self._collect_gpu_addoninfo(gpu_type, pci_device_address.lower(), vendor_name)
+
+            if addonInfo.get("device"):
+                device = addonInfo["device"]
+                del addonInfo["device"]
+
+            if addonInfo.get("name"):
+                name = addonInfo["name"]
+                del addonInfo["name"]
 
             if vendor_id != '' and device_id != '' and gpu_type != 'Generic':
                 gpu_devs.append({
@@ -401,19 +410,21 @@ class AgentManager(object):
         return gpu_devs
 
     def _collect_gpu_addoninfo(self, gpu_type, pci_device_address, vendor_name):
-        addonInfo = {}
         if gpu_type in ['GPU_3D_Controller', 'GPU_Video_Controller', 'GPU_Processing_Accelerators']:
             if vendor_name == VendorEnum.NVIDIA:
-                return self._collect_nvidia_gpu_info(pci_device_address, addonInfo)
+                return self._collect_nvidia_gpu_info(pci_device_address)
             if vendor_name == VendorEnum.AMD:
-                return self._collect_amd_gpu_info(pci_device_address, addonInfo)
+                return self._collect_amd_gpu_info(pci_device_address)
             if vendor_name == VendorEnum.HAIGUANG:
-                return self._collect_hygon_gpu_info(pci_device_address, addonInfo)
+                return self._collect_hygon_gpu_info(pci_device_address)
             if vendor_name == VendorEnum.TIANSHU:
-                return self._collect_tianshu_gpu_info(pci_device_address, addonInfo)
+                return self._collect_tianshu_gpu_info(pci_device_address)
             if vendor_name == VendorEnum.HUAWEI:
-                return self._collect_huawei_gpu_info(pci_device_address, addonInfo)
-        return addonInfo
+                return self._collect_huawei_gpu_info(pci_device_address)
+            if vendor_name == VendorEnum.ENFLAME:
+                return self._collect_enflame_gpu_info(pci_device_address)
+
+        return {}
 
     def _simplify_pci_device_name(self, name):
         if 'Intel Corporation' in name:
@@ -428,20 +439,23 @@ class AgentManager(object):
             return VendorEnum.HUAWEI
         elif '1e3e' in name:
             return VendorEnum.TIANSHU
+        elif 'Enflame' in name:
+            return VendorEnum.ENFLAME
         else:
             return name.replace('Co., Ltd ', '')
 
-    def _update_to_addon_info_from_gpu_infos(self, gpu_infos, pci_device_address, addon_info):
+    def _get_addon_info_from_gpu_infos(self, gpu_infos, pci_device_address):
+        addon_info = {}
         for gpuinfo in gpu_infos:
-            if pci_device_address not in gpuinfo["pciAddress"]:
+            if pci_device_address not in gpuinfo.get("pciAddress"):
                 continue
-            addon_info["memory"] = gpuinfo["memory"]
-            addon_info["power"] = gpuinfo["power"]
-            addon_info["serialNumber"] = gpuinfo["serialNumber"]
+            addon_info["memory"] = gpuinfo.get("memory")
+            addon_info["power"] = gpuinfo.get("power")
+            addon_info["serialNumber"] = gpuinfo.get("serialNumber")
             addon_info["isDriverLoaded"] = True
         return addon_info
 
-    def _collect_nvidia_gpu_info(self, pci_device_address, addon_info):
+    def _collect_nvidia_gpu_info(self, pci_device_address):
         r, o, e = bm_utils.shell_cmd("which nvidia-smi", False)
         if r != 0:
             LOG.warning("no nvidia-smi")
@@ -452,10 +466,10 @@ class AgentManager(object):
             LOG.error("nvidia query gpu is error, %s" % e)
             return
 
-        return self._update_to_addon_info_from_gpu_infos(gpu.parse_nvidia_gpu_output(o),
-                                                         pci_device_address, addon_info)
+        return self._get_addon_info_from_gpu_infos(gpu.parse_nvidia_gpu_output(o),
+                                                   pci_device_address)
 
-    def _collect_amd_gpu_info(self, pci_device_address, addon_info):
+    def _collect_amd_gpu_info(self, pci_device_address):
         r, o, e = bm_utils.shell_cmd("which rocm-smi", False)
         if r != 0:
             LOG.warning("no rocm-smi")
@@ -466,10 +480,10 @@ class AgentManager(object):
             LOG.error("amd query gpu is error, %s" % e)
             return
 
-        return self._update_to_addon_info_from_gpu_infos(gpu.parse_amd_gpu_output(o),
-                                                         pci_device_address, addon_info)
+        return self._get_addon_info_from_gpu_infos(gpu.parse_amd_gpu_output(o),
+                                                   pci_device_address)
 
-    def _collect_hygon_gpu_info(self, pci_device_address, addon_info):
+    def _collect_hygon_gpu_info(self, pci_device_address):
         r, o, e = bm_utils.shell_cmd("which hy-smi", False)
         if r != 0:
             LOG.warning("no hy-smi")
@@ -480,24 +494,29 @@ class AgentManager(object):
             LOG.error("hy query gpu is error, %s" % e)
             return
 
-        return self._update_to_addon_info_from_gpu_infos(gpu.parse_hy_gpu_output(o),
-                                                         pci_device_address, addon_info)
+        return self._get_addon_info_from_gpu_infos(gpu.parse_hy_gpu_output(o),
+                                                   pci_device_address)
 
-    def _collect_tianshu_gpu_info(self, pci_device_address, addon_info):
+    def _collect_tianshu_gpu_info(self, pci_device_address):
         r, o, e = bm_utils.shell_cmd("which ixsmi", False)
         if r != 0:
             LOG.warning("no ixsmi")
             return
 
-        r, o, e = bm_utils.shell_cmd(gpu.get_tianshu_gpu_basic_info_cmd(), False)
+        r, o, e = bm_utils.shell_cmd(gpu.is_tianshu_v1(), False)
+        if r == 0:
+            cmd = gpu.get_tianshu_gpu_basic_info_cmd_v1()
+        else:
+            cmd = gpu.get_tianshu_gpu_basic_info_cmd_v2()
+        r, o, e = bm_utils.shell_cmd(cmd, False)
         if r != 0:
             LOG.error("ixsmi query gpu is error, %s" % e)
             return
 
-        return self._update_to_addon_info_from_gpu_infos(gpu.parse_tianshu_gpu_output(o),
-                                                         pci_device_address, addon_info)
+        return self._get_addon_info_from_gpu_infos(gpu.parse_tianshu_gpu_output(o),
+                                                   pci_device_address)
 
-    def _collect_huawei_gpu_info(self, pci_device_address, addon_info):
+    def _collect_huawei_gpu_info(self, pci_device_address):
         r, o, e = bm_utils.shell_cmd("which npu-smi", False)
         if r != 0:
             LOG.warning("no npu-smi")
@@ -507,14 +526,74 @@ class AgentManager(object):
         if r != 0:
             LOG.error("npu query gpu is error, %s" % npu_ids_out)
             return
-        npu_id = gpu.get_huawei_npu_id(npu_ids_out)
-        if npu_id is None:
+        npu_ids = gpu.get_huawei_npu_id(npu_ids_out)
+        if len(npu_ids) == 0:
             return
 
-        r, o, e = bm_utils.shell_cmd(gpu.get_huawei_gpu_basic_info_cmd(npu_id), False)
+        npu_infos = []
+        for npu_id in npu_ids:
+            r, o, e = bm_utils.shell_cmd(gpu.get_huawei_gpu_basic_info_cmd(npu_id), False)
+            if r != 0:
+                LOG.error("npu query gpu board is error, %s" % e)
+                return
+            npu_infos.extend(gpu.parse_huawei_gpu_output_by_npu_id(o))
+
+        device = None
+        name = None
+        for npu_info in npu_infos:
+            if pci_device_address not in npu_info.get("pciAddress"):
+                continue
+
+            r, o, e = bm_utils.shell_cmd(gpu.get_huawei_gpu_product_name_cmd(npu_ids), False)
+            if r != 0:
+                LOG.error("npu-smi query gpu product type is error, %s " % e)
+                return
+
+            if "not support" in o:
+                LOG.error("current gpu device not support query product")
+                return
+
+            product_type = gpu.get_huawei_product_type(o)
+            if product_type:
+                device = "-"
+                name = product_type
+
+        addon_info = self._get_addon_info_from_gpu_infos(npu_infos, pci_device_address)
+        if device and name:
+            addon_info["device"] = device
+            addon_info["name"] = name
+
+        return addon_info
+
+    def _collect_enflame_gpu_info(self, pci_device_address):
+        r, o, e = bm_utils.shell_cmd("which efsmi", False)
         if r != 0:
-            LOG.error("npu query gpu board is error, %s" % e)
+            LOG.warning("no efsmi, detail: %s " % o)
             return
 
-        return self._update_to_addon_info_from_gpu_infos(gpu.parse_huawei_gpu_output_by_npu_id(o),
-                                                         pci_device_address, addon_info)
+        r, o, e = bm_utils.shell_cmd(gpu.get_enflame_gpu_info_cmd(), False)
+        if r != 0:
+            LOG.error("enflame query gcu is error, %s " % e)
+            return
+
+        addon_info = {}
+        for info in gpu.parse_enflame_gpu_output(o):
+            if pci_device_address not in info.get("pciAddress"):
+                continue
+
+            mem = info.get("memory", "")
+            power = info.get("powerCap", "")
+            serial = info.get("serialNumber", "")
+
+            if mem and re.match(r"^\s*\d+\s*MiB\s*$", mem, re.IGNORECASE):
+                addon_info["memory"] = mem.strip()
+
+            if power and re.match(r"^\s*\d+(\.\d+)?\s*W\s*$", power, re.IGNORECASE):
+                addon_info["power"] = power.strip()
+
+            if serial.strip():
+                addon_info["serialNumber"] = serial
+
+            addon_info["isDriverLoaded"] = True
+            break
+        return addon_info

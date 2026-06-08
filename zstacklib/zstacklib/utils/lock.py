@@ -6,7 +6,7 @@
 import weakref
 import threading
 import functools
-import log
+from . import log
 import os
 import fcntl
 #import typing
@@ -93,9 +93,10 @@ class FileLock(object):
     LOCK_DIR = '/var/lib/zstack/lock/'
 
     def __init__(self, lock_prefix, locker=Lockf()):
+        self.lock_file = None
         def _prepare_lock_file(dname, fname):
             if not os.path.exists(dname):
-                os.makedirs(dname, 0755)
+                os.makedirs(dname, 0o755)
 
             lock_file_path = os.path.join(dname, fname)
             self.lock_file = open(lock_file_path, 'w')
@@ -121,3 +122,23 @@ class FileLock(object):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.unlock()
+
+class NonBlockNamedLock(object):
+    def __init__(self, name):
+        self.name = name
+        self.acquired = False
+        self.lock = None
+
+    def __enter__(self):
+        self.lock = _get_lock(self.name)
+        self.acquired = self.lock.acquire(blocking=False)
+        return self
+
+    def __exit__(self, type, value, traceback):
+        if not self.acquired:
+            return
+        try:
+            self.lock.release()
+        except Exception as e:
+            logger.debug('%s released lock %s error: %s' % (threading.current_thread().name, self.name, str(e)))
+

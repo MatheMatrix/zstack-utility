@@ -1,12 +1,14 @@
 import glob
 import os
 import re
-import urlparse
+import urllib.parse
 
-import linux
-import lock
-import shell
-import device
+from . import log
+logger = log.get_logger(__name__)
+from . import linux
+from . import lock
+from . import shell
+from . import device
 
 
 # only support single ip
@@ -17,7 +19,7 @@ def get_device_path_by_wwn(disk_id):
             continue
         link_path = os.path.join('/dev/disk/by-id/', fname)
         wwid = device.get_device_wwid(os.path.basename(os.readlink(link_path)))
-        if id in wwid:
+        if disk_id in wwid:
             return link_path
 
 
@@ -34,29 +36,55 @@ def get_iscsi_device_serial(disk_path):
     return splits[1].strip()
 
 
+def get_multipath_device(disk_name):
+    sys_block_path = "/sys/block"
+    for dev in linux.listdir(sys_block_path):
+        if not dev.startswith("dm-"):
+            continue
+        slaves_dir = os.path.join(sys_block_path, dev, "slaves")
+        if not os.path.isdir(slaves_dir):
+            continue
+        if disk_name in linux.listdir(slaves_dir):
+            mapper_path = os.path.join("/dev/mapper", dev)
+            if os.path.exists(mapper_path):
+                return os.path.realpath(mapper_path)
+            
+            return os.path.join("/dev", dev)
+
+    return None
+
+
 def get_device_path_by_serial(id):
     cmd = shell.ShellCmd("iscsiadm -m session -P 3 | grep -E 'Attached scsi disk'")
     cmd(False)
     if cmd.return_code != 0:
         return None
-    disk_regex = re.compile(r'Attached scsi disk (\w+)\s+State: running')
 
+    disk_regex = re.compile(r'Attached scsi disk (\w+)\s+State: running')
     for line in cmd.stdout.splitlines():
         matches = disk_regex.search(line)
         if not matches:
             continue
 
-        disk_path = "/dev/%s" % matches.group(1)
-        if get_iscsi_device_serial(disk_path) == id:
+        disk_name = matches.group(1)
+        disk_path = "/dev/%s" % disk_name
+
+        serial = get_iscsi_device_serial(disk_path)
+        if serial == id:
+            multipath_dev = get_multipath_device(disk_name)
+            if multipath_dev:
+                logger.debug("multipath device[%s] found for iscsi device[%s]" % (multipath_dev, disk_path))
+                return multipath_dev
+
             return disk_path
 
-    return ""
+    return None
 
 
 class IscsiLogin(object):
     def __init__(self, url=None):
         if url:
-            u = urlparse.urlparse(url)
+            u = urllib.parse.urlparse(url)
             self.server_hostname = u.hostname
             self.server_port = u.port
             self.target = u.path.split('/')[1]
@@ -168,7 +196,7 @@ def config_iscsi_startup_if_needed():
 # e.g. iscsi://172.27.15.189,172.27.12.27:3260/iqn.2024-01.com.sds.wds:662ba14b7316/6001405042040000b7f0d8a20da2a2c9
 def connect_iscsi_target(url, connect_all=False):
     login = None
-    u = urlparse.urlparse(url)
+    u = urllib.parse.urlparse(url)
     server_hostnames = sorted(u.hostname.split(','))
     errs = []
     for server_hostname in server_hostnames:

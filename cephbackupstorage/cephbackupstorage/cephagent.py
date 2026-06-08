@@ -1,18 +1,19 @@
 __author__ = 'frank'
 
+import codecs
 import os
 import os.path
 import pprint
 import traceback
-import urllib
-import urllib2
-import urlparse
+import urllib.request, urllib.parse, urllib.error
+import urllib.parse
 import tempfile
 import threading
 import rados
 import rbd
 import cherrypy
 import hashlib
+import xxhash
 from cherrypy.lib.static import _serve_fileobj
 from cherrypy._cpreqbody import Entity, Part, SizedReader
 from cherrypy._cprequest import Request
@@ -23,18 +24,33 @@ import zstacklib.utils.http as http
 import zstacklib.utils.jsonobject as jsonobject
 from zstacklib.utils import lock
 from zstacklib.utils import linux
-from zstacklib.utils import thread
 from zstacklib.utils.bash import *
 from zstacklib.utils.ceph import get_mon_addr
+from zstacklib.utils.rangeset import RangeSet
 from zstacklib.utils.report import Report, get_exact_percent
 from zstacklib.utils import shell
 from zstacklib.utils import ceph
 from zstacklib.utils import qemu_img
 from zstacklib.utils import traceable_shell
 from zstacklib.utils.rollback import rollback, rollbackable
+from zstacklib.utils.thread import AsyncThread
 
 logger = log.get_logger(__name__)
 BUFFER_SIZE = 16 * 1024 ** 2
+SFTP_SCP_TO_PIPE_CMD_FORMAT = "scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s:%s %s"
+SFTP_BATCH_CMD_FORMAT = "sftp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=no -P %s -b /dev/stdin %s"
+
+
+def build_sftp_target(username, hostname):
+    return linux.format_ssh_target(username, hostname)
+
+
+def build_sftp_scp_to_pipe_cmd(port, username, hostname, path, pipe_path):
+    return SFTP_SCP_TO_PIPE_CMD_FORMAT % (port, build_sftp_target(username, hostname), path, pipe_path)
+
+
+def build_sftp_batch_cmd(port, username, hostname):
+    return SFTP_BATCH_CMD_FORMAT % (port, build_sftp_target(username, hostname))
 
 
 class CephPoolCapacity(object):
@@ -81,13 +97,13 @@ class CephToCephMigrateImageCmd(AgentCommand):
     def __init__(self):
         super(CephToCephMigrateImageCmd, self).__init__()
         self.imageUuid = None
-        self.imageSize = None  # type:long
+        self.imageSize = None  # type: int
         self.srcInstallPath = None
         self.dstInstallPath = None
         self.dstMonHostname = None
         self.dstMonSshUsername = None
         self.dstMonSshPassword = None
-        self.dstMonSshPort = None  # type:int
+        self.dstMonSshPort = None  # type: int
 
 
 class UploadProgressRsp(AgentResponse):
@@ -166,10 +182,10 @@ class UploadParam(object):
     def __init__(self):
         self.image_uuid = None
         self.image_size = 0
-        self.slice_index = 0
         self.slice_offset = 0
         self.slice_size = 0
-        self.slice_md5 = None
+        self.slice_hash = None
+        self.hash_algorithm = None
 
 
 class UploadTask(object):
@@ -180,16 +196,13 @@ class UploadTask(object):
         self.dstPath = dstPath # without 'ceph://'
         self.tmpPath = tmpPath # where image firstly imported to
         self.expectedSize = 0
-        self.downloadSize = 0
-        self.progress = 0
         self.lastError = None
         self.lastOpTime = linux.get_current_timestamp()
         self.image_format = "raw"
         self.close = None
 
-        self.slice_uploaded = set()
-        self.slice_count = 0
-        self.slice_size = 0
+        self.upload_lock = threading.Lock()
+        self.slice_uploaded = RangeSet()
 
         self.image_created = False
         self.image_completing = False
@@ -204,13 +217,12 @@ class UploadTask(object):
 
     def success(self):
         self.completed = True
-        self.progress = 100
         self.lastOpTime = linux.get_current_timestamp()
         if self.close:
             self.close()
 
     def is_started(self):
-        return self.progress > 0
+        return len(self.slice_uploaded.iv) > 0
 
     def is_running(self):
         return not(self.completed or self.is_started())
@@ -219,14 +231,15 @@ class UploadTask(object):
         self.lastOpTime = linux.get_current_timestamp()
 
     def all_slice_uploaded(self):
-        return 0 < self.slice_count == len(self.slice_uploaded)
+        return self.image_completing
 
     def checked_download_size(self):
-        for i in range(self.slice_count):
-            if i not in self.slice_uploaded:
-                return i * self.slice_size
+        with self.upload_lock:
+            missing = self.slice_uploaded.missing(self.expectedSize, 1)
+            if missing:
+                return missing[0][0]
 
-        return self.expectedSize
+            return self.expectedSize
 
     def create_image_if_not_exists(self, ioctx, image_name):
         # type: (rados.Ioctx, str) -> None
@@ -234,22 +247,17 @@ class UploadTask(object):
         if self.image_created:
             return
 
-        with lock.NamedLock("upload-image-%s" % self.imageUuid):
+        with self.upload_lock:
             if not self.image_created:
                 rbd.RBD().create(ioctx, image_name, self.expectedSize)
                 self.image_created = True
 
-    def allow_image_completing(self):
-        if self.all_slice_uploaded():
-            with lock.NamedLock("upload-image-%s" % self.imageUuid):
-                if not self.image_completing:
-                    self.image_completing = True
-                    return True
-        return False
-
-    def add_download_size(self, delta):
-        with lock.NamedLock("upload-image-%s" % self.imageUuid):
-            self.downloadSize += delta
+    def record_slice_uploaded(self, offset, length):
+        with self.upload_lock:
+            self.slice_uploaded.add(offset, offset + length)
+            # all slice uploaded
+            if self.expectedSize > 0 and self.slice_uploaded.covered(0, self.expectedSize):
+                self.image_completing = True
 
 
 class UploadTasks(object):
@@ -311,8 +319,7 @@ def get_boundary(entity):
         b = b.strip()
         if b == ib:
             break
-
-    return ib
+    return ib.decode('ascii')
 
 
 def get_image_format_from_header(ioctx, image_name):
@@ -322,26 +329,34 @@ def get_image_format_from_header(ioctx, image_name):
     return get_image_format_from_buf(buf)
 
 
-def get_image_format_from_buf(qhdr):
-    if qhdr[:4] == 'QFI\xfb':
-        if qhdr[16:20] == '\x00\x00\x00\00':
+def get_image_format_from_buf(qhdr: bytes) -> str:
+    if qhdr[:4] == b'QFI\xfb':
+        if qhdr[16:20] == b'\x00\x00\x00\00':
             return "qcow2"
         else:
             return "derivedQcow2"
 
-    if qhdr[:5] == 'KDMV\x03':
+    if qhdr[:5] == b'KDMV\x03':
         return 'vmdk'
 
-    if qhdr[0x8001:0x8006] == 'CD001':
+    if qhdr[0x8001:0x8006] == b'CD001':
         return 'iso'
 
-    if qhdr[0x8801:0x8806] == 'CD001':
+    if qhdr[0x8801:0x8806] == b'CD001':
         return 'iso'
 
-    if qhdr[0x9001:0x9006] == 'CD001':
+    if qhdr[0x9001:0x9006] == b'CD001':
         return 'iso'
     return "raw"
 
+
+def get_hasher(algorithm, default="md5"):
+    if algorithm == "xxh3":
+        return xxhash.xxh3_64()
+
+    if algorithm not in hashlib.algorithms_available:
+        algorithm = default
+    return getattr(hashlib, algorithm)()
 
 def stream_body(entity, boundary, param, task, ioctx):
     # type: (Entity, str, UploadParam, UploadTask, rados.Ioctx) -> None
@@ -350,22 +365,24 @@ def stream_body(entity, boundary, param, task, ioctx):
     task.create_image_if_not_exists(ioctx, image_name)
     image_obj = ImageFileObject(rbd.Image(ioctx, image_name))
     image_obj.seek(param.slice_offset)
+    slice_downloaded_size = 0
+    md5 = hashlib.md5()
 
+    slice_downloaded_size = 0
+    hasher = get_hasher(param.hash_algorithm) if param.slice_hash else None
     while True:
         headers = Part.read_headers(entity.fp)
         p = Part(entity.fp, headers, boundary)
         if not p.filename:
             continue
 
-        logger.debug("uploading image %s: %s slice, index: %d, offset: %d, content length: %d" %
-                     (param.image_uuid, p.filename, param.slice_index, param.slice_offset, param.slice_size))
+        logger.debug("uploading image %s: offset: %d, content length: %d" %
+                     (param.image_uuid, param.slice_offset, param.slice_size))
 
-        slice_downloaded_size = 0
         try:
-            reader = SizedReader(p.fp, None, param.slice_offset)
+            reader = SizedReader(p.fp, None, param.slice_size)
             remaining = param.slice_size
             bytes_read = 0
-            md5 = hashlib.md5()
             chunks = []
             chunk_size = 32 * 1024
             while remaining > 0:
@@ -375,13 +392,13 @@ def stream_body(entity, boundary, param, task, ioctx):
                 datalen = len(tmp)
                 task.renew()
                 chunks.append(tmp)
-                md5.update(tmp)
+                if hasher:
+                    hasher.update(tmp)
 
                 remaining -= datalen
                 bytes_read += datalen
                 if bytes_read >= BUFFER_SIZE or remaining <= 0:
                     image_obj.write(b''.join(chunks))
-                    task.add_download_size(bytes_read)
                     slice_downloaded_size += bytes_read
                     chunks = []
                     bytes_read = 0
@@ -390,21 +407,20 @@ def stream_body(entity, boundary, param, task, ioctx):
         break
 
     if param.slice_size != slice_downloaded_size:
-        task.add_download_size(-slice_downloaded_size)
-        raise Exception("incomplete image %s slice index %d, offset %d, completed %d, expected %d" %
-                        (param.image_uuid, param.slice_index, param.slice_offset, slice_downloaded_size, param.slice_size))
+        raise Exception("incomplete image %s slice offset %d, completed %d, expected %d" %
+                        (param.image_uuid, param.slice_offset, slice_downloaded_size, param.slice_size))
 
-    if param.slice_md5 and param.slice_md5 != md5.hexdigest():
-        task.add_download_size(-slice_downloaded_size)
-        raise cherrypy.HTTPError(406, "content md5 not match, expected: %s, actual: %s" % (param.slice_md5, md5.hexdigest()))
+    if param.slice_hash and param.slice_hash != hasher.hexdigest():
+        raise cherrypy.HTTPError(406, "content %s hash not match, expected: %s, actual: %s" % (param.hash_algorithm, param.slice_hash, hasher.hexdigest()))
 
-    task.slice_uploaded.add(param.slice_index)
-    logger.debug("uploaded image %s slice, index: %d offset: %d, content length: %d" %
-                 (param.image_uuid, param.slice_index, param.slice_offset, param.slice_size))
+    task.record_slice_uploaded(param.slice_offset, param.slice_size)
+    logger.debug("uploaded image %s slice offset: %d, content length: %d" %
+                 (param.image_uuid, param.slice_offset, param.slice_size))
 
 
+@AsyncThread
 def complete_upload(task, ioctx):
-    # type: (UploadTask) -> None
+    # type: (UploadTask, rados.Ioctx) -> None
     try:
         file_format = linux.get_img_fmt('rbd:' + task.tmpPath)
     except Exception as e:
@@ -428,8 +444,8 @@ def complete_upload(task, ioctx):
             shell.check_run('%s -f %s -O rbd rbd:%s rbd:%s:conf=%s' % (qemu_img.subcmd('convert'), file_format,
                                                                        task.tmpPath, task.dstPath, conf_path))
         except Exception as e:
-            task.fail('cannot convert %s image %s to rbd' % (file_format, task.imageUuid))
-            logger.warn('convert image %s failed: %s', (task.imageUuid, str(e)))
+            task.fail('cannot convert %s image %s to rbd, error: %s' % (file_format, task.imageUuid, str(e)))
+            logger.warn('convert image %s failed: %s' % (task.imageUuid, str(e)))
             return
         finally:
             shell.run('rbd rm %s' % task.tmpPath)
@@ -564,16 +580,16 @@ class CephAgent(object):
         df = jsonobject.loads(o)
 
         if df.stats.total_bytes__ is not None :
-            total = long(df.stats.total_bytes_)
+            total = int(df.stats.total_bytes_)
         elif df.stats.total_space__ is not None:
-            total = long(df.stats.total_space__) * 1024
+            total = int(df.stats.total_space__) * 1024
         else:
             raise Exception('unknown ceph df output: %s' % o)
 
         if df.stats.total_avail_bytes__ is not None:
-            avail = long(df.stats.total_avail_bytes_)
+            avail = int(df.stats.total_avail_bytes_)
         elif df.stats.total_avail__ is not None:
-            avail = long(df.stats.total_avail_) * 1024
+            avail = int(df.stats.total_avail_) * 1024
         else:
             raise Exception('unknown ceph df output: %s' % o)
 
@@ -614,7 +630,7 @@ class CephAgent(object):
     def _get_file_size(self, path):
         o = shell.call('rbd --format json info %s' % path)
         o = jsonobject.loads(o)
-        return long(o.size_)
+        return int(o.size_)
 
     @replyerror
     def get_image_size(self, req):
@@ -787,6 +803,7 @@ class CephAgent(object):
 
         return jsonobject.dumps(rsp)
 
+    @replyerror
     def connect(self, req):
         rsp = AgentResponse()
         self.reconnect_cluster()
@@ -815,7 +832,7 @@ class CephAgent(object):
         task = self.get_upload_task(upload_param)
         self.upload_slice(req.body, upload_param, task)
 
-        if task.allow_image_completing():
+        if task.image_completing:
             pool, img_name = task.dstPath.split('/')
             ioctx = self.get_ioctx(pool)
             complete_upload(task, ioctx)
@@ -828,7 +845,7 @@ class CephAgent(object):
         def get_long_field(key, default=None):
             v = req_header.get(key, default)
             try:
-                lv = long(v)
+                lv = int(v)
                 if lv < 0:
                     raise ValueError
                 return lv
@@ -841,7 +858,8 @@ class CephAgent(object):
         up.slice_offset = get_long_field('X-SLICE-OFFSET', default=0)
         up.slice_size = get_long_field('X-SLICE-SIZE', default=up.image_size)
         up.slice_index = get_long_field('X-SLICE-INDEX', default=0)
-        up.expected_md5 = req_header.get('X-SLICE-MD5', None)
+        up.slice_hash = req_header.get('X-SLICE-HASH', None)
+        up.hash_algorithm = req_header.get('X-HASH-ALGORITHM', None)
 
         if up.slice_offset >= up.image_size:
             raise Exception('invalid slice offset header: %s, image_size: %d' % (up.slice_offset, up.image_size))
@@ -862,22 +880,10 @@ class CephAgent(object):
 
         task.expectedSize = param.image_size
 
-        if param.slice_index == 0:
-            task.slice_size = param.slice_size
-
+        if param.slice_offset == 0:
             _, avail, _ = self._get_capacity()
             if avail <= task.expectedSize:
                 self._fail_task(task, 'capacity not enough for size: %d' % param.image_size)
-
-        if param.slice_offset + param.slice_size == param.image_size:
-            slice_count = param.slice_index + 1
-        else:
-            slice_count = (param.image_size - 1) / param.slice_size + 1
-
-        if not task.slice_count:
-            task.slice_count = slice_count
-        elif task.slice_count != slice_count:
-            raise Exception("every upload request for image[uuid:%s] should has the same slice size and image size" % param.image_uuid)
 
         return task
 
@@ -893,8 +899,8 @@ class CephAgent(object):
 
         try:
             stream_body(entity, boundary, param, task, ioctx)
-        except cherrypy.HTTPError as e:
-            raise cherrypy.HTTPError(e.status, e._message)
+        except cherrypy.HTTPError:
+            raise
         except Exception as e:
             if str(e).lstrip() != 'timed out':
                 shell.run('rbd rm %s' % task.tmpPath)
@@ -945,7 +951,7 @@ class CephAgent(object):
         rsp.size = task.expectedSize
         rsp.actualSize = task.expectedSize
         rsp.downloadSize = task.checked_download_size()
-        rsp.lastOpTime = long(task.lastOpTime) * 1000
+        rsp.lastOpTime = int(task.lastOpTime) * 1000
         rsp.format = task.image_format
         if task.expectedSize == 0:
             rsp.progress = 0
@@ -953,7 +959,8 @@ class CephAgent(object):
             rsp.size = self._get_file_size(task.dstPath)
             rsp.progress = 100
         else:
-            rsp.progress = task.downloadSize * 90 / task.expectedSize
+            logger.debug("image %s uploaded range : %s" % (cmd.imageUuid, task.slice_uploaded))
+            rsp.progress = len(task.slice_uploaded) * 90 // task.expectedSize
 
         if task.lastError is not None:
             rsp.success = False
@@ -968,7 +975,7 @@ class CephAgent(object):
         def _get_origin_format(path):
             qcow2_length = 0x9007
             if path.startswith('http://') or path.startswith('https://') or path.startswith('ftp://'):
-                resp = urllib2.urlopen(path)
+                resp = urllib.request.urlopen(path)
                 qhdr = resp.read(qcow2_length)
                 resp.close()
             elif path.startswith('sftp://'):
@@ -981,7 +988,7 @@ class CephAgent(object):
                 if os.path.exists(tmp_file):
                     os.remove(tmp_file)
             else:
-                resp = open(path)
+                resp = open(path, 'rb')
                 qhdr = resp.read(qcow2_length)
                 resp.close()
             if len(qhdr) < qcow2_length:
@@ -1004,23 +1011,22 @@ class CephAgent(object):
         def _1():
             shell.check_run('rbd rm %s/%s' % (pool, tmp_image_name))
 
-        def _getRealSize(length):
+        def _getRealSize(length: str) -> int:
             '''length looks like: 10245K'''
             logger.debug(length)
+            length = length.strip()
             if not length[-1].isalpha():
-                return length
+                return int(length)
             units = {
                 "g": lambda x: x * 1024 * 1024 * 1024,
                 "m": lambda x: x * 1024 * 1024,
                 "k": lambda x: x * 1024,
             }
             try:
-                if not length[-1].isalpha():
-                    return length
                 return units[length[-1].lower()](int(length[:-1]))
             except:
                 logger.warn(linux.get_exception_stacktrace())
-                return length
+                return 0
 
         # whether we have an upload request
         if cmd.url.startswith(self.UPLOAD_PROTO):
@@ -1038,9 +1044,9 @@ class CephAgent(object):
         report.resourceUuid = cmd.imageUuid
         report.progress_report("0", "start")
 
-        cmd.url = urllib.quote(cmd.url.encode('utf-8'), safe=':/?=')
+        cmd.url = urllib.parse.quote(cmd.url, safe=':/?=')
 
-        url = urlparse.urlparse(cmd.url)
+        url = urllib.parse.urlparse(cmd.url)
         if url.scheme in ('http', 'https', 'ftp'):
             image_format = get_origin_format(cmd.url, True)
             cmd.url = linux.shellquote(cmd.url)
@@ -1066,9 +1072,9 @@ class CephAgent(object):
 
             logger.debug("content-length is: %s" % total)
 
-            _, _, err = shell.bash_progress_1('set -o pipefail;wget --no-check-certificate -O - %s 2>%s| rbd import '
+            _, _, err = shell.bash_progress_1('wget --no-check-certificate -O - %s 2>%s| rbd import '
                                               '--image-format 2 - %s/%s ' % (cmd.url, PFILE, pool, tmp_image_name)
-                                              , _getProgress)
+                                              , _getProgress, pipe_fail=True)
             if err:
                 raise err
             actual_size = linux.get_file_size_by_http_head(cmd.url)
@@ -1081,8 +1087,8 @@ class CephAgent(object):
             PFILE = linux.create_temp_file()
             ssh_pswd_file = None
             pipe_path = PFILE + "fifo"
-            scp_to_pipe_cmd = "scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s@%s:%s %s" % (port, url.username, url.hostname, url.path, pipe_path)
-            sftp_command = "sftp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=no -P %s -b /dev/stdin %s@%s" % (port, url.username, url.hostname) + " <<EOF\n%s\nEOF\n"
+            scp_to_pipe_cmd = build_sftp_scp_to_pipe_cmd(port, url.username, url.hostname, url.path, pipe_path)
+            sftp_command = build_sftp_batch_cmd(port, url.username, url.hostname) + " <<EOF\n%s\nEOF\n"
             if url.password is not None:
                 ssh_pswd_file = linux.write_to_temp_file(url.password)
                 scp_to_pipe_cmd = 'sshpass -f %s %s' % (ssh_pswd_file, scp_to_pipe_cmd)
@@ -1101,13 +1107,14 @@ class CephAgent(object):
                 last = linux.tail_1(PFILE).strip()
                 if not last or not last.isdigit():
                     return synced
-                report.progress_report(int(last)*90/100, "report")
+                report.progress_report(int(last)*90//100, "report")
                 return synced
 
             get_content_from_pipe_cmd = "pv -s %s -n %s 2>%s" % (actual_size, pipe_path, PFILE)
             import_from_pipe_cmd = "rbd import --image-format 2 - %s/%s" % (pool, tmp_image_name)
-            _, _, err = shell.bash_progress_1('set -o pipefail; %s & %s | %s' %
-                                        (scp_to_pipe_cmd, get_content_from_pipe_cmd, import_from_pipe_cmd), _get_progress)
+            _, _, err = shell.bash_progress_1('%s & %s | %s' %
+                                        (scp_to_pipe_cmd, get_content_from_pipe_cmd, import_from_pipe_cmd),
+                                              _get_progress, pipe_fail=True)
 
             if ssh_pswd_file:
                 linux.rm_file_force(ssh_pswd_file)
@@ -1176,7 +1183,7 @@ class CephAgent(object):
         o = shell.call('rbd --format json info %s/%s' % (pool, image_name))
         image_stats = jsonobject.loads(o)
 
-        rsp.size = long(image_stats.size_)
+        rsp.size = int(image_stats.size_)
         rsp.actualSize = actual_size
         if image_format in ['qcow2', 'vmdk']:
             rsp.format = "raw"
@@ -1193,14 +1200,16 @@ class CephAgent(object):
         pool_name = kwargs['pool']
         image_name = get_image_name(kwargs['image'])
 
-        if isinstance(pool_name, unicode):
-            pool_name = pool_name.encode('unicode-escape').decode('string_escape')
-        if isinstance(image_name, unicode):
-            image_name = image_name.encode('unicode-escape').decode('string_escape')
+        if isinstance(pool_name, str):
+            pool_name = codecs.decode(pool_name.encode('unicode_escape'), 'unicode_escape')
+        if isinstance(image_name, str):
+            image_name = codecs.decode(image_name.encode('unicode_escape'), 'unicode_escape')
 
         ioctx = self.get_ioctx(pool_name)
         try:
             token = ioctx.read(image_name + "-export")
+            if isinstance(token, bytes):
+                token = token.decode()
             if 'token' not in kwargs or token != kwargs['token']:
                 rsp.status = 403
                 return "Forbidden"

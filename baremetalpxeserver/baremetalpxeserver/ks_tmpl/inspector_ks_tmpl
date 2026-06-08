@@ -1,6 +1,6 @@
 # Use network installation
-url --url=ftp://PXESERVER_DHCP_NIC_IP/zstack-dvd/ARCH
-repo --name=qemu-kvm-ev --baseurl=ftp://PXESERVER_DHCP_NIC_IP/zstack-dvd/Extra/qemu-kvm-ev
+url --url=ftp://PXESERVER_DHCP_NIC_URL_HOST/zstack-dvd/ARCH
+repo --name=qemu-kvm-ev --baseurl=ftp://PXESERVER_DHCP_NIC_URL_HOST/zstack-dvd/Extra/qemu-kvm-ev
 
 # Text mode
 text
@@ -10,6 +10,7 @@ text
 if [ ! -f /usr/bin/python ];then
    [ -f /usr/bin/python2 ] && ln -s /usr/bin/python2 /usr/bin/python
    [ -f /usr/bin/python3 ] && ln -s /usr/bin/python3 /usr/bin/python
+   [ -f /usr/libexec/platform-python ] && ln -s /usr/libexec/platform-python /usr/bin/python
 fi
 %end
 
@@ -91,7 +92,7 @@ if not status:
 if basic_json.endswith(','):
     basic_json = basic_json[:-1]
 basic_json += '}"}'
-cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/baremetal/chassis/sendhardwareinfo" -d \'%s\' --retry 5 http://PXESERVER_DHCP_NIC_IP:7771/zstack/asyncrest/sendcommand' % basic_json
+cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/baremetal/chassis/sendhardwareinfo" -d \'%s\' --retry 5 http://PXESERVER_DHCP_NIC_URL_HOST:7771/zstack/asyncrest/sendcommand' % basic_json
 shell_cmd(cmd)
 
 # nic
@@ -101,7 +102,10 @@ with open('/proc/cmdline', 'r') as f:
     for param in f.read().strip().split():
         if 'BOOTIF' in param:
             pxe_iface_mac = param.split('=')[-1].replace('-', ':')
-cmd = r'''ip -family inet -oneline link show scope global | awk '{ printf "%s %s\n", $2, $(NF-2) }' | egrep -v "^lo:"'''
+cmd = r'''ip -family inet -oneline link show scope global | awk '{
+    match($0, /([0-9a-f]{2}:){5}[0-9a-f]{2}/, mac);
+    print $2 " " mac[0];
+}' | egrep -v "^lo:"'''
 status, output, _ = shell_cmd(cmd)
 if not status:
     for line in output.split('\n'):
@@ -120,7 +124,7 @@ if not status:
         nic_json += '{\\"devname\\":\\"%s\\", \\"mac\\":\\"%s\\", \\"speed\\":\\"%s\\", \\"pxe\\":\\"%s\\", \\"ip\\":\\"%s\\"},' % (devname, mac, speed, pxe, ip)
     nic_json = nic_json[:-1]
 nic_json += ']"}'
-cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/baremetal/chassis/sendhardwareinfo" -d \'%s\' --retry 5 http://PXESERVER_DHCP_NIC_IP:7771/zstack/asyncrest/sendcommand' % nic_json
+cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/baremetal/chassis/sendhardwareinfo" -d \'%s\' --retry 5 http://PXESERVER_DHCP_NIC_URL_HOST:7771/zstack/asyncrest/sendcommand' % nic_json
 shell_cmd(cmd)
 
 # disk
@@ -133,12 +137,12 @@ if not status and output != '':
         disk_json += '{\\"name\\":\\"%s\\", \\"size\\":\\"%s\\"},' % (name, size)
     disk_json = disk_json[:-1]
 disk_json += ']"}'
-cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/baremetal/chassis/sendhardwareinfo" -d \'%s\' --retry 5 http://PXESERVER_DHCP_NIC_IP:7771/zstack/asyncrest/sendcommand' % disk_json
+cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/baremetal/chassis/sendhardwareinfo" -d \'%s\' --retry 5 http://PXESERVER_DHCP_NIC_URL_HOST:7771/zstack/asyncrest/sendcommand' % disk_json
 shell_cmd(cmd)
 
 # pxeserver
 pxe_json = '{"ipmiAddress":"%s", "ipmiPort":%d, "type":"pxeserver", "content":"PXESERVERUUID"}' %  (ipmiAddress, ipmiPort)
-cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/baremetal/chassis/sendhardwareinfo" -d \'%s\' --retry 5 http://PXESERVER_DHCP_NIC_IP:7771/zstack/asyncrest/sendcommand' % pxe_json
+cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/baremetal/chassis/sendhardwareinfo" -d \'%s\' --retry 5 http://PXESERVER_DHCP_NIC_URL_HOST:7771/zstack/asyncrest/sendcommand' % pxe_json
 shell_cmd(cmd)
 
 # poweroff after sending hardware info back to management node

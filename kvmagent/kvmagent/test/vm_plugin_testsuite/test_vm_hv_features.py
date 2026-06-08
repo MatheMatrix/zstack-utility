@@ -2,7 +2,7 @@ from kvmagent.plugins import vm_plugin
 from kvmagent.test.utils import vm_utils, network_utils, pytest_utils
 from kvmagent.test.utils.stub import *
 from unittest import TestCase
-from distutils.version import LooseVersion
+from kvmagent.plugins.vm_plugin import NumericVersion
 
 import platform
 
@@ -25,7 +25,7 @@ class TestVmMaxVcpu(TestCase, vm_utils.VmPluginTestStub):
     def test_hv_synic_enabled_with_kernel_newer_than_3_10_0(self):
         hv_features = ["synic", "vpindex", "stimer"]
 
-        vm_plugin.KERNEL_VERSION = "kernel-4.18.0-348.23.1.2.g50e329d.el7.x86_64"
+        vm_plugin.KERNEL_VERSION = "4.18.0-348.23.1.2.g50e329d.el7.x86_64"
         vm = vm_utils.create_startvm_body_jsonobject()
         vm.emulateHyperV = True
         vm.hypervClock = True
@@ -76,7 +76,7 @@ class TestVmMaxVcpu(TestCase, vm_utils.VmPluginTestStub):
             r, o = bash.bash_ro(
                 "virsh dumpxml %s | grep %s" % (vm.vmInstanceUuid, feature))
             
-            if LooseVersion(vm_plugin.KERNEL_VERSION) > LooseVersion("3.10.0"):
+            if NumericVersion(vm_plugin.KERNEL_VERSION) > NumericVersion("3.10.0"):
                 self.assertTrue(r == 0, "missing feature %s from xml" % feature)
             else:
                 self.assertTrue(r == 1, "unexpected feature %s from xml %s" % (feature, o))

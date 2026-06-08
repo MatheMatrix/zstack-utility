@@ -3,13 +3,11 @@
 @author: frank
 '''
 import os
-import inspect
-import types
 import time
 from zstacklib.utils import jsonobject
 from zstacklib.utils import log
 from zstacklib.utils import http
-import inventory
+from . import inventory
 
 logger = log.get_logger(__name__)
 
@@ -43,25 +41,114 @@ class Api(object):
         self.api_result_url = http.build_url(('http', host, port, result_path))
         self.curl = curl
 
-    def _get_response(self, ret_uuid):
+    def _get_async_result_url(self, ret_uuid):
         url = '%s%s' % (self.api_result_url, ret_uuid)
+        return url
+
+    def _get_response(self, ret_uuid):
+        url = self._get_async_result_url(ret_uuid)
         jstr = http.json_dump_get(url, print_curl=self.curl)
         rsp = jsonobject.loads(jstr)
         return rsp
 
-    def _error_code_to_string(self, error):
+    # Constants for error formatting
+    _MAX_INDENT_LEVEL = 4
+    _INDENT_SPACES = "  "
+    _CIRCULAR_REF_MSG = '[circular reference detected]'
+    _MAX_DEPTH_MSG_PREFIX = '[error details too deep'
+
+    def _error_code_to_string(self, error, visited=None, max_depth=10, _depth=0):
+        """Convert error object to formatted string with cause chain support.
+
+        Args:
+            error: Error object to format
+            visited: Set of visited error IDs (for circular reference detection)
+            max_depth: Maximum recursion depth (default: 10)
+            _depth: Current recursion depth (internal use only)
+
+        Returns:
+            Formatted error string with cause chain, or empty string if error is None
+
+        Examples:
+            Simple error:
+                [code: ERR001, description: Test error, details: Some details]
+
+            Error with cause chain:
+                [code: ERR001, description: Top error, details: Details]
+                  caused by: [code: ERR002, description: Root cause, details: Root details]
+        """
+        if visited is None:
+            visited = set()
+
         if error is None:
             return ''
 
-        if error.elaboration is not None:
-            return "[code: %s, description: %s, details: %s, elaboration: \n%s" % \
-                   (error.code, error.description, error.details, error.elaboration)
-        else:
-            return "[code: %s, description: %s, details: %s]" % \
-                   (error.code, error.description, error.details)
+        # Check depth limit based on recursion level, not visited count
+        if _depth >= max_depth:
+            return '{0} - max depth {1} reached]'.format(self._MAX_DEPTH_MSG_PREFIX, max_depth)
+
+        error_id = id(error)
+        # Check for circular reference
+        if error_id in visited:
+            return self._CIRCULAR_REF_MSG
+
+        visited.add(error_id)
+
+        # Safely get error attributes with defaults
+        code = getattr(error, 'code', 'UNKNOWN')
+        description = getattr(error, 'description', 'No description')
+        details = getattr(error, 'details', 'No details')
+        elaboration = getattr(error, 'elaboration', None)
+
+        # Build error message parts efficiently
+        msg_parts = []
+
+        # Use safer string formatting to handle special characters
+        try:
+            msg_parts.append("[code: {0}, description: {1}, details: {2}".format(code, description, details))
+        except (TypeError, ValueError):
+            # Fallback if format fails
+            msg_parts.append("[code: <format error>, description: <format error>, details: <format error>]")
+
+        # Safely handle elaboration with proper error handling
+        if elaboration is not None:
+            try:
+                elaboration_str = str(elaboration).strip()
+                if elaboration_str:
+                    msg_parts.append(", elaboration: \n{0}".format(elaboration_str))
+            except Exception as e:
+                # If str() fails, skip elaboration rather than crashing
+                logger.warn("Failed to convert elaboration to string: %s", e)
+
+        msg_parts.append("]")
+
+        # Handle cause chain with limited indentation (max 4 levels = 8 spaces)
+        if hasattr(error, 'cause') and error.cause is not None:
+            indent = self._INDENT_SPACES * min(_depth + 1, self._MAX_INDENT_LEVEL)
+            try:
+                cause_str = self._error_code_to_string(error.cause, visited, max_depth, _depth + 1)
+                # Only append if we got meaningful content
+                if cause_str:
+                    # Check if it's a special message (circular reference or max depth)
+                    is_special_msg = (cause_str == self._CIRCULAR_REF_MSG or
+                                     cause_str.startswith(self._MAX_DEPTH_MSG_PREFIX))
+                    if not is_special_msg:
+                        msg_parts.append("\n{0}caused by: {1}".format(indent, cause_str))
+                    else:
+                        # For special messages, show them without "caused by:" prefix
+                        msg_parts.append("\n{0}{1}".format(indent, cause_str))
+            except Exception as e:
+                # Catch any unexpected errors in recursive call to prevent cascading failures
+                try:
+                    error_msg = str(e)
+                except:
+                    error_msg = repr(e) if hasattr(e, '__repr__') else 'unknown error'
+                msg_parts.append("\n{0}[error processing cause: {1}]".format(indent, error_msg))
+
+        return ''.join(msg_parts)
 
     def _check_not_none_field(self, apicmd):
-        for k, v in apicmd.__dict__.items():
+        for k, v in list(apicmd.__dict__.items()):
             if isinstance(v, inventory.NotNoneField):
                 err = 'field[%s] of %s cannot be None' % (k, apicmd.FULL_NAME)
                 raise ApiError(err)
@@ -141,7 +228,7 @@ class Api(object):
         if rsp.state == 'Done':
             logger.debug("async call[url: %s, response: %s]" % (self.api_url, mask_result(apievent, rsp.result)))
             reply = jsonobject.loads(rsp.result)
-            (name, event) = (reply.__dict__.items()[0])
+            (name, event) = (list(reply.__dict__.items())[0])
             if exception_on_error and not event.success:
                 raise ApiError('API call[%s] failed because %s' % (name, self._error_code_to_string(event.error)))
             return name, event
@@ -155,11 +242,12 @@ class Api(object):
             curr += interval
 
         if curr >= timeout:
-            raise ApiError('API call[%s] timeout after %dms' % (apicmd.FULL_NAME, curr))
+            raise ApiError('API call[%s] timeout after %dms, state[%s]. Request result url for details: %s' % (
+                apicmd.FULL_NAME, timeout, rsp.state, self._get_async_result_url(ret_uuid)))
 
         logger.debug("async call[url: %s, response: %s] after %dms" % (self.api_url, mask_result(apievent, rsp.result), curr))
         reply = jsonobject.loads(rsp.result)
-        (name, event) = (reply.__dict__.items()[0])
+        (name, event) = (list(reply.__dict__.items())[0])
         if exception_on_error and not event.success:
             raise ApiError('API call[%s] failed because %s' % (name, self._error_code_to_string(event.error)))
         return name, event
@@ -172,53 +260,64 @@ class Api(object):
         logger.debug("sync_call[url: %s, response: %s]" % (self.api_url, jstr))
         rsp = jsonobject.loads(jstr)
         reply = jsonobject.loads(rsp.result)
-        (name, r) = reply.__dict__.items()[0]
+        (name, r) = list(reply.__dict__.items())[0]
         if exception_on_error:
             if not r.success:
                 raise ApiError('API call[%s] failed because %s' % (name, self._error_code_to_string(r.error)))
         return name, r
 
 
-def error_code_to_string(self, error):
-    return "[code: %s, description: %s, details: %s]" % (error.code, error.description, error.details)
+def error_code_to_string(error):
+    """Module-level helper function for error formatting.
+
+    Note: This provides basic error formatting without cause chain handling.
+    For full error chain formatting, use Api._error_code_to_string() instead.
+    """
+    if error is None:
+        return ''
+
+    code = getattr(error, 'code', 'UNKNOWN')
+    description = getattr(error, 'description', 'No description')
+    details = getattr(error, 'details', 'No details')
+    return "[code: %s, description: %s, details: %s]" % (code, description, details)
 
 
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def async_call(apicmd, session_uuid):
     api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+              port=int(os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT')))
     api.set_session_to_api_message(apicmd, session_uuid)
     (name, event) = api.async_call_wait_for_complete(apicmd)
     if not event.success:
         raise ApiError(
             "Async call: [%s] meets error: %s." % (apicmd.__class__.__name__, error_code_to_string(event.error)))
-    print("[Async call]: [%s] Success" % apicmd.__class__.__name__)
+    print(("[Async call]: [%s] Success" % apicmd.__class__.__name__))
     return event
 
 
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def sync_call(apicmd, session_uuid):
     api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+              port=int(os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT')))
     if session_uuid:
         api.set_session_to_api_message(apicmd, session_uuid)
     (name, reply) = api.sync_call(apicmd)
     if not reply.success:
         raise ApiError(
             "Sync call: [%s] meets error: %s." % (apicmd.__class__.__name__, error_code_to_string(reply.error)))
-    print("[Sync call]: [%s] Success" % apicmd.__class__.__name__)
+    print(("[Sync call]: [%s] Success" % apicmd.__class__.__name__))
     return reply
 
 
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def login_as_admin():
     api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+              port=int(os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT')))
     return api.login_as_admin()
 
 
 # ZSTACK_BUILT_IN_HTTP_SERVER_IP should be set as environment variable.
 def logout(session_uuid):
     api = Api(host=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_IP'),
-              port=os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT'))
+              port=int(os.environ.get('ZSTACK_BUILT_IN_HTTP_SERVER_PORT')))
     api.log_out(session_uuid)

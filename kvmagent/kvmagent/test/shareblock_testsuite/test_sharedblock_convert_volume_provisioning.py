@@ -37,7 +37,7 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
         self.assertEqual(rsp.success, True, "iscsiadm login failed")
 
         # test connect shareblock
-        r, o = bash.bash_ro("ls /dev/disk/by-id | grep scsi|awk -F '-' '{print $2}'")
+        r, o = bash.bash_ro("ls /dev/disk/by-id | grep scsi-3 | awk -F '-' '{print $2}'")
         blockUuid = o.strip().replace(' ', '').replace('\n', '').replace('\r', '')
 
         rsp = self.connect([blockUuid], [blockUuid], vgUuid, hostUuid, hostId, forceWipe=True)
@@ -53,12 +53,12 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
         )
         self.assertEqual(True, rsp.success, rsp.error)
 
-        old_size = long(lvm.get_lv_size("/dev/%s/%s" % (vgUuid, volume_uuid)))
+        old_size = int(lvm.get_lv_size("/dev/%s/%s" % (vgUuid, volume_uuid)))
         rsp = sharedblock_utils.sharedblock_convert_volume_provisioning(vgUuid, hostUuid, volumeUuid=volume_uuid,
                                                                         installPath="sharedblock://{}/{}".format(vgUuid, volume_uuid),
                                                                         provisioningStrategy='ThinProvisioning',
                                                                         addons={"thinProvisioningInitializeSize":1048576*1024*5})
 
         self.assertEqual(True, rsp.success, rsp.error)
-        new_size = long(lvm.get_lv_size("/dev/%s/%s" % (vgUuid, volume_uuid)))
+        new_size = int(lvm.get_lv_size("/dev/%s/%s" % (vgUuid, volume_uuid)))
         self.assertLess(new_size, old_size)

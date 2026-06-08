@@ -2,7 +2,6 @@
 # encoding: utf-8
 import argparse
 import datetime
-from distutils.version import LooseVersion
 import os.path
 import re
 
@@ -76,6 +75,9 @@ IS_LOONGARCH64 = host_info.host_arch == 'loongarch64'
 if host_info.host_arch == 'x86_64':
     src_pkg_imagestorebackupstorage = "zstack-store.bin"
     src_pkg_exporter = "collectd_exporter"
+elif releasever == "oe2403sp1":
+    src_pkg_imagestorebackupstorage = "zstack-store.{}.abi2.bin".format(host_info.host_arch)
+    src_pkg_exporter = "collectd_exporter_{}_abi2".format(host_info.host_arch)
 else:
     src_pkg_imagestorebackupstorage = "zstack-store.{}.bin".format(host_info.host_arch)
     src_pkg_exporter = "collectd_exporter_{}".format(host_info.host_arch)
@@ -109,6 +111,7 @@ if host_info.distro in RPM_BASED_OS:
 
     releasever_mapping = {
         'h84r': ' collectd-disk pyparted iscsi-initiator-utils',
+        'uos20r': ' collectd-disk pyparted iscsi-initiator-utils',
         'h2203sp1o': ' collectd-disk iscsi-initiator-utils python2-pyparted',
     }
 
@@ -217,7 +220,7 @@ def load_nbd():
     status = run_remote_command(command, host_post_info, True, False)
     if status is False:
         return "nbd kernel module not found!"
-    if LooseVersion(host_info.kernel_version) > LooseVersion('4.0.0'):
+    if NumericVersion(host_info.kernel_version) > NumericVersion('4.0.0'):
         command = "/sbin/modprobe nbd nbds_max=32 max_part=16"
     else:
         command = "/sbin/modprobe nbd nbds_max=128 max_part=16"

@@ -1,5 +1,44 @@
+import io
+
 import simplejson
+
 import types
+import sys
+
+# Python 2/3 type compatibility shims
+_PY3 = sys.version_info[0] >= 3
+
+if _PY3:
+    _dict_types = (dict,)
+    _list_types = (list,)
+    _str_types = (str, bytes)
+    _int_types = (int,)
+    _float_types = (float,)
+    _bool_types = (bool,)
+    _primitive_types = (bool, int, float, str, bytes)
+    _unsupported_types = (
+        complex, tuple, types.FunctionType, types.LambdaType,
+        types.GeneratorType, types.MethodType, types.BuiltinFunctionType,
+        types.BuiltinMethodType, types.TracebackType, types.FrameType,
+        types.GetSetDescriptorType, types.MemberDescriptorType,
+    )
+else:
+    _dict_types = (types.DictType, types.DictionaryType)
+    _list_types = (types.ListType,)
+    _str_types = (types.StringType, types.UnicodeType)
+    _int_types = (types.IntType, types.LongType)
+    _float_types = (types.FloatType,)
+    _bool_types = (types.BooleanType,)
+    _primitive_types = (types.BooleanType, types.LongType, types.IntType,
+                        types.FloatType, types.StringType, types.UnicodeType)
+    _unsupported_types = (
+        types.ComplexType, types.TupleType, types.FunctionType, types.LambdaType,
+        types.GeneratorType, types.MethodType, types.UnboundMethodType,
+        types.BuiltinFunctionType, types.BuiltinMethodType, types.FileType,
+        types.XRangeType, types.TracebackType, types.FrameType, types.DictProxyType,
+        types.NotImplementedType, types.GetSetDescriptorType,
+        types.MemberDescriptorType,
+    )
 
 
 class NoneSupportedTypeError(Exception):
@@ -82,10 +121,10 @@ def _parse_list(lst):
 
         if _is_primitive_types(l):
             vals.append(l)
-        elif isinstance(l, types.DictType):
+        elif isinstance(l, dict):
             dobj = _parse_dict(l)
             vals.append(dobj)
-        elif isinstance(l, types.ListType):
+        elif isinstance(l, list):
             lobj = _parse_list(l)
             vals.append(lobj)
         else:
@@ -95,17 +134,17 @@ def _parse_list(lst):
 
 def _parse_dict(d):
     dobj = JsonObject()
-    for key in d.keys():
+    for key in list(d.keys()):
         val = d[key]
         if _is_unsupported_type(val):
             raise NoneSupportedTypeError("Cannot parse object: %s, type: %s, dict dump: %s" % (val, type(val), d))
 
         if _is_primitive_types(val):
             setattr(dobj, key, val)
-        elif isinstance(val, types.ListType):
+        elif isinstance(val, list):
             lst = _parse_list(val)
             setattr(dobj, key, lst)
-        elif isinstance(val, types.DictType):
+        elif isinstance(val, dict):
             nobj = _parse_dict(val)
             setattr(dobj, key, nobj)
         elif val is None:
@@ -121,9 +160,9 @@ def loads(jstr):
         root = simplejson.loads(jstr)
     except Exception as e:
         raise NoneSupportedTypeError("Cannot compile string: %s to a jsonobject" % jstr)
-    if isinstance(root, types.DictType):
+    if isinstance(root, dict):
         return _parse_dict(root)
-    if isinstance(root, types.ListType):
+    if isinstance(root, list):
         return _parse_list(root)
     else:
         return root
@@ -138,16 +177,11 @@ def nj():
 
 
 def _is_unsupported_type(obj):
-    return isinstance(obj, (types.ComplexType, types.TupleType, types.FunctionType, types.LambdaType,
-                            types.GeneratorType, types.MethodType, types.UnboundMethodType, types.BuiltinFunctionType,
-                            types.BuiltinMethodType, types.FileType,
-                            types.XRangeType, types.TracebackType, types.FrameType, types.DictProxyType,
-                            types.NotImplementedType, types.GetSetDescriptorType,
-                            types.MemberDescriptorType))
+    return isinstance(obj, _unsupported_types)
 
 
 def _is_primitive_types(obj):
-    return isinstance(obj, (types.BooleanType, types.LongType, types.IntType, types.FloatType, types.StringType, types.UnicodeType))
+    return isinstance(obj, _primitive_types)
 
 
 def _dump_list(lst):
@@ -158,12 +192,12 @@ def _dump_list(lst):
 
         if _is_primitive_types(val):
             nlst.append(val)
-        elif isinstance(val, types.DictType):
+        elif isinstance(val, dict):
             nlst.append(val)
-        elif isinstance(val, types.ListType):
+        elif isinstance(val, list):
             tlst = _dump_list(val)
             nlst.append(tlst)
-        elif isinstance(val, types.NoneType):
+        elif isinstance(val, type(None)):
             pass
         else:
             nmap = _dump(val)
@@ -176,7 +210,7 @@ def _dump(obj, include_protected_attr=False):
     if _is_primitive_types(obj): return simplejson.dumps(obj, ensure_ascii=True)
 
     ret = {}
-    items = obj.iteritems() if isinstance(obj, types.DictionaryType) else obj.__dict__.iteritems()
+    items = iter(obj.items()) if isinstance(obj, dict) else iter(obj.__dict__.items())
     for key, val in items:
         if key.startswith('_') and not include_protected_attr: continue
         if _is_unsupported_type(obj):
@@ -184,17 +218,17 @@ def _dump(obj, include_protected_attr=False):
 
         if _is_primitive_types(val):
             ret[key] = val
-        elif isinstance(val, types.DictType):
+        elif isinstance(val, dict):
             if len(val) == 0:
                 ret[key] = val
                 continue
 
             nmap = _dump(val, include_protected_attr=include_protected_attr)
             ret[key] = nmap
-        elif isinstance(val, types.ListType):
+        elif isinstance(val, list):
             nlst = _dump_list(val)
             ret[key] = nlst
-        elif isinstance(val, types.NoneType):
+        elif isinstance(val, type(None)):
             pass
         else:
             nmap = _dump(val, include_protected_attr=include_protected_attr)
@@ -210,7 +244,6 @@ def dumps(obj, pretty=False, include_protected_attr=False):
         return simplejson.dumps(jsonmap, ensure_ascii=True)
 
 
-def from_dict(obj):
-    # type: (dict) -> JsonObject
-
-    return loads(dumps(obj))
+def from_dict(obj, include_protected_attr=False):
+    # type: (dict, bool) -> JsonObject
+    return loads(dumps(obj, include_protected_attr=include_protected_attr))

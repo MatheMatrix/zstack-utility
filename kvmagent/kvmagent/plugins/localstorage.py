@@ -189,6 +189,18 @@ class CreateVolumeFromCacheRsp(AgentResponse):
         self.size = None
 
 
+class OfflineMergeSnapshotRsp(AgentResponse):
+    def __init__(self):
+        super(OfflineMergeSnapshotRsp, self).__init__()
+        self.actualSize = None
+
+
+class OfflineCommitSnapshotRsp(AgentResponse):
+    def __init__(self):
+        super(OfflineCommitSnapshotRsp, self).__init__()
+        self.actualSize = None
+
+
 class LocalStoragePlugin(kvmagent.KvmAgent):
     INIT_PATH = "/localstorage/init"
     GET_PHYSICAL_CAPACITY_PATH = "/localstorage/getphysicalcapacity"
@@ -209,6 +221,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
     MERGE_SNAPSHOT_PATH = "/localstorage/snapshot/merge"
     MERGE_AND_REBASE_SNAPSHOT_PATH = "/localstorage/snapshot/mergeandrebase"
     OFFLINE_MERGE_PATH = "/localstorage/snapshot/offlinemerge"
+    OFFLINE_COMMIT_PATH = "/localstorage/snapshot/offlinecommit"
     CREATE_TEMPLATE_FROM_VOLUME = "/localstorage/volume/createtemplate"
     ESTIMATE_TEMPLATE_SIZE_PATH = "/localstorage/volume/estimatetemplatesize"
     CHECK_BITS_PATH = "/localstorage/checkbits"
@@ -259,6 +272,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.MERGE_SNAPSHOT_PATH, self.merge_snapshot)
         http_server.register_async_uri(self.MERGE_AND_REBASE_SNAPSHOT_PATH, self.merge_and_rebase_snapshot)
         http_server.register_async_uri(self.OFFLINE_MERGE_PATH, self.offline_merge_snapshot)
+        http_server.register_async_uri(self.OFFLINE_COMMIT_PATH, self.offline_commit_snapshot)
         http_server.register_async_uri(self.CREATE_TEMPLATE_FROM_VOLUME, self.create_template_from_volume)
         http_server.register_async_uri(self.ESTIMATE_TEMPLATE_SIZE_PATH, self.estimate_template)
         http_server.register_async_uri(self.CHECK_BITS_PATH, self.check_bits)
@@ -306,7 +320,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
 
         shell.run("pkill -9 -f '%s'" % cmd.primaryStorageInstallPath)
 
-        self.do_delete_bits(cmd.primaryStorageInstallPath)
+        linux.rm_file_force(cmd.primaryStorageInstallPath)
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -400,7 +414,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = GetBatchVolumeSizeRsp()
 
-        for uuid, installPath in cmd.volumeUuidInstallPaths.__dict__.items():
+        for uuid, installPath in list(cmd.volumeUuidInstallPaths.__dict__.items()):
             with IgnoreError():
                 _, rsp.actualSizes[uuid] = linux.qcow2_size_and_actual_size(installPath)
 
@@ -596,25 +610,22 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
             logger.debug("getProgress in localstorage-agent, synced: %s, total: %s" % (synced, total))
             if not os.path.exists(PFILE):
                 return synced
-            fpread = open(PFILE, 'r')
-            lines = fpread.readlines()
+            with open(PFILE, 'r') as fpread:
+                lines = fpread.readlines()
             if not lines:
-                fpread.close()
                 return synced
             last = str(lines[-1]).strip().split('\r')[-1]
             if not last or len(last.split()) < 1:
-                fpread.close()
                 return synced
             line = last.split()[0]
             if not line.isdigit():
                 return synced
             if total > 0:
-                synced = long(line)
+                synced = int(line)
                 if synced < total:
                     percent = int(round(float(written + synced) / float(total) * (end - start) + start))
                     report.progress_report(percent, "report")
                     synced = written
-            fpread.close()
             return synced
 
         for path in set(chain):
@@ -684,7 +695,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         rsp = CreateTemplateFromVolumeRsp()
         dirname = os.path.dirname(cmd.installPath)
         if not os.path.exists(dirname):
-            os.makedirs(dirname, 0755)
+            os.makedirs(dirname, 0o755)
 
         @rollback.rollbackable
         def _0():
@@ -728,7 +739,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         install_path = cmd.imagePath
         dirname = os.path.dirname(cmd.volumePath)
         if not os.path.exists(dirname):
-            os.makedirs(dirname, 0775)
+            os.makedirs(dirname, 0o775)
 
         new_volume_path = os.path.join(dirname, '{0}.qcow2'.format(uuidhelper.uuid()))
         linux.qcow2_clone_with_cmd(install_path, new_volume_path, cmd)
@@ -778,10 +789,11 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
     @kvmagent.replyerror
     def offline_merge_snapshot(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = AgentResponse()
+        rsp = OfflineMergeSnapshotRsp()
 
         src_path = cmd.srcPath if not cmd.fullRebase else ""
         if linux.qcow2_get_backing_file(cmd.destPath) == src_path:
+            _, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.destPath)
             rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.storagePath)
             return jsonobject.dumps(rsp)
 
@@ -792,6 +804,28 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
             qcow2.create_template_with_task_daemon(cmd.destPath, tmp, task_spec=cmd)
             shell.call("mv %s %s" % (tmp, cmd.destPath))
 
+        self.imagestore_client.clean_meta(cmd.destPath)
+
+        _, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.destPath)
+        rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.storagePath)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def offline_commit_snapshot(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = OfflineCommitSnapshotRsp()
+
+        if linux.qcow2_get_backing_file(cmd.top) != linux.qcow2_get_backing_file(cmd.base):
+            linux.qcow2_commit(cmd.top, cmd.base)
+
+        if cmd.topChildrenInstallPathInDb:
+            for children in cmd.topChildrenInstallPathInDb:
+                if linux.qcow2_get_backing_file(children) != cmd.base:
+                    linux.qcow2_rebase_no_check(cmd.base, children)
+
+        self.imagestore_client.clean_meta(cmd.base)
+
+        _, rsp.actualSize = linux.qcow2_size_and_actual_size(cmd.base)
         rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.storagePath)
         return jsonobject.dumps(rsp)
 
@@ -813,7 +847,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
         if not os.path.exists(cmd.path):
-            os.makedirs(cmd.path, 0755)
+            os.makedirs(cmd.path, 0o755)
         if cmd.initFilePath:
             if not os.path.exists(cmd.initFilePath):
                 f = open(cmd.initFilePath, 'w')
@@ -900,7 +934,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
     def do_create_volume_with_backing(backing_path, vol_path, cmd):
         dirname = os.path.dirname(vol_path)
         if not os.path.exists(dirname):
-            os.makedirs(dirname, 0775)
+            os.makedirs(dirname, 0o775)
 
         linux.qcow2_clone_with_cmd(backing_path, vol_path, cmd)
 
@@ -1048,7 +1082,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
                 linux.link(backing_file, dst_file)
                 linux.qcow2_rebase_no_check(dst_file, f)
 
-        for src_file, dst_file in src_dst_dict.iteritems():
+        for src_file, dst_file in src_dst_dict.items():
             linux.link(src_file, dst_file)
 
     @kvmagent.replyerror

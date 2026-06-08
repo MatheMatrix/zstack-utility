@@ -36,7 +36,8 @@ SwitchCtlFilePath = "/var/run/openvswitch/ovs-vswitchd.zs.ctl"
 CtlBin = "ovs-vsctl --db=unix:{} ".format(DB_SOCK)
 OvsPackagesPath = "/var/lib/zstack/network/ovs-tools"
 
-OvsDpdkSupportVnic = ['vDPA', 'dpdkvhostuserclient']
+#ovsDpdk code will only hand mlnx smart nic network
+OvsDpdkSupportVnic = ['vDPA']
 OvsDpdkSupportBondType = ['dpdkBond', 'ovsBond']
 
 BridgeAndPfExist = 0
@@ -166,7 +167,7 @@ def getOffloadStatus(interfaceName):
     try:
         pciId = getPciID(interfaceName)
         offloadStatus = getMlnxSmartNicOffloadStatus()
-        if pciId in offloadStatus.keys():
+        if pciId in list(offloadStatus.keys()):
             return offloadStatus[pciId]
         return None
     except Exception as err:
@@ -283,7 +284,7 @@ class OvsVenv(object):
             raise OvsError("ovs package file:{} not exists".format(OvsPackagesPath))
 
         try:
-            release_list = ["h84r", "rl84"]
+            release_list = ["h84r", "rl84", "uos20r"]
             zstack_release = get_zstack_release()
             if zstack_release in release_list:
                 shell.call("export YUM0={}; yum --disablerepo=* --enablerepo=zstack-local localinstall -y {}/*.rpm".format(zstack_release, OvsPackagesPath))
@@ -1052,7 +1053,7 @@ class OvsBaseCtl(object):
 
             shell.call(cmd)
         except Exception as err:
-            logger.error("Set interface {} failed. {}".format(err))
+            logger.error("Set interface {} failed. {}".format(ifName, err))
             raise OvsError(str(err))
 
     @property
@@ -1072,11 +1073,11 @@ class OvsBaseCtl(object):
                 if d['bond']['name'] == bondName:
                     dpdkBond.name = d['bond']['name']
                     dpdkBond.mode = d['bond']['mode']
-                    if d['bond'].has_key('lacp'):
+                    if 'lacp' in d['bond']:
                         dpdkBond.lacp = d['bond']['lacp']
-                    if d['bond'].has_key('options'):
+                    if 'options' in d['bond']:
                         dpdkBond.options = d['bond']['options']
-                    if d['bond'].has_key('policy'):
+                    if 'policy' in d['bond']:
                         dpdkBond.policy = d['bond']['policy']
                     dpdkBond.id = d['bond']['id']
                     for i in d['bond']['slaves']:
@@ -1162,7 +1163,7 @@ class OvsBaseCtl(object):
             nicAndVmUuid = {}
             for row in rawData:
                 if len(row) == 0:
-                    if 'name' not in tmp.keys() or 'external_ids' not in tmp.keys():
+                    if 'name' not in list(tmp.keys()) or 'external_ids' not in list(tmp.keys()):
                         tmp = {}
                         continue
                     nicAndVmUuid[tmp['name']] = tmp['external_ids'].lstrip(
@@ -1279,7 +1280,7 @@ class OvsBaseCtl(object):
 
             if self.isDpdkReady:
                 self.configDpdkForOvs()
-                self.convertOvsConfigByVersion(self.venv.dpdkVer)
+                self.convertOvsConfigByVersion()
             else:
                 logger.debug("ovs do not support dpdk.")
 
@@ -1461,7 +1462,7 @@ class OvsDpdkCtl(OvsBaseCtl):
             shell.call("devlink dev eswitch set pci/{} mode {}".format(bdf, "legacy"))
             ret = shell.call("devlink dev eswitch show pci/{}".format(bdf))
             if "legacy" not in ret:
-                logger.error("devlink dev set eswitch mode {} for {} failed for restore nic.".format(mode, bdf))
+                logger.error("devlink dev set eswitch mode {} for {} failed for restore nic.".format("legacy", bdf))
                 return -1
              
             return 0
@@ -1781,7 +1782,7 @@ class OvsDpdkCtl(OvsBaseCtl):
                 return 0
 
             bond_list_org = bond_info.split("\n")
-            bond_list_org = filter(None, bond_list_org)
+            bond_list_org = [_f for _f in bond_list_org if _f]
 
             bond_list = self._getBondInfoList(bond_list_org, all_brs)
             if len(bond_list) <= 0:
@@ -1879,23 +1880,23 @@ class OvsDpdkCtl(OvsBaseCtl):
         """
         bond_list format:
         [{
-	'name': 'dpdkbond',
-	'active_pf': 'p1',
-	'br_name': 'br-bond',
-	'bond_mode': 'active-backup',
-	'slaves': [
+    'name': 'dpdkbond',
+    'active_pf': 'p1',
+    'br_name': 'br-bond',
+    'bond_mode': 'active-backup',
+    'slaves': [
         {
-		'status': 'enabled',
-		'name': 'p0',
-		'pci_addr': '0000:65:00.0'
-	}, 
+        'status': 'enabled',
+        'name': 'p0',
+        'pci_addr': '0000:65:00.0'
+    }, 
         {
-		'status': 'enabled',
-		'active': 1,
-		'name': 'p1',
-		'pci_addr': '0000:65:00.1'
-	}],
-	'active_pf_pci_addr': '0000:65:00.1'
+        'status': 'enabled',
+        'active': 1,
+        'name': 'p1',
+        'pci_addr': '0000:65:00.1'
+    }],
+    'active_pf_pci_addr': '0000:65:00.1'
         }]
         """
         try:
@@ -1914,7 +1915,7 @@ class OvsDpdkCtl(OvsBaseCtl):
                     continue
     
                 if "slave" == item[0:5]:
-                    if not itemDict.has_key("slaves"):
+                    if "slaves" not in itemDict:
                         slaveList = []
                     slaveDict = {}
                     slaveDict["status"] = item.split(":")[1][1:]
@@ -1993,9 +1994,10 @@ class OvsDpdkCtl(OvsBaseCtl):
             raise OvsError(
                 "The pfs under vflag should come from the same nic.")
 
-        if interfacePciIds[0] not in self.venv.offloadStatus.keys():
+        interface_pci_id = interfacePciIds.pop()
+        if interface_pci_id not in list(self.venv.offloadStatus.keys()):
             raise OvsError("Device:{} not in support vf lag list {}."
-                           .format(interfacePciIds[0], self.venv.offloadStatus.keys()))
+                           .format(interface_pci_id, list(self.venv.offloadStatus.keys())))
 
         for i in interfaces:
             self._changeDevlinkMode(i)
@@ -2064,7 +2066,7 @@ class OvsDpdkCtl(OvsBaseCtl):
             # Mlnx nics is driverd by mlx5_core, but other nics use vfio-pci instead.
             # For mlnx nics they do not need to change driver,
             # but the others need change driver to vfio-pci/igb_uio/uio_pci_generic.
-            if getPciID(bdf) not in self.venv.offloadStatus.keys():
+            if getPciID(bdf) not in list(self.venv.offloadStatus.keys()):
                 self._bindDpdkDriverToDevice(bdf)
             else:
                 self._changeDevlinkMode(bdf)
@@ -2206,7 +2208,7 @@ class OvsDpdkCtl(OvsBaseCtl):
     def createNic(self, nic):
         bridgeName = nic.bridgeName
         nicInternalName = nic.nicInternalName
-        self.addPort(bridgeName, nicInternalName)
+        self.addPort(bridgeName, nicInternalName, nic.type)
 
     def createVdpa(self, nic, sockPath):
         bridgeName = nic.bridgeName
@@ -2603,7 +2605,8 @@ def getOvsCtl(with_dpdk=None):
 def isVmUseOpenvSwitch(vmUuid):
     try:
         vmInterfaceList = shell.call("virsh domiflist {}".format(vmUuid)).strip()
-        if "vhostuser" in vmInterfaceList:
+        ## only vdpa nic is managed by ovs.py
+        if "vdpa" in vmInterfaceList:
             return True
         return False
     except shell.ShellError as err:
@@ -2625,11 +2628,11 @@ def getAllBondFromFile():
             dpdkBond = Bond()
             dpdkBond.name = d['bond']['name']
             dpdkBond.mode = d['bond']['mode']
-            if d['bond'].has_key('lacp'):
+            if 'lacp' in d['bond']:
                 dpdkBond.lacp = d['bond']['lacp']
-            if d['bond'].has_key('options'):
+            if 'options' in d['bond']:
                 dpdkBond.options = d['bond']['options']
-            if d['bond'].has_key('policy'):
+            if 'policy' in d['bond']:
                 dpdkBond.policy = d['bond']['policy']
             dpdkBond.id = d['bond']['id']
             for i in d['bond']['slaves']:

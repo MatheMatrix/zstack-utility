@@ -1,24 +1,22 @@
 #!/usr/bin/env python
 # encoding: utf-8
-import commands
+import subprocess
 import datetime
 import functools
 import importlib
 import json
 import logging
-from logging import handlers as logging_handlers
 import os
 import pprint
 import re
 import sys
-import threading
 import time
 import traceback
 
 import jinja2
-import urllib2
+import urllib.request, urllib.error, urllib.parse
 
-from utils import log
+from .utils import log
 
 # set global default value
 start_time = datetime.datetime.now()
@@ -30,9 +28,18 @@ pkg_zstacklib = ""
 yum_server = ""
 trusted_host = ""
 
-RPM_BASED_OS = ["centos", "redhat", "alibaba", "kylin10", "uos1021a", "rocky"]
+RPM_BASED_OS = ["centos", "redhat", "alibaba", "kylin10", "uos1021a", "uos20r", "rocky", "helix"]
 DEB_BASED_OS = ["ubuntu", "kylin4.0.2", "uos", "debian", "uniontech"]
 DISTRO_WITH_RPM_DEB = ["kylin"]
+
+
+def map_distro_id(os_release):
+    distro = os_release.get('ID', '').lower()
+    if distro == 'uos':
+        version_id = os_release.get('VERSION_ID', '')
+        if version_id.endswith('r'):
+            return 'uos20r'
+    return distro
 
 
 def ignoreerror(func):
@@ -206,15 +213,17 @@ def retry(times=3, sleep_time=3):
     def wrap(f):
         @functools.wraps(f)
         def inner(*args, **kwargs):
+            ex = None
             for i in range(0, times):
                 try:
                     return f(*args, **kwargs)
                 except Exception as e:
+                    ex = traceback.format_exc()
                     logger.error(e)
                     time.sleep(sleep_time)
             error(("The task failed, please make sure the host can be "
                    "connected and no error happened, then try again. "
-                   "Below is detail:\n %s") % e)
+                   "Below is detail:\n %s") % ex)
         return inner
     return wrap
 
@@ -235,7 +244,7 @@ def create_log(logger_dir, logger_file):
 def get_mn_release():
     # file /etc/zstack-release from zstack-release.rpm
     # file content like: ZStack release c76
-    return commands.getoutput("awk '{print $3}' /etc/zstack-release").strip()
+    return subprocess.getoutput("awk '{print $3}' /etc/zstack-release").strip()
 
 
 def get_host_releasever(ansible_distribution):
@@ -253,6 +262,7 @@ def get_host_releasever(ansible_distribution):
         'helix green obsidian 8.4r': 'h84r',
         "uniontech kongzi 20": "uos1021a",
         "rocky green obsidian 8.4": "rl84",
+        "uniontech os 20.06r": "uos20r",
     }
     _key = " ".join(ansible_distribution).lower()
     _releasever = supported_release_info.get(_key)
@@ -272,16 +282,17 @@ def post_msg(msg, post_url):
         error(msg.data.description + "\nDetail: " + msg.data.details)
     else:
         error("ERROR: undefined message type: %s" % msg.type)
+        return
 
     if post_url == "":
         logger.info("Warning: no post_url defined by user")
         return 0
     try:
         headers = {"content-type": "application/json"}
-        req = urllib2.Request(post_url, data, headers)
-        response = urllib2.urlopen(req)
+        req = urllib.request.Request(post_url, data.encode(), headers)
+        response = urllib.request.urlopen(req)
         response.close()
-    except urllib2.URLError as e:
+    except urllib.error.URLError as e:
         logger.debug(e.reason)
         error(("Please check the post_url: %s and check the server "
                "status") % post_url)
@@ -727,7 +738,7 @@ def pip_install_package(pip_install_arg, host_post_info):
         if param_dict_raw[item] is not None:
             param_dict[item] = param_dict_raw[item]
     option = 'name=' + name + ' ' + \
-        ' '.join(['{0}={1}'.format(k, v) for k, v in param_dict.iteritems()])
+        ' '.join(['{0}={1}'.format(k, v) for k, v in param_dict.items()])
     runner_args = ZstackRunnerArg()
     runner_args.host_post_info = host_post_info
     runner_args.module_name = 'pip'
@@ -744,8 +755,11 @@ def pip_install_package(pip_install_arg, host_post_info):
     else:
         ret = result['contacted'][host]
         if ret.get('failed', True):
-            command = "pip2 uninstall -y %s" % name
-            run_remote_command(command, host_post_info)
+            command = "pip3 uninstall -y %s" % name
+            try:
+                run_remote_command(command, host_post_info)
+            except Exception as ignore:
+                pass
             description = "ERROR: pip install package %s failed!" % name
             handle_ansible_failed(description, result, host_post_info)
             return False
@@ -1158,9 +1172,9 @@ def get_remote_host_info(host_post_info):
             facts = ret['ansible_facts']
             (distro, major_version, release, distro_version) = [
                 facts['ansible_distribution'].split()[0].lower(),
-                int(facts['ansible_distribution_major_version']),
+                int(re.sub(r'[^0-9]', '', str(facts['ansible_distribution_major_version']))),
                 facts['ansible_distribution_release'],
-                facts['ansible_distribution_version']]
+                re.sub(r'[^0-9.]', '', str(facts['ansible_distribution_version']))]
             handle_ansible_info(
                 "SUCC: Get remote host %s info successful" % host,
                 host_post_info,
@@ -1455,18 +1469,19 @@ def unarchive(unarchive_arg, host_post_info):
 
 class ZstackLib(object):
     def __init__(self, args):
-        distro = args.distro
-        distro_release = args.distro_release
-        distro_version = args.distro_version
+        self.distro = args.distro
+        self.distro_release = args.distro_release
+        self.distro_version = args.distro_version
         zstack_repo = args.zstack_repo
         zstack_root = args.zstack_root
+        self.host_post_info = args.host_post_info
         host_post_info = args.host_post_info
         trusted_host = args.trusted_host
         pip_url = args.pip_url
         pip_version = "7.0.3"
         yum_server = args.yum_server
         current_dir = os.path.dirname(os.path.realpath(__file__))
-        if distro in RPM_BASED_OS:
+        if self.distro in RPM_BASED_OS:
             # always add aliyun repo
             self.generate_aliyun_yum_repo()
 
@@ -1500,7 +1515,7 @@ class ZstackLib(object):
             # install rpm packages required by zstack
             self.install_yum_os_required_packages(zstack_repo, user_defined)
             self.install_virtual_router_required_packages(zstack_repo)
-        elif distro in DEB_BASED_OS:
+        elif self.distro in DEB_BASED_OS:
             self.update_debian_repo(zstack_repo)
             self.install_debian_system_requirements()
             self.enable_debian_services()
@@ -1535,8 +1550,8 @@ class ZstackLib(object):
         # install libselinux-python and other command system libs from user
         # defined repos
         command = (
-            "%s pkg_list=`rpm -q libselinux-python python-devel "
-            "python-setuptools python-pip gcc autoconf | grep "
+            "%s pkg_list=`rpm -q python3-libselinux libselinux-python python-devel python3.11-devel"
+            "python-setuptools python-pip python3.11-pip gcc autoconf | grep "
             "\"not installed\" | awk '{ print $2 }'` && for pkg in $pkg_list; "
             "do yum --disablerepo=* --enablerepo=%s install -y $pkg; "
             "done;") % (before_install_command, zstack_repo, zstack_repo)
@@ -1549,7 +1564,7 @@ class ZstackLib(object):
         # Centos 6.x
         command = (
             "yum clean --enablerepo=%s metadata &&  pkg_list=`rpm -q "
-            "python-backports-ssl_match_hostname chrony | grep "
+            "chrony | grep "
             "\"not installed\" | awk '{ print $2 }'` && for pkg in $pkg_list; "
             "do yum --disablerepo=* --enablerepo=%s install -y $pkg; "
             "done;") % (zstack_repo, zstack_repo)
@@ -1693,7 +1708,7 @@ EOF
         self.generate_epel_yum_repo()
 
         # zstack_repo defined by user
-        self.install_yum_os_required_packages()
+        self.install_yum_os_required_packages(zstack_repo)
 
     def enable_debian_services(self):
         # name: enable chrony service for Debian

@@ -19,6 +19,14 @@ class CpRsp(AgentResponse):
         super(CpRsp, self).__init__()
         self.installPath = None
 
+class StorageBackupRsp(AgentResponse):
+    def __init__(self):
+        super(StorageBackupRsp, self).__init__()
+        self.uploadFile = None
+        self.lastBackupUuid = None
+        self.mode = None
+        self.size = 0
+
 class ImageStoreClient(object):
     ZSTORE_CLI_BIN = "/usr/local/zstack/imagestore/bin/zstcli"
     ZSTORE_CLI_PATH = ZSTORE_CLI_BIN + " -rootca /var/lib/zstack/imagestorebackupstorage/package/certs/ca.pem"
@@ -45,7 +53,7 @@ class ImageStoreClient(object):
     def _ceph_file_existed(self, path):
         pool, meta = self._get_id_name_from_install(path)
         checkstr = 'rados -p pool %s stat %s' % (pool, meta)
-        if shell.run(checkstr.encode(encoding="utf-8")) == 0:
+        if shell.run(checkstr) == 0:
             return True
         return False
 
@@ -62,6 +70,31 @@ class ImageStoreClient(object):
 
     def _build_install_path(self, name, imgid):
         return "{0}{1}/{2}".format(self.ZSTORE_PROTOSTR, name, imgid)
+
+    def storage_backup(self, cmd):
+        self._check_zstore_cli()
+        sshData = cmd.userName + '@' + cmd.hostname + ':' + cmd.uploadDir
+        cmdstr = '%s storagebackup -ssh %s -p %s -parent %s -volume %s -backupUuid %s -mode %s' % (
+            self.ZSTORE_CLI_PATH, sshData, cmd.password, cmd.lastBackupUuid, cmd.volumePath,
+            cmd.backupUuid, cmd.mode)
+        output = shell.call(cmdstr.encode(encoding="utf-8"))
+        result = jsonobject.loads(output.splitlines()[-1])
+
+        _, image = self._get_id_name_from_install(cmd.volumePath)
+        rsp = StorageBackupRsp()
+        rsp.uploadFile = os.path.join(cmd.uploadDir, result.backupName)
+        rsp.mode = result.mode
+        rsp.size = int(result.size)
+        rsp.lastBackupUuid = result.lastBackupUuid
+        return jsonobject.dumps(rsp)
+
+    def cancel_storage_backup(self, cmd):
+        self._check_zstore_cli()
+        cmdstr = '%s cancelstoragebackup -volume %s ' % (
+            self.ZSTORE_CLI_PATH, cmd.volumePath)
+        shell.call(cmdstr.encode(encoding="utf-8"))
+        rsp = AgentResponse()
+        return jsonobject.dumps(rsp)
 
     def upload_imagestore(self, cmd, req):
         self._check_zstore_cli()
@@ -87,7 +120,7 @@ class ImageStoreClient(object):
             taskid, cmd.imageUuid, extpara, push_ext_param, cmd.srcPath)
         logger.debug('pushing %s to image store' % cmd.srcPath)
         shell = traceable_shell.get_shell(cmd)
-        shell.call(cmdstr.encode(encoding="utf-8"))
+        shell.call(cmdstr)
         logger.debug('%s pushed to image store' % cmd.srcPath)
 
         name, imageid = self._get_image_reference(cmd.srcPath)
@@ -118,6 +151,9 @@ class ImageStoreClient(object):
         if cmd.concurrency and cmd.concurrency > 1:
             args += " -concurrency %d" % cmd.concurrency
 
+        if cmd.preCreated:
+            args += " -precreated"
+
         cmdstr = '%s -url %s:%s pull %s %s:%s' % (
         self.ZSTORE_CLI_PATH, cmd.hostname, self.ZSTORE_DEF_PORT, args, name, imageid)
         logger.debug('pulling %s:%s from image store' % (name, imageid))
@@ -145,6 +181,6 @@ class ImageStoreClient(object):
         req[http.REQUEST_HEADER].get(http.TASK_UUID), cmd.imageUuid, cmd.description, fpath)
 
         logger.debug('adding %s to local image store' % fpath)
-        shell.call(cmdstr.encode(encoding="utf-8"))
+        shell.call(cmdstr)
         logger.debug('%s added to local image store' % fpath)
 

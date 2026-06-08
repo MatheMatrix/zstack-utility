@@ -7,7 +7,7 @@ set -ex
 # Param version : like 4.6.31
 
 
-YUM_BASED_OS="c76 ky10sp2 ky10sp3"
+YUM_BASED_OS="c76 ky10sp2 ky10sp3 ky10sp3.2403"
 APT_BASED_OS=""
 
 # /root/.zguest/zstack-utility is zstack-utility home of ztest.
@@ -16,7 +16,7 @@ SCRIPTS_HOME="/root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools
 
 validate_necessary_parameters() {
     if [ -z "${arch_os}" ] || [ -z "${version}" ];then
-        echo "Error: params needed is empty: arch_os:[${arch_os}] version:[${arch_os}]"
+        echo "Error: params needed is empty: arch_os:[${arch_os}] version:[${version}]"
         exit 1
     fi
     arch=$(echo $arch_os | awk -F ':' '{print $1}')
@@ -34,6 +34,8 @@ prepare_external_repo() {
         elif [ "$arch_os" == "aarch64:ky10sp2" ]; then
             echo later to add
         elif [ "$arch_os" == "aarch64:ky10sp3" ]; then
+            echo later to add
+        elif [ "$arch_os" == "aarch64:ky10sp3.2403" ]; then
             echo later to add
         fi
         if [ -f "/etc/yum.repos.d/CentOS-Base.repo" ]; then
@@ -73,37 +75,24 @@ prepare_internal_repo
 
 
 prepare_mn_mock() {
-    cd /root/
-    mkdir -p ~/.pip/
-    mkdir -p ~/.config/pip/
-    rm -rf ~/.config/pip/pip.conf
-    rm -rf ~/.pip/pip.conf
-    wget -c http://minio.zstack.io:9001/download/devops_dependencies/utility_ut/pip.conf -O pip.conf || true
-    cp pip.conf ~/.config/pip/ || true
-    cp pip.conf ~/.pip/ || true
+    pip3.11 config set global.index-url file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple
+    pip3.11 config set global.extra-index-url file:///root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/pypi/simple
 
-
-    # wget -c http://minio.zstack.io:9001/download/prsystem/UtilityUT/get-pip.py -O get-pip.py
     cd /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/
-    pip install -r requirements/requirements1.txt -i file://`pwd`/pypi/simple
-    pip install -r requirements/requirements2.txt -i file://`pwd`/pypi/simple
-    virtualenv --version || pip install virtualenv==12.1.1
+    pip3.11 install -r requirements/requirements1.txt -i file://`pwd`/pypi/simple
     cd /root
-    python2_path=$(which python)
-    rm -rf venv1
-    virtualenv -p "$python2_path" venv1
+    rm -rf /root/venv1
+    python3.11 -m venv venv1
     # in venv1
     source /root/venv1/bin/activate
     cd /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/
-    pip install pip==20.3.4 -i file://`pwd`/pypi/simple
-    pip install setuptools==44.1.1 -i file://`pwd`/pypi/simple
-    # prepare_zstacklib 
+    # prepare_zstacklib
     cd /root/.zguest/zstack-utility/zstacklib/
     if [ "${os}" == "ky10sp3" ]; then
         echo "cython<3" > /tmp/constraint.txt
-        PIP_CONSTRAINT=/tmp/constraint.txt bash install.sh -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple
+        PIP_CONSTRAINT=/tmp/constraint.txt bash install.sh
     else
-        bash install.sh -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple
+        bash install.sh
     fi
     ZSTACKLIB_TAR=$(basename dist/zstacklib-?*.tar.gz)
     \cp dist/zstacklib-?*.tar.gz ansible/
@@ -111,29 +100,39 @@ prepare_mn_mock() {
     \cp -r ansible/* /usr/local/zstack/ansible/files/zstacklib/
     # prepare_kvmagent
     cd /root/.zguest/zstack-utility/kvmagent/
-    bash install.sh -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple
+    bash install.sh
     KVMAGENT_TAR=$(basename dist/kvmagent-?*.tar.gz)
     \cp dist/kvmagent-?*.tar.gz ansible/
     \cp zstack-kvmagent ansible/
     mkdir -p /usr/local/zstack/ansible/files/kvm/
     \cp -rL ansible/* /usr/local/zstack/ansible/files/kvm/
     deactivate
-    if [ "$(yum repolist --enablerepo=* | grep zstack-local)" != "" ];then
-        yum --disablerepo=* --enablerepo=zstack-local,qemu-kvm-ev install -y openssl-devel openssl libffi libffi-devel
+
+    NEED_INSTALL=""
+    rpm -q openssl-devel >/dev/null 2>&1 || NEED_INSTALL="${NEED_INSTALL} openssl-devel"
+    rpm -q libffi-devel >/dev/null 2>&1 || NEED_INSTALL="${NEED_INSTALL} libffi-devel"
+    if [ -n "${NEED_INSTALL}" ]; then
+        if [ "$(yum repolist --enablerepo=* | grep zstack-local)" != "" ];then
+            yum --disablerepo=* --enablerepo=zstack-local,qemu-kvm-ev install -y ${NEED_INSTALL}
+        else
+            yum --disablerepo=* --enablerepo=qemu-kvm-ev install -y ${NEED_INSTALL}
+        fi
     else
-        yum --disablerepo=* --enablerepo=qemu-kvm-ev install -y openssl-devel openssl libffi libffi-devel
+        echo "==>> openssl-devel libffi-devel already installed, skip yum install"
     fi
-    umount /tmp
+
+    umount /tmp || true
     mkdir -p /tmp
 
     cd /root
     rm -rf venv2
-    virtualenv -p "$python2_path" venv2
+    python3.11 -m venv venv2
     source /root/venv2/bin/activate
     # in venv2
+
     cd /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/
-    pip install -r requirements/requirements1.txt -i file://`pwd`/pypi/simple
-    pip2 install ansible==4.10.0 -i file:///root/.zguest/zstack-utility/zstackbuild/pypi_source/pypi/simple --extra-index-url http://mirrors.aliyun.com/pypi/simple/
+    pip3.11 install -r requirements/requirements1.txt -i file://`pwd`/pypi/simple
+    pip3.11 install ansible
     deactivate
     echo "==>> pass prepare_mn_mock"
 }
@@ -171,11 +170,12 @@ install_kvm() {
 install_kvm
 
 copy_kvm_virtualenv_to_venv3() {
-    pip install virtualenv-clone==0.5.7
+    cd /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/
+    pip3.11 install virtualenv-clone -i file://`pwd`/pypi/simple
     virtualenv-clone /var/lib/zstack/virtualenv/kvm/ /root/venv3/
     source /root/venv3/bin/activate
-    cd /root/.zguest/zstack-utility/kvmagent/kvmagent/test/unittest_tools/unittest_pypi_source/
-    pip install -r requirements/requirements1.txt -i file://`pwd`/pypi/simple
-    pip install -r requirements/requirements3.txt -i file://`pwd`/pypi/simple --extra-index-url http://mirrors.aliyun.com/pypi/simple 
+    pip3.11 install -r requirements/requirements1.txt
+    pip3.11 install -r requirements/requirements3.txt
 }
 copy_kvm_virtualenv_to_venv3
+

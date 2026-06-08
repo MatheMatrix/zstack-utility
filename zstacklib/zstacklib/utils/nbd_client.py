@@ -3,7 +3,6 @@
 
 import struct
 import socket
-import subprocess
 import os
 import netaddr
 import time
@@ -286,7 +285,7 @@ class NBDClient(object):
         got = b''
         while len(got) < length:
             more = self.sock.recv(length - len(got))
-            if more == "":
+            if not more:
                 raise Exception('connection to %s closed, require %d, received %d' % (self._host, length, len(got)))
             got += more
         return got
