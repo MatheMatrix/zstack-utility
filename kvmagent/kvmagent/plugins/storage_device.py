@@ -1335,6 +1335,18 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
                     if transport:
                         return transport.strip()
 
+            for target in nvme_subsystems:
+                subsys_dir = "/sys/class/nvme-subsystem/%s" % target
+                if not any(os.path.basename(p) == dev_name
+                           for p in linux.walk(subsys_dir, depth=2)):
+                    continue
+                for entry in os.listdir(subsys_dir):
+                    if not entry.startswith("nvme") or "n" in entry[len("nvme"):]:
+                        continue
+                    transport = linux.read_file("%s/%s/transport" % (subsys_dir, entry))
+                    if transport:
+                        return transport.strip()
+
         for lun in nvme_luns:
             s = NvmeLunStruct()
             dev_name = os.path.basename(lun.DevicePath)
@@ -1372,27 +1384,39 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         if os.path.exists("/sys/class/nvme-subsystem"):
             nvme_subsystems = os.listdir("/sys/class/nvme-subsystem")
 
+        def collect_wwids(base_dir):
+            wwids = set()
+            for entry in os.listdir(base_dir):
+                if not entry.startswith("nvme"):
+                    continue
+                wwid_path = "%s/%s/wwid" % (base_dir, entry)
+                if os.path.exists(wwid_path):
+                    wwids.add(linux.read_file(wwid_path).strip())
+            return wwids
+
         for target in nvme_subsystems:
             nqn = linux.read_file("/sys/class/nvme-subsystem/%s/subsysnqn" % target).strip()
             if nqn != subsysnqn:
                 continue
             parent_dir = "/sys/class/nvme-subsystem/%s" % target
             for f in os.listdir(parent_dir):
-                if not (os.path.basename(f).startswith("nvme") and os.path.exists("%s/%s/address" % (parent_dir, f))):
+                if not (f.startswith("nvme") and os.path.exists("%s/%s/address" % (parent_dir, f))):
                     continue
                 controller = NvmeController()
                 controller.name = f
                 controller.address = linux.read_file("%s/%s/address" % (parent_dir, f)).strip()
                 controller.transport = linux.read_file("%s/%s/transport" % (parent_dir, f)).strip()
-                controller.wwids = set()
-                for ff in os.listdir("%s/%s/" % (parent_dir, f)):
-                    if not (os.path.basename(ff).startswith("nvme") and os.path.exists("%s/%s/%s/wwid" % (parent_dir, f, ff))):
-                        continue
-                    controller.wwids.add(linux.read_file("%s/%s/%s/wwid" % (parent_dir, f, ff)).strip())
+                controller.wwids = collect_wwids("%s/%s" % (parent_dir, f)) or collect_wwids(parent_dir)
                 controllers.append(controller)
 
-
         return controllers
+
+    @staticmethod
+    def _nvme_address_matches(controller, transport, ip, port):
+        expected_addr = "traddr=%s,trsvcid=%s" % (ip, port)
+        return controller.transport == transport and (
+                controller.address == expected_addr or
+                controller.address.startswith(expected_addr + ","))
 
     @bash.in_bash
     def connect_nvme_controller(self, cmd):
@@ -1408,17 +1432,43 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
         for line in o.splitlines():
             discovered_nqns.add(line.strip().split()[1])
 
+        def wait_for_nvme_wwids(collect_wwids):
+            previous = set()
+            for _ in range(3):
+                current = set(collect_wwids() or [])
+                if current and current == previous:
+                    return current
+                previous = current
+                time.sleep(3)
+            return previous
+
         wwids = set()
         any_nqn_connected = False
         error = ""
         for nqn in discovered_nqns:
             r, o, e = bash.bash_roe("timeout 60 nvme connect -a %s -s %s -t %s --nqn %s" % (cmd.ip, cmd.port, cmd.transport, nqn))
-            for controller in self.get_nvme_subsystem_controllers(nqn):
-                if controller.transport == cmd.transport and controller.address == "traddr=%s,trsvcid=%s" % (cmd.ip, cmd.port):
-                    any_nqn_connected = True
-                    wwids = wwids.union(controller.wwids)
-                    break
-            if not any_nqn_connected:
+
+            def matching_controllers():
+                matched = []
+                for controller in self.get_nvme_subsystem_controllers(nqn):
+                    if self._nvme_address_matches(controller, cmd.transport, cmd.ip, cmd.port):
+                        matched.append(controller)
+                return matched
+
+            if matching_controllers():
+                any_nqn_connected = True
+
+                def collect_controller_wwids():
+                    collected = set()
+                    for controller in matching_controllers():
+                        collected = collected.union(controller.wwids)
+                    return collected
+
+                wwids_ready = wait_for_nvme_wwids(collect_controller_wwids)
+                if not wwids_ready:
+                    logger.warn("nqn[%s] on server[%s:%s] connected but no wwid became ready in time, LUN list may be incomplete until a later rescan" % (nqn, cmd.ip, cmd.port))
+                wwids = wwids.union(wwids_ready)
+            else:
                 error = e
 
         if not any_nqn_connected:
@@ -1439,7 +1489,7 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
 
         for nqn in discovered_nqns:
             for controller in self.get_nvme_subsystem_controllers(nqn):
-                if controller.transport == cmd.transport and controller.address == "traddr=%s,trsvcid=%s" % (cmd.ip, cmd.port):
+                if self._nvme_address_matches(controller, cmd.transport, cmd.ip, cmd.port):
                     r, o, e = bash.bash_roe("timeout 60 nvme disconnect -d %s" % controller.name)
                     if r != 0:
                         logger.warn("disconnect nvme nqn[%s] failed: %s" % (nqn, e))
