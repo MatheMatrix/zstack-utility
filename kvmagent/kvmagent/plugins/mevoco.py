@@ -45,6 +45,19 @@ def get_iptables_cmd():
 
 IP6TABLES_CMD = iptables.get_ip6tables_cmd()
 HOST_ARCH = platform.machine()
+DHCPV6_DUID_UUID_PREFIX = '00:04'
+UUID_HEX_LENGTH = 32
+
+
+def make_dhcpv6_duid_uuid(vm_uuid):
+    if not vm_uuid:
+        return None
+
+    uuid_hex = vm_uuid.replace('-', '').lower()
+    if len(uuid_hex) != UUID_HEX_LENGTH or not re.match('^[0-9a-f]+$', uuid_hex):
+        return None
+
+    return DHCPV6_DUID_UUID_PREFIX + ':' + ':'.join(uuid_hex[i:i + 2] for i in range(0, UUID_HEX_LENGTH, 2))
 
 
 class NamespaceInfraEnv(object):
@@ -2454,6 +2467,7 @@ dhcp-range={{g}}
                 if d.dns6 is not None:
                     dnslist = ['[%s]' % dns for dns in d.dns6]
                     dhcp_info['dns6'] = ",".join(dnslist)
+                dhcp_info['dhcp6Duid'] = make_dhcpv6_duid_uuid(getattr(d, 'vmUuid', None))
                 routes = []
                 # add classless-static-route (option 121) for gateway:
                 if d.isDefaultL3Network:
@@ -2477,8 +2491,14 @@ dhcp-range={{g}}
 {% for d in dhcp -%}
 {% if d.isDefaultL3Network -%}
 {{d.mac}},set:{{d.tag}},{{d.address}},{{d.hostname}},infinite
+{% if d.ip6 and d.dhcp6Duid -%}
+id:{{d.dhcp6Duid}},set:{{d.tag}},[{{d.ip6}}],{{d.hostname}},infinite
+{% endif -%}
 {% else -%}
 {{d.mac}},set:{{d.tag}},{{d.address}},infinite
+{% if d.ip6 and d.dhcp6Duid -%}
+id:{{d.dhcp6Duid}},set:{{d.tag}},[{{d.ip6}}],infinite
+{% endif -%}
 {% endif -%}
 {% endfor -%}
 '''
@@ -2623,6 +2643,7 @@ dhcp-range={{range}}
                     dhcp_info['dnslist'] = ",".join(dnslist)
                 if d.dnsDomain is not None:
                     dhcp_info['domainList'] = ",".join(d.dnsDomain)
+                dhcp_info['dhcp6Duid'] = make_dhcpv6_duid_uuid(getattr(d, 'vmUuid', None))
                 info.append(dhcp_info)
 
                 if not rebuild:
@@ -2631,6 +2652,9 @@ dhcp-range={{range}}
             dhcp_conf = '''\
 {% for d in dhcp -%}
 {{d.mac}},set:{{d.tag}},[{{d.ip6}}],{{d.hostname}},infinite
+{% if d.dhcp6Duid -%}
+id:{{d.dhcp6Duid}},set:{{d.tag}},[{{d.ip6}}],{{d.hostname}},infinite
+{% endif -%}
 {% endfor -%}
 '''
 
@@ -2726,6 +2750,7 @@ tag:{{o.tag}},option6:domain-search,{{o.domainList}}
 
         bash_errorout('''\
 sed -i '/{{MAC}},/d' {{DHCP}};
+sed -i '/set:{{TAG}},/d' {{DHCP}};
 sed -i '/,{{IP}},/d' {{DHCP}};
 sed -i '/^$/d' {{DHCP}};
 sed -i '/{{TAG}},/d' {{OPTION}};
