@@ -1188,6 +1188,55 @@ class TestMevocoDoApplyDhcp:
         assert "id:00:04:85:b7:d8:8b:37:4f:44:7b:b7:4a:7c:f6:fd:8e:0d:4d" in dhcp_conf
         assert "[2026:6:9:1::5d:c9c3],2026-6-9-1--5d-c9c3,infinite" in dhcp_conf
 
+    def test_do_apply_dhcp_restarts_dnsmasq_for_dhcpv6_duid_host(self, tmp_path: object):
+        plugin = _make_plugin()
+        plugin.DNSMASQ_CONF_FOLDER = str(tmp_path)
+        plugin.DNSMASQ_LOG_LOGROTATE_PATH = os.path.join(str(tmp_path), "logrotate")
+        plugin._restart_dnsmasq = MagicMock()
+        plugin._refresh_dnsmasq = MagicMock()
+
+        linux = cast(MagicMock, importlib.import_module("zstacklib.utils.linux"))
+        linux.mkdir = MagicMock(side_effect=lambda path, _mode=None: os.makedirs(path, exist_ok=True))
+        linux.touch_file = MagicMock(side_effect=lambda path: open(path, "a", encoding="utf-8").close())
+
+        shell = cast(MagicMock, importlib.import_module("zstacklib.utils.shell"))
+        shell.call = MagicMock(return_value="5")
+        setattr(mevoco, "bash_errorout", MagicMock())
+
+        dhcp_v6 = _Obj(
+            namespaceName="ns6",
+            bridgeName="br1",
+            mac="fa:70:fd:24:dc:00",
+            ip="",
+            ip6="2026:6:9:1::5d:c9c3",
+            ipVersion=6,
+            nicType="VNIC",
+            dns=[],
+            dns6=[],
+            dnsDomain=[],
+            gateway=None,
+            netmask="",
+            hostname="2026-6-9-1--5d-c9c3",
+            mtu=None,
+            isDefaultL3Network=True,
+            hostRoutes=[],
+            vmMultiGateway=False,
+            enableRa=False,
+            firstIp="2026:6:9:1::2",
+            endIp="2026:6:9:1:ffff:ffff:ffff:ffff",
+            prefixLength=64,
+            vmUuid="85b7d88b-374f-447b-b74a-7cf6fd8e0d4d",
+        )
+
+        plugin.do_apply_dhcp(_IterDict({"ns6": [dhcp_v6]}), rebuild=True)
+        plugin._restart_dnsmasq.reset_mock()
+        plugin._refresh_dnsmasq.reset_mock()
+
+        plugin.do_apply_dhcp(_IterDict({"ns6": [dhcp_v6]}), rebuild=False)
+
+        plugin._restart_dnsmasq.assert_called_once()
+        plugin._refresh_dnsmasq.assert_not_called()
+
     def test_do_apply_dhcp_writes_configs_for_v4_and_v6(self, tmp_path: object):
         plugin = _make_plugin()
         plugin.DNSMASQ_CONF_FOLDER = str(tmp_path)

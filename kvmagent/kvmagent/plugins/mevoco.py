@@ -2468,6 +2468,8 @@ dhcp-range={{g}}
                     dnslist = ['[%s]' % dns for dns in d.dns6]
                     dhcp_info['dns6'] = ",".join(dnslist)
                 dhcp_info['dhcp6Duid'] = make_dhcpv6_duid_uuid(getattr(d, 'vmUuid', None))
+                if dhcp_info['dhcp6Duid']:
+                    restart_dnsmasq = True
                 routes = []
                 # add classless-static-route (option 121) for gateway:
                 if d.isDefaultL3Network:
@@ -2644,6 +2646,8 @@ dhcp-range={{range}}
                 if d.dnsDomain is not None:
                     dhcp_info['domainList'] = ",".join(d.dnsDomain)
                 dhcp_info['dhcp6Duid'] = make_dhcpv6_duid_uuid(getattr(d, 'vmUuid', None))
+                if dhcp_info['dhcp6Duid']:
+                    restart_dnsmasq = True
                 info.append(dhcp_info)
 
                 if not rebuild:
