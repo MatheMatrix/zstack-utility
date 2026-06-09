@@ -64,6 +64,13 @@ def as_list(value):
     return [value]
 
 
+def source_roots_from_view(view):
+    for field in ('allowedRoots', 'allowedSourceRoots', 'hostSourceRoot', 'sourceRootPath'):
+        if get_attr(view, field) is not None:
+            return virtiofs_source.source_roots_from_raw(view)
+    return None
+
+
 def safe_uuid(value, field_name):
     if not value or not re.match(r'^[A-Za-z0-9][A-Za-z0-9_.-]*$', value):
         raise Exception('invalid %s: %s' % (field_name, value))
@@ -149,7 +156,8 @@ def make_view_bind_specs(vm_uuid, artifacts):
 
 class VmArtifactViewSpec(object):
     def __init__(self, vm_uuid, tag=None, artifacts=None, source_path=None,
-                 view_path=None, cache=None, queue=None, binary_path=None, read_only=True):
+                 view_path=None, cache=None, queue=None, binary_path=None, read_only=True,
+                 source_roots=None, required_capacity_bytes=None):
         self.vm_uuid = safe_uuid(vm_uuid, 'vmInstanceUuid')
         self.tag = sanitize_tag(tag or self.vm_uuid)
         self.artifacts = as_list(artifacts)
@@ -159,6 +167,8 @@ class VmArtifactViewSpec(object):
         self.queue = virtiofs_device.normalize_queue(queue or DEFAULT_VIRTIOFS_QUEUE)
         self.binary_path = binary_path or DEFAULT_VIRTIOFS_BINARY
         self.read_only = read_only is not False
+        self.source_roots = source_roots
+        self.required_capacity_bytes = required_capacity_bytes
 
         source_fields = len([p for p in [self.artifacts, self.source_path, self.view_path] if p])
         if source_fields > 1:
@@ -181,6 +191,9 @@ class VmArtifactViewSpec(object):
             queue=get_attr(view, 'queue', DEFAULT_VIRTIOFS_QUEUE),
             binary_path=get_attr(view, 'binaryPath', DEFAULT_VIRTIOFS_BINARY),
             read_only=get_attr(view, 'readOnly', True),
+            source_roots=source_roots_from_view(view),
+            required_capacity_bytes=virtiofs_source._parse_required_capacity(
+                get_attr(view, 'requiredCapacityBytes', get_attr(view, 'requiredBytes'))),
         )
 
     def resolve_source_path(self):
@@ -189,8 +202,13 @@ class VmArtifactViewSpec(object):
             return source_path
         if self.source_path:
             try:
-                return ensure_under(self.source_path, HOST_SOURCE_ROOT, 'sourcePath')
-            except Exception:
+                source_path = virtiofs_source.ensure_under_any(
+                    self.source_path, self.source_roots or (HOST_SOURCE_ROOT,), 'sourcePath', allow_root=False)
+                virtiofs_source.check_available_capacity(source_path, self.required_capacity_bytes)
+                return source_path
+            except Exception as exc:
+                if 'available capacity' in str(exc) or 'failed to check virtiofs source capacity' in str(exc):
+                    raise
                 return virtiofs_source_path(self.vm_uuid, self.source_path)
         if self.view_path:
             return virtiofs_source_path(self.vm_uuid, self.view_path)
