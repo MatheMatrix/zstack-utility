@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<project name="zstack-license-server builder" basedir="../">
+    <property name="license.server.bdir" location="${build.dir}/license-server" />
+    <property name="license.server.ansible.dir" location="${ansible.dir}/license-server/" />
+
+    <target name="build-license-server" if="build_war_flag">
+        <makeDir dir="${license.server.bdir}" />
+
+        <checkProperty property="licenseserver.source" />
+        <checkFile file="${licenseserver.source}" />
+
+        <exec executable="make" dir="${licenseserver.source}" failonerror="true">
+            <arg value="clean" />
+        </exec>
+
+        <exec executable="make" dir="${licenseserver.source}" failonerror="true">
+            <arg value="package-binary" />
+            <arg value="ARCH=amd64 arm64 mips64le loong64" />
+        </exec>
+
+        <copy todir="${license.server.bdir}/">
+            <fileset dir="${licenseserver.package.dir}">
+                <exclude name="**/*~" />
+                <include name="**/*" />
+            </fileset>
+        </copy>
+    </target>
+
+    <target name="assemble-license-server" if="build_war_flag">
+        <makeDir dir="${license.server.ansible.dir}" />
+
+        <copy todir="${license.server.ansible.dir}">
+            <fileset dir="${license.server.bdir}">
+                <include name="**/*" />
+            </fileset>
+        </copy>
+    </target>
+
+</project>

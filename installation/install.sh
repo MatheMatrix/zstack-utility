@@ -113,6 +113,15 @@ MYSQL_NEW_ROOT_PASSWORD='zstack.mysql.password'
 MYSQL_USER_PASSWORD='zstack.password'
 MYSQL_UI_USER_PASSWORD='zstack.ui.password'
 CHOOSE_DATABASE='MariaDB'
+LICENSE_SERVER_DB_NAME='zstack_license_server'
+LICENSE_SERVER_DB_USER='license_server'
+LICENSE_SERVER_DEFAULT_DB_PASSWORD='zstack.ls.password'
+LICENSE_SERVER_DATA_DIR='/var/log/zstack/zstack-license-server'
+LICENSE_SERVER_LOG_DIR='/var/log/zstack/zstack-license-server'
+LICENSE_SERVER_SERVICE='zstack-license-server.service'
+LICENSE_SERVER_DB_PASSWORD=''
+LICENSE_SERVER_DB_PASSWORD_ENC=''
+LICENSE_SERVER_EXISTING_INSTALL='n'
 
 YUM_ONLINE_REPO='y'
 INSTALL_MONITOR=''
@@ -2574,6 +2583,238 @@ install_morph_server(){
   systemctl is-enabled morph &>/dev/null && systemctl restart morph || true
 }
 
+license_server_installer_bin() {
+    local license_server_dir="$ZSTACK_INSTALL_ROOT/$CATALINA_ZSTACK_CLASSES/ansible/license-server"
+    local installer_bin=''
+
+    [ ! -d "$license_server_dir" ] && return 0
+    installer_bin=`find "$license_server_dir" -maxdepth 1 -type f -name "zstack-license-server.${BASEARCH}.bin" | head -n 1`
+    echo "$installer_bin"
+}
+
+encrypt_license_server_db_password() {
+    local plain="$1"
+    local key_hex='5a537461636b4c534d61737465724b79'
+    local iv_hex='000102030405060708090a0b0c0d0e0f'
+    local ct_file=''
+    local raw_file=''
+    local b64=''
+
+    which openssl >/dev/null 2>&1 || fail "openssl is required to encrypt license server database password"
+    which perl >/dev/null 2>&1 || fail "perl is required to render license server database password"
+
+    ct_file=`mktemp`
+    raw_file=`mktemp`
+    printf '%s' "$plain" | openssl enc -aes-128-cbc -K "$key_hex" -iv "$iv_hex" -out "$ct_file" >/dev/null 2>&1
+    [ $? -ne 0 ] && rm -f "$ct_file" "$raw_file" && fail "failed to encrypt license server database password"
+    perl -e 'print pack("H*", shift)' "$iv_hex" > "$raw_file"
+    cat "$ct_file" >> "$raw_file"
+    b64=`base64 -w0 "$raw_file" 2>/dev/null || base64 < "$raw_file" | tr -d '\n'`
+    rm -f "$ct_file" "$raw_file"
+    echo "ENC($b64)"
+}
+
+decrypt_license_server_db_password() {
+    local encrypted="$1"
+    local key_hex='5a537461636b4c534d61737465724b79'
+    local body=''
+    local raw_file=''
+    local ct_file=''
+    local plain=''
+    local iv_hex=''
+
+    which openssl >/dev/null 2>&1 || fail "openssl is required to decrypt license server database password"
+    which perl >/dev/null 2>&1 || fail "perl is required to decrypt license server database password"
+
+    body=`echo "$encrypted" | sed -e 's/^ENC(//' -e 's/)$//'`
+    raw_file=`mktemp`
+    ct_file=`mktemp`
+    printf '%s' "$body" | base64 -d > "$raw_file" 2>/dev/null || printf '%s' "$body" | base64 -D > "$raw_file" 2>/dev/null
+    [ $? -ne 0 ] && rm -f "$raw_file" "$ct_file" && fail "failed to decode license server database password"
+    iv_hex=`dd if="$raw_file" bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'`
+    dd if="$raw_file" of="$ct_file" bs=16 skip=1 2>/dev/null
+    plain=`openssl enc -d -aes-128-cbc -K "$key_hex" -iv "$iv_hex" -in "$ct_file" 2>/dev/null`
+    [ $? -ne 0 ] && rm -f "$raw_file" "$ct_file" && fail "failed to decrypt license server database password"
+    rm -f "$raw_file" "$ct_file"
+    echo "$plain"
+}
+
+read_license_server_config_password() {
+    local config_file="$1"
+    local encrypted=''
+
+    encrypted=`perl -0ne 'if (/database:\n(?:[[:blank:]]+[^\n]*\n)*?[[:blank:]]+password:[[:blank:]]*"([^"]*)"/s) { print $1; exit 0 } exit 1' "$config_file"`
+    [ $? -ne 0 -o -z "$encrypted" ] && fail "cannot read license server database password from $config_file"
+    echo "$encrypted"
+}
+
+license_server_sql_escape() {
+    printf '%s' "$1" | perl -pe "s/\\\\/\\\\\\\\/g; s/'/''/g"
+}
+
+prepare_license_server_password() {
+    local config_file="${ZSTACK_INSTALL_ROOT}/license-server/conf/config.yaml"
+    local encrypted=''
+
+    LICENSE_SERVER_EXISTING_INSTALL='n'
+    LICENSE_SERVER_DB_PASSWORD=''
+    LICENSE_SERVER_DB_PASSWORD_ENC=''
+
+    # License Server install state is independent from the ZStack -u flag:
+    # an existing config.yaml means LS upgrade/reinstall and must preserve its
+    # database password; otherwise this is a new LS deployment.
+    if [ -f "$config_file" ]; then
+        LICENSE_SERVER_EXISTING_INSTALL='y'
+        encrypted=`read_license_server_config_password "$config_file"`
+        LICENSE_SERVER_DB_PASSWORD=`decrypt_license_server_db_password "$encrypted"`
+        return 0
+    fi
+
+    LICENSE_SERVER_DB_PASSWORD="$LICENSE_SERVER_DEFAULT_DB_PASSWORD"
+    LICENSE_SERVER_DB_PASSWORD_ENC=`encrypt_license_server_db_password "$LICENSE_SERVER_DB_PASSWORD"`
+}
+
+prepare_license_server_user_and_db() {
+    echo_subtitle "Prepare License Server db and user"
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+
+    local root_password="$MYSQL_NEW_ROOT_PASSWORD"
+    local user_password="$LICENSE_SERVER_DEFAULT_DB_PASSWORD"
+    local user_password_sql=''
+    local reset_user='n'
+    local mysql_defaults_file=''
+    local sql_file=''
+
+    [ -n "$MYSQL_ROOT_PASSWORD" ] && root_password="$MYSQL_ROOT_PASSWORD"
+    [ -n "$LICENSE_SERVER_DB_PASSWORD" ] && user_password="$LICENSE_SERVER_DB_PASSWORD" && reset_user='y'
+
+    mysql_defaults_file=`mktemp`
+    sql_file=`mktemp`
+    chmod 600 "$mysql_defaults_file" "$sql_file"
+
+    # Avoid leaking database passwords through the global DEBUG trap's BASH_COMMAND log.
+    trap - DEBUG
+    printf '[client]\nuser=root\npassword=%s\n' "$root_password" > "$mysql_defaults_file"
+    user_password_sql=`license_server_sql_escape "$user_password"`
+
+    mysql --defaults-extra-file="$mysql_defaults_file" -e 'exit' >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        rm -f "$mysql_defaults_file" "$sql_file"
+        trap 'traplogger $LINENO "$BASH_COMMAND" $?' DEBUG
+        fail2 "\nCannot login mysql! If you have mysql root password, please add option '-P MYSQL_ROOT_PASSWORD'.\n"
+    fi
+
+    if [ -n "$NEED_DROP_DB" ]; then
+        printf 'DROP DATABASE IF EXISTS `%s`;\n' "$LICENSE_SERVER_DB_NAME" > "$sql_file"
+        mysql --defaults-extra-file="$mysql_defaults_file" < "$sql_file" >>$ZSTACK_INSTALL_LOG 2>&1
+        if [ $? -ne 0 ]; then
+            rm -f "$mysql_defaults_file" "$sql_file"
+            trap 'traplogger $LINENO "$BASH_COMMAND" $?' DEBUG
+            fail "failed to drop license server database"
+        fi
+    fi
+
+    printf 'CREATE DATABASE IF NOT EXISTS `%s` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;\n' "$LICENSE_SERVER_DB_NAME" > "$sql_file"
+    mysql --defaults-extra-file="$mysql_defaults_file" < "$sql_file" >>$ZSTACK_INSTALL_LOG 2>&1
+    if [ $? -ne 0 ]; then
+        rm -f "$mysql_defaults_file" "$sql_file"
+        trap 'traplogger $LINENO "$BASH_COMMAND" $?' DEBUG
+        fail "failed to create license server database"
+    fi
+
+    if [ x"$reset_user" = x"y" ]; then
+        cat > "$sql_file" <<EOF
+DROP USER IF EXISTS '$LICENSE_SERVER_DB_USER'@'localhost';
+DROP USER IF EXISTS '$LICENSE_SERVER_DB_USER'@'%';
+CREATE USER '$LICENSE_SERVER_DB_USER'@'localhost' IDENTIFIED BY '$user_password_sql';
+CREATE USER '$LICENSE_SERVER_DB_USER'@'%' IDENTIFIED BY '$user_password_sql';
+GRANT ALL PRIVILEGES ON \`$LICENSE_SERVER_DB_NAME\`.* TO '$LICENSE_SERVER_DB_USER'@'localhost';
+GRANT ALL PRIVILEGES ON \`$LICENSE_SERVER_DB_NAME\`.* TO '$LICENSE_SERVER_DB_USER'@'%';
+FLUSH PRIVILEGES;
+EOF
+    else
+        cat > "$sql_file" <<EOF
+CREATE USER IF NOT EXISTS '$LICENSE_SERVER_DB_USER'@'localhost' IDENTIFIED BY '$user_password_sql';
+CREATE USER IF NOT EXISTS '$LICENSE_SERVER_DB_USER'@'%' IDENTIFIED BY '$user_password_sql';
+GRANT ALL PRIVILEGES ON \`$LICENSE_SERVER_DB_NAME\`.* TO '$LICENSE_SERVER_DB_USER'@'localhost';
+GRANT ALL PRIVILEGES ON \`$LICENSE_SERVER_DB_NAME\`.* TO '$LICENSE_SERVER_DB_USER'@'%';
+FLUSH PRIVILEGES;
+EOF
+    fi
+    mysql --defaults-extra-file="$mysql_defaults_file" < "$sql_file" >>$ZSTACK_INSTALL_LOG 2>&1
+    if [ $? -ne 0 ]; then
+        rm -f "$mysql_defaults_file" "$sql_file"
+        trap 'traplogger $LINENO "$BASH_COMMAND" $?' DEBUG
+        fail "failed to prepare license server database user"
+    fi
+    rm -f "$mysql_defaults_file" "$sql_file"
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?' DEBUG
+
+    pass
+}
+
+render_license_server_config_password() {
+    local config_file="${ZSTACK_INSTALL_ROOT}/license-server/conf/config.yaml"
+
+    [ -z "$LICENSE_SERVER_DB_PASSWORD_ENC" ] && return 0
+    [ -f "$config_file" ] || fail "cannot find license server config: $config_file"
+
+    DB_PASSWORD_ENC="$LICENSE_SERVER_DB_PASSWORD_ENC" perl -0pi -e '
+        my $p = $ENV{"DB_PASSWORD_ENC"};
+        s#(database:\n(?:[[:blank:]]+[^\n]*\n)*?[[:blank:]]+password:[[:blank:]]*")[^"]*(")#$1$p$2#s
+            or die "database.password not found\n";
+    ' "$config_file" >>$ZSTACK_INSTALL_LOG 2>&1
+    [ $? -ne 0 ] && fail "failed to render license server database password"
+}
+
+install_license_server() {
+    local installer_bin=`license_server_installer_bin`
+    if [ -z "$installer_bin" ]; then
+        fail "license server installer package for $BASEARCH not found"
+    fi
+
+    echo_title "Install License Server"
+    echo ""
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+
+    prepare_license_server_password
+    show_spinner prepare_license_server_user_and_db
+
+    LICENSE_SERVER_INSTALL_OUTPUT=`mktemp`
+    show_spinner is_install_license_server "$installer_bin"
+    if [ -s "$LICENSE_SERVER_INSTALL_OUTPUT" ]; then
+        echo "" >>$ZSTACK_INSTALL_LOG
+        echo "    License Server installer output:" >>$ZSTACK_INSTALL_LOG
+        sed 's/^/      /' "$LICENSE_SERVER_INSTALL_OUTPUT" >>$ZSTACK_INSTALL_LOG
+    fi
+    rm -f "$LICENSE_SERVER_INSTALL_OUTPUT"
+}
+
+is_install_license_server() {
+    echo_subtitle "Install License Server files"
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+
+    local installer_bin="$1"
+    local installer_output="${LICENSE_SERVER_INSTALL_OUTPUT:-$ZSTACK_INSTALL_LOG}"
+
+    DB_DRIVER=mysql \
+    DB_URL="${MANAGEMENT_IP}:${MYSQL_PORT}" \
+    DB_NAME="$LICENSE_SERVER_DB_NAME" \
+    DB_USER="$LICENSE_SERVER_DB_USER" \
+    ZSTACK_INSTALL_ROOT="$ZSTACK_INSTALL_ROOT" \
+    PREFIX="${ZSTACK_INSTALL_ROOT}/license-server" \
+    DATA_DIR="$LICENSE_SERVER_DATA_DIR" \
+    LOG_DIR="$LICENSE_SERVER_LOG_DIR" \
+    bash "$installer_bin" >"$installer_output" 2>&1
+    [ $? -ne 0 ] && fail "failed to install license server"
+
+    if [ x"$LICENSE_SERVER_EXISTING_INSTALL" != x"y" ]; then
+        render_license_server_config_password
+    fi
+
+    pass
+}
+
 is_extract_morph_tar(){
   echo_subtitle "Extract morph tar"
   local src="${1}"
@@ -4613,6 +4854,11 @@ if [ x"$UPGRADE" = x'y' ]; then
     #only upgrade zstack
     upgrade_zstack
 
+    #Install or upgrade license server after the new management node package is in place
+    if [ -z "$ONLY_UPGRADE_CTL" ]; then
+        install_license_server
+    fi
+
     #Upgrade or install zops
     install_zops
 
@@ -4796,6 +5042,8 @@ install_fluentbit_server
 install_keycloak_server
 
 install_morph_server
+
+install_license_server
 
 #Start ${PRODUCT_NAME} 
 if [ -z $NOT_START_ZSTACK ]; then
