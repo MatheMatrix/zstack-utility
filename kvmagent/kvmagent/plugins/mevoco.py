@@ -27,10 +27,24 @@ from jinja2 import Template
 import struct
 import socket
 import platform
+import time
 
 from zstacklib.utils.ovs import OvsError
 
 logger = log.get_logger(__name__)
+
+
+def write_file_if_changed(path, content, mode=None):
+    if os.path.exists(path):
+        with open(path, 'r') as fd:
+            if fd.read() == content:
+                return False
+
+    with open(path, 'w') as fd:
+        fd.write(content)
+    if mode is not None:
+        os.chmod(path, mode)
+    return True
 
 
 @functools.lru_cache(maxsize=1)
@@ -1538,13 +1552,8 @@ tag:{{TAG}},option:dns-server,{{DNS}}
     @kvmagent.replyerror
     @lock.lock('lighttpd')
     def batch_apply_userdata(self, req):
+        started_at = time.time()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-
-        if cmd.rebuild:
-            # kill all lighttpd processes using userdata folder
-            # which will be restarted later
-            pattern = self.USERDATA_ROOT.replace("/", "\/")
-            shell.call("pkill -9 -f 'lighttpd.*%s' || true" % pattern)
 
         namespaces = {}
         for u in cmd.userdata:
@@ -1567,14 +1576,22 @@ tag:{{TAG}},option:dns-server,{{DNS}}
                     raise Exception('same namespace [%s] but has different port: %s, %s ' % (
                     u.namespaceName, namespaces[u.namespaceName].port, u.port))
 
+        restart_required = {}
+        xtables_started_at = time.time()
         for n in list(namespaces.values()):
-            self._apply_userdata_xtables(n)
+            restart_required[n.namespaceName] = self._apply_userdata_xtables(n)
 
+        vmdata_started_at = time.time()
         for u in cmd.userdata:
             self._apply_userdata_vmdata(u)
 
+        lighttpd_started_at = time.time()
         for n in list(namespaces.values()):
-            self._apply_userdata_restart_httpd(n)
+            self._apply_userdata_restart_httpd(n, restart_required.get(n.namespaceName, True))
+
+        logger.debug('batch apply userdata done, vm count: %s, namespace count: %s, xtables: %.3fs, vmdata: %.3fs, lighttpd: %.3fs, total: %.3fs' % (
+            len(cmd.userdata), len(namespaces), vmdata_started_at - xtables_started_at,
+            lighttpd_started_at - vmdata_started_at, time.time() - lighttpd_started_at, time.time() - started_at))
 
         return jsonobject.dumps(kvmagent.AgentResponse())
 
@@ -1582,9 +1599,9 @@ tag:{{TAG}},option:dns-server,{{DNS}}
     @lock.lock('lighttpd')
     def apply_userdata(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        self._apply_userdata_xtables(cmd.userdata)
+        restart_required = self._apply_userdata_xtables(cmd.userdata)
         self._apply_userdata_vmdata(cmd.userdata)
-        self._apply_userdata_restart_httpd(cmd.userdata)
+        self._apply_userdata_restart_httpd(cmd.userdata, restart_required)
         return jsonobject.dumps(ApplyUserdataRsp())
 
     @in_bash
@@ -1598,8 +1615,7 @@ tag:{{TAG}},option:dns-server,{{DNS}}
                 linux.mkdir(meta_root)
 
             index_file_path = os.path.join(meta_root, 'index.html')
-            with open(index_file_path, 'w') as fd:
-                fd.write('')
+            write_file_if_changed(index_file_path, '')
 
         def prepare_br_connect_ns(ns, ns_inner_dev, ns_outer_dev):
             bridge_name = self.CONNECT_ALL_NETNS_BR_NAME
@@ -1834,19 +1850,11 @@ mimetype.assign = (
 
         linux.mkdir(http_root, 0o777)
 
-        if not os.path.exists(conf_path):
-            with open(conf_path, 'w') as fd:
-                fd.write(conf)
-        else:
-            with open(conf_path, 'r') as fd:
-                current_conf = fd.read()
-
-            if current_conf != conf:
-                with open(conf_path, 'w') as fd:
-                    fd.write(conf)
+        conf_changed = write_file_if_changed(conf_path, conf)
 
         create_default_userdata(http_root)
         self.apply_zwatch_vm_agent(http_root)
+        return conf_changed
 
     def apply_zwatch_vm_agent(self, http_root):
         agent_file_source_path = "/var/lib/zstack/kvm/zwatch-vm-agent"
@@ -1923,9 +1931,10 @@ mimetype.assign = (
 
             # macs/index.html
             mac_index_file_path = os.path.join(macs_root, 'index.html')
-            with open(mac_index_file_path, 'w') as fd:
-                for nic in self.network_interfaces:
-                    fd.write(nic.macAddress + '\n')
+            mac_index = ''
+            for nic in self.network_interfaces:
+                mac_index += nic.macAddress + '\n'
+            write_file_if_changed(mac_index_file_path, mac_index)
 
             # write value to file for each nic
             for nic in self.network_interfaces:
@@ -1936,13 +1945,13 @@ mimetype.assign = (
                 for attr, file_name in self.nic_field_mapper.field_map.items():
                     if hasattr(nic, attr) and getattr(nic, attr):
                         file_path = os.path.join(mac_dir, file_name)
-                        with open(file_path, 'w') as fd:
-                            fd.write(getattr(nic, attr))
+                        write_file_if_changed(file_path, getattr(nic, attr))
                 mac_index = os.path.join(mac_dir, 'index.html')
-                with open(mac_index, 'w') as fd:
-                    for attr, file_name in self.nic_field_mapper.field_map.items():
-                        if hasattr(nic, attr) and getattr(nic, attr):
-                            fd.write(file_name + '\n')
+                index_content = ''
+                for attr, file_name in self.nic_field_mapper.field_map.items():
+                    if hasattr(nic, attr) and getattr(nic, attr):
+                        index_content += file_name + '\n'
+                write_file_if_changed(mac_index, index_content)
 
     def _write_metadata_files(self, meta_root, to):
         field_mapper = self.FieldMapper({
@@ -1957,29 +1966,28 @@ mimetype.assign = (
 
         # index.html
         index_file_path = os.path.join(meta_root, 'index.html')
-        with open(index_file_path, 'w') as fd:
-            for field in ['vmUuid', 'vmHostname', 'regionName', 'mac', 'vpcId', 'dnsServersIp']:
-                value = getattr(to.metadata, field, None)
-                if value:
-                    fd.write(field_mapper.get_file_name(field) + '\n')
-            if to.vmIp:
-                fd.write('private-ipv4\n')
-            if to.networkInterfaces:
-                fd.write('network/\n')
+        index_content = ''
+        for field in ['vmUuid', 'vmHostname', 'regionName', 'mac', 'vpcId', 'dnsServersIp']:
+            value = getattr(to.metadata, field, None)
+            if value:
+                index_content += field_mapper.get_file_name(field) + '\n'
+        if to.vmIp:
+            index_content += 'private-ipv4\n'
+        if to.networkInterfaces:
+            index_content += 'network/\n'
+        write_file_if_changed(index_file_path, index_content)
 
         # write value to single file
         for field in ['vmUuid', 'vmHostname', 'regionName', 'vpcId', 'mac']:
             value = getattr(to.metadata, field, None)
             if value:
                 file_path = os.path.join(meta_root, field_mapper.get_file_name(field))
-                with open(file_path, 'w') as fd:
-                    fd.write(value)
+                write_file_if_changed(file_path, value)
 
         # private-ipv4
         if to.vmIp:
             vm_ip_file_path = os.path.join(meta_root, 'private-ipv4')
-            with open(vm_ip_file_path, 'w') as fd:
-                fd.write(to.vmIp) # in before design, to has vmIp
+            write_file_if_changed(vm_ip_file_path, to.vmIp)
 
         # dns-conf/nameservers
         if to.metadata.dnsServersIp:
@@ -1987,24 +1995,20 @@ mimetype.assign = (
             if not os.path.exists(dns_conf_dir):
                 linux.mkdir(dns_conf_dir)
             nameservers_file_path = os.path.join(dns_conf_dir, 'nameservers')
-            with open(nameservers_file_path, 'w') as fd:
-                fd.write(to.metadata.dnsServersIp)
+            write_file_if_changed(nameservers_file_path, to.metadata.dnsServersIp)
             dns_conf_index_path = os.path.join(dns_conf_dir, 'index.html')
-            with open(dns_conf_index_path, 'w') as fd:
-                fd.write('nameservers\n')
+            write_file_if_changed(dns_conf_index_path, 'nameservers\n')
         if to.networkInterfaces:
             network_root = os.path.join(meta_root, 'network')
             if not os.path.exists(network_root):
                 linux.mkdir(network_root)
             network_index = os.path.join(network_root, 'index.html')
-            with open(network_index, 'w') as fd:
-                fd.write('interfaces/\n')
+            write_file_if_changed(network_index, 'interfaces/\n')
             interfaces_root = os.path.join(network_root, 'interfaces')
             if not os.path.exists(interfaces_root):
                 linux.mkdir(interfaces_root)
             interfaces_index = os.path.join(interfaces_root, 'index.html')
-            with open(interfaces_index, 'w') as fd:
-                fd.write('macs/\n')
+            write_file_if_changed(interfaces_index, 'macs/\n')
 
         # network/interfaces/macs
         if to.networkInterfaces:
@@ -2047,29 +2051,25 @@ mimetype.assign = (
         self._write_metadata_files(meta_root, to)
 
         if to.userdataList:
+            userdata_content = packUserdata(to.userdataList)
             userdata_file_path = os.path.join(root, 'user-data')
-            with open(userdata_file_path, 'w') as fd:
-                fd.write(packUserdata(to.userdataList))
+            write_file_if_changed(userdata_file_path, userdata_content)
 
             windows_meta_data_json_path = os.path.join(root, 'meta_data.json')
-            with open(windows_meta_data_json_path, 'w') as fd:
-                fd.write(conf)
+            write_file_if_changed(windows_meta_data_json_path, conf)
 
             windows_userdata_file_path = os.path.join(root, 'user_data')
-            with open(windows_userdata_file_path, 'w') as fd:
-                fd.write(packUserdata(to.userdataList))
+            write_file_if_changed(windows_userdata_file_path, userdata_content)
 
             windows_meta_data_password = os.path.join(root, 'password')
-            with open(windows_meta_data_password, 'w') as fd:
-                fd.write('')
+            write_file_if_changed(windows_meta_data_password, '')
 
         if to.agentConfig:
             pvpanic_file_path = os.path.join(meta_root, 'pvpanic')
-            with open(pvpanic_file_path, 'w') as fd:
-                fd.write(to.agentConfig.pvpanic if to.agentConfig.pvpanic else 'disable')
+            write_file_if_changed(pvpanic_file_path, to.agentConfig.pvpanic if to.agentConfig.pvpanic else 'disable')
 
     @in_bash
-    def _apply_userdata_restart_httpd(self, to):
+    def _apply_userdata_restart_httpd(self, to, restart_required=True):
         def check(_):
             pid = linux.find_process_by_cmdline([conf_path])
             return pid is not None
@@ -2077,6 +2077,9 @@ mimetype.assign = (
         conf_folder = os.path.join(self.USERDATA_ROOT, to.namespaceName)
         conf_path = os.path.join(conf_folder, 'lighttpd.conf')
         pids = linux.find_all_process_by_cmdline([conf_path])
+        if pids and not restart_required:
+            return
+
         for pid in pids:
             linux.kill_process(pid)
 
@@ -2108,24 +2111,25 @@ mimetype.assign = (
         # DNAT port 80
         PORT = to.port
         PORT_CHAIN_NAME = "UD-PORT-%s" % PORT
+        nat_rules = str(bash_errorout("iptables-save -t nat") or "")
         # delete old chains not matching our port
-        OLD_CHAIN = bash_errorout("iptables-save | awk '/^:UD-PORT-/{print substr($1,2)}'").strip(' \n\r\t')
-        if OLD_CHAIN and OLD_CHAIN != CHAIN_NAME:
-            ret = bash_r("iptables-save -t nat | grep -- '-j {{OLD_CHAIN}}'")
-            if ret == 0:
-                bash_r('%s -t nat -D PREROUTING -j {{OLD_CHAIN}}' % get_iptables_cmd())
+        old_chains = []
+        for line in nat_rules.splitlines():
+            if line.startswith(":UD-PORT-"):
+                old_chains.append(line.split()[0][1:])
+        for OLD_CHAIN in old_chains:
+            if OLD_CHAIN and OLD_CHAIN != PORT_CHAIN_NAME:
+                if '-j %s' % OLD_CHAIN in nat_rules:
+                    bash_r('%s -t nat -D PREROUTING -j {{OLD_CHAIN}}' % get_iptables_cmd())
 
-            bash_errorout('%s -t nat -F {{OLD_CHAIN}}' % get_iptables_cmd())
-            bash_errorout('%s -t nat -X {{OLD_CHAIN}}' % get_iptables_cmd())
-        ret = bash_r('iptables-save | grep -w ":{{PORT_CHAIN_NAME}}" > /dev/null')
-        if ret != 0:
+                bash_errorout('%s -t nat -F {{OLD_CHAIN}}' % get_iptables_cmd())
+                bash_errorout('%s -t nat -X {{OLD_CHAIN}}' % get_iptables_cmd())
+        if ":%s " % PORT_CHAIN_NAME not in nat_rules:
             self.bash_ignore_exist_for_ipt('%s -t nat -N {{PORT_CHAIN_NAME}}' % get_iptables_cmd())
-        ret = bash_r("%s -t nat -L PREROUTING | grep -- '-j {{PORT_CHAIN_NAME}}'" % get_iptables_cmd())
-        if ret != 0:
+        if '-A PREROUTING -j %s' % PORT_CHAIN_NAME not in nat_rules:
             self.bash_ignore_exist_for_ipt('%s -t nat -I PREROUTING -j {{PORT_CHAIN_NAME}}' % get_iptables_cmd())
-        ret = bash_r(
-            "iptables-save -t nat | grep -- '{{PORT_CHAIN_NAME}} -d 169.254.169.254/32 -p tcp -j DNAT --to-destination :{{PORT}}'")
-        if ret != 0:
+        dnat_rule = '-A %s -d 169.254.169.254/32 -p tcp -j DNAT --to-destination :%s' % (PORT_CHAIN_NAME, PORT)
+        if dnat_rule not in nat_rules:
             self.bash_ignore_exist_for_ipt(
                 '%s -t nat -A {{PORT_CHAIN_NAME}} -d 169.254.169.254/32 -p tcp -j DNAT --to-destination :{{PORT}}' % get_iptables_cmd())
 
@@ -2227,6 +2231,7 @@ mimetype.assign = (
     @lock.lock('prepare_dhcp')
     @kvmagent.replyerror
     def batch_prepare_dhcp(self, req):
+        started_at = time.time()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
         for info in cmd.dhcpInfos:
@@ -2254,6 +2259,7 @@ mimetype.assign = (
 
             p.prepare()
 
+        logger.debug('batch prepare dhcp done, namespace count: %s, total: %.3fs' % (len(cmd.dhcpInfos), time.time() - started_at))
         return jsonobject.dumps(PrepareDhcpRsp())
 
     @lock.lock('dnsmasq')
@@ -2302,12 +2308,15 @@ mimetype.assign = (
     @lock.lock('dnsmasq')
     @kvmagent.replyerror
     def batch_apply_dhcp(self, req):
+        started_at = time.time()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
 
         namespace_dhcp = {}
+        dhcp_count = 0
 
         for info in cmd.dhcpInfos:
             for d in info.dhcp:
+                dhcp_count += 1
                 lst = namespace_dhcp.get(d.namespaceName)
                 if not lst:
                     lst = []
@@ -2315,6 +2324,8 @@ mimetype.assign = (
                 lst.append(d)
 
         self.do_apply_dhcp(namespace_dhcp, cmd.rebuild)
+        logger.debug('batch apply dhcp done, dhcp count: %s, namespace count: %s, rebuild: %s, total: %.3fs' % (
+            dhcp_count, len(namespace_dhcp), cmd.rebuild, time.time() - started_at))
         rsp = ApplyDhcpRsp()
         return jsonobject.dumps(rsp)
 
@@ -2427,10 +2438,10 @@ dhcp-range={{g}}
                 'gateways': ranges
             })
 
-            restart_dnsmasq = rebuild
+            restart_dnsmasq = False
+            refresh_dnsmasq = False
             if not os.path.exists(conf_file_path) or rebuild:
-                with open(conf_file_path, 'w') as fd:
-                    fd.write(conf_file)
+                restart_dnsmasq = write_file_if_changed(conf_file_path, conf_file)
             else:
                 with open(conf_file_path, 'r') as fd:
                     c = fd.read()
@@ -2438,8 +2449,7 @@ dhcp-range={{g}}
                 if c != conf_file:
                     logger.debug('dnsmasq configure file for bridge[%s] changed, restart it' % bridge_name)
                     restart_dnsmasq = True
-                    with open(conf_file_path, 'w') as fd:
-                        fd.write(conf_file)
+                    write_file_if_changed(conf_file_path, conf_file)
                     logger.debug('wrote dnsmasq configure file for bridge[%s]\n%s' % (bridge_name, conf_file))
 
 
@@ -2489,8 +2499,12 @@ dhcp-range={{g}}
             if rebuild:
                 mode = 'w'
 
-            with open(dhcp_path, mode) as fd:
-                fd.write(dhcp_conf)
+            if rebuild:
+                refresh_dnsmasq = write_file_if_changed(dhcp_path, dhcp_conf) or refresh_dnsmasq
+            else:
+                with open(dhcp_path, mode) as fd:
+                    fd.write(dhcp_conf)
+                refresh_dnsmasq = True
 
             option_conf = '''\
 {% for o in options -%}
@@ -2529,8 +2543,12 @@ tag:{{o.tag}},option:mtu,{{o.mtu}}
             tmpt = Template(option_conf)
             option_conf = tmpt.render({'options': info})
 
-            with open(option_path, mode) as fd:
-                fd.write(option_conf)
+            if rebuild:
+                refresh_dnsmasq = write_file_if_changed(option_path, option_conf) or refresh_dnsmasq
+            else:
+                with open(option_path, mode) as fd:
+                    fd.write(option_conf)
+                refresh_dnsmasq = True
 
             hostname_conf = '''\
 {% for h in hostnames -%}
@@ -2545,13 +2563,14 @@ tag:{{o.tag}},option:mtu,{{o.mtu}}
             tmpt = Template(hostname_conf)
             hostname_conf = tmpt.render({'hostnames': info})
 
-            with open(dns_path, mode) as fd:
-                fd.write(hostname_conf)
-
-            if restart_dnsmasq:
-                self._restart_dnsmasq(namespace_name, conf_file_path)
+            if rebuild:
+                refresh_dnsmasq = write_file_if_changed(dns_path, hostname_conf) or refresh_dnsmasq
             else:
-                self._refresh_dnsmasq(namespace_name, conf_file_path)
+                with open(dns_path, mode) as fd:
+                    fd.write(hostname_conf)
+                refresh_dnsmasq = True
+
+            self._sync_dnsmasq(namespace_name, conf_file_path, restart_dnsmasq, refresh_dnsmasq)
 
         @in_bash
         def applyv6(dhcp):
@@ -2596,10 +2615,10 @@ dhcp-range={{range}}
                 'range': dhcp_range + ra_param if dhcp[0].enableRa else dhcp_range,
             })
 
-            restart_dnsmasq = rebuild
+            restart_dnsmasq = False
+            refresh_dnsmasq = False
             if not os.path.exists(conf_file_path) or rebuild:
-                with open(conf_file_path, 'w') as fd:
-                    fd.write(conf_file)
+                restart_dnsmasq = write_file_if_changed(conf_file_path, conf_file)
             else:
                 with open(conf_file_path, 'r') as fd:
                     c = fd.read()
@@ -2607,8 +2626,7 @@ dhcp-range={{range}}
                 if c != conf_file:
                     logger.debug('dnsmasq configure file for bridge[%s] changed, restart it' % bridge_name)
                     restart_dnsmasq = True
-                    with open(conf_file_path, 'w') as fd:
-                        fd.write(conf_file)
+                    write_file_if_changed(conf_file_path, conf_file)
                     logger.debug('wrote dnsmasq configure file for bridge[%s]\n%s' % (bridge_name, conf_file))
 
             info = []
@@ -2640,8 +2658,12 @@ dhcp-range={{range}}
             if rebuild:
                 mode = 'w'
 
-            with open(dhcp_path, mode) as fd:
-                fd.write(dhcp_conf)
+            if rebuild:
+                refresh_dnsmasq = write_file_if_changed(dhcp_path, dhcp_conf) or refresh_dnsmasq
+            else:
+                with open(dhcp_path, mode) as fd:
+                    fd.write(dhcp_conf)
+                refresh_dnsmasq = True
 
             # for dhcpv6,  if dns-server is not provided, dnsmasq will use dhcp server as dns-server
             option_conf = '''\
@@ -2657,8 +2679,12 @@ tag:{{o.tag}},option6:domain-search,{{o.domainList}}
             tmpt = Template(option_conf)
             option_conf = tmpt.render({'options': info})
 
-            with open(option_path, mode) as fd:
-                fd.write(option_conf)
+            if rebuild:
+                refresh_dnsmasq = write_file_if_changed(option_path, option_conf) or refresh_dnsmasq
+            else:
+                with open(option_path, mode) as fd:
+                    fd.write(option_conf)
+                refresh_dnsmasq = True
 
             hostname_conf = '''\
 {% for h in hostnames -%}
@@ -2670,13 +2696,14 @@ tag:{{o.tag}},option6:domain-search,{{o.domainList}}
             tmpt = Template(hostname_conf)
             hostname_conf = tmpt.render({'hostnames': info})
 
-            with open(dns_path, mode) as fd:
-                fd.write(hostname_conf)
-
-            if restart_dnsmasq:
-                self._restart_dnsmasq(namespace_name, conf_file_path)
+            if rebuild:
+                refresh_dnsmasq = write_file_if_changed(dns_path, hostname_conf) or refresh_dnsmasq
             else:
-                self._refresh_dnsmasq(namespace_name, conf_file_path)
+                with open(dns_path, mode) as fd:
+                    fd.write(hostname_conf)
+                refresh_dnsmasq = True
+
+            self._sync_dnsmasq(namespace_name, conf_file_path, restart_dnsmasq, refresh_dnsmasq)
 
         for k, v in namespace_dhcp.items():
             if v[0].ipVersion == 4 or v[0].ipVersion == 46:
@@ -2701,6 +2728,19 @@ tag:{{o.tag}},option6:domain-search,{{o.domainList}}
 
         if not linux.wait_callback_success(check, None, 5):
             raise Exception('dnsmasq[conf-file:%s] is not running after being started %s seconds' % (conf_file_path, 5))
+
+    def _sync_dnsmasq(self, ns_name, conf_file_path, restart_required, refresh_required):
+        if restart_required:
+            self._restart_dnsmasq(ns_name, conf_file_path)
+            return
+
+        pid = linux.find_process_by_cmdline([conf_file_path])
+        if not pid:
+            self._restart_dnsmasq(ns_name, conf_file_path)
+            return
+
+        if refresh_required:
+            self._refresh_dnsmasq(ns_name, conf_file_path)
 
     def _refresh_dnsmasq(self, ns_name, conf_file_path):
         pid = linux.find_process_by_cmdline([conf_file_path])
