@@ -9,6 +9,8 @@ import functools
 import log
 import os
 import fcntl
+import errno
+import time
 #import typing
 
 _internal_lock = threading.RLock()
@@ -23,14 +25,31 @@ def _get_lock(name):
             _locks[name] = lock
         return lock
 
+class LockTimeout(Exception):
+    pass
+
+
 class NamedLock(object):
-    def __init__(self, name):
+    def __init__(self, name, timeout=None, interval=0.2):
         self.name = name
         self.lock = None
+        self.timeout = timeout
+        self.interval = interval
 
     def __enter__(self):
         self.lock = _get_lock(self.name)
-        self.lock.acquire()
+        if self.timeout is None:
+            self.lock.acquire()
+            return
+
+        deadline = time.time() + self.timeout
+        while True:
+            if self.lock.acquire(False):
+                return
+            if time.time() >= deadline:
+                raise LockTimeout("unable to acquire named lock %s in %ss" %
+                                  (self.name, self.timeout))
+            time.sleep(self.interval)
         #logger.debug('%s got lock %s' % (threading.current_thread().name, self.name))
 
     def __exit__(self, type, value, traceback):
@@ -58,8 +77,27 @@ class Locker(object):
 
 
 class Flock(Locker):
+    def __init__(self, timeout=None, interval=0.2):
+        self.timeout = timeout
+        self.interval = interval
+
     def lock(self, lock_file):
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        if self.timeout is None:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            return
+
+        deadline = time.time() + self.timeout
+        while True:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except (IOError, OSError) as e:
+                if e.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                if time.time() >= deadline:
+                    raise LockTimeout("unable to acquire file lock %s in %ss" %
+                                      (lock_file.name, self.timeout))
+                time.sleep(self.interval)
 
     def unlock(self, lock_file):
         fcntl.flock(lock_file, fcntl.LOCK_UN)
@@ -78,7 +116,8 @@ def file_lock(name, locker=Lockf(), debug=False):
     def wrap(f):
         @functools.wraps(f)
         def inner(*args, **kwargs):
-            with NamedLock(name):
+            lock_timeout = getattr(locker, 'timeout', None)
+            with NamedLock(name, timeout=lock_timeout):
                 if debug:
                     logger.debug("entering named lock %s with function %s.%s" % (name, f.__module__, f.__name__))
                 with FileLock(name, locker):

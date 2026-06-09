@@ -2614,7 +2614,9 @@ class TempAccessible(object):
 
 
 def get_libvirt_package_version():
-    return shell.call("rpm -q libvirt --qf ' %{VERSION}-%{RELEASE}'")
+    return shell.call(
+        "timeout -k 5s 10s rpm -q libvirt --qf ' %{VERSION}-%{RELEASE}'",
+        exception=False).strip()
 
 
 def get_libvirt_version():
@@ -2622,9 +2624,11 @@ def get_libvirt_version():
 
 
 def get_libvirt_rpm_info():
-    cmd_get_version = shell.ShellCmd("rpm -q --qf '%{VERSION}' libvirt")
+    cmd_get_version = shell.ShellCmd(
+        "timeout -k 5s 10s rpm -q --qf '%{VERSION}' libvirt")
     cmd_get_version(False)
-    cmd_get_release = shell.ShellCmd("rpm -q --qf '%{RELEASE}' libvirt")
+    cmd_get_release = shell.ShellCmd(
+        "timeout -k 5s 10s rpm -q --qf '%{RELEASE}' libvirt")
     cmd_get_release(False)
     if cmd_get_version.return_code != 0 or cmd_get_release.return_code != 0:
         return '', ''
