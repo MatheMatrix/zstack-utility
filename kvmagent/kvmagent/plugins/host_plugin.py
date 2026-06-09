@@ -245,6 +245,7 @@ class SetIpOnHostNetworkInterfaceCmd(kvmagent.AgentCommand):
         self.oldGateway = None
         self.ipAddress = None
         self.netmask = None
+        self.prefixLength = None
         self.gateway = None
 
 
@@ -2429,26 +2430,35 @@ done
             rsp.success = False
             return jsonobject.dumps(rsp)
 
+        is_ipv6_address = cmd.ipAddress is not None and ':' in cmd.ipAddress
+        old_is_ipv6_address = cmd.oldIpAddress is not None and ':' in cmd.oldIpAddress
         if cmd.ipAddress is not None:
             try:
-                # zs-network-setting -i eth0 192.168.1.10 255.255.255.0
-                # 192.168.1.1
-                if cmd.gateway is not None:
-                    shell.call('/usr/local/bin/zs-network-setting -i %s %s %s %s' %
-                               (cmd.interfaceName, cmd.ipAddress, cmd.netmask, cmd.gateway))
+                if is_ipv6_address:
+                    prefix_length = cmd.prefixLength if cmd.prefixLength is not None else cmd.netmask
+                    shell.call('ip -6 addr flush dev %s scope global' % shell_quote(cmd.interfaceName))
+                    shell.call('ip -6 addr add %s/%s dev %s' %
+                               (shell_quote(cmd.ipAddress), prefix_length, shell_quote(cmd.interfaceName)))
+                    shell.call('ip link set dev %s up' % shell_quote(cmd.interfaceName))
                 else:
-                    # zs-network-setting -d eth0
-                    shell.call('/usr/local/bin/zs-network-setting -d %s' %
-                               cmd.interfaceName)
-                    bash_o('/usr/local/bin/zs-network-setting -i %s %s %s' %
-                           (cmd.interfaceName, cmd.ipAddress, cmd.netmask))
+                    # zs-network-setting -i eth0 192.168.1.10 255.255.255.0
+                    # 192.168.1.1
+                    if cmd.gateway is not None:
+                        shell.call('/usr/local/bin/zs-network-setting -i %s %s %s %s' %
+                                   (cmd.interfaceName, cmd.ipAddress, cmd.netmask, cmd.gateway))
+                    else:
+                        # zs-network-setting -d eth0
+                        shell.call('/usr/local/bin/zs-network-setting -d %s' %
+                                   cmd.interfaceName)
+                        bash_o('/usr/local/bin/zs-network-setting -i %s %s %s' %
+                               (cmd.interfaceName, cmd.ipAddress, cmd.netmask))
             except Exception as e:
                 rsp.error = 'unable to add ip on %s, because %s' % (
                     cmd.interfaceName, str(e))
                 rsp.success = False
 
             # After configuring the ip, check the connectivity
-            if cmd.gateway is not None and shell.run(
+            if not is_ipv6_address and cmd.gateway is not None and shell.run(
                     'ping -c 5 -W 1 %s > /dev/null 2>&1' % cmd.gateway) != 0:
                 shell.call('/usr/local/bin/zs-network-setting -d %s' %
                            cmd.interfaceName)
@@ -2468,6 +2478,8 @@ done
                 # mv ip on interface
                 shell.call('/usr/local/bin/zs-network-setting -d %s' %
                            cmd.interfaceName)
+                if old_is_ipv6_address:
+                    shell.call('ip -6 addr flush dev %s scope global' % shell_quote(cmd.interfaceName))
             except Exception as e:
                 rsp.error = 'unable to delete ip on %s, because %s' % (
                     cmd.interfaceName, str(e))

@@ -1,4 +1,5 @@
 import difflib
+import ipaddress
 import random
 import re
 import time
@@ -261,6 +262,7 @@ class IscsiLoginCmd(AgentCmd):
         self.iscsiServerPort = None
         self.iscsiChapUserName = None
         self.iscsiChapUserPassword = None
+        self.dataNetworkCidr = None
         self.iscsiTargets = []
 
 
@@ -487,11 +489,47 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
             if r != 0:
                 raise RetryException("can not discovery iscsi portal %s, cause %s" % (portal, e))
 
-            iqns = []
+            records = []
             for i in o.splitlines():
-                if i.startswith("%s," % portal):
-                    iqns.append(i.strip().split(" ")[-1])
-            return iqns
+                record = parse_discovery_record(i)
+                if record is not None:
+                    records.append(record)
+            return records
+
+        def parse_discovery_record(line):
+            parts = line.strip().split()
+            if len(parts) < 2:
+                return None
+
+            portal = parts[0].split(',')[0]
+            if portal.startswith('['):
+                end = portal.find(']')
+                if end == -1:
+                    return None
+                ip = portal[1:end]
+                port = portal[end + 2:] if len(portal) > end + 2 and portal[end + 1] == ':' else cmd.iscsiServerPort
+            else:
+                if ':' not in portal:
+                    return None
+                ip, port = portal.rsplit(':', 1)
+
+            return {
+                'ip': ip,
+                'port': port,
+                'iqn': parts[-1],
+            }
+
+        def is_ip_in_cidr(ip, cidr):
+            try:
+                return ipaddress.ip_address(ip) in ipaddress.ip_network(cidr, strict=False)
+            except ValueError:
+                return False
+
+        def records_on_portal(records, iscsiServerIp, iscsiServerPort):
+            return [r for r in records if r['ip'] == iscsiServerIp and str(r['port']) == str(iscsiServerPort)]
+
+        def iqns_from_records(records):
+            return list(dict.fromkeys([r['iqn'] for r in records]))
 
         def list_iscsi_disks(iscsiServerIp, iscsiServerPort, iscsiIqn):
             portals = _format_iscsi_portal_patterns(iscsiServerIp, iscsiServerPort)
@@ -552,15 +590,45 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
 
         check_iscsi_conf()
         path = "/var/lib/iscsi/nodes"
-        self.clean_iscsi_cache_configuration(path, cmd.iscsiServerIp, cmd.iscsiServerPort)
+        login_server_ip = cmd.iscsiServerIp
+        login_server_port = cmd.iscsiServerPort
+        discovered_records = None
+
+        if cmd.dataNetworkCidr:
+            try:
+                discovered_records = discovery_iscsi(cmd.iscsiServerIp, cmd.iscsiServerPort)
+                data_network_records = [r for r in discovered_records if is_ip_in_cidr(r['ip'], cmd.dataNetworkCidr)]
+                if len(data_network_records) > 0:
+                    login_server_ip = data_network_records[0]['ip']
+                    login_server_port = data_network_records[0]['port']
+                    logger.debug("selected iscsi data network portal %s:%s by cidr %s, original portal %s:%s" %
+                                 (login_server_ip, login_server_port, cmd.dataNetworkCidr, cmd.iscsiServerIp, cmd.iscsiServerPort))
+                else:
+                    logger.warn("no iscsi discovery portal matches data network cidr %s, fallback to %s:%s" %
+                                (cmd.dataNetworkCidr, cmd.iscsiServerIp, cmd.iscsiServerPort))
+            except Exception as e:
+                if cmd.iscsiTargets is None or len(cmd.iscsiTargets) == 0:
+                    current_hostname = linux.get_hostname()
+                    rsp.error = "login iscsi server %s:%s on host %s failed, because %s" % \
+                                (cmd.iscsiServerIp, cmd.iscsiServerPort, current_hostname, str(e))
+                    rsp.success = False
+                    return jsonobject.dumps(rsp)
+                logger.warn("unable to discover iscsi data network portal by cidr %s, fallback to %s:%s, because %s" %
+                            (cmd.dataNetworkCidr, cmd.iscsiServerIp, cmd.iscsiServerPort, str(e)))
+
+        self.clean_iscsi_cache_configuration(path, login_server_ip, login_server_port)
         iqns = cmd.iscsiTargets
         if iqns is None or len(iqns) == 0:
             try:
-                iqns = discovery_iscsi(cmd.iscsiServerIp, cmd.iscsiServerPort)
+                if discovered_records is None:
+                    discovered_records = discovery_iscsi(login_server_ip, login_server_port)
+
+                portal_records = records_on_portal(discovered_records, login_server_ip, login_server_port)
+                iqns = iqns_from_records(portal_records if len(portal_records) > 0 else discovered_records)
             except Exception as e:
                 current_hostname = linux.get_hostname()
                 rsp.error = "login iscsi server %s:%s on host %s failed, because %s" % \
-                            (cmd.iscsiServerIp, cmd.iscsiServerPort, current_hostname, str(e))
+                            (login_server_ip, login_server_port, current_hostname, str(e))
                 rsp.success = False
                 return jsonobject.dumps(rsp)
 
@@ -569,32 +637,31 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
             return jsonobject.dumps(rsp)
 
         login_failed = 0
+        login_portal = linux.shellquote(_format_iscsi_portal(login_server_ip, login_server_port))
         for iqn in iqns:
             t = IscsiTargetStruct()
             t.iqn = iqn
             try:
                 if cmd.iscsiChapUserName and cmd.iscsiChapUserPassword:
-                    portal = _format_iscsi_portal(cmd.iscsiServerIp, cmd.iscsiServerPort)
                     bash.bash_o(
                         'iscsiadm --mode node --targetname "%s" -p %s --op=update --name node.session.auth.authmethod --value=CHAP' % (
-                            iqn, linux.shellquote(portal)))
+                            iqn, login_portal))
                     bash.bash_o(
                         'iscsiadm --mode node --targetname "%s" -p %s --op=update --name node.session.auth.username --value=%s' % (
-                            iqn, linux.shellquote(portal), cmd.iscsiChapUserName))
+                            iqn, login_portal, cmd.iscsiChapUserName))
                     bash.bash_o(
                         'iscsiadm --mode node --targetname "%s" -p %s --op=update --name node.session.auth.password --value=%s' % (
-                            iqn, linux.shellquote(portal), linux.shellquote(cmd.iscsiChapUserPassword)))
-                timeout = self.get_iqn_login_timeout(iqn, cmd.iscsiServerIp, cmd.iscsiServerPort)
-                portal = _format_iscsi_portal(cmd.iscsiServerIp, cmd.iscsiServerPort)
+                            iqn, login_portal, linux.shellquote(cmd.iscsiChapUserPassword)))
+                timeout = self.get_iqn_login_timeout(iqn, login_server_ip, login_server_port)
                 r, o, e = bash.bash_roe('timeout -s SIGKILL %s iscsiadm --mode node --targetname "%s" -p %s --login' %
-                            (timeout, iqn, linux.shellquote(portal)))
-                wait_iscsi_mknode(cmd.iscsiServerIp, cmd.iscsiServerPort, iqn, e)
+                            (timeout, iqn, login_portal))
+                wait_iscsi_mknode(login_server_ip, login_server_port, iqn, e)
             except Exception:
                 login_failed = login_failed + 1
                 if login_failed == len(iqns):
                     raise
             finally:
-                disks = list_iscsi_disks(cmd.iscsiServerIp, cmd.iscsiServerPort, iqn)
+                disks = list_iscsi_disks(login_server_ip, login_server_port, iqn)
 
                 # refresh mpath dev if any
                 refresh_mpath(disks)
