@@ -12,6 +12,12 @@ class Obj(object):
     pass
 
 
+class Statvfs(object):
+    def __init__(self, available_bytes):
+        self.f_frsize = 1
+        self.f_bavail = available_bytes
+
+
 def _provider_with_roots(*roots):
     provider = virtiofs_source.PreparedPathSourceProvider()
     provider.allowed_roots = roots
@@ -69,6 +75,43 @@ def test_prepare_path_source_records_ready_source(tmp_path):
         registry = json.load(fd)
     assert registry['source-a']['state'] == 'ready'
     assert registry['source-a']['capability']['persistent'] is True
+
+
+def test_prepare_path_source_accepts_command_source_root(tmp_path):
+    source_dir = tmp_path / 'large-disk' / 'model-centers' / 'mc' / 'root' / 'models' / 'qwen'
+    source_dir.mkdir(parents=True)
+    registry_file = tmp_path / 'registry.json'
+    manager = virtiofs_source.SourceManager(
+        registry=virtiofs_source.SourceRegistry(str(registry_file)),
+    )
+
+    host_source = manager.ensure_ready({
+        'type': 'preparedPath',
+        'sourcePath': str(source_dir),
+        'sourceRootPath': str(tmp_path / 'large-disk'),
+        'sourceUuid': 'source-a',
+    })
+
+    assert host_source.path == os.path.realpath(str(source_dir))
+
+
+def test_prepare_path_source_rejects_insufficient_capacity(tmp_path, monkeypatch):
+    source_dir = tmp_path / 'large-disk' / 'source-a'
+    source_dir.mkdir(parents=True)
+    monkeypatch.setattr(virtiofs_source.os, 'statvfs', lambda path: Statvfs(512))
+    manager = virtiofs_source.SourceManager(
+        registry=virtiofs_source.SourceRegistry(str(tmp_path / 'registry.json')),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        manager.ensure_ready({
+            'type': 'preparedPath',
+            'sourcePath': str(source_dir),
+            'sourceRootPath': str(tmp_path / 'large-disk'),
+            'requiredCapacityBytes': 1024,
+        })
+
+    assert 'available capacity[512 bytes] is less than required capacity[1024 bytes]' in str(exc_info.value)
 
 
 def test_prepare_path_source_accepts_vm_view_root(tmp_path):
