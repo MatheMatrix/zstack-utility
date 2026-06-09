@@ -305,25 +305,25 @@ if [ $? -ne 0 ]; then
     sed -i "/\[mysqld\]/a tmpdir=$mysql_tmp_path" $mysql_conf
 fi
 
-if [[ $DB_VERSION == *"GreatSQL"* ]]; then    
+if [[ $DB_VERSION == *"GreatSQL"* ]]; then
     grep 'explicit_defaults_for_timestamp=' $mysql_conf >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo "explicit_defaults_for_timestamp=OFF"
         sed -i '/\[mysqld\]/a explicit_defaults_for_timestamp=OFF\' $mysql_conf
     fi
-    
+
     grep 'sql_generate_invisible_primary_key=' $mysql_conf >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo "sql_generate_invisible_primary_key=OFF"
         sed -i '/\[mysqld\]/a sql_generate_invisible_primary_key=OFF\' $mysql_conf
     fi
-    
+
     grep 'default_authentication_plugin=' $mysql_conf >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo "default_authentication_plugin=mysql_native_password"
         sed -i '/\[mysqld\]/a default_authentication_plugin=mysql_native_password\' $mysql_conf
     fi
-    
+
     sql_mode="IGNORE_SPACE,STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
     grep 'sql_mode' "$mysql_conf" >/dev/null 2>&1
     if [ $? -ne 0 ]; then
@@ -333,7 +333,7 @@ if [[ $DB_VERSION == *"GreatSQL"* ]]; then
         echo "replace sql_mode"
         sed -i "s/sql_mode.*/sql_mode = $sql_mode/" "$mysql_conf"
     fi
-    
+
     echo "init greatdb"
     mysqld --initialize-insecure --user=mysql --datadir=/var/lib/mysql
     echo "soft link greatdb"
@@ -342,7 +342,7 @@ if [[ $DB_VERSION == *"GreatSQL"* ]]; then
     sudo ln -sf /etc/systemd/system/mysql.service /usr/lib/systemd/system/mariadb.service
     sudo ln -sf /usr/bin/mysql /usr/bin/mariadb
     sudo systemctl daemon-reload
-    
+
     if [ ! -d /var/log/mysql ]; then
         echo "init mysql dir"
         # init mysqmysl dir
@@ -1844,13 +1844,14 @@ class Command(object):
 
 def create_check_ui_status_command(timeout=10, ui_ip='127.0.0.1', ui_port=5000, if_https=False):
     protocol = 'https' if if_https else 'http'
+    ui_host = format_url_host(ui_ip)
     if shell_return('which wget') == 0:
         return ShellCmd(
-            '''wget --no-proxy -O- --tries=%s --no-check-certificate --timeout=1 %s://%s:%s/health''' % (timeout, protocol, ui_ip, ui_port))
+            '''wget --no-proxy -O- --tries=%s --no-check-certificate --timeout=1 %s://%s:%s/health''' % (timeout, protocol, ui_host, ui_port))
     elif shell_return('which curl') == 0:
             return ShellCmd(
                 '''curl -k --noproxy --connect-timeout=1 --retry %s --retry-delay 0 --retry-max-time %s --max-time %s %s://%s:%s/health''' % (
-                    timeout, timeout, timeout, protocol, ui_ip, ui_port))
+                    timeout, timeout, timeout, protocol, ui_host, ui_port))
     else:
         return None
 
@@ -4039,7 +4040,7 @@ class InstallDbCmd(Command):
             and ansible_distribution_major_version >= 7 \
             and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mariadb mariadb-server
-      
+
     - name: rollback MySQL installation on Kylin10
       when: ansible_os_family == 'Kylin' and ansible_distribution_major_version == 10 and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mariadb mariadb-server
@@ -4101,7 +4102,7 @@ class InstallDbCmd(Command):
 
     - name: pre install script
       script: $pre_install_script
-      
+
     - name: install readline needed by greatdb-client, greatdb-server
       when: ansible_os_family == 'Kylin' and ansible_distribution_version == '10'
       shell: yum clean all; yum --disablerepo="*" --enablerepo=zstack-local-greatdb install -y readline
@@ -7002,7 +7003,7 @@ class MysqlRestorer(object):
 
     def is_local_ip(self, db_hostname):
         raise Exception('function all_local_ip not be implemented')
- 
+
     def start_extra_services(self, args, service_name):
         info("starting %s service..." % service_name)
         shell("systemctl start %s" % service_name)
@@ -10343,7 +10344,7 @@ class DashboardStatusCmd(Command):
                         with open(ha_info_file, 'r') as fd2:
                             ha_conf = yaml.load(fd2)
                             if check_ip_port(ha_conf['vip'], 8888):
-                                info('UI status: %s [PID:%s] http://%s:8888' % (colored('Running', 'green'), pid, ha_conf['vip']))
+                                info('UI status: %s [PID:%s] http://%s:8888' % (colored('Running', 'green'), pid, format_url_host(ha_conf['vip'])))
                             else:
                                 info('UI status: %s' % colored('Unknown', 'yellow'))
                             return
@@ -10357,7 +10358,7 @@ class DashboardStatusCmd(Command):
                                 port = port.strip()
                         else:
                             port = 5000
-                        info('UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, default_ip, port))
+                        info('UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, format_url_host(default_ip), port))
                     return
 
         pid = find_process_by_cmdline('zstack_dashboard')
@@ -10451,7 +10452,7 @@ class UiStatusCmd(Command):
                 else:
                     http = 'https' if '--ssl.enabled=true' in output else 'http'
                     info('UI status: %s [PID:%s] %s://%s:%s' % (
-                        colored('Running', 'green'), pid, http, default_ip, port))
+                        colored('Running', 'green'), pid, http, format_url_host(default_ip), port))
             else:
                 write_status(colored('Unknown', 'yellow'))
             return True
@@ -10479,7 +10480,7 @@ class UiStatusCmd(Command):
                         protcol = fd2.readline()
                         protcol = protcol.strip()
                         info('UI status: %s [PID:%s] %s://%s:%s' % (
-                            colored('Running', 'green'),output, protcol, default_ip, port))
+                            colored('Running', 'green'),output, protcol, format_url_host(default_ip), port))
 
 # For VDI UI 2.1
 class VDIUiStatusCmd(Command):
