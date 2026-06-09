@@ -43,8 +43,8 @@ class TestVolume(TestCase, vm_utils.VmPluginTestStub):
     @pytest.mark.run(order=3)
     @pytest_utils.ztest_decorater
     def test_detach_volume_from_vm(self):
-        # just sleep 10s for guest os booting
-        time.sleep(10)
+        # just sleep 60s for guest os booting
+        time.sleep(60)
         rsp = vm_utils.detach_volume_from_vm(TestVolume.vm_uuid, TestVolume.vol)
         self.assertTrue(rsp.success)
         xml = vm_utils.get_vm_xmlobject_from_virsh_dump(TestVolume.vm_uuid)
