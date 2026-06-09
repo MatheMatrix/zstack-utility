@@ -63,6 +63,7 @@ IPTABLES_COMMAND = 'iptables'
 IP6TABLES_COMMAND = 'ip6tables'
 IPTABLES_IPV4_LOOPBACK = '127.0.0.1'
 IPTABLES_IPV6_LOOPBACK = '::1'
+UI_LOCAL_WEBHOOK_HOST = IPTABLES_IPV4_LOOPBACK
 
 
 def is_ipv6_literal(address):
@@ -118,6 +119,17 @@ def build_ui_nginx_ipv6_listen_line(server_port, enable_ssl=False, enable_http2=
 
     listen_host = normalize_ui_ipv6_listen_host(listen_host) or UI_IPV6_ANY_NGINX_LISTEN_HOST
     return '        listen %s:%s%s;' % (listen_host, server_port, suffix)
+
+
+def build_default_ui_db_and_webhook_hosts(is_ha, default_ip=None, ha_db_vip=None):
+    if is_ha:
+        return ha_db_vip, UI_LOCAL_WEBHOOK_HOST
+
+    return default_ip, UI_LOCAL_WEBHOOK_HOST
+
+
+def build_default_ui_db_url(db_host):
+    return 'jdbc:mysql://%s:%s' % (format_jdbc_host(db_host), DEFAULT_MYSQL_PORT)
 
 
 def is_ui_nginx_ipv6_listen_line(line, server_port):
@@ -11443,8 +11455,9 @@ class ConfigUiCmd(Command):
             """
             if check_ha():
                 zsha2_utils = Zsha2Utils()
-                return zsha2_utils.config['dbvip'], zsha2_utils.config['nodeip']
-            return get_default_ip(), '127.0.0.1'
+                return build_default_ui_db_and_webhook_hosts(
+                    True, ha_db_vip=zsha2_utils.config['dbvip'])
+            return build_default_ui_db_and_webhook_hosts(False, default_ip=get_default_ip())
 
         # init zstack.ui.properties
         if args.init:
@@ -11483,7 +11496,7 @@ class ConfigUiCmd(Command):
             if not ctl.read_ui_property("server.ssl.enabled-protocols"):
                 ctl.write_ui_property("server.ssl.enabled-protocols", 'TLSv1.2')
             if not ctl.read_ui_property("db_url"):
-                ctl.write_ui_property("db_url", 'jdbc:mysql://%s:3306' % default_db_ip)
+                ctl.write_ui_property("db_url", build_default_ui_db_url(default_db_ip))
             if not ctl.read_ui_property("db_username"):
                 ctl.write_ui_property("db_username", 'zstack_ui')
             if not ctl.read_ui_property("db_password"):
@@ -11511,7 +11524,7 @@ class ConfigUiCmd(Command):
             ctl.write_ui_property("ssl_keystore_type", 'PKCS12')
             ctl.write_ui_property("ssl_keystore_password", 'password')
             ctl.write_ui_property("server.ssl.enabled-protocols", 'TLSv1.2')
-            ctl.write_ui_property("db_url", 'jdbc:mysql://%s:3306' % default_db_ip)
+            ctl.write_ui_property("db_url", build_default_ui_db_url(default_db_ip))
             ctl.write_ui_property("db_username", 'zstack_ui')
             ctl.write_ui_property("db_password", 'zstack.ui.password')
             ctl.write_ui_property("redis_password", 'zstack.redis.password')

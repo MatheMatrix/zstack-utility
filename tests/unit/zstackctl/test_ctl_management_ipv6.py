@@ -187,6 +187,29 @@ def test_ui_ipv6_ssl_listen_line_accepts_literal_ipv6():
         '        listen [2001:db8::10]:5443 ssl http2;'
 
 
+def test_default_ui_hosts_use_local_webhook_in_ha():
+    assert ctl.build_default_ui_db_and_webhook_hosts(
+        True, ha_db_vip='fd00:5:5:28::54:cccc') == (
+            'fd00:5:5:28::54:cccc',
+            '127.0.0.1',
+        )
+
+
+def test_default_ui_hosts_use_local_webhook_without_ha():
+    assert ctl.build_default_ui_db_and_webhook_hosts(
+        False, default_ip='172.24.246.95') == (
+            '172.24.246.95',
+            '127.0.0.1',
+        )
+
+
+def test_default_ui_db_url_brackets_ipv6_host():
+    assert ctl.build_default_ui_db_url('fd00:5:5:28::54:cccc') == \
+        'jdbc:mysql://[fd00:5:5:28::54:cccc]:3306'
+    assert ctl.build_default_ui_db_url('172.24.246.95') == \
+        'jdbc:mysql://172.24.246.95:3306'
+
+
 def test_change_ip_firewall_commands_keep_ipv4_iptables():
     assert ctl.build_change_ip_ipv4_firewall_delete_commands('172.24.246.1', {'3306'}) == [
         'iptables -D INPUT -p tcp --dport 3306 -d 172.24.246.1 -j ACCEPT',
