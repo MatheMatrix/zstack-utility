@@ -616,13 +616,22 @@ class StorageDevicePlugin(kvmagent.KvmAgent):
                 logger.warn("unable to discover iscsi data network portal by cidr %s, fallback to %s:%s, because %s" %
                             (cmd.dataNetworkCidr, cmd.iscsiServerIp, cmd.iscsiServerPort, str(e)))
 
-        self.clean_iscsi_cache_configuration(path, login_server_ip, login_server_port)
         iqns = cmd.iscsiTargets
+        self.clean_iscsi_cache_configuration(path, login_server_ip, login_server_port)
+        try:
+            discovered_records = discovery_iscsi(login_server_ip, login_server_port)
+        except Exception as e:
+            if iqns is None or len(iqns) == 0:
+                current_hostname = linux.get_hostname()
+                rsp.error = "login iscsi server %s:%s on host %s failed, because %s" % \
+                            (login_server_ip, login_server_port, current_hostname, str(e))
+                rsp.success = False
+                return jsonobject.dumps(rsp)
+            logger.warn("unable to refresh iscsi node records on portal %s:%s, because %s" %
+                        (login_server_ip, login_server_port, str(e)))
+
         if iqns is None or len(iqns) == 0:
             try:
-                if discovered_records is None:
-                    discovered_records = discovery_iscsi(login_server_ip, login_server_port)
-
                 portal_records = records_on_portal(discovered_records, login_server_ip, login_server_port)
                 iqns = iqns_from_records(portal_records if len(portal_records) > 0 else discovered_records)
             except Exception as e:
