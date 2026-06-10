@@ -1,3 +1,4 @@
+import json
 import math
 import tempfile
 import time
@@ -1150,6 +1151,65 @@ class CephAgent(plugin.TaskManager):
         logger.debug('get echoed')
         return ''
 
+    @staticmethod
+    def _default_pool_crush_rule_id(default_rule_cfg):
+        # `ceph osd pool create <name> <pg>` without an explicit rule uses
+        # osd_pool_default_crush_rule; a negative value falls back to rule 0.
+        try:
+            rule_id = int(str(default_rule_cfg).strip())
+        except (TypeError, ValueError):
+            rule_id = -1
+        return rule_id if rule_id >= 0 else 0
+
+    @staticmethod
+    def _crush_rule_take_roots(rule_dump_json, rule_id):
+        for rule in json.loads(rule_dump_json):
+            if rule.get('rule_id') == rule_id:
+                return [step.get('item_name') for step in rule.get('steps', [])
+                        if str(step.get('op', '')).startswith('take')]
+        return []
+
+    @staticmethod
+    def _crush_roots_have_weighted_osd(crush_tree_json, root_names):
+        tree = json.loads(crush_tree_json)
+        nodes = tree.get('nodes', []) if isinstance(tree, dict) else tree
+        node_by_id = {n.get('id'): n for n in nodes}
+        name_to_id = {n.get('name'): n.get('id') for n in nodes}
+
+        def subtree_has_weighted_osd(node_id):
+            node = node_by_id.get(node_id)
+            if node is None:
+                return False
+            if node.get('type') == 'osd':
+                return (node.get('crush_weight') or 0) > 0
+            return any(subtree_has_weighted_osd(child) for child in node.get('children', []))
+
+        return any(subtree_has_weighted_osd(name_to_id.get(name)) for name in root_names)
+
+    def _ensure_default_pool_crush_rule_usable(self, pool_name):
+        # auto-created pools inherit the default crush rule; if that rule maps to a
+        # crush root with no weighted OSD the pool gets 0 capacity and is unusable,
+        # so reject up front instead of leaving a dead pool behind (ZSTAC-85651).
+        try:
+            rule_id = self._default_pool_crush_rule_id(
+                shell.call('ceph config get mon osd_pool_default_crush_rule'))
+            roots = self._crush_rule_take_roots(
+                shell.call('ceph osd crush rule dump -f json'), rule_id)
+            if not roots:
+                return
+            usable = self._crush_roots_have_weighted_osd(
+                shell.call('ceph osd crush tree -f json'), roots)
+        except Exception as e:
+            logger.warn('skip default crush rule check for pool[%s]: %s' % (pool_name, str(e)))
+            return
+
+        if not usable:
+            raise Exception(
+                'cannot auto-create pool[%s]: the default crush rule[id:%s] maps to crush root%s '
+                'with no weighted OSD, the new pool would get 0 capacity and be unusable. '
+                'Please create the pool manually with a usable crush rule, then add it with '
+                'isCreate=false.' % (pool_name, rule_id, roots))
+
     @replyerror
     def add_pool(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -1169,6 +1229,7 @@ class CephAgent(plugin.TaskManager):
                     'current ceph storage type only support add exist pool, please create it manually')
 
         if realname not in pool_names:
+            self._ensure_default_pool_crush_rule_usable(realname)
             shell.call('ceph osd pool create %s 128' % realname)
 
         rsp = AgentResponse()
@@ -1204,6 +1265,7 @@ class CephAgent(plugin.TaskManager):
             if ceph.is_xsky() or ceph.is_sandstone():
                 raise Exception('The ceph storage type to be added does not support auto initialize pool, please create it manually')
 
+            self._ensure_default_pool_crush_rule_usable(pool.name)
             shell.call('ceph osd pool create %s 128' % pool.name)
 
         rsp = InitRsp()
