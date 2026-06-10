@@ -403,7 +403,7 @@ def install_kvm_pkg():
         arch_exclude_mapping = {
             'loongarch64': 'edac-utils freeipmi lldpd libcbd',
             'x86_64_alinux4': 'usbredir-server storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils',
-            'aarch64_alinux4': 'usbredir-server collectd-virt storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils collectd-disk lldpd edk2.git-ovmf-x64'
+            'aarch64_alinux4': 'usbredir-server collectd-virt storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils collectd-disk lldpd edk2-ovmf edk2.git-ovmf-x64 mcelog seabios-bin'
         }
 
         arch_release_mapping = {
