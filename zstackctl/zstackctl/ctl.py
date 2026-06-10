@@ -12229,10 +12229,10 @@ class LicenseServerService(ExtraService):
         return "zstack-license-server"
 
     def start(self, do_init=False):
-        shell_no_pipe("systemctl start %s" % self.service_name())
+        shell_no_pipe("systemctl enable --now %s" % self.service_name())
         self.ready_url = self._wait_for_license_server([self.https_health_url, self.http_health_url])
         if self.zsha2_utils:
-            self.zsha2_utils.execute_on_peer("systemctl start %s" % self.service_name())
+            self.zsha2_utils.execute_on_peer("systemctl enable --now %s" % self.service_name())
 
     def post_start_log(self):
         scheme = "https"
