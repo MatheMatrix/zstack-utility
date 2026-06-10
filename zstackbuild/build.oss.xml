@@ -90,6 +90,7 @@
     <import file="${basedir}/projects/zstack-store.xml" optional="false" />
     <import file="${basedir}/projects/zstack-vyos.xml" optional="false" />
     <import file="${basedir}/projects/zstack-network.xml" optional="false" />
+    <import file="${basedir}/projects/zstack-znsproxy.xml" optional="false" />
     <import file="${basedir}/projects/zstack-sharedblock.xml" optional="false" />
     <import file="${basedir}/projects/zstack-promtail.xml" optional="false" />
     <import file="${basedir}/projects/zstack-dpuagent.xml" optional="false" />
@@ -202,6 +203,12 @@
             <arg value="--name-status" />
             <arg value="HEAD^..HEAD" />
         </exec>
+        <exec executable="git" failonerror="false" error="/dev/null" output="${war.dir}/zns-git-commit">
+            <arg value="--git-dir=${zstackzns.source}/.git" />
+            <arg value="log" />
+            <arg value="--name-status" />
+            <arg value="HEAD^..HEAD" />
+        </exec>
         <exec executable="git" failonerror="false" error="/dev/null" output="${war.dir}/zsblk-git-commit">
             <arg value="--git-dir=${zstacksharedblock.source}/.git" />
             <arg value="log" />
@@ -302,6 +309,9 @@
             <sequential>
                 <antcall target="build-zstack-vyos"/>
             </sequential>
+            <sequential>
+                <antcall target="build-zstack-zns-proxy"/>
+            </sequential>
         </parallel>
     </target>
 
@@ -389,6 +399,9 @@
             </sequential>
             <sequential>
                 <antcall target="assemble-zstack-vyos"/>
+            </sequential>
+            <sequential>
+                <antcall target="assemble-zstack-zns-proxy"/>
             </sequential>
             <sequential>
                 <antcall target="assemble-zstack-promtail"/>

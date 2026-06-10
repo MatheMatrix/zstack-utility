@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<project name="zstack-znsproxy builder" basedir="../">
+    <property name="znsproxy.bdir" location="${build.dir}/zns-proxy/" />
+    <property name="znsproxy.ansible.dir" location="${ansible.dir}/znsproxy/" />
+
+    <target name="build-zstack-zns-proxy">
+        <makeDir dir="${znsproxy.bdir}" />
+
+        <checkProperty property="zstackzns.source" />
+        <checkFile file="${zstackzns.source}" />
+
+        <exec executable="make" dir="${zstackzns.source}" failonerror="true">
+            <env key="GOWORK" value="off" />
+            <arg value="zns-proxy" />
+            <arg value="ARCH=amd64 arm64 loong64" />
+        </exec>
+
+        <copy todir="${znsproxy.bdir}/">
+            <fileset dir="${zstackzns.source}/target">
+                <include name="zns-proxy.bin" />
+            </fileset>
+        </copy>
+    </target>
+
+    <target name="assemble-zstack-zns-proxy">
+        <makeDir dir="${znsproxy.ansible.dir}" />
+
+        <copy todir="${znsproxy.ansible.dir}">
+            <fileset dir="${znsproxy.bdir}">
+                <include name="**/*" />
+            </fileset>
+        </copy>
+
+        <copy todir="${znsproxy.ansible.dir}">
+            <fileset dir="${znsproxyansibleplaybook.source}/ansible">
+                <include name="**/*" />
+                <exclude name="**/__pycache__/**" />
+                <exclude name="**/*.pyc" />
+            </fileset>
+        </copy>
+    </target>
+</project>
