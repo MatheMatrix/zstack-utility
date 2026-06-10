@@ -141,6 +141,7 @@ _THIRD_PARTY_MOCKS = [
     'xxhash',  # cephbackupstorage
     'cherrypy', 'cherrypy.lib', 'cherrypy.lib.static',  # cephbackupstorage
     'cherrypy._cpreqbody', 'cherrypy._cprequest',  # cephbackupstorage
+    'xms_client', 'xms_client.api', 'xms_client.rest',  # thirdpartycephdriver (xsky)
 ]
 for _mod_name in _THIRD_PARTY_MOCKS:
     if _mod_name not in sys.modules:
