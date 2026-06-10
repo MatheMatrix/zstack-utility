@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<project name="zstack-znsagent builder" basedir="../">
+    <property name="zns.bdir" location="${build.dir}/zns-agent/" />
+    <property name="zns.ansible.dir" location="${ansible.dir}/znsagentansible/" />
+
+    <target name="build-zstack-zns-agent">
+        <makeDir dir="${zns.bdir}" />
+
+        <checkProperty property="zstackzns.source" />
+        <checkFile file="${zstackzns.source}" />
+
+        <exec executable="make" dir="${zstackzns.source}" failonerror="true">
+            <arg value="zns-agent" />
+            <arg value="ARCH=amd64 arm64 loong64" />
+        </exec>
+
+        <copy todir="${zns.bdir}/">
+            <fileset dir="${zstackzns.source}/target/package/zns-agent">
+                <include name="zns-agent.bin" />
+                <include name="zns-agent.aarch64.bin" />
+                <include name="zns-agent.loongarch64.bin" />
+            </fileset>
+        </copy>
+    </target>
+
+    <target name="assemble-zstack-zns-agent">
+        <copy todir="${zns.ansible.dir}">
+            <fileset dir="${zns.bdir}">
+                <include name="**/*" />
+            </fileset>
+        </copy>
+
+        <copy todir="${zns.ansible.dir}">
+            <fileset dir="${znsansibleplaybook.source}/ansible">
+                <include name="**/*" />
+            </fileset>
+        </copy>
+    </target>
+</project>

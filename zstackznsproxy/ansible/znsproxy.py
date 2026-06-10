@@ -63,8 +63,8 @@ copy_arg.args = "force=yes mode=0755"
 copy(copy_arg, host_post_info)
 
 run_remote_command("chmod 0755 %s" % shell_quote(dst_pkg_znsproxy), host_post_info)
-run_remote_command("%s install" % shell_quote(dst_pkg_znsproxy), host_post_info)
-run_remote_command("curl -fsS %s" % shell_quote(znsproxy_health_url), host_post_info)
+run_remote_command("%s install --listen-address 0.0.0.0:7890" % shell_quote(dst_pkg_znsproxy), host_post_info)
+run_remote_command("curl -fsS --max-time 10 %s" % shell_quote(znsproxy_health_url), host_post_info)
 
 host_post_info.start_time = start_time
 handle_ansible_info("SUCC: Deploy zns proxy successful", host_post_info, "INFO")
