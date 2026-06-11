@@ -17,6 +17,7 @@ from zstacklib.utils import http
 from zstacklib.utils import jsonobject
 from zstacklib.utils import log
 from zstacklib.utils import qmp
+from zstacklib.utils.qga import VmQga
 import time
 
 logger = log.get_logger(__name__)
@@ -97,6 +98,12 @@ class ZrmPlugin(kvmagent.KvmAgent):
     PATH_CHECKPOINT_CREATE = "/zrm/checkpoint/create"
     PATH_RECOVERY_PREPARE = "/zrm/recovery/prepare"
     PATH_REPLICATION_THROTTLE = "/zrm/replication/throttle"
+    PATH_REPLICATION_GUEST_FSFREEZE = "/zrm/replication/guest-fsfreeze"
+
+    # QGA fsfreeze command names (Linux application-consistent quiesce).
+    _FSFREEZE_CMD_FREEZE = "guest-fsfreeze-freeze"
+    _FSFREEZE_CMD_THAW = "guest-fsfreeze-thaw"
+    _FSFREEZE_CMD_STATUS = "guest-fsfreeze-status"
 
     def start(self):
         http_server = kvmagent.get_http_server()
@@ -111,6 +118,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.PATH_CHECKPOINT_CREATE, self.zrm_checkpoint_create)
         http_server.register_async_uri(self.PATH_RECOVERY_PREPARE, self.zrm_recovery_prepare)
         http_server.register_async_uri(self.PATH_REPLICATION_THROTTLE, self.zrm_replication_throttle)
+        http_server.register_async_uri(self.PATH_REPLICATION_GUEST_FSFREEZE, self.zrm_replication_guest_fsfreeze)
         logger.info("ZRM plugin started: registered /zrm/* paths as async URIs")
 
     def stop(self):
@@ -1321,6 +1329,186 @@ class ZrmPlugin(kvmagent.KvmAgent):
     @kvmagent.replyerror
     def zrm_replication_throttle(self, req):
         return self._replication_throttle(req)
+
+    @kvmagent.replyerror
+    def zrm_replication_guest_fsfreeze(self, req):
+        return self._replication_guest_fsfreeze(req)
+
+    def _get_vm_qga(self, vm_uuid):
+        """Return a connected VmQga for vm_uuid, or (None, error_message) on failure."""
+        try:
+            from kvmagent.plugins.vm_plugin import get_vm_by_uuid
+            vm = get_vm_by_uuid(vm_uuid)
+            if not vm or not getattr(vm, "domain", None):
+                return None, "unable to find vm domain: " + vm_uuid
+            qga = VmQga(vm.domain)
+            if qga.state != VmQga.QGA_STATE_RUNNING:
+                return None, "QEMU Guest Agent not in running state for vm " + vm_uuid
+            return qga, None
+        except Exception as ex:
+            return None, str(ex)
+
+    def _guest_fsfreeze_response(self, success, fs_status, filesystem_count=0,
+                                 error_message=None, guest_os_type=None,
+                                 quiesce_provider=None, error_code=None):
+        """Build agent response body compatible with ZRM GuestFsFreezeResult."""
+        fields = {
+            "success": success,
+            "fsFreezeStatus": fs_status,
+            "filesystemCount": filesystem_count,
+        }
+        if error_message is not None:
+            fields["errorMessage"] = error_message
+        if guest_os_type is not None:
+            fields["guestOsType"] = guest_os_type
+        if quiesce_provider is not None:
+            fields["quiesceProvider"] = quiesce_provider
+        if error_code is not None:
+            fields["errorCode"] = error_code
+        return jsonobject.dumps(ZrmAgentRsp(**fields))
+
+    def _qga_supports_fsfreeze(self, qga):
+        """Return whether QGA exposes and enables fsfreeze-related commands."""
+        required = (
+            self._FSFREEZE_CMD_FREEZE,
+            self._FSFREEZE_CMD_THAW,
+            self._FSFREEZE_CMD_STATUS,
+        )
+        for cmd in required:
+            if cmd not in qga.supported_commands:
+                return False, "QGA command not supported: " + cmd
+            if not qga.supported_commands.get(cmd):
+                return False, "QGA command disabled: " + cmd
+        return True, None
+
+    def _linux_guest_fsfreeze(self, qga, action, timeout_seconds):
+        """Linux path: freeze/thaw via QGA fsfreeze commands."""
+        ok, reason = self._qga_supports_fsfreeze(qga)
+        if not ok:
+            return self._guest_fsfreeze_response(
+                False, "error", 0, reason, guest_os_type="linux",
+                quiesce_provider="none", error_code="QGA_COMMAND_IS_DISABLED")
+
+        timeout_seconds = max(3, int(timeout_seconds or 30))
+        try:
+            if action == "freeze":
+                status = qga.call_qga_command(
+                    self._FSFREEZE_CMD_STATUS, timeout=timeout_seconds)
+                if status == "frozen":
+                    frozen_list = qga.call_qga_command(
+                        "guest-fsfreeze-freeze-list", timeout=timeout_seconds)
+                    fs_count = len(frozen_list) if isinstance(frozen_list, list) else 0
+                    return self._guest_fsfreeze_response(
+                        True, "frozen", fs_count, guest_os_type="linux",
+                        quiesce_provider="qga-fsfreeze")
+                fs_count = qga.call_qga_command(
+                    self._FSFREEZE_CMD_FREEZE, timeout=timeout_seconds)
+                if not isinstance(fs_count, int):
+                    fs_count = 0
+                status = qga.call_qga_command(
+                    self._FSFREEZE_CMD_STATUS, timeout=timeout_seconds)
+                if status != "frozen":
+                    return self._guest_fsfreeze_response(
+                        False, "error", fs_count,
+                        "unexpected fsfreeze status after freeze: " + str(status),
+                        guest_os_type="linux", quiesce_provider="qga-fsfreeze",
+                        error_code="QGA_RETURN_VALUE_ERROR")
+                return self._guest_fsfreeze_response(
+                    True, "frozen", fs_count, guest_os_type="linux",
+                    quiesce_provider="qga-fsfreeze")
+
+            if action == "thaw":
+                status = qga.call_qga_command(
+                    self._FSFREEZE_CMD_STATUS, timeout=timeout_seconds)
+                if status == "thawed":
+                    return self._guest_fsfreeze_response(
+                        True, "thawed", 0, guest_os_type="linux",
+                        quiesce_provider="qga-fsfreeze")
+                fs_count = qga.call_qga_command(
+                    self._FSFREEZE_CMD_THAW, timeout=timeout_seconds)
+                if not isinstance(fs_count, int):
+                    fs_count = 0
+                status = qga.call_qga_command(
+                    self._FSFREEZE_CMD_STATUS, timeout=timeout_seconds)
+                if status != "thawed":
+                    return self._guest_fsfreeze_response(
+                        False, "error", fs_count,
+                        "unexpected fsfreeze status after thaw: " + str(status),
+                        guest_os_type="linux", quiesce_provider="qga-fsfreeze",
+                        error_code="QGA_RETURN_VALUE_ERROR")
+                return self._guest_fsfreeze_response(
+                    True, "thawed", fs_count, guest_os_type="linux",
+                    quiesce_provider="qga-fsfreeze")
+
+            return self._guest_fsfreeze_response(
+                False, "error", 0, "unsupported action: " + str(action),
+                guest_os_type="linux", quiesce_provider="qga-fsfreeze",
+                error_code="QGA_COMMAND_ERROR")
+        except Exception as ex:
+            logger.warn("ZRM guest-fsfreeze linux action=%s vm=%s failed: %s" %
+                        (action, qga.vm_uuid, ex))
+            return self._guest_fsfreeze_response(
+                False, "error", 0, str(ex), guest_os_type="linux",
+                quiesce_provider="qga-fsfreeze", error_code="QGA_COMMAND_EXEC_ERROR")
+
+    def _windows_guest_fsfreeze(self, qga, action, timeout_seconds):
+        """Windows path: GuestTools zs-tools VSS; degrades when zs-tools is not installed."""
+        timeout_seconds = max(3, int(timeout_seconds or 30))
+        if not qga.guest_file_is_exist(VmQga.ZS_TOOLS_PATN_WIN):
+            return self._guest_fsfreeze_response(
+                False, "error", 0, "zstack-guest-tools zs-tools.exe not installed",
+                guest_os_type="windows", quiesce_provider="none",
+                error_code="GUESTTOOLS_NOT_INSTALLED")
+        operate = "freeze" if action == "freeze" else "thaw" if action == "thaw" else None
+        if operate is None:
+            return self._guest_fsfreeze_response(
+                False, "error", 0, "unsupported action: " + str(action),
+                guest_os_type="windows", quiesce_provider="guesttools-vss",
+                error_code="QGA_COMMAND_ERROR")
+        exit_code, output = qga.guest_exec_zs_tools(operate, "{}", output=True)
+        if exit_code != 0:
+            return self._guest_fsfreeze_response(
+                False, "error", 0, output or ("zs-tools " + operate + " failed"),
+                guest_os_type="windows", quiesce_provider="guesttools-vss",
+                error_code="VSS_WRITER_FAILED")
+        fs_status = "frozen" if operate == "freeze" else "thawed"
+        return self._guest_fsfreeze_response(
+            True, fs_status, 1, guest_os_type="windows",
+            quiesce_provider="guesttools-vss")
+
+    def _replication_guest_fsfreeze(self, req):
+        """
+        Guest quiesce endpoint invoked by ZRM createCheckpointInternal before checkpoint.
+
+        Request: vmUuid, action (freeze|thaw), timeoutSeconds
+        Response: success, fsFreezeStatus, filesystemCount, errorMessage, guestOsType, quiesceProvider, errorCode
+        """
+        try:
+            body = req.get(http.REQUEST_BODY)
+            if not body:
+                return jsonobject.dumps(ZrmAgentRsp(success=False, error="missing body"))
+            cmd = jsonobject.loads(body)
+            vm_uuid = (getattr(cmd, "vmUuid", None) or "").strip()
+            action = (getattr(cmd, "action", None) or "").strip().lower()
+            timeout_seconds = getattr(cmd, "timeoutSeconds", None)
+            if not vm_uuid:
+                return jsonobject.dumps(ZrmAgentRsp(success=False, error="vmUuid required"))
+            if action not in ("freeze", "thaw"):
+                return jsonobject.dumps(ZrmAgentRsp(success=False, error="action must be freeze or thaw"))
+
+            qga, qga_err = self._get_vm_qga(vm_uuid)
+            if qga is None:
+                return self._guest_fsfreeze_response(
+                    False, "error", 0, qga_err, guest_os_type="unknown",
+                    quiesce_provider="none", error_code="QGA_NOT_RUNNING")
+
+            guest_os = (qga.os or "").lower()
+            if guest_os == VmQga.VM_OS_WINDOWS or "windows" in guest_os:
+                return self._windows_guest_fsfreeze(qga, action, timeout_seconds)
+            return self._linux_guest_fsfreeze(qga, action, timeout_seconds)
+        except Exception as e:
+            logger.exception("ZRM guest-fsfreeze failed")
+            return jsonobject.dumps(ZrmAgentRsp(success=False, error=str(e)))
 
     def _replication_throttle(self, req):
         """

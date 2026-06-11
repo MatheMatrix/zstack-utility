@@ -149,5 +149,124 @@ class TestZrmPluginWaitInitial(unittest.TestCase):
         self.assertEqual(1, rsp_dict.get("concludedJobCount"))
 
 
+class TestZrmPluginGuestFsfreeze(unittest.TestCase):
+    def setUp(self):
+        self.plugin = object.__new__(zrm_plugin.ZrmPlugin)
+
+    def _make_req(self, body_dict):
+        return {
+            http.REQUEST_BODY: json.dumps(body_dict)
+        }
+
+    def _load_rsp(self, rsp_json):
+        rsp = jsonobject.loads(rsp_json)
+        body = json.loads(rsp_json)
+        return rsp, body
+
+    def test_guest_fsfreeze_missing_vm_uuid(self):
+        rsp_json = self.plugin._replication_guest_fsfreeze(self._make_req({
+            "action": "freeze",
+            "timeoutSeconds": 10
+        }))
+        rsp, body = self._load_rsp(rsp_json)
+        self.assertFalse(rsp.success)
+        self.assertEqual("vmUuid required", rsp.error)
+        self.assertEqual(False, body.get("success"))
+
+    def test_guest_fsfreeze_linux_freeze_success(self):
+        class FakeQga(object):
+            vm_uuid = "vm-linux-1"
+            os = "centos"
+            supported_commands = {
+                "guest-fsfreeze-freeze": True,
+                "guest-fsfreeze-thaw": True,
+                "guest-fsfreeze-status": True,
+                "guest-fsfreeze-freeze-list": True,
+            }
+
+            def call_qga_command(self, command, args=None, timeout=3):
+                if command == "guest-fsfreeze-status":
+                    return "thawed"
+                if command == "guest-fsfreeze-freeze":
+                    return 2
+                raise AssertionError("unexpected command: %s" % command)
+
+        self.plugin._get_vm_qga = lambda vm_uuid: (FakeQga(), None)
+        rsp_json = self.plugin._replication_guest_fsfreeze(self._make_req({
+            "vmUuid": "vm-linux-1",
+            "action": "freeze",
+            "timeoutSeconds": 15
+        }))
+        rsp, body = self._load_rsp(rsp_json)
+        self.assertTrue(body.get("success"))
+        self.assertEqual("frozen", body.get("fsFreezeStatus"))
+        self.assertEqual(2, body.get("filesystemCount"))
+        self.assertEqual("linux", body.get("guestOsType"))
+        self.assertEqual("qga-fsfreeze", body.get("quiesceProvider"))
+
+    def test_guest_fsfreeze_linux_thaw_success(self):
+        class FakeQga(object):
+            vm_uuid = "vm-linux-2"
+            os = "centos"
+            supported_commands = {
+                "guest-fsfreeze-freeze": True,
+                "guest-fsfreeze-thaw": True,
+                "guest-fsfreeze-status": True,
+            }
+
+            def call_qga_command(self, command, args=None, timeout=3):
+                if command == "guest-fsfreeze-status":
+                    return "frozen"
+                if command == "guest-fsfreeze-thaw":
+                    return 2
+                if command == "guest-fsfreeze-status":
+                    return "thawed"
+                raise AssertionError("unexpected command: %s" % command)
+
+        class ThawFakeQga(FakeQga):
+            def call_qga_command(self, command, args=None, timeout=3):
+                calls = []
+                if command == "guest-fsfreeze-status":
+                    calls.append("status")
+                    return "thawed" if len(calls) > 1 else "frozen"
+                if command == "guest-fsfreeze-thaw":
+                    return 2
+                raise AssertionError("unexpected command: %s" % command)
+
+        thaw_qga = ThawFakeQga()
+        status_calls = {"count": 0}
+
+        def fake_call(command, args=None, timeout=3):
+            if command == "guest-fsfreeze-status":
+                status_calls["count"] += 1
+                return "frozen" if status_calls["count"] == 1 else "thawed"
+            if command == "guest-fsfreeze-thaw":
+                return 2
+            raise AssertionError("unexpected command: %s" % command)
+
+        thaw_qga.call_qga_command = fake_call
+        self.plugin._get_vm_qga = lambda vm_uuid: (thaw_qga, None)
+        rsp_json = self.plugin._replication_guest_fsfreeze(self._make_req({
+            "vmUuid": "vm-linux-2",
+            "action": "thaw",
+            "timeoutSeconds": 10
+        }))
+        _, body = self._load_rsp(rsp_json)
+        self.assertTrue(body.get("success"))
+        self.assertEqual("thawed", body.get("fsFreezeStatus"))
+
+    def test_guest_fsfreeze_qga_not_running(self):
+        self.plugin._get_vm_qga = lambda vm_uuid: (None, "QEMU Guest Agent not in running state")
+        rsp_json = self.plugin._replication_guest_fsfreeze(self._make_req({
+            "vmUuid": "vm-down",
+            "action": "freeze",
+            "timeoutSeconds": 10
+        }))
+        _, body = self._load_rsp(rsp_json)
+        self.assertFalse(body.get("success"))
+        self.assertEqual("error", body.get("fsFreezeStatus"))
+        self.assertEqual("QGA_NOT_RUNNING", body.get("errorCode"))
+
+
 if __name__ == '__main__':
     unittest.main()
