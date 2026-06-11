@@ -19,6 +19,7 @@ create_log(logger_dir)
 banner("Starting to deploy zns proxy")
 start_time = datetime.datetime.now()
 
+znsproxy_action = "install"
 src_pkg_znsproxy = ""
 dst_pkg_znsproxy = "/var/lib/zstack/zns-proxy/package/zns-proxy.bin"
 znsproxy_health_url = "http://127.0.0.1:7890/zns-proxy/api/v1/health"
@@ -37,9 +38,6 @@ args = parser.parse_args()
 argument_dict = eval(args.e)
 locals().update(argument_dict)
 
-if not src_pkg_znsproxy:
-    error("src_pkg_znsproxy is empty")
-
 host_post_info = HostPostInfo()
 host_post_info.host_inventory = args.i
 host_post_info.host = host
@@ -52,6 +50,37 @@ host_post_info.remote_pass = remote_pass
 host_post_info.remote_port = remote_port
 if remote_pass is not None and remote_user != "root":
     host_post_info.become = True
+
+if znsproxy_action == "cleanup":
+    cleanup_cmd = (
+        "systemctl stop zstack-zns-agent.service || true; "
+        "systemctl disable zstack-zns-agent.service || true; "
+        "rm -f /usr/lib/systemd/system/zstack-zns-agent.service; "
+        "rm -f /etc/systemd/system/zstack-zns-agent.service; "
+        "rm -f /etc/zstack-zns/zns-agent.toml; "
+        "rm -f /etc/logrotate.d/zns-agent; "
+        "rm -rf /usr/local/zstack/zns-agent; "
+        "rm -rf /var/lib/zstack/zns-agent/package; "
+        "systemctl stop zstack-zns-proxy.service || true; "
+        "systemctl disable zstack-zns-proxy.service || true; "
+        "rm -f /usr/lib/systemd/system/zstack-zns-proxy.service; "
+        "rm -f /etc/systemd/system/zstack-zns-proxy.service; "
+        "rm -f /etc/zstack-zns/zns-proxy.toml; "
+        "rm -f /etc/logrotate.d/zns-proxy; "
+        "rm -rf /usr/local/zstack/zns-proxy; "
+        "rm -rf /var/lib/zstack/zns-proxy/package; "
+        "systemctl daemon-reload"
+    )
+    run_remote_command(cleanup_cmd, host_post_info)
+    host_post_info.start_time = start_time
+    handle_ansible_info("SUCC: Cleanup zns proxy and agent successful", host_post_info, "INFO")
+    sys.exit(0)
+
+if znsproxy_action != "install":
+    error("unsupported znsproxy_action: %s" % znsproxy_action)
+
+if not src_pkg_znsproxy:
+    error("src_pkg_znsproxy is empty")
 
 package_dir = os.path.dirname(dst_pkg_znsproxy)
 run_remote_command("mkdir -p %s" % shell_quote(package_dir), host_post_info)
