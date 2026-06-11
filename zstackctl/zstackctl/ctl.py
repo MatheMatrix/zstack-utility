@@ -25,6 +25,8 @@ from shutil import rmtree
 from .utils import linux, lock
 from .zstacklib import *
 from . import log_collector
+from . import license_integrity
+from . import license_manifest
 import jinja2
 import socket
 import struct
@@ -2983,6 +2985,19 @@ class AESCipher:
         except:
             return False
 
+INTEGRITY_DIR_NAME = 'zstack-integrity'
+
+
+def resolve_integrity_paths():
+    home = ctl.zstack_home.rstrip('/')
+    install_root = os.path.dirname(os.path.dirname(os.path.dirname(home)))
+    base = os.path.join(install_root, INTEGRITY_DIR_NAME)
+    return (install_root,
+            os.path.join(base, 'release-manifest.json'),
+            os.path.join(base, 'release-pubkey.pem'),
+            os.path.join(base, 'zstack-integrity-verifier'))
+
+
 class StartCmd(Command):
     START_SCRIPT = '../../bin/startup.sh'
     SET_ENV_SCRIPT = '../../bin/setenv.sh'
@@ -3186,6 +3201,26 @@ class StartCmd(Command):
             with open(setenv_path, 'w') as fd:
                 fd.write('export CATALINA_OPTS=" %s"' % ' '.join(catalina_opts))
 
+            return catalina_opts
+
+        def check_jvm_integrity(catalina_opts):
+            scan_result = license_integrity.scan_jvm_arg_sources(
+                {'CATALINA_OPTS (setenv.sh)': catalina_opts}, os.environ)
+            if scan_result:
+                raise CtlError(license_integrity.format_jvm_scan_report(scan_result))
+
+        def check_release_integrity():
+            install_root, manifest_path, pubkey_path, helper_path = resolve_integrity_paths()
+            result = license_manifest.verify_release_integrity(
+                install_root, manifest_path, pubkey_path, helper_path)
+            status = result['status']
+            if status in (license_manifest.STATUS_TAMPERED,
+                          license_manifest.STATUS_SIGNATURE_INVALID,
+                          license_manifest.STATUS_ERROR):
+                raise CtlError(license_manifest.format_integrity_report(result))
+            if status == license_manifest.STATUS_VERIFIED and result.get('mode') == license_manifest.MODE_HASH_ONLY:
+                warn(license_manifest.format_integrity_report(result))
+
         def start_mgmt_node():
             log_path = os.path.join(ctl.zstack_home, "../../logs/management-server.log")
             shell('chown zstack:zstack %s || true; sudo -u zstack sh %s -DappName=zstack' % (log_path, os.path.join(ctl.zstack_home, self.START_SCRIPT)))
@@ -3297,7 +3332,9 @@ class StartCmd(Command):
         check_chrony()
         restart_console_proxy()
         prepare_qemu_kvm_repo()
-        prepare_setenv()
+        catalina_opts = prepare_setenv()
+        check_jvm_integrity(catalina_opts)
+        check_release_integrity()
         open_iptables_port('udp',['123'])
         encrypt_properties_if_need()
         check_start_mode(get_start_mode())
@@ -8760,6 +8797,11 @@ class SetEnvironmentVariableCmd(Command):
 
         env = PropertyFile(self.PATH)
         arg_str = ' '.join(ctl.extra_arguments)
+        key, _, value = arg_str.partition('=')
+        findings = license_integrity.check_setenv_assignment(key, value)
+        if findings:
+            raise CtlError(license_integrity.format_jvm_scan_report(
+                OrderedDict([(key.strip(), findings)])))
         env.write_properties([arg_str.split('=', 1)])
 
 class UnsetEnvironmentVariableCmd(Command):
@@ -8813,6 +8855,59 @@ class GetEnvironmentVariableCmd(Command):
                 ret.append('%s=%s' % (k, v))
 
         info('\n'.join(ret))
+
+class VerifyIntegrityCmd(Command):
+    def __init__(self):
+        super(VerifyIntegrityCmd, self).__init__()
+        self.name = 'verify_integrity'
+        self.description = (
+            "verify management node startup integrity: dangerous JVM options in setenv.sh, "
+            "the zstack-ctl ctl-env file and the JVM option environment variables (%s); and, "
+            "when a signed release manifest is present, the manifest signature and the "
+            "SHA-256 of the critical release files." % ', '.join(license_integrity.JVM_OPT_ENV_VARS)
+        )
+        ctl.register_command(self)
+
+    def _read_setenv_catalina_opts(self):
+        setenv_path = os.path.join(ctl.zstack_home, StartCmd.SET_ENV_SCRIPT)
+        if not os.path.exists(setenv_path):
+            return None
+        with open(setenv_path) as fd:
+            for line in fd:
+                line = line.strip()
+                if line.startswith('export CATALINA_OPTS='):
+                    return line[len('export CATALINA_OPTS='):].strip().strip('"')
+        return None
+
+    def run(self, args):
+        problems = []
+
+        sources = {}
+        setenv_opts = self._read_setenv_catalina_opts()
+        if setenv_opts:
+            sources['CATALINA_OPTS (setenv.sh)'] = setenv_opts
+        ctl_env_opts = ctl.get_env('CATALINA_OPTS')
+        if ctl_env_opts:
+            sources['CATALINA_OPTS (ctl-env)'] = ctl_env_opts
+        scan_result = license_integrity.scan_jvm_arg_sources(sources, os.environ)
+        if scan_result:
+            problems.append(license_integrity.format_jvm_scan_report(scan_result))
+
+        install_root, manifest_path, pubkey_path, helper_path = resolve_integrity_paths()
+        manifest_result = license_manifest.verify_release_integrity(
+            install_root, manifest_path, pubkey_path, helper_path)
+        if manifest_result['status'] in (license_manifest.STATUS_TAMPERED,
+                                          license_manifest.STATUS_SIGNATURE_INVALID,
+                                          license_manifest.STATUS_ERROR):
+            problems.append(license_manifest.format_integrity_report(manifest_result))
+        else:
+            info(license_manifest.format_integrity_report(manifest_result))
+
+        if problems:
+            error('\n\n'.join(problems))
+
+        info('integrity check passed: no dangerous JVM options detected in setenv.sh, '
+             'ctl-env, or JVM option environment variables')
 
 # For UI 1.x
 class InstallDashboardCmd(Command):
@@ -12543,6 +12638,7 @@ def main():
     DeployDBCmd()
     DeployUIDBCmd()
     GetEnvironmentVariableCmd()
+    VerifyIntegrityCmd()
     InstallHACmd()
     InstallDbCmd()
     InstallRabbitCmd()
