@@ -34,6 +34,19 @@ def get_attr(obj, name, default=None):
     return getattr(obj, name, default)
 
 
+def has_attr(obj, name):
+    if obj is None:
+        return False
+    if isinstance(obj, dict):
+        return name in obj
+    try:
+        if hasattr(obj, 'hasattr') and obj.hasattr(name):
+            return True
+    except Exception:
+        pass
+    return hasattr(obj, name)
+
+
 def as_list(value):
     if value is None:
         return []
@@ -76,10 +89,18 @@ def source_roots_from_raw(raw, include_vm_view=True):
     for field in ('allowedRoots', 'allowedSourceRoots'):
         for root in _split_roots(get_attr(raw, field)):
             _append_root(roots, root)
+    has_explicit_source_root = False
     for field in ('hostSourceRoot', 'sourceRootPath'):
-        _append_root(roots, get_attr(raw, field))
-    _append_root(roots, HOST_SOURCE_ROOT)
-    if include_vm_view:
+        if not has_attr(raw, field):
+            continue
+        has_explicit_source_root = True
+        root = get_attr(raw, field)
+        if root is None or str(root).strip() == '':
+            raise Exception('virtiofs %s must not be empty' % field)
+        _append_root(roots, root)
+    if not has_explicit_source_root:
+        _append_root(roots, HOST_SOURCE_ROOT)
+    if include_vm_view and not has_explicit_source_root:
         _append_root(roots, VM_VIEW_ROOT)
     return tuple(roots)
 

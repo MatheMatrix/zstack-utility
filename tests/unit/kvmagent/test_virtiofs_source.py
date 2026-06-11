@@ -95,6 +95,45 @@ def test_prepare_path_source_accepts_command_source_root(tmp_path):
     assert host_source.path == os.path.realpath(str(source_dir))
 
 
+def test_prepare_path_source_rejects_empty_command_source_root(tmp_path):
+    source_dir = tmp_path / 'virtiofs-sources' / 'source-a'
+    source_dir.mkdir(parents=True)
+    manager = virtiofs_source.SourceManager(
+        registry=virtiofs_source.SourceRegistry(str(tmp_path / 'registry.json')),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        manager.ensure_ready({
+            'type': 'preparedPath',
+            'sourcePath': str(source_dir),
+            'sourceRootPath': ' ',
+        })
+
+    assert 'virtiofs sourceRootPath must not be empty' in str(exc_info.value)
+
+
+def test_prepare_path_source_does_not_fallback_when_command_source_root_is_explicit(tmp_path, monkeypatch):
+    default_root = tmp_path / 'virtiofs-sources'
+    explicit_root = tmp_path / 'large-disk'
+    source_dir = default_root / 'source-a'
+    source_dir.mkdir(parents=True)
+    explicit_root.mkdir()
+    monkeypatch.setattr(virtiofs_source, 'HOST_SOURCE_ROOT', str(default_root))
+    monkeypatch.setattr(virtiofs_source, 'VM_VIEW_ROOT', str(tmp_path / 'vm-views'))
+    manager = virtiofs_source.SourceManager(
+        registry=virtiofs_source.SourceRegistry(str(tmp_path / 'registry.json')),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        manager.ensure_ready({
+            'type': 'preparedPath',
+            'sourcePath': str(source_dir),
+            'sourceRootPath': str(explicit_root),
+        })
+
+    assert 'outside allowed virtiofs source directory' in str(exc_info.value)
+
+
 def test_prepare_path_source_rejects_insufficient_capacity(tmp_path, monkeypatch):
     source_dir = tmp_path / 'large-disk' / 'source-a'
     source_dir.mkdir(parents=True)
