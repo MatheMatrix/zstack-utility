@@ -5,8 +5,8 @@ import sys
 
 
 def test_kvmagent_and_ovs_modules_import_without_pyyaml(monkeypatch):
-    sys.modules.pop('kvmagent.plugins.host_plugin', None)
-    sys.modules.pop('zstacklib.utils.ovs', None)
+    monkeypatch.delitem(sys.modules, 'kvmagent.plugins.host_plugin', raising=False)
+    monkeypatch.delitem(sys.modules, 'zstacklib.utils.ovs', raising=False)
 
     real_import = builtins.__import__
 
