@@ -53,6 +53,12 @@
                 <exclude name="**/*.pyc" />
             </fileset>
         </copy>
+
+        <copy todir="${ansible.dir}">
+            <fileset dir="${znsproxyansibleplaybook.source}/ansible">
+                <include name="znsproxy.py" />
+            </fileset>
+        </copy>
     </target>
 
     <target name="verify-zstack-zns-proxy-package">
