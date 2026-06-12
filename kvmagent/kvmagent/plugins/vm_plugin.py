@@ -779,7 +779,7 @@ class VolumeBackupInfo(object):
 
 
 class TakeVolumesBackupsCommand(kvmagent.AgentCommand):
-    @log.sensitive_fields("password")
+    @log.sensitive_fields("password", "encryptionSpecs")
     def __init__(self):
         super(TakeVolumesBackupsCommand, self).__init__()
         self.hostname = None
@@ -797,6 +797,7 @@ class TakeVolumesBackupsCommand(kvmagent.AgentCommand):
         self.mode = None
         self.volumes = []
         self.storageInfo = None
+        self.encryptionSpecs = []
 
 
 class TakeVolumesBackupsResponse(kvmagent.AgentResponse):
@@ -9463,11 +9464,20 @@ host side snapshot files chian:
         isc = ImageStoreClient()
         isc.stop_volume_backup_job(cmd.vmUuid, drive, cmd.force)
 
+    @staticmethod
+    def _get_backup_encryption_spec(cmd, device_id):
+        for spec in getattr(cmd, 'encryptionSpecs', []) or []:
+            if getattr(spec, 'deviceId', None) == device_id:
+                return spec
+        return None
+
     # returns list[VolumeBackupInfo]
     def do_take_volumes_backup(self, cmd, target_disks, bitmaps, dstdir):
         isc = ImageStoreClient()
         backupArgs = {}
         final_backup_args = []
+        cmd_encryption_specs = getattr(cmd, 'encryptionSpecs', []) or []
+        encryption_specs = [] if cmd_encryption_specs else None
         speed = cmd.volumeWriteBandwidth if cmd.volumeWriteBandwidth else 0
         backing_files = {}
 
@@ -9483,9 +9493,14 @@ host side snapshot files chian:
             if bf:
                 backing_files[deviceId] = bf
 
+            encryption_spec = self._get_backup_encryption_spec(cmd, deviceId)
             def get_backup_args():
                 if bitmap:
-                    return bitmap, 'full' if cmd.mode == 'full' else 'auto', nodename, speed
+                    if cmd.mode == 'full':
+                        return bitmap, 'full', nodename, speed
+                    if getattr(encryption_spec, 'encrypted', False) and not bf:
+                        return bitmap, 'auto-full', nodename, speed
+                    return bitmap, 'auto', nodename, speed
 
                 bm = 'zsbitmap%d' % deviceId
                 if cmd.mode == 'full' or not bf:
@@ -9496,9 +9511,12 @@ host side snapshot files chian:
             args = get_backup_args()
             backupArgs[deviceId] = args
             final_backup_args.append(args)
+            if encryption_specs is not None:
+                encryption_specs.append(encryption_spec)
 
         logger.info('{api: %s} taking backup for vm: %s' % (cmd.threadContext["api"], cmd.vmUuid))
-        res = isc.backup_volumes(cmd.vmUuid, final_backup_args, dstdir, cmd.pointInTime, Report.from_spec(cmd, "VmBackup"), get_task_stage(cmd))
+        res = isc.backup_volumes(cmd.vmUuid, final_backup_args, dstdir, cmd.pointInTime,
+                                 Report.from_spec(cmd, "VmBackup"), get_task_stage(cmd), encryption_specs)
         logger.info('{api: %s} completed backup for vm: %s' % (cmd.threadContext["api"], cmd.vmUuid))
 
         backres = jsonobject.loads(res)

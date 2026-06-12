@@ -22,6 +22,7 @@ class ImageStoreClient(object):
     ZSTORE_CLI_BIN = "/usr/local/zstack/imagestore/bin/zstcli"
     ZSTORE_CLI_PATH = ZSTORE_CLI_BIN + " -rootca /var/lib/zstack/imagestorebackupstorage/package/certs/ca.pem"
     ZSTORE_DEF_PORT = 8000
+    KEY_AGENT_PROVIDER = "unix:///var/run/key-agent/key-agent.sock"
 
     UPLOAD_BIT_PATH = "/imagestore/upload"
     DOWNLOAD_BIT_PATH = "/imagestore/download"
@@ -216,6 +217,29 @@ class ImageStoreClient(object):
                             break
             return vm, maxInfoMap, minInfoMap
 
+    @staticmethod
+    def _spec_to_json(spec):
+        if not spec or not getattr(spec, 'encrypted', False):
+            return None
+
+        return {
+            "encrypted": True,
+            "encryptedDek": getattr(spec, 'encryptedDek', None),
+            "keyProviderUuid": getattr(spec, 'keyProviderUuid', None),
+            "keyVersion": getattr(spec, 'keyVersion', None),
+            "cipher": getattr(spec, 'cipher', None),
+        }
+
+    @staticmethod
+    def _write_json_temp_file(content):
+        fd, path = tempfile.mkstemp(prefix='zstcli-backup-', suffix='.json')
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, json.dumps(content).encode('utf-8'))
+        finally:
+            os.close(fd)
+        return path
+
     def backup_volume(self, vm, node, bitmap, mode, dest, point_in_time, speed, reporter, stage):
         self.check_capacity(os.path.dirname(dest))
 
@@ -234,10 +258,12 @@ class ImageStoreClient(object):
             if point_in_time is not None:
                 p_option = "-point-in-time=%s" % str(point_in_time).lower()
 
-            cmdstr = '%s -progress %s backup -bitmap %s -dest %s -domain %s -drive "%s" -mode %s %s -speed %s' % \
-                     (self.ZSTORE_CLI_PATH, PFILE, bitmap, dest, vm, node, mode, p_option, speed)
-            _, mode, err = bash_progress_1(cmdstr, _get_progress)
-            linux.rm_file_force(PFILE)
+            try:
+                cmdstr = '%s -progress %s backup -bitmap %s -dest %s -domain %s -drive "%s" -mode %s %s -speed %s' % \
+                         (self.ZSTORE_CLI_PATH, PFILE, bitmap, dest, vm, node, mode, p_option, speed)
+                _, mode, err = bash_progress_1(cmdstr, _get_progress)
+            finally:
+                linux.rm_file_force(PFILE)
             if err:
                 self.check_capacity(os.path.dirname(dest))
                 raise Exception('fail to backup vm %s, because %s' % (vm, str(err)))
@@ -246,9 +272,10 @@ class ImageStoreClient(object):
     # args -> (bitmap, mode, drive)
     # {'drive-virtio-disk0': { "backupFile": "foo", "mode":"full" },
     #  'drive-virtio-disk1': { "backupFile": "bar", "mode":"top" }}
-    def backup_volumes(self, vm, args, dstdir, point_in_time, reporter, stage):
+    def backup_volumes(self, vm, args, dstdir, point_in_time, reporter, stage, encryption_specs=None):
         self.check_capacity(dstdir)
         PFILE = linux.create_temp_file()
+        args_file = None
 
         def _get_progress(synced):
             last = linux.tail_1(PFILE).strip()
@@ -263,10 +290,35 @@ class ImageStoreClient(object):
             if point_in_time is not None:
                 p_option = "-point-in-time=%s" % str(point_in_time).lower()
 
-            cmdstr = '%s -progress %s batbak -domain %s -destdir %s %s -args %s' % \
-                     (self.ZSTORE_CLI_PATH, PFILE, vm, dstdir, p_option, ':'.join(["%s,%s,%s,%s" % x for x in args]))
-            _, mode, err = bash_progress_1(cmdstr, _get_progress)
-            linux.rm_file_force(PFILE)
+            backup_args = ':'.join(["%s,%s,%s,%s" % x for x in args])
+            args_option = '-args %s' % backup_args
+            encryption_specs = encryption_specs or []
+            if any([self._spec_to_json(spec) for spec in encryption_specs]):
+                backups = []
+                for idx, arg in enumerate(args):
+                    item = {
+                        "bitmap": arg[0],
+                        "mode": arg[1],
+                        "drive": arg[2],
+                        "speed": arg[3],
+                    }
+                    spec = encryption_specs[idx] if idx < len(encryption_specs) else None
+                    spec_json = self._spec_to_json(spec)
+                    if spec_json:
+                        item["encryption"] = spec_json
+                    backups.append(item)
+                args_file = self._write_json_temp_file({"backups": backups})
+                args_option = '-args-json-file %s -secret-channel-provider %s' % (
+                    args_file, self.KEY_AGENT_PROVIDER)
+
+            try:
+                cmdstr = '%s -progress %s batbak -domain %s -destdir %s %s %s' % \
+                         (self.ZSTORE_CLI_PATH, PFILE, vm, dstdir, p_option, args_option)
+                _, mode, err = bash_progress_1(cmdstr, _get_progress)
+            finally:
+                linux.rm_file_force(PFILE)
+                if args_file:
+                    linux.rm_file_force(args_file)
             if err:
                 self.check_capacity(dstdir)
                 raise Exception('fail to backup vm %s, because %s' % (vm, str(err)))
