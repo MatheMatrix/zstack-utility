@@ -51,8 +51,16 @@ host_post_info.remote_port = remote_port
 if remote_pass is not None and remote_user != "root":
     host_post_info.become = True
 
-if znsproxy_action == "cleanup":
-    cleanup_cmd = (
+if znsproxy_action in ["purge", "cleanup"]:
+    if znsproxy_action == "cleanup":
+        handle_ansible_info(
+            "WARNING: znsproxy_action=cleanup is deprecated; use purge for Cloud-side full uninstall only",
+            host_post_info,
+            "WARNING"
+        )
+    # Cloud-side full uninstall only. Do not use this action for ZNS host
+    # deprovision, because zns-proxy is owned by the Cloud/MN host lifecycle.
+    purge_cmd = (
         "systemctl stop zstack-zns-agent.service || true; "
         "systemctl disable zstack-zns-agent.service || true; "
         "rm -f /usr/lib/systemd/system/zstack-zns-agent.service; "
@@ -71,13 +79,13 @@ if znsproxy_action == "cleanup":
         "rm -rf /var/lib/zstack/zns-proxy/package; "
         "systemctl daemon-reload"
     )
-    run_remote_command(cleanup_cmd, host_post_info)
+    run_remote_command(purge_cmd, host_post_info)
     host_post_info.start_time = start_time
-    handle_ansible_info("SUCC: Cleanup zns proxy and agent successful", host_post_info, "INFO")
+    handle_ansible_info("SUCC: Purge zns proxy and agent successful", host_post_info, "INFO")
     sys.exit(0)
 
 if znsproxy_action != "install":
-    error("unsupported znsproxy_action: %s" % znsproxy_action)
+    error("unsupported znsproxy_action: %s, supported actions: install, purge" % znsproxy_action)
 
 if not src_pkg_znsproxy:
     error("src_pkg_znsproxy is empty")
