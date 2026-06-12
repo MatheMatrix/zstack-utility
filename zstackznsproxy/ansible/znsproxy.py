@@ -89,7 +89,18 @@ copy_arg = CopyArg()
 copy_arg.src = src_pkg_znsproxy
 copy_arg.dest = dst_pkg_znsproxy
 copy_arg.args = "force=yes mode=0755"
-copy(copy_arg, host_post_info)
+copy_znsproxy = copy(copy_arg, host_post_info)
+
+health_ok = run_remote_command(
+    "curl -fsS --max-time 10 %s" % shell_quote(znsproxy_health_url),
+    host_post_info,
+    return_status=True
+)
+
+if copy_znsproxy == "changed:False" and health_ok:
+    host_post_info.start_time = start_time
+    handle_ansible_info("SUCC: zns proxy is already ready", host_post_info, "INFO")
+    sys.exit(0)
 
 run_remote_command("chmod 0755 %s" % shell_quote(dst_pkg_znsproxy), host_post_info)
 run_remote_command("%s install --listen-address 0.0.0.0:7890" % shell_quote(dst_pkg_znsproxy), host_post_info)

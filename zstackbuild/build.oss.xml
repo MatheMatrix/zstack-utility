@@ -218,7 +218,7 @@
         </exec>
     </target>
 
-    <target name="zip-war">
+    <target name="zip-war" depends="verify-zstack-zns-proxy-package">
         <jar destfile="${war.file}" basedir="${war.dir}"/>
 
         <echo message="successfully build zstack.war at ${war.file}" />

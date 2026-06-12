@@ -21,6 +21,20 @@
                 <include name="zns-proxy.bin" />
             </fileset>
         </copy>
+
+        <exec executable="/bin/python" dir="${basedir}" failonerror="true">
+            <arg value="${basedir}/scripts/zns_proxy_manifest.py" />
+            <arg value="--package" />
+            <arg value="${znsproxy.bdir}/zns-proxy.bin" />
+            <arg value="--output" />
+            <arg value="${znsproxy.bdir}/zns-proxy-manifest.json" />
+            <arg value="--version" />
+            <arg value="${bin.version}" />
+            <arg value="--arch" />
+            <arg value="amd64,arm64,loong64" />
+            <arg value="--path" />
+            <arg value="zns-proxy.bin" />
+        </exec>
     </target>
 
     <target name="assemble-zstack-zns-proxy">
@@ -39,5 +53,13 @@
                 <exclude name="**/*.pyc" />
             </fileset>
         </copy>
+    </target>
+
+    <target name="verify-zstack-zns-proxy-package">
+        <exec executable="/bin/python" dir="${basedir}" failonerror="true">
+            <arg value="${basedir}/scripts/zns_proxy_iso_guard.py" />
+            <arg value="--ansible-dir" />
+            <arg value="${ansible.dir}" />
+        </exec>
     </target>
 </project>
