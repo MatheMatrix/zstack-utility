@@ -4598,6 +4598,10 @@ fi
 #Install license
 install_license
 
+# Fluent-bit must be prepared before the first management node startup because
+# FluentBitServerFactory creates config files under the runtime directory.
+install_fluentbit_server
+
 #Start ${PRODUCT_NAME} 
 if [ -z $NOT_START_ZSTACK ]; then
     start_zstack
@@ -4661,7 +4665,6 @@ fi
 install_zops
 install_or_upgrade_vops
 install_or_upgrade_zmigrate
-install_fluentbit_server
 
 echo ""
 echo_star_line
