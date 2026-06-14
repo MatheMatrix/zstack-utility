@@ -1732,7 +1732,8 @@ WantedBy=multi-user.target
         if cmd.vlanId is not None and cmd.vlanId is not 0:
             dev_name = '%s.%s' % (cmd.interfaceName, cmd.vlanId)
 
-        register_service_type(dev_name, cmd.serviceType)
+        serviceType = [] if cmd.serviceType is None else cmd.serviceType
+        register_service_type(dev_name, serviceType)
         rsp.success = True
 
         return jsonobject.dumps(rsp)
