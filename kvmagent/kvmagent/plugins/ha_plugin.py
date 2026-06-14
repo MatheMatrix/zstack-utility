@@ -1219,7 +1219,7 @@ def get_runnning_vm_root_volume_on_ps(maxAttempts, strategy, mountPath, isFlushb
             continue
 
         on_storage_vm_uuids.append(vm.uuid)
-        if is_allow_fencer(host_storage_name, vm.uuid):
+        if not_exec_kill_vm(strategy, vm.uuid, host_storage_name):
             logger.debug("fencer detect ha strategy is %s skip fence vm[uuid:%s]" % (strategy, vm.uuid))
             continue
 
