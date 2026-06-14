@@ -1718,6 +1718,22 @@ WantedBy=multi-user.target
         else:
             PAGE_SIZE = int(output)
 
+    @kvmagent.replyerror
+    def set_service_type_on_host_network_interface(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = SetServiceTypeOnHostNetworkInterfaceRsp()
+        rsp.success = False
+
+        dev_name = cmd.interfaceName
+        if cmd.vlanId is not None and cmd.vlanId is not 0:
+            dev_name = '%s.%s' % (cmd.interfaceName, cmd.vlanId)
+
+        serviceType = [] if cmd.serviceType is None else cmd.serviceType
+        register_service_type(dev_name, serviceType)
+        rsp.success = True
+
+        return jsonobject.dumps(rsp)
+
     def start(self):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.COLLECTD_PATH, self.start_prometheus_exporter)
