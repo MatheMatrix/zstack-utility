@@ -8408,7 +8408,7 @@ class ChangeIpCmd(Command):
         if db_updated:
             self.checkMysqlConnection(mysql_ip, args.root_password)
 
-        firewall_mysql_ip = mysql_ip if mysql_ip else ctl.read_property('DB.url')
+        firewall_mysql_ip = mysql_ip if db_updated else None
         update_change_ip_firewall_rules(new_ip, firewall_mysql_ip, old_ip, {DEFAULT_MYSQL_PORT})
 
         if change['primary']:

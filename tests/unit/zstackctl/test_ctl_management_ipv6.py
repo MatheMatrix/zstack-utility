@@ -324,6 +324,7 @@ def test_change_ip_rejects_management_ip_address_family_switch(monkeypatch):
 def test_change_ip4_on_dual_stack_updates_ipv4_scoped_properties(monkeypatch):
     writes = []
     shell_calls = []
+    firewall_calls = []
 
     properties = {
         'management.server.ip': '172.24.249.182',
@@ -344,7 +345,7 @@ def test_change_ip4_on_dual_stack_updates_ipv4_scoped_properties(monkeypatch):
     monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda name: 'jdbc:mysql://172.24.249.182:3306/zstack_ui')
     monkeypatch.setattr(ctl.ctl, 'write_ui_properties', writes.extend)
     monkeypatch.setattr(ctl, 'shell', lambda command, *args, **kwargs: 'mn-host\n' if command == 'hostname' else shell_calls.append(command) or '')
-    monkeypatch.setattr(ctl, 'update_change_ip_firewall_rules', lambda *args: shell_calls.append(args))
+    monkeypatch.setattr(ctl, 'update_change_ip_firewall_rules', lambda *args: firewall_calls.append(args))
 
     cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
     monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
@@ -367,11 +368,13 @@ def test_change_ip4_on_dual_stack_updates_ipv4_scoped_properties(monkeypatch):
     assert ('DB.url', 'jdbc:mysql://172.24.249.183:3306/zstack') in writes
     assert ('db_url', 'jdbc:mysql://172.24.249.183:3306/zstack_ui') in writes
     assert ('morph', '172.24.249.183') in shell_calls
+    assert firewall_calls == [('172.24.249.183', '172.24.249.183', '172.24.249.182', {'3306'})]
 
 
 def test_change_ip6_on_dual_stack_preserves_ipv4_scoped_properties(monkeypatch):
     writes = []
     shell_calls = []
+    firewall_calls = []
 
     properties = {
         'management.server.ip': '172.24.249.182',
@@ -392,7 +395,7 @@ def test_change_ip6_on_dual_stack_preserves_ipv4_scoped_properties(monkeypatch):
     monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda name: 'jdbc:mysql://172.24.249.182:3306/zstack_ui')
     monkeypatch.setattr(ctl.ctl, 'write_ui_properties', writes.extend)
     monkeypatch.setattr(ctl, 'shell', lambda command, *args, **kwargs: 'mn-host\n' if command == 'hostname' else shell_calls.append(command) or '')
-    monkeypatch.setattr(ctl, 'update_change_ip_firewall_rules', lambda *args: shell_calls.append(args))
+    monkeypatch.setattr(ctl, 'update_change_ip_firewall_rules', lambda *args: firewall_calls.append(args))
 
     cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
     monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
@@ -414,6 +417,7 @@ def test_change_ip6_on_dual_stack_preserves_ipv4_scoped_properties(monkeypatch):
     assert ('consoleProxyOverriddenIp', 'fd00:172:24:249::182') not in writes
     assert ('DB.url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack') not in writes
     assert ('morph', 'fd00:172:24:249::182') not in shell_calls
+    assert firewall_calls == [('fd00:172:24:249::182', None, 'fd00:172:24:249::181', {'3306'})]
 
 
 def test_add_ip_sets_management_server_ip6_without_configuring_nic(monkeypatch):
