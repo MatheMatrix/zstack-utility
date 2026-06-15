@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 import socket
 
-from zstacklib.utils import linux
 from zstacklib.utils import network_ipv6
 from zstacklib.utils import ceph as ceph_utils
+from tests.unit.zstacklib.real_linux import load_real_linux
 
 TEST_IPV4_ADDRESS = '192.168.10.10'
 TEST_IPV6_ADDRESS = '2001:db8::10'
@@ -22,6 +22,8 @@ TEST_IP_ADDR_OUTPUT = """
 3: ens4: <BROADCAST,MULTICAST> mtu 1500 state DOWN qlen 1000
     inet6 fd00:172:24:249::187/64 scope global
 """
+
+linux = load_real_linux()
 
 
 def _format_ssh_target(user, hostname):
