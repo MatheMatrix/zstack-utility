@@ -3695,26 +3695,30 @@ class InstallDbCmd(Command):
       set_fact:
         ansible_distribution_version: "{{ ansible_distribution_version | regex_replace('[^0-9.]', '') }}"
 
+    - name: set Alibaba Cloud Linux 4 fact
+      set_fact:
+        is_alibaba_cloud_linux_4: "{{ (ansible_distribution == 'Alibaba' or (ansible_distribution == 'Alibaba Cloud Linux' and ansible_architecture in ['aarch64', 'arm64'])) and (ansible_distribution_major_version | int) == 4 }}"
+
     - name: pre-install script
       script: $pre_install_script
 
     - name: install MySQL for Alibaba Cloud Linux 4 from local
-      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4 and yum_repo != 'false'
+      when: is_alibaba_cloud_linux_4 | bool and yum_repo != 'false'
       shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y  mariadb mariadb-server iptables-services
       register: install_result
 
     - name: install MySQL for Alibaba Cloud Linux 4
-      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4 and yum_repo == 'false'
+      when: is_alibaba_cloud_linux_4 | bool and yum_repo == 'false'
       shell: yum clean metadata; yum --nogpgcheck install -y  mariadb mariadb-server iptables-services
       register: install_result
 
     - name: install MySQL for RedHat 6 through user defined repos
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and yum_repo != 'false'
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (is_alibaba_cloud_linux_4 | bool) and yum_repo != 'false'
       shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y mysql mysql-server
       register: install_result
 
     - name: install MySQL for RedHat 6 through system defined repos
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and yum_repo == 'false'
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (is_alibaba_cloud_linux_4 | bool) and yum_repo == 'false'
       shell: "yum clean metadata; yum --nogpgcheck install -y mysql mysql-server "
       register: install_result
 
@@ -3757,20 +3761,20 @@ class InstallDbCmd(Command):
 
     - name: open 3306 port on RedHat 7/Helix 8/Alibaba/Alibaba Cloud Linux/Kylin10/openEuler/UnionTech/Nfs
       when: ansible_os_family == 'RedHat' or ansible_os_family == 'Helix' or ansible_os_family == 'Alibaba'
-            or (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) 
+            or (is_alibaba_cloud_linux_4 | bool)
             or (ansible_os_family == 'Kylin' and ansible_distribution_version == '10')
             or ansible_os_family == 'Openeuler' or ansible_os_family == 'Nfs' or ansible_os_family == 'UnionTech'
       shell: iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport 3306 -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport 3306 -j ACCEPT && service iptables save)
 
     - name: open 3306 port
-      when: ansible_os_family != 'RedHat' and ansible_os_family != 'Alibaba' and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and (ansible_os_family == 'Kylin' and ansible_distribution_version == '4.0.2')
+      when: ansible_os_family != 'RedHat' and ansible_os_family != 'Alibaba' and not (is_alibaba_cloud_linux_4 | bool) and (ansible_os_family == 'Kylin' and ansible_distribution_version == '4.0.2')
       shell: iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport 3306 -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport 3306 -j ACCEPT && /etc/init.d/netfilter-persistent save)
 
     - name: run post-install script
       script: $post_install_script
 
     - name: enable MySQL daemon on RedHat 6
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4)
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (is_alibaba_cloud_linux_4 | bool)
       service: name=mysqld state=restarted enabled=yes
 
     - name: enable MySQL daemon on RedHat 7/Helix 8/Kylin10/openEuler/UnionTech/Nfs
@@ -3785,7 +3789,7 @@ class InstallDbCmd(Command):
       service: name=mariadb state=restarted enabled=yes
 
     - name: enable MySQL daemon on Alibaba Cloud Linux 4
-      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4
+      when: is_alibaba_cloud_linux_4 | bool
       service: name=mariadb state=restarted enabled=yes
 
     - name: enable MySQL on Ubuntu
@@ -3806,7 +3810,7 @@ class InstallDbCmd(Command):
       shell: $grant_access_cmd
 
     - name: rollback MySQL installation on RedHat 6
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and change_root_result.rc != 0 and install_result.changed == True
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (is_alibaba_cloud_linux_4 | bool) and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mysql mysql-server
 
     - name: rollback MySQL installation on RedHat 7/ Helix 8
@@ -3824,7 +3828,7 @@ class InstallDbCmd(Command):
       shell: rpm -ev mariadb mariadb-server
 
     - name: rollback MySQL installation on Alibaba Cloud Linux 4
-      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4 and change_root_result.rc != 0 and install_result.changed == True
+      when: is_alibaba_cloud_linux_4 | bool and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mariadb mariadb-server
       
     - name: rollback MySQL installation on UnionTech/openEuler/Nfs
@@ -3878,6 +3882,10 @@ class InstallDbCmd(Command):
       set_fact:
         ansible_distribution_version: "{{ ansible_distribution_version | regex_replace('[^0-9.]', '') }}"
 
+    - name: set Alibaba Cloud Linux 4-or-later fact
+      set_fact:
+        is_alibaba_cloud_linux_4_or_later: "{{ (ansible_distribution == 'Alibaba' or (ansible_distribution == 'Alibaba Cloud Linux' and ansible_architecture in ['aarch64', 'arm64'])) and (ansible_distribution_major_version | int) >= 4 }}"
+
     - name: pre install script
       script: $pre_install_script
       
@@ -3885,16 +3893,16 @@ class InstallDbCmd(Command):
       when: >
         (ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
         or (ansible_os_family == 'Kylin' and ansible_distribution_version == '10')
-        or (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
+        or (is_alibaba_cloud_linux_4_or_later | bool)
       shell: yum clean all; yum --disablerepo="*" --enablerepo=zstack-local-greatdb install -y readline
 
     - name: fail fast when GreatDB repo is missing on Alibaba Cloud Linux 4
-      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4 and yum_repo == 'false'
+      when: is_alibaba_cloud_linux_4_or_later | bool and yum_repo == 'false'
       fail:
         msg: "GreatDB on Alibaba Cloud Linux 4 requires a configured yum repo"
 
     - name: record mariadb-connector-c-config state on Alibaba Cloud Linux 4
-      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4
+      when: is_alibaba_cloud_linux_4_or_later | bool
       shell: rpm -q mariadb-connector-c-config
       register: alinux4_mariadb_config_state
       failed_when: false
@@ -3902,7 +3910,7 @@ class InstallDbCmd(Command):
 
     - name: install GreatDB on Alibaba Cloud Linux 4
       when: >
-        (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
+        (is_alibaba_cloud_linux_4_or_later | bool)
         and yum_repo != 'false'
       shell: |
         yum clean all &&
@@ -3918,13 +3926,13 @@ class InstallDbCmd(Command):
         ((ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
         or
         (ansible_os_family == 'Kylin' and ansible_distribution_version == '10'))
-        and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
+        and not (is_alibaba_cloud_linux_4_or_later | bool)
         and yum_repo != 'false'
       shell: yum clean all; yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
       register: install_result
 
     - name: set GreatDB install result on Alibaba Cloud Linux 4
-      when: ansible_distribution == "Alibaba" and ansible_distribution_major_version|int >= 4
+      when: is_alibaba_cloud_linux_4_or_later | bool
       set_fact:
         install_result: "{{ alinux4_install_result }}"
 
@@ -3938,7 +3946,7 @@ class InstallDbCmd(Command):
     - name: start GreatDB service
       when: >
         (ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
-        or (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
+        or (is_alibaba_cloud_linux_4_or_later | bool)
       service: name=mysql state=restarted enabled=yes
 
     - name: update root password
@@ -3953,13 +3961,13 @@ class InstallDbCmd(Command):
     - name: rollback GreatDB
       when: >
         ((ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
-        or (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4))
+        or (is_alibaba_cloud_linux_4_or_later | bool))
         and change_root_result.rc != 0 and install_result.changed == True
       shell: yum remove -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
 
     - name: restore mariadb-connector-c-config on Alibaba Cloud Linux 4 rollback
       when: >
-        (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
+        (is_alibaba_cloud_linux_4_or_later | bool)
         and change_root_result.rc != 0 and install_result.changed == True
         and alinux4_mariadb_config_state.rc == 0
       shell: yum --disablerepo="*" --enablerepo=zstack-local install -y mariadb-connector-c-config
