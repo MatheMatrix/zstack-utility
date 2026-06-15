@@ -2,6 +2,16 @@
 
 import pytest
 
+from zstacklib.utils import plugin
+
+
+class FakeTaskDaemon(object):
+    def __init__(self, *args, **kwargs):
+        pass
+
+
+plugin.TaskDaemon = FakeTaskDaemon
+
 from kvmagent.plugins import vm_plugin
 
 
@@ -49,6 +59,49 @@ def no_retry(*args, **kwargs):
 
 class FakeLibvirtError(Exception):
     pass
+
+
+DOMAIN_XML_WITH_USED_IOTHREAD = '''
+<domain>
+  <iothreadids>
+    <iothread id="101"/>
+  </iothreadids>
+  <devices>
+    <disk type="network" device="disk">
+      <driver name="qemu" type="raw" cache="none" discard="unmap" queues="4"/>
+      <source protocol="cbd" name="old"/>
+      <target dev="vdb" bus="virtio"/>
+    </disk>
+  </devices>
+</domain>
+'''
+
+
+def cbd_migration_volume(**kwargs):
+    values = {
+        'installPath': 'cbd:new-volume',
+        'dev_letter': 'b',
+        'multiQueues': '4',
+        'ioThreads': 2,
+        'physicalBlockSize': None,
+    }
+    values.update(kwargs)
+    return cbd_volume(**values)
+
+
+class FakeDomainXmlVm(object):
+    domain_xml = DOMAIN_XML_WITH_USED_IOTHREAD
+
+    def _get_target_disk_by_path(self, path):
+        return None, 'vdb'
+
+
+def write_temp_file_to(monkeypatch, path):
+    def write_temp_file(content):
+        path.write_text(content)
+        return str(path)
+
+    monkeypatch.setattr(vm_plugin.linux, 'write_to_temp_file', write_temp_file)
 
 
 @pytest.mark.kvmagent
@@ -246,6 +299,79 @@ def test_migration_cbd_disks_allocate_distinct_iothread_ids():
     assert disk_iothread_ids == [['101', '102'], ['103', '104']]
     assert root.find('iothreads').text == '4'
     assert [i.get('id') for i in root.findall('./iothreadids/iothread')] == ['101', '102', '103', '104']
+
+
+@pytest.mark.kvmagent
+def test_build_domain_new_xml_allocates_cbd_iothreads_from_domain_root():
+    vm = vm_plugin.Vm()
+    vm.get_migratable_xml = lambda: DOMAIN_XML_WITH_USED_IOTHREAD
+    vm._get_target_disk_by_path = lambda path: (None, 'vdb')
+
+    disks, dest_xml = vm._build_domain_new_xml({'old': cbd_migration_volume()})
+
+    assert disks == ['vdb']
+    root = vm_plugin.etree.fromstring(dest_xml)
+    iothreads = root.findall('./devices/disk/driver/iothreads/iothread')
+    assert [i.get('id') for i in iothreads] == ['102', '103']
+
+
+@pytest.mark.kvmagent
+def test_vm_plugin_build_domain_new_xml_allocates_cbd_iothreads_from_domain_root(monkeypatch, tmp_path):
+    plugin = object.__new__(vm_plugin.VmPlugin)
+    domain_xml_path = tmp_path / 'domain.xml'
+    write_temp_file_to(monkeypatch, domain_xml_path)
+
+    disks, fpath = plugin._build_domain_new_xml(FakeDomainXmlVm(), {'old': cbd_migration_volume()})
+
+    assert disks == ['vdb']
+    root = vm_plugin.etree.parse(fpath).getroot()
+    iothreads = root.findall('./devices/disk/driver/iothreads/iothread')
+    assert [i.get('id') for i in iothreads] == ['102', '103']
+
+
+@pytest.mark.kvmagent
+def test_vm_plugin_build_dest_disk_xml_allocates_cbd_iothreads_from_domain_root(monkeypatch, tmp_path):
+    plugin = object.__new__(vm_plugin.VmPlugin)
+    disk_xml_path = tmp_path / 'disk.xml'
+    write_temp_file_to(monkeypatch, disk_xml_path)
+
+    dev, fpath = plugin._build_dest_disk_xml(FakeDomainXmlVm(), 'old', cbd_migration_volume())
+
+    assert dev == 'vdb'
+    disk = vm_plugin.etree.parse(fpath).getroot()
+    iothreads = disk.findall('./driver/iothreads/iothread')
+    assert [i.get('id') for i in iothreads] == ['102', '103']
+
+
+@pytest.mark.kvmagent
+def test_retrieve_diskele_allocates_cbd_iothreads_from_domain_root():
+    class FakeNbdDisk(object):
+        class Source(object):
+            name_ = 'old'
+
+        source = Source()
+
+        def dump(self):
+            return '''
+            <disk type="network" device="disk">
+              <driver name="qemu" type="raw" cache="none" discard="unmap" queues="4"/>
+              <source protocol="cbd" name="old"/>
+              <target dev="vdb" bus="virtio"/>
+            </disk>
+            '''
+
+    class FakeDomainXmlObject(object):
+        def dump(self):
+            return DOMAIN_XML_WITH_USED_IOTHREAD
+
+    task = object.__new__(vm_plugin.VmVolumesRecoveryTask)
+    task.volumes = [cbd_migration_volume(installPath='cbd:new-volume?old')]
+    task.domain_xmlobject = FakeDomainXmlObject()
+
+    disk = task.retrieve_diskele(FakeNbdDisk())
+
+    iothreads = disk.findall('./driver/iothreads/iothread')
+    assert [i.get('id') for i in iothreads] == ['102', '103']
 
 
 @pytest.mark.kvmagent

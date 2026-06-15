@@ -2344,7 +2344,9 @@ class VmVolumesRecoveryTask(plugin.TaskDaemon):
             if rpath.endswith(nbddisk.source.name_):
                 saved = v.installPath
                 v.installPath = dstpath
+                root = etree.fromstring(self.domain_xmlobject.dump())
                 ele = VmPlugin._get_new_disk(etree.fromstring(nbddisk.dump()), v)
+                VmPlugin._apply_migration_iothread_vq_mapping(root, ele, v)
                 v.installPath = saved
                 return ele
         raise kvmagent.KvmError("VM: %s: recover volume not found: %s" % (self.vmUuid, v.installPath))
@@ -4735,22 +4737,24 @@ class Vm(object):
             migrate_disks[disk_name] = volume
 
         tree = etree.ElementTree(etree.fromstring(self.get_migratable_xml()))
-        xml_changed = self._split_legacy_rbd_snapshot(tree.getroot())
-        devices = tree.getroot().find('devices')
-        for disk in tree.iterfind('devices/disk'):
+        root = tree.getroot()
+        xml_changed = self._split_legacy_rbd_snapshot(root)
+        devices = root.find('devices')
+        for parent_index, disk in enumerate(list(devices)):
+            if disk.tag != 'disk':
+                continue
             dev = disk.find('target').attrib['dev']
             volume = migrate_disks.get(dev, None)
             new_disk = VmPlugin._get_new_disk(disk, volume)
             if new_disk != disk:
                 if volume:
-                    VmPlugin._apply_migration_iothread_vq_mapping(tree.getroot(), new_disk, volume)
-                parent_index = list(devices).index(disk)
+                    VmPlugin._apply_migration_iothread_vq_mapping(root, new_disk, volume)
                 devices.remove(disk)
                 devices.insert(parent_index, new_disk)
                 xml_changed = True
 
         if xml_changed:
-            return list(migrate_disks.keys()), etree.tostring(tree.getroot(), encoding="unicode")
+            return list(migrate_disks.keys()), etree.tostring(root, encoding="unicode")
         else:
             return None, None
 
@@ -9739,13 +9743,15 @@ class VmPlugin(kvmagent.KvmAgent):
         fpath = linux.write_to_temp_file(vm.domain_xml)
 
         tree = etree.parse(fpath)
-        devices = tree.getroot().find('devices')
-        for disk in tree.iterfind('devices/disk'):
+        root = tree.getroot()
+        devices = root.find('devices')
+        for parent_index, disk in enumerate(list(devices)):
+            if disk.tag != 'disk':
+                continue
             dev = disk.find('target').attrib['dev']
             if dev in migrate_disks:
                 new_disk = VmPlugin._get_new_disk(disk, migrate_disks[dev])
-                VmPlugin._apply_migration_iothread_vq_mapping(tree.getroot(), new_disk, migrate_disks[dev])
-                parent_index = list(devices).index(disk)
+                VmPlugin._apply_migration_iothread_vq_mapping(root, new_disk, migrate_disks[dev])
                 devices.remove(disk)
                 devices.insert(parent_index, new_disk)
 
@@ -9755,12 +9761,12 @@ class VmPlugin(kvmagent.KvmAgent):
     def _build_dest_disk_xml(self, vm, oldVolumePath, newVolume):
         _, disk_name = vm._get_target_disk_by_path(oldVolumePath)
 
-        tree = etree.fromstring(vm.domain_xml)
-
-        for disk in tree.iterfind('devices/disk'):
+        root = etree.fromstring(vm.domain_xml)
+        for disk in root.iterfind('devices/disk'):
             dev = disk.find('target').attrib['dev']
             if dev == disk_name:
                 new_disk = VmPlugin._get_new_disk(disk, newVolume)
+                VmPlugin._apply_migration_iothread_vq_mapping(root, new_disk, newVolume)
                 return dev, linux.write_to_temp_file(etree.tostring(new_disk, encoding="unicode"))
 
     def _do_block_copy(self, vmUuid, disk_name, disk_xml, task_spec):
