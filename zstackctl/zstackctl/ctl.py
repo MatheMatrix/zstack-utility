@@ -8046,6 +8046,7 @@ class ConfiguredCollectLogCmd(Command):
 
 
 class ChangeIpCmd(Command):
+    UNSPECIFIED_MANAGEMENT_IPS = ('0.0.0.0', '::')
     DUAL_STACK_LEGACY_IP_ERROR = (
         'current management node is dual-stack; use --ip4 and/or --ip6 to change '
         'the IPv4 and IPv6 management address explicitly'
@@ -8286,8 +8287,8 @@ class ChangeIpCmd(Command):
             if get_ip_version(new_ip) != version:
                 error('new %s management address[%s] is not a valid %s address' % (
                     family_name, new_ip, family_name))
-            if new_ip == '0.0.0.0':
-                raise CtlError('for your data safety, please do NOT use 0.0.0.0 as the listen address')
+            if new_ip in self.UNSPECIFIED_MANAGEMENT_IPS:
+                raise CtlError('for your data safety, please do NOT use %s as the listen address' % new_ip)
             if get_ip_version(old_ip) != version:
                 error(self.MISSING_MANAGEMENT_IP_ERROR % (family_name, family_name))
             if self.isVirtualIp(new_ip):
@@ -8379,14 +8380,18 @@ class ChangeIpCmd(Command):
             info("Update cloudbus server ip %s in %s " % (target_cloudbus_ip, zstack_conf_file))
 
         cpo_ip = ctl.read_property('consoleProxyOverriddenIp')
-        if not console_proxy_updated and (
-                cpo_ip is None or cpo_ip == '' or cpo_ip == old_ip or self.should_follow_change(cpo_ip, change)):
+        should_update_console_proxy = (
+            cpo_ip == old_ip
+            or self.should_follow_change(cpo_ip, change)
+            or ((cpo_ip is None or cpo_ip == '') and change['primary'])
+        )
+        if not console_proxy_updated and should_update_console_proxy:
             ctl.write_properties([('consoleProxyOverriddenIp', new_ip)])
             info("Update console proxy overridden ip %s in %s " % (new_ip, zstack_conf_file))
             console_proxy_updated = True
 
         old_chrony_ips = ctl.read_property_list('chrony.serverIp.')
-        if len(old_chrony_ips) == 1 and self.should_follow_change(old_chrony_ips[0][1], change):
+        if len(old_chrony_ips) == 1 and old_chrony_ips[0][1] == old_ip:
             ctl.write_property(old_chrony_ips[0][0], new_ip)
             info("Update chrony server ip %s in %s " % (new_ip, zstack_conf_file))
 
