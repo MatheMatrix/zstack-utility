@@ -223,7 +223,9 @@ class DeleteCacheCmd(CacheBaseCmd):
 
 class FlushCacheCmd(CacheBaseCmd):
     """Flush cache to backing volume"""
-    pass
+    threadContext = None
+    threadContextStack = None
+    taskContext = None
 
 
 class GetCacheCapacityCmd(CacheBaseCmd):
