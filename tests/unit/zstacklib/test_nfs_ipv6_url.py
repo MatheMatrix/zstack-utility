@@ -6,12 +6,14 @@ import pytest
 
 from zstacklib.storage.nfs import operations
 from zstacklib.storage.nfs.exceptions import InvalidNfsUrlError
-from zstacklib.utils import linux
+from tests.unit.zstacklib.real_linux import load_real_linux
 
 IPV4_NFS_URL = '192.168.10.10:/export/nfs'
 HOSTNAME_NFS_URL = 'nfs.example.com:/export/nfs'
 IPV6_NFS_URL = '[fd00:172:24:249::182]:/export/zstack-nfs-ps'
 RAW_IPV6_NFS_URL = 'fd00:172:24:249::182:/export/zstack-nfs-ps'
+
+linux = load_real_linux()
 
 
 def test_parse_nfs_url_supports_ipv4_hostname_and_bracketed_ipv6():

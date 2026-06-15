@@ -8046,13 +8046,19 @@ class ConfiguredCollectLogCmd(Command):
 
 
 class ChangeIpCmd(Command):
-    ADDRESS_FAMILY_CHANGE_ERROR = (
-        'changing management.server.ip address family is not supported: old_ip=%s, new_ip=%s'
+    UNSPECIFIED_MANAGEMENT_IPS = ('0.0.0.0', '::')
+    DUAL_STACK_LEGACY_IP_ERROR = (
+        'current management node is dual-stack; use --ip4 and/or --ip6 to change '
+        'the IPv4 and IPv6 management address explicitly'
     )
-    ADDRESS_FAMILY_CHANGE_RISK = (
-        'Changing management.server.ip address family may disconnect or lose management of '
-        'hosts, primary storage, backup storage, VPC routers, console proxy, and external '
-        'agents that still use the old IP version.'
+    NO_CHANGE_IP_ERROR = 'one of --ip, --ip4 or --ip6 must be specified'
+    MIXED_CHANGE_IP_ERROR = '--ip cannot be used together with --ip4 or --ip6'
+    MISSING_MANAGEMENT_IP_ERROR = (
+        'cannot change %s management address because current %s is not configured; '
+        'use add_ip to add a secondary management address first'
+    )
+    ADDRESS_FAMILY_CHANGE_ERROR = (
+        'changing management address family is not supported by change_ip: old_ip=%s, new_ip=%s'
     )
 
     def __init__(self):
@@ -8066,18 +8072,14 @@ class ChangeIpCmd(Command):
     def install_argparse_arguments(self, parser):
         parser.add_argument('--ip', help='The new IP address of management node.'
                                          'This operation will update the new ip address to '
-                                         'zstack config file' , required=True)
+                                         'zstack config file' , required=False)
+        parser.add_argument('--ip4', help='The new IPv4 management address of management node.', required=False)
+        parser.add_argument('--ip6', help='The new IPv6 management address of management node.', required=False)
         parser.add_argument('--cloudbus_server_ip', help='The new IP address of CloudBus.serverIp.0, default will use value from --ip', required=False)
         parser.add_argument('--mysql_ip', help='The new IP address of DB.url, default will use value from --ip', required=False)
         parser.add_argument('--root-password',
                             help='When mysql_restrict_connection is enabled, --root-password needs to be set ',
                             required=False)
-        parser.add_argument('--allow-management-ip-family-change',
-                            help='Allow high-risk management.server.ip IPv4/IPv6 family switch.',
-                            action='store_true', default=False)
-        parser.add_argument('--yes-i-understand-management-network-risk',
-                            help='Confirm that resources using the old IP version may disconnect after change_ip.',
-                            action='store_true', default=False)
 
     def isVirtualIp(self, ip):
         return shell("ip a | grep -w %s" % ip, False).strip().endswith("zs")
@@ -8216,48 +8218,217 @@ class ChangeIpCmd(Command):
         else:
             info("morph cannot find skip")
 
-    def check_management_ip_family_change(self, args, old_ip, new_ip):
-        if management_network_ipv6.is_same_ip_version_transition(old_ip, new_ip):
+    def current_management_ip_model(self):
+        primary_ip = ctl.read_property(management_network_ipv6.MANAGEMENT_IP_PROPERTY_KEY)
+        ip4 = ctl.read_property(management_network_ipv6.MANAGEMENT_IP4_PROPERTY_KEY)
+        ip6 = ctl.read_property(management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY)
+        primary_version = get_ip_version(primary_ip)
+
+        model = {
+            management_network_ipv6.IPV4_VERSION: {
+                'ip': ip4,
+                'property': management_network_ipv6.MANAGEMENT_IP4_PROPERTY_KEY,
+                'primary': False,
+            },
+            management_network_ipv6.IPV6_VERSION: {
+                'ip': ip6,
+                'property': management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY,
+                'primary': False,
+            },
+        }
+
+        if primary_version in model:
+            model[primary_version] = {
+                'ip': primary_ip,
+                'property': management_network_ipv6.MANAGEMENT_IP_PROPERTY_KEY,
+                'primary': True,
+            }
+
+        return model
+
+    def is_dual_stack_management_ip(self, model):
+        return (
+            get_ip_version(model[management_network_ipv6.IPV4_VERSION]['ip']) == management_network_ipv6.IPV4_VERSION
+            and get_ip_version(model[management_network_ipv6.IPV6_VERSION]['ip']) == management_network_ipv6.IPV6_VERSION
+        )
+
+    def validate_change_ip_inputs(self, args, model):
+        if args.ip and (args.ip4 or args.ip6):
+            error(self.MIXED_CHANGE_IP_ERROR)
+        if not args.ip and not args.ip4 and not args.ip6:
+            error(self.NO_CHANGE_IP_ERROR)
+
+        dual_stack = self.is_dual_stack_management_ip(model)
+        targets = []
+        if args.ip:
+            if dual_stack:
+                error(self.DUAL_STACK_LEGACY_IP_ERROR)
+            new_version = get_ip_version(args.ip)
+            old_version = None
+            for version, current in model.items():
+                if get_ip_version(current['ip']) == version:
+                    old_version = version
+                    break
+            if old_version is None:
+                error('current management.server.ip is not configured')
+            if new_version != old_version:
+                error(self.ADDRESS_FAMILY_CHANGE_ERROR % (model[old_version]['ip'], args.ip))
+            targets.append((old_version, args.ip))
+
+        if args.ip4:
+            targets.append((management_network_ipv6.IPV4_VERSION, args.ip4))
+        if args.ip6:
+            targets.append((management_network_ipv6.IPV6_VERSION, args.ip6))
+
+        changes = []
+        for version, new_ip in targets:
+            old_ip = model[version]['ip']
+            family_name = 'IPv4' if version == management_network_ipv6.IPV4_VERSION else 'IPv6'
+            if get_ip_version(new_ip) != version:
+                error('new %s management address[%s] is not a valid %s address' % (
+                    family_name, new_ip, family_name))
+            if new_ip in self.UNSPECIFIED_MANAGEMENT_IPS:
+                raise CtlError('for your data safety, please do NOT use %s as the listen address' % new_ip)
+            if get_ip_version(old_ip) != version:
+                error(self.MISSING_MANAGEMENT_IP_ERROR % (family_name, family_name))
+            if self.isVirtualIp(new_ip):
+                info("The ip address you input: %s is a virtual ip" % new_ip)
+                return None
+            current = model[version]
+            changes.append({
+                'version': version,
+                'family': family_name,
+                'old_ip': old_ip,
+                'new_ip': new_ip,
+                'property': current['property'],
+                'primary': current['primary'],
+            })
+
+        changed_versions = set([change['version'] for change in changes])
+        for option_name, input_ip in [
+                ('--cloudbus_server_ip', args.cloudbus_server_ip),
+                ('--mysql_ip', args.mysql_ip)]:
+            if input_ip and get_ip_version(input_ip) not in changed_versions:
+                error('%s address family must match one of --ip, --ip4 or --ip6' % option_name)
+
+        return changes
+
+    def should_follow_change(self, current_ip, change):
+        return get_ip_version(current_ip) == change['version']
+
+    def update_hosts_for_change(self, change, zstack_conf_file):
+        old_ip = change['old_ip']
+        new_ip = change['new_ip']
+
+        if not validate_ip(old_ip):
+            info("The ip address[%s] read from [%s] seems not a valid ip" % (old_ip, zstack_conf_file))
             return False
 
-        if not getattr(args, 'allow_management_ip_family_change', False):
-            error(self.ADDRESS_FAMILY_CHANGE_ERROR % (old_ip, new_ip))
+        old_hostname = shell("hostname").replace("\n", "")
+        new_hostname = ip_to_hostname(new_ip)
+        if old_hostname != "localhost" and old_hostname != "localhost.localdomain":
+            new_hostname = old_hostname
 
-        if not getattr(args, 'yes_i_understand_management_network_risk', False):
-            error('%s Re-run with --yes-i-understand-management-network-risk if you have verified the risk.'
-                  % self.ADDRESS_FAMILY_CHANGE_RISK)
+        shell('sed -i "/^%s .*$/d" /etc/hosts' % old_ip)
+        shell('echo "%s %s" >> /etc/hosts' % (new_ip, new_hostname))
+        if change['primary']:
+            shell('hostnamectl set-hostname %s' % new_hostname)
+            shell('export HOSTNAME=%s' % new_hostname)
 
-        info(self.ADDRESS_FAMILY_CHANGE_RISK)
+        info("Update /etc/hosts, old_ip:%s, new_ip:%s" % (old_ip, new_ip))
         return True
 
-    def secondary_management_ip_property_for(self, ip):
-        ip_version = get_ip_version(ip)
-        if ip_version == management_network_ipv6.IPV4_VERSION:
-            return management_network_ipv6.MANAGEMENT_IP4_PROPERTY_KEY
-        if ip_version == management_network_ipv6.IPV6_VERSION:
-            return management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY
-        error('management ip[%s] is not a valid ip' % ip)
+    def is_management_vip(self, ip):
+        return ip in (
+            ctl.read_property(management_network_ipv6.MANAGEMENT_VIP6_PROPERTY_KEY),
+            ctl.read_property('management.server.vip'),
+        )
+
+    def update_db_url_property(self, property_name, db_url, mysql_ip, change, writer, conf_file):
+        if not db_url:
+            return False
+
+        db_old_ip = extract_db_url_host(db_url)
+        if db_old_ip is None or self.isVirtualIp(db_old_ip) or self.is_management_vip(db_old_ip):
+            return False
+        if not self.should_follow_change(db_old_ip, change):
+            return False
+
+        db_new_url = replace_db_url_host(db_url, mysql_ip)
+        writer([(property_name, db_new_url)])
+        info("Update mysql new url %s in %s " % (db_new_url, conf_file))
+        return True
+
+    def update_family_scoped_properties(self, args, change, zstack_conf_file, console_proxy_updated):
+        new_ip = change['new_ip']
+        old_ip = change['old_ip']
+
+        ctl.write_properties([(change['property'], new_ip)])
+        info("Update %s %s in %s " % (change['property'], new_ip, zstack_conf_file))
+
+        cloudbus_ip = ctl.read_property('CloudBus.serverIp.0')
+        target_cloudbus_ip = args.cloudbus_server_ip if args.cloudbus_server_ip else new_ip
+        if args.cloudbus_server_ip:
+            if get_ip_version(target_cloudbus_ip) != change['version']:
+                target_cloudbus_ip = None
+        elif not (self.should_follow_change(cloudbus_ip, change) or
+                  (not cloudbus_ip and change['primary']) or cloudbus_ip == old_ip):
+            target_cloudbus_ip = None
+
+        if target_cloudbus_ip:
+            ctl.write_properties([('CloudBus.serverIp.0', target_cloudbus_ip)])
+            info("Update cloudbus server ip %s in %s " % (target_cloudbus_ip, zstack_conf_file))
+
+        cpo_ip = ctl.read_property('consoleProxyOverriddenIp')
+        should_update_console_proxy = (
+            cpo_ip == old_ip
+            or self.should_follow_change(cpo_ip, change)
+            or ((cpo_ip is None or cpo_ip == '') and change['primary'])
+        )
+        if not console_proxy_updated and should_update_console_proxy:
+            ctl.write_properties([('consoleProxyOverriddenIp', new_ip)])
+            info("Update console proxy overridden ip %s in %s " % (new_ip, zstack_conf_file))
+            console_proxy_updated = True
+
+        old_chrony_ips = ctl.read_property_list('chrony.serverIp.')
+        if len(old_chrony_ips) == 1 and old_chrony_ips[0][1] == old_ip:
+            ctl.write_property(old_chrony_ips[0][0], new_ip)
+            info("Update chrony server ip %s in %s " % (new_ip, zstack_conf_file))
+
+        mysql_ip = args.mysql_ip if args.mysql_ip else new_ip
+        db_updated = False
+        if args.mysql_ip and get_ip_version(args.mysql_ip) != change['version']:
+            mysql_ip = None
+
+        if mysql_ip:
+            db_url = ctl.read_property('DB.url')
+            db_updated = self.update_db_url_property('DB.url', db_url, mysql_ip, change,
+                                                     ctl.write_properties, zstack_conf_file)
+
+            if os.path.isfile(ctl.ui_properties_file_path):
+                ui_db_url = ctl.read_ui_property('db_url')
+                self.update_db_url_property('db_url', ui_db_url, mysql_ip, change,
+                                            ctl.write_ui_properties, ctl.ui_properties_file_path)
+
+        if db_updated:
+            self.checkMysqlConnection(mysql_ip, args.root_password)
+
+        firewall_mysql_ip = mysql_ip if db_updated else None
+        update_change_ip_firewall_rules(new_ip, firewall_mysql_ip, old_ip, {DEFAULT_MYSQL_PORT})
+
+        if change['primary']:
+            self.update_morph_config(new_ip)
+
+        return console_proxy_updated
 
     def run(self, args):
-        if args.ip == '0.0.0.0':
-            raise CtlError('for your data safety, please do NOT use 0.0.0.0 as the listen address')
-        if args.cloudbus_server_ip is not None:
-            cloudbus_server_ip = args.cloudbus_server_ip
-        else:
-            cloudbus_server_ip = args.ip
-        if args.mysql_ip is not None:
-            mysql_ip = args.mysql_ip
-        else:
-            mysql_ip = args.ip
         if args.root_password is not None:
             root_password_ = ''.join(map(check_special_root, args.root_password))
             self.check_mysql_password("root", root_password_)
 
-        if check_ha():
-            error("please change to single management before change ip")
-
         zstack_conf_file = ctl.properties_file_path
-        for input_ip in [args.ip, cloudbus_server_ip, mysql_ip]:
+        input_ips = [args.ip, args.ip4, args.ip6, args.cloudbus_server_ip, args.mysql_ip]
+        for input_ip in [ip for ip in input_ips if ip]:
             if not validate_ip(input_ip):
                 info("The ip address you input: %s seems not a valid ip" % input_ip)
                 return 1
@@ -8267,36 +8438,13 @@ class ChangeIpCmd(Command):
 
         # Update /etc/hosts
         if os.path.isfile(zstack_conf_file):
-            old_ip = ctl.read_property('management.server.ip')
-            preserve_old_ip_property = None
-            cleanup_secondary_ip_property = None
-            if old_ip is not None:
-                if not validate_ip(old_ip):
-                    info("The ip address[%s] read from [%s] seems not a valid ip" % (old_ip, zstack_conf_file))
+            model = self.current_management_ip_model()
+            changes = self.validate_change_ip_inputs(args, model)
+            if changes is None:
+                return 1
+            for change in changes:
+                if not self.update_hosts_for_change(change, zstack_conf_file):
                     return 1
-                if self.check_management_ip_family_change(args, old_ip, args.ip):
-                    preserve_old_ip_property = self.secondary_management_ip_property_for(old_ip)
-                    cleanup_secondary_ip_property = self.secondary_management_ip_property_for(args.ip)
-
-            # read from env other than /etc/hostname in case of impact of DHCP SERVER
-            old_hostname = shell("hostname").replace("\n","")
-            new_hostname = ip_to_hostname(args.ip)
-            if old_hostname != "localhost" and old_hostname != "localhost.localdomain":
-               new_hostname = old_hostname
-
-            if old_ip != None:
-                shell('sed -i "/^%s .*$/d" /etc/hosts' % old_ip)
-            else:
-                shell('sed -i "/^.* %s$/d" /etc/hosts' % new_hostname)
-
-            shell('echo "%s %s" >> /etc/hosts' % (args.ip, new_hostname))
-            shell('hostnamectl set-hostname %s' % new_hostname)
-            shell('export HOSTNAME=%s' % new_hostname)
-
-            if old_ip != None:
-                info("Update /etc/hosts, old_ip:%s, new_ip:%s" % (old_ip, args.ip))
-            else:
-                info("Update /etc/hosts, new_ip:%s" % args.ip)
 
         else:
             info("Didn't find %s, skip update new ip" % zstack_conf_file  )
@@ -8305,68 +8453,13 @@ class ChangeIpCmd(Command):
        # Update zstack config file
         if os.path.isfile(zstack_conf_file):
             shell("yes | cp %s %s.bak" % (zstack_conf_file, zstack_conf_file))
-            ctl.write_properties([
-              ('CloudBus.serverIp.0', cloudbus_server_ip),
-            ])
-            info("Update cloudbus server ip %s in %s " % (cloudbus_server_ip, zstack_conf_file))
-            ctl.write_properties([
-              ('management.server.ip', args.ip),
-            ])
-            info("Update management server ip %s in %s " % (args.ip, zstack_conf_file))
-            if preserve_old_ip_property is not None:
-                if cleanup_secondary_ip_property is not None:
-                    ctl.delete_properties([cleanup_secondary_ip_property])
-                    info("Remove stale secondary management server ip property %s in %s " % (
-                        cleanup_secondary_ip_property, zstack_conf_file))
-                ctl.write_properties([
-                    (preserve_old_ip_property, old_ip),
-                ])
-                info("Preserve old management server ip %s as %s in %s " % (
-                    old_ip, preserve_old_ip_property, zstack_conf_file))
-
-            cpo_ip = ctl.read_property('consoleProxyOverriddenIp')
-            if cpo_ip is None or cpo_ip == '' or cpo_ip == old_ip:
-                ctl.write_properties([
-                    ('consoleProxyOverriddenIp', args.ip),
-                ])
-                info("Update console proxy overridden ip %s in %s " % (args.ip, zstack_conf_file))
-
-            old_chrony_ips = ctl.read_property_list('chrony.serverIp.')
-            if len(old_chrony_ips) == 1 and old_chrony_ips[0][1] == old_ip:
-                # management.server.ip has been setted when zstack install
-                ctl.write_property(old_chrony_ips[0][0], args.ip)
-                info("Update chrony server ip %s in %s " % (args.ip, zstack_conf_file))
-
-            # update zstack db url
-            db_url = ctl.read_property('DB.url')
-            db_old_ip = extract_db_url_host(db_url)
-            if db_old_ip is not None and not self.isVirtualIp(db_old_ip) and not db_old_ip == ctl.read_property('management.server.vip'):
-                db_new_url = replace_db_url_host(db_url, mysql_ip)
-                ctl.write_properties([
-                    ('DB.url', db_new_url),
-                ])
-                info("Update mysql new url %s in %s " % (db_new_url, zstack_conf_file))
-
-            # update zstack_ui db url
-            if os.path.isfile(ctl.ui_properties_file_path):
-                db_url = ctl.read_ui_property('db_url')
-                db_old_ip = extract_db_url_host(db_url)
-                if db_old_ip is not None and not self.isVirtualIp(db_old_ip) and not db_old_ip == ctl.read_property('management.server.vip'):
-                    db_new_url = replace_db_url_host(db_url, mysql_ip)
-                    ctl.write_ui_properties([
-                        ('db_url', db_new_url),
-                    ])
-                    info("Update mysql new url %s in %s " % (db_new_url, ctl.ui_properties_file_path))
-
-            # update mysql restrict connection configuration
-            self.checkMysqlConnection(args.ip, args.root_password)
+            console_proxy_updated = False
+            for change in changes:
+                console_proxy_updated = self.update_family_scoped_properties(
+                    args, change, zstack_conf_file, console_proxy_updated)
         else:
             info("Didn't find %s, skip update new ip" % zstack_conf_file  )
             return 1
-
-        update_change_ip_firewall_rules(args.ip, mysql_ip, old_ip, {DEFAULT_MYSQL_PORT})
-
-        self.update_morph_config(args.ip)
 
         info("update iptables rules successfully")
         info("Change ip successfully")

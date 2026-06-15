@@ -1,4 +1,23 @@
-from kvmagent.plugins.imagestore import ImageStoreClient
+import importlib.util
+import sys
+from pathlib import Path
+
+
+def _load_imagestore_module():
+    bash_module = sys.modules.get('zstacklib.utils.bash')
+    if bash_module is not None and not hasattr(bash_module, 'bash_progress_1'):
+        bash_module.bash_progress_1 = lambda *args, **kwargs: (0, '', None)
+
+    repo_root = Path(__file__).resolve().parents[3]
+    module_path = repo_root / 'kvmagent' / 'kvmagent' / 'plugins' / 'imagestore.py'
+    spec = importlib.util.spec_from_file_location('imagestore_under_test', str(module_path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+imagestore = _load_imagestore_module()
+ImageStoreClient = imagestore.ImageStoreClient
 
 
 TEST_IPV6_ADDRESS = '2001:db8::10'
@@ -20,10 +39,7 @@ def test_download_from_imagestore_uses_bracketed_ipv6_registry_url(monkeypatch):
     commands = []
 
     monkeypatch.setattr(client, '_check_zstore_cli', lambda: None)
-    monkeypatch.setattr(
-        'kvmagent.plugins.imagestore.shell.call',
-        lambda command: commands.append(command) or '',
-    )
+    monkeypatch.setattr(imagestore.shell, 'call', lambda command: commands.append(command) or '')
 
     client.download_from_imagestore(
         None,

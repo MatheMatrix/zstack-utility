@@ -1178,7 +1178,38 @@ class TestMevocoDoApplyDhcp:
             vmUuid="85b7d88b-374f-447b-b74a-7cf6fd8e0d4d",
         )
 
-        plugin.do_apply_dhcp(_IterDict({"ns6": [dhcp_v6]}), rebuild=True)
+        def _template_factory(text: object) -> object:
+            class _Template:
+                _value: str
+
+                def __init__(self, value: object) -> None:
+                    self._value = str(value)
+
+                def render(self, context: object | None = None, **_kwargs: object) -> str:
+                    data = context or {}
+                    if isinstance(data, dict) and isinstance(data.get("dhcp"), list):
+                        lines = []
+                        for d in data["dhcp"]:
+                            lines.append("%s,set:%s,[%s],%s,infinite" % (
+                                d["mac"], d["tag"], d["ip6"], d["hostname"]
+                            ))
+                            if d.get("dhcp6Duid"):
+                                lines.append("id:%s,set:%s,[%s],%s,infinite" % (
+                                    d["dhcp6Duid"], d["tag"], d["ip6"], d["hostname"]
+                                ))
+                        return "\n".join(lines) + "\n"
+                    if isinstance(data, dict) and "hostnames" in data:
+                        return "\n".join(
+                            "%s %s" % (h["ip6"], h["hostname"])
+                            for h in data["hostnames"]
+                            if h.get("isDefaultL3Network") and h.get("hostname")
+                        ) + "\n"
+                    return self._value
+
+            return _Template(text)
+
+        with patch.object(mevoco, "Template", side_effect=_template_factory):
+            plugin.do_apply_dhcp(_IterDict({"ns6": [dhcp_v6]}), rebuild=True)
 
         dhcp_path = os.path.join(str(tmp_path), "ns6", "hosts.dhcp")
         with open(dhcp_path, encoding="utf-8") as fd:

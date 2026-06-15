@@ -304,10 +304,10 @@ class TestDeleteConsoleFirewallRuleHandler:
     def test_delete_console_firewall_rule(self):
         plugin = _make_vm_plugin()
         mock_rule = MagicMock()
-        vm_plugin.VncPortIptableRule = MagicMock(return_value=mock_rule)
 
-        req = _make_req({'vmInternalId': 123, 'hostManagementIp': '10.0.0.2'})
-        result = plugin.delete_console_firewall_rule(req)
+        with patch.object(vm_plugin, 'VncPortIptableRule', return_value=mock_rule):
+            req = _make_req({'vmInternalId': 123, 'hostManagementIp': '10.0.0.2'})
+            result = plugin.delete_console_firewall_rule(req)
         rsp = json.loads(result)
 
         assert rsp['success'] is True
