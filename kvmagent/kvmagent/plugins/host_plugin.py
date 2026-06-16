@@ -15,7 +15,6 @@ import uuid
 import sys
 import string
 import socket
-import yaml
 import subprocess
 import time
 try:
@@ -104,6 +103,15 @@ BOND_MODE_ACTIVE_6 = "balance-alb"
 
 DISTRO_USING_DNF = ['rl84', 'h84r', 'ky10sp1', 'ky10sp2', 'ky10sp3',
                     'ky10sp3.2403', 'oe2203sp1', 'h2203sp1o', 'uos20r']
+
+
+def _load_yaml_file(path):
+    try:
+        import yaml
+    except ImportError as exc:
+        raise Exception('PyYAML is required to parse yaml file[%s]: %s' % (path, exc))
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
 
 
 class ConnectResponse(kvmagent.AgentResponse):
@@ -3129,8 +3137,7 @@ done
         if not os.path.exists(dpdkBondFile):
             return bonds
 
-        with open(dpdkBondFile, "r") as f:
-            bondData = yaml.safe_load(f)
+        bondData = _load_yaml_file(dpdkBondFile)
 
         if bondData is None:
             return bonds

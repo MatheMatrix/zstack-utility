@@ -5,7 +5,6 @@
 import os
 import shutil
 import time
-import yaml
 import glob
 import uuid
 import re
@@ -46,6 +45,15 @@ BridgeNotExist = 2
 
 class OvsError(Exception):
     '''ovs error'''
+
+
+def _load_yaml_file(path):
+    try:
+        import yaml
+    except ImportError as exc:
+        raise OvsError("PyYAML is required to parse yaml file[{}]: {}".format(path, exc))
+    with open(path, 'r') as f:
+        return yaml.safe_load(f)
 
 
 def writeSysfs(path, value, supressRaise=False):
@@ -179,8 +187,7 @@ def getMlnxSmartNicOffloadStatus():
     if not os.path.exists(nicInfoPath):
         raise OvsError("no such file:{}".format(nicInfoPath))
 
-    with open(nicInfoPath, 'r') as f:
-        data = yaml.safe_load(f)
+    data = _load_yaml_file(nicInfoPath)
     offloadStatus = {}
     for i in data:
         offloadStatus[str(i['nic']['vendor_device'])] = "|".join(
@@ -313,8 +320,7 @@ class OvsVenv(object):
         if not os.path.exists(nicInfoPath):
             raise OvsError("no such file:{}".format(nicInfoPath))
 
-        with open(nicInfoPath, 'r') as f:
-            data = yaml.safe_load(f)
+        data = _load_yaml_file(nicInfoPath)
 
         for i in data:
             self.offloadStatus[str(i['nic']['vendor_device'])] = "|".join(
@@ -1066,8 +1072,7 @@ class OvsBaseCtl(object):
             bondFile = os.path.join(ConfPath, "dpdk-bond.yaml")
 
             dpdkBond = Bond()
-            with open(bondFile, "r") as f:
-                data = yaml.safe_load(f)
+            data = _load_yaml_file(bondFile)
 
             for d in data:
                 if d['bond']['name'] == bondName:
@@ -2621,8 +2626,7 @@ def getAllBondFromFile():
         if not os.path.exists(bondFile):
             return dpdkbonds
 
-        with open(bondFile, "r") as f:
-            data = yaml.safe_load(f)
+        data = _load_yaml_file(bondFile)
 
         for d in data:
             dpdkBond = Bond()
@@ -2641,7 +2645,6 @@ def getAllBondFromFile():
         return dpdkbonds
     except Exception as e:
         return []
-
 
 
 
