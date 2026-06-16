@@ -223,6 +223,7 @@ class DeleteCacheCmd(CacheBaseCmd):
 
 class FlushCacheCmd(CacheBaseCmd):
     """Flush cache to backing volume"""
+    sendCommandUrl = None
     threadContext = None
     threadContextStack = None
     taskContext = None
