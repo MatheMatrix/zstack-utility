@@ -17,6 +17,7 @@ from zstacklib.utils import lock
 from zstacklib.utils import log
 from zstacklib.utils import shell
 from zstacklib.utils import http
+from zstacklib.utils import network_ipv6
 from zstacklib.utils import iproute
 from zstacklib.utils import xmlobject
 from zstacklib.utils.bash import in_bash
@@ -366,6 +367,23 @@ def getRealStoragePath(storagePath):
     return os.path.abspath(os.path.join(storagePath, "v2v-cache"))
 
 
+def build_nfs_mount_source(host, real_storage_path):
+    return "{}:{}".format(network_ipv6.format_url_host(host), real_storage_path)
+
+
+def normalize_host_for_lookup(host):
+    if host and host.startswith(network_ipv6.IPV6_BRACKET_PREFIX) \
+            and host.endswith(network_ipv6.IPV6_BRACKET_SUFFIX):
+        return host[1:-1]
+    return host
+
+
+def should_apply_ipv4_qos(ip_address):
+    return bool(ip_address) and re.match(
+            r'^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$',
+            ip_address) is not None
+
+
 def set_v2v_exports_config(real_storage_path):
     with open(EXPORTS_CONFIG_FILE_PATH, 'w') as f:
         f.write(EXPORTS_CONFIG.format(real_storage_path))
@@ -498,7 +516,8 @@ class KVMV2VPlugin(kvmagent.KvmAgent):
 
         def do_ssh_mount(cmd, local_mount_point, real_storage_path):
             mount_cmd = get_mount_command(cmd)
-            mount_paths = "{}:{} {}".format(cmd.managementIp, real_storage_path, local_mount_point)
+            mount_source = build_nfs_mount_source(cmd.managementIp, real_storage_path)
+            mount_paths = "{} {}".format(mount_source, local_mount_point)
             alternative_mount = mount_cmd + " -o vers=3"
 
             with lock.NamedLock(local_mount_point):
@@ -596,9 +615,10 @@ class KVMV2VPlugin(kvmagent.KvmAgent):
             logger.info(str(ex))
             raise Exception('host {} cannot access NFS on {}'.format(libvirtHost, cmd.managementIp))
 
-        if linux.find_route_interface_by_destination_ip(linux.get_host_by_name(cmd.managementIp)):
+        management_ip = linux.get_host_by_name(normalize_host_for_lookup(cmd.managementIp))
+        if should_apply_ipv4_qos(management_ip) and linux.find_route_interface_by_destination_ip(management_ip):
             cmdstr = "tc filter replace dev %s protocol ip parent 1: prio 1 u32 match ip src %s/32 flowid 1:1" \
-                     % (QOS_IFB, cmd.managementIp)
+                     % (QOS_IFB, management_ip)
             shell.run(cmdstr)
 
         volumes = None
