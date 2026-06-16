@@ -38,6 +38,9 @@ disk_status_abnormal_list_record = {}
 dump_stack_and_objects = True
 kvmagent_physical_memory_usage_alarm_time = None
 
+cpu_status_consecutive_abnormal_count = {}
+CPU_STATUS_ABNORMAL_ALARM_THRESHOLD = 3
+
 # collect domain max memory
 domain_max_memory = {}
 
@@ -990,8 +993,15 @@ def collect_physical_cpu_state():
             metrics['cpu_temperature'].add_metric(["CPU%d" % cpu_id], float(cpu_temperature))
         if re.match(cpu_status_pattern, sensor_id):
             cpu_id = int(re.sub(r'\D', '', sensor_id))
-            cpu_status = 0 if "presence detected" == sensor_value else 10
-            metrics['cpu_status'].add_metric(["CPU%d" % cpu_id], float(cpu_status))
+            is_normal = sensor_value in ("presence detected", "present")
+            if is_normal:
+                metrics['cpu_status'].add_metric(["CPU%d" % cpu_id], 0)
+                cpu_status_consecutive_abnormal_count.pop(cpu_id, None)
+            else:
+                cnt = cpu_status_consecutive_abnormal_count.get(cpu_id, 0) + 1
+                cpu_status_consecutive_abnormal_count[cpu_id] = cnt
+                if cnt >= CPU_STATUS_ABNORMAL_ALARM_THRESHOLD:
+                    metrics['cpu_status'].add_metric(["CPU%d" % cpu_id], 10)
 
     return metrics.values()
 
