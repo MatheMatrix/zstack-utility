@@ -2129,7 +2129,7 @@ class ManagementNodeStatusCollector(Command):
 
 class ShowStatus2Cmd(Command):
     colors = ["green", "yellow", "red"]
-    service_names = ["mysql", "prometheus2", "zops-ui", "port restriction", "MN", "MN-UI"]
+    service_names = ["mysql", "prometheus2", "zops-ui", "license-server", "port restriction", "MN", "MN-UI"]
 
     def __init__(self):
         super(ShowStatus2Cmd, self).__init__()
@@ -2176,6 +2176,10 @@ class ShowStatus2Cmd(Command):
         # zops ui status
         zops_ui_status = collector.get_systemd_service_status("zops-ui")
         self._format_str_color("zops-ui", zops_ui_status)
+
+        # license server
+        license_server_status = collector.get_systemd_service_status("zstack-license-server")
+        self._format_str_color("license-server", license_server_status)
 
         # safety-reinforcing
         safe_reinforcing_status = collector.get_safe()
@@ -12260,18 +12264,59 @@ WantedBy=multi-user.target
         return False
 
 
+class LicenseServerService(ExtraService):
+    default_port = 8201
+    https_health_url = "https://127.0.0.1:%d/healthz" % default_port
+    http_health_url = "http://127.0.0.1:%d/healthz" % default_port
+    ready_url = None
+
+    def service_name(self):
+        return "zstack-license-server"
+
+    def start(self, do_init=False):
+        shell_no_pipe("systemctl enable --now %s" % self.service_name())
+        self.ready_url = self._wait_for_license_server([self.https_health_url, self.http_health_url])
+        if self.zsha2_utils:
+            self.zsha2_utils.execute_on_peer("systemctl enable --now %s" % self.service_name())
+
+    def post_start_log(self):
+        scheme = "https"
+        if self.ready_url and self.ready_url.startswith("http://"):
+            scheme = "http"
+        info("License Server service has been started. Access it at: %s://%s:%s" % (scheme, get_default_ip(), self.default_port))
+
+    def _wait_for_license_server(self, urls, timeout=120):
+        info_and_debug("Waiting for %s to become available at: %s" % (self.service_name(), ", ".join(urls)))
+        begin = time.time()
+
+        while time.time() - begin < timeout:
+            for url in urls:
+                try:
+                    result = shell("curl -k -s -o /dev/null -w '%%{http_code}' %s" % url)
+                    if result.strip() == "200":
+                        info_and_debug("%s is ready at %s." % (self.service_name(), url))
+                        return url
+                except Exception as e:
+                    logger.debug("%s health check failed at %s: %s" % (self.service_name(), url, str(e)))
+            time.sleep(2)
+
+        error("%s did not become ready within %d seconds." % (self.service_name(), timeout))
+        return None
+
+
 
 
 class StartExtraServicesCmd(Command):
     EXTRA_SERVICE_REGISTRY = {
         "iam": IamService,
         "morph": MorphService,
+        "license-server": LicenseServerService,
     }
 
     def __init__(self):
         super(StartExtraServicesCmd, self).__init__()
         self.name = 'start-extra-service'
-        self.description = 'Start extra services like iam, morph, etc.'
+        self.description = 'Start extra services like iam, morph, license-server, etc.'
         ctl.register_command(self)
 
     def install_argparse_arguments(self, parser):

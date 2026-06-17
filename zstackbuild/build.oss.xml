@@ -93,6 +93,7 @@
     <import file="${basedir}/projects/zstack-sharedblock.xml" optional="false" />
     <import file="${basedir}/projects/zstack-promtail.xml" optional="false" />
     <import file="${basedir}/projects/zstack-dpuagent.xml" optional="false" />
+    <import file="${basedir}/projects/zstack-license-server.xml" optional="false" />
     <import file="${basedir}/projects/guest-tools.xml" optional="false" />
     <import file="${basedir}/projects/transmission.xml" optional="false" />
     <import file="${basedir}/projects/build-pypi-source.xml" optional="false" />
@@ -285,6 +286,9 @@
                 <antcall target="build-dpuagent"/>
             </sequential>
             <sequential>
+                <antcall target="build-license-server"/>
+            </sequential>
+            <sequential>
                 <antcall target="build-zbsp"/>
             </sequential>
             <sequential>
@@ -368,6 +372,9 @@
             </sequential>
             <sequential>
                 <antcall target="assemble-dpuagent"/>
+            </sequential>
+            <sequential>
+                <antcall target="assemble-license-server"/>
             </sequential>
             <sequential>
                 <antcall target="assemble-agent-server"/>
