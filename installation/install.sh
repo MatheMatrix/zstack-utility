@@ -3761,7 +3761,7 @@ Options:
         password for MySQL user 'zstack' that is the user ${PRODUCT_NAME} management nodes use to access database. By default, an empty password is applied.
 
   -P MYSQL_PASSWORD
-        password for MySQL root user. By default, an empty password is applied.
+        password for MySQL root user. By default, zstack.mysql.password is applied.
 
   -q    quiet installation. Installation will try to fix the system configuration issue, rather than quit installation process.
 
@@ -3798,7 +3798,7 @@ Following command will install the ${PRODUCT_NAME} management node to /usr/local
 . NFS server
 . Apache HTTP server
 
-And an empty password is set to the root user of MySQL.
+And zstack.mysql.password is set to the root user of MySQL.
 
 # ${PROGNAME} -a
 
