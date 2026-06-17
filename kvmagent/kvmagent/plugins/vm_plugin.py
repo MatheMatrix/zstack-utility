@@ -1240,6 +1240,11 @@ def e(parent, tag, value=None, attrib=None, usenamesapce = False):
     return el
 
 
+def make_pmu_feature(cmd, features):
+    if hasattr(cmd, 'pmu') and cmd.pmu is False:
+        e(features, "pmu", attrib={'state': 'off'})
+
+
 def find_namespace_node(root, path, name):
     ns = {'zs': ZS_XML_NAMESPACE}
 
@@ -5149,6 +5154,8 @@ class Vm(object):
             if get_gic_version(cmd.cpuNum) == 2:
                 e(features, "gic", attrib={'version': '2'})
 
+            make_pmu_feature(cmd, features)
+
 
         def make_qemu_commandline():
             if not os.path.exists(QMP_SOCKET_PATH):
@@ -7479,7 +7486,7 @@ class VmPlugin(kvmagent.KvmAgent):
             self._record_operation(cmd.uuid, self.VM_OP_STOP)
             self._stop_vm(cmd)
             # notify vrouter agent nic removed from source host
-            for nic in cmd.vmNics:
+            for nic in getattr(cmd, 'vmNics', None) or []:
                 if nic.type == 'TFVNIC':
                     vrouter_cmd = [
                         'vrouter-port-control',
@@ -7557,7 +7564,7 @@ class VmPlugin(kvmagent.KvmAgent):
                 if vmUseOpenvSwitch:
                     ovs.getOvsCtl(with_dpdk=True).destoryNicBackend(cmd.uuid)
                 # notify vrouter agent nic removed from source host
-                for nic in cmd.vmNics:
+                for nic in getattr(cmd, 'vmNics', None) or []:
                     if nic.type == 'TFVNIC':
                         vrouter_cmd = [
                             'vrouter-port-control',
