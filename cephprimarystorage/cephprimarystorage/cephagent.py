@@ -766,11 +766,8 @@ class CephAgent(plugin.TaskManager):
         if cmd.sendCommandUrl:
             Report.url = cmd.sendCommandUrl
 
-        if cmd.skipIfExisting and shell.run("rbd info %s" % dst_path) == 0:
-            rsp.size = self._get_file_size(dst_path)
-            rsp.installPath = cmd.dstPath
-            self._set_capacity_to_response(rsp)
-            return jsonobject.dumps(rsp)
+        if cmd.overrideIfExisting and shell.run("rbd info %s" % dst_path) == 0:
+            shell.run('rbd rm %s' % dst_path)
 
         report = Report(cmd.threadContext, cmd.threadContextStack)
         report.processType = "CephCpVolume"
