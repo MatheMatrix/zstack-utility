@@ -41,6 +41,7 @@ PAGE_SIZE = None
 disk_list_record = None
 hba_port_state_list_record_map = {}
 nvme_serial_numbers_record = None
+IPMITOOL_TIMEOUT = 30
 
 
 @functools.lru_cache(maxsize=1)
@@ -1002,7 +1003,13 @@ def collect_ipmi_state():
         return collect_equipment_state_last_result
 
     # get ipmi status
-    metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
+    try:
+        metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info", timeout=IPMITOOL_TIMEOUT))
+    except BashError as e:
+        logger.warn("failed to get ipmi status in collect_ipmi_state: %s" % str(e))
+        metrics['ipmi_status'].add_metric([], 1)
+        collect_equipment_state_last_time = None
+        return list(metrics.values())
 
     # get cpu info
     if not get_is_hygon():
@@ -1104,7 +1111,12 @@ def collect_ipmi_state():
         origin_fan_flag = True
 
     # get power info
-    r, sdr_data = bash_ro("ipmitool sdr elist")
+    try:
+        r, sdr_data = bash_ro("ipmitool sdr elist", timeout=IPMITOOL_TIMEOUT)
+    except BashError as e:
+        logger.warn("failed to get sdr elist in collect_ipmi_state: %s" % str(e))
+        collect_equipment_state_last_time = None
+        return list(metrics.values())
     if r == 0:
         power_list = []
         for line in sdr_data.splitlines():
@@ -1170,9 +1182,13 @@ def check_equipment_state_from_ipmitool(metrics):
         "Power Supply": send_physical_power_supply_status_alarm_to_mn
     }
 
-    r, sensor_infos = bash_ro(
-        "ipmi-sensors --sensor-types=Memory,fan,Power_Supply -Q --ignore-unrecognized-events --comma-separated-output "
-        "--no-header-output --sdr-cache-recreate --output-sensor-state")
+    try:
+        r, sensor_infos = bash_ro(
+            "ipmi-sensors --sensor-types=Memory,fan,Power_Supply -Q --ignore-unrecognized-events --comma-separated-output "
+            "--no-header-output --sdr-cache-recreate --output-sensor-state", timeout=IPMITOOL_TIMEOUT)
+    except BashError as e:
+        logger.warn("failed to get ipmi-sensors in check_equipment_state_from_ipmitool: %s" % str(e))
+        return
     if r == 0:
         for sensor_info in sensor_infos.splitlines():
             sensor = sensor_info.split(",")
@@ -1200,10 +1216,19 @@ def collect_equipment_state_from_ipmi():
         "cpu_status": GaugeMetricFamily('cpu_status', 'cpu status', None, ['cpu']),
         "ipmi_memory_status": GaugeMetricFamily('ipmi_memory_status', 'ipmi memory status', None, ['name', 'type']),
     }
-    metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
+    try:
+        metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info", timeout=IPMITOOL_TIMEOUT))
+    except BashError as e:
+        logger.warn("failed to get ipmi status in collect_equipment_state_from_ipmi: %s" % str(e))
+        metrics['ipmi_status'].add_metric([], 1)
+        return list(metrics.values())
 
-    r, cpu_info = bash_ro(
-        "ipmitool sdr elist | grep -i cpu")  # type: (int, str)
+    try:
+        r, cpu_info = bash_ro(
+            "ipmitool sdr elist | grep -i cpu", timeout=IPMITOOL_TIMEOUT)  # type: (int, str)
+    except BashError as e:
+        logger.warn("failed to get sdr elist in collect_equipment_state_from_ipmi: %s" % str(e))
+        return list(metrics.values())
     if r != 0:
         return list(metrics.values())
 
@@ -1263,8 +1288,19 @@ def collect_equipment_state():
         'ipmi_status': GaugeMetricFamily('ipmi_status', 'ipmi status', None, []),
     }
 
+    try:
+        metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info", timeout=IPMITOOL_TIMEOUT))
+    except BashError as e:
+        logger.warn("failed to get ipmi status in collect_equipment_state: %s" % str(e))
+        metrics['ipmi_status'].add_metric([], 1)
+        return list(metrics.values())
+
     # type: (int, str)
-    r, ps_info = bash_ro("ipmitool sdr type 'power supply'")
+    try:
+        r, ps_info = bash_ro("ipmitool sdr type 'power supply'", timeout=IPMITOOL_TIMEOUT)
+    except BashError as e:
+        logger.warn("failed to get sdr type in collect_equipment_state: %s" % str(e))
+        return list(metrics.values())
     if r == 0:
         for info in ps_info.splitlines():
             info = info.strip()
@@ -1272,7 +1308,6 @@ def collect_equipment_state():
             health = 10 if "fail" in info.lower() or "lost" in info.lower() else 0
             metrics['power_supply'].add_metric([ps_id], health)
 
-    metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
     return list(metrics.values())
 
 

@@ -25,13 +25,13 @@ subprocess.Popen._close_fds = _linux_close_fds
 
 
 @lock.lock("subprocess.popen")
-def get_process(cmd, shell=None, workdir=None, pipe=None, executable=None):
+def get_process(cmd, shell=None, workdir=None, pipe=None, executable=None, start_new_session=False):
     if pipe:
         return subprocess.Popen(cmd, shell=shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                close_fds=True, executable=executable, cwd=workdir)
+                                close_fds=True, executable=executable, cwd=workdir, start_new_session=start_new_session)
     else:
         return subprocess.Popen(cmd, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                close_fds=True, executable=executable, cwd=workdir)
+                                close_fds=True, executable=executable, cwd=workdir, start_new_session=start_new_session)
 
 
 class ShellError(Exception):
