@@ -8048,17 +8048,26 @@ class ConfiguredCollectLogCmd(Command):
 class ChangeIpCmd(Command):
     UNSPECIFIED_MANAGEMENT_IPS = ('0.0.0.0', '::')
     DUAL_STACK_LEGACY_IP_ERROR = (
-        'current management node is dual-stack; use --ip4 and/or --ip6 to change '
+        'current management node is dual-stack; use --ipv4 and/or --ipv6 to change '
         'the IPv4 and IPv6 management address explicitly'
     )
-    NO_CHANGE_IP_ERROR = 'one of --ip, --ip4 or --ip6 must be specified'
-    MIXED_CHANGE_IP_ERROR = '--ip cannot be used together with --ip4 or --ip6'
+    NO_CHANGE_IP_ERROR = 'one of --ip, --ipv4 or --ipv6 must be specified'
+    MIXED_CHANGE_IP_ERROR = '--ip cannot be used together with --ipv4 or --ipv6'
     MISSING_MANAGEMENT_IP_ERROR = (
         'cannot change %s management address because current %s is not configured; '
         'use add_ip to add a secondary management address first'
     )
     ADDRESS_FAMILY_CHANGE_ERROR = (
         'changing management address family is not supported by change_ip: old_ip=%s, new_ip=%s'
+    )
+    ADDRESS_FAMILY_CHANGE_RISK = (
+        'Changing management address family is only safe before adding any resources. '
+        'Hosts, primary storage, backup storage, VPC routers, console proxy, and external '
+        'agents that still use the old IP version may disconnect or become unmanaged.'
+    )
+    ADDRESS_FAMILY_CHANGE_CONFIRMATION_HINT = (
+        'Re-run with --allow-management-ip-family-change and '
+        '--yes-i-understand-management-network-risk if you have verified the risk.'
     )
 
     def __init__(self):
@@ -8073,13 +8082,21 @@ class ChangeIpCmd(Command):
         parser.add_argument('--ip', help='The new IP address of management node.'
                                          'This operation will update the new ip address to '
                                          'zstack config file' , required=False)
-        parser.add_argument('--ip4', help='The new IPv4 management address of management node.', required=False)
-        parser.add_argument('--ip6', help='The new IPv6 management address of management node.', required=False)
+        parser.add_argument('--ipv4', '--ip4', dest='ip4',
+                            help='The new IPv4 management address of management node.', required=False)
+        parser.add_argument('--ipv6', '--ip6', dest='ip6',
+                            help='The new IPv6 management address of management node.', required=False)
         parser.add_argument('--cloudbus_server_ip', help='The new IP address of CloudBus.serverIp.0, default will use value from --ip', required=False)
         parser.add_argument('--mysql_ip', help='The new IP address of DB.url, default will use value from --ip', required=False)
         parser.add_argument('--root-password',
                             help='When mysql_restrict_connection is enabled, --root-password needs to be set ',
                             required=False)
+        parser.add_argument('--allow-management-ip-family-change',
+                            help='Allow high-risk management.server.ip IPv4/IPv6 family switch.',
+                            action='store_true', default=False)
+        parser.add_argument('--yes-i-understand-management-network-risk',
+                            help='Confirm that resources using the old IP version may disconnect after change_ip.',
+                            action='store_true', default=False)
 
     def isVirtualIp(self, ip):
         return shell("ip a | grep -w %s" % ip, False).strip().endswith("zs")
@@ -8252,10 +8269,35 @@ class ChangeIpCmd(Command):
             and get_ip_version(model[management_network_ipv6.IPV6_VERSION]['ip']) == management_network_ipv6.IPV6_VERSION
         )
 
+    def check_management_ip_family_change(self, args, old_ip, new_ip):
+        if management_network_ipv6.is_same_ip_version_transition(old_ip, new_ip):
+            return False
+
+        if not (
+                getattr(args, 'allow_management_ip_family_change', False)
+                and getattr(args, 'yes_i_understand_management_network_risk', False)):
+            error('%s. %s %s' % (
+                self.ADDRESS_FAMILY_CHANGE_ERROR % (old_ip, new_ip),
+                self.ADDRESS_FAMILY_CHANGE_RISK,
+                self.ADDRESS_FAMILY_CHANGE_CONFIRMATION_HINT))
+
+        info(self.ADDRESS_FAMILY_CHANGE_RISK)
+        return True
+
+    def management_ip_property_for_version(self, version):
+        if version == management_network_ipv6.IPV4_VERSION:
+            return management_network_ipv6.MANAGEMENT_IP4_PROPERTY_KEY
+        if version == management_network_ipv6.IPV6_VERSION:
+            return management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY
+        error('management ip version[%s] is not supported' % version)
+
     def validate_change_ip_inputs(self, args, model):
-        if args.ip and (args.ip4 or args.ip6):
+        ip4 = getattr(args, 'ip4', None)
+        ip6 = getattr(args, 'ip6', None)
+
+        if args.ip and (ip4 or ip6):
             error(self.MIXED_CHANGE_IP_ERROR)
-        if not args.ip and not args.ip4 and not args.ip6:
+        if not args.ip and not ip4 and not ip6:
             error(self.NO_CHANGE_IP_ERROR)
 
         dual_stack = self.is_dual_stack_management_ip(model)
@@ -8272,49 +8314,90 @@ class ChangeIpCmd(Command):
             if old_version is None:
                 error('current management.server.ip is not configured')
             if new_version != old_version:
-                error(self.ADDRESS_FAMILY_CHANGE_ERROR % (model[old_version]['ip'], args.ip))
-            targets.append((old_version, args.ip))
+                self.check_management_ip_family_change(args, model[old_version]['ip'], args.ip)
+                targets.append({
+                    'version': new_version,
+                    'old_version': old_version,
+                    'new_ip': args.ip,
+                    'old_ip': model[old_version]['ip'],
+                    'property': management_network_ipv6.MANAGEMENT_IP_PROPERTY_KEY,
+                    'primary': True,
+                    'family_switch': True,
+                    'follow_version': old_version,
+                    'old_primary_secondary_property': self.management_ip_property_for_version(old_version),
+                    'stale_secondary_property': self.management_ip_property_for_version(new_version),
+                })
+            else:
+                targets.append({
+                    'version': old_version,
+                    'new_ip': args.ip,
+                    'old_ip': model[old_version]['ip'],
+                    'property': model[old_version]['property'],
+                    'primary': model[old_version]['primary'],
+                })
 
-        if args.ip4:
-            targets.append((management_network_ipv6.IPV4_VERSION, args.ip4))
-        if args.ip6:
-            targets.append((management_network_ipv6.IPV6_VERSION, args.ip6))
+        if ip4:
+            targets.append({
+                'version': management_network_ipv6.IPV4_VERSION,
+                'new_ip': ip4,
+                'old_ip': model[management_network_ipv6.IPV4_VERSION]['ip'],
+                'property': model[management_network_ipv6.IPV4_VERSION]['property'],
+                'primary': model[management_network_ipv6.IPV4_VERSION]['primary'],
+            })
+        if ip6:
+            targets.append({
+                'version': management_network_ipv6.IPV6_VERSION,
+                'new_ip': ip6,
+                'old_ip': model[management_network_ipv6.IPV6_VERSION]['ip'],
+                'property': model[management_network_ipv6.IPV6_VERSION]['property'],
+                'primary': model[management_network_ipv6.IPV6_VERSION]['primary'],
+            })
 
         changes = []
-        for version, new_ip in targets:
-            old_ip = model[version]['ip']
+        for target in targets:
+            version = target['version']
+            new_ip = target['new_ip']
+            old_ip = target['old_ip']
             family_name = 'IPv4' if version == management_network_ipv6.IPV4_VERSION else 'IPv6'
             if get_ip_version(new_ip) != version:
                 error('new %s management address[%s] is not a valid %s address' % (
                     family_name, new_ip, family_name))
             if new_ip in self.UNSPECIFIED_MANAGEMENT_IPS:
                 raise CtlError('for your data safety, please do NOT use %s as the listen address' % new_ip)
-            if get_ip_version(old_ip) != version:
+            if not target.get('family_switch') and get_ip_version(old_ip) != version:
                 error(self.MISSING_MANAGEMENT_IP_ERROR % (family_name, family_name))
             if self.isVirtualIp(new_ip):
                 info("The ip address you input: %s is a virtual ip" % new_ip)
                 return None
-            current = model[version]
-            changes.append({
+            change = {
                 'version': version,
                 'family': family_name,
                 'old_ip': old_ip,
                 'new_ip': new_ip,
-                'property': current['property'],
-                'primary': current['primary'],
-            })
+                'property': target['property'],
+                'primary': target['primary'],
+            }
+            for key in (
+                    'old_version',
+                    'family_switch',
+                    'follow_version',
+                    'old_primary_secondary_property',
+                    'stale_secondary_property'):
+                if key in target:
+                    change[key] = target[key]
+            changes.append(change)
 
         changed_versions = set([change['version'] for change in changes])
         for option_name, input_ip in [
                 ('--cloudbus_server_ip', args.cloudbus_server_ip),
                 ('--mysql_ip', args.mysql_ip)]:
             if input_ip and get_ip_version(input_ip) not in changed_versions:
-                error('%s address family must match one of --ip, --ip4 or --ip6' % option_name)
+                error('%s address family must match one of --ip, --ipv4 or --ipv6' % option_name)
 
         return changes
 
     def should_follow_change(self, current_ip, change):
-        return get_ip_version(current_ip) == change['version']
+        return get_ip_version(current_ip) == change.get('follow_version', change['version'])
 
     def update_hosts_for_change(self, change, zstack_conf_file):
         old_ip = change['old_ip']
@@ -8365,6 +8448,12 @@ class ChangeIpCmd(Command):
 
         ctl.write_properties([(change['property'], new_ip)])
         info("Update %s %s in %s " % (change['property'], new_ip, zstack_conf_file))
+
+        if change.get('family_switch'):
+            ctl.write_properties([(change['old_primary_secondary_property'], old_ip)])
+            ctl.delete_properties([change['stale_secondary_property']])
+            info("Keep old primary management ip %s in %s" % (
+                old_ip, change['old_primary_secondary_property']))
 
         cloudbus_ip = ctl.read_property('CloudBus.serverIp.0')
         target_cloudbus_ip = args.cloudbus_server_ip if args.cloudbus_server_ip else new_ip
@@ -8427,7 +8516,13 @@ class ChangeIpCmd(Command):
             self.check_mysql_password("root", root_password_)
 
         zstack_conf_file = ctl.properties_file_path
-        input_ips = [args.ip, args.ip4, args.ip6, args.cloudbus_server_ip, args.mysql_ip]
+        input_ips = [
+            args.ip,
+            getattr(args, 'ip4', None),
+            getattr(args, 'ip6', None),
+            args.cloudbus_server_ip,
+            args.mysql_ip,
+        ]
         for input_ip in [ip for ip in input_ips if ip]:
             if not validate_ip(input_ip):
                 info("The ip address you input: %s seems not a valid ip" % input_ip)
