@@ -1,17 +1,55 @@
 # encoding: utf-8
 
 import re
+import errno
 import hashlib
 import threading
 import logging
 import xxhash
 from zstacklib.utils import linux, lock
 from zstacklib.utils.rangeset import RangeSet
-import cherrypy
 from cherrypy._cpreqbody import Entity, Part, SizedReader
 
 logger = logging.getLogger(__name__)
 BUFFER_SIZE = 16 * 1024 ** 2  # 16MB
+# Per-slice retry budget chosen to tolerate repeated weak-network read/EOF/hash
+# failures without keeping a broken upload task alive indefinitely.
+UPLOAD_SLICE_FAILURE_TOLERANCE = 20
+
+
+class RetryableUploadError(Exception):
+    def __init__(self, message, cause=None):
+        Exception.__init__(self, message)
+        self.cause = cause
+        self.errno = getattr(cause, 'errno', None)
+
+
+def is_no_space_error(reason):
+    checked = set()
+    depth = 0
+    max_depth = 20
+    while reason is not None and id(reason) not in checked and depth < max_depth:
+        checked.add(id(reason))
+        depth += 1
+
+        if getattr(reason, 'errno', None) == errno.ENOSPC:
+            return True
+
+        msg = str(reason).lower()
+        if 'no space left on device' in msg or \
+                'no enough storage' in msg or \
+                'not enough storage' in msg or \
+                'not enough space' in msg:
+            return True
+
+        next_reason = None
+        for attr in ['cause', '__cause__', '__context__']:
+            next_reason = getattr(reason, attr, None)
+            if next_reason is not None:
+                break
+        reason = next_reason
+
+    return False
 
 
 def get_hasher(algorithm, default="md5"):
@@ -81,6 +119,8 @@ class UploadTask(object):
         self.downloadSize = 0
         self.lastError = None
         self.lastOpTime = linux.get_current_timestamp()
+        self.failureTimes = {}
+        self.lastTransientError = None
         self.close = None
 
         self.slice_uploaded = RangeSet()
@@ -90,30 +130,98 @@ class UploadTask(object):
         self.task_completing = False
 
     def fail(self, reason):
-        self.completed = True
-        self.lastError = reason
-        self.lastOpTime = linux.get_current_timestamp()
-        if self.close:
-            self.close()
+        self._fail(reason, True)
+
+    def _fail_without_renew(self, reason):
+        self._fail(reason, False)
+
+    def _fail(self, reason, renew):
+        close = None
+        with self.upload_lock:
+            if self.completed:
+                return
+            self.completed = True
+            self.lastError = reason
+            self.failureTimes.clear()
+            if renew:
+                self.lastOpTime = linux.get_current_timestamp()
+            close = self.close
+        if close:
+            close()
         logger.info('task failed for %s: %s' % (self.taskUuid, reason))
 
+    @staticmethod
+    def upload_slice_failure_key(offset, size):
+        return "%d:%d" % (offset, size)
+
+    def mark_upload_slice_error(self, offset, size, reason):
+        close = None
+        failure_times = 0
+        terminal_failed = False
+        with self.upload_lock:
+            if self.completed:
+                return self.lastError is not None
+
+            key = self.upload_slice_failure_key(offset, size)
+            self.failureTimes[key] = self.failureTimes.get(key, 0) + 1
+            failure_times = self.failureTimes[key]
+            self.lastTransientError = reason
+            terminal_failed = failure_times > UPLOAD_SLICE_FAILURE_TOLERANCE
+            if terminal_failed:
+                self.completed = True
+                self.lastError = reason
+                self.failureTimes.clear()
+                close = self.close
+        logger.warn('upload slice failed for %s, offset: %d, size: %d: %s, retryable failure count: %d/%d' %
+                    (self.taskUuid, offset, size, reason, failure_times,
+                     UPLOAD_SLICE_FAILURE_TOLERANCE))
+        if terminal_failed:
+            if close:
+                close()
+            logger.info('task failed for %s: %s' % (self.taskUuid, reason))
+            return True
+
+        return False
+
+    def clear_upload_slice_error(self, offset, size):
+        with self.upload_lock:
+            self.failureTimes.pop(self.upload_slice_failure_key(offset, size), None)
+
+    def handle_upload_slice_error(self, offset, size, reason):
+        if is_no_space_error(reason):
+            self._fail_without_renew(reason)
+            return True
+
+        return self.mark_upload_slice_error(offset, size, str(reason))
+
     def success(self):
-        self.completed = True
-        self.lastOpTime = linux.get_current_timestamp()
-        if self.close:
-            self.close()
+        close = None
+        with self.upload_lock:
+            if self.completed:
+                return
+            self.completed = True
+            self.failureTimes.clear()
+            self.lastOpTime = linux.get_current_timestamp()
+            close = self.close
+        if close:
+            close()
 
     def is_started(self):
-        return len(self.slice_uploaded.iv) > 0
+        with self.upload_lock:
+            return len(self.slice_uploaded.iv) > 0
 
+    # Used by task-table expunge: "running" means allocated but no slice has started yet.
     def is_running(self):
-        return not (self.completed or self.is_started())
+        with self.upload_lock:
+            return not (self.completed or len(self.slice_uploaded.iv) > 0)
 
     def renew(self):
-        self.lastOpTime = linux.get_current_timestamp()
+        with self.upload_lock:
+            self.lastOpTime = linux.get_current_timestamp()
 
     def all_slice_uploaded(self):
-        return self.task_completing
+        with self.upload_lock:
+            return self.task_completing
 
     def checked_download_size(self):
         with self.upload_lock:
@@ -220,35 +328,50 @@ class UploadHandler(object):
         if task is None:
             raise Exception('upload task not found %s' % param.task_uuid)
 
-        if task.lastError:
-            self._fail_task(task, task.lastError)
+        with task.upload_lock:
+            last_error = task.lastError
+            completed = task.completed
+            if task.expectedSize == 0:
+                task.expectedSize = param.total_size
+            expected_size = task.expectedSize
 
-        if task.completed:
+        if last_error:
+            raise Exception('upload task %s already failed: %s' % (param.task_uuid, last_error))
+
+        if completed:
             raise Exception('upload task[uuid: %s] upload has completed' % param.task_uuid)
 
-        task.expectedSize = param.total_size
+        if expected_size != param.total_size:
+            raise Exception('upload task %s total size changed, expected: %d, actual: %d' %
+                            (param.task_uuid, expected_size, param.total_size))
 
         if param.slice_offset == 0:
-            err = task.check_capacity(task.expectedSize)
+            err = task.check_capacity(expected_size)
             if err:
-                self._fail_task(task, err)
+                self._fail_task(task, err, renew=not is_no_space_error(err))
 
         return task
 
     @staticmethod
-    def _fail_task(task, reason):
-        task.fail(reason)
+    def _fail_task(task, reason, renew=True):
+        if renew:
+            task.fail(reason)
+        else:
+            task._fail_without_renew(reason)
         raise Exception(reason)
 
     def upload_slice(self, entity, param, task):
         boundary = self.get_boundary(entity)
         if not boundary:
-            self._fail_task(task, 'unexpected post form')
+            err = 'unexpected post form'
+            task.handle_upload_slice_error(param.slice_offset, param.slice_size, err)
+            raise Exception(err)
 
         try:
             self.stream_body(entity, boundary, param, task)
-        except Exception, e:
-            self._fail_task(task, str(e))
+        except Exception as e:
+            task.handle_upload_slice_error(param.slice_offset, param.slice_size, e)
+            raise Exception(str(e))
 
     @staticmethod
     def stream_body(entity, boundary, param, task):
@@ -273,10 +396,19 @@ class UploadHandler(object):
                 chunks = []
                 chunk_size = 32 * 1024
                 while remaining > 0:
-                    if task.lastError:
-                        raise Exception(task.lastError)
-                    tmp = reader.read(min(chunk_size, remaining))
+                    with task.upload_lock:
+                        last_error = task.lastError
+                    if last_error:
+                        raise Exception(last_error)
+                    try:
+                        tmp = reader.read(min(chunk_size, remaining))
+                    except Exception as e:
+                        raise RetryableUploadError(
+                            "failed to read upload body, taskUuid: %s, offset: %d, size: %d, completed: %d: %s" %
+                            (param.task_uuid, param.slice_offset, param.slice_size, slice_downloaded_size, e), e)
                     datalen = len(tmp)
+                    if datalen == 0:
+                        break
                     task.renew()
                     chunks.append(tmp)
                     if hasher:
@@ -290,28 +422,38 @@ class UploadHandler(object):
                         slice_downloaded_size += bytes_read
                         chunks = []
                         bytes_read = 0
+            except Exception:
+                if slice_downloaded_size:
+                    task.add_download_size(-slice_downloaded_size)
+                raise
             finally:
                 image_obj.close()
             break
 
         if param.slice_size != slice_downloaded_size:
             task.add_download_size(-slice_downloaded_size)
-            raise Exception("incomplete image %s slice offset %d, completed %d, expected %d" %
-                            (param.task_uuid, param.slice_offset, slice_downloaded_size,
-                             param.slice_size))
+            raise RetryableUploadError("incomplete image %s slice offset %d, completed %d, expected %d" %
+                                       (param.task_uuid, param.slice_offset, slice_downloaded_size,
+                                        param.slice_size))
 
         if param.slice_hash and param.slice_hash != hasher.hexdigest():
+            actual_hash = hasher.hexdigest()
             task.add_download_size(-slice_downloaded_size)
-            raise cherrypy.HTTPError(406, "content %s hash not match, expected: %s, actual: %s" % (
-                param.hash_algorithm, param.slice_hash, hasher.hexdigest()))
+            raise RetryableUploadError(
+                "content %s hash not match, taskUuid: %s, offset: %d, size: %d, expected: %s, actual: %s" % (
+                    param.hash_algorithm, param.task_uuid, param.slice_offset, param.slice_size, param.slice_hash,
+                    actual_hash))
 
         task.record_slice_uploaded(param.slice_offset, param.slice_size)
+        task.clear_upload_slice_error(param.slice_offset, param.slice_size)
+        task.renew()
         logger.debug("uploaded image %s slice offset: %d, content length: %d" %
                      (param.task_uuid, param.slice_offset, param.slice_size))
 
     def handle_upload(self):
         upload_param = self.get_upload_param(self.req.headers)
         task = self.get_upload_task(upload_param)
+        task.renew()
         self.upload_slice(self.req.body, upload_param, task)
         if task.task_completing:
             task.complete_upload()
