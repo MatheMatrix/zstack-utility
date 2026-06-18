@@ -3155,6 +3155,8 @@ class Vm(object):
         flag = (0, libvirt.VIR_DOMAIN_START_PAUSED)[create_paused]
         domain = define_xml()
         self.domain = domain
+        from kvmagent.plugins import zbs_vhost_target
+        zbs_vhost_target.ensure_hugepages_for_domain(self.domain_xml)
         self.domain.createWithFlags(flag)
         if create_paused:
             self._wait_for_vm_paused(timeout)
