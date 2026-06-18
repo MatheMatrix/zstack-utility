@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import argparse
 import json
 import socket
 import sys
@@ -51,6 +52,14 @@ sys.modules['cryptography.hazmat.primitives.serialization'].pkcs12 = sys.modules
     'cryptography.hazmat.primitives.serialization.pkcs12']
 
 from zstackctl import ctl
+
+
+def _family_switch_reject_message(old_ip, new_ip):
+    return '%s. %s %s' % (
+        ctl.ChangeIpCmd.ADDRESS_FAMILY_CHANGE_ERROR % (old_ip, new_ip),
+        ctl.ChangeIpCmd.ADDRESS_FAMILY_CHANGE_RISK,
+        ctl.ChangeIpCmd.ADDRESS_FAMILY_CHANGE_CONFIRMATION_HINT,
+    )
 
 
 def test_split_host_port_endpoint_supports_bracketed_ipv6():
@@ -316,9 +325,117 @@ def test_change_ip_rejects_management_ip_address_family_switch(monkeypatch):
         ))
 
     assert errors == [
-        'changing management address family is not supported by change_ip: '
-        'old_ip=172.24.249.182, new_ip=fd00:172:24:249::182'
+        _family_switch_reject_message('172.24.249.182', 'fd00:172:24:249::182')
     ]
+
+
+def test_change_ip_rejects_family_switch_without_risk_confirmation(monkeypatch):
+    class ChangeIpRejected(Exception):
+        pass
+
+    errors = []
+
+    def fail(message):
+        errors.append(message)
+        raise ChangeIpRejected(message)
+
+    monkeypatch.setattr(ctl, 'check_ha', lambda: False)
+    monkeypatch.setattr(ctl.os.path, 'isfile', lambda path: True)
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: {
+        'management.server.ip': '172.24.249.182',
+    }.get(name))
+    monkeypatch.setattr(ctl, 'error', fail)
+
+    cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
+    monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
+
+    with pytest.raises(ChangeIpRejected):
+        cmd.run(SimpleNamespace(
+            ip='fd00:172:24:249::182',
+            cloudbus_server_ip=None,
+            mysql_ip=None,
+            root_password=None,
+            ip4=None,
+            ip6=None,
+            allow_management_ip_family_change=True,
+            yes_i_understand_management_network_risk=False,
+        ))
+
+    assert errors == [
+        _family_switch_reject_message('172.24.249.182', 'fd00:172:24:249::182')
+    ]
+
+
+def test_change_ip_allows_confirmed_family_switch_and_keeps_old_primary(monkeypatch):
+    writes = []
+    deletes = []
+    shell_calls = []
+    firewall_calls = []
+
+    old_ip = '172.24.249.182'
+    new_ip = 'fd00:172:24:249::182'
+    properties = {
+        'management.server.ip': old_ip,
+        'management.server.ip6': None,
+        'CloudBus.serverIp.0': old_ip,
+        'DB.url': 'jdbc:mysql://172.24.249.182:3306/zstack',
+        'consoleProxyOverriddenIp': old_ip,
+        'management.server.vip': None,
+        'management.server.vip6': None,
+    }
+
+    monkeypatch.setattr(ctl, 'check_ha', lambda: False)
+    monkeypatch.setattr(ctl.os.path, 'isfile', lambda path: True)
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: properties.get(name))
+    monkeypatch.setattr(ctl.ctl, 'read_property_list', lambda prefix: [])
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl.ctl, 'write_property', lambda key, value: writes.append((key, value)))
+    monkeypatch.setattr(ctl.ctl, 'delete_properties', deletes.extend)
+    monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda name: 'jdbc:mysql://172.24.249.182:3306/zstack_ui')
+    monkeypatch.setattr(ctl.ctl, 'write_ui_properties', writes.extend)
+    monkeypatch.setattr(ctl, 'shell', lambda command, *args, **kwargs: 'mn-host\n' if command == 'hostname' else shell_calls.append(command) or '')
+    monkeypatch.setattr(ctl, 'update_change_ip_firewall_rules', lambda *args: firewall_calls.append(args))
+    monkeypatch.setattr(ctl, 'info', lambda *args, **kwargs: None)
+
+    cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
+    monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
+    monkeypatch.setattr(cmd, 'checkMysqlConnection', lambda *args: None)
+    monkeypatch.setattr(cmd, 'update_morph_config', lambda ip: shell_calls.append(('morph', ip)))
+
+    cmd.run(SimpleNamespace(
+        ip=new_ip,
+        cloudbus_server_ip=None,
+        mysql_ip=None,
+        root_password=None,
+        ip4=None,
+        ip6=None,
+        allow_management_ip_family_change=True,
+        yes_i_understand_management_network_risk=True,
+    ))
+
+    assert ('management.server.ip', new_ip) in writes
+    assert ('management.server.ip4', old_ip) in writes
+    assert deletes == ['management.server.ip6']
+    assert ('CloudBus.serverIp.0', new_ip) in writes
+    assert ('consoleProxyOverriddenIp', new_ip) in writes
+    assert ('DB.url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack') in writes
+    assert ('db_url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack_ui') in writes
+    assert ('morph', new_ip) in shell_calls
+    assert firewall_calls == [(new_ip, new_ip, old_ip, {'3306'})]
+
+
+def test_change_ip_ipv4_ipv6_aliases_parse_to_family_scoped_args():
+    parser = argparse.ArgumentParser()
+    cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
+
+    cmd.install_argparse_arguments(parser)
+    args = parser.parse_args([
+        '--ipv4', '172.24.249.183',
+        '--ipv6', 'fd00:172:24:249::183',
+    ])
+
+    assert args.ip4 == '172.24.249.183'
+    assert args.ip6 == 'fd00:172:24:249::183'
 
 
 def test_change_ip_rejects_ipv6_unspecified_address(monkeypatch):
