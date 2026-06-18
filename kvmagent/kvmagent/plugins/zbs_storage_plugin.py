@@ -26,6 +26,12 @@ class VhostActivateRsp(kvmagent.AgentResponse):
         self.socketPath = None
 
 
+class VhostTargetHealthRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(VhostTargetHealthRsp, self).__init__()
+        self.healthy = False
+
+
 class ZbsStoragePlugin(kvmagent.KvmAgent):
     CHECK_HOST_STORAGE_CONNECTION_PATH = "/zbs/primarystorage/check/host/connection"
     UPDATE_HOST_DEPENDENCY_PATH = "/zbs/primarystorage/host/updatedependency"
@@ -33,6 +39,7 @@ class ZbsStoragePlugin(kvmagent.KvmAgent):
     VHOST_ACTIVATE_PATH = "/zbs/primarystorage/vhost/activate"
     VHOST_DEACTIVATE_PATH = "/zbs/primarystorage/vhost/deactivate"
     VHOST_RESIZE_PATH = "/zbs/primarystorage/vhost/resize"
+    VHOST_TARGET_HEALTH_PATH = "/zbs/primarystorage/vhost/target/health"
 
     def start(self):
         http_server = kvmagent.get_http_server()
@@ -42,6 +49,7 @@ class ZbsStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.VHOST_ACTIVATE_PATH, self.vhost_activate)
         http_server.register_async_uri(self.VHOST_DEACTIVATE_PATH, self.vhost_deactivate)
         http_server.register_async_uri(self.VHOST_RESIZE_PATH, self.vhost_resize)
+        http_server.register_async_uri(self.VHOST_TARGET_HEALTH_PATH, self.vhost_target_health)
 
     @kvmagent.replyerror
     @bash.in_bash
@@ -102,7 +110,9 @@ class ZbsStoragePlugin(kvmagent.KvmAgent):
             control_sock=self._control_sock(cmd),
             client_conf=cmd.clientConf if cmd.clientConf else zbs_vhost_target.DEFAULT_CLIENT_CONF,
             hugepage_nr=cmd.hugepageNr if cmd.hugepageNr else zbs_vhost_target.DEFAULT_HUGEPAGE_NR,
-            image_tar=cmd.imageTar)
+            image_tar=cmd.imageTar,
+            image_url=cmd.imageUrl,
+            core_count=cmd.coreCount if cmd.coreCount else zbs_vhost_target.DEFAULT_CORE_COUNT)
 
     @kvmagent.replyerror
     def vhost_target_ensure(self, req):
@@ -142,6 +152,7 @@ class ZbsStoragePlugin(kvmagent.KvmAgent):
         if rpc.get_bdev(cmd.bdevName) is not None:
             rpc.bdev_zbs_delete(cmd.bdevName)
 
+        zbs_vhost_target.reclaim_hugepages()
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -150,6 +161,13 @@ class ZbsStoragePlugin(kvmagent.KvmAgent):
         rsp = CheckHostStorageConnectionRsp()
         rpc = ZbsVhostRpc(self._control_sock(cmd))
         rpc.bdev_zbs_resize(cmd.bdevName, cmd.sizeMib)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def vhost_target_health(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = VhostTargetHealthRsp()
+        rsp.healthy = zbs_vhost_target.target_healthy(self._control_sock(cmd))
         return jsonobject.dumps(rsp)
 
 
