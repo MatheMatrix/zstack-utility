@@ -91,6 +91,9 @@ MAX_MEMORY = 34359738368 if (HOST_ARCH != "aarch64") else linux.get_max_vm_ipa_s
 MIPS64EL_CPU_MODEL = "Loongson-3A4000-COMP"
 LOONGARCH64_CPU_MODEL = "Loongson-3A5000"
 
+LIBVIRT_DEFINED_XML_DIR = "/etc/libvirt/qemu/"
+
+
 class RetryException(Exception):
     pass
 
@@ -6723,6 +6726,11 @@ class VmPlugin(kvmagent.KvmAgent):
 
     def _start_vm(self, cmd):
         try:
+            if os.path.exists(os.path.join(LIBVIRT_DEFINED_XML_DIR, cmd.vmInstanceUuid + ".xml")) \
+                    and not linux.get_vm_pid(cmd.vmInstanceUuid):
+                # undefine previous
+                shell.run("virsh undefine %s" % cmd.vmInstanceUuid)
+
             vm = get_vm_by_uuid_no_retry(cmd.vmInstanceUuid, False)
 
             if vm:
