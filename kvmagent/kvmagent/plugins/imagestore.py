@@ -4,6 +4,7 @@ import os
 import os.path
 import platform
 import json
+import pipes
 
 from kvmagent import kvmagent
 from kvmagent.plugins import volume_secret
@@ -228,6 +229,33 @@ class ImageStoreClient(object):
             os.close(fd)
         return path
 
+    def _command_env_prefix(self, cmd):
+        env = getattr(cmd, 'commandEnv', None)
+        if not env:
+            return ""
+
+        if hasattr(env, "__dict__"):
+            items = env.__dict__.items()
+        else:
+            items = env.items()
+
+        return "".join(["%s=%s " % (k, pipes.quote(str(v))) for k, v in items if v is not None])
+
+    def _encrypted_source_option(self, cmd):
+        encrypted_dek = getattr(cmd, 'encryptedDek', None)
+        if not encrypted_dek:
+            return "", None
+
+        encryption_file = self._write_json_temp_file({
+            "encrypted": True,
+            "encryptedDek": encrypted_dek,
+            "keyProviderUuid": getattr(cmd, "keyProviderUuid", None),
+            "keyVersion": getattr(cmd, "keyVersion", None),
+            "cipher": getattr(cmd, "cipher", "luks"),
+        })
+        return " -encryption-json-file %s -secret-channel-provider %s" % (
+            encryption_file, self.KEY_AGENT_PROVIDER), encryption_file
+
     def backup_volume(self, vm, node, bitmap, mode, dest, point_in_time, speed, reporter, stage):
         self.check_capacity(os.path.dirname(dest))
 
@@ -320,14 +348,21 @@ class ImageStoreClient(object):
         push_ext_param = ""
         if cmd.concurrency and cmd.concurrency > 1:
             push_ext_param += " -concurrency %d" % cmd.concurrency
+        encryption_file = None
+        encrypted_source_option, encryption_file = self._encrypted_source_option(cmd)
+        push_ext_param += encrypted_source_option
 
         cmdstr = '%s -url %s:%s -callbackurl %s -taskid %s -imageUuid %s %s push %s %s' % (
-            self.ZSTORE_CLI_PATH, cmd.hostname, self.ZSTORE_DEF_PORT, req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
+            self._command_env_prefix(cmd) + self.ZSTORE_CLI_PATH, cmd.hostname, self.ZSTORE_DEF_PORT, req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
             taskid, cmd.imageUuid, extpara, push_ext_param, cmd.primaryStorageInstallPath)
         logger.debug('pushing %s to image store' % cmd.primaryStorageInstallPath)
-        shell = traceable_shell.get_shell(cmd)
-        shell.call(cmdstr)
-        logger.debug('%s pushed to image store' % cmd.primaryStorageInstallPath)
+        try:
+            shell = traceable_shell.get_shell(cmd)
+            shell.call(cmdstr)
+            logger.debug('%s pushed to image store' % cmd.primaryStorageInstallPath)
+        finally:
+            if encryption_file:
+                linux.rm_file_force(encryption_file)
 
         rsp = kvmagent.AgentResponse()
         rsp.backupStorageInstallPath = jsonobject.loads(crsp).backupStorageInstallPath
@@ -343,11 +378,18 @@ class ImageStoreClient(object):
         linux.sync_file(fpath)
 
         # Add the image to registry
-        cmdstr = '%s -json  -callbackurl %s -taskid %s -imageUuid %s add -desc \'%s\' -file %s' % (self.ZSTORE_CLI_PATH, req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
-                req[http.REQUEST_HEADER].get(http.TASK_UUID), cmd.imageUuid, cmd.description, fpath)
+        encryption_file = None
+        encrypted_source_option, encryption_file = self._encrypted_source_option(cmd)
+        cmdstr = '%s -json  -callbackurl %s -taskid %s -imageUuid %s add %s -desc \'%s\' -file %s' % (
+                self._command_env_prefix(cmd) + self.ZSTORE_CLI_PATH, req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
+                req[http.REQUEST_HEADER].get(http.TASK_UUID), cmd.imageUuid, encrypted_source_option, cmd.description, fpath)
         logger.debug('adding %s to local image store' % fpath)
-        output = shell.call(cmdstr.encode(encoding="utf-8"))
-        logger.debug('%s added to local image store' % fpath)
+        try:
+            output = shell.call(cmdstr.encode(encoding="utf-8"))
+            logger.debug('%s added to local image store' % fpath)
+        finally:
+            if encryption_file:
+                linux.rm_file_force(encryption_file)
 
         imf = jsonobject.loads(output.splitlines()[-1])
 
