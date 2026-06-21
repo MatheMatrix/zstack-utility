@@ -4,6 +4,17 @@ import hashlib
 import json
 import os
 import re
+import shutil
+
+
+try:
+    basestring
+except NameError:
+    basestring = str
+try:
+    long
+except NameError:
+    long = int
 
 
 HOST_SOURCE_ROOT = '/var/lib/zstack/aios/virtiofs-sources'
@@ -22,6 +33,198 @@ def get_attr(obj, name, default=None):
     except Exception:
         pass
     return getattr(obj, name, default)
+
+
+def has_attr(obj, name):
+    if obj is None:
+        return False
+    if isinstance(obj, dict):
+        return name in obj
+    try:
+        if hasattr(obj, 'hasattr') and obj.hasattr(name):
+            return True
+    except Exception:
+        pass
+    return hasattr(obj, name)
+
+
+def as_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _normalize_root(root):
+    root = str(root or '').strip()
+    if not root:
+        return None
+    if not os.path.isabs(root):
+        raise Exception('virtiofs source root[%s] must be an absolute path' % root)
+    return os.path.realpath(root)
+
+
+def _append_root(roots, root):
+    root = _normalize_root(root)
+    if root and root not in roots:
+        roots.append(root)
+
+
+def _split_roots(value):
+    roots = []
+    for item in as_list(value):
+        if item is None:
+            continue
+        if isinstance(item, basestring):
+            parts = item.split(',')
+        else:
+            parts = [item]
+        for part in parts:
+            _append_root(roots, part)
+    return roots
+
+
+def source_roots_from_raw(raw, include_vm_view=True):
+    roots = []
+    for field in ('allowedRoots', 'allowedSourceRoots'):
+        for root in _split_roots(get_attr(raw, field)):
+            _append_root(roots, root)
+    has_explicit_source_root = False
+    for field in ('hostSourceRoot', 'sourceRootPath'):
+        if not has_attr(raw, field):
+            continue
+        has_explicit_source_root = True
+        root = get_attr(raw, field)
+        if root is None or str(root).strip() == '':
+            raise Exception('virtiofs %s must not be empty' % field)
+        _append_root(roots, root)
+    if not has_explicit_source_root:
+        _append_root(roots, HOST_SOURCE_ROOT)
+    if include_vm_view and not has_explicit_source_root:
+        _append_root(roots, VM_VIEW_ROOT)
+    return tuple(roots)
+
+
+def has_source_root_fields(raw):
+    for field in ('allowedRoots', 'allowedSourceRoots', 'hostSourceRoot', 'sourceRootPath'):
+        if get_attr(raw, field) is not None:
+            return True
+    return False
+
+
+def _parse_required_capacity(value):
+    if value is None or value == '':
+        return None
+    try:
+        required = long(value)
+    except Exception:
+        raise Exception('requiredCapacityBytes[%s] must be a number' % value)
+    if required < 0:
+        raise Exception('requiredCapacityBytes[%s] must not be negative' % value)
+    return required
+
+
+def check_available_capacity(path, required_capacity_bytes):
+    if required_capacity_bytes is None or required_capacity_bytes == 0:
+        return
+    try:
+        stat = os.statvfs(path)
+        available = stat.f_bavail * stat.f_frsize
+    except OSError as exc:
+        raise Exception('failed to check virtiofs source capacity for path[%s]: %s' % (path, exc))
+    if available < required_capacity_bytes:
+        raise Exception('virtiofs source path[%s] available capacity[%s bytes] is less than required capacity[%s bytes]. '
+                        'Please move the virtiofs source root to a disk with enough capacity or free host storage space.' % (
+                            path, available, required_capacity_bytes))
+
+
+def statvfs_capacity(path):
+    try:
+        stat = os.statvfs(path)
+    except OSError as exc:
+        raise Exception('failed to check virtiofs source root capacity for path[%s]: %s' % (path, exc))
+    return {
+        'physicalTotalBytes': long(stat.f_blocks * stat.f_frsize),
+        'physicalAvailableBytes': long(stat.f_bavail * stat.f_frsize),
+    }
+
+
+def directory_size(path):
+    total = 0
+    for root, dirs, files in os.walk(path):
+        for name in files:
+            fpath = os.path.join(root, name)
+            try:
+                total += os.path.getsize(fpath)
+            except OSError:
+                pass
+    return long(total)
+
+
+def cache_entry(source_root, source_path):
+    root = _normalize_root(source_root)
+    path = ensure_under(source_path, root, 'sourcePath', allow_root=False)
+    if not os.path.exists(path):
+        raise Exception('sourcePath[%s] does not exist' % source_path)
+    if not os.path.isdir(path):
+        raise Exception('sourcePath[%s] is not a directory' % source_path)
+    return {
+        'sourcePath': path,
+        'sizeBytes': directory_size(path),
+        'sourceMtime': long(os.path.getmtime(path)),
+        'checksum': None,
+        'contentVersion': None,
+    }
+
+
+def report_source_root(source_root):
+    root = _normalize_root(source_root or HOST_SOURCE_ROOT)
+    if not os.path.exists(root):
+        raise Exception('sourceRoot[%s] does not exist' % root)
+    if not os.path.isdir(root):
+        raise Exception('sourceRoot[%s] is not a directory' % root)
+
+    result = statvfs_capacity(root)
+    result['sourceRoot'] = root
+    result['cacheEntries'] = []
+
+    registry = SourceRegistry(os.path.join(root, '.registry')).load()
+    for entry in registry.values():
+        path = entry.get('path') if isinstance(entry, dict) else None
+        if not path:
+            continue
+        try:
+            result['cacheEntries'].append(cache_entry(root, path))
+        except Exception:
+            pass
+    return result
+
+
+def prepare_host_model_cache(source_root, source_path, required_capacity_bytes=None):
+    root = _normalize_root(source_root or HOST_SOURCE_ROOT)
+    if not os.path.exists(root):
+        raise Exception('sourceRoot[%s] does not exist' % root)
+    check_available_capacity(root, required_capacity_bytes)
+    return cache_entry(root, source_path)
+
+
+def cleanup_host_model_cache(source_root, source_path):
+    root = _normalize_root(source_root or HOST_SOURCE_ROOT)
+    path = ensure_under(source_path, root, 'sourcePath', allow_root=False)
+    if not os.path.exists(path):
+        return {
+            'sourcePath': path,
+            'bytesReclaimed': 0,
+        }
+    if not os.path.isdir(path):
+        raise Exception('sourcePath[%s] is not a directory' % source_path)
+    bytes_reclaimed = directory_size(path)
+    shutil.rmtree(path)
+    return {
+        'sourcePath': path,
+        'bytesReclaimed': bytes_reclaimed,
+    }
 
 
 def _safe_id(value, prefix):
@@ -83,10 +286,13 @@ class SourceCapability(object):
 
 
 class SourceSpec(object):
-    def __init__(self, source_type='preparedPath', path=None, source_uuid=None):
+    def __init__(self, source_type='preparedPath', path=None, source_uuid=None,
+                 allowed_roots=None, required_capacity_bytes=None):
         self.source_type = source_type or 'preparedPath'
         self.path = path
         self.source_uuid = source_uuid
+        self.allowed_roots = allowed_roots
+        self.required_capacity_bytes = required_capacity_bytes
 
     @staticmethod
     def from_raw(raw):
@@ -96,7 +302,10 @@ class SourceSpec(object):
         path = (get_attr(raw, 'path') or get_attr(raw, 'sourcePath') or
                 get_attr(raw, 'preparedPath'))
         source_uuid = get_attr(raw, 'sourceUuid', get_attr(raw, 'uuid'))
-        return SourceSpec(source_type, path, source_uuid)
+        required_capacity = _parse_required_capacity(
+            get_attr(raw, 'requiredCapacityBytes', get_attr(raw, 'requiredBytes')))
+        allowed_roots = source_roots_from_raw(raw) if has_source_root_fields(raw) else None
+        return SourceSpec(source_type, path, source_uuid, allowed_roots, required_capacity)
 
     @staticmethod
     def from_command(cmd):
@@ -107,6 +316,8 @@ class SourceSpec(object):
             get_attr(cmd, 'sourceType', 'preparedPath'),
             get_attr(cmd, 'sourcePath'),
             get_attr(cmd, 'sourceUuid'),
+            source_roots_from_raw(cmd) if has_source_root_fields(cmd) else None,
+            _parse_required_capacity(get_attr(cmd, 'requiredCapacityBytes', get_attr(cmd, 'requiredBytes'))),
         )
 
 
@@ -142,7 +353,9 @@ class PreparedPathSourceProvider(object):
         if not os.path.isdir(spec.path):
             raise Exception('sourcePath[%s] is not a directory' % spec.path)
 
-        path = ensure_under_any(spec.path, self.allowed_roots, 'sourcePath', allow_root=False)
+        allowed_roots = spec.allowed_roots or self.allowed_roots
+        path = ensure_under_any(spec.path, allowed_roots, 'sourcePath', allow_root=False)
+        check_available_capacity(path, spec.required_capacity_bytes)
         source_uuid = _safe_id(spec.source_uuid, None) if spec.source_uuid else _path_id(path)
         capability = SourceCapability(
             migratable=False,
