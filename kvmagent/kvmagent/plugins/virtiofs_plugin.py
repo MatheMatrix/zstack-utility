@@ -203,6 +203,20 @@ def _get_cmd_attr(obj, name, default=None):
     return getattr(obj, name, default)
 
 
+def _classify_host_model_cache_failure(error):
+    error = str(error or '')
+    lowered = error.lower()
+    if 'capacity' in lowered or 'available' in lowered:
+        return 'CapacityCheck', 'InsufficientHostCacheStorage'
+    if 'permission' in lowered or 'denied' in lowered:
+        return 'AgentExecution', 'PermissionDenied'
+    if 'outside allowed' in lowered or 'must be absolute' in lowered or 'does not exist' in lowered or 'not a directory' in lowered:
+        return 'PreparedSourceValidation', 'SourcePathInvalid'
+    if 'timeout' in lowered:
+        return 'AgentExecution', 'AgentTimeout'
+    return 'AgentExecution', 'Unknown'
+
+
 def get_vm_domain(vm_uuid):
     """Get libvirt domain for VM
 
@@ -480,6 +494,9 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
     ATTACH_VIRTIOFS_PATH = "/virtiofs/attach"
     DETACH_VIRTIOFS_PATH = "/virtiofs/detach"
     STATUS_VIRTIOFS_PATH = "/virtiofs/status"
+    HOST_MODEL_CACHE_REPORT_PATH = "/virtiofs/host-model-cache/report"
+    HOST_MODEL_CACHE_PREPARE_PATH = "/virtiofs/host-model-cache/prepare"
+    HOST_MODEL_CACHE_CLEANUP_PATH = "/virtiofs/host-model-cache/cleanup"
 
     def start(self):
         """Initialize virtiofsd path and register HTTP endpoints."""
@@ -489,6 +506,9 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.ATTACH_VIRTIOFS_PATH, self.attach_virtiofs)
         http_server.register_async_uri(self.DETACH_VIRTIOFS_PATH, self.detach_virtiofs)
         http_server.register_async_uri(self.STATUS_VIRTIOFS_PATH, self.virtiofs_status)
+        http_server.register_async_uri(self.HOST_MODEL_CACHE_REPORT_PATH, self.report_host_model_cache)
+        http_server.register_async_uri(self.HOST_MODEL_CACHE_PREPARE_PATH, self.prepare_host_model_cache)
+        http_server.register_async_uri(self.HOST_MODEL_CACHE_CLEANUP_PATH, self.cleanup_host_model_cache)
 
     def stop(self):
         """No-op; virtiofs plugin has no background resources to clean up."""
@@ -661,4 +681,72 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
         supported, version = check_libvirt_version()
         rsp.libvirtVersion = version
         rsp.virtiofsHotplugSupported = supported
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def report_host_model_cache(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = jsonobject.JsonObject()
+        rsp.success = False
+        try:
+            source_root = _get_cmd_attr(cmd, 'sourceRoot', _get_cmd_attr(cmd, 'sourceRootPath', None))
+            report = virtiofs_source.report_source_root(source_root)
+            rsp.sourceRoot = report.get('sourceRoot')
+            rsp.physicalTotalBytes = report.get('physicalTotalBytes')
+            rsp.physicalAvailableBytes = report.get('physicalAvailableBytes')
+            rsp.cacheEntries = report.get('cacheEntries', [])
+            rsp.success = True
+            logger.info("Reported host model cache root[%s], entries=%s, available=%s" % (
+                rsp.sourceRoot, len(rsp.cacheEntries), rsp.physicalAvailableBytes))
+        except Exception as e:
+            logger.warning("Failed to report host model cache: %s" % str(e))
+            rsp.error = str(e)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def prepare_host_model_cache(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = jsonobject.JsonObject()
+        rsp.success = False
+        try:
+            source_root = _get_cmd_attr(cmd, 'sourceRoot', _get_cmd_attr(cmd, 'sourceRootPath', None))
+            source_path = _get_cmd_attr(cmd, 'sourcePath', None)
+            required_capacity = _get_cmd_attr(cmd, 'requiredCapacityBytes', None)
+            entry = virtiofs_source.prepare_host_model_cache(source_root, source_path, required_capacity)
+            rsp.cacheEntry = entry
+            rsp.success = True
+            logger.info("Prepared host model cache path[%s], size=%s" % (
+                entry.get('sourcePath'), entry.get('sizeBytes')))
+        except Exception as e:
+            phase, code = _classify_host_model_cache_failure(e)
+            rsp.failurePhase = phase
+            rsp.failureCode = code
+            rsp.failureMessage = str(e)
+            rsp.error = str(e)
+            logger.warning("Failed to prepare host model cache, phase=%s code=%s error=%s" % (
+                phase, code, str(e)))
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def cleanup_host_model_cache(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = jsonobject.JsonObject()
+        rsp.success = False
+        try:
+            source_root = _get_cmd_attr(cmd, 'sourceRoot', _get_cmd_attr(cmd, 'sourceRootPath', None))
+            source_path = _get_cmd_attr(cmd, 'sourcePath', None)
+            result = virtiofs_source.cleanup_host_model_cache(source_root, source_path)
+            rsp.sourcePath = result.get('sourcePath')
+            rsp.bytesReclaimed = result.get('bytesReclaimed')
+            rsp.success = True
+            logger.info("Cleaned host model cache path[%s], bytesReclaimed=%s" % (
+                rsp.sourcePath, rsp.bytesReclaimed))
+        except Exception as e:
+            phase, code = _classify_host_model_cache_failure(e)
+            rsp.failurePhase = phase
+            rsp.failureCode = code
+            rsp.failureMessage = str(e)
+            rsp.error = str(e)
+            logger.warning("Failed to cleanup host model cache, phase=%s code=%s error=%s" % (
+                phase, code, str(e)))
         return jsonobject.dumps(rsp)
