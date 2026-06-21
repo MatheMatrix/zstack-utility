@@ -117,7 +117,7 @@ def _parse_required_capacity(value):
     if value is None or value == '':
         return None
     try:
-        required = long(value)
+        required = int(value)
     except Exception:
         raise Exception('requiredCapacityBytes[%s] must be a number' % value)
     if required < 0:
@@ -145,8 +145,8 @@ def statvfs_capacity(path):
     except OSError as exc:
         raise Exception('failed to check virtiofs source root capacity for path[%s]: %s' % (path, exc))
     return {
-        'physicalTotalBytes': long(stat.f_blocks * stat.f_frsize),
-        'physicalAvailableBytes': long(stat.f_bavail * stat.f_frsize),
+        'physicalTotalBytes': int(stat.f_blocks * stat.f_frsize),
+        'physicalAvailableBytes': int(stat.f_bavail * stat.f_frsize),
     }
 
 
@@ -159,7 +159,7 @@ def directory_size(path):
                 total += os.path.getsize(fpath)
             except OSError:
                 pass
-    return long(total)
+    return int(total)
 
 
 def cache_entry(source_root, source_path):
@@ -172,7 +172,7 @@ def cache_entry(source_root, source_path):
     return {
         'sourcePath': path,
         'sizeBytes': directory_size(path),
-        'sourceMtime': long(os.path.getmtime(path)),
+        'sourceMtime': int(os.path.getmtime(path)),
         'checksum': None,
         'contentVersion': None,
     }
