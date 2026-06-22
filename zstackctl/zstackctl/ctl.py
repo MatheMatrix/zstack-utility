@@ -58,6 +58,9 @@ JAVA_PREFER_IPV4_STACK_OPT = '-Djava.net.preferIPv4Stack'
 JAVA_PREFER_IPV4_STACK_TRUE = JAVA_PREFER_IPV4_STACK_OPT + '=true'
 JAVA_PREFER_IPV4_STACK_FALSE = JAVA_PREFER_IPV4_STACK_OPT + '=false'
 JAVA_PREFER_IPV6_ADDRESSES_TRUE = '-Djava.net.preferIPv6Addresses=true'
+CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY = 'consoleProxyOverriddenIp'
+CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY = 'consoleProxyOverriddenIpv4'
+CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY = 'consoleProxyOverriddenIpv6'
 IPTABLES_INPUT_CHAIN = 'INPUT'
 IPTABLES_COMMAND = 'iptables'
 IP6TABLES_COMMAND = 'ip6tables'
@@ -8399,6 +8402,46 @@ class ChangeIpCmd(Command):
     def should_follow_change(self, current_ip, change):
         return get_ip_version(current_ip) == change.get('follow_version', change['version'])
 
+    def console_proxy_property_for_version(self, version):
+        if version == management_network_ipv6.IPV4_VERSION:
+            return CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY
+        if version == management_network_ipv6.IPV6_VERSION:
+            return CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY
+        raise CtlError('unsupported management IP version[%s]' % version)
+
+    def update_console_proxy_properties(self, change, zstack_conf_file):
+        new_ip = change['new_ip']
+        old_ip = change['old_ip']
+        family_property = self.console_proxy_property_for_version(change['version'])
+        legacy_ip = ctl.read_property(CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY)
+        family_ip = ctl.read_property(family_property)
+        writes = []
+
+        if change.get('family_switch'):
+            old_family_property = self.console_proxy_property_for_version(change['old_version'])
+            old_family_ip = ctl.read_property(old_family_property)
+            old_family_value = legacy_ip if get_ip_version(legacy_ip) == change['old_version'] else old_ip
+            if not old_family_ip and old_family_value:
+                writes.append((old_family_property, old_family_value))
+            if not family_ip or family_ip == new_ip:
+                writes.append((family_property, new_ip))
+            if legacy_ip == old_ip:
+                writes.append((CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, ''))
+        else:
+            should_update_family = (
+                family_ip == old_ip
+                or ((family_ip is None or family_ip == '') and legacy_ip == old_ip)
+                or ((family_ip is None or family_ip == '') and (legacy_ip is None or legacy_ip == '') and change['primary'])
+            )
+            if should_update_family:
+                writes.append((family_property, new_ip))
+            if legacy_ip == old_ip:
+                writes.append((CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, ''))
+
+        if writes:
+            ctl.write_properties(writes)
+            info("Update console proxy address fields %s in %s " % (writes, zstack_conf_file))
+
     def update_hosts_for_change(self, change, zstack_conf_file):
         old_ip = change['old_ip']
         new_ip = change['new_ip']
@@ -8468,16 +8511,7 @@ class ChangeIpCmd(Command):
             ctl.write_properties([('CloudBus.serverIp.0', target_cloudbus_ip)])
             info("Update cloudbus server ip %s in %s " % (target_cloudbus_ip, zstack_conf_file))
 
-        cpo_ip = ctl.read_property('consoleProxyOverriddenIp')
-        should_update_console_proxy = (
-            cpo_ip == old_ip
-            or self.should_follow_change(cpo_ip, change)
-            or ((cpo_ip is None or cpo_ip == '') and change['primary'])
-        )
-        if not console_proxy_updated and should_update_console_proxy:
-            ctl.write_properties([('consoleProxyOverriddenIp', new_ip)])
-            info("Update console proxy overridden ip %s in %s " % (new_ip, zstack_conf_file))
-            console_proxy_updated = True
+        self.update_console_proxy_properties(change, zstack_conf_file)
 
         old_chrony_ips = ctl.read_property_list('chrony.serverIp.')
         if len(old_chrony_ips) == 1 and old_chrony_ips[0][1] == old_ip:
