@@ -4,9 +4,9 @@
 # (c) Kurt Garloff <garloff@suse.de>, 2/2009, GPL v2 or v3.
 # Usage: See usage()
 
-import os, sys, re, getopt
+from __future__ import print_function
 
-# from __future__ import print_function
+import os, sys, re, getopt
 
 # Global options
 showint = False
