@@ -2,7 +2,6 @@ import os
 import uuid as uuidlib
 
 from kvmagent import kvmagent
-from kvmagent.plugins.imagestore import ImageStoreClient
 from kvmagent.plugins import volume_secret
 from zstacklib.utils import http
 from zstacklib.utils import jsonobject
@@ -41,7 +40,6 @@ class CephStoragePlugin(kvmagent.KvmAgent):
     LUKS_ENCRYPT_IN_PLACE_PATH = "/ceph/primarystorage/kvmhost/encryptinplace"
     LUKS_RESIZE_PATH = "/ceph/primarystorage/kvmhost/luksresize"
     LUKS_CONVERT_PATH = "/ceph/primarystorage/kvmhost/luksconvert"
-    IMAGESTORE_ENCRYPTED_UPLOAD_PATH = "/ceph/primarystorage/kvmhost/imagestore/encryptedupload"
 
     CEPH_CLIENT_CONF_ROOT = "/var/lib/zstack/ceph"
 
@@ -53,8 +51,6 @@ class CephStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.LUKS_ENCRYPT_IN_PLACE_PATH, self.luks_encrypt_in_place)
         http_server.register_async_uri(self.LUKS_RESIZE_PATH, self.luks_resize)
         http_server.register_async_uri(self.LUKS_CONVERT_PATH, self.luks_convert)
-        http_server.register_async_uri(self.IMAGESTORE_ENCRYPTED_UPLOAD_PATH, self.upload_encrypted_imagestore)
-        self.imagestore_client = ImageStoreClient()
 
     @kvmagent.replyerror
     def check_host_storage_connection(self, req):
@@ -242,32 +238,6 @@ class CephStoragePlugin(kvmagent.KvmAgent):
 
         rsp.actualSize = self._rbd_actual_size(dst_path, conf)
         return jsonobject.dumps(rsp)
-
-    @kvmagent.replyerror
-    def upload_encrypted_imagestore(self, req):
-        cmd = jsonobject.loads(req[http.REQUEST_BODY])
-        rsp = CephLuksRsp()
-        conf = self._validate_luks_cmd(cmd, rsp, encrypted_dek=True)
-        if conf is None:
-            return jsonobject.dumps(rsp)
-        if not getattr(cmd, "hostname", None):
-            rsp.success = False
-            rsp.error = "hostname is required for encrypted ImageStore upload"
-            return jsonobject.dumps(rsp)
-        if not getattr(cmd, "primaryStorageInstallPath", None):
-            rsp.success = False
-            rsp.error = "primaryStorageInstallPath is required for encrypted ImageStore upload"
-            return jsonobject.dumps(rsp)
-        if not getattr(cmd, "imageUuid", None):
-            rsp.success = False
-            rsp.error = "imageUuid is required for encrypted ImageStore upload"
-            return jsonobject.dumps(rsp)
-
-        cmd.commandEnv = {
-            "CEPH_CONF": conf,
-            "CEPH_ARGS": "--conf %s" % conf,
-        }
-        return self.imagestore_client.upload_to_imagestore(cmd, req)
 
     @kvmagent.replyerror
     def luks_create_empty(self, req):
