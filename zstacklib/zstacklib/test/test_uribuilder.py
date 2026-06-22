@@ -38,6 +38,25 @@ class TestUriBuilder(unittest.TestCase):
         ret = builder.build()
         self.assertEqual('http://localhost:80/', ret)
 
+    def test_build_url_with_ipv6_host(self):
+        ret = http.build_url(('http', 'fd11:5:5:29::220', '8080', '/zstack/api/'))
+        self.assertEqual('http://[fd11:5:5:29::220]:8080/zstack/api/', ret)
+
+    def test_build_url_with_bracketed_ipv6_host(self):
+        ret = http.build_url(('http', '[fd11:5:5:29::220]', '8080', '/zstack/api/'))
+        self.assertEqual('http://[fd11:5:5:29::220]:8080/zstack/api/', ret)
+
+    def test_build_url_with_ipv6_uri(self):
+        builder = http.UriBuilder('http://[fd11:5:5:29::220]:8080/zstack/api/')
+        self.assertEqual('http://[fd11:5:5:29::220]:8080/zstack/api/', builder.build())
+
+    def test_build_url_with_https_default_port(self):
+        builder = http.UriBuilder('https://localhost/')
+        self.assertEqual('https://localhost:443/', builder.build())
+
+    def test_build_url_with_invalid_port(self):
+        self.assertRaises(Exception, http.UriBuilder, 'http://localhost:abc/')
+
 
 if __name__ == "__main__":
     #import sys;sys.argv = ['', 'Test.testName']
