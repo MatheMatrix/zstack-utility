@@ -213,12 +213,12 @@ def install_kvm_pkg():
 
         releasever_mapping = {
             'c74': 'qemu-kvm ',
-            'c76': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel',
-            'c79': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel',
+            'c76': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel collectd-disk',
+            'c79': 'qemu-kvm libvirt-admin seabios-bin nping elfutils-libelf-devel collectd-disk',
             'h76c': ('%s qemu-kvm libvirt-admin seabios-bin nping '
-                     'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
+                     'elfutils-libelf-devel vconfig OVMF libicu collectd-disk') % helix_rhel_rpms,
             'h79c': ('%s qemu-kvm libvirt-admin seabios-bin nping '
-                     'elfutils-libelf-devel vconfig OVMF libicu') % helix_rhel_rpms,
+                     'elfutils-libelf-devel vconfig OVMF libicu collectd-disk') % helix_rhel_rpms,
             'h84r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm '
                      'seabios-bin elfutils-libelf-devel collectd-disk') % helix_rhel_rpms,
             'rl84': 'qemu-kvm libvirt-daemon libvirt-daemon-kvm seabios-bin elfutils-libelf-devel',
