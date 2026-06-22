@@ -1878,21 +1878,12 @@ class IsoCeph(object):
         return disk
 
 
-def _add_luks_encryption(disk, volume, allow_legacy_secret=True):
+def _add_luks_encryption(parent, volume, allow_legacy_secret=True):
     secret_uuid = getattr(volume, 'luksSecretUuid', None)
     if not secret_uuid and allow_legacy_secret and getattr(volume, 'deviceType', None) != 'ceph':
         secret_uuid = getattr(volume, 'secretUuid', None)
     if secret_uuid:
-        enc = e(disk, 'encryption', None, {'format': 'luks'})
-        e(enc, 'secret', None, {'type': 'passphrase', 'uuid': secret_uuid})
-
-
-def _add_luks_encryption_to_source(source, volume, allow_legacy_secret=True):
-    secret_uuid = getattr(volume, 'luksSecretUuid', None)
-    if not secret_uuid and allow_legacy_secret and getattr(volume, 'deviceType', None) != 'ceph':
-        secret_uuid = getattr(volume, 'secretUuid', None)
-    if secret_uuid:
-        enc = e(source, 'encryption', None, {'format': 'luks'})
+        enc = e(parent, 'encryption', None, {'format': 'luks'})
         e(enc, 'secret', None, {'type': 'passphrase', 'uuid': secret_uuid})
 
 
@@ -1915,7 +1906,7 @@ def _add_luks_backing_chain_if_needed(disk, volume, disk_type):
         e(backing, 'format', None, {'type': linux.get_img_fmt(backing_path)})
         source = e(backing, 'source', None, {source_attr: backing_path})
         if backing_path in encrypted_backing_paths:
-            _add_luks_encryption_to_source(source, volume)
+            _add_luks_encryption(source, volume)
 
     e(backing, 'backingStore')
     return True
@@ -3248,7 +3239,7 @@ class Vm(object):
             # qcow2 with LUKS header needs <encryption> + secret ref, else
             # qemu aborts: "Parameter 'encrypt.key-secret' is required for cipher".
             if _add_luks_backing_chain_if_needed(disk, volume, 'file'):
-                _add_luks_encryption_to_source(source, volume)
+                _add_luks_encryption(source, volume)
             else:
                 _add_luks_encryption(disk, volume)
 
@@ -3273,6 +3264,7 @@ class Vm(object):
             disk = etree.Element('disk', attrib={'type': 'block', 'device': 'lun', 'sgio': get_sgio_value()})
             e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': volume.cacheMode})
             e(disk, 'source', None, {'dev': volume.installPath})
+            _add_luks_encryption(disk, volume)
             e(disk, 'target', None, {'dev': 'sd%s' % dev_letter, 'bus': 'scsi'})
             return disk
 
@@ -3348,7 +3340,7 @@ class Vm(object):
                 source = e(disk, 'source', None, {'dev': volume.installPath})
 
                 if _add_luks_backing_chain_if_needed(disk, volume, 'block'):
-                    _add_luks_encryption_to_source(source, volume)
+                    _add_luks_encryption(source, volume)
                 else:
                     _add_luks_encryption(disk, volume)
 
@@ -3921,7 +3913,7 @@ class Vm(object):
                 linux.qcow2_clone(source_file, vs_struct.installPath)
             d = e(disks, 'disk', None, attrib={'name': disk_name, 'snapshot': 'external', 'type': target_disk.type_})
             source = e(d, 'source', None, attrib={'file' if target_disk.type_ == 'file' else 'dev': vs_struct.installPath})
-            _add_luks_encryption_to_source(source, vs_struct.volume)
+            _add_luks_encryption(source, vs_struct.volume)
             e(d, 'driver', None, attrib={'type': 'qcow2'})
             return_structs.append(VolumeSnapshotResultStruct(
                 vs_struct.volumeUuid,
@@ -4082,7 +4074,7 @@ class Vm(object):
             disks = e(snapshot, 'disks')
             d = e(disks, 'disk', None, attrib={'name': disk_name, 'snapshot': 'external', 'type': backing_store_type})
             source = e(d, 'source', None, attrib={source_type: install_path})
-            _add_luks_encryption_to_source(source, volume)
+            _add_luks_encryption(source, volume)
             e(d, 'driver', None, attrib={'type': 'qcow2'})
 
             # QEMU 2.3 default create snapshots on all devices
@@ -6021,7 +6013,7 @@ class Vm(object):
                 # qcow2 with LUKS header needs <encryption> + secret ref, else
                 # qemu aborts: "Parameter 'encrypt.key-secret' is required for cipher".
                 if _add_luks_backing_chain_if_needed(disk, _v, 'file'):
-                    _add_luks_encryption_to_source(source, _v)
+                    _add_luks_encryption(source, _v)
                 else:
                     _add_luks_encryption(disk, _v)
 
@@ -6169,7 +6161,7 @@ class Vm(object):
                 source = e(disk, 'source', None, {'dev': _v.installPath})
 
                 if _add_luks_backing_chain_if_needed(disk, _v, 'block'):
-                    _add_luks_encryption_to_source(source, _v)
+                    _add_luks_encryption(source, _v)
                 else:
                     _add_luks_encryption(disk, _v)
 
@@ -6630,6 +6622,7 @@ class Vm(object):
                     disk = e(devices, 'disk', None, attrib={'type': 'block', 'device': 'lun', 'sgio': get_sgio_value()})
                     e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none'})
                     e(disk, 'source', None, {'dev': volume.installPath})
+                    _add_luks_encryption(disk, volume)
                     e(disk, 'target', None, {'dev': 'sd%s' % Vm.DEVICE_LETTERS[volume.deviceId], 'bus': 'scsi'})
                     Vm.set_device_address(disk, volume)
 
