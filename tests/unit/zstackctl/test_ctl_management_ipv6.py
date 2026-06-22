@@ -417,7 +417,9 @@ def test_change_ip_allows_confirmed_family_switch_and_keeps_old_primary(monkeypa
     assert ('management.server.ip4', old_ip) in writes
     assert deletes == ['management.server.ip6']
     assert ('CloudBus.serverIp.0', new_ip) in writes
-    assert ('consoleProxyOverriddenIp', new_ip) in writes
+    assert ('consoleProxyOverriddenIpv4', old_ip) in writes
+    assert ('consoleProxyOverriddenIpv6', new_ip) in writes
+    assert ('consoleProxyOverriddenIp', '') in writes
     assert ('DB.url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack') in writes
     assert ('db_url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack_ui') in writes
     assert ('morph', new_ip) in shell_calls
@@ -504,7 +506,8 @@ def test_change_ip4_on_dual_stack_updates_ipv4_scoped_properties(monkeypatch):
     assert ('management.server.ip', '172.24.249.183') in writes
     assert ('management.server.ip6', 'fd00:172:24:249::182') not in writes
     assert ('CloudBus.serverIp.0', '172.24.249.183') in writes
-    assert ('consoleProxyOverriddenIp', '172.24.249.183') in writes
+    assert ('consoleProxyOverriddenIpv4', '172.24.249.183') in writes
+    assert ('consoleProxyOverriddenIp', '') in writes
     assert ('DB.url', 'jdbc:mysql://172.24.249.183:3306/zstack') in writes
     assert ('db_url', 'jdbc:mysql://172.24.249.183:3306/zstack_ui') in writes
     assert ('morph', '172.24.249.183') in shell_calls
@@ -551,7 +554,8 @@ def test_change_ip_dual_stack_updates_empty_console_proxy_to_primary(monkeypatch
     ))
 
     assert ('consoleProxyOverriddenIp', '172.24.249.183') not in writes
-    assert ('consoleProxyOverriddenIp', 'fd00:172:24:249::183') in writes
+    assert ('consoleProxyOverriddenIpv4', '172.24.249.183') not in writes
+    assert ('consoleProxyOverriddenIpv6', 'fd00:172:24:249::183') in writes
 
 
 def test_change_ip6_on_dual_stack_preserves_ipv4_scoped_properties(monkeypatch):
