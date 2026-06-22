@@ -6812,7 +6812,7 @@ class CollectLogCmd(Command):
             for mn_ip in mn_list:
                 host_post_info = HostPostInfo()
                 host_post_info.remote_user = 'root'
-                # this will be changed in the future
+                # this will be changed later
                 host_post_info.remote_port = '22'
                 host_post_info.host = mn_ip
                 host_post_info.host_inventory = InstallHACmd.conf_dir + 'host'
@@ -9575,6 +9575,13 @@ class ClearLicenseCmd(Command):
             shell('''/bin/cp -f %s %s''' % (license_pri_key, license_bck))
 
         shell('''find %s -maxdepth 1 -name 'license_*' -type f -exec mv {} %s \;''' % (license_folder, license_bck))
+
+        if os.path.exists(license_folder):
+            appid_pattern = re.compile(r'^[0-9a-fA-F]{32}$')
+            for item in os.listdir(license_folder):
+                item_path = os.path.join(license_folder, item)
+                if os.path.isdir(item_path) and appid_pattern.match(item):
+                    shell("mv -f '%s' '%s'" % (item_path, license_bck))
 
         info("Successfully clear and backup zstack license files to " + license_bck)
 
