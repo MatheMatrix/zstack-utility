@@ -342,12 +342,27 @@ class ImageStoreClient(object):
         # Synchronize cached writes for 'fpath'
         linux.sync_file(fpath)
 
+        add_ext_param = ""
+        encryption_file = None
+        encrypted_dek = getattr(cmd, 'encryptedDek', None)
+        if encrypted_dek:
+            encryption_file = self._write_json_temp_file({
+                "encrypted": True,
+                "encryptedDek": encrypted_dek,
+            })
+            add_ext_param = " -encryption-json-file %s -secret-channel-provider %s" % (
+                encryption_file, self.KEY_AGENT_PROVIDER)
+
         # Add the image to registry
-        cmdstr = '%s -json  -callbackurl %s -taskid %s -imageUuid %s add -desc \'%s\' -file %s' % (self.ZSTORE_CLI_PATH, req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
-                req[http.REQUEST_HEADER].get(http.TASK_UUID), cmd.imageUuid, cmd.description, fpath)
+        cmdstr = '%s -json  -callbackurl %s -taskid %s -imageUuid %s add%s -desc \'%s\' -file %s' % (self.ZSTORE_CLI_PATH, req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
+                req[http.REQUEST_HEADER].get(http.TASK_UUID), cmd.imageUuid, add_ext_param, cmd.description, fpath)
         logger.debug('adding %s to local image store' % fpath)
-        output = shell.call(cmdstr.encode(encoding="utf-8"))
-        logger.debug('%s added to local image store' % fpath)
+        try:
+            output = shell.call(cmdstr.encode(encoding="utf-8"))
+            logger.debug('%s added to local image store' % fpath)
+        finally:
+            if encryption_file:
+                linux.rm_file_force(encryption_file)
 
         imf = jsonobject.loads(output.splitlines()[-1])
 
