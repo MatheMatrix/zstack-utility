@@ -1014,16 +1014,12 @@ server.max-worker=1
 dir-listing.activate = "enable"
 index-file.names = ( "index.html" )
 
-server.modules += ("mod_proxy", "mod_rewrite", "mod_access", "mod_accesslog","mod_auth","mod_setenv")
+server.modules += ("mod_proxy", "mod_rewrite", "mod_access", "mod_accesslog",)
 accesslog.filename = "/var/log/lighttpd/lighttpd_access.log"
 server.errorlog = "/var/log/lighttpd/lighttpd_error.log"
 
-auth.backend = "plain"
-auth.backend.plain.users = ( "admin" => "zstack@123" )
-
 $HTTP["remoteip"] =~ "^(.*)$" {
     $HTTP["url"] =~ "^/metrics/job" {
-        setenv.add-request-header = ( "Authorization" => "Basic YWRtaW46enN0YWNrQDEyMw==" )
         proxy.server = ( "" =>
            ( ( "host" => "{{pushgateway_ip}}", "port" => {{pushgateway_port}} ) )
         )
