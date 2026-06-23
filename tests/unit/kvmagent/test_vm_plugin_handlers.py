@@ -2939,6 +2939,7 @@ class TestVmStartCmdXmlBuild:
                 patch.object(vm_plugin, 'parse_url', side_effect=_real_parse_url), \
                 patch.object(vm_plugin, 'xrange', range, create=True), \
                 patch.object(vm_plugin, 'range', self._RangeCompat), \
+                patch.object(vm_plugin.kvmagent, 'get_host_os_type', return_value='ky10'), \
                 patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
                 patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
             cmd = self._build_start_cmd(use_numa=False)
@@ -2990,6 +2991,7 @@ class TestVmStartCmdXmlBuild:
                 patch.object(vm_plugin, 'is_hv_freq_supported', return_value=False), \
                 patch.object(vm_plugin, 'is_hv_synic_supported', return_value=False), \
                 patch.object(vm_plugin, 'range', self._RangeCompat), \
+                patch.object(vm_plugin.kvmagent, 'get_host_os_type', return_value='ky10'), \
                 patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
                 patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
             cmd = self._build_start_cmd(use_numa=True)

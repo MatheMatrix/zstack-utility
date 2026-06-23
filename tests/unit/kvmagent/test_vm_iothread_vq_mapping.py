@@ -185,6 +185,69 @@ def test_get_new_cbd_disk_keeps_existing_iothread_vq_mapping_for_migration():
     assert [q.get('id') for q in iothreads[1].findall('queue')] == ['2', '3']
 
 
+def migration_domain_with_virtio_disks(count=1, queues='4'):
+    driver_queues = '' if queues is None else ' queues="%s"' % queues
+    disks = ''.join([
+        '''
+        <disk type="network" device="disk">
+          <driver name="qemu" type="raw" cache="none" discard="unmap"%s/>
+          <source protocol="cbd" name="old-%s"/>
+          <target dev="vd%s" bus="virtio"/>
+        </disk>
+        ''' % (driver_queues, index, chr(ord('a') + index))
+        for index in range(count)
+    ])
+    return vm_plugin.etree.fromstring('<domain><devices>%s</devices></domain>' % disks)
+
+
+@pytest.mark.kvmagent
+def test_migration_cbd_disk_allocates_iothread_vq_mapping_from_driver_queues():
+    root = migration_domain_with_virtio_disks()
+    disk = root.find('./devices/disk')
+    volume = cbd_volume(multiQueues='16', ioThreads=2)
+
+    vm_plugin.VmPlugin._apply_migration_iothread_vq_mapping(root, disk, volume)
+
+    driver = disk.find('driver')
+    assert driver.get('queues') == '4'
+    iothreads = driver.findall('./iothreads/iothread')
+    assert [i.get('id') for i in iothreads] == ['101', '102']
+    assert [q.get('id') for q in iothreads[0].findall('queue')] == ['0', '1']
+    assert [q.get('id') for q in iothreads[1].findall('queue')] == ['2', '3']
+    assert root.find('iothreads').text == '2'
+    assert [i.get('id') for i in root.findall('./iothreadids/iothread')] == ['101', '102']
+
+
+@pytest.mark.kvmagent
+def test_migration_cbd_disk_without_driver_queues_does_not_allocate_iothread_vq_mapping():
+    root = migration_domain_with_virtio_disks(queues=None)
+    disk = root.find('./devices/disk')
+    volume = cbd_volume(multiQueues='16', ioThreads=2)
+
+    vm_plugin.VmPlugin._apply_migration_iothread_vq_mapping(root, disk, volume)
+
+    assert disk.find('./driver/iothreads') is None
+    assert root.find('iothreads') is None
+    assert root.find('iothreadids') is None
+
+
+@pytest.mark.kvmagent
+def test_migration_cbd_disks_allocate_distinct_iothread_ids():
+    root = migration_domain_with_virtio_disks(count=2)
+    volume = cbd_volume(multiQueues='16', ioThreads=2)
+
+    for disk in root.findall('./devices/disk'):
+        vm_plugin.VmPlugin._apply_migration_iothread_vq_mapping(root, disk, volume)
+
+    disk_iothread_ids = [
+        [i.get('id') for i in disk.findall('./driver/iothreads/iothread')]
+        for disk in root.findall('./devices/disk')
+    ]
+    assert disk_iothread_ids == [['101', '102'], ['103', '104']]
+    assert root.find('iothreads').text == '4'
+    assert [i.get('id') for i in root.findall('./iothreadids/iothread')] == ['101', '102', '103', '104']
+
+
 @pytest.mark.kvmagent
 def test_get_new_cbd_scsi_disk_does_not_write_queues_on_disk_driver():
     old_disk = vm_plugin.etree.fromstring('''
@@ -210,6 +273,52 @@ def test_get_new_cbd_scsi_disk_does_not_write_queues_on_disk_driver():
     assert driver.get('queues') is None
     assert driver.find('iothreads') is None
     assert new_disk.find('target').get('bus') == 'scsi'
+
+
+@pytest.mark.kvmagent
+def test_migration_cbd_scsi_controller_allocates_iothread_vq_mapping_from_controller_queues():
+    root = vm_plugin.etree.fromstring('''
+    <domain>
+      <devices>
+        <controller type="scsi" model="virtio-scsi" index="1">
+          <driver queues="4"/>
+          <alias name="scsi1"/>
+        </controller>
+        <disk type="network" device="disk">
+          <driver name="qemu" type="raw" cache="none" discard="unmap"/>
+          <source protocol="cbd" name="old"/>
+          <target dev="sdb" bus="scsi"/>
+          <address type="drive" controller="1"/>
+        </disk>
+      </devices>
+    </domain>
+    ''')
+    old_disk = root.find('./devices/disk')
+    volume = cbd_volume(
+        installPath='cbd:new-volume',
+        dev_letter='b',
+        useVirtio=True,
+        useVirtioSCSI=False,
+        multiQueues='16',
+        ioThreads=2,
+        physicalBlockSize=None,
+        wwn='123456789abcdef0',
+    )
+
+    new_disk = vm_plugin.VmPlugin._get_new_disk(old_disk, volume)
+    vm_plugin.VmPlugin._apply_migration_iothread_vq_mapping(root, new_disk, volume)
+
+    disk_driver = new_disk.find('driver')
+    controller_driver = root.find('./devices/controller/driver')
+    iothreads = controller_driver.findall('./iothreads/iothread')
+    assert disk_driver.get('queues') is None
+    assert disk_driver.find('iothreads') is None
+    assert controller_driver.get('queues') == '4'
+    assert [i.get('id') for i in iothreads] == ['101', '102']
+    assert [q.get('id') for q in iothreads[0].findall('queue')] == ['0', '1']
+    assert [q.get('id') for q in iothreads[1].findall('queue')] == ['2', '3']
+    assert root.find('iothreads').text == '2'
+    assert [i.get('id') for i in root.findall('./iothreadids/iothread')] == ['101', '102']
 
 
 @pytest.mark.kvmagent
