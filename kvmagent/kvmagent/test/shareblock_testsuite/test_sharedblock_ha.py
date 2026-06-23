@@ -37,8 +37,8 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
         cls.zsblk_agent_heart_result = "success"
         cls.zsblk_agent_heart_code = 0
 
-        cls.origin_json_dump_get = http.json_dump_get
-        cls.origin_json_dump_post = http.json_dump_post
+        cls.origin_json_dump_get = staticmethod(http.json_dump_get)
+        cls.origin_json_dump_post = staticmethod(http.json_dump_post)
         # 1 means storage is good, 2 means storage is failed, -1 means no way to check.
         cls.condition_dict = {1: "success", 0: "fail", -1:"no_way"}
         cls.fencer_result_dict = {1: "trigger", 0:"no_trigger"}
@@ -164,4 +164,3 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
                 time.sleep(self.sanlock_io_timeout + 1) # wait vg recovered
                 self.run_fencer_case(self.condition_dict[sanlk_con], self.condition_dict[zsblk_con],
                                      self.fencer_result_dict[expect_result[sanlk_con][zsblk_con]])
-
