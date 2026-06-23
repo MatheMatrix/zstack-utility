@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 
 
 try:
@@ -116,7 +117,7 @@ def _parse_required_capacity(value):
     if value is None or value == '':
         return None
     try:
-        required = long(value)
+        required = int(value)
     except Exception:
         raise Exception('requiredCapacityBytes[%s] must be a number' % value)
     if required < 0:
@@ -136,6 +137,94 @@ def check_available_capacity(path, required_capacity_bytes):
         raise Exception('virtiofs source path[%s] available capacity[%s bytes] is less than required capacity[%s bytes]. '
                         'Please move the virtiofs source root to a disk with enough capacity or free host storage space.' % (
                             path, available, required_capacity_bytes))
+
+
+def statvfs_capacity(path):
+    try:
+        stat = os.statvfs(path)
+    except OSError as exc:
+        raise Exception('failed to check virtiofs source root capacity for path[%s]: %s' % (path, exc))
+    return {
+        'physicalTotalBytes': int(stat.f_blocks * stat.f_frsize),
+        'physicalAvailableBytes': int(stat.f_bavail * stat.f_frsize),
+    }
+
+
+def directory_size(path):
+    total = 0
+    for root, dirs, files in os.walk(path):
+        for name in files:
+            fpath = os.path.join(root, name)
+            try:
+                total += os.path.getsize(fpath)
+            except OSError:
+                pass
+    return int(total)
+
+
+def cache_entry(source_root, source_path):
+    root = _normalize_root(source_root)
+    path = ensure_under(source_path, root, 'sourcePath', allow_root=False)
+    if not os.path.exists(path):
+        raise Exception('sourcePath[%s] does not exist' % source_path)
+    if not os.path.isdir(path):
+        raise Exception('sourcePath[%s] is not a directory' % source_path)
+    return {
+        'sourcePath': path,
+        'sizeBytes': directory_size(path),
+        'sourceMtime': int(os.path.getmtime(path)),
+        'checksum': None,
+        'contentVersion': None,
+    }
+
+
+def report_source_root(source_root):
+    root = _normalize_root(source_root or HOST_SOURCE_ROOT)
+    if not os.path.exists(root):
+        raise Exception('sourceRoot[%s] does not exist' % root)
+    if not os.path.isdir(root):
+        raise Exception('sourceRoot[%s] is not a directory' % root)
+
+    result = statvfs_capacity(root)
+    result['sourceRoot'] = root
+    result['cacheEntries'] = []
+
+    registry = SourceRegistry(os.path.join(root, '.registry')).load()
+    for entry in registry.values():
+        path = entry.get('path') if isinstance(entry, dict) else None
+        if not path:
+            continue
+        try:
+            result['cacheEntries'].append(cache_entry(root, path))
+        except Exception:
+            pass
+    return result
+
+
+def prepare_host_model_cache(source_root, source_path, required_capacity_bytes=None):
+    root = _normalize_root(source_root or HOST_SOURCE_ROOT)
+    if not os.path.exists(root):
+        raise Exception('sourceRoot[%s] does not exist' % root)
+    check_available_capacity(root, required_capacity_bytes)
+    return cache_entry(root, source_path)
+
+
+def cleanup_host_model_cache(source_root, source_path):
+    root = _normalize_root(source_root or HOST_SOURCE_ROOT)
+    path = ensure_under(source_path, root, 'sourcePath', allow_root=False)
+    if not os.path.exists(path):
+        return {
+            'sourcePath': path,
+            'bytesReclaimed': 0,
+        }
+    if not os.path.isdir(path):
+        raise Exception('sourcePath[%s] is not a directory' % source_path)
+    bytes_reclaimed = directory_size(path)
+    shutil.rmtree(path)
+    return {
+        'sourcePath': path,
+        'bytesReclaimed': bytes_reclaimed,
+    }
 
 
 def _safe_id(value, prefix):
