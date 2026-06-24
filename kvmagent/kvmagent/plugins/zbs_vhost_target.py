@@ -318,3 +318,10 @@ def target_healthy(control_sock=DEFAULT_CONTROL_SOCK, name=DEFAULT_CONTAINER_NAM
     if not is_running(name):
         return False
     return _control_sock_ready(control_sock)
+
+
+def target_running(control_sock, name):
+    # connectivity check (distinct from target_healthy's fencing semantics): this host
+    # can serve vhost only if the spdk target container is up and its admin socket
+    # answers. no container / dead container / dead socket -> not running.
+    return container_exists(name) and is_running(name) and _control_sock_ready(control_sock)

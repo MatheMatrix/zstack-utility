@@ -29,7 +29,7 @@ class VhostActivateRsp(kvmagent.AgentResponse):
 class VhostTargetHealthRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(VhostTargetHealthRsp, self).__init__()
-        self.healthy = False
+        self.targetRunning = False
 
 
 class ZbsStoragePlugin(kvmagent.KvmAgent):
@@ -167,7 +167,7 @@ class ZbsStoragePlugin(kvmagent.KvmAgent):
     def vhost_target_health(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = VhostTargetHealthRsp()
-        rsp.healthy = zbs_vhost_target.target_healthy(self._control_sock(cmd))
+        rsp.targetRunning = zbs_vhost_target.target_running(self._control_sock(cmd), cmd.containerName)
         return jsonobject.dumps(rsp)
 
 
