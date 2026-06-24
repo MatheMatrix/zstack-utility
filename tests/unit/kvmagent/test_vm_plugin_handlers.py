@@ -347,9 +347,6 @@ class TestGetIothreadPinHandler:
 class TestQueryBlockJobStatusHandler:
     def test_query_block_job_status(self):
         plugin = _make_vm_plugin()
-        # return [] so the empty-result retry loop in query_block_job_status
-        # is actually exercised; bare MagicMock() returns a truthy mock which
-        # would break out of the loop on the first iteration (call_count=1).
         vm_plugin.qmp.execute_qmp_command = MagicMock(return_value=[])
         with patch('time.sleep', return_value=None):
             req = _make_req({'vmUuid': 'vm-uuid'})
@@ -357,6 +354,8 @@ class TestQueryBlockJobStatusHandler:
             rsp = json.loads(result)
 
         assert rsp['success'] is True
+        assert rsp['status'] == 'completed'
+        assert rsp['percent'] == 100
         assert vm_plugin.qmp.execute_qmp_command.call_count == 6
 
 
@@ -2872,6 +2871,39 @@ class TestVmStartCmdXmlBuild:
                 ]
         return jsonobject.loads(json.dumps(cmd_dict))
 
+    def _driver_by_target(self, root, dev):
+        for disk in root.findall('./devices/disk'):
+            target = disk.find('target')
+            if target is not None and target.get('dev') == dev:
+                return disk.find('driver')
+        raise AssertionError("disk target %s not found" % dev)
+
+    def _driver_by_bus(self, root, bus):
+        for disk in root.findall('./devices/disk'):
+            target = disk.find('target')
+            if target is not None and target.get('bus') == bus:
+                return disk.find('driver')
+        raise AssertionError("disk bus %s not found" % bus)
+
+    def _driver_by_serial(self, root, serial_text):
+        for disk in root.findall('./devices/disk'):
+            serial = disk.find('serial')
+            if serial is not None and serial.text == serial_text:
+                return disk.find('driver')
+        raise AssertionError("disk serial %s not found" % serial_text)
+
+    def _scsi_controller_driver(self, root):
+        for controller in root.findall('./devices/controller'):
+            if controller.get('type') == 'scsi' and controller.find('driver') is not None:
+                return controller.find('driver')
+        raise AssertionError("virtio-scsi controller driver not found")
+
+    def _iothread_queue_mapping(self, driver):
+        return [
+            (iothread.get('id'), [queue.get('id') for queue in iothread.findall('queue')])
+            for iothread in driver.findall('./iothreads/iothread')
+        ]
+
     def test_from_start_vm_cmd_builds_xml_with_features(self):
         vm_plugin.ovs.OvsDpdkSupportVnic = []
         vm_plugin.pci.need_config_pcimmio = MagicMock(return_value=True)
@@ -2968,6 +3000,146 @@ class TestVmStartCmdXmlBuild:
         xml_str = vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
         assert '<vcpu' in xml_str
         assert 'numa' in xml_str
+
+    def test_cdp_cbd_recover_nbd_disk_keeps_iothread_vq_mapping(self):
+        vm_plugin.ovs.OvsDpdkSupportVnic = []
+        vm_plugin.linux.get_cpu_model = MagicMock(return_value=('GenuineIntel', 'Intel'))
+        vm_plugin.is_ioapic_supported = MagicMock(return_value=True)
+        vm_plugin.is_spice_tls = MagicMock(return_value=0)
+        vm_plugin.VmPlugin.clean_vm_firmware_flash = MagicMock()
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        vm_plugin.uuidhelper.to_full_uuid = MagicMock(side_effect=lambda value: value)
+        vm_plugin.VM_RECOVER_DICT = {}
+
+        def _real_parse_url(uri):
+            normalized = vm_plugin.re.sub(r'^([a-zA-Z]+:)(?!/{2})', r'\1//', uri, count=1)
+            return urllib.parse.urlparse(normalized)
+
+        def _e_with_text(parent, tag, value=None, attrib=None, usenamesapce=False):
+            _ = usenamesapce
+            if attrib is None:
+                attrib = {}
+            attrib = {k: str(v) for k, v in attrib.items()}
+            elem = vm_plugin.etree.SubElement(parent, tag, attrib)
+            if value:
+                elem.text = str(value)
+            return elem
+
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.addons.ioThreadNum = 0
+        cmd.addons.ioThreadPins = []
+        cmd.addons.VolumeQos = None
+        cmd.addons.NicQos = None
+        cmd.addons.pciDevice = []
+        cmd.addons.mdevDevice = []
+        cmd.addons.storageDevice = []
+        cmd.addons.usbDevice = []
+        cmd.cdRoms = []
+        cmd.nics = []
+        cmd.rootVolume.deviceType = 'cbd'
+        cmd.rootVolume.installPath = 'cbd://pool/root-volume?r=nbd://127.0.0.1:10809/root'
+        cmd.rootVolume.volumeUuid = 'vol-root-cbd'
+        cmd.rootVolume.multiQueues = 4
+        cmd.rootVolume.ioThreads = 4
+        cmd.rootVolume.ioThreadId = None
+        cmd.rootVolume.physicalBlockSize = None
+        cmd.dataVolumes = jsonobject.loads(json.dumps([
+            {
+                'deviceId': 1,
+                'deviceType': 'cbd',
+                'installPath': 'cbd://pool/data-volume?r=nbd://127.0.0.1:10810/data',
+                'useVirtio': True,
+                'useVirtioSCSI': False,
+                'volumeUuid': 'vol-data-cbd',
+                'shareable': False,
+                'multiQueues': 4,
+                'ioThreads': 4,
+                'ioThreadId': None,
+                'physicalBlockSize': None,
+            },
+            {
+                'deviceId': 2,
+                'deviceType': 'cbd',
+                'installPath': 'cbd://pool/scsi-volume?r=nbd://127.0.0.1:10811/scsi',
+                'useVirtio': True,
+                'useVirtioSCSI': True,
+                'volumeUuid': 'vol-scsi-cbd',
+                'shareable': False,
+                'multiQueues': 4,
+                'ioThreads': 4,
+                'ioThreadId': None,
+                'physicalBlockSize': None,
+                'wwn': 'wwn-scsi-cbd',
+            },
+            {
+                'deviceId': 3,
+                'deviceType': 'ceph',
+                'installPath': 'ceph://pool/non-cbd-volume?r=nbd://127.0.0.1:10812/non-cbd',
+                'useVirtio': True,
+                'useVirtioSCSI': False,
+                'volumeUuid': 'vol-non-cbd',
+                'shareable': False,
+                'multiQueues': 4,
+                'ioThreads': 4,
+                'ioThreadId': None,
+                'physicalBlockSize': None,
+                'secretUuid': 'ceph-secret',
+                'monInfo': [{'hostname': '10.0.0.2', 'port': 6789}],
+            },
+            {
+                'deviceId': 4,
+                'deviceType': 'cbd',
+                'installPath': 'cbd://pool/manual-iothread-volume?r=nbd://127.0.0.1:10813/manual',
+                'useVirtio': True,
+                'useVirtioSCSI': False,
+                'volumeUuid': 'vol-manual-cbd',
+                'shareable': False,
+                'multiQueues': 4,
+                'ioThreads': 4,
+                'ioThreadId': 9,
+                'physicalBlockSize': None,
+            },
+        ]))
+
+        orig_tostring = vm_plugin.etree.tostring
+        with patch('os.path.exists', return_value=True), \
+                patch.object(vm_plugin, 'parse_url', side_effect=_real_parse_url), \
+                patch.object(vm_plugin, 'xrange', range, create=True), \
+                patch.object(vm_plugin, 'range', self._RangeCompat), \
+                patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
+                patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
+            vm = vm_plugin.Vm.from_StartVmCmd(cmd)
+
+        xml_str = vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
+        root = vm_plugin.etree.fromstring(xml_str)
+        root_driver = self._driver_by_target(root, 'vda')
+        data_driver = self._driver_by_target(root, 'vdb')
+        scsi_driver = self._driver_by_bus(root, 'scsi')
+        non_cbd_driver = self._driver_by_serial(root, 'vol-non-cbd')
+        manual_cbd_driver = self._driver_by_serial(root, 'vol-manual-cbd')
+
+        assert root_driver.get('queues') == '4'
+        assert data_driver.get('queues') == '4'
+        assert non_cbd_driver.get('queues') == '4'
+        assert manual_cbd_driver.get('queues') == '4'
+        assert self._iothread_queue_mapping(root_driver) == [
+            ('101', ['0']), ('102', ['1']), ('103', ['2']), ('104', ['3'])
+        ]
+        assert self._iothread_queue_mapping(data_driver) == [
+            ('105', ['0']), ('106', ['1']), ('107', ['2']), ('108', ['3'])
+        ]
+        assert scsi_driver.find('iothreads') is None
+        assert self._scsi_controller_driver(root).get('queues') == '4'
+        assert self._iothread_queue_mapping(self._scsi_controller_driver(root)) == [
+            ('109', ['0']), ('110', ['1']), ('111', ['2']), ('112', ['3'])
+        ]
+        assert non_cbd_driver.find('iothreads') is None
+        assert manual_cbd_driver.find('iothreads') is None
+
+        recover_root_driver = vm_plugin.VM_RECOVER_DICT['vm-uuid']['vda'].find('driver')
+        recover_data_driver = vm_plugin.VM_RECOVER_DICT['vm-uuid']['vdb'].find('driver')
+        assert self._iothread_queue_mapping(recover_root_driver) == self._iothread_queue_mapping(root_driver)
+        assert self._iothread_queue_mapping(recover_data_driver) == self._iothread_queue_mapping(data_driver)
 
 
 @pytest.mark.kvmagent

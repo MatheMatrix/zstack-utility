@@ -47,6 +47,10 @@ def no_retry(*args, **kwargs):
     return decorator
 
 
+class FakeLibvirtError(Exception):
+    pass
+
+
 @pytest.mark.kvmagent
 def test_is_virtio_blk_excludes_virtio_scsi():
     assert vm_plugin.is_virtio_blk(cbd_volume(useVirtio=True, useVirtioSCSI=False))
@@ -268,6 +272,7 @@ def test_attach_data_volume_failure_cleans_created_mapping(monkeypatch):
     monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success', lambda callback, *args: callback(None))
     monkeypatch.setattr(vm_plugin, 'file_volume_check', lambda v: v)
     monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', lambda uuid: FakeCurrentVm())
+    monkeypatch.setattr(vm_plugin.libvirt, 'libvirtError', FakeLibvirtError)
     monkeypatch.setattr(vm_plugin.Vm, 'set_device_address', staticmethod(lambda *args: None))
     monkeypatch.setattr(vm_plugin.VmPlugin, 'get_iothread_info', staticmethod(lambda uuid: []))
     monkeypatch.setattr(vm_plugin.VmPlugin, 'add_io_thread',
@@ -276,7 +281,8 @@ def test_attach_data_volume_failure_cleans_created_mapping(monkeypatch):
                         staticmethod(lambda uuid, iothread_id: deleted_iothreads.append(iothread_id) or None))
     monkeypatch.setattr(vm_plugin.VmPlugin, 'add_scsi_controller_with_driver', staticmethod(fake_add_controller))
     monkeypatch.setattr(vm, 'detach_controller_by_alias',
-                        lambda vm_uuid, alias: detached_aliases.append(alias) or None)
+                        lambda vm_uuid, alias: detached_aliases.append(alias) or None,
+                        raising=False)
 
     with pytest.raises(RuntimeError):
         vm._attach_data_volume(volume, EmptyAddons())
@@ -375,7 +381,8 @@ def test_detach_data_volume_keeps_referenced_iothread(monkeypatch):
                         staticmethod(lambda uuid, iothread_id: deleted_iothreads.append(iothread_id) or None))
     monkeypatch.setattr(vm, '_get_target_disk', lambda v: (FakeTargetDisk(), 'sdb'))
     monkeypatch.setattr(vm, 'detach_controller_by_alias',
-                        lambda vm_uuid, alias: detached_aliases.append(alias) or None)
+                        lambda vm_uuid, alias: detached_aliases.append(alias) or None,
+                        raising=False)
 
     vm._detach_data_volume(volume)
 
