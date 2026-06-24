@@ -6883,7 +6883,9 @@ class Vm(object):
                 driver_elements = {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'}
                 if is_virtio_blk(_v) and _v.multiQueues:
                     driver_elements["queues"] = _v.multiQueues
-                e(disk, 'driver', None, driver_elements)
+                driver = e(disk, 'driver', None, driver_elements)
+                if not _v.useVirtioSCSI:
+                    IothreadVqMappingAllocator.apply(driver, automatic_iothread_vq_mapping_allocators.get(_v.volumeUuid))
 
                 u = parse_url(r)
                 src = e(disk, 'source', None, {'protocol': 'nbd', 'name': os.path.basename(u.path)})
