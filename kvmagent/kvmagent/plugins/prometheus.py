@@ -1166,15 +1166,14 @@ def collect_ipmi_state():
 
 
 @thread.AsyncThread
-def check_equipment_state_from_ipmitool(metrics):
+def check_equipment_state_from_ipmitool():
     sensor_handlers = {
-        "Memory": send_physical_memory_status_alarm_to_mn,
         "Fan": send_physical_fan_status_alarm_to_mn,
         "Power Supply": send_physical_power_supply_status_alarm_to_mn
     }
 
     r, sensor_infos = bash_ro(
-        "ipmi-sensors --sensor-types=Memory,fan,Power_Supply -Q --ignore-unrecognized-events --comma-separated-output "
+        "ipmi-sensors --sensor-types=fan,Power_Supply -Q --ignore-unrecognized-events --comma-separated-output "
         "--no-header-output --sdr-cache-recreate --output-sensor-state")
     if r == 0:
         for sensor_info in sensor_infos.splitlines():
@@ -1182,18 +1181,13 @@ def check_equipment_state_from_ipmitool(metrics):
             sensor_name = sensor[1].strip()
             sensor_type = sensor[2].strip()
             sensor_state = sensor[3].strip()
-            sensor_event = sensor[6].strip()
-
-            if sensor_type == "Memory" and "Presence detected" in sensor_event:
-                metrics['ipmi_memory_status'].add_metric([sensor_name, sensor_type],
-                                                         0 if sensor_state == 'Nominal' else 1)
 
             if sensor_state.lower() == "critical" and sensor_type in sensor_handlers:
                 sensor_handlers[sensor_type](sensor_name, sensor_state)
-            else:
+            elif sensor_type == "Fan":
                 remove_fan_status_abnormal(sensor_name)
+            elif sensor_type == "Power Supply":
                 remove_power_supply_status_abnormal(sensor_name)
-                remove_memory_status_abnormal(sensor_name)
 
 
 def collect_equipment_state_from_ipmi():
@@ -1201,7 +1195,6 @@ def collect_equipment_state_from_ipmi():
         "ipmi_status": GaugeMetricFamily('ipmi_status', 'ipmi status', None, []),
         "cpu_temperature": GaugeMetricFamily('cpu_temperature', 'cpu temperature', None, ['cpu']),
         "cpu_status": GaugeMetricFamily('cpu_status', 'cpu status', None, ['cpu']),
-        "ipmi_memory_status": GaugeMetricFamily('ipmi_memory_status', 'ipmi memory status', None, ['name', 'type']),
     }
     metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
 
@@ -1210,7 +1203,7 @@ def collect_equipment_state_from_ipmi():
     if r != 0:
         return list(metrics.values())
 
-    check_equipment_state_from_ipmitool(metrics)
+    check_equipment_state_from_ipmitool()
 
     '''
         ================
