@@ -3844,7 +3844,10 @@ class Vm(object):
         def cleanup_created_iothread_vq_mapping():
             for created_scsi_controller_alias in created_scsi_controller_aliases:
                 try:
-                    self.detach_controller_by_alias(self.uuid, created_scsi_controller_alias)
+                    cmd_res = self.detach_controller_by_alias(created_scsi_controller_alias)
+                    if cmd_res:
+                        logger.warn('failed to cleanup scsi controller[%s] on vm[uuid:%s]: %s' %
+                                    (created_scsi_controller_alias, self.uuid, cmd_res))
                 except Exception as exc:
                     logger.warn('failed to cleanup scsi controller[%s] on vm[uuid:%s]: %s' %
                                 (created_scsi_controller_alias, self.uuid, str(exc)))
@@ -4003,6 +4006,16 @@ class Vm(object):
         return VmPlugin.add_scsi_controller(vm_uuid, iothread_id)
 
 
+    @linux.retry(times=3, sleep_time=1)
+    def detach_controller_by_alias(self, controller_alias):
+        exec_cmd = "virsh detach-device-alias %s %s --current" % (self.uuid, controller_alias)
+        cmd_res = shell.call(exec_cmd)
+        res = None
+        if cmd_res and cmd_res.startswith("error:"):
+            res = cmd_res
+        return res
+
+
     def detach_data_volume(self, volume):
         self._wait_vm_run_until_seconds(60)
         self.timeout_object.wait_until_object_timeout('attach-volume-%s' % self.uuid)
@@ -4038,29 +4051,47 @@ class Vm(object):
             if not automatic_iothread_ids_to_cleanup and not scsi_controller_alias_to_cleanup:
                 return
 
-            try:
+            current_vm = get_vm_by_uuid(self.uuid)
+            current_root = etree.fromstring(current_vm.domain_xml)
+            scsi_controller_cleanup_attempted = False
+            if scsi_controller_alias_to_cleanup and not scsi_controller_has_attached_disk(
+                    current_root, scsi_controller_index_to_cleanup):
+                scsi_controller_cleanup_attempted = True
+                err_info = self.detach_controller_by_alias(scsi_controller_alias_to_cleanup)
+                if err_info:
+                    logger.warn('failed to cleanup scsi controller[%s] on vm[uuid:%s]: %s' %
+                                (scsi_controller_alias_to_cleanup, self.uuid, err_info))
+
+            remaining_iothread_ids = set(automatic_iothread_ids_to_cleanup)
+
+            def cleanup_unreferenced_iothreads(_):
                 current_vm = get_vm_by_uuid(self.uuid)
                 current_root = etree.fromstring(current_vm.domain_xml)
-                if scsi_controller_alias_to_cleanup and not scsi_controller_has_attached_disk(
-                        current_root, scsi_controller_index_to_cleanup):
-                    err_info = self.detach_controller_by_alias(self.uuid, scsi_controller_alias_to_cleanup)
-                    if err_info:
-                        logger.warn('failed to cleanup scsi controller[%s] on vm[uuid:%s]: %s' %
-                                    (scsi_controller_alias_to_cleanup, self.uuid, err_info))
-                    current_vm = get_vm_by_uuid(self.uuid)
-                    current_root = etree.fromstring(current_vm.domain_xml)
+                if scsi_controller_cleanup_attempted:
+                    for controller in current_root.findall("./devices/controller"):
+                        if controller.get('type') == 'scsi' and \
+                                scsi_controller_alias(controller) == scsi_controller_alias_to_cleanup:
+                            return False
 
                 referenced_iothread_ids = IothreadVqMappingAllocator.automatic_ids_from_xml(current_root)
-                for iothread_id in automatic_iothread_ids_to_cleanup:
+                for iothread_id in list(remaining_iothread_ids):
                     if iothread_id in referenced_iothread_ids:
                         continue
                     err_info = VmPlugin.del_io_thread(self.uuid, iothread_id)
                     if err_info:
                         logger.warn('failed to cleanup automatic iothread[%s] on vm[uuid:%s]: %s' %
                                     (iothread_id, self.uuid, err_info))
-            except Exception as exc:
-                logger.warn('failed to cleanup iothread-vq-mapping after detaching volume[%s] from vm[uuid:%s]: %s' %
-                            (volume.volumeUuid, self.uuid, str(exc)))
+                        continue
+                    remaining_iothread_ids.remove(iothread_id)
+                return remaining_iothread_ids.issubset(referenced_iothread_ids)
+
+            if scsi_controller_cleanup_attempted:
+                if not linux.wait_callback_success(cleanup_unreferenced_iothreads, None, 5, 1):
+                    logger.warn('failed to cleanup automatic iothreads%s after detaching volume[%s] '
+                                'from vm[uuid:%s]: still referenced' %
+                                (sorted(remaining_iothread_ids), volume.volumeUuid, self.uuid))
+            else:
+                cleanup_unreferenced_iothreads(None)
 
         logger.debug('detaching volume from vm[uuid:%s]:\n%s' % (self.uuid, xmlstr))
         try:
@@ -4098,7 +4129,11 @@ class Vm(object):
                 self._clean_timeout_record(volume)
                 logger.debug("detach success finally, remove record of volume install path: %s" % volume.installPath)
 
-            cleanup_iothread_vq_mapping_after_detach()
+            try:
+                cleanup_iothread_vq_mapping_after_detach()
+            except Exception as exc:
+                logger.warn('failed to cleanup iothread-vq-mapping after detaching volume[%s] from vm[uuid:%s]: %s' %
+                            (volume.volumeUuid, self.uuid, str(exc)))
 
             def logout_iscsi():
                 BlkIscsi.logout_portal(target_disk.source.dev_)
@@ -13984,7 +14019,7 @@ host side snapshot files chian:
         for controller in vm.domain_xmlobject.devices.get_child_node_as_list('controller'):
             if controller.type_ == 'scsi' and hasattr(controller, 'driver') and hasattr(controller.driver, 'iothread_') \
                     and str(controller.driver.iothread_) == str(cmd.ioThreadId):
-                self.detach_controller_by_alias(cmd.vmUuid, controller.alias.name_)
+                vm.detach_controller_by_alias(controller.alias.name_)
                 break
 
         rsp.vmUuid = cmd.vmUuid
@@ -14021,16 +14056,6 @@ host side snapshot files chian:
                 old_index_list.append(int(controller.index_))
         new_index_list = [i for i in range(0, len(old_index_list) + 1)]
         return set(new_index_list).difference(set(old_index_list)).pop()
-
-
-    @linux.retry(times=3, sleep_time=1)
-    def detach_controller_by_alias(self, vm_uuid, controller_alias):
-        exec_cmd = "virsh detach-device-alias %s %s --current" % (vm_uuid, controller_alias)
-        cmd_res = shell.call(exec_cmd)
-        res = None
-        if cmd_res and cmd_res.startswith("error:"):
-            res = cmd_res
-        return res
 
     @staticmethod
     def add_io_thread(vm_uuid, io_thread_id):
