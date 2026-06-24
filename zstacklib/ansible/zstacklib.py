@@ -793,8 +793,11 @@ def yum_install_package(name, host_post_info, ignore_error=False,
     host_post_info.post_label_param = name
     msg = "INFO: Starting yum install package %s ... " % name
     handle_ansible_info(msg, host_post_info, "INFO")
+    # --whatprovides so a capability already satisfied by an installed
+    # package (e.g. libselinux-python provided by python2-libselinux) is
+    # skipped without needing a repo
     status = run_remote_rpmdb_transaction_command(
-        "rpm -q %s" % name, host_post_info, return_status=True)
+        "rpm -q --whatprovides %s" % name, host_post_info, return_status=True)
     if status and not force_install:
         details = "SKIP: The package %s exist in system" % name
         host_post_info.post_label = "ansible.skip.install.pkg"
