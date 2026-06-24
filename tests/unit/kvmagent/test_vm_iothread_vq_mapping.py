@@ -51,6 +51,149 @@ class FakeLibvirtError(Exception):
     pass
 
 
+CLEAN_DOMAIN_XML = '<domain><devices/></domain>'
+
+
+class FakeDetachDomain(object):
+    def detachDeviceFlags(self, xml, flags):
+        return None
+
+
+class FakeTargetDisk(object):
+    def __init__(self, disk_xml):
+        self.disk_xml = disk_xml
+
+    def dump(self):
+        return self.disk_xml
+
+
+class FakeVm(object):
+    def __init__(self, domain_xml):
+        self.domain_xml = domain_xml
+
+    def _get_target_disk(self, volume, is_exception=False):
+        return None, None
+
+
+class DetachVolumeCleanupContext(object):
+    def __init__(self, vm, volume, detached_aliases, deleted_iothreads):
+        self.vm = vm
+        self.volume = volume
+        self.detached_aliases = detached_aliases
+        self.deleted_iothreads = deleted_iothreads
+
+
+def scsi_disk_xml(iothread_ids, dev='sdb', controller='1'):
+    iothreads_xml = '\n'.join(
+        ['                  <iothread id="%s"><queue id="0"/></iothread>' % iothread_id
+         for iothread_id in iothread_ids])
+    iothreads = '''
+                <iothreads>
+%s
+                </iothreads>''' % iothreads_xml if iothread_ids else ''
+    return '''
+            <disk type="network" device="disk">
+              <driver name="qemu" type="raw">
+%s
+              </driver>
+              <target dev="%s" bus="scsi"/>
+              <address type="drive" controller="%s"/>
+            </disk>
+            ''' % (iothreads, dev, controller)
+
+
+def scsi_controller_domain_xml(iothread_ids, queues='4', index='1', alias='scsi1', extra_devices=''):
+    iothreads_xml = '\n'.join(
+        ['              <iothread id="%s"><queue id="0"/></iothread>' % iothread_id
+         for iothread_id in iothread_ids])
+    iothreads = '''
+            <iothreads>
+%s
+            </iothreads>''' % iothreads_xml if iothread_ids else ''
+    return '''
+    <domain>
+      <devices>
+        <controller type="scsi" model="virtio-scsi" index="%s">
+          <driver queues="%s">
+%s
+          </driver>
+          <alias name="%s"/>
+        </controller>
+%s
+      </devices>
+    </domain>
+    ''' % (index, queues, iothreads, alias, extra_devices)
+
+
+def domain_xml_with_iothread_disk(iothread_ids, dev='sdc', controller='1'):
+    return '''
+    <domain>
+      <devices>
+%s
+      </devices>
+    </domain>
+    ''' % scsi_disk_xml(iothread_ids, dev, controller)
+
+
+def fake_wait_callback_success(callback, callback_data=None, timeout=60, interval=1,
+                               ignore_exception_in_callback=False):
+    for _ in range(4):
+        if callback(callback_data):
+            return True
+    return False
+
+
+def stub_detach_volume_dependencies(monkeypatch, vm, disk_xml, current_xmls,
+                                    detached_aliases, deleted_iothreads,
+                                    wait_callback_success=None,
+                                    detach_controller_result=None,
+                                    del_iothread_result=None):
+    current_vms = [FakeVm(domain_xml) for domain_xml in current_xmls]
+
+    def fake_get_vm_by_uuid(uuid):
+        return current_vms.pop(0) if current_vms else FakeVm(current_xmls[-1])
+
+    def fake_detach_controller(alias):
+        detached_aliases.append(alias)
+        return detach_controller_result(vm.uuid, alias) if callable(detach_controller_result) else detach_controller_result
+
+    def fake_del_iothread(uuid, iothread_id):
+        deleted_iothreads.append(iothread_id)
+        return del_iothread_result(uuid, iothread_id) if callable(del_iothread_result) else del_iothread_result
+
+    monkeypatch.setattr(vm_plugin.linux, 'retry', no_retry)
+    monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success',
+                        wait_callback_success or (lambda callback, *args: callback(None)))
+    monkeypatch.setattr(vm_plugin.libvirt, 'libvirtError', RuntimeError)
+    monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', fake_get_vm_by_uuid)
+    monkeypatch.setattr(vm_plugin, 'is_libvirt_support_blockdev', lambda version: True)
+    monkeypatch.setattr(vm, 'detach_controller_by_alias', fake_detach_controller)
+    monkeypatch.setattr(vm_plugin.VmPlugin, 'del_io_thread', staticmethod(fake_del_iothread))
+    monkeypatch.setattr(vm, '_get_target_disk', lambda v: (FakeTargetDisk(disk_xml), 'sdb'))
+
+
+def setup_detach_volume_cleanup(monkeypatch, controller_xml, disk_xml, current_xmls,
+                                wait_callback_success=None, detach_controller_result=None,
+                                del_iothread_result=None, volume_kwargs=None):
+    vm = vm_plugin.Vm()
+    vm.uuid = 'vm-uuid'
+    vm.domain = FakeDetachDomain()
+    vm.domain_xml = controller_xml
+    volume_args = {
+        'useVirtio': False,
+        'useVirtioSCSI': True,
+        'installPath': 'cbd:test-volume',
+        'volumeUuid': 'volume-uuid',
+    }
+    volume_args.update(volume_kwargs or {})
+    detached_aliases = []
+    deleted_iothreads = []
+    stub_detach_volume_dependencies(
+        monkeypatch, vm, disk_xml, current_xmls, detached_aliases, deleted_iothreads,
+        wait_callback_success, detach_controller_result, del_iothread_result)
+    return DetachVolumeCleanupContext(vm, cbd_volume(**volume_args), detached_aliases, deleted_iothreads)
+
+
 @pytest.mark.kvmagent
 def test_is_virtio_blk_excludes_virtio_scsi():
     assert vm_plugin.is_virtio_blk(cbd_volume(useVirtio=True, useVirtioSCSI=False))
@@ -349,10 +492,6 @@ def test_attach_data_volume_failure_cleans_created_mapping(monkeypatch):
         def attachDeviceFlags(self, xml, flags):
             raise RuntimeError('disk attach failed')
 
-    class FakeCurrentVm(object):
-        def _get_target_disk(self, volume, is_exception=False):
-            return None, None
-
     vm = vm_plugin.Vm()
     vm.uuid = 'vm-uuid'
     vm.domain = FakeDomain()
@@ -379,9 +518,9 @@ def test_attach_data_volume_failure_cleans_created_mapping(monkeypatch):
     vm.domain.attachDeviceFlags = fake_attach_device
     monkeypatch.setattr(vm_plugin.linux, 'retry', no_retry)
     monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success', lambda callback, *args: callback(None))
+    monkeypatch.setattr(vm_plugin.libvirt, 'libvirtError', RuntimeError)
     monkeypatch.setattr(vm_plugin, 'file_volume_check', lambda v: v)
-    monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', lambda uuid: FakeCurrentVm())
-    monkeypatch.setattr(vm_plugin.libvirt, 'libvirtError', FakeLibvirtError)
+    monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', lambda uuid: FakeVm(CLEAN_DOMAIN_XML))
     monkeypatch.setattr(vm_plugin.Vm, 'set_device_address', staticmethod(lambda *args: None))
     monkeypatch.setattr(vm_plugin.VmPlugin, 'get_iothread_info', staticmethod(lambda uuid: []))
     monkeypatch.setattr(vm_plugin.VmPlugin, 'add_io_thread',
@@ -390,14 +529,13 @@ def test_attach_data_volume_failure_cleans_created_mapping(monkeypatch):
                         staticmethod(lambda uuid, iothread_id: deleted_iothreads.append(iothread_id) or None))
     monkeypatch.setattr(vm_plugin.VmPlugin, 'add_scsi_controller_with_driver', staticmethod(fake_add_controller))
     monkeypatch.setattr(vm, 'detach_controller_by_alias',
-                        lambda vm_uuid, alias: detached_aliases.append(alias) or None,
-                        raising=False)
+                        lambda alias: detached_aliases.append(alias) or None)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(vm_plugin.kvmagent.KvmError):
         vm._attach_data_volume(volume, EmptyAddons())
 
     assert created_iothreads == [101, 102, 103, 104, 105, 106, 107, 108]
-    assert deleted_iothreads == created_iothreads
+    assert sorted(deleted_iothreads) == created_iothreads
     assert detached_aliases == ['scsi5']
     disk = vm_plugin.etree.fromstring(attached_disk_xml[0])
     assert disk.find('driver').get('queues') is None
@@ -407,93 +545,83 @@ def test_attach_data_volume_failure_cleans_created_mapping(monkeypatch):
 
 @pytest.mark.kvmagent
 def test_detach_data_volume_keeps_referenced_iothread(monkeypatch):
-    class FakeDomain(object):
-        def detachDeviceFlags(self, xml, flags):
-            return None
+    controller_xml = scsi_controller_domain_xml([101, 102], queues='16')
+    referenced_xml = domain_xml_with_iothread_disk([101])
+    ctx = setup_detach_volume_cleanup(
+        monkeypatch, controller_xml, scsi_disk_xml([101, 102]), [CLEAN_DOMAIN_XML, controller_xml, referenced_xml])
 
-    class FakeTargetDisk(object):
-        def dump(self):
-            return '''
-            <disk type="network" device="disk">
-              <driver name="qemu" type="raw">
-                <iothreads>
-                  <iothread id="101"><queue id="0"/></iothread>
-                  <iothread id="102"><queue id="1"/></iothread>
-                </iothreads>
-              </driver>
-              <target dev="sdb" bus="scsi"/>
-              <address type="drive" controller="1"/>
-            </disk>
-            '''
+    ctx.vm._detach_data_volume(ctx.volume)
 
-    class FakeVm(object):
-        def __init__(self, domain_xml):
-            self.domain_xml = domain_xml
+    assert ctx.detached_aliases == ['scsi1']
+    assert ctx.deleted_iothreads == [102]
 
-        def _get_target_disk(self, volume, is_exception=False):
-            return None, None
 
-    controller_xml = '''
-    <domain>
-      <devices>
-        <controller type="scsi" model="virtio-scsi" index="1">
-          <driver queues="16">
-            <iothreads>
-              <iothread id="101"><queue id="0"/></iothread>
-              <iothread id="102"><queue id="1"/></iothread>
-            </iothreads>
-          </driver>
-          <alias name="scsi1"/>
-        </controller>
-      </devices>
-    </domain>
-    '''
-    referenced_xml = '''
-    <domain>
-      <devices>
-        <disk type="network" device="disk">
-          <driver name="qemu" type="raw">
-            <iothreads>
-              <iothread id="101"><queue id="0"/></iothread>
-            </iothreads>
-          </driver>
-        </disk>
-      </devices>
-    </domain>
-    '''
-    current_vms = [
-        FakeVm('<domain><devices/></domain>'),
-        FakeVm(controller_xml),
-        FakeVm(referenced_xml),
-    ]
-    vm = vm_plugin.Vm()
-    vm.uuid = 'vm-uuid'
-    vm.domain = FakeDomain()
-    vm.domain_xml = controller_xml
-    volume = cbd_volume(
-        useVirtio=False,
-        useVirtioSCSI=True,
-        installPath='cbd:test-volume',
-        volumeUuid='volume-uuid',
-    )
-    detached_aliases = []
-    deleted_iothreads = []
+@pytest.mark.kvmagent
+def test_detach_data_volume_keeps_controller_with_attached_disk(monkeypatch):
+    still_attached_disk_xml = scsi_disk_xml([101], dev='sdc')
+    controller_xml = scsi_controller_domain_xml([101])
+    still_attached_xml = scsi_controller_domain_xml([101], extra_devices=still_attached_disk_xml)
+    ctx = setup_detach_volume_cleanup(
+        monkeypatch, controller_xml, scsi_disk_xml([101]), [CLEAN_DOMAIN_XML, still_attached_xml])
 
-    def fake_get_vm_by_uuid(uuid):
-        return current_vms.pop(0) if current_vms else FakeVm(referenced_xml)
+    ctx.vm._detach_data_volume(ctx.volume)
 
-    monkeypatch.setattr(vm_plugin.linux, 'retry', no_retry)
-    monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success', lambda callback, *args: callback(None))
-    monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', fake_get_vm_by_uuid)
-    monkeypatch.setattr(vm_plugin, 'is_libvirt_support_blockdev', lambda version: True)
-    monkeypatch.setattr(vm_plugin.VmPlugin, 'del_io_thread',
-                        staticmethod(lambda uuid, iothread_id: deleted_iothreads.append(iothread_id) or None))
-    monkeypatch.setattr(vm, '_get_target_disk', lambda v: (FakeTargetDisk(), 'sdb'))
-    monkeypatch.setattr(vm, 'detach_controller_by_alias',
-                        lambda vm_uuid, alias: detached_aliases.append(alias) or None,
-                        raising=False)
+    assert ctx.detached_aliases == []
+    assert ctx.deleted_iothreads == []
 
-    vm._detach_data_volume(volume)
 
-    assert detached_aliases == ['scsi1']
-    assert deleted_iothreads == [102]
+@pytest.mark.kvmagent
+def test_detach_data_volume_retries_iothread_cleanup_after_stale_reference(monkeypatch):
+    controller_xml = scsi_controller_domain_xml([101])
+    ctx = setup_detach_volume_cleanup(
+        monkeypatch, controller_xml, scsi_disk_xml([101]),
+        [CLEAN_DOMAIN_XML, controller_xml, controller_xml, CLEAN_DOMAIN_XML],
+        fake_wait_callback_success)
+
+    ctx.vm._detach_data_volume(ctx.volume)
+
+    assert ctx.detached_aliases == ['scsi1']
+    assert ctx.deleted_iothreads == [101]
+
+
+@pytest.mark.kvmagent
+def test_detach_data_volume_waits_for_controller_cleanup_without_iothreads(monkeypatch):
+    controller_xml = scsi_controller_domain_xml([])
+    ctx = setup_detach_volume_cleanup(
+        monkeypatch, controller_xml, scsi_disk_xml([]),
+        [CLEAN_DOMAIN_XML, controller_xml, controller_xml, CLEAN_DOMAIN_XML],
+        fake_wait_callback_success)
+
+    ctx.vm._detach_data_volume(ctx.volume)
+
+    assert ctx.detached_aliases == ['scsi1']
+    assert ctx.deleted_iothreads == []
+
+
+@pytest.mark.kvmagent
+def test_detach_data_volume_waits_after_controller_cleanup_command_error(monkeypatch):
+    controller_xml = scsi_controller_domain_xml([101])
+    ctx = setup_detach_volume_cleanup(
+        monkeypatch, controller_xml, scsi_disk_xml([101]),
+        [CLEAN_DOMAIN_XML, controller_xml, controller_xml, CLEAN_DOMAIN_XML],
+        fake_wait_callback_success,
+        detach_controller_result='error: detach failed')
+
+    ctx.vm._detach_data_volume(ctx.volume)
+
+    assert ctx.detached_aliases == ['scsi1']
+    assert ctx.deleted_iothreads == [101]
+
+
+@pytest.mark.kvmagent
+def test_detach_data_volume_reports_iothread_cleanup_command_error(monkeypatch):
+    controller_xml = scsi_controller_domain_xml([101])
+    ctx = setup_detach_volume_cleanup(
+        monkeypatch, controller_xml, scsi_disk_xml([101]), [CLEAN_DOMAIN_XML, CLEAN_DOMAIN_XML, CLEAN_DOMAIN_XML],
+        fake_wait_callback_success,
+        del_iothread_result='error: iothreaddel failed')
+
+    ctx.vm._detach_data_volume(ctx.volume)
+
+    assert ctx.detached_aliases == ['scsi1']
+    assert set(ctx.deleted_iothreads) == set([101])

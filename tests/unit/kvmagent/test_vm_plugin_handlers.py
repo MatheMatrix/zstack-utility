@@ -1133,14 +1133,13 @@ class TestDelScsiControllerHandler:
         controller.alias.name_ = 'scsi1'
         mock_vm.domain_xmlobject.devices.get_child_node_as_list = MagicMock(return_value=[controller])
         vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
-        plugin.detach_controller_by_alias = MagicMock()
 
         req = _make_req({'vmUuid': 'vm-uuid', 'ioThreadId': 1})
         result = plugin.del_scsi_controller(req)
         rsp = json.loads(result)
 
         assert rsp['success'] is True
-        plugin.detach_controller_by_alias.assert_called_once_with('vm-uuid', 'scsi1')
+        mock_vm.detach_controller_by_alias.assert_called_once_with('scsi1')
 
 
 @pytest.mark.kvmagent
