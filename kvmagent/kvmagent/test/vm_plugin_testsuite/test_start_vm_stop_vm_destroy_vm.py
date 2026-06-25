@@ -1,10 +1,11 @@
 import pytest
+import xml.etree.ElementTree as etree
 
 from kvmagent.plugins import vm_plugin
-from kvmagent.test.utils import vm_utils, network_utils, pytest_utils
-from kvmagent.test.utils.stub import *
+from kvmagent.test.utils import vm_utils, network_utils, pytest_utils, volume_utils
+from kvmagent.test.utils.stub import init_kvmagent
 from zstacklib.test.utils import misc
-from zstacklib.utils import linux
+from zstacklib.utils import bash, linux
 from unittest import TestCase
 
 init_kvmagent()
@@ -50,3 +51,83 @@ class TestVmLifeCycle(TestCase, vm_utils.VmPluginTestStub):
         vm_utils.destroy_vm(TestVmLifeCycle.vm_uuid)
         pid = linux.find_vm_pid_by_uuid(TestVmLifeCycle.vm_uuid)
         self.assertTrue(not pid, 'vm[%s] vm still running' % TestVmLifeCycle.vm_uuid)
+
+    @pytest.mark.run(order=4)
+    @pytest_utils.ztest_decorater
+    def test_start_q35_other_iso_with_data_volume(self):
+        vm = vm_utils.create_startvm_body_jsonobject()
+        vm.machineType = 'q35'
+        vm.imagePlatform = 'Other'
+        vm.rootVolume.useVirtio = False
+
+        iso_uuid, iso_path = volume_utils.create_empty_volume()
+        vm.cdRoms = [{
+            "bootOrder": 0,
+            "imageUuid": iso_uuid,
+            "isEmpty": False,
+            "deviceId": 0,
+            "resourceUuid": iso_uuid,
+            "path": iso_path
+        }]
+
+        vol_uuid1, vol_path1 = volume_utils.create_empty_volume()
+        volume1 = {
+            "resourceUuid": vol_uuid1,
+            "primaryStorageType": "NFS",
+            "volumeUuid": vol_uuid1,
+            "installPath": vol_path1,
+            "useVirtio": False,
+            "format": "qcow2",
+            "ioThreadId": 0,
+            "cacheMode": "none",
+            "useVirtioSCSI": False,
+            "deviceType": "file",
+            "deviceId": 3,
+            "bootOrder": 0,
+            "physicalBlockSize": 0,
+            "shareable": False,
+            "controllerIndex": 0,
+            "wwn": "0x000f9d3e8f07f623",
+            "type": "Data"
+        }
+
+        vol_uuid2, vol_path2 = volume_utils.create_empty_volume()
+        volume2 = {
+            "resourceUuid": vol_uuid2,
+            "primaryStorageType": "NFS",
+            "volumeUuid": vol_uuid2,
+            "installPath": vol_path2,
+            "useVirtio": False,
+            "format": "qcow2",
+            "ioThreadId": 0,
+            "cacheMode": "none",
+            "useVirtioSCSI": False,
+            "deviceType": "file",
+            "deviceId": 4,
+            "bootOrder": 0,
+            "physicalBlockSize": 0,
+            "shareable": False,
+            "controllerIndex": 0,
+            "wwn": "0x000f9d3e8f07f623",
+            "type": "Data"
+        }
+
+        vm.dataVolumes = [volume1, volume2]
+        vm_utils.create_vm(vm)
+        TestVmLifeCycle.vm_uuid = vm.vmInstanceUuid
+        try:
+            r, output = bash.bash_ro("virsh dumpxml %s" % vm.vmInstanceUuid)
+            self.assertEqual(r, 0, "failed to dumpxml of vm %s" % vm.vmInstanceUuid)
+
+            disk_addresses = []
+            root = etree.fromstring(output)
+            for disk in root.iter('disk'):
+                for address in disk.iter('address'):
+                    if address.get('type') == 'drive' and address.get('controller') == '0' and address.get('bus') == '0':
+                        disk_addresses.append(address.get('unit'))
+
+            for unit in ['0', '4', '5']:
+                self.assertIn(unit, disk_addresses,
+                              "failed to find sata address 0/0/%s in dumpxml output, vm xml dump %s" % (unit, output))
+        finally:
+            vm_utils.destroy_vm(vm.vmInstanceUuid)
