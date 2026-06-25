@@ -103,6 +103,34 @@ class TestTargetHealthy:
             assert t.target_healthy() is False
 
 
+class TestTargetRunning:
+    # connectivity (not fencing): unlike target_healthy, a host with NO target must read
+    # as not-running so its per-protocol ref flips Disconnected and the allocator skips it.
+    _SOCK = "/var/zbsvhost/sockets/admin.sock"
+    _NAME = "zbsvhost-10.0.0.9"
+
+    def test_never_deployed_is_not_running(self):
+        with patch.object(t, 'container_exists', return_value=False):
+            assert t.target_running(self._SOCK, self._NAME) is False
+
+    def test_deployed_but_exited_is_not_running(self):
+        with patch.object(t, 'container_exists', return_value=True), \
+             patch.object(t, 'is_running', return_value=False):
+            assert t.target_running(self._SOCK, self._NAME) is False
+
+    def test_running_with_ready_sock_is_running(self):
+        with patch.object(t, 'container_exists', return_value=True), \
+             patch.object(t, 'is_running', return_value=True), \
+             patch.object(t, '_control_sock_ready', return_value=True):
+            assert t.target_running(self._SOCK, self._NAME) is True
+
+    def test_running_with_dead_sock_is_not_running(self):
+        with patch.object(t, 'container_exists', return_value=True), \
+             patch.object(t, 'is_running', return_value=True), \
+             patch.object(t, '_control_sock_ready', return_value=False):
+            assert t.target_running(self._SOCK, self._NAME) is False
+
+
 class TestShellQuoting:
     def test_download_image_quotes_url_and_dest(self):
         with patch.object(t.bash, 'bash_errorout') as be:

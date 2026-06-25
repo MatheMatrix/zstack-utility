@@ -20,6 +20,10 @@ CBD_PREFIX = "cbd"
 CBD_VOLUME_PATH = CBD_PREFIX + ":{}/{}/{}"
 CBD_SNAPSHOT_PATH = CBD_VOLUME_PATH + "@{}"
 CLUSTER_UUID_SUPPORTED_VERSION = "1.5.1"
+VHOST_SOCKET_DIR = "/var/zbsvhost/sockets"
+# zbsadm strips this suffix from the create-bdev --volume arg before opening the
+# file via libcbd, so the real ZBS file name carries no suffix but the argument must.
+VHOST_VOLUME_SUFFIX = "_zbs_"
 
 
 class ClientInfo(object):
@@ -75,6 +79,56 @@ def get_version():
 def deploy_client(ip, port, username, password):
     return shell.call("%s client deploy --host %s --port %s -u %s -p %s --silent" % (
         ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password)))
+
+
+def vhost_auto_cpuset():
+    n = linux.get_cpu_num()
+    core = n - 1 if n and n > 1 else 0
+    return "[%d]" % core
+
+
+def deploy_vhost(ip, port, username, password, cpuset=None, hugepage_size=None, hugepage_dir=None):
+    if not cpuset:
+        cpuset = vhost_auto_cpuset()
+    cmd = "%s vhost deploy --host %s --port %s -u %s -p %s --cpuset %s --silent" % (
+        ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password),
+        linux.shellquote(cpuset))
+    if hugepage_size:
+        cmd += " --hugepage-size %s" % hugepage_size
+    if hugepage_dir:
+        cmd += " --hugepage-dir %s" % hugepage_dir
+    return shell.call(cmd)
+
+
+def destroy_vhost(ip, port, username, password):
+    return shell.call("%s vhost destroy --host %s --port %s -u %s -p %s --silent" % (
+        ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password)))
+
+
+def create_vhost_bdev(ip, port, username, password, logical_pool, volume, bdev_name):
+    return shell.call(
+        "%s vhost create-bdev --host %s --port %s -u %s -p %s --volume %s/%s%s --name %s --silent" % (
+            ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password),
+            logical_pool, volume, VHOST_VOLUME_SUFFIX, bdev_name))
+
+
+def delete_vhost_bdev(ip, port, username, password, bdev_name):
+    return shell.call("%s vhost delete-bdev --host %s --port %s -u %s -p %s --name %s --silent" % (
+        ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password), bdev_name))
+
+
+def list_vhost_bdev(ip, port, username, password):
+    return shell.call("%s vhost list-bdev --host %s --port %s -u %s -p %s" % (
+        ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password)))
+
+
+def get_vhost_status(ip, port, username, password):
+    return shell.call("%s vhost status --host %s --port %s -u %s -p %s" % (
+        ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password)))
+
+
+def vhost_socket_path(bdev_name):
+    return VHOST_SOCKET_DIR + "/" + bdev_name
 
 
 def query_mds_status_info():
