@@ -26,6 +26,7 @@ except ImportError:
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
+from kvmagent.plugins.volume_cache.command_wrapper.filesystem import FileSystemCommandWrapper
 from zstacklib.utils import http, lvm, ceph, pci, gpu
 from zstacklib.utils import qemu
 from zstacklib.utils import iptables
@@ -172,6 +173,12 @@ class GetUsbDevicesRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(GetUsbDevicesRsp, self).__init__()
         self.usbDevicesInfo = None
+
+
+class GetBlockDevicesRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(GetBlockDevicesRsp, self).__init__()
+        self.blockDevices = None
 
 
 class StartUsbRedirectServerRsp(kvmagent.AgentResponse):
@@ -716,6 +723,12 @@ class GetPciDevicesCmd(kvmagent.AgentCommand):
         self.filterString = None
         self.enableIommu = True
         self.skipGrubConfig = False
+
+
+class GetBlockDevicesCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(GetBlockDevicesCmd, self).__init__()
+        self.includeInUse = False
 
 
 class GetPciDevicesResponse(kvmagent.AgentResponse):
@@ -1590,6 +1603,7 @@ class HostPlugin(kvmagent.KvmAgent):
     UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH = "/host/vm/updateConsolePassword/live"
     SETUP_VM_HA_ENABLED_METADATA_LIVE_PATH = '/host/vm/setupHaEnabledMetadata/live'
     RECONCILE_VM_HA_ENABLED_METADATA_LIVE_PATH = '/host/vm/reconcileHaEnabledMetadata/live'
+    GET_BLOCK_DEVICES_PATH = "/host/blockdevices"
 
     def __init__(self):
         self.IS_YUM = False
@@ -4702,6 +4716,17 @@ done
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    def get_block_devices(self, req):
+        rsp = GetBlockDevicesRsp()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+
+        all_devices = lvm.get_block_devices() # type: list[lvm.SharedBlockCandidateStruct]
+        if not cmd.includeInUse:
+            all_devices = list(filter(lambda dev: not FileSystemCommandWrapper.is_block_device_mounted(dev.name), all_devices))
+        rsp.blockDevices = all_devices
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
     def get_dev_capacity(self, req):
         rsp = GetDevCapacityRsp()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -5156,6 +5181,8 @@ done
             self.SETUP_VM_HA_ENABLED_METADATA_LIVE_PATH, self.setup_vm_ha_enabled_metadata_live)
         http_server.register_async_uri(
             self.RECONCILE_VM_HA_ENABLED_METADATA_LIVE_PATH, self.reconcile_vm_ha_enabled_metadata_live)
+        http_server.register_async_uri(
+            self.GET_BLOCK_DEVICES_PATH, self.get_block_devices)
 
         self.heartbeat_timer = {}
         filepath = r'/etc/libvirt/qemu/networks/autostart/default.xml'

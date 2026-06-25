@@ -62,7 +62,7 @@ LVM_LOCKSPACE_BACKUP_PATH = "/var/lib/lvm/"
 
 '''
 If the lvm command with locking is hung, it will always occupy the lock and cannot be released.
-And in scenarios where storage IO is slow and lock contention occurs, it may take longer to execute, 
+And in scenarios where storage IO is slow and lock contention occurs, it may take longer to execute,
 so we need to set a timeout that can tolerate this scenario.
 '''
 lvm_cmd_timeout_with_locking = 210
@@ -158,6 +158,7 @@ class RetryException(Exception):
 
 class SharedBlockCandidateStruct:
     def __init__(self):
+        self.name = None  # type: str
         self.wwid = None  # type: str
         self.vendor = None  # type: str
         self.model = None  # type: str
@@ -534,7 +535,9 @@ def lsblk_info(dev_name):
         return e.split("=")[1].strip().strip('"')
 
     for entry in o.strip().split("\n")[0].split('" '):  # type: str
-        if entry.startswith("VENDOR"):
+        if entry.startswith("NAME"):
+            s.name = get_data(entry)
+        elif entry.startswith("VENDOR"):
             s.vendor = get_data(entry)
         elif entry.startswith("MODEL"):
             s.model = get_data(entry)
@@ -748,7 +751,7 @@ WantedBy=multi-user.target
     os.chmod(lvmlockd_service_path, 0o644)
 
     if os.path.exists("/etc/rsyslog.d") and not os.path.exists(LVMLOCKD_LOG_RSYSLOG_PATH):
-        content = """if $programname == 'lvmlockd' then %s 
+        content = """if $programname == 'lvmlockd' then %s
 & stop
 """ % LVMLOCKD_LOG_FILE_PATH
         with open(LVMLOCKD_LOG_RSYSLOG_PATH, 'w') as f:
@@ -1122,7 +1125,7 @@ def wipe_fs(disks, expected_vg=None, with_lock=True):
         if r == 0 and o.strip() != "":
             exists_vg = o.strip()
 
-        if expected_vg in o.strip():
+        if expected_vg and expected_vg in o.strip():
             continue
 
         backup = backup_super_block(disk)
@@ -2831,8 +2834,8 @@ def report_config_changed():
 
 
 NOLOCK_CMDS = {"lvs", "pvs", "vgs"}
-TIMEOUT_CMDS = {"lvchange", "lvcreate", "lvrename", "lvresize", "lvextend", "lvremove"}
-REPAIR_LV_CMDS = TIMEOUT_CMDS - {"lvcreate"}
+TIMEOUT_CMDS = {"lvchange", "lvcreate", "lvrename", "lvresize", "lvextend", "lvremove", "pvck", "vgck"}
+REPAIR_LV_CMDS = {"lvchange", "lvrename", "lvresize", "lvextend", "lvremove"}
 REPAIR_VG_CMDS = {"vgchange"}
 def subcmd(cmd, timeout=lvm_cmd_timeout_with_locking, lockopts: list[str] | None = None):
     argv = [cmd]

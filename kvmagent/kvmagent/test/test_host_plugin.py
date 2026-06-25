@@ -25,11 +25,11 @@ logger = log.get_logger(__name__)
 class ConnectCmd(kvmagent.AgentCommand):
     def __init__(self):
         self.hostUuid = uuidhelper.uuid()
-        
+
 class HostFactCmd(kvmagent.AgentCommand): pass
 
 
-        
+
 class TestHostPlugin(unittest.TestCase):
     @classmethod
     def setUpClass(self):
@@ -48,7 +48,7 @@ class TestHostPlugin(unittest.TestCase):
         ret = http.json_dump_post(url, body=ConnectCmd())
         rsp = jsonobject.loads(ret)
         self.assertTrue(rsp.success)
-        
+
     @mock.patch('subprocess.Popen')
     def test_hostfact(self, mock_popen):
         url = kvmagent._build_url_for_test([host_plugin.HostPlugin.FACT_PATH])
@@ -231,3 +231,50 @@ class TestHostPluginVirtStatusFallback(unittest.TestCase):
         self.assertEqual(to.virtStatus, "UNVIRTUALIZABLE")
         self.assertEqual(to.virtState, "VIRTUALIZABLE")
         self.assertEqual(to.virtCapabilities, ["TENSORFUSION"])
+
+
+class TestHostPluginGetBlockDevices(unittest.TestCase):
+    def _make_device(self, name):
+        dev = host_plugin.lvm.SharedBlockCandidateStruct()
+        dev.name = name
+        return dev
+
+    def _call_get_block_devices(self, body):
+        plugin = host_plugin.HostPlugin()
+        req = {http.REQUEST_BODY: body}
+        return jsonobject.loads(plugin.get_block_devices(req))
+
+    def test_get_block_devices_filters_mounted_by_default(self):
+        devices = [self._make_device("/dev/sdb"), self._make_device("/dev/sdc")]
+        with mock.patch.object(host_plugin.lvm, 'get_block_devices', return_value=devices):
+            with mock.patch.object(host_plugin.FileSystemCommandWrapper, 'is_block_device_mounted',
+                                   side_effect=lambda name: name == "/dev/sdc") as mock_mounted:
+                rsp = self._call_get_block_devices("{}")
+
+        self.assertEqual(["/dev/sdb"], [d.name for d in rsp.blockDevices])
+        self.assertIsInstance(rsp.blockDevices, list)
+        self.assertTrue(rsp.blockDevices[0].name)
+        self.assertEqual(2, mock_mounted.call_count)
+
+    def test_get_block_devices_filters_mounted_when_include_in_use_false(self):
+        devices = [self._make_device("/dev/sdb"), self._make_device("/dev/sdc")]
+        with mock.patch.object(host_plugin.lvm, 'get_block_devices', return_value=devices):
+            with mock.patch.object(host_plugin.FileSystemCommandWrapper, 'is_block_device_mounted',
+                                   side_effect=lambda name: name == "/dev/sdc") as mock_mounted:
+                rsp = self._call_get_block_devices('{"includeInUse": false}')
+
+        self.assertEqual(["/dev/sdb"], [d.name for d in rsp.blockDevices])
+        self.assertIsInstance(rsp.blockDevices, list)
+        self.assertTrue(rsp.blockDevices[0].name)
+        self.assertEqual(2, mock_mounted.call_count)
+
+    def test_get_block_devices_returns_all_when_include_in_use_true(self):
+        devices = [self._make_device("/dev/sdb"), self._make_device("/dev/sdc")]
+        with mock.patch.object(host_plugin.lvm, 'get_block_devices', return_value=devices):
+            with mock.patch.object(host_plugin.FileSystemCommandWrapper, 'is_block_device_mounted') as mock_mounted:
+                rsp = self._call_get_block_devices('{"includeInUse": true}')
+
+        self.assertEqual(["/dev/sdb", "/dev/sdc"], [d.name for d in rsp.blockDevices])
+        self.assertIsInstance(rsp.blockDevices, list)
+        self.assertTrue(rsp.blockDevices[0].name)
+        self.assertFalse(mock_mounted.called)

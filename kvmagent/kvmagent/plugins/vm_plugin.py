@@ -51,6 +51,8 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins.imagestore import ImageStoreClient
 from kvmagent.plugins.shared_block_plugin import MAX_ACTUAL_SIZE_FACTOR
+from kvmagent.plugins.volume_cache.command_wrapper.virsh import VirshCommandWrapper as CacheVirshWrapper
+from kvmagent.plugins.volume_cache.command_wrapper.qemu_img import BackingVolumeDeviceType, supported_backing_volume_classes
 from zstacklib.utils import bash, plugin, iscsi, gpu
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import lvm
@@ -720,6 +722,31 @@ class DetachDataVolumeCmd(kvmagent.AgentCommand):
 class DetachDataVolumeResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(DetachDataVolumeResponse, self).__init__()
+
+
+class AttachVolumeCacheCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(AttachVolumeCacheCmd, self).__init__()
+        self.instanceUuid = None   # type: str  # VM instance UUID
+        self.volume = None         # type: object  # volume JSON with nested cache descriptor
+
+
+class AttachVolumeCacheRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(AttachVolumeCacheRsp, self).__init__()
+
+
+class DetachVolumeCacheCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(DetachVolumeCacheCmd, self).__init__()
+        self.instanceUuid = None   # type: str  # VM instance UUID
+        self.volume = None         # type: object  # volume JSON with nested cache descriptor
+
+
+class DetachVolumeCacheRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(DetachVolumeCacheRsp, self).__init__()
+
 
 class MigrateVmResponse(kvmagent.AgentResponse):
     def __init__(self):
@@ -1451,6 +1478,46 @@ def e(parent, tag, value=None, attrib=None, usenamesapce = False):
     if value:
         el.text = value
     return el
+
+
+def add_caching_store(disk_element, volume):
+    # type: (etree.Element, object) -> None
+    """Append a <cachingStore> child element to *disk_element* when *volume*
+    carries a valid local-cache descriptor (``volume.cache.installPath``).
+
+    The generated XML fragment looks like::
+
+        <cachingStore type='file'>
+          <format type='qcow2'/>
+          <source file='/lcache/lcache0'/>
+        </cachingStore>
+    """
+    cache = getattr(volume, 'cache', None)
+    if cache is None:
+        return
+    # JsonObject: use hasattr / attribute access
+    if hasattr(cache, 'hasattr') and not cache.hasattr('installPath'):
+        raise Exception('cache installPath is required for attaching cachingStore')
+    install_path = getattr(cache, 'installPath', None)
+    if not install_path:
+        raise Exception('cache installPath is required for attaching cachingStore')
+
+    # validate that the volume's device type supports block caching
+    device_type = getattr(volume, 'deviceType', None)  # type: str
+    if not device_type:
+        raise Exception('volume deviceType is required for attaching cachingStore')
+    try:
+        bvdt = BackingVolumeDeviceType(device_type)
+    except ValueError:
+        raise Exception('volume deviceType[%s] is not a recognised BackingVolumeDeviceType, '
+                        'skip attaching cachingStore' % device_type)
+    if bvdt not in supported_backing_volume_classes:
+        raise Exception('volume deviceType[%s] is not supported for block caching, '
+                        'skip attaching cachingStore' % device_type)
+
+    cs = e(disk_element, 'cachingStore', None, {'type': 'file'})
+    e(cs, 'format', None, {'type': 'qcow2'})
+    e(cs, 'source', None, {'file': install_path})
 
 
 def find_namespace_node(root, path, name):
@@ -2255,6 +2322,61 @@ class MergeSnapshotDaemon(plugin.TaskDaemon):
             logger.debug("live merge snapshot failed. expected backing %s, actually backing %s. "
                          "check the vm xml does not meet expectations" % (self.base, current_backing))
             raise ex
+
+
+class DetachBlockCacheTaskDaemon(plugin.TaskDaemon):
+    """TaskDaemon that wraps ``virsh block-cache-detach`` and reports
+    progress back to the management node via the standard task-progress
+    mechanism."""
+
+    def __init__(self, task_spec, vm_uuid, volume, disk_name):
+        # type: (object, str, object, str) -> None
+        super(DetachBlockCacheTaskDaemon, self).__init__(task_spec, 'DetachBlockCache')
+        self.vm_uuid = vm_uuid       # type: str
+        self.volume = volume         # type: object
+        self.disk_name = disk_name   # type: str
+        self.progress = 0            # type: int
+        self.error = None            # type: str
+
+    def _cancel(self):
+        # type: () -> None
+        logger.warning('Cancel is not supported for detach block-cache task, '
+                       'task will continue to completion')
+
+    def _get_percent(self):
+        # type: () -> int
+        return self.progress
+
+    def _get_detail(self):
+        # type: () -> object
+        return jsonobject.loads(json.dumps({
+            'vmUuid': self.vm_uuid,
+            'volumeInstallPath': self.volume.installPath
+        }))
+
+    def _on_progress(self, progress, err):
+        # type: (float, str) -> None
+        if progress is not None:
+            self.progress = int(max(0, min(99, progress)))
+        if err:
+            self.error = err
+
+    def detach(self):
+        # type: () -> None
+        cache = getattr(self.volume, 'cache', None)
+        timeout = int(cache.timeout) if cache and getattr(cache, 'timeout', None) else None
+        delete = bool(getattr(cache, 'delete', False)) if cache else False
+
+        CacheVirshWrapper.block_cache_detach(
+            domain=self.vm_uuid,
+            path=self.disk_name,
+            timeout=timeout,
+            delete=delete,
+            on_progress=self._on_progress)
+
+        if self.error:
+            raise Exception(self.error)
+        self.progress = 100
 
 
 class VmVolumesRecoveryTask(plugin.TaskDaemon):
@@ -3682,6 +3804,7 @@ class Vm(object):
         Vm.set_volume_qos(addons, volume.volumeUuid, disk_element)
         Vm.set_volume_serial_id(volume.volumeUuid, disk_element)
         volume_native_aio(disk_element)
+        add_caching_store(disk_element, volume)
         xml = etree.tostring(disk_element, encoding="unicode")
         logger.debug('attaching volume[%s] to vm[uuid:%s]:\n%s' % (volume.installPath, self.uuid, xml))
         try:
@@ -3812,7 +3935,15 @@ class Vm(object):
                         logger.debug("detach timeout, record volume install path: %s" % volume.installPath)
                         raise
 
-            detach()
+            try:
+                detach()
+            except libvirt.libvirtError:
+                me = get_vm_by_uuid(self.uuid)
+                disk, _ = me._get_target_disk(volume, is_exception=False)
+                if disk:
+                    raise
+                logger.debug('volume[%s] detached after libvirt reported an async unplug error' %
+                             volume.installPath)
 
             if self._volume_detach_timed_out(volume):
                 self._clean_timeout_record(volume)
@@ -3981,7 +4112,7 @@ class Vm(object):
             # block
             if disk.source.dev__ and disk.source.dev_ in installPath:
                 return disk, disk.target.dev_
-            
+
             # vhost
             if disk.source.path__ and disk.source.path_ == installPath:
                 return disk, disk.target.dev_
@@ -4207,7 +4338,7 @@ class Vm(object):
         except Exception as e:
             logger.debug("deactivate volume %s for memory snapshot failed on vm %s failed, %s" % (
                 install_path, self.uuid, str(e)))
-        
+
 
 
     def do_block_commit(self, task_spec, volume):
@@ -4422,8 +4553,8 @@ class Vm(object):
           <target dev='vda' bus='virtio'/>
           <address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/>
         </disk>
-        
-        An empty <backingStore/> element signals the end of the chain. 
+
+        An empty <backingStore/> element signals the end of the chain.
         '''
 
         def get_backing_store_source(backingStore):
@@ -4579,7 +4710,7 @@ class Vm(object):
 
         def is_external_shared_storage():
             from zstacklib.utils.linux import get_fs_type
-            share_list_type = ["fuseblk", "gpfs"] 
+            share_list_type = ["fuseblk", "gpfs"]
             vdisk_source_type = (get_fs_type(s) for s in self.list_blk_sources())
             if any(s.startswith('/dev/') for s in self.list_blk_sources()) or any(item in share_list_type for item in vdisk_source_type):
                 return True
@@ -5992,7 +6123,7 @@ class Vm(object):
             def make_cpu_vendor():
                 if HOST_ARCH != "x86_64":
                     return
-                
+
                 if cmd.vmCpuVendorId and cmd.vmCpuVendorId != "None":
                     if cmd.nestedVirtualization in ['host-model', 'custom']:
                         model = root.find('cpu/model')
@@ -6669,7 +6800,7 @@ class Vm(object):
                     driver_elements["iothread"] = str(_v.ioThreadId)
                 e(disk, 'driver', None, driver_elements)
                 e(disk, 'source', None, {'dev': _v.installPath})
-                
+
                 if _v.shareable:
                     e(disk, 'shareable')
 
@@ -6689,7 +6820,7 @@ class Vm(object):
             def vhost_volume(_dev_letter, _v):
                 if not os.path.exists(_v.installPath):
                     raise Exception("vhostuser disk %s does not exist" % _v.installPath)
-            
+
                 disk = etree.Element('disk', {'type': 'vhostuser', 'device': 'disk', 'snapshot': 'no'})
 
                 driver_elements = {'name': 'qemu', 'type': _v.format}
@@ -6823,6 +6954,7 @@ class Vm(object):
                 Vm.set_volume_qos(cmd.addons, v.volumeUuid, vol)
                 Vm.set_volume_serial_id(v.volumeUuid, vol)
                 volume_native_aio(vol)
+                add_caching_store(vol, v)
                 return vol
 
             all_ide = default_bus_type == "ide" and cmd.imagePlatform.lower() == "other"
@@ -7333,12 +7465,12 @@ class Vm(object):
 
             if cmd.nestedVirtualization not in ['host-passthrough', 'none']:
                 return
-            
+
             root = elements['root']
             libvirtXml = etree.tostring(root, encoding="unicode")
             cpuFlags = get_cpu_flags_from_xml(libvirtXml)
 
-            # qemu64 is used for x86_64 guests, when no -cpu argument is given to QEMU, 
+            # qemu64 is used for x86_64 guests, when no -cpu argument is given to QEMU,
             # or no <cpu> is provided in libvirt XML.
             if not cpuFlags and cmd.nestedVirtualization == 'none':
                 cpuFlags = "qemu64"
@@ -7383,7 +7515,7 @@ class Vm(object):
             make_memory_backing()
 
         if HOST_ARCH == "x86_64" and cmd.vmCpuVendorId and cmd.vmCpuVendorId != "None":
-            add_cpu_vendor_id_to_cpu_flags()    
+            add_cpu_vendor_id_to_cpu_flags()
 
         root = elements['root']
         xml = etree.tostring(root, encoding="unicode")
@@ -7713,6 +7845,8 @@ class VmPlugin(kvmagent.KvmAgent):
     KVM_VOLUME_SYNC_PATH = "/vm/volumesync"
     KVM_ATTACH_VOLUME = "/vm/attachdatavolume"
     KVM_DETACH_VOLUME = "/vm/detachdatavolume"
+    KVM_ATTACH_VOLUME_CACHE = "/vm/volume/cache/attach"
+    KVM_DETACH_VOLUME_CACHE = "/vm/volume/cache/detach"
     KVM_MIGRATE_VM_PATH = "/vm/migrate"
     KVM_GET_CPU_XML_PATH = "/vm/get/cpu/xml"
     KVM_COMPARE_CPU_FUNCTION_PATH = "/vm/compare/cpu/function"
@@ -8118,7 +8252,7 @@ class VmPlugin(kvmagent.KvmAgent):
                 ]
                 notify_vrouter(vrouter_cmd)
         return jsonobject.dumps(rsp)
-    
+
     @kvmagent.replyerror
     def update_nic(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -8231,7 +8365,7 @@ class VmPlugin(kvmagent.KvmAgent):
             if not s or s == Vm.VM_STATE_RUNNING:
                 s = self.get_vm_stat_with_ps(uuid)
             rsp.states[uuid] = s
-        
+
         return jsonobject.dumps(rsp)
 
     def _escape(self, size):
@@ -8675,7 +8809,7 @@ class VmPlugin(kvmagent.KvmAgent):
         libvirt_running_vms = list(rsp.states.keys())
         no_qemu_process_running_vms = list(set(libvirt_running_vms).difference(set(states_from_qemu_process.keys())))
         state_cached_vms = list(states_from_cache.keys())
-        # if vm cached means kvmagent manually control the sync result, should be used 
+        # if vm cached means kvmagent manually control the sync result, should be used
         # as filter.
         # if vm not have qemu process means libvirt and qemu is inconsistent use filter
         # to make sure the vm state is correct.
@@ -8838,7 +8972,7 @@ class VmPlugin(kvmagent.KvmAgent):
     def take_console_screenshot(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = TakeVmConsoleScreenshotRsp()
-        
+
         @LibvirtAutoReconnect
         def create_stream(conn):
             return conn.newStream()
@@ -8847,13 +8981,13 @@ class VmPlugin(kvmagent.KvmAgent):
             with open(file_path, 'wb') as f:
                 for data in iter(lambda: stream.recv(262120), b''):
                     f.write(data)
-        
+
         stream = create_stream()
         if stream is None:
             rsp.success = False
             rsp.error = "failed to create libvirt stream"
             return jsonobject.dumps(rsp)
-        
+
         tmp_ppm = "/tmp/%s.ppm" % cmd.vmUuid
         tmp_img = "/tmp/%s.png" % cmd.vmUuid
         try:
@@ -9102,6 +9236,65 @@ class VmPlugin(kvmagent.KvmAgent):
             logger.warn(linux.get_exception_stacktrace())
             rsp.error = str(e)
             rsp.success = False
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def attach_volume_cache(self, req):
+        # type: (dict) -> str
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AttachVolumeCacheRsp()
+
+        vm = get_vm_by_uuid(cmd.instanceUuid)
+        if vm.state != Vm.VM_STATE_RUNNING and vm.state != Vm.VM_STATE_PAUSED:
+            raise kvmagent.KvmError(
+                'unable to attach volume cache to vm[uuid:%s], vm must be running or paused' % vm.uuid)
+
+        volume = cmd.volume
+        cache = getattr(volume, 'cache', None)
+        if not cache or not getattr(cache, 'installPath', None):
+            raise kvmagent.KvmError('volume.cache.installPath is required to attach volume cache')
+
+        cache_install_path = cache.installPath  # type: str
+        target_disk, disk_name = vm._get_target_disk(volume)
+        logger.debug('attaching cache[%s] to volume[%s] disk[%s] of vm[uuid:%s]'
+                     % (cache_install_path, volume.installPath, disk_name, vm.uuid))
+
+        CacheVirshWrapper.block_cache_attach(
+            domain=cmd.instanceUuid,
+            path=disk_name,
+            cache=cache_install_path)
+
+        logger.debug('successfully attached cache[%s] to volume[%s] of vm[uuid:%s]'
+                     % (cache_install_path, volume.installPath, vm.uuid))
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def detach_volume_cache(self, req):
+        # type: (dict) -> str
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = DetachVolumeCacheRsp()
+
+        vm = get_vm_by_uuid(cmd.instanceUuid)
+        if vm.state != Vm.VM_STATE_RUNNING and vm.state != Vm.VM_STATE_PAUSED:
+            raise kvmagent.KvmError(
+                'unable to detach volume cache from vm[uuid:%s], vm must be running or paused' % vm.uuid)
+
+        volume = cmd.volume
+        cache = getattr(volume, 'cache', None)
+        timeout = int(cache.timeout) if cache and getattr(cache, 'timeout', None) else None  # type: int
+        delete = bool(getattr(cache, 'delete', False)) if cache else False  # type: bool
+
+        target_disk, disk_name = vm._get_target_disk(volume)
+        logger.debug('detaching cache from volume[%s] disk[%s] of vm[uuid:%s]'
+                     % (volume.installPath, disk_name, vm.uuid))
+
+        with DetachBlockCacheTaskDaemon(cmd, vm.uuid, volume, disk_name) as daemon:
+            daemon.detach()
+
+        logger.debug('successfully detached cache from volume[%s] of vm[uuid:%s]'
+                     % (volume.installPath, vm.uuid))
 
         return jsonobject.dumps(rsp)
 
@@ -10818,7 +11011,7 @@ host side snapshot files chian:
                 gpu_info_map = gpu.get_all_gpu_infos_by_pci()
                 normalized_pci = pci.normalize_pci_address(cmd.pciDeviceAddress)
                 is_gpu_device = normalized_pci in gpu_info_map if normalized_pci else False
-            
+
             if is_gpu_device:
                 return_code, output = gpu.pre_detach_from_vm(vm_domain, cmd.vmUuid, cmd.vendor)
                 if return_code != 0:
@@ -12682,6 +12875,8 @@ host side snapshot files chian:
         http_server.register_async_uri(self.KVM_VOLUME_SYNC_PATH, self.volume_sync)
         http_server.register_async_uri(self.KVM_ATTACH_VOLUME, self.attach_data_volume)
         http_server.register_async_uri(self.KVM_DETACH_VOLUME, self.detach_data_volume)
+        http_server.register_async_uri(self.KVM_ATTACH_VOLUME_CACHE, self.attach_volume_cache)
+        http_server.register_async_uri(self.KVM_DETACH_VOLUME_CACHE, self.detach_volume_cache, cmd=DetachVolumeCacheCmd())
         http_server.register_async_uri(self.KVM_ATTACH_ISO_PATH, self.attach_iso)
         http_server.register_async_uri(self.KVM_DETACH_ISO_PATH, self.detach_iso)
         http_server.register_async_uri(self.KVM_MIGRATE_VM_PATH, self.migrate_vm)

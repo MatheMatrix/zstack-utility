@@ -3202,6 +3202,55 @@ class TestVmAttachDetachDataVolume:
         vm_plugin.BlkIscsi.logout_portal.assert_called_once_with('/dev/iscsi/vol-uuid')
         assert volume.installPath + '-' + vm.uuid not in vm_plugin.Vm.timeout_detached_vol
 
+    def test_detach_data_volume_accepts_completed_async_unplug(self, monkeypatch):
+        class _LibvirtError(Exception):
+            pass
+
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.uuid = 'vm-uuid'
+        vm.domain = MagicMock()
+        vm.domain.detachDeviceFlags = MagicMock(side_effect=_LibvirtError(
+            "internal error: unable to execute QEMU command 'device_del': "
+            "Hot-unplug failed: guest is busy (power indicator blinking)"
+        ))
+
+        target_disk = MagicMock(source=MagicMock(dev_='/path/data.qcow2'))
+        target_disk.dump = MagicMock(return_value=(
+            "<disk type='file' device='disk'>"
+            "<source file='/path/data.qcow2'/>"
+            "<target dev='vdb' bus='virtio'/>"
+            "</disk>"
+        ))
+
+        volume = jsonobject.loads(json.dumps({
+            'deviceId': 1,
+            'deviceType': 'file',
+            'installPath': '/path/data.qcow2',
+            'volumeUuid': 'vol-uuid',
+            'useVirtio': True,
+        }))
+
+        vm._get_target_disk = MagicMock(side_effect=[
+            (target_disk, 'vdb'),
+            (target_disk, 'vdb'),
+            (None, None),
+        ])
+        record = volume.installPath + '-' + vm.uuid
+        vm_plugin.Vm.timeout_detached_vol.discard(record)
+
+        monkeypatch.setattr(vm_plugin.libvirt, 'libvirtError', _LibvirtError)
+        monkeypatch.setattr(vm_plugin.linux, 'retry', self._identity_retry)
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=vm))
+        monkeypatch.setattr(vm_plugin, 'is_libvirt_support_blockdev', MagicMock(return_value=True))
+
+        try:
+            vm._detach_data_volume(volume)
+        finally:
+            vm_plugin.Vm.timeout_detached_vol.discard(record)
+
+        assert vm.domain.detachDeviceFlags.called
+        assert record not in vm_plugin.Vm.timeout_detached_vol
+
 
 @pytest.mark.kvmagent
 class TestTakeVolumeSnapshotOnlineHandler:
