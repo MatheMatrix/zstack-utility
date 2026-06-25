@@ -608,15 +608,11 @@ class DesiredStateBuilder(object):
         if bridge_mappings:
             state.ovs_external_ids['ovn-bridge-mappings'] = ','.join(bridge_mappings)
 
-        # globalConfig -- BFD parameters and tunnel MTU
+        # globalConfig -- tunnel MTU. BFD global parameters are applied by
+        # zstack-zns through OVN NB_Global.options; legacy ovn-bfd-* external_ids
+        # remain managed only so provision can clean up stale values.
         global_config = getattr(cmd, 'globalConfig', None)
         if global_config:
-            for attr, key in [('bfdMinTx', 'ovn-bfd-min-tx'),
-                              ('bfdMinRx', 'ovn-bfd-min-rx'),
-                              ('bfdMult', 'ovn-bfd-mult')]:
-                val = getattr(global_config, attr, None)
-                if val is not None:
-                    state.ovs_external_ids[key] = str(val)
             tunnel_mtu = getattr(global_config, 'tunnelMtu', None)
             if tunnel_mtu is not None:
                 state.tunnel_mtu = int(tunnel_mtu)
