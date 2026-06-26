@@ -40,9 +40,11 @@ from kvmagent import kvmagent
 from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
+from kvmagent.plugins import host_pushgateway
 from kvmagent.plugins.imagestore import ImageStoreClient
 from zstacklib.utils import bash, plugin
 from zstacklib.utils.bash import in_bash
+from zstacklib.utils import http
 from zstacklib.utils import lvm
 from zstacklib.utils import ft
 from zstacklib.utils import shell
@@ -9730,7 +9732,7 @@ host side snapshot files chian:
             if bind_addresses:
                 port = bind_addresses[0].split(':')[-1]
                 url = 'http://localhost:%s/metrics' % port
-                result = http.json_post(url, body=None, headers={'Content-Type':'text/plain'}, method='GET')
+                result = http.json_post(url, body=None, headers=host_pushgateway.make_get_metrics_headers(), method='GET')
                 lines = filter(lambda line:
                         line.startswith('push_time_seconds') and line.find(vm_uuid) >= 0,
                         result.split('\n'))
@@ -11275,7 +11277,7 @@ host side snapshot files chian:
                     break
             vm_uuid = dom.name()
             url = "http://localhost:%s/metrics/job/zwatch_vm_agent/vmUuid/%s" % (port, vm_uuid)
-            shell.run('curl -X DELETE ' + url)
+            http.json_post(url, body=None, headers=host_pushgateway.make_delete_metric_headers(), method='DELETE')
         except Exception as e:
             logger.warn("delete pushgateway metric when vm stoped failed: %s" % e.message)
 
