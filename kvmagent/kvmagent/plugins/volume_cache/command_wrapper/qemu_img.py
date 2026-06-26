@@ -313,9 +313,11 @@ class QemuImgCommandWrapper(object):
                     except (ValueError, IndexError):
                         pass
                 stderr = stderr_stream.read()
+                stderr = stderr.decode()
                 if stderr:
                    raise Exception("failed to flush qcow2 image, stderr: %s" % stderr)
                 break
+            ch = ch.decode()
             if ch == '\r' or ch == '\n':
                 line = buf.strip()
                 buf = ""

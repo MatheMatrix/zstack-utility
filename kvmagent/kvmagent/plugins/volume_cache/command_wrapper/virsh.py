@@ -62,6 +62,7 @@ class VirshCommandWrapper:
                     except (AttributeError, ValueError):
                         pass
                 break
+            ch = ch.decode()
             if ch == '\r' or ch == '\n':
                 line = buf.strip()
                 buf = ""
