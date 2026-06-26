@@ -2,6 +2,7 @@
 import re
 import socket
 import os
+import json
 
 
 try:
@@ -41,6 +42,7 @@ MN_IPV6_SYSCTL_SETTINGS = (
     ('net.ipv6.conf.default.disable_ipv6', '0'),
     ('net.ipv6.bindv6only', '0'),
 )
+IPV6_SYSCTL_STATE_PATH = '/var/lib/zstack/management-network-ipv6-sysctl.json'
 
 
 class IPv6SystemParameterError(RuntimeError):
@@ -204,9 +206,42 @@ def rollback_ipv6_system_parameters(shell_func, original_values, applied_names, 
     return rollback_errors
 
 
+def build_ipv6_sysctl_state(original_values, settings=MN_IPV6_SYSCTL_SETTINGS):
+    return {
+        'settings': [
+            {
+                'name': name,
+                'original': original_values.get(name),
+                'target': value,
+            }
+            for name, value in settings
+        ],
+    }
+
+
+def write_ipv6_sysctl_state(original_values, settings=MN_IPV6_SYSCTL_SETTINGS,
+                            state_path=IPV6_SYSCTL_STATE_PATH, write_file_func=None):
+    content = json.dumps(
+        build_ipv6_sysctl_state(original_values, settings),
+        sort_keys=True,
+        indent=2,
+    )
+
+    if write_file_func:
+        write_file_func(state_path, content)
+        return
+
+    state_dir = os.path.dirname(state_path)
+    if state_dir and not os.path.exists(state_dir):
+        os.makedirs(state_dir)
+    with open(state_path, 'w') as fd:
+        fd.write(content)
+
+
 def prepare_ipv6_system_parameters(shell_func, proc_exists_func=os.path.exists,
                                    read_file_func=None, settings=MN_IPV6_SYSCTL_SETTINGS,
-                                   read_sysctl_func=None, logger_func=None):
+                                   read_sysctl_func=None, logger_func=None,
+                                   write_state_func=write_ipv6_sysctl_state):
     if read_file_func is None:
         def read_file_func(path):
             with open(path, 'r') as fd:
@@ -251,6 +286,20 @@ def prepare_ipv6_system_parameters(shell_func, proc_exists_func=os.path.exists,
                 shell_func, original_values, applied_names, logger_func
             )
             message = 'failed to prepare IPv6 system parameter %s: %s' % (name, str(e))
+            if rollback_errors:
+                message += '; rollback failed: %s' % '; '.join(rollback_errors)
+            raise IPv6SystemParameterError(message)
+
+    if write_state_func:
+        try:
+            write_state_func(original_values, settings)
+            if logger_func:
+                logger_func('recorded IPv6 sysctl original values to %s' % IPV6_SYSCTL_STATE_PATH)
+        except Exception as e:
+            rollback_errors = rollback_ipv6_system_parameters(
+                shell_func, original_values, applied_names, logger_func
+            )
+            message = 'failed to record IPv6 sysctl original values: %s' % str(e)
             if rollback_errors:
                 message += '; rollback failed: %s' % '; '.join(rollback_errors)
             raise IPv6SystemParameterError(message)

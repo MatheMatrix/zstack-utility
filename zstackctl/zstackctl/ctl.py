@@ -69,6 +69,17 @@ IPTABLES_IPV6_LOOPBACK = '::1'
 UI_LOCAL_WEBHOOK_HOST = IPTABLES_IPV4_LOOPBACK
 
 
+def build_ui_ipv6_firewall_accept_command(server_port, distro):
+    rule = '-A INPUT -p tcp -m tcp --dport %s -j ACCEPT' % server_port
+    add_rule = 'ip6tables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT' % server_port
+    command = 'ip6tables-save | grep -- "%s" > /dev/null || ' % rule
+    if distro in RPM_BASED_OS:
+        return command + '(%s && service ip6tables save)' % add_rule
+    if distro in DEB_BASED_OS:
+        return command + '(%s && /etc/init.d/iptables-persistent save)' % add_rule
+    return command + add_rule
+
+
 def is_ipv6_literal(address):
     if not address:
         return False
@@ -11870,8 +11881,10 @@ class StartUiCmd(Command):
                    os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'nginx.conf')))
 
         if shell_return('which ip6tables >/dev/null 2>&1') == 0:
-            shell('ip6tables-save | grep -- "-A INPUT -p tcp -m tcp --dport %s -j ACCEPT" > /dev/null || ip6tables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT ' %
-                  (server_port, server_port))
+            shell(build_ui_ipv6_firewall_accept_command(
+                server_port,
+                map_distro_id(platform.freedesktop_os_release()),
+            ))
 
     def run_mini_ui(self):
         shell_return("systemctl start zstack-mini")
@@ -12160,7 +12173,7 @@ class ConfigUiCmd(Command):
         # ui_address
         if args.ui_address:
             ctl.write_ui_property("ui_address", args.ui_address.strip())
-        if args.listen_host:
+        if args.listen_host or args.listen_host == '':
             ctl.write_ui_property(UI_LISTEN_HOST_PROPERTY, args.listen_host.strip())
 
         # catalina opts

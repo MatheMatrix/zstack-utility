@@ -213,6 +213,62 @@ def test_ui_ipv6_ssl_listen_line_accepts_literal_ipv6():
         '        listen [2001:db8::10]:5443 ssl http2;'
 
 
+def test_ui_ipv6_firewall_command_persists_rpm_rules():
+    command = ctl.build_ui_ipv6_firewall_accept_command('5000', 'centos')
+
+    assert 'ip6tables -I INPUT -p tcp -m tcp --dport 5000 -j ACCEPT' in command
+    assert 'service ip6tables save' in command
+
+
+def test_ui_ipv6_firewall_command_persists_deb_rules():
+    command = ctl.build_ui_ipv6_firewall_accept_command('5000', 'ubuntu')
+
+    assert 'ip6tables -I INPUT -p tcp -m tcp --dport 5000 -j ACCEPT' in command
+    assert '/etc/init.d/iptables-persistent save' in command
+
+
+def test_config_ui_accepts_empty_listen_host(monkeypatch):
+    writes = []
+    monkeypatch.setattr(ctl.ctl, 'write_ui_property', lambda key, value: writes.append((key, value)))
+    monkeypatch.setattr(ctl.os.path, 'exists', lambda path: True)
+    monkeypatch.setattr(ctl.ctl, 'extra_arguments', [], raising=False)
+
+    if not hasattr(ctl, 'ConfigUiCmd'):
+        pytest.skip('ConfigUiCmd is not available')
+
+    cmd = ctl.ConfigUiCmd.__new__(ctl.ConfigUiCmd)
+    args = argparse.Namespace(
+        host=None,
+        init=False,
+        restore=False,
+        port=None,
+        mn_host=None,
+        mn_port=None,
+        webhook_host=None,
+        webhook_port=None,
+        server_port=None,
+        log=None,
+        enable_ssl=None,
+        ssl_keyalias=None,
+        ssl_keystore=None,
+        ssl_keystore_type=None,
+        ssl_keystore_password=None,
+        enable_http2=None,
+        db_url=None,
+        db_username=None,
+        db_password=None,
+        redis_password=None,
+        api_inspector=None,
+        ui_address=None,
+        listen_host='',
+        catalina_opts=None,
+    )
+
+    cmd.run(args)
+
+    assert (ctl.UI_LISTEN_HOST_PROPERTY, '') in writes
+
+
 def test_default_ui_hosts_use_local_webhook_in_ha():
     assert ctl.build_default_ui_db_and_webhook_hosts(
         True, ha_db_vip='fd00:5:5:28::54:cccc') == (

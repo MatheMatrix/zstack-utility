@@ -498,6 +498,8 @@ class UriBuilder(object):
                 self.port = self._parse_port(port[1:], uri)
             elif port:
                 self._invalid_uri(uri)
+            else:
+                self.port = 443 if self.scheme == 'https' else 80
         else:
             colon = authority.find(':')
             if colon != -1:

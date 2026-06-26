@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import json
+
 from zstackctl import management_network_ipv6
 
 
@@ -142,12 +144,16 @@ def test_management_server_requires_ipv6_stack_only_for_ipv6_management_config()
 
 def test_prepare_ipv6_system_parameters_sets_required_sysctls():
     commands = []
+    state_writes = []
 
     management_network_ipv6.prepare_ipv6_system_parameters(
         commands.append,
         proc_exists_func=lambda path: path == management_network_ipv6.IPV6_SYSCTL_PROC_DIR,
         read_file_func=lambda path: 'BOOT_IMAGE=/vmlinuz root=/dev/mapper/root ro',
         read_sysctl_func=lambda name: '1',
+        write_state_func=lambda original_values, settings: state_writes.append(
+            management_network_ipv6.build_ipv6_sysctl_state(original_values, settings)
+        ),
     )
 
     assert commands == [
@@ -155,6 +161,33 @@ def test_prepare_ipv6_system_parameters_sets_required_sysctls():
         ['sysctl', '-w', 'net.ipv6.conf.default.disable_ipv6=0'],
         ['sysctl', '-w', 'net.ipv6.bindv6only=0'],
     ]
+    assert state_writes == [{
+        'settings': [
+            {'name': 'net.ipv6.conf.all.disable_ipv6', 'original': '1', 'target': '0'},
+            {'name': 'net.ipv6.conf.default.disable_ipv6', 'original': '1', 'target': '0'},
+            {'name': 'net.ipv6.bindv6only', 'original': '1', 'target': '0'},
+        ],
+    }]
+
+
+def test_write_ipv6_sysctl_state_records_original_values():
+    writes = []
+
+    management_network_ipv6.write_ipv6_sysctl_state(
+        {
+            'net.ipv6.conf.all.disable_ipv6': '1',
+            'net.ipv6.conf.default.disable_ipv6': '0',
+            'net.ipv6.bindv6only': '0',
+        },
+        write_file_func=lambda path, content: writes.append((path, json.loads(content))),
+    )
+
+    assert writes[0][0] == management_network_ipv6.IPV6_SYSCTL_STATE_PATH
+    assert writes[0][1]['settings'][0] == {
+        'name': 'net.ipv6.conf.all.disable_ipv6',
+        'original': '1',
+        'target': '0',
+    }
 
 
 def test_prepare_ipv6_system_parameters_fails_when_kernel_disables_ipv6():
