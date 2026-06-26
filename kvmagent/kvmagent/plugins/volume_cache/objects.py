@@ -26,10 +26,7 @@ class LvmObjectInfoMeta(type):
 
         return cls
 
-class LvmObjectInfo(object):
-    # python2 support only
-    __metaclass__ = LvmObjectInfoMeta
-
+class LvmObjectInfo(object, metaclass=LvmObjectInfoMeta):
     # Instance variables
     __info = None # type: dict[str, str] | None
     _uuid = None # type: str | None
