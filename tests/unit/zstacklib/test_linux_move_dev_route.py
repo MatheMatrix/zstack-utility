@@ -251,6 +251,8 @@ def test_tcp_port_is_free_closes_probe_sockets_on_failure():
     ipv6_socket = FakeSocket()
     ipv4_socket = FakeSocket()
     original_socket = linux.socket.socket
+    original_bind_dual_stack = linux.network_ipv6.bind_dual_stack_probe_socket
+    original_bind_ipv4 = linux.network_ipv6.bind_ipv4_probe_socket
     try:
         linux.socket.socket = MagicMock(side_effect=[ipv6_socket, ipv4_socket])
         linux.network_ipv6.bind_dual_stack_probe_socket = MagicMock(
@@ -265,3 +267,5 @@ def test_tcp_port_is_free_closes_probe_sockets_on_failure():
         assert ipv4_socket.closed
     finally:
         linux.socket.socket = original_socket
+        linux.network_ipv6.bind_dual_stack_probe_socket = original_bind_dual_stack
+        linux.network_ipv6.bind_ipv4_probe_socket = original_bind_ipv4
