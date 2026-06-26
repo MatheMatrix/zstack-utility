@@ -49,12 +49,14 @@ from kvmagent import kvmagent
 from kvmagent.plugins.baremetal_v2_gateway_agent import \
     BaremetalV2GatewayAgentPlugin as BmV2GwAgent
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
+from kvmagent.plugins import host_pushgateway
 from kvmagent.plugins.imagestore import ImageStoreClient
 from kvmagent.plugins.shared_block_plugin import MAX_ACTUAL_SIZE_FACTOR
 from kvmagent.plugins.volume_cache.command_wrapper.virsh import VirshCommandWrapper as CacheVirshWrapper
 from kvmagent.plugins.volume_cache.command_wrapper.qemu_img import BackingVolumeDeviceType, supported_backing_volume_classes
 from zstacklib.utils import bash, plugin, iscsi, gpu
 from zstacklib.utils.bash import in_bash
+from zstacklib.utils import http
 from zstacklib.utils import lvm
 from zstacklib.utils import ft
 from zstacklib.utils import shell
@@ -11775,7 +11777,7 @@ host side snapshot files chian:
             if bind_addresses:
                 port = bind_addresses[0].split(':')[-1]
                 url = 'http://localhost:%s/metrics' % port
-                result = http.json_post(url, body=None, headers={'Content-Type':'text/plain'}, method='GET')
+                result = http.json_post(url, body=None, headers=host_pushgateway.make_get_metrics_headers(), method='GET')
                 lines = [line for line in result.split('\n') if line.startswith('push_time_seconds') and line.find(vm_uuid) >= 0]
                 if lines:
                     push_time_seconds = float(lines[0].split(' ')[-1])
@@ -13713,7 +13715,7 @@ host side snapshot files chian:
                     break
             vm_uuid = dom.name()
             url = "http://localhost:%s/metrics/job/zwatch_vm_agent/vmUuid/%s" % (port, vm_uuid)
-            shell.run('curl -X DELETE ' + url)
+            http.json_post(url, body=None, headers=host_pushgateway.make_delete_metric_headers(), method='DELETE')
         except Exception as e:
             logger.warn("delete pushgateway metric when vm stoped failed: %s" % str(e))
 
