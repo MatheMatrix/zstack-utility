@@ -307,21 +307,8 @@ def container_exists(name=DEFAULT_CONTAINER_NAME):
     return out != ""
 
 
-def target_healthy(control_sock=DEFAULT_CONTROL_SOCK, name=DEFAULT_CONTAINER_NAME):
-    # the vhost data path on this host is the spdk target container plus its
-    # control socket. the target is deployed lazily on first activate, so a host
-    # with no target yet is not "broken" (nothing to fence) -> healthy. a
-    # deployed target that exited/crashed or lost its control sock means live
-    # vhost volumes here are dead -> unhealthy.
-    if not container_exists(name):
-        return True
-    if not is_running(name):
-        return False
-    return _control_sock_ready(control_sock)
-
-
 def target_running(control_sock, name):
-    # connectivity check (distinct from target_healthy's fencing semantics): this host
-    # can serve vhost only if the spdk target container is up and its admin socket
-    # answers. no container / dead container / dead socket -> not running.
+    # connectivity check: this host can serve vhost only if the spdk target container
+    # is up and its admin socket answers. no container / dead container / dead socket
+    # -> not running.
     return container_exists(name) and is_running(name) and _control_sock_ready(control_sock)

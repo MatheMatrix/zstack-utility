@@ -2,15 +2,9 @@
 """
 Unit tests for the zbsadm-vhost shell-out wrappers in zbsprimarystorage.zbsutils.
 
-These verify the exact `zbsadm vhost ...` command strings, since the zbs PS agent
-drives the SPDK vhost data plane purely by shelling out to zbsadm from the admin
-node (SSH to the compute host). The single most failure-prone contract is the
-volume-name suffix: `zbsadm vhost create-bdev --volume <pool>/<file>_zbs_` strips
-the `_zbs_` marker before handing the name to libcbd, so the real ZBS file name has
-NO suffix but the argument MUST carry it. Empirically (env 172.26.104.97): passing a
-name without `_zbs_` makes libcbd open the wrong file -> kFileNotExists; passing it
-with `_zbs_` succeeds. A regression here is invisible at compile time and only blows
-up at create-bdev against a live cluster, so it is pinned here.
+Key contract: `zbsadm vhost create-bdev --volume <pool>/<file>_zbs_` strips the
+`_zbs_` marker before libcbd opens the file, so the argument carries the suffix
+while the real ZBS file name has none.
 """
 from unittest.mock import patch, MagicMock
 
