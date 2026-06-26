@@ -30,6 +30,8 @@ DEFAULT_CLIENT_CONF = "/etc/zbs/client.conf"
 DEFAULT_CONTAINER_NAME = "zbs-vhost"
 # vhost target needs ~320MB; 2MiB pages -> 160. keep headroom.
 DEFAULT_HUGEPAGE_NR = 256
+# the zbsadm-deployed SPDK target needs >=1024MiB free hugepages; reserve 2GiB (2MiB pages).
+DEFAULT_VHOST_TARGET_HUGEPAGE_NR = 1024
 HUGEPAGE_SIZE_BYTES = 2 * 1024 * 1024
 # spdk target wants 1-2 dedicated cores; pick the highest ids to stay away from
 # the low-numbered cores guest vCPUs tend to land on.
@@ -193,6 +195,22 @@ def reclaim_hugepages(slack=0):
 
 def image_present(image):
     return bash.bash_r("docker image inspect %s >/dev/null 2>&1" % shlex.quote(image)) == 0
+
+
+def docker_ready():
+    return bash.bash_r("command -v docker >/dev/null 2>&1") == 0 and \
+           bash.bash_r("systemctl is-active --quiet docker") == 0
+
+
+def ensure_docker():
+    # the spdk vhost target runs as a docker container and zbsadm only checks for docker
+    # (it does not install it), so install + start it from the host repo when missing.
+    if docker_ready():
+        return
+    bash.bash_errorout("yum install -y docker-ce docker-ce-cli containerd.io")
+    bash.bash_errorout("systemctl enable --now docker")
+    if not docker_ready():
+        raise Exception("docker still not running after install on this host")
 
 
 def load_image(image, image_tar=None, image_url=None):
