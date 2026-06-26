@@ -123,11 +123,23 @@ class TestVmLifeCycle(TestCase, vm_utils.VmPluginTestStub):
             root = etree.fromstring(output)
             for disk in root.iter('disk'):
                 for address in disk.iter('address'):
-                    if address.get('type') == 'drive' and address.get('controller') == '0' and address.get('bus') == '0':
-                        disk_addresses.append(address.get('unit'))
+                    if address.get('type') != 'drive':
+                        continue
+                    disk_addresses.append((
+                        address.get('controller'),
+                        address.get('bus'),
+                        address.get('target'),
+                        address.get('unit')
+                    ))
+
+            self.assertEqual(len(disk_addresses), len(set(disk_addresses)),
+                             "found duplicate drive address in dumpxml output, vm xml dump %s" % output)
+
+            if vm_plugin.HOST_ARCH != 'x86_64':
+                return
 
             for unit in ['0', '4', '5']:
-                self.assertIn(unit, disk_addresses,
+                self.assertIn(('0', '0', '0', unit), disk_addresses,
                               "failed to find sata address 0/0/%s in dumpxml output, vm xml dump %s" % (unit, output))
         finally:
             vm_utils.destroy_vm(vm.vmInstanceUuid)
