@@ -194,3 +194,66 @@ def test_move_dev_route_ignores_missing_source_ipv6_address():
     assert ("ip -6 route del 2026:6:3:1::/64 dev ens3 proto kernel metric 100 pref medium", False) in calls
     assert ("ip -6 route add 2026:6:2:1::1 dev br_ens3 proto static metric 100 pref medium", True) in calls
     assert ("ip -6 route add default via 2026:6:2:1::1 dev br_ens3 proto static metric 100", True) in calls
+
+
+def test_move_dev_route_migrates_resolved_dns_to_bridge():
+    linux = _load_linux_module()
+    calls = []
+
+    def shell_call(cmd, exception=True):
+        calls.append((cmd, exception))
+        if cmd == 'ip addr show dev ens3 | grep "inet "':
+            return "    inet 172.26.115.202/16 scope global noprefixroute ens3\n"
+        if cmd == 'ip addr show dev ens3 | grep "inet6 " | grep -v " scope link"':
+            return ""
+        if cmd == "ip route show dev ens3 | grep via | sed 's/onlink//g'":
+            return ""
+        if cmd == "ip -6 route show dev ens3 | grep via | sed 's/onlink//g'":
+            return ""
+        if cmd == "ip -6 route show dev ens3 | grep -v via | grep -v ' proto kernel ' | grep -v '^fe80::' | sed 's/onlink//g'":
+            return ""
+        if cmd == "ip -6 route show dev ens3 proto kernel | grep -v '^fe80::' | sed 's/onlink//g'":
+            return ""
+        if cmd == 'ip addr show dev br_ens3 | grep "inet 172.26.115.202/16"':
+            return ""
+        if cmd == 'LC_ALL=C resolvectl dns ens3':
+            return "Link 2 (ens3): 223.5.5.5 8.8.8.8"
+        if cmd == 'LC_ALL=C resolvectl dns br_ens3':
+            return "Link 3 (br_ens3):"
+        return ""
+
+    linux.os.path.exists = MagicMock(return_value=True)
+    linux.shell.call = MagicMock(side_effect=shell_call)
+
+    linux.move_dev_route("ens3", "br_ens3")
+
+    assert ('LC_ALL=C resolvectl dns br_ens3 223.5.5.5 8.8.8.8', True) in calls
+    assert ('LC_ALL=C resolvectl domain br_ens3 "~."', True) in calls
+
+
+def test_tcp_port_is_free_closes_probe_sockets_on_failure():
+    linux = _load_linux_module()
+
+    class FakeSocket(object):
+        def __init__(self):
+            self.closed = False
+
+        def setsockopt(self, *_args):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    ipv6_socket = FakeSocket()
+    ipv4_socket = FakeSocket()
+    linux.socket.socket = MagicMock(side_effect=[ipv6_socket, ipv4_socket])
+    linux.network_ipv6.bind_dual_stack_probe_socket = MagicMock(
+        side_effect=linux.socket.error("ipv6 bind failed")
+    )
+    linux.network_ipv6.bind_ipv4_probe_socket = MagicMock(
+        side_effect=linux.socket.error("ipv4 bind failed")
+    )
+
+    assert not linux.tcp_port_is_free(4900)
+    assert ipv6_socket.closed
+    assert ipv4_socket.closed

@@ -1827,6 +1827,13 @@ def move_dev_route(src_dev, dest_dev):
     for r in routes6:
         shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
 
+    # Migrate DNS settings for systems using systemd-resolved (e.g. alinux4).
+    # On these systems DNS servers are bound per-link; after bridging, the
+    # physical interface no longer carries an IP so its DNS config becomes
+    # unreachable.  We read DNS servers from the source device and apply them
+    # to the destination bridge device.
+    _migrate_resolved_dns(src_dev, dest_dev)
+
 
 def _parse_ip_addresses(ip_addr_output):
     return [line.strip().split()[1] for line in ip_addr_output.split('\n') if line.strip()]
@@ -1853,13 +1860,6 @@ def _route_with_dev(route, dev):
         if index + 1 < len(parts):
             return ' '.join(parts[:index + 2] + ['dev', dev] + parts[index + 2:])
     return ' '.join([parts[0], 'dev', dev] + parts[1:])
-
-    # Migrate DNS settings for systems using systemd-resolved (e.g. alinux4).
-    # On these systems DNS servers are bound per-link; after bridging, the
-    # physical interface no longer carries an IP so its DNS config becomes
-    # unreachable.  We read DNS servers from the source device and apply them
-    # to the destination bridge device.
-    _migrate_resolved_dns(src_dev, dest_dev)
 
 
 def _migrate_resolved_dns(src_dev, dest_dev):
@@ -2606,21 +2606,29 @@ def get_free_port_in_range(start_port, end_port):
     raise Exception("no free port found in range[%d, %d]" % (start_port, end_port))
 
 def tcp_port_is_free(port):
+    sock = None
     try:
         sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         network_ipv6.bind_dual_stack_probe_socket(sock, port)
-        sock.close()
         return True
     except socket.error:
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            network_ipv6.bind_ipv4_probe_socket(sock, port)
+        pass
+    finally:
+        if sock is not None:
             sock.close()
-            return True
-        except socket.error:
-            return False
+
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        network_ipv6.bind_ipv4_probe_socket(sock, port)
+        return True
+    except socket.error:
+        return False
+    finally:
+        if sock is not None:
+            sock.close()
 
 def find_free_port_with_locking(start_port, end_port):
     keep_lock = False
