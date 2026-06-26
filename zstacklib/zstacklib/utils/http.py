@@ -10,11 +10,11 @@ import cherrypy
 from . import thread
 import threading
 
-import os
 import urllib3
 from zstacklib.utils import jsonobject
 from zstacklib.utils import log
 from zstacklib.utils import linux
+from zstacklib.utils import network_ipv6
 from zstacklib.utils import debug
 
 TASK_UUID = 'taskuuid'
@@ -302,10 +302,7 @@ class HttpServer(object):
         self.server_conf = {'request.dispatch': self.mapper}
 
         cherrypy.engine.autoreload.unsubscribe()
-        site_config = {}
-        site_config['server.socket_host'] = '0.0.0.0'
-        site_config['server.socket_port'] = self.port
-        site_config['server.thread_pool'] = int(os.getenv('POOLSIZE', '10'))
+        site_config = network_ipv6.build_cherrypy_socket_config(self.port)
 
         # Set the socket connect timeout to 15 seconds, keeping it consistent with the default value of the control plane.
         site_config['server.socket_timeout'] = 15
@@ -460,30 +457,55 @@ class UriBuilder(object):
     def _invalid_uri(self, uri):
         raise Exception('invalid uri[%s]' % uri)
 
+    def _host_for_url(self):
+        host = str(self.host)
+        if ':' in host and not host.startswith('['):
+            return '[%s]' % host
+        return host
+
+    def _parse_port(self, port, uri):
+        if not port:
+            self._invalid_uri(uri)
+
+        try:
+            return int(port)
+        except ValueError:
+            self._invalid_uri(uri)
+
     def _parse(self, uri):
-        scheme = uri[0:4]
+        scheme = 'https' if uri.startswith('https') else uri[0:4]
         if scheme not in ['http', 'https']:
             raise Exception('uri[%s] is not started with scheme[http, https]' % uri)
         self.scheme = scheme
 
-        rest = uri.lstrip(scheme)
+        rest = uri[len(scheme):]
         if not rest.startswith('://'):
             self._invalid_uri(uri)
 
-        rest = rest.lstrip('://')
-        colon = rest.find(':')
-        if colon != -1:
-            self.host = rest[0:colon]
-            rest = rest.lstrip(self.host).lstrip(':%s' % self.port)
+        rest = rest[3:]
+        slash = rest.find('/')
+        authority = rest if slash == -1 else rest[0:slash]
+        rest = '' if slash == -1 else rest[slash:]
+
+        if authority.startswith('['):
+            end = authority.find(']')
+            if end == -1:
+                self._invalid_uri(uri)
+
+            self.host = authority[0:end + 1]
+            port = authority[end + 1:]
+            if port.startswith(':'):
+                self.port = self._parse_port(port[1:], uri)
+            elif port:
+                self._invalid_uri(uri)
         else:
-            self.port = 80
-            slash = rest.find('/')
-            if slash == -1:
-                self.host = rest[0:]
-                return
+            colon = authority.find(':')
+            if colon != -1:
+                self.host = authority[0:colon]
+                self.port = self._parse_port(authority[colon + 1:], uri)
             else:
-                self.host = rest[0:slash]
-                rest = rest.lstrip(self.host)
+                self.host = authority
+                self.port = 443 if self.scheme == 'https' else 80
 
         self.paths = [p.strip('/') for p in rest.split('/')]
         self.paths = [x for x in self.paths if x != '']
@@ -509,7 +531,7 @@ class UriBuilder(object):
 
         self.paths = [p.strip('/') for p in self.paths]
         path = '/'.join(self.paths)
-        ret = '%s://%s:%s/%s' % (self.scheme, self.host, self.port, path)
+        ret = '%s://%s:%s/%s' % (self.scheme, self._host_for_url(), self.port, path)
         return ret + '/' if not ret.endswith('/') else ret
 
 

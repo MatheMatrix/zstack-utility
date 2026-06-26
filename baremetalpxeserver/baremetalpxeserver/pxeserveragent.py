@@ -8,6 +8,7 @@ import socket
 import fcntl
 import struct
 import hashlib
+import subprocess
 import traceback
 import simplejson
 from jinja2 import Template
@@ -17,6 +18,7 @@ import platform
 import zstacklib.utils.daemon as daemon
 import zstacklib.utils.http as http
 import zstacklib.utils.jsonobject as json_object
+from zstacklib.utils import network_ipv6
 from zstacklib.utils.bash import *
 from .imagestore import ImageStoreClient
 
@@ -118,6 +120,11 @@ class PxeServerAgent(object):
     NOVNC_TOKEN_PATH = NOVNC_INSTALL_PATH + "tokens/"
 
     NMAP_BROADCAST_DHCP_DISCOVER_PATH = "/usr/share/nmap/scripts/broadcast-dhcp-discover.nse"
+    IP_ADDR_COMMAND = "ip"
+    IP_ADDR_INET_TOKEN = "inet"
+    IP_ADDR_INET6_TOKEN = "inet6"
+    IP_ADDR_SCOPE_TOKEN = "scope"
+    IP_ADDR_GLOBAL_SCOPE = "global"
 
     def __init__(self):
         self.uuid = None
@@ -193,12 +200,41 @@ class PxeServerAgent(object):
 
     @staticmethod
     def _get_ip_address(ifname: str) -> str:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        return socket.inet_ntoa(fcntl.ioctl(
-            s.fileno(),
-            0x8915,  # SIOCGIFADDR
-            struct.pack('256s', ifname[:15].encode())
-        )[20:24])
+        try:
+            output = subprocess.check_output(
+                [PxeServerAgent.IP_ADDR_COMMAND, "addr", "show", "dev", ifname]
+            )
+            if isinstance(output, bytes):
+                output = output.decode()
+        except Exception as e:
+            raise PxeServerError("failed to get ip address of interface[%s]: %s" % (ifname, e))
+
+        return PxeServerAgent._select_interface_ip(output, ifname)
+
+    @staticmethod
+    def _select_interface_ip(ip_addr_output: str, ifname: str) -> str:
+        ipv4_addresses = []
+        ipv6_addresses = []
+        for line in ip_addr_output.splitlines():
+            tokens = line.strip().split()
+            if len(tokens) < 2:
+                continue
+
+            address = tokens[1].split("/")[0]
+            if tokens[0] == PxeServerAgent.IP_ADDR_INET_TOKEN:
+                ipv4_addresses.append(address)
+            elif tokens[0] == PxeServerAgent.IP_ADDR_INET6_TOKEN:
+                if PxeServerAgent.IP_ADDR_SCOPE_TOKEN not in tokens:
+                    continue
+                scope_index = tokens.index(PxeServerAgent.IP_ADDR_SCOPE_TOKEN)
+                if len(tokens) > scope_index + 1 and tokens[scope_index + 1] == PxeServerAgent.IP_ADDR_GLOBAL_SCOPE:
+                    ipv6_addresses.append(address)
+
+        if ipv4_addresses:
+            return ipv4_addresses[0]
+        if ipv6_addresses:
+            return ipv6_addresses[0]
+        raise PxeServerError("cannot find IPv4 or global IPv6 address on interface[%s]" % ifname)
 
     @staticmethod
     def _is_belong_to_same_subnet(addr1, addr2, netmask):
@@ -218,6 +254,7 @@ class PxeServerAgent(object):
 
         # check dhcp interface and dhcp range
         pxeserver_dhcp_nic_ip = self._get_ip_address(cmd.dhcpInterface).strip()
+        pxeserver_dhcp_nic_url_host = network_ipv6.format_url_host(pxeserver_dhcp_nic_ip)
         pxeserver_dhcp_nic_nm = linux.get_netmask_of_nic(cmd.dhcpInterface).strip()
         if not self._is_belong_to_same_subnet(cmd.dhcpRangeBegin, pxeserver_dhcp_nic_ip, pxeserver_dhcp_nic_nm) or \
                 not self._is_belong_to_same_subnet(cmd.dhcpRangeEnd, pxeserver_dhcp_nic_ip, pxeserver_dhcp_nic_nm):
@@ -294,7 +331,7 @@ label zstack_baremetal
 kernel zstack/x86_64/vmlinuz
 ipappend 2
 append initrd=zstack/x86_64/initrd.img devfs=nomount ksdevice=bootif ks=ftp://{PXESERVER_DHCP_NIC_IP}/ks/inspector_ks_x86_64.cfg vnc
-""".format(PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip)
+""".format(PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_url_host)
         with open(self.PXELINUX_DEFAULT_CFG, 'w') as f:
             f.write(pxelinux_cfg)
 
@@ -315,7 +352,7 @@ menuentry 'ZStack Get Bare Metal Chassis Hardware Info' --class fedora --class g
         $linux (tftp)zstack/$arch/vmlinuz devfs=nomount ksdevice=bootif inst.ks=ftp://%s/ks/inspector_ks_$arch.cfg vnc
         $initrd (tftp)zstack/$arch/initrd.img
 }
-""" % (pxeserver_dhcp_nic_ip, pxeserver_dhcp_nic_ip)
+""" % (pxeserver_dhcp_nic_ip, pxeserver_dhcp_nic_url_host)
         with open(self.UEFI_DEFAULT_GRUB_CFG, 'w') as f:
             f.write(grub_cfg)
 
@@ -336,6 +373,7 @@ menuentry 'ZStack Get Bare Metal Chassis Hardware Info' --class fedora --class g
         for arch in archs:
             inspector_ks_cfg = inspector_ks_cfg_tmp.replace("PXESERVERUUID", cmd.uuid) \
                 .replace("PXESERVER_DHCP_NIC_IP", pxeserver_dhcp_nic_ip) \
+                .replace("PXESERVER_DHCP_NIC_URL_HOST", pxeserver_dhcp_nic_url_host) \
                 .replace("ARCH", arch)
             with open(self.INSPECTOR_KS_CFG.replace("ARCH", arch), 'w') as fw:
                 fw.write(inspector_ks_cfg)
@@ -395,7 +433,7 @@ http {
             fw.write(nginx_conf)
 
         # create nginx proxy for http://MN_IP:MN_PORT/zstack/asyncrest/sendcommand
-        content = "location / { proxy_pass http://%s:%s/; }" % (cmd.managementIp, cmd.managementPort)
+        content = "location / { proxy_pass http://%s:%s/; }" % (network_ipv6.format_url_host(cmd.managementIp), cmd.managementPort)
         with open("/etc/nginx/conf.d/pxe_mn/zstack_mn.conf", 'w') as fw:
             fw.write(content)
 
@@ -501,6 +539,7 @@ http {
         ks_cfg_name = cmd.pxeNicMac
         pxe_cfg_file = os.path.join(self.PXELINUX_CFG_PATH, "01-" + ks_cfg_name)
         pxeserver_dhcp_nic_ip = self._get_ip_address(cmd.dhcpInterface).strip()
+        pxeserver_dhcp_nic_url_host = network_ipv6.format_url_host(pxeserver_dhcp_nic_ip)
 
         append = ""
         if cmd.preconfigurationType == 'kickstart':
@@ -510,8 +549,8 @@ http {
         elif cmd.preconfigurationType == 'autoyast':
             append = 'install=ftp://{PXESERVER_DHCP_NIC_IP}/{IMAGEUUID}/ autoyast=ftp://{PXESERVER_DHCP_NIC_IP}/ks/{KS_CFG_NAME} vnc=1 vncpassword=password'
         elif cmd.preconfigurationType == 'autoinstall':
-            append = 'ip=dhcp url=ftp://{PXESERVER_DHCP_NIC_IP}/{IMAGEUUID} autoinstall ds=nocloud-net\;s=https//{PXESERVER_DHCP_NIC_IP}:7773/ks/{KS_CFG_NAME}/ ---'
-        append = append.format(PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip,
+            append = 'ip=dhcp url=ftp://{PXESERVER_DHCP_NIC_IP}/{IMAGEUUID} autoinstall ds=nocloud-net\;s=http://{PXESERVER_DHCP_NIC_IP}:7773/ks/{KS_CFG_NAME}/ ---'
+        append = append.format(PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_url_host,
                                IMAGEUUID=cmd.imageUuid,
                                KS_CFG_NAME=ks_cfg_name)
 
@@ -521,7 +560,7 @@ http {
                         "label {IMAGEUUID}\n"
                         "kernel {IMAGEUUID}/vmlinuz\n"
                         "append initrd={IMAGEUUID}/initrd.img {APPEND}").format(
-            PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip,
+            PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_url_host,
             IMAGEUUID=cmd.imageUuid,
             KS_CFG_NAME=ks_cfg_name,
             APPEND=append)
@@ -534,12 +573,12 @@ http {
         if cmd.preconfigurationType == 'autoinstall':
             grub_append = ('ip=dhcp url=ftp://{PXESERVER_DHCP_NIC_IP}/{IMAGEUUID}.iso autoinstall ds=nocloud-net\;'
                            's=http://{PXESERVER_DHCP_NIC_IP}:7773/ks/{KS_CFG_NAME}/ vnc ---').format(
-                PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip,
+                PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_url_host,
                 IMAGEUUID=cmd.imageUuid,
                 KS_CFG_NAME=ks_cfg_name)
         else:
             grub_append = ('devfs=nomount ksdevice=bootif inst.ks=ftp://{PXESERVER_DHCP_NIC_IP}/ks/{KS_CFG_NAME} vnc'.format(
-                PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip,
+                PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_url_host,
                 KS_CFG_NAME=ks_cfg_name
             ))
         grub_cfg = """set timeout=1
@@ -607,6 +646,7 @@ menuentry 'Install OS on Bare Metal Instance' --class fedora --class gnu-linux -
                 f.write(rendered_content)
 
     def _create_pre_scripts(self, cmd, pxeserver_dhcp_nic_ip, more_script=""):
+        pxeserver_dhcp_nic_url_host = network_ipv6.format_url_host(pxeserver_dhcp_nic_ip)
         # poweroff and abort the provisioning process if failed to send `deploybegin` command
         pre_script = """# notify deploy begin
 curl --fail -X POST -H "Content-Type:application/json" \
@@ -620,7 +660,7 @@ wget -O- --header="Content-Type:application/json" \
 --tries=3 \
 http://{PXESERVER_DHCP_NIC_IP}:7771/zstack/asyncrest/sendcommand || \
 poweroff
-""".format(BMUUID=cmd.bmUuid, PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip)
+""".format(BMUUID=cmd.bmUuid, PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_url_host)
 
         pre_script += more_script
         with open(os.path.join(self.ZSTACK_SCRIPTS_PATH, "pre_%s.sh" % cmd.pxeNicMac), 'w') as f:
@@ -628,6 +668,7 @@ poweroff
         logger.debug("create pre_%s.sh with content: %s" % (cmd.pxeNicMac, pre_script))
 
     def _create_post_scripts(self, cmd, pxeserver_dhcp_nic_ip, more_script=""):
+        pxeserver_dhcp_nic_url_host = network_ipv6.format_url_host(pxeserver_dhcp_nic_ip)
         post_script = more_script
         post_script += """
 bm_log='/tmp/zstack_bm.log'
@@ -710,20 +751,21 @@ EOF
 
 systemctl daemon-reload
 systemctl enable zstack-bm-agent.service
-""".format(BMUUID=cmd.bmUuid, PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_ip)
+""".format(BMUUID=cmd.bmUuid, PXESERVER_DHCP_NIC_IP=pxeserver_dhcp_nic_url_host)
         with open(os.path.join(self.ZSTACK_SCRIPTS_PATH, "post_%s.sh" % cmd.pxeNicMac), 'w') as f:
             f.write(post_script)
         logger.debug("create post_%s.sh with content: %s" % (cmd.pxeNicMac, post_script))
 
     def _render_kickstart_template(self, cmd, pxeserver_dhcp_nic_ip):
+        pxeserver_dhcp_nic_url_host = network_ipv6.format_url_host(pxeserver_dhcp_nic_ip)
         context = dict()
-        context['REPO_URL'] = "ftp://%s/%s/" % (pxeserver_dhcp_nic_ip, cmd.imageUuid)
+        context['REPO_URL'] = "ftp://%s/%s/" % (pxeserver_dhcp_nic_url_host, cmd.imageUuid)
         context['USERNAME'] = "" if cmd.username == 'root' else cmd.username
         context['PASSWORD'] = cmd.password
         context['PRE_SCRIPTS'] = 'sh -c "$(curl -fsSL ftp://%s/scripts/pre_%s.sh)"' % (
-        pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
+        pxeserver_dhcp_nic_url_host, cmd.pxeNicMac)
         context['POST_SCRIPTS'] = 'sh -c "$(curl -fsSL ftp://%s/scripts/post_%s.sh)"' % (
-        pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
+        pxeserver_dhcp_nic_url_host, cmd.pxeNicMac)
         context['FORCE_INSTALL'] = "clearpart --all --initlabel" if cmd.forceInstall else ""
         context['IMAGE_UUID'] = cmd.imageUuid
 
@@ -847,7 +889,7 @@ echo "ONBOOT=yes" >> $IFCFGFILE
 
         if os.path.exists(os.path.join(self.VSFTPD_ROOT_PATH, cmd.imageUuid, "Extra", "qemu-kvm-ev")):
             context['extra_repo'] = "repo --name=qemu-kvm-ev --baseurl=ftp://%s/%s/Extra/qemu-kvm-ev" % (
-            pxeserver_dhcp_nic_ip, cmd.imageUuid)
+            pxeserver_dhcp_nic_url_host, cmd.imageUuid)
             context['pxeserver_dhcp_nic_ip'] = pxeserver_dhcp_nic_ip
 
         custom = simplejson.loads(cmd.customPreconfigurations) if cmd.customPreconfigurations is not None else {}
@@ -857,6 +899,7 @@ echo "ONBOOT=yes" >> $IFCFGFILE
         return tmpl.render(context)
 
     def _render_preseed_template(self, cmd, pxeserver_dhcp_nic_ip):
+        pxeserver_dhcp_nic_url_host = network_ipv6.format_url_host(pxeserver_dhcp_nic_ip)
         context = dict()
         context['REPO_URL'] = ("d-i mirror/protocol string ftp\n"
                                "d-i mirror/ftp/hostname string {PXESERVER_DHCP_NIC_IP}\n"
@@ -865,9 +908,9 @@ echo "ONBOOT=yes" >> $IFCFGFILE
         context['USERNAME'] = cmd.username
         context['PASSWORD'] = cmd.password
         context['PRE_SCRIPTS'] = 'wget -O- ftp://%s/scripts/pre_%s.sh | /bin/sh -s' % (
-        pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
+        pxeserver_dhcp_nic_url_host, cmd.pxeNicMac)
         context['POST_SCRIPTS'] = 'wget -O- ftp://%s/scripts/post_%s.sh | chroot /target /bin/sh -s' % (
-        pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
+        pxeserver_dhcp_nic_url_host, cmd.pxeNicMac)
         context['FORCE_INSTALL'] = 'd-i partman-partitioning/confirm_write_new_label boolean true\n' \
                                    'd-i partman/choose_partition select finish\n' \
                                    'd-i partman/confirm boolean true\n' \
@@ -965,13 +1008,14 @@ INTERFACES_FILE=/etc/network/interfaces
         return tmpl.render(context)
 
     def _render_autoinstall_template(self, cmd, pxeserver_dhcp_nic_ip):
+        pxeserver_dhcp_nic_url_host = network_ipv6.format_url_host(pxeserver_dhcp_nic_ip)
         context = dict()
         context['USERNAME'] = "'" + cmd.username + "'"
         context['PASSWORD'] = "'" + cmd.password + "'"
         context['PRE_SCRIPTS'] = 'wget -O- ftp://%s/scripts/pre_%s.sh | /bin/bash -s' % (
-            pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
+            pxeserver_dhcp_nic_url_host, cmd.pxeNicMac)
         context['POST_SCRIPTS'] = 'wget -O- ftp://%s/scripts/post_%s.sh | chroot /target /bin/bash -s' % (
-            pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
+            pxeserver_dhcp_nic_url_host, cmd.pxeNicMac)
 
         niccfgs = json_object.loads(cmd.nicCfgs) if cmd.nicCfgs is not None else []
         # post script snippet for network configuration
@@ -1093,13 +1137,14 @@ EOF
         return tmpl.render(context)
 
     def _render_autoyast_template(self, cmd, pxeserver_dhcp_nic_ip):
+        pxeserver_dhcp_nic_url_host = network_ipv6.format_url_host(pxeserver_dhcp_nic_ip)
         context = dict()
         context['USERNAME'] = cmd.username
         context['PASSWORD'] = cmd.password
         context['PRE_SCRIPTS'] = 'sh -c "$(curl -fsSL ftp://%s/scripts/pre_%s.sh)"' % (
-        pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
+        pxeserver_dhcp_nic_url_host, cmd.pxeNicMac)
         context['POST_SCRIPTS'] = 'sh -c "$(curl -fsSL ftp://%s/scripts/post_%s.sh)"' % (
-        pxeserver_dhcp_nic_ip, cmd.pxeNicMac)
+        pxeserver_dhcp_nic_url_host, cmd.pxeNicMac)
         context['FORCE_INSTALL'] = 'false' if cmd.forceInstall else 'true'
 
         niccfgs = json_object.loads(cmd.nicCfgs) if cmd.nicCfgs is not None else []

@@ -18,6 +18,14 @@ logger = log.get_logger(__name__)
 
 CEPH_CONF_ROOT = "/var/lib/zstack/ceph"
 CEPH_KEYRING_CONFIG_NAME = 'client.zstack.keyring'
+CEPH_MON_PROTOCOL_PREFIX = 'v'
+CEPH_MON_PROTOCOL_SEPARATOR = ':'
+CEPH_MON_ADDR_SUFFIX_SEPARATOR = '/'
+CEPH_MON_IPV6_BRACKET_PREFIX = '['
+CEPH_MON_IPV6_BRACKET_SUFFIX = ']'
+ROUTE_PROTOCOL_KERNEL = 'kernel'
+ROUTE_MATCH_CMD_FORMAT = "ip route | grep -w '%s' > /dev/null"
+ROUTE_KERNEL_MATCH_CMD_FORMAT = 'ip route | grep -w "proto kernel" | grep -w \'%s\' > /dev/null'
 
 QEMU_NBD_SOCKET_DIR = "/var/lock/"
 QEMU_NBD_SOCKET_PREFIX = "qemu-nbd-nbd"
@@ -285,18 +293,52 @@ class CephOsdCapacity:
         return self.usedCapacity
 
 
+def strip_mon_addr_protocol(addr):
+    protocol, separator, rest = addr.partition(CEPH_MON_PROTOCOL_SEPARATOR)
+    if separator and protocol.startswith(CEPH_MON_PROTOCOL_PREFIX) and protocol[1:].isdigit():
+        return rest
+    return addr
+
+
+def extract_mon_host(addr):
+    if not addr:
+        return None
+
+    addr = strip_mon_addr_protocol(addr.strip())
+    if addr.startswith(CEPH_MON_IPV6_BRACKET_PREFIX):
+        end = addr.find(CEPH_MON_IPV6_BRACKET_SUFFIX)
+        if end > 0:
+            return addr[1:end]
+        return addr[1:]
+
+    has_addr_suffix = CEPH_MON_ADDR_SUFFIX_SEPARATOR in addr
+    addr_without_suffix = addr.split(CEPH_MON_ADDR_SUFFIX_SEPARATOR, 1)[0]
+    if CEPH_MON_PROTOCOL_SEPARATOR not in addr_without_suffix:
+        return addr_without_suffix
+
+    host, separator, port = addr_without_suffix.rpartition(CEPH_MON_PROTOCOL_SEPARATOR)
+    if addr_without_suffix.count(CEPH_MON_PROTOCOL_SEPARATOR) == 1:
+        return host
+    if has_addr_suffix and separator and port.isdigit():
+        return host
+    return addr_without_suffix
+
+
 def get_mon_addr(monmap, route_protocol=None):
     for mon in jsonobject.loads(monmap).mons:
-        ADDR = mon.addr.split(':')[0]
+        addr = extract_mon_host(mon.addr)
+        if addr is None:
+            continue
+
         cmd = ''
         if route_protocol is None:
-            cmd = 'ip route | grep -w {{ADDR}} > /dev/null'
-        elif route_protocol == "kernel":
-            cmd = 'ip route | grep -w "proto kernel" | grep -w {{ADDR}} > /dev/null'
+            cmd = ROUTE_MATCH_CMD_FORMAT % addr
+        elif route_protocol == ROUTE_PROTOCOL_KERNEL:
+            cmd = ROUTE_KERNEL_MATCH_CMD_FORMAT % addr
         if cmd == '':
             return
         if bash_r(cmd) == 0:
-            return ADDR
+            return addr
 
 
 class CephPoolCapacity:

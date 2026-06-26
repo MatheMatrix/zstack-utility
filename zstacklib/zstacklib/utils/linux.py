@@ -40,6 +40,7 @@ from zstacklib.utils import xmlobject
 from zstacklib.utils import shell
 from zstacklib.utils import log
 from zstacklib.utils import iproute
+from zstacklib.utils import network_ipv6
 
 
 logger = log.get_logger(__name__)
@@ -68,6 +69,9 @@ KVM_CHECK_EXTENSION = 44547
 DEFAULT_VM_IPA_SIZE = 40
 LIVE_LIBVIRT_XML_DIR = "/var/run/libvirt/qemu"
 MAX_NBD_READ_SIZE = 32768000
+NFS_URL_SEPARATOR = ':'
+IPV6_HOST_PREFIX = '['
+IPV6_HOST_SUFFIX = ']'
 
 def ignoreerror(func):
     @functools.wraps(func)
@@ -504,11 +508,11 @@ def is_mounted(path=None, url=None):
         url = re.sub(r'/{2,}','/',url.rstrip('/'))
 
     if url and path:
-        cmdstr = "mount | grep -E '%s[ /]+on' | grep '%s ' " % (url, path)
+        cmdstr = "mount | grep -F '%s on ' | grep -F '%s ' " % (url, path)
     elif not url:
-        cmdstr = "mount | grep '%s '" % path
+        cmdstr = "mount | grep -F '%s '" % path
     elif not path:
-        cmdstr = "mount | grep -E '%s[ /]+on'" % url
+        cmdstr = "mount | grep -F '%s on '" % url
     else:
         raise Exception('path and url cannot both be None')
 
@@ -610,24 +614,28 @@ def fumount(mountpoint, timeout = 10):
     return shell.run("timeout %s fusermount -u %s" % (timeout, mountpoint))
 
 def is_valid_address(address):
-    try:
-        socket.inet_aton(address)
-        return True
-    except socket.error:
-        return False
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            socket.inet_pton(family, address)
+            return True
+        except socket.error:
+            pass
+    return False
 
 def is_valid_hostname(hostname):
     if is_valid_address(hostname):
         return True
 
     try:
-        socket.gethostbyname(hostname)
+        socket.getaddrinfo(hostname, None)
         return True
     except socket.error:
         return False
 
 def get_host_by_name(host):
-    return socket.gethostbyname(host)
+    if is_valid_address(host):
+        return host
+    return socket.getaddrinfo(host, None)[0][4][0]
 
 def get_hostname():
     return socket.gethostname()
@@ -638,13 +646,30 @@ def get_hostname_fqdn():
         return socket.getaddrinfo(socket.gethostname(), 0, 0, 0, 0, socket.AI_CANONNAME)[0][3]
     return socket.getaddrinfo(socket.gethostname(), 0, flags=socket.AI_CANONNAME)[0][3]
 
+def parse_nfs_url(url):
+    if url.startswith(IPV6_HOST_PREFIX):
+        end = url.find(IPV6_HOST_SUFFIX)
+        if end <= 0:
+            raise InvalidNfsUrlError(url, 'IPv6 host must be enclosed by []')
+
+        host = url[len(IPV6_HOST_PREFIX):end]
+        suffix = url[end + len(IPV6_HOST_SUFFIX):]
+        if not suffix.startswith(NFS_URL_SEPARATOR):
+            raise InvalidNfsUrlError(url, 'url should be [IPv6]:/absolute/path')
+
+        return host, suffix[len(NFS_URL_SEPARATOR):]
+
+    ts = url.split(NFS_URL_SEPARATOR)
+    if len(ts) != 2:
+        raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
+
+    return ts[0], ts[1]
+
+
 def is_valid_nfs_url(url):
-    ts = url.split(':')
-    if len(ts) != 2: raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
-    host = ts[0]
-    path = ts[1]
+    host, path = parse_nfs_url(url)
     try:
-        socket.gethostbyname(host)
+        socket.getaddrinfo(host, None)
     except socket.gaierror:
         raise InvalidNfsUrlError(url, '%s cannont resolve to ip address' % host)
 
@@ -828,18 +853,21 @@ def ssh(hostname, sshkey, cmd, user='root', sshPort=22):
     os.chmod(sshkey_file, 0o600)
 
     try:
-        return shell.call('ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s@%s "%s"' % (sshPort, sshkey_file, user, hostname, cmd))
+        return shell.call('ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s "%s"' % (sshPort, sshkey_file, format_ssh_target(user, hostname), cmd))
     finally:
         if sshkey_file:
             os.remove(sshkey_file)
+
+def format_ssh_target(user, hostname):
+    return '%s@%s' % (user, network_ipv6.format_url_host(hostname))
 
 def sshpass_run(hostname, password, cmd, user='root', port=22):
     sshpass_file = write_to_temp_file(password)
     os.chmod(sshpass_file, 0o600)
 
     try:
-        s = shell.ShellCmd('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s@%s "%s"' % (
-            sshpass_file, port, user, hostname, cmd))
+        s = shell.ShellCmd('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s "%s"' % (
+            sshpass_file, port, format_ssh_target(user, hostname), cmd))
         s(False)
         return s.return_code, s.stdout, s.stderr
     finally:
@@ -850,8 +878,8 @@ def sshpass_call(hostname, password, cmd, user='root', port=22):
     os.chmod(sshpass_file, 0o600)
 
     try:
-        return shell.call('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s@%s "%s"' % (
-            sshpass_file, port, user, hostname, cmd))
+        return shell.call('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s "%s"' % (
+            sshpass_file, port, format_ssh_target(user, hostname), cmd))
     finally:
         rm_file_force(sshpass_file)
 
@@ -892,8 +920,8 @@ def scp_download(hostname, sshkey, src_filepath, dst_filepath, host_account='roo
         dst_dir = os.path.dirname(dst_filepath)
         if not os.path.exists(dst_dir):
             os.makedirs(dst_dir)
-        scp_cmd = 'scp {7} {6} -P {0} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {1} {2}@{3}:{4} {5}'\
-            .format(sshPort, sshkey_file, host_account, hostname, shellquote(src_filepath).replace(" ", "\\ "), dst_filepath, bandWidth, filename_check_option)
+        scp_cmd = 'scp {6} {5} -P {0} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {1} {2}:{3} {4}'\
+            .format(sshPort, sshkey_file, format_ssh_target(host_account, hostname), shellquote(src_filepath).replace(" ", "\\ "), dst_filepath, bandWidth, filename_check_option)
         shell.call(scp_cmd)
         os.chmod(dst_filepath, 0o664)
     finally:
@@ -911,9 +939,9 @@ def scp_upload(hostname, sshkey, src_filepath, dst_filepath, host_account='root'
     os.chmod(sshkey_file, 0o600)
     try:
         dst_dir = os.path.dirname(dst_filepath)
-        ssh_cmd = 'ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s@%s "mkdir -m 777 -p %s"' % (sshPort, sshkey_file, host_account, hostname, dst_dir)
+        ssh_cmd = 'ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s "mkdir -m 777 -p %s"' % (sshPort, sshkey_file, format_ssh_target(host_account, hostname), dst_dir)
         shell.call(ssh_cmd)
-        scp_cmd = 'scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s %s@%s:%s' % (sshPort, sshkey_file, src_filepath, host_account, hostname, dst_filepath)
+        scp_cmd = 'scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s %s:%s' % (sshPort, sshkey_file, src_filepath, format_ssh_target(host_account, hostname), dst_filepath)
         shell.call(scp_cmd)
     finally:
         if sshkey_file:
@@ -1751,9 +1779,9 @@ def move_dev_route(src_dev, dest_dev):
     - src_dev: The source device from which the IP and routes will be moved.
     - dest_dev: The destination device to which the IP and routes will be moved.
     """
-    # Check if the source device has an IP address set
-    out = shell.call('ip addr show dev %s | grep "inet "' % src_dev, exception=False)
-    if not out:
+    ipv4_out = shell.call('ip addr show dev %s | grep "inet "' % src_dev, exception=False)
+    ipv6_out = shell.call('ip addr show dev %s | grep "inet6 " | grep -v " scope link"' % src_dev, exception=False)
+    if not ipv4_out and not ipv6_out:
         logger.debug("Source device %s doesn't have an IP address set. No need to move routes." % src_dev)
         return
 
@@ -1765,16 +1793,66 @@ def move_dev_route(src_dev, dest_dev):
             routes.append(line)
             shell.call('ip route del %s' % line)
 
-    # Move IP address from the source device to the destination device
-    ip = out.strip().split()[1]
-    shell.call('ip addr del %s dev %s' % (ip, src_dev))
-    r_out = shell.call('ip addr show dev %s | grep "inet %s"' % (dest_dev, ip), exception=False)
-    if not r_out:
-        shell.call('ip addr add %s dev %s' % (ip, dest_dev))
+    routes6 = []
+    r_out = shell.call("ip -6 route show dev %s | grep via | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            routes6.append(line)
+            shell.call('ip -6 route del %s' % line)
+    direct_routes6 = []
+    r_out = shell.call("ip -6 route show dev %s | grep -v via | grep -v ' proto kernel ' | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            direct_routes6.append(line)
+            shell.call('ip -6 route del %s' % _route_with_dev(line, src_dev))
+    connected_routes6 = []
+    r_out = shell.call("ip -6 route show dev %s proto kernel | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            connected_routes6.append(line)
+
+    for ip in _parse_ip_addresses(ipv4_out):
+        _move_ip_address(ip, src_dev, dest_dev, "inet")
+
+    for ip in _parse_ip_addresses(ipv6_out):
+        _move_ip_address(ip, src_dev, dest_dev, "inet6")
+    for r in connected_routes6:
+        shell.call('ip -6 route del %s' % _route_with_dev(r, src_dev), exception=False)
 
     # Restore routes on the destination device
     for r in routes:
-        shell.call('ip route add %s' % r)
+        shell.call('ip route add %s' % _route_with_dev(r, dest_dev))
+    for r in direct_routes6:
+        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
+    for r in routes6:
+        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
+
+
+def _parse_ip_addresses(ip_addr_output):
+    return [line.strip().split()[1] for line in ip_addr_output.split('\n') if line.strip()]
+
+
+def _move_ip_address(ip, src_dev, dest_dev, family):
+    shell.call('ip addr del %s dev %s' % (ip, src_dev), exception=False)
+    r_out = shell.call('ip addr show dev %s | grep "%s %s"' % (dest_dev, family, ip), exception=False)
+    if not r_out:
+        shell.call('ip addr add %s dev %s' % (ip, dest_dev))
+
+
+def _route_with_dev(route, dev):
+    parts = route.split()
+    if not parts:
+        return route
+    if 'dev' in parts:
+        index = parts.index('dev')
+        if index + 1 < len(parts):
+            parts[index + 1] = dev
+        return ' '.join(parts)
+    if 'via' in parts:
+        index = parts.index('via')
+        if index + 1 < len(parts):
+            return ' '.join(parts[:index + 2] + ['dev', dev] + parts[index + 2:])
+    return ' '.join([parts[0], 'dev', dev] + parts[1:])
 
     # Migrate DNS settings for systems using systemd-resolved (e.g. alinux4).
     # On these systems DNS servers are bound per-link; after bridging, the
@@ -2529,13 +2607,20 @@ def get_free_port_in_range(start_port, end_port):
 
 def tcp_port_is_free(port):
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(('', port))
+        network_ipv6.bind_dual_stack_probe_socket(sock, port)
         sock.close()
         return True
     except socket.error:
-        return False
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            network_ipv6.bind_ipv4_probe_socket(sock, port)
+            sock.close()
+            return True
+        except socket.error:
+            return False
 
 def find_free_port_with_locking(start_port, end_port):
     keep_lock = False
@@ -2558,7 +2643,7 @@ def check_socket_available(host, port, timeout=10):
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock = network_ipv6.create_tcp_socket_for_host(host)
             result = sock.connect_ex((host, port))
             sock.close()
             if result == 0:
@@ -2569,12 +2654,17 @@ def check_socket_available(host, port, timeout=10):
     return False
 
 def is_port_available(port):
-    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+    with contextlib.closing(socket.socket(socket.AF_INET6, socket.SOCK_STREAM)) as s:
         try:
-            s.bind(('', int(port)))
+            network_ipv6.bind_dual_stack_probe_socket(s, port)
             return True
-        except:
-            return False
+        except (socket.error, OSError):
+            with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as ipv4_sock:
+                try:
+                    network_ipv6.bind_ipv4_probe_socket(ipv4_sock, port)
+                    return True
+                except (socket.error, OSError):
+                    return False
 
 def get_all_ethernet_device_names():
     return os.listdir('/sys/class/net/')
@@ -2726,18 +2816,24 @@ class Interface(object):
                 'name':self.name,
                 'ips':self.ips})
 
+IP_ADDR_INTERFACE_MARKER = 'mtu'
+IP_ADDR_ADDRESS_FAMILIES = ('inet', 'inet6')
+IP_ADDR_LIST_CMD = "ip a | grep -E 'mtu| inet | inet6 '"
+
+
 def get_eth_ips():
-    nics = shell.call("ip a | grep -E 'mtu| inet '")
+    nics = shell.call(IP_ADDR_LIST_CMD)
     result = dict()
     interf = ''
 
     for i in nics.splitlines():
-        if i.find('mtu') >= 0:
+        fields = i.strip().split()
+        if i.find(IP_ADDR_INTERFACE_MARKER) >= 0:
             interf = re.findall(r':\ .*:\ ', i)[0].split(': ')[1]
             status = True if re.findall(r'UP', i) else False
             result[interf] = Interface({'name':interf, 'status':status, 'ips':list()})
-        elif i.find('inet') >= 0:
-            result[interf].ips.append(re.findall(r'inet\ .*\ scope', i)[0].split(' ')[1].split('/')[0])
+        elif fields and fields[0] in IP_ADDR_ADDRESS_FAMILIES:
+            result[interf].ips.append(fields[1].split('/')[0])
 
     return result
 

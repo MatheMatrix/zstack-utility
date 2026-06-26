@@ -32,6 +32,28 @@ vm_plugin.http = http
 vm_plugin.jsonobject = jsonobject
 
 
+def test_console_listen_address_uses_ipv4_default_for_ipv4_host():
+    assert vm_plugin.get_console_listen_address('192.168.1.10') == '0.0.0.0'
+
+
+def test_console_listen_address_uses_dual_stack_for_ipv6_host():
+    assert vm_plugin.get_console_listen_address('2001:db8::10') == '::'
+
+
+def test_build_migration_hostname_supports_ipv4():
+    assert vm_plugin.build_migration_hostname('172.24.1.2') == '172-24-1-2.zstack.org'
+
+
+def test_build_migration_hostname_supports_ipv6():
+    assert vm_plugin.build_migration_hostname('fd00:5:5:28::62:d0e5') == \
+        'fd00-5-5-28--62-d0e5.zstack.org'
+
+
+def test_build_migration_hostname_supports_bracketed_ipv6():
+    assert vm_plugin.build_migration_hostname('[fd00:5:5:28::62:d0e5]') == \
+        'fd00-5-5-28--62-d0e5.zstack.org'
+
+
 def _make_vm_plugin():
     plugin = vm_plugin.VmPlugin.__new__(vm_plugin.VmPlugin)
     plugin.config = {}
@@ -282,14 +304,26 @@ class TestDeleteConsoleFirewallRuleHandler:
     def test_delete_console_firewall_rule(self):
         plugin = _make_vm_plugin()
         mock_rule = MagicMock()
-        vm_plugin.VncPortIptableRule = MagicMock(return_value=mock_rule)
 
-        req = _make_req({'vmInternalId': 123, 'hostManagementIp': '10.0.0.2'})
-        result = plugin.delete_console_firewall_rule(req)
+        with patch.object(vm_plugin, 'VncPortIptableRule', return_value=mock_rule):
+            req = _make_req({'vmInternalId': 123, 'hostManagementIp': '10.0.0.2'})
+            result = plugin.delete_console_firewall_rule(req)
         rsp = json.loads(result)
 
         assert rsp['success'] is True
         mock_rule.delete.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestVncPortIptableRule:
+    def test_cleanup_iptables_skips_missing_ip6tables(self):
+        ipv4_iptables = MagicMock()
+
+        with patch.object(vm_plugin.iptables, 'from_iptables_save', return_value=ipv4_iptables), \
+                patch.object(vm_plugin.iptables, 'from_ip6tables_save', side_effect=RuntimeError('no ip6tables')):
+            rule = vm_plugin.VncPortIptableRule()
+
+            assert rule._load_cleanup_iptables() == [ipv4_iptables]
 
 
 @pytest.mark.kvmagent
