@@ -222,13 +222,17 @@ def test_move_dev_route_migrates_resolved_dns_to_bridge():
             return "Link 3 (br_ens3):"
         return ""
 
-    linux.os.path.exists = MagicMock(return_value=True)
-    linux.shell.call = MagicMock(side_effect=shell_call)
+    original_exists = linux.os.path.exists
+    try:
+        linux.os.path.exists = MagicMock(return_value=True)
+        linux.shell.call = MagicMock(side_effect=shell_call)
 
-    linux.move_dev_route("ens3", "br_ens3")
+        linux.move_dev_route("ens3", "br_ens3")
 
-    assert ('LC_ALL=C resolvectl dns br_ens3 223.5.5.5 8.8.8.8', True) in calls
-    assert ('LC_ALL=C resolvectl domain br_ens3 "~."', True) in calls
+        assert ('LC_ALL=C resolvectl dns br_ens3 223.5.5.5 8.8.8.8', True) in calls
+        assert ('LC_ALL=C resolvectl domain br_ens3 "~."', True) in calls
+    finally:
+        linux.os.path.exists = original_exists
 
 
 def test_tcp_port_is_free_closes_probe_sockets_on_failure():
@@ -246,14 +250,18 @@ def test_tcp_port_is_free_closes_probe_sockets_on_failure():
 
     ipv6_socket = FakeSocket()
     ipv4_socket = FakeSocket()
-    linux.socket.socket = MagicMock(side_effect=[ipv6_socket, ipv4_socket])
-    linux.network_ipv6.bind_dual_stack_probe_socket = MagicMock(
-        side_effect=linux.socket.error("ipv6 bind failed")
-    )
-    linux.network_ipv6.bind_ipv4_probe_socket = MagicMock(
-        side_effect=linux.socket.error("ipv4 bind failed")
-    )
+    original_socket = linux.socket.socket
+    try:
+        linux.socket.socket = MagicMock(side_effect=[ipv6_socket, ipv4_socket])
+        linux.network_ipv6.bind_dual_stack_probe_socket = MagicMock(
+            side_effect=linux.socket.error("ipv6 bind failed")
+        )
+        linux.network_ipv6.bind_ipv4_probe_socket = MagicMock(
+            side_effect=linux.socket.error("ipv4 bind failed")
+        )
 
-    assert not linux.tcp_port_is_free(4900)
-    assert ipv6_socket.closed
-    assert ipv4_socket.closed
+        assert not linux.tcp_port_is_free(4900)
+        assert ipv6_socket.closed
+        assert ipv4_socket.closed
+    finally:
+        linux.socket.socket = original_socket
