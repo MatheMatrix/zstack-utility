@@ -2763,11 +2763,12 @@ class IothreadVqMappingAllocator(object):
         return int(value or 0)
 
     @classmethod
-    def needs_automatic_mapping(cls, volume):
+    def needs_automatic_mapping(cls, volume, queue_count=None):
+        queue_count = volume.multiQueues if queue_count is None else queue_count
         return volume.deviceType == 'cbd' \
             and not cls.to_int(volume.ioThreadId) \
             and (volume.useVirtio or volume.useVirtioSCSI) \
-            and cls.to_int(volume.multiQueues) > 0 \
+            and cls.to_int(queue_count) > 0 \
             and cls.to_int(volume.ioThreads) > 0
 
     @classmethod
@@ -4738,8 +4739,11 @@ class Vm(object):
         devices = tree.getroot().find('devices')
         for disk in tree.iterfind('devices/disk'):
             dev = disk.find('target').attrib['dev']
-            new_disk = VmPlugin._get_new_disk(disk, migrate_disks.get(dev, None))
+            volume = migrate_disks.get(dev, None)
+            new_disk = VmPlugin._get_new_disk(disk, volume)
             if new_disk != disk:
+                if volume:
+                    VmPlugin._apply_migration_iothread_vq_mapping(tree.getroot(), new_disk, volume)
                 parent_index = list(devices).index(disk)
                 devices.remove(disk)
                 devices.insert(parent_index, new_disk)
@@ -9572,24 +9576,51 @@ class VmPlugin(kvmagent.KvmAgent):
 
 
     @staticmethod
+    def _apply_migration_iothread_vq_mapping(root, disk, volume):
+        driver = disk.find('driver')
+        target = disk.find('target')
+
+        if target.get('bus') == 'scsi':
+            address = disk.find('address')
+            controller = scsi_controller_xml(root, address.get('controller') if address is not None else None)
+            driver = controller.find('driver') if controller is not None else None
+            queue_count = driver.get('queues') if driver is not None else None
+        else:
+            queue_count = driver.get('queues')
+
+        queue_count = IothreadVqMappingAllocator.to_int(queue_count)
+        if driver is None or driver.find('iothreads') is not None or queue_count <= 0 \
+                or not IothreadVqMappingAllocator.needs_automatic_mapping(volume, queue_count):
+            return
+
+        iothread_count = min(queue_count, IothreadVqMappingAllocator.to_int(volume.ioThreads))
+        used_iothread_ids = IothreadVqMappingAllocator.used_ids_from_xml(root)
+        iothread_ids = IothreadVqMappingAllocator.allocate_iothread_ids(iothread_count, used_iothread_ids)
+        allocator = IothreadVqMappingAllocator(volume.volumeUuid, queue_count, iothread_ids)
+        IothreadVqMappingAllocator.apply(driver, allocator)
+        VmPlugin._declare_migration_iothreads(root, iothread_ids)
+
+    @staticmethod
+    def _declare_migration_iothreads(root, iothread_ids):
+        devices = root.find('devices')
+        iothreads = root.find('iothreads')
+        iothreadids = root.find('iothreadids')
+        if iothreadids is None:
+            iothreadids = etree.Element('iothreadids')
+            before = iothreads if iothreads is not None else devices
+            root.insert(list(root).index(before), iothreadids)
+        for iothread_id in iothread_ids:
+            e(iothreadids, 'iothread', None, {'id': str(iothread_id)})
+
+        if iothreads is None:
+            iothreads = etree.Element('iothreads')
+            root.insert(list(root).index(devices), iothreads)
+        iothreads.text = str(IothreadVqMappingAllocator.to_int(iothreads.text) + len(iothread_ids))
+
+    @staticmethod
     def _get_new_disk(old_disk: etree.Element, volume=None):
         old_driver = old_disk.find('driver')
-
-        def volume_multi_queues(_v):
-            if _v.multiQueues:
-                return _v.multiQueues
-            if old_driver is not None:
-                return old_driver.get('queues')
-            return None
-
-        def automatic_mapping_allocator(_v, queue_count):
-            allocator = IothreadVqMappingAllocator.from_existing_driver(_v, old_driver, queue_count)
-            if allocator:
-                return allocator
-            if not IothreadVqMappingAllocator.needs_automatic_mapping(_v):
-                return None
-            used_iothread_ids = IothreadVqMappingAllocator.used_ids_from_xml(old_disk.getroottree().getroot())
-            return IothreadVqMappingAllocator.allocate(_v, used_iothread_ids)
+        source_queues = old_driver.get('queues')
 
         def filebased_volume(_v):
             disk = etree.Element('disk', {'type': 'file', 'device': 'disk', 'snapshot': 'external'})
@@ -9627,12 +9658,10 @@ class VmPlugin(kvmagent.KvmAgent):
         def cbd_volume(_v):
             disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
             driver_elements = {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'}
-            queue_count = volume_multi_queues(_v)
-            if is_virtio_blk(_v) and queue_count:
-                driver_elements["queues"] = str(queue_count)
             driver = e(disk, 'driver', None, driver_elements)
             if not _v.useVirtioSCSI:
-                IothreadVqMappingAllocator.apply(driver, automatic_mapping_allocator(_v, queue_count))
+                IothreadVqMappingAllocator.apply(
+                    driver, IothreadVqMappingAllocator.from_existing_driver(_v, old_driver, source_queues))
             e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(_v.installPath)})
             if _v.useVirtioSCSI:
                 e(disk, 'target', None, {'dev': 'sd%s' % _v.dev_letter, 'bus': 'scsi'})
@@ -9682,6 +9711,11 @@ class VmPlugin(kvmagent.KvmAgent):
         else:
             raise Exception('unsupported volume deviceType[%s]' % volume.deviceType)
 
+        driver = ele.find('driver')
+        driver.attrib.pop('queues', None)
+        if source_queues:
+            driver.set('queues', source_queues)
+
         tags_to_keep = [ 'target', 'boot', 'alias', 'address', 'wwn', 'serial']
         for c in old_disk:  # getchildren
             if c.tag in tags_to_keep:
@@ -9710,6 +9744,7 @@ class VmPlugin(kvmagent.KvmAgent):
             dev = disk.find('target').attrib['dev']
             if dev in migrate_disks:
                 new_disk = VmPlugin._get_new_disk(disk, migrate_disks[dev])
+                VmPlugin._apply_migration_iothread_vq_mapping(tree.getroot(), new_disk, migrate_disks[dev])
                 parent_index = list(devices).index(disk)
                 devices.remove(disk)
                 devices.insert(parent_index, new_disk)
