@@ -80,32 +80,9 @@ class TestLoadImageFallback:
             be.assert_not_called()
 
 
-class TestTargetHealthy:
-    def test_never_deployed_is_healthy(self):
-        with patch.object(t, 'container_exists', return_value=False):
-            assert t.target_healthy() is True
-
-    def test_deployed_but_exited_is_unhealthy(self):
-        with patch.object(t, 'container_exists', return_value=True), \
-             patch.object(t, 'is_running', return_value=False):
-            assert t.target_healthy() is False
-
-    def test_running_with_ready_sock_is_healthy(self):
-        with patch.object(t, 'container_exists', return_value=True), \
-             patch.object(t, 'is_running', return_value=True), \
-             patch.object(t, '_control_sock_ready', return_value=True):
-            assert t.target_healthy() is True
-
-    def test_running_with_dead_sock_is_unhealthy(self):
-        with patch.object(t, 'container_exists', return_value=True), \
-             patch.object(t, 'is_running', return_value=True), \
-             patch.object(t, '_control_sock_ready', return_value=False):
-            assert t.target_healthy() is False
-
-
 class TestTargetRunning:
-    # connectivity (not fencing): unlike target_healthy, a host with NO target must read
-    # as not-running so its per-protocol ref flips Disconnected and the allocator skips it.
+    # connectivity (not fencing): a host with NO target must read as not-running so its
+    # per-protocol ref flips Disconnected and the allocator skips it.
     _SOCK = "/var/zbsvhost/sockets/admin.sock"
     _NAME = "zbsvhost-10.0.0.9"
 
@@ -146,3 +123,27 @@ class TestShellQuoting:
             t.load_image("zbs-vhost-local", image_tar="/x/evil;touch pwn.tar")
             cmd = be.call_args[0][0]
             assert "'/x/evil;touch pwn.tar'" in cmd
+
+
+class TestEnsureDocker:
+    # zbsadm only checks for docker; the kvmagent prepare step must install + start it when absent.
+    def test_skips_install_when_docker_ready(self):
+        with patch.object(t, 'docker_ready', return_value=True), \
+             patch.object(t.bash, 'bash_errorout') as be:
+            t.ensure_docker()
+            be.assert_not_called()
+
+    def test_installs_and_starts_when_missing(self):
+        states = iter([False, True])  # absent, then ready after install
+        with patch.object(t, 'docker_ready', side_effect=lambda: next(states)), \
+             patch.object(t.bash, 'bash_errorout') as be:
+            t.ensure_docker()
+            cmds = " ".join(str(c) for c in be.call_args_list)
+            assert 'yum install' in cmds and 'docker-ce' in cmds
+            assert 'systemctl enable --now docker' in cmds
+
+    def test_raises_when_docker_unavailable_after_install(self):
+        with patch.object(t, 'docker_ready', return_value=False), \
+             patch.object(t.bash, 'bash_errorout'):
+            with pytest.raises(Exception):
+                t.ensure_docker()

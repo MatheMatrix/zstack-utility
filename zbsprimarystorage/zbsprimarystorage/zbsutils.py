@@ -117,16 +117,6 @@ def delete_vhost_bdev(ip, port, username, password, bdev_name):
         ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password), bdev_name))
 
 
-def list_vhost_bdev(ip, port, username, password):
-    return shell.call("%s vhost list-bdev --host %s --port %s -u %s -p %s" % (
-        ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password)))
-
-
-def get_vhost_status(ip, port, username, password):
-    return shell.call("%s vhost status --host %s --port %s -u %s -p %s" % (
-        ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password)))
-
-
 def vhost_socket_path(bdev_name):
     return VHOST_SOCKET_DIR + "/" + bdev_name
 

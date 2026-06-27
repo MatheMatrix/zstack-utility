@@ -30,6 +30,8 @@ DEFAULT_CLIENT_CONF = "/etc/zbs/client.conf"
 DEFAULT_CONTAINER_NAME = "zbs-vhost"
 # vhost target needs ~320MB; 2MiB pages -> 160. keep headroom.
 DEFAULT_HUGEPAGE_NR = 256
+# the zbsadm-deployed SPDK target needs >=1024MiB free hugepages; reserve 2GiB (2MiB pages).
+DEFAULT_VHOST_TARGET_HUGEPAGE_NR = 1024
 HUGEPAGE_SIZE_BYTES = 2 * 1024 * 1024
 # spdk target wants 1-2 dedicated cores; pick the highest ids to stay away from
 # the low-numbered cores guest vCPUs tend to land on.
@@ -195,6 +197,22 @@ def image_present(image):
     return bash.bash_r("docker image inspect %s >/dev/null 2>&1" % shlex.quote(image)) == 0
 
 
+def docker_ready():
+    return bash.bash_r("command -v docker >/dev/null 2>&1") == 0 and \
+           bash.bash_r("systemctl is-active --quiet docker") == 0
+
+
+def ensure_docker():
+    # the spdk vhost target runs as a docker container and zbsadm only checks for docker
+    # (it does not install it), so install + start it from the host repo when missing.
+    if docker_ready():
+        return
+    bash.bash_errorout("yum install -y docker-ce docker-ce-cli containerd.io")
+    bash.bash_errorout("systemctl enable --now docker")
+    if not docker_ready():
+        raise Exception("docker still not running after install on this host")
+
+
 def load_image(image, image_tar=None, image_url=None):
     if image_present(image):
         return
@@ -307,21 +325,8 @@ def container_exists(name=DEFAULT_CONTAINER_NAME):
     return out != ""
 
 
-def target_healthy(control_sock=DEFAULT_CONTROL_SOCK, name=DEFAULT_CONTAINER_NAME):
-    # the vhost data path on this host is the spdk target container plus its
-    # control socket. the target is deployed lazily on first activate, so a host
-    # with no target yet is not "broken" (nothing to fence) -> healthy. a
-    # deployed target that exited/crashed or lost its control sock means live
-    # vhost volumes here are dead -> unhealthy.
-    if not container_exists(name):
-        return True
-    if not is_running(name):
-        return False
-    return _control_sock_ready(control_sock)
-
-
 def target_running(control_sock, name):
-    # connectivity check (distinct from target_healthy's fencing semantics): this host
-    # can serve vhost only if the spdk target container is up and its admin socket
-    # answers. no container / dead container / dead socket -> not running.
+    # connectivity check: this host can serve vhost only if the spdk target container
+    # is up and its admin socket answers. no container / dead container / dead socket
+    # -> not running.
     return container_exists(name) and is_running(name) and _control_sock_ready(control_sock)
