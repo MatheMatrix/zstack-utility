@@ -270,7 +270,7 @@ def deploy_libvirt_tls_certs(host_post_info):
 
 @with_arch(todo_list=['x86_64'], host_arch=host_info.host_arch)
 def check_nested_kvm(host_post_info):
-    """aarch64 does not need to modprobe kvm"""
+    """Load x86 KVM modules and enable nested virtualization."""
     enabled_nested_flag = False
     # enable nested kvm
     command = "cat /sys/module/kvm_intel/parameters/nested"
@@ -309,6 +309,22 @@ def check_nested_kvm(host_post_info):
     modprobe_arg.name = 'tun'
     modprobe_arg.state = 'present'
     modprobe(modprobe_arg, host_post_info)
+
+
+@with_arch(todo_list=['aarch64'], host_arch=host_info.host_arch)
+def load_alinux4_arm_kvm_module(host_post_info):
+    if releasever != "alinux4":
+        return
+
+    modprobe_arg = ModProbeArg()
+    modprobe_arg.name = 'kvm'
+    modprobe_arg.state = 'present'
+    modprobe(modprobe_arg, host_post_info)
+
+    command = "mkdir -p /etc/modules-load.d && echo kvm > /etc/modules-load.d/kvm.conf"
+    host_post_info.post_label = "ansible.shell.persist.kvm.module"
+    host_post_info.post_label_param = "kvm"
+    run_remote_command(command, host_post_info)
 
 
 def load_zstacklib():
@@ -1214,6 +1230,7 @@ def check_is_remote_cube():
 
 check_is_remote_cube()
 check_nested_kvm(host_post_info)
+load_alinux4_arm_kvm_module(host_post_info)
 install_kvm_pkg()
 copy_tools()
 copy_kvm_files()
