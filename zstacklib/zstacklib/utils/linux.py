@@ -2185,10 +2185,11 @@ def enable_process_coredump(pid):
     shell.run('prlimit --core=%d --pid %s' % (memsize, pid))
 
 def set_vm_priority(pid, priorityConfig):
-    cmd = shell.ShellCmd("virsh schedinfo %s --set cpu_shares=%s --live" % (priorityConfig.vmUuid, priorityConfig.cpuShares))
-    cmd(is_exception=False)
-    if cmd.return_code != 0:
-        logger.warn("set vm %s cpu_shares failed" % priorityConfig.vmUuid)
+    for scope in ["--live", "--config"]:
+        cmd = shell.ShellCmd("virsh schedinfo %s --set cpu_shares=%s %s" % (priorityConfig.vmUuid, priorityConfig.cpuShares, scope))
+        cmd(is_exception=False)
+        if cmd.return_code != 0:
+            logger.warn("set vm %s %s cpu_shares failed" % (priorityConfig.vmUuid, scope[2:]))
 
     oom_score_adj_path = "/proc/%s/oom_score_adj" % pid
     if write_file(oom_score_adj_path, priorityConfig.oomScoreAdj) is None:
