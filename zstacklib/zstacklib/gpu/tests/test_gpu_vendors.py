@@ -33,6 +33,12 @@ class TestGPUBase(unittest.TestCase):
         
         result = GPUBase.normalize_pci_address("0000:3B:00.0")
         self.assertEqual(result, "0000:3b:00.0")
+
+    def test_normalize_pci_address_with_hygon_suffix(self):
+        from zstacklib.gpu.base import GPUBase
+
+        result = GPUBase.normalize_pci_address("0000:06:00.0 --> SN: TRCW390010030401")
+        self.assertEqual(result, "0000:06:00.0")
     
     def test_parse_unit_value(self):
         """Test unit value parsing"""
@@ -570,6 +576,56 @@ class TestHaiguangGetPciOnlyCandidates(unittest.TestCase):
         device_names = {"0000:18:00.1": {"Class": "3D controller", "Vendor": "Haiguang", "Device": "DCU"}}
         candidates = Haiguang.get_pci_only_candidates(device_ids, device_names)
         self.assertEqual(candidates, [])
+
+
+class TestHaiguang(unittest.TestCase):
+    """Test Haiguang vendor implementation."""
+
+    def test_parse_basic_info_accepts_pci_bus_with_serial_suffix(self):
+        from zstacklib.gpu.vendors.haiguang import Haiguang
+
+        output = """
+{
+  "card0": {
+    "Serial Number": "TRCW390010030401",
+    "PCI Bus": "0000:06:00.0 --> SN: TRCW390010030401",
+    "Max Graphics Package Power (W)": "300.0",
+    "Available memory size (MiB)": "65536"
+  }
+}
+"""
+        infos = Haiguang.parse_basic_info(output)
+
+        self.assertEqual(len(infos), 1)
+        self.assertEqual(infos[0].pci_address, "0000:06:00.0")
+        self.assertEqual(infos[0].serial_number, "TRCW390010030401")
+        self.assertEqual(infos[0].power, "300.0")
+        self.assertEqual(infos[0].memory, "65536 MiB")
+
+    def test_parse_metrics_accepts_pci_bus_with_serial_suffix(self):
+        from zstacklib.gpu.vendors.haiguang import Haiguang
+
+        output = """
+{
+  "card0": {
+    "Serial Number": "TRCW390010030401",
+    "PCI Bus": "0000:06:00.0 --> SN: TRCW390010030401",
+    "Average Graphics Package Power (W)": "108.0",
+    "Temperature (Sensor junction) (C)": "70.0",
+    "HCU use (%)": "3.0",
+    "HCU memory use (%)": "5"
+  }
+}
+"""
+        metrics = Haiguang.parse_metrics(output)
+
+        self.assertEqual(len(metrics), 1)
+        self.assertEqual(metrics[0].pci_address, "0000:06:00.0")
+        self.assertEqual(metrics[0].serial_number, "TRCW390010030401")
+        self.assertEqual(metrics[0].power_draw, 108.0)
+        self.assertEqual(metrics[0].temperature, 70.0)
+        self.assertEqual(metrics[0].utilization, 3.0)
+        self.assertEqual(metrics[0].memory_utilization, 5.0)
 
 
 class TestKunlunxinGetPciOnlyCandidates(unittest.TestCase):

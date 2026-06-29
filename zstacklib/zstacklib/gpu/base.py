@@ -623,11 +623,8 @@ class GPUBase(object):
 
         Converts "00000000:3B:00.0" to "0000:3B:00.0"
         """
-        pci_address = pci_address.strip().lower()
-        # Remove 8-char domain prefix (e.g., 00000000:3B:00.0 -> 0000:3B:00.0)
-        if len(pci_address.split(':')[0]) == 8:
-            pci_address = pci_address[4:]
-        return pci_address
+        from zstacklib.utils.pci import normalize_pci_address
+        return normalize_pci_address(pci_address)
 
     @staticmethod
     def parse_unit_value(value, target_unit=None):
