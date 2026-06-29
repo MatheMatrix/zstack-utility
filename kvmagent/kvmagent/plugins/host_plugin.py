@@ -2094,7 +2094,7 @@ if __name__ == "__main__":
             update_qemu_cmd = "export YUM0={0};"
             if releasever in ['c74', 'c76', 'c79', 'h76c', 'h79c']:
                 update_qemu_cmd += "yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} swap -y -- remove qemu-img-ev -- install qemu-img " \
-                              "&& yum remove qemu-kvm-ev qemu-kvm-common-ev -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} update " \
+                              "&& yum remove qemu-kvm-ev qemu-kvm-common-ev qemu-kvm-block-cbd -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} update " \
                               "qemu-storage-daemon -y && yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} install qemu-kvm qemu-kvm-common -y && "
             else:
                 update_qemu_cmd += " yum --disablerepo=* --enablerepo=zstack-mn,qemu-kvm-ev-mn{1} update qemu-storage-daemon -y;"
