@@ -89,6 +89,7 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
     HCT_CCP_BIND_SCRIPT = "/opt/hygon/hct/hct/script/hct_ccp_bind.py"
     HCTCONFIG_SCRIPT = "/opt/hygon/hct/hct/script/hctconfig"
     HCT_START_QEMU_SCRIPT = "/opt/hygon/hct/hct/script/start_qemu.py"
+    MDEV_DEVICES_PATH = "/sys/bus/mdev/devices"
 
     # HTTP endpoints
     GET_HYGON_CCP_DEVICES = "/hygonccpdevice/get"
@@ -120,16 +121,17 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
         """Initialize plugin and register HTTP routes if tools are available"""
         self.tools_available = self._check_tools_availability()
 
+        http_server = kvmagent.get_http_server()
+        http_server.register_async_uri(self.CHECK_HYGON_TOOLS, self.check_hygon_tools)
+
         if not self.tools_available:
-            logger.warning("Hygon tools not available, plugin will not handle requests")
+            logger.warning("Hygon tools not available, plugin will only handle check requests")
             return
 
         # Register HTTP routes
-        http_server = kvmagent.get_http_server()
         http_server.register_async_uri(self.GET_HYGON_CCP_DEVICES, self.get_hygon_ccp_devices)
         http_server.register_async_uri(self.GENERATE_HYGON_MDEV_DEVICES, self.generate_hygon_mdev_devices)
         http_server.register_async_uri(self.UNGENERATE_HYGON_MDEV_DEVICES, self.ungenerate_hygon_mdev_devices)
-        http_server.register_async_uri(self.CHECK_HYGON_TOOLS, self.check_hygon_tools)
 
         logger.info("Hygon device plugin started successfully")
 
@@ -499,11 +501,16 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
 
             Example:
                 /sys/bus/mdev/devices/87bb66cc-390b-48c2-86f4-2da3ee78f581/
-                    vendor/use  -> contains "1" (VM device)
-                    vendor/idx  -> contains "65" (maps to a CCP device)
+                    vendor/use      -> contains "1" (VM device, old driver)
+                    vendor/idx      -> contains the vendor index
+                    vendor/address  -> contains the CCP PCI BDF (new driver)
 
         Vendor Index Mapping Logic:
-            The vendor_idx is calculated differently based on device usage:
+            New Hygon drivers expose vendor/address for direct PCI BDF mapping,
+            but may not expose vendor/use. In that case, vendor_idx is compared
+            against the requested maxProgress/maxQemuNum range to select VM
+            mdevs only. Old drivers expose vendor/use and vendor/idx, so the
+            vendor_idx is calculated differently based on device usage:
 
             For host process devices (use=0):
                 vendor_idx 0-15 maps directly to device_idx 0-15
@@ -571,7 +578,7 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
         # Check existing mdev devices for idempotency
         # Only generate mdev devices if NO mdev exists on host
         # This prevents unnecessary regeneration when some mdevs are accidentally deleted
-        existing_mdev_bindings = self._collect_mdev_bindings(device_idx_to_pci_bdf)
+        existing_mdev_bindings = self._collect_mdev_bindings(device_idx_to_pci_bdf, max_progress, max_qemu_num)
         existing_vm_mdev_count = len(existing_mdev_bindings)
 
         logger.info("Idempotency check: existing VM mdev count=%d (maxQemuNum=%d)" %
@@ -600,7 +607,7 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
             return jsonobject.dumps(rsp)
 
         # Collect mdev bindings after generation
-        mdev_bindings = self._collect_mdev_bindings(device_idx_to_pci_bdf)
+        mdev_bindings = self._collect_mdev_bindings(device_idx_to_pci_bdf, max_progress, max_qemu_num)
         rsp.mdevBindings = mdev_bindings
         rsp.generated = True
 
@@ -613,7 +620,7 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
 
         return jsonobject.dumps(rsp)
 
-    def _collect_mdev_bindings(self, device_idx_to_pci_bdf):
+    def _collect_mdev_bindings(self, device_idx_to_pci_bdf, max_progress=None, max_qemu_num=None):
         """
         Collect mdev device bindings from /sys/bus/mdev/devices/
 
@@ -634,55 +641,87 @@ class HygonDevicePlugin(kvmagent.KvmAgent):
 
         Args:
             device_idx_to_pci_bdf: Mapping from device_idx (0-15) to PCI BDF
+            max_progress: Number of host-process mdevs per CCP device. Used
+                only when vendor/use is absent and vendor/address is present.
+            max_qemu_num: Number of VM mdevs per CCP device. Used only when
+                vendor/use is absent and vendor/address is present.
 
         Returns:
             list: List of mdev binding JsonObjects for Hygon CCP devices only
         """
-        mdev_devices_path = "/sys/bus/mdev/devices"
+        mdev_devices_path = self.MDEV_DEVICES_PATH
         mdev_bindings = []
 
         if not os.path.exists(mdev_devices_path):
             return mdev_bindings
 
         num_devices = len(device_idx_to_pci_bdf)
+        pci_bdf_to_device_idx = dict((v, k) for k, v in device_idx_to_pci_bdf.items())
         logger.debug("Number of CCP devices: %d" % num_devices)
 
         for mdev_uuid in os.listdir(mdev_devices_path):
             mdev_path = os.path.join(mdev_devices_path, mdev_uuid)
             vendor_use_path = os.path.join(mdev_path, "vendor", "use")
             vendor_idx_path = os.path.join(mdev_path, "vendor", "idx")
+            vendor_address_path = os.path.join(mdev_path, "vendor", "address")
 
-            if not os.path.exists(vendor_use_path) or not os.path.exists(vendor_idx_path):
+            if not os.path.exists(vendor_idx_path):
                 # This mdev device doesn't have vendor-specific attributes
                 # (not a Hygon CCP device), skip silently
                 continue
 
             try:
-                with open(vendor_use_path, 'r') as f:
-                    use_flag = int(f.read().strip())
-                if use_flag != self.MDEV_USED_BY_VM:  # Only VM devices (use=1)
-                    continue
-
                 with open(vendor_idx_path, 'r') as f:
                     vendor_idx = int(f.read().strip())
 
-                # Calculate device_idx from vendor_idx
-                # For VM devices: vendor_idx starts from 16, every 4 consecutive indices map to one device
-                if vendor_idx < 16:
-                    # This shouldn't happen for use=1 devices, but handle gracefully
-                    logger.debug("skip mdev device[uuid:%s] vendor_idx=%d (< 16 for VM device)" %
-                               (mdev_uuid, vendor_idx))
+                pci_bdf = None
+                if os.path.exists(vendor_address_path):
+                    with open(vendor_address_path, 'r') as f:
+                        pci_bdf = f.read().strip()
+                    if pci_bdf and pci_bdf not in pci_bdf_to_device_idx:
+                        logger.debug("skip mdev device[uuid:%s] pciBdf=%s (not in CCP device list)" %
+                                     (mdev_uuid, pci_bdf))
+                        continue
+
+                if os.path.exists(vendor_use_path):
+                    with open(vendor_use_path, 'r') as f:
+                        use_flag = int(f.read().strip())
+                    if use_flag != self.MDEV_USED_BY_VM:  # Only VM devices (use=1)
+                        continue
+                elif pci_bdf and max_progress is not None and max_qemu_num is not None:
+                    # Some Hygon hct drivers no longer expose vendor/use. In
+                    # that layout, vendor_idx is per-CCP-device slot index:
+                    # [0, maxProgress) are host-process mdevs and
+                    # [maxProgress, maxProgress + maxQemuNum) are VM mdevs.
+                    if vendor_idx < max_progress or vendor_idx >= max_progress + max_qemu_num:
+                        logger.debug("skip mdev device[uuid:%s] vendor_idx=%d (outside VM range [%d, %d))" %
+                                     (mdev_uuid, vendor_idx, max_progress, max_progress + max_qemu_num))
+                        continue
+                    use_flag = self.MDEV_USED_BY_VM
+                else:
+                    # Without vendor/use or enough range information, this mdev
+                    # cannot be safely identified as a VM Hygon CCP mdev.
                     continue
 
-                device_idx = (vendor_idx - 16) // 4
+                if not pci_bdf:
+                    # Calculate device_idx from vendor_idx.
+                    # For old VM devices: vendor_idx starts from 16, every 4
+                    # consecutive indices map to one device.
+                    if vendor_idx < 16:
+                        # This shouldn't happen for use=1 devices, but handle gracefully
+                        logger.debug("skip mdev device[uuid:%s] vendor_idx=%d (< 16 for VM device)" %
+                                     (mdev_uuid, vendor_idx))
+                        continue
 
-                if device_idx not in device_idx_to_pci_bdf:
-                    logger.debug("skip mdev device[uuid:%s] vendor_idx=%d -> device_idx=%d (out of range, num_devices=%d)" %
-                               (mdev_uuid, vendor_idx, device_idx, num_devices))
-                    continue
+                    device_idx = (vendor_idx - 16) // 4
 
-                # Map device_idx to PCI BDF
-                pci_bdf = device_idx_to_pci_bdf[device_idx]
+                    if device_idx not in device_idx_to_pci_bdf:
+                        logger.debug("skip mdev device[uuid:%s] vendor_idx=%d -> device_idx=%d (out of range, num_devices=%d)" %
+                                     (mdev_uuid, vendor_idx, device_idx, num_devices))
+                        continue
+
+                    # Map device_idx to PCI BDF
+                    pci_bdf = device_idx_to_pci_bdf[device_idx]
 
                 binding = jsonobject.JsonObject()
                 binding.mdevUuid = mdev_uuid
