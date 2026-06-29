@@ -4868,7 +4868,7 @@ class Vm(object):
                     else:
                         if vm_on_source is None:
                             logger.info('vm[uuid:%s] is no longer on source host, migration actually succeeded despite libvirt error: %s' % (cmd.vmUuid, err))
-                            return
+                            return True
 
                     if "cannot set up guest memory" in err:
                         raise kvmagent.KvmError("No enough physical memory for guest")
