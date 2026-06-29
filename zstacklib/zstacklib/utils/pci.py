@@ -194,6 +194,13 @@ def normalize_pci_address(pci_address):
     if not addr:
         return None
 
+    match = re.search(
+        r'(?:0x)?[0-9a-fA-F]{1,8}:(?:0x)?[0-9a-fA-F]{1,2}:'
+        r'(?:0x)?[0-9a-fA-F]{1,2}\.(?:0x)?[0-9a-fA-F]+',
+        addr)
+    if match:
+        addr = match.group(0)
+
     # Remove 0x prefixes if present
     addr = re.sub(r'0x', '', addr, flags=re.IGNORECASE)
 
