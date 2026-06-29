@@ -971,6 +971,30 @@ class TestHostPluginSetIpOnHostNetworkInterface:
         rsp = json.loads(result)
         assert rsp['success'] is True
 
+    def test_set_ipv6_on_host_network_interface(self):
+        plugin = _make_plugin()
+        plugin._has_vlan_or_bridge = MagicMock(return_value=False)
+
+        from zstacklib.utils import shell
+        shell.call = MagicMock()
+
+        req = _make_req({
+            'interfaceName': 'eth1',
+            'ipAddress': 'fd66:6:6:6:1:1:1:f257',
+            'netmask': '64',
+            'prefixLength': 64,
+            'gateway': None,
+            'oldIpAddress': None,
+            'oldNetmask': None,
+            'oldGateway': None,
+        })
+        result = plugin.set_ip_on_host_network_interface(req)
+        rsp = json.loads(result)
+        assert rsp['success'] is True
+        calls = [c[0][0] for c in shell.call.call_args_list]
+        assert 'ip -6 addr flush dev eth1 scope global' in calls
+        assert 'ip -6 addr add fd66:6:6:6:1:1:1:f257/64 dev eth1' in calls
+
 
 @pytest.mark.kvmagent
 class TestHostPluginCheckInterfaceVlan:

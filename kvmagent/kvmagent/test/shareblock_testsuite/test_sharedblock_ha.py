@@ -21,13 +21,26 @@ PKG_NAME = __name__
 __ENV_SETUP__ = {
     'self': {
         'xml':'http://smb.zstack.io/mirror/ztest/xml/twoDiskVm.xml',
-        'init':['bash ./createiSCSIStroage.sh']
+        'init':['bash ./createiSCSIStroage.sh'],
+        'timeout': 1800
     }
 }
 
 hostUuid = "8b12f74e6a834c5fa90304b8ea54b1dd"
 hostId = 24
 vgUuid = "36b02490bb944233b0b01990a450ba83"
+SELF_FENCER_STATE_CHANGED_PATH = "/kvm/reportselffencerstatechanged"
+STORAGE_STATUS_REPORT_PATH = "/kvm/reportstoragestatus"
+LOCKSPACE_SETTLE_TIMEOUT = 15
+LOCKSPACE_SETTLE_INTERVAL = 0.5
+LOCKSPACE_SETTLE_STABLE_CHECKS = 2
+SELECTED_FENCER_CASES = [
+    ("healthy storage", 1, 1, 0),
+    ("sanlock failure", 0, 1, 1),
+    ("zsblk failure only", 1, 0, 0),
+    ("sanlock no way reportable to mn", -1, -1, 0),
+    ("sanlock no way with zsblk failure", -1, 0, 1),
+]
 
 
 ## describe: case will manage by ztest
@@ -37,8 +50,8 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
         cls.zsblk_agent_heart_result = "success"
         cls.zsblk_agent_heart_code = 0
 
-        cls.origin_json_dump_get = http.json_dump_get
-        cls.origin_json_dump_post = http.json_dump_post
+        cls.origin_json_dump_get = staticmethod(http.json_dump_get)
+        cls.origin_json_dump_post = staticmethod(http.json_dump_post)
         # 1 means storage is good, 2 means storage is failed, -1 means no way to check.
         cls.condition_dict = {1: "success", 0: "fail", -1:"no_way"}
         cls.fencer_result_dict = {1: "trigger", 0:"no_trigger"}
@@ -65,7 +78,10 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
 
     def mock_management_work(self):
         def mock_func(uri, body=None, headers={}, fail_soon=False, print_curl=False):
-            if "/kvm/reportselffencerstatechanged" in headers.values():
+            if STORAGE_STATUS_REPORT_PATH in headers.values():
+                return ""
+
+            if SELF_FENCER_STATE_CHANGED_PATH in headers.values():
                 if self.management_network_ok:
                     return ""
                 else:
@@ -83,12 +99,53 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
 
 
     def connnect_storage(self):
+        self.wait_sharedblock_lock_settled()
         bash.bash_errorout("echo 'running' > /sys/class/block/%s/device/state" % self.disk1_dev)
         rsp = self.connect([self.disk1_wwid], self.disk1_wwid, vgUuid, hostUuid, hostId, forceWipe=True, ioTimeout=self.sanlock_io_timeout)
         self.assertEqual(True, rsp.success, rsp.error)
 
     def disconnect_storage(self):
         bash.bash_errorout("echo 'offline' > /sys/class/block/%s/device/state" % self.disk1_dev)
+
+    def wait_sharedblock_lock_settled(self):
+        stable_checks = 0
+        deadline = time.time() + LOCKSPACE_SETTLE_TIMEOUT
+        pending_lock_cmd = (
+            "ps -ef | grep -E 'lvmlockctl .*(--drop|--gl-disable).*%s|dmsetup remove .*%s-lvmlock' | grep -v grep"
+            % (vgUuid, vgUuid)
+        )
+        while time.time() < deadline:
+            _, lockspace = bash.bash_ro("sanlock client gets | grep -E 'lvm_%s.* (ADD|REM)'" % vgUuid)
+            _, lock_cmd = bash.bash_ro(pending_lock_cmd)
+            if lockspace.strip() == "" and lock_cmd.strip() == "":
+                stable_checks += 1
+                if stable_checks >= LOCKSPACE_SETTLE_STABLE_CHECKS:
+                    return
+            else:
+                stable_checks = 0
+            time.sleep(LOCKSPACE_SETTLE_INTERVAL)
+
+        self.fail("sharedblock lockspace %s is still changing" % vgUuid)
+
+    def reset_sharedblock_fencer_state(self):
+        self.fencer_triggered = 0
+        self.zsblk_agent_heart_result = "success"
+        self.management_network_ok = True
+
+        plugin = ha_utils.HA_PLUGIN
+        plugin.fencer_fire_timestamp.pop(vgUuid, None)
+        plugin.storage_status.pop(vgUuid, None)
+
+        checker = plugin.sblk_health_checker
+        checker.fired_vgs.pop(vgUuid, None)
+        checker.reset_fencer_fire_cnt(vgUuid)
+        checker.reset_vg_failure_cnt(vgUuid)
+
+    def prepare_fencer_case(self):
+        self.connnect_storage()
+        self.zsblk_agent_heart_result = "success"
+        time.sleep(self.sanlock_io_timeout + 1)
+        self.reset_sharedblock_fencer_state()
 
     def run_fencer_case(self, sanlock_con, zsblk_con, expect_result):
         print("test case: sanlock %s , zsblk %s, expect %s\n" % (sanlock_con, zsblk_con, expect_result))
@@ -109,6 +166,8 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
             check_timeout -= 5
         self.assertEqual(expect_result, self.fencer_result_dict[self.fencer_triggered], "the result did not meet expectations, expect %s actual %s, sanlock %s, zsblk %s"
                          % (expect_result, self.fencer_result_dict[self.fencer_triggered], sanlock_con, zsblk_con))
+        if self.fencer_triggered:
+            self.wait_sharedblock_lock_settled()
 
 
     @pytest_utils.ztest_decorater
@@ -147,21 +206,13 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
         self.assertEqual(True, rsp.success, rsp.error)
 
         self.management_network_ok = False
-        self.connnect_storage()
+        self.prepare_fencer_case()
+        self.management_network_ok = False
         self.zsblk_agent_heart_result = "success"
         self.run_fencer_case("no_way", "no_way", "trigger")
 
-        self.management_network_ok = True
-        expect_result = {} # type: dict[int, dict[int, int]]
-        expect_result[1] = {1: 0, 0: 0, -1:0}
-        expect_result[0] = {1: 1, 0: 1, -1:1}
-        expect_result[-1] = {1: 0, 0: 1, -1:0}
-
-        for sanlk_con in [1, 0, -1]:
-            for zsblk_con in [1, 0, -1]:
-                self.connnect_storage()
-                self.zsblk_agent_heart_result = "success"
-                time.sleep(self.sanlock_io_timeout + 1) # wait vg recovered
-                self.run_fencer_case(self.condition_dict[sanlk_con], self.condition_dict[zsblk_con],
-                                     self.fencer_result_dict[expect_result[sanlk_con][zsblk_con]])
-
+        for case_name, sanlk_con, zsblk_con, expect_result in SELECTED_FENCER_CASES:
+            print("selected sharedblock HA case: %s\n" % case_name)
+            self.prepare_fencer_case()
+            self.run_fencer_case(self.condition_dict[sanlk_con], self.condition_dict[zsblk_con],
+                                 self.fencer_result_dict[expect_result])

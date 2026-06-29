@@ -31,6 +31,7 @@ from zstacklib.utils import http, lvm, ceph, pci, gpu
 from zstacklib.utils import qemu
 from zstacklib.utils import iptables
 from zstacklib.utils import iproute
+from zstacklib.utils import network_ipv6
 from zstacklib.utils import ebtables
 from zstacklib.utils import jsonobject
 from zstacklib.utils import lock
@@ -254,6 +255,7 @@ class SetIpOnHostNetworkInterfaceCmd(kvmagent.AgentCommand):
         self.oldGateway = None
         self.ipAddress = None
         self.netmask = None
+        self.prefixLength = None
         self.gateway = None
 
 
@@ -496,13 +498,7 @@ class HostNetworkBondingInventory(object):
         output = subprocess.check_output(
             ['ip', 'r', 'get', ip_addr]).decode('utf-8')
 
-        pattern = r'src ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
-        match = re.search(pattern, output)
-        if match:
-            src_addr = match.group(1)
-            return src_addr
-        else:
-            return None
+        return network_ipv6.extract_route_source_address(output)
 
 
 class HostNetworkInterfaceInventory(object):
@@ -702,13 +698,7 @@ class HostNetworkInterfaceInventory(object):
         output = subprocess.check_output(
             ['ip', 'r', 'get', ip_addr]).decode('utf-8')
 
-        pattern = r'src ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
-        match = re.search(pattern, output)
-        if match:
-            src_addr = match.group(1)
-            return src_addr
-        else:
-            return None
+        return network_ipv6.extract_route_source_address(output)
 
 
 class GetNumaTopologyResponse(kvmagent.AgentResponse):
@@ -1694,18 +1684,16 @@ class HostPlugin(kvmagent.KvmAgent):
 
         if self.host_socket is not None:
             self.host_socket.close()
-
-        try:
-            self.host_socket = socket.socket()
-        except socket.error as e:
             self.host_socket = None
 
-        ip_address = cmd.sendCommandUrl.split('/')[2].split(':')[0]
+        ip_address = network_ipv6.extract_url_host(cmd.sendCommandUrl)
         try:
+            self.host_socket = network_ipv6.create_tcp_socket_for_host(ip_address)
             self.host_socket.connect((ip_address, cmd.tcpServerPort))
 
         except socket.error as msg:
-            self.host_socket.close()
+            if self.host_socket is not None:
+                self.host_socket.close()
             self.host_socket = None
 
         self.start_write_to_server()
@@ -1805,8 +1793,7 @@ class HostPlugin(kvmagent.KvmAgent):
         qemu_img_version = shell.call(
             "qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1")
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
-        ipV4Addrs = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if
-                                         x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
+        ip_addrs = network_ipv6.collect_reportable_agent_addresses(iproute)
 
 
         def run_dmidecode(cmd, default=''):
@@ -1852,7 +1839,7 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.qemuImgVersion = qemu_img_version
         rsp.libvirtVersion = self.libvirt_version
         rsp.libvirtPackageVersion = linux.get_libvirt_package_version()
-        rsp.ipAddresses = ipV4Addrs
+        rsp.ipAddresses = ip_addrs
         rsp.cpuArchitecture = platform.machine()
         rsp.uptime = shell.call('uptime -s').strip()
         rsp.iscsiInitiatorName = linux.get_iscsi_initiator_name()
@@ -2974,26 +2961,35 @@ done
             rsp.success = False
             return jsonobject.dumps(rsp)
 
+        is_ipv6_address = cmd.ipAddress is not None and ':' in cmd.ipAddress
+        old_is_ipv6_address = cmd.oldIpAddress is not None and ':' in cmd.oldIpAddress
         if cmd.ipAddress is not None:
             try:
-                # zs-network-setting -i eth0 192.168.1.10 255.255.255.0
-                # 192.168.1.1
-                if cmd.gateway is not None:
-                    shell.call('/usr/local/bin/zs-network-setting -i %s %s %s %s' %
-                               (cmd.interfaceName, cmd.ipAddress, cmd.netmask, cmd.gateway))
+                if is_ipv6_address:
+                    prefix_length = cmd.prefixLength if cmd.prefixLength is not None else cmd.netmask
+                    shell.call('ip -6 addr flush dev %s scope global' % shell_quote(cmd.interfaceName))
+                    shell.call('ip -6 addr add %s/%s dev %s' %
+                               (shell_quote(cmd.ipAddress), prefix_length, shell_quote(cmd.interfaceName)))
+                    shell.call('ip link set dev %s up' % shell_quote(cmd.interfaceName))
                 else:
-                    # zs-network-setting -d eth0
-                    shell.call('/usr/local/bin/zs-network-setting -d %s' %
-                               cmd.interfaceName)
-                    bash_o('/usr/local/bin/zs-network-setting -i %s %s %s' %
-                           (cmd.interfaceName, cmd.ipAddress, cmd.netmask))
+                    # zs-network-setting -i eth0 192.168.1.10 255.255.255.0
+                    # 192.168.1.1
+                    if cmd.gateway is not None:
+                        shell.call('/usr/local/bin/zs-network-setting -i %s %s %s %s' %
+                                   (cmd.interfaceName, cmd.ipAddress, cmd.netmask, cmd.gateway))
+                    else:
+                        # zs-network-setting -d eth0
+                        shell.call('/usr/local/bin/zs-network-setting -d %s' %
+                                   cmd.interfaceName)
+                        bash_o('/usr/local/bin/zs-network-setting -i %s %s %s' %
+                               (cmd.interfaceName, cmd.ipAddress, cmd.netmask))
             except Exception as e:
                 rsp.error = 'unable to add ip on %s, because %s' % (
                     cmd.interfaceName, str(e))
                 rsp.success = False
 
             # After configuring the ip, check the connectivity
-            if cmd.gateway is not None and shell.run(
+            if not is_ipv6_address and cmd.gateway is not None and shell.run(
                     'ping -c 5 -W 1 %s > /dev/null 2>&1' % cmd.gateway) != 0:
                 shell.call('/usr/local/bin/zs-network-setting -d %s' %
                            cmd.interfaceName)
@@ -3013,6 +3009,8 @@ done
                 # mv ip on interface
                 shell.call('/usr/local/bin/zs-network-setting -d %s' %
                            cmd.interfaceName)
+                if old_is_ipv6_address:
+                    shell.call('ip -6 addr flush dev %s scope global' % shell_quote(cmd.interfaceName))
             except Exception as e:
                 rsp.error = 'unable to delete ip on %s, because %s' % (
                     cmd.interfaceName, str(e))

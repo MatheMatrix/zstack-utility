@@ -1165,7 +1165,7 @@ class TestNetworkPluginCreateMacVlanEth:
 
 @pytest.mark.kvmagent
 class TestNetworkPluginCheckVxlanCidr:
-    def test_check_vxlan_cidr_success(self):
+    def test_check_vxlan_cidr_success(self, monkeypatch):
         plugin = _make_plugin()
         linux = cast(_LinuxModule, cast(object, importlib.import_module("zstacklib.utils.linux")))
         class _LegacyDict:
@@ -1180,8 +1180,8 @@ class TestNetworkPluginCheckVxlanCidr:
             def keys(self) -> list[str]:
                 return list(self._data.keys())
 
-        linux.get_nics_by_cidr = MagicMock(return_value=[_LegacyDict({'eth0': '10.0.0.1'})])
-        linux.is_vif_on_bridge = MagicMock(return_value=False)
+        monkeypatch.setattr(linux, "get_nics_by_cidr", MagicMock(return_value=[_LegacyDict({'eth0': '10.0.0.1'})]))
+        monkeypatch.setattr(linux, "is_vif_on_bridge", MagicMock(return_value=False))
 
         req = _make_req({'cidr': '10.0.0.0/24', 'physicalInterfaceName': None, 'vtepip': None})
         result = plugin.check_vxlan_cidr(req)
@@ -1190,7 +1190,7 @@ class TestNetworkPluginCheckVxlanCidr:
         assert rsp['success'] is True
         assert rsp['vtepIp'] == '10.0.0.1'
 
-    def test_check_vxlan_cidr_multiple_interfaces_error(self):
+    def test_check_vxlan_cidr_multiple_interfaces_error(self, monkeypatch):
         plugin = _make_plugin()
         linux = cast(_LinuxModule, cast(object, importlib.import_module("zstacklib.utils.linux")))
 
@@ -1206,11 +1206,11 @@ class TestNetworkPluginCheckVxlanCidr:
             def keys(self) -> list[str]:
                 return list(self._data.keys())
 
-        linux.get_nics_by_cidr = MagicMock(return_value=[
+        monkeypatch.setattr(linux, "get_nics_by_cidr", MagicMock(return_value=[
             _LegacyDict({'eth0': '10.0.0.1'}),
             _LegacyDict({'eth1': '10.0.0.1'}),
-        ])
-        linux.is_vif_on_bridge = MagicMock(return_value=False)
+        ]))
+        monkeypatch.setattr(linux, "is_vif_on_bridge", MagicMock(return_value=False))
 
         req = _make_req({'cidr': '10.0.0.0/24', 'physicalInterfaceName': None, 'vtepip': None})
         result = plugin.check_vxlan_cidr(req)
@@ -1219,7 +1219,7 @@ class TestNetworkPluginCheckVxlanCidr:
         assert rsp['success'] is False
         assert 'multiple interfaces' in cast(str, rsp['error'])
 
-    def test_check_vxlan_cidr_filters_by_interface(self):
+    def test_check_vxlan_cidr_filters_by_interface(self, monkeypatch):
         plugin = _make_plugin()
         linux = cast(_LinuxModule, cast(object, importlib.import_module("zstacklib.utils.linux")))
 
@@ -1235,11 +1235,11 @@ class TestNetworkPluginCheckVxlanCidr:
             def keys(self) -> list[str]:
                 return list(self._data.keys())
 
-        linux.get_nics_by_cidr = MagicMock(return_value=[
+        monkeypatch.setattr(linux, "get_nics_by_cidr", MagicMock(return_value=[
             _LegacyDict({'eth0': '10.0.0.2'}),
             _LegacyDict({'eth1': '10.0.0.3'}),
-        ])
-        linux.is_vif_on_bridge = MagicMock(return_value=False)
+        ]))
+        monkeypatch.setattr(linux, "is_vif_on_bridge", MagicMock(return_value=False))
 
         req = _make_req({'cidr': '10.0.0.0/24', 'physicalInterfaceName': 'eth1', 'vtepip': None})
         result = plugin.check_vxlan_cidr(req)

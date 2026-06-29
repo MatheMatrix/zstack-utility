@@ -58,6 +58,22 @@ def _make_agent():
     return agent
 
 
+def _make_bm_config_cmd():
+    cmd = MagicMock()
+    cmd.dhcpInterface = "eth0"
+    cmd.pxeNicMac = "aa-bb-cc-dd-ee-ff"
+    cmd.bmUuid = "bm-001"
+    cmd.imageUuid = "img-001"
+    cmd.preconfigurationType = "kickstart"
+    cmd.preconfigurationContent = "{{ REPO_URL }} {{ PRE_SCRIPTS }} {{ POST_SCRIPTS }}"
+    cmd.username = "root"
+    cmd.password = "password"
+    cmd.forceInstall = False
+    cmd.nicCfgs = "[]"
+    cmd.customPreconfigurations = None
+    return cmd
+
+
 def _mock_capacity(agent, total=10**12, avail=5 * 10**11):
     """Patch _get_capacity to return predictable values."""
     agent._get_capacity = MagicMock(return_value=(total, total - (total - avail)))
@@ -117,6 +133,72 @@ class TestPxeInit:
         assert rsp["success"] is True
         agent._stop_pxe_server.assert_called_once()
         agent._start_pxe_server.assert_called_once()
+
+    @patch("builtins.open", new_callable=mock_open)
+    def test_init_writes_bracketed_ipv6_management_proxy(self, mocked_open):
+        agent = _make_agent()
+        _mock_capacity(agent)
+
+        agent._get_ip_address = MagicMock(return_value="192.168.1.10")
+        agent._get_mac_address = MagicMock(return_value="aa:bb:cc:dd:ee:ff")
+        agent._is_belong_to_same_subnet = MagicMock(return_value=True)
+        agent._start_pxe_server = MagicMock()
+        agent._stop_pxe_server = MagicMock()
+
+        linux_mod = sys.modules["zstacklib.utils.linux"]
+        linux_mod.get_netmask_of_nic = MagicMock(return_value="255.255.255.0")
+
+        module.bash_r = MagicMock(return_value=0)
+        mock_os = MagicMock(wraps=os)
+        mock_os.path.exists = MagicMock(return_value=True)
+        mock_os.path.islink = MagicMock(return_value=True)
+        mock_os.remove = MagicMock()
+        mock_os.symlink = MagicMock()
+        mock_os.makedirs = MagicMock()
+        module.os = mock_os
+
+        result = agent.init(_make_req({
+            "uuid": "pxe-001",
+            "storagePath": "/var/lib/zstack/baremetal/storage",
+            "dhcpInterface": "eth0",
+            "dhcpRangeBegin": "192.168.1.100",
+            "dhcpRangeEnd": "192.168.1.200",
+            "dhcpRangeNetmask": "255.255.255.0",
+            "managementIp": "2001:db8::10",
+            "managementPort": 8080,
+        }))
+
+        rsp = _load_rsp(result)
+        assert rsp["success"] is True
+        mocked_open.assert_any_call("/etc/nginx/conf.d/pxe_mn/zstack_mn.conf", 'w')
+        mocked_open().write.assert_any_call("location / { proxy_pass http://[2001:db8::10]:8080/; }")
+
+    def test_select_interface_ip_prefers_ipv4_address(self):
+        output = """
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0
+    inet6 2001:db8::10/64 scope global
+"""
+
+        assert module.PxeServerAgent._select_interface_ip(output, "eth0") == "192.168.1.10"
+
+    def test_select_interface_ip_uses_global_ipv6_when_ipv4_absent(self):
+        output = """
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet6 fe80::10/64 scope link
+    inet6 2001:db8::10/64 scope global
+"""
+
+        assert module.PxeServerAgent._select_interface_ip(output, "eth0") == "2001:db8::10"
+
+    def test_select_interface_ip_rejects_link_local_only_interface(self):
+        output = """
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet6 fe80::10/64 scope link
+"""
+
+        with pytest.raises(module.PxeServerError):
+            module.PxeServerAgent._select_interface_ip(output, "eth0")
 
     def test_init_fails_when_dhcp_range_not_in_subnet(self):
         agent = _make_agent()
@@ -326,6 +408,76 @@ class TestPxeCreateBmConfigs:
         rsp = _load_rsp(result)
         assert rsp["success"] is False
         assert "preconfiguration content not complete" in rsp["error"]
+
+    @patch("builtins.open", new_callable=mock_open)
+    def test_create_pxelinux_cfg_uses_bracketed_ipv6_url_host(self, mocked_open):
+        agent = _make_agent()
+        agent._get_ip_address = MagicMock(return_value="2001:db8::20")
+        cmd = _make_bm_config_cmd()
+        cmd.preconfigurationType = "autoinstall"
+        handles = {}
+
+        def open_side_effect(path, *args, **kwargs):
+            handle = mock_open().return_value
+            handles[path] = handle
+            return handle
+
+        mocked_open.side_effect = open_side_effect
+
+        mock_os = MagicMock(wraps=os)
+        mock_os.path.exists = MagicMock(return_value=False)
+        mock_os.symlink = MagicMock()
+        module.os = mock_os
+
+        agent._create_pxelinux_cfg(cmd)
+
+        pxe_cfg_file = os.path.join(agent.PXELINUX_CFG_PATH, "01-" + cmd.pxeNicMac)
+        pxe_handle = handles.get(pxe_cfg_file)
+        assert pxe_handle is not None
+        written = "\n".join(args[0][0] for args in pxe_handle.write.call_args_list)
+        assert "ftp://[2001:db8::20]/img-001" in written
+        assert "http://[2001:db8::20]:7773/ks/aa-bb-cc-dd-ee-ff/" in written
+
+    @patch("builtins.open", new_callable=mock_open)
+    def test_create_scripts_use_bracketed_ipv6_url_host(self, mocked_open):
+        agent = _make_agent()
+        cmd = _make_bm_config_cmd()
+
+        agent._create_pre_scripts(cmd, "2001:db8::20")
+        agent._create_post_scripts(cmd, "2001:db8::20")
+
+        written = "\n".join(args[0][0] for args in mocked_open().write.call_args_list)
+        assert "http://[2001:db8::20]:7771/zstack/asyncrest/sendcommand" in written
+        assert "ftp://[2001:db8::20]/zwatch-vm-agent" in written
+        assert "pushGatewayUrl:  http://[2001:db8::20]:9093" in written
+
+    def test_render_kickstart_template_uses_bracketed_ipv6_urls(self):
+        agent = _make_agent()
+        cmd = _make_bm_config_cmd()
+        agent._create_pre_scripts = MagicMock()
+        agent._create_post_scripts = MagicMock()
+        orig_template = module.Template
+
+        class SimpleTemplate:
+            def __init__(self, content):
+                self.content = content
+
+            def render(self, *args, **kwargs):
+                context = args[0] if args else kwargs
+                rendered = self.content
+                for key, value in context.items():
+                    rendered = rendered.replace("{{ %s }}" % key, str(value))
+                return rendered
+
+        module.Template = SimpleTemplate
+        try:
+            rendered = agent._render_kickstart_template(cmd, "2001:db8::20")
+        finally:
+            module.Template = orig_template
+
+        assert "ftp://[2001:db8::20]/img-001/" in rendered
+        assert "ftp://[2001:db8::20]/scripts/pre_aa-bb-cc-dd-ee-ff.sh" in rendered
+        assert "ftp://[2001:db8::20]/scripts/post_aa-bb-cc-dd-ee-ff.sh" in rendered
 
 
 # ---------------------------------------------------------------------------
