@@ -10,11 +10,17 @@ from zstacklib.utils import linux, lock
 from zstacklib.utils.rangeset import RangeSet
 from cherrypy._cpreqbody import Entity, Part, SizedReader
 
+try:
+    long
+except NameError:
+    long = int
+
 logger = logging.getLogger(__name__)
 BUFFER_SIZE = 16 * 1024 ** 2  # 16MB
 # Per-slice retry budget chosen to tolerate repeated weak-network read/EOF/hash
 # failures without keeping a broken upload task alive indefinitely.
 UPLOAD_SLICE_FAILURE_TOLERANCE = 20
+SUPPORTED_SLICE_HASH_ALGORITHMS = set(['md5', 'sha1', 'sha256', 'xxh3'])
 
 
 class RetryableUploadError(Exception):
@@ -59,6 +65,16 @@ def get_hasher(algorithm, default="md5"):
     if algorithm not in hashlib.algorithms_available:
         algorithm = default
     return getattr(hashlib, algorithm)()
+
+
+def normalize_slice_hash_algorithm(algorithm):
+    if algorithm is None or str(algorithm).strip() == '':
+        raise Exception('missing X-HASH-ALGORITHM for X-SLICE-HASH')
+
+    algorithm = str(algorithm).strip().lower()
+    if algorithm not in SUPPORTED_SLICE_HASH_ALGORITHMS:
+        raise Exception('unsupported hash algorithm: %s' % algorithm)
+    return algorithm
 
 
 class UploadParam(object):
@@ -317,10 +333,25 @@ class UploadHandler(object):
         up.slice_size = get_long_field('X-SLICE-SIZE', default=up.total_size)
         up.slice_hash = headers.get('X-SLICE-HASH', None)
         up.hash_algorithm = headers.get('X-HASH-ALGORITHM', None)
+        if up.slice_hash is None and headers.get('X-SLICE-MD5', None):
+            up.slice_hash = headers.get('X-SLICE-MD5', None)
+            up.hash_algorithm = 'md5'
+        elif up.slice_hash is not None:
+            up.hash_algorithm = normalize_slice_hash_algorithm(up.hash_algorithm)
+
+        if up.total_size <= 0:
+            raise Exception('invalid total size header: %d' % up.total_size)
+
+        if up.slice_size <= 0:
+            raise Exception('invalid slice size header: %d' % up.slice_size)
 
         if up.slice_offset >= up.total_size:
             raise Exception('invalid slice offset header: %s, total_size: %d' %
                             (up.slice_offset, up.total_size))
+
+        if up.slice_size > up.total_size - up.slice_offset:
+            raise Exception('invalid slice range, offset=%d size=%d total_size=%d' %
+                            (up.slice_offset, up.slice_size, up.total_size))
         return up
 
     def get_upload_task(self, param):
