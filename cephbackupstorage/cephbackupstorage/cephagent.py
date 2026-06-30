@@ -2,6 +2,7 @@ __author__ = 'frank'
 
 import base64
 import binascii
+import datetime
 import os
 import os.path
 import pprint
@@ -1469,6 +1470,19 @@ class CephAgent(object):
         # Wrap IPv6 in brackets for SSH/SCP
         ssh_target_ip = "[%s]" % target_host_ip if ':' in str(target_host_ip) else target_host_ip
 
+        def stage_error(stage, details):
+            details = str(details).strip() if details is not None else ""
+            details = details or "(no output)"
+            return ("software upgrade deploy failed: stage=%s, targetHost=%s:%s, "
+                    "script=%s, details=%s" % (
+                        stage, target_host_ip, target_host_ssh_port,
+                        cmd.upgradeScriptPath, details))
+
+        upgrade_log_dir = "/var/log/zstack/zmigrate-upgrade"
+
+        def upgrade_script_log_name():
+            return "zmigrate-upgrade-%s.log" % datetime.datetime.now().strftime("%Y%m%d%H%M%S.%f")
+
         # Validate all SSH parameters BEFORE constructing shell commands.
         # This prevents TypeError/AttributeError when None values are used in
         # string formatting (e.g. %d with None port, os.path.basename(None)).
@@ -1552,7 +1566,7 @@ class CephAgent(object):
                 cmd_str = '%s "mkdir -p %s"' % (sshpass_cmd_header, upgrade_package_target_path)
                 r, _, e = bash.bash_roe(cmd_str)
                 if r != 0:
-                    raise Exception("mkdir failed: %s" % e)
+                    raise Exception(stage_error("create-target-directory", e))
 
             def copy_file():
                 logger.info("copying upgrade package to remote host: %s" % ssh_target_ip)
@@ -1562,9 +1576,9 @@ class CephAgent(object):
                     quoted_ssh_target_ip, linux.shellquote(target_upgrade_package_path))
                 r, _, e = bash.bash_roe(cmd_str)
                 if r == 124:
-                    raise Exception("scp timed out after 1200 seconds")
+                    raise Exception(stage_error("copy-upgrade-package", "scp timed out after 1200 seconds"))
                 if r != 0:
-                    raise Exception("scp failed: %s" % e)
+                    raise Exception(stage_error("copy-upgrade-package", e))
 
             def create_remote_sudo_passwd_file():
                 logger.info("creating remote sudo passwd file on remote host")
@@ -1582,7 +1596,7 @@ class CephAgent(object):
                 _, passwd_error = passwd_process.communicate(input=passwd_input)
                 passwd_error = passwd_error.decode('utf-8') if passwd_error else ""
                 if passwd_process.returncode != 0:
-                    raise Exception("create remote sudo passwd file failed: %s" % passwd_error)
+                    raise Exception(stage_error("create-remote-sudo-password-file", passwd_error))
 
             def unzip_upgrade_package():
                 logger.info("unzipping upgrade package on remote host")
@@ -1592,7 +1606,7 @@ class CephAgent(object):
                     upgrade_package_target_path)
                 r, _, e = bash.bash_roe(cmd_str)
                 if r != 0:
-                    raise Exception("tar failed: %s" % e)
+                    raise Exception(stage_error("extract-upgrade-package", e))
 
             def run_upgrade_script():
                 logger.info("running upgrade script on remote host: %s" % cmd.upgradeScriptPath)
@@ -1604,21 +1618,65 @@ class CephAgent(object):
                 # cd to the script's directory so relative paths inside
                 # upgrade.sh (e.g. "source cmd.sh") resolve correctly.
                 upgrade_script_dir = linux.shellquote(os.path.dirname(cmd.upgradeScriptPath))
+                upgrade_script_log_path = "%s/%s" % (upgrade_log_dir, upgrade_script_log_name())
+                run_script_inner_cmd = linux.shellquote("timeout %d %s > %s 2>&1" % (
+                    script_timeout, upgrade_script_path, linux.shellquote(upgrade_script_log_path)))
                 cmd_str = (
-                    '{0} "sudo -S < {1} chmod +x {2}'
+                    '{0} "sudo -S < {1} mkdir -p {6}'
+                    ' && sudo -S < {1} chmod +x {2}'
                     ' && cd {4}'
-                    ' && sudo -S < {1} timeout {3} {2}"'
+                    ' && sudo -S < {1} sh -c {5}"'
                 ).format(
                     sshpass_cmd_header,
                     quoted_remote_sudo_passwd_file_path,
                     upgrade_script_path,
                     script_timeout,
-                    upgrade_script_dir)
+                    upgrade_script_dir,
+                    run_script_inner_cmd,
+                    linux.shellquote(upgrade_log_dir))
                 r, _, e = bash.bash_roe(cmd_str)
+
+                def append_stage_detail(details, name, value):
+                    value = str(value).strip() if value else ""
+                    details = str(details).strip() if details else ""
+                    if not value:
+                        return details
+                    if not details:
+                        return "%s=%s" % (name, value)
+                    return "%s; %s=%s" % (details, name, value)
+
+                def read_upgrade_script_log_tail():
+                    tail_cmd = '%s "sudo -S < %s tail -n 80 %s"' % (
+                        sshpass_cmd_header,
+                        quoted_remote_sudo_passwd_file_path,
+                        linux.shellquote(upgrade_script_log_path))
+                    tail_ret, tail, tail_err = bash.bash_roe(tail_cmd)
+                    if tail_ret != 0:
+                        logger.warn("failed to read remote upgrade script log %s: %s" % (
+                            upgrade_script_log_path, tail_err))
+                        return ""
+                    return str(tail).strip()
+
                 if r == 124:
-                    raise Exception("upgrade.sh timed out after %d seconds" % script_timeout)
+                    logger.warn("upgrade script timed out on %s, log path: %s" % (
+                        target_host_ip, upgrade_script_log_path))
+                    tail = read_upgrade_script_log_tail()
+                    details = "upgrade.sh timed out after %d seconds" % script_timeout
+                    details = append_stage_detail(details, "logTail", tail)
+                    details = append_stage_detail(details, "logPath", upgrade_script_log_path)
+                    raise Exception(stage_error("execute-upgrade-script", details))
                 elif r != 0:
-                    raise Exception("upgrade.sh failed (exit code %d): %s" % (r, e))
+                    logger.warn("upgrade script failed on %s, log path: %s" % (
+                        target_host_ip, upgrade_script_log_path))
+                    details = "upgrade.sh failed (exit code %d): %s" % (r, e)
+                    tail = read_upgrade_script_log_tail()
+                    if not str(e).strip() and str(tail).strip():
+                        details = "upgrade.sh failed (exit code %d): %s" % (r, tail)
+                    elif str(tail).strip():
+                        details = append_stage_detail(details, "logTail", tail)
+                    details = append_stage_detail(details, "logPath", upgrade_script_log_path)
+                    raise Exception(stage_error("execute-upgrade-script", details))
+                logger.info("saved upgrade script log on target host: %s" % upgrade_script_log_path)
 
             def delete_remote_sudo_passwd_file():
                 logger.info("deleting remote sudo passwd file on remote host")
@@ -1669,11 +1727,12 @@ class CephAgent(object):
                        escaped_target))
                 r, o, e = bash.bash_roe(verify_cmd)
                 if r != 0:
-                    raise Exception("remote path escape verification command failed: %s" % e)
+                    raise Exception(stage_error("verify-extracted-paths", e))
                 escaped = [line.strip() for line in o.strip().splitlines() if line.strip()]
                 if escaped:
-                    raise Exception("path escape detected after remote extraction, "
-                                    "escaped paths: %s" % "; ".join(escaped[:10]))
+                    raise Exception(stage_error("verify-extracted-paths",
+                                                "path escape detected after remote extraction, escaped paths: %s"
+                                                % "; ".join(escaped[:10])))
 
             create_upgrade_package_target_path()
             copy_file()
