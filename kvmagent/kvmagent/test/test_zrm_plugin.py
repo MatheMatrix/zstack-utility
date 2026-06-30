@@ -268,5 +268,134 @@ class TestZrmPluginGuestFsfreeze(unittest.TestCase):
         self.assertEqual("QGA_NOT_RUNNING", body.get("errorCode"))
 
 
+class TestZrmPluginCheckpointCreate(unittest.TestCase):
+    def setUp(self):
+        self.plugin = object.__new__(zrm_plugin.ZrmPlugin)
+        self._orig_json_post = http.json_post
+        self.json_post_calls = []
+
+    def tearDown(self):
+        http.json_post = self._orig_json_post
+
+    def _make_req(self, body_dict):
+        return {
+            http.REQUEST_BODY: json.dumps(body_dict)
+        }
+
+    def _load_rsp(self, rsp_json):
+        rsp = jsonobject.loads(rsp_json)
+        body = json.loads(rsp_json)
+        return rsp, body
+
+    def _mock_throttle(self, allReady=True, success=True, readyCount=2, totalJobs=2, error=None):
+        """Replace _replication_throttle with a fake that returns the given state."""
+        def fake_throttle(req):
+            rsp = {"success": success, "allReady": allReady,
+                   "readyCount": readyCount, "runningCount": 0 if allReady else 1,
+                   "totalJobs": totalJobs}
+            if error:
+                rsp["error"] = error
+            return json.dumps(rsp)
+        self.plugin._replication_throttle = fake_throttle
+
+    def _mock_json_post(self, response_dict):
+        """Replace http.json_post with a fake that records calls and returns response_dict."""
+        def fake_post(url, body=None, headers=None, fail_soon=False, **kwargs):
+            self.json_post_calls.append({"url": url, "body": body, "fail_soon": fail_soon})
+            return json.dumps(response_dict)
+        http.json_post = fake_post
+
+    def test_happy_path_returns_checkpoint_uuid(self):
+        self._mock_throttle(allReady=True, totalJobs=2, readyCount=2)
+        self._mock_json_post({"success": True})
+
+        rsp_json = self.plugin.zrm_checkpoint_create(self._make_req({
+            "vmUuid": "vm-1",
+            "sessionUuid": "sess-1",
+            "checkpointUuid": "cp-uuid-123",
+            "zrServerUrl": "http://192.168.1.10:6800",
+            "waitReadyTimeout": 10,
+            "originalSpeed": 1048576
+        }))
+
+        rsp, body = self._load_rsp(rsp_json)
+        self.assertTrue(body.get("success"))
+        self.assertEqual("cp-uuid-123", body.get("checkpointUuid"))
+        # Verify ZR Server was called
+        self.assertEqual(1, len(self.json_post_calls))
+        self.assertEqual("http://192.168.1.10:6800/zr/checkpoint/create", self.json_post_calls[0]["url"])
+        self.assertTrue(self.json_post_calls[0]["fail_soon"])
+        # Verify body sent to ZR Server
+        sent_body = json.loads(self.json_post_calls[0]["body"])
+        self.assertEqual("sess-1", sent_body["sessionUuid"])
+        self.assertEqual("cp-uuid-123", sent_body["checkpointUuid"])
+
+    def test_mirrors_not_ready_returns_failure_and_skips_zr_call(self):
+        self._mock_throttle(allReady=False, readyCount=1, totalJobs=3)
+        self._mock_json_post({"success": True})  # should not be called
+
+        rsp_json = self.plugin.zrm_checkpoint_create(self._make_req({
+            "vmUuid": "vm-1",
+            "sessionUuid": "sess-1",
+            "checkpointUuid": "cp-uuid-456",
+            "zrServerUrl": "http://192.168.1.10:6800",
+            "waitReadyTimeout": 5
+        }))
+
+        rsp, body = self._load_rsp(rsp_json)
+        self.assertFalse(body.get("success"))
+        self.assertIn("mirrors not ready", body.get("error"))
+        self.assertIn("ready=1", body.get("error"))
+        self.assertIn("total=3", body.get("error"))
+        # http.json_post must NOT have been called
+        self.assertEqual(0, len(self.json_post_calls))
+
+    def test_zr_server_failure_returns_error(self):
+        self._mock_throttle(allReady=True, totalJobs=1, readyCount=1)
+        self._mock_json_post({"success": False, "error": "disk full on target"})
+
+        rsp_json = self.plugin.zrm_checkpoint_create(self._make_req({
+            "vmUuid": "vm-1",
+            "sessionUuid": "sess-1",
+            "checkpointUuid": "cp-uuid-789",
+            "zrServerUrl": "http://192.168.1.10:6800"
+        }))
+
+        rsp, body = self._load_rsp(rsp_json)
+        self.assertFalse(body.get("success"))
+        self.assertIn("disk full on target", body.get("error"))
+        self.assertIn("ZR Server", body.get("error"))
+
+    def test_missing_required_fields_returns_error(self):
+        # No mock needed — validation fails before throttle/post
+        rsp_json = self.plugin.zrm_checkpoint_create(self._make_req({
+            "vmUuid": "vm-1",
+            "sessionUuid": "",
+            "checkpointUuid": "cp-1",
+            "zrServerUrl": ""
+        }))
+
+        rsp, body = self._load_rsp(rsp_json)
+        self.assertFalse(body.get("success"))
+        self.assertIn("required", body.get("error"))
+
+    def test_throttle_failure_returns_error(self):
+        self._mock_throttle(success=False, allReady=False, error="QMP connection lost")
+        self._mock_json_post({"success": True})
+
+        rsp_json = self.plugin.zrm_checkpoint_create(self._make_req({
+            "vmUuid": "vm-1",
+            "sessionUuid": "sess-1",
+            "checkpointUuid": "cp-1",
+            "zrServerUrl": "http://10.0.0.1:6800"
+        }))
+
+        rsp, body = self._load_rsp(rsp_json)
+        self.assertFalse(body.get("success"))
+        self.assertIn("mirror convergence failed", body.get("error"))
+        self.assertIn("QMP connection lost", body.get("error"))
+        self.assertEqual(0, len(self.json_post_calls))
+
+
 if __name__ == '__main__':
     unittest.main()
