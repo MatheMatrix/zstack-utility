@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
+import importlib.util
 import socket
+from pathlib import Path
 
 from zstacklib.utils import network_ipv6
-from zstacklib.utils import ceph as ceph_utils
 from tests.unit.zstacklib.real_linux import load_real_linux
 
 TEST_IPV4_ADDRESS = '192.168.10.10'
@@ -24,6 +25,18 @@ TEST_IP_ADDR_OUTPUT = """
 """
 
 linux = load_real_linux()
+
+
+def load_real_ceph_utils():
+    repo_root = Path(__file__).resolve().parents[3]
+    module_path = repo_root / 'zstacklib' / 'zstacklib' / 'utils' / 'ceph.py'
+    spec = importlib.util.spec_from_file_location('zstacklib_utils_ceph_under_test', str(module_path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+ceph_utils = load_real_ceph_utils()
 
 
 def _format_ssh_target(user, hostname):
@@ -49,44 +62,10 @@ def _is_port_available(port):
         except (socket.error, OSError):
             return False
 
-
-def _strip_mon_addr_protocol(addr):
-    protocol, separator, rest = addr.partition(':')
-    if separator and protocol.startswith('v') and protocol[1:].isdigit():
-        return rest
-    return addr
-
-
-def _extract_mon_host(addr):
-    if not addr:
-        return None
-
-    addr = _strip_mon_addr_protocol(addr.strip())
-    if addr.startswith('['):
-        end = addr.find(']')
-        if end > 0:
-            return addr[1:end]
-        return addr[1:]
-
-    has_addr_suffix = '/' in addr
-    addr_without_suffix = addr.split('/', 1)[0]
-    if ':' not in addr_without_suffix:
-        return addr_without_suffix
-
-    host, separator, port = addr_without_suffix.rpartition(':')
-    if addr_without_suffix.count(':') == 1:
-        return host
-    if has_addr_suffix and separator and port.isdigit():
-        return host
-    return addr_without_suffix
-
-
 if hasattr(linux.format_ssh_target, 'side_effect'):
     linux.format_ssh_target.side_effect = _format_ssh_target
 if hasattr(linux.is_port_available, 'side_effect'):
     linux.is_port_available.side_effect = _is_port_available
-if hasattr(ceph_utils.extract_mon_host, 'side_effect'):
-    ceph_utils.extract_mon_host.side_effect = _extract_mon_host
 
 
 class FakeAddress(object):
@@ -288,6 +267,38 @@ def test_extract_ceph_mon_host_supports_ipv4_ipv6_and_addrvec_prefixes():
     assert ceph_utils.extract_mon_host('v2:[%s]:3300/0' % TEST_IPV6_ADDRESS) == TEST_IPV6_ADDRESS
     assert ceph_utils.extract_mon_host('v1:%s:%s/0' % (TEST_IPV6_ADDRESS, TEST_CEPH_PORT)) == TEST_IPV6_ADDRESS
     assert ceph_utils.extract_mon_host(TEST_IPV6_ADDRESS) == TEST_IPV6_ADDRESS
+
+
+def test_get_ceph_mon_addr_uses_ipv6_route_table(monkeypatch):
+    commands = []
+    monmap = '{"mons":[{"addr":"[%s]:%s/0"}]}' % (TEST_IPV6_ADDRESS, TEST_CEPH_PORT)
+
+    def fake_bash_r(cmd):
+        commands.append(cmd)
+        return 0
+
+    monkeypatch.setattr(ceph_utils, 'bash_r', fake_bash_r)
+
+    assert ceph_utils.get_mon_addr(monmap, ceph_utils.ROUTE_PROTOCOL_KERNEL) == TEST_IPV6_ADDRESS
+    assert commands == [
+        'ip -6 route | grep -w "proto kernel" | grep -w \'%s\' > /dev/null' % TEST_IPV6_ADDRESS
+    ]
+
+
+def test_get_ceph_mon_addr_keeps_ipv4_route_table(monkeypatch):
+    commands = []
+    monmap = '{"mons":[{"addr":"%s:%s/0"}]}' % (TEST_IPV4_ADDRESS, TEST_CEPH_PORT)
+
+    def fake_bash_r(cmd):
+        commands.append(cmd)
+        return 0
+
+    monkeypatch.setattr(ceph_utils, 'bash_r', fake_bash_r)
+
+    assert ceph_utils.get_mon_addr(monmap, ceph_utils.ROUTE_PROTOCOL_KERNEL) == TEST_IPV4_ADDRESS
+    assert commands == [
+        'ip route | grep -w "proto kernel" | grep -w \'%s\' > /dev/null' % TEST_IPV4_ADDRESS
+    ]
 
 
 def test_get_nics_by_cidr_matches_ipv6_addresses(monkeypatch):
