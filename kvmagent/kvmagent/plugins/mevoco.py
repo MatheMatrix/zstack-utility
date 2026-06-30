@@ -775,6 +775,46 @@ def getDhcpEbtableChainName(dhcpIp):
     else:
         return "ZSTACK-%s" % dhcpIp
 
+
+def get_ebtables_userdata_chain_name(br_name, l3_network_uuid):
+    # Note: In ebtables v1.8 and above, the maximum allowed length for certain string fields
+    # (e.g., --comment, --set-mark, custom chain names) is limited to 28 characters.
+    if is_ebtables_nf_tables():
+        max_chain_name_len = 28
+        prefix = "UD"
+        uuid_len = 8
+        separator_len = 2  # two '-' characters
+        max_br_len = max_chain_name_len - len(prefix) - separator_len - uuid_len
+        return "%s-%s-%s" % (prefix, br_name[-max_br_len:], l3_network_uuid[:uuid_len])
+    else:
+        return "USERDATA-%s-%s" % (br_name[-12:], l3_network_uuid[:8])
+
+def is_ebtables_nf_tables():
+    r, o, e = bash_roe(get_ebtables_cmd() + ' --version')
+    if r != 0:
+        raise Exception('Failed to get ebtables version')
+    return "nf_tables" in o
+
+
+def ensure_userdata_veth_pair(namespace_name, outer_dev, inner_dev, mtu):
+    outer_exist = linux.is_network_device_existing(outer_dev)
+    ns_shell = iproute.IpNetnsShell(namespace_name)
+    inner_exist = ns_shell.get_mac(inner_dev) is not None
+
+    if outer_exist != inner_exist:
+        if outer_exist:
+            iproute.delete_link_no_error(outer_dev)
+        if inner_exist:
+            ns_shell.del_link(inner_dev)
+        outer_exist = False
+        inner_exist = False
+
+    if not outer_exist and not inner_exist:
+        iproute.add_link(outer_dev, 'veth', peer=inner_dev)
+        iproute.set_link_attribute(outer_dev, mtu=mtu)
+        iproute.set_link_attribute(inner_dev, mtu=mtu)
+
+
 class UserDataEnv(object):
     def __init__(self, bridge_name, namespace_name, vlan_id):
         self.bridge_name = bridge_name
@@ -1599,10 +1639,7 @@ tag:{{TAG}},option:dns-server,{{DNS}}
             userdata_br_inner_dev = "ud_" + ns_inner_dev
             MAX_MTU = linux.MAX_MTU_OF_VNIC
 
-            if not linux.is_network_device_existing(userdata_br_outer_dev):
-                iproute.add_link(userdata_br_outer_dev, 'veth', peer=userdata_br_inner_dev)
-                iproute.set_link_attribute(userdata_br_outer_dev, mtu=MAX_MTU)
-                iproute.set_link_attribute(userdata_br_inner_dev, mtu=MAX_MTU)
+            ensure_userdata_veth_pair(ns, userdata_br_outer_dev, userdata_br_inner_dev, MAX_MTU)
 
             iproute.set_link_up(userdata_br_outer_dev)
 
