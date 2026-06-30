@@ -1406,7 +1406,10 @@ class CephAgent(object):
         rsp.completed = task.completed
         rsp.size = task.expectedSize
         rsp.actualSize = task.expectedSize
-        rsp.downloadSize = task.checked_download_size()
+        # File-upload LongJob uses downloadSize == 0 to decide whether the
+        # upload session has started. Report bytes actually received here;
+        # RangeSet still controls completion.
+        rsp.downloadSize = task.downloadSize
         rsp.lastOpTime = long(task.lastOpTime) * 1000
         rsp.supportSuspend = True
         if task.downloadSize == 0:
