@@ -2215,6 +2215,10 @@ class BlkCeph(object):
         return disk
 
 
+def is_virtio_blk(volume):
+    return bool(volume.useVirtio) and not bool(volume.useVirtioSCSI)
+
+
 class VirtioCeph(object):
     def __init__(self):
         self.volume = None
@@ -2223,7 +2227,7 @@ class VirtioCeph(object):
     def to_xmlobject(self):
         disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
         driver_elements = {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'}
-        if self.volume.hasattr("multiQueues") and self.volume.multiQueues:
+        if is_virtio_blk(self.volume) and self.volume.multiQueues:
             driver_elements["queues"] = self.volume.multiQueues
         if self.volume.hasattr("ioThreadId") and self.volume.ioThreadId:
             driver_elements["iothread"] = str(self.volume.ioThreadId)
@@ -2873,6 +2877,223 @@ def make_cbd_conf(install_path):
     return install_path[len(PROTOCOL_CBD_PREFIX):] + "_" + DEFAULT_ZBS_USER_NAME + "_:" + DEFAULT_ZBS_CONF_PATH
 
 
+AUTOMATIC_IOTHREAD_ID_START = 101
+AUTOMATIC_IOTHREAD_ID_LIMIT = 65535
+
+
+class IothreadVqMappingAllocator(object):
+    def __init__(self, volume_uuid, queue_count, iothread_ids):
+        self.volume_uuid = volume_uuid
+        self.iothread_ids = iothread_ids
+        self.queue_ids_by_iothread = self._queue_ids_by_iothread(queue_count, iothread_ids)
+
+    @classmethod
+    def allocate(cls, volume, used_iothread_ids):
+        if not cls.needs_automatic_mapping(volume):
+            return None
+
+        queue_count = cls.to_int(volume.multiQueues)
+        iothread_ids = cls.allocate_iothread_ids(min(queue_count, cls.to_int(volume.ioThreads)), used_iothread_ids)
+        return cls(volume.volumeUuid, queue_count, iothread_ids)
+
+    @classmethod
+    def allocate_all(cls, volumes, used_iothread_ids=None):
+        used_iothread_ids = set(used_iothread_ids or [])
+        allocators = {}
+        for volume in sorted(volumes, key=lambda v: cls.to_int(v.deviceId)):
+            allocator = cls.allocate(volume, used_iothread_ids)
+            if allocator:
+                allocators[allocator.volume_uuid] = allocator
+        return allocators
+
+    @classmethod
+    def prepare_scsi_controller_indexes(cls, volumes):
+        volumes = sorted(volumes, key=lambda v: cls.to_int(v.deviceId))
+        used_indexes = {0}
+        reused_indexes = {}
+        for volume in volumes:
+            controller_index = cls.to_int(volume.controllerIndex)
+            if controller_index:
+                io_thread_id = cls.to_int(volume.ioThreadId)
+                if io_thread_id and io_thread_id in reused_indexes:
+                    volume.controllerIndex = reused_indexes[io_thread_id]
+                    continue
+                used_indexes.add(controller_index)
+                if io_thread_id:
+                    reused_indexes[io_thread_id] = controller_index
+
+        next_index = 1
+        for volume in volumes:
+            if not cls.needs_dedicated_scsi_controller(volume) or cls.to_int(volume.controllerIndex):
+                continue
+            io_thread_id = cls.to_int(volume.ioThreadId)
+            if io_thread_id and io_thread_id in reused_indexes:
+                volume.controllerIndex = reused_indexes[io_thread_id]
+                continue
+            while next_index in used_indexes:
+                next_index += 1
+            volume.controllerIndex = next_index
+            used_indexes.add(next_index)
+            if io_thread_id:
+                reused_indexes[io_thread_id] = next_index
+
+    @classmethod
+    def apply(cls, driver, allocator):
+        if not allocator:
+            return
+        iothreads = e(driver, 'iothreads')
+        for iothread_id in allocator.iothread_ids:
+            iothread = e(iothreads, 'iothread', None, {'id': str(iothread_id)})
+            for queue_id in allocator.queue_ids_by_iothread[iothread_id]:
+                e(iothread, 'queue', None, {'id': str(queue_id)})
+
+    @classmethod
+    def automatic_ids_from_xml(cls, root):
+        ids = set()
+        if root is None:
+            return ids
+        for iothread in root.findall(".//iothreads/iothread"):
+            iothread_id = cls.to_int(iothread.get('id'))
+            if iothread_id >= AUTOMATIC_IOTHREAD_ID_START:
+                ids.add(iothread_id)
+        return ids
+
+    @classmethod
+    def used_ids_from_xml(cls, root):
+        ids = set()
+        if root is None:
+            return ids
+        for iothread in root.findall(".//iothread"):
+            iothread_id = cls.to_int(iothread.get('id'))
+            if iothread_id:
+                ids.add(iothread_id)
+        for element in root.findall(".//*[@iothread]"):
+            iothread_id = cls.to_int(element.get('iothread'))
+            if iothread_id:
+                ids.add(iothread_id)
+        return ids
+
+    @classmethod
+    def from_existing_driver(cls, volume, driver, queue_count):
+        # IOThread IDs are scoped to a libvirt domain, so migration can preserve IDs from the source disk XML.
+        iothread_ids = sorted(cls.automatic_ids_from_xml(driver))
+        queue_count = cls.to_int(queue_count)
+        if not iothread_ids or not queue_count:
+            return None
+        return cls(volume.volumeUuid, queue_count, iothread_ids)
+
+    @classmethod
+    def iothread_ids_from_info(cls, iothread_info):
+        ids = set()
+        for info in iothread_info:
+            iothread_id = cls.to_int(info[0])
+            if iothread_id:
+                ids.add(iothread_id)
+        return ids
+
+    @staticmethod
+    def to_int(value):
+        return int(value or 0)
+
+    @classmethod
+    def needs_automatic_mapping(cls, volume, queue_count=None):
+        queue_count = volume.multiQueues if queue_count is None else queue_count
+        return volume.deviceType == 'cbd' \
+            and not cls.to_int(volume.ioThreadId) \
+            and (volume.useVirtio or volume.useVirtioSCSI) \
+            and cls.to_int(queue_count) > 0 \
+            and cls.to_int(volume.ioThreads) > 0
+
+    @classmethod
+    def needs_dedicated_scsi_controller(cls, volume):
+        return bool(volume.useVirtioSCSI) and (
+            cls.to_int(volume.multiQueues) > 0 or cls.to_int(volume.ioThreadId) > 0
+        )
+
+    @classmethod
+    def _queue_ids_by_iothread(cls, queue_count, iothread_ids):
+        iothread_count = len(iothread_ids)
+        base = queue_count // iothread_count
+        remainder = queue_count % iothread_count
+        next_queue_id = 0
+        result = {}
+        for index, iothread_id in enumerate(iothread_ids):
+            owned_queue_count = base + (1 if index >= iothread_count - remainder else 0)
+            result[iothread_id] = list(range(next_queue_id, next_queue_id + owned_queue_count))
+            next_queue_id += owned_queue_count
+        return result
+
+    @staticmethod
+    def allocate_iothread_ids(count, used_iothread_ids):
+        ids = []
+        iothread_id = AUTOMATIC_IOTHREAD_ID_START
+        while len(ids) < count:
+            if iothread_id > AUTOMATIC_IOTHREAD_ID_LIMIT:
+                raise Exception('cannot allocate %s automatic iothreads, no id available below %s' %
+                                (count, AUTOMATIC_IOTHREAD_ID_LIMIT))
+            if iothread_id not in used_iothread_ids:
+                ids.append(iothread_id)
+                used_iothread_ids.add(iothread_id)
+            iothread_id += 1
+        return ids
+
+
+def scsi_controller_xml(root, controller_index):
+    if root is None or controller_index is None:
+        return None
+    for controller in root.findall("./devices/controller"):
+        if controller.get('type') == 'scsi' and controller.get('index') == str(controller_index):
+            return controller
+    return None
+
+
+def scsi_controller_alias(controller):
+    if controller is None:
+        return None
+    alias = controller.find('alias')
+    return alias.get('name') if alias is not None else None
+
+
+def scsi_controller_has_attached_disk(root, controller_index):
+    if root is None or controller_index is None:
+        return False
+    for disk in root.findall("./devices/disk"):
+        target = disk.find('target')
+        address = disk.find('address')
+        if target is None or address is None:
+            continue
+        if target.get('bus') == 'scsi' and address.get('controller') == str(controller_index):
+            return True
+    return False
+
+
+def scsi_controller_is_feature_managed(controller):
+    if controller is None:
+        return False
+    driver = controller.find('driver')
+    return driver is not None and (
+        driver.get('queues') is not None or bool(IothreadVqMappingAllocator.automatic_ids_from_xml(driver))
+    )
+
+
+def make_virtio_scsi_controller_xml(index, alias_id, io_thread_id=None, queues=None, mapping_allocator=None):
+    controller_xml = etree.Element('controller',
+                                   attrib={'type': 'scsi', 'model': 'virtio-scsi', 'index': str(index)})
+    e(controller_xml, 'address', None, {'type': 'pci'})
+
+    driver_elements = {}
+    if queues:
+        driver_elements['queues'] = str(queues)
+    if io_thread_id:
+        driver_elements['iothread'] = str(io_thread_id)
+    if driver_elements or mapping_allocator:
+        driver = e(controller_xml, 'driver', None, driver_elements)
+        IothreadVqMappingAllocator.apply(driver, mapping_allocator)
+
+    e(controller_xml, 'alias', None, {'name': 'scsi{0}'.format(alias_id)})
+    return controller_xml
+
+
 def is_spice_tls():
     return bash.bash_r("grep '^[[:space:]]*spice_tls[[:space:]]*=[[:space:]]*1' /etc/libvirt/qemu.conf")
 
@@ -3064,30 +3285,68 @@ class Vm(object):
 
         target = disk_element.find('target')
         bus = target.get('bus') if target is not None else None
+        persisted_address = vol.deviceAddress
 
-        if vol.deviceAddress and vol.deviceAddress.type == 'pci' and Vm._get_disk_address_type(bus) == 'pci':
-            attributes = {}
-            if vol.deviceAddress.domain:
-                attributes['domain'] = vol.deviceAddress.domain
-            if vol.deviceAddress.bus:
-                attributes['bus'] = vol.deviceAddress.bus
-            if vol.deviceAddress.slot:
-                attributes['slot'] = vol.deviceAddress.slot
-            if vol.deviceAddress.function:
-                attributes['function'] = vol.deviceAddress.function
+        def has_persisted_address_type(address_type):
+            return bool(persisted_address and persisted_address.type == address_type)
 
-            attributes['type'] = vol.deviceAddress.type
-            e(disk_element, 'address', None, attributes)
-        elif vol.deviceAddress and vol.deviceAddress.type == 'drive' and Vm._get_disk_address_type(bus) == 'drive':
-            e(disk_element, 'address', None, {'type': 'drive', 'controller': vol.deviceAddress.controller, 'unit': str(vol.deviceAddress.unit)})
-        elif bus == 'scsi':
-            occupied_units = vm_to_attach.get_occupied_disk_address_units(bus='scsi', controller=0) if vm_to_attach else []
-            default_unit = Vm.get_device_unit(vol.deviceId)
-            unit = default_unit if default_unit not in occupied_units else max(occupied_units) + 1
-            controller = '0'
-            if vol.useVirtioSCSI and vol.hasattr("controllerIndex") and vol.controllerIndex:
-               controller = str(vol.controllerIndex)
+        def set_drive_address(controller, unit):
             e(disk_element, 'address', None, {'type': 'drive', 'controller': controller, 'unit': str(unit)})
+
+        match bus:
+            case 'virtio':
+                if not has_persisted_address_type('pci'):
+                    return
+
+                attributes = {}
+                if persisted_address.domain:
+                    attributes['domain'] = persisted_address.domain
+                if persisted_address.bus:
+                    attributes['bus'] = persisted_address.bus
+                if persisted_address.slot:
+                    attributes['slot'] = persisted_address.slot
+                if persisted_address.function:
+                    attributes['function'] = persisted_address.function
+
+                attributes['type'] = persisted_address.type
+                e(disk_element, 'address', None, attributes)
+                return
+
+            case 'scsi':
+                has_persisted_drive_address = has_persisted_address_type('drive')
+                if has_persisted_drive_address and Vm._can_reuse_persisted_scsi_drive_address(vol):
+                    set_drive_address(persisted_address.controller, persisted_address.unit)
+                    return
+
+                if has_persisted_drive_address:
+                    logger.debug('discard stale drive address controller=%s for volume[%s], replan to scsi topology' %
+                                 (persisted_address.controller, vol.volumeUuid))
+                controller = Vm._planned_scsi_controller(vol) or 0
+                occupied_units = vm_to_attach.get_occupied_disk_address_units(bus='scsi', controller=controller) if vm_to_attach else []
+                default_unit = Vm.get_device_unit(vol.deviceId)
+                unit = default_unit if default_unit not in occupied_units else max(occupied_units) + 1
+                set_drive_address(str(controller), unit)
+
+            case 'sata' | 'ide':
+                if has_persisted_address_type('drive'):
+                    set_drive_address(persisted_address.controller, persisted_address.unit)
+
+    @staticmethod
+    def _can_reuse_persisted_scsi_drive_address(vol):
+        controller = vol.deviceAddress.controller
+        unit = vol.deviceAddress.unit
+
+        if controller in (None, '') or unit in (None, ''):
+            return False
+
+        return IothreadVqMappingAllocator.to_int(controller) == Vm._planned_scsi_controller(vol)
+
+    @staticmethod
+    def _planned_scsi_controller(vol):
+        if not IothreadVqMappingAllocator.needs_dedicated_scsi_controller(vol):
+            return 0
+        controller_index = IothreadVqMappingAllocator.to_int(vol.controllerIndex)
+        return controller_index if controller_index else None
 
     def __init__(self):
         self.uuid = None
@@ -3664,7 +3923,7 @@ class Vm(object):
         def filebased_volume():
             disk = etree.Element('disk', attrib={'type': 'file', 'device': 'disk'})
             driver_elements = {'name': 'qemu', 'type': linux.get_img_fmt(volume.installPath), 'cache': volume.cacheMode, 'discard': 'unmap'}
-            if volume.useVirtio and volume.hasattr("multiQueues") and volume.multiQueues:
+            if is_virtio_blk(volume) and volume.multiQueues:
                 driver_elements["queues"] = volume.multiQueues
             if (not volume.useVirtioSCSI) and volume.useVirtio and volume.hasattr("ioThreadId") and volume.ioThreadId:
                 driver_elements["iothread"] = str(volume.ioThreadId)
@@ -3756,7 +4015,7 @@ class Vm(object):
             def blk():
                 disk = etree.Element('disk', {'type': 'block', 'device': 'disk', 'snapshot': 'external'})
                 driver_elements = {'name': 'qemu', 'type': linux.get_img_fmt(volume.installPath), 'cache': 'none', 'io': 'native'}
-                if volume.useVirtio and volume.hasattr("multiQueues") and volume.multiQueues:
+                if is_virtio_blk(volume) and volume.multiQueues:
                     driver_elements["queues"] = volume.multiQueues
                 if (not volume.useVirtioSCSI) and volume.useVirtio and volume.hasattr("ioThreadId") and volume.ioThreadId:
                     driver_elements["iothread"] = str(volume.ioThreadId)
@@ -3800,7 +4059,7 @@ class Vm(object):
             disk = etree.Element('disk', {'type': 'vhostuser', 'device': 'disk', 'snapshot': 'no'})
 
             driver_elements = {'name': 'qemu', 'type': volume.format}
-            if volume.hasattr("multiQueues") and volume.multiQueues:
+            if is_virtio_blk(volume) and volume.multiQueues:
                 driver_elements["queues"] = volume.multiQueues
             e(disk, 'driver', None, driver_elements)
 
@@ -3823,7 +4082,12 @@ class Vm(object):
 
         def cbd_volume():
             disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
-            e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'})
+            driver_elements = {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'}
+            if is_virtio_blk(volume) and volume.multiQueues:
+                driver_elements["queues"] = volume.multiQueues
+            driver = e(disk, 'driver', None, driver_elements)
+            if not volume.useVirtioSCSI:
+                IothreadVqMappingAllocator.apply(driver, automatic_iothread_vq_mapping_allocator)
             e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(volume.installPath)})
             if volume.useVirtioSCSI:
                 e(disk, 'target', None, {'dev': 'sd%s' % dev_letter, 'bus': 'scsi'})
@@ -3841,12 +4105,59 @@ class Vm(object):
         dev_letter = self._get_device_letter(volume, addons)
         volume = file_volume_check(volume)
 
+        automatic_iothread_vq_mapping_allocator = None
+        created_automatic_iothread_ids = []
+        created_scsi_controller_aliases = []
+        if IothreadVqMappingAllocator.needs_automatic_mapping(volume):
+            used_iothread_ids = IothreadVqMappingAllocator.iothread_ids_from_info(VmPlugin.get_iothread_info(self.uuid))
+            automatic_iothread_vq_mapping_allocator = IothreadVqMappingAllocator.allocate(volume, used_iothread_ids)
+
+        def cleanup_created_iothread_vq_mapping():
+            for created_scsi_controller_alias in created_scsi_controller_aliases:
+                try:
+                    cmd_res = self.detach_controller_by_alias(created_scsi_controller_alias)
+                    if cmd_res:
+                        logger.warn('failed to cleanup scsi controller[%s] on vm[uuid:%s]: %s' %
+                                    (created_scsi_controller_alias, self.uuid, cmd_res))
+                except Exception as exc:
+                    logger.warn('failed to cleanup scsi controller[%s] on vm[uuid:%s]: %s' %
+                                (created_scsi_controller_alias, self.uuid, str(exc)))
+            for iothread_id in created_automatic_iothread_ids:
+                try:
+                    err_info = VmPlugin.del_io_thread(self.uuid, iothread_id)
+                    if err_info:
+                        logger.warn('failed to cleanup automatic iothread[%s] on vm[uuid:%s]: %s' %
+                                    (iothread_id, self.uuid, err_info))
+                except Exception as exc:
+                    logger.warn('failed to cleanup automatic iothread[%s] on vm[uuid:%s]: %s' %
+                                (iothread_id, self.uuid, str(exc)))
+
         if volume.hasattr("ioThreadId") and volume.ioThreadId:
             err_info = self.create_iothread(self.uuid, volume.ioThreadId, volume.ioThreadPin)
             if err_info:
                 raise kvmagent.KvmError("set iothread[{}:{}] on volume[uuid:{}] err: {}".format(volume.ioThreadId, volume.ioThreadPin, volume.volumeUuid, err_info))
-        if volume.useVirtioSCSI and volume.hasattr("ioThreadId") and volume.ioThreadId:
-            volume.controllerIndex = self.create_scsi_controller(self.uuid, volume.ioThreadId)
+
+        try:
+            if automatic_iothread_vq_mapping_allocator:
+                for iothread_id in automatic_iothread_vq_mapping_allocator.iothread_ids:
+                    err_info = VmPlugin.add_io_thread(self.uuid, iothread_id)
+                    if err_info:
+                        raise kvmagent.KvmError("add automatic iothread[{}] on vm[uuid:{}] failed: {}".format(
+                            iothread_id, self.uuid, err_info))
+                    created_automatic_iothread_ids.append(iothread_id)
+
+            if volume.useVirtioSCSI and IothreadVqMappingAllocator.needs_dedicated_scsi_controller(volume):
+                manual_iothread_id = IothreadVqMappingAllocator.to_int(volume.ioThreadId)
+                volume.controllerIndex = VmPlugin.add_scsi_controller_with_driver(
+                    self.uuid,
+                    io_thread_id=manual_iothread_id,
+                    queues=IothreadVqMappingAllocator.to_int(volume.multiQueues),
+                    mapping_allocator=automatic_iothread_vq_mapping_allocator,
+                    created_aliases=created_scsi_controller_aliases
+                )
+        except Exception:
+            cleanup_created_iothread_vq_mapping()
+            raise
 
         if volume.deviceType == 'iscsi':
             disk_element = iscsibased_volume()
@@ -3875,6 +4186,7 @@ class Vm(object):
         add_caching_store(disk_element, volume)
         xml = etree.tostring(disk_element, encoding="unicode")
         logger.debug('attaching volume[%s] to vm[uuid:%s]:\n%s' % (volume.installPath, self.uuid, xml))
+        attach_succeeded = False
         try:
             # libvirt has a bug that if attaching volume just after vm created, it likely fails. So we retry three time here
             @linux.retry(times=3, sleep_time=5)
@@ -3899,6 +4211,7 @@ class Vm(object):
                         raise
 
             attach()
+            attach_succeeded = True
 
         except libvirt.libvirtError as ex:
             err = str(ex)
@@ -3912,6 +4225,9 @@ class Vm(object):
                 err = 'unable to attach the volume[%s] to vm[uuid: %s], %s.' % (volume.volumeUuid, self.uuid, err)
             logger.warn(linux.get_exception_stacktrace())
             raise kvmagent.KvmError(err)
+        finally:
+            if not attach_succeeded:
+                cleanup_created_iothread_vq_mapping()
 
     def _get_device_letter(self, volume, addons):
         default_letter = Vm.DEVICE_LETTERS[volume.deviceId]
@@ -3962,6 +4278,26 @@ class Vm(object):
         return VmPlugin.add_scsi_controller(vm_uuid, iothread_id)
 
 
+    @linux.retry(times=3, sleep_time=1)
+    def detach_controller_by_alias(self, controller_alias):
+        exec_cmd = "virsh detach-device-alias %s %s --current" % (self.uuid, controller_alias)
+        cmd_res = shell.call(exec_cmd)
+
+        def controller_detached(_):
+            vm = get_vm_by_uuid(self.uuid)
+            for controller in vm.domain_xmlobject.devices.get_child_node_as_list('controller'):
+                if controller.type_ == 'scsi' and hasattr(controller, 'alias') \
+                        and controller.alias.name_ == controller_alias:
+                    return False
+            return True
+
+        if not linux.wait_callback_success(controller_detached, None, 60, 1):
+            return "failed to detach scsi controller[alias:%s] from vm[uuid:%s]" % (controller_alias, self.uuid)
+        if cmd_res and cmd_res.startswith("error:"):
+            return cmd_res
+        return None
+
+
     def detach_data_volume(self, volume):
         self._wait_vm_run_until_seconds(60)
         self.timeout_object.wait_until_object_timeout('attach-volume-%s' % self.uuid)
@@ -3973,6 +4309,74 @@ class Vm(object):
 
         target_disk, disk_name = self._get_target_disk(volume)
         xmlstr = target_disk.dump()
+        automatic_iothread_ids_to_cleanup = set()
+        scsi_controller_alias_to_cleanup = None
+        scsi_controller_index_to_cleanup = None
+        try:
+            disk_xml = etree.fromstring(xmlstr)
+            automatic_iothread_ids_to_cleanup.update(IothreadVqMappingAllocator.automatic_ids_from_xml(disk_xml))
+            target = disk_xml.find('target')
+            address = disk_xml.find('address')
+            if target is not None and address is not None and target.get('bus') == 'scsi':
+                controller_index = address.get('controller')
+                domain_root = etree.fromstring(self.domain_xml)
+                controller = scsi_controller_xml(domain_root, controller_index)
+                automatic_iothread_ids_to_cleanup.update(IothreadVqMappingAllocator.automatic_ids_from_xml(controller))
+                if scsi_controller_is_feature_managed(controller):
+                    scsi_controller_index_to_cleanup = controller_index
+                    scsi_controller_alias_to_cleanup = scsi_controller_alias(controller)
+        except Exception as exc:
+            logger.warn('failed to collect iothread-vq-mapping cleanup info before detaching volume[%s] from vm[uuid:%s]: %s' %
+                        (volume.volumeUuid, self.uuid, str(exc)))
+
+        def cleanup_iothread_vq_mapping_after_detach():
+            if not automatic_iothread_ids_to_cleanup and not scsi_controller_alias_to_cleanup:
+                return
+
+            current_vm = get_vm_by_uuid(self.uuid)
+            current_root = etree.fromstring(current_vm.domain_xml)
+            scsi_controller_cleanup_attempted = False
+            if scsi_controller_alias_to_cleanup and not scsi_controller_has_attached_disk(
+                    current_root, scsi_controller_index_to_cleanup):
+                scsi_controller_cleanup_attempted = True
+                err_info = self.detach_controller_by_alias(scsi_controller_alias_to_cleanup)
+                if err_info:
+                    logger.warn('failed to cleanup scsi controller[%s] on vm[uuid:%s]: %s' %
+                                (scsi_controller_alias_to_cleanup, self.uuid, err_info))
+
+            remaining_iothread_ids = set(automatic_iothread_ids_to_cleanup)
+
+            def wait_for_controller_removed(_):
+                current_vm = get_vm_by_uuid(self.uuid)
+                current_root = etree.fromstring(current_vm.domain_xml)
+                return scsi_controller_xml(current_root, scsi_controller_index_to_cleanup) is None
+
+            def cleanup_unreferenced_iothreads():
+                current_vm = get_vm_by_uuid(self.uuid)
+                current_root = etree.fromstring(current_vm.domain_xml)
+                referenced_iothread_ids = IothreadVqMappingAllocator.automatic_ids_from_xml(current_root)
+                for iothread_id in list(remaining_iothread_ids):
+                    if iothread_id in referenced_iothread_ids:
+                        continue
+                    err_info = VmPlugin.del_io_thread(self.uuid, iothread_id)
+                    if err_info:
+                        logger.warn('failed to cleanup automatic iothread[%s] on vm[uuid:%s]: %s' %
+                                    (iothread_id, self.uuid, err_info))
+                        continue
+                    remaining_iothread_ids.remove(iothread_id)
+                return not remaining_iothread_ids
+
+            if scsi_controller_cleanup_attempted:
+                if not linux.wait_callback_success(wait_for_controller_removed, None, 15, 1):
+                    logger.warn('failed to cleanup scsi controller[%s] after detaching volume[%s] '
+                                'from vm[uuid:%s]: still present' %
+                                (scsi_controller_alias_to_cleanup, volume.volumeUuid, self.uuid))
+                    return
+            if remaining_iothread_ids and not cleanup_unreferenced_iothreads():
+                logger.warn('failed to cleanup automatic iothreads%s after detaching volume[%s] '
+                            'from vm[uuid:%s]: still referenced' %
+                            (sorted(remaining_iothread_ids), volume.volumeUuid, self.uuid))
+
         logger.debug('detaching volume from vm[uuid:%s]:\n%s' % (self.uuid, xmlstr))
         try:
             # libvirt has a bug that if detaching volume just after vm created, it likely fails. So we retry three time here
@@ -4016,6 +4420,12 @@ class Vm(object):
             if self._volume_detach_timed_out(volume):
                 self._clean_timeout_record(volume)
                 logger.debug("detach success finally, remove record of volume install path: %s" % volume.installPath)
+
+            try:
+                cleanup_iothread_vq_mapping_after_detach()
+            except Exception as exc:
+                logger.warn('failed to cleanup iothread-vq-mapping after detaching volume[%s] from vm[uuid:%s]: %s' %
+                            (volume.volumeUuid, self.uuid, str(exc)))
 
             def logout_iscsi():
                 BlkIscsi.logout_portal(target_disk.source.dev_)
@@ -4656,8 +5066,11 @@ class Vm(object):
         devices = tree.getroot().find('devices')
         for disk in tree.iterfind('devices/disk'):
             dev = disk.find('target').attrib['dev']
-            new_disk = VmPlugin._get_new_disk(disk, migrate_disks.get(dev, None))
+            volume = migrate_disks.get(dev, None)
+            new_disk = VmPlugin._get_new_disk(disk, volume)
             if new_disk != disk:
+                if volume:
+                    VmPlugin._apply_migration_iothread_vq_mapping(tree.getroot(), new_disk, volume)
                 parent_index = list(devices).index(disk)
                 devices.remove(disk)
                 devices.insert(parent_index, new_disk)
@@ -5985,6 +6398,24 @@ class Vm(object):
             hd_device_address_deduplicate = True
 
         elements = {}
+        volumes_for_iothread_vq_mapping = [cmd.rootVolume]
+        volumes_for_iothread_vq_mapping.extend(cmd.dataVolumes)
+
+        manual_iothread_ids = set()
+        if cmd.addons and cmd.addons.hasattr("ioThreadPins") and cmd.addons.ioThreadPins:
+            for pin in cmd.addons.ioThreadPins:
+                io_thread_id = IothreadVqMappingAllocator.to_int(pin["ioThreadId"])
+                if io_thread_id:
+                    manual_iothread_ids.add(io_thread_id)
+        for volume in volumes_for_iothread_vq_mapping:
+            io_thread_id = IothreadVqMappingAllocator.to_int(volume.ioThreadId)
+            if io_thread_id:
+                manual_iothread_ids.add(io_thread_id)
+
+        IothreadVqMappingAllocator.prepare_scsi_controller_indexes(volumes_for_iothread_vq_mapping)
+        automatic_iothread_vq_mapping_allocators = IothreadVqMappingAllocator.allocate_all(
+            volumes_for_iothread_vq_mapping, manual_iothread_ids
+        )
 
         def make_root():
             root = etree.Element('domain')
@@ -6648,8 +7079,7 @@ class Vm(object):
         def make_volumes():
             devices = elements['devices']
             #guarantee rootVolume is the first of the set
-            volumes = [cmd.rootVolume]
-            volumes.extend(cmd.dataVolumes)
+            volumes = list(volumes_for_iothread_vq_mapping)
             #When platform=other and default_bus_type=ide, the maximum number of volume is three
             if machine_type == 'q35':
                 volume_hd_configs = [
@@ -6714,10 +7144,10 @@ class Vm(object):
             def filebased_volume(_dev_letter, _v):
                 disk = etree.Element('disk', {'type': 'file', 'device': 'disk', 'snapshot': 'external'})
                 driver_elements = {'name': 'qemu', 'type': linux.get_img_fmt(_v.installPath), 'cache': _v.cacheMode, 'discard': 'unmap'}
-                if cmd.addons and cmd.addons['useDataPlane'] is True:
+                if cmd.addons and cmd.addons['useDataPlane'] is True and is_virtio_blk(_v):
                     driver_elements['dataplane'] = 'on'
                     driver_elements['queues'] = 1
-                if _v.useVirtio and _v.hasattr("multiQueues") and _v.multiQueues:
+                if is_virtio_blk(_v) and _v.multiQueues:
                     driver_elements["queues"] = _v.multiQueues
                 if (not _v.useVirtioSCSI) and _v.useVirtio and _v.hasattr("ioThreadId") and _v.ioThreadId:
                     driver_elements["iothread"] = str(_v.ioThreadId)
@@ -6787,9 +7217,11 @@ class Vm(object):
 
                 disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
                 driver_elements = {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'}
-                if _v.useVirtio and _v.hasattr("multiQueues") and _v.multiQueues:
+                if is_virtio_blk(_v) and _v.multiQueues:
                     driver_elements["queues"] = _v.multiQueues
-                e(disk, 'driver', None, driver_elements)
+                driver = e(disk, 'driver', None, driver_elements)
+                if not _v.useVirtioSCSI:
+                    IothreadVqMappingAllocator.apply(driver, automatic_iothread_vq_mapping_allocators.get(_v.volumeUuid))
 
                 u = parse_url(r)
                 src = e(disk, 'source', None, {'protocol': 'nbd', 'name': os.path.basename(u.path)})
@@ -6862,7 +7294,7 @@ class Vm(object):
             def block_volume(_dev_letter, _v):
                 disk = etree.Element('disk', {'type': 'block', 'device': 'disk', 'snapshot': 'external'})
                 driver_elements = {'name': 'qemu', 'type': linux.get_img_fmt(_v.installPath), 'cache': 'none', 'io': 'native'}
-                if _v.useVirtio and _v.hasattr("multiQueues") and _v.multiQueues:
+                if is_virtio_blk(_v) and _v.multiQueues:
                     driver_elements["queues"] = _v.multiQueues
                 if (not _v.useVirtioSCSI) and _v.useVirtio and _v.hasattr("ioThreadId") and _v.ioThreadId:
                     driver_elements["iothread"] = str(_v.ioThreadId)
@@ -6892,7 +7324,7 @@ class Vm(object):
                 disk = etree.Element('disk', {'type': 'vhostuser', 'device': 'disk', 'snapshot': 'no'})
 
                 driver_elements = {'name': 'qemu', 'type': _v.format}
-                if _v.hasattr("multiQueues") and _v.multiQueues:
+                if is_virtio_blk(_v) and _v.multiQueues:
                     driver_elements["queues"] = _v.multiQueues
                 e(disk, 'driver', None, driver_elements)
 
@@ -6918,7 +7350,12 @@ class Vm(object):
 
             def cbd_volume(_dev_letter, _v):
                 disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
-                e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'})
+                driver_elements = {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'}
+                if is_virtio_blk(_v) and _v.multiQueues:
+                    driver_elements["queues"] = _v.multiQueues
+                driver = e(disk, 'driver', None, driver_elements)
+                if not _v.useVirtioSCSI:
+                    IothreadVqMappingAllocator.apply(driver, automatic_iothread_vq_mapping_allocators.get(_v.volumeUuid))
                 e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(_v.installPath)})
                 if _v.useVirtioSCSI:
                     e(disk, 'target', None, {'dev': 'sd%s' % _dev_letter, 'bus': 'scsi'})
@@ -7128,11 +7565,21 @@ class Vm(object):
             io_thread_num = 0
             if cmd.coloPrimary or cmd.coloSecondary:
                 io_thread_num += len(cmd.nics)
+            explicit_iothread_ids = set()
             if cmd.addons and cmd.addons.hasattr("ioThreadNum") and cmd.addons.ioThreadNum:
                 io_thread_num += int(cmd.addons.ioThreadNum)
-                io_thread_ids = e(root, "iothreadids")
                 for pin in cmd.addons.ioThreadPins:
-                    e(io_thread_ids, "iothread", None, {"id": str(pin["ioThreadId"])})
+                    explicit_iothread_ids.add(int(pin["ioThreadId"]))
+            undeclared_manual_iothread_ids = manual_iothread_ids - explicit_iothread_ids
+            io_thread_num += len(undeclared_manual_iothread_ids)
+            explicit_iothread_ids.update(undeclared_manual_iothread_ids)
+            for allocator in automatic_iothread_vq_mapping_allocators.values():
+                io_thread_num += len(allocator.iothread_ids)
+                explicit_iothread_ids.update(allocator.iothread_ids)
+            if explicit_iothread_ids:
+                io_thread_ids = e(root, "iothreadids")
+                for iothread_id in sorted(explicit_iothread_ids):
+                    e(io_thread_ids, "iothread", None, {"id": str(iothread_id)})
             if io_thread_num != 0:
                 e(root, 'iothreads', str(io_thread_num))
 
@@ -7489,14 +7936,21 @@ class Vm(object):
             devices = elements['devices']
             e(devices, 'controller', None, {'type': 'scsi', 'model': 'virtio-scsi'})
 
-            for vol in cmd.dataVolumes:
-                if not vol.useVirtioSCSI:
+            created_dedicated_controllers = set()
+            for vol in volumes_for_iothread_vq_mapping:
+                if not IothreadVqMappingAllocator.needs_dedicated_scsi_controller(vol):
                     continue
-                if vol.hasattr("ioThreadId") and vol.ioThreadId:
-                    controller_xml = e(devices, 'controller', None, {'type': 'scsi', 'model': 'virtio-scsi', 'index': str(vol.controllerIndex)})
-                    e(controller_xml, 'address', None, {'type': 'pci'})
-                    e(controller_xml, 'driver', None, {'iothread': str(vol.ioThreadId)})
-                    e(controller_xml, 'alias', None, {'name': 'scsi{0}'.format(vol.ioThreadId)})
+                alias_id = vol.ioThreadId if vol.ioThreadId else vol.controllerIndex
+                if alias_id in created_dedicated_controllers:
+                    continue
+                created_dedicated_controllers.add(alias_id)
+                devices.append(make_virtio_scsi_controller_xml(
+                    vol.controllerIndex,
+                    alias_id,
+                    io_thread_id=vol.ioThreadId,
+                    queues=IothreadVqMappingAllocator.to_int(vol.multiQueues),
+                    mapping_allocator=automatic_iothread_vq_mapping_allocators.get(vol.volumeUuid)
+                ))
 
             if machine_type in ['q35', 'virt']:
                 if HOST_ARCH != 'loongarch64':
@@ -9517,7 +9971,52 @@ class VmPlugin(kvmagent.KvmAgent):
 
 
     @staticmethod
+    def _apply_migration_iothread_vq_mapping(root, disk, volume):
+        driver = disk.find('driver')
+        target = disk.find('target')
+
+        if target.get('bus') == 'scsi':
+            address = disk.find('address')
+            controller = scsi_controller_xml(root, address.get('controller') if address is not None else None)
+            driver = controller.find('driver') if controller is not None else None
+            queue_count = driver.get('queues') if driver is not None else None
+        else:
+            queue_count = driver.get('queues')
+
+        queue_count = IothreadVqMappingAllocator.to_int(queue_count)
+        if driver is None or driver.find('iothreads') is not None or queue_count <= 0 \
+                or not IothreadVqMappingAllocator.needs_automatic_mapping(volume, queue_count):
+            return
+
+        iothread_count = min(queue_count, IothreadVqMappingAllocator.to_int(volume.ioThreads))
+        used_iothread_ids = IothreadVqMappingAllocator.used_ids_from_xml(root)
+        iothread_ids = IothreadVqMappingAllocator.allocate_iothread_ids(iothread_count, used_iothread_ids)
+        allocator = IothreadVqMappingAllocator(volume.volumeUuid, queue_count, iothread_ids)
+        IothreadVqMappingAllocator.apply(driver, allocator)
+        VmPlugin._declare_migration_iothreads(root, iothread_ids)
+
+    @staticmethod
+    def _declare_migration_iothreads(root, iothread_ids):
+        devices = root.find('devices')
+        iothreads = root.find('iothreads')
+        iothreadids = root.find('iothreadids')
+        if iothreadids is None:
+            iothreadids = etree.Element('iothreadids')
+            before = iothreads if iothreads is not None else devices
+            root.insert(list(root).index(before), iothreadids)
+        for iothread_id in iothread_ids:
+            e(iothreadids, 'iothread', None, {'id': str(iothread_id)})
+
+        if iothreads is None:
+            iothreads = etree.Element('iothreads')
+            root.insert(list(root).index(devices), iothreads)
+        iothreads.text = str(IothreadVqMappingAllocator.to_int(iothreads.text) + len(iothread_ids))
+
+    @staticmethod
     def _get_new_disk(old_disk: etree.Element, volume=None):
+        old_driver = old_disk.find('driver')
+        source_queues = old_driver.get('queues')
+
         def filebased_volume(_v):
             disk = etree.Element('disk', {'type': 'file', 'device': 'disk', 'snapshot': 'external'})
             e(disk, 'driver', None, {'name': 'qemu', 'type': driver_type, 'cache': _v.cacheMode, 'discard': 'unmap'})
@@ -9553,9 +10052,18 @@ class VmPlugin(kvmagent.KvmAgent):
 
         def cbd_volume(_v):
             disk = etree.Element('disk', {'type': 'network', 'device': 'disk'})
-            e(disk, 'driver', None, {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'})
+            driver_elements = {'name': 'qemu', 'type': 'raw', 'cache': 'none', 'discard': 'unmap'}
+            driver = e(disk, 'driver', None, driver_elements)
+            if not _v.useVirtioSCSI:
+                IothreadVqMappingAllocator.apply(
+                    driver, IothreadVqMappingAllocator.from_existing_driver(_v, old_driver, source_queues))
             e(disk, 'source', None, {'protocol': 'cbd', 'name': make_cbd_conf(_v.installPath)})
-            e(disk, 'target', None, {'dev': 'vd%s' % _v.dev_letter, 'bus': 'virtio'})
+            if _v.useVirtioSCSI:
+                e(disk, 'target', None, {'dev': 'sd%s' % _v.dev_letter, 'bus': 'scsi'})
+                if _v.wwn:
+                    e(disk, 'wwn', _v.wwn)
+            else:
+                e(disk, 'target', None, {'dev': 'vd%s' % _v.dev_letter, 'bus': 'virtio'})
             if _v.physicalBlockSize:
                 e(disk, 'blockio', None, {'physical_block_size': str(_v.physicalBlockSize)})
             return disk
@@ -9598,6 +10106,11 @@ class VmPlugin(kvmagent.KvmAgent):
         else:
             raise Exception('unsupported volume deviceType[%s]' % volume.deviceType)
 
+        driver = ele.find('driver')
+        driver.attrib.pop('queues', None)
+        if source_queues:
+            driver.set('queues', source_queues)
+
         tags_to_keep = [ 'target', 'boot', 'alias', 'address', 'wwn', 'serial']
         for c in old_disk:  # getchildren
             if c.tag in tags_to_keep:
@@ -9626,6 +10139,7 @@ class VmPlugin(kvmagent.KvmAgent):
             dev = disk.find('target').attrib['dev']
             if dev in migrate_disks:
                 new_disk = VmPlugin._get_new_disk(disk, migrate_disks[dev])
+                VmPlugin._apply_migration_iothread_vq_mapping(tree.getroot(), new_disk, migrate_disks[dev])
                 parent_index = list(devices).index(disk)
                 devices.remove(disk)
                 devices.insert(parent_index, new_disk)
@@ -14000,7 +14514,7 @@ host side snapshot files chian:
         for controller in vm.domain_xmlobject.devices.get_child_node_as_list('controller'):
             if controller.type_ == 'scsi' and hasattr(controller, 'driver') and hasattr(controller.driver, 'iothread_') \
                     and str(controller.driver.iothread_) == str(cmd.ioThreadId):
-                err_info = self.detach_controller_by_alias(cmd.vmUuid, controller.alias.name_)
+                err_info = vm.detach_controller_by_alias(controller.alias.name_)
                 if isinstance(err_info, str) and err_info:
                     rsp.success = False
                     rsp.error = err_info
@@ -14012,18 +14526,26 @@ host side snapshot files chian:
         return jsonobject.dumps(rsp)
 
     @staticmethod
-    def add_scsi_controller(vm_uuid, io_thread_id):
+    def add_scsi_controller_with_driver(vm_uuid, io_thread_id=None, queues=None, mapping_allocator=None,
+                                        created_aliases=None):
         vm_xml_obj = get_vm_by_uuid(vm_uuid)
-        index = vm_xml_obj.find_scsi_controller_by_iothread(io_thread_id)
-        if not index or index == "0":
-            index = VmPlugin.get_next_scsi_controller_index(vm_xml_obj)
-            controller_xml = etree.Element('controller',
-                                           attrib={'type': 'scsi', 'model': 'virtio-scsi', 'index': str(index)})
-            e(controller_xml, 'address', None, {'type': 'pci'})
-            e(controller_xml, 'driver', None, {'iothread': str(io_thread_id)})
-            e(controller_xml, 'alias', None, {'name': 'scsi{0}'.format(io_thread_id)})
-            vm_xml_obj.domain.attachDeviceFlags(etree.tostring(controller_xml, encoding="unicode"), libvirt.VIR_DOMAIN_AFFECT_LIVE)
+        if io_thread_id:
+            index = vm_xml_obj.find_scsi_controller_by_iothread(io_thread_id)
+            if index and index != "0":
+                return index
+
+        index = VmPlugin.get_next_scsi_controller_index(vm_xml_obj)
+        alias_id = io_thread_id if io_thread_id else index
+        alias_name = 'scsi{0}'.format(alias_id)
+        if created_aliases is not None:
+            created_aliases.append(alias_name)
+        controller_xml = make_virtio_scsi_controller_xml(index, alias_id, io_thread_id, queues, mapping_allocator)
+        vm_xml_obj.domain.attachDeviceFlags(etree.tostring(controller_xml, encoding="unicode"), libvirt.VIR_DOMAIN_AFFECT_LIVE)
         return index
+
+    @staticmethod
+    def add_scsi_controller(vm_uuid, io_thread_id):
+        return VmPlugin.add_scsi_controller_with_driver(vm_uuid, io_thread_id=io_thread_id)
 
     @staticmethod
     def get_next_scsi_controller_index(vm_xml_obj):
@@ -14033,26 +14555,6 @@ host side snapshot files chian:
                 old_index_list.append(int(controller.index_))
         new_index_list = [i for i in range(0, len(old_index_list) + 1)]
         return set(new_index_list).difference(set(old_index_list)).pop()
-
-
-    @linux.retry(times=3, sleep_time=1)
-    def detach_controller_by_alias(self, vm_uuid, controller_alias):
-        exec_cmd = "virsh detach-device-alias %s %s --current" % (vm_uuid, controller_alias)
-        cmd_res = shell.call(exec_cmd)
-
-        def controller_detached(_):
-            vm = get_vm_by_uuid(vm_uuid)
-            for controller in vm.domain_xmlobject.devices.get_child_node_as_list('controller'):
-                if controller.type_ == 'scsi' and hasattr(controller, 'alias') \
-                        and controller.alias.name_ == controller_alias:
-                    return False
-            return True
-
-        if not linux.wait_callback_success(controller_detached, None, 60, 1):
-            return "failed to detach scsi controller[alias:%s] from vm[uuid:%s]" % (controller_alias, vm_uuid)
-        if cmd_res and cmd_res.startswith("error:"):
-            return cmd_res
-        return None
 
     @staticmethod
     def has_scsi_controller_using_iothread(vm_uuid, io_thread_id):
