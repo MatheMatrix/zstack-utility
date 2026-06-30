@@ -235,6 +235,60 @@ def test_move_dev_route_migrates_resolved_dns_to_bridge():
         linux.os.path.exists = original_exists
 
 
+def test_create_bridge_snapshots_routes_before_enslave():
+    linux = _load_linux_module()
+    calls = []
+    enslaved = {"value": False}
+
+    def shell_call(cmd, exception=True):
+        calls.append((cmd, exception))
+        if cmd == 'ip addr show dev eth0 | grep "inet "':
+            return ""
+        if cmd == 'ip addr show dev eth0 | grep "inet6 " | grep -v " scope link"':
+            return "" if enslaved["value"] else "    inet6 fd00:5:5:28::79:d283/64 scope global noprefixroute\n"
+        if cmd == "ip route show dev eth0 | grep via | sed 's/onlink//g'":
+            return ""
+        if cmd == "ip -6 route show dev eth0 | grep via | sed 's/onlink//g'":
+            return "" if enslaved["value"] else "default via fd00:5:5:28::1 proto static metric 101\n"
+        if cmd == "ip -6 route show dev eth0 | grep -v via | grep -v ' proto kernel ' | grep -v '^fe80::' | sed 's/onlink//g'":
+            return ""
+        if cmd == "ip -6 route show dev eth0 proto kernel | grep -v '^fe80::' | sed 's/onlink//g'":
+            return "" if enslaved["value"] else "fd00:5:5:28::/64 proto kernel metric 101 pref medium\n"
+        if cmd == 'ip addr show dev br_eth0 | grep "inet6 fd00:5:5:28::79:d283/64"':
+            return ""
+        return ""
+
+    def set_master(interface, bridge):
+        calls.append(("enslave", interface, bridge))
+        enslaved["value"] = True
+
+    original_is_network_device_existing = linux.is_network_device_existing
+    original_is_bridge = linux.is_bridge
+    original_find_bridge = linux.find_bridge_having_physical_interface
+    original_set_master = linux.ip_link_set_net_device_master
+    original_migrate_dns = linux._migrate_resolved_dns
+    try:
+        linux.shell.call = MagicMock(side_effect=shell_call)
+        linux.is_network_device_existing = MagicMock(return_value=True)
+        linux.is_bridge = MagicMock(return_value=False)
+        linux.find_bridge_having_physical_interface = MagicMock(return_value=None)
+        linux.ip_link_set_net_device_master = MagicMock(side_effect=set_master)
+        linux._migrate_resolved_dns = MagicMock()
+
+        linux.create_bridge("br_eth0", "eth0")
+
+        snapshot_call = ('ip addr show dev eth0 | grep "inet6 " | grep -v " scope link"', False)
+        assert calls.index(snapshot_call) < calls.index(("enslave", "eth0", "br_eth0"))
+        assert ("ip addr add fd00:5:5:28::79:d283/64 dev br_eth0", True) in calls
+        assert ("ip -6 route add default via fd00:5:5:28::1 dev br_eth0 proto static metric 101", True) in calls
+    finally:
+        linux.is_network_device_existing = original_is_network_device_existing
+        linux.is_bridge = original_is_bridge
+        linux.find_bridge_having_physical_interface = original_find_bridge
+        linux.ip_link_set_net_device_master = original_set_master
+        linux._migrate_resolved_dns = original_migrate_dns
+
+
 def test_tcp_port_is_free_closes_probe_sockets_on_failure():
     linux = _load_linux_module()
 

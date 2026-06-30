@@ -1746,6 +1746,8 @@ def create_bridge(bridge_name, interface, move_route=True):
     if br_name and br_name != bridge_name:
         raise Exception('failed to create bridge[{0}], physical interface[{1}] has been occupied by bridge[{2}]'.format(bridge_name, interface, br_name))
 
+    route_info = _get_dev_route_info(interface) if move_route else None
+
     if not is_bridge(bridge_name):
         shell.call("brctl addbr %s" % bridge_name)
     else:
@@ -1768,11 +1770,24 @@ def create_bridge(bridge_name, interface, move_route=True):
     # MAC address.
     shell.call("ip link set %s address `cat /sys/class/net/%s/address`" % (bridge_name, interface))
 
-    if move_route:
-        move_dev_route(interface, bridge_name)
+    if move_route and route_info is not None:
+        try:
+            move_dev_route(interface, bridge_name, route_info, ignore_missing_source=True)
+        except Exception:
+            if br_name != bridge_name:
+                try:
+                    shell.call("ip link set %s nomaster" % interface, exception=False)
+                    shell.call("ip link set %s up" % interface, exception=False)
+                    _restore_dev_route(interface, route_info)
+                except Exception:
+                    logger.warning("failed to rollback routes from bridge %s to interface %s: %s" %
+                                   (bridge_name, interface, traceback.format_exc()))
+            raise
+    elif move_route:
+        logger.debug("Source device %s doesn't have an IP address set. No need to move routes." % interface)
 
 
-def move_dev_route(src_dev, dest_dev):
+def move_dev_route(src_dev, dest_dev, route_info=None, ignore_missing_source=False):
     """
     Move IP address and routes from one network device (src_dev) to another (dest_dev).
 
@@ -1780,53 +1795,14 @@ def move_dev_route(src_dev, dest_dev):
     - src_dev: The source device from which the IP and routes will be moved.
     - dest_dev: The destination device to which the IP and routes will be moved.
     """
-    ipv4_out = shell.call('ip addr show dev %s | grep "inet "' % src_dev, exception=False)
-    ipv6_out = shell.call('ip addr show dev %s | grep "inet6 " | grep -v " scope link"' % src_dev, exception=False)
-    if not ipv4_out and not ipv6_out:
+    if route_info is None:
+        route_info = _get_dev_route_info(src_dev)
+    if route_info is None:
         logger.debug("Source device %s doesn't have an IP address set. No need to move routes." % src_dev)
         return
 
-    # Record old routes associated with the source device
-    routes = []
-    r_out = shell.call("ip route show dev %s | grep via | sed 's/onlink//g'" % src_dev)
-    for line in r_out.split('\n'):
-        if line != "":
-            routes.append(line)
-            shell.call('ip route del %s' % line)
-
-    routes6 = []
-    r_out = shell.call("ip -6 route show dev %s | grep via | sed 's/onlink//g'" % src_dev)
-    for line in r_out.split('\n'):
-        if line != "":
-            routes6.append(line)
-            shell.call('ip -6 route del %s' % line)
-    direct_routes6 = []
-    r_out = shell.call("ip -6 route show dev %s | grep -v via | grep -v ' proto kernel ' | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
-    for line in r_out.split('\n'):
-        if line != "":
-            direct_routes6.append(line)
-            shell.call('ip -6 route del %s' % _route_with_dev(line, src_dev))
-    connected_routes6 = []
-    r_out = shell.call("ip -6 route show dev %s proto kernel | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
-    for line in r_out.split('\n'):
-        if line != "":
-            connected_routes6.append(line)
-
-    for ip in _parse_ip_addresses(ipv4_out):
-        _move_ip_address(ip, src_dev, dest_dev, "inet")
-
-    for ip in _parse_ip_addresses(ipv6_out):
-        _move_ip_address(ip, src_dev, dest_dev, "inet6")
-    for r in connected_routes6:
-        shell.call('ip -6 route del %s' % _route_with_dev(r, src_dev), exception=False)
-
-    # Restore routes on the destination device
-    for r in routes:
-        shell.call('ip route add %s' % _route_with_dev(r, dest_dev))
-    for r in direct_routes6:
-        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
-    for r in routes6:
-        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
+    _delete_dev_route(src_dev, route_info, ignore_missing_source)
+    _restore_dev_route(dest_dev, route_info)
 
     # Migrate DNS settings for systems using systemd-resolved (e.g. alinux4).
     # On these systems DNS servers are bound per-link; after bridging, the
@@ -1836,12 +1812,94 @@ def move_dev_route(src_dev, dest_dev):
     _migrate_resolved_dns(src_dev, dest_dev)
 
 
+def _get_dev_route_info(src_dev):
+    ipv4_out = shell.call('ip addr show dev %s | grep "inet "' % src_dev, exception=False)
+    ipv6_out = shell.call('ip addr show dev %s | grep "inet6 " | grep -v " scope link"' % src_dev, exception=False)
+    if not ipv4_out and not ipv6_out:
+        return None
+
+    routes = []
+    r_out = shell.call("ip route show dev %s | grep via | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            routes.append(line)
+
+    routes6 = []
+    r_out = shell.call("ip -6 route show dev %s | grep via | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            routes6.append(line)
+
+    direct_routes6 = []
+    r_out = shell.call("ip -6 route show dev %s | grep -v via | grep -v ' proto kernel ' | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            direct_routes6.append(line)
+
+    connected_routes6 = []
+    r_out = shell.call("ip -6 route show dev %s proto kernel | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            connected_routes6.append(line)
+
+    return {
+        'ipv4_addresses': _parse_ip_addresses(ipv4_out),
+        'ipv6_addresses': _parse_ip_addresses(ipv6_out),
+        'routes': routes,
+        'routes6': routes6,
+        'direct_routes6': direct_routes6,
+        'connected_routes6': connected_routes6,
+    }
+
+
+def _delete_dev_route(src_dev, route_info, ignore_missing_source=False):
+    exception = not ignore_missing_source
+    for r in route_info['routes']:
+        shell.call('ip route del %s' % r, exception=exception)
+    for r in route_info['routes6']:
+        shell.call('ip -6 route del %s' % r, exception=exception)
+    for r in route_info['direct_routes6']:
+        shell.call('ip -6 route del %s' % _route_with_dev(r, src_dev), exception=exception)
+
+    for ip in route_info['ipv4_addresses']:
+        _move_ip_address(ip, src_dev, None, "inet")
+
+    for ip in route_info['ipv6_addresses']:
+        _move_ip_address(ip, src_dev, None, "inet6")
+    for r in route_info['connected_routes6']:
+        shell.call('ip -6 route del %s' % _route_with_dev(r, src_dev), exception=False)
+
+
+def _restore_dev_route(dest_dev, route_info):
+    if route_info is None:
+        return
+
+    for ip in route_info['ipv4_addresses']:
+        _add_ip_address(ip, dest_dev, "inet")
+
+    for ip in route_info['ipv6_addresses']:
+        _add_ip_address(ip, dest_dev, "inet6")
+
+    for r in route_info['routes']:
+        shell.call('ip route add %s' % _route_with_dev(r, dest_dev))
+    for r in route_info['direct_routes6']:
+        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
+    for r in route_info['routes6']:
+        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
+
+
 def _parse_ip_addresses(ip_addr_output):
     return [line.strip().split()[1] for line in ip_addr_output.split('\n') if line.strip()]
 
 
 def _move_ip_address(ip, src_dev, dest_dev, family):
     shell.call('ip addr del %s dev %s' % (ip, src_dev), exception=False)
+    if dest_dev is None:
+        return
+    _add_ip_address(ip, dest_dev, family)
+
+
+def _add_ip_address(ip, dest_dev, family):
     r_out = shell.call('ip addr show dev %s | grep "%s %s"' % (dest_dev, family, ip), exception=False)
     if not r_out:
         shell.call('ip addr add %s dev %s' % (ip, dest_dev))
