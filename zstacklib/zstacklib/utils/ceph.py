@@ -26,6 +26,8 @@ CEPH_MON_IPV6_BRACKET_SUFFIX = ']'
 ROUTE_PROTOCOL_KERNEL = 'kernel'
 ROUTE_MATCH_CMD_FORMAT = "ip route | grep -w '%s' > /dev/null"
 ROUTE_KERNEL_MATCH_CMD_FORMAT = 'ip route | grep -w "proto kernel" | grep -w \'%s\' > /dev/null'
+IPV6_ROUTE_MATCH_CMD_FORMAT = "ip -6 route | grep -w '%s' > /dev/null"
+IPV6_ROUTE_KERNEL_MATCH_CMD_FORMAT = 'ip -6 route | grep -w "proto kernel" | grep -w \'%s\' > /dev/null'
 
 QEMU_NBD_SOCKET_DIR = "/var/lock/"
 QEMU_NBD_SOCKET_PREFIX = "qemu-nbd-nbd"
@@ -324,17 +326,28 @@ def extract_mon_host(addr):
     return addr_without_suffix
 
 
+def get_route_match_cmd(addr, route_protocol=None):
+    if CEPH_MON_PROTOCOL_SEPARATOR in addr:
+        route_match_cmd_format = IPV6_ROUTE_MATCH_CMD_FORMAT
+        route_kernel_match_cmd_format = IPV6_ROUTE_KERNEL_MATCH_CMD_FORMAT
+    else:
+        route_match_cmd_format = ROUTE_MATCH_CMD_FORMAT
+        route_kernel_match_cmd_format = ROUTE_KERNEL_MATCH_CMD_FORMAT
+
+    if route_protocol is None:
+        return route_match_cmd_format % addr
+    if route_protocol == ROUTE_PROTOCOL_KERNEL:
+        return route_kernel_match_cmd_format % addr
+    return ''
+
+
 def get_mon_addr(monmap, route_protocol=None):
     for mon in jsonobject.loads(monmap).mons:
         addr = extract_mon_host(mon.addr)
         if addr is None:
             continue
 
-        cmd = ''
-        if route_protocol is None:
-            cmd = ROUTE_MATCH_CMD_FORMAT % addr
-        elif route_protocol == ROUTE_PROTOCOL_KERNEL:
-            cmd = ROUTE_KERNEL_MATCH_CMD_FORMAT % addr
+        cmd = get_route_match_cmd(addr, route_protocol)
         if cmd == '':
             return
         if bash_r(cmd) == 0:
