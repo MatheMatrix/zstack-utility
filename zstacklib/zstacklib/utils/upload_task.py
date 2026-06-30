@@ -10,6 +10,11 @@ from zstacklib.utils import linux, lock
 from zstacklib.utils.rangeset import RangeSet
 from cherrypy._cpreqbody import Entity, Part, SizedReader
 
+try:
+    long
+except NameError:
+    long = int
+
 logger = logging.getLogger(__name__)
 BUFFER_SIZE = 16 * 1024 ** 2  # 16MB
 # Per-slice retry budget chosen to tolerate repeated weak-network read/EOF/hash
@@ -317,10 +322,23 @@ class UploadHandler(object):
         up.slice_size = get_long_field('X-SLICE-SIZE', default=up.total_size)
         up.slice_hash = headers.get('X-SLICE-HASH', None)
         up.hash_algorithm = headers.get('X-HASH-ALGORITHM', None)
+        if up.slice_hash is None and headers.get('X-SLICE-MD5', None):
+            up.slice_hash = headers.get('X-SLICE-MD5', None)
+            up.hash_algorithm = 'md5'
+
+        if up.total_size <= 0:
+            raise Exception('invalid total size header: %d' % up.total_size)
+
+        if up.slice_size <= 0:
+            raise Exception('invalid slice size header: %d' % up.slice_size)
 
         if up.slice_offset >= up.total_size:
             raise Exception('invalid slice offset header: %s, total_size: %d' %
                             (up.slice_offset, up.total_size))
+
+        if up.slice_size > up.total_size - up.slice_offset:
+            raise Exception('invalid slice range, offset=%d size=%d total_size=%d' %
+                            (up.slice_offset, up.slice_size, up.total_size))
         return up
 
     def get_upload_task(self, param):
