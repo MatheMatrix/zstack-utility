@@ -61,6 +61,56 @@ def _make_vm_plugin():
 
 
 @pytest.mark.kvmagent
+class TestMigrateVmFalseFailure:
+    def test_destination_running_confirms_false_migration_failure(self, monkeypatch):
+        conn = MagicMock()
+        cmd = MagicMock(
+            vmUuid='vm-uuid',
+            destHostManagementIp='10.0.0.2',
+            destHostIp='172.24.0.2',
+            useTls=False,
+        )
+        dst_vm = MagicMock(state=vm_plugin.Vm.VM_STATE_RUNNING)
+        get_connect = MagicMock(return_value=conn)
+        get_vm_by_uuid = MagicMock(return_value=dst_vm)
+
+        monkeypatch.setattr(vm_plugin, 'get_connect', get_connect)
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', get_vm_by_uuid)
+
+        assert vm_plugin.Vm.is_running_on_destination(cmd) is True
+        get_connect.assert_called_once_with('10.0.0.2', False)
+        get_vm_by_uuid.assert_called_once_with('vm-uuid', False, conn)
+        conn.close.assert_called_once()
+
+    def test_destination_not_running_keeps_migration_failure(self, monkeypatch):
+        conn = MagicMock()
+        cmd = MagicMock(
+            vmUuid='vm-uuid',
+            destHostManagementIp='10.0.0.2',
+            destHostIp='172.24.0.2',
+            useTls=False,
+        )
+        dst_vm = MagicMock(state=vm_plugin.Vm.VM_STATE_PAUSED)
+
+        monkeypatch.setattr(vm_plugin, 'get_connect', MagicMock(return_value=conn))
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=dst_vm))
+
+        assert vm_plugin.Vm.is_running_on_destination(cmd) is False
+
+    def test_destination_verify_error_confirms_false_migration_failure(self, monkeypatch):
+        cmd = MagicMock(
+            vmUuid='vm-uuid',
+            destHostManagementIp='10.0.0.2',
+            destHostIp='172.24.0.2',
+            useTls=False,
+        )
+
+        monkeypatch.setattr(vm_plugin, 'get_connect', MagicMock(side_effect=Exception('connect failed')))
+
+        assert vm_plugin.Vm.is_running_on_destination(cmd) is True
+
+
+@pytest.mark.kvmagent
 class TestAttachIsoHandler:
     def test_attach_iso(self):
         plugin = _make_vm_plugin()
