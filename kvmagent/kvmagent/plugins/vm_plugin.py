@@ -5131,6 +5131,22 @@ class Vm(object):
         if not ret.success:
             raise Exception(ret.error)
 
+    @staticmethod
+    def is_running_on_destination(cmd):
+        dest_ctrl_ip = getattr(cmd, 'destHostManagementIp', None) or cmd.destHostIp
+        use_tls = getattr(cmd, 'useTls', False)
+        if use_tls:
+            use_tls = _check_tls_ready(dest_ctrl_ip, cmd.vmUuid)
+
+        try:
+            with contextlib.closing(get_connect(dest_ctrl_ip, use_tls)) as conn:
+                dst_vm = get_vm_by_uuid(cmd.vmUuid, False, conn)
+                return dst_vm is not None and dst_vm.state == Vm.VM_STATE_RUNNING
+        except Exception as e:
+            logger.warn('failed to verify vm[uuid:%s] on destination host[%s]: %s'
+                        % (cmd.vmUuid, dest_ctrl_ip, str(e)))
+            return True
+
     def migrate(self, cmd):
         if self.state == Vm.VM_STATE_SHUTDOWN:
             raise kvmagent.KvmError('vm[uuid:%s] is stopped, cannot live migrate,' % cmd.vmUuid)
@@ -5345,8 +5361,8 @@ class Vm(object):
                     except libvirt.libvirtError as lookup_err:
                         logger.warn('failed to verify vm on source after migration error: %s' % str(lookup_err))
                     else:
-                        if vm_on_source is None:
-                            logger.info('vm[uuid:%s] is no longer on source host, migration actually succeeded despite libvirt error: %s' % (cmd.vmUuid, err))
+                        if vm_on_source is None and Vm.is_running_on_destination(cmd):
+                            logger.info('vm[uuid:%s] is no longer on source host and is running on destination host, migration actually succeeded despite libvirt error: %s' % (cmd.vmUuid, err))
                             return True
 
                     if "cannot set up guest memory" in err:
