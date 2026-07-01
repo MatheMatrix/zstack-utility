@@ -25,6 +25,7 @@ import base64
 import uuid
 import urllib.parse
 import json
+import signal
 import socket
 import syslog
 import threading
@@ -54,9 +55,7 @@ from kvmagent.plugins import vm_artifact
 from kvmagent.plugins import zbs_vhost_target
 from kvmagent.plugins.imagestore import ImageStoreClient
 from kvmagent.plugins.shared_block_plugin import MAX_ACTUAL_SIZE_FACTOR
-from kvmagent.plugins.volume_cache.command_wrapper.virsh import VirshCommandWrapper as CacheVirshWrapper
-from kvmagent.plugins.volume_cache.command_wrapper.qemu_img import BackingVolumeDeviceType, supported_backing_volume_classes
-from zstacklib.utils import bash, plugin, iscsi, gpu
+from zstacklib.utils import bash, plugin, iscsi, gpu, traceable_shell
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import http
 from zstacklib.utils import lvm
@@ -66,7 +65,7 @@ from zstacklib.utils import uuidhelper
 from zstacklib.utils import xmlobject
 from zstacklib.utils import xmlhook
 from zstacklib.utils import misc
-from zstacklib.utils import qemu_img, qemu, qmp
+from zstacklib.utils import qemu_img, qemu, qmp, virsh
 from zstacklib.utils import ebtables
 from zstacklib.utils import vm_operator
 from zstacklib.utils import pci
@@ -1569,12 +1568,13 @@ def add_caching_store(disk_element, volume):
     device_type = getattr(volume, 'deviceType', None)  # type: str
     if not device_type:
         raise Exception('volume deviceType is required for attaching cachingStore')
+    from kvmagent.plugins import volume_cache_plugin
     try:
-        bvdt = BackingVolumeDeviceType(device_type)
+        backing_volume_class = volume_cache_plugin.supported_backing_volume_classes.get(
+            volume_cache_plugin.BackingVolumeDeviceType(device_type))
     except ValueError:
-        raise Exception('volume deviceType[%s] is not a recognised BackingVolumeDeviceType, '
-                        'skip attaching cachingStore' % device_type)
-    if bvdt not in supported_backing_volume_classes:
+        backing_volume_class = None
+    if not backing_volume_class:
         raise Exception('volume deviceType[%s] is not supported for block caching, '
                         'skip attaching cachingStore' % device_type)
 
@@ -2411,20 +2411,32 @@ class DetachBlockCacheTaskDaemon(plugin.TaskDaemon):
     def __init__(self, task_spec, vm_uuid, volume, disk_name):
         # type: (object, str, object, str) -> None
         super(DetachBlockCacheTaskDaemon, self).__init__(task_spec, 'DetachBlockCache')
+        self.task_spec = task_spec
         self.vm_uuid = vm_uuid       # type: str
         self.volume = volume         # type: object
         self.disk_name = disk_name   # type: str
         self.progress = 0            # type: int
-        self.error = None            # type: str
+        self.progress_file = linux.create_temp_file()
 
     def _cancel(self):
         # type: () -> None
-        logger.warning('Cancel is not supported for detach block-cache task, '
-                       'task will continue to completion')
+        traceable_shell.cancel_job_by_api(self.api_id, sig=signal.SIGINT)
+        self.result.fail('detach block-cache task cancelled')
 
     def _get_percent(self):
         # type: () -> int
-        return self.progress
+        if self.progress == 100:
+            return get_exact_percent(100, self.stage)
+
+        p = linux.tail_1(self.progress_file, split=b'\r')
+        if not p:
+            p = linux.tail_1(self.progress_file, split=b'\n')
+        if not p:
+            return None
+
+        matched = re.search(r'\[\s*(\d+)\s*%\]', p)
+        if matched:
+            return get_exact_percent(min(99, float(matched.group(1))), self.stage)
 
     def _get_detail(self):
         # type: () -> object
@@ -2433,12 +2445,13 @@ class DetachBlockCacheTaskDaemon(plugin.TaskDaemon):
             'volumeInstallPath': self.volume.installPath
         }))
 
-    def _on_progress(self, progress, err):
-        # type: (float, str) -> None
-        if progress is not None:
-            self.progress = int(max(0, min(99, progress)))
-        if err:
-            self.error = err
+    def _exit(self, exc_type, exc_val, exc_tb):
+        linux.rm_file_force(self.progress_file)
+
+    def _raise_if_cancelled(self):
+        # type: () -> None
+        if not self.result.success:
+            raise Exception(self.result.error)
 
     def detach(self):
         # type: () -> None
@@ -2446,15 +2459,18 @@ class DetachBlockCacheTaskDaemon(plugin.TaskDaemon):
         timeout = int(cache.timeout) if cache and getattr(cache, 'timeout', None) else None
         delete = bool(getattr(cache, 'delete', False)) if cache else False
 
-        CacheVirshWrapper.block_cache_detach(
-            domain=self.vm_uuid,
-            path=self.disk_name,
-            timeout=timeout,
-            delete=delete,
-            on_progress=self._on_progress)
-
-        if self.error:
-            raise Exception(self.error)
+        try:
+            virsh.block_cache_detach(
+                    domain=self.vm_uuid,
+                    path=self.disk_name,
+                    timeout=timeout,
+                    delete=delete,
+                    cmd_shell=traceable_shell.get_shell(self.task_spec),
+                    progress_output=self.progress_file)
+        except Exception:
+            self._raise_if_cancelled()
+            raise
+        self._raise_if_cancelled()
         self.progress = 100
 
 
@@ -9815,7 +9831,7 @@ class VmPlugin(kvmagent.KvmAgent):
         logger.debug('attaching cache[%s] to volume[%s] disk[%s] of vm[uuid:%s]'
                      % (cache_install_path, volume.installPath, disk_name, vm.uuid))
 
-        CacheVirshWrapper.block_cache_attach(
+        virsh.block_cache_attach(
             domain=cmd.instanceUuid,
             path=disk_name,
             cache=cache_install_path)
@@ -11459,11 +11475,13 @@ host side snapshot files chian:
     def _create_ceph_secret_key(userKey, uuid):
         VmPlugin.secret_keys[uuid] = userKey
 
-        sh_cmd = shell.ShellCmd('virsh secret-get-value %s' % uuid)
-        sh_cmd(False)
-        if sh_cmd.stdout.strip() == userKey:
+        try:
+            current_key = virsh.get_secret_value(uuid)
+        except Exception:
+            current_key = None
+        if current_key == userKey:
             return
-        elif sh_cmd.return_code == 0:
+        elif current_key is not None:
             shell.call('virsh secret-set-value %s %s' % (uuid, userKey))
             return
 

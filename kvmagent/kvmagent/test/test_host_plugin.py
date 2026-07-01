@@ -247,7 +247,7 @@ class TestHostPluginGetBlockDevices(unittest.TestCase):
     def test_get_block_devices_filters_mounted_by_default(self):
         devices = [self._make_device("/dev/sdb"), self._make_device("/dev/sdc")]
         with mock.patch.object(host_plugin.lvm, 'get_block_devices', return_value=devices):
-            with mock.patch.object(host_plugin.FileSystemCommandWrapper, 'is_block_device_mounted',
+            with mock.patch.object(host_plugin.linux, 'is_block_device_mounted',
                                    side_effect=lambda name: name == "/dev/sdc") as mock_mounted:
                 rsp = self._call_get_block_devices("{}")
 
@@ -259,7 +259,7 @@ class TestHostPluginGetBlockDevices(unittest.TestCase):
     def test_get_block_devices_filters_mounted_when_include_in_use_false(self):
         devices = [self._make_device("/dev/sdb"), self._make_device("/dev/sdc")]
         with mock.patch.object(host_plugin.lvm, 'get_block_devices', return_value=devices):
-            with mock.patch.object(host_plugin.FileSystemCommandWrapper, 'is_block_device_mounted',
+            with mock.patch.object(host_plugin.linux, 'is_block_device_mounted',
                                    side_effect=lambda name: name == "/dev/sdc") as mock_mounted:
                 rsp = self._call_get_block_devices('{"includeInUse": false}')
 
@@ -271,7 +271,7 @@ class TestHostPluginGetBlockDevices(unittest.TestCase):
     def test_get_block_devices_returns_all_when_include_in_use_true(self):
         devices = [self._make_device("/dev/sdb"), self._make_device("/dev/sdc")]
         with mock.patch.object(host_plugin.lvm, 'get_block_devices', return_value=devices):
-            with mock.patch.object(host_plugin.FileSystemCommandWrapper, 'is_block_device_mounted') as mock_mounted:
+            with mock.patch.object(host_plugin.linux, 'is_block_device_mounted') as mock_mounted:
                 rsp = self._call_get_block_devices('{"includeInUse": true}')
 
         self.assertEqual(["/dev/sdb", "/dev/sdc"], [d.name for d in rsp.blockDevices])

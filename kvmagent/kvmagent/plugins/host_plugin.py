@@ -26,8 +26,7 @@ except ImportError:
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
-from kvmagent.plugins.volume_cache.command_wrapper.filesystem import FileSystemCommandWrapper
-from zstacklib.utils import http, lvm, ceph, pci, gpu
+from zstacklib.utils import http, lvm, ceph, pci, gpu, linux
 from zstacklib.utils import qemu
 from zstacklib.utils import iptables
 from zstacklib.utils import iproute
@@ -4745,7 +4744,7 @@ done
 
         all_devices = lvm.get_block_devices() # type: list[lvm.SharedBlockCandidateStruct]
         if not cmd.includeInUse:
-            all_devices = list(filter(lambda dev: not FileSystemCommandWrapper.is_block_device_mounted(dev.name), all_devices))
+            all_devices = list(filter(lambda dev: not linux.is_block_device_mounted(dev.name), all_devices))
         rsp.blockDevices = all_devices
         return jsonobject.dumps(rsp)
 

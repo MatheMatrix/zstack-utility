@@ -83,7 +83,7 @@ def cancel_job(task_spec):
     return cancel_job_by_api(task_spec.cancellationApiId)
 
 
-def cancel_job_by_api(api_id):
+def cancel_job_by_api(api_id, sig=15):
     if not api_id:
         raise Exception("missing api_id")
 
@@ -94,6 +94,6 @@ def cancel_job_by_api(api_id):
 
     logger.debug("it is going to kill process %s to cancel job[api:%s].", pids, api_id)
     for pid in pids:
-        linux.kill_all_child_process(pid)
+        linux.kill_all_child_process(pid, sig=sig)
     return True
 

@@ -23,6 +23,10 @@ def _package(name, path):
     return module
 
 
+class _Info(object):
+    pass
+
+
 def _install_import_fakes():
     kvmagent_module = _module("kvmagent.kvmagent")
 
@@ -45,9 +49,19 @@ def _install_import_fakes():
     utils = _package("zstacklib.utils", _REPO_ROOT / "zstacklib" / "zstacklib" / "utils")
     zstacklib.utils = utils
 
-    for name in ["linux", "lvm", "shell", "plugin"]:
+    for name in ["linux", "lvm", "shell", "plugin", "traceable_shell", "virsh"]:
         child = _module("zstacklib.utils.%s" % name)
         setattr(utils, name, child)
+
+    utils.linux.check_filesystem = MagicMock()
+    utils.linux.FileSystemInfo = _Info
+    utils.linux.MountPointInfo = _Info
+
+    utils.lvm.get_lvm_objects = MagicMock()
+    utils.lvm.rescan_lvm = MagicMock()
+    utils.lvm.PVInfo = _Info
+    utils.lvm.VGInfo = _Info
+    utils.lvm.LVInfo = _Info
 
     class TaskDaemon(object):
         def __init__(self, *args, **kwargs):
@@ -79,12 +93,6 @@ def _install_import_fakes():
     jsonobject.dumps = lambda obj: "{}"
     utils.jsonobject = jsonobject
 
-    qemu_img = _module("kvmagent.plugins.volume_cache.command_wrapper.qemu_img")
-    qemu_img.BackingVolume = object
-    qemu_img.BackingVolumeDeviceType = object
-    qemu_img.QemuImgCommandWrapper = object
-    qemu_img.supported_backing_volume_classes = []
-
     return {
         "kvmagent.kvmagent": kvmagent_module,
         "zstacklib": zstacklib,
@@ -93,17 +101,17 @@ def _install_import_fakes():
         "zstacklib.utils.lvm": utils.lvm,
         "zstacklib.utils.shell": utils.shell,
         "zstacklib.utils.plugin": utils.plugin,
+        "zstacklib.utils.traceable_shell": utils.traceable_shell,
+        "zstacklib.utils.virsh": utils.virsh,
         "zstacklib.utils.log": log,
         "zstacklib.utils.http": http,
         "zstacklib.utils.rollback": rollback,
         "zstacklib.utils.jsonobject": jsonobject,
-        "kvmagent.plugins.volume_cache.command_wrapper.qemu_img": qemu_img,
     }
 
 
 with patch.dict(sys.modules, _install_import_fakes()):
     from kvmagent.plugins import volume_cache_plugin
-    from kvmagent.plugins.volume_cache.command_wrapper.exceptions import PoolOperationError
 
 
 class _FakeFileSystem(object):
@@ -115,13 +123,12 @@ class TestVolumeCachePoolConnect(unittest.TestCase):
         pool = volume_cache_plugin.PoolProcessor("pool-uuid", "/cache/pool")
         check_filesystem = MagicMock(return_value=filesystem_healthy)
         patches = [
-            patch.object(volume_cache_plugin.FileSystemCommandWrapper, "partprobe", MagicMock()),
             patch.object(pool, "_PoolProcessor__load_pvs", MagicMock(return_value=["/dev/sdb"])),
             patch.object(pool, "_PoolProcessor__load_vg", MagicMock(return_value=object())),
             patch.object(pool, "_PoolProcessor__load_lv", MagicMock(return_value=object())),
             patch.object(pool, "_PoolProcessor__load_filesystem", MagicMock(return_value=_FakeFileSystem())),
             patch.object(pool, "_PoolProcessor__load_mount_point", MagicMock(return_value=object())),
-            patch.object(volume_cache_plugin.FileSystemCommandWrapper, "check_filesystem", check_filesystem),
+            patch.object(volume_cache_plugin.linux, "check_filesystem", check_filesystem),
         ]
         for patcher in patches:
             self.addCleanup(patcher.stop)
@@ -139,7 +146,7 @@ class TestVolumeCachePoolConnect(unittest.TestCase):
     def test_connect_pool_fails_when_filesystem_check_is_unhealthy(self):
         pool, check_filesystem = self._loaded_pool(False)
 
-        with self.assertRaises(PoolOperationError) as error:
+        with self.assertRaises(volume_cache_plugin.PoolOperationError) as error:
             pool.connect_pool()
 
         check_filesystem.assert_called_once_with("/cache/pool", "/cache/pool/.heartbeat")
