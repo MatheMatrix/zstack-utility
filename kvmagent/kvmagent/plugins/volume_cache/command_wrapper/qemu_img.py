@@ -166,10 +166,10 @@ class CephBackingVolume(BackingVolume):
 
         portal_str = "rbd"
         img_info_str = "%s/%s" % (self.pool, self.image)
-        mon_host_str = "mon_host=%s" % (";".join(["%s:%s" % (host, port) for host, port in self.mon_infos]))
+        mon_host_str = "mon_host=%s" % "\\;".join(["%s\\:%s" % (host, port) for host, port in self.mon_infos])
         if self.secret_uuid and self.secret_key:
-            auth_str = "id=%s:key=%s:auth_supported=cephx;none" % ("zstack", self.secret_key)
-            return ":".join([portal_str, img_info_str, mon_host_str, auth_str])
+            auth_str = "id=%s:key=%s:auth_supported=cephx\\;none" % ("zstack", self.secret_key)
+            return ":".join([portal_str, img_info_str, auth_str, mon_host_str])
         return ":".join([portal_str, img_info_str, mon_host_str])
 
 
@@ -184,7 +184,7 @@ class CephBackingVolume(BackingVolume):
         url = self.volume.installPath # type: str
         self.pool, self.image = url.replace("ceph://", "").split("/")
         self.secret_uuid = self.volume.secretUuid
-        self.secret_key = self.__get_secret_key()
+        self.secret_key = self.__get_secret_key() if self.secret_uuid else None
         self.mon_infos = self.__get_mon_info()
 
     def __get_mon_info(self):
@@ -226,7 +226,7 @@ class CbdBackingVolume(BackingVolume):
 
     def make_cbd_conf(self, install_path):
         # type: (str) -> str
-        return install_path[len(PROTOCOL_CBD_PREFIX):] + "_" + DEFAULT_ZBS_USER_NAME + "_:" + DEFAULT_ZBS_CONF_PATH
+        return PROTOCOL_CBD_PREFIX + install_path[len(PROTOCOL_CBD_PREFIX):] + "_" + DEFAULT_ZBS_USER_NAME + "_:" + DEFAULT_ZBS_CONF_PATH
 
     @property
     def volume_format(self):
@@ -360,8 +360,9 @@ class QemuImgCommandWrapper(object):
 
         if bitmap_name:
             args.extend(["--bitmap", bitmap_name])
+        convert_cmd = "qemu-img convert" if bitmap_name else qemu_img.subcmd('convert')
         # sub process has been create while ShellCmd initialization
-        cmd = shell.ShellCmd("%s %s %s %s" % (qemu_img.subcmd('convert'), " ".join(quote(arg) for arg in args), quote(qcow2_path), quote(source_path)))
+        cmd = shell.ShellCmd("%s %s %s %s" % (convert_cmd, " ".join(quote(arg) for arg in args), quote(qcow2_path), quote(source_path)))
         if on_progress:
             log.get_logger(__name__).debug(cmd.cmd)
             # cmd.process is created, so it's safe to start the progress monitor thread before calling cmd()
