@@ -95,6 +95,17 @@ class ImageStoreClient(object):
             raise Exception(
                 'storage free size is less than reserved capacity: %d' % ImageStoreClient.RESERVE_CAPACITY)
 
+    @staticmethod
+    def _build_expected_backup_jobs(args):
+        return [
+            {
+                'jobId': 'zs-%d' % (516 + idx),
+                'bitmap': item[0],
+                'mode': item[1],
+                'drive': item[2],
+                'speed': item[3],
+            } for idx, item in enumerate(args)
+        ]
 
     def stop_mirror(self, vm, complete, node, force=False):
         with linux.ShowLibvirtErrorOnException(vm):
@@ -249,6 +260,11 @@ class ImageStoreClient(object):
     def backup_volumes(self, vm, args, dstdir, point_in_time, reporter, stage):
         self.check_capacity(dstdir)
         PFILE = linux.create_temp_file()
+        api = None
+        try:
+            api = reporter.ctxMap["api"]
+        except Exception:
+            pass
 
         def _get_progress(synced):
             last = linux.tail_1(PFILE).strip()
@@ -263,12 +279,24 @@ class ImageStoreClient(object):
             if point_in_time is not None:
                 p_option = "-point-in-time=%s" % str(point_in_time).lower()
 
+            backup_args = ':'.join(["%s,%s,%s,%s" % x for x in args])
+            expected_jobs = self._build_expected_backup_jobs(args)
+            logger.info('{api: %s} zstcli vm backup start[vm:%s]: pointInTime:%s, dest:%s, '
+                        'progressFile:%s, expectedJobCount:%s, expectedJobs:%s, args:%s' %
+                        (api, vm, point_in_time, dstdir, PFILE, len(expected_jobs),
+                         json.dumps(expected_jobs), backup_args))
+
             cmdstr = '%s -progress %s batbak -domain %s -destdir %s %s -args %s' % \
-                     (self.ZSTORE_CLI_PATH, PFILE, vm, dstdir, p_option, ':'.join(["%s,%s,%s,%s" % x for x in args]))
+                     (self.ZSTORE_CLI_PATH, PFILE, vm, dstdir, p_option, backup_args)
             _, mode, err = bash_progress_1(cmdstr, _get_progress)
             linux.rm_file_force(PFILE)
+            logger.info('{api: %s} zstcli vm backup finish[vm:%s]: mode:%s, err:%s' %
+                        (api, vm, mode.strip() if mode else '', err))
             if err:
                 self.check_capacity(dstdir)
+                logger.warn('{api: %s} zstcli vm backup failed[vm:%s]: expectedJobCount:%s, '
+                            'expectedJobs:%s, err:%s' %
+                            (api, vm, len(expected_jobs), json.dumps(expected_jobs), str(err)))
                 raise Exception('fail to backup vm %s, because %s' % (vm, str(err)))
             return mode.strip()
 
