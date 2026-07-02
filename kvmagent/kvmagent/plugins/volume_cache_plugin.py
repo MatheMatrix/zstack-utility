@@ -64,11 +64,22 @@ from kvmagent.plugins.volume_cache.schemas import (
 )
 from zstacklib.utils import jsonobject
 from zstacklib.utils import http
+from zstacklib.utils import lvm
 from zstacklib.utils import log
 from zstacklib.utils import plugin
 from zstacklib.utils.rollback import rollback, rollbackable
 
 logger = log.get_logger(__name__)
+
+
+def _remove_lvm_filter_devices_best_effort(devices, pool_uuid):
+    if not devices:
+        return
+    try:
+        lvm.remove_lvm_filter_devices(devices)
+    except Exception:
+        logger.warn("failed to remove host cache store devices from LVM filter for pool %s: %s" %
+                    (pool_uuid, traceback.format_exc()))
 
 
 def ensure_pool_initialized(func):
@@ -1116,8 +1127,14 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
 
     @kvmagent.replyerror
     @auto_serialize(InitPoolCmd, InitPoolRsp)
+    @rollback
     def init_pool(self, cmd):
         # type: (InitPoolCmd) -> InitPoolRsp
+        added_devices = lvm.append_lvm_filter_devices(cmd.devices)
+        rollback_remove_filter = rollbackable(
+            lambda: _remove_lvm_filter_devices_best_effort(added_devices, cmd.poolUuid))
+        rollback_remove_filter()
+
         pool = self.pool_processors.get(cmd.poolUuid)
         if pool:
             if pool.is_initialized:
@@ -1147,8 +1164,14 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
     @kvmagent.replyerror
     @auto_serialize(ExtendPoolCmd, ExtendPoolRsp)
     @ensure_pool(initialized=True)
+    @rollback
     def extend_pool(self, cmd, pool):
         # type: (ExtendPoolCmd, PoolProcessor) -> ExtendPoolRsp
+        added_devices = lvm.append_lvm_filter_devices(cmd.devices)
+        rollback_remove_filter = rollbackable(
+            lambda: _remove_lvm_filter_devices_best_effort(added_devices, cmd.poolUuid))
+        rollback_remove_filter()
+
         pool.extend_pool(additional_device_paths=cmd.devices, force=bool(cmd.force))
         pool.connect_pool()
 
@@ -1159,7 +1182,9 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
     @ensure_pool(initialized=True)
     def delete_pool(self, cmd, pool):
         # type: (DeletePoolCmd, PoolProcessor) -> DeletePoolRsp
+        devices = [pv[PVInfoFields.PV_NAME] for pv in pool.pvs]
         pool.delete_pool()
+        _remove_lvm_filter_devices_best_effort(devices, cmd.poolUuid)
         self.pool_processors.pop(cmd.poolUuid, None)
         return DeletePoolRsp()
 
