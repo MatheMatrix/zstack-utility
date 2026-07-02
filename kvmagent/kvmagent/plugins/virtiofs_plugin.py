@@ -1,23 +1,23 @@
 # Copyright (c) 2025, ZStack, Inc.
-# ZSTAC-83157: virtiofs plugin for VM model mount
+# ZSTAC-83157: virtiofs plugin for VM host-source exports
 
 import os
 import shlex
 import time
 import traceback
 import libvirt
-from xml.sax.saxutils import escape as xml_escape
-from xml.sax.saxutils import quoteattr as xml_quoteattr
 from kvmagent import kvmagent
-from kvmagent.plugins.host_model_mount_plugin import remount_model_center, get_model_center_uuid_from_path, wait_for_recovery
+from kvmagent.plugins import virtiofs_device
+from kvmagent.plugins import virtiofs_source
 from zstacklib.utils import log, shell, http, jsonobject
 from zstacklib.utils.qga import VmQga, is_qga_connected
 
 logger = log.get_logger(__name__)
 
 # virtiofs configuration constants
-VIRTIOFS_DEFAULT_CACHE_MODE = 'always'  # Recommended for model loading scenarios
-VALID_CACHE_MODES = ('none', 'auto', 'always')
+VIRTIOFS_DEFAULT_CACHE_MODE = virtiofs_device.DEFAULT_CACHE_MODE
+VIRTIOFS_DEFAULT_QUEUE = virtiofs_device.DEFAULT_QUEUE
+VALID_CACHE_MODES = virtiofs_device.VALID_CACHE_MODES
 
 # QGA command timeout configuration
 # QGA guest_exec_bash uses polling mechanism with 'wait' and 'retry' parameters:
@@ -30,9 +30,6 @@ QGA_WAIT_INTERVAL_SECS = 1   # seconds between status checks
 QGA_MKDIR_TIMEOUT_SECS = 10  # mkdir timeout in seconds (fast operation)
 QGA_MOUNT_TIMEOUT_SECS = 30  # mount timeout in seconds (may take longer)
 QGA_UMOUNT_TIMEOUT_SECS = 15 # umount timeout in seconds
-
-# Recovery polling configuration (used when another thread is already recovering a mount)
-_RECOVERY_POLL_TIMEOUT_SECS = 30   # max seconds to wait for concurrent recovery to finish
 
 # Helper to convert timeout seconds to retry count for guest_exec_bash
 def _qga_retry_count(timeout_secs):
@@ -90,8 +87,13 @@ class AttachVirtiofsCmd(jsonobject.JsonObject):
     vmInstanceUuid = str
     tag = str           # virtiofs device tag
     sourcePath = str    # source path on host
+    sourceType = str    # source provider type, default: preparedPath
+    sourceUuid = str    # optional source identity
+    sourceSpec = object # optional structured source spec
     mountPath = str     # mount path inside VM (for reference)
-    cacheMode = str     # cache mode: none/auto/always (default: 'always')
+    cacheMode = str     # cache mode: none/auto/always (default: 'none')
+    cache = str         # Java DTO field alias for cacheMode
+    queue = int         # virtiofs queue size, default 1024
 
 
 class DetachVirtiofsCmd(jsonobject.JsonObject):
@@ -142,115 +144,63 @@ def verify_source_path(source_path):
 
     Returns the resolved real_path for use in XML construction.
     """
-    if not source_path:
-        raise Exception("sourcePath is required")
-
-    if not os.path.exists(source_path):
-        raise Exception("sourcePath[%s] does not exist" % source_path)
-
-    if not os.path.isdir(source_path):
-        raise Exception("sourcePath[%s] is not a directory" % source_path)
-
-    # Resolve symlinks and normalize path
-    real_path = os.path.realpath(source_path)
-
-    # Security check: whitelist mode - only allow paths under model mount base
-    # This prevents arbitrary host directories from being exposed to VMs
-    allowed_base = os.path.realpath('/opt/zstack/models')
-    if real_path != allowed_base and not real_path.startswith(allowed_base + '/'):
-        raise Exception("sourcePath[%s] resolves to path[%s] outside allowed model directory[%s]" % (
-            source_path, real_path, allowed_base))
-
-    return real_path
+    return virtiofs_source.ensure_ready({
+        'type': 'preparedPath',
+        'sourcePath': source_path,
+    }).path
 
 
 def _verify_source_path_with_recovery(source_path):
-    """Verify source path with automatic mount recovery.
-
-    If the source path is not accessible and appears to be under a broken
-    JuiceFS mount point, attempt to remount before failing. This provides
-    on-demand recovery triggered by the virtiofs attach flow (approach 4).
-    """
-    try:
-        return verify_source_path(source_path)
-    except Exception as path_error:
-        # Only attempt recovery for paths under the model mount base.
-        # get_model_center_uuid_from_path() encapsulates the directory layout so
-        # this module does not hard-code /opt/zstack/models path splitting.
-        mc_uuid = get_model_center_uuid_from_path(source_path or '')
-        if mc_uuid is None:
-            raise
-
-        logger.info("Source path[%s] not accessible, attempting mount recovery for model center[%s]" % (
-            source_path, mc_uuid))
-
-        result = remount_model_center(mc_uuid)
-
-        if result is True:
-            # Recovery succeeded, retry verify with short delays
-            for _ in range(3):
-                time.sleep(1)
-                try:
-                    return verify_source_path(source_path)
-                except Exception:
-                    continue
-            logger.warning("Mount recovery succeeded but source path[%s] still not accessible" % source_path)
-            raise path_error
-
-        if result is None:
-            # Another thread is recovering — wait for completion signal (non-busy)
-            logger.info("Another thread is recovering model center[%s], waiting for completion" % mc_uuid)
-            wait_for_recovery(mc_uuid, _RECOVERY_POLL_TIMEOUT_SECS)
-            # Recovery event fired; retry verify a few times
-            for _ in range(3):
-                try:
-                    return verify_source_path(source_path)
-                except Exception:
-                    time.sleep(1)
-            logger.warning("Source path[%s] still not accessible after recovery of model center[%s]" % (
-                source_path, mc_uuid))
-
-        raise path_error
+    return verify_source_path(source_path)
 
 
-def build_virtiofs_xml(tag, source_path, cache_mode=VIRTIOFS_DEFAULT_CACHE_MODE):
+def _ensure_source_for_attach(cmd):
+    source_spec = virtiofs_source.SourceSpec.from_command(cmd)
+    return virtiofs_source.ensure_ready(source_spec)
+
+
+def build_virtiofs_xml(tag, source_path, cache_mode=VIRTIOFS_DEFAULT_CACHE_MODE, queue=VIRTIOFS_DEFAULT_QUEUE):
     """Build virtiofs device XML for libvirt attach
 
     Args:
         tag: virtiofs device tag
         source_path: source path on host (already verified)
-        cache_mode: cache mode (none/auto/always), default 'always'
+        cache_mode: cache mode (none/auto/always), default 'none'
+        queue: virtiofs queue size, default 1024
 
     Returns:
         str: libvirt filesystem device XML, or None if virtiofsd not found
 
     Note: Uses xml.sax.saxutils.escape to prevent XML injection attacks
     """
-    # Get virtiofsd path
     virtiofsd_path = get_virtiofsd_path()
     if virtiofsd_path is None:
         raise Exception("virtiofsd binary not found. Please install virtiofsd package.")
 
-    # Validate cache mode, fallback to default if invalid
-    if cache_mode not in VALID_CACHE_MODES:
+    normalized_cache_mode = virtiofs_device.normalize_cache_mode(cache_mode, VIRTIOFS_DEFAULT_CACHE_MODE)
+    if normalized_cache_mode != cache_mode:
         logger.warning("Invalid cacheMode[%s], using default '%s'" % (
             cache_mode, VIRTIOFS_DEFAULT_CACHE_MODE))
-        cache_mode = VIRTIOFS_DEFAULT_CACHE_MODE
+    normalized_queue = virtiofs_device.normalize_queue(queue, VIRTIOFS_DEFAULT_QUEUE)
+    try:
+        queue_as_int = int(queue)
+    except Exception:
+        queue_as_int = None
+    if normalized_queue != queue_as_int:
+        logger.warning("Invalid virtiofs queue[%s], using default '%s'" % (
+            queue, VIRTIOFS_DEFAULT_QUEUE))
 
-    # NOTE: xml_escape() does not escape quotes, and these values are used in XML
-    # attribute context. Use quoteattr() to ensure proper quoting and escaping.
-    safe_source_path = xml_quoteattr(source_path)
-    safe_tag = xml_quoteattr(tag)
-    safe_virtiofsd_path = xml_quoteattr(virtiofsd_path)
-    return '''<filesystem type='mount' accessmode='passthrough'>
-    <driver type='virtiofs'/>
-    <source dir=%s/>
-    <target dir=%s/>
-    <binary path=%s xattr='on'>
-        <cache mode='%s'/>
-        <sandbox mode='namespace'/>
-    </binary>
-</filesystem>''' % (safe_source_path, safe_tag, safe_virtiofsd_path, cache_mode)
+    return virtiofs_device.build_virtiofs_xml(
+        tag, source_path, normalized_cache_mode, normalized_queue, virtiofsd_path, False, True, True)
+
+
+def _get_cmd_attr(obj, name, default=None):
+    try:
+        if hasattr(obj, 'hasattr') and obj.hasattr(name):
+            return getattr(obj, name)
+    except Exception:
+        pass
+    return getattr(obj, name, default)
 
 
 def get_vm_domain(vm_uuid):
@@ -349,14 +299,14 @@ def mount_virtiofs_in_vm(domain, tag, mount_path):
         # Check if QGA is connected
         if not is_qga_connected(domain):
             logger.warning("QGA not connected for VM[%s], cannot mount inside VM" % domain.name())
-            return False, "QGA not connected for VM, unable to mount model inside VM"
+            return False, "QGA not connected for VM, unable to mount virtiofs source inside VM"
 
         qga = VmQga(domain)
 
         # Check QGA state
         if qga.state != VmQga.QGA_STATE_RUNNING:
             logger.warning("QGA not running for VM[%s], state=%s" % (domain.name(), qga.state))
-            return False, "QGA is not running, unable to mount model inside VM"
+            return False, "QGA is not running, unable to mount virtiofs source inside VM"
 
         # Check OS type - virtiofs only works on Linux
         if qga.os and 'mswindows' in qga.os.lower():
@@ -428,7 +378,7 @@ def mount_virtiofs_in_vm(domain, tag, mount_path):
         # All retries exhausted
         logger.error("Failed to mount virtiofs[%s] to[%s] in VM[%s] after %d attempts: %s" % (
             tag, mount_path, domain.name(), max_retries, last_error_msg))
-        return False, "Failed to mount model in VM: %s" % last_error_msg
+        return False, "Failed to mount virtiofs source in VM: %s" % last_error_msg
 
     except Exception as e:
         error_str = str(e)
@@ -469,7 +419,7 @@ def unmount_virtiofs_in_vm(domain, tag):
 
         # Find mount point by tag from /proc/mounts
         # /proc/mounts format: device mount_point fs_type options
-        # For virtiofs: model-xxx /mnt/models/qwen virtiofs rw,...
+        # For virtiofs: source-xxx /mnt/virtiofs/source virtiofs rw,...
         # Use awk -v to pass variable safely, avoiding nested quote issues
         current_qga_step = "find-mount"
         current_qga_timeout_secs = QGA_MKDIR_TIMEOUT_SECS
@@ -507,7 +457,7 @@ def unmount_virtiofs_in_vm(domain, tag):
             if exitcode != 0:
                 error_msg = stderr if stderr else "unknown error"
                 logger.error("Lazy unmount also failed: %s" % error_msg)
-                return False, "Failed to unmount model in VM: %s" % error_msg
+                return False, "Failed to unmount virtiofs source in VM: %s" % error_msg
 
         logger.info("Successfully unmounted virtiofs[%s] from[%s] inside VM[%s]" % (
             tag, mount_path, domain.name()))
@@ -521,11 +471,11 @@ def unmount_virtiofs_in_vm(domain, tag):
                 current_qga_step, domain.name()))
             return False, "Unmount operation timed out in VM"
         logger.error("Exception during QGA unmount: %s\n%s" % (error_str, traceback.format_exc()))
-        return False, "Failed to unmount model in VM: %s" % error_str
+        return False, "Failed to unmount virtiofs source in VM: %s" % error_str
 
 
 class VirtiofsPlugin(kvmagent.KvmAgent):
-    """Virtiofs plugin for VM model mount"""
+    """Virtiofs plugin for VM host-source exports"""
 
     ATTACH_VIRTIOFS_PATH = "/virtiofs/attach"
     DETACH_VIRTIOFS_PATH = "/virtiofs/detach"
@@ -560,13 +510,14 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
 
         conn = None
         try:
-            logger.info("Attaching virtiofs to VM[%s], tag=%s, source=%s, mountPath=%s, cacheMode=%s" % (
+            logger.info("Attaching virtiofs to VM[%s], tag=%s, source=%s, mountPath=%s, cacheMode=%s, queue=%s" % (
                 cmd.vmInstanceUuid, cmd.tag, cmd.sourcePath, cmd.mountPath,
-                getattr(cmd, 'cacheMode', VIRTIOFS_DEFAULT_CACHE_MODE)))
+                _get_cmd_attr(cmd, 'cacheMode', _get_cmd_attr(cmd, 'cache', VIRTIOFS_DEFAULT_CACHE_MODE)),
+                _get_cmd_attr(cmd, 'queue', VIRTIOFS_DEFAULT_QUEUE)))
 
-            # 1. Verify source path on host and get resolved path
-            #    Includes automatic mount recovery if JuiceFS mount is broken
-            resolved_path = _verify_source_path_with_recovery(cmd.sourcePath)
+            # 1. Ensure source path is ready on host and get resolved path.
+            host_source = _ensure_source_for_attach(cmd)
+            resolved_path = host_source.path
 
             # 2. Get VM domain
             domain, conn = get_vm_domain(cmd.vmInstanceUuid)
@@ -577,10 +528,11 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
                 rsp.error = memory_backing_error
                 return jsonobject.dumps(rsp)
 
-            # 4. Build virtiofs XML using resolved path and cache mode
-            cache_mode = getattr(cmd, 'cacheMode', VIRTIOFS_DEFAULT_CACHE_MODE)
+            # 4. Build virtiofs XML using resolved path and cache/queue settings
+            cache_mode = _get_cmd_attr(cmd, 'cacheMode', _get_cmd_attr(cmd, 'cache', VIRTIOFS_DEFAULT_CACHE_MODE))
+            queue = _get_cmd_attr(cmd, 'queue', VIRTIOFS_DEFAULT_QUEUE)
 
-            xml_str = build_virtiofs_xml(cmd.tag, resolved_path, cache_mode)
+            xml_str = build_virtiofs_xml(cmd.tag, resolved_path, cache_mode, queue)
 
             # 4. Attach device to running VM (hot-plug)
             domain.attachDeviceFlags(xml_str, libvirt.VIR_DOMAIN_AFFECT_LIVE)
@@ -601,21 +553,10 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
                 if qga_error:
                     rsp.qgaMountError = qga_error
 
-                # If QGA mount was attempted but failed, return failure
-                # This ensures the API returns error and Java side will not create DB record
                 if not qga_success:
-                    logger.warning("QGA mount failed for VM[%s], detaching virtiofs device and returning error: %s" % (
+                    logger.warning("QGA mount failed for VM[%s] after virtiofs device attach; "
+                                   "keeping libvirt device and returning success with warning detail: %s" % (
                         cmd.vmInstanceUuid, qga_error))
-                    # Detach the device since mount failed (best effort)
-                    try:
-                        domain.detachDeviceFlags(xml_str, libvirt.VIR_DOMAIN_AFFECT_LIVE)
-                        domain.detachDeviceFlags(xml_str, libvirt.VIR_DOMAIN_AFFECT_CONFIG)
-                    except Exception as detach_err:
-                        logger.warning("Failed to detach virtiofs after mount failure for VM[%s], "
-                                       "device may remain in config: %s" % (cmd.vmInstanceUuid, str(detach_err)))
-
-                    rsp.error = qga_error
-                    return jsonobject.dumps(rsp)
             else:
                 logger.warning("No mountPath specified, skip VM internal mount")
 

@@ -1124,6 +1124,33 @@ class TestHostPluginNetworkInventoryDeep:
 
 @pytest.mark.kvmagent
 class TestHostPluginGetPciInfo:
+    def test_filter_pci_device_ids_keeps_vfs_of_requested_pf(self):
+        plugin = _make_plugin()
+        device_ids = {
+            '0000:0e:00.0': 'pf',
+            '0000:0e:00.1': 'vf',
+            '0000:0f:00.0': 'other',
+        }
+
+        def normalize_side_effect(address):
+            mapping = {
+                '0e:00.0': '0000:0e:00.0',
+                '0000:0e:00.0': '0000:0e:00.0',
+                '0000:0e:00.1': '0000:0e:00.1',
+                '0000:0f:00.0': '0000:0f:00.0',
+            }
+            return mapping.get(address)
+
+        with patch.object(plugin, '_get_pci_parent_address',
+                          side_effect=lambda slot: '0000:0e:00.0' if slot == '0000:0e:00.1' else None), \
+                patch.object(host_plugin.pci, 'normalize_pci_address', side_effect=normalize_side_effect):
+            filtered = plugin._filter_pci_device_ids_by_addresses(device_ids, ['0e:00.0'])
+
+        assert filtered == {
+            '0000:0e:00.0': 'pf',
+            '0000:0e:00.1': 'vf',
+        }
+
     def test_get_pci_info_skip_grub(self):
         plugin = _make_plugin()
         plugin._collect_format_pci_device_info = MagicMock()

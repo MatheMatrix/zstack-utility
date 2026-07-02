@@ -3670,15 +3670,7 @@ done
         device_ids, device_names, pci_device_mapper = result
 
         if pci_device_addresses:
-            normalized_addresses = set()
-            for address in pci_device_addresses:
-                normalized = pci.normalize_pci_address(address)
-                normalized_addresses.add(normalized or address)
-
-            device_ids = {
-                slot: info for slot, info in device_ids.items()
-                if slot in normalized_addresses
-            }
+            device_ids = self._filter_pci_device_ids_by_addresses(device_ids, pci_device_addresses)
 
         pci_devices_dict = {}
 
@@ -3751,6 +3743,29 @@ done
         pci.update_cache_devices(pci_devices_dict)
         pci.calculate_max_addressable_memory(rsp.pciDevicesInfo)
         rsp.mdevDeviceInfos = self.get_all_vm_mdev_mappings()
+
+    def _filter_pci_device_ids_by_addresses(self, device_ids, pci_device_addresses):
+        normalized_addresses = set()
+        for address in pci_device_addresses:
+            normalized = pci.normalize_pci_address(address)
+            normalized_addresses.add(address)
+            if normalized:
+                normalized_addresses.add(normalized)
+
+        return {
+            slot: info for slot, info in device_ids.items()
+            if slot in normalized_addresses
+            or (pci.normalize_pci_address(slot) or slot) in normalized_addresses
+            or self._get_pci_parent_address(slot) in normalized_addresses
+        }
+
+    def _get_pci_parent_address(self, slot):
+        physfn = os.path.join("/sys/bus/pci/devices/", slot, "physfn")
+        if not os.path.exists(physfn):
+            return None
+
+        parent = os.readlink(physfn).split('/')[-1]
+        return pci.normalize_pci_address(parent) or parent
 
     def list_vm_uuids(self):
         r, o, e = bash_roe(

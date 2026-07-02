@@ -33,17 +33,17 @@ class TestVerifySourcePath:
 
     def test_accept_safe_path(self, tmp_path, monkeypatch):
         """Test that safe paths are accepted."""
-        safe_dir = tmp_path / "models"
+        safe_dir = tmp_path / "sources"
         safe_dir.mkdir()
 
         # Monkeypatch os.path.realpath to treat tmp_path as the allowed base
         original_realpath = os.path.realpath
         def mock_realpath(path):
             result = original_realpath(path)
-            # If the path is under tmp_path, pretend it's under /opt/zstack/models
+            # If the path is under tmp_path, pretend it's under the virtiofs source root.
             tmp_real = original_realpath(str(tmp_path))
             if result == tmp_real or result.startswith(tmp_real + os.sep):
-                return result.replace(tmp_real, '/opt/zstack/models')
+                return result.replace(tmp_real, '/var/lib/zstack/aios/virtiofs-sources')
             return result
 
         monkeypatch.setattr(os.path, 'realpath', mock_realpath)
@@ -53,7 +53,7 @@ class TestVerifySourcePath:
 
     def test_accept_nested_safe_path(self, tmp_path, monkeypatch):
         """Test that deeply nested safe paths are accepted."""
-        nested_dir = tmp_path / "a" / "b" / "c" / "models"
+        nested_dir = tmp_path / "a" / "b" / "c" / "sources"
         nested_dir.mkdir(parents=True)
 
         # Monkeypatch os.path.realpath to treat tmp_path as the allowed base
@@ -62,13 +62,30 @@ class TestVerifySourcePath:
             result = original_realpath(path)
             tmp_real = original_realpath(str(tmp_path))
             if result == tmp_real or result.startswith(tmp_real + os.sep):
-                return result.replace(tmp_real, '/opt/zstack/models')
+                return result.replace(tmp_real, '/var/lib/zstack/aios/virtiofs-sources')
             return result
 
         monkeypatch.setattr(os.path, 'realpath', mock_realpath)
 
         # Should not raise any exception
         virtiofs_plugin.verify_source_path(str(nested_dir))
+
+    def test_accept_vm_view_root_path(self, tmp_path, monkeypatch):
+        """Test that projected VM artifact view paths are accepted."""
+        view_dir = tmp_path / "vm-views" / "vm-uuid"
+        view_dir.mkdir(parents=True)
+
+        original_realpath = os.path.realpath
+        def mock_realpath(path):
+            result = original_realpath(path)
+            tmp_real = original_realpath(str(tmp_path / "vm-views"))
+            if result == tmp_real or result.startswith(tmp_real + os.sep):
+                return result.replace(tmp_real, '/var/lib/zstack/aios/vm-views')
+            return result
+
+        monkeypatch.setattr(os.path, 'realpath', mock_realpath)
+
+        virtiofs_plugin.verify_source_path(str(view_dir))
 
     def test_reject_empty_string(self):
         """Test that empty string is rejected."""
@@ -101,43 +118,55 @@ class TestVerifySourcePath:
         """Test that direct access to /etc is blocked."""
         with pytest.raises(Exception) as exc_info:
             virtiofs_plugin.verify_source_path("/etc")
-        assert "outside allowed model directory" in str(exc_info.value)
+        assert "outside allowed virtiofs source directory" in str(exc_info.value)
 
     def test_reject_direct_access_to_root(self):
         """Test that direct access to /root is blocked."""
         with pytest.raises(Exception) as exc_info:
             virtiofs_plugin.verify_source_path("/root")
-        assert "outside allowed model directory" in str(exc_info.value)
+        assert "outside allowed virtiofs source directory" in str(exc_info.value)
 
     def test_reject_direct_access_to_boot(self):
         """Test that direct access to /boot is blocked."""
         with pytest.raises(Exception) as exc_info:
             virtiofs_plugin.verify_source_path("/boot")
-        assert "outside allowed model directory" in str(exc_info.value)
+        assert "outside allowed virtiofs source directory" in str(exc_info.value)
 
     def test_reject_direct_access_to_proc(self):
         """Test that direct access to /proc is blocked."""
         with pytest.raises(Exception) as exc_info:
             virtiofs_plugin.verify_source_path("/proc")
-        assert "outside allowed model directory" in str(exc_info.value)
+        assert "outside allowed virtiofs source directory" in str(exc_info.value)
 
     def test_reject_direct_access_to_sys(self):
         """Test that direct access to /sys is blocked."""
         with pytest.raises(Exception) as exc_info:
             virtiofs_plugin.verify_source_path("/sys")
-        assert "outside allowed model directory" in str(exc_info.value)
+        assert "outside allowed virtiofs source directory" in str(exc_info.value)
 
     def test_reject_subdirectory_of_etc(self):
         """Test that subdirectory of /etc is blocked."""
         with pytest.raises(Exception) as exc_info:
             virtiofs_plugin.verify_source_path("/etc/ssh")
-        assert "outside allowed model directory" in str(exc_info.value)
+        assert "outside allowed virtiofs source directory" in str(exc_info.value)
 
-    def test_reject_subdirectory_of_root(self):
+    def test_reject_subdirectory_of_root(self, tmp_path, monkeypatch):
         """Test that subdirectory of /root is blocked."""
+        source_dir = tmp_path / "root-ssh"
+        source_dir.mkdir()
+
+        original_realpath = os.path.realpath
+        def mock_realpath(path):
+            result = original_realpath(path)
+            if result == original_realpath(str(source_dir)):
+                return "/root/.ssh"
+            return result
+
+        monkeypatch.setattr(os.path, 'realpath', mock_realpath)
+
         with pytest.raises(Exception) as exc_info:
-            virtiofs_plugin.verify_source_path("/root/.ssh")
-        assert "outside allowed model directory" in str(exc_info.value)
+            virtiofs_plugin.verify_source_path(str(source_dir))
+        assert "outside allowed virtiofs source directory" in str(exc_info.value)
 
     def test_reject_path_traversal_with_double_dot(self, tmp_path):
         """Test that path traversal attack using ../ is blocked."""
@@ -153,9 +182,9 @@ class TestVerifySourcePath:
         with pytest.raises(Exception) as exc_info:
             virtiofs_plugin.verify_source_path(traversal_path)
         # The path may not exist, but we still want to verify the behavior
-        # Either "does not exist" or "outside allowed model directory" is acceptable
+        # Either "does not exist" or an allowlist rejection is acceptable.
         error_msg = str(exc_info.value)
-        assert "does not exist" in error_msg or "outside allowed model directory" in error_msg
+        assert "does not exist" in error_msg or "outside allowed virtiofs source directory" in error_msg
 
     def test_reject_symlink_to_dangerous_path(self, tmp_path):
         """Test that symlink pointing to /etc is blocked."""
@@ -164,7 +193,7 @@ class TestVerifySourcePath:
             os.symlink("/etc", str(link_path))
             with pytest.raises(Exception) as exc_info:
                 virtiofs_plugin.verify_source_path(str(link_path))
-            assert "outside allowed model directory" in str(exc_info.value)
+            assert "outside allowed virtiofs source directory" in str(exc_info.value)
         finally:
             if link_path.exists():
                 link_path.unlink()
@@ -176,7 +205,7 @@ class TestVerifySourcePath:
             os.symlink("/root", str(link_path))
             with pytest.raises(Exception) as exc_info:
                 virtiofs_plugin.verify_source_path(str(link_path))
-            assert "outside allowed model directory" in str(exc_info.value)
+            assert "outside allowed virtiofs source directory" in str(exc_info.value)
         finally:
             if link_path.exists():
                 link_path.unlink()
@@ -188,7 +217,7 @@ class TestVerifySourcePath:
             os.symlink("/boot", str(link_path))
             with pytest.raises(Exception) as exc_info:
                 virtiofs_plugin.verify_source_path(str(link_path))
-            assert "outside allowed model directory" in str(exc_info.value)
+            assert "outside allowed virtiofs source directory" in str(exc_info.value)
         finally:
             if link_path.exists():
                 link_path.unlink()
@@ -200,7 +229,7 @@ class TestVerifySourcePath:
             os.symlink("/proc", str(link_path))
             with pytest.raises(Exception) as exc_info:
                 virtiofs_plugin.verify_source_path(str(link_path))
-            assert "outside allowed model directory" in str(exc_info.value)
+            assert "outside allowed virtiofs source directory" in str(exc_info.value)
         finally:
             if link_path.exists():
                 link_path.unlink()
@@ -212,7 +241,7 @@ class TestVerifySourcePath:
             os.symlink("/sys", str(link_path))
             with pytest.raises(Exception) as exc_info:
                 virtiofs_plugin.verify_source_path(str(link_path))
-            assert "outside allowed model directory" in str(exc_info.value)
+            assert "outside allowed virtiofs source directory" in str(exc_info.value)
         finally:
             if link_path.exists():
                 link_path.unlink()
@@ -231,7 +260,7 @@ class TestVerifySourcePath:
             virtiofs_plugin.verify_source_path(traversal_path)
         # The path may not exist, but we still want to verify the behavior
         error_msg = str(exc_info.value)
-        assert "does not exist" in error_msg or "outside allowed model directory" in error_msg
+        assert "does not exist" in error_msg or "outside allowed virtiofs source directory" in error_msg
 
     def test_accept_symlink_to_safe_location(self, tmp_path, monkeypatch):
         """Test that symlink to safe location is accepted."""
@@ -244,7 +273,7 @@ class TestVerifySourcePath:
             result = original_realpath(path)
             tmp_real = original_realpath(str(tmp_path))
             if result == tmp_real or result.startswith(tmp_real + os.sep):
-                return result.replace(tmp_real, '/opt/zstack/models')
+                return result.replace(tmp_real, '/var/lib/zstack/aios/virtiofs-sources')
             return result
 
         monkeypatch.setattr(os.path, 'realpath', mock_realpath)
@@ -258,76 +287,6 @@ class TestVerifySourcePath:
         finally:
             if link_path.exists():
                 link_path.unlink()
-
-
-class TestVerifySourcePathWithRecovery:
-    """Test _verify_source_path_with_recovery() on-demand mount recovery."""
-
-    @patch('kvmagent.plugins.virtiofs_plugin.remount_model_center')
-    @patch('kvmagent.plugins.virtiofs_plugin.get_model_center_uuid_from_path')
-    @patch('kvmagent.plugins.virtiofs_plugin.verify_source_path')
-    def test_recovery_succeeds_on_retry(self, mock_verify, mock_get_uuid, mock_remount):
-        """Test verify fails -> remount succeeds -> retry verify succeeds."""
-        mock_verify.side_effect = [
-            Exception("sourcePath does not exist"),  # first call fails
-            "/opt/zstack/models/test-uuid",           # retry succeeds
-        ]
-        mock_get_uuid.return_value = "test-uuid"
-        mock_remount.return_value = True  # recovery succeeded
-
-        result = virtiofs_plugin._verify_source_path_with_recovery(
-            "/opt/zstack/models/test-uuid"
-        )
-
-        assert result == "/opt/zstack/models/test-uuid"
-        assert mock_verify.call_count == 2
-        mock_remount.assert_called_once_with("test-uuid")
-
-    @patch('kvmagent.plugins.virtiofs_plugin.remount_model_center')
-    @patch('kvmagent.plugins.virtiofs_plugin.get_model_center_uuid_from_path')
-    @patch('kvmagent.plugins.virtiofs_plugin.verify_source_path')
-    def test_recovery_fails_raises_original_error(self, mock_verify, mock_get_uuid, mock_remount):
-        """Test verify fails -> remount fails -> raises original error."""
-        original_error = Exception("sourcePath does not exist")
-        mock_verify.side_effect = original_error
-        mock_get_uuid.return_value = "test-uuid"
-        mock_remount.return_value = False  # recovery failed
-
-        with pytest.raises(Exception) as exc_info:
-            virtiofs_plugin._verify_source_path_with_recovery(
-                "/opt/zstack/models/test-uuid"
-            )
-
-        assert exc_info.value is original_error
-
-    @patch('kvmagent.plugins.virtiofs_plugin.remount_model_center')
-    @patch('kvmagent.plugins.virtiofs_plugin.get_model_center_uuid_from_path')
-    @patch('kvmagent.plugins.virtiofs_plugin.verify_source_path')
-    def test_no_uuid_skips_recovery(self, mock_verify, mock_get_uuid, mock_remount):
-        """Test that verify failure without a valid UUID skips recovery."""
-        mock_verify.side_effect = Exception("sourcePath does not exist")
-        mock_get_uuid.return_value = None  # not a model center path
-
-        with pytest.raises(Exception) as exc_info:
-            virtiofs_plugin._verify_source_path_with_recovery("/some/random/path")
-
-        assert "sourcePath does not exist" in str(exc_info.value)
-        mock_remount.assert_not_called()
-
-    @patch('kvmagent.plugins.virtiofs_plugin.remount_model_center')
-    @patch('kvmagent.plugins.virtiofs_plugin.get_model_center_uuid_from_path')
-    @patch('kvmagent.plugins.virtiofs_plugin.verify_source_path')
-    def test_verify_passes_no_recovery(self, mock_verify, mock_get_uuid, mock_remount):
-        """Test that successful verify skips recovery entirely."""
-        mock_verify.return_value = "/opt/zstack/models/test-uuid"
-
-        result = virtiofs_plugin._verify_source_path_with_recovery(
-            "/opt/zstack/models/test-uuid"
-        )
-
-        assert result == "/opt/zstack/models/test-uuid"
-        mock_get_uuid.assert_not_called()
-        mock_remount.assert_not_called()
 
 
 @pytest.mark.kvmagent
@@ -348,47 +307,46 @@ class TestVirtiofsAttachHandler:
         return plugin
 
     @patch('kvmagent.plugins.virtiofs_plugin.get_vm_domain')
-    @patch('kvmagent.plugins.virtiofs_plugin._verify_source_path_with_recovery')
-    def test_attach_calls_verify_source_path_with_recovery(self, mock_verify, mock_get_domain, tmp_path):
-        """Test that attach handler calls _verify_source_path_with_recovery."""
-        mock_verify.return_value = None  # Path validation passes
+    @patch('kvmagent.plugins.virtiofs_plugin._ensure_source_for_attach')
+    def test_attach_ensures_source_before_attach(self, mock_ensure_source, mock_get_domain, tmp_path):
+        """Test that attach handler ensures the source before libvirt attach."""
+        mock_ensure_source.return_value = MagicMock(path=str(tmp_path / "sources"))
         mock_domain = MagicMock()
         mock_conn = MagicMock()
         mock_get_domain.return_value = (mock_domain, mock_conn)
 
-        safe_dir = tmp_path / "models"
+        safe_dir = tmp_path / "sources"
         safe_dir.mkdir()
 
         req = self._make_req({
             'vmInstanceUuid': 'test-vm-uuid',
-            'tag': 'model-test',
+            'tag': 'source-test',
             'sourcePath': str(safe_dir),
-            'mountPath': '/mnt/models/test',
+            'mountPath': '/mnt/virtiofs/test',
         })
 
         plugin = self._make_plugin()
 
-        # Call the handler - it will fail at libvirt attach, but we just want to
-        # verify that _verify_source_path_with_recovery was called
+        # Call the handler - it will fail at later checks, but source must be ensured first.
         try:
             plugin.attach_virtiofs(req)
         except Exception:
             pass  # Expected to fail at libvirt level
 
-        # Verify that _verify_source_path_with_recovery was called with the source path
-        mock_verify.assert_called_once_with(str(safe_dir))
+        mock_ensure_source.assert_called_once()
+        assert mock_ensure_source.call_args[0][0].sourcePath == str(safe_dir)
 
-    @patch('kvmagent.plugins.virtiofs_plugin._verify_source_path_with_recovery')
-    def test_attach_rejects_dangerous_path(self, mock_verify_recovery):
+    @patch('kvmagent.plugins.virtiofs_plugin._ensure_source_for_attach')
+    def test_attach_rejects_dangerous_path(self, mock_ensure_source):
         """Test that attach handler rejects dangerous paths."""
-        mock_verify_recovery.side_effect = Exception(
+        mock_ensure_source.side_effect = Exception(
             "sourcePath resolves to a restricted path")
 
         req = self._make_req({
             'vmInstanceUuid': 'test-vm-uuid',
-            'tag': 'model-test',
+            'tag': 'source-test',
             'sourcePath': '/etc',
-            'mountPath': '/mnt/models/test',
+            'mountPath': '/mnt/virtiofs/test',
         })
 
         plugin = self._make_plugin()
@@ -397,6 +355,71 @@ class TestVirtiofsAttachHandler:
 
         # Should return error response
         assert rsp.get('success') is False or rsp.get('error') is not None
+
+    @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
+    @patch('kvmagent.plugins.virtiofs_plugin.mount_virtiofs_in_vm', return_value=(False, 'QGA not connected'))
+    @patch('kvmagent.plugins.virtiofs_plugin.check_vm_memory_backing', return_value=(True, None))
+    @patch('kvmagent.plugins.virtiofs_plugin.get_vm_domain')
+    @patch('kvmagent.plugins.virtiofs_plugin._ensure_source_for_attach')
+    def test_attach_qga_failure_is_best_effort(self, mock_ensure_source, mock_get_domain,
+                                               mock_memory_backing, mock_mount_qga,
+                                               mock_get_virtiofsd_path):
+        mock_ensure_source.return_value = MagicMock(path='/var/lib/zstack/aios/vm-views/vm-uuid')
+        mock_domain = MagicMock()
+        mock_conn = MagicMock()
+        mock_get_domain.return_value = (mock_domain, mock_conn)
+
+        req = self._make_req({
+            'vmInstanceUuid': 'vm-uuid',
+            'tag': 'artifact-view',
+            'sourcePath': '/var/lib/zstack/aios/vm-views/vm-uuid',
+            'mountPath': '/mnt/virtiofs',
+            'cache': 'none',
+            'queue': 2048,
+        })
+
+        plugin = self._make_plugin()
+        result = plugin.attach_virtiofs(req)
+        rsp = json.loads(result)
+
+        assert rsp.get('success') is True
+        assert rsp.get('qgaMountAttempted') is True
+        assert rsp.get('qgaMountSuccess') is False
+        assert rsp.get('qgaMountError') == 'QGA not connected'
+        assert mock_domain.attachDeviceFlags.call_count == 2
+        mock_domain.detachDeviceFlags.assert_not_called()
+        xml_str = mock_domain.attachDeviceFlags.call_args_list[0][0][0]
+        assert "queue='2048'" in xml_str
+        assert "<cache mode='none'/>" in xml_str
+
+    @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
+    @patch('kvmagent.plugins.virtiofs_plugin.mount_virtiofs_in_vm', return_value=(True, None))
+    @patch('kvmagent.plugins.virtiofs_plugin.check_vm_memory_backing', return_value=(True, None))
+    @patch('kvmagent.plugins.virtiofs_plugin.get_vm_domain')
+    @patch('kvmagent.plugins.virtiofs_plugin._ensure_source_for_attach')
+    def test_attach_uses_default_cache_and_queue(self, mock_ensure_source, mock_get_domain,
+                                                 mock_memory_backing, mock_mount_qga,
+                                                 mock_get_virtiofsd_path):
+        mock_ensure_source.return_value = MagicMock(path='/var/lib/zstack/aios/vm-views/vm-uuid')
+        mock_domain = MagicMock()
+        mock_conn = MagicMock()
+        mock_get_domain.return_value = (mock_domain, mock_conn)
+
+        req = self._make_req({
+            'vmInstanceUuid': 'vm-uuid',
+            'tag': 'artifact-view',
+            'sourcePath': '/var/lib/zstack/aios/vm-views/vm-uuid',
+            'mountPath': '/mnt/virtiofs',
+        })
+
+        plugin = self._make_plugin()
+        result = plugin.attach_virtiofs(req)
+        rsp = json.loads(result)
+
+        assert rsp.get('success') is True
+        xml_str = mock_domain.attachDeviceFlags.call_args_list[0][0][0]
+        assert "queue='1024'" in xml_str
+        assert "<cache mode='none'/>" in xml_str
 
     @patch('kvmagent.plugins.virtiofs_plugin.check_libvirt_version')
     def test_status_handler(self, mock_check_version):
@@ -418,22 +441,23 @@ class TestBuildVirtiofsXml:
     @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
     def test_build_xml_contains_required_elements(self, mock_path):
         """Test that generated XML contains all required elements."""
-        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/models")
+        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/virtiofs")
 
         assert "type='mount'" in xml_str
         assert "accessmode='passthrough'" in xml_str
         assert "type='virtiofs'" in xml_str
-        assert "/mnt/models" in xml_str
+        assert "/mnt/virtiofs" in xml_str
         assert "test-tag" in xml_str
         assert "virtiofsd" in xml_str
+        assert "queue='1024'" in xml_str
 
     @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
     def test_build_xml_escaping(self, mock_path):
         """Test that special characters in path are preserved."""
         # Paths with spaces should be preserved as-is
-        xml_str = virtiofs_plugin.build_virtiofs_xml("tag with spaces", "/mnt/my models")
+        xml_str = virtiofs_plugin.build_virtiofs_xml("tag with spaces", "/mnt/my sources")
 
-        assert "/mnt/my models" in xml_str
+        assert "/mnt/my sources" in xml_str
         assert "tag with spaces" in xml_str
 
     @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value="/usr/libexec/virtiofsd\"bad")
@@ -448,33 +472,48 @@ class TestBuildVirtiofsXml:
 
     @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
     def test_build_xml_default_cache_mode(self, mock_path):
-        """Test that default cache mode is 'always' (recommended for model loading)."""
-        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/models")
-        assert "<cache mode='always'/>" in xml_str
+        """Test that default cache mode is 'none'."""
+        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/virtiofs")
+        assert "<cache mode='none'/>" in xml_str
+
+    @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
+    def test_build_xml_default_queue(self, mock_path):
+        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/virtiofs")
+        assert "queue='1024'" in xml_str
+
+    @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
+    def test_build_xml_custom_queue(self, mock_path):
+        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/virtiofs", queue=2048)
+        assert "queue='2048'" in xml_str
 
     @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
     def test_build_xml_custom_cache_mode_none(self, mock_path):
         """Test that cache mode 'none' can be specified."""
-        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/models", cache_mode='none')
+        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/virtiofs", cache_mode='none')
         assert "<cache mode='none'/>" in xml_str
 
     @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
     def test_build_xml_custom_cache_mode_auto(self, mock_path):
         """Test that cache mode 'auto' can be specified."""
-        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/models", cache_mode='auto')
+        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/virtiofs", cache_mode='auto')
         assert "<cache mode='auto'/>" in xml_str
 
     @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
     def test_build_xml_custom_cache_mode_always(self, mock_path):
         """Test that cache mode 'always' can be specified."""
-        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/models", cache_mode='always')
+        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/virtiofs", cache_mode='always')
         assert "<cache mode='always'/>" in xml_str
 
     @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
     def test_build_xml_invalid_cache_mode_falls_back(self, mock_path):
-        """Test that invalid cache mode falls back to default 'always'."""
-        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/models", cache_mode='invalid')
-        assert "<cache mode='always'/>" in xml_str
+        """Test that invalid cache mode falls back to default 'none'."""
+        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/virtiofs", cache_mode='invalid')
+        assert "<cache mode='none'/>" in xml_str
+
+    @patch('kvmagent.plugins.virtiofs_plugin.get_virtiofsd_path', return_value='/usr/libexec/virtiofsd')
+    def test_build_xml_invalid_queue_falls_back(self, mock_path):
+        xml_str = virtiofs_plugin.build_virtiofs_xml("test-tag", "/mnt/virtiofs", queue='invalid')
+        assert "queue='1024'" in xml_str
 
 
 class TestAttachVirtiofsCmd:
@@ -485,8 +524,8 @@ class TestAttachVirtiofsCmd:
         cmd = virtiofs_plugin.AttachVirtiofsCmd()
         cmd.vmInstanceUuid = "test-vm-uuid"
         cmd.tag = "test-tag"
-        cmd.sourcePath = "/opt/zstack/models/test"
-        cmd.mountPath = "/mnt/models"
+        cmd.sourcePath = "/var/lib/zstack/aios/virtiofs-sources/test"
+        cmd.mountPath = "/mnt/virtiofs"
         cmd.cacheMode = 'none'
         assert cmd.cacheMode == 'none'
 
@@ -495,8 +534,8 @@ class TestAttachVirtiofsCmd:
         cmd = virtiofs_plugin.AttachVirtiofsCmd()
         cmd.vmInstanceUuid = "test-vm-uuid"
         cmd.tag = "test-tag"
-        cmd.sourcePath = "/opt/zstack/models/test"
-        cmd.mountPath = "/mnt/models"
+        cmd.sourcePath = "/var/lib/zstack/aios/virtiofs-sources/test"
+        cmd.mountPath = "/mnt/virtiofs"
         cmd.cacheMode = 'none'
         assert cmd.cacheMode == 'none'
 
@@ -505,8 +544,8 @@ class TestAttachVirtiofsCmd:
         cmd = virtiofs_plugin.AttachVirtiofsCmd()
         cmd.vmInstanceUuid = "test-vm-uuid"
         cmd.tag = "test-tag"
-        cmd.sourcePath = "/opt/zstack/models/test"
-        cmd.mountPath = "/mnt/models"
+        cmd.sourcePath = "/var/lib/zstack/aios/virtiofs-sources/test"
+        cmd.mountPath = "/mnt/virtiofs"
         cmd.cacheMode = 'auto'
         assert cmd.cacheMode == 'auto'
 
@@ -515,8 +554,8 @@ class TestAttachVirtiofsCmd:
         cmd = virtiofs_plugin.AttachVirtiofsCmd()
         cmd.vmInstanceUuid = "test-vm-uuid"
         cmd.tag = "test-tag"
-        cmd.sourcePath = "/opt/zstack/models/test"
-        cmd.mountPath = "/mnt/models"
+        cmd.sourcePath = "/var/lib/zstack/aios/virtiofs-sources/test"
+        cmd.mountPath = "/mnt/virtiofs"
         cmd.cacheMode = 'always'
         assert cmd.cacheMode == 'always'
 
@@ -671,7 +710,7 @@ class TestMountVirtiofsInVm:
             (0, "", ""),           # mount succeeds
         ]
 
-        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/models")
+        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/virtiofs")
 
         assert success is True
         assert error is None
@@ -701,10 +740,10 @@ class TestMountVirtiofsInVm:
             (1, "", "mount error"),  # mount attempt 2 fails
         ]
 
-        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/models")
+        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/virtiofs")
 
         assert success is False
-        assert "Failed to mount model in VM" in error
+        assert "Failed to mount virtiofs source in VM" in error
 
         # Verify sleep was called once (between retries)
         mock_sleep.assert_called_once_with(1)
@@ -728,7 +767,7 @@ class TestMountVirtiofsInVm:
             (0, "", ""),           # mount attempt 2 succeeds
         ]
 
-        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/models")
+        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/virtiofs")
 
         assert success is True
         assert error is None
@@ -741,7 +780,7 @@ class TestMountVirtiofsInVm:
         """Test that mount fails gracefully when QGA is not connected."""
         mock_domain = self._create_mock_domain()
 
-        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/models")
+        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/virtiofs")
 
         assert success is False
         assert "QGA not connected" in error
@@ -755,7 +794,7 @@ class TestMountVirtiofsInVm:
         mock_qga_class.QGA_STATE_RUNNING = self.QGA_STATE_RUNNING
         mock_qga_class.return_value = mock_qga
 
-        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/models")
+        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/virtiofs")
 
         assert success is False
         assert "Windows VM does not support virtiofs mount" in error
@@ -776,7 +815,7 @@ class TestMountVirtiofsInVm:
             RuntimeError("command timeout after 30s"),  # mount times out
         ]
 
-        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/models")
+        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/virtiofs")
 
         assert success is False
         assert "timed out" in error
@@ -797,7 +836,7 @@ class TestMountVirtiofsInVm:
             RuntimeError("connection lost"),  # unexpected exception
         ]
 
-        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/models")
+        success, error = virtiofs_plugin.mount_virtiofs_in_vm(mock_domain, "test-tag", "/mnt/virtiofs")
 
         assert success is False
         assert "Exception during QGA mount in VM" in error
@@ -836,7 +875,7 @@ class TestUnmountVirtiofsInVm:
 
         # Mock QGA commands
         mock_qga.guest_exec_bash.side_effect = [
-            (0, "/mnt/models", ""),  # findmnt succeeds (is mounted)
+            (0, "/mnt/virtiofs", ""),  # findmnt succeeds (is mounted)
             (0, "", ""),              # unmount succeeds
         ]
 
