@@ -8353,6 +8353,7 @@ class ConfiguredCollectLogCmd(Command):
 
 
 class ChangeIpCmd(Command):
+    LICENSE_SERVER_UNIT_NAME = 'zstack-license-server.service'
     UNSPECIFIED_MANAGEMENT_IPS = ('0.0.0.0', '::')
     DUAL_STACK_LEGACY_IP_ERROR = (
         'current management node is dual-stack; use --ipv4 and/or --ipv6 to change '
@@ -8407,6 +8408,77 @@ class ChangeIpCmd(Command):
 
     def isVirtualIp(self, ip):
         return shell("ip a | grep -w %s" % ip, False).strip().endswith("zs")
+
+    def parse_license_server_systemd_show(self, output):
+        fields = {}
+        for line in output.splitlines():
+            line = line.strip()
+            if not line or '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            fields[key] = value
+        return fields
+
+    def clean_license_server_exec_field(self, value):
+        value = value.strip()
+        value = value.strip(';')
+        value = value.strip('"\'')
+        return value.strip(';')
+
+    def parse_license_server_binary_path(self, exec_start):
+        fallback = None
+        for field in exec_start.split():
+            field = self.clean_license_server_exec_field(field)
+            if field.startswith('argv[]='):
+                binary = self.clean_license_server_exec_field(field[len('argv[]='):])
+                if binary:
+                    return binary
+            if field.startswith('path='):
+                fallback = self.clean_license_server_exec_field(field[len('path='):])
+                continue
+            if fallback is None and os.path.basename(field) == 'zstack-license-server':
+                fallback = field
+        return fallback
+
+    def discover_license_server_binary(self):
+        status, stdout, stderr = shell_return_stdout_stderr(
+            'SYSTEMD_PAGER=cat systemctl --no-pager show %s -p LoadState -p UnitFileState -p ExecStart'
+            % shell_quote(self.LICENSE_SERVER_UNIT_NAME)
+        )
+        if status != 0:
+            raise CtlError('discover License Server failed: %s' % stderr)
+
+        fields = self.parse_license_server_systemd_show(stdout)
+        load_state = fields.get('LoadState', '')
+        unit_file_state = fields.get('UnitFileState', '')
+        exec_start = fields.get('ExecStart', '')
+        if load_state == 'not-found' or load_state.startswith('masked') or unit_file_state.startswith('masked') or not exec_start:
+            info('Skip License Server management_ip update: %s is not installed or enabled' %
+                 self.LICENSE_SERVER_UNIT_NAME)
+            return None
+
+        binary = self.parse_license_server_binary_path(exec_start)
+        if not binary:
+            info('Skip License Server management_ip update: cannot find zstack-license-server binary')
+        return binary
+
+    def update_license_server_management_ip(self, management_ip):
+        binary = self.discover_license_server_binary()
+        if not binary:
+            return
+
+        fd, patch_path = tempfile.mkstemp(prefix='.zstack-license-server-', suffix='.yaml')
+        try:
+            with os.fdopen(fd, 'w') as patch:
+                patch.write('server:\n  management_ip: "%s"\n' % management_ip)
+            shell_no_pipe('%s configure --file %s' % (
+                shell_quote(binary),
+                shell_quote(patch_path),
+            ))
+            info('Update License Server management_ip %s successfully' % management_ip)
+        finally:
+            if os.path.exists(patch_path):
+                os.remove(patch_path)
 
     def check_mysql_password(self, user, password):
         cmd = ShellCmd("mysql -u%s -p%s -e 'show databases;'" % (user, password))
@@ -8845,6 +8917,7 @@ class ChangeIpCmd(Command):
 
         if change['primary']:
             self.update_morph_config(new_ip)
+            self.update_license_server_management_ip(new_ip)
 
         return console_proxy_updated
 
