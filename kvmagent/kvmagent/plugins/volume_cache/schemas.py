@@ -182,7 +182,8 @@ class InitPoolCmd(PoolBaseCmd):
 
 class ConnectPoolCmd(PoolBaseCmd):
     """Connect to existing cache pool"""
-    pass
+
+    devices = None # type: list[str] | None
 
 
 class ExtendPoolCmd(PoolBaseCmd):
