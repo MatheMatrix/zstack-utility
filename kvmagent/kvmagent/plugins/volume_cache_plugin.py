@@ -5,6 +5,7 @@ Manages local cache pool and cache volumes for VMs on compute nodes
 import functools
 import json
 import os
+import re
 import traceback
 from typing import Any, Callable, TypeVar
 from kvmagent import kvmagent
@@ -64,11 +65,166 @@ from kvmagent.plugins.volume_cache.schemas import (
 )
 from zstacklib.utils import jsonobject
 from zstacklib.utils import http
+from zstacklib.utils import lvm
 from zstacklib.utils import log
 from zstacklib.utils import plugin
 from zstacklib.utils.rollback import rollback, rollbackable
 
 logger = log.get_logger(__name__)
+
+LVM_FILTER_KEYS = ("filter", "global_filter")
+LVM_FILTER_CONFIG_FILES = (lvm.LVM_CONFIG_FILE, lvm.LVM_LOCAL_CONFIG_FILE)
+
+
+def _normalize_device_paths(devices):
+    # type: (list[str] | None) -> list[str]
+    paths = []
+    for device in devices or []:
+        if device is None:
+            continue
+        path = str(device).strip()
+        if path:
+            paths.append(path)
+    return _dedupe(paths)
+
+
+def _extract_lvm_filter_rules(config, key):
+    # type: (str, str) -> list[str]
+    rules = []
+    pattern = re.compile(r"(?m)^\s*%s\s*=\s*\[(.*?)\]\s*$" % re.escape(key))
+    for body in pattern.findall(config):
+        for quoted in re.finditer(r'"((?:\\.|[^"\\])*)"', body):
+            rules.append(quoted.group(1))
+        for quoted in re.finditer(r"'((?:\\.|[^'\\])*)'", body):
+            rules.append(quoted.group(1))
+    return rules
+
+
+def _exact_device_from_accept_rule(rule):
+    # type: (str) -> str | None
+    if len(rule) < 4 or rule[0] != "a":
+        return None
+    delimiter = rule[1]
+    end = rule.rfind(delimiter)
+    if end <= 1:
+        return None
+
+    pattern = rule[2:end].replace("\\/", "/")
+    if not pattern.startswith("^") or not pattern.endswith("$"):
+        return None
+    return pattern[1:-1]
+
+
+def _dedupe(items):
+    # type: (list[str]) -> list[str]
+    result = []
+    seen = set()
+    for item in items:
+        if item in seen:
+            continue
+        result.append(item)
+        seen.add(item)
+    return result
+
+
+def _accept_rule_for_device(path):
+    # type: (str) -> str
+    return "a|^%s$|" % path
+
+
+def _render_lvm_filter_line(key, accept_rules):
+    # type: (str, list[str]) -> str
+    rules = accept_rules + ["r|.*|"]
+    return '%s=[%s]' % (key, ", ".join(['"%s"' % rule.replace('"', '\\"') for rule in rules]))
+
+
+def _replace_lvm_filter_setting(config, key, rules):
+    # type: (str, str, list[str]) -> str
+    replacement = _render_lvm_filter_line(key, rules)
+    pattern = re.compile(r"(?m)^\s*%s\s*=\s*\[.*?\]\s*$" % re.escape(key))
+    if pattern.search(config):
+        return pattern.sub(replacement, config, count=1)
+
+    if config and not config.endswith("\n"):
+        config += "\n"
+    return config + replacement + "\n"
+
+
+def append_host_cache_lvm_filter_devices(devices, config_files=None):
+    # type: (list[str] | None, tuple[str, ...] | None) -> None
+    device_paths = _normalize_device_paths(devices)
+    if not device_paths:
+        return
+
+    config_files = config_files or LVM_FILTER_CONFIG_FILES
+    existing_files = [path for path in config_files if os.path.exists(path)]
+    if not existing_files:
+        raise PoolOperationError("No LVM config file found to append host cache store devices")
+
+    accept_rules_by_device = {}
+    extra_accept_rules = []
+    for path in existing_files:
+        with open(path, "r") as stream:
+            config = stream.read()
+        for key in LVM_FILTER_KEYS:
+            for rule in _extract_lvm_filter_rules(config, key):
+                if not rule or not rule.startswith("a"):
+                    continue
+                device = _exact_device_from_accept_rule(rule)
+                if device:
+                    accept_rules_by_device.setdefault(device, rule)
+                else:
+                    extra_accept_rules.append(rule)
+
+    for path in device_paths:
+        accept_rules_by_device.setdefault(path, _accept_rule_for_device(path))
+
+    accept_rules = _dedupe(extra_accept_rules) + list(accept_rules_by_device.values())
+
+    for path in existing_files:
+        with open(path, "r") as stream:
+            config = stream.read()
+        for key in LVM_FILTER_KEYS:
+            config = _replace_lvm_filter_setting(config, key, accept_rules)
+        with open(path, "w") as stream:
+            stream.write(config)
+        lvm.linux.sync_file(path)
+
+
+def remove_host_cache_lvm_filter_devices(devices, config_files=None):
+    # type: (list[str] | None, tuple[str, ...] | None) -> None
+    device_paths = set(_normalize_device_paths(devices))
+    if not device_paths:
+        return
+
+    config_files = config_files or LVM_FILTER_CONFIG_FILES
+    existing_files = [path for path in config_files if os.path.exists(path)]
+    if not existing_files:
+        return
+
+    accept_rules = []
+    for path in existing_files:
+        with open(path, "r") as stream:
+            config = stream.read()
+        for key in LVM_FILTER_KEYS:
+            for rule in _extract_lvm_filter_rules(config, key):
+                if not rule or not rule.startswith("a"):
+                    continue
+                device = _exact_device_from_accept_rule(rule)
+                if device in device_paths:
+                    continue
+                accept_rules.append(rule)
+
+    accept_rules = _dedupe(accept_rules)
+
+    for path in existing_files:
+        with open(path, "r") as stream:
+            config = stream.read()
+        for key in LVM_FILTER_KEYS:
+            config = _replace_lvm_filter_setting(config, key, accept_rules)
+        with open(path, "w") as stream:
+            stream.write(config)
+        lvm.linux.sync_file(path)
 
 
 def ensure_pool_initialized(func):
@@ -1096,6 +1252,7 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
     @auto_serialize(InitPoolCmd, InitPoolRsp)
     def init_pool(self, cmd):
         # type: (InitPoolCmd) -> InitPoolRsp
+        append_host_cache_lvm_filter_devices(cmd.devices)
         pool = self.pool_processors.get(cmd.poolUuid)
         if pool:
             if pool.is_initialized:
@@ -1124,9 +1281,14 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
 
     @kvmagent.replyerror
     @auto_serialize(ExtendPoolCmd, ExtendPoolRsp)
-    @ensure_pool(initialized=True)
-    def extend_pool(self, cmd, pool):
-        # type: (ExtendPoolCmd, PoolProcessor) -> ExtendPoolRsp
+    def extend_pool(self, cmd):
+        # type: (ExtendPoolCmd) -> ExtendPoolRsp
+        append_host_cache_lvm_filter_devices(cmd.devices)
+        pool = self.pool_processors.get(cmd.poolUuid)
+        if not pool:
+            pool = self._load_pool_on_demand(cmd.poolUuid)
+        if not pool.is_initialized:
+            raise PoolNotInitializedError("Pool processor for pool UUID %s is not initialized" % cmd.poolUuid)
         pool.extend_pool(additional_device_paths=cmd.devices, force=bool(cmd.force))
         pool.connect_pool()
 
@@ -1138,6 +1300,11 @@ class VolumeCachePlugin(kvmagent.KvmAgent):
     def delete_pool(self, cmd, pool):
         # type: (DeletePoolCmd, PoolProcessor) -> DeletePoolRsp
         pool.delete_pool()
+        try:
+            remove_host_cache_lvm_filter_devices(cmd.devices)
+        except Exception:
+            logger.warn("failed to remove host cache store devices from LVM filter for pool %s: %s" %
+                        (cmd.poolUuid, traceback.format_exc()))
         self.pool_processors.pop(cmd.poolUuid, None)
         return DeletePoolRsp()
 
