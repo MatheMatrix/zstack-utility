@@ -18,7 +18,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
 import yaml
-import subprocess
+from zstacklib.utils.compat import subprocess
 
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
