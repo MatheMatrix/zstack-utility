@@ -55,6 +55,13 @@ def test_build_migration_hostname_supports_bracketed_ipv6():
         'fd00-5-5-28--62-d0e5.zstack.org'
 
 
+def test_build_nbd_url_wraps_ipv6_host():
+    assert vm_plugin.build_nbd_url('192.168.10.10', 10401) == 'nbd://192.168.10.10:10401'
+    assert vm_plugin.build_nbd_url('fd00:5:5:28::5e:508b', 10401) == 'nbd://[fd00:5:5:28::5e:508b]:10401'
+    assert vm_plugin.build_nbd_url('fd00:5:5:28::5e:508b', 10401, 'parent0') == \
+        'nbd://[fd00:5:5:28::5e:508b]:10401/parent0'
+
+
 def _make_vm_plugin():
     plugin = vm_plugin.VmPlugin.__new__(vm_plugin.VmPlugin)
     plugin.config = {}

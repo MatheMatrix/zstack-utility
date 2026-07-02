@@ -186,6 +186,11 @@ def build_libvirt_tcp_uri(host):
     return 'tcp://%s' % network_ipv6.format_url_host(host)
 
 
+def build_nbd_url(host, port, export_name=None):
+    url = 'nbd://%s:%s' % (network_ipv6.format_url_host(host), port)
+    return '%s/%s' % (url, export_name) if export_name else url
+
+
 def build_migration_hostname(host_ip):
     host = host_ip.strip(network_ipv6.IPV6_BRACKET_PREFIX + network_ipv6.IPV6_BRACKET_SUFFIX)
     hostname = host.replace(IPV4_SEPARATOR, HOSTNAME_LABEL_SEPARATOR).replace(
@@ -11068,8 +11073,7 @@ host side snapshot files chian:
                     raw_result = qemu.get_rbd_data_bitmap(raw_path, MAX_NBD_READ_SIZE)
                     bitmap_map = _merge_json_data(raw_result, qcow2_result)
                 else:
-                    path = "nbd://%s:%s/%s" % (
-                        volume_info.nbdServer, volume_info.nbdPort, volume_info.scratchNodeName)
+                    path = build_nbd_url(volume_info.nbdServer, volume_info.nbdPort, volume_info.scratchNodeName)
                     bitmap_map = qemu.get_data_bitmap(path, MAX_NBD_READ_SIZE, False, True, "-f raw")
             else:
                 path = "driver=nbd,export=%s,server.type=inet,server.host=%s,server.port=%s,x-dirty-bitmap=qemu:dirty-bitmap:%s" % (
@@ -12644,7 +12648,7 @@ host side snapshot files chian:
             if cmd.fullSync:
                 qmp.execute_qmp_command(cmd.vmInstanceUuid, "drive-mirror", raise_exception=False,
                                     device=alias_name, job_id="zs-ft-resync",
-                                    target="nbd://%s:%s/parent%s" % (cmd.secondaryVmHostIp, cmd.nbdServerPort, count),
+                                    target=build_nbd_url(cmd.secondaryVmHostIp, cmd.nbdServerPort, "parent%s" % count),
                                     mode="existing", format="nbd", sync="full"
                                     )
                 while True:
