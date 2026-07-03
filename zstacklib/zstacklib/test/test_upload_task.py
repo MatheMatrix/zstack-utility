@@ -517,6 +517,69 @@ class TestUploadSliceFailureCounter(unittest.TestCase):
             upload_task_module.Part = old_part
             upload_task_module.SizedReader = old_sized_reader
 
+    def test_record_slice_uploaded_returns_unique_size(self):
+        task = TestUploadTask("task-1", "/tmp/file")
+        task.expectedSize = 8
+
+        self.assertEqual(4, task.record_slice_uploaded(0, 4))
+        self.assertEqual(0, task.record_slice_uploaded(0, 4))
+        self.assertEqual(2, task.record_slice_uploaded(2, 4))
+        self.assertEqual(2, task.record_slice_uploaded(6, 4))
+
+    def test_get_upload_task_checks_remaining_capacity_from_ranges(self):
+        task = TestUploadTask("task-1", "/tmp/file")
+        task.expectedSize = 8
+        task.downloadSize = 100
+        task.record_slice_uploaded(0, 4)
+        checked_sizes = []
+        task.check_capacity = lambda required_size: checked_sizes.append(required_size) or None
+
+        handler = UploadHandler(None, TestUploadTasks(task))
+        handler.get_upload_task(make_upload_param(total_size=8, slice_offset=0, slice_size=4))
+
+        self.assertEqual([4], checked_sizes)
+
+    def test_stream_body_does_not_double_count_duplicate_or_overlap_slices(self):
+        old_part = upload_task_module.Part
+        old_sized_reader = upload_task_module.SizedReader
+        upload_task_module.Part = TestPart
+        upload_task_module.SizedReader = SequenceSizedReader
+        try:
+            task = StreamUploadTask("file-task-1", "/tmp/file")
+            task.expectedSize = 8
+
+            SequenceSizedReader.chunks = [b'abcd', b'']
+            param = UploadHandler.get_upload_param({
+                'X-FILE-UUID': 'file-task-1',
+                'X-FILE-SIZE': '8',
+                'X-SLICE-OFFSET': '0',
+                'X-SLICE-SIZE': '4',
+                'X-SLICE-HASH': make_hash('xxh3', b'abcd'),
+                'X-HASH-ALGORITHM': 'xxh3',
+            })
+            UploadHandler.stream_body(TestEntity(), b'--boundary', param, task)
+            self.assertEqual(4, task.downloadSize)
+
+            SequenceSizedReader.chunks = [b'abcd', b'']
+            UploadHandler.stream_body(TestEntity(), b'--boundary', param, task)
+            self.assertEqual(4, task.downloadSize)
+
+            SequenceSizedReader.chunks = [b'cdef', b'']
+            param = UploadHandler.get_upload_param({
+                'X-FILE-UUID': 'file-task-1',
+                'X-FILE-SIZE': '8',
+                'X-SLICE-OFFSET': '2',
+                'X-SLICE-SIZE': '4',
+                'X-SLICE-HASH': make_hash('xxh3', b'cdef'),
+                'X-HASH-ALGORITHM': 'xxh3',
+            })
+            UploadHandler.stream_body(TestEntity(), b'--boundary', param, task)
+            self.assertEqual(6, task.downloadSize)
+            self.assertEqual(6, task.checked_download_size())
+        finally:
+            upload_task_module.Part = old_part
+            upload_task_module.SizedReader = old_sized_reader
+
     def test_file_upload_hash_mismatch_is_retryable(self):
         old_part = upload_task_module.Part
         old_sized_reader = upload_task_module.SizedReader
