@@ -51,6 +51,7 @@ from kvmagent.plugins.baremetal_v2_gateway_agent import \
 from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins import host_pushgateway
 from kvmagent.plugins import vm_artifact
+from kvmagent.plugins import zbs_vhost_target
 from kvmagent.plugins.imagestore import ImageStoreClient
 from kvmagent.plugins.shared_block_plugin import MAX_ACTUAL_SIZE_FACTOR
 from kvmagent.plugins.volume_cache.command_wrapper.virsh import VirshCommandWrapper as CacheVirshWrapper
@@ -3630,6 +3631,7 @@ class Vm(object):
         flag = (0, libvirt.VIR_DOMAIN_START_PAUSED)[create_paused]
         domain = define_xml()
         self.domain = domain
+        zbs_vhost_target.ensure_hugepages_for_domain(self.domain_xml)
         self.domain.createWithFlags(flag)
         if create_paused:
             self._wait_for_vm_paused(timeout)

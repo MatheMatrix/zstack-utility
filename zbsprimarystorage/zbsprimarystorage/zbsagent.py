@@ -46,6 +46,12 @@ class CbdToNbdRsp(AgentResponse):
         self.port = 0
 
 
+class CreateVhostBdevRsp(AgentResponse):
+    def __init__(self):
+        super(CreateVhostBdevRsp, self).__init__()
+        self.socketPath = None
+
+
 class ExpandVolumeRsp(AgentResponse):
     def __init__(self):
         super(ExpandVolumeRsp, self).__init__()
@@ -210,6 +216,10 @@ class ZbsAgent(plugin.TaskManager):
     EXPAND_VOLUME_PATH = "/zbs/primarystorage/volume/expand"
     FLATTEN_VOLUME_PATH = "/zbs/primarystorage/volume/flatten"
     GET_VOLUME_CLIENTS_PATH = "/zbs/primarystorage/volume/clients"
+    DEPLOY_VHOST_PATH = "/zbs/primarystorage/vhost/deploy"
+    DESTROY_VHOST_PATH = "/zbs/primarystorage/vhost/destroy"
+    CREATE_VHOST_BDEV_PATH = "/zbs/primarystorage/vhost/bdev/create"
+    DELETE_VHOST_BDEV_PATH = "/zbs/primarystorage/vhost/bdev/delete"
 
     http_server = http.HttpServer(port=7763)
     http_server.logfile_path = log.get_logfile_path()
@@ -238,6 +248,10 @@ class ZbsAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.DELETE_SNAPSHOT_PATH, self.delete_snapshot)
         self.http_server.register_async_uri(self.ROLLBACK_SNAPSHOT_PATH, self.rollback_snapshot)
         self.http_server.register_sync_uri(self.GET_VOLUME_CLIENTS_PATH, self.get_volume_clients)
+        self.http_server.register_async_uri(self.DEPLOY_VHOST_PATH, self.deploy_vhost)
+        self.http_server.register_async_uri(self.DESTROY_VHOST_PATH, self.destroy_vhost)
+        self.http_server.register_async_uri(self.CREATE_VHOST_BDEV_PATH, self.create_vhost_bdev)
+        self.http_server.register_async_uri(self.DELETE_VHOST_BDEV_PATH, self.delete_vhost_bdev)
 
         self.agent_version = None
 
@@ -700,6 +714,61 @@ class ZbsAgent(plugin.TaskManager):
         if r.error.code != 0:
             rsp.success = False
             rsp.error = 'failed to deploy client, error[%s]' % r.error.message
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def deploy_vhost(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+
+        o = zbsutils.deploy_vhost(cmd.hostIp, cmd.sshPort, cmd.sshUsername, cmd.sshPassword)
+        r = jsonobject.loads(o)
+        if not r.success:
+            raise Exception('failed to deploy vhost target on host[%s], error[%s]' % (
+                cmd.hostIp, r.error.message))
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def destroy_vhost(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+
+        o = zbsutils.destroy_vhost(cmd.hostIp, cmd.sshPort, cmd.sshUsername, cmd.sshPassword)
+        r = jsonobject.loads(o)
+        if not r.success:
+            raise Exception('failed to destroy vhost target on host[%s], error[%s]' % (
+                cmd.hostIp, r.error.message))
+
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def create_vhost_bdev(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CreateVhostBdevRsp()
+
+        o = zbsutils.create_vhost_bdev(cmd.hostIp, cmd.sshPort, cmd.sshUsername, cmd.sshPassword,
+                                       cmd.logicalPool, cmd.volume, cmd.bdevName)
+        r = jsonobject.loads(o)
+        if not r.success:
+            raise Exception('failed to create vhost bdev[%s] for volume[%s/%s] on host[%s], error[%s]' % (
+                cmd.bdevName, cmd.logicalPool, cmd.volume, cmd.hostIp, r.error.message))
+
+        rsp.socketPath = zbsutils.vhost_socket_path(cmd.bdevName)
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def delete_vhost_bdev(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+
+        o = zbsutils.delete_vhost_bdev(cmd.hostIp, cmd.sshPort, cmd.sshUsername, cmd.sshPassword,
+                                       cmd.bdevName)
+        r = jsonobject.loads(o)
+        if not r.success:
+            raise Exception('failed to delete vhost bdev[%s] on host[%s], error[%s]' % (
+                cmd.bdevName, cmd.hostIp, r.error.message))
 
         return jsonobject.dumps(rsp)
 
