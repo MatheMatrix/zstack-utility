@@ -3458,6 +3458,16 @@ cs_setup_nfs(){
         chkconfig rpcbind on >>$ZSTACK_INSTALL_LOG 2>&1
         service rpcbind restart >>$ZSTACK_INSTALL_LOG 2>&1
         service nfs restart >>$ZSTACK_INSTALL_LOG 2>&1
+    elif [[ "$OS" = "ALINUX4" ]]; then
+        for service in rpcbind nfs-server; do
+            systemctl enable $service >>$ZSTACK_INSTALL_LOG 2>&1 || fail "failed to setup NFS server"
+            systemctl restart $service >>$ZSTACK_INSTALL_LOG 2>&1 || fail "failed to setup NFS server"
+        done
+        for service in nfs-lock nfs-idmap; do
+            systemctl cat $service >/dev/null 2>&1 || continue
+            systemctl enable $service >>$ZSTACK_INSTALL_LOG 2>&1 || fail "failed to setup NFS server"
+            systemctl restart $service >>$ZSTACK_INSTALL_LOG 2>&1 || fail "failed to setup NFS server"
+        done
     elif [[ $REDHAT_WITHOUT_CENTOS6 =~ $OS ]]; then
         systemctl enable rpcbind >>$ZSTACK_INSTALL_LOG 2>&1
         systemctl enable nfs-server >>$ZSTACK_INSTALL_LOG 2>&1
@@ -3835,7 +3845,7 @@ is_install_marketplace_server(){
 is_install_fluentbit_server(){
     echo_subtitle "Install fluentbit server"
     if [ "$BASEARCH" = "x86_64" ]; then
-        if [ "$ZSTACK_RELEASE" = "h84r" ] || [ "$ZSTACK_RELEASE" = "uos20r" ]; then
+        if [ "$ZSTACK_RELEASE" = "h84r" ] || [ "$ZSTACK_RELEASE" = "uos20r" ] || [ "$OS" = "ALINUX4" ]; then
             echo "Installing libpq for fluent-bit..." >> $ZSTACK_INSTALL_LOG
             yum install libpq --disablerepo="*" --enablerepo=$ZSTACK_YUM_REPOS -y >> $ZSTACK_INSTALL_LOG 2>&1
             if [ $? -ne 0 ]; then
