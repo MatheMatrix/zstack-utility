@@ -569,6 +569,7 @@ def test_change_ip_allows_confirmed_family_switch_and_keeps_old_primary(monkeypa
     monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
     monkeypatch.setattr(cmd, 'checkMysqlConnection', lambda *args: None)
     monkeypatch.setattr(cmd, 'update_morph_config', lambda ip: shell_calls.append(('morph', ip)))
+    monkeypatch.setattr(cmd, 'update_license_server_management_ip', lambda ip: shell_calls.append(('license', ip)))
 
     cmd.run(SimpleNamespace(
         ip=new_ip,
@@ -591,6 +592,7 @@ def test_change_ip_allows_confirmed_family_switch_and_keeps_old_primary(monkeypa
     assert ('DB.url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack') in writes
     assert ('db_url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack_ui') in writes
     assert ('morph', new_ip) in shell_calls
+    assert ('license', new_ip) in shell_calls
     assert firewall_calls == [(new_ip, new_ip, old_ip, {'3306'})]
 
 
@@ -661,6 +663,7 @@ def test_change_ip4_on_dual_stack_updates_ipv4_scoped_properties(monkeypatch):
     monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
     monkeypatch.setattr(cmd, 'checkMysqlConnection', lambda *args: None)
     monkeypatch.setattr(cmd, 'update_morph_config', lambda ip: shell_calls.append(('morph', ip)))
+    monkeypatch.setattr(cmd, 'update_license_server_management_ip', lambda ip: shell_calls.append(('license', ip)))
 
     cmd.run(SimpleNamespace(
         ip=None,
@@ -679,6 +682,7 @@ def test_change_ip4_on_dual_stack_updates_ipv4_scoped_properties(monkeypatch):
     assert ('DB.url', 'jdbc:mysql://172.24.249.183:3306/zstack') in writes
     assert ('db_url', 'jdbc:mysql://172.24.249.183:3306/zstack_ui') in writes
     assert ('morph', '172.24.249.183') in shell_calls
+    assert ('license', '172.24.249.183') in shell_calls
     assert firewall_calls == [('172.24.249.183', '172.24.249.183', '172.24.249.182', {'3306'})]
 
 
@@ -711,6 +715,7 @@ def test_change_ip_dual_stack_updates_empty_console_proxy_to_primary(monkeypatch
     monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
     monkeypatch.setattr(cmd, 'checkMysqlConnection', lambda *args: None)
     monkeypatch.setattr(cmd, 'update_morph_config', lambda ip: shell_calls.append(('morph', ip)))
+    monkeypatch.setattr(cmd, 'update_license_server_management_ip', lambda ip: shell_calls.append(('license', ip)))
 
     cmd.run(SimpleNamespace(
         ip=None,
@@ -724,6 +729,7 @@ def test_change_ip_dual_stack_updates_empty_console_proxy_to_primary(monkeypatch
     assert ('consoleProxyOverriddenIp', '172.24.249.183') not in writes
     assert ('consoleProxyOverriddenIpv4', '172.24.249.183') not in writes
     assert ('consoleProxyOverriddenIpv6', 'fd00:172:24:249::183') in writes
+    assert ('license', 'fd00:172:24:249::183') in shell_calls
 
 
 def test_change_ip6_on_dual_stack_preserves_ipv4_scoped_properties(monkeypatch):
@@ -756,6 +762,7 @@ def test_change_ip6_on_dual_stack_preserves_ipv4_scoped_properties(monkeypatch):
     monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
     monkeypatch.setattr(cmd, 'checkMysqlConnection', lambda *args: None)
     monkeypatch.setattr(cmd, 'update_morph_config', lambda ip: shell_calls.append(('morph', ip)))
+    monkeypatch.setattr(cmd, 'update_license_server_management_ip', lambda ip: shell_calls.append(('license', ip)))
 
     cmd.run(SimpleNamespace(
         ip=None,
@@ -772,6 +779,7 @@ def test_change_ip6_on_dual_stack_preserves_ipv4_scoped_properties(monkeypatch):
     assert ('consoleProxyOverriddenIp', 'fd00:172:24:249::182') not in writes
     assert ('DB.url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack') not in writes
     assert ('morph', 'fd00:172:24:249::182') not in shell_calls
+    assert ('license', 'fd00:172:24:249::182') not in shell_calls
     assert firewall_calls == [('fd00:172:24:249::182', None, 'fd00:172:24:249::181', {'3306'})]
 
 
@@ -802,6 +810,7 @@ def test_change_ip_preserves_custom_same_family_chrony_server(monkeypatch):
     monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
     monkeypatch.setattr(cmd, 'checkMysqlConnection', lambda *args: None)
     monkeypatch.setattr(cmd, 'update_morph_config', lambda ip: shell_calls.append(('morph', ip)))
+    monkeypatch.setattr(cmd, 'update_license_server_management_ip', lambda ip: shell_calls.append(('license', ip)))
 
     cmd.run(SimpleNamespace(
         ip='172.24.249.183',
@@ -813,6 +822,56 @@ def test_change_ip_preserves_custom_same_family_chrony_server(monkeypatch):
     ))
 
     assert ('chrony.serverIp.0', '172.24.249.183') not in writes
+
+
+def test_update_license_server_management_ip_uses_configure_patch(monkeypatch):
+    commands = []
+    patch_content = []
+    systemd_show = (
+        'LoadState=loaded\n'
+        'UnitFileState=enabled\n'
+        'ExecStart={ path=/usr/local/zstack/license-server/bin/zstack-license-server ; '
+        'argv[]=/usr/local/zstack/license-server/bin/zstack-license-server --config /etc/config.yaml ; }\n'
+    )
+
+    monkeypatch.setattr(ctl, 'shell_return_stdout_stderr', lambda command: (0, systemd_show, ''))
+    monkeypatch.setattr(ctl, 'info', lambda *args, **kwargs: None)
+
+    def fake_shell_no_pipe(command):
+        commands.append(command)
+        patch_path = command.split()[-1].strip("'")
+        with open(patch_path) as fd:
+            patch_content.append(fd.read())
+
+    monkeypatch.setattr(ctl, 'shell_no_pipe', fake_shell_no_pipe)
+
+    cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
+    cmd.update_license_server_management_ip('172.24.249.183')
+
+    assert commands == [
+        "'/usr/local/zstack/license-server/bin/zstack-license-server' configure --file '%s'" %
+        commands[0].split()[-1].strip("'")
+    ]
+    assert patch_content == [
+        'server:\n'
+        '  management_ip: "172.24.249.183"\n'
+        'database:\n'
+        '  url: "172.24.249.183:3306"\n'
+    ]
+
+
+def test_update_license_server_management_ip_skips_absent_service(monkeypatch):
+    commands = []
+    systemd_show = 'LoadState=not-found\nUnitFileState=\nExecStart=\n'
+
+    monkeypatch.setattr(ctl, 'shell_return_stdout_stderr', lambda command: (0, systemd_show, ''))
+    monkeypatch.setattr(ctl, 'shell_no_pipe', lambda command: commands.append(command))
+    monkeypatch.setattr(ctl, 'info', lambda *args, **kwargs: None)
+
+    cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
+    cmd.update_license_server_management_ip('172.24.249.183')
+
+    assert commands == []
 
 
 def test_add_ip_sets_management_server_ip6_without_configuring_nic(monkeypatch):
