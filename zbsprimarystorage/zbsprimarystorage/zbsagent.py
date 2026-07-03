@@ -100,6 +100,12 @@ class BatchQueryVolumeRsp(AgentResponse):
         self.volumes = {}
 
 
+class BatchQueryVolumeWithSnapshotRsp(BatchQueryVolumeRsp):
+    def __init__(self):
+        super(BatchQueryVolumeWithSnapshotRsp, self).__init__()
+        self.snapshots = {}
+
+
 class CloneVolumeRsp(AgentResponse):
     def __init__(self):
         super(CloneVolumeRsp, self).__init__()
@@ -207,6 +213,7 @@ class ZbsAgent(plugin.TaskManager):
     DELETE_VOLUME_PATH = "/zbs/primarystorage/volume/delete"
     QUERY_VOLUME_PATH = "/zbs/primarystorage/volume/query"
     BATCH_QUERY_VOLUME_PATH = "/zbs/primarystorage/volume/query/batch"
+    BATCH_QUERY_VOLUME_WITH_SNAPSHOT_PATH = "/zbs/primarystorage/volume/query/batch/withsnapshot"
     CLONE_VOLUME_PATH = "/zbs/primarystorage/volume/clone"
     CBD_TO_NBD_PATH = "/zbs/primarystorage/volume/cbdtonbd"
     CLEAN_NBD_PATH = "/zbs/primarystorage/volume/cleannbd"
@@ -239,6 +246,7 @@ class ZbsAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.DELETE_VOLUME_PATH, self.delete_volume)
         self.http_server.register_async_uri(self.QUERY_VOLUME_PATH, self.query_volume)
         self.http_server.register_async_uri(self.BATCH_QUERY_VOLUME_PATH, self.batch_query_volume)
+        self.http_server.register_async_uri(self.BATCH_QUERY_VOLUME_WITH_SNAPSHOT_PATH, self.batch_query_volume_with_snapshot)
         self.http_server.register_async_uri(self.CLONE_VOLUME_PATH, self.clone_volume)
         self.http_server.register_async_uri(self.EXPAND_VOLUME_PATH, self.expand_volume)
         self.http_server.register_async_uri(self.FLATTEN_VOLUME_PATH, self.flatten_volume)
@@ -500,24 +508,46 @@ class ZbsAgent(plugin.TaskManager):
                 physical_pool,
                 ret.result.info.fileInfo.cloneSourceSnap
             )
-
         return jsonobject.dumps(rsp)
 
     @replyerror
     def batch_query_volume(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = BatchQueryVolumeRsp()
+        rsp.volumes = self._get_batch_volume_stats(cmd.installPaths)
+        return jsonobject.dumps(rsp)
 
+    @replyerror
+    def batch_query_volume_with_snapshot(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = BatchQueryVolumeWithSnapshotRsp()
+        volume_install_paths, snapshot_install_paths = self._split_volume_and_snapshot_install_paths(cmd.installPaths)
+        rsp.volumes = self._get_batch_volume_stats(volume_install_paths)
+        rsp.snapshots = self._get_snapshot_stats(snapshot_install_paths)
+        return jsonobject.dumps(rsp)
+
+    def _split_volume_and_snapshot_install_paths(self, install_paths):
+        volume_install_paths = []
+        snapshot_install_paths = []
+        for install_path in install_paths or []:
+            if "@" in install_path:
+                snapshot_install_paths.append(install_path)
+            else:
+                volume_install_paths.append(install_path)
+        return volume_install_paths, snapshot_install_paths
+
+    def _get_batch_volume_stats(self, install_paths):
         logical_pool_to_install_paths = {}
         install_path_to_volume_name = {}
 
-        for install_path in cmd.installPaths:
+        for install_path in install_paths:
             _, logical_pool_name, volume_name, _ = zbsutils.parse_cbd_path(install_path)
             if logical_pool_name not in logical_pool_to_install_paths:
                 logical_pool_to_install_paths[logical_pool_name] = []
             logical_pool_to_install_paths[logical_pool_name].append(install_path)
             install_path_to_volume_name[install_path] = volume_name
 
+        volumes = {}
         for logical_pool_name, install_paths in logical_pool_to_install_paths.items():
             o = zbsutils.query_volumes_in_logical_pool(logical_pool_name)
             r = jsonobject.loads(o)
@@ -528,10 +558,29 @@ class ZbsAgent(plugin.TaskManager):
                 for info in r.result.fileInfo:
                     if info.fileName != install_path_to_volume_name.get(install_path):
                         continue
-                    rsp.volumes[install_path] = {'length': info.length, 'usedSize': info.usedSize}
+                    volumes[install_path] = {'length': info.length, 'usedSize': info.usedSize}
                     break
+        return volumes
 
-        return jsonobject.dumps(rsp)
+    def _get_snapshot_stats(self, snapshot_install_paths):
+        if not snapshot_install_paths:
+            return {}
+
+        snapshots = {}
+        for install_path in snapshot_install_paths:
+            _, logical_pool, volume, snapshot = zbsutils.parse_cbd_path(install_path)
+
+            o = zbsutils.get_snapshot_info(logical_pool, volume, snapshot)
+            ret = jsonobject.loads(o)
+            if ret.error.code != 0:
+                logger.error('failed to get snapshot[%s@%s], error[%s]' % (volume, snapshot, ret.error.message))
+                continue
+            if not ret.result.hasattr('fileInfo') or not ret.result.fileInfo.hasattr('usedSize'):
+                logger.error('failed to get snapshot[%s@%s] usedSize from response[%s]' % (volume, snapshot, o))
+                continue
+
+            snapshots[install_path] = {'usedSize': ret.result.fileInfo.usedSize}
+        return snapshots
 
     @replyerror
     def clone_volume(self, req):
@@ -593,6 +642,17 @@ class ZbsAgent(plugin.TaskManager):
             raise Exception('failed to create snapshot[%s@%s], error[%s]' % (volume, cmd.snapshot, ret.error.message))
 
         rsp.size = ret.result.snapShotFileInfo.length
+        snapInfoO = zbsutils.get_snapshot_info(logical_pool, volume, cmd.snapshot)
+        snapInfoRet = jsonobject.loads(snapInfoO)
+        if snapInfoRet.error.code != 0:
+            logger.error('failed to get snapshot[%s@%s], error[%s]' % (
+                volume, cmd.snapshot, snapInfoRet.error.message))
+        elif not snapInfoRet.result.hasattr('fileInfo') or not snapInfoRet.result.fileInfo.hasattr('usedSize'):
+            logger.error('failed to get snapshot[%s@%s] usedSize from response[%s]' % (
+                volume, cmd.snapshot, snapInfoO))
+        else:
+            rsp.actualSize = snapInfoRet.result.fileInfo.usedSize
+
         rsp.installPath = install_path
 
         return jsonobject.dumps(rsp)
