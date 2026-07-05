@@ -48,6 +48,8 @@ MIRROR_JOB_UUID_TRUNCATE_LEN = 8
 # blocking indefinitely.
 _DEFAULT_MAX_WAIT_TIMEOUT = 3600
 
+_DEFAULT_SHUTDOWN_TIMEOUT = 30
+
 # Interval (seconds) between progress log messages inside _wait_initial_full_sync.
 WAIT_INITIAL_LOG_INTERVAL = 30.0
 
@@ -1409,12 +1411,138 @@ class ZrmPlugin(kvmagent.KvmAgent):
             logger.exception("zrm_checkpoint_create failed")
             return jsonobject.dumps(ZrmAgentRsp(success=False, error=str(e)))
 
+    def _vm_shutdown_and_isolate(self, vm_uuid, shutdown_timeout=_DEFAULT_SHUTDOWN_TIMEOUT, force_isolate=False):
+        import libvirt
+        import xml.etree.ElementTree as ET
+        from kvmagent.plugins.vm_plugin import get_vm_by_uuid
+
+        vm = get_vm_by_uuid(vm_uuid, exception_if_not_existing=False)
+        if not vm or not getattr(vm, "domain", None):
+            logger.info("_vm_shutdown_and_isolate: vm %s not found, treating as stopped" % vm_uuid)
+            return True, None
+
+        domain = vm.domain
+
+        def _is_no_domain_error(ex):
+            try:
+                get_error_code = getattr(ex, "get_error_code", None)
+                return bool(get_error_code) and get_error_code() == libvirt.VIR_ERR_NO_DOMAIN
+            except Exception:
+                return False
+
+        if not force_isolate:
+            try:
+                state, _ = domain.state()
+                if state == libvirt.VIR_DOMAIN_SHUTOFF:
+                    logger.info("_vm_shutdown_and_isolate: vm %s already SHUTOFF" % vm_uuid)
+                    return True, None
+            except Exception as e:
+                if _is_no_domain_error(e):
+                    logger.info("_vm_shutdown_and_isolate: vm %s disappeared while checking state" % vm_uuid)
+                    return True, None
+                return False, "vm state check failed: %s" % e
+
+            try:
+                domain.shutdown()
+            except Exception as e:
+                logger.warn("_vm_shutdown_and_isolate: shutdown() failed for %s: %s, proceeding to poll" % (vm_uuid, e))
+
+            deadline = time.time() + shutdown_timeout
+            while time.time() < deadline:
+                try:
+                    state, _ = domain.state()
+                    if state == libvirt.VIR_DOMAIN_SHUTOFF:
+                        logger.info("_vm_shutdown_and_isolate: vm %s shut down cleanly" % vm_uuid)
+                        return True, None
+                except Exception as e:
+                    if _is_no_domain_error(e):
+                        logger.info("_vm_shutdown_and_isolate: vm %s disappeared while waiting for shutdown" % vm_uuid)
+                        return True, None
+                    return False, "vm state check failed: %s" % e
+                time.sleep(1)
+
+            logger.warn("_vm_shutdown_and_isolate: vm %s did not shut down in %ds, isolating network" %
+                        (vm_uuid, shutdown_timeout))
+
+        try:
+            xml_str = domain.XMLDesc(0)
+            root = ET.fromstring(xml_str)
+            ifaces = root.findall(".//devices/interface")
+            if not ifaces:
+                logger.info("_vm_shutdown_and_isolate: no interfaces to detach on vm %s" % vm_uuid)
+                return True, None
+
+            detached_count = 0
+            detach_errors = []
+            for iface in ifaces:
+                iface_xml = ET.tostring(iface, encoding="unicode")
+                try:
+                    domain.detachDeviceFlags(iface_xml, libvirt.VIR_DOMAIN_AFFECT_LIVE)
+                    detached_count += 1
+                    logger.info("_vm_shutdown_and_isolate: detached vNIC on vm %s" % vm_uuid)
+                except Exception as de:
+                    detach_errors.append(str(de))
+                    logger.warn("_vm_shutdown_and_isolate: detach vNIC failed on vm %s: %s (continuing)" %
+                                (vm_uuid, de))
+            if detach_errors:
+                # Re-read XML to check whether NICs are actually still present.
+                # A detach API error can fire for an NIC that was already absent
+                # (e.g. concurrent removal); in that case isolation is still achieved.
+                try:
+                    remaining_ifaces = ET.fromstring(domain.XMLDesc(0)).findall(".//devices/interface")
+                except Exception:
+                    remaining_ifaces = ifaces  # conservative: assume still present on XML read failure
+                if remaining_ifaces:
+                    return False, "network isolation failed: %d vNIC(s) remain on vm %s; detach errors: %s" % (
+                        len(remaining_ifaces), vm_uuid, "; ".join(detach_errors))
+                logger.info("_vm_shutdown_and_isolate: all vNICs gone on vm %s (detach errors were for already-absent NICs)" % vm_uuid)
+            return True, None
+
+        except Exception as e:
+            return False, "network isolation failed: " + str(e)
+
     @kvmagent.replyerror
     def zrm_recovery_prepare(self, req):
-        logger.info("ZRM recovery/prepare called -- not yet implemented")
-        return jsonobject.dumps(ZrmAgentRsp(
-            success=False,
-            error="ZR_AGENT.NOT_IMPLEMENTED: recovery/prepare is not implemented in this agent version"))
+        try:
+            body = req.get(http.REQUEST_BODY)
+            if not body:
+                return jsonobject.dumps(ZrmAgentRsp(success=False, error="missing body"))
+            cmd = jsonobject.loads(body)
+
+            vm_uuid          = (getattr(cmd, "vmUuid", None) or "").strip()
+            _timeout_val = getattr(cmd, "shutdownTimeout", None)
+            shutdown_timeout = int(_timeout_val) if _timeout_val is not None else _DEFAULT_SHUTDOWN_TIMEOUT
+            force_isolate    = bool(getattr(cmd, "forceIsolate", False))
+
+            if not vm_uuid:
+                return jsonobject.dumps(ZrmAgentRsp(success=False, error="vmUuid required"))
+
+            stop_rsp_json = self._replication_stop(req)
+            try:
+                stop_rsp = jsonobject.loads(stop_rsp_json)
+                stop_success = getattr(stop_rsp, "success", True)
+                stale_jobs = getattr(stop_rsp, "staleJobs", None)
+                if not stop_success:
+                    err = getattr(stop_rsp, "error", "unknown error")
+                    return jsonobject.dumps(ZrmAgentRsp(success=False,
+                        error="replication_stop failed: %s" % err))
+                if stale_jobs:
+                    return jsonobject.dumps(ZrmAgentRsp(success=False,
+                        error="replication_stop: stale mirror jobs remain: %s" % stale_jobs))
+            except Exception as e:
+                return jsonobject.dumps(ZrmAgentRsp(success=False,
+                    error="replication_stop response parse error: %s" % e))
+
+            ok, err = self._vm_shutdown_and_isolate(vm_uuid, shutdown_timeout, force_isolate)
+            if not ok:
+                return jsonobject.dumps(ZrmAgentRsp(success=False, error=err))
+
+            logger.info("zrm_recovery_prepare: vm %s isolated (mirrors stopped, vm shutdown/isolated)" % vm_uuid)
+            return jsonobject.dumps(ZrmAgentRsp())
+
+        except Exception as e:
+            logger.exception("zrm_recovery_prepare failed")
+            return jsonobject.dumps(ZrmAgentRsp(success=False, error=str(e)))
 
     @kvmagent.replyerror
     def zrm_replication_throttle(self, req):
