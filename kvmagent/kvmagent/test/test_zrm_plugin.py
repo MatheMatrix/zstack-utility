@@ -1,5 +1,11 @@
+import itertools
 import json
 import unittest
+
+try:
+    from unittest import mock
+except ImportError:
+    import mock
 
 from zstacklib.utils import http
 from zstacklib.utils import jsonobject
@@ -395,6 +401,119 @@ class TestZrmPluginCheckpointCreate(unittest.TestCase):
         self.assertIn("mirror convergence failed", body.get("error"))
         self.assertIn("QMP connection lost", body.get("error"))
         self.assertEqual(0, len(self.json_post_calls))
+
+
+class TestZrmPluginRecoveryPrepare(unittest.TestCase):
+    def setUp(self):
+        self.plugin = object.__new__(zrm_plugin.ZrmPlugin)
+
+    def _make_req(self, body_dict):
+        return {http.REQUEST_BODY: json.dumps(body_dict)}
+
+    def _load_rsp(self, rsp_json):
+        return json.loads(rsp_json)
+
+    def _fake_domain(self, states):
+        domain = mock.MagicMock()
+        domain.state.side_effect = states
+        domain.XMLDesc.return_value = (
+            "<domain><devices>"
+            "<interface type='bridge'><alias name='net0'/></interface>"
+            "<interface type='bridge'><alias name='net1'/></interface>"
+            "</devices></domain>"
+        )
+        return domain
+
+    def _fake_vm(self, domain):
+        vm = mock.MagicMock()
+        vm.domain = domain
+        return vm
+
+    def test_happy_path_clean_shutdown(self):
+        import libvirt as _libvirt
+        domain = self._fake_domain([
+            (_libvirt.VIR_DOMAIN_RUNNING, 0),
+            (_libvirt.VIR_DOMAIN_SHUTOFF, 0),
+        ])
+        stop_rsp = json.dumps({"success": True})
+        with mock.patch("kvmagent.plugins.vm_plugin.get_vm_by_uuid",
+                        return_value=self._fake_vm(domain)), \
+             mock.patch.object(self.plugin, "_replication_stop", return_value=stop_rsp):
+            body = self._load_rsp(self.plugin.zrm_recovery_prepare(
+                self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
+        self.assertTrue(body["success"])
+        domain.shutdown.assert_called_once()
+
+    def test_shutdown_timeout_falls_back_to_nic_detach(self):
+        import libvirt as _libvirt
+        running = (_libvirt.VIR_DOMAIN_RUNNING, 0)
+        # Two state() calls: pre-shutdown check + one in-loop poll before deadline fires.
+        domain = self._fake_domain([running, running])
+        stop_rsp = json.dumps({"success": True})
+        # time.time: first two calls return 0.0 (deadline setup + first loop check),
+        # all subsequent calls return 100.0 so the deadline fires regardless of how
+        # many times the implementation calls time.time() inside the loop.
+        with mock.patch("kvmagent.plugins.vm_plugin.get_vm_by_uuid",
+                        return_value=self._fake_vm(domain)), \
+             mock.patch.object(self.plugin, "_replication_stop", return_value=stop_rsp), \
+             mock.patch("time.sleep"), \
+             mock.patch("time.time", side_effect=itertools.chain([0.0, 0.0], itertools.repeat(100.0))):
+            body = self._load_rsp(self.plugin.zrm_recovery_prepare(
+                self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1",
+                                "shutdownTimeout": 2})))
+        self.assertTrue(body["success"])
+        self.assertEqual(2, domain.detachDeviceFlags.call_count)
+
+    def test_state_error_does_not_report_success(self):
+        domain = self._fake_domain([RuntimeError("libvirt connection lost")])
+        stop_rsp = json.dumps({"success": True})
+        with mock.patch("kvmagent.plugins.vm_plugin.get_vm_by_uuid",
+                        return_value=self._fake_vm(domain)), \
+             mock.patch.object(self.plugin, "_replication_stop", return_value=stop_rsp):
+            body = self._load_rsp(self.plugin.zrm_recovery_prepare(
+                self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
+        self.assertFalse(body["success"])
+        self.assertIn("vm state check failed", body["error"])
+        self.assertEqual(0, domain.shutdown.call_count)
+
+    def test_partial_nic_detach_failure_aborts(self):
+        domain = self._fake_domain([])
+        domain.detachDeviceFlags.side_effect = [None, RuntimeError("detach net1 failed")]
+        stop_rsp = json.dumps({"success": True})
+        with mock.patch("kvmagent.plugins.vm_plugin.get_vm_by_uuid",
+                        return_value=self._fake_vm(domain)), \
+             mock.patch.object(self.plugin, "_replication_stop", return_value=stop_rsp):
+            body = self._load_rsp(self.plugin.zrm_recovery_prepare(
+                self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1",
+                                "forceIsolate": True})))
+        self.assertFalse(body["success"])
+        self.assertIn("network isolation failed", body["error"])
+        self.assertIn("vNIC(s) remain", body["error"])
+
+    def test_vm_not_found_treated_as_stopped(self):
+        stop_rsp = json.dumps({"success": True})
+        with mock.patch("kvmagent.plugins.vm_plugin.get_vm_by_uuid", return_value=None), \
+             mock.patch.object(self.plugin, "_replication_stop", return_value=stop_rsp):
+            body = self._load_rsp(self.plugin.zrm_recovery_prepare(
+                self._make_req({"vmUuid": "vm-gone", "sessionUuid": "sess-1"})))
+        self.assertTrue(body["success"])
+
+    def test_replication_stop_failure_aborts(self):
+        stop_rsp = json.dumps({"success": False, "error": "QMP timeout"})
+        with mock.patch.object(self.plugin, "_replication_stop", return_value=stop_rsp):
+            body = self._load_rsp(self.plugin.zrm_recovery_prepare(
+                self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
+        self.assertFalse(body["success"])
+        self.assertIn("replication_stop failed", body["error"])
+
+    def test_stale_jobs_aborts(self):
+        stop_rsp = json.dumps({"success": True,
+                               "staleJobs": [{"device": "vda", "status": "active"}]})
+        with mock.patch.object(self.plugin, "_replication_stop", return_value=stop_rsp):
+            body = self._load_rsp(self.plugin.zrm_recovery_prepare(
+                self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
+        self.assertFalse(body["success"])
+        self.assertIn("stale mirror jobs", body["error"])
 
 
 if __name__ == '__main__':
