@@ -1365,47 +1365,50 @@ class ZrmPlugin(kvmagent.KvmAgent):
             throttle_rsp_json = self._replication_throttle(throttle_req)
             throttle_rsp = jsonobject.loads(throttle_rsp_json)
 
-            if not getattr(throttle_rsp, "success", True):
-                return jsonobject.dumps(ZrmAgentRsp(
-                    success=False,
-                    error="mirror convergence failed: %s" % (getattr(throttle_rsp, "error", "") or "")))
-
-            if not getattr(throttle_rsp, "allReady", False):
-                return jsonobject.dumps(ZrmAgentRsp(
-                    success=False,
-                    error="mirrors not ready after %ds (ready=%s total=%s)" % (
-                        wait_timeout,
-                        getattr(throttle_rsp, "readyCount", "?"),
-                        getattr(throttle_rsp, "totalJobs", "?"))))
-
-            # Step B: POST to ZR Server /zr/checkpoint/create
-            url = zr_server_url.rstrip("/") + "/zr/checkpoint/create"
-            cp_body = json.dumps({"sessionUuid": session_uuid, "checkpointUuid": checkpoint_uuid})
-            zr_rsp_raw = http.json_post(url, body=cp_body, fail_soon=True)
-            zr_rsp = jsonobject.loads(zr_rsp_raw)
-
-            if not getattr(zr_rsp, "success", False):
-                return jsonobject.dumps(ZrmAgentRsp(
-                    success=False,
-                    error="ZR Server checkpoint/create failed: %s" % (getattr(zr_rsp, "error", "") or "")))
-
-            # Step C: restore original mirror speed (best-effort, failure is non-fatal)
+            # Speed may now be 0; use try/finally so original_speed is always restored
+            # regardless of which failure path is taken below.
             try:
-                restore_req = {
-                    http.REQUEST_BODY: json.dumps({
-                        "vmUuid": vm_uuid,
-                        "speed": original_speed,
-                        "waitReadyTimeout": 0
-                    })
-                }
-                self._replication_throttle(restore_req)
-            except Exception as restore_ex:
-                logger.warn("zrm_checkpoint_create: failed to restore mirror speed for vm %s: %s" %
-                            (vm_uuid, restore_ex))
+                if not getattr(throttle_rsp, "success", True):
+                    return jsonobject.dumps(ZrmAgentRsp(
+                        success=False,
+                        error="mirror convergence failed: %s" % (getattr(throttle_rsp, "error", "") or "")))
 
-            logger.info("zrm_checkpoint_create: vm=%s session=%s checkpoint=%s success" %
-                        (vm_uuid, session_uuid, checkpoint_uuid))
-            return jsonobject.dumps(ZrmAgentRsp(checkpointUuid=checkpoint_uuid))
+                if not getattr(throttle_rsp, "allReady", False):
+                    return jsonobject.dumps(ZrmAgentRsp(
+                        success=False,
+                        error="mirrors not ready after %ds (ready=%s total=%s)" % (
+                            wait_timeout,
+                            getattr(throttle_rsp, "readyCount", "?"),
+                            getattr(throttle_rsp, "totalJobs", "?"))))
+
+                # Step B: POST to ZR Server /zr/checkpoint/create
+                url = zr_server_url.rstrip("/") + "/zr/checkpoint/create"
+                cp_body = json.dumps({"sessionUuid": session_uuid, "checkpointUuid": checkpoint_uuid})
+                zr_rsp_raw = http.json_post(url, body=cp_body, fail_soon=True)
+                zr_rsp = jsonobject.loads(zr_rsp_raw)
+
+                if not getattr(zr_rsp, "success", False):
+                    return jsonobject.dumps(ZrmAgentRsp(
+                        success=False,
+                        error="ZR Server checkpoint/create failed: %s" % (getattr(zr_rsp, "error", "") or "")))
+
+                logger.info("zrm_checkpoint_create: vm=%s session=%s checkpoint=%s success" %
+                            (vm_uuid, session_uuid, checkpoint_uuid))
+                return jsonobject.dumps(ZrmAgentRsp(checkpointUuid=checkpoint_uuid))
+            finally:
+                # Step C: restore original mirror speed (best-effort, failure is non-fatal)
+                try:
+                    restore_req = {
+                        http.REQUEST_BODY: json.dumps({
+                            "vmUuid": vm_uuid,
+                            "speed": original_speed,
+                            "waitReadyTimeout": 0
+                        })
+                    }
+                    self._replication_throttle(restore_req)
+                except Exception as restore_ex:
+                    logger.warn("zrm_checkpoint_create: failed to restore mirror speed for vm %s: %s" %
+                                (vm_uuid, restore_ex))
 
         except Exception as e:
             logger.exception("zrm_checkpoint_create failed")

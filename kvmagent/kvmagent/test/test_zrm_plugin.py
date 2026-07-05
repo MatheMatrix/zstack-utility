@@ -211,35 +211,15 @@ class TestZrmPluginGuestFsfreeze(unittest.TestCase):
         self.assertEqual("qga-fsfreeze", body.get("quiesceProvider"))
 
     def test_guest_fsfreeze_linux_thaw_success(self):
-        class FakeQga(object):
-            vm_uuid = "vm-linux-2"
-            os = "centos"
-            supported_commands = {
+        thaw_qga = type("ThawFakeQga", (), {
+            "vm_uuid": "vm-linux-2",
+            "os": "centos",
+            "supported_commands": {
                 "guest-fsfreeze-freeze": True,
                 "guest-fsfreeze-thaw": True,
                 "guest-fsfreeze-status": True,
-            }
-
-            def call_qga_command(self, command, args=None, timeout=3):
-                if command == "guest-fsfreeze-status":
-                    return "frozen"
-                if command == "guest-fsfreeze-thaw":
-                    return 2
-                if command == "guest-fsfreeze-status":
-                    return "thawed"
-                raise AssertionError("unexpected command: %s" % command)
-
-        class ThawFakeQga(FakeQga):
-            def call_qga_command(self, command, args=None, timeout=3):
-                calls = []
-                if command == "guest-fsfreeze-status":
-                    calls.append("status")
-                    return "thawed" if len(calls) > 1 else "frozen"
-                if command == "guest-fsfreeze-thaw":
-                    return 2
-                raise AssertionError("unexpected command: %s" % command)
-
-        thaw_qga = ThawFakeQga()
+            },
+        })()
         status_calls = {"count": 0}
 
         def fake_call(command, args=None, timeout=3):
