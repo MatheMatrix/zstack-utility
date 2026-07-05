@@ -534,7 +534,7 @@ def test_change_ip_rejects_family_switch_without_risk_confirmation(monkeypatch):
     ]
 
 
-def test_change_ip_allows_confirmed_family_switch_and_keeps_old_primary(monkeypatch):
+def test_change_ip_allows_confirmed_family_switch_to_ipv6_and_cleans_old_ipv4(monkeypatch):
     writes = []
     deletes = []
     shell_calls = []
@@ -583,14 +583,76 @@ def test_change_ip_allows_confirmed_family_switch_and_keeps_old_primary(monkeypa
     ))
 
     assert ('management.server.ip', new_ip) in writes
-    assert ('management.server.ip4', old_ip) in writes
-    assert deletes == ['management.server.ip6']
+    assert ('management.server.ip4', old_ip) not in writes
+    assert set(deletes) == {'management.server.ip4', 'management.server.ip6', 'consoleProxyOverriddenIpv4'}
     assert ('CloudBus.serverIp.0', new_ip) in writes
-    assert ('consoleProxyOverriddenIpv4', old_ip) in writes
+    assert ('consoleProxyOverriddenIpv4', old_ip) not in writes
     assert ('consoleProxyOverriddenIpv6', new_ip) in writes
     assert ('consoleProxyOverriddenIp', '') in writes
     assert ('DB.url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack') in writes
     assert ('db_url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack_ui') in writes
+    assert ('morph', new_ip) in shell_calls
+    assert ('license', new_ip) in shell_calls
+    assert firewall_calls == [(new_ip, new_ip, old_ip, {'3306'})]
+
+
+def test_change_ip_allows_confirmed_family_switch_to_ipv4_and_cleans_old_ipv6(monkeypatch):
+    writes = []
+    deletes = []
+    shell_calls = []
+    firewall_calls = []
+
+    old_ip = 'fd00:172:24:249::182'
+    new_ip = '172.24.249.182'
+    properties = {
+        'management.server.ip': old_ip,
+        'management.server.ip4': None,
+        'CloudBus.serverIp.0': old_ip,
+        'DB.url': 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack',
+        'consoleProxyOverriddenIp': old_ip,
+        'management.server.vip': None,
+        'management.server.vip6': None,
+    }
+
+    monkeypatch.setattr(ctl, 'check_ha', lambda: False)
+    monkeypatch.setattr(ctl.os.path, 'isfile', lambda path: True)
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: properties.get(name))
+    monkeypatch.setattr(ctl.ctl, 'read_property_list', lambda prefix: [])
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl.ctl, 'write_property', lambda key, value: writes.append((key, value)))
+    monkeypatch.setattr(ctl.ctl, 'delete_properties', deletes.extend)
+    monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda name: 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack_ui')
+    monkeypatch.setattr(ctl.ctl, 'write_ui_properties', writes.extend)
+    monkeypatch.setattr(ctl, 'shell', lambda command, *args, **kwargs: 'mn-host\n' if command == 'hostname' else shell_calls.append(command) or '')
+    monkeypatch.setattr(ctl, 'update_change_ip_firewall_rules', lambda *args: firewall_calls.append(args))
+    monkeypatch.setattr(ctl, 'info', lambda *args, **kwargs: None)
+
+    cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
+    monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
+    monkeypatch.setattr(cmd, 'checkMysqlConnection', lambda *args: None)
+    monkeypatch.setattr(cmd, 'update_morph_config', lambda ip: shell_calls.append(('morph', ip)))
+    monkeypatch.setattr(cmd, 'update_license_server_management_ip', lambda ip: shell_calls.append(('license', ip)))
+
+    cmd.run(SimpleNamespace(
+        ip=new_ip,
+        cloudbus_server_ip=None,
+        mysql_ip=None,
+        root_password=None,
+        ip4=None,
+        ip6=None,
+        allow_management_ip_family_change=True,
+        yes_i_understand_management_network_risk=True,
+    ))
+
+    assert ('management.server.ip', new_ip) in writes
+    assert ('management.server.ip6', old_ip) not in writes
+    assert set(deletes) == {'management.server.ip6', 'management.server.ip4', 'consoleProxyOverriddenIpv6'}
+    assert ('CloudBus.serverIp.0', new_ip) in writes
+    assert ('consoleProxyOverriddenIpv6', old_ip) not in writes
+    assert ('consoleProxyOverriddenIpv4', new_ip) in writes
+    assert ('consoleProxyOverriddenIp', '') in writes
+    assert ('DB.url', 'jdbc:mysql://172.24.249.182:3306/zstack') in writes
+    assert ('db_url', 'jdbc:mysql://172.24.249.182:3306/zstack_ui') in writes
     assert ('morph', new_ip) in shell_calls
     assert ('license', new_ip) in shell_calls
     assert firewall_calls == [(new_ip, new_ip, old_ip, {'3306'})]
@@ -872,6 +934,94 @@ def test_update_license_server_management_ip_skips_absent_service(monkeypatch):
     cmd.update_license_server_management_ip('172.24.249.183')
 
     assert commands == []
+
+
+def test_change_ip_primary_preserves_custom_cloudbus_and_db(monkeypatch):
+    writes = []
+    shell_calls = []
+
+    properties = {
+        'management.server.ip': '172.24.249.182',
+        'CloudBus.serverIp.0': 'localhost',
+        'DB.url': 'jdbc:mysql://172.24.249.10:3306/zstack',
+        'consoleProxyOverriddenIp': '172.24.249.182',
+        'management.server.vip': None,
+        'management.server.vip6': None,
+    }
+
+    monkeypatch.setattr(ctl, 'check_ha', lambda: False)
+    monkeypatch.setattr(ctl.os.path, 'isfile', lambda path: True)
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: properties.get(name))
+    monkeypatch.setattr(ctl.ctl, 'read_property_list', lambda prefix: [])
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl.ctl, 'write_property', lambda key, value: writes.append((key, value)))
+    monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda name: 'jdbc:mysql://172.24.249.10:3306/zstack_ui')
+    monkeypatch.setattr(ctl.ctl, 'write_ui_properties', writes.extend)
+    monkeypatch.setattr(ctl, 'shell', lambda command, *args, **kwargs: 'mn-host\n' if command == 'hostname' else shell_calls.append(command) or '')
+    monkeypatch.setattr(ctl, 'update_change_ip_firewall_rules', lambda *args: None)
+
+    cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
+    monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
+    monkeypatch.setattr(cmd, 'checkMysqlConnection', lambda *args: None)
+    monkeypatch.setattr(cmd, 'update_morph_config', lambda ip: shell_calls.append(('morph', ip)))
+    monkeypatch.setattr(cmd, 'update_license_server_management_ip', lambda ip: shell_calls.append(('license', ip)))
+
+    cmd.run(SimpleNamespace(
+        ip='172.24.249.183',
+        ip4=None,
+        ip6=None,
+        cloudbus_server_ip=None,
+        mysql_ip=None,
+        root_password=None,
+    ))
+
+    assert ('CloudBus.serverIp.0', '172.24.249.183') not in writes
+    assert ('DB.url', 'jdbc:mysql://172.24.249.183:3306/zstack') not in writes
+    assert ('db_url', 'jdbc:mysql://172.24.249.183:3306/zstack_ui') not in writes
+
+
+def test_change_ip_secondary_does_not_update_same_family_cloudbus_or_db(monkeypatch):
+    writes = []
+    shell_calls = []
+
+    properties = {
+        'management.server.ip': '172.24.249.182',
+        'management.server.ip6': 'fd00:172:24:249::181',
+        'CloudBus.serverIp.0': 'fd00:172:24:249::10',
+        'DB.url': 'jdbc:mysql://[fd00:172:24:249::10]:3306/zstack',
+        'consoleProxyOverriddenIp': '172.24.249.182',
+        'management.server.vip': None,
+        'management.server.vip6': None,
+    }
+
+    monkeypatch.setattr(ctl, 'check_ha', lambda: False)
+    monkeypatch.setattr(ctl.os.path, 'isfile', lambda path: True)
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: properties.get(name))
+    monkeypatch.setattr(ctl.ctl, 'read_property_list', lambda prefix: [])
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl.ctl, 'write_property', lambda key, value: writes.append((key, value)))
+    monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda name: 'jdbc:mysql://[fd00:172:24:249::10]:3306/zstack_ui')
+    monkeypatch.setattr(ctl.ctl, 'write_ui_properties', writes.extend)
+    monkeypatch.setattr(ctl, 'shell', lambda command, *args, **kwargs: 'mn-host\n' if command == 'hostname' else shell_calls.append(command) or '')
+    monkeypatch.setattr(ctl, 'update_change_ip_firewall_rules', lambda *args: None)
+
+    cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
+    monkeypatch.setattr(cmd, 'isVirtualIp', lambda ip: False)
+    monkeypatch.setattr(cmd, 'checkMysqlConnection', lambda *args: None)
+    monkeypatch.setattr(cmd, 'update_morph_config', lambda ip: shell_calls.append(('morph', ip)))
+
+    cmd.run(SimpleNamespace(
+        ip=None,
+        ip4=None,
+        ip6='fd00:172:24:249::182',
+        cloudbus_server_ip=None,
+        mysql_ip=None,
+        root_password=None,
+    ))
+
+    assert ('CloudBus.serverIp.0', 'fd00:172:24:249::182') not in writes
+    assert ('DB.url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack') not in writes
+    assert ('db_url', 'jdbc:mysql://[fd00:172:24:249::182]:3306/zstack_ui') not in writes
 
 
 def test_add_ip_sets_management_server_ip6_without_configuring_nic(monkeypatch):

@@ -8803,10 +8803,6 @@ class ChangeIpCmd(Command):
 
         if change.get('family_switch'):
             old_family_property = self.console_proxy_property_for_version(change['old_version'])
-            old_family_ip = ctl.read_property(old_family_property)
-            old_family_value = legacy_ip if get_ip_version(legacy_ip) == change['old_version'] else old_ip
-            if not old_family_ip and old_family_value:
-                writes.append((old_family_property, old_family_value))
             if not family_ip or family_ip == new_ip:
                 writes.append((family_property, new_ip))
             if legacy_ip == old_ip:
@@ -8825,6 +8821,8 @@ class ChangeIpCmd(Command):
         if writes:
             ctl.write_properties(writes)
             info("Update console proxy address fields %s in %s " % (writes, zstack_conf_file))
+        if change.get('family_switch'):
+            ctl.delete_properties([old_family_property])
 
     def update_hosts_for_change(self, change, zstack_conf_file):
         old_ip = change['old_ip']
@@ -8854,14 +8852,14 @@ class ChangeIpCmd(Command):
             ctl.read_property('management.server.vip'),
         )
 
-    def update_db_url_property(self, property_name, db_url, mysql_ip, change, writer, conf_file):
+    def update_db_url_property(self, property_name, db_url, mysql_ip, change, writer, conf_file, force=False):
         if not db_url:
             return False
 
         db_old_ip = extract_db_url_host(db_url)
         if db_old_ip is None or self.isVirtualIp(db_old_ip) or self.is_management_vip(db_old_ip):
             return False
-        if not self.should_follow_change(db_old_ip, change):
+        if not force and db_old_ip != change['old_ip']:
             return False
 
         db_new_url = replace_db_url_host(db_url, mysql_ip)
@@ -8877,18 +8875,20 @@ class ChangeIpCmd(Command):
         info("Update %s %s in %s " % (change['property'], new_ip, zstack_conf_file))
 
         if change.get('family_switch'):
-            ctl.write_properties([(change['old_primary_secondary_property'], old_ip)])
-            ctl.delete_properties([change['stale_secondary_property']])
-            info("Keep old primary management ip %s in %s" % (
-                old_ip, change['old_primary_secondary_property']))
+            ctl.delete_properties([
+                change['old_primary_secondary_property'],
+                change['stale_secondary_property'],
+            ])
+            info("Clean old family-scoped management ip fields %s in %s" % (
+                [change['old_primary_secondary_property'], change['stale_secondary_property']],
+                zstack_conf_file))
 
         cloudbus_ip = ctl.read_property('CloudBus.serverIp.0')
         target_cloudbus_ip = args.cloudbus_server_ip if args.cloudbus_server_ip else new_ip
         if args.cloudbus_server_ip:
             if get_ip_version(target_cloudbus_ip) != change['version']:
                 target_cloudbus_ip = None
-        elif not (self.should_follow_change(cloudbus_ip, change) or
-                  (not cloudbus_ip and change['primary']) or cloudbus_ip == old_ip):
+        elif cloudbus_ip != old_ip:
             target_cloudbus_ip = None
 
         if target_cloudbus_ip:
@@ -8902,7 +8902,8 @@ class ChangeIpCmd(Command):
             ctl.write_property(old_chrony_ips[0][0], new_ip)
             info("Update chrony server ip %s in %s " % (new_ip, zstack_conf_file))
 
-        mysql_ip = args.mysql_ip if args.mysql_ip else new_ip
+        mysql_ip_explicit = bool(args.mysql_ip)
+        mysql_ip = args.mysql_ip if mysql_ip_explicit else new_ip
         db_updated = False
         if args.mysql_ip and get_ip_version(args.mysql_ip) != change['version']:
             mysql_ip = None
@@ -8910,12 +8911,14 @@ class ChangeIpCmd(Command):
         if mysql_ip:
             db_url = ctl.read_property('DB.url')
             db_updated = self.update_db_url_property('DB.url', db_url, mysql_ip, change,
-                                                     ctl.write_properties, zstack_conf_file)
+                                                     ctl.write_properties, zstack_conf_file,
+                                                     force=mysql_ip_explicit)
 
             if os.path.isfile(ctl.ui_properties_file_path):
                 ui_db_url = ctl.read_ui_property('db_url')
                 self.update_db_url_property('db_url', ui_db_url, mysql_ip, change,
-                                            ctl.write_ui_properties, ctl.ui_properties_file_path)
+                                            ctl.write_ui_properties, ctl.ui_properties_file_path,
+                                            force=mysql_ip_explicit)
 
         if db_updated:
             self.checkMysqlConnection(mysql_ip, args.root_password)
