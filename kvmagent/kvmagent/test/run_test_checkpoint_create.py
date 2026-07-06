@@ -293,9 +293,9 @@ class TestZrmCheckpointCreate(unittest.TestCase):
         self.assertEqual(1, len(self._http_post_calls))
 
     # ----------------------------------------------------------
-    # Test 7: Speed restore failure is non-fatal
+    # Test 7: Speed restore failure is visible to caller
     # ----------------------------------------------------------
-    def test_speed_restore_failure_is_nonfatal(self):
+    def test_speed_restore_failure_returns_error(self):
         call_count = {"throttle": 0}
 
         def throttle_with_restore_failure(req):
@@ -321,9 +321,15 @@ class TestZrmCheckpointCreate(unittest.TestCase):
 
         rsp = self._load_rsp(self.plugin.zrm_checkpoint_create(req))
 
-        # Should still succeed despite restore failure
         self.assertTrue(rsp.get("success", True))
+        self.assertTrue(rsp.get("degraded"))
         self.assertEqual("cp-xyz", rsp.get("checkpointUuid"))
+        self.assertTrue(rsp.get("speedRestoreFailed"))
+        self.assertIn("checkpoint cp-xyz created successfully", rsp.get("error"))
+        self.assertIn("Checkpoint is usable", rsp.get("error"))
+        self.assertIn("retry speed throttle", rsp.get("error"))
+        self.assertIn("ACTION REQUIRED", rsp.get("error"))
+        self.assertIn("VM already stopped", rsp.get("speedRestoreError"))
         # Throttle should have been called twice (quiesce + restore attempt)
         self.assertEqual(2, call_count["throttle"])
 
