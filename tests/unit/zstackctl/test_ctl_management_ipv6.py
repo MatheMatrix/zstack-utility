@@ -922,6 +922,42 @@ def test_update_license_server_management_ip_uses_configure_patch(monkeypatch):
     ]
 
 
+def test_update_license_server_management_ip_brackets_ipv6_database_url(monkeypatch):
+    commands = []
+    patch_content = []
+    systemd_show = (
+        'LoadState=loaded\n'
+        'UnitFileState=enabled\n'
+        'ExecStart={ path=/usr/local/zstack/license-server/bin/zstack-license-server ; '
+        'argv[]=/usr/local/zstack/license-server/bin/zstack-license-server --config /etc/config.yaml ; }\n'
+    )
+
+    monkeypatch.setattr(ctl, 'shell_return_stdout_stderr', lambda command: (0, systemd_show, ''))
+    monkeypatch.setattr(ctl, 'info', lambda *args, **kwargs: None)
+
+    def fake_shell_no_pipe(command):
+        commands.append(command)
+        patch_path = command.split()[-1].strip("'")
+        with open(patch_path) as fd:
+            patch_content.append(fd.read())
+
+    monkeypatch.setattr(ctl, 'shell_no_pipe', fake_shell_no_pipe)
+
+    cmd = ctl.ChangeIpCmd.__new__(ctl.ChangeIpCmd)
+    cmd.update_license_server_management_ip('fd66:6:6:6:1:1:1:d100')
+
+    assert commands == [
+        "'/usr/local/zstack/license-server/bin/zstack-license-server' configure --file '%s'" %
+        commands[0].split()[-1].strip("'")
+    ]
+    assert patch_content == [
+        'server:\n'
+        '  management_ip: "fd66:6:6:6:1:1:1:d100"\n'
+        'database:\n'
+        '  url: "[fd66:6:6:6:1:1:1:d100]:3306"\n'
+    ]
+
+
 def test_update_license_server_management_ip_skips_absent_service(monkeypatch):
     commands = []
     systemd_show = 'LoadState=not-found\nUnitFileState=\nExecStart=\n'
