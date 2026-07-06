@@ -292,6 +292,102 @@ def test_default_ui_db_url_brackets_ipv6_host():
         'jdbc:mysql://172.24.246.95:3306'
 
 
+def test_get_default_ip_does_not_scan_loopback_without_default_route(monkeypatch):
+    commands = []
+
+    class FakeShellCmd(object):
+        def __init__(self, command):
+            self.command = command
+            self.stdout = ''
+            commands.append(command)
+
+        def __call__(self, is_exception=True):
+            return self
+
+    monkeypatch.setattr(ctl, 'ShellCmd', FakeShellCmd)
+
+    assert ctl.get_default_ip() == ''
+    assert all('addr show dev' not in command for command in commands)
+
+
+def test_get_default_ip_uses_ipv6_default_route(monkeypatch):
+    class FakeShellCmd(object):
+        def __init__(self, command):
+            self.command = command
+            self.stdout = ''
+
+        def __call__(self, is_exception=True):
+            if self.command.startswith('ip -6 route show default'):
+                self.stdout = 'ens4\n'
+            elif self.command.startswith("ip -6 addr show dev 'ens4'"):
+                self.stdout = 'fd00:5:5:28::116:84\n'
+            return self
+
+    monkeypatch.setattr(ctl, 'ShellCmd', FakeShellCmd)
+
+    assert ctl.get_default_ip() == 'fd00:5:5:28::116:84'
+
+
+def test_get_ui_address_prefers_management_ip_over_loopback_ui_address(monkeypatch):
+    monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda key: '127.0.0.1')
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda key: 'fd00:5:5:28::116:84')
+
+    assert ctl.get_ui_address() == 'fd00:5:5:28::116:84'
+
+
+def test_config_ui_init_sets_ipv6_ui_address_and_listen_host(monkeypatch):
+    properties = {}
+    writes = []
+
+    monkeypatch.setattr(ctl.os.path, 'exists', lambda path: True)
+    monkeypatch.setattr(ctl, 'check_ha', lambda: False)
+    monkeypatch.setattr(ctl, 'get_default_ip', lambda: '')
+    monkeypatch.setattr(ctl.ctl, 'extra_arguments', [], raising=False)
+    monkeypatch.setattr(ctl.ctl, 'read_property',
+                        lambda key: 'fd00:5:5:28::116:84' if key == 'management.server.ip' else '')
+    monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda key: properties.get(key, ''))
+
+    def write_ui_property(key, value):
+        properties[key] = value
+        writes.append((key, value))
+
+    monkeypatch.setattr(ctl.ctl, 'write_ui_property', write_ui_property)
+
+    cmd = ctl.ConfigUiCmd.__new__(ctl.ConfigUiCmd)
+    args = argparse.Namespace(
+        host=None,
+        init=True,
+        restore=False,
+        port=None,
+        mn_host=None,
+        mn_port=None,
+        webhook_host=None,
+        webhook_port=None,
+        server_port=None,
+        log=None,
+        enable_ssl=None,
+        ssl_keyalias=None,
+        ssl_keystore=None,
+        ssl_keystore_type=None,
+        ssl_keystore_password=None,
+        enable_http2=None,
+        db_url=None,
+        db_username=None,
+        db_password=None,
+        redis_password=None,
+        api_inspector=None,
+        ui_address=None,
+        listen_host=None,
+        catalina_opts=None,
+    )
+
+    cmd.run(args)
+
+    assert ('ui_address', 'fd00:5:5:28::116:84') in writes
+    assert (ctl.UI_LISTEN_HOST_PROPERTY, '::') in writes
+    assert ('db_url', 'jdbc:mysql://[fd00:5:5:28::116:84]:3306') in writes
+
+
 def test_ui_webhook_urls_bracket_ipv6_vip():
     assert ctl.build_ui_webhook_urls('fd00:5:5:28::54:cccc', '5000') == (
         'http://[fd00:5:5:28::54:cccc]:5000/webhook/ticket',
