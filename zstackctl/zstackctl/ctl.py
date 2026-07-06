@@ -11197,13 +11197,13 @@ class VDIUiStatusCmd(Command):
                 if check_pid_cmd.return_code == 0:
                     default_ip = get_default_ip()
                     if not default_ip:
-                        info('VDI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, default_ip,port))
+                        info('VDI status: %s [PID:%s]' % (colored('Running', 'green'), pid))
                     else:
                         if os.path.exists(portfile):
                             with open(portfile, 'r') as fd2:
                                 port = fd2.readline()
                                 port = port.strip()
-                        info('VDI UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, default_ip,port))
+                        info('VDI UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, format_url_host(default_ip),port))
                     return
 
         pid = find_process_by_cmdline('zstack-vdi')
@@ -11593,7 +11593,7 @@ class StartDashboardCmd(Command):
                     if not default_ip:
                         info('UI server is still running[PID:%s]' % pid)
                     else:
-                        info('UI server is still running[PID:%s], http://%s:%s' % (pid, default_ip, port))
+                        info('UI server is still running[PID:%s], http://%s:%s' % (pid, format_url_host(default_ip), port))
 
                     return False
 
@@ -11670,7 +11670,7 @@ class StartDashboardCmd(Command):
         if not default_ip:
             info('successfully started UI server on the local host, PID[%s]' % pid)
         else:
-            info('successfully started UI server on the local host, PID[%s], http://%s:%s' % (pid, default_ip, args.port))
+            info('successfully started UI server on the local host, PID[%s], http://%s:%s' % (pid, format_url_host(default_ip), args.port))
 
         os.system('mkdir -p /var/run/zstack/')
         with open('/var/run/zstack/zstack-dashboard.port', 'w') as fd:
@@ -11808,7 +11808,7 @@ class StartUiCmd(Command):
                 info('UI status: %s ' % (colored('Running', 'green')))
             else:
                 info('UI status: %s  //%s:%s' % (
-                    colored('Running', 'green'), default_ip, "5000"))
+                    colored('Running', 'green'), format_url_host(default_ip), "5000"))
 
                 return False
         return True
@@ -12062,7 +12062,7 @@ class StartUiCmd(Command):
         default_ip = get_default_ip()
         mini_pid = get_ui_pid('mini')
         mini_port = 8200
-        ui_addr = ", http://{}:{}".format(default_ip, mini_port) if default_ip else ""
+        ui_addr = ", http://{}:{}".format(format_url_host(default_ip), mini_port) if default_ip else ""
         info('successfully started MINI UI server on the local host, PID[{}]{}'.format(mini_pid, ui_addr))
 
 
@@ -12399,7 +12399,7 @@ class StartVDIUICmd(Command):
                     if not default_ip:
                         info('VDI UI is still running[PID:%s]' % pid)
                     else:
-                        info('VDI UI is still running[PID:%s], http://%s:%s' % (pid, default_ip, VDI_UI_PORT))
+                        info('VDI UI is still running[PID:%s], http://%s:%s' % (pid, format_url_host(default_ip), VDI_UI_PORT))
                     return False
 
         pid = find_process_by_cmdline('zstack-vdi')
@@ -12453,7 +12453,7 @@ class StartVDIUICmd(Command):
         if not default_ip:
             info('successfully started VDI UI server on the local host, PID[%s]' % pid)
         else:
-            info('successfully started VDI UI server on the local host, PID[%s], http://%s:%s' % (pid, default_ip, args.server_port))
+            info('successfully started VDI UI server on the local host, PID[%s], http://%s:%s' % (pid, format_url_host(default_ip), args.server_port))
 
         os.system('mkdir -p /var/run/zstack/')
         with open('/var/run/zstack/zstack-vdi.port', 'w') as fd:
@@ -13253,7 +13253,7 @@ class LicenseServerService(ExtraService):
         scheme = "https"
         if self.ready_url and self.ready_url.startswith("http://"):
             scheme = "http"
-        info("License Server service has been started. Access it at: %s://%s:%s" % (scheme, get_default_ip(), self.default_port))
+        info("License Server service has been started. Access it at: %s://%s:%s" % (scheme, format_url_host(get_default_ip()), self.default_port))
 
     def _wait_for_license_server(self, urls, timeout=120):
         info_and_debug("Waiting for %s to become available at: %s" % (self.service_name(), ", ".join(urls)))

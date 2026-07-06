@@ -335,6 +335,21 @@ def test_get_ui_address_prefers_management_ip_over_loopback_ui_address(monkeypat
     assert ctl.get_ui_address() == 'fd00:5:5:28::116:84'
 
 
+def test_license_server_post_start_log_brackets_ipv6_default_ip(monkeypatch):
+    logs = []
+    service = ctl.LicenseServerService.__new__(ctl.LicenseServerService)
+    service.ready_url = None
+
+    monkeypatch.setattr(ctl, 'get_default_ip', lambda: 'fd00:5:5:28::116:84')
+    monkeypatch.setattr(ctl, 'info', lambda message: logs.append(message))
+
+    service.post_start_log()
+
+    assert logs == [
+        'License Server service has been started. Access it at: https://[fd00:5:5:28::116:84]:8201'
+    ]
+
+
 def test_config_ui_init_sets_ipv6_ui_address_and_listen_host(monkeypatch):
     properties = {}
     writes = []
