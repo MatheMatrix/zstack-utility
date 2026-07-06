@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import time
 
 
 try:
@@ -287,12 +288,15 @@ class SourceCapability(object):
 
 class SourceSpec(object):
     def __init__(self, source_type='preparedPath', path=None, source_uuid=None,
-                 allowed_roots=None, required_capacity_bytes=None):
+                 allowed_roots=None, required_capacity_bytes=None,
+                 remote_source_path=None, remote_allowed_roots=None):
         self.source_type = source_type or 'preparedPath'
         self.path = path
         self.source_uuid = source_uuid
         self.allowed_roots = allowed_roots
         self.required_capacity_bytes = required_capacity_bytes
+        self.remote_source_path = remote_source_path
+        self.remote_allowed_roots = remote_allowed_roots
 
     @staticmethod
     def from_raw(raw):
@@ -304,8 +308,13 @@ class SourceSpec(object):
         source_uuid = get_attr(raw, 'sourceUuid', get_attr(raw, 'uuid'))
         required_capacity = _parse_required_capacity(
             get_attr(raw, 'requiredCapacityBytes', get_attr(raw, 'requiredBytes')))
+        remote_source_path = get_attr(raw, 'remoteSourcePath')
+        remote_allowed_roots = source_roots_from_raw({
+            'sourceRootPath': get_attr(raw, 'remoteSourceRootPath')
+        }, include_vm_view=False) if get_attr(raw, 'remoteSourceRootPath') else None
         allowed_roots = source_roots_from_raw(raw) if has_source_root_fields(raw) else None
-        return SourceSpec(source_type, path, source_uuid, allowed_roots, required_capacity)
+        return SourceSpec(source_type, path, source_uuid, allowed_roots, required_capacity,
+                          remote_source_path, remote_allowed_roots)
 
     @staticmethod
     def from_command(cmd):
@@ -318,6 +327,10 @@ class SourceSpec(object):
             get_attr(cmd, 'sourceUuid'),
             source_roots_from_raw(cmd) if has_source_root_fields(cmd) else None,
             _parse_required_capacity(get_attr(cmd, 'requiredCapacityBytes', get_attr(cmd, 'requiredBytes'))),
+            get_attr(cmd, 'remoteSourcePath'),
+            source_roots_from_raw({
+                'sourceRootPath': get_attr(cmd, 'remoteSourceRootPath')
+            }, include_vm_view=False) if get_attr(cmd, 'remoteSourceRootPath') else None,
         )
 
 
@@ -348,12 +361,16 @@ class PreparedPathSourceProvider(object):
     def prepare(self, spec):
         if not spec.path:
             raise Exception('sourcePath is required')
+        allowed_roots = spec.allowed_roots or self.allowed_roots
+        if spec.remote_source_path:
+            prepare_copy_source(spec.path, allowed_roots, spec.remote_source_path,
+                                spec.remote_allowed_roots or self.allowed_roots,
+                                spec.required_capacity_bytes)
         if not os.path.exists(spec.path):
             raise Exception('sourcePath[%s] does not exist' % spec.path)
         if not os.path.isdir(spec.path):
             raise Exception('sourcePath[%s] is not a directory' % spec.path)
 
-        allowed_roots = spec.allowed_roots or self.allowed_roots
         path = ensure_under_any(spec.path, allowed_roots, 'sourcePath', allow_root=False)
         check_available_capacity(path, spec.required_capacity_bytes)
         source_uuid = _safe_id(spec.source_uuid, None) if spec.source_uuid else _path_id(path)
@@ -364,6 +381,42 @@ class PreparedPathSourceProvider(object):
             shared_across_hosts=False,
         )
         return HostSource(source_uuid, spec.source_type, path, capability)
+
+
+def prepare_copy_source(target_path, target_roots, remote_source_path, remote_roots, required_capacity_bytes=None):
+    target = ensure_under_any(target_path, target_roots, 'sourcePath', allow_root=False)
+    if os.path.exists(target):
+        if not os.path.isdir(target):
+            raise Exception('sourcePath[%s] exists but is not a directory' % target_path)
+        return target
+
+    remote = ensure_under_any(remote_source_path, remote_roots, 'remoteSourcePath', allow_root=False)
+    if not os.path.exists(remote):
+        raise Exception('remoteSourcePath[%s] does not exist' % remote_source_path)
+    if not os.path.isdir(remote):
+        raise Exception('remoteSourcePath[%s] is not a directory' % remote_source_path)
+
+    parent = os.path.dirname(target)
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, 0o755)
+    check_available_capacity(parent, required_capacity_bytes)
+
+    tmp = '%s.tmp.%s.%s' % (target, os.getpid(), int(time.time() * 1000))
+    if os.path.exists(tmp):
+        shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        shutil.copytree(remote, tmp, symlinks=True)
+        try:
+            os.rename(tmp, target)
+        except OSError:
+            if os.path.exists(target) and os.path.isdir(target):
+                shutil.rmtree(tmp, ignore_errors=True)
+                return target
+            raise
+    except Exception:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return target
 
 
 class SourceRegistry(object):
