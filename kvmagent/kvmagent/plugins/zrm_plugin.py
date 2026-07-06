@@ -572,20 +572,28 @@ class ZrmPlugin(kvmagent.KvmAgent):
         effective_timeout = timeout_seconds if (timeout_seconds and timeout_seconds > 0) else _DEFAULT_MAX_WAIT_TIMEOUT
         deadline = time.time() + effective_timeout
         last_log_ts = 0.0
+        query_retry_count = 0
+        query_failure_start_ts = None
         while True:
             jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
             if query_error:
                 now = time.time()
+                query_retry_count += 1
+                if query_failure_start_ts is None:
+                    query_failure_start_ts = now
                 if now >= deadline:
                     err = "initial full sync observation failed for vm=%s: query-block-jobs error=%s" % (
                         vm_uuid, query_error)
                     logger.warn("ZRM initial full sync wait: %s" % err)
+                    total_query_failure_duration = now - query_failure_start_ts if query_failure_start_ts is not None else 0
                     return ZrmAgentRsp(
                         success=False,
                         error=err,
                         queryBlockJobsFailed=True,
                         queryBlockJobsError=query_error,
                         queryBlockJobsRetriable=True,
+                        queryRetryCount=query_retry_count,
+                        totalQueryFailureDuration=total_query_failure_duration,
                         readyJobCount=0,
                         runningJobCount=0,
                         concludedJobCount=0,
@@ -599,6 +607,8 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     last_log_ts = now
                 time.sleep(1.0)
                 continue
+            query_retry_count = 0
+            query_failure_start_ts = None
             not_ready = []
             missing = []
             ready_count = 0
@@ -959,7 +969,13 @@ class ZrmPlugin(kvmagent.KvmAgent):
             vm_uuid = (getattr(cmd, "vmUuid", None) or "").strip()
             if not vm_uuid:
                 return jsonobject.dumps(ZrmAgentRsp(success=False, error="vmUuid required"))
-            zrm_jobs = self._get_zrm_block_jobs(vm_uuid)
+            zrm_jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
+            if query_error:
+                return jsonobject.dumps(ZrmAgentRsp(
+                    success=False,
+                    error="query-block-jobs failed: %s" % query_error,
+                    queryBlockJobsFailed=True,
+                    queryBlockJobsError=query_error))
             cancelled_devices = []
             cancel_failed_jobs = []
             for device in zrm_jobs:
@@ -972,11 +988,17 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     cancel_failed_jobs.append({"device": device, "error": err_msg})
                     logger.warn("ZRM replication stop: cancel failed for %s: %s" % (device, err_msg))
             # Wait for cancelled jobs to disappear or reach concluded state, then dismiss.
+            # block_job_cancel suppresses QMP command errors, so the post-cancel
+            # query is the authoritative proof that recovery can safely continue.
             stale_jobs = []
             if cancelled_devices:
+                post_cancel_query_error = None
                 _stop_deadline = time.time() + 10
                 while time.time() < _stop_deadline:
-                    remaining = self._get_zrm_block_jobs(vm_uuid)
+                    remaining, query_error = self._query_zrm_block_jobs(vm_uuid)
+                    if query_error:
+                        post_cancel_query_error = query_error
+                        break
                     still_active = [d for d in cancelled_devices if d in remaining
                                     and (remaining[d].get("status") or "").lower() not in ("concluded", "null")]
                     # Dismiss any concluded jobs immediately.
@@ -990,8 +1012,22 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     if not still_active:
                         break
                     time.sleep(0.5)
+                if post_cancel_query_error:
+                    return jsonobject.dumps(ZrmAgentRsp(
+                        success=False,
+                        error="query-block-jobs failed after cancel: %s" % post_cancel_query_error,
+                        queryBlockJobsFailed=True,
+                        queryBlockJobsError=post_cancel_query_error,
+                        cancelRequestedDevices=cancelled_devices))
                 # Detect stale jobs that survived the cancel deadline.
-                remaining = self._get_zrm_block_jobs(vm_uuid)
+                remaining, query_error = self._query_zrm_block_jobs(vm_uuid)
+                if query_error:
+                    return jsonobject.dumps(ZrmAgentRsp(
+                        success=False,
+                        error="query-block-jobs failed after cancel: %s" % query_error,
+                        queryBlockJobsFailed=True,
+                        queryBlockJobsError=query_error,
+                        cancelRequestedDevices=cancelled_devices))
                 for d in cancelled_devices:
                     if d in remaining:
                         st = (remaining[d].get("status") or "unknown").lower()
@@ -1361,7 +1397,6 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     success=False,
                     error="vmUuid, sessionUuid, checkpointUuid, zrServerUrl are all required"))
 
-            # Step A: speed=0 (quiesce) + wait allReady via _replication_throttle
             throttle_req = {
                 http.REQUEST_BODY: json.dumps({
                     "vmUuid": vm_uuid,
@@ -1369,41 +1404,48 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     "waitReadyTimeout": wait_timeout
                 })
             }
-            throttle_rsp_json = self._replication_throttle(throttle_req)
-            throttle_rsp = jsonobject.loads(throttle_rsp_json)
+            result = None
+            checkpoint_created = False
+            restore_error = None
+            restore_failures = None
 
-            # Speed may now be 0; use try/finally so original_speed is always restored
-            # regardless of which failure path is taken below.
             try:
-                if not getattr(throttle_rsp, "success", True):
-                    return jsonobject.dumps(ZrmAgentRsp(
-                        success=False,
-                        error="mirror convergence failed: %s" % (getattr(throttle_rsp, "error", "") or "")))
+                throttle_rsp_json = self._replication_throttle(throttle_req)
+                throttle_rsp = jsonobject.loads(throttle_rsp_json)
 
-                if not getattr(throttle_rsp, "allReady", False):
-                    return jsonobject.dumps(ZrmAgentRsp(
+                if not getattr(throttle_rsp, "success", True):
+                    result = ZrmAgentRsp(
+                        success=False,
+                        error="mirror convergence failed: %s" % (getattr(throttle_rsp, "error", "") or ""))
+
+                elif not getattr(throttle_rsp, "allReady", False):
+                    result = ZrmAgentRsp(
                         success=False,
                         error="mirrors not ready after %ds (ready=%s total=%s)" % (
                             wait_timeout,
                             getattr(throttle_rsp, "readyCount", "?"),
-                            getattr(throttle_rsp, "totalJobs", "?"))))
+                            getattr(throttle_rsp, "totalJobs", "?")))
+                else:
+                    # Step B: POST to ZR Server /zr/checkpoint/create
+                    url = zr_server_url.rstrip("/") + "/zr/checkpoint/create"
+                    cp_body = json.dumps({"sessionUuid": session_uuid, "checkpointUuid": checkpoint_uuid})
+                    zr_rsp_raw = http.json_post(url, body=cp_body, fail_soon=True)
+                    zr_rsp = jsonobject.loads(zr_rsp_raw)
 
-                # Step B: POST to ZR Server /zr/checkpoint/create
-                url = zr_server_url.rstrip("/") + "/zr/checkpoint/create"
-                cp_body = json.dumps({"sessionUuid": session_uuid, "checkpointUuid": checkpoint_uuid})
-                zr_rsp_raw = http.json_post(url, body=cp_body, fail_soon=True)
-                zr_rsp = jsonobject.loads(zr_rsp_raw)
-
-                if not getattr(zr_rsp, "success", False):
-                    return jsonobject.dumps(ZrmAgentRsp(
-                        success=False,
-                        error="ZR Server checkpoint/create failed: %s" % (getattr(zr_rsp, "error", "") or "")))
-
-                logger.info("zrm_checkpoint_create: vm=%s session=%s checkpoint=%s success" %
-                            (vm_uuid, session_uuid, checkpoint_uuid))
-                return jsonobject.dumps(ZrmAgentRsp(checkpointUuid=checkpoint_uuid))
+                    if not getattr(zr_rsp, "success", False):
+                        result = ZrmAgentRsp(
+                            success=False,
+                            error="ZR Server checkpoint/create failed: %s" % (getattr(zr_rsp, "error", "") or ""))
+                    else:
+                        checkpoint_created = True
+                        logger.info("zrm_checkpoint_create: vm=%s session=%s checkpoint=%s success" %
+                                    (vm_uuid, session_uuid, checkpoint_uuid))
+                        result = ZrmAgentRsp(checkpointUuid=checkpoint_uuid)
+            except Exception as op_ex:
+                logger.exception("zrm_checkpoint_create operation failed")
+                result = ZrmAgentRsp(success=False, error=str(op_ex))
             finally:
-                # Step C: restore original mirror speed (best-effort, failure is non-fatal)
+                # Step C: restore original mirror speed; report failures to the caller.
                 try:
                     restore_req = {
                         http.REQUEST_BODY: json.dumps({
@@ -1412,10 +1454,58 @@ class ZrmPlugin(kvmagent.KvmAgent):
                             "waitReadyTimeout": 0
                         })
                     }
-                    self._replication_throttle(restore_req)
+                    restore_rsp_json = self._replication_throttle(restore_req)
+                    try:
+                        restore_body = json.loads(restore_rsp_json)
+                    except Exception as parse_ex:
+                        restore_body = None
+                        restore_error = "unable to parse mirror speed restoration response: %s" % parse_ex
+                    if restore_body is not None and not isinstance(restore_body, dict):
+                        restore_error = "unexpected mirror speed restoration response: %s" % restore_body
+                    elif restore_body is not None and not restore_body.get("success", True):
+                        restore_error = restore_body.get("error") or "unknown mirror speed restoration failure"
+                        restore_failures = restore_body.get("speedSetFailures")
                 except Exception as restore_ex:
-                    logger.warn("zrm_checkpoint_create: failed to restore mirror speed for vm %s: %s" %
-                                (vm_uuid, restore_ex))
+                    restore_error = str(restore_ex)
+                if restore_error:
+                    if checkpoint_created:
+                        logger.error("zrm_checkpoint_create: failed to restore mirror speed for vm %s: %s "
+                                     "(checkpoint %s created)" % (vm_uuid, restore_error, checkpoint_uuid))
+                    else:
+                        logger.warn("zrm_checkpoint_create: failed to restore mirror speed for vm %s: %s" %
+                                    (vm_uuid, restore_error))
+
+            if restore_error:
+                original_error = getattr(result, "error", None) if result is not None else None
+                error_msg = "mirror speed restoration failed: %s" % restore_error
+                if checkpoint_created:
+                    error_msg = (
+                        "checkpoint %s created successfully but mirror speed restoration failed: %s. "
+                        "Checkpoint is usable. ACTION REQUIRED: retry speed throttle to restore replication rate." % (
+                            checkpoint_uuid, restore_error))
+                elif original_error:
+                    error_msg = error_msg + "; original checkpoint error: " + original_error
+                rsp = ZrmAgentRsp(
+                    success=(True if checkpoint_created else False),
+                    error=error_msg,
+                    checkpointUuid=checkpoint_uuid,
+                    degraded=(True if checkpoint_created else False),
+                    speedRestoreFailed=True,
+                    speedRestoreError=restore_error)
+                if restore_failures is not None:
+                    rsp.speedRestoreFailures = restore_failures
+                if original_error:
+                    rsp.checkpointError = original_error
+                return jsonobject.dumps(rsp)
+
+            if result is None:
+                logger.error(
+                    "zrm_checkpoint_create: unexpected nil result for vm %s session %s checkpoint %s "
+                    "(checkpoint_created=%s, restore_error=%s, restore_failures=%s)" % (
+                        vm_uuid, session_uuid, checkpoint_uuid,
+                        checkpoint_created, restore_error, restore_failures))
+                result = ZrmAgentRsp(success=False, error="checkpoint operation did not produce response")
+            return jsonobject.dumps(result)
 
         except Exception as e:
             logger.exception("zrm_checkpoint_create failed")
@@ -1534,8 +1624,15 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 stale_jobs = getattr(stop_rsp, "staleJobs", None)
                 if not stop_success:
                     err = getattr(stop_rsp, "error", "unknown error")
-                    return jsonobject.dumps(ZrmAgentRsp(success=False,
-                        error="replication_stop failed: %s" % err))
+                    rsp = ZrmAgentRsp(success=False,
+                        error="replication_stop failed: %s" % err)
+                    if getattr(stop_rsp, "queryBlockJobsFailed", False):
+                        rsp.queryBlockJobsFailed = True
+                        rsp.queryBlockJobsError = getattr(stop_rsp, "queryBlockJobsError", None)
+                        cancel_requested_devices = getattr(stop_rsp, "cancelRequestedDevices", None)
+                        if cancel_requested_devices is not None:
+                            rsp.cancelRequestedDevices = cancel_requested_devices
+                    return jsonobject.dumps(rsp)
                 if stale_jobs:
                     return jsonobject.dumps(ZrmAgentRsp(success=False,
                         error="replication_stop: stale mirror jobs remain: %s" % stale_jobs))
@@ -1802,18 +1899,42 @@ class ZrmPlugin(kvmagent.KvmAgent):
             #   API >0 (throttle)  → QEMU N (that exact value)
             qemu_speed = 0 if speed <= 0 else speed
 
-            all_jobs = self._get_zrm_block_jobs(vm_uuid)
+            all_jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
+            if query_error:
+                return jsonobject.dumps(ZrmAgentRsp(
+                    success=False,
+                    error="query-block-jobs failed: %s" % query_error,
+                    queryBlockJobsFailed=True,
+                    queryBlockJobsError=query_error))
             # Filter out concluded/completed jobs -- QEMU rejects set-speed on them
             zrm_jobs = {d: j for d, j in all_jobs.items()
                         if (j.get("status") or "").lower() not in ("concluded", "null")}
             total_jobs = len(zrm_jobs)
 
             # Set speed on active mirror jobs only
+            speed_set_failures = []
+            speed_set_devices = []
             for device in zrm_jobs:
                 try:
                     qmp.block_job_set_speed(vm_uuid, device, qemu_speed)
+                    speed_set_devices.append(device)
                 except Exception as ex:
-                    logger.warn("ZRM throttle: set-speed failed for %s on vm %s: %s" % (device, vm_uuid, ex))
+                    err = str(ex)
+                    speed_set_failures.append({"device": device, "error": err})
+                    logger.warn("ZRM throttle: set-speed failed for %s on vm %s: %s" % (device, vm_uuid, err))
+
+            if speed_set_failures:
+                rsp = ZrmAgentRsp(
+                    success=False,
+                    error="failed to set speed for ZRM mirror jobs: %s" % (
+                        "; ".join(["%s: %s" % (f["device"], f["error"]) for f in speed_set_failures])),
+                    speedSetFailed=True,
+                    speedSetFailures=speed_set_failures,
+                    speedSetDevices=speed_set_devices)
+                rsp.readyCount = 0
+                rsp.runningCount = total_jobs
+                rsp.totalJobs = total_jobs
+                return jsonobject.dumps(rsp)
 
             if total_jobs == 0:
                 rsp = ZrmAgentRsp()
@@ -1828,7 +1949,15 @@ class ZrmPlugin(kvmagent.KvmAgent):
             if speed == 0 and wait_timeout > 0:
                 deadline = time.time() + wait_timeout
                 while time.time() < deadline:
-                    zrm_jobs = self._get_zrm_block_jobs(vm_uuid)
+                    zrm_jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
+                    if query_error:
+                        return jsonobject.dumps(ZrmAgentRsp(
+                            success=False,
+                            error="query-block-jobs failed: %s" % query_error,
+                            queryBlockJobsFailed=True,
+                            queryBlockJobsError=query_error,
+                            speedSetDevices=speed_set_devices,
+                            totalJobs=total_jobs))
                     ready_count = 0
                     running_count = 0
                     for device, job in zrm_jobs.items():
@@ -1849,7 +1978,15 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     time.sleep(0.5)
 
             # Final state snapshot
-            zrm_jobs = self._get_zrm_block_jobs(vm_uuid)
+            zrm_jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
+            if query_error:
+                return jsonobject.dumps(ZrmAgentRsp(
+                    success=False,
+                    error="query-block-jobs failed: %s" % query_error,
+                    queryBlockJobsFailed=True,
+                    queryBlockJobsError=query_error,
+                    speedSetDevices=speed_set_devices,
+                    totalJobs=total_jobs))
             ready_count = 0
             running_count = 0
             for device, job in zrm_jobs.items():

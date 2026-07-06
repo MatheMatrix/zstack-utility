@@ -49,14 +49,14 @@ class TestZrmPluginWaitInitial(unittest.TestCase):
         self.assertEqual("no volumeUuids specified for initial full sync wait", rsp_dict.get("error"))
 
     def test_wait_initial_all_ready_returns_progress_fields(self):
-        self.plugin._get_zrm_block_jobs = lambda vm_uuid: {
+        self.plugin._query_zrm_block_jobs = lambda vm_uuid: ({
             "zrm-mirror-volready": {
                 "status": "ready",
                 "ready": True,
                 "offset": 128,
                 "len": 256
             }
-        }
+        }, None)
         req = self._make_req({
             "vmUuid": "vm-1",
             "volumeUuids": ["volready-uuid"],
@@ -77,14 +77,14 @@ class TestZrmPluginWaitInitial(unittest.TestCase):
         self.assertEqual(1, rsp_dict.get("readyJobCount"))
 
     def test_wait_initial_timeout_returns_failure_response(self):
-        self.plugin._get_zrm_block_jobs = lambda vm_uuid: {
+        self.plugin._query_zrm_block_jobs = lambda vm_uuid: ({
             "zrm-mirror-voltimeo": {
                 "status": "running",
                 "ready": False,
                 "offset": 64,
                 "len": 256
             }
-        }
+        }, None)
         time_points = [100.0, 101.5]
 
         def fake_time():
@@ -110,9 +110,33 @@ class TestZrmPluginWaitInitial(unittest.TestCase):
         self.assertEqual([], list(rsp.missing))
         self.assertEqual(False, rsp_dict.get("success"))
 
+    def test_wait_initial_query_failure_reports_retry_metrics(self):
+        self.plugin._query_zrm_block_jobs = lambda vm_uuid: ({}, "query-block-jobs timeout")
+        time_points = [100.0, 100.0, 101.1]
+
+        def fake_time():
+            return time_points.pop(0) if time_points else 101.1
+
+        zrm_plugin.time.time = fake_time
+        zrm_plugin.time.sleep = lambda seconds: None
+
+        rsp_json = self.plugin._replication_wait_initial(self._make_req({
+            "vmUuid": "vm-1",
+            "volumeUuids": ["volquery-uuid"],
+            "timeoutSeconds": 1
+        }))
+
+        rsp, rsp_dict = self._load_rsp(rsp_json)
+        self.assertFalse(rsp.success)
+        self.assertTrue(rsp.queryBlockJobsFailed)
+        self.assertEqual("query-block-jobs timeout", rsp.queryBlockJobsError)
+        self.assertEqual(2, rsp.queryRetryCount)
+        self.assertAlmostEqual(1.1, rsp.totalQueryFailureDuration)
+        self.assertEqual(2, rsp_dict.get("queryRetryCount"))
+
     def test_wait_initial_concluded_returns_failure_and_dismisses_job(self):
         dismiss_calls = []
-        self.plugin._get_zrm_block_jobs = lambda vm_uuid: {
+        self.plugin._query_zrm_block_jobs = lambda vm_uuid: ({
             "zrm-mirror-volconcl": {
                 "status": "concluded",
                 "ready": False,
@@ -120,7 +144,7 @@ class TestZrmPluginWaitInitial(unittest.TestCase):
                 "len": 512,
                 "error": "Input/output error"
             }
-        }
+        }, None)
 
         def fake_execute_qmp_command(vm_uuid, command, raise_exception=False, id=None):
             dismiss_calls.append({
@@ -420,14 +444,172 @@ class TestZrmPluginCheckpointCreate(unittest.TestCase):
         self.assertIn("QMP connection lost", body.get("error"))
         self.assertEqual(0, len(self.json_post_calls))
 
+    def test_speed_restore_failure_returns_visible_error(self):
+        throttle_calls = []
+
+        def fake_throttle(req):
+            throttle_calls.append(json.loads(req[http.REQUEST_BODY]))
+            if throttle_calls[-1]["speed"] == 0:
+                return json.dumps({
+                    "success": True,
+                    "allReady": True,
+                    "readyCount": 1,
+                    "runningCount": 0,
+                    "totalJobs": 1
+                })
+            return json.dumps({
+                "success": False,
+                "error": "failed to set speed for ZRM mirror jobs: zrm-mirror-vol1: QMP connection lost",
+                "speedSetFailed": True,
+                "speedSetFailures": [{
+                    "device": "zrm-mirror-vol1",
+                    "error": "QMP connection lost"
+                }]
+            })
+
+        self.plugin._replication_throttle = fake_throttle
+        self._mock_json_post({"success": True})
+
+        rsp_json = self.plugin.zrm_checkpoint_create(self._make_req({
+            "vmUuid": "vm-1",
+            "sessionUuid": "sess-1",
+            "checkpointUuid": "cp-restore-failed",
+            "zrServerUrl": "http://10.0.0.1:6800",
+            "originalSpeed": 1048576
+        }))
+
+        rsp, body = self._load_rsp(rsp_json)
+        self.assertTrue(body.get("success"))
+        self.assertTrue(body.get("degraded"))
+        self.assertEqual("cp-restore-failed", body.get("checkpointUuid"))
+        self.assertTrue(body.get("speedRestoreFailed"))
+        self.assertIn("checkpoint cp-restore-failed created successfully", body.get("error"))
+        self.assertIn("Checkpoint is usable", body.get("error"))
+        self.assertIn("retry speed throttle", body.get("error"))
+        self.assertIn("ACTION REQUIRED", body.get("error"))
+        self.assertEqual([{
+            "device": "zrm-mirror-vol1",
+            "error": "QMP connection lost"
+        }], body.get("speedRestoreFailures"))
+        self.assertEqual(2, len(throttle_calls))
+
+
+class TestZrmPluginReplicationThrottle(unittest.TestCase):
+    def setUp(self):
+        self.plugin = object.__new__(zrm_plugin.ZrmPlugin)
+        self._orig_query_block_jobs_by_device = zrm_plugin.qmp.query_block_jobs_by_device
+        self._orig_block_job_set_speed = zrm_plugin.qmp.block_job_set_speed
+
+    def tearDown(self):
+        zrm_plugin.qmp.query_block_jobs_by_device = self._orig_query_block_jobs_by_device
+        zrm_plugin.qmp.block_job_set_speed = self._orig_block_job_set_speed
+
+    def _make_req(self, body_dict):
+        return {http.REQUEST_BODY: json.dumps(body_dict)}
+
+    def _load_rsp(self, rsp_json):
+        return json.loads(rsp_json)
+
+    def test_set_speed_failure_returns_error_details(self):
+        zrm_plugin.qmp.query_block_jobs_by_device = lambda vm_uuid: {
+            "zrm-mirror-vol1": {"status": "running"}
+        }
+
+        def fake_block_job_set_speed(vm_uuid, device, speed):
+            raise RuntimeError("QMP connection lost")
+
+        zrm_plugin.qmp.block_job_set_speed = fake_block_job_set_speed
+
+        body = self._load_rsp(self.plugin._replication_throttle(
+            self._make_req({"vmUuid": "vm-1", "speed": 1048576, "waitReadyTimeout": 0})))
+
+        self.assertFalse(body["success"])
+        self.assertTrue(body["speedSetFailed"])
+        self.assertIn("failed to set speed", body["error"])
+        self.assertEqual([{
+            "device": "zrm-mirror-vol1",
+            "error": "QMP connection lost"
+        }], body["speedSetFailures"])
+        self.assertEqual(1, body["totalJobs"])
+
+    def test_partial_speed_set_failure_returns_failed_subset(self):
+        zrm_plugin.qmp.query_block_jobs_by_device = lambda vm_uuid: {
+            "zrm-mirror-vol1": {"status": "running"},
+            "zrm-mirror-vol2": {"status": "running"},
+            "zrm-mirror-vol3": {"status": "running"}
+        }
+
+        def fake_block_job_set_speed(vm_uuid, device, speed):
+            if device == "zrm-mirror-vol2":
+                raise RuntimeError("vol2 NBD server unreachable")
+
+        zrm_plugin.qmp.block_job_set_speed = fake_block_job_set_speed
+
+        body = self._load_rsp(self.plugin._replication_throttle(
+            self._make_req({"vmUuid": "vm-1", "speed": 1048576, "waitReadyTimeout": 0})))
+
+        self.assertFalse(body["success"])
+        self.assertTrue(body["speedSetFailed"])
+        self.assertIn("zrm-mirror-vol2", body["error"])
+        self.assertEqual([{
+            "device": "zrm-mirror-vol2",
+            "error": "vol2 NBD server unreachable"
+        }], body["speedSetFailures"])
+        self.assertEqual(3, body["totalJobs"])
+
+    def test_query_failure_returns_error(self):
+        def fake_query_block_jobs(vm_uuid):
+            raise RuntimeError("query-block-jobs timeout")
+
+        zrm_plugin.qmp.query_block_jobs_by_device = fake_query_block_jobs
+
+        body = self._load_rsp(self.plugin._replication_throttle(
+            self._make_req({"vmUuid": "vm-1", "speed": 1048576, "waitReadyTimeout": 0})))
+
+        self.assertFalse(body["success"])
+        self.assertTrue(body["queryBlockJobsFailed"])
+        self.assertIn("query-block-jobs failed", body["error"])
+        self.assertEqual("query-block-jobs timeout", body["queryBlockJobsError"])
+
+    def test_final_query_failure_returns_speed_set_devices(self):
+        query_calls = {"count": 0}
+        set_speed_calls = []
+
+        def fake_query_block_jobs(vm_uuid):
+            query_calls["count"] += 1
+            if query_calls["count"] == 1:
+                return {
+                    "zrm-mirror-vol1": {"status": "running"},
+                    "zrm-mirror-vol2": {"status": "running"}
+                }
+            raise RuntimeError("query-block-jobs lost after set-speed")
+
+        def fake_block_job_set_speed(vm_uuid, device, speed):
+            set_speed_calls.append(device)
+
+        zrm_plugin.qmp.query_block_jobs_by_device = fake_query_block_jobs
+        zrm_plugin.qmp.block_job_set_speed = fake_block_job_set_speed
+
+        body = self._load_rsp(self.plugin._replication_throttle(
+            self._make_req({"vmUuid": "vm-1", "speed": 1048576, "waitReadyTimeout": 0})))
+
+        self.assertFalse(body["success"])
+        self.assertTrue(body["queryBlockJobsFailed"])
+        self.assertEqual("query-block-jobs lost after set-speed", body["queryBlockJobsError"])
+        self.assertEqual(set(["zrm-mirror-vol1", "zrm-mirror-vol2"]), set(body["speedSetDevices"]))
+        self.assertEqual(set(set_speed_calls), set(body["speedSetDevices"]))
+        self.assertEqual(2, body["totalJobs"])
+
 
 class TestZrmPluginReplicationStop(unittest.TestCase):
     def setUp(self):
         self.plugin = object.__new__(zrm_plugin.ZrmPlugin)
         self._orig_block_job_cancel = zrm_plugin.qmp.block_job_cancel
+        self._orig_query_block_jobs_by_device = zrm_plugin.qmp.query_block_jobs_by_device
 
     def tearDown(self):
         zrm_plugin.qmp.block_job_cancel = self._orig_block_job_cancel
+        zrm_plugin.qmp.query_block_jobs_by_device = self._orig_query_block_jobs_by_device
 
     def _make_req(self, body_dict):
         return {http.REQUEST_BODY: json.dumps(body_dict)}
@@ -436,7 +618,7 @@ class TestZrmPluginReplicationStop(unittest.TestCase):
         return json.loads(rsp_json)
 
     def test_cancel_failure_returns_error_with_failed_job(self):
-        self.plugin._get_zrm_block_jobs = lambda vm_uuid: {
+        zrm_plugin.qmp.query_block_jobs_by_device = lambda vm_uuid: {
             "zrm-mirror-volfail": {"status": "running"}
         }
 
@@ -454,6 +636,41 @@ class TestZrmPluginReplicationStop(unittest.TestCase):
             "device": "zrm-mirror-volfail",
             "error": "QMP connection lost"
         }], body["cancelFailedJobs"])
+
+    def test_initial_query_failure_returns_error(self):
+        def fake_query_block_jobs(vm_uuid):
+            raise RuntimeError("query-block-jobs timeout")
+
+        zrm_plugin.qmp.query_block_jobs_by_device = fake_query_block_jobs
+
+        body = self._load_rsp(self.plugin._replication_stop(
+            self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
+
+        self.assertFalse(body["success"])
+        self.assertIn("query-block-jobs failed", body["error"])
+        self.assertTrue(body["queryBlockJobsFailed"])
+        self.assertEqual("query-block-jobs timeout", body["queryBlockJobsError"])
+
+    def test_post_cancel_query_failure_returns_error(self):
+        query_calls = {"count": 0}
+
+        def fake_query_block_jobs(vm_uuid):
+            query_calls["count"] += 1
+            if query_calls["count"] == 1:
+                return {"zrm-mirror-volquery": {"status": "running"}}
+            raise RuntimeError("query-block-jobs lost after cancel")
+
+        zrm_plugin.qmp.query_block_jobs_by_device = fake_query_block_jobs
+        zrm_plugin.qmp.block_job_cancel = lambda vm_uuid, device: None
+
+        body = self._load_rsp(self.plugin._replication_stop(
+            self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
+
+        self.assertFalse(body["success"])
+        self.assertIn("query-block-jobs failed after cancel", body["error"])
+        self.assertTrue(body["queryBlockJobsFailed"])
+        self.assertEqual("query-block-jobs lost after cancel", body["queryBlockJobsError"])
+        self.assertEqual(["zrm-mirror-volquery"], body["cancelRequestedDevices"])
 
 
 class TestZrmPluginRecoveryPrepare(unittest.TestCase):
@@ -560,11 +777,9 @@ class TestZrmPluginRecoveryPrepare(unittest.TestCase):
         self.assertIn("replication_stop failed", body["error"])
 
     def test_cancel_failure_aborts_before_isolation(self):
-        self.plugin._get_zrm_block_jobs = lambda vm_uuid: {
-            "zrm-mirror-volfail": {"status": "running"}
-        }
-
-        with mock.patch.object(zrm_plugin.qmp, "block_job_cancel",
+        with mock.patch.object(zrm_plugin.qmp, "query_block_jobs_by_device",
+                               return_value={"zrm-mirror-volfail": {"status": "running"}}), \
+             mock.patch.object(zrm_plugin.qmp, "block_job_cancel",
                                side_effect=RuntimeError("QMP connection lost")), \
              mock.patch.object(self.plugin, "_vm_shutdown_and_isolate",
                                return_value=(True, None)) as isolate:
@@ -576,6 +791,47 @@ class TestZrmPluginRecoveryPrepare(unittest.TestCase):
         self.assertIn("failed to cancel ZRM mirror jobs", body["error"])
         isolate.assert_not_called()
 
+    def test_initial_query_failure_aborts_before_isolation(self):
+        with mock.patch.object(zrm_plugin.qmp, "query_block_jobs_by_device",
+                               side_effect=RuntimeError("query-block-jobs timeout")), \
+             mock.patch.object(self.plugin, "_vm_shutdown_and_isolate",
+                               return_value=(True, None)) as isolate:
+            body = self._load_rsp(self.plugin.zrm_recovery_prepare(
+                self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
+
+        self.assertFalse(body["success"])
+        self.assertIn("replication_stop failed", body["error"])
+        self.assertIn("query-block-jobs failed", body["error"])
+        self.assertTrue(body["queryBlockJobsFailed"])
+        self.assertEqual("query-block-jobs timeout", body["queryBlockJobsError"])
+        isolate.assert_not_called()
+
+    def test_post_cancel_query_failure_aborts_before_isolation(self):
+        query_calls = {"count": 0}
+
+        def fake_query_block_jobs(vm_uuid):
+            query_calls["count"] += 1
+            if query_calls["count"] == 1:
+                return {"zrm-mirror-volquery": {"status": "running"}}
+            raise RuntimeError("query-block-jobs lost after cancel")
+
+        with mock.patch.object(zrm_plugin.qmp, "query_block_jobs_by_device",
+                               side_effect=fake_query_block_jobs), \
+             mock.patch.object(zrm_plugin.qmp, "block_job_cancel",
+                               return_value=None), \
+             mock.patch.object(self.plugin, "_vm_shutdown_and_isolate",
+                               return_value=(True, None)) as isolate:
+            body = self._load_rsp(self.plugin.zrm_recovery_prepare(
+                self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
+
+        self.assertFalse(body["success"])
+        self.assertIn("replication_stop failed", body["error"])
+        self.assertIn("query-block-jobs failed after cancel", body["error"])
+        self.assertTrue(body["queryBlockJobsFailed"])
+        self.assertEqual("query-block-jobs lost after cancel", body["queryBlockJobsError"])
+        self.assertEqual(["zrm-mirror-volquery"], body["cancelRequestedDevices"])
+        isolate.assert_not_called()
+
     def test_stale_jobs_aborts(self):
         stop_rsp = json.dumps({"success": True,
                                "staleJobs": [{"device": "vda", "status": "active"}]})
@@ -584,6 +840,47 @@ class TestZrmPluginRecoveryPrepare(unittest.TestCase):
                 self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
         self.assertFalse(body["success"])
         self.assertIn("stale mirror jobs", body["error"])
+
+
+class TestVmPluginBlockGraphFallback(unittest.TestCase):
+    def setUp(self):
+        from kvmagent.plugins import vm_plugin
+        self.vm_plugin = vm_plugin
+        self._orig_execute_qmp_command = vm_plugin.qmp.execute_qmp_command
+        self._orig_block_graph_capability = dict(vm_plugin._BLOCK_GRAPH_CAPABILITY)
+        vm_plugin._BLOCK_GRAPH_CAPABILITY.clear()
+
+    def tearDown(self):
+        self.vm_plugin.qmp.execute_qmp_command = self._orig_execute_qmp_command
+        self.vm_plugin._BLOCK_GRAPH_CAPABILITY.clear()
+        self.vm_plugin._BLOCK_GRAPH_CAPABILITY.update(self._orig_block_graph_capability)
+
+    def test_query_block_match_is_used_when_block_graph_unavailable(self):
+        calls = []
+
+        def fake_execute_qmp_command(vm_uuid, command, raise_exception=False, **kwargs):
+            calls.append(command)
+            if command == "query-block":
+                return [{
+                    "device": "drive-virtio-disk0",
+                    "inserted": {
+                        "node-name": "drive-node0",
+                        "file": "/var/lib/zstack/volumes/volume-vol-old-qemu.qcow2"
+                    }
+                }]
+            if command == "x-debug-query-block-graph":
+                return None
+            return None
+
+        self.vm_plugin.qmp.execute_qmp_command = fake_execute_qmp_command
+
+        node_name, device_name = self.vm_plugin.get_mirror_device_for_volume_uuid(
+            "vm-qemu-old", "vol-old-qemu")
+
+        self.assertEqual("drive-node0", node_name)
+        self.assertEqual("drive-virtio-disk0", device_name)
+        self.assertEqual(False, self.vm_plugin._BLOCK_GRAPH_CAPABILITY.get("vm-qemu-old"))
+        self.assertEqual(["query-block", "x-debug-query-block-graph"], calls)
 
 
 if __name__ == '__main__':
