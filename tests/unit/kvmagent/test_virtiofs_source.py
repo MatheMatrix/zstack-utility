@@ -95,6 +95,29 @@ def test_prepare_path_source_accepts_command_source_root(tmp_path):
     assert host_source.path == os.path.realpath(str(source_dir))
 
 
+def test_prepare_path_source_copies_remote_source_to_target_root(tmp_path):
+    remote_dir = tmp_path / 'virtiofs-sources' / 'model-centers' / 'mc' / 'root' / 'models' / 'qwen'
+    remote_dir.mkdir(parents=True)
+    (remote_dir / 'config.json').write_text('{}')
+    target_dir = tmp_path / 'primary-storage' / 'ai-model-cache' / 'models' / 'model-uuid' / 'v1'
+    registry_file = tmp_path / 'registry.json'
+    manager = virtiofs_source.SourceManager(
+        registry=virtiofs_source.SourceRegistry(str(registry_file)),
+    )
+
+    host_source = manager.ensure_ready({
+        'type': 'preparedPath',
+        'sourcePath': str(target_dir),
+        'sourceRootPath': str(tmp_path / 'primary-storage'),
+        'remoteSourcePath': str(remote_dir),
+        'remoteSourceRootPath': str(tmp_path / 'virtiofs-sources'),
+        'sourceUuid': 'model-cache',
+    })
+
+    assert host_source.path == os.path.realpath(str(target_dir))
+    assert (target_dir / 'config.json').read_text() == '{}'
+
+
 def test_prepare_path_source_rejects_empty_command_source_root(tmp_path):
     source_dir = tmp_path / 'virtiofs-sources' / 'source-a'
     source_dir.mkdir(parents=True)
