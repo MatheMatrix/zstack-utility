@@ -8467,22 +8467,21 @@ class ChangeIpCmd(Command):
         if not binary:
             return
 
+        database_url = build_url_host_port(management_ip, DEFAULT_MYSQL_PORT)
         fd, patch_path = tempfile.mkstemp(prefix='.zstack-license-server-', suffix='.yaml')
         try:
             with os.fdopen(fd, 'w') as patch:
-                patch.write('server:\n  management_ip: "%s"\ndatabase:\n  url: "%s:%s"\n' % (
+                patch.write('server:\n  management_ip: "%s"\ndatabase:\n  url: "%s"\n' % (
                     management_ip,
-                    management_ip,
-                    DEFAULT_MYSQL_PORT,
+                    database_url,
                 ))
             shell_no_pipe('%s configure --file %s' % (
                 shell_quote(binary),
                 shell_quote(patch_path),
             ))
-            info('Update License Server management_ip %s and database url %s:%s successfully' % (
+            info('Update License Server management_ip %s and database url %s successfully' % (
                 management_ip,
-                management_ip,
-                DEFAULT_MYSQL_PORT,
+                database_url,
             ))
         finally:
             if os.path.exists(patch_path):
