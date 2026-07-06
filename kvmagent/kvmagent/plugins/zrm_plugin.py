@@ -961,13 +961,16 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 return jsonobject.dumps(ZrmAgentRsp(success=False, error="vmUuid required"))
             zrm_jobs = self._get_zrm_block_jobs(vm_uuid)
             cancelled_devices = []
+            cancel_failed_jobs = []
             for device in zrm_jobs:
                 try:
                     qmp.block_job_cancel(vm_uuid, device)
                     cancelled_devices.append(device)
                     logger.info("ZRM replication stop: cancel requested for job %s on vm %s" % (device, vm_uuid))
                 except Exception as cancel_err:
-                    logger.warn("ZRM replication stop: cancel failed for %s: %s" % (device, cancel_err))
+                    err_msg = str(cancel_err)
+                    cancel_failed_jobs.append({"device": device, "error": err_msg})
+                    logger.warn("ZRM replication stop: cancel failed for %s: %s" % (device, err_msg))
             # Wait for cancelled jobs to disappear or reach concluded state, then dismiss.
             stale_jobs = []
             if cancelled_devices:
@@ -998,6 +1001,10 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 if not stale_jobs:
                     logger.info("ZRM replication stop: all cancel requests settled for vm %s" % vm_uuid)
             rsp = ZrmAgentRsp()
+            if cancel_failed_jobs:
+                rsp.success = False
+                rsp.error = "failed to cancel ZRM mirror jobs: %s" % cancel_failed_jobs
+                rsp.cancelFailedJobs = cancel_failed_jobs
             if stale_jobs:
                 rsp.staleJobs = stale_jobs
             return jsonobject.dumps(rsp)
@@ -1602,6 +1609,30 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 return False, "QGA command disabled: " + cmd
         return True, None
 
+    def _get_cached_linux_fsfreeze_count(self, qga):
+        vm_uuid = getattr(qga, "vm_uuid", None)
+        cache = getattr(self, "_linux_fsfreeze_counts", None) or {}
+        try:
+            return int(cache.get(vm_uuid, 0) or 0)
+        except Exception:
+            return 0
+
+    def _set_cached_linux_fsfreeze_count(self, qga, fs_count):
+        vm_uuid = getattr(qga, "vm_uuid", None)
+        if not vm_uuid:
+            return
+        cache = getattr(self, "_linux_fsfreeze_counts", None)
+        if cache is None:
+            cache = {}
+            self._linux_fsfreeze_counts = cache
+        cache[vm_uuid] = fs_count if isinstance(fs_count, int) else 0
+
+    def _clear_cached_linux_fsfreeze_count(self, qga):
+        vm_uuid = getattr(qga, "vm_uuid", None)
+        cache = getattr(self, "_linux_fsfreeze_counts", None)
+        if vm_uuid and cache:
+            cache.pop(vm_uuid, None)
+
     def _linux_guest_fsfreeze(self, qga, action, timeout_seconds):
         """Linux path: freeze/thaw via QGA fsfreeze commands."""
         ok, reason = self._qga_supports_fsfreeze(qga)
@@ -1616,9 +1647,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 status = qga.call_qga_command(
                     self._FSFREEZE_CMD_STATUS, timeout=timeout_seconds)
                 if status == "frozen":
-                    frozen_list = qga.call_qga_command(
-                        "guest-fsfreeze-freeze-list", timeout=timeout_seconds)
-                    fs_count = len(frozen_list) if isinstance(frozen_list, list) else 0
+                    fs_count = self._get_cached_linux_fsfreeze_count(qga)
                     return self._guest_fsfreeze_response(
                         True, "frozen", fs_count, guest_os_type="linux",
                         quiesce_provider="qga-fsfreeze")
@@ -1634,6 +1663,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                         "unexpected fsfreeze status after freeze: " + str(status),
                         guest_os_type="linux", quiesce_provider="qga-fsfreeze",
                         error_code="QGA_RETURN_VALUE_ERROR")
+                self._set_cached_linux_fsfreeze_count(qga, fs_count)
                 return self._guest_fsfreeze_response(
                     True, "frozen", fs_count, guest_os_type="linux",
                     quiesce_provider="qga-fsfreeze")
@@ -1642,6 +1672,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 status = qga.call_qga_command(
                     self._FSFREEZE_CMD_STATUS, timeout=timeout_seconds)
                 if status == "thawed":
+                    self._clear_cached_linux_fsfreeze_count(qga)
                     return self._guest_fsfreeze_response(
                         True, "thawed", 0, guest_os_type="linux",
                         quiesce_provider="qga-fsfreeze")
@@ -1657,6 +1688,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                         "unexpected fsfreeze status after thaw: " + str(status),
                         guest_os_type="linux", quiesce_provider="qga-fsfreeze",
                         error_code="QGA_RETURN_VALUE_ERROR")
+                self._clear_cached_linux_fsfreeze_count(qga)
                 return self._guest_fsfreeze_response(
                     True, "thawed", fs_count, guest_os_type="linux",
                     quiesce_provider="qga-fsfreeze")

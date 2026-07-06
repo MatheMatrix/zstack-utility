@@ -190,9 +190,13 @@ class TestZrmPluginGuestFsfreeze(unittest.TestCase):
                 "guest-fsfreeze-freeze-list": True,
             }
 
+            def __init__(self):
+                self.status_calls = 0
+
             def call_qga_command(self, command, args=None, timeout=3):
                 if command == "guest-fsfreeze-status":
-                    return "thawed"
+                    self.status_calls += 1
+                    return "thawed" if self.status_calls == 1 else "frozen"
                 if command == "guest-fsfreeze-freeze":
                     return 2
                 raise AssertionError("unexpected command: %s" % command)
@@ -209,6 +213,38 @@ class TestZrmPluginGuestFsfreeze(unittest.TestCase):
         self.assertEqual(2, body.get("filesystemCount"))
         self.assertEqual("linux", body.get("guestOsType"))
         self.assertEqual("qga-fsfreeze", body.get("quiesceProvider"))
+        self.assertEqual(2, self.plugin._linux_fsfreeze_counts["vm-linux-1"])
+
+    def test_guest_fsfreeze_linux_freeze_already_frozen_uses_cached_count(self):
+        class FakeQga(object):
+            vm_uuid = "vm-linux-frozen"
+            os = "centos"
+            supported_commands = {
+                "guest-fsfreeze-freeze": True,
+                "guest-fsfreeze-thaw": True,
+                "guest-fsfreeze-status": True,
+            }
+
+            def call_qga_command(self, command, args=None, timeout=3):
+                if command == "guest-fsfreeze-status":
+                    return "frozen"
+                if command == "guest-fsfreeze-freeze-list":
+                    raise AssertionError("freeze-list must not be called when already frozen")
+                raise AssertionError("unexpected command: %s" % command)
+
+        self.plugin._linux_fsfreeze_counts = {"vm-linux-frozen": 3}
+        self.plugin._get_vm_qga = lambda vm_uuid: (FakeQga(), None)
+
+        rsp_json = self.plugin._replication_guest_fsfreeze(self._make_req({
+            "vmUuid": "vm-linux-frozen",
+            "action": "freeze",
+            "timeoutSeconds": 15
+        }))
+
+        _, body = self._load_rsp(rsp_json)
+        self.assertTrue(body.get("success"))
+        self.assertEqual("frozen", body.get("fsFreezeStatus"))
+        self.assertEqual(3, body.get("filesystemCount"))
 
     def test_guest_fsfreeze_linux_thaw_success(self):
         thaw_qga = type("ThawFakeQga", (), {
@@ -231,6 +267,7 @@ class TestZrmPluginGuestFsfreeze(unittest.TestCase):
             raise AssertionError("unexpected command: %s" % command)
 
         thaw_qga.call_qga_command = fake_call
+        self.plugin._linux_fsfreeze_counts = {"vm-linux-2": 2}
         self.plugin._get_vm_qga = lambda vm_uuid: (thaw_qga, None)
         rsp_json = self.plugin._replication_guest_fsfreeze(self._make_req({
             "vmUuid": "vm-linux-2",
@@ -240,6 +277,7 @@ class TestZrmPluginGuestFsfreeze(unittest.TestCase):
         _, body = self._load_rsp(rsp_json)
         self.assertTrue(body.get("success"))
         self.assertEqual("thawed", body.get("fsFreezeStatus"))
+        self.assertNotIn("vm-linux-2", self.plugin._linux_fsfreeze_counts)
 
     def test_guest_fsfreeze_qga_not_running(self):
         self.plugin._get_vm_qga = lambda vm_uuid: (None, "QEMU Guest Agent not in running state")
@@ -383,6 +421,41 @@ class TestZrmPluginCheckpointCreate(unittest.TestCase):
         self.assertEqual(0, len(self.json_post_calls))
 
 
+class TestZrmPluginReplicationStop(unittest.TestCase):
+    def setUp(self):
+        self.plugin = object.__new__(zrm_plugin.ZrmPlugin)
+        self._orig_block_job_cancel = zrm_plugin.qmp.block_job_cancel
+
+    def tearDown(self):
+        zrm_plugin.qmp.block_job_cancel = self._orig_block_job_cancel
+
+    def _make_req(self, body_dict):
+        return {http.REQUEST_BODY: json.dumps(body_dict)}
+
+    def _load_rsp(self, rsp_json):
+        return json.loads(rsp_json)
+
+    def test_cancel_failure_returns_error_with_failed_job(self):
+        self.plugin._get_zrm_block_jobs = lambda vm_uuid: {
+            "zrm-mirror-volfail": {"status": "running"}
+        }
+
+        def fake_block_job_cancel(vm_uuid, device):
+            raise RuntimeError("QMP connection lost")
+
+        zrm_plugin.qmp.block_job_cancel = fake_block_job_cancel
+
+        body = self._load_rsp(self.plugin._replication_stop(
+            self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
+
+        self.assertFalse(body["success"])
+        self.assertIn("failed to cancel ZRM mirror jobs", body["error"])
+        self.assertEqual([{
+            "device": "zrm-mirror-volfail",
+            "error": "QMP connection lost"
+        }], body["cancelFailedJobs"])
+
+
 class TestZrmPluginRecoveryPrepare(unittest.TestCase):
     def setUp(self):
         self.plugin = object.__new__(zrm_plugin.ZrmPlugin)
@@ -485,6 +558,23 @@ class TestZrmPluginRecoveryPrepare(unittest.TestCase):
                 self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
         self.assertFalse(body["success"])
         self.assertIn("replication_stop failed", body["error"])
+
+    def test_cancel_failure_aborts_before_isolation(self):
+        self.plugin._get_zrm_block_jobs = lambda vm_uuid: {
+            "zrm-mirror-volfail": {"status": "running"}
+        }
+
+        with mock.patch.object(zrm_plugin.qmp, "block_job_cancel",
+                               side_effect=RuntimeError("QMP connection lost")), \
+             mock.patch.object(self.plugin, "_vm_shutdown_and_isolate",
+                               return_value=(True, None)) as isolate:
+            body = self._load_rsp(self.plugin.zrm_recovery_prepare(
+                self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
+
+        self.assertFalse(body["success"])
+        self.assertIn("replication_stop failed", body["error"])
+        self.assertIn("failed to cancel ZRM mirror jobs", body["error"])
+        isolate.assert_not_called()
 
     def test_stale_jobs_aborts(self):
         stop_rsp = json.dumps({"success": True,
