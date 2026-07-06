@@ -598,6 +598,9 @@ class PoolProcessor(object):
             self.lv = self.__load_lv()
             self.fs = self.__load_filesystem()
             self.mount_point = self.__load_mount_point()
+            if self.__check_filesystem():
+                raise PoolOperationError("Filesystem check failed for pool %s on mount path %s" % (
+                    self.pool_uuid, self.mount_path))
         except Exception as e:
             logger.error("Failed to connect pool %s on mount path %s: %s" % (
                 self.pool_uuid, self.mount_path, str(e)))
