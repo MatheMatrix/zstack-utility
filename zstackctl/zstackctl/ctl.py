@@ -361,7 +361,7 @@ if grep -qi 'Alibaba Cloud Linux' /etc/os-release 2>/dev/null; then
     rm -f /var/lib/zstack/init_fk.sql /var/lib/mysql/init_fk.sql
 fi
 
-if [[ $DB_VERSION == *"GreatSQL"* ]]; then
+if [[ $DB_VERSION == *"GreatSQL"* || $DB_VERSION == *"GreatDB"* ]]; then
     grep 'explicit_defaults_for_timestamp=' $mysql_conf >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo "explicit_defaults_for_timestamp=OFF"
@@ -392,11 +392,29 @@ if [[ $DB_VERSION == *"GreatSQL"* ]]; then
 
     echo "init greatdb"
     mysqld --initialize-insecure --user=mysql --datadir=/var/lib/mysql
-    echo "soft link greatdb"
-    sudo ln -sf /usr/bin/mysql /usr/bin/greatdb
-    sudo ln -sf /etc/systemd/system/mysql.service /etc/systemd/system/mariadb.service
-    sudo ln -sf /etc/systemd/system/mysql.service /usr/lib/systemd/system/mariadb.service
-    sudo ln -sf /usr/bin/mysql /usr/bin/mariadb
+    echo "create mysql-compatible greatdb links"
+    if command -v greatdb >/dev/null 2>&1; then
+        sudo ln -sf /usr/bin/greatdb /usr/bin/mysql
+        sudo ln -sf /usr/bin/greatdb /usr/bin/mariadb
+    fi
+    if command -v greatdbadmin >/dev/null 2>&1; then
+        sudo ln -sf /usr/bin/greatdbadmin /usr/bin/mysqladmin
+    fi
+    if command -v greatdbdump >/dev/null 2>&1; then
+        sudo ln -sf /usr/bin/greatdbdump /usr/bin/mysqldump
+    fi
+    if command -v greatdbd >/dev/null 2>&1; then
+        sudo ln -sf /usr/sbin/greatdbd /usr/sbin/mysqld
+    fi
+    for unit_dir in /usr/lib/systemd/system /etc/systemd/system; do
+        if [ -f ${unit_dir}/greatdbd.service ]; then
+            sudo ln -sf ${unit_dir}/greatdbd.service /etc/systemd/system/mysql.service
+            sudo ln -sf ${unit_dir}/greatdbd.service /etc/systemd/system/mariadb.service
+            sudo ln -sf ${unit_dir}/greatdbd.service /usr/lib/systemd/system/mysql.service
+            sudo ln -sf ${unit_dir}/greatdbd.service /usr/lib/systemd/system/mariadb.service
+            break
+        fi
+    done
     sudo systemctl daemon-reload
 
     if [ ! -d /var/log/mysql ]; then
@@ -4400,8 +4418,12 @@ class InstallDbCmd(Command):
         if [ {{ alinux4_mariadb_config_state.rc }} -eq 0 ]; then
             rpm -e --nodeps mariadb-connector-c-config
         fi &&
-        yum --disablerepo="*" --enablerepo=zstack-local install -y compat-readline7 compat-openssl11 compat-openldap24 &&
-        yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
+        (rpm -q mariadb-server-utils >/dev/null 2>&1 && rpm -e --nodeps mariadb-server-utils || true) &&
+        (rpm -q mariadb-server >/dev/null 2>&1 && rpm -e --nodeps mariadb-server || true) &&
+        (rpm -q mariadb-backup >/dev/null 2>&1 && rpm -e --nodeps mariadb-backup || true) &&
+        (rpm -q mariadb-gssapi-server >/dev/null 2>&1 && rpm -e --nodeps mariadb-gssapi-server || true) &&
+        yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y compat-openssl11 compat-openldap24 &&
+        yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y greatdb-client greatdb-devel greatdb-icu-data-files greatdb-server greatdb-shared
       register: alinux4_install_result
 
     - name: install GreatDB
@@ -4419,6 +4441,33 @@ class InstallDbCmd(Command):
       set_fact:
         install_result: "{{ alinux4_install_result }}"
 
+    - name: create GreatDB compatibility links on Alibaba Cloud Linux 4
+      when: is_alibaba_cloud_linux_4_or_later | bool
+      shell: |
+        if command -v greatdb >/dev/null 2>&1; then
+            ln -sf /usr/bin/greatdb /usr/bin/mysql
+            ln -sf /usr/bin/greatdb /usr/bin/mariadb
+        fi
+        if command -v greatdbadmin >/dev/null 2>&1; then
+            ln -sf /usr/bin/greatdbadmin /usr/bin/mysqladmin
+        fi
+        if command -v greatdbdump >/dev/null 2>&1; then
+            ln -sf /usr/bin/greatdbdump /usr/bin/mysqldump
+        fi
+        if command -v greatdbd >/dev/null 2>&1; then
+            ln -sf /usr/sbin/greatdbd /usr/sbin/mysqld
+        fi
+        for unit_dir in /usr/lib/systemd/system /etc/systemd/system; do
+            if [ -f $${unit_dir}/greatdbd.service ]; then
+                ln -sf $${unit_dir}/greatdbd.service /etc/systemd/system/mysql.service
+                ln -sf $${unit_dir}/greatdbd.service /etc/systemd/system/mariadb.service
+                ln -sf $${unit_dir}/greatdbd.service /usr/lib/systemd/system/mysql.service
+                ln -sf $${unit_dir}/greatdbd.service /usr/lib/systemd/system/mariadb.service
+                break
+            fi
+        done
+        systemctl daemon-reload
+
     - name: open 3306 port
       when: ansible_os_family == 'RedHat'
       shell: iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport 3306 -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport 3306 -j ACCEPT && service iptables save)
@@ -4432,10 +4481,54 @@ class InstallDbCmd(Command):
         or (is_alibaba_cloud_linux_4_or_later | bool)
       service: name=mysql state=restarted enabled=yes
 
+    - name: set GreatDB root password on Alibaba Cloud Linux 4
+      when: is_alibaba_cloud_linux_4_or_later | bool
+      shell: |
+        if grep -q 'temporary password' /var/log/mysqld.log /var/log/greatdbd.log 2>/dev/null; then
+            systemctl stop mysql 2>/dev/null || systemctl stop mysqld 2>/dev/null || systemctl stop greatdbd 2>/dev/null || true
+            sleep 2
+            killall mysqld 2>/dev/null || killall greatdbd 2>/dev/null || true
+            sleep 1
+            if command -v greatdbd >/dev/null 2>&1; then
+                /usr/sbin/greatdbd --user=mysql --skip-grant-tables --skip-networking &
+            else
+                /usr/sbin/mysqld --user=mysql --skip-grant-tables --skip-networking &
+            fi
+            sleep 5
+            mysql -u root -e "SET GLOBAL validate_password.policy=LOW; SET GLOBAL validate_password.length=6; SET GLOBAL validate_password.number_count=0; SET GLOBAL validate_password.mixed_case_count=0; SET GLOBAL validate_password.special_char_count=0; FLUSH PRIVILEGES; ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '{{ root_password }}'; FLUSH PRIVILEGES;"
+            sleep 1
+            killall mysqld 2>/dev/null || killall greatdbd 2>/dev/null || true
+            sleep 2
+            systemctl start mysql 2>/dev/null || systemctl start mysqld 2>/dev/null || systemctl start greatdbd
+            sleep 4
+        fi
+
+    - name: relax GreatDB password policy on Alibaba Cloud Linux 4
+      when: is_alibaba_cloud_linux_4_or_later | bool
+      shell: |
+        mysql -u root -p{{ root_password }} -e "SET PERSIST validate_password.policy=LOW; SET PERSIST validate_password.length=6; SET PERSIST validate_password.number_count=0; SET PERSIST validate_password.mixed_case_count=0; SET PERSIST validate_password.special_char_count=0;" 2>&1 || true
+
     - name: update root password
+      when: not (is_alibaba_cloud_linux_4_or_later | bool)
       shell: $change_password_cmd
-      register: change_root_result
+      register: normal_change_root_result
       ignore_errors: yes
+
+    - name: verify GreatDB root password on Alibaba Cloud Linux 4
+      when: is_alibaba_cloud_linux_4_or_later | bool
+      shell: /usr/bin/mysql -u root -p{{ root_password }} -e "select 1"
+      register: alinux4_change_root_result
+      ignore_errors: yes
+
+    - name: set root password result on Alibaba Cloud Linux 4
+      when: is_alibaba_cloud_linux_4_or_later | bool
+      set_fact:
+        change_root_result: "{{ alinux4_change_root_result }}"
+
+    - name: set root password result
+      when: not (is_alibaba_cloud_linux_4_or_later | bool)
+      set_fact:
+        change_root_result: "{{ normal_change_root_result }}"
 
     - name: grant access
       when: change_root_result.rc == 0
@@ -4446,7 +4539,7 @@ class InstallDbCmd(Command):
         ((ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
         or (is_alibaba_cloud_linux_4_or_later | bool))
         and change_root_result.rc != 0 and install_result.changed == True
-      shell: yum remove -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
+      shell: yum remove -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared greatdb-client greatdb-devel greatdb-icu-data-files greatdb-server greatdb-shared
 
     - name: restore mariadb-connector-c-config on Alibaba Cloud Linux 4 rollback
       when: >
@@ -4515,10 +4608,13 @@ class InstallDbCmd(Command):
                     if not ip:
                         continue
                     more_cmd += "CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '{root_pass}';".format(host=ip, root_pass=args.root_password)
+                    more_cmd += "ALTER USER 'root'@'{host}' IDENTIFIED BY '{root_pass}';".format(host=ip, root_pass=args.root_password)
                     more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;".format(host=ip)
                 grant_access_cmd = '''/usr/bin/mysql -u root -p{root_pass} -e ''' \
                                    '''"CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED BY '{root_pass}';''' \
+                                   '''ALTER USER 'root'@'localhost' IDENTIFIED BY '{root_pass}';''' \
                                    '''CREATE USER IF NOT EXISTS 'root'@'{host}' IDENTIFIED BY '{root_pass}';''' \
+                                   '''ALTER USER 'root'@'{host}' IDENTIFIED BY '{root_pass}';''' \
                                    '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;''' \
                                    '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' WITH GRANT OPTION;''' \
                                    '''{more_cmd} FLUSH PRIVILEGES;"'''.format(root_pass=args.root_password, host=args.host, more_cmd=more_cmd)
