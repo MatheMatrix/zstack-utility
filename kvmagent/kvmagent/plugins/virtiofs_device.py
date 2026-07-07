@@ -8,13 +8,12 @@ DEFAULT_CACHE_MODE = 'none'
 DEFAULT_QUEUE = 1024
 DEFAULT_BINARY = '/usr/libexec/virtiofsd'
 VALID_CACHE_MODES = ('none', 'auto', 'always')
-MAX_TAG_LENGTH = 36
 
 
 def sanitize_tag(value):
     tag = re.sub(r'[^A-Za-z0-9_.-]', '_', str(value or 'artifact'))
     tag = tag.strip('._-')
-    return tag[:MAX_TAG_LENGTH] if tag else 'artifact'
+    return tag[:96] if tag else 'artifact'
 
 
 def normalize_cache_mode(cache_mode, default=DEFAULT_CACHE_MODE):

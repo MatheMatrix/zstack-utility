@@ -149,34 +149,30 @@ def make_view_bind_specs(vm_uuid, artifacts):
 
 class VmArtifactViewSpec(object):
     def __init__(self, vm_uuid, tag=None, artifacts=None, source_path=None,
-                 view_path=None, cache=None, queue=None, binary_path=None, read_only=True):
+                 cache=None, queue=None, binary_path=None, read_only=True):
         self.vm_uuid = safe_uuid(vm_uuid, 'vmInstanceUuid')
         self.tag = sanitize_tag(tag or self.vm_uuid)
         self.artifacts = as_list(artifacts)
         self.source_path = source_path
-        self.view_path = view_path
         self.cache = virtiofs_device.normalize_cache_mode(cache or DEFAULT_VIRTIOFS_CACHE)
         self.queue = virtiofs_device.normalize_queue(queue or DEFAULT_VIRTIOFS_QUEUE)
         self.binary_path = binary_path or DEFAULT_VIRTIOFS_BINARY
         self.read_only = read_only is not False
 
-        source_fields = len([p for p in [self.artifacts, self.source_path, self.view_path] if p])
-        if source_fields > 1:
-            raise Exception('vmArtifactView can specify only one of artifacts, sourcePath, or viewPath')
+        if self.artifacts and self.source_path:
+            raise Exception('vmArtifactView cannot specify both artifacts and sourcePath')
 
     @staticmethod
     def from_raw(view):
         vm_uuid = get_attr(view, 'vmInstanceUuid')
         tag = (get_attr(view, 'tag') or get_attr(view, 'mountTag') or
                get_attr(view, 'artifactUuid') or vm_uuid)
-        source_path = get_attr(view, 'sourcePath')
-        view_path = get_attr(view, 'viewPath')
+        source_path = get_attr(view, 'sourcePath') or get_attr(view, 'viewPath')
         return VmArtifactViewSpec(
             vm_uuid=vm_uuid,
             tag=tag,
             artifacts=get_attr(view, 'artifacts'),
             source_path=source_path,
-            view_path=view_path,
             cache=get_attr(view, 'cache', DEFAULT_VIRTIOFS_CACHE),
             queue=get_attr(view, 'queue', DEFAULT_VIRTIOFS_QUEUE),
             binary_path=get_attr(view, 'binaryPath', DEFAULT_VIRTIOFS_BINARY),
@@ -187,14 +183,7 @@ class VmArtifactViewSpec(object):
         if self.artifacts:
             source_path, _ = sync_artifact_view(self.vm_uuid, self.artifacts)
             return source_path
-        if self.source_path:
-            try:
-                return ensure_under(self.source_path, HOST_SOURCE_ROOT, 'sourcePath')
-            except Exception:
-                return virtiofs_source_path(self.vm_uuid, self.source_path)
-        if self.view_path:
-            return virtiofs_source_path(self.vm_uuid, self.view_path)
-        return virtiofs_source_path(self.vm_uuid)
+        return virtiofs_source_path(self.vm_uuid, self.source_path)
 
     def to_virtiofs_spec(self):
         return virtiofs_device.VirtiofsDeviceSpec(
@@ -203,7 +192,7 @@ class VmArtifactViewSpec(object):
             self.cache,
             self.queue,
             self.binary_path,
-            False,
+            self.read_only,
             True,
             True,
         )

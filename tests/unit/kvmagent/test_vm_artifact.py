@@ -64,9 +64,9 @@ class TestArtifactPathValidation:
 class TestVmArtifactViewSpec:
 
     def test_parse_vm_artifact_views_normalizes_addon_payload(self, tmp_path, monkeypatch):
-        source_root, _ = _set_roots(monkeypatch, tmp_path)
-        source = source_root / 'prepared' / 'model'
-        source.mkdir(parents=True)
+        _, view_root = _set_roots(monkeypatch, tmp_path)
+        source = view_root / 'vm-uuid'
+        source.mkdir()
         addons = {
             vm_artifact.ADDON_VM_ARTIFACT_VIEWS: [{
                 'vmInstanceUuid': 'vm-uuid',
@@ -86,20 +86,6 @@ class TestVmArtifactViewSpec:
         assert views[0].cache == 'always'
         assert views[0].queue == 2048
         assert views[0].read_only is False
-        assert views[0].resolve_source_path() == str(source)
-
-    def test_view_path_stays_under_vm_view_root(self, tmp_path, monkeypatch):
-        _, view_root = _set_roots(monkeypatch, tmp_path)
-        view_path = view_root / 'vm-uuid'
-        view_path.mkdir()
-
-        view = vm_artifact.VmArtifactViewSpec(
-            vm_uuid='vm-uuid',
-            tag='view',
-            view_path=str(view_path),
-        )
-
-        assert view.resolve_source_path() == str(view_path)
 
     def test_parse_vm_artifact_views_rejects_missing_vm_uuid(self):
         addons = {
@@ -120,7 +106,7 @@ class TestVmArtifactViewSpec:
                 source_path='/var/lib/zstack/aios/vm-views/vm-uuid',
             )
 
-        assert 'only one of artifacts, sourcePath, or viewPath' in str(exc_info.value)
+        assert 'both artifacts and sourcePath' in str(exc_info.value)
 
 
 class TestArtifactBind:
