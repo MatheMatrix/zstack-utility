@@ -34,6 +34,8 @@ LVM_CONFIG_PATH = "/etc/lvm"
 LVM_CONFIG_FILE = '/etc/lvm/lvm.conf'
 LVM_LOCAL_CONFIG_FILE = '/etc/lvm/lvmlocal.conf'
 LVM_CONFIG_TMP_FILE = '/etc/lvm/lvm.conf.tmp'
+LVM_FILTER_KEYS = ("filter", "global_filter")
+LVM_CONFIG_LOCK_FILE = "/var/run/zstack/lvm-config.lock"
 SANLOCK_CONFIG_FILE_PATH = "/etc/sanlock/sanlock.conf"
 DEB_SANLOCK_CONFIG_FILE_PATH = "/etc/default/sanlock"
 LIVE_LIBVIRT_XML_DIR = "/var/run/libvirt/qemu"
@@ -609,6 +611,7 @@ def backup_lvm_config():
     logger.debug("backup lvm config file success")
 
 
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
 def reset_lvm_conf_default():
     if not os.path.exists(LVM_CONFIG_PATH):
         raise Exception("can not find lvm config path: %s, reset lvm config failed" % LVM_CONFIG_PATH)
@@ -639,6 +642,7 @@ def get_lvm_default_config():
     return Config(_get_config())
 
 
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
 def config_lvm_by_sed(keyword, entry, files):
     warnings.warn("config_lvm_by_sed() is deprecated", DeprecationWarning)
     if not os.path.exists(LVM_CONFIG_PATH):
@@ -651,13 +655,19 @@ def config_lvm_by_sed(keyword, entry, files):
     logger.debug(bash.bash_o("lvmconfig --type diff"))
 
 
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
 @bash.in_bash
 def config_lvm_filter(files, no_drbd=False, preserve_disks=None):
+    # type: (list[str], bool, set[str]) -> object
+    _config_lvm_filter(files, no_drbd, preserve_disks)
+
+
+def _config_lvm_filter(files, no_drbd=False, preserve_disks=None):
     # type: (list[str], bool, set[str]) -> object
     if not os.path.exists(LVM_CONFIG_PATH):
         raise Exception("can not find lvm config path: %s, config lvm failed" % LVM_CONFIG_PATH)
 
-    if preserve_disks is not None and len(preserve_disks) != 0:
+    if preserve_disks is not None:
         filter_str = 'filter=['
         for disk in preserve_disks:
             filter_str += '"a|^%s$|", ' % disk.replace("/", "\\/")
@@ -681,6 +691,76 @@ def config_lvm_filter(files, no_drbd=False, preserve_disks=None):
     for f in files:
         bash.bash_r("sed -i 's/.*\\b%s.*/%s/g' %s/%s" % ("filter", filter_str, LVM_CONFIG_PATH, f))
         linux.sync_file(os.path.join(LVM_CONFIG_PATH, f))
+
+
+def _existing_lvm_filter_files():
+    files = ("lvm.conf", "lvmlocal.conf")
+    return [f for f in files if os.path.exists(os.path.join(LVM_CONFIG_PATH, f))]
+
+
+def _normalize_lvm_filter_devices(devices):
+    return list(set(str(device).strip() for device in devices or [] if device and str(device).strip()))
+
+
+def _get_lvm_filter_rules(config, key):
+    pattern = re.compile(r"(?m)^\s*%s\s*=\s*\[(.*?)\]\s*$" % re.escape(key))
+    rules = []
+    for filter_body in pattern.findall(config):
+        rules.extend(re.findall(r'"((?:\\.|[^"\\])*)"', filter_body))
+    return rules
+
+
+def _exact_device_from_lvm_accept_rule(rule):
+    if rule.startswith("a|^") and rule.endswith("$|"):
+        return rule[3:-2].replace("\\/", "/")
+
+
+def _read_lvm_accept_rules(config_files):
+    accept_rules = []
+    for path in config_files:
+        with open(os.path.join(LVM_CONFIG_PATH, path), "r") as stream:
+            config = stream.read()
+        for key in LVM_FILTER_KEYS:
+            accept_rules.extend([
+                rule for rule in _get_lvm_filter_rules(config, key)
+                if rule.startswith("a")
+            ])
+    return accept_rules
+
+
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
+@bash.in_bash
+def append_lvm_filter_devices(devices):
+    devices = _normalize_lvm_filter_devices(devices)
+    if not devices:
+        return set()
+
+    config_files = _existing_lvm_filter_files()
+    if not config_files:
+        raise Exception("No LVM config file found to append filter devices")
+
+    accepted_devices = set(filter(None, [_exact_device_from_lvm_accept_rule(rule)
+                                         for rule in _read_lvm_accept_rules(config_files)]))
+    appended_devices = set(devices) - accepted_devices
+    accepted_devices.update(devices)
+    _config_lvm_filter(config_files, preserve_disks=accepted_devices)
+    return appended_devices
+
+
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
+@bash.in_bash
+def remove_lvm_filter_devices(devices):
+    devices = _normalize_lvm_filter_devices(devices)
+    if not devices:
+        return
+
+    config_files = _existing_lvm_filter_files()
+    if not config_files:
+        return
+
+    accepted_devices = set(filter(None, [_exact_device_from_lvm_accept_rule(rule)
+                                         for rule in _read_lvm_accept_rules(config_files)]))
+    _config_lvm_filter(config_files, preserve_disks=accepted_devices - set(devices))
 
 
 def modify_sanlock_config(key, value):
@@ -765,11 +845,13 @@ WantedBy=multi-user.target
     cmd(is_exception=False)
 
 
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
 def config_lvm_conf(node, value):
     cmd = shell.ShellCmd("lvmconfig --mergedconfig --config %s=%s -f /etc/lvm/lvm.conf" % (node, value))
     cmd(is_exception=True)
 
 
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
 def config_lvmlocal_conf(node, value):
     cmd = shell.ShellCmd("lvmconfig --mergedconfig --config %s=%s -f /etc/lvm/lvmlocal.conf" % (node, value))
     cmd(is_exception=True)
