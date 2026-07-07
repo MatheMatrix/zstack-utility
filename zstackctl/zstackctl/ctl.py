@@ -1027,6 +1027,77 @@ def check_ha():
     return False
 
 
+HA_MONITOR_PROCESS_NAMES = set(['zstack-hamon', 'cloud-hamon'])
+
+
+def _read_proc_status(pid):
+    try:
+        with open('/proc/%s/status' % pid) as fd:
+            return fd.read()
+    except:
+        return ''
+
+
+def _read_proc_cmdline(pid):
+    try:
+        with open('/proc/%s/cmdline' % pid, 'rb') as fd:
+            content = fd.read()
+    except:
+        return ''
+
+    try:
+        content = content.decode('utf-8', 'ignore')
+    except AttributeError:
+        pass
+
+    return content.replace('\x00', ' ').strip()
+
+
+def _get_proc_name(pid):
+    status = _read_proc_status(pid)
+    for line in status.splitlines():
+        if line.startswith('Name:'):
+            return line.split(':', 1)[1].strip()
+    return ''
+
+
+def _get_parent_pid(pid):
+    status = _read_proc_status(pid)
+    for line in status.splitlines():
+        if line.startswith('PPid:'):
+            try:
+                return int(line.split(':', 1)[1].strip())
+            except:
+                return None
+    return None
+
+
+def _is_ha_monitor_process(pid):
+    name = _get_proc_name(pid)
+    if name in HA_MONITOR_PROCESS_NAMES:
+        return True
+
+    cmdline = _read_proc_cmdline(pid)
+    if not cmdline:
+        return False
+
+    executable = os.path.basename(cmdline.split()[0])
+    return executable in HA_MONITOR_PROCESS_NAMES
+
+
+def is_invoked_by_ha_monitor(pid=None):
+    pid = pid or os.getpid()
+    visited = set()
+
+    while pid and pid > 1 and pid not in visited:
+        visited.add(pid)
+        if _is_ha_monitor_process(pid):
+            return True
+        pid = _get_parent_pid(pid)
+
+    return False
+
+
 class Ctl(object):
     IS_AARCH64 = platform.machine() == 'aarch64'
     DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/zstack/'
@@ -2564,12 +2635,7 @@ def clear_management_node_leftovers():
         pass
 
 def is_ha_installed():
-    _, output, _ = shell_return_stdout_stderr("systemctl is-enabled zstack-ha")
-    status, _, _ = shell_return_stdout_stderr("pgrep -x zstack-hamon")
-    if output and output.strip() == "enabled" and status != 0:
-        return True
-    else:
-        return False
+    return check_ha()
 
 class StopAllCmd(Command):
     def __init__(self):
@@ -2793,8 +2859,8 @@ class StartCmd(Command):
             if 0 != shell_return("ip a | grep 'inet ' | grep -w '%s'" % mn_ip):
                 error("management.server.ip[%s] is not found on any device" % mn_ip)
 
-        def check_ha():
-            if is_ha_installed():
+        def check_ha_start_guard():
+            if check_ha() and not is_invoked_by_ha_monitor():
                 error("please use 'zsha2 start-node'")
 
         def check_chrony():
@@ -2972,7 +3038,7 @@ class StartCmd(Command):
         check_mn_port()
         check_prometheus_port()
         check_msyql()
-        check_ha()
+        check_ha_start_guard()
         check_mn_ip()
         check_chrony()
         restart_console_proxy()
