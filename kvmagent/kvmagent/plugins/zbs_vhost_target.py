@@ -21,7 +21,9 @@ def _locked(fn):
             return fn(*args, **kwargs)
     return wrapper
 
-HUGEPAGE_NR_PATH = "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
+HUGEPAGE_DIR = "/sys/kernel/mm/hugepages/hugepages-2048kB"
+HUGEPAGE_NR_PATH = HUGEPAGE_DIR + "/nr_hugepages"
+HUGEPAGE_FREE_PATH = HUGEPAGE_DIR + "/free_hugepages"
 DEFAULT_SOCKET_DIR = "/var/tmp/vhost-sockets"
 DEFAULT_CONTROL_SOCK = "/var/tmp/vhost-sockets/vhost.sock"
 DEFAULT_CLIENT_CONF = "/etc/zbs/client.conf"
@@ -132,8 +134,12 @@ def _read_hugepage_nr():
 
 
 def _read_hugepage_free():
-    out = bash.bash_o("grep HugePages_Free /proc/meminfo")
-    return int(out.split(":")[1].strip()) if ":" in out else 0
+    # per-pool sysfs, not /proc/meminfo: meminfo's HugePages_Free reports only the
+    # kernel default hugepage size, which on aarch64 (64KB base page) is 512MB, not the
+    # 2MB pool this target uses; reading meminfo makes the 2MB grow look like it failed.
+    if not os.path.exists(HUGEPAGE_FREE_PATH):
+        raise Exception("hugepage sysfs not found: %s" % HUGEPAGE_FREE_PATH)
+    return int(bash.bash_o("cat %s" % HUGEPAGE_FREE_PATH).strip() or "0")
 
 
 def _compact_memory():

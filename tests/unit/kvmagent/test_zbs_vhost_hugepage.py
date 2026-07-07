@@ -62,6 +62,27 @@ class TestDomainMemoryBytes:
         assert t.domain_memory_bytes(xml) == 1024 * 1024
 
 
+class TestReadHugepageFree:
+    # regression guard for the aarch64 bug: free count MUST come from the 2MB pool's own
+    # sysfs, never /proc/meminfo (which reports only the kernel default size, 512MB on ARM64).
+    def test_reads_pool_sysfs_not_meminfo(self):
+        with patch('os.path.exists', return_value=True), \
+             patch.object(t.bash, 'bash_o', return_value="100\n") as bo:
+            assert t._read_hugepage_free() == 100
+            called = " ".join(str(c) for c in bo.call_args_list)
+            assert t.HUGEPAGE_FREE_PATH in called
+            assert "meminfo" not in called
+
+    def test_free_path_targets_2mb_pool(self):
+        assert t.HUGEPAGE_FREE_PATH == t.HUGEPAGE_DIR + "/free_hugepages"
+        assert "hugepages-2048kB" in t.HUGEPAGE_FREE_PATH
+
+    def test_raises_when_pool_sysfs_absent(self):
+        with patch('os.path.exists', return_value=False):
+            with pytest.raises(Exception):
+                t._read_hugepage_free()
+
+
 class TestEnsureFreeHugepages:
     def test_noop_when_free_sufficient(self):
         with patch.object(t, '_read_hugepage_nr', return_value=768), \
