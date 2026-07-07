@@ -2962,50 +2962,90 @@ def rename_vg(old_vg_uuid, new_vg_uuid):
 
 
 @bash.in_bash
-def reset_sanlock_lockspace(vg_uuid):
+def reset_sanlock_lockspace(vg_uuid, io_timeout=10):
     lockspace_path = "/dev/mapper/%s-lvmlock" % vg_uuid
 
     fix_vglk(vg_uuid)
 
+    def align_size_to_sanlock_option(align_size):
+        align_options = {
+            sanlock.SMALL_ALIGN_SIZE: "1M",
+            sanlock.SMALL_ALIGN_SIZE * 2: "2M",
+            sanlock.SMALL_ALIGN_SIZE * 4: "4M",
+            sanlock.BIG_ALIGN_SIZE: "8M",
+        }
+        if align_size not in align_options:
+            raise Exception("unsupported sanlock align size %s for %s" % (align_size, vg_uuid))
+        return align_options[align_size]
+
+    lv_lock_output = bash.bash_errorout(
+        "timeout -s SIGKILL 30 lvs -ouuid,lock_args -Svg_name=%s --noheading --nolocking -t" % vg_uuid)
+
+    lv_leases = []
+    for line in lv_lock_output.strip().splitlines():
+        xs = line.strip().split()
+        if len(xs) < 2 or ":" not in xs[1]:
+            logger.warn("reset_sanlock_lockspace: skip unparseable LV lease line: %r" % line)
+            continue
+        offset = xs[1].split(":")[-1]
+        try:
+            int(offset)
+        except ValueError:
+            logger.warn("reset_sanlock_lockspace: skip LV lease line with unparseable offset: %r" % line)
+            continue
+        lv_leases.append((xs[0], offset))
+
+    try:
+        sector_size = sanlock.get_sector_size(vg_uuid)
+        align_size = sanlock.sector_size_to_align_size(sector_size)
+    except Exception as e:
+        if any(int(offset) >= sanlock.BIG_ALIGN_SIZE * sanlock.VGLK_BEGIN for _, offset in lv_leases):
+            logger.warn("reset_sanlock_lockspace: failed to detect sector size from GLLK/VGLK for %s, "
+                        "fallback to LV lease offsets: %s" % (vg_uuid, str(e)))
+            sector_size = sanlock.SECTOR_SIZE_4K
+            align_size = sanlock.BIG_ALIGN_SIZE
+        else:
+            raise
+    logger.debug("reset_sanlock_lockspace: use sector_size=%s align_size=%s io_timeout=%s" %
+                 (sector_size, align_size, io_timeout))
+
+    align_option = align_size_to_sanlock_option(align_size)
+    lockspace_init_options = "-Z %s -A %s -o %s" % (sector_size, align_option, io_timeout)
+    resource_init_options = "-Z %s -A %s" % (sector_size, align_option)
+
     # Reinit delta lease area (clears ALL host slots).
     r, o, e = bash.bash_roe(
-        "timeout -s SIGKILL 60 sanlock direct init -s lvm_%s:0:%s:0" % (vg_uuid, lockspace_path))
+        "timeout -s SIGKILL 60 sanlock direct init %s -s lvm_%s:0:%s:0" %
+        (lockspace_init_options, vg_uuid, lockspace_path))
     if r != 0:
         raise Exception("failed to init sanlock lockspace for %s: stdout=%s, stderr=%s"
                         % (vg_uuid, o, e))
 
     # Reinit GLLK and VGLK resource leases (clear source platform owner residue).
-    sector_size = sanlock.get_sector_size(vg_uuid)
-    align_size = sanlock.sector_size_to_align_size(sector_size)
     gllk_offset = sanlock.GLLK_BEGIN * align_size
     vglk_offset = sanlock.VGLK_BEGIN * align_size
 
     r, o, e = bash.bash_roe(
-        "timeout -s SIGKILL 30 sanlock direct init -r lvm_%s:GLLK:%s:%s" % (vg_uuid, lockspace_path, gllk_offset))
+        "timeout -s SIGKILL 30 sanlock direct init %s -r lvm_%s:GLLK:%s:%s" %
+        (resource_init_options, vg_uuid, lockspace_path, gllk_offset))
     if r != 0:
         raise Exception("failed to reinit GLLK for %s: %s" % (vg_uuid, e))
     logger.debug("reset_sanlock_lockspace: reinit GLLK at offset %s" % gllk_offset)
 
     r, o, e = bash.bash_roe(
-        "timeout -s SIGKILL 30 sanlock direct init -r lvm_%s:VGLK:%s:%s" % (vg_uuid, lockspace_path, vglk_offset))
+        "timeout -s SIGKILL 30 sanlock direct init %s -r lvm_%s:VGLK:%s:%s" %
+        (resource_init_options, vg_uuid, lockspace_path, vglk_offset))
     if r != 0:
         raise Exception("failed to reinit VGLK for %s: %s" % (vg_uuid, e))
     logger.debug("reset_sanlock_lockspace: reinit VGLK at offset %s" % vglk_offset)
 
     # Reinit per-LV resource leases.
-    o = bash.bash_errorout("timeout -s SIGKILL 30 lvs -ouuid,lock_args -Svg_name=%s --noheading --nolocking -t" % vg_uuid)
-
     failed_lvs = []
-    for line in o.strip().splitlines():
-        xs = line.strip().split()
-        if len(xs) < 2 or ":" not in xs[1]:
-            logger.warn("reset_sanlock_lockspace: skip unparseable LV lease line: %r" % line)
-            continue
-        uuid = xs[0]
-        offset = xs[1].split(":")[-1]
+    for uuid, offset in lv_leases:
         logger.debug("reset_sanlock_lockspace: reinit LV lease %s offset %s" % (uuid, offset))
         r, _o, e = bash.bash_roe(
-            "timeout -s SIGKILL 30 sanlock direct init -r lvm_%s:%s:%s:%s" % (vg_uuid, uuid, lockspace_path, offset))
+            "timeout -s SIGKILL 30 sanlock direct init %s -r lvm_%s:%s:%s:%s" %
+            (resource_init_options, vg_uuid, uuid, lockspace_path, offset))
         if r != 0:
             failed_lvs.append(uuid)
             logger.warn("failed to reinit LV lease %s for %s: %s" % (uuid, vg_uuid, e))

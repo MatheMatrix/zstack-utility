@@ -1907,10 +1907,32 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
 
         active_vg_uuid = vg_uuid_on_storage
         try:
-            lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times)
-            lvm.reset_sanlock_lockspace(vg_uuid_on_storage)
-            lvm.drop_vg_lock(vg_uuid_on_storage)
-            lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times)
+            running_lockspace = sanlock.get_lockspace(vg_uuid_on_storage)
+            if not running_lockspace:
+                logger.info("takeover[5/8] remove stale device maps for %s before lock start" %
+                            vg_uuid_on_storage)
+                lvm.remove_device_map_for_vg(vg_uuid_on_storage)
+            else:
+                logger.info("takeover[5/8] skip stale device map cleanup for %s, active lockspace exists: %s" %
+                            (vg_uuid_on_storage, running_lockspace))
+
+            reset_done = False
+            try:
+                lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times)
+            except Exception as e:
+                if running_lockspace:
+                    raise
+                logger.warn("takeover[5/8] initial lock start failed for %s, "
+                            "reset sanlock lockspace and retry: %s" % (vg_uuid_on_storage, str(e)))
+                lvm.reset_sanlock_lockspace(vg_uuid_on_storage, cmd.ioTimeout)
+                lvm.drop_vg_lock(vg_uuid_on_storage)
+                lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times)
+                reset_done = True
+
+            if not reset_done:
+                lvm.reset_sanlock_lockspace(vg_uuid_on_storage, cmd.ioTimeout)
+                lvm.drop_vg_lock(vg_uuid_on_storage)
+                lvm.start_vg_lock(vg_uuid_on_storage, cmd.hostId, retry_times)
             logger.info("takeover[5/8] sanlock lockspace reset for %s" % vg_uuid_on_storage)
 
             lvm.check_gl_lock()
