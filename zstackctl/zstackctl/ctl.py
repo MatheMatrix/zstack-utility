@@ -146,6 +146,32 @@ def build_default_ui_db_url(db_host):
     return 'jdbc:mysql://%s:%s' % (format_jdbc_host(db_host), DEFAULT_MYSQL_PORT)
 
 
+def is_loopback_ip(ip):
+    if not ip:
+        return False
+
+    ip = ip.strip('[]')
+    return ip == IPTABLES_IPV4_LOOPBACK or ip == IPTABLES_IPV6_LOOPBACK
+
+
+def is_link_local_ipv6(ip):
+    if not ip:
+        return False
+
+    return ip.strip('[]').lower().startswith('fe80:')
+
+
+def is_reportable_ip(ip):
+    if not ip:
+        return False
+
+    ip = ip.strip()
+    if not validate_ip(ip.strip('[]')):
+        return False
+
+    return not is_loopback_ip(ip) and not is_link_local_ipv6(ip)
+
+
 def build_url_host_port(host, port):
     return '%s:%s' % (format_url_host(host), port)
 
@@ -781,9 +807,29 @@ def get_default_gateway_ip():
             return None
 
 def get_default_ip():
-    cmd = ShellCmd("""dev=`ip route|grep default|head -n 1|awk -F "dev" '{print $2}' | awk -F " " '{print $1}'`; ip addr show $dev |grep "inet "|awk '{print $2}'|head -n 1 |awk -F '/' '{print $1}'""")
-    cmd(False)
-    return cmd.stdout.strip()
+    for route_cmd, addr_cmd in (
+            (
+                """ip route show default | awk '{for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}'""",
+                """ip -4 addr show dev %s scope global | awk '/inet / {split($2, a, "/"); print a[1]; exit}'""",
+            ),
+            (
+                """ip -6 route show default | awk '{for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}'""",
+                """ip -6 addr show dev %s scope global | awk '/inet6 / {split($2, a, "/"); print a[1]; exit}'""",
+            ),
+    ):
+        dev_cmd = ShellCmd(route_cmd)
+        dev_cmd(False)
+        dev = dev_cmd.stdout.strip()
+        if not dev:
+            continue
+
+        ip_cmd = ShellCmd(addr_cmd % shell_quote(dev))
+        ip_cmd(False)
+        ip = ip_cmd.stdout.strip()
+        if is_reportable_ip(ip):
+            return ip
+
+    return ''
 
 def get_all_ips():
     script = ShellCmd('''ip addr | awk -F '[/| ]+'  '/inet\s+/{sub(/^\s*/,"");print $2}' ''')
@@ -792,7 +838,22 @@ def get_all_ips():
 
 def get_ui_address():
     ui_addr = ctl.read_ui_property("ui_address")
-    return ui_addr if ui_addr else get_default_ip()
+    if is_reportable_ip(ui_addr):
+        return ui_addr
+
+    management_ip = ctl.read_property('management.server.ip')
+    if is_reportable_ip(management_ip):
+        return management_ip
+
+    return get_default_ip()
+
+
+def get_management_or_default_ip():
+    management_ip = ctl.read_property('management.server.ip')
+    if is_reportable_ip(management_ip):
+        return management_ip
+
+    return get_default_ip()
 
 def get_yum_repo_from_property():
     yum_repo = ctl.read_property('Ansible.var.zstack_repo')
@@ -11136,13 +11197,13 @@ class VDIUiStatusCmd(Command):
                 if check_pid_cmd.return_code == 0:
                     default_ip = get_default_ip()
                     if not default_ip:
-                        info('VDI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, default_ip,port))
+                        info('VDI status: %s [PID:%s]' % (colored('Running', 'green'), pid))
                     else:
                         if os.path.exists(portfile):
                             with open(portfile, 'r') as fd2:
                                 port = fd2.readline()
                                 port = port.strip()
-                        info('VDI UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, default_ip,port))
+                        info('VDI UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, format_url_host(default_ip),port))
                     return
 
         pid = find_process_by_cmdline('zstack-vdi')
@@ -11532,7 +11593,7 @@ class StartDashboardCmd(Command):
                     if not default_ip:
                         info('UI server is still running[PID:%s]' % pid)
                     else:
-                        info('UI server is still running[PID:%s], http://%s:%s' % (pid, default_ip, port))
+                        info('UI server is still running[PID:%s], http://%s:%s' % (pid, format_url_host(default_ip), port))
 
                     return False
 
@@ -11609,7 +11670,7 @@ class StartDashboardCmd(Command):
         if not default_ip:
             info('successfully started UI server on the local host, PID[%s]' % pid)
         else:
-            info('successfully started UI server on the local host, PID[%s], http://%s:%s' % (pid, default_ip, args.port))
+            info('successfully started UI server on the local host, PID[%s], http://%s:%s' % (pid, format_url_host(default_ip), args.port))
 
         os.system('mkdir -p /var/run/zstack/')
         with open('/var/run/zstack/zstack-dashboard.port', 'w') as fd:
@@ -11747,7 +11808,7 @@ class StartUiCmd(Command):
                 info('UI status: %s ' % (colored('Running', 'green')))
             else:
                 info('UI status: %s  //%s:%s' % (
-                    colored('Running', 'green'), default_ip, "5000"))
+                    colored('Running', 'green'), format_url_host(default_ip), "5000"))
 
                 return False
         return True
@@ -11955,11 +12016,15 @@ class StartUiCmd(Command):
             UiStatusCmd.ZSTACK_UI_SSL = 'http'
 
 
-        default_ip = get_default_ip()
-        if not default_ip:
+        ui_address = get_ui_address()
+        if not ui_address:
             info('successfully started UI server on the local host')
         else:
-            info('successfully started UI server on the local host %s://%s:%s' % ('https' if args.enable_ssl else 'http', default_ip, args.server_port))
+            info('successfully started UI server on the local host %s://%s:%s' % (
+                'https' if args.enable_ssl else 'http',
+                format_url_host(ui_address),
+                args.server_port,
+            ))
 
     def _configure_nginx_ipv6_listen(self, server_port, enable_ssl, enable_http2, listen_host):
         if not ui_should_listen_ipv6(listen_host):
@@ -11997,7 +12062,7 @@ class StartUiCmd(Command):
         default_ip = get_default_ip()
         mini_pid = get_ui_pid('mini')
         mini_port = 8200
-        ui_addr = ", http://{}:{}".format(default_ip, mini_port) if default_ip else ""
+        ui_addr = ", http://{}:{}".format(format_url_host(default_ip), mini_port) if default_ip else ""
         info('successfully started MINI UI server on the local host, PID[{}]{}'.format(mini_pid, ui_addr))
 
 
@@ -12119,10 +12184,11 @@ class ConfigUiCmd(Command):
                 zsha2_utils = Zsha2Utils()
                 return build_default_ui_db_and_webhook_hosts(
                     True, ha_db_vip=zsha2_utils.config['dbvip'])
-            return build_default_ui_db_and_webhook_hosts(False, default_ip=get_default_ip())
+            return build_default_ui_db_and_webhook_hosts(False, default_ip=get_management_or_default_ip())
 
         # init zstack.ui.properties
         if args.init:
+            management_ip = ctl.read_property('management.server.ip')
             default_db_ip, default_webhook_host = get_default_webhook_and_db_ips()
             if not ctl.read_ui_property("mn_host"):
                 ctl.write_ui_property("mn_host", '127.0.0.1')
@@ -12167,10 +12233,15 @@ class ConfigUiCmd(Command):
                 ctl.write_ui_property("redis_password", 'zstack.redis.password')
             if not ctl.read_ui_property("catalina_opts"):
                 ctl.write_ui_property("catalina_opts", ctl.ZSTACK_UI_CATALINA_OPTS)
+            if not ctl.read_ui_property("ui_address") and is_ipv6_literal(management_ip):
+                ctl.write_ui_property("ui_address", management_ip)
+            if not ctl.read_ui_property(UI_LISTEN_HOST_PROPERTY) and is_ipv6_literal(management_ip):
+                ctl.write_ui_property(UI_LISTEN_HOST_PROPERTY, UI_IPV6_ANY_LISTEN_HOSTS[0])
             return
 
         # restore to default values
         if args.restore:
+            management_ip = ctl.read_property('management.server.ip')
             default_db_ip, default_webhook_host = get_default_webhook_and_db_ips()
             ctl.clear_ui_properties()
             ctl.write_ui_property("mn_host", '127.0.0.1')
@@ -12191,6 +12262,9 @@ class ConfigUiCmd(Command):
             ctl.write_ui_property("db_password", 'zstack.ui.password')
             ctl.write_ui_property("redis_password", 'zstack.redis.password')
             ctl.write_ui_property("catalina_opts", ctl.ZSTACK_UI_CATALINA_OPTS)
+            if is_ipv6_literal(management_ip):
+                ctl.write_ui_property("ui_address", management_ip)
+                ctl.write_ui_property(UI_LISTEN_HOST_PROPERTY, UI_IPV6_ANY_LISTEN_HOSTS[0])
             return
 
         # `--key=value` type of params
@@ -12325,7 +12399,7 @@ class StartVDIUICmd(Command):
                     if not default_ip:
                         info('VDI UI is still running[PID:%s]' % pid)
                     else:
-                        info('VDI UI is still running[PID:%s], http://%s:%s' % (pid, default_ip, VDI_UI_PORT))
+                        info('VDI UI is still running[PID:%s], http://%s:%s' % (pid, format_url_host(default_ip), VDI_UI_PORT))
                     return False
 
         pid = find_process_by_cmdline('zstack-vdi')
@@ -12379,7 +12453,7 @@ class StartVDIUICmd(Command):
         if not default_ip:
             info('successfully started VDI UI server on the local host, PID[%s]' % pid)
         else:
-            info('successfully started VDI UI server on the local host, PID[%s], http://%s:%s' % (pid, default_ip, args.server_port))
+            info('successfully started VDI UI server on the local host, PID[%s], http://%s:%s' % (pid, format_url_host(default_ip), args.server_port))
 
         os.system('mkdir -p /var/run/zstack/')
         with open('/var/run/zstack/zstack-vdi.port', 'w') as fd:
@@ -13179,7 +13253,7 @@ class LicenseServerService(ExtraService):
         scheme = "https"
         if self.ready_url and self.ready_url.startswith("http://"):
             scheme = "http"
-        info("License Server service has been started. Access it at: %s://%s:%s" % (scheme, get_default_ip(), self.default_port))
+        info("License Server service has been started. Access it at: %s://%s:%s" % (scheme, format_url_host(get_default_ip()), self.default_port))
 
     def _wait_for_license_server(self, urls, timeout=120):
         info_and_debug("Waiting for %s to become available at: %s" % (self.service_name(), ", ".join(urls)))
