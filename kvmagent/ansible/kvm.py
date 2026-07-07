@@ -734,9 +734,12 @@ def copy_kvm_files():
             add_infiniband_devices_args = "regexp='(cgroup_device_acl\s*=\s*\[[^\]]*?,\s*)' replace='\\1" + formatted_devices + ",\\n    '"
             replace_content(qemu_conf_dst, add_infiniband_devices_args, host_post_info)
 
-        # Add Hygon vfio and mdev devices to cgroup_device_acl (only for Hygon hosts)
-        # Check if /dev/hygon_psp_config exists to determine if this is a Hygon host
-        (is_hygon_host, _) = run_remote_command("test -e /dev/hygon_psp_config", host_post_info, return_status=True, return_output=True)
+        # Add Hygon vfio and mdev devices to cgroup_device_acl (only for Hygon SE hosts).
+        # Newer Hygon SE hosts may not expose /dev/hygon_psp_config, but still
+        # expose the /dev/hct_share device that must be whitelisted.
+        (is_hygon_host, _) = run_remote_command(
+            "test -e /dev/hygon_psp_config || test -e /dev/hct_share",
+            host_post_info, return_status=True, return_output=True)
         if is_hygon_host is True:
             # Pre-write a fixed range of /dev/vfio/1 to /dev/vfio/5000 to cover all possible iommu_group numbers
             # This avoids the chicken-and-egg problem where mdev devices don't exist yet during ansible deploy
