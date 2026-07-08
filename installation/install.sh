@@ -318,6 +318,30 @@ get_local_ip_interface() {
     }'
 }
 
+get_local_ip_prefix_length() {
+    local ip_addr="$1"
+    ip_addr="${ip_addr#[}"
+    ip_addr="${ip_addr%]}"
+    ip -o addr show 2>/dev/null | awk -v target="$ip_addr" '{
+        split($4, addr, "/")
+        if (addr[1] == target) {
+            print addr[2]
+            exit
+        }
+    }'
+}
+
+append_chrony_allow_rule_if_missing() {
+    local allow_rule="$1"
+    [ -z "$allow_rule" ] && return
+    [ x"$allow_rule" = x"/" ] && return
+
+    grep -E "^[[:space:]]*allow[[:space:]]+${allow_rule}([[:space:]]|$)" -q /etc/chrony.conf >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "allow ${allow_rule}" >> /etc/chrony.conf
+    fi
+}
+
 format_host_for_url() {
     case "$1" in
         *:*) echo "[$1]" ;;
@@ -2156,6 +2180,22 @@ install_system_libs(){
 is_enable_chronyd(){
     echo_subtitle "Enable chronyd"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+    local chrony_allow_ip6=''
+    local chrony_allow_ip6_prefix=''
+    if is_ipv6_address "$MANAGEMENT_IP"; then
+        chrony_allow_ip6="$MANAGEMENT_IP"
+    elif [ -n "$MANAGEMENT_IP6" ]; then
+        chrony_allow_ip6="$MANAGEMENT_IP6"
+    elif command -v zstack-ctl >/dev/null 2>&1; then
+        chrony_allow_ip6=`zstack-ctl get_configuration management.server.ip6 2>/dev/null || true`
+    fi
+    chrony_allow_ip6="${chrony_allow_ip6#[}"
+    chrony_allow_ip6="${chrony_allow_ip6%]}"
+    if [ -n "$chrony_allow_ip6" ]; then
+        chrony_allow_ip6_prefix=`get_local_ip_prefix_length "$chrony_allow_ip6"`
+        [ -z "$chrony_allow_ip6_prefix" ] && chrony_allow_ip6_prefix="$MANAGEMENT_IP6_PREFIX"
+        [ -z "$chrony_allow_ip6_prefix" ] && chrony_allow_ip6_prefix="64"
+    fi
     if [[ $REDHAT_OS =~ $OS ]];then
         if [ x"$ZSTACK_OFFLINE_INSTALL" = x'n' ];then
             grep '^server 0.centos.pool.ntp.org' /etc/chrony.conf >/dev/null 2>&1
@@ -2172,6 +2212,7 @@ is_enable_chronyd(){
         if [ $? -ne 0 ];then
             echo "allow 0.0.0.0/0" >> /etc/chrony.conf
         fi
+        append_chrony_allow_rule_if_missing "${chrony_allow_ip6}/${chrony_allow_ip6_prefix}"
 
         systemctl disable ntpd >> $ZSTACK_INSTALL_LOG 2>&1 || true
         systemctl enable chronyd.service >> $ZSTACK_INSTALL_LOG 2>&1
@@ -2192,6 +2233,7 @@ is_enable_chronyd(){
         if [ $? -ne 0 ];then
             echo "allow 0.0.0.0/0" >> /etc/chrony.conf
         fi
+        append_chrony_allow_rule_if_missing "${chrony_allow_ip6}/${chrony_allow_ip6_prefix}"
         update-rc.d chrony defaults >>$ZSTACK_INSTALL_LOG 2>&1
         service chrony restart >>$ZSTACK_INSTALL_LOG 2>&1
     fi
