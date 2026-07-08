@@ -431,6 +431,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
     PREFIX_REBASE_BACKING_FILES_PATH = "/sharedblock/snapshot/prefixrebasebackingfiles"
     ENCRYPT_VOLUME_BITS_PATH = "/sharedblock/volume/encryptinplace"
     CONVERT_VOLUME_ENCRYPTION_PATH = "/sharedblock/volume/convertencryption"
+    ROLLBACK_VOLUME_ENCRYPTION_PATH = "/sharedblock/volume/convertencryption/rollback"
 
     _metadata_handler = SblkMetadataHandler(lvm, bash)
 
@@ -495,6 +496,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.PREFIX_REBASE_BACKING_FILES_PATH, self.prefix_rebase_backing_files)
         http_server.register_async_uri(self.ENCRYPT_VOLUME_BITS_PATH, self.encrypt_volume_bits)
         http_server.register_async_uri(self.CONVERT_VOLUME_ENCRYPTION_PATH, self.convert_volume_encryption)
+        http_server.register_async_uri(self.ROLLBACK_VOLUME_ENCRYPTION_PATH, self.rollback_volume_encryption)
 
         self.imagestore_client = ImageStoreClient()
 
@@ -1595,6 +1597,24 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
             rsp.success = False
             rsp.error = 'failed to convert volume[%s] encryption: %s' % (cmd.volumeUuid, str(e))
 
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    @lock.file_lock(LOCK_FILE)
+    def rollback_volume_encryption(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentRsp()
+        try:
+            for item in reversed(cmd.items):
+                target_abs_path = translate_absolute_path_from_install_path(item.targetInstallPath)
+                if lvm.lv_exists(target_abs_path):
+                    lvm.delete_lv(target_abs_path)
+                    if lvm.lv_exists(target_abs_path):
+                        raise Exception("failed to remove converted target lv %s" % target_abs_path)
+        except Exception as e:
+            logger.warn(linux.get_exception_stacktrace())
+            rsp.success = False
+            rsp.error = 'failed to rollback volume[%s] encryption conversion: %s' % (cmd.volumeUuid, str(e))
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror

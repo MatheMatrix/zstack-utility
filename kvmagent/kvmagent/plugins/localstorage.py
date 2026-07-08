@@ -287,6 +287,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
     PREFIX_REBASE_BACKING_FILES_PATH = "/localstorage/snapshot/prefixrebasebackingfiles"
     ENCRYPT_VOLUME_BITS_PATH = "/localstorage/volume/encryptinplace"
     CONVERT_VOLUME_ENCRYPTION_PATH = "/localstorage/volume/convertencryption"
+    ROLLBACK_VOLUME_ENCRYPTION_PATH = "/localstorage/volume/convertencryption/rollback"
 
     _metadata_handler = FileBasedMetadataHandler()
 
@@ -346,6 +347,7 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.PREFIX_REBASE_BACKING_FILES_PATH, self.prefix_rebase_backing_files)
         http_server.register_async_uri(self.ENCRYPT_VOLUME_BITS_PATH, self.encrypt_volume_bits)
         http_server.register_async_uri(self.CONVERT_VOLUME_ENCRYPTION_PATH, self.convert_volume_encryption)
+        http_server.register_async_uri(self.ROLLBACK_VOLUME_ENCRYPTION_PATH, self.rollback_volume_encryption)
 
         self.imagestore_client = ImageStoreClient()
 
@@ -1069,6 +1071,24 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
                 linux.rm_file_force(item.targetInstallPath)
             rsp.success = False
             rsp.error = 'failed to convert volume[%s] encryption: %s' % (cmd.volumeUuid, str(e))
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def rollback_volume_encryption(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+        try:
+            for item in reversed(cmd.items):
+                if not os.path.exists(item.targetInstallPath):
+                    continue
+                linux.exception_on_opened_file(item.targetInstallPath)
+                os.remove(item.targetInstallPath)
+                if os.path.exists(item.targetInstallPath):
+                    raise Exception("failed to remove converted target file %s" % item.targetInstallPath)
+        except Exception as e:
+            logger.warn(linux.get_exception_stacktrace())
+            rsp.success = False
+            rsp.error = 'failed to rollback volume[%s] encryption conversion: %s' % (cmd.volumeUuid, str(e))
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror

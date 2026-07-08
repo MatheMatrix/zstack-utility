@@ -329,6 +329,7 @@ class CephAgent(plugin.TaskManager):
     ADD_POOL_PATH = "/ceph/primarystorage/addpool"
     CHECK_POOL_PATH = "/ceph/primarystorage/checkpool"
     RESIZE_VOLUME_PATH = "/ceph/primarystorage/volume/resize"
+    LUKS_ROLLBACK_CONVERT_PATH = "/ceph/primarystorage/volume/luksconvert/rollback"
     LUKS_SWAP_IN_PLACE_PATH = "/ceph/primarystorage/volume/luksswapinplace"
     MIGRATE_VOLUME_SEGMENT_PATH = "/ceph/primarystorage/volume/migratesegment"
     GET_VOLUME_SNAPINFOS_PATH = "/ceph/primarystorage/volume/getsnapinfos"
@@ -404,6 +405,7 @@ class CephAgent(plugin.TaskManager):
         self.http_server.register_async_uri(self.DELETE_IMAGE_CACHE, self.delete_image_cache)
         self.http_server.register_async_uri(self.CHECK_BITS_PATH, self.check_bits)
         self.http_server.register_async_uri(self.RESIZE_VOLUME_PATH, self.resize_volume)
+        self.http_server.register_async_uri(self.LUKS_ROLLBACK_CONVERT_PATH, self.rollback_luks_volume_conversion)
         self.http_server.register_async_uri(self.LUKS_SWAP_IN_PLACE_PATH, self.swap_luks_volume_in_place)
         self.http_server.register_sync_uri(self.ECHO_PATH, self.echo)
         self.http_server.register_async_uri(self.MIGRATE_VOLUME_SEGMENT_PATH, self.migrate_volume_segment, cmd=CephToCephMigrateVolumeSegmentCmd())
@@ -1179,6 +1181,22 @@ class CephAgent(plugin.TaskManager):
                 if shell.run('rbd mv %s %s' % (old_path, src_path)) != 0:
                     logger.warn('failed to restore original RBD image after LUKS in-place swap: source[%s], temporary[%s], old[%s]' %
                                 (src_path, tmp_path, old_path))
+
+        return jsonobject.dumps(AgentResponse())
+
+    @replyerror
+    def rollback_luks_volume_conversion(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        target_path = self._normalize_install_path(cmd.targetInstallPath)
+        if '@' in target_path:
+            raise Exception('RBD LUKS rollback only supports active image paths: target[%s]' % target_path)
+
+        if self._rbd_image_exists(target_path):
+            watcher = self._get_watcher(target_path)
+            if watcher:
+                raise Exception('unable to delete converted RBD target %s during LUKS rollback, the image is in use: %s' %
+                                (target_path, watcher))
+            shell.call('rbd rm %s' % target_path)
 
         return jsonobject.dumps(AgentResponse())
 

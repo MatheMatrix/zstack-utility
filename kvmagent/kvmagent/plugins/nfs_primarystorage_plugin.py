@@ -292,6 +292,7 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
     GET_QCOW2_HASH_VALUE_PATH = "/nfsprimarystorage/getqcow2hash"
     ENCRYPT_VOLUME_BITS_PATH = "/nfsprimarystorage/volume/encryptinplace"
     CONVERT_VOLUME_ENCRYPTION_PATH = "/nfsprimarystorage/volume/convertencryption"
+    ROLLBACK_VOLUME_ENCRYPTION_PATH = "/nfsprimarystorage/volume/convertencryption/rollback"
     WRITE_VM_METADATA_PATH = "/nfsprimarystorage/vm/metadata/write"
     GET_VM_INSTANCE_METADATA_PATH = "/nfsprimarystorage/vm/metadata/get"
     SCAN_VM_METADATA_PATH = "/nfsprimarystorage/vm/metadata/scan"
@@ -346,6 +347,7 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.GET_QCOW2_HASH_VALUE_PATH, self.get_qcow2_hashvalue)
         http_server.register_async_uri(self.ENCRYPT_VOLUME_BITS_PATH, self.encrypt_volume_bits)
         http_server.register_async_uri(self.CONVERT_VOLUME_ENCRYPTION_PATH, self.convert_volume_encryption)
+        http_server.register_async_uri(self.ROLLBACK_VOLUME_ENCRYPTION_PATH, self.rollback_volume_encryption)
         http_server.register_async_uri(self.WRITE_VM_METADATA_PATH, self.write_vm_metadata)
         http_server.register_async_uri(self.GET_VM_INSTANCE_METADATA_PATH, self.get_vm_instance_metadata)
         http_server.register_async_uri(self.SCAN_VM_METADATA_PATH, self.scan_vm_metadata)
@@ -1039,6 +1041,24 @@ class NfsPrimaryStoragePlugin(kvmagent.KvmAgent):
                 linux.rm_file_force(item.targetInstallPath)
             rsp.success = False
             rsp.error = 'failed to convert volume[%s] encryption: %s' % (cmd.volumeUuid, str(e))
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def rollback_volume_encryption(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+        try:
+            for item in reversed(cmd.items):
+                if not os.path.exists(item.targetInstallPath):
+                    continue
+                linux.exception_on_opened_file(item.targetInstallPath)
+                os.remove(item.targetInstallPath)
+                if os.path.exists(item.targetInstallPath):
+                    raise Exception("failed to remove converted target file %s" % item.targetInstallPath)
+        except Exception as e:
+            logger.warn(linux.get_exception_stacktrace())
+            rsp.success = False
+            rsp.error = 'failed to rollback volume[%s] encryption conversion: %s' % (cmd.volumeUuid, str(e))
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
