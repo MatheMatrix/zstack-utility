@@ -2839,12 +2839,71 @@ class Vm(object):
         self.start(cmd.timeout)
 
     def restore(self, path):
+        self._patch_cpu_xml_from_saved_image(path)
+
+        # ensure domain_xml is str for restoreFlags regardless of patch branch
+        if isinstance(self.domain_xml, bytes):
+            self.domain_xml = self.domain_xml.decode('utf-8')
+
         @LibvirtAutoReconnect
         def restore_from_file(conn):
             return conn.restoreFlags(path, self.domain_xml)
 
         logger.debug('restoring vm:\n%s' % self.domain_xml)
         restore_from_file()
+
+    def _patch_cpu_xml_from_saved_image(self, path):
+        """Patch CPU XML for host-model VMs restoring from memory snapshot.
+
+        When a VM uses host-model CPU mode, libvirt internally expands it to
+        mode='custom' with a concrete CPU model and check='full' in the saved
+        image. If we pass a freshly built XML with mode='host-model', libvirt's
+        restoreFlags rejects it because the CPU mode/check don't match.
+
+        Fix: extract the CPU element from the saved image XML and replace the
+        agent-built one so that source and target are identical.
+
+        See: http://jira.zstack.io/browse/ZSTAC-61717
+        """
+        try:
+            current_tree = etree.fromstring(self.domain_xml)
+            current_cpu = current_tree.find('cpu')
+            if current_cpu is None or current_cpu.get('mode') != 'host-model':
+                return
+
+            @LibvirtAutoReconnect
+            def get_saved_xml(conn):
+                return conn.saveImageGetXMLDesc(path, 0)
+
+            saved_xml = get_saved_xml()
+            saved_tree = etree.fromstring(saved_xml)
+            saved_cpu = saved_tree.find('cpu')
+
+            if saved_cpu is None:
+                return
+
+            logger.debug('patching CPU xml for host-model memory snapshot restore, '
+                         'saved cpu mode=%s, agent cpu mode=%s'
+                         % (saved_cpu.get('mode'), current_cpu.get('mode')))
+
+            # preserve topology and numa from agent-built xml if not in saved xml
+            for tag in ('topology', 'numa'):
+                agent_elem = current_cpu.find(tag)
+                saved_elem = saved_cpu.find(tag)
+                if agent_elem is not None and saved_elem is None:
+                    saved_cpu.append(agent_elem)
+
+            # cpu is a direct child of the root <domain> element
+            root = current_tree
+            cpu_index = list(root).index(current_cpu)
+            root.remove(current_cpu)
+            root.insert(cpu_index, saved_cpu)
+            self.domain_xml = etree.tostring(root)
+
+            logger.debug('patched CPU xml from saved image for host-model restore')
+        except Exception as ex:
+            logger.warn('failed to patch CPU xml from saved image, '
+                        'falling back to original xml: %s' % str(ex))
 
     def start(self, timeout=60, create_paused=False, wait_console=True):
         # TODO: 1. enable hair_pin mode
