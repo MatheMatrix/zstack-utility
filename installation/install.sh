@@ -1677,6 +1677,20 @@ check_update_grayscale_upgrade_success(){
     echo "Successfully configure grayscale upgrade" >>$ZSTACK_INSTALL_LOG
 }
 
+upgrade_chrony_ipv6_allow(){
+    [ -f /etc/chrony.conf ] || return
+
+    grep "^allow ::/0" -q /etc/chrony.conf >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "allow ::/0" >> /etc/chrony.conf
+        if [[ $REDHAT_OS =~ $OS ]]; then
+            systemctl is-active --quiet chronyd.service && systemctl restart chronyd.service >> $ZSTACK_INSTALL_LOG 2>&1 || true
+        else
+            service chrony status >/dev/null 2>&1 && service chrony restart >>$ZSTACK_INSTALL_LOG 2>&1 || true
+        fi
+    fi
+}
+
 upgrade_zstack(){
     echo_title "Upgrade ${PRODUCT_NAME}"
     echo ""
@@ -1714,6 +1728,8 @@ upgrade_zstack(){
     if [ ! -z $ONLY_UPGRADE_CTL ]; then
         return
     fi
+
+    upgrade_chrony_ipv6_allow
 
     do_config_ansible
     do_config_systemd
@@ -2171,6 +2187,7 @@ is_enable_chronyd(){
         grep "^allow" -q /etc/chrony.conf >/dev/null 2>&1
         if [ $? -ne 0 ];then
             echo "allow 0.0.0.0/0" >> /etc/chrony.conf
+            echo "allow ::/0" >> /etc/chrony.conf
         fi
 
         systemctl disable ntpd >> $ZSTACK_INSTALL_LOG 2>&1 || true
@@ -2191,6 +2208,7 @@ is_enable_chronyd(){
         grep "^allow" -q /etc/chrony.conf >/dev/null 2>&1
         if [ $? -ne 0 ];then
             echo "allow 0.0.0.0/0" >> /etc/chrony.conf
+            echo "allow ::/0" >> /etc/chrony.conf
         fi
         update-rc.d chrony defaults >>$ZSTACK_INSTALL_LOG 2>&1
         service chrony restart >>$ZSTACK_INSTALL_LOG 2>&1
