@@ -74,8 +74,9 @@ class TestDeployVhost:
              patch.object(zbsutils.linux, 'shellquote', side_effect=_real_quote), \
              patch.object(zbsutils.linux, 'sshpass_run', return_value=(0, "8\n", "")) as ssh:
             zbsutils.deploy_vhost("10.0.0.9", 2222, "root", "pwd")
-            ssh.assert_called_once_with("10.0.0.9", "pwd", "grep -c processor /proc/cpuinfo",
-                                        user="root", port=2222)
+            assert ssh.call_args_list[0] == (
+                ("10.0.0.9", "pwd", "grep -c processor /proc/cpuinfo"),
+                {"user": "root", "port": 2222})
 
     def test_single_cpu_host_falls_back_to_core0(self):
         with patch.object(zbsutils.shell, 'call'), \
@@ -84,14 +85,32 @@ class TestDeployVhost:
             zbsutils.deploy_vhost("10.0.0.9", 22, "root", "pwd")
             assert "--cpuset '[0]'" in _last_cmd()
 
-    def test_omits_hugepage_args_so_zbsadm_defaults_apply(self):
+    def test_uses_existing_2mb_hugetlbfs_mount_when_hugepage_dir_not_set(self):
         with patch.object(zbsutils.shell, 'call'), \
              patch.object(zbsutils.linux, 'shellquote', side_effect=_real_quote), \
-             patch.object(zbsutils.linux, 'sshpass_run', return_value=(0, "8\n", "")):
+             patch.object(zbsutils.linux, 'sshpass_run', side_effect=[
+                 (0, "8\n", ""),
+                 (0, "/dev/hugepages\n", ""),
+             ]) as ssh:
             zbsutils.deploy_vhost("10.0.0.9", 22, "root", "pwd")
             cmd = _last_cmd()
-            assert "--hugepage-size" not in cmd
-            assert "--hugepage-dir" not in cmd
+            assert "--hugepage-dir /dev/hugepages" in cmd
+            assert ssh.call_args_list[1][0][2].startswith("findmnt")
+            assert "\\$2" in ssh.call_args_list[1][0][2]
+            assert "\\$1" in ssh.call_args_list[1][0][2]
+
+    def test_mounts_2mb_hugetlbfs_when_target_has_none(self):
+        with patch.object(zbsutils.shell, 'call'), \
+             patch.object(zbsutils.linux, 'shellquote', side_effect=_real_quote), \
+             patch.object(zbsutils.linux, 'sshpass_run', side_effect=[
+                 (0, "8\n", ""),
+                 (0, "", ""),
+                 (0, "", ""),
+             ]) as ssh:
+            zbsutils.deploy_vhost("10.0.0.9", 22, "root", "pwd")
+            cmd = _last_cmd()
+            assert "--hugepage-dir /dev/hugepages2m" in cmd
+            assert "mount -t hugetlbfs -o pagesize=2M none '/dev/hugepages2m'" in ssh.call_args_list[2][0][2]
 
     def test_explicit_cpuset_overrides_auto(self):
         with patch.object(zbsutils.shell, 'call'), \
@@ -111,6 +130,50 @@ class TestDeployVhost:
             cmd = _last_cmd()
             assert "--hugepage-size 2048" in cmd
             assert "--hugepage-dir /dev/hugepages2m" in cmd
+
+    def test_handler_forwards_hugepage_args_to_zbsadm(self):
+        body = '{"hostIp":"10.0.0.9","sshPort":22,"sshUsername":"root","sshPassword":"pwd",' \
+               '"hugepageSize":1024,"hugepageDir":"/dev/hugepages2m"}'
+        with patch.object(zbsutils, 'deploy_vhost', return_value=_OK) as deploy, \
+             patch.object(zbsutils, 'wait_vhost_target_ready', return_value=True):
+            zbsagent.ZbsAgent().deploy_vhost(_req(body))
+            deploy.assert_called_once_with("10.0.0.9", 22, "root", "pwd",
+                                           hugepage_size=1024, hugepage_dir="/dev/hugepages2m")
+
+    def test_waits_for_target_ready_after_deploy(self):
+        body = '{"hostIp":"10.0.0.9","sshPort":22,"sshUsername":"root","sshPassword":"pwd"}'
+        with patch.object(zbsutils, 'deploy_vhost', return_value=_OK), \
+             patch.object(zbsutils, 'wait_vhost_target_ready', return_value=True) as wait_ready:
+            out = zbsagent.ZbsAgent().deploy_vhost(_req(body))
+            wait_ready.assert_called_once_with("10.0.0.9", 22, "root", "pwd")
+            assert zbsagent.jsonobject.loads(out).success is True
+
+    def test_ready_timeout_fails_deploy(self):
+        body = '{"hostIp":"10.0.0.9","sshPort":22,"sshUsername":"root","sshPassword":"pwd"}'
+        with patch.object(zbsutils, 'deploy_vhost', return_value=_OK), \
+             patch.object(zbsutils, 'wait_vhost_target_ready', return_value=False):
+            out = zbsagent.ZbsAgent().deploy_vhost(_req(body))
+            r = zbsagent.jsonobject.loads(out)
+            assert r.success is False
+            assert "not ready" in r.error
+
+    def test_ready_wait_checks_container_and_admin_sock(self):
+        calls = {'n': 0}
+
+        def ssh(*args, **kwargs):
+            calls['n'] += 1
+            return (0 if calls['n'] == 3 else 1, "", "")
+
+        with patch.object(zbsutils.linux, 'sshpass_run', side_effect=ssh) as sshpass, \
+             patch.object(zbsutils.time, 'sleep') as sleep:
+            assert zbsutils.wait_vhost_target_ready("10.0.0.9", 2222, "root", "pwd",
+                                                    retries=3, interval=0.1) is True
+
+            cmd = sshpass.call_args[0][2]
+            assert "docker ps" in cmd
+            assert "name=^/zbsvhost-10.0.0.9$" in cmd
+            assert "/var/zbsvhost/sockets/admin.sock" in cmd
+            assert sleep.call_count == 2
 
 
 class TestDestroyVhost:
