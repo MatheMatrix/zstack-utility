@@ -3914,7 +3914,22 @@ class StopCmd(Command):
             def wait_stop():
                 return get_management_node_pid() is None
 
-            shell('bash %s' % os.path.join(ctl.zstack_home, self.STOP_SCRIPT))
+            stop_script = os.path.join(ctl.zstack_home, self.STOP_SCRIPT)
+            management_ip_properties = {
+                'management.server.ip': ctl.read_property('management.server.ip'),
+                'management.server.ip6': ctl.read_property('management.server.ip6'),
+                'management.server.vip6': ctl.read_property('management.server.vip6'),
+            }
+            stop_java_opts = management_network_ipv6.build_java_ip_stack_opts(
+                management_ip_properties.get('management.server.ip6') or
+                management_ip_properties.get('management.server.vip6') or
+                management_ip_properties.get('management.server.ip'),
+                [],
+            )
+            shell('JAVA_OPTS="$JAVA_OPTS %s" bash %s' % (
+                ' '.join(stop_java_opts),
+                shell_quote(stop_script),
+            ))
             if wait_stop():
                 clear_management_node_leftovers()
                 info_and_debug('successfully stopped management node')
