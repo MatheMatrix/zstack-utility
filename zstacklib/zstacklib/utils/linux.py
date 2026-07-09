@@ -798,7 +798,8 @@ def native_io_disk_exists(vm_xml_obj):
 
 def sshfs_mount_with_vm_xml(vm_xml_obj, username, hostname, port, password, url, mountpoint, writebandwidth=None):
     vmuuid = vm_xml_obj.name.text_
-    out = shell.call("pgrep -a 'qemu-kvm|qemu-system' | grep -w %s | grep [-]machine" % vmuuid)
+    out = shell.call("pgrep -a 'qemu-kvm|qemu-system' | grep -w %s | grep [-]machine" % vmuuid,
+                     exception=False)
     is_aio, uid = False, 0
 
     if out:
