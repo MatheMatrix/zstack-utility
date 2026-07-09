@@ -1894,16 +1894,121 @@ class TestHotUnplugMdevDeviceHandler:
 
 @pytest.mark.kvmagent
 class TestHotUnplugPciDeviceHandler:
-    def test_hot_unplug_pci_device(self):
+    def _mock_linux_retry(self, monkeypatch):
+        def retry(times=3, sleep_time=3):
+            def wrap(func):
+                def inner(*args, **kwargs):
+                    last_error = None
+                    for _ in range(times):
+                        try:
+                            return func(*args, **kwargs)
+                        except Exception as error:
+                            last_error = error
+                    raise last_error
+                return inner
+            return wrap
+
+        monkeypatch.setattr(vm_plugin.linux, 'retry', retry)
+
+    def _mock_running_vm(self, monkeypatch):
+        vm = MagicMock()
+        vm.state = vm_plugin.Vm.VM_STATE_RUNNING
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=vm))
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid_no_retry', MagicMock(return_value=vm))
+
+    def _mock_non_gpu_device(self, monkeypatch):
+        monkeypatch.setattr(vm_plugin.gpu, 'get_all_gpu_infos_by_pci', MagicMock(return_value={}))
+        monkeypatch.setattr(vm_plugin.pci, 'normalize_pci_address', MagicMock(return_value='0000:00:01.0'))
+
+    def test_hot_unplug_pci_device(self, monkeypatch):
         plugin = _make_vm_plugin()
-        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
-        vm_plugin.get_vm_by_uuid = MagicMock(return_value=MagicMock())
+        plugin.timeout_object = MagicMock()
+        self._mock_linux_retry(monkeypatch)
+        self._mock_running_vm(monkeypatch)
+        self._mock_non_gpu_device(monkeypatch)
+        monkeypatch.setattr(vm_plugin.linux, 'write_to_temp_file', MagicMock(return_value='/tmp/pci.xml'))
+        monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success', MagicMock(return_value=True))
+        monkeypatch.setattr(vm_plugin.bash, 'bash_roe', MagicMock(return_value=(0, 'present', '')))
 
         req = _make_req({'vmUuid': 'vm-uuid', 'pciDeviceAddress': '0000:00:01.0'})
         result = plugin.hot_unplug_pci_device(req)
         rsp = json.loads(result)
 
         assert rsp['success'] is True
+
+    def test_hot_unplug_pci_device_retries_in_process_detach_until_xml_removed(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        plugin.timeout_object = MagicMock()
+        self._mock_linux_retry(monkeypatch)
+        self._mock_running_vm(monkeypatch)
+        self._mock_non_gpu_device(monkeypatch)
+        monkeypatch.setattr(vm_plugin.linux, 'write_to_temp_file', MagicMock(return_value='/tmp/pci.xml'))
+
+        detach_results = iter([
+            (0, 'Device detached successfully', ''),
+            (1, '', ("error: internal error: unable to execute QEMU command 'device_del': "
+                     "Device hostdev7 is already in the process of unplug")),
+        ])
+        detach_cmds = []
+
+        def bash_roe(cmd):
+            if 'virsh dumpxml' in cmd:
+                return 0, 'present', ''
+            if 'virsh detach-device' in cmd:
+                detach_cmds.append(cmd)
+                return next(detach_results)
+            return 0, '', ''
+
+        wait_results = iter([False, True])
+        wait_args = []
+
+        def wait_callback_success(callback, callback_data=None, timeout=60, interval=1, **_):
+            wait_args.append((timeout, interval))
+            return next(wait_results)
+
+        monkeypatch.setattr(vm_plugin.bash, 'bash_roe', bash_roe)
+        monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success', wait_callback_success)
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'pciDeviceAddress': '0000:00:01.0'})
+        result = plugin.hot_unplug_pci_device(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        assert len(detach_cmds) == 2
+        assert wait_args == [(10, 1), (10, 1)]
+
+    def test_hot_unplug_pci_device_fails_if_device_still_exists_after_retries(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        plugin.timeout_object = MagicMock()
+        self._mock_linux_retry(monkeypatch)
+        self._mock_running_vm(monkeypatch)
+        self._mock_non_gpu_device(monkeypatch)
+        monkeypatch.setattr(vm_plugin.linux, 'write_to_temp_file', MagicMock(return_value='/tmp/pci.xml'))
+
+        detach_cmds = []
+
+        def bash_roe(cmd):
+            if 'virsh dumpxml' in cmd:
+                return 0, 'present', ''
+            if 'virsh detach-device' in cmd:
+                detach_cmds.append(cmd)
+                if len(detach_cmds) == 1:
+                    return 0, 'Device detached successfully', ''
+                return 1, '', ("error: internal error: unable to execute QEMU command 'device_del': "
+                               "Device hostdev7 is already in the process of unplug")
+            return 0, '', ''
+
+        monkeypatch.setattr(vm_plugin.bash, 'bash_roe', bash_roe)
+        monkeypatch.setattr(vm_plugin.linux, 'wait_callback_success', MagicMock(return_value=False))
+
+        req = _make_req({'vmUuid': 'vm-uuid', 'pciDeviceAddress': '0000:00:01.0'})
+        result = plugin.hot_unplug_pci_device(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is False
+        assert 'device still exists after detach' in rsp['error']
+        assert len(detach_cmds) == 3
+        assert vm_plugin.linux.wait_callback_success.call_count == 3
 
 
 @pytest.mark.kvmagent

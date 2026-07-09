@@ -11597,6 +11597,10 @@ host side snapshot files chian:
 
         @linux.retry(3, 2)
         def detach_pci_device_from_vm(cmd, xml_path, vm_domain):
+            device_unplugging = "is already in the process of unplug"
+            detach_cmd_timeout = 60
+            detach_wait_timeout = 10
+
             if not find_pci_device(cmd.vmUuid, cmd.pciDeviceAddress):
                 return
 
@@ -11632,17 +11636,27 @@ host side snapshot files chian:
                     raise Exception("pre_detach_from_vm failed: %s" % output)
 
             # Perform detach-device
-            r, o, e = bash.bash_roe("timeout -k 5 60 virsh detach-device %s %s" % (cmd.vmUuid, xml_path))
+            r, o, e = bash.bash_roe("timeout -k 5 %s virsh detach-device %s %s" %
+                                     (detach_cmd_timeout, cmd.vmUuid, xml_path))
             if r != 0:
-                raise Exception("detach-device failed: %s, %s" % (o, e))
+                output = "%s, %s" % (o, e)
+                if device_unplugging in output:
+                    logger.debug("pci device %s is already unplugging from vm[uuid:%s]" %
+                                 (cmd.pciDeviceAddress, cmd.vmUuid))
+                elif find_pci_device(cmd.vmUuid, cmd.pciDeviceAddress):
+                    raise Exception("detach-device failed: %s" % output)
+                else:
+                    return
 
             # Verify device is actually detached
             if not linux.wait_callback_success(
                     lambda args: not find_pci_device(args[0], args[1]),
                     [cmd.vmUuid, cmd.pciDeviceAddress],
-                    timeout=5
+                    timeout=detach_wait_timeout,
+                    interval=1
             ):
-                raise Exception("device still exists after detach")
+                if find_pci_device(cmd.vmUuid, cmd.pciDeviceAddress):
+                    raise Exception("device still exists after detach")
 
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = HotUnplugPciDeviceRsp()
