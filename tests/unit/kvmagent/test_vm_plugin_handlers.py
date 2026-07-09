@@ -1263,9 +1263,12 @@ class TestConfigPrimaryVmHandler:
 
 @pytest.mark.kvmagent
 class TestVmSyncHandler:
-    def test_vm_sync(self):
+    def test_vm_sync(self, monkeypatch):
         plugin = _make_vm_plugin()
         vm_plugin.bash.bash_r = MagicMock(return_value=0)
+        sync_priority = MagicMock()
+        monkeypatch.setattr(vm_plugin.linux, 'is_alinux4', MagicMock(return_value=True))
+        monkeypatch.setattr(vm_plugin, 'sync_vm_live_priority_after_libvirtd_restart', sync_priority)
 
         def _set_states(rsp):
             rsp.states = {'vm1': vm_plugin.Vm.VM_STATE_RUNNING}
@@ -1280,6 +1283,47 @@ class TestVmSyncHandler:
 
         assert rsp['success'] is True
         assert rsp['states']['vm1'] == vm_plugin.Vm.VM_STATE_RUNNING
+        sync_priority.assert_called_once_with({'vm1': vm_plugin.Vm.VM_STATE_RUNNING})
+
+    def test_sync_vm_live_priority_after_libvirtd_restart(self, monkeypatch):
+        sync_cpu_shares = MagicMock()
+        monkeypatch.setattr(vm_plugin, 'last_libvirtd_pid_for_vm_priority_sync', None)
+        monkeypatch.setattr(vm_plugin.linux, 'get_libvirtd_pid', MagicMock(side_effect=[100, 100, 101]))
+        monkeypatch.setattr(vm_plugin.linux, 'sync_vm_live_cpu_shares_from_config', sync_cpu_shares)
+
+        states = {
+            'vm-running': vm_plugin.Vm.VM_STATE_RUNNING,
+            'vm-stopped': vm_plugin.Vm.VM_STATE_SHUTDOWN,
+        }
+
+        vm_plugin.sync_vm_live_priority_after_libvirtd_restart(states)
+        sync_cpu_shares.assert_called_once_with('vm-running')
+
+        vm_plugin.sync_vm_live_priority_after_libvirtd_restart(states)
+        sync_cpu_shares.assert_called_once_with('vm-running')
+
+        vm_plugin.sync_vm_live_priority_after_libvirtd_restart(states)
+        assert sync_cpu_shares.call_count == 2
+
+    def test_vm_sync_skips_priority_sync_on_non_alinux4(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        vm_plugin.bash.bash_r = MagicMock(return_value=0)
+        sync_priority = MagicMock()
+        monkeypatch.setattr(vm_plugin.linux, 'is_alinux4', MagicMock(return_value=False))
+        monkeypatch.setattr(vm_plugin, 'sync_vm_live_priority_after_libvirtd_restart', sync_priority)
+
+        def _set_states(rsp):
+            rsp.states = {'vm1': vm_plugin.Vm.VM_STATE_RUNNING}
+
+        plugin.get_vm_state_from_libvirt = MagicMock(side_effect=_set_states)
+        vm_plugin.get_all_vm_states_with_process = MagicMock(return_value={'vm1': vm_plugin.Vm.VM_STATE_RUNNING})
+        vm_plugin.get_vm_states_from_cache = MagicMock(return_value={})
+
+        result = plugin.vm_sync(_make_req())
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        sync_priority.assert_not_called()
 
 
 @pytest.mark.kvmagent

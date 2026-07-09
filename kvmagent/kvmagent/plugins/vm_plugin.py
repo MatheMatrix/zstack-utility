@@ -2748,6 +2748,33 @@ def remove_vm_state_from_cache(uuid):
     if uuid in vm_state_cache:
         del vm_state_cache[uuid]
 
+last_libvirtd_pid_for_vm_priority_sync = None
+def sync_vm_live_priority_after_libvirtd_restart(states):
+    global last_libvirtd_pid_for_vm_priority_sync
+
+    try:
+        current_pid = linux.get_libvirtd_pid()
+    except Exception:
+        logger.warn("failed to get libvirtd pid when syncing vm priority")
+        return
+
+    if not current_pid:
+        return
+
+    if last_libvirtd_pid_for_vm_priority_sync == current_pid:
+        return
+
+    for vm_uuid, state in list(states.items()):
+        if state != Vm.VM_STATE_RUNNING:
+            continue
+
+        try:
+            linux.sync_vm_live_cpu_shares_from_config(vm_uuid)
+        except Exception:
+            logger.warn("failed to sync vm %s live cpu_shares from config" % vm_uuid)
+
+    last_libvirtd_pid_for_vm_priority_sync = current_pid
+
 def get_all_vm_states_with_process():
     states = {}
 
@@ -9375,6 +9402,9 @@ class VmPlugin(kvmagent.KvmAgent):
                 continue
 
             rsp.states[vm] = Vm.VM_STATE_SHUTDOWN
+
+        if linux.is_alinux4():
+            sync_vm_live_priority_after_libvirtd_restart(rsp.states)
 
         return jsonobject.dumps(rsp)
 
