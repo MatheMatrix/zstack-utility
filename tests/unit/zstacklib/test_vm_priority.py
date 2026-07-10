@@ -95,9 +95,9 @@ def test_sync_vm_live_cpu_shares_from_config_updates_drift(monkeypatch):
 
     assert linux.sync_vm_live_cpu_shares_from_config("vm-uuid") is True
     assert calls == [
-        ("virsh schedinfo vm-uuid --config", False),
-        ("virsh schedinfo vm-uuid --live", False),
-        ("virsh schedinfo vm-uuid --set cpu_shares=1024 --live", False),
+        ("timeout 5 virsh schedinfo vm-uuid --config", False),
+        ("timeout 5 virsh schedinfo vm-uuid --live", False),
+        ("timeout 5 virsh schedinfo vm-uuid --set cpu_shares=1024 --live", False),
     ]
 
 
@@ -111,7 +111,7 @@ def test_sync_vm_live_cpu_shares_from_config_skips_without_config(monkeypatch):
 
     assert linux.sync_vm_live_cpu_shares_from_config("vm-uuid") is False
     assert calls == [
-        ("virsh schedinfo vm-uuid --config", False),
+        ("timeout 5 virsh schedinfo vm-uuid --config", False),
     ]
 
 

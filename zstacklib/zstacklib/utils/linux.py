@@ -2358,7 +2358,7 @@ def set_vm_priority(pid, priorityConfig):
 
 
 def get_vm_cpu_shares(vm_uuid, scope):
-    cmd = shell.ShellCmd("virsh schedinfo %s %s" % (vm_uuid, scope))
+    cmd = shell.ShellCmd("timeout 5 virsh schedinfo %s %s" % (vm_uuid, scope))
     output = cmd(is_exception=False)
     if cmd.return_code != 0:
         logger.warn("get vm %s %s cpu_shares failed" % (vm_uuid, scope[2:]))
@@ -2387,7 +2387,7 @@ def sync_vm_live_cpu_shares_from_config(vm_uuid):
     if live_cpu_shares == config_cpu_shares:
         return False
 
-    cmd = shell.ShellCmd("virsh schedinfo %s --set cpu_shares=%s --live" % (vm_uuid, config_cpu_shares))
+    cmd = shell.ShellCmd("timeout 5 virsh schedinfo %s --set cpu_shares=%s --live" % (vm_uuid, config_cpu_shares))
     cmd(is_exception=False)
     if cmd.return_code != 0:
         logger.warn("restore vm %s live cpu_shares from config failed" % vm_uuid)
