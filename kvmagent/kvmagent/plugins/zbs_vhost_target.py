@@ -33,6 +33,7 @@ DEFAULT_HUGEPAGE_NR = 256
 DEFAULT_VHOST_TARGET_HUGEPAGE_NR = 1024
 HUGEPAGE_SIZE_BYTES = 2 * 1024 * 1024
 DEFAULT_CORE_COUNT = 2
+DOCKER_INSTALL_CMD = "yum --disablerepo=zstack-local --enablerepo=zstack-mn install -y docker"
 
 
 def host_cpu_num():
@@ -212,7 +213,7 @@ def docker_ready():
 def ensure_docker():
     if docker_ready():
         return
-    bash.bash_errorout("yum install -y docker-ce docker-ce-cli containerd.io")
+    bash.bash_errorout(DOCKER_INSTALL_CMD)
     bash.bash_errorout("systemctl enable --now docker")
     if not docker_ready():
         raise Exception("docker still not running after install on this host")
