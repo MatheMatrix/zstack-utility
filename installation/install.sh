@@ -3217,11 +3217,11 @@ cs_config_zstack_properties(){
 
     if [ -n "${CONSOLE_PROXY_ADDRESS}" ];then
         if [[ "${CONSOLE_PROXY_ADDRESS}" == *":"* ]]; then
-            zstack-ctl configure "consoleProxyOverriddenIpv6=${CONSOLE_PROXY_ADDRESS}"
+            zstack-ctl configure "consoleProxyOverriddenIpv6=${CONSOLE_PROXY_ADDRESS}" "consoleProxyOverriddenIpv4=" "consoleProxyOverriddenIp="
         elif [[ "${CONSOLE_PROXY_ADDRESS}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            zstack-ctl configure "consoleProxyOverriddenIpv4=${CONSOLE_PROXY_ADDRESS}"
+            zstack-ctl configure "consoleProxyOverriddenIpv4=${CONSOLE_PROXY_ADDRESS}" "consoleProxyOverriddenIpv6=" "consoleProxyOverriddenIp="
         else
-            zstack-ctl configure "consoleProxyOverriddenIp=${CONSOLE_PROXY_ADDRESS}"
+            zstack-ctl configure "consoleProxyOverriddenIp=${CONSOLE_PROXY_ADDRESS}" "consoleProxyOverriddenIpv4=" "consoleProxyOverriddenIpv6="
         fi
         if [ $? -ne 0 ];then
             fail "failed to update console proxy overridden IP to $CONSOLE_PROXY_ADDRESS"
