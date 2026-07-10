@@ -135,7 +135,19 @@ class TestEnsureDocker:
              patch.object(t.bash, 'bash_errorout') as be:
             t.ensure_docker()
             cmds = " ".join(str(c) for c in be.call_args_list)
-            assert 'yum install' in cmds and 'docker-ce' in cmds
+            assert 'yum --disablerepo=zstack-local --enablerepo=zstack-mn install -y docker' in cmds
+            assert 'systemctl enable --now docker' in cmds
+
+    def test_installs_docker_capability_from_management_node_repo(self):
+        states = iter([False, True])
+
+        with patch.object(t, 'docker_ready', side_effect=lambda: next(states)), \
+             patch.object(t.bash, 'bash_errorout') as be:
+            t.ensure_docker()
+            cmds = " ".join(str(c) for c in be.call_args_list)
+            assert 'yum --disablerepo=zstack-local --enablerepo=zstack-mn install -y docker' in cmds
+            assert 'docker-engine' not in cmds
+            assert 'docker-ce' not in cmds
             assert 'systemctl enable --now docker' in cmds
 
     def test_raises_when_docker_unavailable_after_install(self):
