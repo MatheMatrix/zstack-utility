@@ -1,6 +1,7 @@
 __author__ = 'Xingwei Yu'
 
 import os
+import time
 from zstacklib.utils.version import NumericVersion
 
 import zstacklib.utils.jsonobject as jsonobject
@@ -22,6 +23,11 @@ CBD_SNAPSHOT_PATH = CBD_VOLUME_PATH + "@{}"
 CLUSTER_UUID_SUPPORTED_VERSION = "1.5.1"
 VHOST_SOCKET_DIR = "/var/zbsvhost/sockets"
 VHOST_VOLUME_SUFFIX = "_zbs_"
+VHOST_TARGET_CONTAINER_PREFIX = "zbsvhost-"
+VHOST_ADMIN_SOCK_NAME = "admin.sock"
+VHOST_DEPLOY_READY_RETRIES = 40
+VHOST_DEPLOY_READY_INTERVAL_SECONDS = 0.5
+DEFAULT_VHOST_TARGET_HUGEPAGE_DIR = "/dev/hugepages2m"
 
 
 class ClientInfo(object):
@@ -86,9 +92,33 @@ def vhost_auto_cpuset(ip, port, username, password):
     return "[%d]" % core
 
 
+def find_2m_hugetlbfs_mount(ip, port, username, password):
+    cmd = "findmnt -rn -t hugetlbfs -o TARGET,OPTIONS | awk '\\$2 ~ /(^|,)pagesize=2M(,|$)/ {print \\$1; exit}'"
+    ret, out, err = linux.sshpass_run(ip, password, cmd, user=username, port=int(port))
+    if ret != 0:
+        raise Exception("failed to find 2M hugetlbfs mount on host[%s]: %s" % (ip, err))
+    return out.strip() if out else None
+
+
+def ensure_2m_hugetlbfs_mount(ip, port, username, password, mount_dir=DEFAULT_VHOST_TARGET_HUGEPAGE_DIR):
+    existing = find_2m_hugetlbfs_mount(ip, port, username, password)
+    if existing:
+        return existing
+
+    quoted_mount_dir = linux.shellquote(mount_dir)
+    cmd = "mkdir -p %s && mount -t hugetlbfs -o pagesize=2M none %s" % (
+        quoted_mount_dir, quoted_mount_dir)
+    ret, _, err = linux.sshpass_run(ip, password, cmd, user=username, port=int(port))
+    if ret != 0:
+        raise Exception("failed to mount 2M hugetlbfs on host[%s], dir[%s]: %s" % (ip, mount_dir, err))
+    return mount_dir
+
+
 def deploy_vhost(ip, port, username, password, cpuset=None, hugepage_size=None, hugepage_dir=None):
     if not cpuset:
         cpuset = vhost_auto_cpuset(ip, port, username, password)
+    if not hugepage_dir:
+        hugepage_dir = ensure_2m_hugetlbfs_mount(ip, port, username, password)
     cmd = "%s vhost deploy --host %s --port %s -u %s -p %s --cpuset %s --silent" % (
         ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password),
         linux.shellquote(cpuset))
@@ -97,6 +127,23 @@ def deploy_vhost(ip, port, username, password, cpuset=None, hugepage_size=None, 
     if hugepage_dir:
         cmd += " --hugepage-dir %s" % hugepage_dir
     return shell.call(cmd)
+
+
+def wait_vhost_target_ready(ip, port, username, password, retries=VHOST_DEPLOY_READY_RETRIES,
+                            interval=VHOST_DEPLOY_READY_INTERVAL_SECONDS):
+    container_name = VHOST_TARGET_CONTAINER_PREFIX + ip
+    control_sock = "%s/%s" % (VHOST_SOCKET_DIR, VHOST_ADMIN_SOCK_NAME)
+    cmd = "docker ps --filter %s --filter status=running -q | grep -q . && test -S %s" % (
+        linux.shellquote("name=^/%s$" % container_name),
+        linux.shellquote(control_sock))
+
+    for _ in range(retries):
+        ret, _, _ = linux.sshpass_run(ip, password, cmd, user=username, port=int(port))
+        if ret == 0:
+            return True
+        time.sleep(interval)
+
+    return False
 
 
 def destroy_vhost(ip, port, username, password):

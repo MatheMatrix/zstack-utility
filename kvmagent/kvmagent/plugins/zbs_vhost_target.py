@@ -24,6 +24,7 @@ def _locked(fn):
 HUGEPAGE_DIR = "/sys/kernel/mm/hugepages/hugepages-2048kB"
 HUGEPAGE_NR_PATH = HUGEPAGE_DIR + "/nr_hugepages"
 HUGEPAGE_FREE_PATH = HUGEPAGE_DIR + "/free_hugepages"
+DEFAULT_VHOST_TARGET_HUGEPAGE_DIR = "/dev/hugepages2m"
 DEFAULT_SOCKET_DIR = "/var/tmp/vhost-sockets"
 DEFAULT_CONTROL_SOCK = "/var/tmp/vhost-sockets/vhost.sock"
 DEFAULT_CLIENT_CONF = "/etc/zbs/client.conf"
@@ -159,6 +160,29 @@ def ensure_free_hugepages(need_pages):
     if got < need_pages:
         raise Exception("failed to free %d hugepages, only %d free after growing to %d; "
                         "free up memory on the host" % (need_pages, got, target))
+
+
+def find_2m_hugetlbfs_mount():
+    out = bash.bash_o("findmnt -rn -t hugetlbfs -o TARGET,OPTIONS")
+    for line in out.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and "pagesize=2M" in parts[1].split(","):
+            return parts[0]
+    return None
+
+
+def ensure_2m_hugetlbfs_mount(mount_dir=DEFAULT_VHOST_TARGET_HUGEPAGE_DIR):
+    existing = find_2m_hugetlbfs_mount()
+    if existing:
+        return existing
+
+    if not os.path.exists(mount_dir):
+        os.makedirs(mount_dir)
+    if bash.bash_r("findmnt -n -T %s -t hugetlbfs -o OPTIONS | grep -qw pagesize=2M" %
+                   shlex.quote(mount_dir)) == 0:
+        return mount_dir
+    bash.bash_errorout("mount -t hugetlbfs -o pagesize=2M none %s" % shlex.quote(mount_dir))
+    return mount_dir
 
 
 def ensure_hugepages_for_domain(domain_xml):

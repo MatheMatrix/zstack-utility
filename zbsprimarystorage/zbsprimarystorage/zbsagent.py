@@ -722,11 +722,16 @@ class ZbsAgent(plugin.TaskManager):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = AgentResponse()
 
-        o = zbsutils.deploy_vhost(cmd.hostIp, cmd.sshPort, cmd.sshUsername, cmd.sshPassword)
+        hugepage_size = cmd.hugepageSize if cmd.hasattr('hugepageSize') else None
+        hugepage_dir = cmd.hugepageDir if cmd.hasattr('hugepageDir') else None
+        o = zbsutils.deploy_vhost(cmd.hostIp, cmd.sshPort, cmd.sshUsername, cmd.sshPassword,
+                                  hugepage_size=hugepage_size, hugepage_dir=hugepage_dir)
         r = jsonobject.loads(o)
         if not r.success:
             raise Exception('failed to deploy vhost target on host[%s], error[%s]' % (
                 cmd.hostIp, r.error.message))
+        if not zbsutils.wait_vhost_target_ready(cmd.hostIp, cmd.sshPort, cmd.sshUsername, cmd.sshPassword):
+            raise Exception('deployed vhost target on host[%s] but target is not ready' % cmd.hostIp)
 
         return jsonobject.dumps(rsp)
 
