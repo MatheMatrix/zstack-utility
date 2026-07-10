@@ -74,9 +74,26 @@ class TaskDaemon(object, metaclass=abc.ABCMeta):
     A daemon to track a long task, task will be canceled automatically when timeout or canceled by api.
     '''
 
-    def __init__(self, task_spec, task_name, timeout=0):
+    _concurrency_limiters = {}
+    _concurrency_limiters_lock = threading.Lock()
+
+    def __init__(self, task_spec, task_name, timeout=0, task_type=None, max_concurrency=None):
         if self.__class__.__name__ != TaskDaemon.__name__ and "__exit__" in self.__class__.__dict__:
             raise Exception("method __exit__ cannot be overridden")
+        if (task_type is None) != (max_concurrency is None) or max_concurrency is not None and max_concurrency <= 0:
+            raise ValueError("task_type and positive max_concurrency must be specified together")
+
+        self.concurrency_limiter = None
+        self.concurrency_limiter_acquired = False
+        if task_type is not None:
+            with self._concurrency_limiters_lock:
+                limiter = self._concurrency_limiters.get(task_type)
+                if limiter is None:
+                    limiter = (max_concurrency, threading.BoundedSemaphore(max_concurrency))
+                    self._concurrency_limiters[task_type] = limiter
+                elif limiter[0] != max_concurrency:
+                    raise ValueError("task type[%s] already has concurrency limit[%s]" % (task_type, limiter[0]))
+                self.concurrency_limiter = limiter[1]
         self.api_id = get_api_id(task_spec)
         self.task_name = task_name
         self.stage = get_task_stage(task_spec)
@@ -122,18 +139,27 @@ class TaskDaemon(object, metaclass=abc.ABCMeta):
 
 
     def start(self):
-        if self.api_id:
-            TaskManager.add_task(self.api_id, self)
+        if self.concurrency_limiter:
+            self.concurrency_limiter.acquire()
+            self.concurrency_limiter_acquired = True
+        try:
+            if self.api_id:
+                TaskManager.add_task(self.api_id, self)
 
-        if self.cancel_thread:
-            self.cancel_thread.start()
+            if self.cancel_thread:
+                self.cancel_thread.start()
 
-        if self.progress_reporter:
-            self.progress_reporter.start()
+            if self.progress_reporter:
+                self.progress_reporter.start()
 
-        self.start_time = time.time()
-        self.deadline = self.start_time + self.timeout
-        logger.debug("[task=%s] (name=%s) task started. timeout %d, deadline %d" % (self.api_id, self.task_name, self.timeout, self.deadline))
+            self.start_time = time.time()
+            self.deadline = self.start_time + self.timeout
+            logger.debug("[task=%s] (name=%s) task started. timeout %d, deadline %d" % (self.api_id, self.task_name, self.timeout, self.deadline))
+        except Exception:
+            if self.concurrency_limiter_acquired:
+                self.concurrency_limiter.release()
+                self.concurrency_limiter_acquired = False
+            raise
 
     def get_remaining_timeout(self):
         now = time.time()
@@ -143,16 +169,20 @@ class TaskDaemon(object, metaclass=abc.ABCMeta):
         if self.closed:
             return
 
-        if self.api_id:
-            TaskManager.remove_task(self.api_id, self)
+        try:
+            if self.api_id:
+                TaskManager.remove_task(self.api_id, self)
 
-        if self.progress_reporter:
-            self.progress_reporter.close()
+            if self.progress_reporter:
+                self.progress_reporter.close()
 
-        if self.cancel_thread:
-            self.cancel_thread.cancel()
-
-        self.closed = True
+            if self.cancel_thread:
+                self.cancel_thread.cancel()
+        finally:
+            if self.concurrency_limiter_acquired:
+                self.concurrency_limiter.release()
+                self.concurrency_limiter_acquired = False
+            self.closed = True
 
     def _timeout_cancel(self):
         logger.debug('[task=%s] (name=%s) timeout after %d seconds, cancelling %s.' % (self.api_id, self.task_name, self.timeout, self.task_name))

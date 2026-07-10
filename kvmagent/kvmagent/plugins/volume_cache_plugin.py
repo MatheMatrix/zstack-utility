@@ -897,7 +897,8 @@ class CacheProcessor(object):
 class FlushCacheTaskDaemon(plugin.TaskDaemon):
     def __init__(self, task_spec, cache):
         # type: (object, CacheProcessor) -> None
-        super(FlushCacheTaskDaemon, self).__init__(task_spec, "FlushVolumeCache")
+        super(FlushCacheTaskDaemon, self).__init__(
+            task_spec, "FlushVolumeCache", task_type="volume-cache-flush-detach", max_concurrency=3)
         self.cache = cache
         self.progress = 0
         self.error = None

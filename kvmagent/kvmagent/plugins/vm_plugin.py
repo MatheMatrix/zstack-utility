@@ -2410,7 +2410,8 @@ class DetachBlockCacheTaskDaemon(plugin.TaskDaemon):
 
     def __init__(self, task_spec, vm_uuid, volume, disk_name):
         # type: (object, str, object, str) -> None
-        super(DetachBlockCacheTaskDaemon, self).__init__(task_spec, 'DetachBlockCache')
+        super(DetachBlockCacheTaskDaemon, self).__init__(
+            task_spec, 'DetachBlockCache', task_type='volume-cache-flush-detach', max_concurrency=3)
         self.vm_uuid = vm_uuid       # type: str
         self.volume = volume         # type: object
         self.disk_name = disk_name   # type: str
