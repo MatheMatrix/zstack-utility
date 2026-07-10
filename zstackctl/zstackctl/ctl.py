@@ -69,6 +69,11 @@ IPTABLES_IPV6_LOOPBACK = '::1'
 UI_LOCAL_WEBHOOK_HOST = IPTABLES_IPV4_LOOPBACK
 
 
+def colorize_output(text, color):
+    no_color = 'NO_COLOR' in os.environ or 'ANSI_COLORS_DISABLED' in os.environ
+    return colored(text, color, no_color=no_color, force_color=True)
+
+
 def build_ui_ipv6_firewall_accept_command(server_port, distro):
     rule = '-A INPUT -p tcp -m tcp --dport %s -j ACCEPT' % server_port
     add_rule = 'ip6tables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT' % server_port
@@ -2498,10 +2503,10 @@ class ShowStatusCmd(Command):
                 if pid:
                     write_status('%s, the management node seems to become zombie as it stops responding APIs but the '
                                  'process(PID: %s) is still running. Please stop the node using zstack-ctl stop_node' %
-                                 (colored('Unknown', 'yellow'), pid))
+                                 (colorize_output('Unknown', 'yellow'), pid))
                     dump_mn()
                 else:
-                    write_status(colored('Stopped', 'red'))
+                    write_status(colorize_output('Stopped', 'red'))
                 return False
 
             state = get_mgmt_node_state_from_result(cmd)
@@ -2511,7 +2516,7 @@ class ShowStatusCmd(Command):
                 return False
 
             if state:
-                write_status(colored('Running', 'green') + ' [PID:%s]' % pid)
+                write_status(colorize_output('Running', 'green') + ' [PID:%s]' % pid)
             else:
                 write_status('Starting, should be ready in a few seconds')
 
@@ -11250,21 +11255,21 @@ class UiStatusCmd(Command):
                     write_status(
                         '%s, the ui seems to become zombie as it stops responding APIs but the '
                         'process(PID: %s) is still running. Please stop the node using zstack-ctl stop_ui' %
-                        (colored('Zombie', 'yellow'), pid))
+                        (colorize_output('Zombie', 'yellow'), pid))
                 else:
-                    write_status(colored('Stopped', 'red'))
+                    write_status(colorize_output('Stopped', 'red'))
                 return False
             elif 'UP' in cmd.stdout:
                 default_ip = get_ui_address()
 
                 if not default_ip:
-                    info('UI status: %s [PID:%s]' % (colored('Running', 'green'), pid))
+                    info('UI status: %s [PID:%s]' % (colorize_output('Running', 'green'), pid))
                 else:
                     http = 'https' if '--ssl.enabled=true' in output else 'http'
                     info('UI status: %s [PID:%s] %s://%s:%s' % (
-                        colored('Running', 'green'), pid, http, format_url_host(default_ip), port))
+                        colorize_output('Running', 'green'), pid, http, format_url_host(default_ip), port))
             else:
-                write_status(colored('Unknown', 'yellow'))
+                write_status(colorize_output('Unknown', 'yellow'))
             return True
         default_protcol='http'
         if os.path.exists(StartUiCmd.HTTP_FILE):
@@ -11283,14 +11288,14 @@ class UiStatusCmd(Command):
                 "systemctl show --property MainPID  zstack-ui-nginx.service | awk -F= '{printf $2}'")
             output = output[1]
             if not default_ip:
-                info('UI status: %s [PID:%s] ' % (colored('Running', 'green'),output))
+                info('UI status: %s [PID:%s] ' % (colorize_output('Running', 'green'),output))
             else:
                 if os.path.exists(StartUiCmd.HTTP_FILE):
                     with open(StartUiCmd.HTTP_FILE, 'r') as fd2:
                         protcol = fd2.readline()
                         protcol = protcol.strip()
                         info('UI status: %s [PID:%s] %s://%s:%s' % (
-                            colored('Running', 'green'),output, protcol, format_url_host(default_ip), port))
+                            colorize_output('Running', 'green'),output, protcol, format_url_host(default_ip), port))
 
 # For VDI UI 2.1
 class VDIUiStatusCmd(Command):
