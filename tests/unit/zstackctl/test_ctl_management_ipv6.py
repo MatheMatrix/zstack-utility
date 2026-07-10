@@ -539,6 +539,112 @@ def test_change_ip_ipv4_path_cleans_old_ipv6_rules(monkeypatch):
     ]
 
 
+def test_configure_console_proxy_legacy_ipv4_syncs_family_field(monkeypatch):
+    writes = []
+    monkeypatch.setattr(ctl.ctl, 'extra_arguments', ['consoleProxyOverriddenIp=172.24.194.240'], raising=False)
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl.ConfigureCmd, '_report_property_updated', lambda self: None)
+
+    cmd = ctl.ConfigureCmd.__new__(ctl.ConfigureCmd)
+    cmd.run(SimpleNamespace(use_file=None, duplicate_to_remote=None, delete=None, host=None))
+
+    assert writes == [
+        ['consoleProxyOverriddenIp', '172.24.194.240'],
+        ['consoleProxyOverriddenIpv4', '172.24.194.240'],
+    ]
+
+
+def test_configure_console_proxy_family_field_clears_conflicting_legacy(monkeypatch):
+    writes = []
+    monkeypatch.setattr(ctl.ctl, 'extra_arguments', ['consoleProxyOverriddenIpv4=192.168.242.253'], raising=False)
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: {
+        'consoleProxyOverriddenIp': '172.24.194.240',
+    }.get(name))
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl.ConfigureCmd, '_report_property_updated', lambda self: None)
+
+    cmd = ctl.ConfigureCmd.__new__(ctl.ConfigureCmd)
+    cmd.run(SimpleNamespace(use_file=None, duplicate_to_remote=None, delete=None, host=None))
+
+    assert writes == [
+        ['consoleProxyOverriddenIpv4', '192.168.242.253'],
+        ['consoleProxyOverriddenIp', ''],
+    ]
+
+
+def test_configure_console_proxy_rejects_same_command_family_conflict(monkeypatch):
+    writes = []
+    monkeypatch.setattr(ctl.ctl, 'extra_arguments', [
+        'consoleProxyOverriddenIp=172.24.194.240',
+        'consoleProxyOverriddenIpv4=192.168.242.253',
+    ], raising=False)
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl.ConfigureCmd, '_report_property_updated', lambda self: None)
+
+    cmd = ctl.ConfigureCmd.__new__(ctl.ConfigureCmd)
+    with pytest.raises(ctl.CtlError):
+        cmd.run(SimpleNamespace(use_file=None, duplicate_to_remote=None, delete=None, host=None))
+
+    assert writes == []
+
+
+def test_configure_console_proxy_legacy_hostname_clears_family_fields(monkeypatch):
+    writes = []
+    monkeypatch.setattr(ctl.ctl, 'extra_arguments', [
+        'consoleProxyOverriddenIp=console.example.com',
+        'consoleProxyOverriddenIpv4=',
+        'consoleProxyOverriddenIpv6=',
+    ], raising=False)
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl.ConfigureCmd, '_report_property_updated', lambda self: None)
+
+    cmd = ctl.ConfigureCmd.__new__(ctl.ConfigureCmd)
+    cmd.run(SimpleNamespace(use_file=None, duplicate_to_remote=None, delete=None, host=None))
+
+    assert writes == [
+        ['consoleProxyOverriddenIp', 'console.example.com'],
+        ['consoleProxyOverriddenIpv4', ''],
+        ['consoleProxyOverriddenIpv6', ''],
+    ]
+
+
+def test_configure_console_proxy_legacy_hostname_rejects_family_override(monkeypatch):
+    writes = []
+    monkeypatch.setattr(ctl.ctl, 'extra_arguments', [
+        'consoleProxyOverriddenIp=console.example.com',
+        'consoleProxyOverriddenIpv4=172.24.194.240',
+    ], raising=False)
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl.ConfigureCmd, '_report_property_updated', lambda self: None)
+
+    cmd = ctl.ConfigureCmd.__new__(ctl.ConfigureCmd)
+    with pytest.raises(ctl.CtlError):
+        cmd.run(SimpleNamespace(use_file=None, duplicate_to_remote=None, delete=None, host=None))
+
+    assert writes == []
+
+
+@pytest.mark.parametrize('key,value', [
+    ('consoleProxyOverriddenIpv4', 'fd66:6:6:6::240'),
+    ('consoleProxyOverriddenIpv4', 'console.example.com'),
+    ('consoleProxyOverriddenIpv4', '::'),
+    ('consoleProxyOverriddenIpv6', '172.24.194.240'),
+    ('consoleProxyOverriddenIpv6', 'console.example.com'),
+    ('consoleProxyOverriddenIpv6', '0.0.0.0'),
+])
+def test_configure_console_proxy_rejects_invalid_family_value(monkeypatch, key, value):
+    writes = []
+    monkeypatch.setattr(ctl.ctl, 'extra_arguments', ['%s=%s' % (key, value)], raising=False)
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl.ConfigureCmd, '_report_property_updated', lambda self: None)
+
+    cmd = ctl.ConfigureCmd.__new__(ctl.ConfigureCmd)
+    with pytest.raises(ctl.CtlError):
+        cmd.run(SimpleNamespace(use_file=None, duplicate_to_remote=None, delete=None, host=None))
+
+    assert writes == []
+
+
 def test_change_ip_rejects_legacy_ip_for_dual_stack(monkeypatch):
     class ChangeIpRejected(Exception):
         pass
@@ -1177,6 +1283,7 @@ def test_add_ip_sets_management_server_ip6_without_configuring_nic(monkeypatch):
 
     monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: {
         'management.server.ip': '172.24.249.182',
+        'consoleProxyOverriddenIp': '172.24.249.182',
     }.get(name))
     monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
     monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: True)
@@ -1186,7 +1293,12 @@ def test_add_ip_sets_management_server_ip6_without_configuring_nic(monkeypatch):
     cmd = ctl.AddIpCmd.__new__(ctl.AddIpCmd)
     assert cmd.add_management_server_ip_under_lock('fd00:172:24:249::182')
 
-    assert writes == [('management.server.ip6', 'fd00:172:24:249::182')]
+    assert writes == [
+        ('management.server.ip6', 'fd00:172:24:249::182'),
+        ('consoleProxyOverriddenIpv4', '172.24.249.182'),
+        ('consoleProxyOverriddenIpv6', 'fd00:172:24:249::182'),
+        ('consoleProxyOverriddenIp', ''),
+    ]
     assert shell_calls == []
 
 
@@ -1195,6 +1307,7 @@ def test_add_ip_sets_management_server_ip4_for_ipv6_primary(monkeypatch):
 
     monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: {
         'management.server.ip': 'fd00:172:24:249::182',
+        'consoleProxyOverriddenIp': 'fd00:172:24:249::182',
     }.get(name))
     monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
     monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: True)
@@ -1202,7 +1315,66 @@ def test_add_ip_sets_management_server_ip4_for_ipv6_primary(monkeypatch):
     cmd = ctl.AddIpCmd.__new__(ctl.AddIpCmd)
     assert cmd.add_management_server_ip_under_lock('172.24.249.182')
 
-    assert writes == [('management.server.ip4', '172.24.249.182')]
+    assert writes == [
+        ('management.server.ip4', '172.24.249.182'),
+        ('consoleProxyOverriddenIpv6', 'fd00:172:24:249::182'),
+        ('consoleProxyOverriddenIpv4', '172.24.249.182'),
+        ('consoleProxyOverriddenIp', ''),
+    ]
+
+
+def test_add_ip_preserves_custom_legacy_console_proxy(monkeypatch):
+    writes = []
+
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: {
+        'management.server.ip': '172.24.249.182',
+        'consoleProxyOverriddenIp': 'console-proxy.example.com',
+    }.get(name))
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: True)
+
+    cmd = ctl.AddIpCmd.__new__(ctl.AddIpCmd)
+    assert cmd.add_management_server_ip_under_lock('fd00:172:24:249::182')
+
+    assert writes == [
+        ('management.server.ip6', 'fd00:172:24:249::182'),
+    ]
+
+
+def test_add_ip_preserves_custom_legacy_ipv4_console_proxy(monkeypatch):
+    writes = []
+
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: {
+        'management.server.ip': '172.24.249.182',
+        'consoleProxyOverriddenIp': '172.24.194.240',
+    }.get(name))
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: True)
+
+    cmd = ctl.AddIpCmd.__new__(ctl.AddIpCmd)
+    assert cmd.add_management_server_ip_under_lock('fd00:172:24:249::182')
+
+    assert writes == [
+        ('management.server.ip6', 'fd00:172:24:249::182'),
+    ]
+
+
+def test_add_ip_preserves_custom_legacy_ipv6_console_proxy(monkeypatch):
+    writes = []
+
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda name: {
+        'management.server.ip': 'fd00:172:24:249::182',
+        'consoleProxyOverriddenIp': 'fd00:172:24:194::240',
+    }.get(name))
+    monkeypatch.setattr(ctl.ctl, 'write_properties', writes.extend)
+    monkeypatch.setattr(ctl, 'local_ip_exists', lambda ip: True)
+
+    cmd = ctl.AddIpCmd.__new__(ctl.AddIpCmd)
+    assert cmd.add_management_server_ip_under_lock('172.24.249.182')
+
+    assert writes == [
+        ('management.server.ip4', '172.24.249.182'),
+    ]
 
 
 def test_add_ip_requires_local_address(monkeypatch):

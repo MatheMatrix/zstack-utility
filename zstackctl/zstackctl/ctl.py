@@ -3055,6 +3055,82 @@ EOF
         ))
         logger.debug('report properties updated, propertiesDigestValue: %s, mnIp: %s' % (config_cmd.propertiesDigestValue, config_cmd.mnIp))
 
+    def console_proxy_property_for_ip(self, ip):
+        ip_version = get_ip_version(ip)
+        if ip_version == management_network_ipv6.IPV4_VERSION:
+            return CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY
+        if ip_version == management_network_ipv6.IPV6_VERSION:
+            return CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY
+        return None
+
+    def append_or_replace_property(self, properties, key, value):
+        for prop in reversed(properties):
+            if prop[0] == key:
+                prop[1] = value
+                return
+        properties.append([key, value])
+
+    def validate_console_proxy_family_property(self, key, value):
+        if value in (None, ''):
+            return
+        if key == CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY and value == '0.0.0.0':
+            return
+        if key == CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY and value == '::':
+            return
+
+        ip_version = get_ip_version(value)
+        if key == CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY and ip_version != management_network_ipv6.IPV4_VERSION:
+            raise CtlError('%s must be an IPv4 address' % key)
+        if key == CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY and ip_version != management_network_ipv6.IPV6_VERSION:
+            raise CtlError('%s must be an IPv6 address' % key)
+
+    def normalize_console_proxy_properties(self, properties):
+        requested = {}
+        for key, value in properties:
+            if key in (CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY,
+                       CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY,
+                       CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY):
+                requested[key] = value
+
+        if not requested:
+            return properties
+
+        for family_property in (CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY, CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY):
+            if family_property in requested:
+                self.validate_console_proxy_family_property(family_property, requested[family_property])
+
+        legacy_value = requested.get(CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY)
+        if legacy_value is not None:
+            family_property = self.console_proxy_property_for_ip(legacy_value)
+            if family_property:
+                family_value = requested.get(family_property)
+                if family_value is not None and family_value not in ('', legacy_value):
+                    raise CtlError('%s conflicts with %s for the same IP family' %
+                                   (CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, family_property))
+                self.append_or_replace_property(properties, family_property, legacy_value)
+            elif legacy_value not in ('', '0.0.0.0', '::'):
+                for family_property in (CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY, CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY):
+                    family_value = requested.get(family_property)
+                    if family_value not in (None, ''):
+                        raise CtlError('%s conflicts with %s; hostname legacy must be used by all clients' %
+                                       (CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, family_property))
+                    self.append_or_replace_property(properties, family_property, '')
+
+        for family_property in (CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY, CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY):
+            if family_property not in requested:
+                continue
+            family_value = requested[family_property]
+            family_version = get_ip_version(family_value)
+            legacy = legacy_value if legacy_value is not None else ctl.read_property(CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY)
+            if not legacy or legacy in ('0.0.0.0', '::'):
+                continue
+            if family_version is None:
+                continue
+            if get_ip_version(legacy) == family_version and legacy != family_value:
+                self.append_or_replace_property(properties, CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, '')
+
+        return properties
+
     def run(self, args):
         if args.use_file:
             self._use_file(args)
@@ -3077,6 +3153,7 @@ EOF
             return
 
         properties = [l.split('=', 1) for l in ctl.extra_arguments]
+        properties = self.normalize_console_proxy_properties(properties)
         ctl.write_properties(properties)
 
         self._report_property_updated()
@@ -8883,12 +8960,11 @@ class ChangeIpCmd(Command):
             if legacy_ip == old_ip:
                 writes.append((CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, ''))
         else:
-            should_update_family = (
-                family_ip == old_ip
-                or ((family_ip is None or family_ip == '') and legacy_ip == old_ip)
-                or ((family_ip is None or family_ip == '') and (legacy_ip is None or legacy_ip == '') and change['primary'])
-            )
-            if should_update_family:
+            if family_ip == old_ip:
+                writes.append((family_property, new_ip))
+            elif (family_ip is None or family_ip == '') and legacy_ip == old_ip:
+                writes.append((family_property, new_ip))
+            elif (family_ip is None or family_ip == '') and (legacy_ip is None or legacy_ip == '') and change['primary']:
                 writes.append((family_property, new_ip))
             if legacy_ip == old_ip:
                 writes.append((CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, ''))
@@ -9077,6 +9153,35 @@ class AddIpCmd(Command):
             return management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY
         error('add_ip requires a valid IP address')
 
+    def console_proxy_property_for_ip(self, ip):
+        ip_version = get_ip_version(ip)
+        if ip_version == management_network_ipv6.IPV4_VERSION:
+            return CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY
+        if ip_version == management_network_ipv6.IPV6_VERSION:
+            return CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY
+        error('add_ip requires a valid IP address')
+
+    def console_proxy_properties_for_add_ip(self, primary_ip, secondary_ip):
+        legacy_ip = ctl.read_property(CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY)
+        primary_property = self.console_proxy_property_for_ip(primary_ip)
+        secondary_property = self.console_proxy_property_for_ip(secondary_ip)
+        primary_console_ip = ctl.read_property(primary_property)
+        secondary_console_ip = ctl.read_property(secondary_property)
+        writes = []
+
+        legacy_console_default = legacy_ip is None or legacy_ip == '' or legacy_ip in (primary_ip, secondary_ip)
+        if not legacy_console_default:
+            return writes
+
+        primary_console_empty = primary_console_ip is None or primary_console_ip == ''
+        if primary_console_empty:
+            writes.append((primary_property, primary_ip))
+        if secondary_console_ip is None or secondary_console_ip == '':
+            writes.append((secondary_property, secondary_ip))
+        if legacy_ip == primary_ip or legacy_ip == secondary_ip:
+            writes.append((CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, ''))
+        return writes
+
     def add_management_server_ip_under_lock(self, ip):
         primary_ip = ctl.read_property(management_network_ipv6.MANAGEMENT_IP_PROPERTY_KEY)
         if primary_ip is None or not validate_ip(primary_ip):
@@ -9099,9 +9204,9 @@ class AddIpCmd(Command):
         if not local_ip_exists(ip):
             error('IP address %s is not found on any device; please configure the OS network address before running add_ip' % ip)
 
-        ctl.write_properties([
-            (property_key, ip),
-        ])
+        writes = [(property_key, ip)]
+        writes.extend(self.console_proxy_properties_for_add_ip(primary_ip, ip))
+        ctl.write_properties(writes)
         return True
 
     @lock.file_lock('/run/zstack.properties.lock')
