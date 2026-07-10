@@ -1343,6 +1343,11 @@ def add_vg_tag(vgUuid, tag):
     cmd(is_exception=True)
 
 
+def add_pv_tag(pvName, tag):
+    cmd = shell.ShellCmd("pvchange --addtag %s %s" % (tag, pvName))
+    cmd(is_exception=True)
+
+
 def has_lv_tag(path, tag):
     # type: (str, str) -> bool
     if tag == "":
@@ -2939,3 +2944,129 @@ def subcmd(cmd, timeout=lvm_cmd_timeout_with_locking, lockopts: list[str] | None
         argv += ["--lockopt", ",".join(lockopts)]
 
     return " ".join(argv)
+
+
+def get_lvm_objects(object_type, fields=None, uuid=None, name=None, tag=None, first=False):
+    sub_cmd = {
+        "physical_volume": subcmd("pvs"),
+        "volume_group": subcmd("vgs"),
+        "logical_volume": subcmd("lvs"),
+    }.get(object_type)
+    if not sub_cmd:
+        raise Exception("Unsupported LVM object type: %s" % object_type)
+
+    selected_fields = ["all"] if fields is None else fields
+    args = ["--units", "B", "--options", ",".join(selected_fields), "--reportformat", "json"]
+    selectors = []
+    if uuid:
+        selectors.append("uuid=%s" % uuid)
+    if tag:
+        selectors.append("tags=%s" % tag)
+    if selectors:
+        args.extend(["--select", linux.shellquote(" && ".join(selectors))])
+    if name:
+        args.append(linux.shellquote(name))
+    cmd = shell.ShellCmd("%s %s" % (sub_cmd, " ".join(args)))
+    cmd(is_exception=False)
+    if not cmd.stdout.strip():
+        return None
+
+    reports = simplejson.loads(cmd.stdout.strip()).get("report")
+    if not reports:
+        return None
+    objects = reports.pop().popitem()[1] or None
+    if first:
+        return objects.pop() if objects else None
+    return objects
+
+
+class LvmObjectInfo(object):
+    _object_type = None # type: str | None
+
+    def __init__(self, uuid):
+        # type: (str) -> None
+        self._uuid = uuid
+        self._info = None # type: dict[str, str] | None
+
+    def reload(self):
+        # type: () -> None
+        self._info = None
+
+    def _load(self):
+        # type: () -> dict[str, str]
+        info = get_lvm_objects(self._object_type, uuid=self._uuid, first=True)
+
+        if not info:
+            raise Exception("No such LVM object with UUID: %s" % self._uuid)
+
+        return info
+
+    def __getitem__(self, name):
+        # type: (str) -> str
+        if self._info is None:
+            self._info = self._load()
+        return self._info.get(name, "")
+
+class PVInfo(LvmObjectInfo):
+    _object_type = "physical_volume"
+
+class VGInfo(LvmObjectInfo):
+    _object_type = "volume_group"
+
+class LVInfo(LvmObjectInfo):
+    _object_type = "logical_volume"
+
+
+def create_pv(device_path, metadata_size=None, force=True):
+    args = ["-qq", "--yes"]
+    if metadata_size is not None:
+        args.extend(["--metadatasize", metadata_size])
+    if force:
+        args.append("--force")
+    args.append(device_path)
+    shell.ShellCmd("%s %s" % (subcmd("pvcreate"), ' '.join(args)))(is_exception=True)
+    pv_created = get_lvm_objects("physical_volume", name=device_path, fields=["pv_uuid"], first=True)
+    if pv_created is None:
+        raise Exception("Failed to create PV on device %s" % device_path)
+    return pv_created.get("pv_uuid")
+
+
+def remove_pv(pv_name, force=True):
+    args = ["-qq", "--yes"]
+    if force:
+        args.append("--force")
+    args.append(pv_name)
+    shell.ShellCmd("%s %s" % (subcmd("pvremove"), ' '.join(args)))(is_exception=True)
+
+
+def check_pv(pv_name):
+    cmd = shell.ShellCmd("%s -qq --yes %s" % (subcmd("pvck", timeout=5), pv_name))
+    cmd(is_exception=False)
+    return cmd.return_code == 0
+
+
+def create_vg(vg_name, pv_names, metadata_size=None):
+    args = ["-qq", "--yes"]
+    if metadata_size is not None:
+        args.extend(["--metadatasize", metadata_size])
+    args.append(vg_name)
+    args.extend(pv_names)
+    shell.ShellCmd("%s %s" % (subcmd("vgcreate"), ' '.join(args)))(is_exception=True)
+    vg_created = get_lvm_objects("volume_group", name=vg_name, fields=["vg_uuid"], first=True)
+    if vg_created is None:
+        raise Exception("Failed to create VG %s on PVs %s" % (vg_name, ','.join(pv_names)))
+    return vg_created.get("vg_uuid")
+
+
+def remove_vg(vg_name, force=True):
+    args = ["-qq", "--yes"]
+    if force:
+        args.append("--force")
+    args.append(vg_name)
+    shell.ShellCmd("%s %s" % (subcmd("vgremove"), ' '.join(args)))(is_exception=True)
+
+
+def rescan_lvm():
+    shell.ShellCmd("%s --cache -qq --yes" % subcmd("pvscan"))(is_exception=True)
+    shell.ShellCmd("%s -qq --yes --ignorelockingfailure" % subcmd("vgscan"))(is_exception=True)
+    shell.ShellCmd("%s -qq --yes --ignorelockingfailure --all" % subcmd("lvscan"))(is_exception=True)

@@ -1164,7 +1164,7 @@ def create_template(src, dst, dst_format='qcow2', compress=False, shell=shell, p
     raise Exception('unknown format[%s] of the image file[%s]' % (fmt, src))
 
 
-def qcow2_create_template(src, dst, compress, dst_format='qcow2', shell=shell, progress_output=None, opts=None):
+def qcow2_create_template(src, dst, compress, dst_format='qcow2', shell=shell, progress_output=None, opts=None, bitmap=None):
     redirect, ext_opts = "", []
     if progress_output:
         redirect = " > " + progress_output
@@ -1175,6 +1175,9 @@ def qcow2_create_template(src, dst, compress, dst_format='qcow2', shell=shell, p
 
     if opts:
         ext_opts.append(opts)
+
+    if bitmap:
+        ext_opts.extend(["--bitmap", shellquote(bitmap)])
 
     shell.call('%s %s -f qcow2 -O %s %s %s %s' % (qemu_img.subcmd('convert'), " ".join(ext_opts), dst_format, src, dst, redirect))
 
@@ -1188,6 +1191,10 @@ def raw_create_template(src, dst, dst_format='qcow2', shell=shell, progress_outp
 
 def qcow2_convert_to_raw(src, dst):
     shell.call('%s -f qcow2 -O raw %s %s' % (qemu_img.subcmd('convert'), src, dst))
+
+def qcow2_convert(src, dst, dst_format='qcow2', shell=shell, progress_output=None, opts=None, bitmap=None):
+    qcow2_create_template(src, dst, False, dst_format=dst_format, shell=shell,
+                          progress_output=progress_output, opts=opts, bitmap=bitmap)
 
 def qcow2_commit(top, base):
     shell.call('%s -f qcow2 -b %s %s' % (qemu_img.subcmd('commit'), base, top))
@@ -2847,14 +2854,14 @@ def kill_process(pid, timeout=5, is_exception=True, is_graceful=True):
         raise Exception('cannot kill -9 process[pid:%s];the process still exists after %s seconds' % (pid, timeout))
 
 
-def kill_all_child_process(ppid, timeout=5):
+def kill_all_child_process(ppid, timeout=5, sig=15):
     def check(_):
         return not os.path.exists('/proc/%s' % ppid)
 
     if check(None):
         return
 
-    shell.run("pkill -15 -P %s" % ppid)
+    shell.run("pkill -%s -P %s" % (sig, ppid))
     if wait_callback_success(check, None, timeout):
         return
 
@@ -3783,3 +3790,112 @@ def get_dev_sector_size(dev_path):
         buf = fcntl.ioctl(fd, BLKSSZGET, "    ")
         sector_size = struct.unpack('I', buf)[0]
         return sector_size
+
+
+class FileSystemInfo(object):
+    def __init__(self, block_device):
+        # type: (str) -> None
+        self.block_device = block_device
+        self._info = None # type: dict[str, str] | None
+
+    def reload(self):
+        # type: () -> None
+        self._info = None
+
+    def _load(self):
+        # type: () -> dict[str, str]
+        if not self.block_device:
+            raise Exception("Block device is not specified for FileSystemInfo")
+        info = _get_filesystem_object(self.block_device)
+        if not info:
+            raise Exception("No filesystem found on block device: %s" % self.block_device)
+        return info
+
+    def __getitem__(self, name):
+        # type: (str) -> str
+        if self._info is None:
+            self._info = self._load()
+        return self._info.get(name, "")
+
+
+class MountPointInfo(object):
+    def __init__(self, filesystem_uuid, mount_path):
+        # type: (str, str) -> None
+        self.filesystem_uuid = filesystem_uuid
+        self.mount_path = mount_path
+        self._info = None # type: dict[str, str] | None
+
+    def reload(self):
+        # type: () -> None
+        self._info = None
+
+    def _load(self):
+        # type: () -> dict[str, str]
+        if not self.filesystem_uuid or not self.mount_path:
+            raise Exception("Block device or mount path is not specified for MountPointInfo")
+        if not is_mounted(path=self.mount_path):
+            raise Exception("No mount point found for device %s on mount path: %s" % (self.filesystem_uuid, self.mount_path))
+        stat = os.statvfs(self.mount_path)
+        size = stat.f_frsize * stat.f_blocks
+        return {
+            "target": self.mount_path,
+            "size": size,
+            "avail": stat.f_frsize * stat.f_bavail,
+            "used": size - stat.f_frsize * stat.f_bfree,
+        }
+
+    def __getitem__(self, name):
+        # type: (str) -> str
+        if self._info is None:
+            self._info = self._load()
+        return self._info.get(name, "")
+
+
+def wipe_block_device_superblock(device_path, force=False):
+    if not os.path.exists(device_path):
+        raise Exception("Device path %s does not exist" % device_path)
+    if not force:
+        cmd = shell.ShellCmd("wipefs --noheadings --no-act --output TYPE %s" % shellquote(device_path))
+        cmd(is_exception=True)
+        if cmd.stdout.strip():
+            raise Exception("Device %s has existing filesystem signatures, refuse to wipe without force" % device_path)
+    shell.ShellCmd("wipefs --all --force %s" % shellquote(device_path))(is_exception=True)
+
+
+def _get_filesystem_object(device_path):
+    cmd = shell.ShellCmd("wipefs --json --no-act --output uuid,usage %s" % shellquote(device_path))
+    cmd(is_exception=True)
+    filesystems = json.loads(cmd.stdout.strip()).get("signatures", []) if cmd.stdout.strip() else []
+    if not filesystems:
+        return None
+    obj = filesystems.pop()
+    return obj if obj.get("usage") == "filesystem" else None
+
+
+def create_xfs_filesystem(device_path, force=False):
+    args = ["-t", "xfs"]
+    if force:
+        args.append("-f")
+    args.append(device_path)
+    shell.ShellCmd("mkfs %s" % ' '.join(shellquote(arg) for arg in args))(is_exception=True)
+    return device_path
+
+
+def extend_xfs_filesystem(device_path):
+    cmd = shell.ShellCmd("xfs_growfs %s" % shellquote(device_path))
+    cmd()
+    if cmd.return_code != 0:
+        raise Exception("Failed to extend filesystem on device %s: %s" % (device_path, cmd.stderr))
+
+
+def check_filesystem(directory, tmp_file=None, timeout=5):
+    tmp_file_path = os.path.join(directory, tmp_file or ".tmp")
+    cmd = shell.ShellCmd("timeout %s touch %s" % (int(timeout), shellquote(tmp_file_path)))
+    cmd(is_exception=False)
+    return cmd.return_code == 0
+
+
+def is_block_device_mounted(device_path):
+    cmd = shell.ShellCmd("lsblk -nr -o MOUNTPOINT %s" % shellquote(device_path))
+    cmd(is_exception=True)
+    return bool(cmd.stdout.strip())
