@@ -132,23 +132,53 @@ class TestEnsureDocker:
     def test_installs_and_starts_when_missing(self):
         states = iter([False, True])
         with patch.object(t, 'docker_ready', side_effect=lambda: next(states)), \
+             patch.object(t.bash, 'bash_roe', return_value=(0, "", None)) as br, \
              patch.object(t.bash, 'bash_errorout') as be:
             t.ensure_docker()
-            cmds = " ".join(str(c) for c in be.call_args_list)
-            assert 'yum --disablerepo=zstack-local --enablerepo=zstack-mn install -y docker' in cmds
-            assert 'systemctl enable --now docker' in cmds
+            cmds = " ".join(str(c) for c in br.call_args_list)
+            assert t.DOCKER_CE_INSTALL_CMD in cmds
+            assert any('systemctl enable --now docker' in str(c) for c in be.call_args_list)
 
-    def test_installs_docker_capability_from_management_node_repo(self):
+    def test_installs_docker_ce_from_management_node_repo_first(self):
         states = iter([False, True])
 
         with patch.object(t, 'docker_ready', side_effect=lambda: next(states)), \
+             patch.object(t.bash, 'bash_roe', return_value=(0, "", None)) as br, \
              patch.object(t.bash, 'bash_errorout') as be:
             t.ensure_docker()
-            cmds = " ".join(str(c) for c in be.call_args_list)
-            assert 'yum --disablerepo=zstack-local --enablerepo=zstack-mn install -y docker' in cmds
-            assert 'docker-engine' not in cmds
-            assert 'docker-ce' not in cmds
-            assert 'systemctl enable --now docker' in cmds
+            cmds = " ".join(str(c) for c in br.call_args_list)
+            assert t.DOCKER_CE_INSTALL_CMD in cmds
+            assert t.DOCKER_ENGINE_INSTALL_CMD not in cmds
+            assert any('systemctl enable --now docker' in str(c) for c in be.call_args_list)
+
+    def test_falls_back_to_docker_engine_when_ce_is_unavailable(self):
+        states = iter([False, True])
+        installs = []
+
+        def run(cmd):
+            installs.append(cmd)
+            if cmd == t.DOCKER_CE_INSTALL_CMD:
+                return 1, "", "No match for argument: docker-ce"
+            return 0, "", None
+
+        with patch.object(t, 'docker_ready', side_effect=lambda: next(states)), \
+             patch.object(t.bash, 'bash_roe', side_effect=run):
+            t.ensure_docker()
+            assert installs[0] == t.DOCKER_CE_INSTALL_CMD
+            assert installs[1] == t.DOCKER_ENGINE_INSTALL_CMD
+
+    def test_raises_with_yum_output_when_both_providers_fail(self):
+        def run(cmd):
+            if cmd == t.DOCKER_CE_INSTALL_CMD:
+                return 1, "ce stdout", "ce stderr"
+            return 1, "engine stdout", "engine stderr"
+
+        with patch.object(t, 'docker_ready', return_value=False), \
+             patch.object(t.bash, 'bash_roe', side_effect=run):
+            with pytest.raises(Exception) as ei:
+                t.ensure_docker()
+            assert 'ce stderr' in str(ei.value)
+            assert 'engine stderr' in str(ei.value)
 
     def test_raises_when_docker_unavailable_after_install(self):
         with patch.object(t, 'docker_ready', return_value=False), \

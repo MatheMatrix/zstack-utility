@@ -33,7 +33,8 @@ DEFAULT_HUGEPAGE_NR = 256
 DEFAULT_VHOST_TARGET_HUGEPAGE_NR = 1024
 HUGEPAGE_SIZE_BYTES = 2 * 1024 * 1024
 DEFAULT_CORE_COUNT = 2
-DOCKER_INSTALL_CMD = "yum --disablerepo=zstack-local --enablerepo=zstack-mn install -y docker"
+DOCKER_CE_INSTALL_CMD = "yum --disablerepo=zstack-local --enablerepo=zstack-mn install -y docker-ce docker-ce-cli containerd.io"
+DOCKER_ENGINE_INSTALL_CMD = "yum --disablerepo=zstack-local --enablerepo=zstack-mn install -y docker-engine"
 
 
 def host_cpu_num():
@@ -213,7 +214,14 @@ def docker_ready():
 def ensure_docker():
     if docker_ready():
         return
-    bash.bash_errorout(DOCKER_INSTALL_CMD)
+    ce_r, ce_o, ce_e = bash.bash_roe(DOCKER_CE_INSTALL_CMD)
+    if ce_r != 0:
+        logger.warn("docker-ce install failed, falling back to docker-engine, stdout: %s, stderr: %s" % (ce_o, ce_e))
+        engine_r, engine_o, engine_e = bash.bash_roe(DOCKER_ENGINE_INSTALL_CMD)
+        if engine_r != 0:
+            raise Exception("failed to install docker provider from zstack-mn, "
+                            "docker-ce stdout: %s, stderr: %s; docker-engine stdout: %s, stderr: %s"
+                            % (ce_o, ce_e, engine_o, engine_e))
     bash.bash_errorout("systemctl enable --now docker")
     if not docker_ready():
         raise Exception("docker still not running after install on this host")
