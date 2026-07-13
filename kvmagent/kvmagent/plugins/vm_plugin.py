@@ -1569,12 +1569,7 @@ def add_caching_store(disk_element, volume):
     if not device_type:
         raise Exception('volume deviceType is required for attaching cachingStore')
     from kvmagent.plugins import volume_cache_plugin
-    try:
-        backing_volume_class = volume_cache_plugin.supported_backing_volume_classes.get(
-            volume_cache_plugin.BackingVolumeDeviceType(device_type))
-    except ValueError:
-        backing_volume_class = None
-    if not backing_volume_class:
+    if device_type not in volume_cache_plugin.supported_backing_volume_classes:
         raise Exception('volume deviceType[%s] is not supported for block caching, '
                         'skip attaching cachingStore' % device_type)
 
