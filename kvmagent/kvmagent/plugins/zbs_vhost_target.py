@@ -6,6 +6,7 @@ import socket
 import threading
 import xml.etree.ElementTree as ET
 
+from zstacklib.system.filesystem import read_file, safe_write
 from zstacklib.utils import bash
 from zstacklib.utils import log
 
@@ -35,6 +36,7 @@ HUGEPAGE_SIZE_BYTES = 2 * 1024 * 1024
 DEFAULT_CORE_COUNT = 2
 DOCKER_CE_INSTALL_CMD = "yum --disablerepo=zstack-local --enablerepo=zstack-mn install -y docker-ce docker-ce-cli containerd.io"
 DOCKER_ENGINE_INSTALL_CMD = "yum --disablerepo=zstack-local --enablerepo=zstack-mn install -y docker-engine"
+DOCKER_DAEMON_CONFIG_PATH = "/etc/docker/daemon.json"
 
 
 def host_cpu_num():
@@ -206,14 +208,49 @@ def image_present(image):
     return bash.bash_r("docker image inspect %s >/dev/null 2>&1" % shlex.quote(image)) == 0
 
 
+def docker_active():
+    return bash.bash_r("systemctl is-active --quiet docker") == 0
+
+
 def docker_ready():
-    return bash.bash_r("command -v docker >/dev/null 2>&1") == 0 and \
-           bash.bash_r("systemctl is-active --quiet docker") == 0
+    return bash.bash_r("command -v docker >/dev/null 2>&1") == 0 and docker_active()
 
 
+def _read_docker_daemon_config():
+    try:
+        config = json.loads(read_file(DOCKER_DAEMON_CONFIG_PATH))
+    except FileNotFoundError:
+        return {}
+    except ValueError as e:
+        raise Exception("invalid docker daemon config[%s]: %s" % (DOCKER_DAEMON_CONFIG_PATH, e))
+    if not isinstance(config, dict):
+        raise Exception("invalid docker daemon config[%s]: expected a JSON object" % DOCKER_DAEMON_CONFIG_PATH)
+    return config
+
+
+def _ensure_docker_iptables_disabled():
+    config = _read_docker_daemon_config()
+    if config.get("iptables") is False:
+        return
+    if "iptables" in config:
+        raise Exception("docker daemon config[%s] has conflicting iptables value[%s]" %
+                        (DOCKER_DAEMON_CONFIG_PATH, config["iptables"]))
+
+    config["iptables"] = False
+    safe_write(DOCKER_DAEMON_CONFIG_PATH,
+               json.dumps(config, indent=2, sort_keys=True) + "\n")
+
+
+@_locked
 def ensure_docker():
     if docker_ready():
+        if _read_docker_daemon_config().get("iptables") is not False:
+            raise Exception("docker is active but daemon config[%s] does not set iptables to false" %
+                            DOCKER_DAEMON_CONFIG_PATH)
         return
+    if docker_active():
+        raise Exception("docker service is active but docker command is unavailable")
+    _ensure_docker_iptables_disabled()
     ce_r, ce_o, ce_e = bash.bash_roe(DOCKER_CE_INSTALL_CMD)
     if ce_r != 0:
         logger.warn("docker-ce install failed, falling back to docker-engine, stdout: %s, stderr: %s" % (ce_o, ce_e))
