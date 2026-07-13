@@ -3,6 +3,7 @@
 Huawei NPU Vendor Implementation (Python 2/3 Compatible)
 """
 
+import os
 import re
 
 from zstacklib.utils import log
@@ -675,5 +676,39 @@ class Huawei(GPUBase):
 
         Returns tuple: (is_supported, capability_info)
         """
-        # Huawei NPU does not support SR-IOV
+        addr = pci_device_to.pciDeviceAddress
+        dev = os.path.join("/sys/bus/pci/devices/", addr)
+        totalvfs = os.path.join(dev, "sriov_totalvfs")
+        numvfs = os.path.join(dev, "sriov_numvfs")
+        physfn = os.path.join(dev, "physfn")
+        capability_info = {}
+
+        if os.path.exists(totalvfs):
+            with open(totalvfs, 'r') as f:
+                capability_info['maxPartNum'] = f.read().strip()
+
+            with open(numvfs, 'r') as f:
+                if f.read().strip() != '0':
+                    cls.set_capability_virt_metadata(
+                        capability_info, "SRIOV_VIRTUALIZED",
+                        "VIRTUALIZED", "SRIOV", ["SRIOV"])
+                else:
+                    cls.set_capability_virt_metadata(
+                        capability_info, "SRIOV_VIRTUALIZABLE",
+                        "VIRTUALIZABLE", None, ["SRIOV"])
+            return True, capability_info
+
+        if os.path.exists(physfn):
+            parent_numvfs = os.path.join(physfn, "sriov_numvfs")
+            if os.path.exists(parent_numvfs):
+                with open(parent_numvfs, 'r') as f:
+                    capability_info['maxPartNum'] = f.read().strip()
+
+            cls.set_capability_virt_metadata(
+                capability_info, "SRIOV_VIRTUAL",
+                "VIRTUAL", "SRIOV", [])
+            capability_info['parentAddress'] = os.readlink(
+                physfn).split('/')[-1]
+            return True, capability_info
+
         return False, {}

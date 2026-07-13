@@ -501,6 +501,107 @@ Power Dissipation : 150 W
         candidates = Huawei.get_pci_only_candidates(device_ids, device_names)
         self.assertEqual(candidates, [])
 
+    def test_detect_sriov_capability_for_pf_with_vfs(self):
+        from io import StringIO
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        class PciDevice(object):
+            pciDeviceAddress = "0000:42:00.0"
+
+        def open_sysfs(path, mode='r'):
+            value = "12" if path.endswith("sriov_totalvfs") else "8"
+            return StringIO(value)
+
+        with patch("zstacklib.gpu.vendors.huawei.os.path.exists",
+                   side_effect=lambda path: path.endswith(("sriov_totalvfs", "sriov_numvfs"))), \
+                patch("zstacklib.gpu.vendors.huawei.open",
+                      side_effect=open_sysfs, create=True):
+            supported, info = Huawei.detect_sriov_capability(PciDevice())
+
+        self.assertTrue(supported)
+        self.assertEqual(info["maxPartNum"], "12")
+        self.assertEqual(info["virtStatus"], "SRIOV_VIRTUALIZED")
+        self.assertEqual(info["virtState"], "VIRTUALIZED")
+        self.assertEqual(info["virtMode"], "SRIOV")
+        self.assertEqual(info["virtCapabilities"], ["SRIOV"])
+
+    def test_detect_sriov_capability_for_pf_without_vfs(self):
+        from io import StringIO
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        class PciDevice(object):
+            pciDeviceAddress = "0000:42:00.0"
+
+        def open_sysfs(path, mode='r'):
+            value = "12" if path.endswith("sriov_totalvfs") else "0"
+            return StringIO(value)
+
+        with patch("zstacklib.gpu.vendors.huawei.os.path.exists",
+                   side_effect=lambda path: path.endswith(("sriov_totalvfs", "sriov_numvfs"))), \
+                patch("zstacklib.gpu.vendors.huawei.open",
+                      side_effect=open_sysfs, create=True):
+            supported, info = Huawei.detect_sriov_capability(PciDevice())
+
+        self.assertTrue(supported)
+        self.assertEqual(info["maxPartNum"], "12")
+        self.assertEqual(info["virtStatus"], "SRIOV_VIRTUALIZABLE")
+        self.assertEqual(info["virtState"], "VIRTUALIZABLE")
+        self.assertEqual(info["virtMode"], "")
+        self.assertEqual(info["virtCapabilities"], ["SRIOV"])
+
+    def test_detect_sriov_capability_for_vf(self):
+        from io import StringIO
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        class PciDevice(object):
+            pciDeviceAddress = "0000:42:01.0"
+
+        def path_exists(path):
+            return path.endswith("physfn") or path.endswith("physfn/sriov_numvfs")
+
+        with patch("zstacklib.gpu.vendors.huawei.os.path.exists", side_effect=path_exists), \
+                patch("zstacklib.gpu.vendors.huawei.os.readlink",
+                      return_value="../0000:42:00.0"), \
+                patch("zstacklib.gpu.vendors.huawei.open",
+                      return_value=StringIO("8"), create=True):
+            supported, info = Huawei.detect_sriov_capability(PciDevice())
+
+        self.assertTrue(supported)
+        self.assertEqual(info["maxPartNum"], "8")
+        self.assertEqual(info["parentAddress"], "0000:42:00.0")
+        self.assertEqual(info["virtStatus"], "SRIOV_VIRTUAL")
+        self.assertEqual(info["virtState"], "VIRTUAL")
+        self.assertEqual(info["virtMode"], "SRIOV")
+        self.assertEqual(info["virtCapabilities"], [])
+
+    def test_detect_sriov_capability_for_physical_device(self):
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        class PciDevice(object):
+            pciDeviceAddress = "0000:01:00.0"
+
+        with patch("zstacklib.gpu.vendors.huawei.os.path.exists", return_value=False):
+            supported, info = Huawei.detect_sriov_capability(PciDevice())
+
+        self.assertFalse(supported)
+        self.assertEqual(info, {})
+
     def test_post_process_preserves_product_name_in_device(self):
         """ZSTAC-83466: When productName is available, device should keep productName
         after post_process_pci_device_by_vendor (not be overwritten to '-').
