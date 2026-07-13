@@ -12010,16 +12010,88 @@ host side snapshot files chian:
 
             fixed = False
 
-            def get_path_by_device(device_name, vm):
+            def get_disk_by_device(device_name, vm):
                 for disk in vm.domain_xmlobject.devices.get_child_node_as_list('disk'):
                     if disk.target.dev_ == device_name:
-                        return VmPlugin.get_source_file_by_disk(disk)
+                        return disk
+
+            def get_path_by_disk(disk):
+                if disk:
+                    return VmPlugin.get_source_file_by_disk(disk)
+
+            def get_qmp_filename(info):
+                if isinstance(info, dict):
+                    if info.get("filename"):
+                        return info.get("filename")
+                    return get_qmp_filename(info.get("image")) or get_qmp_filename(info.get("file"))
+                if isinstance(info, basestring):
+                    return info
+
+            def qmp_node_refers_path(block_node, path):
+                if not block_node or not path:
+                    return False
+                if block_node.get("backing_file") == path:
+                    return True
+                return path in str(block_node.get("file")) or path in str(block_node.get("image"))
+
+            def get_cbt_scratch_path(source_path):
+                block_jobs = qmp.execute_qmp_command(vm_uuid, "query-block-jobs", raise_exception=False)
+                if block_jobs is None:
+                    return None, False
+
+                scratch_jobs = []
+                for job in block_jobs:
+                    job_name = job.get("device") or job.get("id") or job.get("job-id")
+                    if job.get("type") == "backup" and job_name and job_name.endswith("-scratch"):
+                        scratch_jobs.append(job_name)
+
+                if not scratch_jobs:
+                    return None, False
+
+                block_nodes = qmp.execute_qmp_command(vm_uuid, "query-named-block-nodes", raise_exception=False)
+                if block_nodes is None:
+                    logger.warn("cannot query block nodes of vm[%s] to find cbt scratch of source[%s]" %
+                                (vm_uuid, source_path))
+                    return None, True
+
+                block_node_map = {}
+                for block_node in block_nodes:
+                    block_node_map[block_node.get("node-name")] = block_node
+
+                for scratch_node_name in scratch_jobs:
+                    scratch_node = block_node_map.get(scratch_node_name)
+                    if not qmp_node_refers_path(scratch_node, source_path):
+                        continue
+
+                    storage_node_name = scratch_node_name.replace("scratch", "storage", 1)
+                    storage_node = block_node_map.get(storage_node_name)
+                    scratch_path = get_qmp_filename(storage_node)
+                    if scratch_path:
+                        return scratch_path, True
+                    logger.warn("cannot get filename from cbt scratch storage node[%s] of vm[%s]" %
+                                (storage_node_name, vm_uuid))
+                    return None, True
+
+                return None, False
 
             try:
                 for device, error in disk_errors.viewitems():
                     if error == libvirt.VIR_DOMAIN_DISK_ERROR_NO_SPACE:
-                        path = get_path_by_device(device, vm)
-                        syslog.syslog("disk %s:%s of vm %s got ENOSPC" % (device, path, vm_uuid))
+                        disk = get_disk_by_device(device, vm)
+                        source_path = get_path_by_disk(disk)
+                        syslog.syslog("disk %s:%s of vm %s got ENOSPC" % (device, source_path, vm_uuid))
+
+                        path, cbt_scratch = get_cbt_scratch_path(source_path)
+                        if cbt_scratch:
+                            syslog.syslog("disk %s of vm %s got CBT scratch ENOSPC, scratch path is %s" %
+                                          (device, vm_uuid, path))
+                            if not path:
+                                syslog.syslog("skip extending source disk of vm %s because CBT scratch path is unknown" %
+                                              vm_uuid)
+                                continue
+                        else:
+                            path = source_path
+
                         if not lvm.lv_exists(path):
                             continue
                         extend_lv(event_str, path, vm, device)
