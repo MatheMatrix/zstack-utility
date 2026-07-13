@@ -1193,8 +1193,18 @@ def qcow2_convert_to_raw(src, dst):
     shell.call('%s -f qcow2 -O raw %s %s' % (qemu_img.subcmd('convert'), src, dst))
 
 def qcow2_convert(src, dst, dst_format='qcow2', shell=shell, progress_output=None, opts=None, bitmap=None):
-    qcow2_create_template(src, dst, False, dst_format=dst_format, shell=shell,
-                          progress_output=progress_output, opts=opts, bitmap=bitmap)
+    redirect, ext_opts = "", []
+    if progress_output:
+        redirect = " > " + progress_output
+        ext_opts.append("-p")
+
+    if opts:
+        ext_opts.append(opts)
+
+    if bitmap:
+        ext_opts.extend(["--bitmap", shellquote(bitmap)])
+
+    shell.call('qemu-img convert %s -f qcow2 -O %s %s %s %s' % (" ".join(ext_opts), dst_format, src, dst, redirect))
 
 def qcow2_commit(top, base):
     shell.call('%s -f qcow2 -b %s %s' % (qemu_img.subcmd('commit'), base, top))
