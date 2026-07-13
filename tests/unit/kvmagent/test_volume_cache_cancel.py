@@ -530,5 +530,17 @@ class VolumeCacheCancelCase(unittest.TestCase):
             opts="-W -n",
             bitmap="block-cache")
 
+
+class VolumeCacheXmlCase(unittest.TestCase):
+    def test_add_caching_store_accepts_supported_device_type(self):
+        vm_plugin = _import_with_plugin_stub("kvmagent.plugins.vm_plugin")
+        disk = vm_plugin.etree.Element("disk")
+        volume = _Obj(deviceType="file", cache=_Obj(installPath="/cache/volume-1.qcow2"))
+
+        vm_plugin.add_caching_store(disk, volume)
+
+        self.assertEqual("/cache/volume-1.qcow2", disk.find("cachingStore/source").get("file"))
+
+
 if __name__ == "__main__":
     unittest.main()
