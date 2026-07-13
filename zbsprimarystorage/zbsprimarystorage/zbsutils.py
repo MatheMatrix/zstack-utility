@@ -1,10 +1,12 @@
 __author__ = 'Xingwei Yu'
 
+from collections import defaultdict
 import os
 import time
 from zstacklib.utils.version import NumericVersion
 
 import zstacklib.utils.jsonobject as jsonobject
+from zstacklib.utils import form
 
 from zstacklib.utils.bash import *
 
@@ -28,6 +30,8 @@ VHOST_ADMIN_SOCK_NAME = "admin.sock"
 VHOST_DEPLOY_READY_RETRIES = 40
 VHOST_DEPLOY_READY_INTERVAL_SECONDS = 0.5
 DEFAULT_VHOST_TARGET_HUGEPAGE_DIR = "/dev/hugepages2m"
+DEFAULT_VHOST_TARGET_CPU_COUNT = 4
+VHOST_CPU_TOPOLOGY_CMD = "LC_ALL=C lscpu --online -e=CPU,NODE,SOCKET,CORE"
 
 
 class ClientInfo(object):
@@ -85,11 +89,46 @@ def deploy_client(ip, port, username, password):
         ZBSADM_BIN_PATH, ip, port, username, linux.shellquote(password)))
 
 
+def _select_vhost_cpus(topology):
+    numa_nodes = defaultdict(list)
+    for cpu_topology in topology:
+        numa_nodes[cpu_topology[1]].append(cpu_topology)
+
+    selected_node = max(
+        numa_nodes.values(),
+        key=lambda cpus: (len(cpus), max(cpu[0] for cpu in cpus)))
+    physical_cores = defaultdict(list)
+    for cpu, _, socket, core in selected_node:
+        physical_cores[(socket, core)].append(cpu)
+
+    selected = []
+    core_groups = sorted(physical_cores.values(), key=max, reverse=True)
+    for siblings in core_groups[:DEFAULT_VHOST_TARGET_CPU_COUNT]:
+        selected.append(max(siblings))
+
+    if len(selected) < DEFAULT_VHOST_TARGET_CPU_COUNT:
+        remaining = sorted(
+            (cpu[0] for cpu in selected_node if cpu[0] not in selected),
+            reverse=True)
+        selected.extend(remaining[:DEFAULT_VHOST_TARGET_CPU_COUNT - len(selected)])
+    return sorted(selected)
+
+
 def vhost_auto_cpuset(ip, port, username, password):
-    _, o, _ = linux.sshpass_run(ip, password, "grep -c processor /proc/cpuinfo", user=username, port=int(port))
-    n = int(o.strip()) if o and o.strip().isdigit() else 0
-    core = n - 1 if n > 1 else 0
-    return "[%d]" % core
+    ret, out, err = linux.sshpass_run(
+        ip, password, VHOST_CPU_TOPOLOGY_CMD, user=username, port=int(port))
+    if ret != 0:
+        detail = (err or "").strip() or (out or "").strip() or "no command output"
+        raise Exception("failed to query vhost CPU topology on host[%s], exit code[%s]: %s" %
+                        (ip, ret, detail))
+
+    try:
+        topology = [tuple(int(row[key]) for key in ("CPU", "NODE", "SOCKET", "CORE"))
+                    for row in form.load(out)]
+        cpus = _select_vhost_cpus(topology)
+    except (KeyError, TypeError, ValueError) as error:
+        raise Exception("failed to select vhost CPUs on host[%s]: %s" % (ip, error))
+    return "[%s]" % ",".join(str(cpu) for cpu in cpus)
 
 
 def find_2m_hugetlbfs_mount(ip, port, username, password):

@@ -3,6 +3,8 @@ Unit tests for the lazy-deploy path in kvmagent.plugins.zbs_vhost_target:
 image source fallback ordering, conditional insecure-registry downgrade,
 target health semantics, and shell quoting of request-supplied values.
 """
+import json
+
 import pytest
 from unittest.mock import patch
 
@@ -123,21 +125,110 @@ class TestShellQuoting:
 
 
 class TestEnsureDocker:
+    @pytest.fixture(autouse=True)
+    def daemon_config(self, tmp_path):
+        self.daemon_config = tmp_path / "daemon.json"
+        self.daemon_config_path = str(self.daemon_config)
+        with patch.object(t, 'DOCKER_DAEMON_CONFIG_PATH', self.daemon_config_path), \
+             patch.object(t, 'docker_active', return_value=False) as active:
+            self.docker_active = active
+            yield
+
+    def _write_daemon_config(self, config):
+        self.daemon_config.write_text(json.dumps(config) if isinstance(config, dict) else config)
+
+    def _read_daemon_config(self):
+        return json.loads(self.daemon_config.read_text()) if self.daemon_config.exists() else None
+
+    def _read_daemon_config_bytes(self):
+        return self.daemon_config.read_bytes() if self.daemon_config.exists() else None
+
     def test_skips_install_when_docker_ready(self):
+        self._write_daemon_config({'iptables': False})
         with patch.object(t, 'docker_ready', return_value=True), \
+             patch.object(t.bash, 'bash_roe') as br, \
              patch.object(t.bash, 'bash_errorout') as be:
             t.ensure_docker()
+            br.assert_not_called()
             be.assert_not_called()
 
     def test_installs_and_starts_when_missing(self):
         states = iter([False, True])
+
+        def start(cmd):
+            assert self._read_daemon_config()['iptables'] is False
+
         with patch.object(t, 'docker_ready', side_effect=lambda: next(states)), \
              patch.object(t.bash, 'bash_roe', return_value=(0, "", None)) as br, \
-             patch.object(t.bash, 'bash_errorout') as be:
+             patch.object(t.bash, 'bash_errorout', side_effect=start) as be:
             t.ensure_docker()
             cmds = " ".join(str(c) for c in br.call_args_list)
             assert t.DOCKER_CE_INSTALL_CMD in cmds
             assert any('systemctl enable --now docker' in str(c) for c in be.call_args_list)
+            assert self._read_daemon_config() == {'iptables': False}
+
+    def test_preserves_existing_daemon_config_when_disabling_iptables(self):
+        self._write_daemon_config({'registry-mirrors': ['https://mirror.example.com']})
+        states = iter([False, True])
+        with patch.object(t, 'docker_ready', side_effect=lambda: next(states)), \
+             patch.object(t.bash, 'bash_roe', return_value=(0, "", None)), \
+             patch.object(t.bash, 'bash_errorout'):
+            t.ensure_docker()
+
+        assert self._read_daemon_config() == {
+            'iptables': False,
+            'registry-mirrors': ['https://mirror.example.com'],
+        }
+
+    @pytest.mark.parametrize('config', [
+        {'iptables': True},
+        '{invalid-json',
+        '[]',
+        'null',
+    ])
+    def test_rejects_conflicting_daemon_config_before_start(self, config):
+        self._write_daemon_config(config)
+        with patch.object(t, 'docker_ready', return_value=False), \
+             patch.object(t.bash, 'bash_roe') as br, \
+             patch.object(t.bash, 'bash_errorout') as be, \
+             pytest.raises(Exception):
+            t.ensure_docker()
+
+        br.assert_not_called()
+        be.assert_not_called()
+
+    @pytest.mark.parametrize('config', [
+        None,
+        {'iptables': True},
+        '{invalid-json',
+        '[]',
+        'null',
+    ])
+    def test_rejects_active_docker_without_safe_firewall_config(self, config):
+        if config is not None:
+            self._write_daemon_config(config)
+        original = self._read_daemon_config_bytes()
+        with patch.object(t, 'docker_ready', return_value=True), \
+             patch.object(t.bash, 'bash_roe') as br, \
+             patch.object(t.bash, 'bash_errorout') as be, \
+             pytest.raises(Exception):
+            t.ensure_docker()
+
+        br.assert_not_called()
+        be.assert_not_called()
+        assert self._read_daemon_config_bytes() == original
+
+    def test_rejects_active_docker_when_cli_is_unavailable(self):
+        self._write_daemon_config({'iptables': False})
+        self.docker_active.return_value = True
+        with patch.object(t, 'docker_ready', return_value=False), \
+             patch.object(t.bash, 'bash_roe', return_value=(0, "", None)) as br, \
+             patch.object(t.bash, 'bash_errorout') as be, \
+             pytest.raises(Exception, match='active.*command'):
+            t.ensure_docker()
+
+        br.assert_not_called()
+        be.assert_not_called()
 
     def test_installs_docker_ce_from_management_node_repo_first(self):
         states = iter([False, True])
@@ -156,6 +247,7 @@ class TestEnsureDocker:
         installs = []
 
         def run(cmd):
+            assert self._read_daemon_config()['iptables'] is False
             installs.append(cmd)
             if cmd == t.DOCKER_CE_INSTALL_CMD:
                 return 1, "", "No match for argument: docker-ce"
