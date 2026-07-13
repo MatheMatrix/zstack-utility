@@ -13979,9 +13979,13 @@ host side snapshot files chian:
             if not is_io_error_suspend:
                 return
 
-            disk_errors = dom.diskErrors()  # type: dict
             vm = get_vm_by_uuid_no_retry(vm_uuid, False)
 
+            if not vm or vm.state != Vm.VM_STATE_PAUSED:
+                logger.debug("vm %s state is %s, skip to extend volume" % (vm_uuid, vm.state if vm else None))
+                return
+
+            disk_errors = vm.domain.diskErrors()  # type: dict
             if len(disk_errors) == 0:
                 syslog.syslog("no error in vm %s. skip to check and extend volume" % vm_uuid)
                 return
@@ -14007,7 +14011,7 @@ host side snapshot files chian:
 
             if fixed:
                 syslog.syslog("resume vm %s" % vm_uuid)
-                vm.resume()
+                vm.domain.resume()
                 touchQmpSocketWhenExists(vm_uuid)
 
         event_str = LibvirtEventManager.event_to_string(event)
