@@ -4,8 +4,11 @@ from zstacklib.utils import jsonobject
 from zstacklib.utils import log
 from zstacklib.utils import bash
 from zstacklib.utils import linux
+from kvmagent.plugins.imagestore import ImageStoreClient
 from kvmagent.plugins import volume_secret
 import json
+import os
+import tempfile
 import uuid
 
 
@@ -58,6 +61,7 @@ class ZbsStoragePlugin(kvmagent.KvmAgent):
     LUKS_CREATE_EMPTY_PATH = "/zbs/primarystorage/kvmhost/lukscreateempty"
     LUKS_ENCRYPT_IN_PLACE_PATH = "/zbs/primarystorage/kvmhost/encryptinplace"
     LUKS_RESIZE_PATH = "/zbs/primarystorage/kvmhost/luksresize"
+    IMAGESTORE_ENCRYPTED_DOWNLOAD_PATH = "/zbs/primarystorage/kvmhost/imagestore/encrypteddownload"
 
     def start(self):
         http_server = kvmagent.get_http_server()
@@ -66,6 +70,8 @@ class ZbsStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.LUKS_CREATE_EMPTY_PATH, self.luks_create_empty)
         http_server.register_async_uri(self.LUKS_ENCRYPT_IN_PLACE_PATH, self.luks_encrypt_in_place)
         http_server.register_async_uri(self.LUKS_RESIZE_PATH, self.luks_resize)
+        http_server.register_async_uri(self.IMAGESTORE_ENCRYPTED_DOWNLOAD_PATH, self.download_encrypted_imagestore)
+        self.imagestore_client = ImageStoreClient()
 
     def _cbd_qemu_path(self, install_path):
         if not install_path.startswith(PROTOCOL_CBD_PREFIX):
@@ -320,6 +326,83 @@ class ZbsStoragePlugin(kvmagent.KvmAgent):
             rsp.success = False
             rsp.error = 'failed to resize ZBS LUKS volume[%s]: %s' % (install_path or '<missing>', str(e))
         return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    @bash.in_bash
+    def download_encrypted_imagestore(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ZbsLuksRsp()
+        bs_path = '<missing>'
+        target_path = '<missing>'
+        try:
+            hostname = cmd_attr(cmd, 'hostname')
+            username = cmd_attr(cmd, 'username')
+            password = cmd_attr(cmd, 'password')
+            ssh_port = int(cmd_attr(cmd, 'sshPort') or 0)
+            bs_path = cmd_attr(cmd, 'backupStorageInstallPath')
+            bs_export_path = cmd_attr(cmd, 'backupStorageExportPath')
+            target_path = cmd_attr(cmd, 'primaryStorageInstallPath')
+            encrypted_dek = cmd_attr(cmd, 'encryptedDek')
+            source_encrypted = cmd_attr(cmd, 'sourceEncrypted', False)
+
+            self.imagestore_client._check_zstore_cli()
+            self.imagestore_client._parse_image_reference(bs_path)
+
+            self._convert_encrypted_imagestore_export_to_luks_cbd(
+                hostname, username, password, ssh_port, bs_export_path, target_path, encrypted_dek, source_encrypted)
+        except Exception as e:
+            logger.warn(linux.get_exception_stacktrace())
+            rsp.success = False
+            rsp.error = 'failed to download encrypted ZBS ImageStore image[%s] to[%s]: %s' % (
+                bs_path or '<missing>', target_path or '<missing>', str(e))
+        return jsonobject.dumps(rsp)
+
+    def _convert_encrypted_imagestore_export_to_luks_cbd(self, hostname, username, password, ssh_port,
+                                                         bs_export_path, target_path, encrypted_dek,
+                                                         source_encrypted=True):
+        mount_path = tempfile.mkdtemp(prefix='zbs-imagestore-export-')
+        mounted = False
+        try:
+            export_dir = os.path.dirname(bs_export_path)
+            export_name = os.path.basename(bs_export_path)
+            if not export_dir or not export_name:
+                raise Exception('invalid ImageStore export path: %s' % bs_export_path)
+            linux.sshfs_mount(
+                str(username),
+                str(hostname),
+                int(ssh_port),
+                str(password),
+                export_dir,
+                mount_path)
+            mounted = True
+            source_path = os.path.join(mount_path, export_name)
+            if not os.path.exists(source_path):
+                raise Exception('ImageStore exported image file does not exist: %s' % source_path)
+            with volume_secret.luks_secret_channel(encrypted_dek) as secret_file:
+                secret = 'luks_sec'
+                if source_encrypted:
+                    with linux._qcow2_image_opts_with_secret_context(source_path, secret) as source_arg:
+                        cmd = '/usr/bin/qemu-img convert -n --target-image-opts ' \
+                              '--object secret,id=%s,format=raw,file=%s ' \
+                              '-m 16 -W %s %s' % (
+                                  secret,
+                                  linux.shellquote(secret_file),
+                                  source_arg,
+                                  linux.shellquote(self._luks_image_opts_value(target_path)))
+                        bash.bash_errorout(cmd)
+                else:
+                    cmd = '/usr/bin/qemu-img convert -n --target-image-opts ' \
+                          '--object secret,id=%s,format=raw,file=%s ' \
+                          '-m 16 -W -f qcow2 %s %s' % (
+                              secret,
+                              linux.shellquote(secret_file),
+                              linux.shellquote(source_path),
+                              linux.shellquote(self._luks_image_opts_value(target_path)))
+                    bash.bash_errorout(cmd)
+        finally:
+            if mounted and linux.fumount(mount_path, 10) != 0:
+                logger.warn('failed to unmount ImageStore sshfs mount path %s' % mount_path)
+            linux.rm_dir_force(mount_path)
 
 
     def stop(self):

@@ -78,9 +78,27 @@ def _install_import_stubs():
     bash_mod = types.ModuleType("zstacklib.utils.bash")
     bash_mod.bash_errorout = lambda cmd: ""
     bash_mod.bash_roe = lambda cmd: (0, "", "")
+    bash_mod.bash_r = lambda cmd: 0
+    bash_mod.bash_progress_1 = lambda cmd, func=None: ""
     bash_mod.in_bash = lambda func: func
     zstacklib_utils_pkg.bash = bash_mod
     sys.modules["zstacklib.utils.bash"] = bash_mod
+
+    shell_mod = types.ModuleType("zstacklib.utils.shell")
+    shell_mod.call = lambda cmd: ""
+    shell_mod.check_run = lambda cmd: ""
+    zstacklib_utils_pkg.shell = shell_mod
+    sys.modules["zstacklib.utils.shell"] = shell_mod
+
+    traceable_shell_mod = types.ModuleType("zstacklib.utils.traceable_shell")
+    traceable_shell_mod.get_shell = lambda cmd=None: shell_mod
+    zstacklib_utils_pkg.traceable_shell = traceable_shell_mod
+    sys.modules["zstacklib.utils.traceable_shell"] = traceable_shell_mod
+
+    report_mod = types.ModuleType("zstacklib.utils.report")
+    report_mod.log = log_mod
+    zstacklib_utils_pkg.report = report_mod
+    sys.modules["zstacklib.utils.report"] = report_mod
 
     linux_mod = types.ModuleType("zstacklib.utils.linux")
     linux_mod.shellquote = lambda value: value
@@ -456,6 +474,73 @@ class TestZbsStoragePlugin(unittest.TestCase):
             self.assertIn("virtualSize is required", rsp.error)
 
         self.assertEqual([], calls)
+
+    def test_encrypted_imagestore_download_uses_qcow2_chain_image_opts(self):
+        plugin = zbs_storage_plugin.ZbsStoragePlugin()
+        commands = []
+        chain_calls = []
+        removed = []
+        original_mkdtemp = zbs_storage_plugin.tempfile.mkdtemp
+        original_exists = zbs_storage_plugin.os.path.exists
+        original_errorout = zbs_storage_plugin.bash.bash_errorout
+        original_secret_channel = zbs_storage_plugin.volume_secret.luks_secret_channel
+        original_sshfs = getattr(zbs_storage_plugin.linux, "sshfs_mount", None)
+        original_fumount = getattr(zbs_storage_plugin.linux, "fumount", None)
+        original_rm_dir = getattr(zbs_storage_plugin.linux, "rm_dir_force", None)
+        original_source_arg_context = getattr(zbs_storage_plugin.linux, "_qcow2_image_opts_with_secret_context", None)
+        try:
+            zbs_storage_plugin.tempfile.mkdtemp = lambda prefix: "/mnt/zbs-imagestore-export"
+            zbs_storage_plugin.os.path.exists = lambda path: True
+            zbs_storage_plugin.bash.bash_errorout = lambda cmd: commands.append(cmd) or ""
+            zbs_storage_plugin.linux.sshfs_mount = lambda username, hostname, ssh_port, password, export_dir, mount_path: None
+            zbs_storage_plugin.linux.fumount = lambda mount_path, timeout: 0
+            zbs_storage_plugin.linux.rm_dir_force = lambda path: removed.append(path)
+
+            @contextlib.contextmanager
+            def secret_channel(encrypted_dek):
+                self.assertEqual("sealed-dek", encrypted_dek)
+                yield "/tmp/luks-secret"
+
+            @contextlib.contextmanager
+            def source_arg_context(path, secret_id="luks_sec", include_backing=True):
+                chain_calls.append((path, secret_id, include_backing))
+                yield "--image-opts driver=qcow2,encrypt.key-secret=luks_sec,file.filename=%s,backing.driver=qcow2,backing.encrypt.key-secret=luks_sec,backing.file.filename=/mnt/zbs-imagestore-export/base" % path
+
+            zbs_storage_plugin.volume_secret.luks_secret_channel = secret_channel
+            zbs_storage_plugin.linux._qcow2_image_opts_with_secret_context = source_arg_context
+
+            plugin._convert_encrypted_imagestore_export_to_luks_cbd(
+                "bs-host", "root", "password", 22,
+                "/vms_is/export/v2/top", "cbd:physical/logical/target", "sealed-dek")
+
+            self.assertEqual([("/mnt/zbs-imagestore-export/top", "luks_sec", True)], chain_calls)
+            self.assertEqual(1, len(commands))
+            self.assertIn("--image-opts", commands[0])
+            self.assertIn("backing.encrypt.key-secret=luks_sec", commands[0])
+            self.assertIn("--target-image-opts", commands[0])
+            self.assertIn("driver=luks,key-secret=luks_sec,file.driver=cbd", commands[0])
+            self.assertEqual(["/mnt/zbs-imagestore-export"], removed)
+        finally:
+            zbs_storage_plugin.tempfile.mkdtemp = original_mkdtemp
+            zbs_storage_plugin.os.path.exists = original_exists
+            zbs_storage_plugin.bash.bash_errorout = original_errorout
+            zbs_storage_plugin.volume_secret.luks_secret_channel = original_secret_channel
+            if original_sshfs is None:
+                delattr(zbs_storage_plugin.linux, "sshfs_mount")
+            else:
+                zbs_storage_plugin.linux.sshfs_mount = original_sshfs
+            if original_fumount is None:
+                delattr(zbs_storage_plugin.linux, "fumount")
+            else:
+                zbs_storage_plugin.linux.fumount = original_fumount
+            if original_rm_dir is None:
+                delattr(zbs_storage_plugin.linux, "rm_dir_force")
+            else:
+                zbs_storage_plugin.linux.rm_dir_force = original_rm_dir
+            if original_source_arg_context is None:
+                delattr(zbs_storage_plugin.linux, "_qcow2_image_opts_with_secret_context")
+            else:
+                zbs_storage_plugin.linux._qcow2_image_opts_with_secret_context = original_source_arg_context
 
     def test_luks_encrypt_in_place_returns_new_install_path_without_replacing_original(self):
         plugin = zbs_storage_plugin.ZbsStoragePlugin()
