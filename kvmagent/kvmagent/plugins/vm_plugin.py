@@ -2412,11 +2412,51 @@ class DetachBlockCacheTaskDaemon(plugin.TaskDaemon):
         self.disk_name = disk_name   # type: str
         self.progress = 0            # type: int
         self.progress_file = linux.create_temp_file()
+        self.detach_lock = threading.Lock()
+
+    def _finish_detached_cache(self):
+        if self.progress == 100:
+            return True
+
+        cache = self.volume.cache
+        if not cache.installPath:
+            return False
+
+        try:
+            caches = qmp.execute_qmp_command(self.vm_uuid, "query-block-cache", raise_exception=False)
+        except Exception as e:
+            logger.warn('failed to query block cache for vm[uuid:%s]: %s' % (self.vm_uuid, str(e)))
+            return False
+
+        if caches is None:
+            return False
+
+        target_cache = next((c for c in caches if c.get('file') == cache.installPath), None)
+        if target_cache is None:
+            self.progress = 100
+            return True
+        if target_cache.get('status') != 'detached':
+            return False
+
+        virsh.block_cache_detach(
+                domain=self.vm_uuid,
+                path=self.disk_name,
+                timeout=int(cache.timeout) if cache.timeout else None,
+                delete=bool(cache.delete),
+                cmd_shell=traceable_shell.TraceableShell(
+                    None, self.deadline if self.timeout else None),
+                progress_output=self.progress_file)
+        self.progress = 100
+        return True
 
     def _cancel(self):
         # type: () -> None
-        traceable_shell.cancel_job_by_api(self.api_id, sig=signal.SIGINT)
-        self.result.fail('detach block-cache task cancelled')
+        with self.detach_lock:
+            if self._finish_detached_cache():
+                raise Exception('block cache is already detached, cancel detach task failed')
+
+            traceable_shell.cancel_job_by_api(self.api_id, sig=signal.SIGINT)
+            self.result.fail('detach block-cache task cancelled')
 
     def _get_percent(self):
         # type: () -> int
@@ -2463,10 +2503,14 @@ class DetachBlockCacheTaskDaemon(plugin.TaskDaemon):
                     cmd_shell=traceable_shell.get_shell(self.task_spec),
                     progress_output=self.progress_file)
         except Exception:
+            with self.detach_lock:
+                if self.result.success and self._finish_detached_cache():
+                    return
             self._raise_if_cancelled()
             raise
-        self._raise_if_cancelled()
-        self.progress = 100
+        with self.detach_lock:
+            self._raise_if_cancelled()
+            self.progress = 100
 
 
 class VmVolumesRecoveryTask(plugin.TaskDaemon):
