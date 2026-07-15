@@ -684,6 +684,7 @@ class CephAgent(object):
             UploadHandler(req, self.upload_tasks).handle_upload()
         except Exception, e:
             logger.error("File upload failed: %s", str(e))
+            raise
 
     def _prepare_upload(self, cmd):
         class ImageUploadDaemon(plugin.TaskDaemon):
@@ -1311,6 +1312,7 @@ class CephAgent(object):
             UploadHandler(req, self.upload_file_tasks).handle_upload()
         except Exception as e:
             logger.exception("File upload failed: %s", str(e))
+            raise
 
     class PathEscapeError(Exception):
         """Raised when a path escape (Zip-Slip) attempt is detected."""
