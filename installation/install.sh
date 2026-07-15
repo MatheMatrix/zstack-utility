@@ -285,6 +285,21 @@ is_ipv6_address() {
     esac
 }
 
+get_zsha2_db_vip() {
+    command -v zsha2 >/dev/null 2>&1 || return
+    command -v python3 >/dev/null 2>&1 || return
+
+    zsha2 show-config 2>/dev/null | python3 -c '
+import ipaddress
+import json
+import sys
+
+dbvip = str(json.load(sys.stdin).get("dbvip", "")).strip()
+if dbvip:
+    print(ipaddress.ip_address(dbvip))
+' 2>/dev/null
+}
+
 is_ipv6_prefix_length() {
     local prefix="$1"
     case "$prefix" in
@@ -3379,6 +3394,7 @@ cs_append_iptables(){
     echo_subtitle "Append iptables"
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     if [ "$NEED_SET_MN_IP" == "y" ]; then
+        local ha_db_vip=`get_zsha2_db_vip`
         ports=(3306)
         for port in ${ports[@]}
         do
@@ -3391,6 +3407,9 @@ cs_append_iptables(){
 
             iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport $port -j REJECT" || iptables -A INPUT -p tcp --dport $port -j REJECT >>$ZSTACK_INSTALL_LOG 2>&1
             iptables-save | grep -- "-A INPUT -d $MANAGEMENT_IP/32 -p tcp -m tcp --dport $port -j ACCEPT" || iptables -I INPUT -p tcp --dport $port -d "$MANAGEMENT_IP" -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
+            if [ -n "$ha_db_vip" ] && ! is_ipv6_address "$ha_db_vip"; then
+                iptables-save | grep -- "-A INPUT -d $ha_db_vip/32 -p tcp -m tcp --dport $port -j ACCEPT" || iptables -I INPUT -p tcp --dport $port -d "$ha_db_vip" -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
+            fi
             iptables-save | grep -- "-A INPUT -d 127.0.0.1/32 -p tcp -m tcp --dport $port -j ACCEPT" || iptables -I INPUT -p tcp --dport $port -d 127.0.0.1 -j ACCEPT >>$ZSTACK_INSTALL_LOG 2>&1
         done
         if is_ipv6_address "$MANAGEMENT_IP"; then
