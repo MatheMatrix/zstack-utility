@@ -2413,29 +2413,23 @@ class DetachBlockCacheTaskDaemon(plugin.TaskDaemon):
         self.progress = 0            # type: int
         self.progress_file = linux.create_temp_file()
         self.detach_lock = threading.Lock()
+        self.shell_id = '%s-detach-cache' % self.api_id
 
     def _finish_detached_cache(self):
         if self.progress == 100:
             return True
 
         cache = self.volume.cache
-        if not cache.installPath:
-            return False
-
-        try:
-            caches = qmp.execute_qmp_command(self.vm_uuid, "query-block-cache", raise_exception=False)
-        except Exception as e:
-            logger.warn('failed to query block cache for vm[uuid:%s]: %s' % (self.vm_uuid, str(e)))
-            return False
+        caches = qmp.execute_qmp_command(self.vm_uuid, "query-block-cache", raise_exception=False)
 
         if caches is None:
             return False
 
-        target_cache = next((c for c in caches if c.get('file') == cache.installPath), None)
-        if target_cache is None:
+        target_caches = list(filter(lambda c: c['file'] == cache.installPath, caches))
+        if not target_caches:
             self.progress = 100
             return True
-        if target_cache.get('status') != 'detached':
+        if target_caches[0]['status'] != 'detached':
             return False
 
         virsh.block_cache_detach(
@@ -2455,7 +2449,7 @@ class DetachBlockCacheTaskDaemon(plugin.TaskDaemon):
             if self._finish_detached_cache():
                 raise Exception('block cache is already detached, cancel detach task failed')
 
-            traceable_shell.cancel_job_by_api(self.api_id, sig=signal.SIGINT)
+            traceable_shell.cancel_job_by_api(self.shell_id, sig=signal.SIGINT)
             self.result.fail('detach block-cache task cancelled')
 
     def _get_percent(self):
@@ -2500,7 +2494,8 @@ class DetachBlockCacheTaskDaemon(plugin.TaskDaemon):
                     path=self.disk_name,
                     timeout=timeout,
                     delete=delete,
-                    cmd_shell=traceable_shell.get_shell(self.task_spec),
+                    cmd_shell=traceable_shell.TraceableShell(
+                        self.shell_id, self.deadline if self.timeout else None),
                     progress_output=self.progress_file)
         except Exception:
             with self.detach_lock:
