@@ -1140,7 +1140,9 @@ def get_remote_host_info(host_post_info):
     runner_args = ZstackRunnerArg()
     runner_args.host_post_info = host_post_info
     runner_args.module_name = 'setup'
-    runner_args.module_args = 'filter=ansible_distribution*'
+    runner_args.module_args = ('gather_subset=!all '
+                               'gather_timeout=10 '
+                               'filter=ansible_distribution*')
     zstack_runner = ZstackRunner(runner_args)
     result = zstack_runner.run()
     logger.debug(result)
