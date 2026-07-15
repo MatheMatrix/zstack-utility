@@ -335,6 +335,99 @@ def test_get_ui_address_prefers_management_ip_over_loopback_ui_address(monkeypat
     assert ctl.get_ui_address() == 'fd00:5:5:28::116:84'
 
 
+def test_get_status_ui_addresses_keeps_ipv4_status_line_and_appends_enabled_ipv6(monkeypatch):
+    properties = {
+        'management.server.ip': '172.24.246.95',
+        'management.server.ip6': 'fd00:5:5:28::116:84',
+    }
+    logs = []
+
+    monkeypatch.setattr(
+        ctl.ctl,
+        'read_ui_property',
+        lambda key: '172.24.246.95' if key == 'ui_address' else '::')
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda key: properties.get(key, ''))
+    monkeypatch.setattr(ctl, 'info', lambda message: logs.append(message))
+
+    assert ctl.get_status_ui_addresses() == [
+        '172.24.246.95',
+        'fd00:5:5:28::116:84',
+    ]
+    assert ctl.write_ui_status_endpoints('Running', '50595', 'http', '5000')
+    assert logs == [
+        'UI status: Running [PID:50595] http://172.24.246.95:5000',
+        'UI IPv6 address: http://[fd00:5:5:28::116:84]:5000',
+    ]
+
+
+def test_get_status_ui_addresses_hides_unconfigured_secondary_ipv6(monkeypatch):
+    properties = {
+        'management.server.ip': '172.24.246.95',
+        'management.server.ip6': 'fd00:5:5:28::116:84',
+    }
+
+    monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda key: '172.24.246.95' if key == 'ui_address' else '')
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda key: properties.get(key, ''))
+
+    assert ctl.get_status_ui_addresses() == ['172.24.246.95']
+
+
+def test_get_status_ui_addresses_uses_specific_ipv6_listen_host(monkeypatch):
+    properties = {
+        'management.server.ip': '172.24.246.95',
+        'management.server.ip6': 'fd00:5:5:28::116:84',
+    }
+    logs = []
+
+    monkeypatch.setattr(
+        ctl.ctl,
+        'read_ui_property',
+        lambda key: '172.24.246.95' if key == 'ui_address' else 'fd00:5:5:28::116:99')
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda key: properties.get(key, ''))
+    monkeypatch.setattr(ctl, 'info', lambda message: logs.append(message))
+
+    assert ctl.get_status_ui_addresses() == [
+        '172.24.246.95',
+        'fd00:5:5:28::116:99',
+    ]
+    assert ctl.write_ui_status_endpoints('Running', '50595', 'http', '5000')
+    assert logs[-1] == 'UI IPv6 address: http://[fd00:5:5:28::116:99]:5000'
+
+
+def test_get_status_ui_addresses_preserves_custom_explicit_ui_address(monkeypatch):
+    properties = {
+        'management.server.ip': '172.24.246.95',
+        'management.server.ip6': 'fd00:5:5:28::116:84',
+    }
+
+    monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda key: '203.0.113.10')
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda key: properties.get(key, ''))
+
+    assert ctl.get_status_ui_addresses() == ['203.0.113.10']
+
+
+def test_get_status_ui_addresses_preserves_single_stack_output(monkeypatch):
+    properties = {'management.server.ip': '172.24.246.95'}
+    logs = []
+
+    monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda key: '172.24.246.95')
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda key: properties.get(key, ''))
+    monkeypatch.setattr(ctl, 'info', lambda message: logs.append(message))
+
+    assert ctl.get_status_ui_addresses() == ['172.24.246.95']
+    assert ctl.write_ui_status_endpoints('Running', '50595', 'http', '5000')
+    assert logs == ['UI status: Running [PID:50595] http://172.24.246.95:5000']
+
+
+def test_get_status_ui_addresses_supports_ipv6_only(monkeypatch):
+    properties = {'management.server.ip': 'fd00:5:5:28::116:84'}
+
+    monkeypatch.setattr(ctl.ctl, 'read_ui_property', lambda key: 'fd00:5:5:28::116:84')
+    monkeypatch.setattr(ctl.ctl, 'read_property', lambda key: properties.get(key, ''))
+
+    assert ctl.get_status_ui_addresses() == ['fd00:5:5:28::116:84']
+
+
 def test_license_server_post_start_log_brackets_ipv6_default_ip(monkeypatch):
     logs = []
     service = ctl.LicenseServerService.__new__(ctl.LicenseServerService)

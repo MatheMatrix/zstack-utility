@@ -853,6 +853,54 @@ def get_ui_address():
     return get_default_ip()
 
 
+def get_status_ui_addresses():
+    ui_address = get_ui_address()
+    if not ui_address:
+        return []
+
+    management_addresses = {}
+    for property_name in (
+            management_network_ipv6.MANAGEMENT_IP_PROPERTY_KEY,
+            management_network_ipv6.MANAGEMENT_IP4_PROPERTY_KEY,
+            management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY):
+        address = ctl.read_property(property_name)
+        if not is_reportable_ip(address):
+            continue
+        family = get_ip_version(address)
+        if family not in management_addresses:
+            management_addresses[family] = address
+
+    if ui_address not in management_addresses.values():
+        return [ui_address]
+
+    addresses = [management_addresses[family] for family in (
+        management_network_ipv6.IPV4_VERSION,
+        management_network_ipv6.IPV6_VERSION,
+    ) if family in management_addresses]
+    if len(addresses) > 1:
+        ipv6_listen_host = normalize_ui_ipv6_listen_host(
+            ctl.read_ui_property(UI_LISTEN_HOST_PROPERTY))
+        if not ipv6_listen_host:
+            return [ui_address]
+        if ipv6_listen_host != UI_IPV6_ANY_NGINX_LISTEN_HOST:
+            addresses[1] = ipv6_listen_host.strip('[]')
+
+    return addresses
+
+
+def write_ui_status_endpoints(status, pid, protocol, port, addresses=None):
+    addresses = addresses if addresses is not None else get_status_ui_addresses()
+    if not addresses:
+        return False
+
+    info('UI status: %s [PID:%s] %s://%s:%s' % (
+        status, pid, protocol, format_url_host(addresses[0]), port))
+    if len(addresses) > 1:
+        info('UI IPv6 address: %s://%s:%s' % (
+            protocol, format_url_host(addresses[1]), port))
+    return True
+
+
 def get_management_or_default_ip():
     management_ip = ctl.read_property('management.server.ip')
     if is_reportable_ip(management_ip):
@@ -11260,14 +11308,13 @@ class UiStatusCmd(Command):
                     write_status(colorize_output('Stopped', 'red'))
                 return False
             elif 'UP' in cmd.stdout:
-                default_ip = get_ui_address()
+                addresses = get_status_ui_addresses()
 
-                if not default_ip:
+                if not addresses:
                     info('UI status: %s [PID:%s]' % (colorize_output('Running', 'green'), pid))
                 else:
                     http = 'https' if '--ssl.enabled=true' in output else 'http'
-                    info('UI status: %s [PID:%s] %s://%s:%s' % (
-                        colorize_output('Running', 'green'), pid, http, format_url_host(default_ip), port))
+                    write_ui_status_endpoints(colorize_output('Running', 'green'), pid, http, port, addresses)
             else:
                 write_status(colorize_output('Unknown', 'yellow'))
             return True
@@ -11283,19 +11330,18 @@ class UiStatusCmd(Command):
             write_status(cmd.stdout)
             return False
         else:
-            default_ip = get_ui_address()
+            addresses = get_status_ui_addresses()
             output = shell_return_stdout_stderr(
                 "systemctl show --property MainPID  zstack-ui-nginx.service | awk -F= '{printf $2}'")
             output = output[1]
-            if not default_ip:
+            if not addresses:
                 info('UI status: %s [PID:%s] ' % (colorize_output('Running', 'green'),output))
             else:
                 if os.path.exists(StartUiCmd.HTTP_FILE):
                     with open(StartUiCmd.HTTP_FILE, 'r') as fd2:
                         protcol = fd2.readline()
                         protcol = protcol.strip()
-                        info('UI status: %s [PID:%s] %s://%s:%s' % (
-                            colorize_output('Running', 'green'),output, protcol, format_url_host(default_ip), port))
+                        write_ui_status_endpoints(colorize_output('Running', 'green'), output, protcol, port, addresses)
 
 # For VDI UI 2.1
 class VDIUiStatusCmd(Command):
