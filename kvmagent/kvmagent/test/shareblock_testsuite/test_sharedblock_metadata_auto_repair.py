@@ -57,6 +57,7 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
         self.assertEqual(True, rsp.success, o)
 
         self.lvm_repair_cmd_test()
+        self.dm_table_refresh_test()
 
         ver = lvm.get_sanlock_patch_version()
         if not (ver and ver.isdigit()) or int(ver) < 7:
@@ -78,6 +79,40 @@ class TestSharedBlockPlugin(TestCase, SharedBlockPluginTestStub):
         test_lv = "/dev/{}/testlv-new".format(vgUuid)
         lvm.deactive_lv(test_lv)
         lvm.delete_lv(test_lv)
+
+    def dm_table_refresh_test(self):
+        lv_name = "dm_table_refresh"
+        test_lv = "/dev/{}/{}".format(vgUuid, lv_name)
+        dm_name = "{}-{}".format(vgUuid, lv_name)
+        wrong_dm_name = "{}-wrong".format(dm_name)
+        lvm.create_lv_from_absolute_path(test_lv, 4194304, exact_size=True)
+        lvm.active_lv_with_check(test_lv, shared=True)
+        try:
+            original_table = bash.bash_o("dmsetup table %s" % dm_name).strip()
+            segments = original_table.splitlines()
+            self.assertEqual(1, len(segments), original_table)
+            tokens = segments[0].split()
+            self.assertEqual("linear", tokens[2], original_table)
+
+            bash.bash_errorout("dmsetup create %s --table %s" % (
+                wrong_dm_name, linux.shellquote("0 %s zero" % tokens[1])))
+            wrong_rdev = os.stat("/dev/mapper/%s" % wrong_dm_name).st_rdev
+            wrong_device = "%s:%s" % (os.major(wrong_rdev), os.minor(wrong_rdev))
+            self.assertNotEqual(tokens[3], wrong_device)
+            tokens[3] = wrong_device
+            tokens[4] = "0"
+            wrong_table = " ".join(tokens)
+
+            bash.bash_errorout("dmsetup reload %s --table %s" % (dm_name, linux.shellquote(wrong_table)))
+            bash.bash_errorout("dmsetup suspend %s && dmsetup resume %s" % (dm_name, dm_name))
+            self.assertEqual(wrong_table, bash.bash_o("dmsetup table %s" % dm_name).strip())
+
+            rsp = self.connect(blockUuids[0 : 1], blockUuids, vgUuid, hostUuid, hostId, forceWipe=False)
+            self.assertEqual(True, rsp.success, rsp.error)
+            self.assertEqual(original_table, bash.bash_o("dmsetup table %s" % dm_name).strip())
+        finally:
+            lvm.delete_lv(test_lv, raise_exception=False)
+            bash.bash_r("dmsetup remove %s" % wrong_dm_name)
 
     def lvlk_repair_test(self):
         volume_uuid = misc.uuid()
