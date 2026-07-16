@@ -40,6 +40,7 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
     WIN_ZWATCH_VM_INFO_PATH = WIN_ZWATCH_BASE_PATH + "\\" + "vm.info"
     WIN_ZWATCH_VM_METRIC_PATH = WIN_ZWATCH_BASE_PATH + "\\" + "vm_metrics.prom"
     WIN_ZWATCH_GET_NIC_INFO_PATH = WIN_ZWATCH_BASE_PATH + "\\" + "zs-tools\\nic_info_win.ps1"
+    WIN_ZWATCH_GET_NIC_INFO_EXE_PATH = WIN_ZWATCH_BASE_PATH + "\\" + "zs-tools\\zs-tools.exe"
 
     PROMETHEUS_PUSHGATEWAY_URL = "http://127.0.0.1:9092/metrics/job/zwatch_vm_agent/vmUuid/"
 
@@ -56,6 +57,8 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
         self.tools_state = {}
         self.running_vm_lock = threading.Lock()
         self.zwatch_qga_lock = threading.Lock()
+        self.vm_nic_inflight = set()
+        self.vm_nic_inflight_lock = threading.Lock()
 
     def configure(self, config):
         self.config = config
@@ -116,16 +119,33 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
 
     @thread.AsyncThread
     def qga_get_vm_nic(self, uuid, qga):
+        with self.vm_nic_inflight_lock:
+            if uuid in self.vm_nic_inflight:
+                logger.debug('vm[%s] nic info collection still in flight, skip this round' % uuid)
+                return
+            self.vm_nic_inflight.add(uuid)
         try:
             if qga.os and 'mswindows' in qga.os:
                 zwatch_nic_info_path = self.WIN_ZWATCH_GET_NIC_INFO_PATH
             else:
                 zwatch_nic_info_path = self.ZWATCH_GET_NIC_INFO_PATH
             nicInfoStatus = qga.guest_file_is_exist(zwatch_nic_info_path)
+            if qga.os and 'mswindows' in qga.os:
+                nicInfoStatus = nicInfoStatus or qga.guest_file_is_exist(self.WIN_ZWATCH_GET_NIC_INFO_EXE_PATH)
             if not nicInfoStatus:
                 return
             if is_windows_2008(qga):
                 nicInfo = get_nic_info_for_windows_2008(uuid, qga)
+            elif qga.os and 'mswindows' in qga.os:
+                nicInfo = None
+                if qga.guest_file_is_exist(self.WIN_ZWATCH_GET_NIC_INFO_EXE_PATH):
+                    try:
+                        nicInfo = qga.guest_exec_program_no_exitcode(
+                            self.WIN_ZWATCH_GET_NIC_INFO_EXE_PATH, ['nic-info'])
+                    except Exception as e:
+                        logger.debug('vm[%s] read nic info by zs-tools.exe failed, fallback to powershell script due to [%s]' % (uuid, str(e)))
+                if nicInfo is None:
+                    nicInfo = qga.guest_exec_cmd_no_exitcode(zwatch_nic_info_path)
             else:
                 nicInfo = qga.guest_exec_cmd_no_exitcode(zwatch_nic_info_path)
             nicInfo = str(nicInfo).strip()
@@ -140,6 +160,9 @@ class ZWatchMetricMonitor(kvmagent.KvmAgent):
         except Exception as e:
             logger.debug('vm[%s] read nic info by qga failed due to [%s]' % (uuid, str(e)))
             return
+        finally:
+            with self.vm_nic_inflight_lock:
+                self.vm_nic_inflight.discard(uuid)
 
     @thread.AsyncThread
     def zwatch_qga_monitor_vm(self, uuid, qga):
