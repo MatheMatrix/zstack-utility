@@ -9786,6 +9786,27 @@ class VmPlugin(kvmagent.KvmAgent):
 
             target_disk, _ = vm._get_target_disk(volume, is_exception=False)
             if not target_disk:
+                expected_volumes = cmd.expectedVolumes
+                if expected_volumes is not None:
+                    expected_volume_uuids = [expected_volume.volumeUuid for expected_volume in expected_volumes]
+                    if volume.volumeUuid not in expected_volume_uuids:
+                        raise kvmagent.KvmError(
+                            'unable to detach data volume[%s] from vm[uuid:%s], '
+                            'because expected volumes do not contain the target volume[uuid:%s]' %
+                            (volume.installPath, vm.uuid, volume.volumeUuid))
+
+                    missing_volume_uuids = self._find_missing_expected_volume_uuids(
+                        vm, expected_volumes, volume.volumeUuid)
+                    if missing_volume_uuids:
+                        raise kvmagent.KvmError(
+                            'unable to detach data volume[%s] from vm[uuid:%s], '
+                            'because expected volumes[uuids:%s] are also missing' %
+                            (volume.installPath, vm.uuid, ','.join(missing_volume_uuids)))
+                    logger.debug('volume [installPath: %s] has been detached before' % volume.installPath)
+                    if vm._volume_detach_timed_out(volume):
+                        vm._clean_timeout_record(volume)
+                    return jsonobject.dumps(rsp)
+
                 if vm._volume_detach_timed_out(volume):
                     logger.debug('volume [installPath: %s] has been detached before' % volume.installPath)
                     vm._clean_timeout_record(volume)
@@ -9804,6 +9825,19 @@ class VmPlugin(kvmagent.KvmAgent):
             rsp.success = False
 
         return jsonobject.dumps(rsp)
+
+    @staticmethod
+    def _find_missing_expected_volume_uuids(vm, expected_volumes, detached_volume_uuid):
+        missing_volume_uuids = []
+        for expected_volume in expected_volumes:
+            if expected_volume.volumeUuid == detached_volume_uuid:
+                continue
+
+            expected_disk, _ = vm._get_target_disk(expected_volume, is_exception=False)
+            if not expected_disk:
+                missing_volume_uuids.append(expected_volume.volumeUuid)
+
+        return sorted(missing_volume_uuids)
 
     @kvmagent.replyerror
     def attach_volume_cache(self, req):

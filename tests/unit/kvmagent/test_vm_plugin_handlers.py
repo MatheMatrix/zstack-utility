@@ -655,19 +655,176 @@ class TestAttachDataVolumeHandler:
 
 @pytest.mark.kvmagent
 class TestDetachDataVolumeHandler:
-    def test_detach_data_volume(self):
+    def test_missing_target_is_idempotent_when_all_other_expected_volumes_exist(self, monkeypatch):
         plugin = _make_vm_plugin()
         mock_vm = MagicMock()
+        mock_vm.uuid = 'vm-uuid'
         mock_vm.state = vm_plugin.Vm.VM_STATE_RUNNING
-        mock_vm._get_target_disk = MagicMock(return_value=(MagicMock(), 'vda'))
-        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
-        vm_plugin.volume_support_block_node = MagicMock(return_value=False)
+        mock_vm._get_target_disk.side_effect = lambda volume, is_exception=False: (
+            (None, None) if volume.volumeUuid == 'target-volume-uuid' else (MagicMock(), 'vda')
+        )
+        mock_vm._volume_detach_timed_out.return_value = True
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=mock_vm))
 
-        req = _make_req({'vmInstanceUuid': 'vm-uuid', 'volume': {'installPath': '/path/vol', 'volumeUuid': 'vol-uuid'}})
+        req = _make_req({
+            'vmInstanceUuid': 'vm-uuid',
+            'volume': {'installPath': '/path/target', 'volumeUuid': 'target-volume-uuid'},
+            'expectedVolumes': [
+                {'installPath': '/path/root', 'volumeUuid': 'root-volume-uuid'},
+                {'installPath': '/path/target', 'volumeUuid': 'target-volume-uuid'},
+                {'installPath': '/path/other', 'volumeUuid': 'other-volume-uuid'},
+            ],
+        })
         result = plugin.detach_data_volume(req)
         rsp = json.loads(result)
 
         assert rsp['success'] is True
+        mock_vm._volume_detach_timed_out.assert_called_once()
+        mock_vm._clean_timeout_record.assert_called_once()
+        mock_vm.detach_data_volume.assert_not_called()
+
+    @pytest.mark.parametrize('expected_volumes', [
+        [],
+        [{'installPath': '/path/root', 'volumeUuid': 'root-volume-uuid'}],
+    ])
+    def test_missing_target_rejects_incomplete_expected_volumes(self, monkeypatch, expected_volumes):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm.uuid = 'vm-uuid'
+        mock_vm.state = vm_plugin.Vm.VM_STATE_RUNNING
+        mock_vm._get_target_disk.return_value = (None, None)
+        mock_vm._volume_detach_timed_out.return_value = True
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=mock_vm))
+
+        req = _make_req({
+            'vmInstanceUuid': 'vm-uuid',
+            'volume': {'installPath': '/path/target', 'volumeUuid': 'target-volume-uuid'},
+            'expectedVolumes': expected_volumes,
+        })
+        result = plugin.detach_data_volume(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is False
+        assert 'expected volumes do not contain the target volume' in rsp['error']
+        mock_vm._volume_detach_timed_out.assert_not_called()
+        mock_vm._clean_timeout_record.assert_not_called()
+        mock_vm.detach_data_volume.assert_not_called()
+
+    def test_missing_target_fails_when_another_expected_volume_is_missing(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm.uuid = 'vm-uuid'
+        mock_vm.state = vm_plugin.Vm.VM_STATE_RUNNING
+        mock_vm._get_target_disk.side_effect = lambda volume, is_exception=False: (
+            (None, None)
+            if volume.volumeUuid in {'target-volume-uuid', 'other-volume-uuid'}
+            else (MagicMock(), 'vda')
+        )
+        mock_vm._volume_detach_timed_out.return_value = True
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=mock_vm))
+
+        req = _make_req({
+            'vmInstanceUuid': 'vm-uuid',
+            'volume': {'installPath': '/path/target', 'volumeUuid': 'target-volume-uuid'},
+            'expectedVolumes': [
+                {'installPath': '/path/root', 'volumeUuid': 'root-volume-uuid'},
+                {'installPath': '/path/target', 'volumeUuid': 'target-volume-uuid'},
+                {'installPath': '/path/other', 'volumeUuid': 'other-volume-uuid'},
+            ],
+        })
+        result = plugin.detach_data_volume(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is False
+        assert 'other-volume-uuid' in rsp['error']
+        mock_vm._volume_detach_timed_out.assert_not_called()
+        mock_vm._clean_timeout_record.assert_not_called()
+        mock_vm.detach_data_volume.assert_not_called()
+
+    def test_missing_target_accepts_existing_non_virtio_iscsi_expected_volume(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.uuid = 'vm-uuid'
+        vm.state = vm_plugin.Vm.VM_STATE_RUNNING
+        disk = MagicMock()
+        disk.source.dev__ = True
+        disk.source.dev_ = '/dev/disk/by-path/other-volume-uuid'
+        disk.source.file__ = False
+        vm.domain_xmlobject = MagicMock()
+        vm.domain_xmlobject.devices.get_child_node_as_list.return_value = [disk]
+        monkeypatch.setattr(vm_plugin.xmlobject, 'has_element', MagicMock(return_value=True))
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=vm))
+
+        req = _make_req({
+            'vmInstanceUuid': 'vm-uuid',
+            'volume': {
+                'deviceType': 'file',
+                'installPath': '/path/target',
+                'volumeUuid': 'target-volume-uuid',
+            },
+            'expectedVolumes': [
+                {
+                    'deviceType': 'file',
+                    'installPath': '/path/target',
+                    'volumeUuid': 'target-volume-uuid',
+                },
+                {
+                    'deviceType': 'iscsi',
+                    'installPath': 'iscsi://127.0.0.1:3260/iqn/1',
+                    'useVirtio': False,
+                    'volumeUuid': 'other-volume-uuid',
+                },
+            ],
+        })
+        result = plugin.detach_data_volume(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True, rsp
+
+    def test_missing_expected_volumes_field_uses_timeout_record(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm.uuid = 'vm-uuid'
+        mock_vm.state = vm_plugin.Vm.VM_STATE_RUNNING
+        mock_vm._get_target_disk.return_value = (None, None)
+        mock_vm._volume_detach_timed_out.return_value = True
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=mock_vm))
+
+        req = _make_req({
+            'vmInstanceUuid': 'vm-uuid',
+            'volume': {'installPath': '/path/target', 'volumeUuid': 'target-volume-uuid'},
+        })
+        result = plugin.detach_data_volume(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        mock_vm._volume_detach_timed_out.assert_called_once()
+        mock_vm._clean_timeout_record.assert_called_once()
+        mock_vm.detach_data_volume.assert_not_called()
+
+    def test_attached_target_runs_normal_detach(self, monkeypatch):
+        plugin = _make_vm_plugin()
+        mock_vm = MagicMock()
+        mock_vm.uuid = 'vm-uuid'
+        mock_vm.state = vm_plugin.Vm.VM_STATE_RUNNING
+        mock_vm._get_target_disk.return_value = (MagicMock(), 'vda')
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=mock_vm))
+        monkeypatch.setattr(vm_plugin, 'volume_support_block_node', MagicMock(return_value=False))
+
+        req = _make_req({
+            'vmInstanceUuid': 'vm-uuid',
+            'volume': {'installPath': '/path/target', 'volumeUuid': 'target-volume-uuid'},
+            'expectedVolumes': [
+                {'installPath': '/path/root', 'volumeUuid': 'root-volume-uuid'},
+                {'installPath': '/path/target', 'volumeUuid': 'target-volume-uuid'},
+            ],
+        })
+        result = plugin.detach_data_volume(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is True
+        mock_vm._volume_detach_timed_out.assert_not_called()
+        mock_vm._clean_timeout_record.assert_not_called()
         mock_vm.detach_data_volume.assert_called_once()
 
 
