@@ -187,15 +187,72 @@ class TestRpmdbRepair(unittest.TestCase):
         return host_plugin.RpmdbRepairDecision(False, True, None)
 
     def test_parse_package_processes(self):
-        output = "123 S 70 yum yum install foo\nabc S 1 rpm ignored\n"
+        output = ("123 S 70 456 yum yum install foo\n"
+                  "abc S 1 789 rpm ignored\n")
         processes = host_plugin._parse_package_processes(output)
 
         self.assertEqual(1, len(processes))
         self.assertEqual(123, processes[0]['pid'])
         self.assertEqual('S', processes[0]['stat'])
         self.assertEqual(70, processes[0]['etimes'])
+        self.assertEqual(456, processes[0]['start_ticks'])
         self.assertEqual('yum', processes[0]['comm'])
         self.assertEqual('yum install foo', processes[0]['args'])
+
+    def test_terminate_revalidates_identity_and_age_before_each_signal(self):
+        process = {
+            'pid': 123,
+            'stat': 'S',
+            'etimes': 120,
+            'start_ticks': 456,
+            'comm': 'yum',
+            'args': 'yum install foo'
+        }
+
+        with mock.patch.object(host_plugin, '_run_rpmdb_output_command',
+                               return_value=(True, '', None)) as run_cmd:
+            decision = host_plugin._terminate_package_processes([process])
+
+        command = run_cmd.call_args[0][0]
+        self.assertFalse(decision.stop)
+        self.assertIn('target_specs="123:456"', command)
+        self.assertIn('current_start_ticks', command)
+        self.assertIn('[ "$current_start_ticks" = "$expected_start_ticks" ]',
+                      command)
+        self.assertIn('[ "$current_etimes" -ge 60 ]', command)
+        self.assertGreaterEqual(command.count(
+            'is_same_stale_package_process "$pid" '
+            '"$expected_start_ticks"'), 2)
+        self.assertIn('kill -TERM "$pid"', command)
+        self.assertIn('kill -KILL "$pid"', command)
+        self.assertNotIn('kill -TERM $term_pids', command)
+        self.assertNotIn('kill -KILL $kill_pids', command)
+
+    def test_rebuild_rechecks_processes_and_fds_before_destructive_work(self):
+        with mock.patch.object(host_plugin, '_run_rpmdb_output_command',
+                               return_value=(True, '', None)) as run_cmd:
+            decision = host_plugin._backup_and_rebuild_rpmdb()
+
+        command = run_cmd.call_args[0][0]
+        backup_pos = command.index('tar czf "$backup_file"')
+        remove_pos = command.index('rm -f "$dbpath"/__db.*')
+        guard_positions = []
+        offset = 0
+        while True:
+            pos = command.find('require_idle_rpmdb', offset)
+            if pos < 0:
+                break
+            guard_positions.append(pos)
+            offset = pos + 1
+
+        self.assertFalse(decision.stop)
+        self.assertIn('ps -eo pid=,ppid=,comm=,args=', command)
+        self.assertIn('for fd in /proc/[0-9]*/fd/*', command)
+        self.assertGreaterEqual(len(guard_positions), 3)
+        self.assertLess(guard_positions[1], backup_pos)
+        self.assertGreater(guard_positions[2], backup_pos)
+        self.assertLess(guard_positions[2], remove_pos)
+        self.assertIn('rm -f "$backup_file"', command)
 
     def test_first_pass_stops_when_yum_fails_but_rpmdb_is_healthy(self):
         with mock.patch.object(host_plugin, '_rpmdb_check',

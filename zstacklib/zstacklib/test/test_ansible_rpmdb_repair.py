@@ -164,6 +164,79 @@ class TestAnsibleRpmdbRepair(unittest.TestCase):
     def _continue(self):
         return zstacklib.RpmdbRepairDecision(False, True, None)
 
+    def _result(self, rc, stdout='', stderr=''):
+        return {'contacted': {
+            self.host_post_info.host: {
+                'rc': rc,
+                'stdout': stdout,
+                'stderr': stderr
+            }}}
+
+    def test_parse_package_processes_keeps_process_start_identity(self):
+        output = "123 S 70 456 yum yum install foo\n"
+
+        processes = zstacklib._parse_package_processes(output)
+
+        self.assertEqual(1, len(processes))
+        self.assertEqual(456, processes[0]['start_ticks'])
+
+    def test_terminate_revalidates_identity_and_age_before_each_signal(self):
+        process = {
+            'pid': 123,
+            'stat': 'S',
+            'etimes': 120,
+            'start_ticks': 456,
+            'comm': 'yum',
+            'args': 'yum install foo'
+        }
+
+        with mock.patch.object(zstacklib, '_run_rpmdb_output_command',
+                               return_value=(True, '')) as run_cmd:
+            decision = zstacklib._terminate_package_processes(
+                [process], self.host_post_info)
+
+        command = run_cmd.call_args[0][0]
+        self.assertFalse(decision.stop)
+        self.assertIn('target_specs="123:456"', command)
+        self.assertIn('current_start_ticks', command)
+        self.assertIn('[ "$current_start_ticks" = "$expected_start_ticks" ]',
+                      command)
+        self.assertIn('[ "$current_etimes" -ge 60 ]', command)
+        self.assertGreaterEqual(command.count(
+            'is_same_stale_package_process "$pid" '
+            '"$expected_start_ticks"'), 2)
+        self.assertIn('kill -TERM "$pid"', command)
+        self.assertIn('kill -KILL "$pid"', command)
+        self.assertNotIn('kill -TERM $term_pids', command)
+        self.assertNotIn('kill -KILL $kill_pids', command)
+
+    def test_rebuild_rechecks_processes_and_fds_before_destructive_work(self):
+        with mock.patch.object(zstacklib, '_run_rpmdb_output_command',
+                               return_value=(True, '')) as run_cmd:
+            decision = zstacklib._backup_and_rebuild_rpmdb(
+                self.host_post_info)
+
+        command = run_cmd.call_args[0][0]
+        backup_pos = command.index('tar czf "$backup_file"')
+        remove_pos = command.index('rm -f "$dbpath"/__db.*')
+        guard_positions = []
+        offset = 0
+        while True:
+            pos = command.find('require_idle_rpmdb', offset)
+            if pos < 0:
+                break
+            guard_positions.append(pos)
+            offset = pos + 1
+
+        self.assertFalse(decision.stop)
+        self.assertIn('ps -eo pid=,ppid=,comm=,args=', command)
+        self.assertIn('for fd in /proc/[0-9]*/fd/*', command)
+        self.assertGreaterEqual(len(guard_positions), 3)
+        self.assertLess(guard_positions[1], backup_pos)
+        self.assertGreater(guard_positions[2], backup_pos)
+        self.assertLess(guard_positions[2], remove_pos)
+        self.assertIn('rm -f "$backup_file"', command)
+
     def test_remote_repair_command_disables_yum0_setup(self):
         with mock.patch.object(zstacklib, 'run_remote_command',
                                return_value=True) as run_remote:
@@ -200,7 +273,8 @@ class TestAnsibleRpmdbRepair(unittest.TestCase):
     def test_yum_install_package_uses_rpmdb_transaction_lock(self):
         with mock.patch.object(
                 zstacklib, 'run_remote_rpmdb_transaction_command',
-                side_effect=[False, (True, {})]) as run_locked, \
+                side_effect=[(False, self._result(1)),
+                             (True, self._result(0))]) as run_locked, \
                 mock.patch.object(zstacklib, 'handle_ansible_info'):
             self.assertTrue(zstacklib.yum_install_package(
                 'foo', self.host_post_info))
@@ -208,14 +282,14 @@ class TestAnsibleRpmdbRepair(unittest.TestCase):
         commands = [call[0][0] for call in run_locked.call_args_list]
         self.assertEqual(['rpm -q --whatprovides foo',
                           'yum --nogpgcheck install -y foo'], commands)
-        self.assertFalse(
-            run_locked.call_args_list[0][1].get('return_result', False))
+        self.assertTrue(run_locked.call_args_list[0][1]['return_result'])
         self.assertTrue(run_locked.call_args_list[1][1]['return_result'])
 
     def test_yum_force_install_updates_installed_package(self):
         with mock.patch.object(
                 zstacklib, 'run_remote_rpmdb_transaction_command',
-                side_effect=[True, (True, {})]) as run_locked, \
+                side_effect=[(True, self._result(0)),
+                             (True, self._result(0))]) as run_locked, \
                 mock.patch.object(zstacklib, 'handle_ansible_info'):
             self.assertTrue(zstacklib.yum_install_package(
                 'foo', self.host_post_info, force_install=True))
@@ -233,7 +307,8 @@ class TestAnsibleRpmdbRepair(unittest.TestCase):
             }}}
         with mock.patch.object(
                 zstacklib, 'run_remote_rpmdb_transaction_command',
-                side_effect=[False, (False, result)]), \
+                side_effect=[(False, self._result(1)),
+                             (False, result)]), \
                 mock.patch.object(zstacklib, 'handle_ansible_info'), \
                 mock.patch.object(
                     zstacklib, '_fail_with_rpmdb_transaction_result') \
@@ -282,7 +357,8 @@ class TestAnsibleRpmdbRepair(unittest.TestCase):
             }}}
         with mock.patch.object(
                 zstacklib, 'run_remote_rpmdb_transaction_command',
-                side_effect=[True, (False, result)]), \
+                side_effect=[(True, self._result(0)),
+                             (False, result)]), \
                 mock.patch.object(zstacklib, 'handle_ansible_info'), \
                 mock.patch.object(
                     zstacklib, '_fail_with_rpmdb_transaction_result') \
@@ -296,6 +372,102 @@ class TestAnsibleRpmdbRepair(unittest.TestCase):
         self.assertEqual(
             'ansible.yum.remove.pkg.fail',
             self.host_post_info.post_label)
+
+    def test_yum_install_lock_timeout_fails_before_install(self):
+        result = self._result(75, stderr='failed to acquire lock')
+        with mock.patch.object(
+                zstacklib, 'run_remote_rpmdb_transaction_command',
+                return_value=(False, result)) as run_locked, \
+                mock.patch.object(zstacklib, 'handle_ansible_info'), \
+                mock.patch.object(
+                    zstacklib, '_fail_with_rpmdb_transaction_result') \
+                as fail:
+            status = zstacklib.yum_install_package(
+                'foo', self.host_post_info)
+
+        self.assertIsNone(status)
+        self.assertEqual(1, run_locked.call_count)
+        fail.assert_called_once_with(
+            'ERROR: failed to query package foo before yum install',
+            result,
+            self.host_post_info)
+
+    def test_yum_check_lock_timeout_is_not_package_absent(self):
+        result = self._result(75, stderr='failed to acquire lock')
+        with mock.patch.object(
+                zstacklib, 'run_remote_rpmdb_transaction_command',
+                return_value=(False, result)), \
+                mock.patch.object(zstacklib, 'handle_ansible_info'), \
+                mock.patch.object(
+                    zstacklib, '_fail_with_rpmdb_transaction_result') \
+                as fail:
+            status = zstacklib.yum_check_package(
+                'foo', self.host_post_info)
+
+        self.assertIsNone(status)
+        fail.assert_called_once_with(
+            'ERROR: failed to query package foo',
+            result,
+            self.host_post_info)
+
+    def test_yum_remove_lock_timeout_does_not_skip_removal(self):
+        result = self._result(75, stderr='failed to acquire lock')
+        with mock.patch.object(
+                zstacklib, 'run_remote_rpmdb_transaction_command',
+                return_value=(False, result)) as run_locked, \
+                mock.patch.object(zstacklib, 'handle_ansible_info'), \
+                mock.patch.object(
+                    zstacklib, '_fail_with_rpmdb_transaction_result') \
+                as fail:
+            status = zstacklib.yum_remove_package(
+                'foo', self.host_post_info)
+
+        self.assertIsNone(status)
+        self.assertEqual(1, run_locked.call_count)
+        fail.assert_called_once_with(
+            'ERROR: failed to query package foo before yum remove',
+            result,
+            self.host_post_info)
+
+    def test_yum_check_query_miss_returns_package_absent(self):
+        with mock.patch.object(
+                zstacklib, 'run_remote_rpmdb_transaction_command',
+                return_value=(False, self._result(1))), \
+                mock.patch.object(zstacklib, 'handle_ansible_info'):
+            status = zstacklib.yum_check_package(
+                'foo', self.host_post_info)
+
+        self.assertFalse(status)
+
+    def test_yum_remove_query_miss_keeps_normal_skip_behavior(self):
+        with mock.patch.object(
+                zstacklib, 'run_remote_rpmdb_transaction_command',
+                return_value=(False, self._result(1))) as run_locked, \
+                mock.patch.object(zstacklib, 'handle_ansible_info'):
+            status = zstacklib.yum_remove_package(
+                'foo', self.host_post_info)
+
+        self.assertTrue(status)
+        self.assertEqual(1, run_locked.call_count)
+        self.assertEqual('rpm -q foo', run_locked.call_args[0][0])
+
+    def test_unexpected_package_query_failure_preserves_result(self):
+        result = self._result(2, stderr='rpmdb query failed')
+        with mock.patch.object(
+                zstacklib, 'run_remote_rpmdb_transaction_command',
+                return_value=(False, result)), \
+                mock.patch.object(zstacklib, 'handle_ansible_info'), \
+                mock.patch.object(
+                    zstacklib, '_fail_with_rpmdb_transaction_result') \
+                as fail:
+            status = zstacklib.yum_check_package(
+                'foo', self.host_post_info)
+
+        self.assertIsNone(status)
+        fail.assert_called_once_with(
+            'ERROR: failed to query package foo',
+            result,
+            self.host_post_info)
 
     def test_install_release_uses_rpmdb_transaction_lock(self):
         class HostInfo(object):

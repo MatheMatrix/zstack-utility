@@ -720,8 +720,12 @@ def yum_check_package(name, host_post_info):
     host_post_info.post_label_param = name
     handle_ansible_info("INFO: Searching yum package %s ... " %
                         name, host_post_info, "INFO")
-    status = run_remote_rpmdb_transaction_command(
-        'rpm -q %s' % name, host_post_info, return_status=True)
+    status = _query_package_with_rpmdb_lock(
+        'rpm -q %s' % name,
+        "ERROR: failed to query package %s" % name,
+        host_post_info)
+    if status is None:
+        return None
     if status:
         details = "SUCC: The package %s exist in system" % name
         host_post_info.post_label = "ansible.yum.search.pkg.succ"
@@ -803,8 +807,12 @@ def yum_install_package(name, host_post_info, ignore_error=False,
     # --whatprovides so a capability already satisfied by an installed
     # package (e.g. libselinux-python provided by python2-libselinux) is
     # skipped without needing a repo
-    status = run_remote_rpmdb_transaction_command(
-        "rpm -q --whatprovides %s" % name, host_post_info, return_status=True)
+    status = _query_package_with_rpmdb_lock(
+        "rpm -q --whatprovides %s" % name,
+        "ERROR: failed to query package %s before yum install" % name,
+        host_post_info)
+    if status is None:
+        return None
     if status and not force_install:
         details = "SKIP: The package %s exist in system" % name
         host_post_info.post_label = "ansible.skip.install.pkg"
@@ -842,8 +850,12 @@ def yum_remove_package(name, host_post_info):
     host_post_info.post_label = "ansible.yum.start.remove.pkg"
     handle_ansible_info("INFO: yum start removing package %s ... " %
                         name, host_post_info, "INFO")
-    status = run_remote_rpmdb_transaction_command(
-        'yum list installed ' + name, host_post_info, return_status=True)
+    status = _query_package_with_rpmdb_lock(
+        'rpm -q ' + name,
+        "ERROR: failed to query package %s before yum remove" % name,
+        host_post_info)
+    if status is None:
+        return None
     if status:
         details = "INFO: yum removing %s ... " % name
         host_post_info.post_label = "ansible.yum.remove.pkg"
@@ -2247,6 +2259,27 @@ def _fail_with_rpmdb_transaction_result(description, result, host_post_info):
     handle_ansible_failed(description, result, host_post_info)
 
 
+def _remote_command_result_rc(result, host_post_info):
+    try:
+        return result['contacted'][host_post_info.host]['rc']
+    except (KeyError, TypeError):
+        return None
+
+
+def _query_package_with_rpmdb_lock(command, description, host_post_info):
+    status, result = run_remote_rpmdb_transaction_command(
+        command, host_post_info, return_status=True, return_result=True)
+    if status:
+        return True
+
+    if _remote_command_result_rc(result, host_post_info) == 1:
+        return False
+
+    _fail_with_rpmdb_transaction_result(
+        description, result, host_post_info)
+    return None
+
+
 class RpmdbRepairDecision(object):
     def __init__(self, stop=False, success=True, message=None):
         self.stop = stop
@@ -2342,13 +2375,14 @@ done
 def _parse_package_processes(output):
     processes = []
     for line in output.splitlines():
-        fields = line.split(None, 4)
-        if len(fields) < 4:
+        fields = line.split(None, 5)
+        if len(fields) < 5:
             continue
 
         try:
             pid = int(fields[0])
             etimes = int(fields[2])
+            start_ticks = int(fields[3])
         except ValueError:
             continue
 
@@ -2356,8 +2390,9 @@ def _parse_package_processes(output):
             'pid': pid,
             'stat': fields[1],
             'etimes': etimes,
-            'comm': fields[3],
-            'args': fields[4] if len(fields) > 4 else ''
+            'start_ticks': start_ticks,
+            'comm': fields[4],
+            'args': fields[5] if len(fields) > 5 else ''
         })
     return processes
 
@@ -2390,7 +2425,20 @@ ps -eo pid=,ppid=,stat=,etimes=,comm=,args= 2>/dev/null | awk \
             args ~ /(\/usr\/bin\/yum|\/bin\/yum|\/usr\/bin\/dnf|\/bin\/dnf)/) {
             print pid, stat, etimes, comm, args
         }
-    }'
+    }' | while read pid stat etimes comm args; do
+        start_ticks="$(awk '
+            {
+                line=$0
+                sub(/^.*\) /, "", line)
+                count=split(line, fields, " ")
+                if (count >= 20) print fields[20]
+            }' "/proc/$pid/stat" 2>/dev/null)"
+        case "$start_ticks" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        printf '%s %s %s %s %s %s\n' \
+            "$pid" "$stat" "$etimes" "$start_ticks" "$comm" "$args"
+    done
 """
     status, output = _run_rpmdb_output_command(cmd, host_post_info)
     if not status:
@@ -2534,42 +2582,101 @@ def _terminate_package_processes(processes, host_post_info):
     if not processes:
         return _rpmdb_continue()
 
-    pids = ' '.join([str(p['pid']) for p in processes])
-    cmd = """
-pids="%s"
-targets=""
-for pid in $pids; do
-    proc="$(ps -p "$pid" -o comm= -o args= 2>/dev/null)" || continue
-    case "$proc" in
-        *yum*|*dnf*|*rpm*)
-            targets="$targets $pid"
+    target_specs = ' '.join([
+        '%s:%s' % (p['pid'], p['start_ticks']) for p in processes])
+    cmd = r"""
+target_specs="%s"
+
+get_process_start_ticks() {
+    awk '
+        {
+            line=$0
+            sub(/^.*\) /, "", line)
+            count=split(line, fields, " ")
+            if (count >= 20) print fields[20]
+        }' "/proc/$1/stat" 2>/dev/null
+}
+
+is_same_stale_package_process() {
+    pid="$1"
+    expected_start_ticks="$2"
+
+    current_start_ticks="$(get_process_start_ticks "$pid")"
+    [ "$current_start_ticks" = "$expected_start_ticks" ] || {
+        echo "skip pid whose process identity changed: $pid"
+        return 1
+    }
+
+    process_info="$(ps -p "$pid" -o etimes= -o stat= -o comm= -o args= 2>/dev/null)" || return 1
+    set -- $process_info
+    current_etimes="$1"
+    current_stat="$2"
+    current_comm="$3"
+    case "$current_etimes" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$current_etimes" -ge %s ] || {
+        echo "skip package manager process below stale threshold: $pid"
+        return 1
+    }
+
+    case "$current_stat" in
+        D*|Z*) return 1 ;;
+    esac
+
+    case "$current_comm" in
+        yum|dnf|rpm)
+            return 0
             ;;
-        *)
-            echo "skip pid no longer owned by package manager: $pid"
+        python|python[0-9]*|*-python|*-python[0-9]*)
+            case "$process_info" in
+                */usr/bin/yum*|*/bin/yum*|*/usr/bin/dnf*|*/bin/dnf*)
+                    return 0
+                    ;;
+            esac
             ;;
     esac
+
+    echo "skip pid no longer owned by package manager: $pid"
+    return 1
+}
+
+targets=""
+for target_spec in $target_specs; do
+    pid="${target_spec%%:*}"
+    expected_start_ticks="${target_spec#*:}"
+    if is_same_stale_package_process "$pid" "$expected_start_ticks"; then
+        echo "terminate stale package manager process: $pid"
+        if kill -TERM "$pid" 2>/dev/null; then
+            targets="$targets $target_spec"
+        fi
+    fi
 done
 
 [ -n "$targets" ] || exit 0
-
-echo "terminate stale package manager processes:$targets"
-kill -TERM $targets 2>/dev/null || true
 sleep 5
 
 alive=""
-for pid in $targets; do
-    kill -0 "$pid" 2>/dev/null && alive="$alive $pid"
+for target_spec in $targets; do
+    pid="${target_spec%%:*}"
+    expected_start_ticks="${target_spec#*:}"
+    if is_same_stale_package_process "$pid" "$expected_start_ticks"; then
+        echo "force kill stale package manager process: $pid"
+        if kill -KILL "$pid" 2>/dev/null; then
+            alive="$alive $target_spec"
+        fi
+    fi
 done
 
-if [ -n "$alive" ]; then
-    echo "force kill stale package manager processes:$alive"
-    kill -KILL $alive 2>/dev/null || true
-    sleep 2
-fi
+[ -z "$alive" ] || sleep 2
 
 still_alive=""
-for pid in $targets; do
+for target_spec in $alive; do
+    pid="${target_spec%%:*}"
+    expected_start_ticks="${target_spec#*:}"
     kill -0 "$pid" 2>/dev/null || continue
+    current_start_ticks="$(get_process_start_ticks "$pid")"
+    [ "$current_start_ticks" = "$expected_start_ticks" ] || continue
     stat="$(ps -o stat= -p "$pid" 2>/dev/null)"
     case "$stat" in
         Z*)
@@ -2584,7 +2691,7 @@ if [ -n "$still_alive" ]; then
     echo "package manager processes are still alive after SIGKILL:$still_alive"
     exit 2
 fi
-""" % pids
+""" % (target_specs, RPMDB_REPAIR_STALE_SECONDS)
     status, output = _run_rpmdb_output_command(cmd, host_post_info)
     if status:
         return _rpmdb_continue()
@@ -2597,15 +2704,71 @@ def _backup_and_rebuild_rpmdb(host_post_info):
     cmd = r"""
 dbpath="$(__RPMDB_PATH_CMD__ 2>/dev/null)"
 [ -n "$dbpath" ] || exit 2
+
+require_idle_rpmdb() {
+    process_output="$(ps -eo pid=,ppid=,comm=,args= 2>/dev/null)" || {
+        echo "failed to inspect package manager processes"
+        return 2
+    }
+    package_pids="$(printf '%s\n' "$process_output" | awk \
+        -v self="$$" -v parent="$PPID" '
+        {
+            pid=$1
+            ppid=$2
+            comm=$3
+            args=""
+            for (i = 4; i <= NF; i++) {
+                args = args " " $i
+            }
+
+            if (pid == self || pid == parent) {
+                next
+            }
+            if (comm ~ /^(yum|dnf|rpm)$/ ||
+                (comm ~ /(^|-)python[0-9.]*$/ &&
+                 args ~ /(\/usr\/bin\/yum|\/bin\/yum|\/usr\/bin\/dnf|\/bin\/dnf)/)) {
+                print pid
+            }
+        }')"
+    if [ -n "$package_pids" ]; then
+        echo "package manager processes appeared during rpmdb rebuild guard: $package_pids"
+        return 1
+    fi
+
+    rpmdb_users=""
+    for fd in /proc/[0-9]*/fd/*; do
+        target="$(readlink "$fd" 2>/dev/null)" || continue
+        case "$target" in
+            "$dbpath"/*)
+                pid="${fd#/proc/}"
+                pid="${pid%%/*}"
+                [ "$pid" = "$$" ] && continue
+                [ "$pid" = "$PPID" ] && continue
+                rpmdb_users="$rpmdb_users $pid"
+                ;;
+        esac
+    done
+    if [ -n "$rpmdb_users" ]; then
+        echo "rpmdb file descriptors appeared during rebuild guard:$rpmdb_users"
+        return 1
+    fi
+    return 0
+}
+
 RPMDB_BACKUP_DIR="/var/lib/zstack/rpmdb-backups"
 mkdir -p "$RPMDB_BACKUP_DIR" || exit 2
 backup_file="$RPMDB_BACKUP_DIR/rpmdb-$(date +%Y%m%d%H%M%S).tar.gz"
 
+require_idle_rpmdb || exit 2
 if [ -d "$dbpath" ]; then
     timeout -k 10s 120s tar czf "$backup_file" -C "$(dirname "$dbpath")" "$(basename "$dbpath")" || exit 2
 fi
 ls -1t "$RPMDB_BACKUP_DIR"/rpmdb-*.tar.gz 2>/dev/null | awk 'NR > 5' | xargs -r rm -f
 
+if ! require_idle_rpmdb; then
+    rm -f "$backup_file"
+    exit 2
+fi
 rm -f "$dbpath"/__db.* || exit 2
 timeout -k 10s 180s rpm --rebuilddb || exit 2
 timeout -k 5s 30s rpm -qa >/dev/null || exit 2
