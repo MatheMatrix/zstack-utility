@@ -4,10 +4,14 @@
 
 @author: frank
 '''
-import mock
 import subprocess
 import time
 import unittest
+
+try:
+    import mock
+except ImportError:
+    from unittest import mock
 
 from kvmagent import kvmagent
 from kvmagent.plugins import host_plugin
@@ -56,6 +60,15 @@ class TestHostPlugin(unittest.TestCase):
         self.assertEqual(host_plugin._get_cpu_num(), rsp.cpuNum)
         self.assertEqual(host_plugin._get_cpu_speed(), rsp.cpuSpeed)
         self.assertEqual(host_plugin._get_total_memory(), rsp.totalMemory)
+
+    def test_direct_upload_file_propagates_upload_error(self):
+        plugin = host_plugin.HostPlugin()
+
+        with mock.patch('kvmagent.plugins.host_plugin.UploadHandler') as upload_handler:
+            upload_handler.return_value.handle_upload.side_effect = Exception('incomplete slice')
+
+            with self.assertRaises(Exception):
+                plugin.direct_upload_file(object())
 
     if __name__ == "__main__":
         #import sys;sys.argv = ['', 'Test.testName']

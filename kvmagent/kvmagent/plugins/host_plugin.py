@@ -4420,6 +4420,7 @@ done
             UploadHandler(req, self.upload_tasks).handle_upload()
         except Exception as e:
             logger.exception("File upload failed: %s", str(e))
+            raise
 
     @kvmagent.replyerror
     def get_upload_progress(self, req):
