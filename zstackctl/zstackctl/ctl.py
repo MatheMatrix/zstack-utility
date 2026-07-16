@@ -3665,13 +3665,16 @@ class InstallDbCmd(Command):
         else:
             if not args.root_password:
                 args.root_password = args.login_password
-            more_cmd = ' '
+            more_cmd = "GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; ".format(root_pass=args.root_password)
+            more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'::1' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; ".format(root_pass=args.root_password)
+            more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; ".format(root_pass=args.root_password)
             for ip in current_host_ips:
                 if not ip:
                     continue
                 more_cmd += "GRANT ALL PRIVILEGES ON *.* TO 'root'@'{}' IDENTIFIED BY '{}' WITH GRANT OPTION;".format(ip, args.root_password)
             grant_access_cmd = '''/usr/bin/mysql -u root -p{root_pass} -e '''\
                                '''"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
+                               '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'$(hostname)' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''GRANT ALL PRIVILEGES ON *.* TO 'root'@'{host}' IDENTIFIED BY '{root_pass}' WITH GRANT OPTION; '''\
                                '''{more_cmd} FLUSH PRIVILEGES;"'''.format(root_pass=args.root_password, host=args.host, more_cmd=more_cmd)
             if args.choose_database == 'GreatDB':
