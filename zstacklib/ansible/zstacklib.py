@@ -1575,7 +1575,8 @@ def get_remote_host_info_obj(host_post_info):
     runner_args = ZstackRunnerArg()
     runner_args.host_post_info = host_post_info
     runner_args.module_name = 'setup'
-    runner_args.module_args = ('gather_subset=machine '
+    runner_args.module_args = ('gather_subset=!all '
+                               'gather_timeout=10 '
                                'filter=ansible_dist*,ansible_machine,'
                                'ansible_processor,ansible_kernel')
     zstack_runner = ZstackRunner(runner_args)
