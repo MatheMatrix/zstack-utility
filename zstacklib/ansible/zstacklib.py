@@ -10,6 +10,10 @@ import json
 import os
 import sys
 import threading
+try:
+    from shlex import quote as shell_quote
+except ImportError:
+    from pipes import quote as shell_quote
 
 from ansible import constants as ansible_constants
 from ansible import context as ansible_context
@@ -689,32 +693,21 @@ def yum_enable_repo(name, disablerepo, enablerepo, host_post_info):
     host_post_info.post_label_param = name
     handle_ansible_info("INFO: Starting enable yum repo %s ... " %
                         name, host_post_info, "INFO")
-    runner_args = ZstackRunnerArg()
-    runner_args.host_post_info = host_post_info
-    runner_args.module_name = 'yum'
-    runner_args.module_args = 'name={} disablerepo={} enablerepo={} state=present'.format(
-        name, disablerepo, enablerepo)
-    zstack_runner = ZstackRunner(runner_args)
-    result = zstack_runner.run()
-    logger.debug(result)
-    if result['contacted'] == {}:
-        ansible_start = AnsibleStartResult()
-        ansible_start.host = host
-        ansible_start.post_url = post_url
-        ansible_start.result = result
-        handle_ansible_start(ansible_start)
+    command = 'yum --disablerepo={} --enablerepo={} install -y {}'.format(
+        disablerepo, enablerepo, name)
+    status, result = run_remote_rpmdb_transaction_command(
+        command, host_post_info, return_status=True, return_result=True)
+    if not status:
+        description = "ERROR: Enable yum repo failed"
+        host_post_info.post_label = "ansible.yum.enable.repo.fail"
+        _fail_with_rpmdb_transaction_result(
+            description, result, host_post_info)
     else:
-        ret = result['contacted'][host]
-        if ret.get('failed', True):
-            description = "ERROR: Enable yum repo failed"
-            host_post_info.post_label = "ansible.yum.enable.repo.fail"
-            handle_ansible_failed(description, result, host_post_info)
-        else:
-            details = "SUCC: yum enable repo %s " % enablerepo
-            host_post_info.post_label = "ansible.yum.enable.repo.succ"
-            host_post_info.post_label_param = enablerepo
-            handle_ansible_info(details, host_post_info, "INFO")
-            return True
+        details = "SUCC: yum enable repo %s " % enablerepo
+        host_post_info.post_label = "ansible.yum.enable.repo.succ"
+        host_post_info.post_label_param = enablerepo
+        handle_ansible_info(details, host_post_info, "INFO")
+        return True
 
 
 @retry(times=3, sleep_time=3)
@@ -727,37 +720,22 @@ def yum_check_package(name, host_post_info):
     host_post_info.post_label_param = name
     handle_ansible_info("INFO: Searching yum package %s ... " %
                         name, host_post_info, "INFO")
-    runner_args = ZstackRunnerArg()
-    runner_args.host_post_info = host_post_info
-    runner_args.module_name = 'shell'
-    runner_args.module_args = 'rpm -q %s' % name
-    zstack_runner = ZstackRunner(runner_args)
-    result = zstack_runner.run()
-    logger.debug(result)
-    if result['contacted'] == {}:
-        ansible_start = AnsibleStartResult()
-        ansible_start.host = host
-        ansible_start.post_url = post_url
-        ansible_start.result = result
-        handle_ansible_start(ansible_start)
+    status = _query_package_with_rpmdb_lock(
+        'rpm -q %s' % name,
+        "ERROR: failed to query package %s" % name,
+        host_post_info)
+    if status is None:
+        return None
+    if status:
+        details = "SUCC: The package %s exist in system" % name
+        host_post_info.post_label = "ansible.yum.search.pkg.succ"
+        handle_ansible_info(details, host_post_info, "INFO")
+        return True
     else:
-        ret = result['contacted'][host]
-        if 'rc' not in ret:
-            logger.warning(("Maybe network problem, try again now, ansible "
-                            "reply is below:\n %s") % result)
-            raise Exception(result)
-        else:
-            status = ret['rc']
-            if status == 0:
-                details = "SUCC: The package %s exist in system" % name
-                host_post_info.post_label = "ansible.yum.search.pkg.succ"
-                handle_ansible_info(details, host_post_info, "INFO")
-                return True
-            else:
-                details = "SUCC: The package %s not exist in system" % name
-                host_post_info.post_label = "ansible.yum.search.pkg.fail"
-                handle_ansible_info(details, host_post_info, "INFO")
-                return False
+        details = "SUCC: The package %s not exist in system" % name
+        host_post_info.post_label = "ansible.yum.search.pkg.fail"
+        handle_ansible_info(details, host_post_info, "INFO")
+        return False
 
 
 @retry(times=3, sleep_time=3)
@@ -826,59 +804,40 @@ def yum_install_package(name, host_post_info, ignore_error=False,
     host_post_info.post_label_param = name
     msg = "INFO: Starting yum install package %s ... " % name
     handle_ansible_info(msg, host_post_info, "INFO")
-    runner_args = ZstackRunnerArg()
-    runner_args.host_post_info = host_post_info
-    runner_args.module_name = 'shell'
     # --whatprovides so a capability already satisfied by an installed
     # package (e.g. libselinux-python provided by python2-libselinux) is
     # skipped without needing a repo
-    runner_args.module_args = "rpm -q --whatprovides %s" % name
-    runner_args.name = name
-    zstack_runner = ZstackRunner(runner_args)
-    result = zstack_runner.run()
-    logger.debug(result)
-    if result['contacted'] == {}:
-        ansible_start = AnsibleStartResult()
-        ansible_start.host = host
-        ansible_start.post_url = post_url
-        ansible_start.result = result
-        handle_ansible_start(ansible_start)
+    status = _query_package_with_rpmdb_lock(
+        "rpm -q --whatprovides %s" % name,
+        "ERROR: failed to query package %s before yum install" % name,
+        host_post_info)
+    if status is None:
+        return None
+    if status and not force_install:
+        details = "SKIP: The package %s exist in system" % name
+        host_post_info.post_label = "ansible.skip.install.pkg"
+        handle_ansible_info(details, host_post_info, "INFO")
+        return True
     else:
-        ret = result['contacted'][host]
-        if 'rc' not in ret:
-            logger.warning(("Network problem, try again now, ansible reply "
-                            "is below:\n %s") % result)
-            raise Exception(result)
+        details = "INFO: Yum installing package %s ..." % name
+        host_post_info.post_label = "ansible.yum.install.pkg"
+        handle_ansible_info(details, host_post_info, "INFO")
+        yum_action = 'update' if status and force_install else 'install'
+        command = 'yum --nogpgcheck %s -y %s' % (yum_action, name)
+        status, result = run_remote_rpmdb_transaction_command(
+            command, host_post_info, return_status=True, return_result=True)
+        if status:
+            details = "SUCC: yum install package %s successfully" % name
+            host_post_info.post_label = "ansible.yum.install.pkg.succ"
+            handle_ansible_info(details, host_post_info, "INFO")
+            return True
+        elif ignore_error:
+            return True
         else:
-            status = ret['rc']
-            if status == 0 and not force_install:
-                details = "SKIP: The package %s exist in system" % name
-                host_post_info.post_label = "ansible.skip.install.pkg"
-                handle_ansible_info(details, host_post_info, "INFO")
-                return True
-            else:
-                details = "INFO: Yum installing package %s ..." % name
-                host_post_info.post_label = "ansible.yum.install.pkg"
-                handle_ansible_info(details, host_post_info, "INFO")
-                runner_args = ZstackRunnerArg()
-                runner_args.host_post_info = host_post_info
-                runner_args.module_name = 'yum'
-                args = 'name=%s disable_gpg_check=yes state=latest' % name
-                runner_args.module_args = args
-                zstack_runner = ZstackRunner(runner_args)
-                result = zstack_runner.run()
-                logger.debug(result)
-                ret = result['contacted'][host]
-                if ret.get('failed', True) and not ignore_error:
-                    description = "ERROR: YUM install package %s failed" % name
-                    host_post_info.post_label = "ansible.yum.install.pkg.fail"
-                    handle_ansible_failed(description, result, host_post_info)
-                else:
-                    details = \
-                        "SUCC: yum install package %s successfully" % name
-                    host_post_info.post_label = "ansible.yum.install.pkg.succ"
-                    handle_ansible_info(details, host_post_info, "INFO")
-                    return True
+            description = "ERROR: YUM install package %s failed" % name
+            host_post_info.post_label = "ansible.yum.install.pkg.fail"
+            _fail_with_rpmdb_transaction_result(
+                description, result, host_post_info)
 
 
 @retry(times=3, sleep_time=3)
@@ -891,52 +850,33 @@ def yum_remove_package(name, host_post_info):
     host_post_info.post_label = "ansible.yum.start.remove.pkg"
     handle_ansible_info("INFO: yum start removing package %s ... " %
                         name, host_post_info, "INFO")
-    runner_args = ZstackRunnerArg()
-    runner_args.host_post_info = host_post_info
-    runner_args.module_name = 'shell'
-    runner_args.module_args = 'yum list installed ' + name
-    zstack_runner = ZstackRunner(runner_args)
-    result = zstack_runner.run()
-    logger.debug(result)
-    if result['contacted'] == {}:
-        ansible_start = AnsibleStartResult()
-        ansible_start.host = host
-        ansible_start.post_url = post_url
-        ansible_start.result = result
-        handle_ansible_start(ansible_start)
-    ret = result['contacted'][host]
-    if 'rc' not in ret:
-        logger.warning(("Network problem, try again now, ansible reply "
-                        "is below:\n %s") % result)
-        raise Exception(result)
-    else:
-        status = ret['rc']
-        if status == 0:
-            details = "INFO: yum removing %s ... " % name
-            host_post_info.post_label = "ansible.yum.remove.pkg"
-            handle_ansible_info(details, host_post_info, "INFO")
-            runner_args = ZstackRunnerArg()
-            runner_args.host_post_info = host_post_info
-            runner_args.module_name = 'yum'
-            runner_args.module_args = 'name=' + name + ' state=absent'
-            zstack_runner = ZstackRunner(runner_args)
-            result = zstack_runner.run()
-            logger.debug(result)
-            ret = result['contacted'][host]
-            if ret.get('failed', True):
-                description = "ERROR: yum remove package %s failed" % name
-                host_post_info.post_label = "ansible.yum.remove.pkg.fail"
-                handle_ansible_failed(description, result, host_post_info)
-            else:
-                details = "SUCC: yum remove package %s successfully" % name
-                host_post_info.post_label = "ansible.yum.remove.pkg.succ"
-                handle_ansible_info(details, host_post_info, "INFO")
-                return True
-        else:
-            details = "SKIP: The package %s is not exist in system" % name
-            host_post_info.post_label = "ansible.skip.remove.pkg"
+    status = _query_package_with_rpmdb_lock(
+        'rpm -q ' + name,
+        "ERROR: failed to query package %s before yum remove" % name,
+        host_post_info)
+    if status is None:
+        return None
+    if status:
+        details = "INFO: yum removing %s ... " % name
+        host_post_info.post_label = "ansible.yum.remove.pkg"
+        handle_ansible_info(details, host_post_info, "INFO")
+        command = 'yum remove -y ' + name
+        status, result = run_remote_rpmdb_transaction_command(
+            command, host_post_info, return_status=True, return_result=True)
+        if status:
+            details = "SUCC: yum remove package %s successfully" % name
+            host_post_info.post_label = "ansible.yum.remove.pkg.succ"
             handle_ansible_info(details, host_post_info, "INFO")
             return True
+        description = "ERROR: yum remove package %s failed" % name
+        host_post_info.post_label = "ansible.yum.remove.pkg.fail"
+        _fail_with_rpmdb_transaction_result(
+            description, result, host_post_info)
+    else:
+        details = "SKIP: The package %s is not exist in system" % name
+        host_post_info.post_label = "ansible.skip.remove.pkg"
+        handle_ansible_info(details, host_post_info, "INFO")
+        return True
 
 
 def check_pkg_status(name_list, host_post_info):
@@ -1339,13 +1279,12 @@ def check_host_reachable(host_post_info, warning=False):
 
 @retry(times=3, sleep_time=3)
 def run_remote_command(command, host_post_info, return_status=False,
-                       return_output=False, stderr_match_regexp=''):
+                       return_output=False, stderr_match_regexp='',
+                       setup_yum0=True, return_result=False):
     '''return status all the time except return_status is False,
     return output is set to True'''
-    if 'yum' in command:
-        set_yum0 = '''rpm -q zstack-release >/dev/null && releasever=`awk '{print $3}' /etc/zstack-release`;\
-                    export YUM0=$releasever; grep $releasever /etc/yum/vars/YUM0 || echo $releasever > /etc/yum/vars/YUM0;'''
-        command = set_yum0 + command
+    if setup_yum0:
+        command = _setup_yum0_for_command(command)
     start_time = datetime.datetime.now()
     host_post_info.start_time = start_time
     host = host_post_info.host
@@ -1395,6 +1334,8 @@ def run_remote_command(command, host_post_info, return_status=False,
                 details = "SUCC: run shell command: %s successfully " % command
                 host_post_info.post_label = host_post_info.post_label + ".succ"
                 handle_ansible_info(details, host_post_info, "INFO")
+                if return_result:
+                    return (True, result)
                 if return_output is False:
                     return True
                 else:
@@ -1412,6 +1353,8 @@ def run_remote_command(command, host_post_info, return_status=False,
                     host_post_info.post_label = \
                         host_post_info.post_label + ".fail"
                     handle_ansible_info(details, host_post_info, "WARNING")
+                    if return_result:
+                        return (False, result)
                     if return_output is False:
                         return False
                     else:
@@ -2218,7 +2161,7 @@ def upgrade_to_helix(host_info, host_post_info):
             copy_arg.src = helix_pkg
             copy_arg.dest = '/opt'
             copy(copy_arg, host_post_info)
-        run_remote_command(install_cmd, host_post_info)
+        run_remote_rpmdb_transaction_command(install_cmd, host_post_info)
 
         # flush ansible cache after upgrading
         global _ansible_cache
@@ -2250,13 +2193,672 @@ def install_release_on_host(is_rpm, host_info, host_post_info):
     copy_arg.src = src_pkg
     copy_arg.dest = '/opt'
     copy(copy_arg, host_post_info)
-    run_remote_command(install_cmd, host_post_info)
+    run_remote_rpmdb_transaction_command(install_cmd, host_post_info)
+
+
+RPMDB_REPAIR_STALE_SECONDS = 60
+RPMDB_REPAIR_WAIT_SECONDS = 60
+RPMDB_LOCK_WAIT_SECONDS = 60
+RPMDB_REPAIR_LOCK_PATH = "/run/zstack-yum.lock"
+RPMDB_YUM_CHECK_CMD = \
+    "timeout -k 5s 30s yum --disablerepo=* list installed >/dev/null 2>&1"
+RPMDB_CHECK_CMD = "timeout -k 5s 30s rpm -qa >/dev/null 2>&1"
+RPMDB_PATH_CMD = "timeout -k 5s 30s rpm --eval '%{_dbpath}'"
+
+
+def _setup_yum0_for_command(command):
+    if 'yum' not in command:
+        return command
+    set_yum0 = '''rpm -q zstack-release >/dev/null && releasever=`awk '{print $3}' /etc/zstack-release`;\
+                    export YUM0=$releasever; grep $releasever /etc/yum/vars/YUM0 || echo $releasever > /etc/yum/vars/YUM0;'''
+    return set_yum0 + command
+
+
+def _lock_rpmdb_command(command):
+    quoted_lock_path = shell_quote(RPMDB_REPAIR_LOCK_PATH)
+    return (
+        "if command -v flock >/dev/null 2>&1; then\n"
+        "mkdir -p /run 2>/dev/null || true\n"
+        "(\n"
+        "flock -w %s -x 9\n"
+        "rc=$?\n"
+        "if [ $rc -ne 0 ]; then\n"
+        "echo 'failed to acquire %s in %ss' >&2\n"
+        "exit 75\n"
+        "fi\n"
+        "%s\n"
+        ") 9>%s\n"
+        "else\n"
+        "%s\n"
+        "fi"
+    ) % (RPMDB_LOCK_WAIT_SECONDS, RPMDB_REPAIR_LOCK_PATH,
+         RPMDB_LOCK_WAIT_SECONDS, command, quoted_lock_path, command)
+
+
+def run_remote_rpmdb_transaction_command(
+        command, host_post_info, return_status=False, return_output=False,
+        stderr_match_regexp='', setup_yum0=True, return_result=False):
+    if setup_yum0:
+        command = _setup_yum0_for_command(command)
+    return run_remote_command(_lock_rpmdb_command(command), host_post_info,
+                              return_status=return_status,
+                              return_output=return_output,
+                              stderr_match_regexp=stderr_match_regexp,
+                              setup_yum0=False,
+                              return_result=return_result)
+
+
+def _fail_with_rpmdb_transaction_result(description, result, host_post_info):
+    if result is None:
+        result = {'contacted': {
+            host_post_info.host: {
+                'stdout': '',
+                'stderr': '',
+                'rc': 1
+            }}}
+    handle_ansible_failed(description, result, host_post_info)
+
+
+def _remote_command_result_rc(result, host_post_info):
+    try:
+        return result['contacted'][host_post_info.host]['rc']
+    except (KeyError, TypeError):
+        return None
+
+
+def _query_package_with_rpmdb_lock(command, description, host_post_info):
+    status, result = run_remote_rpmdb_transaction_command(
+        command, host_post_info, return_status=True, return_result=True)
+    if status:
+        return True
+
+    if _remote_command_result_rc(result, host_post_info) == 1:
+        return False
+
+    _fail_with_rpmdb_transaction_result(
+        description, result, host_post_info)
+    return None
+
+
+class RpmdbRepairDecision(object):
+    def __init__(self, stop=False, success=True, message=None):
+        self.stop = stop
+        self.success = success
+        self.message = message
+
+
+def _rpmdb_continue():
+    return RpmdbRepairDecision(False, True, None)
+
+
+def _rpmdb_stop_with_warning(message):
+    warn(message)
+    return RpmdbRepairDecision(True, True, message)
+
+
+def _run_rpmdb_repair_command(command, host_post_info, return_status=False,
+                              return_output=False):
+    return run_remote_command(_lock_rpmdb_command(command), host_post_info,
+                              return_status=return_status,
+                              return_output=return_output,
+                              setup_yum0=False)
+
+
+def _run_rpmdb_status_command(command, host_post_info):
+    return _run_rpmdb_repair_command(command, host_post_info,
+                                     return_status=True)
+
+
+def _run_rpmdb_output_command(command, host_post_info):
+    return _run_rpmdb_repair_command(command, host_post_info,
+                                     return_status=True,
+                                     return_output=True)
+
+
+def _yum_rpmdb_check(host_post_info):
+    return _run_rpmdb_status_command(RPMDB_YUM_CHECK_CMD, host_post_info)
+
+
+def _rpmdb_check(host_post_info):
+    return _run_rpmdb_status_command(RPMDB_CHECK_CMD, host_post_info)
+
+
+def _check_rpmdb_repair_prerequisites(host_post_info):
+    cmd = ("command -v timeout >/dev/null 2>&1 && "
+           "ps -eo pid=,ppid=,pgid=,stat=,etimes=,comm=,args= >/dev/null 2>&1")
+    if _run_rpmdb_status_command(cmd, host_post_info):
+        return _rpmdb_continue()
+    return _rpmdb_stop_with_warning(
+        "timeout and ps etimes are required to recover rpmdb safely; "
+        "skip rpmdb repair and continue host reconnect/deploy")
+
+
+def _remove_stale_yum_pid_files(host_post_info):
+    cmd = r"""
+for pid_file in /var/run/yum.pid /run/yum.pid; do
+    [ -f "$pid_file" ] || continue
+    pid="$(awk '{print $1}' "$pid_file" 2>/dev/null)"
+
+    case "$pid" in
+        ''|*[!0-9]*)
+            echo "remove malformed yum pid file: $pid_file"
+            rm -f "$pid_file" || exit 2
+            continue
+            ;;
+    esac
+
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo "remove stale yum pid file: $pid_file"
+        rm -f "$pid_file" || exit 2
+        continue
+    fi
+
+    proc="$(ps -p "$pid" -o comm= -o args= 2>/dev/null)"
+    case "$proc" in
+        *yum*|*dnf*|*rpm*)
+            ;;
+        *)
+            echo "remove yum pid file owned by non-package process: $pid_file"
+            rm -f "$pid_file" || exit 2
+            ;;
+    esac
+done
+"""
+    status, output = _run_rpmdb_output_command(cmd, host_post_info)
+    if status:
+        return _rpmdb_continue()
+    return _rpmdb_stop_with_warning(
+        "failed to remove stale yum pid files; skip rpmdb repair and "
+        "continue host reconnect/deploy. output: %s" % output)
+
+
+def _parse_package_processes(output):
+    processes = []
+    for line in output.splitlines():
+        fields = line.split(None, 5)
+        if len(fields) < 5:
+            continue
+
+        try:
+            pid = int(fields[0])
+            etimes = int(fields[2])
+            start_ticks = int(fields[3])
+        except ValueError:
+            continue
+
+        processes.append({
+            'pid': pid,
+            'stat': fields[1],
+            'etimes': etimes,
+            'start_ticks': start_ticks,
+            'comm': fields[4],
+            'args': fields[5] if len(fields) > 5 else ''
+        })
+    return processes
+
+
+def _list_package_processes(host_post_info):
+    cmd = r"""
+ps -eo pid=,ppid=,stat=,etimes=,comm=,args= 2>/dev/null | awk \
+    -v self="$$" -v parent="$PPID" '
+    {
+        pid=$1
+        ppid=$2
+        stat=$3
+        etimes=$4
+        comm=$5
+        args=""
+        for (i = 6; i <= NF; i++) {
+            args = args " " $i
+        }
+
+        if (pid == self || pid == parent) {
+            next
+        }
+
+        if (comm ~ /^(yum|dnf|rpm)$/) {
+            print pid, stat, etimes, comm, args
+            next
+        }
+
+        if (comm ~ /(^|-)python[0-9.]*$/ &&
+            args ~ /(\/usr\/bin\/yum|\/bin\/yum|\/usr\/bin\/dnf|\/bin\/dnf)/) {
+            print pid, stat, etimes, comm, args
+        }
+    }' | while read pid stat etimes comm args; do
+        start_ticks="$(awk '
+            {
+                line=$0
+                sub(/^.*\) /, "", line)
+                count=split(line, fields, " ")
+                if (count >= 20) print fields[20]
+            }' "/proc/$pid/stat" 2>/dev/null)"
+        case "$start_ticks" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        printf '%s %s %s %s %s %s\n' \
+            "$pid" "$stat" "$etimes" "$start_ticks" "$comm" "$args"
+    done
+"""
+    status, output = _run_rpmdb_output_command(cmd, host_post_info)
+    if not status:
+        warn("failed to list package manager processes; continue without "
+             "rpmdb repair. output: %s" % output)
+        return None
+    return _parse_package_processes(output)
+
+
+def _format_package_process_pids(processes):
+    return ','.join([str(p['pid']) for p in processes])
+
+
+def _check_rpmdb_opened(host_post_info, include_lock_files=False,
+                        ignore_error=False):
+    rpmdb_users, error = _list_rpmdb_users(host_post_info, include_lock_files)
+    if error:
+        if ignore_error:
+            return _rpmdb_continue()
+        return _rpmdb_stop_with_warning(
+            "failed to list rpmdb users; skip rpmdb repair and continue host "
+            "reconnect/deploy. output: %s" % error)
+    if not rpmdb_users:
+        return _rpmdb_continue()
+
+    return _rpmdb_stop_with_warning(
+        "rpmdb is still opened by processes; skip rpmdb rebuild and continue "
+        "host reconnect/deploy. pids: %s" % ','.join(rpmdb_users))
+
+
+def _list_rpmdb_users(host_post_info, include_lock_files=False):
+    cmd = r"""
+dbpath="$(__RPMDB_PATH_CMD__ 2>/dev/null)"
+[ -n "$dbpath" ] || exit 2
+include_lock_files="__INCLUDE_LOCK_FILES__"
+for fd in /proc/[0-9]*/fd/*; do
+    target="$(readlink "$fd" 2>/dev/null)" || continue
+    case "$target" in
+        "$dbpath"/__db.*)
+            [ "$include_lock_files" = "true" ] || continue
+            pid="${fd#/proc/}"
+            pid="${pid%%/*}"
+            ;;
+        "$dbpath"/*)
+            pid="${fd#/proc/}"
+            pid="${pid%%/*}"
+            ;;
+        *)
+            continue
+            ;;
+    esac
+
+    [ "$pid" = "$$" ] && continue
+    [ "$pid" = "$PPID" ] && continue
+    echo "$pid"
+done | sort -u
+""".replace("__INCLUDE_LOCK_FILES__",
+            "true" if include_lock_files else "false")
+    cmd = cmd.replace("__RPMDB_PATH_CMD__", RPMDB_PATH_CMD)
+    status, output = _run_rpmdb_output_command(cmd, host_post_info)
+    if not status:
+        return None, output
+    return [pid for pid in output.split() if pid.isdigit()], None
+
+
+def _evaluate_rpmdb_repair_state(processes, host_post_info,
+                                 check_remaining_processes=False):
+    if processes is None:
+        return _rpmdb_stop_with_warning(
+            "cannot inspect package manager processes; skip rpmdb repair and "
+            "continue host reconnect/deploy")
+
+    d_state_processes = [p for p in processes if p['stat'].startswith('D')]
+    if d_state_processes:
+        return _rpmdb_stop_with_warning(
+            "package manager process is in D state; skip rpmdb recovery and "
+            "let host reconnect/deploy retry later. pids: %s" %
+            _format_package_process_pids(d_state_processes))
+
+    if (not check_remaining_processes and not processes and
+            _rpmdb_check(host_post_info)):
+        return _rpmdb_stop_with_warning(
+            "yum cannot list installed packages but rpmdb is healthy and no "
+            "package manager process is blocking it; skip rpmdb rebuild and "
+            "continue host reconnect/deploy")
+
+    if processes and _rpmdb_check(host_post_info):
+        return _rpmdb_stop_with_warning(
+            "yum cannot list installed packages because another package "
+            "manager process is running, but rpmdb is healthy; skip killing "
+            "the process and continue host reconnect/deploy. pids: %s" %
+            _format_package_process_pids(processes))
+
+    rpmdb_users, error = _list_rpmdb_users(host_post_info)
+    if error:
+        return _rpmdb_stop_with_warning(
+            "failed to list rpmdb users; skip rpmdb repair and continue host "
+            "reconnect/deploy. output: %s" % error)
+    if rpmdb_users:
+        return _rpmdb_stop_with_warning(
+            "package manager process is using rpmdb core files; skip killing "
+            "the process and continue host reconnect/deploy. pids: %s" %
+            ','.join(rpmdb_users))
+
+    if check_remaining_processes and processes:
+        return _rpmdb_stop_with_warning(
+            "package manager processes are still running after stale process "
+            "cleanup; skip rpmdb rebuild and continue host reconnect/deploy. "
+            "pids: %s" % _format_package_process_pids(processes))
+
+    return _rpmdb_continue()
+
+
+def _wait_for_young_package_processes(processes, host_post_info):
+    young_processes = [p for p in processes
+                       if p['etimes'] < RPMDB_REPAIR_STALE_SECONDS]
+    if not young_processes:
+        return _rpmdb_continue()
+
+    time.sleep(RPMDB_REPAIR_WAIT_SECONDS)
+    if _yum_rpmdb_check(host_post_info):
+        return RpmdbRepairDecision(True, True, None)
+
+    processes = _list_package_processes(host_post_info)
+    decision = _evaluate_rpmdb_repair_state(processes, host_post_info)
+    if decision.stop:
+        return decision
+
+    young_processes = [p for p in processes
+                       if p['etimes'] < RPMDB_REPAIR_STALE_SECONDS]
+    if young_processes:
+        return _rpmdb_stop_with_warning(
+            "package manager process is still active and below stale "
+            "threshold; skip destructive rpmdb recovery. pids: %s" %
+            _format_package_process_pids(young_processes))
+
+    return _rpmdb_continue()
+
+
+def _terminate_package_processes(processes, host_post_info):
+    if not processes:
+        return _rpmdb_continue()
+
+    target_specs = ' '.join([
+        '%s:%s' % (p['pid'], p['start_ticks']) for p in processes])
+    cmd = r"""
+target_specs="%s"
+
+get_process_start_ticks() {
+    awk '
+        {
+            line=$0
+            sub(/^.*\) /, "", line)
+            count=split(line, fields, " ")
+            if (count >= 20) print fields[20]
+        }' "/proc/$1/stat" 2>/dev/null
+}
+
+is_same_stale_package_process() {
+    pid="$1"
+    expected_start_ticks="$2"
+
+    current_start_ticks="$(get_process_start_ticks "$pid")"
+    [ "$current_start_ticks" = "$expected_start_ticks" ] || {
+        echo "skip pid whose process identity changed: $pid"
+        return 1
+    }
+
+    process_info="$(ps -p "$pid" -o etimes= -o stat= -o comm= -o args= 2>/dev/null)" || return 1
+    set -- $process_info
+    current_etimes="$1"
+    current_stat="$2"
+    current_comm="$3"
+    case "$current_etimes" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$current_etimes" -ge %s ] || {
+        echo "skip package manager process below stale threshold: $pid"
+        return 1
+    }
+
+    case "$current_stat" in
+        D*|Z*) return 1 ;;
+    esac
+
+    case "$current_comm" in
+        yum|dnf|rpm)
+            return 0
+            ;;
+        python|python[0-9]*|*-python|*-python[0-9]*)
+            case "$process_info" in
+                */usr/bin/yum*|*/bin/yum*|*/usr/bin/dnf*|*/bin/dnf*)
+                    return 0
+                    ;;
+            esac
+            ;;
+    esac
+
+    echo "skip pid no longer owned by package manager: $pid"
+    return 1
+}
+
+targets=""
+for target_spec in $target_specs; do
+    pid="${target_spec%%:*}"
+    expected_start_ticks="${target_spec#*:}"
+    if is_same_stale_package_process "$pid" "$expected_start_ticks"; then
+        echo "terminate stale package manager process: $pid"
+        if kill -TERM "$pid" 2>/dev/null; then
+            targets="$targets $target_spec"
+        fi
+    fi
+done
+
+[ -n "$targets" ] || exit 0
+sleep 5
+
+alive=""
+for target_spec in $targets; do
+    pid="${target_spec%%:*}"
+    expected_start_ticks="${target_spec#*:}"
+    if is_same_stale_package_process "$pid" "$expected_start_ticks"; then
+        echo "force kill stale package manager process: $pid"
+        if kill -KILL "$pid" 2>/dev/null; then
+            alive="$alive $target_spec"
+        fi
+    fi
+done
+
+[ -z "$alive" ] || sleep 2
+
+still_alive=""
+for target_spec in $alive; do
+    pid="${target_spec%%:*}"
+    expected_start_ticks="${target_spec#*:}"
+    kill -0 "$pid" 2>/dev/null || continue
+    current_start_ticks="$(get_process_start_ticks "$pid")"
+    [ "$current_start_ticks" = "$expected_start_ticks" ] || continue
+    stat="$(ps -o stat= -p "$pid" 2>/dev/null)"
+    case "$stat" in
+        Z*)
+            ;;
+        *)
+            still_alive="$still_alive $pid"
+            ;;
+    esac
+done
+
+if [ -n "$still_alive" ]; then
+    echo "package manager processes are still alive after SIGKILL:$still_alive"
+    exit 2
+fi
+""" % (target_specs, RPMDB_REPAIR_STALE_SECONDS)
+    status, output = _run_rpmdb_output_command(cmd, host_post_info)
+    if status:
+        return _rpmdb_continue()
+    return _rpmdb_stop_with_warning(
+        "failed to terminate stale package manager processes; skip rpmdb "
+        "repair and continue host reconnect/deploy. output: %s" % output)
+
+
+def _backup_and_rebuild_rpmdb(host_post_info):
+    cmd = r"""
+dbpath="$(__RPMDB_PATH_CMD__ 2>/dev/null)"
+[ -n "$dbpath" ] || exit 2
+
+require_idle_rpmdb() {
+    process_output="$(ps -eo pid=,ppid=,comm=,args= 2>/dev/null)" || {
+        echo "failed to inspect package manager processes"
+        return 2
+    }
+    package_pids="$(printf '%s\n' "$process_output" | awk \
+        -v self="$$" -v parent="$PPID" '
+        {
+            pid=$1
+            ppid=$2
+            comm=$3
+            args=""
+            for (i = 4; i <= NF; i++) {
+                args = args " " $i
+            }
+
+            if (pid == self || pid == parent) {
+                next
+            }
+            if (comm ~ /^(yum|dnf|rpm)$/ ||
+                (comm ~ /(^|-)python[0-9.]*$/ &&
+                 args ~ /(\/usr\/bin\/yum|\/bin\/yum|\/usr\/bin\/dnf|\/bin\/dnf)/)) {
+                print pid
+            }
+        }')"
+    if [ -n "$package_pids" ]; then
+        echo "package manager processes appeared during rpmdb rebuild guard: $package_pids"
+        return 1
+    fi
+
+    rpmdb_users=""
+    for fd in /proc/[0-9]*/fd/*; do
+        target="$(readlink "$fd" 2>/dev/null)" || continue
+        case "$target" in
+            "$dbpath"/*)
+                pid="${fd#/proc/}"
+                pid="${pid%%/*}"
+                [ "$pid" = "$$" ] && continue
+                [ "$pid" = "$PPID" ] && continue
+                rpmdb_users="$rpmdb_users $pid"
+                ;;
+        esac
+    done
+    if [ -n "$rpmdb_users" ]; then
+        echo "rpmdb file descriptors appeared during rebuild guard:$rpmdb_users"
+        return 1
+    fi
+    return 0
+}
+
+RPMDB_BACKUP_DIR="/var/lib/zstack/rpmdb-backups"
+mkdir -p "$RPMDB_BACKUP_DIR" || exit 2
+backup_file="$RPMDB_BACKUP_DIR/rpmdb-$(date +%Y%m%d%H%M%S).tar.gz"
+
+require_idle_rpmdb || exit 2
+if [ -d "$dbpath" ]; then
+    timeout -k 10s 120s tar czf "$backup_file" -C "$(dirname "$dbpath")" "$(basename "$dbpath")" || exit 2
+fi
+ls -1t "$RPMDB_BACKUP_DIR"/rpmdb-*.tar.gz 2>/dev/null | awk 'NR > 5' | xargs -r rm -f
+
+if ! require_idle_rpmdb; then
+    rm -f "$backup_file"
+    exit 2
+fi
+rm -f "$dbpath"/__db.* || exit 2
+timeout -k 10s 180s rpm --rebuilddb || exit 2
+timeout -k 5s 30s rpm -qa >/dev/null || exit 2
+"""
+    cmd = cmd.replace("__RPMDB_PATH_CMD__", RPMDB_PATH_CMD)
+    status, output = _run_rpmdb_output_command(cmd, host_post_info)
+    if status:
+        return _rpmdb_continue()
+    return _rpmdb_stop_with_warning(
+        "failed to backup and rebuild rpmdb; continue host reconnect/deploy. "
+        "output: %s" % output)
 
 
 def repair_rpmdb_if_damaged(host_post_info):
-    cmd = "yum --disablerepo=* --enablerepo=zstack-local list >/dev/null 2>&1 || " \
-          "(rm -f /var/lib/rpm/_db.*; rpm --rebuilddb)"
-    run_remote_command(cmd, host_post_info)
+    decision = _check_rpmdb_opened(
+        host_post_info, include_lock_files=True, ignore_error=True)
+    if decision.stop:
+        return decision
+
+    if _yum_rpmdb_check(host_post_info):
+        return _rpmdb_continue()
+
+    decision = _check_rpmdb_repair_prerequisites(host_post_info)
+    if decision.stop:
+        return decision
+
+    decision = _remove_stale_yum_pid_files(host_post_info)
+    if decision.stop:
+        return decision
+    if _yum_rpmdb_check(host_post_info):
+        return _rpmdb_continue()
+
+    decision = _check_rpmdb_opened(
+        host_post_info, include_lock_files=True)
+    if decision.stop:
+        return decision
+
+    processes = _list_package_processes(host_post_info)
+    decision = _evaluate_rpmdb_repair_state(processes, host_post_info)
+    if decision.stop:
+        return decision
+
+    decision = _wait_for_young_package_processes(processes, host_post_info)
+    if decision.stop:
+        return decision
+
+    processes = _list_package_processes(host_post_info)
+    decision = _terminate_package_processes(processes, host_post_info)
+    if decision.stop:
+        return decision
+
+    processes = _list_package_processes(host_post_info)
+    decision = _evaluate_rpmdb_repair_state(
+        processes, host_post_info, check_remaining_processes=True)
+    if decision.stop:
+        return decision
+
+    decision = _remove_stale_yum_pid_files(host_post_info)
+    if decision.stop:
+        return decision
+
+    if _yum_rpmdb_check(host_post_info):
+        return _rpmdb_continue()
+    if _rpmdb_check(host_post_info):
+        return _rpmdb_stop_with_warning(
+            "yum cannot list installed packages but rpmdb is healthy after "
+            "clearing package manager processes; skip rpmdb rebuild and "
+            "continue host reconnect/deploy")
+
+    rpmdb_users, error = _list_rpmdb_users(
+        host_post_info, include_lock_files=True)
+    if error:
+        return _rpmdb_stop_with_warning(
+            "failed to list rpmdb users before rpmdb rebuild; skip rpmdb "
+            "repair and continue host reconnect/deploy. output: %s" % error)
+    if rpmdb_users:
+        return _rpmdb_stop_with_warning(
+            "rpmdb is still opened by processes; skip rpmdb rebuild and "
+            "continue host reconnect/deploy. pids: %s" %
+            ','.join(rpmdb_users))
+
+    decision = _backup_and_rebuild_rpmdb(host_post_info)
+    if decision.stop:
+        return decision
+    if not _yum_rpmdb_check(host_post_info):
+        return _rpmdb_stop_with_warning(
+            "rpmdb repair finished but yum still cannot list installed "
+            "packages; continue host reconnect/deploy")
+
+    return _rpmdb_continue()
 
 
 class ZstackLib(object):
@@ -2292,7 +2894,10 @@ class ZstackLib(object):
             host_info = get_remote_host_info_obj(self.host_post_info)
 
         if self.distro in RPM_BASED_OS:
-            repair_rpmdb_if_damaged(self.host_post_info)
+            decision = repair_rpmdb_if_damaged(self.host_post_info)
+            if decision.stop:
+                error("defer rpmdb-dependent deployment because %s" %
+                      (decision.message or "rpmdb is not ready"))
             install_release_on_host(True, host_info, self.host_post_info)
             # always add aliyun yum repo
             self.generate_aliyun_yum_repo()
@@ -2407,7 +3012,7 @@ class ZstackLib(object):
         else:
             command = "yum --disablerepo=* --enablerepo={0} install -y {1} || true" \
                       .format(zstack_repo, " ".join(selinux_pkgs))
-            run_remote_command(command, self.host_post_info)
+            run_remote_rpmdb_transaction_command(command, self.host_post_info)
 
         if zstack_repo == "false":
             batch_yum_install_package(required_rpm_set, self.host_post_info)
@@ -2420,7 +3025,9 @@ class ZstackLib(object):
                                     zstack_repo)
             self.host_post_info.post_label = "ansible.shell.install.pkg"
             self.host_post_info.post_label_param = ",".join(required_rpm_set)
-            run_remote_command(command, self.host_post_info, stderr_match_regexp=r'.*pre-existing rpmdb problem.*(?:lvm2|librados).*')
+            run_remote_rpmdb_transaction_command(
+                command, self.host_post_info,
+                stderr_match_regexp=r'.*pre-existing rpmdb problem.*(?:lvm2|librados).*')
         if "chrony" in required_rpm_set:
             # enable chrony service for RedHat
             enable_chrony(trusted_host, self.host_post_info, self.distro)
