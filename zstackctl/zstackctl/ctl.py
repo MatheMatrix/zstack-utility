@@ -2608,12 +2608,22 @@ def get_management_node_pid():
 def release_mysql_lock(lock_name, mn_ip):
     result = mysql("select IS_USED_LOCK('%s')" % lock_name, db_hostname=mn_ip)
     result = result.strip().splitlines()
-
     connection_id = result[1].strip()
-    if connection_id == 'NULL' or connection_id == '-1' or connection_id == '0':
-        return
-    info("kill connection %s to release lock %s held by management node %s" % (connection_id, lock_name, mn_ip))
-    mysql("KILL %s" % connection_id, db_hostname=mn_ip)
+    if connection_id not in ('NULL', '-1', '0'):
+        info("kill connection %s to release lock %s" % (connection_id, lock_name))
+        mysql("KILL %s" % connection_id, db_hostname=mn_ip)
+    if check_ha():
+        zsha2_utils = Zsha2Utils()
+        peer_ip = zsha2_utils.config['peerip']
+        if peer_ip in ('NULL', '-1', '0'):
+            return
+        result = mysql("select IS_USED_LOCK('%s')" % lock_name, db_hostname=peer_ip)
+        result = result.strip().splitlines()
+        connection_id = result[1].strip()
+        if connection_id not in ('NULL', '-1', '0'):
+            info("kill connection %s to release lock %s" % (connection_id, lock_name))
+            mysql("KILL %s" % connection_id, db_hostname=peer_ip)
+
 
 def clear_management_node_leftovers():
     pid = get_management_node_pid()
@@ -3117,6 +3127,7 @@ class StopCmd(Command):
 
             shell('bash %s' % os.path.join(ctl.zstack_home, self.STOP_SCRIPT))
             if wait_stop():
+                clear_management_node_leftovers()
                 info_and_debug('successfully stopped management node')
                 return
 
