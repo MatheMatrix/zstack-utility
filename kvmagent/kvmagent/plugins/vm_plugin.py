@@ -4245,6 +4245,18 @@ class Vm(object):
         if not ret.success:
             raise Exception(ret.error)
 
+    @staticmethod
+    def is_running_on_destination(cmd):
+        dest_ctrl_ip = getattr(cmd, 'destHostManagementIp', None) or cmd.destHostIp
+        try:
+            with contextlib.closing(get_connect(dest_ctrl_ip)) as conn:
+                dst_vm = get_vm_by_uuid(cmd.vmUuid, False, conn)
+                return dst_vm is not None and dst_vm.state == Vm.VM_STATE_RUNNING
+        except Exception as e:
+            logger.warn('failed to verify vm[uuid:%s] on destination host[%s]: %s'
+                        % (cmd.vmUuid, dest_ctrl_ip, str(e)))
+            return True
+
     def migrate(self, cmd):
         if self.state == Vm.VM_STATE_SHUTDOWN:
             raise kvmagent.KvmError('vm[uuid:%s] is stopped, cannot live migrate,' % cmd.vmUuid)
@@ -4430,6 +4442,19 @@ class Vm(object):
                 if exc_type == libvirt.libvirtError:
                     err = str(exc_val)
                     logger.warn('unable to migrate vm[uuid:%s] to %s, %s' % (cmd.vmUuid, destUrl, err))
+
+                    # When network bandwidth is saturated during concurrent migrations,
+                    # libvirt may report failure even though the VM actually migrated.
+                    # Check if the VM is still on the source host before reporting error.
+                    try:
+                        vm_on_source = get_vm_by_uuid_no_retry(cmd.vmUuid, exception_if_not_existing=False)
+                    except libvirt.libvirtError as lookup_err:
+                        logger.warn('failed to verify vm on source after migration error: %s' % str(lookup_err))
+                    else:
+                        if vm_on_source is None and Vm.is_running_on_destination(cmd):
+                            logger.info('vm[uuid:%s] is no longer on source host and is running on destination host, migration actually succeeded despite libvirt error: %s' % (cmd.vmUuid, err))
+                            return True
+
                     if "cannot set up guest memory" in err:
                         raise kvmagent.KvmError("No enough physical memory for guest")
                     else:
