@@ -2933,7 +2933,20 @@ class Vm(object):
         dumpformat = libvirt.VIR_DOMAIN_CORE_DUMP_FORMAT_KDUMP_ZLIB
         self.domain.coreDumpWithFormat(path, dumpformat, flags)
 
-    def stop(self, strategy='grace', timeout=5, undefine=True):
+    @staticmethod
+    def _get_undefine_flags(keep_nvram, include_cleanup_flags=True):
+        nvram_flag_name = "VIR_DOMAIN_UNDEFINE_KEEP_NVRAM" if keep_nvram else "VIR_DOMAIN_UNDEFINE_NVRAM"
+        attrs = [nvram_flag_name]
+        if include_cleanup_flags:
+            attrs = ["VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA"] + attrs
+
+        flags = 0
+        for attr in attrs:
+            if hasattr(libvirt, attr):
+                flags |= getattr(libvirt, attr)
+        return flags
+
+    def stop(self, strategy='grace', timeout=5, undefine=True, keep_nvram=True):
         def cleanup_addons():
             for chan in self.domain_xmlobject.devices.get_child_node_as_list('channel'):
                 if chan.type_ == 'unix':
@@ -2972,7 +2985,11 @@ class Vm(object):
 
             def force_undefine():
                 try:
-                    self.domain.undefine()
+                    flags = self._get_undefine_flags(keep_nvram, include_cleanup_flags=False)
+                    if flags:
+                        self.domain.undefineFlags(flags)
+                    else:
+                        self.domain.undefine()
                 except:
                     logger.warn('cannot undefine the VM[uuid:%s]' % self.uuid)
                     pid = linux.find_process_by_cmdline(['qemu', self.uuid])
@@ -2981,11 +2998,7 @@ class Vm(object):
                         linux.kill_process(pid, is_exception=False)
 
             try:
-                flags = 0
-                for attr in [ "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA", "VIR_DOMAIN_UNDEFINE_NVRAM" ]:
-                    if hasattr(libvirt, attr):
-                        flags |= getattr(libvirt, attr)
-                self.domain.undefineFlags(flags)
+                self.domain.undefineFlags(self._get_undefine_flags(keep_nvram))
             except libvirt.libvirtError as ex:
                 logger.warn('undefine domain[%s] failed: %s' % (self.uuid, str(ex)))
                 force_undefine()
@@ -3042,7 +3055,7 @@ class Vm(object):
             raise kvmagent.KvmError('failed to stop vm, timeout after 60 secs')
 
     def destroy(self):
-        self.stop(strategy='cold')
+        self.stop(strategy='cold', keep_nvram=False)
 
     def pause(self, timeout=5):
         def loop_suspend(_):
@@ -5507,7 +5520,6 @@ class Vm(object):
                 e(os, 'type', 'hvm', attrib={'arch': 'loongarch64', 'machine': 'loongson7a'})
                 e(os, 'loader', '{}loongarch_bios.bin'.format(qemu.get_bin_dir()), attrib={'readonly': 'yes', 'type': 'rom'})
 
-            VmPlugin.clean_vm_firmware_flash(cmd.vmInstanceUuid)
             eval("on_{}".format(host_arch))()
 
             if cmd.useBootMenu:
@@ -7214,11 +7226,6 @@ class VmPlugin(kvmagent.KvmAgent):
 
     def _start_vm(self, cmd):
         try:
-            if os.path.exists(os.path.join(LIBVIRT_DEFINED_XML_DIR, cmd.vmInstanceUuid + ".xml")) \
-                    and not linux.get_vm_pid(cmd.vmInstanceUuid):
-                # undefine previous
-                shell.run("virsh undefine %s" % cmd.vmInstanceUuid)
-
             vm = get_vm_by_uuid_no_retry(cmd.vmInstanceUuid, False)
 
             if vm:
@@ -7229,7 +7236,7 @@ class VmPlugin(kvmagent.KvmAgent):
                     logger.debug('vm[uuid:%s, name:%s] is already running' % (cmd.vmInstanceUuid, vm.get_name()))
                     return
                 else:
-                    vm.destroy()
+                    vm.stop(strategy='cold')
 
             vm = Vm.from_StartVmCmd(cmd)
 
@@ -8236,7 +8243,7 @@ class VmPlugin(kvmagent.KvmAgent):
             self._record_operation(cmd.uuid, self.VM_OP_STOP)
             self._stop_vm(cmd)
             # notify vrouter agent nic removed from source host
-            for nic in cmd.vmNics:
+            for nic in cmd.vmNics or []:
                 if nic.type == 'TFVNIC':
                     vrouter_cmd = [
                         'vrouter-port-control',
@@ -8314,7 +8321,7 @@ class VmPlugin(kvmagent.KvmAgent):
                 if vmUseOpenvSwitch:
                     ovs.getOvsCtl(with_dpdk=True).destoryNicBackend(cmd.uuid)
                 # notify vrouter agent nic removed from source host
-                for nic in cmd.vmNics:
+                for nic in cmd.vmNics or []:
                     if nic.type == 'TFVNIC':
                         vrouter_cmd = [
                             'vrouter-port-control',
@@ -8323,6 +8330,7 @@ class VmPlugin(kvmagent.KvmAgent):
                         ]
                         notify_vrouter(vrouter_cmd)
                 logger.debug('successfully destroyed vm[uuid:%s]' % cmd.uuid)
+            self.clean_vm_firmware_flash(cmd.uuid)
         except kvmagent.KvmError as e:
             logger.warn(linux.get_exception_stacktrace())
             rsp.error = str(e)
