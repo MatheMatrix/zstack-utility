@@ -77,8 +77,8 @@ def is_qga_connected(vm_dom):
         return False
 
 
-# windows zs-tools command wait less than 30 seconds
-zs_tools_wait_retry = 25
+# windows zs-tools command wait 120s
+zs_tools_wait_retry = 120
 
 
 class QgaException(Exception):
@@ -387,64 +387,43 @@ class VmQga(object):
             e_ret_data = decode_with_fallback(ret['err-data'])
 
         return exit_code, s_ret_data, e_ret_data
-
+    
     def guest_exec_zs_tools(self, operate, config, output=True, wait=qga_exec_wait_interval, retry=zs_tools_wait_retry):
-        try:
-            if operate == 'net':
-                ret = self.guest_exec(
-                    {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--config", config], "capture-output": output})
-            elif operate == 'host':
-                ret = self.guest_exec(
-                    {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--name", config], "capture-output": output})
-            else:
-                raise Exception('qga exec zs-tools unknow operate {} for vm {}'.format(operate, self.vm_uuid))
+        if operate == 'net':
+            ret = self.guest_exec(
+                {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--config", config], "capture-output": output})
+        elif operate == 'host':
+            ret = self.guest_exec(
+                {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--name", config], "capture-output": output})
+        else:
+            raise Exception('qga exec zs-tools unknow operate {} for vm {}'.format(operate, self.vm_uuid))
 
-            if ret and "pid" in ret:
-                pid = ret["pid"]
-            else:
-                raise Exception(
-                    'qga exec zs-tools operate {} config {} failed for vm {}, ret={}'.format(
-                        operate, config, self.vm_uuid, self._dump_qga_result(ret)))
+        if ret and "pid" in ret:
+            pid = ret["pid"]
+        else:
+            raise Exception(
+                'qga exec zs-tools operate {} config {} failed for vm {}'.format(operate, config, self.vm_uuid))
 
-            ret = None
-            for i in range(retry):
-                time.sleep(wait)
-                ret = self.guest_exec_status(pid)
-                if ret['exited']:
-                    break
+        ret = None
+        for i in range(retry):
+            time.sleep(wait)
+            ret = self.guest_exec_status(pid)
+            if ret['exited']:
+                break
 
-            if not ret or not ret.get('exited'):
-                raise Exception(
-                    'zs-tools pid {} not exited after {} retries, ret={}, operate {}, config {}, vm {}'.format(
-                        pid, retry, self._dump_qga_result(ret), operate, config, self.vm_uuid))
+        if not ret or not ret.get('exited'):
+            raise Exception(
+                'qga exec zs-tools operate {} config {} timeout for vm {}'.format(operate, config, self.vm_uuid))
 
-            exit_code = ret.get('exitcode')
-            ret_data = self._get_guest_exec_return_data(ret)
-            return exit_code, ret_data
-        except Exception as e:
-            raise Exception(str(e))
+        exit_code = ret.get('exitcode')
+        ret_data = None
+        if 'out-data' in ret:
+            ret_data = decode_with_fallback(ret['out-data'])
+        elif 'err-data' in ret:
+            ret_data = decode_with_fallback(ret['err-data'])
 
-    def _dump_qga_result(self, result):
-        if not result:
-            return 'None'
-        try:
-            return json.dumps(result)
-        except TypeError:
-            return str(result)
+        return exit_code, ret_data.replace('\r\n', '')
 
-    def _get_guest_exec_return_data(self, result):
-        if not result:
-            return ''
-        parts = []
-        if 'out-data' in result:
-            parts.append('stdout: ' + self._decode_guest_exec_data(result['out-data']))
-        if 'err-data' in result:
-            parts.append('stderr: ' + self._decode_guest_exec_data(result['err-data']))
-        return '\n'.join(parts)
-
-    def _decode_guest_exec_data(self, data):
-        decoded = decode_with_fallback(data)
-        return decoded.replace('\r\n', '\n')
 
     def guest_exec_wmic(self, cmd, output=True, wait=qga_exec_wait_interval, retry=qga_exec_wait_retry):
         cmd_parts = cmd.split('|')
