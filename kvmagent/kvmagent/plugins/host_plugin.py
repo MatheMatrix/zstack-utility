@@ -108,6 +108,7 @@ class HostFactResponse(kvmagent.AgentResponse):
         self.virtualizerInfo = vm_plugin.VirtualizerInfoTO()
         self.iscsiInitiatorName = None
         self.deployMode = None
+        self.cpuFeatureMd5 = None
 
 class SetupMountablePrimaryStorageHeartbeatCmd(kvmagent.AgentCommand):
     def __init__(self):
@@ -1900,6 +1901,12 @@ class HostPlugin(kvmagent.KvmAgent):
         rsp.virtualizerInfo.uuid = self.config.get(kvmagent.HOST_UUID)
         rsp.virtualizerInfo.virtualizer = "qemu-kvm"
         rsp.virtualizerInfo.version = qemu.get_version_from_exe_file(qemu.get_path())
+
+        # get CPU feature MD5 for migration compatibility check
+        sh_cmd = shell.ShellCmd('virsh capabilities | virsh cpu-baseline /dev/stdin')
+        sh_cmd(False)
+        if sh_cmd.return_code == 0 and sh_cmd.stdout.strip():
+            rsp.cpuFeatureMd5 = hashlib.md5(sh_cmd.stdout.strip().encode()).hexdigest()
 
         return jsonobject.dumps(rsp)
 
