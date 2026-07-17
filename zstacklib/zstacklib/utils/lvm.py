@@ -1148,6 +1148,31 @@ def backup_super_block(disk_path):
 
 
 @bash.in_bash
+def is_running_vm_using_lun_passthrough():
+    return bash.bash_r('''grep -rlF "<disk type='block' device='lun'" %s/*''' % LIVE_LIBVIRT_XML_DIR) == 0
+
+
+@bash.in_bash
+def flush_mpath(disk):
+    wwid = get_dm_wwid(disk)
+    bash.bash_roe("multipath -f %s" % disk)
+    lun_passthrough_in_use = is_running_vm_using_lun_passthrough()
+    if lun_passthrough_in_use and wwid:
+        # re-create only this disk's map; a host-wide multipathd reload would
+        # suspend in-use maps and abort in-flight IO on LUN-passthrough guests
+        logger.warn("re-create multipath map %s for %s without host-wide multipathd reload because a LUN-passthrough VM is running" % (wwid, disk))
+        r, o, e = bash.bash_roe("multipath %s && sleep 1" % wwid)
+        if r != 0:
+            logger.warn("failed to re-create multipath map %s for %s, return code: %s, stdout: %s, stderr: %s" % (wwid, disk, r, o, e))
+    else:
+        if lun_passthrough_in_use:
+            logger.warn("fall back to host-wide multipathd reload for %s because WWID is unknown while a LUN-passthrough VM is running" % disk)
+        r, o, e = bash.bash_roe("systemctl reload multipathd.service && sleep 1")
+        if r != 0:
+            logger.warn("failed to reload multipathd while flushing %s, return code: %s, stdout: %s, stderr: %s" % (disk, r, o, e))
+
+
+@bash.in_bash
 def wipe_fs(disks, expected_vg=None, with_lock=True):
     @bash.in_bash
     def clear_lvmlock(vg_name):
@@ -1186,7 +1211,7 @@ def wipe_fs(disks, expected_vg=None, with_lock=True):
             bash.bash_roe("dmsetup remove /dev/%s" % holder)
 
         if need_flush_mpath:
-            bash.bash_roe("multipath -f %s && systemctl reload multipathd.service && sleep 1" % disk)
+            flush_mpath(disk)
 
         if exists_vg is not None:
             bash.bash_r("grep -l %s /etc/drbd.d/* | xargs rm" % exists_vg)
