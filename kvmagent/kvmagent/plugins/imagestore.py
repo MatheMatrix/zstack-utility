@@ -359,11 +359,11 @@ class ImageStoreClient(object):
                 "encrypted": True,
                 "encryptedDek": encrypted_dek,
             })
-            add_ext_param = " -encryption-json-file %s -secret-channel-provider %s" % (
+            add_ext_param = "-encryption-json-file %s -secret-channel-provider %s" % (
                 encryption_file, self.KEY_AGENT_PROVIDER)
 
         # Add the image to registry
-        cmdstr = '%s -json  -callbackurl %s -taskid %s -imageUuid %s add%s -desc \'%s\' -file %s' % (self.ZSTORE_CLI_PATH, req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
+        cmdstr = '%s -json  -callbackurl %s -taskid %s -imageUuid %s add %s -desc \'%s\' -file %s' % (self.ZSTORE_CLI_PATH, req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
                 req[http.REQUEST_HEADER].get(http.TASK_UUID), cmd.imageUuid, add_ext_param, cmd.description, fpath)
         logger.debug('adding %s to local image store' % fpath)
         try:
