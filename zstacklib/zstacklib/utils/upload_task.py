@@ -247,12 +247,33 @@ class UploadTask(object):
 
             return self.expectedSize
 
+    def remaining_upload_size(self, total_size):
+        if total_size <= 0:
+            return 0
+
+        with self.upload_lock:
+            uploaded = len(self.slice_uploaded)
+
+        if uploaded >= total_size:
+            return 0
+        return total_size - uploaded
+
     def record_slice_uploaded(self, offset, length):
         with self.upload_lock:
-            self.slice_uploaded.add(offset, offset + length)
+            end = offset + length
+            newly_covered = length
+            for start, stop in self.slice_uploaded:
+                overlap_start = max(offset, start)
+                overlap_end = min(end, stop)
+                if overlap_start < overlap_end:
+                    newly_covered -= overlap_end - overlap_start
+            newly_covered = max(0, newly_covered)
+
+            self.slice_uploaded.add(offset, end)
             # all slice uploaded
             if self.expectedSize > 0 and self.slice_uploaded.covered(0, self.expectedSize):
                 self.task_completing = True
+            return newly_covered
 
     def add_download_size(self, delta):
         with lock.NamedLock("upload-task-%s" % self.taskUuid):
@@ -377,7 +398,8 @@ class UploadHandler(object):
                             (param.task_uuid, expected_size, param.total_size))
 
         if param.slice_offset == 0:
-            err = task.check_capacity(expected_size)
+            remaining_size = task.remaining_upload_size(expected_size)
+            err = task.check_capacity(remaining_size) if remaining_size > 0 else None
             if err:
                 self._fail_task(task, err, renew=not is_no_space_error(err))
 
@@ -475,7 +497,10 @@ class UploadHandler(object):
                     param.hash_algorithm, param.task_uuid, param.slice_offset, param.slice_size, param.slice_hash,
                     actual_hash))
 
-        task.record_slice_uploaded(param.slice_offset, param.slice_size)
+        newly_downloaded_size = task.record_slice_uploaded(param.slice_offset, param.slice_size)
+        duplicate_size = slice_downloaded_size - newly_downloaded_size
+        if duplicate_size > 0:
+            task.add_download_size(-duplicate_size)
         task.clear_upload_slice_error(param.slice_offset, param.slice_size)
         task.renew()
         logger.debug("uploaded image %s slice offset: %d, content length: %d" %
