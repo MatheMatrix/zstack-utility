@@ -3482,7 +3482,7 @@ done
 
             product_type = gpu.get_huawei_product_type(o)
             if product_type:
-                to.device = "-"
+                to.device = product_type
                 to.name = product_type
 
         # collect aios rank table
