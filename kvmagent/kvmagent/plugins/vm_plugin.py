@@ -3544,7 +3544,15 @@ class Vm(object):
                         logger.debug("detach timeout, record volume install path: %s" % volume.installPath)
                         raise
 
-            detach()
+            try:
+                detach()
+            except libvirt.libvirtError:
+                me = get_vm_by_uuid(self.uuid)
+                disk, _ = me._get_target_disk(volume, is_exception=False)
+                if disk:
+                    raise
+                logger.debug('volume[%s] detached after libvirt reported an async unplug error' %
+                             volume.installPath)
 
             if self._volume_detach_timed_out(volume):
                 self._clean_timeout_record(volume)
@@ -4430,6 +4438,19 @@ class Vm(object):
                 if exc_type == libvirt.libvirtError:
                     err = str(exc_val)
                     logger.warn('unable to migrate vm[uuid:%s] to %s, %s' % (cmd.vmUuid, destUrl, err))
+
+                    # When network bandwidth is saturated during concurrent migrations,
+                    # libvirt may report failure even though the VM actually migrated.
+                    # Check if the VM is still on the source host before reporting error.
+                    try:
+                        vm_on_source = get_vm_by_uuid_no_retry(cmd.vmUuid, exception_if_not_existing=False)
+                    except libvirt.libvirtError as lookup_err:
+                        logger.warn('failed to verify vm on source after migration error: %s' % str(lookup_err))
+                    else:
+                        if vm_on_source is None:
+                            logger.info('vm[uuid:%s] is no longer on source host, migration actually succeeded despite libvirt error: %s' % (cmd.vmUuid, err))
+                            return True
+
                     if "cannot set up guest memory" in err:
                         raise kvmagent.KvmError("No enough physical memory for guest")
                     else:
