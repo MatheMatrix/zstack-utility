@@ -154,6 +154,15 @@ def make_upload_param(task_uuid="task-1", total_size=100, slice_offset=0, slice_
     return param
 
 
+def make_upload_headers(prefix="FILE", task_uuid="task-1", total_size=100, slice_offset=0, slice_size=4):
+    return {
+        'X-%s-UUID' % prefix: task_uuid,
+        'X-%s-SIZE' % prefix: str(total_size),
+        'X-SLICE-OFFSET': str(slice_offset),
+        'X-SLICE-SIZE': str(slice_size),
+    }
+
+
 def make_hash(algorithm, data):
     hasher = upload_task_module.get_hasher(algorithm)
     hasher.update(data)
@@ -327,6 +336,20 @@ class TestUploadSliceFailureCounter(unittest.TestCase):
         self.assertEqual("no enough storage", task.lastError)
         self.assertEqual(100, task.lastOpTime)
         self.assertEqual({}, task.failureTimes)
+
+    def test_get_upload_task_checks_remaining_unique_file_bytes(self):
+        task = TestUploadTask("task-1", "/tmp/image")
+        task.expectedSize = 10
+        task.downloadSize = 12
+        task.record_slice_uploaded(0, 6)
+        checked_sizes = []
+        task.check_capacity = lambda required_size: checked_sizes.append(required_size) or None
+        handler = UploadHandler(None, TestUploadTasks(task))
+
+        handler.get_upload_task(make_upload_param(total_size=10, slice_offset=0))
+
+        self.assertEqual([4], checked_sizes)
+        self.assertFalse(task.completed)
 
     def test_upload_slice_general_error_is_retryable(self):
         task = TestUploadTask("task-1", "/tmp/image")
@@ -516,6 +539,39 @@ class TestUploadSliceFailureCounter(unittest.TestCase):
         finally:
             upload_task_module.Part = old_part
             upload_task_module.SizedReader = old_sized_reader
+
+    def assert_duplicate_and_overlap_slices_are_counted_once(self, header_prefix):
+        old_part = upload_task_module.Part
+        old_sized_reader = upload_task_module.SizedReader
+        upload_task_module.Part = TestPart
+        upload_task_module.SizedReader = SequenceSizedReader
+        try:
+            task = StreamUploadTask("%s-task-1" % header_prefix.lower(), "/tmp/upload")
+            task.expectedSize = 8
+
+            SequenceSizedReader.chunks = [b'abcd', b'']
+            UploadHandler.stream_body(TestEntity(), b'--boundary', UploadHandler.get_upload_param(
+                make_upload_headers(header_prefix, task.taskUuid, 8, 0, 4)), task)
+
+            SequenceSizedReader.chunks = [b'abcd', b'']
+            UploadHandler.stream_body(TestEntity(), b'--boundary', UploadHandler.get_upload_param(
+                make_upload_headers(header_prefix, task.taskUuid, 8, 0, 4)), task)
+
+            SequenceSizedReader.chunks = [b'cdef', b'']
+            UploadHandler.stream_body(TestEntity(), b'--boundary', UploadHandler.get_upload_param(
+                make_upload_headers(header_prefix, task.taskUuid, 8, 2, 4)), task)
+
+            self.assertEqual(6, task.downloadSize)
+            self.assertEqual(6, task.checked_download_size())
+        finally:
+            upload_task_module.Part = old_part
+            upload_task_module.SizedReader = old_sized_reader
+
+    def test_image_upload_stream_body_does_not_double_count_duplicate_or_overlap_slices(self):
+        self.assert_duplicate_and_overlap_slices_are_counted_once('IMAGE')
+
+    def test_file_upload_stream_body_does_not_double_count_duplicate_or_overlap_slices(self):
+        self.assert_duplicate_and_overlap_slices_are_counted_once('FILE')
 
     def test_file_upload_hash_mismatch_is_retryable(self):
         old_part = upload_task_module.Part
