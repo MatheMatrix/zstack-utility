@@ -9,6 +9,7 @@ import threading
 
 from zstacklib.utils import log
 from zstacklib.utils.pci import normalize_pci_address
+from zstacklib.gpu.operation_gate import gpu_operation_gate
 from zstacklib.gpu.vendors.nvidia import NVIDIA
 
 from kvmagent.plugins.tensorfusion.models import WorkerCreateRequest, GPUHardwareInfo
@@ -77,7 +78,7 @@ class TensorFusionService(object):
                 logger.warning('TensorFusionService: killing orphan worker %s '
                             '(%s, vm=%s not running)' % (w.device_uuid, WorkerExecutor.worker_label(w), w.vm_uuid))
                 try:
-                    self._executor.stop(w)
+                    self._stop_worker_runtime(w)
                 except Exception as e:
                     logger.warning('TensorFusionService: failed to stop orphan worker %s: %s' %
                                 (w.device_uuid, e))
@@ -159,12 +160,15 @@ class TensorFusionService(object):
             if vm_state is not False:
                 continue
 
-            logger.warning('TensorFusionService: orphan scan: killing worker %s '
-                        '(%s, vm=%s not running, tracked=%s)' %
-                        (w.device_uuid, WorkerExecutor.worker_label(w), w.vm_uuid,
-                         self._store.get(w.device_uuid) is not None))
+            tracked = None
             try:
-                self._executor.stop(w)
+                with gpu_operation_gate.critical():
+                    tracked = self._store.get(w.device_uuid)
+                    logger.warning('TensorFusionService: orphan scan: killing worker %s '
+                                '(%s, vm=%s not running, tracked=%s)' %
+                                (w.device_uuid, WorkerExecutor.worker_label(w), w.vm_uuid,
+                                 tracked is not None))
+                    self._stop_worker_runtime(w)
             except Exception as e:
                 logger.warning('TensorFusionService: orphan scan: failed to stop worker %s: %s' %
                             (w.device_uuid, e))
@@ -172,9 +176,9 @@ class TensorFusionService(object):
                     continue
 
             # Clean up StateStore entry if present
-            tracked = self._store.get(w.device_uuid)
-            if tracked:
-                self._remove_worker_state(tracked)
+            if (tracked and self._is_same_worker_runtime(w, tracked) and
+                    self._remove_worker_state(tracked) is None):
+                continue
             killed += 1
 
         # Clean up stale StateStore entries whose workers are already dead
@@ -189,20 +193,32 @@ class TensorFusionService(object):
             logger.info('TensorFusionService: orphan scan: cleaned up %d orphan workers' % killed)
 
     def _remove_worker_state(self, worker):
-        removed = self._store.remove(worker.device_uuid, expected_worker=worker)
-        if removed is None:
-            logger.info('TensorFusionService: worker %s changed before state cleanup, skipping stale cleanup' %
-                        worker.device_uuid)
-            return None
+        with gpu_operation_gate.critical():
+            if self._store.get(worker.device_uuid) is not worker:
+                logger.info('TensorFusionService: worker %s changed before state cleanup, skipping stale cleanup' %
+                            worker.device_uuid)
+                return None
 
-        # Reap the dead worker to clean up resources (zombie process or stopped container).
-        try:
-            self._executor.reap_dead(removed)
-        except Exception as e:
-            logger.warning('TensorFusionService: failed to reap worker %s: %s' %
-                        (removed.device_uuid, e))
+            try:
+                reaped = self._reap_dead_worker_runtime(worker)
+            except Exception as e:
+                logger.warning('TensorFusionService: failed to reap worker %s: %s' %
+                            (worker.device_uuid, e))
+                return None
+            if reaped is False:
+                logger.warning('TensorFusionService: worker %s is still running, preserving state' %
+                            worker.device_uuid)
+                return None
+
+            removed = self._store.remove(worker.device_uuid, expected_worker=worker)
+            if removed is None:
+                logger.info('TensorFusionService: worker %s changed before state cleanup, skipping stale cleanup' %
+                            worker.device_uuid)
+                return None
+
+            self._tracker.release(removed.pci_address, removed.device_uuid)
+
         self._monitor.clear(removed.device_uuid)
-        self._tracker.release(removed.pci_address, removed.device_uuid)
         return removed
 
     @staticmethod
@@ -224,18 +240,32 @@ class TensorFusionService(object):
         normalized = normalize_pci_address(pci_address)
         return normalized or pci_address
 
+    @staticmethod
+    def _is_same_worker_runtime(first, second):
+        first_container_id = getattr(first, 'container_id', None)
+        second_container_id = getattr(second, 'container_id', None)
+        if first_container_id or second_container_id:
+            return bool(first_container_id and first_container_id == second_container_id)
+
+        first_pid = getattr(first, 'pid', None)
+        second_pid = getattr(second, 'pid', None)
+        if first_pid is not None or second_pid is not None:
+            return first_pid is not None and first_pid == second_pid
+        return first is second
+
     def refresh_gpu_details(self):
         # type: () -> bool
-        try:
-            gpu_details = NVIDIA.query_gpu_details()
-        except Exception as e:
-            logger.warning('TensorFusionService: failed to query GPU details, continuing with current inventory: %s' % e)
-            return False
+        with gpu_operation_gate.critical():
+            try:
+                gpu_details = NVIDIA.query_gpu_details()
+            except Exception as e:
+                logger.warning('TensorFusionService: failed to query GPU details, continuing with current inventory: %s' % e)
+                return False
 
-        self._gpu_details.clear()
-        self._gpu_details.update(gpu_details)
-        self._tracker.refresh_gpu_details(self._gpu_details)
-        return True
+            self._gpu_details.clear()
+            self._gpu_details.update(gpu_details)
+            self._tracker.refresh_gpu_details(self._gpu_details)
+            return True
 
     def _get_create_lock(self, pci_address):
         with self._create_lock_guard:
@@ -244,6 +274,14 @@ class TensorFusionService(object):
                 lock = threading.Lock()
                 self._create_locks[pci_address] = lock
             return lock
+
+    def _stop_worker_runtime(self, worker):
+        with gpu_operation_gate.critical():
+            self._executor.stop(worker)
+
+    def _reap_dead_worker_runtime(self, worker):
+        with gpu_operation_gate.critical():
+            return self._executor.reap_dead(worker)
 
     def create_worker(self, request):
         # type: (WorkerCreateRequest) -> object
@@ -254,7 +292,7 @@ class TensorFusionService(object):
         request.pci_address = self._normalize_pci_address(request.pci_address)
         pci = request.pci_address
         create_lock = self._get_create_lock(pci)
-        with create_lock:
+        with create_lock, gpu_operation_gate.critical():
             # Always refresh: cuda_index may change after GPU passthrough.
             self.refresh_gpu_details()
 
@@ -269,15 +307,9 @@ class TensorFusionService(object):
                     raise Exception('worker %s already exists for vm %s on %s' %
                                     (request.device_uuid, existing.vm_uuid, existing.pci_address))
 
-                # Clean up the dead worker: reap zombie, release resources, remove state.
-                try:
-                    self._executor.reap_dead(existing)
-                except Exception as e:
-                    logger.warning('TensorFusionService: failed to reap dead worker %s: %s' %
-                                (request.device_uuid, e))
-                self._monitor.clear(request.device_uuid)
-                self._tracker.release(existing.pci_address, request.device_uuid)
-                self._store.remove(request.device_uuid)
+                if self._remove_worker_state(existing) is None:
+                    raise Exception('failed to clean up existing worker %s before create' %
+                                    request.device_uuid)
 
             if not self._tracker.can_allocate(pci, request.memory_mb):
                 avail = self._tracker.get_available_memory(pci)
@@ -290,7 +322,7 @@ class TensorFusionService(object):
                 self._tracker.allocate(pci, worker.device_uuid, worker.allocated_memory_mb)
             except Exception:
                 try:
-                    self._executor.stop(worker)
+                    self._stop_worker_runtime(worker)
                 except Exception as stop_error:
                     logger.warning('TensorFusionService: failed to rollback worker %s after create error: %s' % (
                         request.device_uuid, stop_error))
@@ -335,7 +367,7 @@ class TensorFusionService(object):
         req.pci_address = self._normalize_pci_address(req.pci_address)
         pci = req.pci_address
         create_lock = self._get_create_lock(pci)
-        with create_lock:
+        with create_lock, gpu_operation_gate.critical():
             # Always refresh: cuda_index may change after GPU passthrough.
             self.refresh_gpu_details()
             if pci not in self._gpu_details:
@@ -350,7 +382,7 @@ class TensorFusionService(object):
             replaced = self._store.replace(new_worker, expected_worker=current_worker)
             if replaced is None:
                 try:
-                    self._executor.stop(new_worker)
+                    self._stop_worker_runtime(new_worker)
                 except Exception as stop_error:
                     logger.warning('TensorFusionService: failed to stop orphan worker %s after restart CAS miss: %s' % (
                         current_worker.device_uuid, stop_error))
@@ -404,19 +436,21 @@ class TensorFusionService(object):
             self._monitor.clear(device_uuid)
 
             try:
-                self._executor.stop(worker)
+                self._stop_worker_runtime(worker)
             except Exception:
                 if self._executor.is_alive(worker):
                     self._store.set_restarting(device_uuid, False, expected_worker=worker)
                 else:
                     removed = self._remove_worker_state(worker)
                     if removed is None:
+                        self._store.set_restarting(device_uuid, False, expected_worker=worker)
                         logger.warning('TensorFusionService: worker %s changed during destroy after stop failure' %
                                     device_uuid)
                 raise
 
             removed = self._remove_worker_state(worker)
             if removed is None:
+                self._store.set_restarting(device_uuid, False, expected_worker=worker)
                 logger.warning('TensorFusionService: worker %s changed during destroy, refusing success' %
                             device_uuid)
                 return False
@@ -447,10 +481,13 @@ class TensorFusionService(object):
                 continue
             if destroyed:
                 count += 1
+            else:
+                failures.append('%s: runtime cleanup incomplete' % w.device_uuid)
 
         try:
             survivors = self._store.list_by_vm(vm_uuid)
-            count += self._executor.cleanup_residual_workers_by_vm(vm_uuid, known_workers=survivors)
+            with gpu_operation_gate.critical():
+                count += self._executor.cleanup_residual_workers_by_vm(vm_uuid, known_workers=survivors)
         except Exception as e:
             failures.append('residual cleanup: %s' % str(e))
 
@@ -467,8 +504,9 @@ class TensorFusionService(object):
         if worker and not getattr(worker, 'restarting', False) and not self._executor.is_alive(worker):
             logger.warning('TensorFusionService: worker %s (%s) is dead, cleaning up' %
                         (device_uuid, WorkerExecutor.worker_label(worker)))
-            self._remove_worker_state(worker)
-            return None
+            if self._remove_worker_state(worker) is not None:
+                return None
+            return self._store.get(device_uuid)
         return worker
 
     def list_workers(self):
@@ -508,8 +546,8 @@ class TensorFusionService(object):
             if not self._executor.is_alive(w):
                 logger.warning('TensorFusionService: cleaning up dead worker %s (%s)' %
                             (w.device_uuid, WorkerExecutor.worker_label(w)))
-                self._remove_worker_state(w)
-                cleaned.append(w.device_uuid)
+                if self._remove_worker_state(w) is not None:
+                    cleaned.append(w.device_uuid)
         if cleaned:
             logger.info('TensorFusionService: cleaned up %d dead workers' % len(cleaned))
         return cleaned
