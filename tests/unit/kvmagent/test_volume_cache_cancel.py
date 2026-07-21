@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from concurrent.futures import ThreadPoolExecutor
 import importlib
 import os
 import platform
@@ -7,6 +8,7 @@ import shutil
 import signal
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest.mock import PropertyMock, patch
@@ -80,6 +82,8 @@ class _TaskDaemonStub(object):
     def __init__(self, task_spec, *args, **kwargs):
         self.api_id = getattr(getattr(task_spec, "threadContext", None), "api", None)
         self.stage = None
+        self.timeout = 0
+        self.deadline = None
         self.result = _TaskResultStub()
 
     def __enter__(self):
@@ -404,18 +408,117 @@ class VolumeCacheCancelCase(unittest.TestCase):
                 patch.object(volume_cache_plugin.report, "get_exact_percent", side_effect=lambda percent, _: int(percent)):
             self.assertEqual(75, daemon._get_percent())
 
-    def test_detach_block_cache_cancel_uses_traceable_shell_sigint(self):
+    def test_detach_block_cache_cancel_uses_api_shell_sigint(self):
+        vm_plugin = _import_with_plugin_stub("kvmagent.plugins.vm_plugin")
+
+        cache_path = "/cache/volume-1.qcow2"
+        volume = _Obj(
+            installPath="/primary/volume-1",
+            cache=_Obj(installPath=cache_path, timeout=30, delete=False),
+        )
+        daemon = vm_plugin.DetachBlockCacheTaskDaemon(_task_spec(), "vm-1", volume, "vdb")
+
+        with patch.object(vm_plugin.qmp, "execute_qmp_command", return_value=[
+                    {"file": "/cache/other.qcow2", "status": "detached"},
+                    {"file": cache_path, "status": "flushing"},
+                ]), \
+                patch.object(vm_plugin.traceable_shell, "cancel_job_by_api", create=True) as cancel, \
+                patch.object(vm_plugin.virsh, "block_cache_detach") as detach:
+            daemon._cancel()
+            cancel.assert_called_once_with(daemon.api_id, sig=signal.SIGINT)
+            detach.assert_not_called()
+
+    def test_detach_block_cache_cancel_rejects_after_cache_node_removed(self):
         vm_plugin = _import_with_plugin_stub("kvmagent.plugins.vm_plugin")
 
         volume = _Obj(
             installPath="/primary/volume-1",
-            cache=_Obj(timeout=30, delete=False),
+            cache=_Obj(installPath="/cache/volume-1.qcow2", timeout=30, delete=False),
         )
         daemon = vm_plugin.DetachBlockCacheTaskDaemon(_task_spec(), "vm-1", volume, "vdb")
 
-        with patch.object(vm_plugin.traceable_shell, "cancel_job_by_api", create=True) as cancel:
+        with patch.object(vm_plugin.qmp, "execute_qmp_command", return_value=[]), \
+                patch.object(vm_plugin.traceable_shell, "cancel_job_by_api", create=True) as cancel, \
+                patch.object(vm_plugin.virsh, "block_cache_detach") as detach:
+            with self.assertRaisesRegex(Exception, "already detached"):
+                daemon._cancel()
+
+        self.assertTrue(daemon.result.success)
+        self.assertEqual(100, daemon.progress)
+        cancel.assert_not_called()
+        detach.assert_not_called()
+
+    def test_detach_block_cache_cancel_falls_back_when_cache_query_fails(self):
+        vm_plugin = _import_with_plugin_stub("kvmagent.plugins.vm_plugin")
+
+        volume = _Obj(
+            installPath="/primary/volume-1",
+            cache=_Obj(installPath="/cache/volume-1.qcow2", timeout=30, delete=False),
+        )
+        daemon = vm_plugin.DetachBlockCacheTaskDaemon(_task_spec(), "vm-1", volume, "vdb")
+
+        with patch.object(vm_plugin.qmp, "execute_qmp_command", return_value=None), \
+                patch.object(vm_plugin.traceable_shell, "cancel_job_by_api", create=True) as cancel:
             daemon._cancel()
-            cancel.assert_called_once_with("api-volume-cache-cancel", sig=signal.SIGINT)
+
+        cancel.assert_called_once_with(daemon.api_id, sig=signal.SIGINT)
+        self.assertFalse(daemon.result.success)
+
+    def test_detach_block_cache_cancel_finishes_detached_cache_and_rejects_cancel(self):
+        vm_plugin = _import_with_plugin_stub("kvmagent.plugins.vm_plugin")
+
+        cache_path = "/cache/volume-1.qcow2"
+        volume = _Obj(
+            installPath="/primary/volume-1",
+            cache=_Obj(installPath=cache_path, timeout=30, delete=False),
+        )
+        daemon = vm_plugin.DetachBlockCacheTaskDaemon(_task_spec(), "vm-1", volume, "vdb")
+        daemon.timeout = 300
+        daemon.deadline = 2147483647
+        first_detach_started = threading.Event()
+        finish_first_detach = threading.Event()
+        terminal_detach_started = threading.Event()
+        finish_terminal_detach = threading.Event()
+
+        def _detach(**kwargs):
+            if detach.call_count == 1:
+                first_detach_started.set()
+                self.assertTrue(finish_first_detach.wait(3))
+                raise Exception("original virsh process was terminated")
+            terminal_detach_started.set()
+            self.assertTrue(finish_terminal_detach.wait(3))
+
+        with patch.object(vm_plugin.qmp, "execute_qmp_command", return_value=[{
+                    "file": cache_path,
+                    "status": "detached",
+                }]), \
+                patch.object(vm_plugin.traceable_shell, "cancel_job_by_api", create=True) as cancel, \
+                patch.object(vm_plugin.traceable_shell, "TraceableShell", create=True,
+                             side_effect=lambda api_id, deadline: _Obj(id=api_id, deadline=deadline)), \
+                patch.object(vm_plugin.virsh, "block_cache_detach", side_effect=_detach) as detach:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                detach_future = executor.submit(daemon.detach)
+                self.assertTrue(first_detach_started.wait(3))
+                cancel_future = executor.submit(daemon._cancel)
+                self.assertTrue(terminal_detach_started.wait(3))
+                finish_first_detach.set()
+                self.assertFalse(detach_future.done())
+                finish_terminal_detach.set()
+                with self.assertRaisesRegex(Exception, "already detached"):
+                    cancel_future.result(timeout=3)
+                detach_future.result(timeout=3)
+
+        self.assertEqual(2, detach.call_count)
+        self.assertEqual(daemon.api_id, detach.call_args_list[0][1]["cmd_shell"].id)
+        terminal_kwargs = detach.call_args_list[1][1]
+        self.assertEqual("vm-1", terminal_kwargs["domain"])
+        self.assertEqual("vdb", terminal_kwargs["path"])
+        self.assertIsNone(terminal_kwargs["cmd_shell"].id)
+        self.assertEqual(daemon.deadline, terminal_kwargs["cmd_shell"].deadline)
+        self.assertEqual(daemon.progress_file, terminal_kwargs["progress_output"])
+        self.assertTrue(daemon.result.success)
+        self.assertEqual(100, daemon.progress)
+        cancel.assert_not_called()
 
     def test_detach_block_cache_uses_traceable_shell_and_progress_file(self):
         vm_plugin = _import_with_plugin_stub("kvmagent.plugins.vm_plugin")
@@ -426,10 +529,11 @@ class VolumeCacheCancelCase(unittest.TestCase):
         )
         daemon = vm_plugin.DetachBlockCacheTaskDaemon(_task_spec(), "vm-1", volume, "vdb")
 
-        with patch.object(vm_plugin.traceable_shell, "get_shell", return_value="trace-shell"), \
+        with patch.object(vm_plugin.traceable_shell, "TraceableShell", return_value="trace-shell", create=True) as shell, \
                 patch.object(vm_plugin.virsh, "block_cache_detach") as detach:
             daemon.detach()
 
+        shell.assert_called_once_with(daemon.api_id, None)
         detach.assert_called_once_with(
             domain="vm-1",
             path="vdb",
@@ -444,15 +548,16 @@ class VolumeCacheCancelCase(unittest.TestCase):
 
         volume = _Obj(
             installPath="/primary/volume-1",
-            cache=_Obj(timeout=30, delete=False),
+            cache=_Obj(installPath="/cache/volume-1.qcow2", timeout=30, delete=False),
         )
         daemon = vm_plugin.DetachBlockCacheTaskDaemon(_task_spec(), "vm-1", volume, "vdb")
 
         def _detach(**kwargs):
             daemon._cancel()
 
-        with patch.object(vm_plugin.traceable_shell, "cancel_job_by_api", create=True), \
-                patch.object(vm_plugin.traceable_shell, "get_shell", return_value="trace-shell"), \
+        with patch.object(vm_plugin.qmp, "execute_qmp_command", return_value=None), \
+                patch.object(vm_plugin.traceable_shell, "cancel_job_by_api", create=True), \
+                patch.object(vm_plugin.traceable_shell, "TraceableShell", return_value="trace-shell", create=True), \
                 patch.object(vm_plugin.virsh, "block_cache_detach", side_effect=_detach):
             with self.assertRaises(Exception) as exc:
                 daemon.detach()
@@ -464,7 +569,7 @@ class VolumeCacheCancelCase(unittest.TestCase):
 
         volume = _Obj(
             installPath="/primary/volume-1",
-            cache=_Obj(timeout=30, delete=False),
+            cache=_Obj(installPath="/cache/volume-1.qcow2", timeout=30, delete=False),
         )
         daemon = vm_plugin.DetachBlockCacheTaskDaemon(_task_spec(), "vm-1", volume, "vdb")
 
@@ -472,8 +577,9 @@ class VolumeCacheCancelCase(unittest.TestCase):
             daemon._cancel()
             raise Exception("virsh block-cache-detach return code: 130")
 
-        with patch.object(vm_plugin.traceable_shell, "cancel_job_by_api", create=True), \
-                patch.object(vm_plugin.traceable_shell, "get_shell", return_value="trace-shell"), \
+        with patch.object(vm_plugin.qmp, "execute_qmp_command", return_value=None), \
+                patch.object(vm_plugin.traceable_shell, "cancel_job_by_api", create=True), \
+                patch.object(vm_plugin.traceable_shell, "TraceableShell", return_value="trace-shell", create=True), \
                 patch.object(vm_plugin.virsh, "block_cache_detach", side_effect=_detach):
             with self.assertRaises(Exception) as exc:
                 daemon.detach()
