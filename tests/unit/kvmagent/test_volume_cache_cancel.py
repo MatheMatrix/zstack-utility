@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import importlib
 import os
@@ -599,7 +600,10 @@ class VolumeCacheCancelCase(unittest.TestCase):
     def test_flush_cache_uses_qcow2_convert_without_bitmap_when_bitmap_missing(self):
         volume_cache_plugin = _import_with_plugin_stub("kvmagent.plugins.volume_cache_plugin")
         cache = object.__new__(volume_cache_plugin.CacheProcessor)
-        cache._CacheProcessor__backing_volume = _Obj(output_format=_Obj(value="raw"), source_path="/dev/vg/volume")
+        cache._CacheProcessor__backing_volume = _Obj(
+            output_format=_Obj(value="raw"),
+            source_path="/dev/vg/volume",
+            io_session=lambda _: contextlib.nullcontext())
 
         with patch.object(volume_cache_plugin.CacheProcessor, "is_instantiated", new_callable=PropertyMock, return_value=True), \
                 patch.object(volume_cache_plugin.CacheProcessor, "install_path", new_callable=PropertyMock, return_value="/cache/volume.qcow2"), \
@@ -616,25 +620,85 @@ class VolumeCacheCancelCase(unittest.TestCase):
             opts="-W -n",
             bitmap=None)
 
-    def test_flush_cache_uses_qcow2_convert_with_bitmap(self):
+    def test_flush_shared_block_with_bitmap_extends_lv_and_deactivates_on_convert_failure(self):
         volume_cache_plugin = _import_with_plugin_stub("kvmagent.plugins.volume_cache_plugin")
-        cache = object.__new__(volume_cache_plugin.CacheProcessor)
-        cache._CacheProcessor__backing_volume = _Obj(output_format=_Obj(value="raw"), source_path="/dev/vg/volume")
+        events = []
+
+        class _LvSession(object):
+            def __enter__(self):
+                events.append("active")
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                events.append("deactive")
+
+        def _convert(*args, **kwargs):
+            events.append("convert")
+            raise RuntimeError("convert failed")
+
+        volume = _Obj(
+            deviceType="file",
+            installPath="/dev/vg/volume",
+            format="qcow2",
+            primaryStorageType="SharedBlock",
+            size=1024,
+            volumeUuid="volume-1")
+        cache = volume_cache_plugin.CacheProcessor(_Obj(is_initialized=True), volume, auto_create=False)
 
         with patch.object(volume_cache_plugin.CacheProcessor, "is_instantiated", new_callable=PropertyMock, return_value=True), \
                 patch.object(volume_cache_plugin.CacheProcessor, "install_path", new_callable=PropertyMock, return_value="/cache/volume.qcow2"), \
                 patch.object(volume_cache_plugin.qemu_img, "get_qcow2_bitmaps", return_value=[{"name": "block-cache"}]), \
-                patch.object(volume_cache_plugin.linux, "qcow2_convert") as convert:
-            cache.flush(shell="trace-shell", progress_output="/tmp/progress")
+                patch.object(volume_cache_plugin.lvm, "RecursiveOperateLv", return_value=_LvSession(), create=True) as operate_lv, \
+                patch.object(volume_cache_plugin.qemu_img, "get_check_result", return_value=_Obj(image_end_offset=100)), \
+                patch.object(volume_cache_plugin.linux, "qcow2_get_cluster_size", return_value=131072), \
+                patch.object(volume_cache_plugin.linux, "qcow2_measure_required_size", return_value=200) as measure, \
+                patch.object(volume_cache_plugin.lvm, "extend_lv", create=True) as extend_lv, \
+                patch.object(volume_cache_plugin.linux, "qcow2_convert", side_effect=_convert) as convert:
+            with self.assertRaises(RuntimeError):
+                cache.flush(shell="trace-shell", progress_output="/tmp/progress")
 
+        self.assertEqual(["active", "convert", "deactive"], events)
+        operate_lv.assert_called_once_with("/dev/vg/volume", shared=False)
+        measure.assert_called_once_with("/cache/volume.qcow2", cluster_size=131072)
+        extend_lv.assert_called_once_with("/dev/vg/volume", 300, skip_if_sufficient=True)
         convert.assert_called_once_with(
             "/cache/volume.qcow2",
             "/dev/vg/volume",
-            dst_format="raw",
+            dst_format="qcow2",
             shell="trace-shell",
             progress_output="/tmp/progress",
             opts="-W -n",
             bitmap="block-cache")
+
+    def test_file_backing_volume_io_session_is_noop_for_other_primary_storage(self):
+        volume_cache_plugin = _import_with_plugin_stub("kvmagent.plugins.volume_cache_plugin")
+        backing_volume = volume_cache_plugin.FileBackingVolume(_Obj(primaryStorageType="LocalStorage"))
+
+        with patch.object(volume_cache_plugin.lvm, "RecursiveOperateLv", create=True) as operate_lv:
+            with backing_volume.io_session("/cache/volume.qcow2"):
+                pass
+
+        operate_lv.assert_not_called()
+
+    def test_shared_block_io_session_caps_extension_at_virtual_size(self):
+        volume_cache_plugin = _import_with_plugin_stub("kvmagent.plugins.volume_cache_plugin")
+
+        volume = _Obj(
+            installPath="/dev/vg/volume",
+            format="qcow2",
+            primaryStorageType="SharedBlock",
+            size=250,
+            volumeUuid="volume-1")
+        backing_volume = volume_cache_plugin.FileBackingVolume(volume)
+
+        with patch.object(volume_cache_plugin.lvm, "RecursiveOperateLv", return_value=contextlib.nullcontext(), create=True), \
+                patch.object(volume_cache_plugin.qemu_img, "get_check_result", return_value=_Obj(image_end_offset=100)), \
+                patch.object(volume_cache_plugin.linux, "qcow2_get_cluster_size", return_value=131072), \
+                patch.object(volume_cache_plugin.linux, "qcow2_measure_required_size", return_value=200), \
+                patch.object(volume_cache_plugin.lvm, "extend_lv", create=True) as extend_lv:
+            with backing_volume.io_session("/cache/volume.qcow2"):
+                pass
+
+        extend_lv.assert_called_once_with("/dev/vg/volume", 250, skip_if_sufficient=True)
 
 
 class VolumeCacheXmlCase(unittest.TestCase):

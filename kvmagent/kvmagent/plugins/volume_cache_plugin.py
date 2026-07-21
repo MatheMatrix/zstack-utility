@@ -2,6 +2,7 @@
 VM Local Volume Cache Plugin
 Manages local cache pool and cache volumes for VMs on compute nodes
 """
+import contextlib
 import functools
 import json
 import os
@@ -347,6 +348,15 @@ class BackingVolume(object):
         # type: (JsonObject) -> None
         self.volume = volume
 
+    @contextlib.contextmanager
+    def io_session(self, overlay_path):
+        with contextlib.ExitStack() as session:
+            self.init_io_session(overlay_path, session)
+            yield
+
+    def init_io_session(self, overlay_path, session):
+        pass
+
 class IscsiBackingVolume(BackingVolume):
     target = None # type: str | None
     lun = None # type: str | None
@@ -390,6 +400,19 @@ class FileBackingVolume(BackingVolume):
     @property
     def output_format(self):
         return qemu_img.QemuImgOutputFormat(self.volume_format)
+
+    def init_io_session(self, overlay_path, session):
+        if self.volume.primaryStorageType.lower() != VolumeTO.SHAREDBLOCK:
+            return
+
+        session.enter_context(lvm.RecursiveOperateLv(self.source_path, shared=False))
+
+        current_image_end = int(qemu_img.get_check_result(self.source_path).image_end_offset)
+        cluster_size = linux.qcow2_get_cluster_size(self.source_path)
+        max_overlay_allocation = linux.qcow2_measure_required_size(overlay_path, cluster_size=cluster_size)
+        required_image_end = min(current_image_end + max_overlay_allocation, int(self.volume.size))
+
+        lvm.extend_lv(self.source_path, required_image_end, skip_if_sufficient=True)
 
 class CephBackingVolume(BackingVolume):
     pool = None # type: str | None
@@ -1158,8 +1181,8 @@ class CacheProcessor(object):
                         % (bitmap_name, self.install_path))
             bitmap_name = None
 
-        try:
-            output_format = getattr(self.backing_volume.output_format, "value", self.backing_volume.output_format)
+        output_format = getattr(self.backing_volume.output_format, "value", self.backing_volume.output_format)
+        with self.backing_volume.io_session(self.install_path):
             linux.qcow2_convert(self.install_path,
                                 self.backing_volume.source_path,
                                 dst_format=output_format,
@@ -1167,9 +1190,6 @@ class CacheProcessor(object):
                                 progress_output=progress_output,
                                 opts="-W -n",
                                 bitmap=bitmap_name)
-        except Exception as e:
-            raise CacheOperationError("Failed to flush cache file %s to backing volume %s: %s"
-                                      % (self.install_path, self.backing_volume.source_path, str(e)))
 
     def get_capacity(self):
         # type: () -> CacheCapacityInfo
