@@ -1737,6 +1737,10 @@ def is_hv_synic_supported():
             NumericVersion(KERNEL_VERSION) >= NumericVersion("4.18.0"))
 
 
+def is_hyperv_clock_enabled(cmd):
+    return HOST_ARCH == "x86_64" and getattr(cmd, 'hypervClock', False)
+
+
 def is_new_ovmf_supported():
     if not linux.is_rpm_installed('edk2-ovmf'):
         return False
@@ -6809,7 +6813,7 @@ class Vm(object):
                 if not ("hygon" in model_name.lower() and cmd.vmCpuModel == 'Hygon_Customized'):
                     if is_hv_freq_supported():
                         e(hyperv, 'frequencies', attrib={'state': 'on'})
-                    if is_hv_synic_supported() and cmd.hypervClock:
+                    if is_hv_synic_supported() and is_hyperv_clock_enabled(cmd):
                         e(hyperv, 'vpindex', attrib={'state': 'on'})
                         # Requires: hv-vpindex
                         e(hyperv, 'synic', attrib={'state': 'on'})
@@ -7642,7 +7646,7 @@ class Vm(object):
                 e(clock, 'timer', None, {'name': 'pit', 'tickpolicy': 'delay'})
                 e(clock, 'timer', None, {'name': 'hpet', 'present': 'no'})
 
-                if cmd.hypervClock:
+                if is_hyperv_clock_enabled(cmd):
                     e(clock, 'timer', None, {'name': 'hypervclock', 'present': 'yes'})
 
         def make_vnc():
