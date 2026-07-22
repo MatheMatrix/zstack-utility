@@ -13360,7 +13360,7 @@ WantedBy=multi-user.target
 
 
 class LicenseServerService(ExtraService):
-    default_port = 8201
+    default_port = 18201
     https_health_url = "https://127.0.0.1:%d/healthz" % default_port
     http_health_url = "http://127.0.0.1:%d/healthz" % default_port
     ready_url = None

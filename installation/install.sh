@@ -127,6 +127,9 @@ LICENSE_SERVER_DB_USER='license_server'
 LICENSE_SERVER_DEFAULT_DB_PASSWORD='zstack.ls.password'
 LICENSE_SERVER_DATA_DIR='/var/lib/zstack/zstack-license-server'
 LICENSE_SERVER_SERVICE_PATH='/usr/lib/systemd/system/zstack-license-server.service'
+LICENSE_SERVER_PORT='18201'
+LICENSE_SERVER_WAS_RUNNING=''
+DEFER_ZSTACK_START_FOR_LICENSE_SERVER=''
 
 get_default_route_interface_by_family() {
     local family="$1"
@@ -1749,6 +1752,7 @@ upgrade_zstack(){
     do_config_ansible
     do_config_systemd
     show_spinner uz_stop_zstack
+    prepare_license_server_upgrade
     show_spinner prepare_zops_user_and_db
     show_spinner uz_upgrade_zstack
     show_spinner upgrade_tomcat_security
@@ -1878,7 +1882,7 @@ upgrade_zstack(){
     if [ -z $ONLY_INSTALL_ZSTACK ]; then
 
         #when using -k option, will not start zstack.
-        if [ -z $NEED_KEEP_DB ] && [ $CURRENT_STATUS = 'y' ] && [ -z $NOT_START_ZSTACK ]; then
+        if [ -z $NEED_KEEP_DB ] && [ $CURRENT_STATUS = 'y' ] && [ -z $NOT_START_ZSTACK ] && [ -z "$DEFER_ZSTACK_START_FOR_LICENSE_SERVER" ]; then
             show_spinner sz_start_zstack
             echo "start zstack-ui" >>$ZSTACK_INSTALL_LOG
             show_spinner sd_start_zstack_ui
@@ -2969,6 +2973,7 @@ database:
   reset_database: ${reset_database}
 server:
   management_ip: "${management_ip}"
+  port: ${LICENSE_SERVER_PORT}
 EOF
     [ $? -ne 0 ] && fail "failed to render license server install config"
     chmod 600 "$config_file" || fail "failed to protect license server install config"
@@ -3049,6 +3054,74 @@ is_install_license_server() {
     fi
 
     pass
+}
+
+prepare_license_server_upgrade() {
+    is_ipv6_address "$MANAGEMENT_IP" && return 0
+    [ -f "$LICENSE_SERVER_SERVICE_PATH" ] || return 0
+
+    DEFER_ZSTACK_START_FOR_LICENSE_SERVER='y'
+    if systemctl is-active --quiet zstack-license-server; then
+        LICENSE_SERVER_WAS_RUNNING='y'
+        systemctl stop zstack-license-server >>$ZSTACK_INSTALL_LOG 2>&1
+        [ $? -ne 0 ] && fail "failed to stop license server"
+    fi
+}
+
+is_start_license_server() {
+    echo_subtitle "Start License Server"
+    zstack-ctl start-extra-service --name license-server >>$ZSTACK_INSTALL_LOG 2>&1
+    [ $? -ne 0 ] && fail "failed to start license server"
+    pass
+}
+
+migrate_license_client_server_port() {
+    local admin_password="$MYSQL_NEW_ROOT_PASSWORD"
+    local query_output=''
+    local query_ret=0
+
+    [ -n "$MYSQL_ROOT_PASSWORD" ] && admin_password="$MYSQL_ROOT_PASSWORD"
+    query_output=`mysql -uroot --password="$admin_password" --host="$MANAGEMENT_IP" --port="$MYSQL_PORT" \
+        --batch --skip-column-names -e "
+UPDATE zstack.GlobalConfigVO
+SET value = JSON_SET(
+    value,
+    '$.baseUrl',
+    REPLACE(JSON_UNQUOTE(JSON_EXTRACT(value, '$.baseUrl')), ':8201', ':${LICENSE_SERVER_PORT}')
+)
+WHERE category = 'mevoco'
+  AND name = 'license.client.config'
+  AND JSON_VALID(value)
+  AND TRIM(TRAILING '/' FROM JSON_UNQUOTE(JSON_EXTRACT(value, '$.baseUrl'))) IN (
+      'http://${MANAGEMENT_IP}:8201',
+      'https://${MANAGEMENT_IP}:8201',
+      'http://127.0.0.1:8201',
+      'https://127.0.0.1:8201',
+      'http://localhost:8201',
+      'https://localhost:8201'
+  );
+SELECT ROW_COUNT();" 2>&1`
+    query_ret=$?
+    if [ $query_ret -ne 0 ]; then
+        echo "Failed to migrate License Server URL:" >>$ZSTACK_INSTALL_LOG
+        printf '%s\n' "$query_output" | sed 's/^/  /' >>$ZSTACK_INSTALL_LOG
+        fail "failed to migrate license client server port"
+    fi
+}
+
+complete_license_server_upgrade() {
+    [ -n "$DEFER_ZSTACK_START_FOR_LICENSE_SERVER" ] || return 0
+
+    if [ x"$LICENSE_SERVER_WAS_RUNNING" = x"y" ]; then
+        show_spinner is_start_license_server
+    fi
+    [ -z "$NEED_KEEP_DB" ] && migrate_license_client_server_port
+
+    if [ -z $NEED_KEEP_DB ] && [ $CURRENT_STATUS = 'y' ] && [ -z $NOT_START_ZSTACK ]; then
+        show_spinner sz_start_zstack
+        echo "start zstack-ui" >>$ZSTACK_INSTALL_LOG
+        show_spinner sd_start_zstack_ui
+    fi
 }
 
 is_extract_morph_tar(){
@@ -5131,6 +5204,7 @@ if [ x"$UPGRADE" = x'y' ]; then
     #Install or upgrade license server after the new management node package is in place
     if [ -z "$ONLY_UPGRADE_CTL" ]; then
         install_license_server
+        complete_license_server_upgrade
     fi
 
     #Upgrade or install zops
@@ -5322,6 +5396,9 @@ install_license_server
 
 #Start ${PRODUCT_NAME} 
 if [ -z $NOT_START_ZSTACK ]; then
+    if ! is_ipv6_address "$MANAGEMENT_IP"; then
+        show_spinner is_start_license_server
+    fi
     start_zstack
 fi
 
