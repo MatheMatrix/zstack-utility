@@ -1,4 +1,5 @@
 import functools
+import json
 import os.path
 import re
 
@@ -1296,6 +1297,47 @@ def find_vm_uuid_from_vm_qemu_process(process):
         return None
 
 
+def _parse_qemu_ioport(value):
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value, 0)
+        except ValueError:
+            return None
+    return None
+
+
+def _is_pvpanic_isa_device_arg(word):
+    if word.startswith('pvpanic,'):
+        for option in word.split(',')[1:]:
+            key, separator, value = option.partition('=')
+            if separator and key == 'ioport':
+                return _parse_qemu_ioport(value) == 0x505
+        return False
+
+    if not word.startswith('{'):
+        return False
+
+    try:
+        device = json.loads(word)
+    except (TypeError, ValueError):
+        return False
+
+    return (
+        isinstance(device, dict)
+        and device.get('driver') == 'pvpanic'
+        and _parse_qemu_ioport(device.get('ioport')) == 0x505
+    )
+
+
+def is_pvpanic_enabled_in_qemu_cmdline(cmdline):
+    return any(
+        word == '-device' and _is_pvpanic_isa_device_arg(cmdline[index + 1])
+        for index, word in enumerate(cmdline[:-1])
+    )
+
+
 def collect_vm_statistics():
     metrics = {
         'cpu_occupied_by_vm': GaugeMetricFamily('cpu_occupied_by_vm',
@@ -1351,17 +1393,16 @@ def collect_vm_pvpanic_enable_in_domain_xml():
     if len(processes) == 0:
         return list(metrics.values())
 
-    # if pvpanic enable in domain xml (qemu process cmdline has 'pvpanic,ioport'), collect '1'
-    # if not, collect '0'
+    # If the QEMU command line contains an ISA pvpanic device, collect 1.
+    # Otherwise, collect 0.
     for process in processes:
         vm_uuid = find_vm_uuid_from_vm_qemu_process(process)
-        r = ""
+        enable = 0
         try:
-            r = [word for word in process.cmdline() if word == 'pvpanic,ioport=1285']
+            enable = 1 if is_pvpanic_enabled_in_qemu_cmdline(process.cmdline()) else 0
         except psutil.NoSuchProcess:
             pass
 
-        enable = 1 if len(r) > 0 else 0
         metrics[KEY].add_metric([vm_uuid], enable)
 
     return list(metrics.values())
