@@ -696,8 +696,8 @@ class CephAgent(object):
             def _cancel(self):
                 if self.task.completed:
                     return
-                self.task.lastError = "image [uuid: %s] upload canceled" % cmd.imageUuid
-                shell.run('rbd rm %s' % task.tmpPath)
+                self.task.fail("image [uuid: %s] upload canceled" % cmd.imageUuid)
+                shell.run('rbd rm %s' % self.task.tmpPath)
 
         start = len(self.UPLOAD_PROTO)
         imageUuid = cmd.url[start:start+self.LENGTH_OF_UUID]
@@ -709,7 +709,7 @@ class CephAgent(object):
 
         task = CephUploadTask(imageUuid, cmd.installPath, dstPath, tmpPath, self.get_ioctx(pool))
         self.upload_tasks.add_task(task)
-        ImageUploadDaemon(task).start()
+        return ImageUploadDaemon(task).start()
 
     def _get_upload_path(self, req):
         host = req[http.REQUEST_HEADER]['Host']
@@ -780,6 +780,11 @@ class CephAgent(object):
             return image_format
 
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        if plugin.TaskManager.cancellation_pending(plugin.get_api_id(cmd)):
+            rsp.success = False
+            rsp.error = "image download canceled before start"
+            return jsonobject.dumps(rsp)
+
         shell = traceable_shell.get_shell(cmd)
         pool, image_name = self._parse_install_path(cmd.installPath)
         tmp_image_name = 'tmp-%s' % image_name
@@ -808,7 +813,10 @@ class CephAgent(object):
 
         # whether we have an upload request
         if cmd.url.startswith(self.UPLOAD_PROTO):
-            self._prepare_upload(cmd)
+            if not self._prepare_upload(cmd):
+                rsp.success = False
+                rsp.error = "image upload canceled before start"
+                return jsonobject.dumps(rsp)
             rsp.size = 0
             rsp.uploadPath = self._get_upload_path(req)
             self._set_capacity_to_response(rsp)
@@ -1301,9 +1309,12 @@ class CephAgent(object):
 
             task = FileSystemUploadTask(cmd.taskUuid, cmd.installPath)
             self.upload_file_tasks.add_task(task)
-            FileUploadDaemon(task).start()
+            return FileUploadDaemon(task).start()
 
-        _prepare_upload()
+        if not _prepare_upload():
+            rsp.success = False
+            rsp.error = "file[%s] upload canceled before start" % cmd.installPath
+            return jsonobject.dumps(rsp)
         rsp.directUploadUrl = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
         return jsonobject.dumps(rsp)
 

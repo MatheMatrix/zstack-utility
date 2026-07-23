@@ -4409,9 +4409,12 @@ done
 
             task = FileSystemUploadTask(cmd.taskUuid, cmd.installPath)
             self.upload_tasks.add_task(task)
-            FileUploadDaemon(task).start()
+            return FileUploadDaemon(task).start()
 
-        _prepare_upload()
+        if not _prepare_upload():
+            rsp.success = False
+            rsp.error = "file[%s] upload canceled before start" % cmd.installPath
+            return jsonobject.dumps(rsp)
         rsp.directUploadUrl = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
         return jsonobject.dumps(rsp)
 
