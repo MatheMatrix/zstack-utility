@@ -108,9 +108,8 @@ class VmQga(object):
     VM_OS_LINUX_ALMALINUX = "almalinux"
     VM_OS_WINDOWS = "mswindows"
 
-    ZS_TOOLS_PATN_WIN = r"C:\Program Files\GuestTools\zs-tools\zs-tools.exe"
-    ZS_TOOLS_VERSION_PATN_WIN = r"C:\Program Files\Common Files\GuestTools\VERSION"
-    ZS_TOOLS_LOG_PATH_WIN = r"C:\Program Files\GuestTools\zs-tools\zs-tools.log"
+    ZS_TOOLS_PATN_WIN = "C:\Program Files\GuestTools\zs-tools\zs-tools.exe"
+    ZS_TOOLS_VERSION_PATN_WIN = "C:\Program Files\Common Files\GuestTools\VERSION"
 
     def __init__(self, domain):
         self.domain = domain
@@ -279,45 +278,17 @@ class VmQga(object):
 
         return exit_code, ret_data
 
-    def _format_zs_tools_exec_result(self, result):
-        if not result:
-            return ""
-        parts = []
-        if result.get('out-data'):
-            parts.append('stdout:\n{}'.format(
-                decode_with_fallback(result['out-data']).replace('\r\n', '\n')))
-        if result.get('err-data'):
-            parts.append('stderr:\n{}'.format(
-                decode_with_fallback(result['err-data']).replace('\r\n', '\n')))
-        return '\n'.join(parts)
-
-    def _try_read_zs_tools_log_tail(self, n_bytes=4096):
-        handle = None
-        try:
-            handle = self.guest_file_open(self.ZS_TOOLS_LOG_PATH_WIN)
-            ret = self.call_qga_command(
-                'guest-file-seek', args={'handle': handle, 'offset': 0, 'whence': 2})
-            size = ret.get('position', 0)
-            self.call_qga_command(
-                'guest-file-seek', args={
-                    'handle': handle, 'offset': max(size - n_bytes, 0), 'whence': 0})
-            ret = self.call_qga_command(
-                'guest-file-read', args={'handle': handle, 'count': n_bytes})
-            data = ret.get('buf-b64')
-            if not data:
-                return ''
-            return decode_with_fallback(data).replace('\r\n', '\n')
-        except Exception as e:
-            logger.debug('read zs-tools log tail failed for vm %s: %s', self.vm_uuid, e)
-            return ''
-        finally:
-            if handle is not None:
-                try:
-                    self.guest_file_close(handle)
-                except Exception:
-                    pass
-
     def guest_exec_zs_tools(self, operate, config, config_obj=None, output=True, wait=qga_exec_wait_interval, retry=zs_tools_wait_retry):
+        def get_return_data(result):
+            if not result:
+                return ""
+            ret_data = ""
+            if 'out-data' in result:
+                ret_data = decode_with_fallback(result['out-data'])
+            elif 'err-data' in result:
+                ret_data = decode_with_fallback(result['err-data'])
+            return ret_data.replace('\r\n', '')
+
         try:
             ret = self.guest_exec(
                 {"path": self.ZS_TOOLS_PATN_WIN, "arg": [operate, "--config", config], "capture-output": output})
@@ -325,8 +296,7 @@ class VmQga(object):
             if ret and "pid" in ret:
                 pid = ret["pid"]
             else:
-                raise Exception('guest-exec returned invalid result: {}'.format(
-                    json.dumps(ret) if ret else 'None'))
+                raise Exception(get_return_data(ret))
 
             ret = None
             for i in range(retry):
@@ -336,17 +306,12 @@ class VmQga(object):
                     break
 
             if not ret or not ret.get('exited'):
-                raise Exception('zs-tools pid {} not exited after {} retries, status={}'.format(
-                    pid, retry, json.dumps(ret) if ret else 'None'))
+                raise Exception(get_return_data(ret))
 
-            return ret.get('exitcode'), self._format_zs_tools_exec_result(ret)
+            return ret.get('exitcode'), get_return_data(ret)
         except Exception as e:
-            message = 'qga exec zs-tools operate {} failed for vm {}, config: {}, error: {}'.format(
-                operate, self.vm_uuid, log.mask_sensitive_field(config_obj, config), e)
-            log_tail = self._try_read_zs_tools_log_tail()
-            if log_tail:
-                message += '\nzs-tools.log tail:\n{}'.format(log_tail)
-            return 1, message
+            return 1, 'qga exec zs-tools operate {} failed for vm {}, config: {}, error: {}'.format(
+                    operate, self.vm_uuid, log.mask_sensitive_field(config_obj, config), e)
 
     def guest_exec_wmic(self, cmd, output=True, wait=qga_exec_wait_interval, retry=qga_exec_wait_retry):
         cmd_parts = cmd.split('|')
