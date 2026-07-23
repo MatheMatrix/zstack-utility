@@ -1043,10 +1043,15 @@ class TestBlockPullHandler:
 
 @pytest.mark.kvmagent
 class TestCheckRecoverHandler:
-    def test_check_recover(self):
+    @pytest.mark.parametrize(('state', 'expected'), [
+        (vm_plugin.Vm.VM_STATE_RUNNING, 'done'),
+        (vm_plugin.Vm.VM_STATE_PAUSED, 'interrupted'),
+    ])
+    def test_check_recover(self, state, expected):
         plugin = _make_vm_plugin()
-        mock_vm = MagicMock()
+        mock_vm = MagicMock(state=state)
         mock_vm.domain_xmlobject.devices.get_child_node_as_list = MagicMock(return_value=[])
+        vm_plugin.VM_RECOVER_TASKS = {}
         vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
         vm_plugin.is_nbd_disk = MagicMock(return_value=False)
 
@@ -1055,7 +1060,7 @@ class TestCheckRecoverHandler:
         rsp = json.loads(result)
 
         assert rsp['success'] is True
-        assert rsp['status'] == 'done'
+        assert rsp['status'] == expected
 
 
 @pytest.mark.kvmagent
@@ -2012,23 +2017,28 @@ class TestQueryVolumeMirrorHandler:
 class TestRecoverVolumesHandler:
     def test_recover_volumes(self):
         plugin = _make_vm_plugin()
+        events = []
         vm_plugin.VM_RECOVER_DICT = {'vm-uuid': MagicMock()}
         vm_plugin.VM_RECOVER_TASKS = {}
         vm_plugin.parse_url = MagicMock(return_value=MagicMock(scheme=None))
         task = MagicMock()
         task.__enter__.return_value = task
         task.__exit__.return_value = None
-        task.recover_vm_volumes = MagicMock()
+        task.recover_vm_volumes = MagicMock(side_effect=lambda: events.append('recover'))
         vm_plugin.VmVolumesRecoveryTask = MagicMock(return_value=task)
-        vm_plugin.linux.wait_callback_success = MagicMock(return_value=True)
-        vm_plugin.get_vm_by_uuid = MagicMock(return_value=MagicMock())
+        mock_vm = MagicMock()
+        mock_vm.pause.side_effect = lambda: events.append('pause')
+        mock_vm.resume.side_effect = lambda: events.append('resume')
+        vm_plugin.linux.wait_callback_success = MagicMock(
+            side_effect=lambda *_args, **_kwargs: events.append('check') or True)
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
 
         req = _make_req({'vmUuid': 'vm-uuid', 'volumes': [{'installPath': '/path/vol'}]})
         result = plugin.recover_volumes(req)
         rsp = json.loads(result)
 
         assert rsp['success'] is True
-        task.recover_vm_volumes.assert_called_once()
+        assert events == ['pause', 'recover', 'check', 'resume']
 
 
 @pytest.mark.kvmagent
@@ -3306,6 +3316,7 @@ class TestVmStartCmdXmlBuild:
                 patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
             vm = vm_plugin.Vm.from_StartVmCmd(cmd)
 
+        assert cmd.createPaused is True
         xml_str = vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
         root = vm_plugin.etree.fromstring(xml_str)
         root_driver = self._driver_by_target(root, 'vda')
