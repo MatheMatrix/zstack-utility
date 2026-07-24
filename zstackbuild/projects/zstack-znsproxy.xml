@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<project name="zstack-znsproxy builder" basedir="../">
+    <property name="znsproxy.bdir" location="${build.dir}/zns-proxy/" />
+    <property name="znsproxy.ansible.dir" location="${ansible.dir}/znsproxy/" />
+
+    <target name="build-zstack-zns-proxy">
+        <makeDir dir="${znsproxy.bdir}" />
+
+        <checkProperty property="zstackzns.source" />
+        <checkFile file="${zstackzns.source}" />
+
+        <exec executable="make" dir="${zstackzns.source}" failonerror="true">
+            <env key="GOWORK" value="off" />
+            <arg value="zns-proxy" />
+            <arg value="ARCH=amd64 arm64 loong64" />
+        </exec>
+
+        <copy todir="${znsproxy.bdir}/">
+            <fileset dir="${zstackzns.source}/target">
+                <include name="zns-proxy.bin" />
+            </fileset>
+        </copy>
+
+        <exec executable="/bin/python" dir="${basedir}" failonerror="true">
+            <arg value="${basedir}/scripts/zns_proxy_manifest.py" />
+            <arg value="--package" />
+            <arg value="${znsproxy.bdir}/zns-proxy.bin" />
+            <arg value="--output" />
+            <arg value="${znsproxy.bdir}/zns-proxy-manifest.json" />
+            <arg value="--version" />
+            <arg value="${bin.version}" />
+            <arg value="--arch" />
+            <arg value="amd64,arm64,loong64" />
+            <arg value="--path" />
+            <arg value="zns-proxy.bin" />
+        </exec>
+    </target>
+
+    <target name="assemble-zstack-zns-proxy">
+        <makeDir dir="${znsproxy.ansible.dir}" />
+
+        <copy todir="${znsproxy.ansible.dir}">
+            <fileset dir="${znsproxy.bdir}">
+                <include name="**/*" />
+            </fileset>
+        </copy>
+
+        <copy todir="${znsproxy.ansible.dir}">
+            <fileset dir="${znsproxyansibleplaybook.source}/ansible">
+                <include name="**/*" />
+                <exclude name="**/__pycache__/**" />
+                <exclude name="**/*.pyc" />
+            </fileset>
+        </copy>
+
+        <copy todir="${ansible.dir}">
+            <fileset dir="${znsproxyansibleplaybook.source}/ansible">
+                <include name="znsproxy.py" />
+            </fileset>
+        </copy>
+    </target>
+
+    <target name="verify-zstack-zns-proxy-package">
+        <exec executable="/bin/python" dir="${basedir}" failonerror="true">
+            <arg value="${basedir}/scripts/zns_proxy_iso_guard.py" />
+            <arg value="--ansible-dir" />
+            <arg value="${ansible.dir}" />
+        </exec>
+    </target>
+</project>
