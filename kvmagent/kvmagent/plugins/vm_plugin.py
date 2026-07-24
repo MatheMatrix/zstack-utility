@@ -392,8 +392,14 @@ class SshfsRemoteStorage(RemoteFileSystem):
         self.local_work_dir = self.mount_point
 
     def mount(self):
-        if 0 != linux.sshfs_mount_with_vm_xml(get_vm_by_uuid(self.vm_uuid).domain_xmlobject, self.username, self.hostname, self.port,
-                                              self.password, self.dst_dir, self.mount_point, self.bandwidth):
+        vm = get_vm_by_uuid(self.vm_uuid, exception_if_not_existing=False) if self.vm_uuid else None
+        if vm:
+            ret = linux.sshfs_mount_with_vm_xml(vm.domain_xmlobject, self.username, self.hostname, self.port,
+                                                self.password, self.dst_dir, self.mount_point, self.bandwidth)
+        else:
+            ret = linux.sshfs_mount(self.username, self.hostname, self.port, self.password,
+                                    self.dst_dir, self.mount_point, self.bandwidth)
+        if 0 != ret:
             raise kvmagent.KvmError("failed to prepare backup space for [vm:%s]" % self.vm_uuid)
 
     def umount(self):
@@ -803,6 +809,31 @@ class TakeVolumesBackupsResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(TakeVolumesBackupsResponse, self).__init__()
         self.backupInfos = [] # type: list[VolumeBackupInfo]
+
+
+class ConvertVolumeBackupsEncryptionCommand(kvmagent.AgentCommand):
+    @log.sensitive_fields("encryption.encryptedDek")
+    def __init__(self):
+        super(ConvertVolumeBackupsEncryptionCommand, self).__init__()
+        self.hostname = None
+        self.username = None
+        self.password = None
+        self.sshPort = 22
+        self.bsPath = None
+        self.uploadDir = None
+        self.vmUuid = None
+        self.networkWriteBandwidth = 0L
+        self.storageInfo = None
+        self.sourceEncrypted = False
+        self.targetEncrypted = False
+        self.encryption = None
+        self.chains = []
+
+
+class ConvertVolumeBackupsEncryptionResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(ConvertVolumeBackupsEncryptionResponse, self).__init__()
+        self.installPathMapping = {}
 
 
 class TakeSnapshotsCmd(kvmagent.AgentCommand):
@@ -7440,6 +7471,7 @@ class VmPlugin(kvmagent.KvmAgent):
     KVM_BLOCK_PULL_VOLUME_PATH = "/vm/volume/blockpull"
     KVM_TAKE_VOLUMES_SNAPSHOT_PATH = "/vm/volumes/takesnapshot"
     KVM_TAKE_VOLUMES_BACKUP_PATH = "/vm/volumes/takebackup"
+    KVM_CONVERT_VOLUME_BACKUPS_ENCRYPTION_PATH = "/vm/volumes/backup/convertencryption"
     KVM_CANCEL_VOLUME_BACKUP_JOBS_PATH = "/vm/volume/cancel/backupjobs"
     KVM_CANCEL_VOLUME_BACKUP_JOB_PATH = "/vm/volume/cancel/backupjob"
     KVM_MERGE_SNAPSHOT_PATH = "/vm/volume/mergesnapshot"
@@ -9702,6 +9734,96 @@ host side snapshot files chian:
         except Exception as e:
             content = traceback.format_exc()
             logger.warn("take vm[uuid:%s] backup failed: %s\n%s" % (cmd.vmUuid, str(e), content))
+            rsp.error = str(e)
+            rsp.success = False
+        finally:
+            storage.disconnect()
+
+        return jsonobject.dumps(rsp)
+
+    @staticmethod
+    def _backup_conversion_source_path(workspace, image):
+        rel_path = getattr(image, 'sourceRelativePath', None)
+        if not rel_path:
+            rel_path = os.path.join("source", "%s.qcow2" % image.id)
+        return os.path.join(workspace, rel_path)
+
+    @staticmethod
+    def _backup_conversion_target_path(workspace, image):
+        rel_path = getattr(image, 'targetRelativePath', None)
+        if not rel_path:
+            rel_path = os.path.join("target", image.id, "%s.qcow2" % image.id)
+        return os.path.join(workspace, rel_path)
+
+    @staticmethod
+    def _get_json_value(obj, key, default=None):
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        try:
+            return obj[key]
+        except Exception:
+            return getattr(obj, key, default)
+
+    def _backup_encryption_spec_to_json(self, spec):
+        if not spec or not self._get_json_value(spec, 'encrypted', False):
+            return None
+
+        return {
+            'encrypted': True,
+            'encryptedDek': self._get_json_value(spec, 'encryptedDek'),
+            'keyProviderUuid': self._get_json_value(spec, 'keyProviderUuid'),
+            'keyVersion': self._get_json_value(spec, 'keyVersion'),
+            'cipher': self._get_json_value(spec, 'cipher'),
+        }
+
+    def _backup_conversion_secret_provider(self, cmd):
+        spec = getattr(cmd, 'encryption', None)
+        encrypted_dek = self._get_json_value(spec, 'encryptedDek')
+        if not encrypted_dek:
+            return None
+        return lambda: volume_secret.luks_secret_channel(encrypted_dek)
+
+    @kvmagent.replyerror
+    def convert_volume_backups_encryption(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ConvertVolumeBackupsEncryptionResponse()
+        storage = RemoteStorageFactory.get_remote_storage(cmd)
+        encryption = self._backup_encryption_spec_to_json(getattr(cmd, 'encryption', None))
+
+        try:
+            if (getattr(cmd, 'sourceEncrypted', False) or cmd.targetEncrypted) and not encryption:
+                raise Exception("backup encryption conversion requires encryption spec")
+
+            storage.connect()
+            workspace = storage.workspace()
+
+            converted_targets = set()
+            for chain in getattr(cmd, 'chains', []) or []:
+                images = list(getattr(chain, 'images', []) or [])
+                if not images:
+                    continue
+
+                converted_parent = None
+                for image in images:
+                    src = self._backup_conversion_source_path(workspace, image)
+                    dst = self._backup_conversion_target_path(workspace, image)
+                    if dst in converted_targets:
+                        converted_parent = dst
+                        continue
+
+                    linux.mkdir(os.path.dirname(dst), 0o755)
+                    linux.convert_qcow2_volume_encryption(
+                        src, dst, cmd.targetEncrypted,
+                        self._backup_conversion_secret_provider(cmd),
+                        converted_parent)
+                    converted_targets.add(dst)
+                    converted_parent = dst
+
+        except Exception as e:
+            content = traceback.format_exc()
+            logger.warn("convert volume backup encryption failed: %s\n%s" % (str(e), content))
             rsp.error = str(e)
             rsp.success = False
         finally:
@@ -12108,6 +12230,9 @@ host side snapshot files chian:
         http_server.register_async_uri(self.KVM_QUERY_BLOCKJOB_STATUS, self.query_block_job_status)
         http_server.register_async_uri(self.KVM_TAKE_VOLUMES_SNAPSHOT_PATH, self.take_volumes_snapshots)
         http_server.register_async_uri(self.KVM_TAKE_VOLUMES_BACKUP_PATH, self.take_volumes_backups, cmd=TakeVolumesBackupsCommand())
+        http_server.register_async_uri(self.KVM_CONVERT_VOLUME_BACKUPS_ENCRYPTION_PATH,
+                                       self.convert_volume_backups_encryption,
+                                       cmd=ConvertVolumeBackupsEncryptionCommand())
         http_server.register_async_uri(self.KVM_CANCEL_VOLUME_BACKUP_JOBS_PATH, self.cancel_backup_jobs)
         http_server.register_async_uri(self.KVM_CANCEL_VOLUME_BACKUP_JOB_PATH, self.cancel_backup_job)
         http_server.register_async_uri(self.KVM_BLOCK_STREAM_VOLUME_PATH, self.block_stream)
