@@ -457,6 +457,8 @@ def install_kvm_pkg():
         if releasever in ['c76', 'c79', 'h76c', 'h79c', 'c74'] and "qemu-kvm" not in skip_packages:
             rpm_deprecated_list += " qemu-img-ev qemu-kvm-ev qemu-kvm-common-ev"
 
+        rpm_deprecated_list += " lvm2-help"
+
         for rpm in rpm_deprecated_list.split():
             yum_remove_package(rpm, host_post_info)
 
