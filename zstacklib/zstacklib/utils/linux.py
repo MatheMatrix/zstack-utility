@@ -85,6 +85,15 @@ def ignoreerror(func):
             logger.warn(err)
     return wrap
 
+def is_alinux4():
+    try:
+        from zstacklib.system.linux.distro import get_distro
+        distro = get_distro()
+    except Exception:
+        return False
+
+    return distro.name.lower() == "alinux" and distro.version_id.split(".")[0] == "4"
+
 class VolumeInUseError(Exception):
     pass
 
@@ -2363,6 +2372,46 @@ def set_vm_priority(pid, priorityConfig):
     oom_score_adj_path = "/proc/%s/oom_score_adj" % pid
     if write_file(oom_score_adj_path, priorityConfig.oomScoreAdj) is None:
         logger.warn("set vm %s oomScoreAdj failed" % priorityConfig.vmUuid)
+
+
+def get_vm_cpu_shares(vm_uuid, scope):
+    cmd = shell.ShellCmd("timeout 5 virsh schedinfo %s %s" % (vm_uuid, scope))
+    output = cmd(is_exception=False)
+    if cmd.return_code != 0:
+        logger.warn("get vm %s %s cpu_shares failed" % (vm_uuid, scope[2:]))
+        return None
+
+    for line in output.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip() != "cpu_shares":
+            continue
+
+        try:
+            return int(value.strip())
+        except ValueError:
+            logger.warn("invalid vm %s %s cpu_shares: %s" % (vm_uuid, scope[2:], value.strip()))
+            return None
+
+    return None
+
+
+def sync_vm_live_cpu_shares_from_config(vm_uuid):
+    config_cpu_shares = get_vm_cpu_shares(vm_uuid, "--config")
+    if not config_cpu_shares:
+        return False
+
+    live_cpu_shares = get_vm_cpu_shares(vm_uuid, "--live")
+    if live_cpu_shares == config_cpu_shares:
+        return False
+
+    cmd = shell.ShellCmd("timeout 5 virsh schedinfo %s --set cpu_shares=%s --live" % (vm_uuid, config_cpu_shares))
+    cmd(is_exception=False)
+    if cmd.return_code != 0:
+        logger.warn("restore vm %s live cpu_shares from config failed" % vm_uuid)
+        return False
+
+    logger.info("restored vm %s live cpu_shares from %s to %s" % (vm_uuid, live_cpu_shares, config_cpu_shares))
+    return True
 
 
 def get_vm_pid(uuid):
