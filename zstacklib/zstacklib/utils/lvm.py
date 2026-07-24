@@ -42,6 +42,7 @@ LVMLOCKD_LOG_LOGROTATE_PATH = "/etc/logrotate.d/lvmlockd"
 LVMLOCKD_ADOPT_FILE = "/run/lvm/lvmlockd.adopt"
 LVM_CONFIG_BACKUP_PATH = "/etc/lvm/zstack-backup"
 LVM_CONFIG_ARCHIVE_PATH = "/etc/lvm/archive"
+LVM_METADATA_BACKUP_PATH = "/etc/lvm/backup"
 SUPER_BLOCK_BACKUP = "superblock.bak"
 COMMON_TAG = "zs::sharedblock"
 VOLUME_TAG = COMMON_TAG + "::volume"
@@ -51,12 +52,13 @@ LVMLOCKD_VERSION = None
 thinProvisioningInitializeSize = "thinProvisioningInitializeSize"
 PV_DISCARD_MIN_SIZE_IN_BYTES = 1*1024**3
 ONE_HOUR_IN_SEC = 60 * 60
-LV_UUID_REFRESH_INTERVAL_IN_SEC = 60 * 30
+LV_UUID_REFRESH_INTERVAL_IN_SEC = 60 * 15
 
 lv_offset = TTLCache(maxsize=100, ttl=ONE_HOUR_IN_SEC)
 continue_lockspace_track = {}  # type: dict[str, bool]
 lv_uuid_cache = {}  # type: dict[str, str]
 lv_uuid_cache_last_refresh_time = 0
+vg_metadata_latest_update_time = 0
 
 class VolumeProvisioningStrategy(object):
     ThinProvisioning = "ThinProvisioning"
@@ -1621,27 +1623,42 @@ def vg_exists(vgUuid):
 
 @lock.file_lock("/var/run/zstack/sharedblock.ping.lock")
 def refresh_lv_uuid_cache_if_need():
-    global lv_uuid_cache_last_refresh_time
-    if linux.get_current_timestamp() - lv_uuid_cache_last_refresh_time <= LV_UUID_REFRESH_INTERVAL_IN_SEC:
-        return
+    def refresh():
+        lv_uuid_cache.clear()
+        cmd = shell.ShellCmd("lvs -olv_path,uuid,lv_tags --nolocking -t --noheading | grep %s" % COMMON_TAG)
+        cmd(is_exception=False)
+        if cmd.return_code != 0:
+            logger.debug("refresh lv uuid cache error: %s" % cmd.stderr)
+            return False
+        for line in cmd.stdout.strip().splitlines():
+            lv_path = line.strip().split()[0]
+            uuid = line.strip().split()[1]
+            lv_uuid_cache.update({lv_path: uuid})
+        global lv_uuid_cache_last_refresh_time
+        lv_uuid_cache_last_refresh_time = linux.get_current_timestamp()
+        logger.debug("lv uuid cache refreshed")
+        return True
 
-    lv_uuid_cache.clear()
-    cmd = shell.ShellCmd("lvs -olv_path,uuid,lv_tags --nolocking -t --noheading | grep %s" % COMMON_TAG)
-    cmd(is_exception=False)
-    if cmd.return_code != 0:
-        logger.debug("refresh lv uuid cache error: %s" % cmd.stderr)
-        return
-    for line in cmd.stdout.strip().splitlines():
-        lv_path = line.strip().split()[0]
-        uuid = line.strip().split()[1]
-        lv_uuid_cache.update({lv_path: uuid})
-    lv_uuid_cache_last_refresh_time = linux.get_current_timestamp()
-    logger.debug("lv uuid cache refreshed")
+    global lv_uuid_cache_last_refresh_time
+    global vg_metadata_latest_update_time
+    need_refresh = linux.get_current_timestamp() - lv_uuid_cache_last_refresh_time > LV_UUID_REFRESH_INTERVAL_IN_SEC
+    if need_refresh:
+        return refresh()
+
+    meta_backup_files = os.listdir(LVM_METADATA_BACKUP_PATH) if os.path.exists(LVM_METADATA_BACKUP_PATH) else []
+    for f in meta_backup_files:
+        mtime = os.stat(os.path.join(LVM_METADATA_BACKUP_PATH, f)).st_mtime
+        if mtime > vg_metadata_latest_update_time:
+            need_refresh = True
+            vg_metadata_latest_update_time = mtime
+    if need_refresh:
+        return refresh()
 
 
 def lv_uuid(path):
-    if path in lv_uuid_cache:
-        return lv_uuid_cache.get(path)
+    uuid = lv_uuid_cache.get(path)
+    if uuid:
+        return uuid
     cmd = shell.ShellCmd("lvs --nolocking -t --noheadings %s -ouuid" % path)
     cmd(is_exception=False)
     uuid = cmd.stdout.strip()
