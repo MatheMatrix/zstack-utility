@@ -12,6 +12,12 @@ class Obj(object):
     pass
 
 
+class Statvfs(object):
+    def __init__(self, available_bytes):
+        self.f_frsize = 1
+        self.f_bavail = available_bytes
+
+
 def _provider_with_roots(*roots):
     provider = virtiofs_source.PreparedPathSourceProvider()
     provider.allowed_roots = roots
@@ -69,6 +75,250 @@ def test_prepare_path_source_records_ready_source(tmp_path):
         registry = json.load(fd)
     assert registry['source-a']['state'] == 'ready'
     assert registry['source-a']['capability']['persistent'] is True
+
+
+def test_prepare_path_source_accepts_command_source_root(tmp_path):
+    source_dir = tmp_path / 'large-disk' / 'model-centers' / 'mc' / 'root' / 'models' / 'qwen'
+    source_dir.mkdir(parents=True)
+    registry_file = tmp_path / 'registry.json'
+    manager = virtiofs_source.SourceManager(
+        registry=virtiofs_source.SourceRegistry(str(registry_file)),
+    )
+
+    host_source = manager.ensure_ready({
+        'type': 'preparedPath',
+        'sourcePath': str(source_dir),
+        'sourceRootPath': str(tmp_path / 'large-disk'),
+        'sourceUuid': 'source-a',
+    })
+
+    assert host_source.path == os.path.realpath(str(source_dir))
+
+
+def test_prepare_path_source_copies_remote_source_to_target_root(tmp_path):
+    remote_dir = tmp_path / 'virtiofs-sources' / 'model-centers' / 'mc' / 'root' / 'models' / 'qwen'
+    remote_dir.mkdir(parents=True)
+    (remote_dir / 'config.json').write_text('{}')
+    target_dir = tmp_path / 'primary-storage' / 'ai-model-cache' / 'models' / 'model-uuid' / 'v1'
+    registry_file = tmp_path / 'registry.json'
+    manager = virtiofs_source.SourceManager(
+        registry=virtiofs_source.SourceRegistry(str(registry_file)),
+    )
+
+    host_source = manager.ensure_ready({
+        'type': 'preparedPath',
+        'sourcePath': str(target_dir),
+        'sourceRootPath': str(tmp_path / 'primary-storage'),
+        'remoteSourcePath': str(remote_dir),
+        'remoteSourceRootPath': str(tmp_path / 'virtiofs-sources'),
+        'sourceUuid': 'model-cache',
+    })
+
+    assert host_source.path == os.path.realpath(str(target_dir))
+    assert (target_dir / 'config.json').read_text() == '{}'
+
+
+def test_prepare_model_center_cache_mounts_copies_and_unmounts(tmp_path, monkeypatch):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    source_root.mkdir(parents=True)
+    target = source_root / 'models' / 'model-uuid' / 'v1'
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+    events = []
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+
+    def mount_model_center(storage_url, mount_path):
+        events.append(('mount', storage_url, mount_path))
+        model_dir = os.path.join(mount_path, 'qwen', 'v1')
+        os.makedirs(model_dir)
+        with open(os.path.join(model_dir, 'config.json'), 'w') as stream:
+            stream.write('{}')
+
+    def unmount_model_center(mount_path):
+        events.append(('unmount', mount_path))
+
+    monkeypatch.setattr(virtiofs_source, '_mount_model_center', mount_model_center)
+    monkeypatch.setattr(virtiofs_source, '_unmount_model_center', unmount_model_center)
+
+    entry = virtiofs_source.prepare_model_center_cache(
+        str(source_root),
+        str(target),
+        'model-center-uuid',
+        'redis://model-center',
+        'qwen/v1',
+        1024)
+
+    assert entry['sourcePath'] == os.path.realpath(str(target))
+    assert (target / 'config.json').read_text() == '{}'
+    registry = json.loads((source_root / '.registry').read_text())
+    assert list(registry.values())[0]['path'] == os.path.realpath(str(target))
+    assert events[0][0] == 'mount'
+    assert events[-1][0] == 'unmount'
+
+
+def test_mount_model_center_uses_packaged_juicefs_layout(tmp_path, monkeypatch):
+    mount_path = tmp_path / 'provider-mount'
+    cache_path = tmp_path / 'juicefs-cache'
+    commands = []
+    mount_checks = iter([False, True])
+
+    monkeypatch.setattr(virtiofs_source, 'JUICEFS_CACHE_DIR', str(cache_path))
+    monkeypatch.setattr(virtiofs_source, '_find_juicefs_binary', lambda: '/usr/local/bin/juicefs')
+    monkeypatch.setattr(
+        virtiofs_source,
+        '_run_process',
+        lambda args, error_message: commands.append(args))
+    monkeypatch.setattr(os.path, 'ismount', lambda path: next(mount_checks))
+
+    virtiofs_source._mount_model_center('redis://model-center', str(mount_path))
+
+    assert commands == [[
+        '/usr/local/bin/juicefs', 'mount',
+        '--read-only', '-d', '--subdir', 'models',
+        '--cache-dir', str(cache_path),
+        'redis://model-center', str(mount_path),
+    ]]
+    assert cache_path.is_dir()
+
+
+def test_prepare_model_center_cache_rejects_escaping_model_path(tmp_path):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    source_root.mkdir(parents=True)
+
+    with pytest.raises(Exception) as exc_info:
+        virtiofs_source.prepare_model_center_cache(
+            str(source_root),
+            str(source_root / 'models' / 'model-uuid' / 'v1'),
+            'model-center-uuid',
+            'redis://model-center',
+            '../outside',
+            1024)
+
+    assert 'escapes its source root' in str(exc_info.value)
+
+
+def test_prepare_model_center_cache_unmounts_when_model_is_missing(tmp_path, monkeypatch):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    source_root.mkdir(parents=True)
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+    unmounted = []
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+    monkeypatch.setattr(
+        virtiofs_source,
+        '_mount_model_center',
+        lambda storage_url, mount_path: os.makedirs(mount_path))
+    monkeypatch.setattr(
+        virtiofs_source,
+        '_unmount_model_center',
+        lambda mount_path: unmounted.append(mount_path))
+
+    with pytest.raises(Exception) as exc_info:
+        virtiofs_source.prepare_model_center_cache(
+            str(source_root),
+            str(source_root / 'models' / 'model-uuid' / 'v1'),
+            'model-center-uuid',
+            'redis://model-center',
+            'missing/model',
+            1024)
+
+    assert 'does not exist' in str(exc_info.value)
+    assert unmounted == [str(provider_root / 'model-center-uuid')]
+
+
+def test_prepare_model_center_cache_reuses_existing_cache_without_mounting(tmp_path, monkeypatch):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    target = source_root / 'models' / 'model-uuid' / 'v1'
+    target.mkdir(parents=True)
+    (target / 'config.json').write_text('{}')
+    monkeypatch.setattr(
+        virtiofs_source,
+        'MODEL_CENTER_PROVIDER_ROOT',
+        str(tmp_path / 'provider-mounts'))
+    monkeypatch.setattr(
+        virtiofs_source,
+        'MODEL_CENTER_LOCK_ROOT',
+        str(tmp_path / 'provider-locks'))
+    monkeypatch.setattr(
+        virtiofs_source,
+        '_mount_model_center',
+        lambda storage_url, mount_path: pytest.fail('existing cache must not remount model center'))
+    monkeypatch.setattr(
+        virtiofs_source,
+        'check_available_capacity',
+        lambda path, required: pytest.fail('existing cache must not reserve capacity again'))
+
+    entry = virtiofs_source.prepare_model_center_cache(
+        str(source_root),
+        str(target),
+        'model-center-uuid',
+        'redis://model-center',
+        'qwen/v1',
+        1024)
+
+    assert entry['sourcePath'] == os.path.realpath(str(target))
+
+
+def test_prepare_path_source_rejects_empty_command_source_root(tmp_path):
+    source_dir = tmp_path / 'virtiofs-sources' / 'source-a'
+    source_dir.mkdir(parents=True)
+    manager = virtiofs_source.SourceManager(
+        registry=virtiofs_source.SourceRegistry(str(tmp_path / 'registry.json')),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        manager.ensure_ready({
+            'type': 'preparedPath',
+            'sourcePath': str(source_dir),
+            'sourceRootPath': ' ',
+        })
+
+    assert 'virtiofs sourceRootPath must not be empty' in str(exc_info.value)
+
+
+def test_prepare_path_source_does_not_fallback_when_command_source_root_is_explicit(tmp_path, monkeypatch):
+    default_root = tmp_path / 'virtiofs-sources'
+    explicit_root = tmp_path / 'large-disk'
+    source_dir = default_root / 'source-a'
+    source_dir.mkdir(parents=True)
+    explicit_root.mkdir()
+    monkeypatch.setattr(virtiofs_source, 'HOST_SOURCE_ROOT', str(default_root))
+    monkeypatch.setattr(virtiofs_source, 'VM_VIEW_ROOT', str(tmp_path / 'vm-views'))
+    manager = virtiofs_source.SourceManager(
+        registry=virtiofs_source.SourceRegistry(str(tmp_path / 'registry.json')),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        manager.ensure_ready({
+            'type': 'preparedPath',
+            'sourcePath': str(source_dir),
+            'sourceRootPath': str(explicit_root),
+        })
+
+    assert 'outside allowed virtiofs source directory' in str(exc_info.value)
+
+
+def test_prepare_path_source_rejects_insufficient_capacity(tmp_path, monkeypatch):
+    source_dir = tmp_path / 'large-disk' / 'source-a'
+    source_dir.mkdir(parents=True)
+    monkeypatch.setattr(virtiofs_source.os, 'statvfs', lambda path: Statvfs(512))
+    manager = virtiofs_source.SourceManager(
+        registry=virtiofs_source.SourceRegistry(str(tmp_path / 'registry.json')),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        manager.ensure_ready({
+            'type': 'preparedPath',
+            'sourcePath': str(source_dir),
+            'sourceRootPath': str(tmp_path / 'large-disk'),
+            'requiredCapacityBytes': 1024,
+        })
+
+    assert 'available capacity[512 bytes] is less than required capacity[1024 bytes]' in str(exc_info.value)
 
 
 def test_prepare_path_source_accepts_vm_view_root(tmp_path):

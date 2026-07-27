@@ -290,6 +290,43 @@ class TestVerifySourcePath:
 
 
 @pytest.mark.kvmagent
+class TestHostModelCachePrepareHandler:
+
+    def test_dispatches_juicefs_model_center_source(self, monkeypatch):
+        captured = {}
+
+        def prepare(source_root, source_path, model_center_uuid, storage_url,
+                    model_relative_path, required_capacity):
+            captured.update({
+                'sourceRoot': source_root,
+                'sourcePath': source_path,
+                'modelCenterUuid': model_center_uuid,
+                'storageUrl': storage_url,
+                'modelRelativePath': model_relative_path,
+                'requiredCapacityBytes': required_capacity,
+            })
+            return {'sourcePath': source_path, 'sizeBytes': 1024}
+
+        monkeypatch.setattr(virtiofs_plugin.virtiofs_source, 'prepare_model_center_cache', prepare)
+        plugin = virtiofs_plugin.VirtiofsPlugin()
+        response = json.loads(plugin.prepare_host_model_cache({
+            http.REQUEST_BODY: json.dumps({
+                'sourceType': 'juicefsModelCenter',
+                'sourceRoot': '/cache',
+                'sourcePath': '/cache/models/model/v1',
+                'modelCenterUuid': 'mc',
+                'storageUrl': 'redis://model-center',
+                'modelRelativePath': 'qwen/v1',
+                'requiredCapacityBytes': 1024,
+            })
+        }))
+
+        assert response['success'] is True
+        assert response['cacheEntry']['sourcePath'] == '/cache/models/model/v1'
+        assert captured['modelRelativePath'] == 'qwen/v1'
+        assert captured['storageUrl'] == 'redis://model-center'
+
+
 class TestVirtiofsAttachHandler:
     """Test virtiofs attach handler."""
 
