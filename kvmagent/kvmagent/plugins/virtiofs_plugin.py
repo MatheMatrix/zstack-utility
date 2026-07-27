@@ -206,6 +206,8 @@ def _get_cmd_attr(obj, name, default=None):
 def _classify_host_model_cache_failure(error):
     error = str(error or '')
     lowered = error.lower()
+    if 'mount model center' in lowered or 'model center mount' in lowered:
+        return 'ModelSourceMount', 'JuicefsMountFailed'
     if 'capacity' in lowered or 'available' in lowered:
         return 'CapacityCheck', 'InsufficientHostCacheStorage'
     if 'permission' in lowered or 'denied' in lowered:
@@ -712,7 +714,17 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
             source_root = _get_cmd_attr(cmd, 'sourceRoot', _get_cmd_attr(cmd, 'sourceRootPath', None))
             source_path = _get_cmd_attr(cmd, 'sourcePath', None)
             required_capacity = _get_cmd_attr(cmd, 'requiredCapacityBytes', None)
-            entry = virtiofs_source.prepare_host_model_cache(source_root, source_path, required_capacity)
+            source_type = _get_cmd_attr(cmd, 'sourceType', 'preparedPath')
+            if source_type == 'juicefsModelCenter':
+                entry = virtiofs_source.prepare_model_center_cache(
+                    source_root,
+                    source_path,
+                    _get_cmd_attr(cmd, 'modelCenterUuid', None),
+                    _get_cmd_attr(cmd, 'storageUrl', None),
+                    _get_cmd_attr(cmd, 'modelRelativePath', None),
+                    required_capacity)
+            else:
+                entry = virtiofs_source.prepare_host_model_cache(source_root, source_path, required_capacity)
             rsp.cacheEntry = entry
             rsp.success = True
             logger.info("Prepared host model cache path[%s], size=%s" % (

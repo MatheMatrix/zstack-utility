@@ -118,6 +118,151 @@ def test_prepare_path_source_copies_remote_source_to_target_root(tmp_path):
     assert (target_dir / 'config.json').read_text() == '{}'
 
 
+def test_prepare_model_center_cache_mounts_copies_and_unmounts(tmp_path, monkeypatch):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    source_root.mkdir(parents=True)
+    target = source_root / 'models' / 'model-uuid' / 'v1'
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+    events = []
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+
+    def mount_model_center(storage_url, mount_path):
+        events.append(('mount', storage_url, mount_path))
+        model_dir = os.path.join(mount_path, 'qwen', 'v1')
+        os.makedirs(model_dir)
+        with open(os.path.join(model_dir, 'config.json'), 'w') as stream:
+            stream.write('{}')
+
+    def unmount_model_center(mount_path):
+        events.append(('unmount', mount_path))
+
+    monkeypatch.setattr(virtiofs_source, '_mount_model_center', mount_model_center)
+    monkeypatch.setattr(virtiofs_source, '_unmount_model_center', unmount_model_center)
+
+    entry = virtiofs_source.prepare_model_center_cache(
+        str(source_root),
+        str(target),
+        'model-center-uuid',
+        'redis://model-center',
+        'qwen/v1',
+        1024)
+
+    assert entry['sourcePath'] == os.path.realpath(str(target))
+    assert (target / 'config.json').read_text() == '{}'
+    registry = json.loads((source_root / '.registry').read_text())
+    assert list(registry.values())[0]['path'] == os.path.realpath(str(target))
+    assert events[0][0] == 'mount'
+    assert events[-1][0] == 'unmount'
+
+
+def test_mount_model_center_uses_packaged_juicefs_layout(tmp_path, monkeypatch):
+    mount_path = tmp_path / 'provider-mount'
+    cache_path = tmp_path / 'juicefs-cache'
+    commands = []
+    mount_checks = iter([False, True])
+
+    monkeypatch.setattr(virtiofs_source, 'JUICEFS_CACHE_DIR', str(cache_path))
+    monkeypatch.setattr(virtiofs_source, '_find_juicefs_binary', lambda: '/usr/local/bin/juicefs')
+    monkeypatch.setattr(
+        virtiofs_source,
+        '_run_process',
+        lambda args, error_message: commands.append(args))
+    monkeypatch.setattr(os.path, 'ismount', lambda path: next(mount_checks))
+
+    virtiofs_source._mount_model_center('redis://model-center', str(mount_path))
+
+    assert commands == [[
+        '/usr/local/bin/juicefs', 'mount',
+        '--read-only', '-d', '--subdir', 'models',
+        '--cache-dir', str(cache_path),
+        'redis://model-center', str(mount_path),
+    ]]
+    assert cache_path.is_dir()
+
+
+def test_prepare_model_center_cache_rejects_escaping_model_path(tmp_path):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    source_root.mkdir(parents=True)
+
+    with pytest.raises(Exception) as exc_info:
+        virtiofs_source.prepare_model_center_cache(
+            str(source_root),
+            str(source_root / 'models' / 'model-uuid' / 'v1'),
+            'model-center-uuid',
+            'redis://model-center',
+            '../outside',
+            1024)
+
+    assert 'escapes its source root' in str(exc_info.value)
+
+
+def test_prepare_model_center_cache_unmounts_when_model_is_missing(tmp_path, monkeypatch):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    source_root.mkdir(parents=True)
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+    unmounted = []
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+    monkeypatch.setattr(
+        virtiofs_source,
+        '_mount_model_center',
+        lambda storage_url, mount_path: os.makedirs(mount_path))
+    monkeypatch.setattr(
+        virtiofs_source,
+        '_unmount_model_center',
+        lambda mount_path: unmounted.append(mount_path))
+
+    with pytest.raises(Exception) as exc_info:
+        virtiofs_source.prepare_model_center_cache(
+            str(source_root),
+            str(source_root / 'models' / 'model-uuid' / 'v1'),
+            'model-center-uuid',
+            'redis://model-center',
+            'missing/model',
+            1024)
+
+    assert 'does not exist' in str(exc_info.value)
+    assert unmounted == [str(provider_root / 'model-center-uuid')]
+
+
+def test_prepare_model_center_cache_reuses_existing_cache_without_mounting(tmp_path, monkeypatch):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    target = source_root / 'models' / 'model-uuid' / 'v1'
+    target.mkdir(parents=True)
+    (target / 'config.json').write_text('{}')
+    monkeypatch.setattr(
+        virtiofs_source,
+        'MODEL_CENTER_PROVIDER_ROOT',
+        str(tmp_path / 'provider-mounts'))
+    monkeypatch.setattr(
+        virtiofs_source,
+        'MODEL_CENTER_LOCK_ROOT',
+        str(tmp_path / 'provider-locks'))
+    monkeypatch.setattr(
+        virtiofs_source,
+        '_mount_model_center',
+        lambda storage_url, mount_path: pytest.fail('existing cache must not remount model center'))
+    monkeypatch.setattr(
+        virtiofs_source,
+        'check_available_capacity',
+        lambda path, required: pytest.fail('existing cache must not reserve capacity again'))
+
+    entry = virtiofs_source.prepare_model_center_cache(
+        str(source_root),
+        str(target),
+        'model-center-uuid',
+        'redis://model-center',
+        'qwen/v1',
+        1024)
+
+    assert entry['sourcePath'] == os.path.realpath(str(target))
+
+
 def test_prepare_path_source_rejects_empty_command_source_root(tmp_path):
     source_dir = tmp_path / 'virtiofs-sources' / 'source-a'
     source_dir.mkdir(parents=True)
