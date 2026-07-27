@@ -1,10 +1,13 @@
 # Copyright (c) 2025, ZStack, Inc.
 
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import re
 import shutil
+import subprocess
 import time
 
 
@@ -21,6 +24,22 @@ except NameError:
 HOST_SOURCE_ROOT = '/var/lib/zstack/aios/virtiofs-sources'
 VM_VIEW_ROOT = '/var/lib/zstack/aios/vm-views'
 SOURCE_REGISTRY_FILE = os.path.join(HOST_SOURCE_ROOT, '.registry')
+MODEL_CENTER_PROVIDER_ROOT = '/var/lib/zstack/aios/provider-mounts/model-centers'
+MODEL_CENTER_LOCK_ROOT = '/var/lib/zstack/aios/provider-locks/model-centers'
+JUICEFS_CACHE_DIR = '/var/cache/virtiofs/juicefs'
+JUICEFS_CANDIDATE_PATHS = (
+    '/usr/local/bin/juicefs',
+    '/usr/bin/juicefs',
+    '/opt/zstack/bin/juicefs',
+)
+
+
+def _ensure_directory(path):
+    try:
+        os.makedirs(path, 0o755)
+    except OSError as exc:
+        if exc.errno != errno.EEXIST or not os.path.isdir(path):
+            raise
 
 
 def get_attr(obj, name, default=None):
@@ -208,6 +227,123 @@ def prepare_host_model_cache(source_root, source_path, required_capacity_bytes=N
         raise Exception('sourceRoot[%s] does not exist' % root)
     check_available_capacity(root, required_capacity_bytes)
     return cache_entry(root, source_path)
+
+
+def _validate_source_id(value, field_name):
+    value = str(value or '').strip()
+    if not value or not re.match(r'^[A-Za-z0-9][A-Za-z0-9_.-]*$', value):
+        raise Exception('invalid %s[%s]' % (field_name, value))
+    return value
+
+
+def _validate_relative_path(value, field_name):
+    value = str(value or '').strip()
+    if not value or os.path.isabs(value):
+        raise Exception('%s[%s] must be a non-empty relative path' % (field_name, value))
+    normalized = os.path.normpath(value)
+    if normalized == '..' or normalized.startswith('..' + os.sep):
+        raise Exception('%s[%s] escapes its source root' % (field_name, value))
+    return normalized
+
+
+def _find_juicefs_binary():
+    for path in JUICEFS_CANDIDATE_PATHS:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    raise Exception('juicefs binary not found')
+
+
+def _run_process(args, error_message):
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+    if process.returncode != 0:
+        raise Exception('%s, exitCode[%s]' % (error_message, process.returncode))
+    return stdout, stderr
+
+
+def _mount_model_center(storage_url, mount_path):
+    if os.path.ismount(mount_path):
+        _unmount_model_center(mount_path)
+    if not os.path.exists(mount_path):
+        _ensure_directory(mount_path)
+    if not os.path.exists(JUICEFS_CACHE_DIR):
+        _ensure_directory(JUICEFS_CACHE_DIR)
+    juicefs = _find_juicefs_binary()
+    _run_process([
+        juicefs, 'mount',
+        '--read-only', '-d', '--subdir', 'models',
+        '--cache-dir', JUICEFS_CACHE_DIR,
+        storage_url, mount_path,
+    ], 'failed to mount model center')
+    for _ in range(20):
+        if os.path.ismount(mount_path):
+            return
+        time.sleep(0.5)
+    raise Exception('model center mount did not become ready')
+
+
+def _unmount_model_center(mount_path):
+    if not os.path.ismount(mount_path):
+        return
+    juicefs = _find_juicefs_binary()
+    _run_process([juicefs, 'umount', '--force', mount_path], 'failed to unmount model center')
+    if os.path.ismount(mount_path):
+        raise Exception('model center mount is still active after unmount')
+
+
+def prepare_model_center_cache(source_root, source_path, model_center_uuid, storage_url,
+                               model_relative_path, required_capacity_bytes=None):
+    root = _normalize_root(source_root or HOST_SOURCE_ROOT)
+    target = ensure_under(source_path, root, 'sourcePath', allow_root=False)
+    model_center_uuid = _validate_source_id(model_center_uuid, 'modelCenterUuid')
+    if not storage_url or not str(storage_url).strip():
+        raise Exception('storageUrl is required')
+    relative_path = _validate_relative_path(model_relative_path, 'modelRelativePath')
+
+    if not os.path.exists(root):
+        _ensure_directory(root)
+
+    if not os.path.exists(MODEL_CENTER_PROVIDER_ROOT):
+        _ensure_directory(MODEL_CENTER_PROVIDER_ROOT)
+    if not os.path.exists(MODEL_CENTER_LOCK_ROOT):
+        _ensure_directory(MODEL_CENTER_LOCK_ROOT)
+
+    mount_path = os.path.join(MODEL_CENTER_PROVIDER_ROOT, model_center_uuid)
+    lock_path = os.path.join(MODEL_CENTER_LOCK_ROOT, model_center_uuid + '.lock')
+    lock_fd = open(lock_path, 'a+')
+    try:
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+        if os.path.ismount(mount_path):
+            _unmount_model_center(mount_path)
+        if os.path.exists(target):
+            entry = cache_entry(root, target)
+            _register_model_center_cache(root, target)
+            return entry
+
+        check_available_capacity(root, required_capacity_bytes)
+        try:
+            _mount_model_center(str(storage_url).strip(), mount_path)
+            remote_source = ensure_under(
+                os.path.join(mount_path, relative_path),
+                mount_path,
+                'modelRelativePath',
+                allow_root=False)
+            prepare_copy_source(
+                target,
+                (root,),
+                remote_source,
+                (mount_path,),
+                required_capacity_bytes)
+        finally:
+            _unmount_model_center(mount_path)
+        entry = cache_entry(root, target)
+        _register_model_center_cache(root, target)
+        return entry
+    finally:
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_fd.close()
 
 
 def cleanup_host_model_cache(source_root, source_path):
@@ -447,6 +583,30 @@ class SourceRegistry(object):
             return True
         except (IOError, OSError):
             return False
+
+
+def _register_model_center_cache(source_root, source_path):
+    source = HostSource(
+        _path_id(source_path),
+        'juicefsModelCenter',
+        source_path,
+        SourceCapability(
+            migratable=False,
+            snapshotable=False,
+            persistent=True,
+            shared_across_hosts=False,
+        ))
+    registry = SourceRegistry(os.path.join(source_root, '.registry'))
+    lock_fd = open(registry.path + '.lock', 'a+')
+    try:
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+        if not registry.save_host_source(source):
+            raise Exception('failed to register prepared model center cache[%s]' % source_path)
+    finally:
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_fd.close()
 
 
 class SourceManager(object):
