@@ -1,3 +1,5 @@
+import sys
+import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -79,3 +81,27 @@ def test_collector_exports_cached_pcie_values_under_existing_metric_contract():
     ]
     vendor.collect_metrics.assert_called_once_with()
     vendor.collect_vgpu_metrics.assert_called_once_with()
+
+
+def test_dgpu_collector_omits_samples_when_vendor_metrics_are_unavailable():
+    service = MagicMock()
+    workers = [SimpleNamespace(device_uuid="device-uuid")]
+    service.list_workers.return_value = workers
+    nvidia = MagicMock()
+    nvidia.is_available.return_value = True
+    nvidia.collect_dgpu_worker_metrics.return_value = []
+    nvidia_module = types.ModuleType("zstacklib.gpu.vendors.nvidia")
+    nvidia_module.NVIDIA = nvidia
+
+    with patch.object(prometheus.kvmagent, "get_tf_service",
+                      return_value=service), \
+            patch.dict(sys.modules, {
+                "zstacklib.gpu.vendors.nvidia": nvidia_module,
+            }), \
+            patch.object(prometheus, "GaugeMetricFamily",
+                         side_effect=lambda *args, **kwargs: RecordingMetric()):
+        metrics = list(prometheus.collect_dgpu_worker_metrics())
+
+    assert len(metrics) == 2
+    assert all(metric.samples == [] for metric in metrics)
+    nvidia.collect_dgpu_worker_metrics.assert_called_once_with(workers)

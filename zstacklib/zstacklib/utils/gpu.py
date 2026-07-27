@@ -1431,7 +1431,7 @@ def get_info(pci_address=None, pci_device=None, vendor_name=None):
     Automatically handles:
     - Auto-identify vendor (if not provided)
     - Prioritize plugin (no environment variable check, try directly)
-    - Auto fallback to legacy when plugin fails
+    - Use legacy fallback when it is safe to retry
     - Handle all vendor-specific fields (Huawei npuId, product name, etc.)
 
     Args:
@@ -1477,6 +1477,7 @@ def get_info(pci_address=None, pci_device=None, vendor_name=None):
     pci_address = normalized_pci
 
     # 2. Try using plugin (no environment variable check, try directly)
+    nvidia_plugin_attempted = False
     try:
         from zstacklib.gpu import (
             get_gpu_vendor,
@@ -1491,6 +1492,7 @@ def get_info(pci_address=None, pci_device=None, vendor_name=None):
         if plugin_vendor_name:
             plugin = get_gpu_vendor(plugin_vendor_name)
             if plugin and plugin.is_available():
+                nvidia_plugin_attempted = vendor_name == VendorEnum.NVIDIA
                 # Use plugin to collect information
                 gpu_infos = plugin.get_basic_info()
                 for gpu_info in gpu_infos:
@@ -1562,11 +1564,12 @@ def get_info(pci_address=None, pci_device=None, vendor_name=None):
                                     "Failed to get Alibaba product name: %s" % str(e))
 
                         return result
-                # Plugin ran but no matching GPU found (e.g. hy-smi "No device available" in VM)
-                # Fall through to legacy so vendor can return minimal addon and device still recognized as GPU
     except Exception as e:
-        logger.debug("Plugin failed for %s, fallback to legacy: %s" %
+        logger.debug("Plugin failed for %s: %s" %
                      (pci_address, str(e)))
+
+    if nvidia_plugin_attempted:
+        return None
 
     # 3. Fallback to legacy (error tolerance mechanism)
     return _get_info_legacy(pci_address, vendor_name)
@@ -1612,7 +1615,10 @@ def _collect_nvidia_legacy(pci_address):
     if r != 0:
         return None
 
-    r, o, e = bash_roe(get_nvidia_gpu_basic_info_cmd())
+    from zstacklib.gpu.vendors.nvidia import NVIDIA
+    r, o, e = NVIDIA._run_critical_command(
+        "timeout %s %s" %
+        (NVIDIA.QUERY_TIMEOUT_SECONDS, get_nvidia_gpu_basic_info_cmd()))
     if r != 0:
         return None
 

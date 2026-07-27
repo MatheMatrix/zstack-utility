@@ -142,7 +142,7 @@ class NVIDIA(GPUBase):
                 return list(cls._basic_info_cache)
 
             error = ''
-            cached_inventory = cls._basic_info_inventory(
+            cached_inventory = cls._inventory(
                 cls._basic_info_cache)
             for _ in range(2):
                 r, output, error = cls._run_critical_command(
@@ -154,7 +154,7 @@ class NVIDIA(GPUBase):
                 if not parsed:
                     continue
 
-                inventory = cls._basic_info_inventory(parsed)
+                inventory = cls._inventory(parsed)
                 missing_inventory = cached_inventory - inventory
                 inventory_is_current = (
                     not has_usable_cache or
@@ -173,7 +173,7 @@ class NVIDIA(GPUBase):
             return []
 
     @staticmethod
-    def _basic_info_inventory(gpu_infos):
+    def _inventory(gpu_infos):
         return frozenset(info.pci_address for info in gpu_infos
                          if info.pci_address)
 
@@ -296,6 +296,7 @@ class NVIDIA(GPUBase):
         now = time.time()
         with cls._metrics_lock:
             cache_age = now - cls._metrics_cache_time
+            cached_inventory = cls._inventory(cls._metrics_cache)
             if not cls._metrics_cache_time or cache_age >= cls.METRICS_CACHE_SECONDS:
                 result = cls._run_monitoring_command(
                     "timeout %s %s" %
@@ -311,8 +312,13 @@ class NVIDIA(GPUBase):
                         parsed = cls.parse_metrics(output)
                         has_usable_cache = (cls._metrics_cache and
                                             cache_age < cls.METRICS_LAST_GOOD_SECONDS)
-                        if parsed and (not has_usable_cache or
-                                       len(parsed) >= len(cls._metrics_cache)):
+                        missing_inventory = cached_inventory - cls._inventory(parsed)
+                        inventory_is_current = (
+                            not has_usable_cache or
+                            not missing_inventory or
+                            not any(cls._is_nvidia_driver_bound(pci_address)
+                                    for pci_address in missing_inventory))
+                        if parsed and inventory_is_current:
                             cls._metrics_cache = parsed
                             cls._metrics_cache_time = now
                         elif not parsed and cache_age >= cls.METRICS_LAST_GOOD_SECONDS:
@@ -339,10 +345,10 @@ class NVIDIA(GPUBase):
         if now - cls._pcie_last_attempt.get(cache_key, 0) < cls.PCIE_CACHE_SECONDS:
             return
 
-        cls._pcie_last_attempt[cache_key] = now
         result = cls._run_monitoring_command("timeout 10 nvidia-smi pci -gCnt")
         if result is None:
             return
+        cls._pcie_last_attempt[cache_key] = now
         r, output, error = result
         if r != 0:
             cls._pcie_blocked_until[cache_key] = now + cls.PCIE_CIRCUIT_BREAKER_SECONDS
@@ -541,6 +547,8 @@ class NVIDIA(GPUBase):
 
         # Get per-PID GPU metrics from nvidia-smi pmon
         pmon = cls._parse_pmon_output()
+        if pmon is None:
+            return []
 
         # Iterate all workers; default to 0 if not found in pmon
         result = []
@@ -566,10 +574,10 @@ class NVIDIA(GPUBase):
         """
         result = cls._run_monitoring_command("timeout 10 nvidia-smi pmon -c 1 -s mu")
         if result is None:
-            return {}
+            return None
         r, o, _ = result
         if r != 0:
-            return {}
+            return None
 
         # nvidia-smi pmon -c 1 -s mu output columns:
         # gpu  pid  type  fb  ccpm  sm  mem  enc  dec  jpg  ofa  command

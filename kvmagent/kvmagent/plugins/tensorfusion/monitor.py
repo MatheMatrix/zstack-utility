@@ -229,6 +229,7 @@ class WorkerRestartMonitor(object):
             if reaped is False:
                 logger.warning('WorkerRestartMonitor: worker %s (%s) is still running, skipping restart' %
                             (device_uuid, _worker_label(w)))
+                self.clear(device_uuid)
                 self._store.set_restarting(device_uuid, False, expected_worker=w)
                 return
 
@@ -296,6 +297,7 @@ class WorkerRestartMonitor(object):
                 if reaped is False:
                     logger.warning('WorkerRestartMonitor: worker %s is still running during give_up' %
                                 device_uuid)
+                    self.clear(device_uuid)
                     self._store.set_restarting(device_uuid, False, expected_worker=w)
                     return False
 

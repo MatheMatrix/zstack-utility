@@ -142,9 +142,8 @@ class TensorFusionService(object):
     def _scan_and_cleanup_orphans(self):
         """Reconcile running workers against libvirt VM state.
 
-        Scans ALL running tensor-fusion-workers (regardless of whether
-        they are tracked in StateStore) and kills any whose VM no longer exists
-        in libvirt.  Also cleans up stale StateStore entries for dead workers.
+        Kills workers only when their VM is confirmed not running, and cleans
+        stale StateStore entries for runtimes that are confirmed dead.
         """
         try:
             running = self._executor.scan_running()
@@ -152,7 +151,6 @@ class TensorFusionService(object):
             logger.warning('TensorFusionService: orphan scan: failed to scan running workers: %s' % e)
             return
 
-        running_device_uuids = {w.device_uuid for w in running}
         killed = 0
 
         for w in running:
@@ -163,7 +161,12 @@ class TensorFusionService(object):
             tracked = None
             try:
                 with gpu_operation_gate.critical():
-                    tracked = self._store.get(w.device_uuid)
+                    current = self._store.get(w.device_uuid)
+                    if current and self._is_same_worker_runtime(w, current):
+                        tracked = self._store.set_restarting(
+                            w.device_uuid, True, expected_worker=current)
+                        if tracked is not None:
+                            self._monitor.clear(w.device_uuid)
                     logger.warning('TensorFusionService: orphan scan: killing worker %s '
                                 '(%s, vm=%s not running, tracked=%s)' %
                                 (w.device_uuid, WorkerExecutor.worker_label(w), w.vm_uuid,
@@ -173,17 +176,20 @@ class TensorFusionService(object):
                 logger.warning('TensorFusionService: orphan scan: failed to stop worker %s: %s' %
                             (w.device_uuid, e))
                 if self._executor.is_alive(w):
+                    if tracked is not None:
+                        self._store.set_restarting(w.device_uuid, False, expected_worker=tracked)
                     continue
-
-            # Clean up StateStore entry if present
-            if (tracked and self._is_same_worker_runtime(w, tracked) and
-                    self._remove_worker_state(tracked) is None):
-                continue
+                if tracked is not None and self._remove_worker_state(tracked) is None:
+                    self._store.set_restarting(w.device_uuid, False, expected_worker=tracked)
+                    continue
+            else:
+                if tracked is not None:
+                    self._finalize_worker_state(tracked)
             killed += 1
 
         # Clean up stale StateStore entries whose workers are already dead
         for w in self._store.list_all():
-            if w.device_uuid not in running_device_uuids:
+            if not any(self._is_same_worker_runtime(w, current) for current in running):
                 if not self._executor.is_alive(w):
                     logger.info('TensorFusionService: orphan scan: removing stale entry %s '
                                 '(%s already dead)' % (w.device_uuid, WorkerExecutor.worker_label(w)))
@@ -210,6 +216,10 @@ class TensorFusionService(object):
                             worker.device_uuid)
                 return None
 
+            return self._finalize_worker_state(worker)
+
+    def _finalize_worker_state(self, worker):
+        with gpu_operation_gate.critical():
             removed = self._store.remove(worker.device_uuid, expected_worker=worker)
             if removed is None:
                 logger.info('TensorFusionService: worker %s changed before state cleanup, skipping stale cleanup' %
@@ -279,6 +289,20 @@ class TensorFusionService(object):
         with gpu_operation_gate.critical():
             self._executor.stop(worker)
 
+    def _start_worker_runtime(self, request):
+        with gpu_operation_gate.critical():
+            try:
+                return self._executor.start(request)
+            except Exception:
+                try:
+                    known_workers = self._store.list_by_vm(request.vm_uuid)
+                    self._executor.cleanup_residual_workers_by_vm(
+                        request.vm_uuid, known_workers=known_workers)
+                except Exception as cleanup_error:
+                    logger.warning('TensorFusionService: failed to reconcile residual worker for VM %s '
+                                'after start failure: %s' % (request.vm_uuid, cleanup_error))
+                raise
+
     def _reap_dead_worker_runtime(self, worker):
         with gpu_operation_gate.critical():
             return self._executor.reap_dead(worker)
@@ -316,7 +340,7 @@ class TensorFusionService(object):
                 raise Exception('insufficient GPU memory on %s: requested %dMB, available %dMB' %
                                 (pci, request.memory_mb, avail))
 
-            worker = self._executor.start(request)
+            worker = self._start_worker_runtime(request)
             try:
                 self._store.add(worker)
                 self._tracker.allocate(pci, worker.device_uuid, worker.allocated_memory_mb)
@@ -377,7 +401,7 @@ class TensorFusionService(object):
             if existing is not current_worker:
                 return None
 
-            new_worker = self._executor.start(req)
+            new_worker = self._start_worker_runtime(req)
             new_worker.restarting = False
             replaced = self._store.replace(new_worker, expected_worker=current_worker)
             if replaced is None:
@@ -440,15 +464,16 @@ class TensorFusionService(object):
             except Exception:
                 if self._executor.is_alive(worker):
                     self._store.set_restarting(device_uuid, False, expected_worker=worker)
+                    raise
                 else:
                     removed = self._remove_worker_state(worker)
                     if removed is None:
                         self._store.set_restarting(device_uuid, False, expected_worker=worker)
                         logger.warning('TensorFusionService: worker %s changed during destroy after stop failure' %
                                     device_uuid)
-                raise
-
-            removed = self._remove_worker_state(worker)
+                        raise
+            else:
+                removed = self._finalize_worker_state(worker)
             if removed is None:
                 self._store.set_restarting(device_uuid, False, expected_worker=worker)
                 logger.warning('TensorFusionService: worker %s changed during destroy, refusing success' %

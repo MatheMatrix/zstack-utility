@@ -65,7 +65,7 @@ def _remove_shared_memory_file(path):
         return True
     except OSError as e:
         if e.errno == errno.ENOENT:
-            return False
+            return True
         raise
 
 
@@ -94,6 +94,9 @@ class ContainerExecutor(WorkerExecutor):
     DOCKER_CMD_TIMEOUT = 30
     DOCKER_RUN_TIMEOUT = 90
     DOCKER_REAP_TIMEOUT = 5
+    ROLLBACK_RETRY_WINDOW_SEC = 5
+    ROLLBACK_RETRY_INTERVAL_SEC = 0.5
+    ROLLBACK_REMOVE_TIMEOUT_SEC = 1
 
     # Docker labels used for filtering and identification.
     LABEL_MARKER = 'tf-worker'
@@ -141,8 +144,10 @@ class ContainerExecutor(WorkerExecutor):
         enable_log = request.enable_log if request.enable_log is not None else self.DEFAULT_ENABLE_LOG
         log_level = request.log_level or self.DEFAULT_LOG_LEVEL
 
-        if not self._remove_container_and_shared_memory(container_name, shm_path):
+        if not self._remove_container(container_name):
             raise Exception('failed to remove existing worker container %s' % container_name)
+        if not self._remove_shared_memory(shm_path):
+            raise Exception('failed to remove existing worker shared memory %s' % shm_path)
 
         cmd = self._build_run_cmd(
             device_uuid=device_uuid,
@@ -260,11 +265,9 @@ class ContainerExecutor(WorkerExecutor):
         except Exception as e:
             logger.warning('docker stop failed for %s: %s, forcing removal' % (target, e))
 
-        shm_path = getattr(worker, 'shared_memory_path', None)
-        if not shm_path:
-            shm_path = self.SHM_PREFIX + 'tf_%s' % worker.device_uuid
-        if not self._remove_container_and_shared_memory(target, shm_path):
+        if not self._remove_container(target):
             raise Exception('failed to remove worker container %s' % target)
+        self._remove_shared_memory(self._worker_shared_memory_path(worker))
 
     @classmethod
     def is_alive(cls, worker):
@@ -337,11 +340,15 @@ class ContainerExecutor(WorkerExecutor):
         container_id = getattr(worker, 'container_id', None)
         container_name = getattr(worker, 'container_name', None)
         target = container_id or container_name
-        shm_path = getattr(worker, 'shared_memory_path', None)
         if not target:
             return False
-        if not self._remove_container_and_shared_memory(target, shm_path):
+        if self.is_alive(worker):
+            logger.warning('skip reaping worker %s container %s: container is still running' %
+                           (worker.device_uuid, target))
+            return False
+        if not self._remove_container(target):
             raise Exception('failed to reap worker container %s' % target)
+        self._remove_shared_memory(self._worker_shared_memory_path(worker))
         logger.debug('reaped dead worker container %s (id=%s, name=%s)' %
                      (target, container_id, container_name))
         return True
@@ -349,11 +356,15 @@ class ContainerExecutor(WorkerExecutor):
     def cleanup_residual_workers_by_vm(self, vm_uuid, known_workers=None):
         # type: (str, list) -> int
         """Remove residual containers for a VM that are not in known_workers."""
-        known_names = set()
+        known_ids = set()
+        known_names_without_id = set()
         for w in (known_workers or []):
+            container_id = getattr(w, 'container_id', None)
             name = getattr(w, 'container_name', None)
-            if name:
-                known_names.add(name)
+            if container_id:
+                known_ids.add(container_id)
+            elif name:
+                known_names_without_id.add(name)
 
         try:
             output = self._docker([
@@ -376,7 +387,8 @@ class ContainerExecutor(WorkerExecutor):
                 if not info:
                     continue
                 name = info.get('Name', '').lstrip('/')
-                if name in known_names:
+                actual_id = info.get('Id') or cid
+                if actual_id in known_ids or name in known_names_without_id:
                     continue
 
                 # Extract device_uuid from env for shm cleanup.
@@ -385,7 +397,8 @@ class ContainerExecutor(WorkerExecutor):
                 device_uuid = env.get('TF_DEVICE_UUID')
 
                 shm_path = self.SHM_PREFIX + 'tf_%s' % device_uuid if device_uuid else None
-                if self._remove_container_and_shared_memory(cid, shm_path):
+                if self._remove_container(cid):
+                    self._remove_shared_memory(shm_path)
                     cleaned += 1
             except Exception as e:
                 logger.warning('cleanup_residual: failed to clean container %s: %s' % (cid, e))
@@ -470,12 +483,31 @@ class ContainerExecutor(WorkerExecutor):
             return None
 
     def _rollback_failed_start(self, container_name, shm_path):
-        return self._remove_container_and_shared_memory(container_name, shm_path)
+        deadline = time.time() + self.ROLLBACK_RETRY_WINDOW_SEC
+        removed = False
+        while True:
+            removed = self._remove_container(
+                container_name, timeout=self.ROLLBACK_REMOVE_TIMEOUT_SEC)
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            time.sleep(min(self.ROLLBACK_RETRY_INTERVAL_SEC, remaining))
 
-    def _remove_container_and_shared_memory(self, container_target, shm_path):
+        if not removed:
+            logger.warning('worker container %s cleanup remains pending after failed start' %
+                           container_name)
+            return False
+        self._remove_shared_memory(shm_path)
+        return True
+
+    def _remove_container(self, container_target, timeout=None):
         removed = False
         try:
-            self._docker(['rm', '-f', container_target])
+            args = ['rm', '-f', container_target]
+            if timeout is None:
+                self._docker(args)
+            else:
+                self._docker(args, timeout=timeout)
             removed = True
         except DockerCommandError as e:
             stderr_lower = e.stderr.lower()
@@ -486,19 +518,25 @@ class ContainerExecutor(WorkerExecutor):
                            (container_target, e))
 
         if not removed:
-            logger.warning('retaining shared memory %s because container %s removal is unconfirmed' %
-                           (shm_path, container_target))
+            logger.warning('worker container %s removal is unconfirmed' % container_target)
             return False
+        return True
 
-        shared_memory_removed = True
-        if shm_path:
-            try:
-                _remove_shared_memory_file(shm_path)
-            except OSError as e:
-                shared_memory_removed = False
-                logger.warning('failed to remove shared memory file %s: %s' %
-                               (shm_path, e))
-        return removed and shared_memory_removed
+    @classmethod
+    def _worker_shared_memory_path(cls, worker):
+        return (getattr(worker, 'shared_memory_path', None) or
+                cls.SHM_PREFIX + 'tf_%s' % worker.device_uuid)
+
+    @staticmethod
+    def _remove_shared_memory(shm_path):
+        if not shm_path:
+            return True
+        try:
+            return _remove_shared_memory_file(shm_path)
+        except OSError as e:
+            logger.warning('failed to remove shared memory file %s: %s' %
+                           (shm_path, e))
+            return False
 
     def _image_exists(self):
         """Check if the worker Docker image is available locally."""

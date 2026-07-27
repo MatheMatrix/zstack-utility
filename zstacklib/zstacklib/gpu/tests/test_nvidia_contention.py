@@ -55,6 +55,18 @@ def _lspci_outputs(count=8):
     return id_output, name_output
 
 
+def _worker(pid=123):
+    return type('Worker', (), {
+        'device_uuid': 'device-uuid',
+        'vm_uuid': 'vm-uuid',
+        'pci_address': '0000:1a:00.0',
+        'pid': pid,
+        'container_id': None,
+        'restarting': False,
+        'allocated_memory_mb': 1024,
+    })()
+
+
 class TestNVIDIAContention(unittest.TestCase):
 
     def setUp(self):
@@ -242,6 +254,30 @@ class TestNVIDIAContention(unittest.TestCase):
         self.assertEqual(len(second), 1)
         self.assertEqual(second[0].pci_address, "0000:1a:00.0")
 
+    def test_metrics_cache_accepts_inventory_shrink_after_driver_unbind(self):
+        now = [1000]
+        outputs = [(0, _metric_output(), ""),
+                   (0, _metric_output(7), "")]
+
+        with patch.object(NVIDIA, "is_available", return_value=True), \
+                patch.object(NVIDIA, "_is_nvidia_driver_bound",
+                             return_value=False), \
+                patch.object(NVIDIA, "_collect_pcie_metrics"), \
+                patch("zstacklib.gpu.vendors.nvidia.time.time",
+                      side_effect=lambda: now[0]), \
+                patch("zstacklib.gpu.vendors.nvidia.bash_roe",
+                      side_effect=outputs) as bash_roe:
+            first = NVIDIA.collect_metrics()
+            now[0] = 1031
+            second = NVIDIA.collect_metrics()
+
+        self.assertEqual(len(first), 8)
+        self.assertEqual(len(second), 7)
+        self.assertNotIn("0000:21:00.0",
+                         [metric.pci_address for metric in second])
+        self.assertEqual(NVIDIA._metrics_cache_time, 1031)
+        self.assertEqual(bash_roe.call_count, 2)
+
     def test_pcie_failure_opens_per_device_circuit_breaker(self):
         commands = []
         now = [1000]
@@ -275,6 +311,40 @@ class TestNVIDIAContention(unittest.TestCase):
 
         self.assertEqual(len(metrics), 1)
         bash_roe.assert_not_called()
+
+    def test_pcie_skip_does_not_delay_next_attempt(self):
+        metrics = NVIDIA.parse_metrics(_metric_output(1))
+
+        with patch("zstacklib.gpu.vendors.nvidia.bash_roe") as bash_roe, \
+                gpu_operation_gate.critical():
+            NVIDIA._collect_pcie_metrics(metrics, 1000)
+
+        self.assertNotIn("_all", NVIDIA._pcie_last_attempt)
+        bash_roe.assert_not_called()
+
+    def test_dgpu_metrics_are_unavailable_while_critical_is_active(self):
+        with patch("zstacklib.gpu.vendors.nvidia.bash_roe") as bash_roe, \
+                gpu_operation_gate.critical():
+            metrics = NVIDIA.collect_dgpu_worker_metrics([_worker()])
+
+        self.assertEqual(metrics, [])
+        bash_roe.assert_not_called()
+
+    def test_dgpu_metrics_are_unavailable_after_pmon_failure(self):
+        with patch.object(
+                NVIDIA, "_run_monitoring_command",
+                return_value=(1, "", "NVML busy")):
+            metrics = NVIDIA.collect_dgpu_worker_metrics([_worker()])
+
+        self.assertEqual(metrics, [])
+
+    def test_dgpu_metrics_keep_zero_for_pid_missing_from_successful_pmon(self):
+        with patch.object(NVIDIA, "_parse_pmon_output", return_value={}):
+            metrics = NVIDIA.collect_dgpu_worker_metrics([_worker()])
+
+        self.assertEqual(len(metrics), 1)
+        self.assertEqual(metrics[0].utilization, 0.0)
+        self.assertEqual(metrics[0].memory_utilization, 0.0)
 
     def test_query_gpu_details_has_hard_timeout(self):
         output = "0, 00000000:1A:00.0, NVIDIA GeForce RTX 3090, 24576, 580.142"
