@@ -12,6 +12,7 @@ from zstacklib.utils import log
 from zstacklib.utils import ebtables
 from zstacklib.utils import bash
 from zstacklib.utils import linux
+from zstacklib.utils import thread
 from zstacklib.utils.bash import *
 from prometheus_client.core import GaugeMetricFamily
 import netaddr
@@ -43,11 +44,13 @@ class Eip(object):
         return tag.replace("-", ":")
 
     def parse_eip_string(self, estr):
-        nic_ip = ip = vip_uuid = vm_uuid = nic_name = eip_uuid = None
+        nic_ip = ip = vip_uuid = vm_uuid = nic_name = eip_uuid = vip_gateway = None
         ws = estr.split(',')
         for w in ws:
             if w.startswith('eip_addr'):
                 ip = w.split(':')[1]
+            elif w.startswith('vip_gateway:'):
+                vip_gateway = w.split(':')[1]
             elif w.startswith('vip'):
                 vip_uuid = w.split(':')[1]
             elif w.startswith('vnic_ip'):
@@ -72,9 +75,15 @@ class Eip(object):
         except Exception as e:
             nic_ip = self._tag2ipv6address(nic_ip)
 
+        if vip_gateway:
+            try:
+                netaddr.IPAddress(vip_gateway)
+            except Exception as e:
+                vip_gateway = self._tag2ipv6address(vip_gateway)
+
         # logger.debug('parse_eip_string: {} {} {} {} {} {} {}'.format(ip, vip_uuid, nic_ip, version, vm_uuid, eip_uuid, nic_name))
 
-        return ip, vip_uuid, nic_ip, version, vm_uuid, eip_uuid, nic_name
+        return ip, vip_uuid, nic_ip, version, vm_uuid, eip_uuid, nic_name, vip_gateway
 
     def generate_namespace_name(self, bridge, vip):
         return "%s_%s" % (bridge, vip.replace(".", "_"))
@@ -94,6 +103,74 @@ class Eip(object):
                 return ns
 
         return None
+
+    def set_public_interface_state(self, ns_name, eip_uuid, vip, version, active,
+                                   fail_if_missing=True, vip_gateway=None):
+        if ns_name not in iproute.IpNetnsShell.list_netns():
+            if active and fail_if_missing:
+                raise Exception("cannot find EIP namespace[%s] for vip[%s]" % (ns_name, vip))
+            return
+
+        netns = iproute.IpNetnsShell(ns_name)
+        public_interface = "%s_ei" % eip_uuid[-9:]
+        if netns.get_mac(public_interface) is None:
+            if active and fail_if_missing:
+                raise Exception("cannot find EIP public interface[%s] in namespace[%s]" %
+                                (public_interface, ns_name))
+            return
+
+        private_interface = "%s_i" % eip_uuid[-9:]
+        if active and netns.get_mac(private_interface) is None:
+            if fail_if_missing:
+                raise Exception("cannot find EIP private interface[%s] in namespace[%s]" %
+                                (private_interface, ns_name))
+            return
+
+        if active:
+            netns.set_link_up(public_interface)
+            if vip_gateway:
+                ip_cmd = "ip" if int(version) == 4 else "ip -6"
+                if bash_r("ip netns exec {{ns_name}} {{ip_cmd}} route | "
+                          "grep -w default > /dev/null") != 0:
+                    bash_errorout("ip netns exec {{ns_name}} {{ip_cmd}} route add "
+                                  "default via {{vip_gateway}}")
+            if int(version) == 4:
+                private_gateway = bash_o(
+                    "ip netns exec {{ns_name}} ip -o -4 addr show dev {{private_interface}} "
+                    "| awk '/scope global/ {print $4}' | cut -d/ -f1"
+                ).strip()
+                announce_threads = [
+                    thread.ThreadFacade.run_in_thread(
+                        bash_r,
+                        ("ip netns exec %s arping -q -A -w 2 -c 3 "
+                         "-I %s %s > /dev/null" % (ns_name, public_interface, vip),),
+                    )
+                ]
+                if private_gateway:
+                    announce_threads.append(
+                        thread.ThreadFacade.run_in_thread(
+                            bash_r,
+                            ("ip netns exec %s arping -q -U -w 2 -c 3 "
+                             "-I %s %s > /dev/null" %
+                             (ns_name, private_interface, private_gateway),),
+                        )
+                    )
+                for announce_thread in announce_threads:
+                    announce_thread.join()
+        else:
+            bash_errorout("ip netns exec {{ns_name}} ip link set {{public_interface}} down")
+
+    def set_eip_public_interface_state(self, eip, active):
+        ns_name = self.generate_namespace_name(eip.publicBridgeName, eip.vip)
+        self.set_public_interface_state(
+            ns_name,
+            eip.eipUuid,
+            eip.vip,
+            eip.ipVersion,
+            active,
+            active,
+            eip.vipGateway,
+        )
 
     @bash.in_bash
     @lock.file_lock('/run/xtables.lock')
@@ -249,7 +326,7 @@ class Eip(object):
 
     @bash.in_bash
     @lock.file_lock('/run/xtables.lock')
-    def apply_eip(self, eip):
+    def apply_eip(self, eip, active=True):
         dev_base_name = eip.nicName.replace('vnic', '', 1)
         dev_base_name = dev_base_name.replace(".", "_")
         PUB_BR = eip.publicBridgeName
@@ -283,11 +360,12 @@ class Eip(object):
         EBTABLE_CHAIN_NAME= eip.vmBridgeName
 
         if int(eip.ipVersion) == 4:
-            EIP_DESC = "eip:%s,eip_addr:%s,vnic:%s,vnic_ip:%s,vm:%s,vip:%s" % (eip.eipUuid, VIP, eip.nicName, NIC_IP, eip.vmUuid, eip.vipUuid)
+            EIP_DESC = "eip:%s,eip_addr:%s,vnic:%s,vnic_ip:%s,vm:%s,vip:%s,vip_gateway:%s" % (eip.eipUuid, VIP, eip.nicName, NIC_IP, eip.vmUuid, eip.vipUuid, VIP_GW)
         else:
             vip_tag = self._ipv6address2tag(VIP)
             nic_tag = self._ipv6address2tag(NIC_IP)
-            EIP_DESC = "eip:%s,eip_addr:%s,vnic:%s,vnic_ip:%s,vm:%s,vip:%s" % (eip.eipUuid, vip_tag, eip.nicName, nic_tag, eip.vmUuid, eip.vipUuid)
+            gateway_tag = self._ipv6address2tag(VIP_GW)
+            EIP_DESC = "eip:%s,eip_addr:%s,vnic:%s,vnic_ip:%s,vm:%s,vip:%s,vip_gateway:%s" % (eip.eipUuid, vip_tag, eip.nicName, nic_tag, eip.vmUuid, eip.vipUuid, gateway_tag)
 
         NS = "ip netns exec {{NS_NAME}}"
 
@@ -606,7 +684,8 @@ class Eip(object):
         create_dev_if_needed(PUB_ODEV, EIP_DESC, PUB_IDEV, EIP_DESC)
         create_dev_if_needed(PRI_ODEV, EIP_DESC, PRI_IDEV, EIP_DESC)
 
-        add_dev_to_br_if_needed(PUB_BR, PUB_ODEV)
+        if active:
+            add_dev_to_br_if_needed(PUB_BR, PUB_ODEV)
         add_dev_to_br_if_needed(PRI_BR, PRI_ODEV)
 
         add_dev_namespace_if_needed(PUB_IDEV, NS_NAME)
@@ -616,10 +695,10 @@ class Eip(object):
 
         if int(eip.ipVersion) == 4:
             iproute.IpNetnsShell(NS_NAME).set_link_up(PUB_IDEV)
-            if newCreated and not eip.skipArpCheck:
+            if active and newCreated and not eip.skipArpCheck:
                 r, o = bash.bash_ro('eval {{NS}} arping -D -w 1 -c 3 -I {{PUB_IDEV}} {{VIP}}')
                 if r != 0 and "Unicast reply from" in o:
-                    raise Exception('there are dupicated public [ip:%s] on public network, output: %s' % (VIP, o))
+                    raise Exception('there are duplicated public [ip:%s] on public network, output: %s' % (VIP, o))
 
             vipPrefixLen = linux.netmask_to_cidr(VIP_NETMASK)
             set_ip_to_idev_if_needed(PUB_IDEV, "ip", VIP, vipPrefixLen)
@@ -627,12 +706,13 @@ class Eip(object):
             set_ip_to_idev_if_needed(PRI_IDEV, "ip", NIC_GATEWAY, nicPrefixLen)
             add_filter_to_prevent_namespace_arp_request()
 
-            # ping VIP gateway
-            bash_r('eval {{NS}} arping -q -A -w 2 -c 3 -I {{PUB_IDEV}} {{VIP}} > /dev/null')
+            if active:
+                bash_r('eval {{NS}} arping -q -A -w 2 -c 3 -I {{PUB_IDEV}} {{VIP}} > /dev/null')
             set_gateway_arp_if_needed()
             # send gratuitous ARP to update VM's gateway MAC cache,
             # because the VM may have learned the physical gateway's MAC before EIP was applied
-            bash_r('eval {{NS}} arping -q -U -w 2 -c 3 -I {{PRI_IDEV}} {{NIC_GATEWAY}} > /dev/null')
+            if active:
+                bash_r('eval {{NS}} arping -q -U -w 2 -c 3 -I {{PRI_IDEV}} {{NIC_GATEWAY}} > /dev/null')
             set_eip_rules()
             set_default_route_if_needed("ip")
             create_perf_monitor()
@@ -644,6 +724,10 @@ class Eip(object):
             set_default_route_if_needed("ip -6")
             enable_ipv6_forwarding()
             create_ipv6_perf_monitor()
+
+        if not active:
+            bash_errorout("ip netns exec {{NS_NAME}} ip link set {{PUB_IDEV}} down")
+            add_dev_to_br_if_needed(PUB_BR, PUB_ODEV)
 
 
 def collect_vip_statistics():
@@ -697,7 +781,7 @@ def collect_vip_statistics():
     eip_cmd = Eip()
 
     for estr in eip_strings:
-        ip, vip_uuid, vnic_ip, version, _,_,_ = eip_cmd.parse_eip_string(estr)
+        ip, vip_uuid, vnic_ip, version, _, _, _, _ = eip_cmd.parse_eip_string(estr)
         if ip is None:
             logger.warn("no ip field found in %s" % estr)
             continue
@@ -741,7 +825,7 @@ def clean_eips_by_vms(vm_uuids):
     eip = Eip()
 
     for estr in eip_strings:
-        vip, _, vnic_ip, version, vm_uuid, eip_uuid, vnic_name = eip.parse_eip_string(estr)
+        vip, _, vnic_ip, version, vm_uuid, eip_uuid, vnic_name, _ = eip.parse_eip_string(estr)
         # logger.debug('parse_eip_string: {} {} {} {} {} {}'.format(vip, vnic_ip, version, vm_uuid, eip_uuid, vnic_name))
 
         if vm_uuid not in vm_uuids:
@@ -773,6 +857,8 @@ class DEip(kvmagent.KvmAgent):
     DELETE_EIP_PATH = "/flatnetworkprovider/eip/delete"
     BATCH_APPLY_EIP_PATH = "/flatnetworkprovider/eip/batchapply"
     BATCH_DELETE_EIP_PATH = "/flatnetworkprovider/eip/batchdelete"
+    BATCH_PREPARE_EIP_PATH = "/flatnetworkprovider/eip/batchprepare"
+    BATCH_ENABLE_EIP_PATH = "/flatnetworkprovider/eip/batchenable"
 
     def start(self):
         http_server = kvmagent.get_http_server()
@@ -781,6 +867,9 @@ class DEip(kvmagent.KvmAgent):
         http_server.register_async_uri(self.BATCH_APPLY_EIP_PATH, self.apply_eips)
         http_server.register_async_uri(self.DELETE_EIP_PATH, self.delete_eip)
         http_server.register_async_uri(self.BATCH_DELETE_EIP_PATH, self.delete_eips)
+        http_server.register_async_uri(self.BATCH_PREPARE_EIP_PATH, self.prepare_eips)
+        http_server.register_async_uri(self.BATCH_ENABLE_EIP_PATH, self.enable_eips)
+        self._register_vm_lifecycle_hook()
 
     def stop(self):
         pass
@@ -795,6 +884,18 @@ class DEip(kvmagent.KvmAgent):
     def apply_eips(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         self._apply_eips(cmd.eips)
+        return jsonobject.dumps(AgentRsp())
+
+    @kvmagent.replyerror
+    def prepare_eips(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        self._prepare_eips(cmd.eips)
+        return jsonobject.dumps(AgentRsp())
+
+    @kvmagent.replyerror
+    def enable_eips(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        self._set_eips_public_interface_state(cmd.eips, True)
         return jsonobject.dumps(AgentRsp())
 
     @kvmagent.replyerror
@@ -820,3 +921,81 @@ class DEip(kvmagent.KvmAgent):
         eip_cmd = Eip()
         for eip in eips:
             eip_cmd.apply_eip(eip)
+
+    @lock.lock('eip')
+    def _prepare_eips(self, eips):
+        eip_cmd = Eip()
+        for eip in eips:
+            eip_cmd.apply_eip(eip, False)
+
+    @lock.lock('eip')
+    def _set_eips_public_interface_state(self, eips, active):
+        eip_cmd = Eip()
+        for eip in eips:
+            eip_cmd.set_eip_public_interface_state(eip, active)
+
+    def _register_vm_lifecycle_hook(self):
+        import libvirt
+        from kvmagent.plugins.vm_plugin import LibvirtAutoReconnect
+
+        callbacks = LibvirtAutoReconnect.libvirt_event_callbacks.get(
+            libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE, []
+        )
+        if self._on_vm_lifecycle_event not in callbacks:
+            LibvirtAutoReconnect.add_libvirt_callback(
+                libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE,
+                self._on_vm_lifecycle_event,
+            )
+
+    def _on_vm_lifecycle_event(self, conn, dom, event, detail, opaque):
+        import libvirt
+
+        active = None
+        if (event == libvirt.VIR_DOMAIN_EVENT_STOPPED and
+                detail == libvirt.VIR_DOMAIN_EVENT_STOPPED_MIGRATED):
+            active = False
+        elif (event == libvirt.VIR_DOMAIN_EVENT_RESUMED and
+              detail == libvirt.VIR_DOMAIN_EVENT_RESUMED_MIGRATED):
+            active = True
+        elif (event == libvirt.VIR_DOMAIN_EVENT_STARTED and
+              detail == libvirt.VIR_DOMAIN_EVENT_STARTED_MIGRATED and
+              dom.state()[0] == libvirt.VIR_DOMAIN_RUNNING):
+            active = True
+
+        if active is None:
+            return
+
+        thread.ThreadFacade.run_in_thread(
+            self._set_eips_public_interface_state_by_vm_uuid,
+            (dom.name(), active),
+        )
+
+    @lock.lock('eip')
+    def _set_eips_public_interface_state_by_vm_uuid(self, vm_uuid, active):
+        eip_cmd = Eip()
+        normalized_vm_uuid = vm_uuid.replace('-', '')
+        aliases = [word for word in bash_o('ip -o -d link').split() if word.startswith('eip:')]
+        handled_eips = set()
+
+        for alias in aliases:
+            vip, _, _, version, alias_vm_uuid, eip_uuid, _, vip_gateway = \
+                eip_cmd.parse_eip_string(alias)
+            if not alias_vm_uuid or alias_vm_uuid.replace('-', '') != normalized_vm_uuid:
+                continue
+            if not vip or not eip_uuid or (eip_uuid, vip) in handled_eips:
+                continue
+
+            ns_name = eip_cmd.find_namespace_name_by_ip(vip, version)
+            if not ns_name:
+                continue
+
+            handled_eips.add((eip_uuid, vip))
+            eip_cmd.set_public_interface_state(
+                ns_name,
+                eip_uuid,
+                vip,
+                version,
+                active,
+                False,
+                vip_gateway,
+            )
