@@ -28,6 +28,23 @@ from zstacklib.utils import http
 from kvmagent.plugins import virtiofs_plugin
 
 
+@patch('kvmagent.plugins.virtiofs_plugin._init_virtiofsd_path')
+@patch('kvmagent.plugins.virtiofs_plugin.kvmagent.get_http_server')
+def test_prepare_host_model_cache_registers_sensitive_command(
+        mock_get_http_server, _mock_init_virtiofsd_path):
+    server = MagicMock()
+    mock_get_http_server.return_value = server
+
+    virtiofs_plugin.VirtiofsPlugin().start()
+
+    prepare_call = next(
+        call for call in server.register_async_uri.call_args_list
+        if call.args[0] == virtiofs_plugin.VirtiofsPlugin.HOST_MODEL_CACHE_PREPARE_PATH)
+    assert isinstance(
+        prepare_call.kwargs["cmd"],
+        virtiofs_plugin.PrepareHostModelCacheCmd)
+
+
 class TestVerifySourcePath:
     """Test verify_source_path() security validation."""
 

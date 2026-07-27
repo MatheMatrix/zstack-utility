@@ -117,6 +117,12 @@ class VirtiofsStatusResponse(jsonobject.JsonObject):
     virtiofsHotplugSupported = bool
 
 
+class PrepareHostModelCacheCmd(object):
+    @log.sensitive_fields("storageUrl")
+    def __init__(self):
+        pass
+
+
 def check_libvirt_version():
     """Check if libvirt version supports virtiofs hotplug (>= 7.9.0)"""
     try:
@@ -509,7 +515,10 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.DETACH_VIRTIOFS_PATH, self.detach_virtiofs)
         http_server.register_async_uri(self.STATUS_VIRTIOFS_PATH, self.virtiofs_status)
         http_server.register_async_uri(self.HOST_MODEL_CACHE_REPORT_PATH, self.report_host_model_cache)
-        http_server.register_async_uri(self.HOST_MODEL_CACHE_PREPARE_PATH, self.prepare_host_model_cache)
+        http_server.register_async_uri(
+            self.HOST_MODEL_CACHE_PREPARE_PATH,
+            self.prepare_host_model_cache,
+            cmd=PrepareHostModelCacheCmd())
         http_server.register_async_uri(self.HOST_MODEL_CACHE_CLEANUP_PATH, self.cleanup_host_model_cache)
 
     def stop(self):
