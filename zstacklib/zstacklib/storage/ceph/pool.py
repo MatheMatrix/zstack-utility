@@ -96,7 +96,15 @@ def _fill_crush_rule_names(pools):
 def _fill_crush_osds(pools):
     # type: (List[CephPoolCapacity]) -> None
     """Fill CRUSH item OSDs for each pool."""
-    o = shell.call('ceph osd tree -f json')
+    has_shadow = any(
+        name and '~' in name
+        for pool_capacity in pools
+        for name in pool_capacity.crush_rule_item_names
+    )
+    if has_shadow:
+        o = shell.call('ceph osd crush tree --show-shadow -f json')
+    else:
+        o = shell.call('ceph osd tree -f json')
     # In the open source Ceph 10 version, the value returned by executing
     # 'ceph osd tree -f json' might have '-nan', causing json parsing to fail.
     o = o.replace("-nan", "\"\"")

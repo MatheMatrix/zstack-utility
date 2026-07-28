@@ -212,7 +212,15 @@ def get_pools_capacity():
                         pool_capacity.crush_rule_item_names.append(step.item_name)
 
     # fill crush_item_osds
-    o = shell.call('ceph osd tree -f json')
+    has_shadow = any(
+        name and '~' in name
+        for pool_capacity in result
+        for name in pool_capacity.crush_rule_item_names
+    )
+    if has_shadow:
+        o = shell.call('ceph osd crush tree --show-shadow -f json')
+    else:
+        o = shell.call('ceph osd tree -f json')
     # In the open source Ceph 10 version, the value returned by executing 'ceph osd tree -f json' might have '-nan', causing json parsing to fail.
     o = o.replace("-nan", "\"\"")
     tree = jsonobject.loads(o)
