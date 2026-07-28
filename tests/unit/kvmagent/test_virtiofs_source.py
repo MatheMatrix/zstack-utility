@@ -129,8 +129,8 @@ def test_prepare_model_center_cache_mounts_copies_and_unmounts(tmp_path, monkeyp
     monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
     monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
 
-    def mount_model_center(storage_url, mount_path):
-        events.append(('mount', storage_url, mount_path))
+    def mount_model_center(storage_url, mount_path, storage_subdir):
+        events.append(('mount', storage_url, mount_path, storage_subdir))
         model_dir = os.path.join(mount_path, 'qwen', 'v1')
         os.makedirs(model_dir)
         with open(os.path.join(model_dir, 'config.json'), 'w') as stream:
@@ -155,6 +155,7 @@ def test_prepare_model_center_cache_mounts_copies_and_unmounts(tmp_path, monkeyp
     registry = json.loads((source_root / '.registry').read_text())
     assert list(registry.values())[0]['path'] == os.path.realpath(str(target))
     assert events[0][0] == 'mount'
+    assert events[0][3] == 'models'
     assert events[-1][0] == 'unmount'
 
 
@@ -211,7 +212,7 @@ def test_prepare_model_center_cache_unmounts_when_model_is_missing(tmp_path, mon
     monkeypatch.setattr(
         virtiofs_source,
         '_mount_model_center',
-        lambda storage_url, mount_path: os.makedirs(mount_path))
+        lambda storage_url, mount_path, storage_subdir: os.makedirs(mount_path))
     monkeypatch.setattr(
         virtiofs_source,
         '_unmount_model_center',
@@ -228,6 +229,46 @@ def test_prepare_model_center_cache_unmounts_when_model_is_missing(tmp_path, mon
 
     assert 'does not exist' in str(exc_info.value)
     assert unmounted == [str(provider_root / 'model-center-uuid')]
+
+
+def test_prepare_model_center_artifact_uses_requested_subdir_without_cache_registration(tmp_path, monkeypatch):
+    source_root = tmp_path / 'virtiofs-sources'
+    source_root.mkdir()
+    target = source_root / 'model-centers' / 'mc' / 'root' / 'datasets' / 'eval'
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+    mounted_subdirs = []
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+
+    def mount_model_center(storage_url, mount_path, storage_subdir):
+        mounted_subdirs.append(storage_subdir)
+        artifact_dir = os.path.join(mount_path, 'eval')
+        os.makedirs(artifact_dir)
+        with open(os.path.join(artifact_dir, 'dataset.json'), 'w') as stream:
+            stream.write('{}')
+
+    monkeypatch.setattr(virtiofs_source, '_mount_model_center', mount_model_center)
+    monkeypatch.setattr(virtiofs_source, '_unmount_model_center', lambda mount_path: None)
+    monkeypatch.setattr(
+        virtiofs_source,
+        '_register_model_center_cache',
+        lambda root, path: pytest.fail('non-model artifacts must not enter the model cache registry'))
+
+    entry = virtiofs_source.prepare_model_center_cache(
+        str(source_root),
+        str(target),
+        'mc',
+        'redis://model-center',
+        'eval',
+        256,
+        'datasets',
+        False)
+
+    assert mounted_subdirs == ['datasets']
+    assert entry['sourcePath'] == str(target)
+    assert (target / 'dataset.json').read_text() == '{}'
 
 
 def test_prepare_model_center_cache_reuses_existing_cache_without_mounting(tmp_path, monkeypatch):

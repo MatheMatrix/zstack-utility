@@ -725,13 +725,22 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
             required_capacity = _get_cmd_attr(cmd, 'requiredCapacityBytes', None)
             source_type = _get_cmd_attr(cmd, 'sourceType', 'preparedPath')
             if source_type == 'juicefsModelCenter':
+                artifact_relative_path = _get_cmd_attr(cmd, 'artifactRelativePath', None)
+                if not artifact_relative_path:
+                    artifact_relative_path = _get_cmd_attr(cmd, 'modelRelativePath', None)
+                storage_subdir = _get_cmd_attr(cmd, 'storageSubdir', None) or 'models'
+                register_cache = _get_cmd_attr(cmd, 'registerCache', None)
+                if register_cache is None:
+                    register_cache = True
                 entry = virtiofs_source.prepare_model_center_cache(
                     source_root,
                     source_path,
                     _get_cmd_attr(cmd, 'modelCenterUuid', None),
                     _get_cmd_attr(cmd, 'storageUrl', None),
-                    _get_cmd_attr(cmd, 'modelRelativePath', None),
-                    required_capacity)
+                    artifact_relative_path,
+                    required_capacity,
+                    storage_subdir,
+                    register_cache)
             else:
                 entry = virtiofs_source.prepare_host_model_cache(source_root, source_path, required_capacity)
             rsp.cacheEntry = entry

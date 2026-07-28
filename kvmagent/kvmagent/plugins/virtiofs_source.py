@@ -261,7 +261,7 @@ def _run_process(args, error_message):
     return stdout, stderr
 
 
-def _mount_model_center(storage_url, mount_path):
+def _mount_model_center(storage_url, mount_path, storage_subdir='models'):
     if os.path.ismount(mount_path):
         _unmount_model_center(mount_path)
     if not os.path.exists(mount_path):
@@ -271,7 +271,7 @@ def _mount_model_center(storage_url, mount_path):
     juicefs = _find_juicefs_binary()
     _run_process([
         juicefs, 'mount',
-        '--read-only', '-d', '--subdir', 'models',
+        '--read-only', '-d', '--subdir', storage_subdir,
         '--cache-dir', JUICEFS_CACHE_DIR,
         storage_url, mount_path,
     ], 'failed to mount model center')
@@ -292,13 +292,15 @@ def _unmount_model_center(mount_path):
 
 
 def prepare_model_center_cache(source_root, source_path, model_center_uuid, storage_url,
-                               model_relative_path, required_capacity_bytes=None):
+                               artifact_relative_path, required_capacity_bytes=None,
+                               storage_subdir='models', register_cache=True):
     root = _normalize_root(source_root or HOST_SOURCE_ROOT)
     target = ensure_under(source_path, root, 'sourcePath', allow_root=False)
     model_center_uuid = _validate_source_id(model_center_uuid, 'modelCenterUuid')
     if not storage_url or not str(storage_url).strip():
         raise Exception('storageUrl is required')
-    relative_path = _validate_relative_path(model_relative_path, 'modelRelativePath')
+    storage_subdir = _validate_relative_path(storage_subdir, 'storageSubdir')
+    relative_path = _validate_relative_path(artifact_relative_path, 'artifactRelativePath')
 
     if not os.path.exists(root):
         _ensure_directory(root)
@@ -317,12 +319,13 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
             _unmount_model_center(mount_path)
         if os.path.exists(target):
             entry = cache_entry(root, target)
-            _register_model_center_cache(root, target)
+            if register_cache:
+                _register_model_center_cache(root, target)
             return entry
 
         check_available_capacity(root, required_capacity_bytes)
         try:
-            _mount_model_center(str(storage_url).strip(), mount_path)
+            _mount_model_center(str(storage_url).strip(), mount_path, storage_subdir)
             remote_source = ensure_under(
                 os.path.join(mount_path, relative_path),
                 mount_path,
@@ -337,7 +340,8 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
         finally:
             _unmount_model_center(mount_path)
         entry = cache_entry(root, target)
-        _register_model_center_cache(root, target)
+        if register_cache:
+            _register_model_center_cache(root, target)
         return entry
     finally:
         try:

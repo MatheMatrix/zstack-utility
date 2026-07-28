@@ -313,14 +313,17 @@ class TestHostModelCachePrepareHandler:
         captured = {}
 
         def prepare(source_root, source_path, model_center_uuid, storage_url,
-                    model_relative_path, required_capacity):
+                    artifact_relative_path, required_capacity, storage_subdir,
+                    register_cache):
             captured.update({
                 'sourceRoot': source_root,
                 'sourcePath': source_path,
                 'modelCenterUuid': model_center_uuid,
                 'storageUrl': storage_url,
-                'modelRelativePath': model_relative_path,
+                'artifactRelativePath': artifact_relative_path,
                 'requiredCapacityBytes': required_capacity,
+                'storageSubdir': storage_subdir,
+                'registerCache': register_cache,
             })
             return {'sourcePath': source_path, 'sizeBytes': 1024}
 
@@ -340,8 +343,46 @@ class TestHostModelCachePrepareHandler:
 
         assert response['success'] is True
         assert response['cacheEntry']['sourcePath'] == '/cache/models/model/v1'
-        assert captured['modelRelativePath'] == 'qwen/v1'
+        assert captured['artifactRelativePath'] == 'qwen/v1'
+        assert captured['storageSubdir'] == 'models'
+        assert captured['registerCache'] is True
         assert captured['storageUrl'] == 'redis://model-center'
+
+    def test_dispatches_non_model_artifact_source(self, monkeypatch):
+        captured = {}
+
+        def prepare(source_root, source_path, model_center_uuid, storage_url,
+                    artifact_relative_path, required_capacity, storage_subdir,
+                    register_cache):
+            captured.update({
+                'artifactRelativePath': artifact_relative_path,
+                'storageSubdir': storage_subdir,
+                'registerCache': register_cache,
+            })
+            return {'sourcePath': source_path, 'sizeBytes': 256}
+
+        monkeypatch.setattr(virtiofs_plugin.virtiofs_source, 'prepare_model_center_cache', prepare)
+        plugin = virtiofs_plugin.VirtiofsPlugin()
+        response = json.loads(plugin.prepare_host_model_cache({
+            http.REQUEST_BODY: json.dumps({
+                'sourceType': 'juicefsModelCenter',
+                'sourceRoot': '/sources',
+                'sourcePath': '/sources/model-centers/mc/root/datasets/eval',
+                'modelCenterUuid': 'mc',
+                'storageUrl': 'redis://model-center',
+                'storageSubdir': 'datasets',
+                'artifactRelativePath': 'eval',
+                'registerCache': False,
+                'requiredCapacityBytes': 256,
+            })
+        }))
+
+        assert response['success'] is True
+        assert captured == {
+            'artifactRelativePath': 'eval',
+            'storageSubdir': 'datasets',
+            'registerCache': False,
+        }
 
 
 class TestVirtiofsAttachHandler:
