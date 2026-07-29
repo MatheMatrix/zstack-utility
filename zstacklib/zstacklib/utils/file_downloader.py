@@ -34,6 +34,21 @@ class HttpDownloadStrategy(DownloadStrategy):
     """Download strategy for HTTP/HTTPS/FTP protocols"""
 
     def download(self):
+        install_path = self.downloader.install_path
+        download_cancelled = [False]
+
+        class HttpDownloadDaemon(plugin.TaskDaemon):
+            def _cancel(self):
+                download_cancelled[0] = True
+                linux.rm_file_force(install_path)
+
+        daemon = HttpDownloadDaemon(self.downloader.cmd, "DownloadImage")
+        if not daemon.start():
+            return False, 'download canceled before start'
+
+        def cancellation_checker():
+            return download_cancelled[0] or self.downloader.cancellation_pending()
+
         try:
             cmd = self.downloader.cmd
             cmd.url = linux.shellquote(cmd.url)
@@ -41,7 +56,8 @@ class HttpDownloadStrategy(DownloadStrategy):
                 cmd.url,
                 self.downloader.file_name,
                 self.downloader.path,
-                self.downloader.timeout
+                self.downloader.timeout,
+                cancellation_checker
             )
             if ret != 0:
                 linux.rm_file_force(self.downloader.install_path)
@@ -52,6 +68,8 @@ class HttpDownloadStrategy(DownloadStrategy):
             linux.rm_file_force(self.downloader.install_path)
             logger.warning("HTTP download error traceback: %s" % traceback.format_exc())
             return False, str(e)
+        finally:
+            daemon.close()
 
 
 class SftpDownloadStrategy(DownloadStrategy):
@@ -161,9 +179,17 @@ class FileDownloader:
         except ValueError:
             self.urlScheme = None
 
-    def use_wget(self, url, name, workdir, timeout):
+    def use_wget(self, url, name, workdir, timeout, cancellation_checker=None):
+        if cancellation_checker is None:
+            cancellation_checker = self.cancellation_pending
+
         return linux.wget(url, workdir=workdir, rename=name, timeout=timeout, interval=2,
-                          callback=self.reporter.progress_report, callback_data="report")
+                          callback=self.reporter.progress_report, callback_data="report",
+                          cmd_wrapper=self.t_shell.wrap_cmd,
+                          cancellation_checker=cancellation_checker)
+
+    def cancellation_pending(self):
+        return plugin.TaskManager.cancellation_pending(plugin.get_api_id(self.cmd))
 
     def get_url_file_size(self, url):
         # Only allow HTTP/HTTPS/FTP to prevent SSRF via unexpected protocols.
@@ -285,6 +311,10 @@ class FileDownloader:
 
     def download(self):
         """Execute download using appropriate strategy"""
+
+        api_id = plugin.get_api_id(self.cmd)
+        if plugin.TaskManager.cancellation_pending(api_id):
+            return False, 'download canceled before start'
 
         # Validate URL scheme
         if self.urlScheme is None or self.urlScheme not in self.STRATEGY_MAP:

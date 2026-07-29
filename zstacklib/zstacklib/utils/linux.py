@@ -937,7 +937,7 @@ def shellquote(s):
 def remote_shell_quote(s):
     return ("\\''" + s.replace("'", "'\\''") + "'\\'").encode('utf8')
 
-def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callback_data=None, cert_check=False):
+def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callback_data=None, cert_check=False, cmd_wrapper=None, cancellation_checker=None):
     def get_percentage(filesize, dst):
         try:
             curr_size = get_local_file_size(dst)
@@ -955,6 +955,17 @@ def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callba
                 return True, long(filesize)
         return False, 0
 
+    def is_cancelled():
+        return cancellation_checker and cancellation_checker()
+
+    def kill_download_process(process):
+        try:
+            kill_all_child_process(process.pid)
+        except Exception:
+            logger.warn(get_exception_stacktrace())
+        if process.poll() is None:
+            process.kill()
+
     cmdlst = ['wget']
     dst_file = os.path.join(workdir, os.path.basename(url))
     src_file = os.path.join(workdir, os.path.basename(url))
@@ -970,8 +981,19 @@ def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callba
     cmdlst.append('2>/dev/null')
 
     cmd = ' '.join(cmdlst)
+    if cmd_wrapper:
+        try:
+            cmd = cmd_wrapper(cmd)
+        except Exception as e:
+            raise LinuxError('wget %s failed before start, %s' % (url, str(e)))
+
+    if is_cancelled():
+        raise LinuxError('wget %s canceled before start' % url)
 
     is_support_file_size, filesize = get_file_size(url)
+    if is_cancelled():
+        raise LinuxError('wget %s canceled before start' % url)
+
     if is_support_file_size:
         process = shell.get_process(cmd, shell=True, executable='/bin/sh', workdir=workdir)
         is_timeout = False
@@ -979,6 +1001,9 @@ def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callba
         logger.debug('start to download %s, total size: %s' % (url, filesize))
         try:
             while process.poll() is None:
+                if is_cancelled():
+                    kill_download_process(process)
+                    raise LinuxError('wget %s canceled' % url)
                 time.sleep(interval)
                 count += interval
                 if timeout > 0 and count > timeout:
@@ -998,14 +1023,43 @@ def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callba
                 raise LinuxError('wget %s timeout after %s seconds' % (url, timeout))
 
             return process.returncode
+        except LinuxError:
+            raise
         except Exception as e:
             logger.warn(get_exception_stacktrace())
             if process.poll() is None:
                 process.kill()
             raise LinuxError('unhandled exception happened when downloading %s, %s' % (url, str(e)))
     else:
-        shell.call(cmd, workdir=workdir)
-        return 0
+        if is_cancelled():
+            raise LinuxError('wget %s canceled before start' % url)
+        process = shell.get_process(cmd, shell=True, executable='/bin/sh', workdir=workdir)
+        is_timeout = False
+        count = 0
+        logger.debug('start to download %s without content length' % url)
+        try:
+            while process.poll() is None:
+                if is_cancelled():
+                    kill_download_process(process)
+                    raise LinuxError('wget %s canceled' % url)
+                time.sleep(interval)
+                count += interval
+                if timeout > 0 and count > timeout:
+                    process.kill()
+                    is_timeout = True
+                    break
+
+            if is_timeout:
+                raise LinuxError('wget %s timeout after %s seconds' % (url, timeout))
+
+            return process.returncode
+        except LinuxError:
+            raise
+        except Exception as e:
+            logger.warn(get_exception_stacktrace())
+            if process.poll() is None:
+                process.kill()
+            raise LinuxError('unhandled exception happened when downloading %s, %s' % (url, str(e)))
 
 def md5sum(file_path):
     return 'md5sum is not calculated due to time cost'

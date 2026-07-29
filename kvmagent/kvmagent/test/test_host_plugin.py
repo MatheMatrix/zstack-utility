@@ -19,6 +19,7 @@ from zstacklib.utils import http
 from zstacklib.utils import uuidhelper
 from zstacklib.utils import jsonobject
 from zstacklib.utils import log
+from zstacklib.utils import plugin as task_plugin
 
 
 logger = log.get_logger(__name__)
@@ -69,6 +70,32 @@ class TestHostPlugin(unittest.TestCase):
 
             with self.assertRaises(Exception):
                 plugin.direct_upload_file(object())
+
+    def test_upload_file_rejects_pending_cancellation(self):
+        host = host_plugin.HostPlugin()
+        host.upload_tasks = mock.Mock()
+        cmd = type('Cmd', (), {
+            'installPath': '/tmp/pending-cancel-upload',
+            'taskUuid': 'pending-cancel-api',
+        })()
+        req = {
+            http.REQUEST_BODY: jsonobject.dumps(cmd),
+            http.REQUEST_HEADER: {'Host': '127.0.0.1:7070'},
+        }
+
+        with mock.patch(
+                'kvmagent.plugins.host_plugin.linux.validate_install_path',
+                return_value=(cmd.installPath, None)), \
+                mock.patch('kvmagent.plugins.host_plugin.FileSystemUploadTask'), \
+                mock.patch.object(task_plugin.TaskDaemon, 'start', return_value=False):
+            rsp = jsonobject.loads(host.upload_file(req))
+
+        self.assertFalse(rsp.success)
+        self.assertEqual(
+            'file[%s] upload canceled before start' % cmd.installPath,
+            rsp.error)
+        self.assertFalse(rsp.directUploadUrl)
+        host.upload_tasks.add_task.assert_called_once()
 
     if __name__ == "__main__":
         #import sys;sys.argv = ['', 'Test.testName']
