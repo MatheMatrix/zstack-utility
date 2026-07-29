@@ -2253,7 +2253,10 @@ def find_process_list_by_command(comm, cmdlines=None):
                 if all(c in cmdline for c in cmdlines):
                     match_pids.append(pid)
                     continue
-        except (IOError, OSError):
+        except (IOError, OSError) as e:
+            if e.errno not in (errno.ENOENT, errno.ESRCH):
+                logger.warn("failed to inspect process[%s] when looking for command[%s]: %s" %
+                            (pid, comm, str(e)))
             continue
     return match_pids
 

@@ -1,6 +1,9 @@
-from zstacklib.utils import linux
-from zstacklib.utils import shell
+import errno
+import os
+import signal
 import subprocess
+
+from zstacklib.utils import linux
 
 DEFAULT_KILL_TIMEOUT = 60
 DEFAULT_KILL_INTERVAL = 1
@@ -15,14 +18,18 @@ def export(port, *args):
 
 
 def find_qemu_nbd_process(pattern):
-    command = "pgrep -a qemu-nbd | grep -F -- %s" % linux.shellquote(pattern)
-    return shell.run(command)
+    return 0 if linux.find_process_list_by_command('qemu-nbd', [pattern]) else 1
 
 
 def kill_qemu_nbd_process(pattern):
-    command = ("pgrep -a qemu-nbd | grep -F -- %s | "
-               "awk '{print $1}' | xargs -r kill -15") % linux.shellquote(pattern)
-    return shell.run(command)
+    pids = linux.find_process_list_by_command('qemu-nbd', [pattern])
+    for pid in pids:
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except OSError as e:
+            if e.errno != errno.ESRCH:
+                raise
+    return 0 if pids else 1
 
 
 def wait_qemu_nbd_process_gone(pattern, timeout=DEFAULT_KILL_TIMEOUT, interval=DEFAULT_KILL_INTERVAL):

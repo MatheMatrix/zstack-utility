@@ -9451,15 +9451,10 @@ host side snapshot files chian:
     def unexport_nbd_volumes(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
         rsp = kvmagent.AgentResponse()
-
-        @linux.retry(times=3, sleep_time=2)
-        def deactive_volume(path):
-            self.deactive_volume_if_need(path, False)
-
         for volume in cmd.volumes:
             real_path = self.get_cbt_volume_actual_install_path(volume.installPath)
             qemu_nbd.kill_nbd_process_by_flag(real_path)
-            deactive_volume(real_path)
+            self.deactive_volume_if_need(real_path, False)
 
         rsp.success = True
         return jsonobject.dumps(rsp)
