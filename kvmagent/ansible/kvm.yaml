@@ -117,6 +117,9 @@
         - restart redhat libvirtd
         - restart debian libvirtd
 
+    - name: create /etc/pki/qemu dir 
+      shell: test -d /etc/pki/qemu || mkdir -p /etc/pki/qemu
+
     - name: copy qemu conf
       copy: src="{{file_root}}/qemu.conf" dest=/etc/libvirt/qemu.conf
       notify:

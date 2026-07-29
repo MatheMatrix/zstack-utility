@@ -6,6 +6,7 @@ import platform
 import json
 
 from kvmagent import kvmagent
+from kvmagent.plugins import volume_secret
 from zstacklib.utils import jsonobject
 from zstacklib.utils import shell
 from zstacklib.utils import traceable_shell
@@ -22,6 +23,7 @@ class ImageStoreClient(object):
     ZSTORE_CLI_BIN = "/usr/local/zstack/imagestore/bin/zstcli"
     ZSTORE_CLI_PATH = ZSTORE_CLI_BIN + " -rootca /var/lib/zstack/imagestorebackupstorage/package/certs/ca.pem"
     ZSTORE_DEF_PORT = 8000
+    KEY_AGENT_PROVIDER = "unix:///var/run/key-agent/key-agent.sock"
 
     UPLOAD_BIT_PATH = "/imagestore/upload"
     DOWNLOAD_BIT_PATH = "/imagestore/download"
@@ -48,8 +50,8 @@ class ImageStoreClient(object):
     def _build_install_path(self, name, imgid):
         return "{0}{1}/{2}".format(self.ZSTORE_PROTOSTR, name, imgid)
 
-    def upload_image(self, hostname, fpath, concurrency=None):
-        imf = self.commit_image(fpath)
+    def upload_image(self, hostname, fpath, concurrency=None, encryption_spec=None):
+        imf = self.commit_image(fpath, encryption_spec)
 
         extra_param = ""
         if concurrency and concurrency > 1:
@@ -62,11 +64,20 @@ class ImageStoreClient(object):
 
         return imf
 
-    def commit_image(self, fpath):
-        cmdstr = '%s -json add -file %s' % (self.ZSTORE_CLI_PATH, fpath)
+    def commit_image(self, fpath, encryption_spec=None):
+        args_file = None
+        encryption_option = ''
+        if encryption_spec:
+            args_file = self._write_json_temp_file(encryption_spec)
+            encryption_option = ' -encryption-json-file %s -secret-channel-provider %s' % (
+                args_file, self.KEY_AGENT_PROVIDER)
+
+        cmdstr = '%s -json add -file %s%s' % (self.ZSTORE_CLI_PATH, fpath, encryption_option)
         logger.debug('adding %s to local image store' % fpath)
         output = shell.call(cmdstr.encode(encoding="utf-8"))
         logger.debug('%s added to local image store' % fpath)
+        if args_file:
+            linux.rm_file_force(args_file)
 
         return jsonobject.loads(output.splitlines()[-1])
 
@@ -216,6 +227,16 @@ class ImageStoreClient(object):
                             break
             return vm, maxInfoMap, minInfoMap
 
+    @staticmethod
+    def _write_json_temp_file(content):
+        fd, path = tempfile.mkstemp(prefix='zstcli-backup-', suffix='.json')
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, json.dumps(content).encode('utf-8'))
+        finally:
+            os.close(fd)
+        return path
+
     def backup_volume(self, vm, node, bitmap, mode, dest, point_in_time, speed, reporter, stage):
         self.check_capacity(os.path.dirname(dest))
 
@@ -246,9 +267,10 @@ class ImageStoreClient(object):
     # args -> (bitmap, mode, drive)
     # {'drive-virtio-disk0': { "backupFile": "foo", "mode":"full" },
     #  'drive-virtio-disk1': { "backupFile": "bar", "mode":"top" }}
-    def backup_volumes(self, vm, args, dstdir, point_in_time, reporter, stage):
+    def backup_volumes(self, vm, args, dstdir, point_in_time, reporter, stage, addons=None, device_ids=None):
         self.check_capacity(dstdir)
         PFILE = linux.create_temp_file()
+        args_file = None
 
         def _get_progress(synced):
             last = linux.tail_1(PFILE).strip()
@@ -265,8 +287,12 @@ class ImageStoreClient(object):
 
             cmdstr = '%s -progress %s batbak -domain %s -destdir %s %s -args %s' % \
                      (self.ZSTORE_CLI_PATH, PFILE, vm, dstdir, p_option, ':'.join(["%s,%s,%s,%s" % x for x in args]))
+            cmdstr, args_file = volume_secret.make_backup_args_option(
+                cmdstr, args, addons, device_ids or [], self._write_json_temp_file, self.KEY_AGENT_PROVIDER)
             _, mode, err = bash_progress_1(cmdstr, _get_progress)
             linux.rm_file_force(PFILE)
+            if args_file:
+                linux.rm_file_force(args_file)
             if err:
                 self.check_capacity(dstdir)
                 raise Exception('fail to backup vm %s, because %s' % (vm, str(err)))
