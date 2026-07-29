@@ -125,9 +125,7 @@ class TestGuestExecZsTools(unittest.TestCase):
             'out-data': b'line1\r\nline2', 'err-data': b'error1\r\nerror2'
         })
         with mock.patch.object(qga_mod.time, 'sleep', mock.Mock()):
-            with mock.patch.object(qga_mod, 'decode_with_fallback',
-                                   side_effect=lambda x: x.decode('utf-8')):
-                code, data = self.qga.guest_exec_zs_tools('net', '{}', wait=0, retry=1)
+            code, data = self.qga.guest_exec_zs_tools('net', '{}', wait=0, retry=1)
         self.assertEqual(code, 2)
         self.assertEqual(data, 'stdout:\nline1\nline2\nstderr:\nerror1\nerror2')
 
@@ -149,9 +147,7 @@ class TestGuestExecZsTools(unittest.TestCase):
             {'position': 5000}, {'position': 904},
             {'buf-b64': b'tail\r\nline', 'count': 10, 'eof': True}
         ])
-        with mock.patch.object(qga_mod, 'decode_with_fallback',
-                               side_effect=lambda x: x.decode('utf-8')):
-            data = self.qga._try_read_zs_tools_log_tail()
+        data = self.qga._try_read_zs_tools_log_tail()
         self.assertEqual(data, 'tail\nline')
         self.assertEqual(self.qga.call_qga_command.call_args_list[1], mock.call(
             'guest-file-seek', args={'handle': 11, 'offset': 904, 'whence': 0}))

@@ -285,10 +285,10 @@ class VmQga(object):
         parts = []
         if result.get('out-data'):
             parts.append('stdout:\n{}'.format(
-                decode_with_fallback(result['out-data']).replace('\r\n', '\n')))
+                decode_with_fallback(result['out-data']).decode('utf-8').replace('\r\n', '\n')))
         if result.get('err-data'):
             parts.append('stderr:\n{}'.format(
-                decode_with_fallback(result['err-data']).replace('\r\n', '\n')))
+                decode_with_fallback(result['err-data']).decode('utf-8').replace('\r\n', '\n')))
         return '\n'.join(parts)
 
     def _try_read_zs_tools_log_tail(self, n_bytes=4096):
@@ -306,7 +306,7 @@ class VmQga(object):
             data = ret.get('buf-b64')
             if not data:
                 return ''
-            return decode_with_fallback(data).replace('\r\n', '\n')
+            return decode_with_fallback(data).decode('utf-8').replace('\r\n', '\n')
         except Exception as e:
             logger.debug('read zs-tools log tail failed for vm %s: %s', self.vm_uuid, e)
             return ''
