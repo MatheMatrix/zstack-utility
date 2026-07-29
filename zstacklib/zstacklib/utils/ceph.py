@@ -27,7 +27,7 @@ ROUTE_PROTOCOL_KERNEL = 'kernel'
 ROUTE_MATCH_CMD_FORMAT = "ip route | grep -w '%s' > /dev/null"
 ROUTE_KERNEL_MATCH_CMD_FORMAT = 'ip route | grep -w "proto kernel" | grep -w \'%s\' > /dev/null'
 IPV6_ROUTE_MATCH_CMD_FORMAT = "ip -6 route | grep -w '%s' > /dev/null"
-IPV6_ROUTE_KERNEL_MATCH_CMD_FORMAT = 'ip -6 route | grep -w "proto kernel" | grep -w \'%s\' > /dev/null'
+IPV6_ROUTE_KERNEL_MATCH_CMD_FORMAT = "ip -6 route get '%s' | grep -E '^local[[:space:]]' > /dev/null"
 
 QEMU_NBD_SOCKET_DIR = "/var/lock/"
 QEMU_NBD_SOCKET_PREFIX = "qemu-nbd-nbd"

@@ -269,7 +269,7 @@ def test_extract_ceph_mon_host_supports_ipv4_ipv6_and_addrvec_prefixes():
     assert ceph_utils.extract_mon_host(TEST_IPV6_ADDRESS) == TEST_IPV6_ADDRESS
 
 
-def test_get_ceph_mon_addr_uses_ipv6_route_table(monkeypatch):
+def test_get_ceph_mon_addr_uses_ipv6_local_route(monkeypatch):
     commands = []
     monmap = '{"mons":[{"addr":"[%s]:%s/0"}]}' % (TEST_IPV6_ADDRESS, TEST_CEPH_PORT)
 
@@ -281,7 +281,39 @@ def test_get_ceph_mon_addr_uses_ipv6_route_table(monkeypatch):
 
     assert ceph_utils.get_mon_addr(monmap, ceph_utils.ROUTE_PROTOCOL_KERNEL) == TEST_IPV6_ADDRESS
     assert commands == [
-        'ip -6 route | grep -w "proto kernel" | grep -w \'%s\' > /dev/null' % TEST_IPV6_ADDRESS
+        "ip -6 route get '%s' | grep -E '^local[[:space:]]' > /dev/null" % TEST_IPV6_ADDRESS
+    ]
+
+
+def test_get_ceph_mon_addr_rejects_nonlocal_ipv6_route(monkeypatch):
+    commands = []
+    monmap = '{"mons":[{"addr":"[%s]:%s/0"}]}' % (TEST_IPV6_ADDRESS, TEST_CEPH_PORT)
+
+    def fake_bash_r(cmd):
+        commands.append(cmd)
+        return 1
+
+    monkeypatch.setattr(ceph_utils, 'bash_r', fake_bash_r)
+
+    assert ceph_utils.get_mon_addr(monmap, ceph_utils.ROUTE_PROTOCOL_KERNEL) is None
+    assert commands == [
+        "ip -6 route get '%s' | grep -E '^local[[:space:]]' > /dev/null" % TEST_IPV6_ADDRESS
+    ]
+
+
+def test_get_ceph_mon_addr_keeps_ipv6_static_route_fallback(monkeypatch):
+    commands = []
+    monmap = '{"mons":[{"addr":"[%s]:%s/0"}]}' % (TEST_IPV6_ADDRESS, TEST_CEPH_PORT)
+
+    def fake_bash_r(cmd):
+        commands.append(cmd)
+        return 0
+
+    monkeypatch.setattr(ceph_utils, 'bash_r', fake_bash_r)
+
+    assert ceph_utils.get_mon_addr(monmap) == TEST_IPV6_ADDRESS
+    assert commands == [
+        "ip -6 route | grep -w '%s' > /dev/null" % TEST_IPV6_ADDRESS
     ]
 
 
