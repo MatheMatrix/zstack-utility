@@ -3151,6 +3151,8 @@ class TestVmStartCmdXmlBuild:
         xml_str = vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
         assert '<memoryBacking>' in xml_str
         assert '<hyperv>' in xml_str
+        assert '<timer name="hypervclock" present="yes"' in xml_str
+        assert '<stimer state="on"' in xml_str
         assert 'qemu:commandline' in xml_str
         assert '-qmp' in xml_str
         assert 'fw_cfg' in xml_str
@@ -3162,6 +3164,16 @@ class TestVmStartCmdXmlBuild:
         iothread_ids = {iothread.get('id') for iothread in root.findall('./iothreadids/iothread')}
         assert iothread_ids == {'1', '2'}
         assert root.find('iothreads').text == '2'
+
+    def test_aarch64_skips_hyperv_time_xml(self):
+        cmd = self._build_start_cmd(use_numa=False)
+
+        with patch.object(vm_plugin, 'HOST_ARCH', 'aarch64'):
+            xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<timer name="hypervclock"' not in xml_str
+        assert '<stimer' not in xml_str
+        assert '<runtime state="on"' not in xml_str
 
     def test_from_start_vm_cmd_builds_xml_with_numa(self):
         vm_plugin.ovs.OvsDpdkSupportVnic = []
