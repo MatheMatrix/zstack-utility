@@ -10,6 +10,9 @@ import sys
 from zstacklib import *
 
 
+ZNS_PROXY_PORT = 7890
+
+
 def shell_quote(value):
     if value is None:
         return "''"
@@ -39,7 +42,7 @@ start_time = datetime.datetime.now()
 znsproxy_action = "install"
 src_pkg_znsproxy = ""
 dst_pkg_znsproxy = "/var/lib/zstack/zns-proxy/package/zns-proxy.bin"
-znsproxy_health_url = "http://127.0.0.1:7890/zns-proxy/api/v1/health"
+znsproxy_health_url = "http://127.0.0.1:%s/zns-proxy/api/v1/health" % ZNS_PROXY_PORT
 post_url = ""
 chrony_servers = None
 remote_user = "root"
@@ -128,7 +131,11 @@ if copy_znsproxy == "changed:False" and health_ok:
     sys.exit(0)
 
 run_remote_command("chmod 0755 %s" % shell_quote(dst_pkg_znsproxy), host_post_info)
-run_remote_command("%s install --listen-address 0.0.0.0:7890" % shell_quote(dst_pkg_znsproxy), host_post_info)
+run_remote_command(
+    "%s install --listen-address 0.0.0.0:%s"
+    % (shell_quote(dst_pkg_znsproxy), ZNS_PROXY_PORT),
+    host_post_info
+)
 run_remote_command("curl -fsS --max-time 10 %s" % shell_quote(znsproxy_health_url), host_post_info)
 
 host_post_info.start_time = start_time
