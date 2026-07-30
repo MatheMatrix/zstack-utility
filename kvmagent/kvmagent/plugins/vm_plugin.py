@@ -9487,7 +9487,10 @@ host side snapshot files chian:
         volume_export_info = {}
         for volume in cmd.volumes:
             volume_export_info[volume.volumeUuid] = False
+            real_path = self.get_cbt_volume_actual_install_path(volume.installPath)
             if qemu_nbd.find_qemu_nbd_process(volume.installPath) == 0:
+                volume_export_info[volume.volumeUuid] = True
+            elif real_path != volume.installPath and qemu_nbd.find_qemu_nbd_process(real_path) == 0:
                 volume_export_info[volume.volumeUuid] = True
 
         rsp.volumeExportInfos = volume_export_info
