@@ -10611,9 +10611,23 @@ host side snapshot files chian:
         return jsonobject.dumps(rsp)
 
     @staticmethod
-    def active_volume_if_need(volume_path):
+    def active_volume_if_need(volume_path, shared=False):
         if volume_path.startswith("/dev/") and not os.path.exists(volume_path):
-            lvm.active_lv(volume_path)
+            lvm.active_lv(volume_path, shared)
+
+    @staticmethod
+    def active_volume_chain_if_need(volume_path):
+        volume = volume_path
+        visited = set()
+        shared = False
+        while volume.startswith("/dev/"):
+            if volume in visited:
+                raise Exception("qcow2 backing chain has a cycle at %s" % volume)
+
+            visited.add(volume)
+            VmPlugin.active_volume_if_need(volume, shared)
+            volume = linux.qcow2_get_backing_file(volume)
+            shared = True
 
     @staticmethod
     def deactive_volume_if_need(volume_path, raise_exception=True):
@@ -10973,7 +10987,7 @@ host side snapshot files chian:
                 format, install_path = volumeInfo.volume.format, volumeInfo.volume.installPath
                 port, locked = linux.find_free_port_with_locking(start_port, end_port)
                 real_path = self.get_cbt_volume_actual_install_path(install_path)
-                self.active_volume_if_need(real_path)
+                self.active_volume_chain_if_need(real_path)
                 _export_nbd(port, format, real_path, volumeInfo.volume.volumeUuid)
                 volumeInfo.scratchNodeName = volumeInfo.volume.volumeUuid
                 volumeInfo.nbdPort = port
