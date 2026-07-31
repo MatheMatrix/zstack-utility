@@ -41,6 +41,7 @@ from zstacklib.utils import shell
 from zstacklib.utils import log
 from zstacklib.utils import iproute
 from zstacklib.utils import network_ipv6
+from zstacklib.utils import path_guard
 
 
 logger = log.get_logger(__name__)
@@ -311,6 +312,10 @@ def rm_file_force(fpath):
         pass
 
 black_dpath_list = ["", "/", "*", "/root", "/var", "/bin", "/lib", "/sys"]
+contains_path_traversal = path_guard.contains_path_traversal
+validate_install_path = path_guard.validate_install_path
+safe_delete_paths = path_guard.safe_delete_paths
+
 
 def rm_dir_force(dpath):
     if dpath.strip() in black_dpath_list:
@@ -485,8 +490,9 @@ def get_total_file_size(paths):
     return total
 
 def get_disk_capacity_by_df(dir_path):
-    total, avail = shell.call("df %s|tail -1|awk '{print $(NF-4), $(NF-2)}'" % dir_path).split()
+    total, avail = shell.call("df %s|tail -1|awk '{print $(NF-4), $(NF-2)}'" % shellquote(dir_path)).split()
     return int(total) * 1024, int(avail) * 1024
+
 
 def get_folder_size(path = "."):
     total_size = 0
@@ -733,7 +739,10 @@ def shellquote(s: str) -> str:
 def remote_shell_quote(s: str) -> str:
     return ("\\''" + s.replace("'", "'\\''") + "'\\'")
 
-def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callback_data=None, cert_check=False):
+def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callback_data=None,
+         cert_check=False, cmd_wrapper=None, cancellation_checker=None):
+    safe_url = re.sub(r'([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@', r'\1***@', url)
+
     def get_percentage(filesize, dst):
         try:
             curr_size = get_local_file_size(dst)
@@ -744,12 +753,23 @@ def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callba
             return None
 
     def get_file_size(url):
-        output = shell.call('curl --head %s' % url)
+        output = shell.call('curl --head %s' % url, logcmd=False)
         for l in output.split('\n'):
             if 'Content-Length' in l:
                 filesize = l.split(':')[1].strip()
                 return True, int(filesize)
         return False, 0
+
+    def is_cancelled():
+        return cancellation_checker and cancellation_checker()
+
+    def kill_download_process(process):
+        try:
+            kill_all_child_process(process.pid)
+        except Exception:
+            logger.warn(get_exception_stacktrace())
+        if process.poll() is None:
+            process.kill()
 
     cmdlst = ['wget']
     dst_file = os.path.join(workdir, os.path.basename(url))
@@ -766,15 +786,27 @@ def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callba
     cmdlst.append('2>/dev/null')
 
     cmd = ' '.join(cmdlst)
+    if cmd_wrapper:
+        try:
+            cmd = cmd_wrapper(cmd)
+        except Exception as e:
+            raise LinuxError('wget %s failed before start, %s' % (safe_url, str(e)))
 
+    if is_cancelled():
+        raise LinuxError('wget %s canceled before start' % safe_url)
     is_support_file_size, filesize = get_file_size(url)
+    if is_cancelled():
+        raise LinuxError('wget %s canceled before start' % safe_url)
     if is_support_file_size:
         process = shell.get_process(cmd, shell=True, executable='/bin/sh', workdir=workdir)
         is_timeout = False
         count = 0
-        logger.debug('start to download %s, total size: %s' % (url, filesize))
+        logger.debug('start to download %s, total size: %s' % (safe_url, filesize))
         try:
             while process.poll() is None:
+                if is_cancelled():
+                    kill_download_process(process)
+                    raise LinuxError('wget %s canceled' % safe_url)
                 time.sleep(interval)
                 count += interval
                 if timeout > 0 and count > timeout:
@@ -791,17 +823,46 @@ def wget(url, workdir, rename=None, timeout=0, interval=1, callback=None, callba
                             pass
 
             if is_timeout:
-                raise LinuxError('wget %s timeout after %s seconds' % (url, timeout))
+                raise LinuxError('wget %s timeout after %s seconds' % (safe_url, timeout))
 
             return process.returncode
+        except LinuxError:
+            raise
         except Exception as e:
             logger.warn(get_exception_stacktrace())
             if process.poll() is None:
                 process.kill()
-            raise LinuxError('unhandled exception happened when downloading %s, %s' % (url, str(e)))
+            raise LinuxError('unhandled exception happened when downloading %s, %s' % (safe_url, str(e)))
     else:
-        shell.call(cmd, workdir=workdir)
-        return 0
+        if is_cancelled():
+            raise LinuxError('wget %s canceled before start' % safe_url)
+        process = shell.get_process(cmd, shell=True, executable='/bin/sh', workdir=workdir)
+        is_timeout = False
+        count = 0
+        logger.debug('start to download %s without content length' % safe_url)
+        try:
+            while process.poll() is None:
+                if is_cancelled():
+                    kill_download_process(process)
+                    raise LinuxError('wget %s canceled' % safe_url)
+                time.sleep(interval)
+                count += interval
+                if timeout > 0 and count > timeout:
+                    process.kill()
+                    is_timeout = True
+                    break
+
+            if is_timeout:
+                raise LinuxError('wget %s timeout after %s seconds' % (safe_url, timeout))
+
+            return process.returncode
+        except LinuxError:
+            raise
+        except Exception as e:
+            logger.warn(get_exception_stacktrace())
+            if process.poll() is None:
+                process.kill()
+            raise LinuxError('unhandled exception happened when downloading %s, %s' % (safe_url, str(e)))
 
 def md5sum(file_path):
     return 'md5sum is not calculated due to time cost'

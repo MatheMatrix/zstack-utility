@@ -30,6 +30,11 @@ class CancelJobResponse(object):
     def __init__(self):
         self.success = True
         self.error = None
+        self.cancelResult = 'CANCEL_SIGNALLED'
+
+
+class TaskCanceledByPendingCancellation(Exception):
+    pass
 
 class TaskProgressInfo(object):
     def __init__(self, key, req, rsp):
@@ -91,7 +96,10 @@ class TaskDaemon(object, metaclass=abc.ABCMeta):
         self.result = TaskResult()
 
     def __enter__(self):
-        self.start()
+        if not self.start():
+            raise TaskCanceledByPendingCancellation(
+                "[task=%s] (name=%s) canceled before start" % (self.api_id, self.task_name)
+            )
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -122,8 +130,11 @@ class TaskDaemon(object, metaclass=abc.ABCMeta):
 
 
     def start(self):
-        if self.api_id:
-            TaskManager.add_task(self.api_id, self)
+        if self.api_id and not TaskManager.add_task(self.api_id, self):
+            self.closed = True
+            logger.debug("[task=%s] (name=%s) rejected by a pending cancellation" %
+                         (self.api_id, self.task_name))
+            return False
 
         if self.cancel_thread:
             self.cancel_thread.start()
@@ -134,6 +145,7 @@ class TaskDaemon(object, metaclass=abc.ABCMeta):
         self.start_time = time.time()
         self.deadline = self.start_time + self.timeout
         logger.debug("[task=%s] (name=%s) task started. timeout %d, deadline %d" % (self.api_id, self.task_name, self.timeout, self.deadline))
+        return True
 
     def get_remaining_timeout(self):
         now = time.time()
@@ -180,7 +192,9 @@ class TaskDaemon(object, metaclass=abc.ABCMeta):
 
 
 task_daemons = {}  # type: dict[str, list[TaskDaemon]]
+cancelled_task_tombstones = {}
 task_operator_lock = threading.RLock()
+CANCEL_TOMBSTONE_TTL_SECONDS = 300
 
 
 def cancel_job(cmd, rsp):
@@ -191,14 +205,23 @@ def cancel_job(cmd, rsp):
 
 
 def _cancel_job(cmd, rsp, times=1, interval=3):
+    allow_task_not_found = getattr(cmd, 'allowTaskNotFound', False)
+    if allow_task_not_found:
+        TaskManager.remember_cancellation(cmd.cancellationApiId)
+
     for i in range(times):
-        canceled_task_count = TaskManager.cancel_task(cmd.cancellationApiId)
         process_canceled = traceable_shell.cancel_job(cmd)
+        canceled_task_count = TaskManager.cancel_task(cmd.cancellationApiId)
         if process_canceled or canceled_task_count:
             return rsp
 
-        if times > i:
+        if i + 1 < times:
             time.sleep(interval)
+
+    if allow_task_not_found:
+        if not TaskManager.cancel_tombstone_matched(cmd.cancellationApiId):
+            rsp.cancelResult = 'TASK_NOT_FOUND'
+        return rsp
 
     rsp.success = False
     rsp.error = "no matched job to cancel"
@@ -216,6 +239,22 @@ class TaskManager(object):
         '''
         self.mapper_lock = threading.RLock()
         self.longjob_progress_mapper = {}
+
+    @staticmethod
+    def _prune_cancel_tombstones():
+        now = time.time()
+        for api_id, tombstone in list(cancelled_task_tombstones.items()):
+            if tombstone['expiresAt'] <= now:
+                cancelled_task_tombstones.pop(api_id, None)
+
+    @staticmethod
+    def _mark_cancel_tombstone_matched(api_id):
+        TaskManager._prune_cancel_tombstones()
+        tombstone = cancelled_task_tombstones.get(api_id)
+        if not tombstone:
+            return False
+        tombstone['matched'] = True
+        return True
 
     # TODO(MJ): use task daemon instead
     def load_task(self, req):
@@ -287,11 +326,18 @@ class TaskManager(object):
 
     @staticmethod
     def add_task(api_id, task):
+        cancel_immediately = False
         with task_operator_lock:
-            if api_id in task_daemons:
+            if TaskManager._mark_cancel_tombstone_matched(api_id):
+                cancel_immediately = True
+            elif api_id in task_daemons:
                 task_daemons[api_id].append(task)
             else:
                 task_daemons[api_id] = [task]
+        if cancel_immediately:
+            task.cancel()
+            return False
+        return True
 
     @staticmethod
     def remove_task(api_id, task):
@@ -312,6 +358,30 @@ class TaskManager(object):
             task.cancel()
 
         return len(to_cancel_tasks)
+
+    @staticmethod
+    def remember_cancellation(api_id):
+        with task_operator_lock:
+            TaskManager._prune_cancel_tombstones()
+            tombstone = cancelled_task_tombstones.get(api_id)
+            cancelled_task_tombstones[api_id] = {
+                'expiresAt': time.time() + CANCEL_TOMBSTONE_TTL_SECONDS,
+                'matched': tombstone['matched'] if tombstone else False,
+            }
+
+    @staticmethod
+    def cancellation_pending(api_id):
+        if not api_id:
+            return False
+        with task_operator_lock:
+            return TaskManager._mark_cancel_tombstone_matched(api_id)
+
+    @staticmethod
+    def cancel_tombstone_matched(api_id):
+        with task_operator_lock:
+            TaskManager._prune_cancel_tombstones()
+            tombstone = cancelled_task_tombstones.get(api_id)
+            return bool(tombstone and tombstone['matched'])
 
     @staticmethod
     def wait_task(task_spec, task_name, no_task_return=lambda task_name, api_id:
