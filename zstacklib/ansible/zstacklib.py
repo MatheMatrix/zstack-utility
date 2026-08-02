@@ -2413,7 +2413,7 @@ name=zstack-experimental-mn
 baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/Extra/zstack-experimental/
 gpgcheck=0
 module_hotfixes=true
-enabled=0" >  /etc/yum.repos.d/zstack-experimental-mn.repo; sync
+enabled=0" >  /etc/yum.repos.d/zstack-experimental-mn.repo
                """
         generate_exp_repo_template = jinja2.Template(
             generate_exp_repo_raw_command)
@@ -2430,7 +2430,7 @@ name=mlnx-ofed-mn
 baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/Extra/mlnx-ofed/
 gpgcheck=0
 module_hotfixes=true
-enabled=0" >  /etc/yum.repos.d/mlnx-ofed-mn.repo; sync
+enabled=0" >  /etc/yum.repos.d/mlnx-ofed-mn.repo
                """
         generate_mlnx_repo_template = jinja2.Template(
             generate_mlnx_repo_raw_command)
@@ -2447,7 +2447,7 @@ name=qemu-kvm-ev-mn
 baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/Extra/qemu-kvm-ev/
 gpgcheck=0
 module_hotfixes=true
-enabled=0" >  /etc/yum.repos.d/qemu-kvm-ev-mn.repo; sync
+enabled=0" >  /etc/yum.repos.d/qemu-kvm-ev-mn.repo
                """
         generate_kvm_repo_template = jinja2.Template(
             generate_kvm_repo_raw_command)
@@ -2466,7 +2466,7 @@ name=zstack-mn
 baseurl=http://{{ yum_server }}/zstack/static/zstack-repo/\$basearch/\$YUM0/
 gpgcheck=0
 module_hotfixes=true
-enabled=0" >  /etc/yum.repos.d/zstack-mn.repo; sync
+enabled=0" >  /etc/yum.repos.d/zstack-mn.repo
                """
         generate_mn_repo_template = jinja2.Template(
             generate_mn_repo_raw_command)
