@@ -1,14 +1,20 @@
 __author__ = 'frank'
 
+import base64
+import binascii
 import codecs
+import datetime
+import functools
 import os
 import os.path
-import pprint
+import re
+import shlex
+import subprocess
 import traceback
-import urllib.request, urllib.parse, urllib.error
-import urllib.parse
 import tempfile
 import threading
+import urllib.parse
+import urllib.request
 import rados
 import rbd
 import cherrypy
@@ -26,6 +32,8 @@ from zstacklib.utils import lock
 from zstacklib.utils import linux
 from zstacklib.utils.bash import *
 from zstacklib.utils.ceph import get_mon_addr
+from zstacklib.utils.file_downloader import FileDownloader
+from zstacklib.utils.file_system_upload_task import FileSystemUploadTask
 from zstacklib.utils.rangeset import RangeSet
 from zstacklib.utils.report import Report, get_exact_percent
 from zstacklib.utils import shell
@@ -33,7 +41,17 @@ from zstacklib.utils import ceph
 from zstacklib.utils import qemu_img
 from zstacklib.utils import traceable_shell
 from zstacklib.utils.rollback import rollback, rollbackable
+from zstacklib.utils.safe_tar import UnsafeArchiveError, extract_archive, inspect_archive
+from zstacklib.utils.ssh_validation import (
+    SSHValidationError,
+    validate_ssh_host_ip,
+    validate_ssh_path,
+    validate_ssh_port,
+    validate_ssh_script_path,
+    validate_ssh_username,
+)
 from zstacklib.utils.thread import AsyncThread
+from zstacklib.utils.upload_task import UploadHandler, UploadTasks as FileUploadTasks
 
 logger = log.get_logger(__name__)
 BUFFER_SIZE = 16 * 1024 ** 2
@@ -163,6 +181,48 @@ class GetLocalFileSizeRsp(AgentResponse):
         super(GetLocalFileSizeRsp, self).__init__()
         self.size = None
 
+
+class DownloadFileRsp(AgentResponse):
+    def __init__(self):
+        super(DownloadFileRsp, self).__init__()
+        self.md5sum = None
+        self.size = None
+        self.format = None
+
+
+class UnzipFileRsp(AgentResponse):
+    def __init__(self):
+        super(UnzipFileRsp, self).__init__()
+        self.unzipInstallPath = None
+        self.fileSizes = None
+
+
+class UploadFileRsp(AgentResponse):
+    def __init__(self):
+        super(UploadFileRsp, self).__init__()
+        self.directUploadUrl = None
+
+
+class UploadFileProgressRsp(AgentResponse):
+    def __init__(self):
+        super(UploadFileProgressRsp, self).__init__()
+        self.apiId = None
+        self.completed = False
+        self.progress = 0
+        self.size = 0
+        self.actualSize = 0
+        self.installPath = None
+        self.lastOpTime = 0
+        self.downloadSize = 0
+        self.md5sum = None
+        self.supportSuspend = False
+
+
+class SoftwareUpgradePackageResponse(AgentResponse):
+    def __init__(self):
+        super(SoftwareUpgradePackageResponse, self).__init__()
+        self.upgradeScriptPath = None
+
 def replyerror(func):
     @functools.wraps(func)
     def wrap(*args, **kwargs):
@@ -170,13 +230,16 @@ def replyerror(func):
             return func(*args, **kwargs)
         except Exception as e:
             content = traceback.format_exc()
-            err = '%s\n%s\nargs:%s' % (str(e), content, pprint.pformat([args, kwargs]))
             rsp = AgentResponse()
             rsp.success = False
             rsp.error = str(e)
-            logger.warn(err)
+            logger.warn('%s\n%s' % (str(e), content))
             return jsonobject.dumps(rsp)
     return wrap
+
+
+def validate_install_path(install_path, param_name="installPath"):
+    return linux.validate_install_path(install_path, param_name)
 
 class UploadParam(object):
     def __init__(self):
@@ -510,15 +573,25 @@ class CephAgent(object):
     CHECK_POOL_PATH = "/ceph/backupstorage/checkpool"
     GET_LOCAL_FILE_SIZE = "/ceph/backupstorage/getlocalfilesize/"
     MIGRATE_IMAGE_PATH = "/ceph/backupstorage/image/migrate"
+    FILE_DOWNLOAD_PATH = "/ceph/file/download"
+    FILE_DIRECT_UPLOAD_PATH = "/ceph/file/direct/upload"
+    FILE_UPLOAD_PATH = "/ceph/file/upload"
+    FILE_UPLOAD_PROGRESS_PATH = "/ceph/file/progress"
+    DELETE_FILES_PATH = "/ceph/files/delete"
+    UNZIP_FILE_PATH = "/ceph/file/unzip"
+    SOFTWARE_UPGRADE_PACKAGE_DEPLOY_PATH = "/ceph/upgrade/deploy"
 
     CEPH_METADATA_FILE = "bs_ceph_info.json"
     UPLOAD_PROTO = "upload://"
     LENGTH_OF_UUID = 32
     CEPH_CONF_PATH = "/etc/ceph/ceph.conf"
+    _BASE64_PATTERN = re.compile(r'^[A-Za-z0-9+/]*={0,2}$')
+    _DEFAULT_UPGRADE_SCRIPT_TIMEOUT = 1800
 
     http_server = http.HttpServer(port=7761)
     http_server.logfile_path = log.get_logfile_path()
     upload_tasks = UploadTasks()
+    upload_file_tasks = FileUploadTasks()
 
     def __init__(self):
         self.http_server.register_async_uri(self.INIT_PATH, self.init)
@@ -542,6 +615,15 @@ class CephAgent(object):
         self.http_server.register_async_uri(self.CHECK_POOL_PATH, self.check_pool)
         self.http_server.register_async_uri(self.GET_LOCAL_FILE_SIZE, self.get_local_file_size)
         self.http_server.register_async_uri(self.MIGRATE_IMAGE_PATH, self.migrate_image, cmd=CephToCephMigrateImageCmd())
+        self.http_server.register_async_uri(self.FILE_DOWNLOAD_PATH, self.download_file)
+        self.http_server.register_raw_uri(self.FILE_DIRECT_UPLOAD_PATH, self.direct_upload_file)
+        self.http_server.register_async_uri(self.FILE_UPLOAD_PATH, self.upload_file)
+        self.http_server.register_async_uri(self.FILE_UPLOAD_PROGRESS_PATH, self.get_upload_file_progress)
+        self.http_server.register_async_uri(self.DELETE_FILES_PATH, self.delete_files)
+        self.http_server.register_async_uri(self.UNZIP_FILE_PATH, self.unzip_file)
+        self.http_server.register_async_uri(
+            self.SOFTWARE_UPGRADE_PACKAGE_DEPLOY_PATH,
+            self.deploy_and_execute_software_upgrade_package)
 
         self.cluster = None
         self.ioctx = {}
@@ -1365,6 +1447,407 @@ class CephAgent(object):
             rsp.error = "Failed to migrate image from one ceph backup storage to another."
         self._set_capacity_to_response(rsp)
         return jsonobject.dumps(rsp)
+
+    @replyerror
+    def download_file(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = DownloadFileRsp()
+        install_path, error = validate_install_path(cmd.installPath)
+        if error:
+            rsp.success = False
+            rsp.error = error
+            return jsonobject.dumps(rsp)
+        if os.path.islink(install_path):
+            rsp.success = False
+            rsp.error = "installPath cannot be a symbolic link"
+            return jsonobject.dumps(rsp)
+
+        cmd.installPath = install_path
+        downloader = FileDownloader(Report.from_spec(cmd, "DownloadFile"), cmd)
+        success, error = downloader.download()
+        if not success:
+            rsp.success = False
+            rsp.error = error or "download failed"
+            return jsonobject.dumps(rsp)
+
+        rsp.md5sum = linux.get_file_md5sum_hashlib(install_path)
+        rsp.size = os.path.getsize(install_path)
+        return jsonobject.dumps(rsp)
+
+    @replyerror
+    def delete_files(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = AgentResponse()
+        if not cmd.filePaths or not isinstance(cmd.filePaths, list):
+            rsp.success = False
+            rsp.error = "filePaths must be a non-empty list"
+            return jsonobject.dumps(rsp)
+
+        failed = linux.safe_delete_paths(cmd.filePaths)
+        if failed:
+            rsp.success = False
+            rsp.error = "failed to delete files: %s" % "; ".join(failed)
+        return jsonobject.dumps(rsp)
+
+    PathEscapeError = UnsafeArchiveError
+
+    @staticmethod
+    def check_tar_archive_safety(archive_path):
+        return inspect_archive(archive_path)
+
+    @staticmethod
+    def unzip_package_and_get_files_size(install_path):
+        unzip_dir = tempfile.mkdtemp(prefix="unzip_path_", dir=os.path.dirname(install_path))
+        try:
+            return unzip_dir, extract_archive(install_path, unzip_dir)
+        except Exception:
+            linux.rm_dir_force(unzip_dir)
+            raise
+
+    @replyerror
+    def unzip_file(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = UnzipFileRsp()
+        install_path, error = validate_install_path(cmd.installPath)
+        if error:
+            rsp.success = False
+            rsp.error = error
+            return jsonobject.dumps(rsp)
+        if not os.path.isfile(install_path) or os.path.islink(install_path):
+            rsp.success = False
+            rsp.error = "file not found or is not a regular file: %s" % install_path
+            return jsonobject.dumps(rsp)
+
+        archive_size = CephAgent.check_tar_archive_safety(install_path)
+        _, available_capacity = linux.get_disk_capacity_by_df(os.path.dirname(install_path))
+        required_capacity = max(archive_size, os.path.getsize(install_path))
+        required_capacity = (required_capacity * 11 + 9) // 10
+        if available_capacity < required_capacity:
+            rsp.success = False
+            rsp.error = "insufficient disk space to extract file (available: %s, needed: %s)" % (
+                available_capacity, required_capacity)
+            return jsonobject.dumps(rsp)
+
+        rsp.unzipInstallPath, rsp.fileSizes = self.unzip_package_and_get_files_size(install_path)
+        return jsonobject.dumps(rsp)
+
+    def get_direct_upload_path(self, host):
+        return 'http://' + host + self.FILE_DIRECT_UPLOAD_PATH
+
+    @replyerror
+    def upload_file(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = UploadFileRsp()
+        install_path, error = validate_install_path(cmd.installPath)
+        if error:
+            rsp.success = False
+            rsp.error = error
+            return jsonobject.dumps(rsp)
+        if os.path.islink(install_path):
+            rsp.success = False
+            rsp.error = "installPath cannot be a symbolic link"
+            return jsonobject.dumps(rsp)
+        cmd.installPath = install_path
+
+        class FileUploadDaemon(plugin.TaskDaemon):
+            def __init__(self, task):
+                super(FileUploadDaemon, self).__init__(cmd, 'fileUpload')
+                self.task = task
+                self.task.close = self.close
+
+            def _cancel(self):
+                if not self.task.completed:
+                    self.task.fail("file[%s] upload canceled" % cmd.installPath)
+
+        task = FileSystemUploadTask(cmd.taskUuid, cmd.installPath)
+        self.upload_file_tasks.add_task(task)
+        if not FileUploadDaemon(task).start():
+            rsp.success = False
+            rsp.error = "file[%s] upload canceled before start" % cmd.installPath
+            return jsonobject.dumps(rsp)
+
+        rsp.directUploadUrl = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
+        return jsonobject.dumps(rsp)
+
+    def direct_upload_file(self, req):
+        UploadHandler(req, self.upload_file_tasks).handle_upload()
+
+    @replyerror
+    def get_upload_file_progress(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        task = self.upload_file_tasks.get_task(cmd.taskUuid)
+        if task is None:
+            raise Exception("upload task not found: %s" % cmd.taskUuid)
+
+        rsp = UploadFileProgressRsp()
+        rsp.apiId = cmd.taskUuid
+        rsp.completed = task.completed
+        rsp.size = task.expectedSize
+        rsp.actualSize = task.expectedSize
+        rsp.downloadSize = task.downloadSize
+        rsp.lastOpTime = int(task.lastOpTime * 1000)
+        rsp.supportSuspend = True
+
+        if task.downloadSize == 0:
+            rsp.installPath = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
+        elif task.completed and not task.lastError:
+            actual_size = os.path.getsize(task.installPath) if os.path.isfile(task.installPath) else 0
+            if actual_size <= 0:
+                rsp.success = False
+                rsp.error = "upload completed but file is missing or empty"
+                return jsonobject.dumps(rsp)
+            rsp.size = actual_size
+            rsp.actualSize = actual_size
+            rsp.downloadSize = actual_size
+            rsp.md5sum = linux.get_file_md5sum_hashlib(task.installPath)
+            rsp.installPath = task.installPath
+            rsp.progress = 100
+        elif task.expectedSize > 0:
+            rsp.progress = min(90, task.downloadSize * 90 // task.expectedSize)
+            rsp.installPath = self.get_direct_upload_path(req[http.REQUEST_HEADER]['Host'])
+
+        if task.lastError is not None:
+            rsp.success = False
+            rsp.error = task.lastError
+        return jsonobject.dumps(rsp)
+
+    @staticmethod
+    def _run_process(args, input_data=None, timeout=None):
+        process = subprocess.Popen(
+            args, stdin=subprocess.PIPE if input_data is not None else None,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            stdout, stderr = process.communicate(input=input_data, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            return 124, stdout.decode('utf-8', errors='replace'), stderr.decode('utf-8', errors='replace')
+        return (
+            process.returncode,
+            stdout.decode('utf-8', errors='replace'),
+            stderr.decode('utf-8', errors='replace'),
+        )
+
+    @replyerror
+    def deploy_and_execute_software_upgrade_package(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = SoftwareUpgradePackageResponse()
+
+        try:
+            validate_ssh_port(cmd.targetHostSshPort)
+            validate_ssh_username(cmd.targetHostSshUsername)
+            validate_ssh_host_ip(cmd.targetHostIp)
+            validate_ssh_path(
+                cmd.upgradePackagePath,
+                param_name="upgradePackagePath",
+                allow_relative=False)
+            validate_ssh_path(
+                cmd.upgradePackageTargetPath,
+                param_name="upgradePackageTargetPath",
+                allow_relative=False)
+            validate_ssh_script_path(
+                cmd.upgradeScriptPath,
+                param_name="upgradeScriptPath",
+                allow_relative=False)
+        except SSHValidationError as e:
+            rsp.success = False
+            rsp.error = "parameter validation failed: %s" % str(e)
+            return jsonobject.dumps(rsp)
+
+        package_path, error = validate_install_path(
+            cmd.upgradePackagePath, "upgradePackagePath")
+        if error:
+            rsp.success = False
+            rsp.error = error
+            return jsonobject.dumps(rsp)
+        if not os.path.isfile(package_path) or os.path.islink(package_path):
+            rsp.success = False
+            rsp.error = "local upgrade package is missing or not a regular file: %s" % package_path
+            return jsonobject.dumps(rsp)
+
+        target_path = os.path.normpath(cmd.upgradePackageTargetPath)
+        script_path = os.path.normpath(cmd.upgradeScriptPath)
+        try:
+            if os.path.commonpath([target_path, script_path]) != target_path or script_path == target_path:
+                raise ValueError()
+        except ValueError:
+            rsp.success = False
+            rsp.error = "upgradeScriptPath must be inside upgradePackageTargetPath"
+            return jsonobject.dumps(rsp)
+
+        try:
+            CephAgent.check_tar_archive_safety(package_path)
+        except Exception as e:
+            rsp.success = False
+            rsp.error = "failed to verify upgrade package: %s" % str(e)
+            return jsonobject.dumps(rsp)
+
+        encoded_password = cmd.targetHostSshPassword
+        try:
+            if not encoded_password or not self._BASE64_PATTERN.fullmatch(encoded_password):
+                raise ValueError("malformed base64 input")
+            password = base64.b64decode(encoded_password, validate=True)
+            if not password or b'\x00' in password or b'\n' in password or b'\r' in password:
+                raise ValueError("decoded password contains unsupported characters")
+        except (binascii.Error, ValueError, TypeError) as e:
+            rsp.success = False
+            rsp.error = "targetHostSshPassword is not valid base64: %s" % str(e)
+            return jsonobject.dumps(rsp)
+
+        target_ip = str(cmd.targetHostIp)
+        scp_host = "[%s]" % target_ip if ':' in target_ip else target_ip
+        scp_target = "%s@%s" % (cmd.targetHostSshUsername, scp_host)
+        ssh_port = int(cmd.targetHostSshPort)
+        package_name = os.path.basename(package_path)
+        remote_package_path = os.path.join(target_path, package_name)
+        log_dir = "/var/log/zstack/zmigrate-upgrade"
+        log_path = "%s/zmigrate-upgrade-%s.log" % (
+            log_dir, datetime.datetime.now().strftime("%Y%m%d%H%M%S.%f"))
+        password_file = None
+        target_created = False
+
+        try:
+            password_dir = '/dev/shm' if os.path.isdir('/dev/shm') else None
+            with tempfile.NamedTemporaryFile(
+                    mode='wb', prefix='zmigrate-ssh-', dir=password_dir, delete=False) as stream:
+                stream.write(password)
+                password_file = stream.name
+            os.chmod(password_file, 0o600)
+
+            ssh_args = [
+                'sshpass', '-f', password_file,
+                'ssh', '-p', str(ssh_port),
+                '-o', 'StrictHostKeyChecking=no',
+                '-o', 'UserKnownHostsFile=/dev/null',
+                '-o', 'ConnectTimeout=30',
+                '-l', str(cmd.targetHostSshUsername),
+                target_ip,
+            ]
+
+            def stage_error(stage, details):
+                details = (details or "").strip() or "(no output)"
+                return "software upgrade deploy failed: stage=%s, targetHost=%s:%s, details=%s" % (
+                    stage, target_ip, ssh_port, details)
+
+            def run_ssh(command, stage, as_root=False, timeout=120):
+                input_data = None
+                remote_command = command
+                if as_root:
+                    remote_command = "sudo -S -p '' -- sh -c %s" % shlex.quote(command)
+                    input_data = password + b'\n'
+                code, output, error_output = self._run_process(
+                    ssh_args + [remote_command], input_data=input_data, timeout=timeout)
+                if code != 0:
+                    details = error_output or output
+                    if code == 124:
+                        details = "command timed out after %s seconds; %s" % (timeout, details)
+                    raise Exception(stage_error(stage, details))
+                return output
+
+            create_command = "mkdir -m 700 -- %s" % shlex.quote(target_path)
+            run_ssh(create_command, "create-target-directory")
+            target_created = True
+
+            scp_args = [
+                'sshpass', '-f', password_file,
+                'scp', '-P', str(ssh_port),
+                '-o', 'StrictHostKeyChecking=no',
+                '-o', 'UserKnownHostsFile=/dev/null',
+                '-o', 'ConnectTimeout=30',
+                package_path,
+                "%s:%s" % (scp_target, remote_package_path),
+            ]
+            code, output, error_output = self._run_process(scp_args, timeout=1200)
+            if code != 0:
+                details = error_output or output
+                if code == 124:
+                    details = "scp timed out after 1200 seconds; %s" % details
+                raise Exception(stage_error("copy-upgrade-package", details))
+
+            extract_command = "tar --no-same-owner --no-same-permissions -xf %s -C %s" % (
+                shlex.quote(remote_package_path), shlex.quote(target_path))
+            run_ssh(extract_command, "extract-upgrade-package", as_root=True, timeout=1200)
+
+            verify_command = "find %s -xdev -exec realpath -- {} \\;" % shlex.quote(target_path)
+            resolved_paths = run_ssh(
+                verify_command, "verify-extracted-paths", as_root=True, timeout=300)
+            escaped_paths = [
+                path for path in resolved_paths.splitlines()
+                if path and os.path.commonpath([target_path, path]) != target_path
+            ]
+            if escaped_paths:
+                raise Exception(stage_error(
+                    "verify-extracted-paths",
+                    "path escape detected: %s" % "; ".join(escaped_paths[:10])))
+
+            script_timeout = self._DEFAULT_UPGRADE_SCRIPT_TIMEOUT
+            requested_timeout = getattr(cmd, 'upgradeScriptTimeout', None)
+            if requested_timeout is not None:
+                try:
+                    script_timeout = max(1, int(requested_timeout))
+                except (TypeError, ValueError):
+                    pass
+
+            execute_command = (
+                "mkdir -p -- {log_dir} && chmod +x -- {script} && cd {script_dir} "
+                "&& timeout {timeout} {script} > {log_path} 2>&1"
+            ).format(
+                log_dir=shlex.quote(log_dir),
+                script=shlex.quote(script_path),
+                script_dir=shlex.quote(os.path.dirname(script_path)),
+                timeout=script_timeout,
+                log_path=shlex.quote(log_path))
+            try:
+                run_ssh(
+                    execute_command,
+                    "execute-upgrade-script",
+                    as_root=True,
+                    timeout=script_timeout + 30)
+            except Exception as execution_error:
+                try:
+                    log_tail = run_ssh(
+                        "tail -n 80 -- %s" % shlex.quote(log_path),
+                        "read-upgrade-log",
+                        as_root=True,
+                        timeout=60)
+                except Exception:
+                    log_tail = ""
+                if log_tail:
+                    raise Exception("%s; logPath=%s; logTail=%s" % (
+                        str(execution_error), log_path, log_tail[-16384:]))
+                raise
+
+            rsp.upgradeScriptPath = script_path
+            return jsonobject.dumps(rsp)
+        except Exception as e:
+            rsp.success = False
+            rsp.error = str(e)
+            return jsonobject.dumps(rsp)
+        finally:
+            if target_created and password_file:
+                try:
+                    cleanup_ssh_args = [
+                        'sshpass', '-f', password_file,
+                        'ssh', '-p', str(ssh_port),
+                        '-o', 'StrictHostKeyChecking=no',
+                        '-o', 'UserKnownHostsFile=/dev/null',
+                        '-o', 'ConnectTimeout=30',
+                        '-l', str(cmd.targetHostSshUsername),
+                        target_ip,
+                        "sudo -S -p '' -- rm -rf -- %s" % shlex.quote(target_path),
+                    ]
+                    code, _, error_output = self._run_process(
+                        cleanup_ssh_args, input_data=password + b'\n', timeout=120)
+                    if code != 0:
+                        logger.warning(
+                            "failed to clean remote upgrade target %s: %s" %
+                            (target_path, error_output.strip()))
+                except Exception as cleanup_error:
+                    logger.warning(
+                        "failed to clean remote upgrade target %s: %s" %
+                        (target_path, str(cleanup_error)))
+            if password_file:
+                linux.rm_file_force(password_file)
 
     @replyerror
     def cancel(self, req):

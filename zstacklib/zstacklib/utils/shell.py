@@ -85,8 +85,8 @@ class ShellCmd(object):
         return self.stdout
 
 
-def call(cmd, exception=True, workdir=None, output_bytes=False):
-    return ShellCmd(cmd, workdir)(exception, output_bytes=output_bytes)
+def call(cmd, exception=True, workdir=None, output_bytes=False, logcmd=True):
+    return ShellCmd(cmd, workdir)(exception, logcmd=logcmd, output_bytes=output_bytes)
 
 
 def run(cmd, workdir=None):
