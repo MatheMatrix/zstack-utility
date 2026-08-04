@@ -27,14 +27,20 @@ def get_physical_capacity(storagePath):
         "storagePath":storagePath
     }))
 
+def _guarded(handler, body):
+    return LOCALSTORAGE_PLUGIN._with_initialized_file_guard(handler)(misc.make_a_request(body))
+
 @misc.return_jsonobject()
-def create_empty_volume(installUrl=None, backingFile=None, size=None, storagePath=None):
-    return LOCALSTORAGE_PLUGIN.create_empty_volume(misc.make_a_request({
+def create_empty_volume(installUrl=None, backingFile=None, size=None, storagePath=None, uuid=None,
+                        primaryStorageUuid=None):
+    return _guarded(LOCALSTORAGE_PLUGIN.create_empty_volume, {
         "installUrl" : installUrl,
         "backingFile" : backingFile,
         "size" : size,
-        "storagePath": storagePath
-    }))
+        "storagePath": storagePath,
+        "uuid": uuid,
+        "primaryStorageUuid": primaryStorageUuid
+    })
 
 @misc.return_jsonobject()
 def create_folder(installUrl=None, storagePath=None):
@@ -44,20 +50,26 @@ def create_folder(installUrl=None, storagePath=None):
     }))
 
 @misc.return_jsonobject()
-def create_root_volume_from_template(templatePathInCache=None, installUrl=None, storagePath=None):
-    return LOCALSTORAGE_PLUGIN.create_root_volume_from_template(misc.make_a_request({
+def create_root_volume_from_template(templatePathInCache=None, installUrl=None, storagePath=None, uuid=None,
+                                     primaryStorageUuid=None):
+    return _guarded(LOCALSTORAGE_PLUGIN.create_root_volume_from_template, {
         "templatePathInCache":templatePathInCache,
         "installUrl":installUrl,
-        "storagePath": storagePath
-    }))
+        "storagePath": storagePath,
+        "uuid": uuid,
+        "primaryStorageUuid": primaryStorageUuid
+    })
 
 @misc.return_jsonobject()
-def create_volume_with_backing(templatePathInCache=None, installPath=None, storagePath=None):
-    return LOCALSTORAGE_PLUGIN.create_volume_with_backing(misc.make_a_request({
+def create_volume_with_backing(templatePathInCache=None, installPath=None, storagePath=None, uuid=None,
+                               primaryStorageUuid=None):
+    return _guarded(LOCALSTORAGE_PLUGIN.create_volume_with_backing, {
         "templatePathInCache":templatePathInCache,
         "installPath":installPath,
-        "storagePath":storagePath
-    }))
+        "storagePath":storagePath,
+        "uuid": uuid,
+        "primaryStorageUuid": primaryStorageUuid
+    })
 
 @misc.return_jsonobject()
 def deleteImage(path=None, storagePath=None):
