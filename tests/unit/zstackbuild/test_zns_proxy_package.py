@@ -42,6 +42,7 @@ class ZnsProxyPackageTest(unittest.TestCase):
                 "zns-proxy:\n"
                 "\t@mkdir -p target\n"
                 "\t@\"$(GO)\" version > target/go-version.log\n"
+                "\t@printf '%s\\n' \"$(ARCH)\" > target/zns-proxy-arch.log\n"
                 "\t@printf 'fake-zns-proxy\\n' > target/zns-proxy.bin\n"
             )
         subprocess.check_call(["git", "init", "-q"], cwd=source)
@@ -140,6 +141,9 @@ class ZnsProxyPackageTest(unittest.TestCase):
         with open(package, "rb") as stream:
             package_sha256 = hashlib.sha256(stream.read()).hexdigest()
         self.assertEqual(package_sha256, manifest["sha256"])
+        self.assertEqual(["amd64"], manifest["arch"])
+        with open(os.path.join(source, "target", "zns-proxy-arch.log")) as stream:
+            self.assertEqual("amd64", stream.read().strip())
 
         ansible_dir = os.path.join(
             self.build_dir,
