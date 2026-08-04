@@ -400,6 +400,29 @@ def install_kvm_pkg():
             'x86_64': 'edk2-ovmf edk2.git-ovmf-x64',
             'aarch64': 'edk2-aarch64'
         }
+
+        tpm_stack_rpms = 'swtpm swtpm-libs swtpm-tools libtpms tpm2-tss'
+        releasever_arch_rpms = {
+            'alinux4': {
+                'x86_64': 'key-manager %s' % tpm_stack_rpms,
+                'aarch64': 'key-manager %s' % tpm_stack_rpms,
+            },
+            'c76': {'x86_64': 'key-manager'},
+            'c79': {'x86_64': 'key-manager'},
+            'h76c': {'x86_64': 'key-manager'},
+            'h79c': {'x86_64': 'key-manager'},
+            'h84r': {'x86_64': 'key-manager %s' % tpm_stack_rpms},
+            'uos20r': {'x86_64': 'key-manager %s' % tpm_stack_rpms},
+            'ky10sp3': {
+                'x86_64': 'key-manager %s' % tpm_stack_rpms,
+                'aarch64': 'key-manager',
+            },
+            'ky10sp3.2403': {
+                'x86_64': 'key-manager %s' % tpm_stack_rpms,
+                'aarch64': 'key-manager',
+            },
+            'h2203sp1o': {'aarch64': 'key-manager %s' % tpm_stack_rpms},
+        }
         
         arch_exclude_mapping = {
             'loongarch64': 'edac-utils freeipmi lldpd libcbd',
@@ -426,12 +449,14 @@ def install_kvm_pkg():
         if zstack_repo != 'false':
             distro_head = host_info.distro.split("_")[0] if releasever in kylin or releasever in uos else host_info.distro
             arch_release = "%s_%s" % (host_info.host_arch, releasever)
-            common_dep_list = "%s %s %s %s %s" % (
+            arch_dep_list = releasever_arch_rpms.get(releasever, {}).get(host_info.host_arch, '')
+            common_dep_list = "%s %s %s %s %s %s" % (
                 os_base_dep,
                 distro_mapping.get(distro_head, ''),
                 releasever_mapping.get(releasever, ''),
                 edk2_mapping.get(host_info.host_arch, ''),
-                arch_release_mapping.get(arch_release, ''))
+                arch_release_mapping.get(arch_release, ''),
+                arch_dep_list)
             # common kvmagent deps of x86 and arm that need to update
             common_update_list = ("sanlock sysfsutils hwdata sg3_utils lvm2"
                                   " lvm2-libs lvm2-lockd systemd openssh"
@@ -447,6 +472,8 @@ def install_kvm_pkg():
             dep_list = common_dep_list
             update_list = common_update_list
             no_update_list = common_no_update_list
+            if arch_dep_list:
+                update_list = "%s %s" % (update_list, arch_dep_list)
 
             # libvirt does not need to be updated
             command = "which virsh"
@@ -672,6 +699,12 @@ def install_kvm_pkg():
         deb_based_install()
     else:
         error("unsupported OS!")
+
+def initialize_keymanager():
+    command = "if getent group libvirt >/dev/null 2>&1 && id -u keymanager >/dev/null 2>&1; then usermod -a -G libvirt keymanager; fi"
+    host_post_info.post_label = "ansible.shell.user.mod"
+    host_post_info.post_label_param = "keymanager->libvirt"
+    run_remote_command(command, host_post_info)
 
 def copy_tools():
     """copy binary tools"""
@@ -1218,6 +1251,19 @@ def set_gpu_blacklist():
     run_remote_command(command, host_post_info)
 
 
+def start_key_agent():
+    if host_info.host_arch not in ('x86_64', 'aarch64'):
+        return
+    if chroot_env != 'false':
+        return
+    command = "if systemctl list-unit-files key-agent.service 2>/dev/null | grep -q '^key-agent\\.service'; then " \
+              "systemctl enable key-agent && systemctl start key-agent; " \
+              "fi"
+    host_post_info.post_label = "ansible.shell.start.key_agent"
+    host_post_info.post_label_param = None
+    run_remote_command(command, host_post_info)
+
+
 def check_is_remote_cube():
     command = "ls /usr/local/hyperconverged"
     status = run_remote_command(command, host_post_info, return_status=True)
@@ -1228,6 +1274,7 @@ def check_is_remote_cube():
 check_is_remote_cube()
 check_nested_kvm(host_post_info)
 install_kvm_pkg()
+initialize_keymanager()
 copy_tools()
 copy_kvm_files()
 copy_exporter_tools()
@@ -1257,6 +1304,7 @@ do_ksm_config()
 modprobe_usb_module()
 modprobe_mpci_module()
 set_gpu_blacklist()
+start_key_agent()
 start_kvmagent()
 
 host_post_info.start_time = start_time

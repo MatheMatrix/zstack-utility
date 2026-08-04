@@ -55,6 +55,7 @@ from kvmagent.plugins import vm_artifact
 from kvmagent.plugins import zbs_vhost_target
 from kvmagent.plugins.imagestore import ImageStoreClient
 from kvmagent.plugins.shared_block_plugin import MAX_ACTUAL_SIZE_FACTOR
+from kvmagent.plugins.vms import vm_host_file, vm_host_file_monitor, tpm
 from zstacklib.utils import bash, plugin, iscsi, gpu, traceable_shell
 from zstacklib.utils.bash import in_bash
 from zstacklib.utils import http
@@ -92,6 +93,9 @@ from zstacklib.utils.libvirt_singleton import LibvirtEventManagerSingleton
 from zstacklib.utils.libvirt_singleton import LibvirtSingleton
 
 logger = log.get_logger(__name__)
+
+VIR_DOMAIN_UNDEFINE_TPM = 1 << 5
+VIR_DOMAIN_UNDEFINE_KEEP_TPM = 1 << 6
 
 HOST_ARCH = platform.machine()
 
@@ -555,6 +559,12 @@ class StartVmCmd(kvmagent.AgentCommand):
         self.isApplianceVm = False
         self.systemSerialNumber = None
         self.bootMode = None
+        self.secureBoot = None
+        self.edkVersion = None
+        self.tpm = None
+        self.nvRam = None
+        self.hostFiles = []
+        self.vmHostFileBackupJobs = []
         self.consolePassword = None
         self.enableHa = None
         self.memBalloon = None # type:VirtualDeviceInfo
@@ -568,6 +578,37 @@ class StartVmResponse(kvmagent.AgentResponse):
         self.virtualDeviceInfoList = []  # type:list[VirtualDeviceInfo]
         self.memBalloonInfo = None  # type:VirtualDeviceInfo
         self.virtualizerInfo = VirtualizerInfoTO()  # type:VirtualizerInfoTO
+
+
+class ReadVmHostFileContentCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(ReadVmHostFileContentCmd, self).__init__()
+        self.hostFiles = []
+
+class ReadVmHostFileContentResponse(kvmagent.AgentResponse):
+    @log.sensitive_fields("hostFiles")
+    def __init__(self):
+        super(ReadVmHostFileContentResponse, self).__init__()
+        self.hostFiles = []
+
+class WriteVmHostFileContentCmd(kvmagent.AgentCommand):
+    @log.sensitive_fields("hostFiles")
+    def __init__(self):
+        super(WriteVmHostFileContentCmd, self).__init__()
+        self.hostFiles = []
+
+class WriteVmHostFileContentResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(WriteVmHostFileContentResponse, self).__init__()
+
+class BackupVmHostFileCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(BackupVmHostFileCmd, self).__init__()
+        self.vmHostFileBackupJobs = []
+
+class BackupVmHostFileResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(BackupVmHostFileResponse, self).__init__()
         self.pciDeviceInfos = {} # type:dict[str,str]
         self.mdevDeviceInfos = {}  # type:dict[str,str]
 
@@ -3744,19 +3785,23 @@ class Vm(object):
 
             def force_undefine():
                 try:
-                    self.domain.undefine()
+                    flags = libvirt.VIR_DOMAIN_UNDEFINE_KEEP_NVRAM
+                    if tpm.VIRSH_SUPPORT_KEEP_TPM:
+                        flags |= VIR_DOMAIN_UNDEFINE_KEEP_TPM
+                    self.domain.undefineFlags(flags)
                 except:
                     logger.warn('cannot undefine the VM[uuid:%s]' % self.uuid)
                     pid = linux.find_process_by_cmdline(['qemu', self.uuid])
                     if pid:
-                        # force to kill the VM
                         linux.kill_process(pid, is_exception=False)
 
             try:
                 flags = 0
-                for attr in [ "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA", "VIR_DOMAIN_UNDEFINE_NVRAM" ]:
+                for attr in ["VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", "VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA", "VIR_DOMAIN_UNDEFINE_KEEP_NVRAM"]:
                     if hasattr(libvirt, attr):
                         flags |= getattr(libvirt, attr)
+                if tpm.VIRSH_SUPPORT_KEEP_TPM:
+                    flags |= getattr(libvirt, "VIR_DOMAIN_UNDEFINE_KEEP_TPM", VIR_DOMAIN_UNDEFINE_KEEP_TPM)
                 self.domain.undefineFlags(flags)
             except libvirt.libvirtError as ex:
                 logger.warn('undefine domain[%s] failed: %s' % (self.uuid, str(ex)))
@@ -5274,6 +5319,12 @@ class Vm(object):
 
         if cmd.useNuma or storage_migration_required:
             flag |= libvirt.VIR_MIGRATE_PERSIST_DEST
+        try:
+            tpm_devices = self.domain_xmlobject.devices.get_child_node_as_list('tpm')
+            if tpm_devices and len(tpm_devices) > 0:
+                flag |= libvirt.VIR_MIGRATE_PERSIST_DEST
+        except Exception:
+            pass
 
         if use_tls and hasattr(libvirt, 'VIR_MIGRATE_TLS'):
             flag |= libvirt.VIR_MIGRATE_TLS
@@ -6734,7 +6785,8 @@ class Vm(object):
                 # if boot mode is UEFI
                 if cmd.bootMode in ["UEFI", "UEFI_WITH_CSM"]:
                     e(os, 'loader', loader_path, attrib={'readonly': 'yes', 'type': 'pflash'})
-                    e(os, 'nvram', '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid, attrib={'template': nvram_path})
+                    nvram_path_fd = '/var/lib/libvirt/qemu/nvram/%s-host-files/%s.fd' % (cmd.vmInstanceUuid, cmd.vmInstanceUuid) if (cmd.nvRam or cmd.tpm) else '/var/lib/libvirt/qemu/nvram/%s.fd' % cmd.vmInstanceUuid
+                    e(os, 'nvram', nvram_path_fd, attrib={'template': nvram_path})
                 elif cmd.addons['loaderRom'] is not None:
                     e(os, 'loader', cmd.addons['loaderRom'], {'type': 'rom'})
 
@@ -7014,6 +7066,17 @@ class Vm(object):
             else:
                 set_keyboard()
                 set_tablet()
+
+            if cmd.tpm is not None:
+                tpm_element = e(devices, 'tpm', None, {'model': 'tpm-crb'})
+                backend_element = e(tpm_element, 'backend', None, {'type': 'emulator', 'version': '2.0'})
+                secret = getattr(cmd.tpm, "secretUuid", '')
+                if secret:
+                    try:
+                        secret = str(uuid.UUID(secret))
+                    except (TypeError, ValueError):
+                        raise kvmagent.KvmError('invalid TPM secretUuid: %s' % secret)
+                    e(backend_element, 'encryption', None, {'secret': secret})
 
             elements['devices'] = devices
 
@@ -8553,6 +8616,11 @@ class VmPlugin(kvmagent.KvmAgent):
 
     SET_VM_VF_NIC_STATE = "/vm/vfnic/state"
     SET_VF_NIC_MAC_PATH = "/vm/setvfnicmac"
+
+    READ_VM_HOST_FILE_PATH = "/vm/hostfile/read"
+    WRITE_VM_HOST_FILE_PATH = "/vm/hostfile/write"
+    BACKUP_VM_HOST_FILE_PATH = "/vm/hostfile/backup"
+    VTPM_RESOLVE_LIBVIRT_SECRET_UUID_PATH = '/vm/vtpm/resolveLibvirtSecretUuid'
 
     VM_OP_START = "start"
     VM_OP_STOP = "stop"
@@ -13525,6 +13593,75 @@ host side snapshot files chian:
 
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def read_hostfile(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = ReadVmHostFileContentResponse()
+        for hf in cmd.hostFiles:
+            if hf.type == 'NvRam':
+                rsp.hostFiles.append(vm_host_file.read_vm_host_file_base64(hf))
+            elif hf.type == 'TpmState':
+                rsp.hostFiles.append(tpm.TpmStateHostFile().read_file(hf))
+            else:
+                result = vm_host_file.VmHostFileTO()
+                result.path = hf.path
+                result.type = hf.type
+                result.error = 'invalid host file type: %s' % hf.type
+                rsp.hostFiles.append(result)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def write_hostfile(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = WriteVmHostFileContentResponse()
+        errors = []
+        for hf in cmd.hostFiles:
+            try:
+                if hf.type == 'NvRam':
+                    vm_host_file.write_vm_host_file(hf)
+                elif hf.type == 'TpmState':
+                    tpm.TpmStateHostFile().write_file(hf)
+                else:
+                    errors.append('invalid host file type: %s' % hf.type)
+            except Exception as ex:
+                errors.append(str(ex))
+        if errors:
+            rsp.success = False
+            rsp.error = ', '.join(errors)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def backup_hostfile(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = BackupVmHostFileResponse()
+        try:
+            vm_host_file.backup_vm_host_files(cmd.vmHostFileBackupJobs)
+        except Exception as ex:
+            rsp.success = False
+            rsp.error = str(ex)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def resolve_vtpm_libvirt_secret_uuid(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = kvmagent.AgentResponse()
+        domain_xml = None
+        try:
+            conn = LibvirtSingleton.get_connection()
+            dom = conn.lookupByName(cmd.vmInstanceUuid)
+            domain_xml = dom.XMLDesc(0)
+        except Exception as ex:
+            rsp.success = False
+            rsp.error = str(ex)
+            return jsonobject.dumps(rsp)
+        secret_uuid, err = tpm.get_vtpm_libvirt_secret_uuid_from_domain_xml(domain_xml)
+        if err:
+            rsp.success = False
+            rsp.error = err
+        else:
+            rsp.secretUuid = secret_uuid
+        return jsonobject.dumps(rsp)
+
     def start(self):
         http_server = kvmagent.get_http_server()
 
@@ -13642,6 +13779,10 @@ host side snapshot files chian:
         http_server.register_async_uri(self.DETACH_VIRTIO_DRIVER_PATH, self.detach_virtio_driver)
         http_server.register_async_uri(self.SET_VM_VF_NIC_STATE, self.set_vf_nic_state)
         http_server.register_async_uri(self.SET_VF_NIC_MAC_PATH, self.set_vf_nic_mac)
+        http_server.register_async_uri(self.READ_VM_HOST_FILE_PATH, self.read_hostfile, cmd=ReadVmHostFileContentCmd())
+        http_server.register_async_uri(self.WRITE_VM_HOST_FILE_PATH, self.write_hostfile, cmd=WriteVmHostFileContentCmd())
+        http_server.register_async_uri(self.BACKUP_VM_HOST_FILE_PATH, self.backup_hostfile, cmd=BackupVmHostFileCmd())
+        http_server.register_async_uri(self.VTPM_RESOLVE_LIBVIRT_SECRET_UUID_PATH, self.resolve_vtpm_libvirt_secret_uuid)
 
         # snapshot stale sshfs mounts before going async, so the background
         # thread won't accidentally unmount mounts created after startup

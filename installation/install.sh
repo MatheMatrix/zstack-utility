@@ -1871,6 +1871,8 @@ upgrade_zstack(){
     zstack-ctl show_configuration | grep 'deploy_mode' | grep zsv >/dev/null 2>&1
     [ $? -eq 0 ] && show_spinner iz_upgrade_zsphere_tools
 
+    show_spinner iz_install_key_manager
+
     # update consoleProxyCertFile if necessary
     update_console_proxy_cert_file
 
@@ -2075,6 +2077,49 @@ is_install_virtualenv(){
     [ $? -ne 0 ] && fail "install virtualenv failed"
     pass
 }
+
+iz_install_key_manager(){
+    echo_subtitle "Install Key Manager"
+    trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
+
+    if [[ $REDHAT_OS != *"$OS"* ]]; then
+        echo "key-manager install is skipped on non-RedHat OS $OS" >>$ZSTACK_INSTALL_LOG
+        pass
+        return
+    fi
+    if [ "$BASEARCH" != 'x86_64' ] && [ "$BASEARCH" != 'aarch64' ]; then
+        echo "key-manager install is skipped on unsupported arch $BASEARCH" >>$ZSTACK_INSTALL_LOG
+        pass
+        return
+    fi
+    if [ -z "$ZSTACK_YUM_REPOS" ]; then
+        echo "key-manager install is skipped because ZSTACK_YUM_REPOS is empty" >>$ZSTACK_INSTALL_LOG
+        pass
+        return
+    fi
+
+    yum --disablerepo="*" --enablerepo="$ZSTACK_YUM_REPOS" clean metadata >/dev/null 2>&1
+    yum --disablerepo="*" --enablerepo="$ZSTACK_YUM_REPOS" list key-manager >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "key-manager package not found in repo(s) $ZSTACK_YUM_REPOS, skip install" >>$ZSTACK_INSTALL_LOG
+        pass
+        return
+    fi
+
+    echo yum install --disablerepo="*" --enablerepo="$ZSTACK_YUM_REPOS" -y key-manager >>$ZSTACK_INSTALL_LOG
+    yum install --disablerepo="*" --enablerepo="$ZSTACK_YUM_REPOS" -y key-manager >>$ZSTACK_INSTALL_LOG 2>&1
+    [ $? -ne 0 ] && fail "failed to install key-manager from repo(s) $ZSTACK_YUM_REPOS"
+
+    if systemctl list-unit-files crypto-daemon.service 2>/dev/null | grep -q '^crypto-daemon.service'; then
+        systemctl enable crypto-daemon.service >>$ZSTACK_INSTALL_LOG 2>&1
+        systemctl start crypto-daemon.service >>$ZSTACK_INSTALL_LOG 2>&1
+    fi
+    if systemctl list-unit-files key-tool.service 2>/dev/null | grep -q '^key-tool.service'; then
+        systemctl enable key-tool.service >>$ZSTACK_INSTALL_LOG 2>&1
+        systemctl start key-tool.service >>$ZSTACK_INSTALL_LOG 2>&1
+    fi
+    pass
+} >>$ZSTACK_INSTALL_LOG 2>&1
 
 is_install_general_libs_deb(){
     echo_subtitle "Install General Libraries (takes a couple of minutes)"
@@ -2809,6 +2854,7 @@ install_zstack(){
     show_spinner iz_install_zstackcli
     show_spinner iz_install_zstackctl
     show_spinner cp_third_party_tools
+    show_spinner iz_install_key_manager
     if [ -z $ONLY_INSTALL_ZSTACK ]; then
         show_spinner sd_install_zstack_ui
         zstack-ctl config_ui --restore
