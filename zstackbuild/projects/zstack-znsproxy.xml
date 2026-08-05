@@ -38,7 +38,7 @@
             <env key="GOWORK" value="off" />
             <env key="GOROOT" value="" />
             <arg value="zns-proxy" />
-            <arg value="ARCH=amd64 arm64 loong64" />
+            <arg value="ARCH=amd64" />
             <arg value="GO=${zstackzns.go}" />
         </exec>
 
@@ -57,7 +57,7 @@
             <arg value="--version" />
             <arg value="${bin.version}" />
             <arg value="--arch" />
-            <arg value="amd64,arm64,loong64" />
+            <arg value="amd64" />
             <arg value="--path" />
             <arg value="zns-proxy.bin" />
         </exec>
