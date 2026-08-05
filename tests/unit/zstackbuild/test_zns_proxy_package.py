@@ -44,6 +44,8 @@ class ZnsProxyPackageTest(unittest.TestCase):
                 "\t@\"$(GO)\" version > target/go-version.log\n"
                 "\t@printf '%s\\n' \"$(ARCH)\" > target/zns-proxy-arch.log\n"
                 "\t@printf 'fake-zns-proxy\\n' > target/zns-proxy.bin\n"
+                "print-zns-proxy-version:\n"
+                "\t@printf '1.2.0.1\\n'\n"
             )
         subprocess.check_call(["git", "init", "-q"], cwd=source)
         subprocess.check_call(["git", "add", "Makefile", "go.mod"], cwd=source)
@@ -144,6 +146,8 @@ class ZnsProxyPackageTest(unittest.TestCase):
         self.assertEqual(["amd64"], manifest["arch"])
         with open(os.path.join(source, "target", "zns-proxy-arch.log")) as stream:
             self.assertEqual("amd64", stream.read().strip())
+        self.assertEqual("zns-proxy", manifest["component"])
+        self.assertEqual("1.2.0.1", manifest["version"])
 
         ansible_dir = os.path.join(
             self.build_dir,
@@ -173,6 +177,27 @@ class ZnsProxyPackageTest(unittest.TestCase):
                     os.path.join(root, name),
                 )
 
+        assembled_manifest = expected[1]
+        invalid_fields = [
+            ("version", 1, "manifest version must be a non-empty string"),
+            ("sha256", None, "manifest sha256 must be a non-empty string"),
+            ("arch", [0], "manifest arch must be a non-empty list of strings"),
+            ("buildTime", True, "manifest buildTime must be a non-empty string"),
+        ]
+        for field, value, message in invalid_fields:
+            invalid_manifest = manifest.copy()
+            invalid_manifest[field] = value
+            with open(assembled_manifest, "w") as stream:
+                json.dump(invalid_manifest, stream)
+            guard_result = self._run_ant(
+                self._write_go("go1.24.12"),
+                ["verify-zstack-zns-proxy-package"],
+            )
+            self.assertNotEqual(0, guard_result.returncode, guard_result.stdout)
+            self.assertIn(message, guard_result.stdout)
+        with open(assembled_manifest, "w") as stream:
+            json.dump(manifest, stream)
+
         forbidden = os.path.join(ansible_dir, "znsproxy", "zns-agent.bin")
         with open(forbidden, "w") as stream:
             stream.write("must be rejected\n")
@@ -182,6 +207,57 @@ class ZnsProxyPackageTest(unittest.TestCase):
         )
         self.assertNotEqual(0, guard_result.returncode, guard_result.stdout)
         self.assertIn("zns-agent binary must not be packaged", guard_result.stdout)
+
+    def test_manifest_rejects_same_version_with_different_sha(self):
+        package = os.path.join(self.temp_dir, "zns-proxy.bin")
+        output = os.path.join(self.temp_dir, "zns-proxy-manifest.json")
+        script = os.path.join(
+            REPO_ROOT,
+            "zstackbuild",
+            "scripts",
+            "zns_proxy_manifest.py",
+        )
+
+        with open(package, "wb") as stream:
+            stream.write(b"first")
+        command = [
+            "python",
+            script,
+            "--package",
+            package,
+            "--output",
+            output,
+            "--version",
+            "1.2.0.1",
+            "--arch",
+            "amd64",
+            "--path",
+            "zns-proxy.bin",
+        ]
+        subprocess.check_call(command)
+
+        with open(output) as stream:
+            legacy_manifest = json.load(stream)
+        legacy_manifest.pop("component")
+        with open(output, "w") as stream:
+            json.dump(legacy_manifest, stream)
+
+        subprocess.check_call(command)
+        with open(output) as stream:
+            refreshed_manifest = json.load(stream)
+        self.assertEqual("zns-proxy", refreshed_manifest["component"])
+
+        with open(package, "wb") as stream:
+            stream.write(b"second")
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("already exists with a different sha256", result.stdout)
 
 
 if __name__ == "__main__":

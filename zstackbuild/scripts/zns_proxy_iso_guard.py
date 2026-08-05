@@ -3,6 +3,18 @@ import argparse
 import hashlib
 import json
 import os
+import re
+
+
+COMPONENT_VERSION_PATTERN = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\."
+    r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+)
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+try:
+    STRING_TYPES = (basestring,)
+except NameError:
+    STRING_TYPES = (str,)
 
 
 def sha256sum(path):
@@ -36,14 +48,38 @@ def main():
 
     with open(manifest_path) as stream:
         manifest = json.load(stream)
+    if not isinstance(manifest, dict):
+        fail("manifest must be a JSON object")
 
     expected = {
+        "component": "zns-proxy",
         "packageName": "zns-proxy.bin",
         "path": "zns-proxy.bin",
     }
     for key, value in expected.items():
         if manifest.get(key) != value:
             fail("manifest %s must be %s, got %s" % (key, value, manifest.get(key)))
+
+    version = manifest.get("version")
+    if not isinstance(version, STRING_TYPES) or not version.strip():
+        fail("manifest version must be a non-empty string")
+    if not COMPONENT_VERSION_PATTERN.match(version):
+        fail("manifest version must be a canonical four-part version")
+    sha256 = manifest.get("sha256")
+    if not isinstance(sha256, STRING_TYPES) or not sha256.strip():
+        fail("manifest sha256 must be a non-empty string")
+    if not SHA256_PATTERN.match(sha256):
+        fail("manifest sha256 must be lowercase hexadecimal")
+    arch = manifest.get("arch")
+    if (
+        not isinstance(arch, list)
+        or not arch
+        or any(not isinstance(item, STRING_TYPES) or not item.strip() for item in arch)
+    ):
+        fail("manifest arch must be a non-empty list of strings")
+    build_time = manifest.get("buildTime")
+    if not isinstance(build_time, STRING_TYPES) or not build_time.strip():
+        fail("manifest buildTime must be a non-empty string")
 
     if manifest.get("sha256") != sha256sum(package_path):
         fail("manifest sha256 does not match znsproxy/zns-proxy.bin")
