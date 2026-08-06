@@ -147,6 +147,120 @@ def test_validate_ip_versions_rejects_invalid_ip(monkeypatch):
     ]
 
 
+def test_validate_ip_versions_accepts_independent_db_family(monkeypatch):
+    errors = []
+    monkeypatch.setattr(ctl, 'error', lambda message: errors.append(message))
+
+    zsha = ctl.Zsha2Utils.__new__(ctl.Zsha2Utils)
+    zsha.config = {
+        'nodeip': '2001:db8::10',
+        'peerip': '2001:db8::11',
+        'dbvip': '192.168.10.20',
+        'ipv4': {
+            'enabled': True,
+            'nodeIp': '192.168.10.10',
+            'peerIp': '192.168.10.11',
+            'virtualIp': '192.168.10.20',
+        },
+        'ipv6': {
+            'enabled': True,
+            'nodeIp': '2001:db8::10',
+            'peerIp': '2001:db8::11',
+            'virtualIp': '2001:db8::20',
+        },
+    }
+
+    zsha.validate_ip_versions()
+
+    assert errors == []
+
+
+def test_validate_ip_versions_rejects_mixed_node_and_peer(monkeypatch):
+    errors = []
+    monkeypatch.setattr(ctl, 'error', lambda message: errors.append(message))
+
+    zsha = ctl.Zsha2Utils.__new__(ctl.Zsha2Utils)
+    zsha.config = {
+        'nodeip': '2001:db8::10',
+        'peerip': '192.168.10.11',
+        'dbvip': '192.168.10.20',
+    }
+
+    zsha.validate_ip_versions()
+
+    assert errors == ['zsha2 nodeip and peerip must use the same IP version']
+
+
+def test_validate_ip_versions_rejects_mixed_family_without_nested_inventory(monkeypatch):
+    errors = []
+    monkeypatch.setattr(ctl, 'error', lambda message: errors.append(message))
+
+    zsha = ctl.Zsha2Utils.__new__(ctl.Zsha2Utils)
+    zsha.config = {
+        'nodeip': '2001:db8::10',
+        'peerip': '2001:db8::11',
+        'dbvip': '192.168.10.20',
+    }
+
+    zsha.validate_ip_versions()
+
+    assert errors == [
+        'zsha2 mixed node and database IP versions require nested ipv4/ipv6 inventory'
+    ]
+
+
+def test_validate_ip_versions_rejects_invalid_nested_family(monkeypatch):
+    errors = []
+    monkeypatch.setattr(ctl, 'error', lambda message: errors.append(message))
+
+    zsha = ctl.Zsha2Utils.__new__(ctl.Zsha2Utils)
+    zsha.config = {
+        'nodeip': '2001:db8::10',
+        'peerip': '2001:db8::11',
+        'dbvip': '192.168.10.20',
+        'ipv4': {
+            'enabled': True,
+            'nodeIp': '192.168.10.10',
+            'peerIp': '192.168.10.11',
+            'virtualIp': '192.168.10.20',
+        },
+        'ipv6': {
+            'enabled': True,
+            'nodeIp': '2001:db8::10',
+            'peerIp': '192.168.10.11',
+            'virtualIp': '2001:db8::20',
+        },
+    }
+
+    zsha.validate_ip_versions()
+
+    assert errors == ['zsha2 ipv6.peerIp must be a valid IPv6 address']
+
+
+def test_validate_ip_versions_rejects_missing_primary_family_inventory(monkeypatch):
+    errors = []
+    monkeypatch.setattr(ctl, 'error', lambda message: errors.append(message))
+
+    zsha = ctl.Zsha2Utils.__new__(ctl.Zsha2Utils)
+    zsha.config = {
+        'nodeip': '2001:db8::10',
+        'peerip': '2001:db8::11',
+        'dbvip': '192.168.10.20',
+        'ipv4': {
+            'enabled': True,
+            'nodeIp': '192.168.10.10',
+            'peerIp': '192.168.10.11',
+            'virtualIp': '192.168.10.20',
+        },
+    }
+
+    zsha.validate_ip_versions()
+
+    assert errors == [
+        'zsha2 nodeip and peerip must match an enabled ipv4/ipv6 inventory'
+    ]
+
+
 def test_management_server_ip_stack_opts_enable_dual_stack_for_ip6():
     opts = ctl.build_management_server_ip_stack_opts({
         'management.server.ip': '172.24.196.95',
