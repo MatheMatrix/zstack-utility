@@ -168,6 +168,7 @@ _mock_log.get_logger = lambda name: _mock_logger
 _mock_log.get_logfile_path = lambda: '/dev/null'
 _mock_log.configure_log = lambda *a, **kw: None  # ceph agents call this at module level
 _mock_log.sensitive_fields = lambda *fields: (lambda cls: cls)  # decorator passthrough
+_mock_log.LogConfig = MagicMock()
 sys.modules['log'] = _mock_log
 sys.modules['zstacklib.utils.log'] = _mock_log
 
