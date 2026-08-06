@@ -242,6 +242,11 @@ def install_kvm_pkg():
             'h84r': "lm_sensors"
         }
 
+        cube_arch_releasever_mapping = {
+            'x86_64_ky10sp3': "MegaCli",
+            'x86_64_ky10sp3.2403': "MegaCli",
+        }
+
         # handle zstack_repo
         if zstack_repo != 'false':
             distro_head = host_info.distro.split("_")[0] if releasever in kylin or releasever in uos else host_info.distro
@@ -260,7 +265,12 @@ def install_kvm_pkg():
 
             if isRemoteCube:
                 cube_distro_info = host_info.host_arch + "_" + distro_head
-                common_dep_list = "%s %s %s" % (common_dep_list, cube_distro_mapping.get(cube_distro_info, ''), cube_releasever_mapping.get(releasever, ''))
+                cube_arch_releasever_info = host_info.host_arch + "_" + releasever
+                common_dep_list = "%s %s %s %s" % (
+                    common_dep_list,
+                    cube_distro_mapping.get(cube_distro_info, ''),
+                    cube_releasever_mapping.get(releasever, ''),
+                    cube_arch_releasever_mapping.get(cube_arch_releasever_info, ''))
 
             dep_list = common_dep_list
             update_list = common_update_list
