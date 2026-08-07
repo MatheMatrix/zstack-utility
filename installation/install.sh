@@ -3232,7 +3232,8 @@ is_install_zops(){
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     zops_installer_bin=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/zops -name "zops-installer*" | head -n 1`
     bash $zops_installer_bin install --for_ops >>$ZSTACK_INSTALL_LOG 2>&1
-    [ $? -eq 0 ] && pass
+    [ $? -ne 0 ] && fail "failed to install ZOps"
+    pass
 }
 
 is_upgrade_zops(){
@@ -3240,7 +3241,8 @@ is_upgrade_zops(){
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
     zops_installer_bin=`find /opt/zstack-dvd/$BASEARCH/$ZSTACK_RELEASE/zops -name "zops-installer*" | head -n 1`
     bash $zops_installer_bin upgrade >>$ZSTACK_INSTALL_LOG 2>&1
-    [ $? -eq 0 ] && pass
+    [ $? -ne 0 ] && fail "failed to upgrade ZOps"
+    pass
 }
 
 is_install_marketplace_server(){
