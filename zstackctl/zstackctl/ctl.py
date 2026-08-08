@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import ipaddress
 import os
 import re
 import signal
@@ -2303,7 +2304,7 @@ class Zsha2Utils(object):
             error('cannot ssh peer node with sshkey')
 
     def validate_ip_versions(self):
-        versions = set()
+        versions = {}
         invalid_ips = []
         for name in ('nodeip', 'peerip', 'dbvip'):
             value = self.config.get(name, '')
@@ -2313,13 +2314,59 @@ class Zsha2Utils(object):
             if version is None:
                 invalid_ips.append('%s=%s' % (name, value))
                 continue
-            versions.add(version)
+            versions[name] = version
 
         if invalid_ips:
             error('zsha2 nodeip, peerip and dbvip must be valid IP addresses: %s' % ', '.join(invalid_ips))
+            return
 
-        if len(versions) > 1:
-            error('zsha2 nodeip, peerip and dbvip must use the same IP version')
+        node_version = versions.get('nodeip')
+        peer_version = versions.get('peerip')
+        if node_version is not None and peer_version is not None and node_version != peer_version:
+            error('zsha2 nodeip and peerip must use the same IP version')
+            return
+
+        enabled_virtual_ips = set()
+        enabled_inventory_versions = set()
+        has_nested_inventory = False
+        for family_name, expected_version in (('ipv4', 4), ('ipv6', 6)):
+            family = self.config.get(family_name)
+            if family is None:
+                continue
+            has_nested_inventory = True
+            if not isinstance(family, dict):
+                error('zsha2 %s inventory must be an object' % family_name)
+                return
+            if not family.get('enabled', False):
+                continue
+
+            for field in ('nodeIp', 'peerIp', 'virtualIp'):
+                value = family.get(field, '')
+                if get_ip_version(value) != expected_version:
+                    error('zsha2 %s.%s must be a valid IPv%s address' % (
+                        family_name, field, expected_version))
+                    return
+
+            gateway = family.get('gateway', '')
+            if gateway and get_ip_version(gateway) != expected_version:
+                error('zsha2 %s.gateway must be a valid IPv%s address' % (
+                    family_name, expected_version))
+                return
+
+            enabled_inventory_versions.add(expected_version)
+            enabled_virtual_ips.add(ipaddress.ip_address(family['virtualIp']))
+
+        db_version = versions.get('dbvip')
+        if has_nested_inventory:
+            if node_version is not None and node_version not in enabled_inventory_versions:
+                error('zsha2 nodeip and peerip must match an enabled ipv4/ipv6 inventory')
+                return
+            dbvip = self.config.get('dbvip')
+            if dbvip and ipaddress.ip_address(dbvip) not in enabled_virtual_ips:
+                error('zsha2 dbvip must match virtualIp of an enabled ipv4/ipv6 inventory')
+                return
+        elif node_version is not None and db_version is not None and node_version != db_version:
+            error('zsha2 mixed node and database IP versions require nested ipv4/ipv6 inventory')
 
     def execute_on_peer(self, cmd, useSudo=False):
         remote_path = '/tmp/%s.sh' % uuid.uuid4()
