@@ -367,6 +367,10 @@ class ZrmPlugin(kvmagent.KvmAgent):
         inserted = entry.get("inserted") or {}
         if isinstance(inserted, dict):
             node_name = inserted.get("node-name")
+        if not node_name:
+            node_name = entry.get("node-name") or entry.get("node")
+        if node_name and not isinstance(node_name, _str_types):
+            node_name = str(node_name)
         return device, node_name
 
     def _find_block_entry_for_volume(self, blocks_list, volume_uuid):
