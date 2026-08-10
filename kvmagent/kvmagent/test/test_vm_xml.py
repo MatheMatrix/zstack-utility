@@ -18,9 +18,12 @@ class Test(unittest.TestCase):
 
         vm = vm_plugin.Vm.from_StartVmCmd(cmd)
         channel = etree.fromstring(vm.domain_xml).xpath("./devices/channel[target[@name='applianceVm.vport']]")[0]
-        self.assertEqual('8', channel.find('address').get('port'))
-        self.assertEqual('0', channel.find('address').get('controller'))
-        self.assertEqual('0', channel.find('address').get('bus'))
+        address = channel.find('address')
+        self.assertIsNotNone(address)
+        self.assertEqual('virtio-serial', address.get('type'))
+        self.assertEqual('8', address.get('port'))
+        self.assertEqual('0', address.get('controller'))
+        self.assertEqual('0', address.get('bus'))
 
         cmd = vm_utils.create_startvm_body_jsonobject()
         cmd.addons.channel.targetName = 'applianceVm.vport'
