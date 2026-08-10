@@ -672,3 +672,52 @@ def test_registry_load_ignores_invalid_json(tmp_path):
     registry_file.write_text('{broken')
 
     assert virtiofs_source.SourceRegistry(str(registry_file)).load() == {}
+
+
+def test_cleanup_host_model_cache_removes_matching_registry_entry(tmp_path):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    keep_dir = source_root / 'models' / 'keep' / 'v1'
+    drop_dir = source_root / 'models' / 'drop' / 'v1'
+    keep_dir.mkdir(parents=True)
+    drop_dir.mkdir(parents=True)
+    (drop_dir / 'weights.bin').write_bytes(b'1234')
+
+    virtiofs_source._register_model_center_cache(str(source_root), str(keep_dir))
+    virtiofs_source._register_model_center_cache(str(source_root), str(drop_dir))
+    registry_file = source_root / '.registry'
+    lock_file = source_root / '.registry.lock'
+    before = json.loads(registry_file.read_text())
+    assert len(before) == 2
+
+    result = virtiofs_source.cleanup_host_model_cache(str(source_root), str(drop_dir))
+
+    assert result['sourcePath'] == os.path.realpath(str(drop_dir))
+    assert result['bytesReclaimed'] >= 4
+    assert not drop_dir.exists()
+    assert keep_dir.is_dir()
+    assert registry_file.is_file()
+    assert lock_file.is_file()
+    after = json.loads(registry_file.read_text())
+    assert len(after) == 1
+    assert list(after.values())[0]['path'] == os.path.realpath(str(keep_dir))
+    assert all(os.path.realpath(entry['path']) != os.path.realpath(str(drop_dir))
+               for entry in after.values())
+
+
+def test_cleanup_host_model_cache_clears_registry_when_directory_already_gone(tmp_path):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    missing = source_root / 'models' / 'gone' / 'v1'
+    missing.mkdir(parents=True)
+    virtiofs_source._register_model_center_cache(str(source_root), str(missing))
+    # Simulate prior physical delete that left registry dirty.
+    import shutil
+    shutil.rmtree(str(missing))
+    assert not missing.exists()
+    registry_file = source_root / '.registry'
+    assert json.loads(registry_file.read_text())
+
+    result = virtiofs_source.cleanup_host_model_cache(str(source_root), str(missing))
+
+    assert result['bytesReclaimed'] == 0
+    assert registry_file.is_file()
+    assert json.loads(registry_file.read_text()) == {}

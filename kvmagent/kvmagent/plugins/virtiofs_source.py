@@ -530,15 +530,14 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
 def cleanup_host_model_cache(source_root, source_path):
     root = _normalize_root(source_root or HOST_SOURCE_ROOT)
     path = ensure_under(source_path, root, 'sourcePath', allow_root=False)
-    if not os.path.exists(path):
-        return {
-            'sourcePath': path,
-            'bytesReclaimed': 0,
-        }
-    if not os.path.isdir(path):
-        raise Exception('sourcePath[%s] is not a directory' % source_path)
-    bytes_reclaimed = directory_size(path)
-    shutil.rmtree(path)
+    bytes_reclaimed = 0
+    if os.path.exists(path):
+        if not os.path.isdir(path):
+            raise Exception('sourcePath[%s] is not a directory' % source_path)
+        bytes_reclaimed = directory_size(path)
+        shutil.rmtree(path)
+    # Always drop matching registry entries so "dir gone but Ready remains" cannot persist.
+    _unregister_model_center_cache(root, path)
     return {
         'sourcePath': path,
         'bytesReclaimed': bytes_reclaimed,
@@ -757,13 +756,42 @@ class SourceRegistry(object):
                 os.makedirs(parent)
             data = self.load()
             data[host_source.sourceUuid] = host_source.to_registry_entry()
-            tmp_path = self.path + '.tmp'
-            with open(tmp_path, 'w') as fd:
-                json.dump(data, fd, indent=2)
-            os.rename(tmp_path, self.path)
-            return True
+            return self._write(data)
         except (IOError, OSError):
             return False
+
+    def remove_by_path(self, source_path):
+        """Remove registry entries whose path matches source_path. Keep the file if other entries remain."""
+        try:
+            real_path = os.path.realpath(source_path)
+            data = self.load()
+            if not data:
+                return True
+            remaining = {}
+            removed = False
+            for key, entry in data.items():
+                entry_path = None
+                if isinstance(entry, dict):
+                    entry_path = entry.get('path')
+                if entry_path and os.path.realpath(entry_path) == real_path:
+                    removed = True
+                    continue
+                remaining[key] = entry
+            if not removed:
+                return True
+            return self._write(remaining)
+        except (IOError, OSError):
+            return False
+
+    def _write(self, data):
+        parent = os.path.dirname(self.path)
+        if parent and not os.path.exists(parent):
+            os.makedirs(parent)
+        tmp_path = self.path + '.tmp'
+        with open(tmp_path, 'w') as fd:
+            json.dump(data, fd, indent=2)
+        os.rename(tmp_path, self.path)
+        return True
 
 
 def _register_model_center_cache(source_root, source_path):
@@ -783,6 +811,20 @@ def _register_model_center_cache(source_root, source_path):
         fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
         if not registry.save_host_source(source):
             raise Exception('failed to register prepared model center cache[%s]' % source_path)
+    finally:
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_fd.close()
+
+
+def _unregister_model_center_cache(source_root, source_path):
+    registry = SourceRegistry(os.path.join(source_root, '.registry'))
+    lock_fd = open(registry.path + '.lock', 'a+')
+    try:
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+        if not registry.remove_by_path(source_path):
+            raise Exception('failed to unregister model center cache[%s]' % source_path)
     finally:
         try:
             fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
