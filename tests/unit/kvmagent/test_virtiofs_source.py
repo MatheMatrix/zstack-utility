@@ -544,6 +544,88 @@ def test_prepare_model_center_cache_without_sidecar_refreshes_existing_dir(tmp_p
     assert entry['prepareReason'] == 'no_sidecar'
 
 
+def test_prepare_model_center_cache_refresh_restores_backup_when_copy_fails(tmp_path, monkeypatch):
+    """Refresh must not leave hosts without cache if the new copy fails."""
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    target = source_root / 'models' / 'template' / 'root'
+    target.mkdir(parents=True)
+    (target / 'template.yaml').write_text('usable-old-cache')
+    virtiofs_source.write_local_content_version(str(target), 'meta:1:1')
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+
+    def mount_model_center(storage_url, mount_path, storage_subdir):
+        model_dir = os.path.join(mount_path, 'template-id')
+        os.makedirs(model_dir)
+        with open(os.path.join(model_dir, 'template.yaml'), 'w') as stream:
+            stream.write('new-but-copy-will-fail')
+
+    monkeypatch.setattr(virtiofs_source, '_mount_model_center', mount_model_center)
+    monkeypatch.setattr(virtiofs_source, '_unmount_model_center', lambda mount_path: None)
+    monkeypatch.setattr(
+        virtiofs_source,
+        'prepare_copy_source',
+        lambda *args, **kwargs: (_ for _ in ()).throw(Exception('simulated copy failure')))
+
+    with pytest.raises(Exception) as exc_info:
+        virtiofs_source.prepare_model_center_cache(
+            str(source_root),
+            str(target),
+            'model-center-uuid',
+            'redis://model-center',
+            'template-id',
+            1024,
+            'model_service',
+            False)
+
+    assert 'simulated copy failure' in str(exc_info.value)
+    assert target.is_dir()
+    assert (target / 'template.yaml').read_text() == 'usable-old-cache'
+    assert virtiofs_source.read_local_content_version(str(target)) == 'meta:1:1'
+    leftovers = [p for p in target.parent.iterdir() if p.name.startswith(target.name + '.old.')]
+    assert leftovers == []
+
+
+def test_prepare_model_center_cache_refresh_removes_backup_after_success(tmp_path, monkeypatch):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    target = source_root / 'models' / 'template' / 'root'
+    target.mkdir(parents=True)
+    (target / 'template.yaml').write_text('old')
+    virtiofs_source.write_local_content_version(str(target), 'meta:1:1')
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+
+    def mount_model_center(storage_url, mount_path, storage_subdir):
+        model_dir = os.path.join(mount_path, 'template-id')
+        os.makedirs(model_dir)
+        with open(os.path.join(model_dir, 'template.yaml'), 'w') as stream:
+            stream.write('new')
+
+    monkeypatch.setattr(virtiofs_source, '_mount_model_center', mount_model_center)
+    monkeypatch.setattr(virtiofs_source, '_unmount_model_center', lambda mount_path: None)
+
+    entry = virtiofs_source.prepare_model_center_cache(
+        str(source_root),
+        str(target),
+        'model-center-uuid',
+        'redis://model-center',
+        'template-id',
+        1024,
+        'model_service',
+        False)
+
+    assert (target / 'template.yaml').read_text() == 'new'
+    assert entry['prepareDecision'] == 'refresh'
+    leftovers = [p for p in target.parent.iterdir() if p.name.startswith(target.name + '.old.')]
+    assert leftovers == []
+
+
 def test_prepare_path_source_rejects_empty_command_source_root(tmp_path):
     source_dir = tmp_path / 'virtiofs-sources' / 'source-a'
     source_dir.mkdir(parents=True)

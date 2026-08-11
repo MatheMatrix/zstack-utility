@@ -484,18 +484,11 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
                 else:
                     decision, reason = 'meta_hit', 'meta_match'
             else:
-                if os.path.exists(target):
-                    if not os.path.isdir(target):
-                        raise Exception('sourcePath[%s] exists but is not a directory' % source_path)
-                    shutil.rmtree(target)
-                check_available_capacity(root, required_capacity_bytes)
-                prepare_copy_source(
-                    target,
-                    (root,),
-                    remote_source,
-                    (mount_path,),
-                    required_capacity_bytes)
-                write_local_content_version(target, expected_version)
+                # Never rmtree first: keep usable cache until new copy is ready.
+                # Rename old aside → copy into target → drop backup; on failure restore.
+                _refresh_model_center_cache_from_remote(
+                    target, root, remote_source, mount_path,
+                    required_capacity_bytes, expected_version)
                 aligned_version = expected_version
                 copied = True
                 if not had_local:
@@ -525,6 +518,48 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
             fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
         finally:
             lock_fd.close()
+
+
+def _refresh_model_center_cache_from_remote(target, root, remote_source, mount_path,
+                                           required_capacity_bytes, expected_version):
+    """Copy remote into target without dropping usable local cache until success.
+
+    If target exists, rename it to a sibling backup first. On any failure, restore
+    the backup so in-use hosts keep a readable path. Backup and new copy coexist
+    briefly, so free space must cover one extra full artifact until cleanup.
+    """
+    backup = None
+    if os.path.exists(target):
+        if not os.path.isdir(target):
+            raise Exception('sourcePath[%s] exists but is not a directory' % target)
+        backup = '%s.old.%s.%s' % (target, os.getpid(), int(time.time() * 1000))
+        if os.path.exists(backup):
+            shutil.rmtree(backup, ignore_errors=True)
+        os.rename(target, backup)
+
+    try:
+        check_available_capacity(root, required_capacity_bytes)
+        prepare_copy_source(
+            target,
+            (root,),
+            remote_source,
+            (mount_path,),
+            required_capacity_bytes)
+        write_local_content_version(target, expected_version)
+    except Exception:
+        if os.path.exists(target):
+            shutil.rmtree(target, ignore_errors=True)
+        if backup and os.path.exists(backup) and not os.path.exists(target):
+            try:
+                os.rename(backup, target)
+                backup = None
+            except (IOError, OSError) as restore_err:
+                logger.warning(
+                    '[host-model-cache-prepare] failed to restore backup[%s] to target[%s]: %s' % (
+                        backup, target, restore_err))
+        raise
+    if backup and os.path.exists(backup):
+        shutil.rmtree(backup, ignore_errors=True)
 
 
 def cleanup_host_model_cache(source_root, source_path):
