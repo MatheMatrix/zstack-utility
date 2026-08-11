@@ -740,7 +740,8 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
                     artifact_relative_path,
                     required_capacity,
                     storage_subdir,
-                    register_cache)
+                    register_cache,
+                    _get_cmd_attr(cmd, 'contentVersion', None))
             else:
                 entry = virtiofs_source.prepare_host_model_cache(source_root, source_path, required_capacity)
             rsp.cacheEntry = entry

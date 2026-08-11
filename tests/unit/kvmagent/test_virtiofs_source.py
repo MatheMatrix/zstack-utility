@@ -152,6 +152,8 @@ def test_prepare_model_center_cache_mounts_copies_and_unmounts(tmp_path, monkeyp
 
     assert entry['sourcePath'] == os.path.realpath(str(target))
     assert (target / 'config.json').read_text() == '{}'
+    assert entry['contentVersion'].startswith('meta:')
+    assert virtiofs_source.read_local_content_version(str(target)) == entry['contentVersion']
     registry = json.loads((source_root / '.registry').read_text())
     assert list(registry.values())[0]['path'] == os.path.realpath(str(target))
     assert events[0][0] == 'mount'
@@ -271,11 +273,12 @@ def test_prepare_model_center_artifact_uses_requested_subdir_without_cache_regis
     assert (target / 'dataset.json').read_text() == '{}'
 
 
-def test_prepare_model_center_cache_reuses_existing_cache_without_mounting(tmp_path, monkeypatch):
+def test_prepare_model_center_cache_reuses_existing_cache_with_matching_strong_version(tmp_path, monkeypatch):
     source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
     target = source_root / 'models' / 'model-uuid' / 'v1'
     target.mkdir(parents=True)
     (target / 'config.json').write_text('{}')
+    virtiofs_source.write_local_content_version(str(target), 'v:checksum-abc')
     monkeypatch.setattr(
         virtiofs_source,
         'MODEL_CENTER_PROVIDER_ROOT',
@@ -287,7 +290,8 @@ def test_prepare_model_center_cache_reuses_existing_cache_without_mounting(tmp_p
     monkeypatch.setattr(
         virtiofs_source,
         '_mount_model_center',
-        lambda storage_url, mount_path: pytest.fail('existing cache must not remount model center'))
+        lambda storage_url, mount_path, storage_subdir='models': pytest.fail(
+            'existing cache with matching strong version must not remount model center'))
     monkeypatch.setattr(
         virtiofs_source,
         'check_available_capacity',
@@ -299,9 +303,171 @@ def test_prepare_model_center_cache_reuses_existing_cache_without_mounting(tmp_p
         'model-center-uuid',
         'redis://model-center',
         'qwen/v1',
-        1024)
+        1024,
+        content_version='checksum-abc')
 
     assert entry['sourcePath'] == os.path.realpath(str(target))
+    assert entry['contentVersion'] == 'v:checksum-abc'
+
+
+def test_prepare_model_center_cache_refreshes_when_strong_version_mismatches(tmp_path, monkeypatch):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    target = source_root / 'models' / 'model-uuid' / 'v1'
+    target.mkdir(parents=True)
+    (target / 'config.json').write_text('stale')
+    virtiofs_source.write_local_content_version(str(target), 'v:old')
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+    events = []
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+
+    def mount_model_center(storage_url, mount_path, storage_subdir):
+        events.append(('mount', storage_subdir))
+        model_dir = os.path.join(mount_path, 'qwen', 'v1')
+        os.makedirs(model_dir)
+        with open(os.path.join(model_dir, 'config.json'), 'w') as stream:
+            stream.write('fresh')
+
+    monkeypatch.setattr(virtiofs_source, '_mount_model_center', mount_model_center)
+    monkeypatch.setattr(virtiofs_source, '_unmount_model_center', lambda mount_path: events.append('unmount'))
+
+    entry = virtiofs_source.prepare_model_center_cache(
+        str(source_root),
+        str(target),
+        'model-center-uuid',
+        'redis://model-center',
+        'qwen/v1',
+        1024,
+        content_version='new')
+
+    assert events[0] == ('mount', 'models')
+    assert events[-1] == 'unmount'
+    assert (target / 'config.json').read_text() == 'fresh'
+    assert entry['contentVersion'] == 'v:new'
+    assert virtiofs_source.read_local_content_version(str(target)) == 'v:new'
+
+
+def test_prepare_model_center_cache_refreshes_when_meta_mismatches(tmp_path, monkeypatch):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    target = source_root / 'models' / 'template' / 'root'
+    target.mkdir(parents=True)
+    (target / 'template.yaml').write_text('old-template')
+    virtiofs_source.write_local_content_version(str(target), 'meta:1:1')
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+    events = []
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+
+    def mount_model_center(storage_url, mount_path, storage_subdir):
+        events.append('mount')
+        model_dir = os.path.join(mount_path, 'template-id')
+        os.makedirs(model_dir)
+        with open(os.path.join(model_dir, 'template.yaml'), 'w') as stream:
+            stream.write('new-template-content')
+
+    monkeypatch.setattr(virtiofs_source, '_mount_model_center', mount_model_center)
+    monkeypatch.setattr(virtiofs_source, '_unmount_model_center', lambda mount_path: events.append('unmount'))
+
+    entry = virtiofs_source.prepare_model_center_cache(
+        str(source_root),
+        str(target),
+        'model-center-uuid',
+        'redis://model-center',
+        'template-id',
+        1024,
+        'model_service',
+        False)
+
+    assert 'mount' in events
+    assert (target / 'template.yaml').read_text() == 'new-template-content'
+    assert entry['contentVersion'].startswith('meta:')
+    assert entry['contentVersion'] != 'meta:1:1'
+
+
+def test_prepare_model_center_cache_reuses_when_meta_matches_after_mount(tmp_path, monkeypatch):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    target = source_root / 'models' / 'template' / 'root'
+    target.mkdir(parents=True)
+    (target / 'template.yaml').write_text('same')
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+    mounted = []
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+
+    def mount_model_center(storage_url, mount_path, storage_subdir):
+        mounted.append(mount_path)
+        model_dir = os.path.join(mount_path, 'template-id')
+        os.makedirs(model_dir)
+        with open(os.path.join(model_dir, 'template.yaml'), 'w') as stream:
+            stream.write('same')
+        # Align local sidecar to remote meta so prepare is a hit after mount.
+        meta = virtiofs_source.remote_directory_meta(model_dir)
+        virtiofs_source.write_local_content_version(str(target), meta)
+
+    monkeypatch.setattr(virtiofs_source, '_mount_model_center', mount_model_center)
+    monkeypatch.setattr(virtiofs_source, '_unmount_model_center', lambda mount_path: None)
+    monkeypatch.setattr(
+        virtiofs_source,
+        'prepare_copy_source',
+        lambda *args, **kwargs: pytest.fail('matching meta must not recopy'))
+
+    entry = virtiofs_source.prepare_model_center_cache(
+        str(source_root),
+        str(target),
+        'model-center-uuid',
+        'redis://model-center',
+        'template-id',
+        1024,
+        'model_service',
+        False)
+
+    assert mounted
+    assert entry['contentVersion'].startswith('meta:')
+    assert (target / 'template.yaml').read_text() == 'same'
+
+
+def test_prepare_model_center_cache_without_sidecar_refreshes_existing_dir(tmp_path, monkeypatch):
+    """ZSTAC-87450: existence-only hit is wrong; no sidecar forces remount/refresh."""
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    target = source_root / 'models' / 'template' / 'root'
+    target.mkdir(parents=True)
+    (target / 'template.yaml').write_text('stale-no-sidecar')
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+    events = []
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+
+    def mount_model_center(storage_url, mount_path, storage_subdir):
+        events.append('mount')
+        model_dir = os.path.join(mount_path, 'template-id')
+        os.makedirs(model_dir)
+        with open(os.path.join(model_dir, 'template.yaml'), 'w') as stream:
+            stream.write('refreshed')
+
+    monkeypatch.setattr(virtiofs_source, '_mount_model_center', mount_model_center)
+    monkeypatch.setattr(virtiofs_source, '_unmount_model_center', lambda mount_path: events.append('unmount'))
+
+    entry = virtiofs_source.prepare_model_center_cache(
+        str(source_root),
+        str(target),
+        'model-center-uuid',
+        'redis://model-center',
+        'template-id',
+        None,
+        'model_service',
+        False)
+
+    assert events == ['mount', 'unmount']
+    assert (target / 'template.yaml').read_text() == 'refreshed'
+    assert entry['contentVersion'].startswith('meta:')
 
 
 def test_prepare_path_source_rejects_empty_command_source_root(tmp_path):

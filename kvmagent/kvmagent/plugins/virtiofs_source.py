@@ -32,6 +32,10 @@ JUICEFS_CANDIDATE_PATHS = (
     '/usr/bin/juicefs',
     '/opt/zstack/bin/juicefs',
 )
+# Local alignment sidecar: strong "v:<shared>" or weak "meta:<size>:<mtime>" from JuiceFS.
+CONTENT_VERSION_SIDECAR = '.aios-content-version'
+CONTENT_VERSION_STRONG_PREFIX = 'v:'
+CONTENT_VERSION_META_PREFIX = 'meta:'
 
 
 def _ensure_directory(path):
@@ -182,19 +186,80 @@ def directory_size(path):
     return int(total)
 
 
-def cache_entry(source_root, source_path):
+def format_strong_content_version(content_version):
+    value = str(content_version or '').strip()
+    if not value:
+        return None
+    if value.startswith(CONTENT_VERSION_STRONG_PREFIX) or value.startswith(CONTENT_VERSION_META_PREFIX):
+        return value
+    return CONTENT_VERSION_STRONG_PREFIX + value
+
+
+def format_meta_content_version(size_bytes, source_mtime):
+    return '%s%s:%s' % (CONTENT_VERSION_META_PREFIX, int(size_bytes), int(source_mtime))
+
+
+def read_local_content_version(path):
+    sidecar = os.path.join(path, CONTENT_VERSION_SIDECAR)
+    if not os.path.isfile(sidecar):
+        return None
+    try:
+        with open(sidecar, 'r') as fd:
+            value = fd.read().strip()
+        return value or None
+    except (IOError, OSError):
+        return None
+
+
+def write_local_content_version(path, content_version):
+    value = str(content_version or '').strip()
+    if not value:
+        return
+    sidecar = os.path.join(path, CONTENT_VERSION_SIDECAR)
+    tmp = '%s.tmp.%s' % (sidecar, os.getpid())
+    try:
+        with open(tmp, 'w') as fd:
+            fd.write(value)
+        os.rename(tmp, sidecar)
+    except (IOError, OSError):
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except (IOError, OSError):
+            pass
+        raise
+
+
+def is_local_content_aligned(path, expected_version):
+    expected = str(expected_version or '').strip()
+    if not expected:
+        return False
+    local = read_local_content_version(path)
+    return bool(local) and local == expected
+
+
+def remote_directory_meta(path):
+    if not os.path.exists(path):
+        raise Exception('remoteSourcePath[%s] does not exist' % path)
+    if not os.path.isdir(path):
+        raise Exception('remoteSourcePath[%s] is not a directory' % path)
+    return format_meta_content_version(directory_size(path), int(os.path.getmtime(path)))
+
+
+def cache_entry(source_root, source_path, content_version=None):
     root = _normalize_root(source_root)
     path = ensure_under(source_path, root, 'sourcePath', allow_root=False)
     if not os.path.exists(path):
         raise Exception('sourcePath[%s] does not exist' % source_path)
     if not os.path.isdir(path):
         raise Exception('sourcePath[%s] is not a directory' % source_path)
+    version = content_version if content_version is not None else read_local_content_version(path)
     return {
         'sourcePath': path,
         'sizeBytes': directory_size(path),
         'sourceMtime': int(os.path.getmtime(path)),
         'checksum': None,
-        'contentVersion': None,
+        'contentVersion': version,
     }
 
 
@@ -293,7 +358,14 @@ def _unmount_model_center(mount_path):
 
 def prepare_model_center_cache(source_root, source_path, model_center_uuid, storage_url,
                                artifact_relative_path, required_capacity_bytes=None,
-                               storage_subdir='models', register_cache=True):
+                               storage_subdir='models', register_cache=True,
+                               content_version=None):
+    """Prepare host-local cache from JuiceFS model center.
+
+    Deploy always calls prepare. Local dir existence alone is not a hit:
+    - strong contentVersion (v:...) matching local sidecar skips remount
+    - otherwise mount JuiceFS and compare weak meta (size+mtime); refresh on mismatch
+    """
     root = _normalize_root(source_root or HOST_SOURCE_ROOT)
     target = ensure_under(source_path, root, 'sourcePath', allow_root=False)
     model_center_uuid = _validate_source_id(model_center_uuid, 'modelCenterUuid')
@@ -301,6 +373,7 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
         raise Exception('storageUrl is required')
     storage_subdir = _validate_relative_path(storage_subdir, 'storageSubdir')
     relative_path = _validate_relative_path(artifact_relative_path, 'artifactRelativePath')
+    expected_strong = format_strong_content_version(content_version)
 
     if not os.path.exists(root):
         _ensure_directory(root)
@@ -317,13 +390,15 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
         fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
         if os.path.ismount(mount_path):
             _unmount_model_center(mount_path)
-        if os.path.exists(target):
-            entry = cache_entry(root, target)
+
+        # Strong-version hit: local sidecar already matches shared truth → skip mount.
+        if os.path.exists(target) and expected_strong and is_local_content_aligned(target, expected_strong):
+            entry = cache_entry(root, target, expected_strong)
             if register_cache:
                 _register_model_center_cache(root, target)
             return entry
 
-        check_available_capacity(root, required_capacity_bytes)
+        aligned_version = None
         try:
             _mount_model_center(str(storage_url).strip(), mount_path, storage_subdir)
             remote_source = ensure_under(
@@ -331,15 +406,27 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
                 mount_path,
                 'modelRelativePath',
                 allow_root=False)
-            prepare_copy_source(
-                target,
-                (root,),
-                remote_source,
-                (mount_path,),
-                required_capacity_bytes)
+            expected_version = expected_strong or remote_directory_meta(remote_source)
+
+            if os.path.exists(target) and is_local_content_aligned(target, expected_version):
+                aligned_version = expected_version
+            else:
+                if os.path.exists(target):
+                    if not os.path.isdir(target):
+                        raise Exception('sourcePath[%s] exists but is not a directory' % source_path)
+                    shutil.rmtree(target)
+                check_available_capacity(root, required_capacity_bytes)
+                prepare_copy_source(
+                    target,
+                    (root,),
+                    remote_source,
+                    (mount_path,),
+                    required_capacity_bytes)
+                write_local_content_version(target, expected_version)
+                aligned_version = expected_version
         finally:
             _unmount_model_center(mount_path)
-        entry = cache_entry(root, target)
+        entry = cache_entry(root, target, aligned_version)
         if register_cache:
             _register_model_center_cache(root, target)
         return entry
