@@ -314,7 +314,7 @@ class TestHostModelCachePrepareHandler:
 
         def prepare(source_root, source_path, model_center_uuid, storage_url,
                     artifact_relative_path, required_capacity, storage_subdir,
-                    register_cache):
+                    register_cache, content_version=None):
             captured.update({
                 'sourceRoot': source_root,
                 'sourcePath': source_path,
@@ -324,8 +324,9 @@ class TestHostModelCachePrepareHandler:
                 'requiredCapacityBytes': required_capacity,
                 'storageSubdir': storage_subdir,
                 'registerCache': register_cache,
+                'contentVersion': content_version,
             })
-            return {'sourcePath': source_path, 'sizeBytes': 1024}
+            return {'sourcePath': source_path, 'sizeBytes': 1024, 'contentVersion': 'v:abc'}
 
         monkeypatch.setattr(virtiofs_plugin.virtiofs_source, 'prepare_model_center_cache', prepare)
         plugin = virtiofs_plugin.VirtiofsPlugin()
@@ -338,6 +339,7 @@ class TestHostModelCachePrepareHandler:
                 'storageUrl': 'redis://model-center',
                 'modelRelativePath': 'qwen/v1',
                 'requiredCapacityBytes': 1024,
+                'contentVersion': 'abc',
             })
         }))
 
@@ -347,17 +349,19 @@ class TestHostModelCachePrepareHandler:
         assert captured['storageSubdir'] == 'models'
         assert captured['registerCache'] is True
         assert captured['storageUrl'] == 'redis://model-center'
+        assert captured['contentVersion'] == 'abc'
 
     def test_dispatches_non_model_artifact_source(self, monkeypatch):
         captured = {}
 
         def prepare(source_root, source_path, model_center_uuid, storage_url,
                     artifact_relative_path, required_capacity, storage_subdir,
-                    register_cache):
+                    register_cache, content_version=None):
             captured.update({
                 'artifactRelativePath': artifact_relative_path,
                 'storageSubdir': storage_subdir,
                 'registerCache': register_cache,
+                'contentVersion': content_version,
             })
             return {'sourcePath': source_path, 'sizeBytes': 256}
 
@@ -374,6 +378,7 @@ class TestHostModelCachePrepareHandler:
                 'artifactRelativePath': 'eval',
                 'registerCache': False,
                 'requiredCapacityBytes': 256,
+                'contentVersion': 'tpl-v2',
             })
         }))
 
@@ -382,6 +387,7 @@ class TestHostModelCachePrepareHandler:
             'artifactRelativePath': 'eval',
             'storageSubdir': 'datasets',
             'registerCache': False,
+            'contentVersion': 'tpl-v2',
         }
 
 
