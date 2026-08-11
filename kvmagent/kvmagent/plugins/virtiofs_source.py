@@ -4,11 +4,14 @@ import errno
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
 import subprocess
 import time
+
+logger = logging.getLogger(__name__)
 
 
 try:
@@ -246,7 +249,8 @@ def remote_directory_meta(path):
     return format_meta_content_version(directory_size(path), int(os.path.getmtime(path)))
 
 
-def cache_entry(source_root, source_path, content_version=None):
+def cache_entry(source_root, source_path, content_version=None,
+                prepare_decision=None, prepare_reason=None, prepare_actions=None):
     root = _normalize_root(source_root)
     path = ensure_under(source_path, root, 'sourcePath', allow_root=False)
     if not os.path.exists(path):
@@ -254,13 +258,43 @@ def cache_entry(source_root, source_path, content_version=None):
     if not os.path.isdir(path):
         raise Exception('sourcePath[%s] is not a directory' % source_path)
     version = content_version if content_version is not None else read_local_content_version(path)
-    return {
+    entry = {
         'sourcePath': path,
         'sizeBytes': directory_size(path),
         'sourceMtime': int(os.path.getmtime(path)),
         'checksum': None,
         'contentVersion': version,
     }
+    if prepare_decision is not None:
+        entry['prepareDecision'] = prepare_decision
+    if prepare_reason is not None:
+        entry['prepareReason'] = prepare_reason
+    if prepare_actions is not None:
+        entry['prepareActions'] = prepare_actions
+    return entry
+
+
+def _prepare_actions(mounted, copied):
+    return 'mount=%s,copy=%s' % (1 if mounted else 0, 1 if copied else 0)
+
+
+def _log_prepare_decision(decision, reason, expected, local_version, path, model_center_uuid,
+                          storage_subdir, actions, entry, elapsed_ms):
+    logger.info(
+        '[host-model-cache-prepare] decision=%s reason=%s expected=%s local=%s '
+        'path=%s mc=%s subdir=%s actions=%s elapsedMs=%s sizeBytes=%s contentVersion=%s' % (
+            decision,
+            reason,
+            expected or 'none',
+            local_version or 'none',
+            path,
+            model_center_uuid,
+            storage_subdir,
+            actions,
+            int(elapsed_ms),
+            entry.get('sizeBytes'),
+            entry.get('contentVersion') or 'none',
+        ))
 
 
 def report_source_root(source_root):
@@ -366,6 +400,7 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
     - strong contentVersion (v:...) matching local sidecar skips remount
     - otherwise mount JuiceFS and compare weak meta (size+mtime); refresh on mismatch
     """
+    started = time.time()
     root = _normalize_root(source_root or HOST_SOURCE_ROOT)
     target = ensure_under(source_path, root, 'sourcePath', allow_root=False)
     model_center_uuid = _validate_source_id(model_center_uuid, 'modelCenterUuid')
@@ -374,6 +409,8 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
     storage_subdir = _validate_relative_path(storage_subdir, 'storageSubdir')
     relative_path = _validate_relative_path(artifact_relative_path, 'artifactRelativePath')
     expected_strong = format_strong_content_version(content_version)
+    had_local = os.path.exists(target)
+    local_before = read_local_content_version(target) if had_local else None
 
     if not os.path.exists(root):
         _ensure_directory(root)
@@ -392,13 +429,23 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
             _unmount_model_center(mount_path)
 
         # Strong-version hit: local sidecar already matches shared truth → skip mount.
-        if os.path.exists(target) and expected_strong and is_local_content_aligned(target, expected_strong):
-            entry = cache_entry(root, target, expected_strong)
+        if had_local and expected_strong and is_local_content_aligned(target, expected_strong):
+            actions = _prepare_actions(False, False)
+            entry = cache_entry(
+                root, target, expected_strong,
+                'strong_hit', 'strong_match', actions)
             if register_cache:
                 _register_model_center_cache(root, target)
+            _log_prepare_decision(
+                'strong_hit', 'strong_match', expected_strong, local_before,
+                target, model_center_uuid, storage_subdir, actions, entry,
+                (time.time() - started) * 1000)
             return entry
 
         aligned_version = None
+        decision = None
+        reason = None
+        copied = False
         try:
             _mount_model_center(str(storage_url).strip(), mount_path, storage_subdir)
             remote_source = ensure_under(
@@ -410,6 +457,10 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
 
             if os.path.exists(target) and is_local_content_aligned(target, expected_version):
                 aligned_version = expected_version
+                if expected_strong:
+                    decision, reason = 'strong_hit', 'strong_match'
+                else:
+                    decision, reason = 'meta_hit', 'meta_match'
             else:
                 if os.path.exists(target):
                     if not os.path.isdir(target):
@@ -424,11 +475,28 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
                     required_capacity_bytes)
                 write_local_content_version(target, expected_version)
                 aligned_version = expected_version
+                copied = True
+                if not had_local:
+                    decision, reason = 'cold_copy', 'missing_local'
+                elif not local_before:
+                    decision, reason = 'refresh', 'no_sidecar'
+                elif expected_strong:
+                    decision, reason = 'refresh', 'strong_mismatch'
+                else:
+                    decision, reason = 'refresh', 'meta_mismatch'
         finally:
             _unmount_model_center(mount_path)
-        entry = cache_entry(root, target, aligned_version)
+
+        actions = _prepare_actions(True, copied)
+        entry = cache_entry(
+            root, target, aligned_version,
+            decision, reason, actions)
         if register_cache:
             _register_model_center_cache(root, target)
+        _log_prepare_decision(
+            decision, reason, expected_strong or aligned_version, local_before,
+            target, model_center_uuid, storage_subdir, actions, entry,
+            (time.time() - started) * 1000)
         return entry
     finally:
         try:

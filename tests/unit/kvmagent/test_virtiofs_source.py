@@ -154,6 +154,9 @@ def test_prepare_model_center_cache_mounts_copies_and_unmounts(tmp_path, monkeyp
     assert (target / 'config.json').read_text() == '{}'
     assert entry['contentVersion'].startswith('meta:')
     assert virtiofs_source.read_local_content_version(str(target)) == entry['contentVersion']
+    assert entry['prepareDecision'] == 'cold_copy'
+    assert entry['prepareReason'] == 'missing_local'
+    assert entry['prepareActions'] == 'mount=1,copy=1'
     registry = json.loads((source_root / '.registry').read_text())
     assert list(registry.values())[0]['path'] == os.path.realpath(str(target))
     assert events[0][0] == 'mount'
@@ -308,6 +311,9 @@ def test_prepare_model_center_cache_reuses_existing_cache_with_matching_strong_v
 
     assert entry['sourcePath'] == os.path.realpath(str(target))
     assert entry['contentVersion'] == 'v:checksum-abc'
+    assert entry['prepareDecision'] == 'strong_hit'
+    assert entry['prepareReason'] == 'strong_match'
+    assert entry['prepareActions'] == 'mount=0,copy=0'
 
 
 def test_prepare_model_center_cache_refreshes_when_strong_version_mismatches(tmp_path, monkeypatch):
@@ -347,6 +353,9 @@ def test_prepare_model_center_cache_refreshes_when_strong_version_mismatches(tmp
     assert (target / 'config.json').read_text() == 'fresh'
     assert entry['contentVersion'] == 'v:new'
     assert virtiofs_source.read_local_content_version(str(target)) == 'v:new'
+    assert entry['prepareDecision'] == 'refresh'
+    assert entry['prepareReason'] == 'strong_mismatch'
+    assert entry['prepareActions'] == 'mount=1,copy=1'
 
 
 def test_prepare_model_center_cache_refreshes_when_meta_mismatches(tmp_path, monkeypatch):
@@ -386,6 +395,8 @@ def test_prepare_model_center_cache_refreshes_when_meta_mismatches(tmp_path, mon
     assert (target / 'template.yaml').read_text() == 'new-template-content'
     assert entry['contentVersion'].startswith('meta:')
     assert entry['contentVersion'] != 'meta:1:1'
+    assert entry['prepareDecision'] == 'refresh'
+    assert entry['prepareReason'] == 'meta_mismatch'
 
 
 def test_prepare_model_center_cache_reuses_when_meta_matches_after_mount(tmp_path, monkeypatch):
@@ -430,6 +441,9 @@ def test_prepare_model_center_cache_reuses_when_meta_matches_after_mount(tmp_pat
     assert mounted
     assert entry['contentVersion'].startswith('meta:')
     assert (target / 'template.yaml').read_text() == 'same'
+    assert entry['prepareDecision'] == 'meta_hit'
+    assert entry['prepareReason'] == 'meta_match'
+    assert entry['prepareActions'] == 'mount=1,copy=0'
 
 
 def test_prepare_model_center_cache_without_sidecar_refreshes_existing_dir(tmp_path, monkeypatch):
@@ -468,6 +482,8 @@ def test_prepare_model_center_cache_without_sidecar_refreshes_existing_dir(tmp_p
     assert events == ['mount', 'unmount']
     assert (target / 'template.yaml').read_text() == 'refreshed'
     assert entry['contentVersion'].startswith('meta:')
+    assert entry['prepareDecision'] == 'refresh'
+    assert entry['prepareReason'] == 'no_sidecar'
 
 
 def test_prepare_path_source_rejects_empty_command_source_root(tmp_path):
