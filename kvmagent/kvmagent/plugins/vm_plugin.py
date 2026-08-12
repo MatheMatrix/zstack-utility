@@ -7768,6 +7768,9 @@ class Vm(object):
                 chan = e(devices, 'channel', None, {'type': 'unix'})
                 e(chan, 'source', None, {'mode': 'bind', 'path': channel.socketPath})
                 e(chan, 'target', None, {'type': 'virtio', 'name': channel.targetName})
+                if channel.virtioSerialPort is not None:
+                    e(chan, 'address', None, {'type': 'virtio-serial', 'controller': '0', 'bus': '0',
+                                               'port': str(channel.virtioSerialPort)})
             if channel_vr:
                 basedir = os.path.dirname(channel_vr.socketPath)
                 linux.mkdir(basedir, 0o777)
