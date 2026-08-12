@@ -53,6 +53,31 @@ def build_sftp_batch_cmd(port, username, hostname):
     return SFTP_BATCH_CMD_FORMAT % (port, build_sftp_target(username, hostname))
 
 
+def encode_download_url(url):
+    parsed = urllib.parse.urlsplit(url)
+    path = urllib.parse.quote(parsed.path, safe="/:=@%")
+    query = urllib.parse.quote(parsed.query, safe=":/?=&%")
+    fragment = urllib.parse.quote(parsed.fragment, safe=":/?=&%")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, query, fragment))
+
+
+def get_http_content_length(command_shell, url):
+    headers = command_shell.call(
+        "curl -fsSIL --globoff -- %s" % linux.shellquote(url)
+    )
+    content_lengths = []
+    for line in headers.splitlines():
+        if line.strip().upper().startswith('HTTP/'):
+            content_lengths = []
+            continue
+        name, separator, value = line.partition(':')
+        if separator and name.strip().lower() == 'content-length' and value.strip():
+            content_lengths.append(value.strip())
+    if not content_lengths:
+        raise Exception('cannot get Content-Length from url[%s]' % url)
+    return content_lengths[-1]
+
+
 class CephPoolCapacity(object):
     def __init__(self, name, available, used, total, replicated_size, security_policy, disk_utilization, related_osds, related_osd_capacity):
         self.name = name
@@ -1044,17 +1069,17 @@ class CephAgent(object):
         report.resourceUuid = cmd.imageUuid
         report.progress_report("0", "start")
 
-        cmd.url = urllib.parse.quote(cmd.url, safe=':/?=')
+        cmd.url = encode_download_url(cmd.url)
 
         url = urllib.parse.urlparse(cmd.url)
         if url.scheme in ('http', 'https', 'ftp'):
             image_format = get_origin_format(cmd.url, True)
-            cmd.url = linux.shellquote(cmd.url)
+            quoted_url = linux.shellquote(cmd.url)
             # roll back tmp ceph file after import it
             _1()
 
             PFILE = linux.create_temp_file()
-            content_length = shell.call("""curl -sLI %s|awk '/[cC]ontent-[lL]ength/{print $NF}'""" % cmd.url).splitlines()[-1]
+            content_length = get_http_content_length(shell, cmd.url)
             total = _getRealSize(content_length)
 
             def _getProgress(synced):
@@ -1073,11 +1098,11 @@ class CephAgent(object):
             logger.debug("content-length is: %s" % total)
 
             _, _, err = shell.bash_progress_1('wget --no-check-certificate -O - %s 2>%s| rbd import '
-                                              '--image-format 2 - %s/%s ' % (cmd.url, PFILE, pool, tmp_image_name)
+                                              '--image-format 2 - %s/%s ' % (quoted_url, PFILE, pool, tmp_image_name)
                                               , _getProgress, pipe_fail=True)
             if err:
                 raise err
-            actual_size = linux.get_file_size_by_http_head(cmd.url)
+            actual_size = linux.get_file_size_by_http_head(quoted_url)
 
             if os.path.exists(PFILE):
                 os.remove(PFILE)
