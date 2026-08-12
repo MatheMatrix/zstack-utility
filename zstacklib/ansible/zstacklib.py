@@ -548,10 +548,15 @@ def get_host_releasever(host_info):
         "uniontech fou 20": "uos20",
         "redhat maipo 7.4": "ky10", # old kylinV10, oem 7.4 incompletely
         "centos core 7.9.2009": "c79",
+        "centos core 7.9": "c79",
         "centos core 7.6.1810": "c76",
+        "centos core 7.6": "c76",
         "centos core 7.4.1708": "c74",
+        "centos core 7.4": "c74",
         "centos core 7.2.1511": "c74",  # c74 for old releases
+        "centos core 7.2": "c74",
         "centos core 7.1.1503": "c74",
+        "centos core 7.1": "c74",
         'helix core 7.6c': 'h76c',
         'helix core 7.6': 'h76c',
         'helix core 7.9c': 'h79c',
@@ -2763,10 +2768,6 @@ class ZstackLib(object):
                 # kvm.py
                 if (self.distro_version >= 7 or self.zstack_releasever == 'alinux4') and self.zstack_releasever in centos:
                     self.copy_redhat_yum_repo()
-                # zstack_repo is empty, will use system repo
-                # python3-libselinux is needed by ansible copy/file/template/
-                # selinux modules when selinux is enabled on host
-                yum_install_package("python3-libselinux", self.host_post_info)
                 # install epel-release
                 if self.distro in RPM_BASED_OS and self.zstack_releasever in centos:
                     self.copy_epel_yum_repo()
@@ -2786,7 +2787,6 @@ class ZstackLib(object):
                 # generate zstack experimental repo anyway
                 self.generate_zstack_experimental_yum_repo()
 
-            # install python3-libselinux and other system libs
             self.install_rpm_based_os_requirements(
                 self.zstack_repo, user_defined)
         elif self.distro in DEB_BASED_OS:
@@ -2816,23 +2816,39 @@ class ZstackLib(object):
 
         return python_requirement_set
 
+    _SELINUX_BINDING_PACKAGES = {
+        3: ('python3-libselinux', 'libselinux-python3'),
+        2: ('python2-libselinux', 'libselinux-python'),
+    }
+
+    def _get_system_python_major(self):
+        candidates = ('python3', 'python2', 'python')
+        commands = ["%s -c 'import sys; print(sys.version_info[0])' "
+                    "2>/dev/null" % python for python in candidates]
+        ok, output = run_remote_command(' || '.join(commands),
+                                        self.host_post_info,
+                                        return_status=True,
+                                        return_output=True)
+        major = (output or '').strip()
+        if ok and major in ('2', '3'):
+            return int(major)
+        raise Exception("failed to find system python on host %s" %
+                        self.host_post_info.host)
+
+    def _install_selinux(self, zstack_repo):
+        major = self._get_system_python_major()
+        candidates = self._SELINUX_BINDING_PACKAGES[major]
+        yum = 'yum' if zstack_repo == 'false' else \
+            'yum --disablerepo=* --enablerepo=%s' % zstack_repo
+        commands = ['%s install -y %s' % (yum, package)
+                    for package in candidates]
+        run_remote_command(' || '.join(commands), self.host_post_info)
+
     def _basic_rpm_set(self):
-        # python3-libselinux is required by ansible selinux/copy/file modules.
-        # When the current interpreter (e.g. python3.11) lacks selinux bindings,
-        # ansible's respawn mechanism probes system python (/usr/bin/python3)
-        # and re-executes the module with the interpreter that has
-        # python3-libselinux installed.
-        probe = ('if [ -x /usr/bin/python3 ]; '
-                 'then echo python3-libselinux; '
-                 'else echo libselinux-python; fi')
-        ok, stdout = run_remote_command(probe, self.host_post_info,
-                                        return_status=True, return_output=True)
-        selinux_pkg = stdout.strip() if ok and stdout.strip() else "libselinux-python"
         basic = {
             "gcc",
             "autoconf",
             "vim-minimal",
-            selinux_pkg,
         }
 
         if self.distro in KYLIN_DISTRO:
@@ -2852,6 +2868,7 @@ class ZstackLib(object):
 
     def install_rpm_based_os_requirements(self, zstack_repo,
                                           skip_clean_yum_metadata=True):
+        self._install_selinux(zstack_repo)
         required_rpm_set = self._basic_rpm_set()
 
         # imagestore do not need python env will skip python packages
@@ -2862,15 +2879,6 @@ class ZstackLib(object):
         if not skip_clean_yum_metadata:
             before_install_command += \
                 "yum clean --enablerepo=%s metadata && " % zstack_repo
-
-        # install python3-libselinux first, it's needed by ansible modules
-        selinux_pkgs = [p for p in required_rpm_set if "selinux" in p]
-        if zstack_repo == "false":
-            batch_yum_install_package(selinux_pkgs, self.host_post_info)
-        else:
-            command = "yum --disablerepo=* --enablerepo={0} install -y {1} || true" \
-                      .format(zstack_repo, " ".join(selinux_pkgs))
-            run_remote_command(command, self.host_post_info)
 
         if zstack_repo == "false":
             batch_yum_install_package(required_rpm_set, self.host_post_info)
