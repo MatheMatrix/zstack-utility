@@ -77,6 +77,68 @@ class TestCephBackupSftpCommandFormatting:
 
 
 # ---------------------------------------------------------------------------
+# Download URL handling
+# ---------------------------------------------------------------------------
+@pytest.mark.ceph
+class TestCephBackupDownloadUrl:
+    def test_ZSTAC_87499_preserves_ipv6_authority(self):
+        url = "http://[fd11:5:5:29::66:571d]:18080/centos image.qcow2"
+
+        encoded_url = module.encode_download_url(url)
+
+        assert encoded_url == "http://[fd11:5:5:29::66:571d]:18080/centos%20image.qcow2"
+
+    def test_preserves_sftp_userinfo_and_ipv6_authority(self):
+        url = "sftp://root:password@[2001:db8::10]:22/backup/image.qcow2"
+
+        encoded_url = module.encode_download_url(url)
+
+        assert encoded_url == url
+
+    def test_encodes_path_without_changing_query_structure(self):
+        url = "https://example.com/镜像/image.qcow2?token=a%20b&name=测试"
+
+        encoded_url = module.encode_download_url(url)
+
+        assert encoded_url == (
+            "https://example.com/%E9%95%9C%E5%83%8F/image.qcow2"
+            "?token=a%20b&name=%E6%B5%8B%E8%AF%95"
+        )
+
+    def test_extracts_last_content_length_after_redirect(self):
+        command_shell = MagicMock()
+        command_shell.call.return_value = (
+            "HTTP/1.1 302 Found\r\nContent-Length: 0\r\n\r\n"
+            "HTTP/1.1 200 OK\r\nContent-Length: 21474836480\r\n"
+        )
+        url = "http://[2001:db8::10]:18080/image.qcow2"
+
+        content_length = module.get_http_content_length(command_shell, url)
+
+        assert content_length == "21474836480"
+        command_shell.call.assert_called_once_with(
+            "curl -fsSIL --globoff -- 'http://[2001:db8::10]:18080/image.qcow2'"
+        )
+
+    def test_missing_content_length_has_explicit_error(self):
+        command_shell = MagicMock()
+        command_shell.call.return_value = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+
+        with pytest.raises(Exception, match="cannot get Content-Length"):
+            module.get_http_content_length(command_shell, "https://example.com/image.qcow2")
+
+    def test_missing_content_length_in_final_redirect_response_has_explicit_error(self):
+        command_shell = MagicMock()
+        command_shell.call.return_value = (
+            "HTTP/1.1 302 Found\r\nContent-Length: 0\r\n\r\n"
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+        )
+
+        with pytest.raises(Exception, match="cannot get Content-Length"):
+            module.get_http_content_length(command_shell, "https://example.com/image.qcow2")
+
+
+# ---------------------------------------------------------------------------
 # echo
 # ---------------------------------------------------------------------------
 @pytest.mark.ceph
