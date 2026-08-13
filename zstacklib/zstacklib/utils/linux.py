@@ -2250,7 +2250,7 @@ def qcow2_direct_get_backing_file(path):
 # Get derived file and all its backing files
 def qcow2_get_file_chain(path):
     out = shell.call("%s --backing-chain %s | grep 'image:' | awk '{print $2}'" %
-            (qemu_img.subcmd('info'), path))
+            (qemu_img.subcmd('info'), shellquote(path)))
     return out.splitlines()
 
 # Get derived file all backing files
