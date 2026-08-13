@@ -1670,7 +1670,11 @@ def delete_zstack_metadata_live(vm_uuid, metadata_key):
     return _sync_zstack_metadata_live(vm_uuid, metadata_key, None, True)
 
 
-def get_console_listen_address(host_management_ip):
+def get_console_listen_address(host_management_ip, management_network_ip_version=None):
+    if management_network_ip_version == 'ipv6':
+        return CONSOLE_LISTEN_IPV6_ADDRESS
+    if management_network_ip_version == 'ipv4':
+        return CONSOLE_LISTEN_IPV4_ADDRESS
     if host_management_ip and network_ipv6.IPV6_SEPARATOR in host_management_ip:
         return CONSOLE_LISTEN_IPV6_ADDRESS
     return CONSOLE_LISTEN_IPV4_ADDRESS
@@ -7652,7 +7656,7 @@ class Vm(object):
 
         def make_vnc():
             devices = elements['devices']
-            listen_address = get_console_listen_address(cmd.hostManagementIp)
+            listen_address = get_console_listen_address(cmd.hostManagementIp, cmd.managementNetworkIpVersion)
             if cmd.consolePassword == None:
                 vnc = e(devices, 'graphics', None, {'type': 'vnc', 'port': '5900', 'autoport': 'yes'})
             else:
@@ -7662,7 +7666,7 @@ class Vm(object):
 
         def make_spice():
             devices = elements['devices']
-            listen_address = get_console_listen_address(cmd.hostManagementIp)
+            listen_address = get_console_listen_address(cmd.hostManagementIp, cmd.managementNetworkIpVersion)
             if cmd.consolePassword == None:
                 spice = e(devices, 'graphics', None, {'type': 'spice', 'port': '5900', 'autoport': 'yes'})
             else:

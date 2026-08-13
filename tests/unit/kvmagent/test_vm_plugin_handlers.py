@@ -41,6 +41,23 @@ def test_console_listen_address_uses_dual_stack_for_ipv6_host():
     assert vm_plugin.get_console_listen_address('2001:db8::10') == '::'
 
 
+def test_zstac_87496_console_listen_address_uses_explicit_ipv6_for_hostname():
+    assert vm_plugin.get_console_listen_address('host01.ipv6.test', 'ipv6') == '::'
+
+
+def test_zstac_87496_console_listen_address_uses_explicit_ipv4_for_hostname():
+    assert vm_plugin.get_console_listen_address('host01.ipv4.test', 'ipv4') == '0.0.0.0'
+
+
+def test_zstac_87496_console_listen_address_falls_back_for_legacy_command():
+    assert vm_plugin.get_console_listen_address('2001:db8::10', None) == '::'
+    assert vm_plugin.get_console_listen_address('192.168.1.10', None) == '0.0.0.0'
+
+
+def test_zstac_87496_console_listen_address_falls_back_for_unknown_ip_version():
+    assert vm_plugin.get_console_listen_address('2001:db8::10', 'unknown') == '::'
+
+
 def test_build_migration_hostname_supports_ipv4():
     assert vm_plugin.build_migration_hostname('172.24.1.2') == '172-24-1-2.zstack.org'
 
