@@ -27,13 +27,13 @@ def get_physical_capacity(storagePath):
         "storagePath":storagePath
     }))
 
-def _guarded(handler, body):
-    return LOCALSTORAGE_PLUGIN._with_initialized_file_guard(handler)(misc.make_a_request(body))
+def _guarded(path, handler, body):
+    return LOCALSTORAGE_PLUGIN._with_initialized_file_guard(path, handler)(misc.make_a_request(body))
 
 @misc.return_jsonobject()
 def create_empty_volume(installUrl=None, backingFile=None, size=None, storagePath=None, uuid=None,
                         primaryStorageUuid=None):
-    return _guarded(LOCALSTORAGE_PLUGIN.create_empty_volume, {
+    return _guarded(LOCALSTORAGE_PLUGIN.CREATE_EMPTY_VOLUME_PATH, LOCALSTORAGE_PLUGIN.create_empty_volume, {
         "installUrl" : installUrl,
         "backingFile" : backingFile,
         "size" : size,
@@ -52,7 +52,7 @@ def create_folder(installUrl=None, storagePath=None):
 @misc.return_jsonobject()
 def create_root_volume_from_template(templatePathInCache=None, installUrl=None, storagePath=None, uuid=None,
                                      primaryStorageUuid=None):
-    return _guarded(LOCALSTORAGE_PLUGIN.create_root_volume_from_template, {
+    return _guarded(LOCALSTORAGE_PLUGIN.CREATE_VOLUME_FROM_CACHE_PATH, LOCALSTORAGE_PLUGIN.create_root_volume_from_template, {
         "templatePathInCache":templatePathInCache,
         "installUrl":installUrl,
         "storagePath": storagePath,
@@ -63,7 +63,7 @@ def create_root_volume_from_template(templatePathInCache=None, installUrl=None, 
 @misc.return_jsonobject()
 def create_volume_with_backing(templatePathInCache=None, installPath=None, storagePath=None, uuid=None,
                                primaryStorageUuid=None):
-    return _guarded(LOCALSTORAGE_PLUGIN.create_volume_with_backing, {
+    return _guarded(LOCALSTORAGE_PLUGIN.CREATE_DATA_VOLUME_WITH_BACKING_PATH, LOCALSTORAGE_PLUGIN.create_volume_with_backing, {
         "templatePathInCache":templatePathInCache,
         "installPath":installPath,
         "storagePath":storagePath,

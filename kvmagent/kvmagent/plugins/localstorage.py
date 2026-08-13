@@ -296,12 +296,34 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
     ENCRYPT_VOLUME_BITS_PATH = "/localstorage/volume/encryptinplace"
     CONVERT_VOLUME_ENCRYPTION_PATH = "/localstorage/volume/convertencryption"
 
+    LOCAL_STORAGE_INITIALIZED_FILE_GUARD_EXEMPT_PATHS = set([
+        INIT_PATH,
+        GET_PHYSICAL_CAPACITY_PATH,
+        ESTIMATE_TEMPLATE_SIZE_PATH,
+        CHECK_BITS_PATH,
+        VERIFY_SNAPSHOT_CHAIN_PATH,
+        GET_MD5_PATH,
+        CHECK_MD5_PATH,
+        GET_BACKING_FILE_PATH,
+        GET_BACKING_CHAIN_PATH,
+        GET_VOLUME_SIZE,
+        BATCH_GET_VOLUME_SIZE,
+        GET_BASE_IMAGE_PATH,
+        GET_QCOW2_REFERENCE,
+        CHECK_INITIALIZED_FILE,
+        CREATE_INITIALIZED_FILE,
+        GET_DOWNLOAD_BITS_FROM_KVM_HOST_PROGRESS_PATH,
+        GET_QCOW2_HASH_VALUE_PATH,
+        GET_VM_INSTANCE_METADATA_PATH,
+        SCAN_VM_METADATA_PATH,
+    ])
+
     _metadata_handler = FileBasedMetadataHandler()
 
     LOCAL_NOT_ROOT_USER_MIGRATE_TMP_PATH = "primary_storage_tmp_dir"
 
     def start(self):
-        http_server = kvmagent.get_http_server()
+        http_server = self._local_storage_guarded_http_server(kvmagent.get_http_server())
         http_server.register_async_uri(self.INIT_PATH, self.init)
         http_server.register_async_uri(self.GET_PHYSICAL_CAPACITY_PATH, self.get_physical_capacity)
         http_server.register_async_uri(self.CREATE_EMPTY_VOLUME_PATH, self.create_empty_volume)
@@ -355,63 +377,61 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.PREFIX_REBASE_BACKING_FILES_PATH, self.prefix_rebase_backing_files)
         http_server.register_async_uri(self.ENCRYPT_VOLUME_BITS_PATH, self.encrypt_volume_bits)
         http_server.register_async_uri(self.CONVERT_VOLUME_ENCRYPTION_PATH, self.convert_volume_encryption)
-        self._guard_local_storage_write_uris(http_server)
 
         self.imagestore_client = ImageStoreClient()
 
     def stop(self):
         pass
 
-    def _guard_local_storage_write_uris(self, http_server):
-        unguarded_paths = set([
-            self.INIT_PATH,
-            self.GET_PHYSICAL_CAPACITY_PATH,
-            self.ESTIMATE_TEMPLATE_SIZE_PATH,
-            self.CHECK_BITS_PATH,
-            self.VERIFY_SNAPSHOT_CHAIN_PATH,
-            self.GET_MD5_PATH,
-            self.CHECK_MD5_PATH,
-            self.GET_BACKING_FILE_PATH,
-            self.GET_BACKING_CHAIN_PATH,
-            self.GET_VOLUME_SIZE,
-            self.BATCH_GET_VOLUME_SIZE,
-            self.GET_BASE_IMAGE_PATH,
-            self.GET_QCOW2_REFERENCE,
-            self.CHECK_INITIALIZED_FILE,
-            self.CREATE_INITIALIZED_FILE,
-            self.CANCEL_DOWNLOAD_BITS_FROM_KVM_HOST_PATH,
-            self.GET_DOWNLOAD_BITS_FROM_KVM_HOST_PROGRESS_PATH,
-            self.GET_QCOW2_HASH_VALUE_PATH,
-            self.GET_VM_INSTANCE_METADATA_PATH,
-            self.SCAN_VM_METADATA_PATH,
-        ])
-        for path, uri_obj in http_server.async_uri_handlers.items():
-            if path.startswith('/localstorage/') and path not in unguarded_paths:
-                uri_obj.func = self._with_initialized_file_guard(uri_obj.func)
+    def _local_storage_guarded_http_server(self, http_server):
+        register_async_uri = self._build_local_storage_guarded_register(http_server.register_async_uri)
 
-    def _with_initialized_file_guard(self, handler):
+        class LocalStorageGuardedHttpServer(object):
+            def register_async_uri(self, path, handler, *args, **kwargs):
+                return register_async_uri(path, handler, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(http_server, name)
+
+        return LocalStorageGuardedHttpServer()
+
+    def _build_local_storage_guarded_register(self, register_async_uri):
+        def guarded_register(path, handler, *args, **kwargs):
+            if self._need_initialized_file_guard(path):
+                handler = self._with_initialized_file_guard(path, handler)
+            return register_async_uri(path, handler, *args, **kwargs)
+        return guarded_register
+
+    def _need_initialized_file_guard(self, path):
+        return path.startswith('/localstorage/') and path not in self.LOCAL_STORAGE_INITIALIZED_FILE_GUARD_EXEMPT_PATHS
+
+    def _with_initialized_file_guard(self, path, handler):
         def guarded(req):
             cmd = jsonobject.loads(req[http.REQUEST_BODY])
-            self._check_initialized_file_for_write(cmd)
+            self._check_initialized_file_for_write(path, cmd)
             return handler(req)
         guarded.__name__ = handler.__name__
         return kvmagent.replyerror(guarded)
 
     @staticmethod
-    def _check_initialized_file_for_write(cmd):
-        storage_uuid = getattr(cmd, 'uuid', None) or getattr(cmd, 'primaryStorageUuid', None)
+    def _check_initialized_file_for_write(path, cmd):
+        storage_uuid = getattr(cmd, 'primaryStorageUuid', None) or getattr(cmd, 'uuid', None)
         storage_path = getattr(cmd, 'storagePath', None)
         if not storage_uuid or not storage_path:
-            return
+            raise kvmagent.KvmError(
+                'local storage write uri[%s] requires primaryStorageUuid/uuid and storagePath for initialized-file guard'
+                % path
+            )
 
         initialized_file_path = os.path.join(storage_path, '%s-initialized-file' % storage_uuid)
         if os.path.exists(initialized_file_path):
             return
 
         raise kvmagent.KvmError(
-            'cannot create local storage resource on primary storage[uuid:%s], '
-            'because initialized file[%s] is missing; the local storage path may not be mounted correctly'
-            % (storage_uuid, initialized_file_path)
+            'cannot modify local storage resource through uri[%s] on primary storage[uuid:%s], '
+            'because initialized file[%s] is missing. The local storage path[%s] may not be mounted correctly; '
+            'refuse to continue to avoid writing data to the system disk and causing local storage data split'
+            % (path, storage_uuid, initialized_file_path, storage_path)
         )
 
     @kvmagent.replyerror
@@ -997,10 +1017,6 @@ class LocalStoragePlugin(kvmagent.KvmAgent):
 
         if not os.path.exists(cmd.path):
             os.makedirs(cmd.path, 0755)
-        if cmd.initFilePath:
-            if not os.path.exists(cmd.initFilePath):
-                f = open(cmd.initFilePath, 'w')
-                f.close()
 
         rsp = InitRsp()
         rsp.totalCapacity, rsp.availableCapacity = self._get_disk_capacity(cmd.path)
