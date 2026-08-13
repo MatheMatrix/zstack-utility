@@ -11,6 +11,7 @@
 from __future__ import annotations
 """Handler-level unit tests for kvmagent.plugins.vm_plugin."""
 import json
+import socket
 import tempfile
 import urllib.parse
 from collections.abc import Iterator
@@ -41,21 +42,21 @@ def test_console_listen_address_uses_dual_stack_for_ipv6_host():
     assert vm_plugin.get_console_listen_address('2001:db8::10') == '::'
 
 
-def test_zstac_87496_console_listen_address_uses_explicit_ipv6_for_hostname():
-    assert vm_plugin.get_console_listen_address('host01.ipv6.test', 'ipv6') == '::'
+def test_zstac_87496_console_listen_address_resolves_ipv6_hostname():
+    addresses = [(socket.AF_INET6, socket.SOCK_STREAM, 6, '', ('2001:db8::10', 0, 0, 0))]
+    with patch.object(vm_plugin.socket, 'getaddrinfo', return_value=addresses):
+        assert vm_plugin.get_console_listen_address('host01.ipv6.test') == '::'
 
 
-def test_zstac_87496_console_listen_address_uses_explicit_ipv4_for_hostname():
-    assert vm_plugin.get_console_listen_address('host01.ipv4.test', 'ipv4') == '0.0.0.0'
+def test_zstac_87496_console_listen_address_resolves_ipv4_hostname():
+    addresses = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.10', 0))]
+    with patch.object(vm_plugin.socket, 'getaddrinfo', return_value=addresses):
+        assert vm_plugin.get_console_listen_address('host01.ipv4.test') == '0.0.0.0'
 
 
-def test_zstac_87496_console_listen_address_falls_back_for_legacy_command():
-    assert vm_plugin.get_console_listen_address('2001:db8::10', None) == '::'
-    assert vm_plugin.get_console_listen_address('192.168.1.10', None) == '0.0.0.0'
-
-
-def test_zstac_87496_console_listen_address_falls_back_for_unknown_ip_version():
-    assert vm_plugin.get_console_listen_address('2001:db8::10', 'unknown') == '::'
+def test_zstac_87496_console_listen_address_falls_back_when_hostname_cannot_be_resolved():
+    with patch.object(vm_plugin.socket, 'getaddrinfo', side_effect=socket.gaierror()):
+        assert vm_plugin.get_console_listen_address('unresolvable.example') == '0.0.0.0'
 
 
 def test_build_migration_hostname_supports_ipv4():

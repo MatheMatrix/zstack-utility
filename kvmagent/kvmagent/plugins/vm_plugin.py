@@ -1670,13 +1670,22 @@ def delete_zstack_metadata_live(vm_uuid, metadata_key):
     return _sync_zstack_metadata_live(vm_uuid, metadata_key, None, True)
 
 
-def get_console_listen_address(host_management_ip, management_network_ip_version=None):
-    if management_network_ip_version == 'ipv6':
-        return CONSOLE_LISTEN_IPV6_ADDRESS
-    if management_network_ip_version == 'ipv4':
+def get_console_listen_address(host_management_ip):
+    if not host_management_ip:
         return CONSOLE_LISTEN_IPV4_ADDRESS
-    if host_management_ip and network_ipv6.IPV6_SEPARATOR in host_management_ip:
+    if network_ipv6.IPV6_SEPARATOR in host_management_ip:
         return CONSOLE_LISTEN_IPV6_ADDRESS
+    try:
+        socket.inet_pton(socket.AF_INET, host_management_ip)
+        return CONSOLE_LISTEN_IPV4_ADDRESS
+    except OSError:
+        pass
+    try:
+        addresses = socket.getaddrinfo(host_management_ip, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        if addresses and addresses[0][0] == socket.AF_INET6:
+            return CONSOLE_LISTEN_IPV6_ADDRESS
+    except socket.gaierror:
+        pass
     return CONSOLE_LISTEN_IPV4_ADDRESS
 
 
@@ -7656,7 +7665,7 @@ class Vm(object):
 
         def make_vnc():
             devices = elements['devices']
-            listen_address = get_console_listen_address(cmd.hostManagementIp, cmd.managementNetworkIpVersion)
+            listen_address = get_console_listen_address(cmd.hostManagementIp)
             if cmd.consolePassword == None:
                 vnc = e(devices, 'graphics', None, {'type': 'vnc', 'port': '5900', 'autoport': 'yes'})
             else:
@@ -7666,7 +7675,7 @@ class Vm(object):
 
         def make_spice():
             devices = elements['devices']
-            listen_address = get_console_listen_address(cmd.hostManagementIp, cmd.managementNetworkIpVersion)
+            listen_address = get_console_listen_address(cmd.hostManagementIp)
             if cmd.consolePassword == None:
                 spice = e(devices, 'graphics', None, {'type': 'spice', 'port': '5900', 'autoport': 'yes'})
             else:
