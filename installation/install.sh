@@ -3968,14 +3968,12 @@ EOF
 #create zstack local yum repo
 create_yum_repo(){
     trap 'traplogger $LINENO "$BASH_COMMAND" $?'  DEBUG
-    if [ -f /etc/redhat-release ]; then
-        os_release=`cat /etc/redhat-release`
-        if [[ $os_release =~ 'Alibaba Cloud Linux' ]]; then
-            cat << 'EOF' > $zstack_ali_repo_file
+    if is_alinux4_host; then
+        cat << 'EOF' > $zstack_ali_repo_file
 #aliyun alinux4 base
 [alibase]
 name=ALinux-4 - OS - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/alinux/4/os/$basearch/
+baseurl=https://mirrors.aliyun.com/alinux/4.0/os/$basearch/os/
 gpgcheck=0
 enabled=0
 module_hotfixes=true
@@ -3983,13 +3981,17 @@ module_hotfixes=true
 #released updates
 [aliupdates]
 name=ALinux-4 - Updates - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/alinux/4/updates/$basearch/
+baseurl=https://mirrors.aliyun.com/alinux/4.0/updates/$basearch/os/
 enabled=0
 gpgcheck=0
 module_hotfixes=true
 
 EOF
-        elif [[ $os_release =~ ' 8' ]]; then
+        [ $? -eq 0 ] || fail2 "Failed to write Alibaba Cloud Linux 4 yum repository"
+        rm -f $zstack_163_repo_file || fail2 "Failed to remove unsupported 163 yum repository"
+    elif [ -f /etc/redhat-release ]; then
+        os_release=`cat /etc/redhat-release`
+        if [[ $os_release =~ ' 8' ]]; then
             cat << 'EOF' > $zstack_ali_repo_file
 #aliyun base
 [alibase]
