@@ -53,7 +53,7 @@ from kvmagent.plugins.bmv2_gateway_agent import utils as bm_utils
 from kvmagent.plugins import host_pushgateway
 from kvmagent.plugins import vm_artifact
 from kvmagent.plugins import zbs_vhost_target
-from kvmagent.plugins.imagestore import ImageStoreClient
+from kvmagent.plugins.imagestore import ImageStoreClient, get_cbd_actual_path
 from kvmagent.plugins.shared_block_plugin import MAX_ACTUAL_SIZE_FACTOR
 from zstacklib.utils import bash, plugin, iscsi, gpu, traceable_shell
 from zstacklib.utils.bash import in_bash
@@ -828,6 +828,12 @@ class TakeVolumeBackupCommand(kvmagent.AgentCommand):
 class CancelVolumeCbtBackupResponse(kvmagent.AgentResponse):
     def __init__(self):
         super(CancelVolumeCbtBackupResponse, self).__init__()
+
+
+class CheckCbtCapabilitiesResponse(kvmagent.AgentResponse):
+    def __init__(self):
+        super(CheckCbtCapabilitiesResponse, self).__init__()
+        self.rollbackVolumeCbtBackup = False
 
 
 class ExportNbdVolumesResponse(kvmagent.AgentResponse):
@@ -2860,7 +2866,7 @@ def get_volume_actual_installpath(install_path):
     elif install_path.startswith('block'):
         return install_path.replace("block://", "/dev/disk/by-id/wwn-0x")
     elif install_path.startswith('cbd'):
-        return "{}_{}_:{}".format(install_path, DEFAULT_ZBS_USER_NAME, DEFAULT_ZBS_CONF_PATH)
+        return get_cbd_actual_path(install_path)
     return install_path
 
 
@@ -2928,7 +2934,7 @@ def make_spool_conf(imgfmt, dev_letter, volume):
 
 
 def make_cbd_conf(install_path):
-    return install_path[len(PROTOCOL_CBD_PREFIX):] + "_" + DEFAULT_ZBS_USER_NAME + "_:" + DEFAULT_ZBS_CONF_PATH
+    return get_cbd_actual_path(install_path)[len(PROTOCOL_CBD_PREFIX):]
 
 
 AUTOMATIC_IOTHREAD_ID_START = 101
@@ -8464,6 +8470,8 @@ class VmPlugin(kvmagent.KvmAgent):
     KVM_LIST_EXPORTED_VOLUMES_PATH = "/vm/volume/listexportedvolumes"
     KVM_UNEXPORT_NBD_VOLUMES_PATH = "/vm/volume/unexportnbdvolumes"
     KVM_CANCEL_VOLUME_CBT_BACKUP_PATH = "/vm/volume/cancelcbtbackup"
+    KVM_ROLLBACK_VOLUME_CBT_BACKUP_PATH = "/vm/volume/rollbackcbtbackup"
+    KVM_CHECK_CBT_CAPABILITIES_PATH = "/vm/volume/cbtcapabilities"
     KVM_GET_VOLUMES_BITMAPS_PATH = "/vm/volume/getvolumebitmaps"
     KVM_TAKE_VOLUME_MIRROR_PATH = "/vm/volume/takemirror"
     KVM_GET_VOLUME_MIRROR_MODE_PATH = "/vm/volume/getmirrormode"
@@ -11023,6 +11031,8 @@ host side snapshot files chian:
             return path.replace("sharedblock:/", "/dev")
         elif path.startswith('ceph'):
             return path.replace("ceph://", "rbd:")
+        elif path.startswith(PROTOCOL_CBD_PREFIX):
+            return get_cbd_actual_path(path)
         return path
 
     @kvmagent.replyerror
@@ -11073,9 +11083,9 @@ host side snapshot files chian:
                 bitmapTimestamp = cmd.bitmapTimestamp
             if cmd.portRange:
                 cmd.portRange = cmd.portRange.replace(":", "-")
-            infos = isc.cbt_backup_volume(vm, cmd.volumeInfos, bitmapTimestamp, cmd.portRange)
             execute_qmp_command(cmd.vmUuid, '{"execute": "migrate-set-capabilities","arguments":'
                                             '{"capabilities":[ {"capability": "dirty-bitmaps", "state":true}]}}')
+            infos = isc.cbt_backup_volume(vm, cmd.volumeInfos, bitmapTimestamp, cmd.portRange)
             logger.info('finished create cbt backup on vm[%s]' % cmd.vmUuid)
 
         except Exception as e:
@@ -11104,6 +11114,32 @@ host side snapshot files chian:
             rsp.error = str(e)
             rsp.success = False
 
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def rollback_volume_cbt_backup(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = CancelVolumeCbtBackupResponse()
+
+        vm = get_vm_by_uuid(cmd.vmUuid, exception_if_not_existing=False)
+        if not vm:
+            raise kvmagent.KvmError("vm[uuid: %s] not found by libvirt" % cmd.vmUuid)
+
+        try:
+            ImageStoreClient().rollback_vm_cbt_backup_jobs(cmd.vmUuid, cmd.records)
+        except Exception as e:
+            content = traceback.format_exc()
+            logger.warn("rollback vm cbt task failed: " + str(e) + '\n' + content)
+            rsp.error = str(e)
+            rsp.success = False
+
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def check_cbt_capabilities(self, req):
+        rsp = CheckCbtCapabilitiesResponse()
+        capabilities = ImageStoreClient().get_cbt_capabilities()
+        rsp.rollbackVolumeCbtBackup = bool(capabilities.get('rollbackVolumeCbtBackup', False))
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
@@ -13579,6 +13615,8 @@ host side snapshot files chian:
         http_server.register_async_uri(self.KVM_LIST_EXPORTED_VOLUMES_PATH, self.list_exported_volumes)
         http_server.register_async_uri(self.KVM_TAKE_VOLUME_CBT_BACKUP_PATH, self.take_volume_cbt_backup)
         http_server.register_async_uri(self.KVM_CANCEL_VOLUME_CBT_BACKUP_PATH, self.cancel_volume_cbt_backup)
+        http_server.register_async_uri(self.KVM_ROLLBACK_VOLUME_CBT_BACKUP_PATH, self.rollback_volume_cbt_backup)
+        http_server.register_async_uri(self.KVM_CHECK_CBT_CAPABILITIES_PATH, self.check_cbt_capabilities)
         http_server.register_async_uri(self.KVM_GET_VOLUMES_BITMAPS_PATH, self.get_volumes_cbt_bitmaps)
         http_server.register_async_uri(self.KVM_TAKE_VOLUME_MIRROR_PATH, self.take_volume_mirror)
         http_server.register_async_uri(self.KVM_GET_VOLUME_MIRROR_MODE_PATH, self.get_volume_mirror_mode)
