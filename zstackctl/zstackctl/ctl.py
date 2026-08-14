@@ -463,14 +463,12 @@ zstone_db_dump_skip_tables = ""
 # pre install scripts
 # prepare yum configurations
 configure_yum_repo_script = '''
-if [ -f /etc/redhat-release ]; then
-    os_release=`cat /etc/redhat-release`
-    if [[ $os_release =~ 'Alibaba Cloud Linux' ]] && grep -Eq '^VERSION_ID="?4(\.|")' /etc/os-release 2>/dev/null; then
-        [ -d /etc/yum.repos.d/ ] && [ ! -f /etc/yum.repos.d/zstack-aliyun-yum.repo ] && cat << 'EOF' > /etc/yum.repos.d/zstack-aliyun-yum.repo
+if grep -qi 'Alibaba Cloud Linux' /etc/os-release 2>/dev/null && grep -Eq '^VERSION_ID="?4(\.|")' /etc/os-release; then
+    [ -d /etc/yum.repos.d/ ] && cat << 'EOF' > /etc/yum.repos.d/zstack-aliyun-yum.repo
 #aliyun alinux4 base
 [alibase]
 name=ALinux-4 - OS - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/alinux/4/os/$basearch/
+baseurl=https://mirrors.aliyun.com/alinux/4.0/os/$basearch/os/
 gpgcheck=0
 enabled=0
 module_hotfixes=true
@@ -478,13 +476,18 @@ module_hotfixes=true
 #released updates
 [aliupdates]
 name=ALinux-4 - Updates - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/alinux/4/updates/$basearch/
+baseurl=https://mirrors.aliyun.com/alinux/4.0/updates/$basearch/os/
 enabled=0
 gpgcheck=0
 module_hotfixes=true
 
 EOF
-    elif [[ $os_release =~ ' 7' ]]; then
+    repo_rc=$?
+    [ $repo_rc -eq 0 ] || exit $repo_rc
+    rm -f /etc/yum.repos.d/zstack-163-yum.repo || exit $?
+elif [ -f /etc/redhat-release ]; then
+    os_release=`cat /etc/redhat-release`
+    if [[ $os_release =~ ' 7' ]]; then
         [ -d /etc/yum.repos.d/ ] &&  [ ! -f /etc/yum.repos.d/epel.repo ] && cat << 'EOF' > /etc/yum.repos.d/epel.repo
 [epel]
 name=Extra Packages for Enterprise Linux $releasever - $basearce - mirrors.aliyun.com

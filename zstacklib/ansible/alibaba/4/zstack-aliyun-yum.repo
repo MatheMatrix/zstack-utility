@@ -1,0 +1,15 @@
+# aliyun alinux4 base
+[alibase]
+name=ALinux-4 - OS - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4.0/os/$basearch/os/
+gpgcheck=0
+enabled=0
+module_hotfixes=true
+
+# released updates
+[aliupdates]
+name=ALinux-4 - Updates - mirrors.aliyun.com
+baseurl=https://mirrors.aliyun.com/alinux/4.0/updates/$basearch/os/
+enabled=0
+gpgcheck=0
+module_hotfixes=true
