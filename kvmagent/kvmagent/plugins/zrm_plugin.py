@@ -747,7 +747,28 @@ class ZrmPlugin(kvmagent.KvmAgent):
 
         return candidates if candidates else [node_name or device]
 
-    def _start_mirrors_for_zr(self, vm_uuid, volume_uuids, target_nbd_base_url, sync_mode_hint=None):
+    @staticmethod
+    def _normalize_qmp_volume_uuids(qmp_volume_uuids):
+        """Return only explicit export-volume -> QMP-volume string mappings."""
+        if isinstance(qmp_volume_uuids, dict):
+            entries = qmp_volume_uuids.items()
+        elif hasattr(qmp_volume_uuids, "__dict__"):
+            # jsonobject.loads produces JsonObject for JSON maps.
+            entries = qmp_volume_uuids.__dict__.items()
+        else:
+            return {}
+        result = {}
+        for export_uuid, qmp_uuid in entries:
+            if not isinstance(export_uuid, _str_types) or not isinstance(qmp_uuid, _str_types):
+                continue
+            export_uuid = export_uuid.strip()
+            qmp_uuid = qmp_uuid.strip()
+            if export_uuid and qmp_uuid and export_uuid != qmp_uuid:
+                result[export_uuid] = qmp_uuid
+        return result
+
+    def _start_mirrors_for_zr(self, vm_uuid, volume_uuids, target_nbd_base_url,
+                              sync_mode_hint=None, qmp_volume_uuids=None):
         """
         Start drive-mirror replication to the target NBD for each volume.
 
@@ -774,11 +795,16 @@ class ZrmPlugin(kvmagent.KvmAgent):
         blocks_cache = self._query_blocks_for_vm(vm_uuid)
         # Pre-query all ZR jobs on this VM for use by the per-volume state machine.
         zrm_jobs = self._get_zrm_block_jobs(vm_uuid)
+        qmp_volume_uuids = self._normalize_qmp_volume_uuids(qmp_volume_uuids)
         first_error = None
         for vol_uuid in volume_uuids:
             vol_uuid = (vol_uuid or "").strip()
             if not vol_uuid:
                 continue
+            # ZR exports the recovery inventory UUID.  A recovered REGISTER_VM
+            # can still expose the original source UUID in QMP, so use the
+            # explicitly verified mapping for local block-node lookup only.
+            qmp_vol_uuid = qmp_volume_uuids.get(vol_uuid, vol_uuid)
             # ZR state machine: complete ready jobs, reuse running ones.
             job_id = "zrm-mirror-%s" % vol_uuid[:MIRROR_JOB_UUID_TRUNCATE_LEN]
             existing = zrm_jobs.get(job_id)
@@ -826,19 +852,22 @@ class ZrmPlugin(kvmagent.KvmAgent):
             nbd_url = "%s/vol-%s" % (base, vol_uuid)
             # Resolve device/node_name -- _get_block_device_for_volume_uuid already
             # delegates to vm_plugin.get_mirror_device_for_volume_uuid internally.
-            device, node_name = self._find_block_entry_for_volume(blocks_cache, vol_uuid) if blocks_cache else (None, None)
+            device, node_name = self._find_block_entry_for_volume(blocks_cache, qmp_vol_uuid) if blocks_cache else (None, None)
             if not device and not node_name:
-                device, node_name = self._get_block_device_for_volume_uuid(vm_uuid, vol_uuid)
+                device, node_name = self._get_block_device_for_volume_uuid(vm_uuid, qmp_vol_uuid)
             if not device and not node_name:
-                err = "no block device found for volume %s on vm %s (query-block)" % (vol_uuid, vm_uuid)
+                err = "no block device found for volume %s (QMP volume %s) on vm %s (query-block)" % (vol_uuid, qmp_vol_uuid, vm_uuid)
                 logger.warn("ZRM replication start: %s" % err)
                 if first_error is None:
                     first_error = err
                 continue
-            mirror_candidates = self._build_mirror_candidates(vm_uuid, vol_uuid, device, node_name, blocks_cache)
+            mirror_candidates = self._build_mirror_candidates(
+                vm_uuid, qmp_vol_uuid, device, node_name, blocks_cache)
             bitmap_node = node_name or device
-            logger.debug("ZRM replication volume=%s mirror_candidates=%s bitmap_node=%s" %
-                         (vol_uuid[:MIRROR_JOB_UUID_TRUNCATE_LEN], mirror_candidates, bitmap_node))
+            logger.debug("ZRM replication volume=%s qmp_volume=%s mirror_candidates=%s bitmap_node=%s" %
+                         (vol_uuid[:MIRROR_JOB_UUID_TRUNCATE_LEN],
+                          qmp_vol_uuid[:MIRROR_JOB_UUID_TRUNCATE_LEN],
+                          mirror_candidates, bitmap_node))
             bitmap_name = self._zrm_bitmap_name(vol_uuid)
             has_bitmap = self._has_dirty_bitmap(vm_uuid, bitmap_node, bitmap_name)
             hint = (sync_mode_hint or "").strip().upper()
@@ -898,7 +927,8 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     break
             # If all drive-mirror candidates fail, diagnose block topology, then try the suggested root or blockdev fallback.
             if last_err is not None:
-                suggested_root, topo_summary = self._diagnose_block_topology(vm_uuid, vol_uuid, node_name or device)
+                suggested_root, topo_summary = self._diagnose_block_topology(
+                    vm_uuid, qmp_vol_uuid, node_name or device)
                 logger.warn("ZRM replication topology diagnosis volume=%s: %s" % (vol_uuid[:MIRROR_JOB_UUID_TRUNCATE_LEN], topo_summary))
                 if suggested_root and suggested_root not in mirror_candidates:
                     try:
@@ -946,7 +976,9 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 single = getattr(cmd, "volumeUuid", None)
                 volume_uuids = [single] if single else []
             sync_mode_hint = (getattr(cmd, "syncMode", None) or "").strip()
-            err = self._start_mirrors_for_zr(vm_uuid, volume_uuids, target_nbd_url, sync_mode_hint)
+            qmp_volume_uuids = getattr(cmd, "qmpVolumeUuids", None)
+            err = self._start_mirrors_for_zr(
+                vm_uuid, volume_uuids, target_nbd_url, sync_mode_hint, qmp_volume_uuids)
             if err:
                 return jsonobject.dumps(ZrmAgentRsp(success=False, error=err))
             return jsonobject.dumps(ZrmAgentRsp())
