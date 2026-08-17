@@ -273,9 +273,9 @@ class TestZrmCheckpointCreate(unittest.TestCase):
         self.assertEqual(0, len(self._http_post_calls))
 
     # ----------------------------------------------------------
-    # Test 6: No mirrors (totalJobs=0) — should still proceed
+    # Test 6: No mirrors (totalJobs=0) must not create a checkpoint
     # ----------------------------------------------------------
-    def test_no_mirrors_still_calls_zr_server(self):
+    def test_no_mirrors_rejects_checkpoint(self):
         self._mock_throttle({"success": True, "allReady": True, "readyCount": 0, "totalJobs": 0})
         self._mock_http_post({"success": True})
 
@@ -288,9 +288,9 @@ class TestZrmCheckpointCreate(unittest.TestCase):
 
         rsp = self._load_rsp(self.plugin.zrm_checkpoint_create(req))
 
-        self.assertTrue(rsp.get("success", True))
-        self.assertEqual("cp-xyz", rsp.get("checkpointUuid"))
-        self.assertEqual(1, len(self._http_post_calls))
+        self.assertFalse(rsp.get("success", True))
+        self.assertIn("no active ZRM mirror jobs", rsp.get("error", ""))
+        self.assertEqual(0, len(self._http_post_calls))
 
     # ----------------------------------------------------------
     # Test 7: Speed restore failure is visible to caller

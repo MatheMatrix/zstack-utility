@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import itertools
 import json
 import unittest
@@ -944,6 +946,206 @@ class TestVmPluginBlockGraphFallback(unittest.TestCase):
         self.assertEqual("drive-virtio-disk0", device_name)
         self.assertEqual(False, self.vm_plugin._BLOCK_GRAPH_CAPABILITY.get("vm-qemu-old"))
         self.assertEqual(["query-block", "x-debug-query-block-graph"], calls)
+
+
+class TestZrmPluginReviewFixes(unittest.TestCase):
+    def setUp(self):
+        self.plugin = object.__new__(zrm_plugin.ZrmPlugin)
+
+    def _make_req(self, body_dict):
+        return {http.REQUEST_BODY: json.dumps(body_dict)}
+
+    def test_nbd_base_url_is_canonical_and_rejects_injection(self):
+        self.assertEqual(
+            "nbd://example.com:10809",
+            self.plugin._normalize_nbd_base_url("nbd://EXAMPLE.com:10809/"))
+        self.assertEqual(
+            "nbd://[2001:db8::1]:10809",
+            self.plugin._normalize_nbd_base_url("nbd://[2001:DB8::1]:10809"))
+        self.assertIsNone(self.plugin._normalize_nbd_base_url(
+            "nbd://host:10809/vol-a"))
+        self.assertIsNone(self.plugin._normalize_nbd_base_url(
+            "nbd://host:10809';touch /tmp/pwned;#"))
+        self.assertIsNone(self.plugin._normalize_nbd_base_url(
+            "nbd://user@host:10809"))
+
+    def test_dirty_bitmap_query_distinguishes_absent_from_failure(self):
+        with mock.patch.object(zrm_plugin.qmp, "execute_qmp_command",
+                               return_value=[{
+                                   "node-name": "node-a",
+                                   "dirty-bitmaps": [{"name": "zrm-volume-a"}]
+                               }]):
+            self.assertTrue(self.plugin._has_dirty_bitmap(
+                "vm-a", "node-a", "zrm-volume-a"))
+            self.assertFalse(self.plugin._has_dirty_bitmap(
+                "vm-a", "node-a", "zrm-volume-b"))
+
+        with mock.patch.object(zrm_plugin.qmp, "execute_qmp_command",
+                               side_effect=RuntimeError("QMP disconnected")):
+            self.assertIsNone(self.plugin._has_dirty_bitmap(
+                "vm-a", "node-a", "zrm-volume-a"))
+
+    def test_mirror_job_identity_changes_with_session_and_target(self):
+        volume_uuid = "0123456789abcdef0123456789abcdef"
+        job_a = self.plugin._mirror_job_id(
+            volume_uuid, "session-a", "nbd://target-a:10809")
+        job_b = self.plugin._mirror_job_id(
+            volume_uuid, "session-b", "nbd://target-a:10809")
+        job_c = self.plugin._mirror_job_id(
+            volume_uuid, "session-a", "nbd://target-b:10809")
+
+        self.assertIn(volume_uuid, job_a)
+        self.assertNotEqual(job_a, job_b)
+        self.assertNotEqual(job_a, job_c)
+        self.assertTrue(self.plugin._job_matches_volume(job_a, volume_uuid))
+        self.assertTrue(self.plugin._job_matches_session(job_a, "session-a"))
+        self.assertFalse(self.plugin._job_matches_session(job_a, "session-b"))
+
+    def test_start_replaces_job_owned_by_another_session(self):
+        volume_uuid = "0123456789abcdef0123456789abcdef"
+        old_job = self.plugin._mirror_job_id(
+            volume_uuid, "session-a", "nbd://target-a:10809")
+        query_results = iter([
+            {old_job: {"status": "running"}},
+            {old_job: {"status": "running"}},
+            {},
+        ])
+        cancelled = []
+        mirror_calls = []
+        self.plugin._query_blocks_for_vm = lambda vm_uuid: [{}]
+        self.plugin._find_block_entry_for_volume = lambda blocks, vol_uuid: ("drive-vda", "node-vda")
+        self.plugin._build_mirror_candidates = lambda *args: ["drive-vda"]
+        self.plugin._has_dirty_bitmap = lambda *args: False
+        self.plugin._add_dirty_bitmap = lambda *args: True
+
+        def fake_execute(vm_uuid, command, raise_exception=True, **kwargs):
+            if command == "drive-mirror":
+                mirror_calls.append(kwargs)
+
+        with mock.patch.object(zrm_plugin.qmp, "query_block_jobs_by_device",
+                               side_effect=lambda vm_uuid: next(query_results)), \
+             mock.patch.object(zrm_plugin.qmp, "block_job_cancel",
+                               side_effect=lambda vm_uuid, job_id: cancelled.append(job_id)), \
+             mock.patch.object(zrm_plugin.qmp, "execute_qmp_command",
+                               side_effect=fake_execute), \
+             mock.patch.object(zrm_plugin.time, "sleep"):
+            error = self.plugin._start_mirrors_for_zr(
+                "vm-a", [volume_uuid], "nbd://target-b:10809",
+                session_uuid="session-b")
+
+        self.assertIsNone(error)
+        self.assertEqual([old_job], cancelled)
+        self.assertEqual(1, len(mirror_calls))
+        self.assertNotEqual(old_job, mirror_calls[0]["job_id"])
+        owner = self.plugin._mirror_job_owners[("vm-a", mirror_calls[0]["job_id"])]
+        self.assertEqual("session-b", owner["sessionUuid"])
+        self.assertEqual("nbd://target-b:10809", owner["targetNbdUrl"])
+
+    def test_blockdev_mirror_failure_deletes_created_target_node(self):
+        raw_commands = []
+
+        def fake_raw(vm_uuid, command, raise_exception=False):
+            raw_commands.append(json.loads(command))
+
+        def fake_execute(vm_uuid, command, raise_exception=True, **kwargs):
+            if command == "blockdev-mirror":
+                raise RuntimeError("mirror failed")
+            if command == "query-named-block-nodes":
+                return []
+
+        with mock.patch.object(zrm_plugin, "execute_qmp_command_raw", side_effect=fake_raw), \
+             mock.patch.object(zrm_plugin.qmp, "execute_qmp_command", side_effect=fake_execute):
+            self.assertFalse(self.plugin._try_blockdev_mirror_to_nbd(
+                "vm-a", "node-a", "nbd://target-a:10809/vol-a",
+                "zrm-mirror-vol-a", "full", None))
+
+        self.assertEqual("blockdev-add", raw_commands[1]["execute"])
+        self.assertEqual("blockdev-del", raw_commands[-1]["execute"])
+
+    def test_throttle_fails_when_expected_job_disappears(self):
+        device = "zrm-mirror-vol-a"
+        query_results = iter([
+            {device: {"status": "running"}},
+            {},
+        ])
+        with mock.patch.object(zrm_plugin.qmp, "query_block_jobs_by_device",
+                               side_effect=lambda vm_uuid: next(query_results)), \
+             mock.patch.object(zrm_plugin.qmp, "block_job_set_speed"), \
+             mock.patch.object(zrm_plugin.time, "time", side_effect=[0, 0]):
+            body = json.loads(self.plugin._replication_throttle(self._make_req({
+                "vmUuid": "vm-a", "speed": 0, "waitReadyTimeout": 10
+            })))
+
+        self.assertFalse(body["success"])
+        self.assertFalse(body["allReady"])
+        self.assertEqual([device], body["missingJobs"])
+
+    def test_pause_fails_closed_when_job_query_fails(self):
+        with mock.patch.object(zrm_plugin.qmp, "query_block_jobs_by_device",
+                               side_effect=RuntimeError("QMP disconnected")):
+            body = json.loads(self.plugin._replication_pause(self._make_req({
+                "vmUuid": "vm-a", "sessionUuid": "session-a"
+            })))
+        self.assertFalse(body["success"])
+        self.assertTrue(body["queryBlockJobsFailed"])
+
+    def test_linux_freeze_lease_auto_thaws(self):
+        class FakeTimer(object):
+            created = []
+
+            def __init__(self, delay, function, args=None):
+                self.delay = delay
+                self.function = function
+                self.args = args or []
+                self.daemon = False
+                self.cancelled = False
+                self.__class__.created.append(self)
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                self.cancelled = True
+
+        class FakeQga(object):
+            vm_uuid = "vm-freeze"
+            os = "linux"
+            supported_commands = {
+                "guest-fsfreeze-freeze": True,
+                "guest-fsfreeze-thaw": True,
+                "guest-fsfreeze-status": True,
+            }
+
+            def __init__(self):
+                self.status = "thawed"
+
+            def call_qga_command(self, command, args=None, timeout=3):
+                if command == "guest-fsfreeze-status":
+                    return self.status
+                if command == "guest-fsfreeze-freeze":
+                    self.status = "frozen"
+                    return 2
+                if command == "guest-fsfreeze-thaw":
+                    self.status = "thawed"
+                    return 2
+                raise AssertionError(command)
+
+        qga = FakeQga()
+        self.plugin._get_vm_qga = lambda vm_uuid: (qga, None)
+        with mock.patch.object(zrm_plugin.threading, "Timer", FakeTimer):
+            body = json.loads(self.plugin._replication_guest_fsfreeze(self._make_req({
+                "vmUuid": qga.vm_uuid,
+                "action": "freeze",
+                "timeoutSeconds": 5,
+                "leaseTimeoutSeconds": 30,
+            })))
+            self.assertTrue(body["success"])
+            self.assertEqual("frozen", qga.status)
+            watchdog = self.plugin._fsfreeze_watchdogs[qga.vm_uuid]["timer"]
+            watchdog.function(*watchdog.args)
+
+        self.assertEqual("thawed", qga.status)
+        self.assertNotIn(qga.vm_uuid, self.plugin._fsfreeze_watchdogs)
 
 
 if __name__ == '__main__':

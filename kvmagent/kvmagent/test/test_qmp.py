@@ -2,6 +2,11 @@ import unittest
 import re
 import json
 
+try:
+    from unittest import mock
+except ImportError:
+    import mock
+
 from zstacklib.utils import qmp
 
 # ------------------------------------------------
@@ -34,6 +39,24 @@ class Test(unittest.TestCase):
 
         assert remove_command_props_parameter(test_qmp_command1) == except_qmp_command1
         assert qmp.qmp_subcmd("6.2.0", test_qmp_command2) == remove_command_props_parameter(test_qmp_command2)
+
+    def test_execute_qmp_uses_argv_without_shell_interpolation(self):
+        command = json.dumps({
+            "execute": "drive-mirror",
+            "arguments": {"target": "nbd://host:10809/vol-a';touch-pwned;#"}
+        })
+        process = mock.Mock()
+        process.returncode = 0
+        process.communicate.return_value = (b'{"return": {}}', b'')
+
+        with mock.patch.object(qmp.shell, "get_process", return_value=process) as get_process:
+            self.assertEqual({}, qmp._execute_qmp_command("vm-uuid", command))
+
+        args, kwargs = get_process.call_args
+        self.assertEqual(
+            ["virsh", "qemu-monitor-command", "vm-uuid", command], args[0])
+        self.assertIs(False, kwargs["shell"])
+        self.assertIs(True, kwargs["pipe"])
 
 
 if __name__ == "__main__":

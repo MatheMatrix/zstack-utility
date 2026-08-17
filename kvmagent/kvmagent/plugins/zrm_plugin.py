@@ -11,7 +11,18 @@ replication similar to the CDP / dual-active design (see kvmagent_implementation
 """
 from __future__ import absolute_import
 
+import hashlib
 import json
+import os
+import re
+import socket
+import threading
+import uuid
+try:
+    from urllib.parse import urlsplit
+except ImportError:
+    from urlparse import urlsplit
+
 from kvmagent import kvmagent
 from zstacklib.utils import http
 from zstacklib.utils import jsonobject
@@ -39,9 +50,19 @@ ZRM_BITMAP_PREFIX = "zrm-"
 # dirty bitmap name: ZRM_BITMAP_PREFIX + volumeUuid[:BITMAP_UUID_TRUNCATE_LEN].
 BITMAP_UUID_TRUNCATE_LEN = 16
 
-# Number of leading characters of volumeUuid used to build the per-volume
-# mirror job ID: "zrm-mirror-" + volumeUuid[:MIRROR_JOB_UUID_TRUNCATE_LEN].
+# Legacy job IDs used only the leading volume UUID characters.  Keep the
+# length for backward-compatible discovery and compact log messages; new job
+# IDs bind the complete volume UUID to session/target hashes.
 MIRROR_JOB_UUID_TRUNCATE_LEN = 8
+
+_MIRROR_JOB_PREFIX = "zrm-mirror-"
+
+# A frozen guest must never depend on the management plane delivering a thaw
+# request.  The lease survives a kvmagent restart under /var/run and is
+# recovered by ZrmPlugin.start().
+_DEFAULT_FSFREEZE_LEASE_SECONDS = 60
+_FSFREEZE_RECOVERY_RETRY_SECONDS = 10
+_FSFREEZE_LEASE_DIR = "/var/run/zstack/zrm/fsfreeze-leases"
 
 # Default maximum timeout (seconds) for _wait_initial_full_sync when the
 # caller does not specify one. Prevents async HTTP handler threads from
@@ -90,6 +111,8 @@ class ZrmAgentRsp(object):
 
 
 class ZrmPlugin(kvmagent.KvmAgent):
+    _runtime_state_init_lock = threading.RLock()
+
     PATH_REPLICATION_START = "/zrm/replication/start"
     PATH_REPLICATION_STOP = "/zrm/replication/stop"
     PATH_REPLICATION_PAUSE = "/zrm/replication/pause"
@@ -107,7 +130,22 @@ class ZrmPlugin(kvmagent.KvmAgent):
     _FSFREEZE_CMD_THAW = "guest-fsfreeze-thaw"
     _FSFREEZE_CMD_STATUS = "guest-fsfreeze-status"
 
+    def _ensure_runtime_state(self):
+        """Lazily initialize state so lightweight object.__new__ tests work."""
+        with self._runtime_state_init_lock:
+            if not hasattr(self, "_fsfreeze_vm_locks"):
+                self._fsfreeze_vm_locks = {}
+            if not hasattr(self, "_fsfreeze_watchdogs"):
+                self._fsfreeze_watchdogs = {}
+            if not hasattr(self, "_linux_fsfreeze_counts"):
+                self._linux_fsfreeze_counts = {}
+            if not hasattr(self, "_mirror_job_owners"):
+                self._mirror_job_owners = {}
+            if not hasattr(self, "_mirror_target_nodes"):
+                self._mirror_target_nodes = {}
+
     def start(self):
+        self._ensure_runtime_state()
         http_server = kvmagent.get_http_server()
         # All ZRM paths are invoked via KVMHostAsyncHttpCallMsg and must be registered as async URIs.
         http_server.register_async_uri(self.PATH_REPLICATION_START, self.zrm_replication_start)
@@ -121,10 +159,15 @@ class ZrmPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.PATH_RECOVERY_PREPARE, self.zrm_recovery_prepare)
         http_server.register_async_uri(self.PATH_REPLICATION_THROTTLE, self.zrm_replication_throttle)
         http_server.register_async_uri(self.PATH_REPLICATION_GUEST_FSFREEZE, self.zrm_replication_guest_fsfreeze)
+        self._start_runtime_recovery()
         logger.info("ZRM plugin started: registered /zrm/* paths as async URIs")
 
     def stop(self):
-        pass
+        self._ensure_runtime_state()
+        leases = [(vm_uuid, state.get("leaseId"))
+                  for vm_uuid, state in list(self._fsfreeze_watchdogs.items())]
+        for vm_uuid, lease_id in leases:
+            self._auto_thaw_linux_guest(vm_uuid, lease_id, retry=False)
 
     def configure(self, config):
         self.config = config
@@ -215,24 +258,135 @@ class ZrmPlugin(kvmagent.KvmAgent):
         if not nbd_url or not isinstance(nbd_url, _str_types):
             return None
         s = (nbd_url or "").strip()
-        if not s.startswith("nbd://"):
+        # Reject characters that can create shell/log ambiguity even though QMP
+        # execution itself is argv-based. Percent escapes are also rejected so
+        # ownership uses one canonical spelling for a target.
+        if re.search(r"[\x00-\x20\x7f'\"\\;#?%]", s):
             return None
         try:
-            rest = s[6:]
-            slash = rest.find("/")
-            if slash >= 0:
-                host_port, export = rest[:slash], rest[slash + 1:]
-            else:
-                host_port, export = rest, ""
-            colon = host_port.rfind(":")
-            if colon <= 0:
+            parsed = urlsplit(s)
+            if (parsed.scheme or "").lower() != "nbd":
                 return None
-            host = host_port[:colon]
-            port_str = host_port[colon + 1:]
-            port = int(port_str)
-            return (host, port, export or "")
-        except (ValueError, AttributeError):
+            if parsed.query or parsed.fragment or parsed.username is not None or parsed.password is not None:
+                return None
+            host = parsed.hostname
+            port = parsed.port
+            if not host or port is None or port < 1 or port > 65535:
+                return None
+            if not self._is_valid_nbd_host(host):
+                return None
+            path = parsed.path or ""
+            export = path[1:] if path.startswith("/") else path
+            if "/" in export or (export and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", export)):
+                return None
+            return host.lower(), port, export
+        except (ValueError, AttributeError, TypeError):
             return None
+
+    @staticmethod
+    def _is_valid_nbd_host(host):
+        """Accept an IPv4/IPv6 literal or a conservative DNS hostname."""
+        try:
+            socket.inet_pton(socket.AF_INET, host)
+            return True
+        except (socket.error, ValueError):
+            pass
+        try:
+            socket.inet_pton(socket.AF_INET6, host)
+            return True
+        except (socket.error, ValueError):
+            pass
+        if len(host) > 253:
+            return False
+        labels = host[:-1].split(".") if host.endswith(".") else host.split(".")
+        return bool(labels) and all(
+            re.match(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$", label)
+            for label in labels)
+
+    def _normalize_nbd_base_url(self, nbd_url):
+        parsed = self._parse_nbd_url(nbd_url)
+        if not parsed:
+            return None
+        host, port, export_name = parsed
+        if export_name:
+            return None
+        display_host = "[%s]" % host if ":" in host else host
+        return "nbd://%s:%d" % (display_host, port)
+
+    @staticmethod
+    def _hash_text(value, length=12):
+        if not isinstance(value, bytes):
+            value = (value or "").encode("utf-8")
+        return hashlib.sha256(value).hexdigest()[:length]
+
+    def _mirror_volume_component(self, volume_uuid):
+        volume_uuid = (volume_uuid or "").strip()
+        component = re.sub(r"[^A-Za-z0-9_.-]", "-", volume_uuid)
+        if component != volume_uuid or len(component) > 64:
+            component = "h%s" % self._hash_text(volume_uuid, 32)
+        return component
+
+    def _mirror_job_id(self, volume_uuid, session_uuid, normalized_target):
+        """Bind a QMP job ID to the full volume plus session/target identity."""
+        volume_component = self._mirror_volume_component(volume_uuid)
+        session_token = self._hash_text((session_uuid or "").strip())
+        target_token = self._hash_text(normalized_target)
+        return "%s%s-s%s-t%s" % (
+            _MIRROR_JOB_PREFIX, volume_component, session_token, target_token)
+
+    def _job_matches_volume(self, job_id, volume_uuid):
+        if not job_id:
+            return False
+        new_prefix = "%s%s-s" % (_MIRROR_JOB_PREFIX, self._mirror_volume_component(volume_uuid))
+        legacy_id = "%s%s" % (_MIRROR_JOB_PREFIX,
+                                (volume_uuid or "")[:MIRROR_JOB_UUID_TRUNCATE_LEN])
+        return job_id.startswith(new_prefix) or job_id == legacy_id
+
+    def _job_matches_session(self, job_id, session_uuid):
+        if not session_uuid or not job_id or "-s" not in job_id:
+            return True
+        return "-s%s-t" % self._hash_text(session_uuid.strip()) in job_id
+
+    def _remember_mirror_job_owner(self, vm_uuid, job_id, volume_uuid,
+                                   session_uuid, normalized_target):
+        self._ensure_runtime_state()
+        self._mirror_job_owners[(vm_uuid, job_id)] = {
+            "volumeUuid": volume_uuid,
+            "sessionUuid": session_uuid or "",
+            "targetNbdUrl": normalized_target,
+        }
+
+    def _forget_mirror_job_owner(self, vm_uuid, job_id):
+        self._ensure_runtime_state()
+        self._mirror_job_owners.pop((vm_uuid, job_id), None)
+
+    @staticmethod
+    def _target_node_for_job(job_id):
+        suffix = job_id[len(_MIRROR_JOB_PREFIX):] if job_id and job_id.startswith(_MIRROR_JOB_PREFIX) else job_id
+        return "zrm-tgt-%s" % (suffix or "")
+
+    def _remember_mirror_target_node(self, vm_uuid, job_id, node_name):
+        self._ensure_runtime_state()
+        self._mirror_target_nodes[(vm_uuid, job_id)] = node_name
+
+    def _cleanup_mirror_target_node(self, vm_uuid, job_id, node_name=None):
+        """Delete a fallback block node after its mirror job has settled."""
+        self._ensure_runtime_state()
+        key = (vm_uuid, job_id)
+        target_node = node_name or self._mirror_target_nodes.get(key)
+        if not target_node:
+            return True, None
+        try:
+            blockdev_del = {"execute": "blockdev-del", "arguments": {"node-name": target_node}}
+            execute_qmp_command_raw(vm_uuid, json.dumps(blockdev_del), raise_exception=True)
+            nodes = qmp.execute_qmp_command(
+                vm_uuid, "query-named-block-nodes", raise_exception=True) or []
+            if any((node or {}).get("node-name") == target_node for node in nodes):
+                return False, "target block node %s still exists after blockdev-del" % target_node
+            self._mirror_target_nodes.pop(key, None)
+            return True, None
+        except Exception as ex:
+            return False, str(ex)
 
     def _try_blockdev_mirror_to_nbd(self, vm_uuid, node_name, nbd_url, job_id, sync_mode, bitmap_name):
         """
@@ -257,7 +411,8 @@ class ZrmPlugin(kvmagent.KvmAgent):
         if not job_suffix:
             logger.warn("ZRM blockdev-mirror fallback: empty job_id suffix, skipping")
             return False
-        tgt_node = "zrm-tgt-%s" % job_suffix
+        tgt_node = self._target_node_for_job(job_id)
+        target_created = False
         try:
             # Best-effort removal of any previous node with the same name to avoid duplicate nodes.
             blockdev_del = {"execute": "blockdev-del", "arguments": {"node-name": tgt_node}}
@@ -276,6 +431,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 }
             }
             execute_qmp_command_raw(vm_uuid, json.dumps(blockdev_add), raise_exception=True)
+            target_created = True
             # blockdev-mirror: device is the source node-name, target is the NBD node just added.
             mirror_args = {
                 "device": node_name,
@@ -288,9 +444,16 @@ class ZrmPlugin(kvmagent.KvmAgent):
             if bitmap_name and sync_mode == "incremental":
                 mirror_args["bitmap"] = bitmap_name
             qmp.execute_qmp_command(vm_uuid, "blockdev-mirror", raise_exception=True, **mirror_args)
+            self._remember_mirror_target_node(vm_uuid, job_id, tgt_node)
             logger.info("ZRM replication start: blockdev-mirror fallback ok for node=%s -> %s (target=%s)" % (node_name, nbd_url, tgt_node))
             return True
         except Exception as e:
+            if target_created:
+                cleaned, cleanup_error = self._cleanup_mirror_target_node(
+                    vm_uuid, job_id, node_name=tgt_node)
+                if not cleaned:
+                    logger.warn("ZRM blockdev-mirror fallback cleanup failed for %s: %s" %
+                                (tgt_node, cleanup_error))
             logger.warn("ZRM blockdev-mirror fallback failed: %s" % e)
             return False
 
@@ -450,16 +613,35 @@ class ZrmPlugin(kvmagent.KvmAgent):
         return ZRM_BITMAP_PREFIX + (volume_uuid or "")[:BITMAP_UUID_TRUNCATE_LEN]
 
     def _has_dirty_bitmap(self, domain_uuid, node_name, bitmap_name):
-        """Return True if a dirty bitmap exists on the given node, otherwise False."""
+        """Return True/False for bitmap presence, or None when QMP query fails."""
         if not node_name or not bitmap_name:
             return False
         try:
-            # Use a full arguments dict to avoid name collisions with qmp.execute_qmp_command's name parameter.
-            qmp_cmd = {"execute": "block-dirty-bitmap-query", "arguments": {"node": node_name, "name": bitmap_name}}
-            execute_qmp_command_raw(domain_uuid, json.dumps(qmp_cmd), raise_exception=True)
-            return True
-        except Exception:
+            nodes = qmp.execute_qmp_command(
+                domain_uuid, "query-named-block-nodes", raise_exception=True) or []
+            for node in nodes:
+                if (node or {}).get("node-name") != node_name:
+                    continue
+                bitmaps = (node or {}).get("dirty-bitmaps") or []
+                return any((bitmap or {}).get("name") == bitmap_name for bitmap in bitmaps)
+
+            # Some older QEMU versions expose bitmaps only under query-block's
+            # inserted node.  A successful query with no matching node means
+            # the bitmap is absent; a query failure must propagate as unknown.
+            blocks = qmp.execute_qmp_command(
+                domain_uuid, "query-block", raise_exception=True) or []
+            for entry in blocks:
+                inserted = (entry or {}).get("inserted") or (entry or {}).get("image") or {}
+                current_node = inserted.get("node-name") or (entry or {}).get("device")
+                if current_node != node_name:
+                    continue
+                bitmaps = inserted.get("dirty-bitmaps") or []
+                return any((bitmap or {}).get("name") == bitmap_name for bitmap in bitmaps)
             return False
+        except Exception as ex:
+            logger.warn("ZRM dirty bitmap query failed: vm=%s node=%s name=%s error=%s" %
+                        (domain_uuid, node_name, bitmap_name, ex))
+            return None
 
     def _add_dirty_bitmap(self, domain_uuid, node_name, bitmap_name):
         """Create a dirty bitmap on the given block node using QMP block-dirty-bitmap-add."""
@@ -495,11 +677,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
         Returns a mapping device -> job object that is used by the replication
         state machine to evaluate ready/running states.
         """
-        try:
-            by_dev = qmp.query_block_jobs_by_device(vm_uuid)
-        except Exception as e:
-            logger.debug("ZRM query-block-jobs failed for vm %s: %s" % (vm_uuid, e))
-            return {}
+        by_dev = qmp.query_block_jobs_by_device(vm_uuid)
         if not by_dev:
             return {}
         return {k: v for k, v in by_dev.items() if k and (k.startswith("zrm-mirror-"))}
@@ -521,6 +699,45 @@ class ZrmPlugin(kvmagent.KvmAgent):
         if not by_dev:
             return {}, None
         return ({k: v for k, v in by_dev.items() if k and (k.startswith("zrm-mirror-"))}, None)
+
+    def _cancel_and_settle_mirror_job(self, vm_uuid, job_id, timeout_seconds=5):
+        """Cancel/dismiss one mirror job and prove that it disappeared."""
+        jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
+        if query_error:
+            return False, "query-block-jobs failed before cancel: %s" % query_error
+        current = jobs.get(job_id)
+        if current:
+            status = (current.get("status") or "").lower()
+            if status == "concluded":
+                qmp.execute_qmp_command(
+                    vm_uuid, "job-dismiss", raise_exception=True, id=job_id)
+            else:
+                qmp.block_job_cancel(vm_uuid, job_id)
+
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
+            if query_error:
+                return False, "query-block-jobs failed while settling %s: %s" % (job_id, query_error)
+            current = jobs.get(job_id)
+            if not current or (current.get("status") or "").lower() == "null":
+                cleaned, cleanup_error = self._cleanup_mirror_target_node(vm_uuid, job_id)
+                if not cleaned:
+                    return False, "target node cleanup failed for %s: %s" % (job_id, cleanup_error)
+                self._forget_mirror_job_owner(vm_uuid, job_id)
+                return True, None
+            status = (current.get("status") or "").lower()
+            try:
+                if status == "pending":
+                    qmp.execute_qmp_command(
+                        vm_uuid, "job-finalize", raise_exception=True, id=job_id)
+                elif status == "concluded":
+                    qmp.execute_qmp_command(
+                        vm_uuid, "job-dismiss", raise_exception=True, id=job_id)
+            except Exception as ex:
+                logger.debug("ZRM mirror job %s settlement command failed: %s" % (job_id, ex))
+            time.sleep(0.3)
+        return False, "mirror job %s did not settle before timeout" % job_id
 
     def _collect_bitmap_status(self, vm_uuid):
         """
@@ -571,7 +788,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
         vols = [v.strip() for v in (volume_uuids or []) if (v or "").strip()]
         if not vols:
             return ZrmAgentRsp(success=False, error="no volumeUuids specified for initial full sync wait")
-        job_ids = ["zrm-mirror-%s" % v[:MIRROR_JOB_UUID_TRUNCATE_LEN] for v in vols]
+        job_labels = ["zrm-mirror-%s" % v[:MIRROR_JOB_UUID_TRUNCATE_LEN] for v in vols]
         # Enforce a deadline to prevent indefinite thread blocking.
         effective_timeout = timeout_seconds if (timeout_seconds and timeout_seconds > 0) else _DEFAULT_MAX_WAIT_TIMEOUT
         deadline = time.time() + effective_timeout
@@ -621,11 +838,15 @@ class ZrmPlugin(kvmagent.KvmAgent):
             concluded_errors = []
             synced_bytes = 0
             target_bytes = 0
-            for job_id in job_ids:
-                job = jobs.get(job_id)
-                if not job:
-                    missing.append(job_id)
+            for volume_uuid, job_label in zip(vols, job_labels):
+                matching_job_ids = [job_id for job_id in jobs
+                                    if self._job_matches_volume(job_id, volume_uuid)]
+                if len(matching_job_ids) != 1:
+                    missing.append(job_label if not matching_job_ids else
+                                   "%s(ambiguous:%s)" % (job_label, matching_job_ids))
                     continue
+                job_id = matching_job_ids[0]
+                job = jobs[job_id]
                 status = (job.get("status") or "").lower()
                 ready = job.get("ready") is True or status == "ready"
                 off = _to_long(job.get("offset"))
@@ -663,7 +884,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     runningJobCount=running_count,
                     concludedJobCount=concluded_count,
                     concludedJobErrors=concluded_errors,
-                    totalJobs=len(job_ids),
+                    totalJobs=len(job_labels),
                     not_ready=not_ready,
                     missing=missing
                 )
@@ -680,7 +901,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     runningJobCount=running_count,
                     concludedJobCount=0,
                     concludedJobErrors=[],
-                    totalJobs=len(job_ids)
+                    totalJobs=len(job_labels)
                 )
             if now >= deadline:
                 err = "initial full sync timeout for vm=%s, not_ready=%s, missing=%s" % (
@@ -696,7 +917,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     runningJobCount=running_count,
                     concludedJobCount=concluded_count,
                     concludedJobErrors=concluded_errors,
-                    totalJobs=len(job_ids),
+                    totalJobs=len(job_labels),
                     not_ready=not_ready,
                     missing=missing
                 )
@@ -768,7 +989,8 @@ class ZrmPlugin(kvmagent.KvmAgent):
         return result
 
     def _start_mirrors_for_zr(self, vm_uuid, volume_uuids, target_nbd_base_url,
-                              sync_mode_hint=None, qmp_volume_uuids=None):
+                              sync_mode_hint=None, qmp_volume_uuids=None,
+                              session_uuid=None):
         """
         Start drive-mirror replication to the target NBD for each volume.
 
@@ -788,9 +1010,9 @@ class ZrmPlugin(kvmagent.KvmAgent):
             volume_uuids = [volume_uuids] if volume_uuids else []
         if not volume_uuids:
             return "no volumeUuids or volumeUuid in command"
-        base = (target_nbd_base_url or "").rstrip("/")
-        if not base.startswith("nbd://"):
-            return "targetNbdUrl must be nbd://host:port"
+        base = self._normalize_nbd_base_url(target_nbd_base_url)
+        if not base:
+            return "targetNbdUrl must be nbd://host:port with a valid host and integer port"
         # Reuse a single query-block result for all volumes to keep API latency low.
         blocks_cache = self._query_blocks_for_vm(vm_uuid)
         # Pre-query all ZR jobs on this VM for use by the per-volume state machine.
@@ -805,8 +1027,28 @@ class ZrmPlugin(kvmagent.KvmAgent):
             # can still expose the original source UUID in QMP, so use the
             # explicitly verified mapping for local block-node lookup only.
             qmp_vol_uuid = qmp_volume_uuids.get(vol_uuid, vol_uuid)
-            # ZR state machine: complete ready jobs, reuse running ones.
-            job_id = "zrm-mirror-%s" % vol_uuid[:MIRROR_JOB_UUID_TRUNCATE_LEN]
+            # Bind the QMP job to this complete volume/session/target tuple.
+            # A job from another session or NBD target must never be reused.
+            job_id = self._mirror_job_id(vol_uuid, session_uuid, base)
+            related_jobs = [(existing_id, existing_job)
+                            for existing_id, existing_job in zrm_jobs.items()
+                            if self._job_matches_volume(existing_id, vol_uuid)]
+            ownership_error = None
+            for existing_id, unused_job in related_jobs:
+                if existing_id == job_id:
+                    continue
+                settled, settle_error = self._cancel_and_settle_mirror_job(
+                    vm_uuid, existing_id)
+                if not settled:
+                    ownership_error = (
+                        "cannot replace mirror job %s for volume %s: %s" %
+                        (existing_id, vol_uuid, settle_error))
+                    break
+                zrm_jobs.pop(existing_id, None)
+            if ownership_error:
+                if first_error is None:
+                    first_error = ownership_error
+                continue
             existing = zrm_jobs.get(job_id)
             if existing:
                 status = (existing.get("status") or "").lower()
@@ -815,38 +1057,17 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 err_text = existing.get("error")
                 reusable_running = ((status == "running") and (not paused) and (not err_text)) or (ready and (not err_text) and status != "concluded")
                 if reusable_running:
+                    self._remember_mirror_job_owner(
+                        vm_uuid, job_id, vol_uuid, session_uuid, base)
                     logger.info("ZRM replication start: volume %s already has running mirror job %s, reuse" % (vol_uuid[:MIRROR_JOB_UUID_TRUNCATE_LEN], job_id))
                     continue
                 else:
-                    if status == "concluded":
-                        qmp.execute_qmp_command(vm_uuid, "block-job-dismiss", raise_exception=False, id=job_id)
-                    else:
-                        qmp.block_job_cancel(vm_uuid, job_id)
-                        # Wait for cancel to settle so the new drive-mirror doesn't hit a job-id conflict.
-                        _cancel_deadline = time.time() + 5
-                        _cleared = False
-                        while time.time() < _cancel_deadline:
-                            _cur = self._get_zrm_block_jobs(vm_uuid).get(job_id)
-                            if not _cur:
-                                _cleared = True
-                                break
-                            _cur_status = (_cur.get("status") or "").lower()
-                            if _cur_status == "concluded":
-                                qmp.execute_qmp_command(vm_uuid, "block-job-dismiss",
-                                                        raise_exception=False, id=job_id)
-                                _cleared = True
-                                break
-                            if _cur_status == "null":
-                                _cleared = True
-                                break
-                            time.sleep(0.3)
-                        if not _cleared:
-                            # Force-dismiss as last resort: job did not reach concluded/null
-                            # within the deadline.  Attempt dismiss with force=True to avoid
-                            # leaving an orphan job that blocks the next drive-mirror.
-                            logger.warn("ZRM replication start: cancel deadline expired for job %s, attempting force dismiss" % job_id)
-                            qmp.execute_qmp_command(vm_uuid, "block-job-dismiss",
-                                                    raise_exception=False, id=job_id)
+                    settled, settle_error = self._cancel_and_settle_mirror_job(vm_uuid, job_id)
+                    if not settled:
+                        err = "cannot restart mirror job %s: %s" % (job_id, settle_error)
+                        if first_error is None:
+                            first_error = err
+                        continue
                     logger.info("ZRM replication start: cleared stale mirror job %s for volume %s (status=%s paused=%s error=%s)" %
                                 (job_id, vol_uuid[:MIRROR_JOB_UUID_TRUNCATE_LEN], status, paused, err_text if err_text else ""))
             nbd_url = "%s/vol-%s" % (base, vol_uuid)
@@ -870,6 +1091,12 @@ class ZrmPlugin(kvmagent.KvmAgent):
                           mirror_candidates, bitmap_node))
             bitmap_name = self._zrm_bitmap_name(vol_uuid)
             has_bitmap = self._has_dirty_bitmap(vm_uuid, bitmap_node, bitmap_name)
+            if has_bitmap is None:
+                err = "unable to verify dirty bitmap %s for volume %s" % (bitmap_name, vol_uuid)
+                logger.warn("ZRM replication start: %s" % err)
+                if first_error is None:
+                    first_error = err
+                continue
             hint = (sync_mode_hint or "").strip().upper()
             if hint == "FULL_SYNC":
                 # Force full sync: remove existing bitmap so we start clean.
@@ -906,7 +1133,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
             )
             if sync_mode == "incremental" and bitmap_name:
                 base_mirror_kw["bitmap"] = bitmap_name
-            last_err = None
+            last_err = RuntimeError("no usable mirror device for volume %s" % vol_uuid)
             for mirror_device in mirror_candidates:
                 if not mirror_device:
                     continue
@@ -946,6 +1173,9 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 logger.warn("ZRM replication start: %s" % err)
                 if first_error is None:
                     first_error = err
+            else:
+                self._remember_mirror_job_owner(
+                    vm_uuid, job_id, vol_uuid, session_uuid, base)
         return first_error
 
     def _replication_start(self, req):
@@ -977,8 +1207,10 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 volume_uuids = [single] if single else []
             sync_mode_hint = (getattr(cmd, "syncMode", None) or "").strip()
             qmp_volume_uuids = getattr(cmd, "qmpVolumeUuids", None)
+            session_uuid = (getattr(cmd, "sessionUuid", None) or "").strip()
             err = self._start_mirrors_for_zr(
-                vm_uuid, volume_uuids, target_nbd_url, sync_mode_hint, qmp_volume_uuids)
+                vm_uuid, volume_uuids, target_nbd_url, sync_mode_hint,
+                qmp_volume_uuids, session_uuid=session_uuid)
             if err:
                 return jsonobject.dumps(ZrmAgentRsp(success=False, error=err))
             return jsonobject.dumps(ZrmAgentRsp())
@@ -1005,6 +1237,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
             vm_uuid = (getattr(cmd, "vmUuid", None) or "").strip()
             if not vm_uuid:
                 return jsonobject.dumps(ZrmAgentRsp(success=False, error="vmUuid required"))
+            session_uuid = (getattr(cmd, "sessionUuid", None) or "").strip()
             zrm_jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
             if query_error:
                 return jsonobject.dumps(ZrmAgentRsp(
@@ -1012,6 +1245,8 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     error="query-block-jobs failed: %s" % query_error,
                     queryBlockJobsFailed=True,
                     queryBlockJobsError=query_error))
+            zrm_jobs = {device: job for device, job in zrm_jobs.items()
+                        if self._job_matches_session(device, session_uuid)}
             cancelled_devices = []
             cancel_failed_jobs = []
             for device in zrm_jobs:
@@ -1095,6 +1330,17 @@ class ZrmPlugin(kvmagent.KvmAgent):
                                     (d, st, vm_uuid))
                 if not stale_jobs:
                     logger.info("ZRM replication stop: all cancel requests settled for vm %s" % vm_uuid)
+            cleanup_failures = []
+            stale_devices = set(item["device"] for item in stale_jobs)
+            for device in cancelled_devices:
+                if device in stale_devices:
+                    continue
+                cleaned, cleanup_error = self._cleanup_mirror_target_node(vm_uuid, device)
+                if not cleaned:
+                    cleanup_failures.append({"device": device, "error": cleanup_error})
+                else:
+                    self._forget_mirror_job_owner(vm_uuid, device)
+
             rsp = ZrmAgentRsp()
             if cancel_failed_jobs:
                 rsp.success = False
@@ -1105,6 +1351,11 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 stale_error = "stale ZRM mirror jobs remain after cancel deadline: %s" % stale_jobs
                 rsp.error = "%s; %s" % (rsp.error, stale_error) if rsp.error else stale_error
                 rsp.staleJobs = stale_jobs
+            if cleanup_failures:
+                rsp.success = False
+                cleanup_error = "failed to delete settled mirror target nodes: %s" % cleanup_failures
+                rsp.error = "%s; %s" % (rsp.error, cleanup_error) if rsp.error else cleanup_error
+                rsp.targetNodeCleanupFailures = cleanup_failures
             return jsonobject.dumps(rsp)
         except Exception as e:
             logger.exception("ZRM replication stop failed")
@@ -1129,7 +1380,16 @@ class ZrmPlugin(kvmagent.KvmAgent):
             vm_uuid = (getattr(cmd, "vmUuid", None) or "").strip()
             if not vm_uuid:
                 return jsonobject.dumps(ZrmAgentRsp(success=False, error="vmUuid required"))
-            zrm_jobs = self._get_zrm_block_jobs(vm_uuid)
+            session_uuid = (getattr(cmd, "sessionUuid", None) or "").strip()
+            zrm_jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
+            if query_error:
+                return jsonobject.dumps(ZrmAgentRsp(
+                    success=False,
+                    error="query-block-jobs failed: %s" % query_error,
+                    queryBlockJobsFailed=True,
+                    queryBlockJobsError=query_error))
+            zrm_jobs = {device: job for device, job in zrm_jobs.items()
+                        if self._job_matches_session(device, session_uuid)}
             if not zrm_jobs:
                 logger.info("ZRM replication pause: no zrm mirror jobs on vm %s" % vm_uuid)
                 return jsonobject.dumps(ZrmAgentRsp())
@@ -1178,7 +1438,16 @@ class ZrmPlugin(kvmagent.KvmAgent):
             vm_uuid = (getattr(cmd, "vmUuid", None) or "").strip()
             if not vm_uuid:
                 return jsonobject.dumps(ZrmAgentRsp(success=False, error="vmUuid required"))
-            zrm_jobs = self._get_zrm_block_jobs(vm_uuid)
+            session_uuid = (getattr(cmd, "sessionUuid", None) or "").strip()
+            zrm_jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
+            if query_error:
+                return jsonobject.dumps(ZrmAgentRsp(
+                    success=False,
+                    error="query-block-jobs failed: %s" % query_error,
+                    queryBlockJobsFailed=True,
+                    queryBlockJobsError=query_error))
+            zrm_jobs = {device: job for device, job in zrm_jobs.items()
+                        if self._job_matches_session(device, session_uuid)}
             if not zrm_jobs:
                 logger.info("ZRM replication resume: no zrm mirror jobs on vm %s" % vm_uuid)
                 return jsonobject.dumps(ZrmAgentRsp())
@@ -1219,7 +1488,16 @@ class ZrmPlugin(kvmagent.KvmAgent):
             vm_uuid = (getattr(cmd, "vmUuid", None) or "").strip()
             if not vm_uuid:
                 return jsonobject.dumps(ZrmAgentRsp(success=False, error="vmUuid required"))
-            zrm_jobs = self._get_zrm_block_jobs(vm_uuid)
+            session_uuid = (getattr(cmd, "sessionUuid", None) or "").strip()
+            zrm_jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
+            if query_error:
+                return jsonobject.dumps(ZrmAgentRsp(
+                    success=False,
+                    error="query-block-jobs failed: %s" % query_error,
+                    queryBlockJobsFailed=True,
+                    queryBlockJobsError=query_error))
+            zrm_jobs = {device: job for device, job in zrm_jobs.items()
+                        if self._job_matches_session(device, session_uuid)}
             ready_count = 0
             running_count = 0
             concluded_count = 0
@@ -1401,7 +1679,13 @@ class ZrmPlugin(kvmagent.KvmAgent):
                         first_error = err
                     continue
                 name = bitmap_name_override or self._zrm_bitmap_name(vu)
-                if self._has_dirty_bitmap(vm_uuid, node_name, name):
+                has_bitmap = self._has_dirty_bitmap(vm_uuid, node_name, name)
+                if has_bitmap is None:
+                    err = "unable to verify dirty bitmap %s for volume %s" % (name, vu)
+                    if first_error is None:
+                        first_error = err
+                    continue
+                if has_bitmap:
                     logger.info("ZRM bitmap already exists: vm=%s vol=%s name=%s" % (vm_uuid, vu, name))
                     continue
                 if not self._add_dirty_bitmap(vm_uuid, node_name, name):
@@ -1462,6 +1746,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
             throttle_req = {
                 http.REQUEST_BODY: json.dumps({
                     "vmUuid": vm_uuid,
+                    "sessionUuid": session_uuid,
                     "speed": 0,
                     "waitReadyTimeout": wait_timeout
                 })
@@ -1479,6 +1764,11 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     result = ZrmAgentRsp(
                         success=False,
                         error="mirror convergence failed: %s" % (getattr(throttle_rsp, "error", "") or ""))
+
+                elif int(getattr(throttle_rsp, "totalJobs", 0) or 0) <= 0:
+                    result = ZrmAgentRsp(
+                        success=False,
+                        error="mirror convergence failed: no active ZRM mirror jobs")
 
                 elif not getattr(throttle_rsp, "allReady", False):
                     result = ZrmAgentRsp(
@@ -1512,6 +1802,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     restore_req = {
                         http.REQUEST_BODY: json.dumps({
                             "vmUuid": vm_uuid,
+                            "sessionUuid": session_uuid,
                             "speed": original_speed,
                             "waitReadyTimeout": 0
                         })
@@ -1792,7 +2083,206 @@ class ZrmPlugin(kvmagent.KvmAgent):
         if vm_uuid and cache:
             cache.pop(vm_uuid, None)
 
-    def _linux_guest_fsfreeze(self, qga, action, timeout_seconds):
+    def _get_fsfreeze_vm_lock(self, vm_uuid):
+        self._ensure_runtime_state()
+        with self._runtime_state_init_lock:
+            vm_lock = self._fsfreeze_vm_locks.get(vm_uuid)
+            if vm_lock is None:
+                vm_lock = threading.RLock()
+                self._fsfreeze_vm_locks[vm_uuid] = vm_lock
+            return vm_lock
+
+    def _fsfreeze_lease_path(self, vm_uuid):
+        return os.path.join(
+            _FSFREEZE_LEASE_DIR,
+            "%s.json" % self._hash_text(vm_uuid, 32))
+
+    def _persist_fsfreeze_lease(self, vm_uuid, lease_id, deadline):
+        if os.name == "nt":
+            return
+        if not os.path.isdir(_FSFREEZE_LEASE_DIR):
+            try:
+                os.makedirs(_FSFREEZE_LEASE_DIR)
+            except OSError:
+                if not os.path.isdir(_FSFREEZE_LEASE_DIR):
+                    raise
+        lease_path = self._fsfreeze_lease_path(vm_uuid)
+        temp_path = "%s.%s.tmp" % (lease_path, lease_id)
+        with open(temp_path, "w") as lease_file:
+            json.dump({
+                "vmUuid": vm_uuid,
+                "leaseId": lease_id,
+                "deadline": deadline,
+            }, lease_file)
+        os.rename(temp_path, lease_path)
+
+    def _remove_fsfreeze_lease_file(self, vm_uuid):
+        if os.name == "nt":
+            return
+        try:
+            os.remove(self._fsfreeze_lease_path(vm_uuid))
+        except OSError:
+            pass
+
+    def _arm_fsfreeze_watchdog(self, vm_uuid, lease_seconds=None,
+                               lease_id=None, deadline=None, persist=True):
+        self._ensure_runtime_state()
+        lease_seconds = max(5, int(lease_seconds or _DEFAULT_FSFREEZE_LEASE_SECONDS))
+        lease_id = lease_id or uuid.uuid4().hex
+        deadline = deadline if deadline is not None else time.time() + lease_seconds
+        persist_error = None
+        if persist:
+            try:
+                self._persist_fsfreeze_lease(vm_uuid, lease_id, deadline)
+            except Exception as ex:
+                persist_error = ex
+
+        old_state = self._fsfreeze_watchdogs.get(vm_uuid)
+        if old_state and old_state.get("timer"):
+            old_state["timer"].cancel()
+        delay = max(0.1, deadline - time.time())
+        timer = threading.Timer(
+            delay, self._auto_thaw_linux_guest, args=[vm_uuid, lease_id])
+        timer.daemon = True
+        self._fsfreeze_watchdogs[vm_uuid] = {
+            "leaseId": lease_id,
+            "deadline": deadline,
+            "timer": timer,
+        }
+        timer.start()
+        if persist_error is not None:
+            raise RuntimeError("failed to persist fsfreeze lease: %s" % persist_error)
+        return lease_id
+
+    def _cancel_fsfreeze_watchdog(self, vm_uuid, lease_id=None):
+        self._ensure_runtime_state()
+        state = self._fsfreeze_watchdogs.get(vm_uuid)
+        if state and (lease_id is None or state.get("leaseId") == lease_id):
+            timer = state.get("timer")
+            if timer:
+                timer.cancel()
+            self._fsfreeze_watchdogs.pop(vm_uuid, None)
+        self._remove_fsfreeze_lease_file(vm_uuid)
+
+    def _reschedule_auto_thaw(self, vm_uuid, lease_id):
+        self._ensure_runtime_state()
+        state = self._fsfreeze_watchdogs.get(vm_uuid)
+        if not state or state.get("leaseId") != lease_id:
+            return
+        timer = threading.Timer(
+            _FSFREEZE_RECOVERY_RETRY_SECONDS,
+            self._auto_thaw_linux_guest,
+            args=[vm_uuid, lease_id])
+        timer.daemon = True
+        state["timer"] = timer
+        timer.start()
+
+    def _best_effort_thaw_qga(self, qga, timeout_seconds):
+        try:
+            status = qga.call_qga_command(
+                self._FSFREEZE_CMD_STATUS, timeout=timeout_seconds)
+            if status == "frozen":
+                qga.call_qga_command(
+                    self._FSFREEZE_CMD_THAW, timeout=timeout_seconds)
+                status = qga.call_qga_command(
+                    self._FSFREEZE_CMD_STATUS, timeout=timeout_seconds)
+            return status == "thawed", status
+        except Exception as ex:
+            logger.warn("ZRM emergency guest thaw failed for vm=%s: %s" %
+                        (getattr(qga, "vm_uuid", "unknown"), ex))
+            return False, str(ex)
+
+    def _auto_thaw_linux_guest(self, vm_uuid, lease_id, retry=True):
+        self._ensure_runtime_state()
+        state = self._fsfreeze_watchdogs.get(vm_uuid)
+        if not state or state.get("leaseId") != lease_id:
+            return
+        with self._get_fsfreeze_vm_lock(vm_uuid):
+            qga, qga_error = self._get_vm_qga(vm_uuid)
+            if qga is None:
+                logger.warn("ZRM fsfreeze lease auto-thaw waiting for vm=%s QGA: %s" %
+                            (vm_uuid, qga_error))
+                if retry:
+                    self._reschedule_auto_thaw(vm_uuid, lease_id)
+                return
+            thawed, status = self._best_effort_thaw_qga(qga, 10)
+            if thawed:
+                self._clear_cached_linux_fsfreeze_count(qga)
+                self._cancel_fsfreeze_watchdog(vm_uuid, lease_id)
+                logger.warn("ZRM fsfreeze lease expired; automatically thawed vm=%s" % vm_uuid)
+            elif retry:
+                logger.warn("ZRM fsfreeze lease auto-thaw will retry vm=%s status=%s" %
+                            (vm_uuid, status))
+                self._reschedule_auto_thaw(vm_uuid, lease_id)
+
+    def _recover_fsfreeze_leases(self):
+        if os.name == "nt" or not os.path.isdir(_FSFREEZE_LEASE_DIR):
+            return
+        for filename in os.listdir(_FSFREEZE_LEASE_DIR):
+            if not filename.endswith(".json"):
+                continue
+            path = os.path.join(_FSFREEZE_LEASE_DIR, filename)
+            try:
+                with open(path, "r") as lease_file:
+                    lease = json.load(lease_file)
+                vm_uuid = (lease.get("vmUuid") or "").strip()
+                lease_id = (lease.get("leaseId") or "").strip()
+                deadline = float(lease.get("deadline"))
+                if not vm_uuid or not lease_id:
+                    raise ValueError("invalid fsfreeze lease")
+                self._arm_fsfreeze_watchdog(
+                    vm_uuid, lease_id=lease_id, deadline=deadline, persist=False)
+            except Exception as ex:
+                logger.warn("ZRM failed to recover fsfreeze lease %s: %s" % (path, ex))
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+    def _recover_mirror_target_nodes(self):
+        """Rebuild fallback-node ownership and remove orphaned zrm-tgt nodes."""
+        try:
+            from kvmagent.plugins.vm_plugin import get_all_vm_states
+            vm_uuids = list((get_all_vm_states() or {}).keys())
+        except Exception as ex:
+            logger.debug("ZRM mirror target recovery skipped: %s" % ex)
+            return
+        for vm_uuid in vm_uuids:
+            try:
+                jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
+                if query_error:
+                    continue
+                nodes = qmp.execute_qmp_command(
+                    vm_uuid, "query-named-block-nodes", raise_exception=True) or []
+                target_nodes = set(
+                    node.get("node-name") for node in nodes
+                    if (node.get("node-name") or "").startswith("zrm-tgt-"))
+                owned_nodes = set()
+                for job_id in jobs:
+                    target_node = self._target_node_for_job(job_id)
+                    if target_node in target_nodes:
+                        self._remember_mirror_target_node(vm_uuid, job_id, target_node)
+                        owned_nodes.add(target_node)
+                for orphan_node in target_nodes.difference(owned_nodes):
+                    cleaned, cleanup_error = self._cleanup_mirror_target_node(
+                        vm_uuid, "orphan-%s" % self._hash_text(orphan_node),
+                        node_name=orphan_node)
+                    if not cleaned:
+                        logger.warn("ZRM orphan target node cleanup failed vm=%s node=%s: %s" %
+                                    (vm_uuid, orphan_node, cleanup_error))
+            except Exception as ex:
+                logger.debug("ZRM mirror target recovery failed for vm=%s: %s" % (vm_uuid, ex))
+
+    def _start_runtime_recovery(self):
+        for name, target in (
+                ("zrm-fsfreeze-recovery", self._recover_fsfreeze_leases),
+                ("zrm-target-node-recovery", self._recover_mirror_target_nodes)):
+            recovery_thread = threading.Thread(target=target, name=name)
+            recovery_thread.daemon = True
+            recovery_thread.start()
+
+    def _linux_guest_fsfreeze(self, qga, action, timeout_seconds,
+                              lease_timeout_seconds=None):
         """Linux path: freeze/thaw via QGA fsfreeze commands."""
         ok, reason = self._qga_supports_fsfreeze(qga)
         if not ok:
@@ -1801,28 +2291,38 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 quiesce_provider="none", error_code="QGA_COMMAND_IS_DISABLED")
 
         timeout_seconds = max(3, int(timeout_seconds or 30))
+        lease_timeout_seconds = max(
+            5, int(lease_timeout_seconds or _DEFAULT_FSFREEZE_LEASE_SECONDS))
+        freeze_issued = False
         try:
             if action == "freeze":
                 status = qga.call_qga_command(
                     self._FSFREEZE_CMD_STATUS, timeout=timeout_seconds)
                 if status == "frozen":
                     fs_count = self._get_cached_linux_fsfreeze_count(qga)
+                    freeze_issued = True
+                    self._arm_fsfreeze_watchdog(qga.vm_uuid, lease_timeout_seconds)
                     return self._guest_fsfreeze_response(
                         True, "frozen", fs_count, guest_os_type="linux",
                         quiesce_provider="qga-fsfreeze")
                 fs_count = qga.call_qga_command(
                     self._FSFREEZE_CMD_FREEZE, timeout=timeout_seconds)
+                freeze_issued = True
                 if not isinstance(fs_count, int):
                     fs_count = 0
                 status = qga.call_qga_command(
                     self._FSFREEZE_CMD_STATUS, timeout=timeout_seconds)
                 if status != "frozen":
+                    thawed, unused_status = self._best_effort_thaw_qga(qga, timeout_seconds)
+                    if not thawed:
+                        self._arm_fsfreeze_watchdog(qga.vm_uuid, lease_timeout_seconds)
                     return self._guest_fsfreeze_response(
                         False, "error", fs_count,
                         "unexpected fsfreeze status after freeze: " + str(status),
                         guest_os_type="linux", quiesce_provider="qga-fsfreeze",
                         error_code="QGA_RETURN_VALUE_ERROR")
                 self._set_cached_linux_fsfreeze_count(qga, fs_count)
+                self._arm_fsfreeze_watchdog(qga.vm_uuid, lease_timeout_seconds)
                 return self._guest_fsfreeze_response(
                     True, "frozen", fs_count, guest_os_type="linux",
                     quiesce_provider="qga-fsfreeze")
@@ -1832,6 +2332,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     self._FSFREEZE_CMD_STATUS, timeout=timeout_seconds)
                 if status == "thawed":
                     self._clear_cached_linux_fsfreeze_count(qga)
+                    self._cancel_fsfreeze_watchdog(qga.vm_uuid)
                     return self._guest_fsfreeze_response(
                         True, "thawed", 0, guest_os_type="linux",
                         quiesce_provider="qga-fsfreeze")
@@ -1848,6 +2349,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                         guest_os_type="linux", quiesce_provider="qga-fsfreeze",
                         error_code="QGA_RETURN_VALUE_ERROR")
                 self._clear_cached_linux_fsfreeze_count(qga)
+                self._cancel_fsfreeze_watchdog(qga.vm_uuid)
                 return self._guest_fsfreeze_response(
                     True, "thawed", fs_count, guest_os_type="linux",
                     quiesce_provider="qga-fsfreeze")
@@ -1857,6 +2359,17 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 guest_os_type="linux", quiesce_provider="qga-fsfreeze",
                 error_code="QGA_COMMAND_ERROR")
         except Exception as ex:
+            if action == "freeze" and freeze_issued:
+                thawed, unused_status = self._best_effort_thaw_qga(qga, timeout_seconds)
+                if thawed:
+                    self._clear_cached_linux_fsfreeze_count(qga)
+                    self._cancel_fsfreeze_watchdog(qga.vm_uuid)
+                elif not getattr(self, "_fsfreeze_watchdogs", {}).get(qga.vm_uuid):
+                    try:
+                        self._arm_fsfreeze_watchdog(qga.vm_uuid, lease_timeout_seconds)
+                    except Exception as watchdog_ex:
+                        logger.warn("ZRM failed to arm emergency fsfreeze watchdog for vm=%s: %s" %
+                                    (qga.vm_uuid, watchdog_ex))
             logger.warn("ZRM guest-fsfreeze linux action=%s vm=%s failed: %s" %
                         (action, qga.vm_uuid, ex))
             return self._guest_fsfreeze_response(
@@ -1903,21 +2416,24 @@ class ZrmPlugin(kvmagent.KvmAgent):
             vm_uuid = (getattr(cmd, "vmUuid", None) or "").strip()
             action = (getattr(cmd, "action", None) or "").strip().lower()
             timeout_seconds = getattr(cmd, "timeoutSeconds", None)
+            lease_timeout_seconds = getattr(cmd, "leaseTimeoutSeconds", None)
             if not vm_uuid:
                 return jsonobject.dumps(ZrmAgentRsp(success=False, error="vmUuid required"))
             if action not in ("freeze", "thaw"):
                 return jsonobject.dumps(ZrmAgentRsp(success=False, error="action must be freeze or thaw"))
 
-            qga, qga_err = self._get_vm_qga(vm_uuid)
-            if qga is None:
-                return self._guest_fsfreeze_response(
-                    False, "error", 0, qga_err, guest_os_type="unknown",
-                    quiesce_provider="none", error_code="QGA_NOT_RUNNING")
+            with self._get_fsfreeze_vm_lock(vm_uuid):
+                qga, qga_err = self._get_vm_qga(vm_uuid)
+                if qga is None:
+                    return self._guest_fsfreeze_response(
+                        False, "error", 0, qga_err, guest_os_type="unknown",
+                        quiesce_provider="none", error_code="QGA_NOT_RUNNING")
 
-            guest_os = (qga.os or "").lower()
-            if guest_os == VmQga.VM_OS_WINDOWS or "windows" in guest_os:
-                return self._windows_guest_fsfreeze(qga, action, timeout_seconds)
-            return self._linux_guest_fsfreeze(qga, action, timeout_seconds)
+                guest_os = (qga.os or "").lower()
+                if guest_os == VmQga.VM_OS_WINDOWS or "windows" in guest_os:
+                    return self._windows_guest_fsfreeze(qga, action, timeout_seconds)
+                return self._linux_guest_fsfreeze(
+                    qga, action, timeout_seconds, lease_timeout_seconds)
         except Exception as e:
             logger.exception("ZRM guest-fsfreeze failed")
             return jsonobject.dumps(ZrmAgentRsp(success=False, error=str(e)))
@@ -1948,6 +2464,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
             vm_uuid = (getattr(cmd, "vmUuid", None) or "").strip()
             if not vm_uuid:
                 return jsonobject.dumps(ZrmAgentRsp(success=False, error="vmUuid required"))
+            session_uuid = (getattr(cmd, "sessionUuid", None) or "").strip()
 
             speed = getattr(cmd, "speed", None)
             if speed is None:
@@ -1968,10 +2485,13 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     error="query-block-jobs failed: %s" % query_error,
                     queryBlockJobsFailed=True,
                     queryBlockJobsError=query_error))
+            all_jobs = {device: job for device, job in all_jobs.items()
+                        if self._job_matches_session(device, session_uuid)}
             # Filter out concluded/completed jobs -- QEMU rejects set-speed on them
             zrm_jobs = {d: j for d, j in all_jobs.items()
                         if (j.get("status") or "").lower() not in ("concluded", "null")}
             total_jobs = len(zrm_jobs)
+            expected_job_ids = set(zrm_jobs.keys())
 
             # Set speed on active mirror jobs only
             speed_set_failures = []
@@ -1999,12 +2519,13 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 return jsonobject.dumps(rsp)
 
             if total_jobs == 0:
-                rsp = ZrmAgentRsp()
-                rsp.allReady = True
-                rsp.readyCount = 0
-                rsp.runningCount = 0
-                rsp.totalJobs = 0
-                return jsonobject.dumps(rsp)
+                return jsonobject.dumps(ZrmAgentRsp(
+                    success=False,
+                    error="no active ZRM mirror jobs found for vm=%s" % vm_uuid,
+                    allReady=False,
+                    readyCount=0,
+                    runningCount=0,
+                    totalJobs=0))
 
             # When quiescing (speed==0), poll until all mirrors ready or timeout.
             # speed==-1 also sets QEMU unlimited but skips the wait.
@@ -2020,21 +2541,45 @@ class ZrmPlugin(kvmagent.KvmAgent):
                             queryBlockJobsError=query_error,
                             speedSetDevices=speed_set_devices,
                             totalJobs=total_jobs))
+                    missing_jobs = sorted(expected_job_ids.difference(set(zrm_jobs.keys())))
+                    terminal_jobs = []
                     ready_count = 0
                     running_count = 0
-                    for device, job in zrm_jobs.items():
+                    for device in expected_job_ids:
+                        job = zrm_jobs.get(device)
+                        if not job:
+                            continue
                         status = (job.get("status") or "").lower()
+                        if status in ("concluded", "null") or job.get("error"):
+                            terminal_jobs.append({
+                                "device": device,
+                                "status": status or "unknown",
+                                "error": str(job.get("error") or "")
+                            })
+                            continue
                         ready = job.get("ready") is True or status == "ready"
                         if ready:
                             ready_count += 1
                         elif status == "running":
                             running_count += 1
-                    if ready_count >= len(zrm_jobs):
+                    if missing_jobs or terminal_jobs:
+                        return jsonobject.dumps(ZrmAgentRsp(
+                            success=False,
+                            error="mirror job set changed during convergence: missing=%s terminal=%s" %
+                                  (missing_jobs, terminal_jobs),
+                            allReady=False,
+                            readyCount=ready_count,
+                            runningCount=running_count,
+                            totalJobs=total_jobs,
+                            missingJobs=missing_jobs,
+                            terminalJobs=terminal_jobs,
+                            speedSetDevices=speed_set_devices))
+                    if ready_count == total_jobs:
                         rsp = ZrmAgentRsp()
                         rsp.allReady = True
                         rsp.readyCount = ready_count
                         rsp.runningCount = running_count
-                        rsp.totalJobs = len(zrm_jobs)
+                        rsp.totalJobs = total_jobs
                         logger.info("ZRM throttle: vm=%s all %d mirrors ready (quiesce)" % (vm_uuid, ready_count))
                         return jsonobject.dumps(rsp)
                     time.sleep(0.5)
@@ -2049,9 +2594,13 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     queryBlockJobsError=query_error,
                     speedSetDevices=speed_set_devices,
                     totalJobs=total_jobs))
+            missing_jobs = sorted(expected_job_ids.difference(set(zrm_jobs.keys())))
             ready_count = 0
             running_count = 0
-            for device, job in zrm_jobs.items():
+            for device in expected_job_ids:
+                job = zrm_jobs.get(device)
+                if not job:
+                    continue
                 status = (job.get("status") or "").lower()
                 ready = job.get("ready") is True or status == "ready"
                 if ready:
@@ -2060,12 +2609,14 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     running_count += 1
 
             rsp = ZrmAgentRsp()
-            rsp.allReady = ready_count >= len(zrm_jobs) and len(zrm_jobs) > 0
+            rsp.allReady = not missing_jobs and ready_count == total_jobs
             rsp.readyCount = ready_count
             rsp.runningCount = running_count
-            rsp.totalJobs = len(zrm_jobs)
+            rsp.totalJobs = total_jobs
+            if missing_jobs:
+                rsp.missingJobs = missing_jobs
             logger.info("ZRM throttle: vm=%s speed=%d qemu_speed=%d ready=%d running=%d total=%d allReady=%s" %
-                        (vm_uuid, speed, qemu_speed, ready_count, running_count, len(zrm_jobs), rsp.allReady))
+                        (vm_uuid, speed, qemu_speed, ready_count, running_count, total_jobs, rsp.allReady))
             return jsonobject.dumps(rsp)
         except Exception as e:
             logger.exception("ZRM replication throttle failed")

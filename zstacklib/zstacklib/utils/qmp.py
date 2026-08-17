@@ -2,9 +2,10 @@ import errno
 import json
 import re
 import socket
+import sys
 from distutils.version import LooseVersion
 
-from zstacklib.utils import log, bash, qemu
+from zstacklib.utils import log, bash, qemu, shell
 
 logger = log.get_logger(__name__)
 
@@ -81,7 +82,30 @@ def block_job_set_speed(vm, device, bandwidth):
 
 @bash.in_bash
 def _execute_qmp_command(domain_id, command, raise_exception=True):
-    r, o, e = bash.bash_roe("virsh qemu-monitor-command %s '%s'" % (domain_id, qmp_subcmd(QEMU_VERSION, command)))
+    if isinstance(command, bytes):
+        command = command.decode('utf-8')
+    if isinstance(domain_id, bytes):
+        domain_id = domain_id.decode('utf-8')
+
+    command = qmp_subcmd(QEMU_VERSION, command)
+    if sys.version_info[0] < 3:
+        if isinstance(command, unicode):
+            command = command.encode('utf-8')
+        if isinstance(domain_id, unicode):
+            domain_id = domain_id.encode('utf-8')
+    # Keep every value in a distinct argv entry.  QMP JSON is caller-controlled
+    # data and must never be interpolated into a shell command: JSON escaping
+    # does not escape shell metacharacters such as a single quote.
+    process = shell.get_process(
+        ["virsh", "qemu-monitor-command", domain_id, command],
+        shell=False,
+        pipe=True)
+    o, e = process.communicate()
+    r = process.returncode
+    if isinstance(o, bytes):
+        o = o.decode('utf-8', 'replace')
+    if isinstance(e, bytes):
+        e = e.decode('utf-8', 'replace')
     if r == 0:
         ret = json.loads(o.strip())
         if "error" not in ret:
