@@ -18,6 +18,16 @@ logger = log.get_logger(__name__)
 
 CEPH_CONF_ROOT = "/var/lib/zstack/ceph"
 CEPH_KEYRING_CONFIG_NAME = 'client.zstack.keyring'
+CEPH_MON_PROTOCOL_PREFIX = 'v'
+CEPH_MON_PROTOCOL_SEPARATOR = ':'
+CEPH_MON_ADDR_SUFFIX_SEPARATOR = '/'
+CEPH_MON_IPV6_BRACKET_PREFIX = '['
+CEPH_MON_IPV6_BRACKET_SUFFIX = ']'
+ROUTE_PROTOCOL_KERNEL = 'kernel'
+ROUTE_MATCH_CMD_FORMAT = "ip route | grep -w '%s' > /dev/null"
+ROUTE_KERNEL_MATCH_CMD_FORMAT = 'ip route | grep -w "proto kernel" | grep -w \'%s\' > /dev/null'
+IPV6_ROUTE_MATCH_CMD_FORMAT = "ip -6 route | grep -w '%s' > /dev/null"
+IPV6_ROUTE_KERNEL_MATCH_CMD_FORMAT = 'ip -6 route | grep -w "proto kernel" | grep -w \'%s\' > /dev/null'
 
 QEMU_NBD_SOCKET_DIR = "/var/lock/"
 QEMU_NBD_SOCKET_PREFIX = "qemu-nbd-nbd"
@@ -202,7 +212,15 @@ def get_pools_capacity():
                         pool_capacity.crush_rule_item_names.append(step.item_name)
 
     # fill crush_item_osds
-    o = shell.call('ceph osd tree -f json')
+    has_shadow = any(
+        name and '~' in name
+        for pool_capacity in result
+        for name in pool_capacity.crush_rule_item_names
+    )
+    if has_shadow:
+        o = shell.call('ceph osd crush tree --show-shadow -f json')
+    else:
+        o = shell.call('ceph osd tree -f json')
     # In the open source Ceph 10 version, the value returned by executing 'ceph osd tree -f json' might have '-nan', causing json parsing to fail.
     o = o.replace("-nan", "\"\"")
     tree = jsonobject.loads(o)
@@ -285,18 +303,63 @@ class CephOsdCapacity:
         return self.usedCapacity
 
 
+def strip_mon_addr_protocol(addr):
+    protocol, separator, rest = addr.partition(CEPH_MON_PROTOCOL_SEPARATOR)
+    if separator and protocol.startswith(CEPH_MON_PROTOCOL_PREFIX) and protocol[1:].isdigit():
+        return rest
+    return addr
+
+
+def extract_mon_host(addr):
+    if not addr:
+        return None
+
+    addr = strip_mon_addr_protocol(addr.strip())
+    if addr.startswith(CEPH_MON_IPV6_BRACKET_PREFIX):
+        end = addr.find(CEPH_MON_IPV6_BRACKET_SUFFIX)
+        if end > 0:
+            return addr[1:end]
+        return addr[1:]
+
+    has_addr_suffix = CEPH_MON_ADDR_SUFFIX_SEPARATOR in addr
+    addr_without_suffix = addr.split(CEPH_MON_ADDR_SUFFIX_SEPARATOR, 1)[0]
+    if CEPH_MON_PROTOCOL_SEPARATOR not in addr_without_suffix:
+        return addr_without_suffix
+
+    host, separator, port = addr_without_suffix.rpartition(CEPH_MON_PROTOCOL_SEPARATOR)
+    if addr_without_suffix.count(CEPH_MON_PROTOCOL_SEPARATOR) == 1:
+        return host
+    if has_addr_suffix and separator and port.isdigit():
+        return host
+    return addr_without_suffix
+
+
+def get_route_match_cmd(addr, route_protocol=None):
+    if CEPH_MON_PROTOCOL_SEPARATOR in addr:
+        route_match_cmd_format = IPV6_ROUTE_MATCH_CMD_FORMAT
+        route_kernel_match_cmd_format = IPV6_ROUTE_KERNEL_MATCH_CMD_FORMAT
+    else:
+        route_match_cmd_format = ROUTE_MATCH_CMD_FORMAT
+        route_kernel_match_cmd_format = ROUTE_KERNEL_MATCH_CMD_FORMAT
+
+    if route_protocol is None:
+        return route_match_cmd_format % addr
+    if route_protocol == ROUTE_PROTOCOL_KERNEL:
+        return route_kernel_match_cmd_format % addr
+    return ''
+
+
 def get_mon_addr(monmap, route_protocol=None):
     for mon in jsonobject.loads(monmap).mons:
-        ADDR = mon.addr.split(':')[0]
-        cmd = ''
-        if route_protocol is None:
-            cmd = 'ip route | grep -w {{ADDR}} > /dev/null'
-        elif route_protocol == "kernel":
-            cmd = 'ip route | grep -w "proto kernel" | grep -w {{ADDR}} > /dev/null'
+        addr = extract_mon_host(mon.addr)
+        if addr is None:
+            continue
+
+        cmd = get_route_match_cmd(addr, route_protocol)
         if cmd == '':
             return
         if bash_r(cmd) == 0:
-            return ADDR
+            return addr
 
 
 class CephPoolCapacity:

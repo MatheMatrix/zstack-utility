@@ -14,6 +14,17 @@ from zstacklib.utils.bash import bash_r
 
 from .models import MANUFACTURER_XSKY, MANUFACTURER_SANDSTONE, MANUFACTURER_OPENSOURCE
 
+CEPH_MON_PROTOCOL_PREFIX = 'v'
+CEPH_MON_PROTOCOL_SEPARATOR = ':'
+CEPH_MON_ADDR_SUFFIX_SEPARATOR = '/'
+CEPH_MON_IPV6_BRACKET_PREFIX = '['
+CEPH_MON_IPV6_BRACKET_SUFFIX = ']'
+ROUTE_PROTOCOL_KERNEL = 'kernel'
+ROUTE_MATCH_CMD_FORMAT = "ip route | grep -w '%s' > /dev/null"
+ROUTE_KERNEL_MATCH_CMD_FORMAT = 'ip route | grep -w "proto kernel" | grep -w \'%s\' > /dev/null'
+IPV6_ROUTE_MATCH_CMD_FORMAT = "ip -6 route | grep -w '%s' > /dev/null"
+IPV6_ROUTE_KERNEL_MATCH_CMD_FORMAT = 'ip -6 route | grep -w "proto kernel" | grep -w \'%s\' > /dev/null'
+
 
 def get_fsid(conffile='/etc/ceph/ceph.conf'):
     # type: (str) -> str
@@ -62,6 +73,55 @@ def get_ceph_manufacturer():
         return MANUFACTURER_OPENSOURCE
 
 
+def strip_mon_addr_protocol(addr):
+    # type: (str) -> str
+    protocol, separator, rest = addr.partition(CEPH_MON_PROTOCOL_SEPARATOR)
+    if separator and protocol.startswith(CEPH_MON_PROTOCOL_PREFIX) and protocol[1:].isdigit():
+        return rest
+    return addr
+
+
+def extract_mon_host(addr):
+    # type: (Optional[str]) -> Optional[str]
+    if not addr:
+        return None
+
+    addr = strip_mon_addr_protocol(addr.strip())
+    if addr.startswith(CEPH_MON_IPV6_BRACKET_PREFIX):
+        end = addr.find(CEPH_MON_IPV6_BRACKET_SUFFIX)
+        if end > 0:
+            return addr[1:end]
+        return addr[1:]
+
+    has_addr_suffix = CEPH_MON_ADDR_SUFFIX_SEPARATOR in addr
+    addr_without_suffix = addr.split(CEPH_MON_ADDR_SUFFIX_SEPARATOR, 1)[0]
+    if CEPH_MON_PROTOCOL_SEPARATOR not in addr_without_suffix:
+        return addr_without_suffix
+
+    host, separator, port = addr_without_suffix.rpartition(CEPH_MON_PROTOCOL_SEPARATOR)
+    if addr_without_suffix.count(CEPH_MON_PROTOCOL_SEPARATOR) == 1:
+        return host
+    if has_addr_suffix and separator and port.isdigit():
+        return host
+    return addr_without_suffix
+
+
+def get_route_match_cmd(addr, route_protocol=None):
+    # type: (str, Optional[str]) -> str
+    if CEPH_MON_PROTOCOL_SEPARATOR in addr:
+        route_match_cmd_format = IPV6_ROUTE_MATCH_CMD_FORMAT
+        route_kernel_match_cmd_format = IPV6_ROUTE_KERNEL_MATCH_CMD_FORMAT
+    else:
+        route_match_cmd_format = ROUTE_MATCH_CMD_FORMAT
+        route_kernel_match_cmd_format = ROUTE_KERNEL_MATCH_CMD_FORMAT
+
+    if route_protocol is None:
+        return route_match_cmd_format % addr
+    if route_protocol == ROUTE_PROTOCOL_KERNEL:
+        return route_kernel_match_cmd_format % addr
+    return ''
+
+
 def get_mon_addr(monmap, route_protocol=None):
     # type: (str, Optional[str]) -> Optional[str]
     """
@@ -77,12 +137,11 @@ def get_mon_addr(monmap, route_protocol=None):
     import zstacklib.utils.jsonobject as jsonobject
     
     for mon in jsonobject.loads(monmap).mons:
-        addr = mon.addr.split(':')[0]
-        cmd = ''
-        if route_protocol is None:
-            cmd = 'ip route | grep -w %s > /dev/null' % addr
-        elif route_protocol == "kernel":
-            cmd = 'ip route | grep -w "proto kernel" | grep -w %s > /dev/null' % addr
+        addr = extract_mon_host(mon.addr)
+        if addr is None:
+            continue
+
+        cmd = get_route_match_cmd(addr, route_protocol)
         if cmd == '':
             return None
         if bash_r(cmd) == 0:

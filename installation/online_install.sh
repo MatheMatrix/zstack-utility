@@ -9,7 +9,10 @@ CENTOS7='CENTOS7'
 UBUNTU1404='UBUNTU14.04'
 UPGRADE='n'
 FORCE='n'
-MANAGEMENT_INTERFACE=`ip route | grep default | head -n 1 | cut -d ' ' -f 5`
+MANAGEMENT_INTERFACE=''
+MANAGEMENT_ROUTE_FAMILY=''
+MANAGEMENT_ROUTE_FAMILY_IPV4='4'
+MANAGEMENT_ROUTE_FAMILY_IPV6='6'
 SUPPORTED_OS="$CENTOS6, $CENTOS7, $UBUNTU1404"
 ZSTACK_INSTALL_LOG='/tmp/zstack_installation.log'
 [ -f $ZSTACK_INSTALL_LOG ] && /bin/rm -f $ZSTACK_INSTALL_LOG
@@ -54,6 +57,122 @@ MYSQL_USER_PASSWORD=''
 NEED_SET_MN_IP=''
 YUM_ONLINE_REPO=''
 ZSTACK_START_TIMEOUT=120
+
+get_default_route_interface_by_family() {
+    local family="$1"
+    ip -"$family" route show default 2>/dev/null | awk '{
+        for (i = 1; i <= NF; i++) {
+            if ($i == "dev" && (i + 1) <= NF) {
+                print $(i + 1)
+                exit
+            }
+        }
+    }'
+}
+
+select_default_management_interface() {
+    MANAGEMENT_INTERFACE=`get_default_route_interface_by_family "$MANAGEMENT_ROUTE_FAMILY_IPV4"`
+    if [ -n "$MANAGEMENT_INTERFACE" ]; then
+        MANAGEMENT_ROUTE_FAMILY="$MANAGEMENT_ROUTE_FAMILY_IPV4"
+        return 0
+    fi
+
+    MANAGEMENT_INTERFACE=`get_default_route_interface_by_family "$MANAGEMENT_ROUTE_FAMILY_IPV6"`
+    if [ -n "$MANAGEMENT_INTERFACE" ]; then
+        MANAGEMENT_ROUTE_FAMILY="$MANAGEMENT_ROUTE_FAMILY_IPV6"
+        return 0
+    fi
+
+    return 1
+}
+
+get_interface_ip_by_family() {
+    local interface="$1"
+    local family="$2"
+    ip -"$family" -o addr show dev "$interface" scope global 2>/dev/null | awk '{
+        split($4, addr, "/")
+        if (addr[1] != "" && addr[1] !~ /^fe80:/) {
+            print addr[1]
+            exit
+        }
+    }'
+}
+
+get_interface_management_ip() {
+    local interface="$1"
+    local route_family="$2"
+    local ip_addr=''
+
+    if [ x"$route_family" = x"$MANAGEMENT_ROUTE_FAMILY_IPV6" ]; then
+        ip_addr=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV6"`
+        [ -n "$ip_addr" ] && echo "$ip_addr" && return
+    fi
+
+    ip_addr=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV4"`
+    [ -n "$ip_addr" ] && echo "$ip_addr" && return
+
+    ip_addr=`get_interface_ip_by_family "$interface" "$MANAGEMENT_ROUTE_FAMILY_IPV6"`
+    [ -n "$ip_addr" ] && echo "$ip_addr"
+}
+
+is_link_local_ipv6() {
+    case "$1" in
+        fe80:*|FE80:*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_local_ip_address() {
+    local ip_addr="$1"
+    ip_addr="${ip_addr#[}"
+    ip_addr="${ip_addr%]}"
+    ip -o addr show 2>/dev/null | awk -v target="$ip_addr" '{
+        split($4, addr, "/")
+        if (addr[1] == target) {
+            found = 1
+        }
+    } END { exit found ? 0 : 1 }'
+}
+
+format_host_for_url() {
+    case "$1" in
+        *:*) echo "[$1]" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+format_host_for_path() {
+    format_host_for_url "$1"
+}
+
+resolve_management_ip() {
+    if [ -z "$MANAGEMENT_INTERFACE" ]; then
+        select_default_management_interface || fail2 "Cannot identify default network interface. Please set management
+   node IP address by '-I MANAGEMENT_NODE_IP_ADDRESS'."
+    fi
+
+    if ip addr show dev "$MANAGEMENT_INTERFACE" >/dev/null 2>&1; then
+        MANAGEMENT_IP=`get_interface_management_ip "$MANAGEMENT_INTERFACE" "$MANAGEMENT_ROUTE_FAMILY"`
+        echo "Management node network interface: $MANAGEMENT_INTERFACE" >> $ZSTACK_INSTALL_LOG
+        if [ -z "$MANAGEMENT_IP" ]; then
+            fail2 "Can not identify IP address for interface: $MANAGEMENT_INTERFACE. Please assign correct interface by '-I MANAGEMENT_NODE_IP_ADDRESS', which has IP address. Use 'ip addr' to show all interface and IP address."
+        fi
+        return
+    fi
+
+    local ip_addr="$MANAGEMENT_INTERFACE"
+    ip_addr="${ip_addr#[}"
+    ip_addr="${ip_addr%]}"
+    if is_link_local_ipv6 "$ip_addr"; then
+        fail2 "$ip_addr is an IPv6 link-local address and cannot be used as management node IP address."
+    fi
+
+    if ! is_local_ip_address "$ip_addr"; then
+        fail2 "$MANAGEMENT_INTERFACE is not a recognized IP address or network interface name. Please assign correct IP address by '-I MANAGEMENT_NODE_IP_ADDRESS'"
+    fi
+
+    MANAGEMENT_IP="$ip_addr"
+}
 
 show_download()
 {
@@ -1269,24 +1388,7 @@ echo "NFS Folder: $NFS_FOLDER" >> $ZSTACK_INSTALL_LOG
 [ -z $HTTP_FOLDER ] && HTTP_FOLDER=$ZSTACK_INSTALL_ROOT/http_root
 echo "HTTP Folder: $HTTP_FOLDER" >> $ZSTACK_INSTALL_LOG
 
-if [ -z $MANAGEMENT_INTERFACE ]; then
-    echo "Cannot identify default network interface. Please set management
-   node IP address by '-I MANAGEMENT_NODE_IP_ADDRESS'."
-    exit 1
-fi
-
-ip addr show $MANAGEMENT_INTERFACE >/dev/null 2>&1
-if [ $? -ne 0 ];then
-    ip addr show |grep $MANAGEMENT_INTERFACE |grep inet >/dev/null 2>&1
-    if [ $? -ne 0 ]; then
-        echo "$MANAGEMENT_INTERFACE is not a recognized IP address or network interface name. Please assign correct IP address by '-I MANAGEMENT_NODE_IP_ADDRESS'" 
-        exit 1
-    fi
-    MANAGEMENT_IP=$MANAGEMENT_INTERFACE
-else
-    MANAGEMENT_IP=`ip -4 addr show ${MANAGEMENT_INTERFACE} | grep inet | head -1 | awk '{print $2}' | cut -f1  -d'/'`
-    echo "Management node network interface: $MANAGEMENT_INTERFACE" >> $ZSTACK_INSTALL_LOG
-fi
+resolve_management_ip
 
 echo "Management ip address: $MANAGEMENT_IP" >> $ZSTACK_INSTALL_LOG
 
@@ -1416,8 +1518,7 @@ install_db_msgbus
 #fi
 
 if [ ! -z $NEED_SET_MN_IP ];then
-    zstack-ctl configure management.server.ip=${MANAGEMENT_IP}
-    zstack-ctl configure consoleProxyOverriddenIp=${MANAGEMENT_IP}
+    zstack-ctl configure management.server.ip="${MANAGEMENT_IP}"
 fi
 
 #Start ZStack
@@ -1438,10 +1539,12 @@ start_dashboard
 
 echo ""
 echo_star_line
+MANAGEMENT_URL_HOST=`format_host_for_url "$MANAGEMENT_IP"`
+MANAGEMENT_PATH_HOST=`format_host_for_path "$MANAGEMENT_IP"`
 echo "${PRODUCT_NAME} All In One ${VERSION}Installation Completed:"
 echo " - Installation path: $ZSTACK_INSTALL_ROOT"
 echo ""
-echo -e " - UI is running, visit $(tput setaf 4)http://$MANAGEMENT_IP:5000$(tput sgr0) in Chrome or Firefox"
+echo -e " - UI is running, visit $(tput setaf 4)http://$MANAGEMENT_URL_HOST:5000$(tput sgr0) in Chrome or Firefox"
 echo "      Use $(tput setaf 3)zstack-ctl [stop_ui|start_ui]$(tput sgr0) to stop/start the UI service"
 echo ""
 echo -e " - Management node is running"
@@ -1449,7 +1552,7 @@ echo "      Use $(tput setaf 3)zstack-ctl [stop_node|start_node]$(tput sgr0) to 
 echo ""
 echo " - ${PRODUCT_NAME} command line tool is installed: zstack-cli"
 echo " - ${PRODUCT_NAME} control tool is installed: zstack-ctl"
-[ ! -z $NEED_NFS ] && echo -e "$(tput setaf 7) - $MANAGEMENT_IP:$NFS_FOLDER is configured for primary storage as an EXAMPLE$(tput sgr0)"
-[ ! -z $NEED_HTTP ] && echo -e "$(tput setaf 7) - http://$MANAGEMENT_IP/image is ready for storing images as an EXAMPLE.  After copy your_image_name to the folder $HTTP_FOLDER, your image local url is http://$MANAGEMENT_IP/image/your_image_name$(tput sgr0)"
+[ ! -z $NEED_NFS ] && echo -e "$(tput setaf 7) - $MANAGEMENT_PATH_HOST:$NFS_FOLDER is configured for primary storage as an EXAMPLE$(tput sgr0)"
+[ ! -z $NEED_HTTP ] && echo -e "$(tput setaf 7) - http://$MANAGEMENT_URL_HOST/image is ready for storing images as an EXAMPLE.  After copy your_image_name to the folder $HTTP_FOLDER, your image local url is http://$MANAGEMENT_URL_HOST/image/your_image_name$(tput sgr0)"
 echo -e "$(tput setaf 7) - You can use \`zstack-ctl install_management_node --host=remote_ip\` to install more management nodes$(tput sgr0)"
 echo_star_line

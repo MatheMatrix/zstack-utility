@@ -452,7 +452,7 @@ class GPUBase(object):
         capability_info['virtCapabilities'] = list(virt_capabilities or [])
 
     @classmethod
-    def detect_vfio_mdev_capability(cls, pci_device_to):
+    def detect_vfio_mdev_capability(cls, pci_device_to, prepared_context=None):
         """
         Detect if the GPU device supports VFIO mdev (mediated device) virtualization.
 
@@ -489,7 +489,7 @@ class GPUBase(object):
         return False, {}
 
     @classmethod
-    def detect_tensorfusion_capability(cls, pci_device_to):
+    def detect_tensorfusion_capability(cls, pci_device_to, prepared_context=None):
         """
         Detect if the GPU device supports TensorFusion virtualization.
 
@@ -623,11 +623,8 @@ class GPUBase(object):
 
         Converts "00000000:3B:00.0" to "0000:3B:00.0"
         """
-        pci_address = pci_address.strip().lower()
-        # Remove 8-char domain prefix (e.g., 00000000:3B:00.0 -> 0000:3B:00.0)
-        if len(pci_address.split(':')[0]) == 8:
-            pci_address = pci_address[4:]
-        return pci_address
+        from zstacklib.utils.pci import normalize_pci_address
+        return normalize_pci_address(pci_address)
 
     @staticmethod
     def parse_unit_value(value, target_unit=None):

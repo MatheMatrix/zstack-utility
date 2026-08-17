@@ -92,7 +92,7 @@ else:
 
 
 # name: install dependencies
-install_rpm_list = "libcbd"
+install_rpm_list = "libcbd nmap"
 py3_rpms = " python3.11 python3.11-devel python3.11-pip libffi-devel openssl-devel"
 qemu_installed = yum_check_package("qemu-kvm", host_post_info)
 if not qemu_installed:

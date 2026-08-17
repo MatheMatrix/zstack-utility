@@ -3,6 +3,8 @@
 
 import argparse
 import hashlib
+import os
+import re
 import signal
 import getpass
 import urllib.parse
@@ -23,6 +25,7 @@ from shutil import copyfile
 from shutil import rmtree
 
 from .utils import linux, lock
+from . import management_network_ipv6
 from .zstacklib import *
 from . import log_collector
 import jinja2
@@ -44,6 +47,209 @@ from collections import OrderedDict
 from .timeline import TaskTimeline, __doc__ as timeline_doc
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import pkcs12
+
+DEFAULT_MYSQL_PORT = '3306'
+DEFAULT_SSH_PORT = '22'
+UI_LISTEN_HOST_PROPERTY = 'listen.host'
+UI_IPV6_ANY_LISTEN_HOSTS = ('::', '[::]')
+UI_IPV6_ANY_NGINX_LISTEN_HOST = '[::]'
+UI_NGINX_LISTEN_KEYWORD = 'listen '
+JAVA_PREFER_IPV4_STACK_OPT = '-Djava.net.preferIPv4Stack'
+JAVA_PREFER_IPV4_STACK_TRUE = JAVA_PREFER_IPV4_STACK_OPT + '=true'
+JAVA_PREFER_IPV4_STACK_FALSE = JAVA_PREFER_IPV4_STACK_OPT + '=false'
+JAVA_PREFER_IPV6_ADDRESSES_TRUE = '-Djava.net.preferIPv6Addresses=true'
+CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY = 'consoleProxyOverriddenIp'
+CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY = 'consoleProxyOverriddenIpv4'
+CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY = 'consoleProxyOverriddenIpv6'
+IPTABLES_INPUT_CHAIN = 'INPUT'
+IPTABLES_COMMAND = 'iptables'
+IP6TABLES_COMMAND = 'ip6tables'
+IPTABLES_IPV4_LOOPBACK = '127.0.0.1'
+IPTABLES_IPV6_LOOPBACK = '::1'
+UI_LOCAL_WEBHOOK_HOST = IPTABLES_IPV4_LOOPBACK
+
+
+def colorize_output(text, color):
+    no_color = 'NO_COLOR' in os.environ or 'ANSI_COLORS_DISABLED' in os.environ
+    return colored(text, color, no_color=no_color, force_color=True)
+
+
+def build_ui_ipv6_firewall_accept_command(server_port, distro):
+    rule = '-A INPUT -p tcp -m tcp --dport %s -j ACCEPT' % server_port
+    add_rule = 'ip6tables -I INPUT -p tcp -m tcp --dport %s -j ACCEPT' % server_port
+    command = 'ip6tables-save | grep -- "%s" > /dev/null || ' % rule
+    if distro in RPM_BASED_OS:
+        return command + '(%s && service ip6tables save)' % add_rule
+    if distro in DEB_BASED_OS:
+        return command + '(%s && /etc/init.d/iptables-persistent save)' % add_rule
+    return command + add_rule
+
+
+def is_ipv6_literal(address):
+    if not address:
+        return False
+
+    try:
+        socket.inet_pton(socket.AF_INET6, address.strip('[]'))
+        return True
+    except socket.error:
+        return False
+
+
+def management_server_should_listen_ipv6(properties):
+    if properties.get('management.server.ip6') or properties.get('management.server.vip6'):
+        return True
+
+    return is_ipv6_literal(properties.get('management.server.ip'))
+
+
+def build_management_server_ip_stack_opts(properties):
+    if management_server_should_listen_ipv6(properties):
+        return [JAVA_PREFER_IPV4_STACK_FALSE, JAVA_PREFER_IPV6_ADDRESSES_TRUE]
+
+    return [JAVA_PREFER_IPV4_STACK_FALSE]
+
+
+def ui_should_listen_ipv6(listen_host):
+    return normalize_ui_ipv6_listen_host(listen_host) is not None
+
+
+def normalize_ui_ipv6_listen_host(listen_host):
+    if not listen_host:
+        return None
+
+    host = listen_host.strip()
+    if host in UI_IPV6_ANY_LISTEN_HOSTS:
+        return UI_IPV6_ANY_NGINX_LISTEN_HOST
+
+    host = host.strip('[]')
+    if is_ipv6_literal(host):
+        return '[%s]' % host
+
+    return None
+
+
+def build_ui_nginx_ipv6_listen_line(server_port, enable_ssl=False, enable_http2=False, listen_host='::'):
+    suffix = ''
+    if enable_ssl:
+        suffix = ' ssl'
+        if str(enable_http2).lower() == 'true':
+            suffix += ' http2'
+
+    listen_host = normalize_ui_ipv6_listen_host(listen_host) or UI_IPV6_ANY_NGINX_LISTEN_HOST
+    return '        listen %s:%s%s;' % (listen_host, server_port, suffix)
+
+
+def build_default_ui_db_and_webhook_hosts(is_ha, default_ip=None, ha_db_vip=None):
+    if is_ha:
+        return ha_db_vip, UI_LOCAL_WEBHOOK_HOST
+
+    return default_ip, UI_LOCAL_WEBHOOK_HOST
+
+
+def build_default_ui_db_url(db_host):
+    return 'jdbc:mysql://%s:%s' % (format_jdbc_host(db_host), DEFAULT_MYSQL_PORT)
+
+
+def is_loopback_ip(ip):
+    if not ip:
+        return False
+
+    ip = ip.strip('[]')
+    return ip == IPTABLES_IPV4_LOOPBACK or ip == IPTABLES_IPV6_LOOPBACK
+
+
+def is_link_local_ipv6(ip):
+    if not ip:
+        return False
+
+    return ip.strip('[]').lower().startswith('fe80:')
+
+
+def is_reportable_ip(ip):
+    if not ip:
+        return False
+
+    ip = ip.strip()
+    if not validate_ip(ip.strip('[]')):
+        return False
+
+    return not is_loopback_ip(ip) and not is_link_local_ipv6(ip)
+
+
+def build_url_host_port(host, port):
+    return '%s:%s' % (format_url_host(host), port)
+
+
+def build_ui_webhook_urls(webhook_ip, server_port, enable_ssl=False):
+    protocol = 'https' if enable_ssl else 'http'
+    endpoint = '%s://%s' % (protocol, build_url_host_port(webhook_ip, server_port))
+    return (
+        '%s/webhook/ticket' % endpoint,
+        '%s/webhook/zwatch' % endpoint,
+    )
+
+
+def build_mn_sendcommand_url(mn_ip, mn_port):
+    return 'http://%s/zstack/asyncrest/sendcommand' % build_url_host_port(mn_ip, mn_port)
+
+
+def build_mn_api_url(mn_ip, mn_port):
+    return 'http://%s/zstack/api' % build_url_host_port(mn_ip, mn_port)
+
+
+def is_ui_nginx_ipv6_listen_line(line, server_port):
+    pattern = r'^\s*listen\s+\[[0-9A-Fa-f:]+\]:%s(?:\s+[^;]+)?;\s*$' % re.escape(str(server_port))
+    return re.match(pattern, line) is not None
+
+
+def ensure_ui_nginx_ipv6_listen_conf(conf_path, server_port, enable_ssl=False, enable_http2=False, listen_host='::'):
+    if not os.path.exists(conf_path):
+        return False
+
+    listen_line = build_ui_nginx_ipv6_listen_line(server_port, enable_ssl, enable_http2, listen_host)
+    with open(conf_path, 'r') as fd:
+        content = fd.read()
+
+    lines = content.splitlines()
+    desired_listen = listen_line.strip()
+    cleaned_lines = []
+    found_desired_listen = False
+    changed = False
+
+    for line in lines:
+        stripped = line.strip()
+        if is_ui_nginx_ipv6_listen_line(line, server_port):
+            if stripped == desired_listen and not found_desired_listen:
+                cleaned_lines.append(line)
+                found_desired_listen = True
+            else:
+                changed = True
+            continue
+
+        cleaned_lines.append(line)
+
+    if found_desired_listen:
+        if changed:
+            with open(conf_path, 'w') as fd:
+                fd.write('\n'.join(cleaned_lines) + '\n')
+            return True
+        return False
+
+    insert_at = None
+    for idx, line in enumerate(cleaned_lines):
+        if line.strip().startswith(UI_NGINX_LISTEN_KEYWORD):
+            insert_at = idx + 1
+            break
+
+    if insert_at is None:
+        cleaned_lines.insert(0, listen_line)
+    else:
+        cleaned_lines.insert(insert_at, listen_line)
+
+    with open(conf_path, 'w') as fd:
+        fd.write('\n'.join(cleaned_lines) + '\n')
+    return True
 
 mysql_db_config_script='''
 #!/bin/bash
@@ -192,19 +398,19 @@ if [[ $DB_VERSION == *"GreatSQL"* ]]; then
         echo "explicit_defaults_for_timestamp=OFF"
         sed -i '/\[mysqld\]/a explicit_defaults_for_timestamp=OFF\' $mysql_conf
     fi
-    
+
     grep 'sql_generate_invisible_primary_key=' $mysql_conf >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo "sql_generate_invisible_primary_key=OFF"
         sed -i '/\[mysqld\]/a sql_generate_invisible_primary_key=OFF\' $mysql_conf
     fi
-    
+
     grep 'default_authentication_plugin=' $mysql_conf >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo "default_authentication_plugin=mysql_native_password"
         sed -i '/\[mysqld\]/a default_authentication_plugin=mysql_native_password\' $mysql_conf
     fi
-    
+
     sql_mode="IGNORE_SPACE,STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
     grep 'sql_mode' "$mysql_conf" >/dev/null 2>&1
     if [ $? -ne 0 ]; then
@@ -214,7 +420,7 @@ if [[ $DB_VERSION == *"GreatSQL"* ]]; then
         echo "replace sql_mode"
         sed -i "s/sql_mode.*/sql_mode = $sql_mode/" "$mysql_conf"
     fi
-    
+
     echo "init greatdb"
     mysqld --initialize-insecure --user=mysql --datadir=/var/lib/mysql
     echo "soft link greatdb"
@@ -223,7 +429,7 @@ if [[ $DB_VERSION == *"GreatSQL"* ]]; then
     sudo ln -sf /etc/systemd/system/mysql.service /usr/lib/systemd/system/mariadb.service
     sudo ln -sf /usr/bin/mysql /usr/bin/mariadb
     sudo systemctl daemon-reload
-    
+
     if [ ! -d /var/log/mysql ]; then
         echo "init mysql dir"
         # init mysqmysl dir
@@ -548,10 +754,16 @@ def get_detail_version():
         return None
 
 def check_ip_port(host, port):
-    import socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    result = sock.connect_ex((host, int(port)))
-    return result == 0
+    host = host.strip('[]') if host else host
+    family = socket.AF_INET6 if get_ip_version(host) == management_network_ipv6.IPV6_VERSION else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        result = sock.connect_ex((host, int(port)))
+        return result == 0
+    except (socket.error, OSError):
+        return False
+    finally:
+        sock.close()
 
 def get_zstack_version(db_hostname, db_port, db_user, db_password):
     def normalize(v):
@@ -600,9 +812,29 @@ def get_default_gateway_ip():
             return None
 
 def get_default_ip():
-    cmd = ShellCmd("""dev=`ip route|grep default|head -n 1|awk -F "dev" '{print $2}' | awk -F " " '{print $1}'`; ip addr show $dev |grep "inet "|awk '{print $2}'|head -n 1 |awk -F '/' '{print $1}'""")
-    cmd(False)
-    return cmd.stdout.strip()
+    for route_cmd, addr_cmd in (
+            (
+                """ip route show default | awk '{for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}'""",
+                """ip -4 addr show dev %s scope global | awk '/inet / {split($2, a, "/"); print a[1]; exit}'""",
+            ),
+            (
+                """ip -6 route show default | awk '{for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}'""",
+                """ip -6 addr show dev %s scope global | awk '/inet6 / {split($2, a, "/"); print a[1]; exit}'""",
+            ),
+    ):
+        dev_cmd = ShellCmd(route_cmd)
+        dev_cmd(False)
+        dev = dev_cmd.stdout.strip()
+        if not dev:
+            continue
+
+        ip_cmd = ShellCmd(addr_cmd % shell_quote(dev))
+        ip_cmd(False)
+        ip = ip_cmd.stdout.strip()
+        if is_reportable_ip(ip):
+            return ip
+
+    return ''
 
 def get_all_ips():
     script = ShellCmd('''ip addr | awk -F '[/| ]+'  '/inet\s+/{sub(/^\s*/,"");print $2}' ''')
@@ -611,7 +843,22 @@ def get_all_ips():
 
 def get_ui_address():
     ui_addr = ctl.read_ui_property("ui_address")
-    return ui_addr if ui_addr else get_default_ip()
+    if is_reportable_ip(ui_addr):
+        return ui_addr
+
+    management_ip = ctl.read_property('management.server.ip')
+    if is_reportable_ip(management_ip):
+        return management_ip
+
+    return get_default_ip()
+
+
+def get_management_or_default_ip():
+    management_ip = ctl.read_property('management.server.ip')
+    if is_reportable_ip(management_ip):
+        return management_ip
+
+    return get_default_ip()
 
 def get_yum_repo_from_property():
     yum_repo = ctl.read_property('Ansible.var.zstack_repo')
@@ -722,16 +969,187 @@ def expand_path(path):
         return os.path.abspath(path)
 
 def validate_ip(s):
-    a = s.split('.')
-    if len(a) != 4:
-        return False
-    for x in a:
-        if not x.isdigit():
-            return False
-        i = int(x)
-        if i < 0 or i > 255:
-            return False
-    return True
+    return management_network_ipv6.validate_ip(s)
+
+
+def ip_to_hostname(ip):
+    return management_network_ipv6.ip_to_hostname(ip)
+
+
+def format_jdbc_host(ip):
+    return management_network_ipv6.format_host_for_url_or_jdbc(ip)
+
+
+def format_url_host(ip):
+    return management_network_ipv6.format_host_for_url_or_jdbc(ip)
+
+
+def build_mysql_jdbc_url(host, port):
+    return management_network_ipv6.build_mysql_jdbc_url(host, port)
+
+
+def get_ip_version(ip):
+    return management_network_ipv6.get_ip_version(ip)
+
+
+def build_change_ip_ipv4_firewall_accept_commands(management_ip, ports):
+    commands = []
+    for port in ports:
+        commands.append('%s -A %s -p tcp --dport %s -j REJECT' % (
+            IPTABLES_COMMAND, IPTABLES_INPUT_CHAIN, port
+        ))
+        commands.append('%s -I %s -p tcp --dport %s -d %s -j ACCEPT' % (
+            IPTABLES_COMMAND, IPTABLES_INPUT_CHAIN, port, management_ip
+        ))
+        commands.append('%s -I %s -p tcp --dport %s -d %s -j ACCEPT' % (
+            IPTABLES_COMMAND, IPTABLES_INPUT_CHAIN, port, IPTABLES_IPV4_LOOPBACK
+        ))
+    return commands
+
+
+def build_change_ip_ipv4_firewall_delete_commands(management_ip, ports):
+    commands = []
+    if management_network_ipv6.get_ip_version(management_ip) != management_network_ipv6.IPV4_VERSION:
+        return commands
+
+    for port in ports:
+        commands.append('%s -D %s -p tcp --dport %s -j REJECT' % (
+            IPTABLES_COMMAND, IPTABLES_INPUT_CHAIN, port
+        ))
+        commands.append('%s -D %s -p tcp --dport %s -d %s -j ACCEPT' % (
+            IPTABLES_COMMAND, IPTABLES_INPUT_CHAIN, port, management_ip
+        ))
+        commands.append('%s -D %s -p tcp --dport %s -d %s -j ACCEPT' % (
+            IPTABLES_COMMAND, IPTABLES_INPUT_CHAIN, port, IPTABLES_IPV4_LOOPBACK
+        ))
+    return commands
+
+
+def cleanup_change_ip_ipv4_firewall_rules(management_ip, ports):
+    for command in build_change_ip_ipv4_firewall_delete_commands(management_ip, ports):
+        shell_return(command)
+
+
+def update_change_ip_ipv4_firewall_rules(management_ip, mysql_ip, old_management_ip, mysql_ports):
+    cleanup_change_ip_ipv4_firewall_rules(old_management_ip, mysql_ports)
+    cleanup_change_ip_ipv6_firewall_rules(old_management_ip, mysql_ports)
+
+    ports = set(mysql_ports)
+    if mysql_ip != management_ip:
+        ports -= set(mysql_ports)
+
+    for command in build_change_ip_ipv4_firewall_accept_commands(management_ip, ports):
+        shell(command)
+
+
+def build_change_ip_ipv6_firewall_accept_commands(management_ip, ports):
+    commands = []
+    for port in ports:
+        commands.append('%s -A %s -p tcp --dport %s -j REJECT' % (
+            IP6TABLES_COMMAND, IPTABLES_INPUT_CHAIN, port
+        ))
+        commands.append('%s -I %s -p tcp --dport %s -d %s -j ACCEPT' % (
+            IP6TABLES_COMMAND, IPTABLES_INPUT_CHAIN, port, management_ip
+        ))
+        commands.append('%s -I %s -p tcp --dport %s -d %s -j ACCEPT' % (
+            IP6TABLES_COMMAND, IPTABLES_INPUT_CHAIN, port, IPTABLES_IPV6_LOOPBACK
+        ))
+    return commands
+
+
+def build_change_ip_ipv6_firewall_delete_commands(management_ip, ports):
+    commands = []
+    if management_network_ipv6.get_ip_version(management_ip) != management_network_ipv6.IPV6_VERSION:
+        return commands
+
+    for port in ports:
+        commands.append('%s -D %s -p tcp --dport %s -j REJECT' % (
+            IP6TABLES_COMMAND, IPTABLES_INPUT_CHAIN, port
+        ))
+        commands.append('%s -D %s -p tcp --dport %s -d %s -j ACCEPT' % (
+            IP6TABLES_COMMAND, IPTABLES_INPUT_CHAIN, port, management_ip
+        ))
+        commands.append('%s -D %s -p tcp --dport %s -d %s -j ACCEPT' % (
+            IP6TABLES_COMMAND, IPTABLES_INPUT_CHAIN, port, IPTABLES_IPV6_LOOPBACK
+        ))
+    return commands
+
+
+def cleanup_change_ip_ipv6_firewall_rules(management_ip, ports):
+    for command in build_change_ip_ipv6_firewall_delete_commands(management_ip, ports):
+        shell_return(command)
+
+
+def update_change_ip_ipv6_firewall_rules(management_ip, mysql_ip, old_management_ip, mysql_ports):
+    cleanup_change_ip_ipv4_firewall_rules(old_management_ip, mysql_ports)
+    cleanup_change_ip_ipv6_firewall_rules(old_management_ip, mysql_ports)
+
+    ports = set(mysql_ports)
+    if mysql_ip != management_ip:
+        ports -= set(mysql_ports)
+
+    for command in build_change_ip_ipv6_firewall_accept_commands(management_ip, ports):
+        shell(command)
+
+
+def update_change_ip_firewall_rules(management_ip, mysql_ip, old_management_ip, mysql_ports):
+    ip_version = get_ip_version(management_ip)
+    if ip_version == management_network_ipv6.IPV4_VERSION:
+        update_change_ip_ipv4_firewall_rules(management_ip, mysql_ip, old_management_ip, mysql_ports)
+        return
+
+    if ip_version == management_network_ipv6.IPV6_VERSION:
+        update_change_ip_ipv6_firewall_rules(management_ip, mysql_ip, old_management_ip, mysql_ports)
+        return
+
+    error('management ip[%s] is not a valid ip' % management_ip)
+
+
+def extract_db_url_host(db_url):
+    return management_network_ipv6.extract_db_url_host(db_url)
+
+
+def replace_db_url_host(db_url, new_host):
+    return management_network_ipv6.replace_db_url_host(db_url, new_host)
+
+
+def local_ip_exists(ip):
+    return management_network_ipv6.ip_addr_output_has_ip(ip, shell("ip addr", False))
+
+
+def split_host_port_endpoint(endpoint, default_port):
+    endpoint = endpoint.strip() if endpoint else ''
+    if endpoint.startswith('['):
+        host, separator, rest = endpoint[1:].partition(']')
+        if not separator:
+            raise CtlError('invalid host endpoint: %s' % endpoint)
+        if rest and not rest.startswith(':'):
+            raise CtlError('invalid host endpoint: %s' % endpoint)
+        return host, rest[1:] if rest.startswith(':') and rest[1:] else default_port
+
+    if validate_ip(endpoint):
+        return endpoint, default_port
+
+    if endpoint.count(':') == 1:
+        host, port = endpoint.split(':', 1)
+        return host, port if port else default_port
+
+    return endpoint, default_port
+
+
+def format_mysql_host(host):
+    if host.startswith('[') and host.endswith(']'):
+        return host[1:-1]
+    return host
+
+
+def parse_jdbc_hostname_port(host_port):
+    return split_host_port_endpoint(host_port, DEFAULT_MYSQL_PORT)
+
+
+def parse_jdbc_hostname_ports(db_url, prefix):
+    host_ports = db_url[len(prefix):].lstrip('/').split('/')[0]
+    return [parse_jdbc_hostname_port(host_port) for host_port in host_ports.split(',')]
 
 
 def check_host_info_format(host_info, with_public_key=False):
@@ -757,16 +1175,19 @@ def check_host_info_format(host_info, with_public_key=False):
                 if user != "root":
                     error("Only root user can be supported, please change user to root")
         # get ip and port
-        if ':' not in host_info.split('@')[1]:
-            ip = host_info.split('@')[1]
-            port = '22'
-        else:
-            ip = host_info.split('@')[1].split(':')[0]
-            port = host_info.split('@')[1].split(':')[1]
+        ip, port = split_host_port_endpoint(host_info.split('@', 1)[1], DEFAULT_SSH_PORT)
 
         if validate_ip(ip) is False:
             error("Ip : %s is invalid" % ip)
         return (user, password, ip, port)
+
+
+def validate_ha_ip_versions(ha_ips):
+    if management_network_ipv6.has_mixed_ip_versions(ha_ips):
+        error("HA nodes must use the same IP version (both IPv4 or both IPv6)")
+    if management_network_ipv6.get_ip_version(ha_ips[0]) == management_network_ipv6.IPV6_VERSION:
+        error("Install HA does not support IPv6 addresses")
+
 
 def check_host_password(password, ip):
     command ='timeout 10 sshpass -p %s ssh -q -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no -o ' \
@@ -1080,6 +1501,77 @@ def check_ha():
     return False
 
 
+HA_MONITOR_PROCESS_NAMES = set(['zstack-hamon', 'cloud-hamon'])
+
+
+def _read_proc_status(pid):
+    try:
+        with open('/proc/%s/status' % pid) as fd:
+            return fd.read()
+    except:
+        return ''
+
+
+def _read_proc_cmdline(pid):
+    try:
+        with open('/proc/%s/cmdline' % pid, 'rb') as fd:
+            content = fd.read()
+    except:
+        return ''
+
+    try:
+        content = content.decode('utf-8', 'ignore')
+    except AttributeError:
+        pass
+
+    return content.replace('\x00', ' ').strip()
+
+
+def _get_proc_name(pid):
+    status = _read_proc_status(pid)
+    for line in status.splitlines():
+        if line.startswith('Name:'):
+            return line.split(':', 1)[1].strip()
+    return ''
+
+
+def _get_parent_pid(pid):
+    status = _read_proc_status(pid)
+    for line in status.splitlines():
+        if line.startswith('PPid:'):
+            try:
+                return int(line.split(':', 1)[1].strip())
+            except:
+                return None
+    return None
+
+
+def _is_ha_monitor_process(pid):
+    name = _get_proc_name(pid)
+    if name in HA_MONITOR_PROCESS_NAMES:
+        return True
+
+    cmdline = _read_proc_cmdline(pid)
+    if not cmdline:
+        return False
+
+    executable = os.path.basename(cmdline.split()[0])
+    return executable in HA_MONITOR_PROCESS_NAMES
+
+
+def is_invoked_by_ha_monitor(pid=None):
+    pid = pid or os.getpid()
+    visited = set()
+
+    while pid and pid > 1 and pid not in visited:
+        visited.add(pid)
+        if _is_ha_monitor_process(pid):
+            return True
+        pid = _get_parent_pid(pid)
+
+    return False
+
+
 class Ctl(object):
     IS_AARCH64 = platform.machine() == 'aarch64'
     DEFAULT_ZSTACK_HOME = '/usr/local/zstack/apache-tomcat/webapps/zstack/'
@@ -1128,7 +1620,10 @@ class Ctl(object):
         self.tomcat_xml_file_path = None
         self.verbose = False
         self.extra_arguments = None
-        self.http_call_cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:%s" -d \'%s\' --retry 5 http://%s:%s/zstack/asyncrest/sendcommand'
+        self.http_call_cmd = \
+            'curl -X POST -H "Content-Type:application/json" ' \
+            '-H "commandpath:%s" -d \'%s\' --retry 5 ' \
+            '"http://%s:%s/zstack/asyncrest/sendcommand"'
 
     def register_command(self, cmd):
         assert cmd.name, "command name cannot be None"
@@ -1206,7 +1701,7 @@ class Ctl(object):
         # check the ip address
         cmd_name = args.sub_command_name
         if cmd_name == "status" or cmd_name == "start" or cmd_name == "start_node" or cmd_name == "restart_node":
-            ip_info = shell("ip a | grep 'inet ' | grep -v 127.0.0.1", False).strip()
+            ip_info = shell("ip -o addr show scope global | grep -E 'inet |inet6 '", False).strip()
             if ip_info is None or ip_info == '':
                 if cmd_name == "status":
                     error_not_exit("Please configure the IP address of this management server correctly.")
@@ -1400,14 +1895,7 @@ class Ctl(object):
         host_name_ports = []
 
         def parse_hostname_ports(prefix):
-            ips = db_url.lstrip(prefix).lstrip('/').split('/')[0]
-            ips = ips.split(',')
-            for ip in ips:
-                if ":" in ip:
-                    hostname, port = ip.split(':')
-                    host_name_ports.append((hostname, port))
-                else:
-                    host_name_ports.append((ip, '3306'))
+            host_name_ports.extend(parse_jdbc_hostname_ports(db_url, prefix))
 
         if db_url.startswith('jdbc:mysql:loadbalance:'):
             parse_hostname_ports('jdbc:mysql:loadbalance:')
@@ -1433,14 +1921,7 @@ class Ctl(object):
         host_name_ports = []
 
         def parse_hostname_ports(prefix):
-            ips = db_url.lstrip(prefix).lstrip('/').split('/')[0]
-            ips = ips.split(',')
-            for ip in ips:
-                if ":" in ip:
-                    hostname, port = ip.split(':')
-                    host_name_ports.append((hostname, port))
-                else:
-                    host_name_ports.append((ip, '3306'))
+            host_name_ports.extend(parse_jdbc_hostname_ports(db_url, prefix))
 
         if db_url.startswith('jdbc:mysql:loadbalance:'):
             parse_hostname_ports('jdbc:mysql:loadbalance:')
@@ -1656,13 +2137,14 @@ class Command(object):
 
 def create_check_ui_status_command(timeout=10, ui_ip='127.0.0.1', ui_port=5000, if_https=False):
     protocol = 'https' if if_https else 'http'
+    ui_host = format_url_host(ui_ip)
     if shell_return('which wget') == 0:
         return ShellCmd(
-            '''wget --no-proxy -O- --tries=%s --no-check-certificate --timeout=1 %s://%s:%s/health''' % (timeout, protocol, ui_ip, ui_port))
+            '''wget --no-proxy -O- --tries=%s --no-check-certificate --timeout=1 %s://%s:%s/health''' % (timeout, protocol, ui_host, ui_port))
     elif shell_return('which curl') == 0:
             return ShellCmd(
                 '''curl -k --noproxy --connect-timeout=1 --retry %s --retry-delay 0 --retry-max-time %s --max-time %s %s://%s:%s/health''' % (
-                    timeout, timeout, timeout, protocol, ui_ip, ui_port))
+                    timeout, timeout, timeout, protocol, ui_host, ui_port))
     else:
         return None
 
@@ -1714,11 +2196,22 @@ def create_check_mgmt_node_command(timeout=10, mn_node='127.0.0.1'):
     check_hosts()
     what_tool = use_tool()
     mn_port = get_mn_port()
+    mn_api_url = build_mn_api_url(mn_node, mn_port)
     # tag::get_zstack_status[]
     if what_tool == USE_CURL:
-        return ShellCmd('''curl --noproxy --connect-timeout=1 --retry %s --retry-delay 0 --retry-max-time %s --max-time %s -H "Content-Type: application/json" -d '{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' http://%s:%s/zstack/api''' % (timeout, timeout, timeout, mn_node, mn_port))
+        return ShellCmd(
+            '''curl --noproxy --connect-timeout=1 --retry %s --retry-delay 0 '''
+            '''--retry-max-time %s --max-time %s -H "Content-Type: application/json" '''
+            '''-d '{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' "%s"''' %
+            (timeout, timeout, timeout, mn_api_url)
+        )
     elif what_tool == USE_WGET:
-        return ShellCmd('''wget --no-proxy -O- --tries=%s --timeout=1  --header=Content-Type:application/json --post-data='{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' http://%s:%s/zstack/api''' % (timeout, mn_node, mn_port))
+        return ShellCmd(
+            '''wget --no-proxy -O- --tries=%s --timeout=1  '''
+            '''--header=Content-Type:application/json '''
+            '''--post-data='{"org.zstack.header.apimediator.APIIsReadyToGoMsg": {}}' "%s"''' %
+            (timeout, mn_api_url)
+        )
         # end::get_zstack_status[]
     else:
         return None
@@ -1752,13 +2245,33 @@ class Zsha2Utils(object):
         self.config = simplejson.loads(o)
         self.statusConfig = simplejson.loads(out)
         self.ssh_exec_user = self.config.get('execUser', getpass.getuser())
-        self.master = shell_return("ip addr show %s | grep -q '[^0-9]%s[^0-9]'"
+        self.validate_ip_versions()
+        self.master = shell_return("ip addr show %s | grep -q ' %s/'"
                                    % (self.config['nic'], self.config['dbvip'])) == 0
         try:
             if self.statusConfig['peerReachable']:
                 self.execute_on_peer("echo 1 > /dev/null")
         except:
             error('cannot ssh peer node with sshkey')
+
+    def validate_ip_versions(self):
+        versions = set()
+        invalid_ips = []
+        for name in ('nodeip', 'peerip', 'dbvip'):
+            value = self.config.get(name, '')
+            if not value:
+                continue
+            version = get_ip_version(value)
+            if version is None:
+                invalid_ips.append('%s=%s' % (name, value))
+                continue
+            versions.add(version)
+
+        if invalid_ips:
+            error('zsha2 nodeip, peerip and dbvip must be valid IP addresses: %s' % ', '.join(invalid_ips))
+
+        if len(versions) > 1:
+            error('zsha2 nodeip, peerip and dbvip must use the same IP version')
 
     def execute_on_peer(self, cmd, useSudo=False):
         remote_path = '/tmp/%s.sh' % uuid.uuid4()
@@ -1777,7 +2290,7 @@ class Zsha2Utils(object):
 
     def scp_to_peer(self, src_path, dst_path):
         shell("sudo -u %s scp -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no %s %s:%s" % (
-            self.ssh_exec_user, src_path, self.config['peerip'], "/tmp/dst_path"))
+            self.ssh_exec_user, src_path, format_url_host(self.config['peerip']), "/tmp/dst_path"))
         self.execute_on_peer("mv %s %s" % ("/tmp/dst_path", dst_path), True)
 
 
@@ -1990,10 +2503,10 @@ class ShowStatusCmd(Command):
                 if pid:
                     write_status('%s, the management node seems to become zombie as it stops responding APIs but the '
                                  'process(PID: %s) is still running. Please stop the node using zstack-ctl stop_node' %
-                                 (colored('Unknown', 'yellow'), pid))
+                                 (colorize_output('Unknown', 'yellow'), pid))
                     dump_mn()
                 else:
-                    write_status(colored('Stopped', 'red'))
+                    write_status(colorize_output('Stopped', 'red'))
                 return False
 
             state = get_mgmt_node_state_from_result(cmd)
@@ -2003,7 +2516,7 @@ class ShowStatusCmd(Command):
                 return False
 
             if state:
-                write_status(colored('Running', 'green') + ' [PID:%s]' % pid)
+                write_status(colorize_output('Running', 'green') + ' [PID:%s]' % pid)
             else:
                 write_status('Starting, should be ready in a few seconds')
 
@@ -2129,7 +2642,7 @@ class ManagementNodeStatusCollector(Command):
 
 class ShowStatus2Cmd(Command):
     colors = ["green", "yellow", "red"]
-    service_names = ["mysql", "prometheus2", "zops-ui", "port restriction", "MN", "MN-UI"]
+    service_names = ["mysql", "prometheus2", "zops-ui", "license-server", "port restriction", "MN", "MN-UI"]
 
     def __init__(self):
         super(ShowStatus2Cmd, self).__init__()
@@ -2176,6 +2689,10 @@ class ShowStatus2Cmd(Command):
         # zops ui status
         zops_ui_status = collector.get_systemd_service_status("zops-ui")
         self._format_str_color("zops-ui", zops_ui_status)
+
+        # license server
+        license_server_status = collector.get_systemd_service_status("zstack-license-server")
+        self._format_str_color("license-server", license_server_status)
 
         # safety-reinforcing
         safe_reinforcing_status = collector.get_safe()
@@ -2281,10 +2798,11 @@ class DeployDBCmd(Command):
         if not os.path.exists(property_file_path):
             error('cannot find %s, your ZStack installation may have been corrupted, please reinstall it' % property_file_path)
 
+        mysql_host = format_mysql_host(args.host)
         if args.root_password:
-            check_existing_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "use zstack"' % (args.root_password, args.host, args.port)
+            check_existing_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "use zstack"' % (args.root_password, mysql_host, args.port)
         else:
-            check_existing_db = 'mysql --user=root --host=%s --port=%s -e "use zstack"' % (args.host, args.port)
+            check_existing_db = 'mysql --user=root --host=%s --port=%s -e "use zstack"' % (mysql_host, args.port)
 
         self.update_db_config()
         cmd = ShellCmd(check_existing_db)
@@ -2300,7 +2818,7 @@ class DeployDBCmd(Command):
             else:
                 raise CtlError('detected existing zstack database; if you are sure to drop it, please append parameter --drop or use --keep-db to keep the database')
         else:
-            cmd = ShellCmd('bash %s root %s %s %s %s' % (script_path, args.root_password, args.host, args.port, args.zstack_password))
+            cmd = ShellCmd('bash %s root %s %s %s %s' % (script_path, args.root_password, mysql_host, args.port, args.zstack_password))
             cmd(False)
             if cmd.return_code != 0:
                 if ('ERROR 1044' in cmd.stdout or 'ERROR 1044' in cmd.stderr) or ('Access denied' in cmd.stdout or 'Access denied' in cmd.stderr):
@@ -2319,7 +2837,7 @@ class DeployDBCmd(Command):
             properties = [
                 ("DB.user", "zstack"),
                 ("DB.password", args.zstack_password),
-                ("DB.url", 'jdbc:mysql://%s:%s' % (args.host, args.port)),
+                ("DB.url", build_mysql_jdbc_url(args.host, args.port)),
             ]
 
             ctl.write_properties(properties)
@@ -2367,12 +2885,13 @@ class DeployUIDBCmd(Command):
         if not os.path.exists(script_path):
             error('cannot find %s, your zstack installation may have been corrupted, please reinstall it' % script_path)
 
+        mysql_host = format_mysql_host(args.host)
         if args.root_password:
-            check_existing_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "use zstack_ui"' % (args.root_password, args.host, args.port)
-            drop_mini_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "DROP DATABASE IF EXISTS zstack_mini;"' % (args.root_password, args.host, args.port)
+            check_existing_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "use zstack_ui"' % (args.root_password, mysql_host, args.port)
+            drop_mini_db = 'mysql --user=root --password=%s --host=%s --port=%s -e "DROP DATABASE IF EXISTS zstack_mini;"' % (args.root_password, mysql_host, args.port)
         else:
-            check_existing_db = 'mysql --user=root --host=%s --port=%s -e "use zstack_ui"' % (args.host, args.port)
-            drop_mini_db = 'mysql --user=root --host=%s --port=%s -e "DROP DATABASE IF EXISTS zstack_mini;"' % (args.host, args.port)
+            check_existing_db = 'mysql --user=root --host=%s --port=%s -e "use zstack_ui"' % (mysql_host, args.port)
+            drop_mini_db = 'mysql --user=root --host=%s --port=%s -e "DROP DATABASE IF EXISTS zstack_mini;"' % (mysql_host, args.port)
 
         self.update_db_config()
         cmd = ShellCmd(check_existing_db)
@@ -2388,7 +2907,7 @@ class DeployUIDBCmd(Command):
             else:
                 raise CtlError('detected existing zstack_ui database; if you are sure to drop it, please append parameter --drop or use --keep-db to keep the database')
         else:
-            cmd = ShellCmd('bash %s root %s %s %s %s' % (script_path, args.root_password, args.host, args.port, args.zstack_ui_password))
+            cmd = ShellCmd('bash %s root %s %s %s %s' % (script_path, args.root_password, mysql_host, args.port, args.zstack_ui_password))
             cmd(False)
             if cmd.return_code != 0:
                 if ('ERROR 1044' in cmd.stdout or 'ERROR 1044' in cmd.stderr) or ('Access denied' in cmd.stdout or 'Access denied' in cmd.stderr):
@@ -2405,7 +2924,7 @@ class DeployUIDBCmd(Command):
                 args.zstack_ui_password = ''
 
             properties = [
-                    ("db_url", 'jdbc:mysql://%s:%s' % (args.host, args.port)),
+                    ("db_url", build_mysql_jdbc_url(args.host, args.port)),
                     ("db_username", "zstack_ui"),
                     ("db_password", args.zstack_ui_password),
             ]
@@ -2533,8 +3052,89 @@ EOF
         mn_port = ctl.read_property('RESTFacade.port')
         if not mn_port:
             mn_port = 8080
-        ShellCmd(ctl.http_call_cmd % (self.reportPath, simplejson.dumps(config_cmd), config_cmd.mnIp, mn_port))
+        ShellCmd(ctl.http_call_cmd % (
+            self.reportPath,
+            simplejson.dumps(config_cmd),
+            format_url_host(config_cmd.mnIp),
+            mn_port,
+        ))
         logger.debug('report properties updated, propertiesDigestValue: %s, mnIp: %s' % (config_cmd.propertiesDigestValue, config_cmd.mnIp))
+
+    def console_proxy_property_for_ip(self, ip):
+        ip_version = get_ip_version(ip)
+        if ip_version == management_network_ipv6.IPV4_VERSION:
+            return CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY
+        if ip_version == management_network_ipv6.IPV6_VERSION:
+            return CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY
+        return None
+
+    def append_or_replace_property(self, properties, key, value):
+        for prop in reversed(properties):
+            if prop[0] == key:
+                prop[1] = value
+                return
+        properties.append([key, value])
+
+    def validate_console_proxy_family_property(self, key, value):
+        if value in (None, ''):
+            return
+        if key == CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY and value == '0.0.0.0':
+            return
+        if key == CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY and value == '::':
+            return
+
+        ip_version = get_ip_version(value)
+        if key == CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY and ip_version != management_network_ipv6.IPV4_VERSION:
+            raise CtlError('%s must be an IPv4 address' % key)
+        if key == CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY and ip_version != management_network_ipv6.IPV6_VERSION:
+            raise CtlError('%s must be an IPv6 address' % key)
+
+    def normalize_console_proxy_properties(self, properties):
+        requested = {}
+        for key, value in properties:
+            if key in (CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY,
+                       CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY,
+                       CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY):
+                requested[key] = value
+
+        if not requested:
+            return properties
+
+        for family_property in (CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY, CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY):
+            if family_property in requested:
+                self.validate_console_proxy_family_property(family_property, requested[family_property])
+
+        legacy_value = requested.get(CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY)
+        if legacy_value is not None:
+            family_property = self.console_proxy_property_for_ip(legacy_value)
+            if family_property:
+                family_value = requested.get(family_property)
+                if family_value is not None and family_value not in ('', legacy_value):
+                    raise CtlError('%s conflicts with %s for the same IP family' %
+                                   (CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, family_property))
+                self.append_or_replace_property(properties, family_property, legacy_value)
+            elif legacy_value not in ('', '0.0.0.0', '::'):
+                for family_property in (CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY, CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY):
+                    family_value = requested.get(family_property)
+                    if family_value not in (None, ''):
+                        raise CtlError('%s conflicts with %s; hostname legacy must be used by all clients' %
+                                       (CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, family_property))
+                    self.append_or_replace_property(properties, family_property, '')
+
+        for family_property in (CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY, CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY):
+            if family_property not in requested:
+                continue
+            family_value = requested[family_property]
+            family_version = get_ip_version(family_value)
+            legacy = legacy_value if legacy_value is not None else ctl.read_property(CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY)
+            if not legacy or legacy in ('0.0.0.0', '::'):
+                continue
+            if family_version is None:
+                continue
+            if get_ip_version(legacy) == family_version and legacy != family_value:
+                self.append_or_replace_property(properties, CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, '')
+
+        return properties
 
     def run(self, args):
         if args.use_file:
@@ -2558,6 +3158,7 @@ EOF
             return
 
         properties = [l.split('=', 1) for l in ctl.extra_arguments]
+        properties = self.normalize_console_proxy_properties(properties)
         ctl.write_properties(properties)
 
         self._report_property_updated()
@@ -2872,12 +3473,7 @@ def clear_management_node_leftovers():
         pass
 
 def is_ha_installed():
-    _, output, _ = shell_return_stdout_stderr("systemctl is-enabled zstack-ha")
-    status, _, _ = shell_return_stdout_stderr("pgrep -x zstack-hamon")
-    if output and output.strip() == "enabled" and status != 0:
-        return True
-    else:
-        return False
+    return check_ha()
 
 class StopAllCmd(Command):
     def __init__(self):
@@ -3098,12 +3694,29 @@ class StartCmd(Command):
             mn_ip = ctl.read_property('management.server.ip')
             if not mn_ip:
                 error("management.server.ip not configured")
-            if 0 != shell_return("ip a | grep 'inet ' | grep -w '%s'" % mn_ip):
+            if not local_ip_exists(mn_ip):
                 error("management.server.ip[%s] is not found on any device" % mn_ip)
 
-        def check_ha():
-            if is_ha_installed():
+        def check_ha_start_guard():
+            if check_ha() and not is_invoked_by_ha_monitor():
                 error("please use 'zsha2 start-node'")
+
+        def prepare_ipv6_system_parameters_if_needed():
+            management_ip_properties = {
+                'management.server.ip': ctl.read_property('management.server.ip'),
+                'management.server.ip6': ctl.read_property('management.server.ip6'),
+                'management.server.vip6': ctl.read_property('management.server.vip6'),
+            }
+            if not management_network_ipv6.management_server_requires_ipv6_stack(management_ip_properties):
+                return
+
+            try:
+                management_network_ipv6.prepare_ipv6_system_parameters(
+                    lambda command: shell_no_pipe(' '.join(command)),
+                    logger_func=lambda message: info(message),
+                )
+            except management_network_ipv6.IPv6SystemParameterError as e:
+                error(str(e))
 
         def check_chrony():
             if ctl.read_property('syncNodeTime') == "false":
@@ -3149,7 +3762,6 @@ class StartCmd(Command):
             setenv_path = os.path.join(ctl.zstack_home, self.SET_ENV_SCRIPT)
             catalina_opts = [
                 '-Djdk.tls.trustNameService=true',
-                '-Djava.net.preferIPv4Stack=true',
                 '-Dcom.sun.management.jmxremote=true',
                 '-Djava.security.egd=file:/dev/./urandom',
                 '-XX:-OmitStackTraceInFastThrow',
@@ -3159,6 +3771,12 @@ class StartCmd(Command):
                 '-XX:+UseAltSigs',
                 '-Dlog4j2.formatMsgNoLookups=true'
             ]
+            management_ip_properties = {
+                'management.server.ip': ctl.read_property('management.server.ip'),
+                'management.server.ip6': ctl.read_property('management.server.ip6'),
+                'management.server.vip6': ctl.read_property('management.server.vip6'),
+            }
+            catalina_opts.extend(build_management_server_ip_stack_opts(management_ip_properties))
 
             if ctl.extra_arguments:
                 catalina_opts.extend(ctl.extra_arguments)
@@ -3171,6 +3789,13 @@ class StartCmd(Command):
             if co:
                 info('use CATALINA_OPTS[%s] set in environment zstack environment variables; check out them by "zstack-ctl getenv"' % co)
                 catalina_opts.extend(co.split(' '))
+
+            catalina_opts = management_network_ipv6.build_java_ip_stack_opts(
+                management_ip_properties.get('management.server.ip6') or
+                management_ip_properties.get('management.server.vip6') or
+                management_ip_properties.get('management.server.ip'),
+                catalina_opts,
+            )
 
             def has_opt(prefix):
                 for opt in catalina_opts:
@@ -3292,7 +3917,8 @@ class StartCmd(Command):
         check_mn_port()
         check_prometheus_port()
         check_msyql()
-        check_ha()
+        check_ha_start_guard()
+        prepare_ipv6_system_parameters_if_needed()
         check_mn_ip()
         check_chrony()
         restart_console_proxy()
@@ -3370,7 +3996,22 @@ class StopCmd(Command):
             def wait_stop():
                 return get_management_node_pid() is None
 
-            shell('bash %s' % os.path.join(ctl.zstack_home, self.STOP_SCRIPT))
+            stop_script = os.path.join(ctl.zstack_home, self.STOP_SCRIPT)
+            management_ip_properties = {
+                'management.server.ip': ctl.read_property('management.server.ip'),
+                'management.server.ip6': ctl.read_property('management.server.ip6'),
+                'management.server.vip6': ctl.read_property('management.server.vip6'),
+            }
+            stop_java_opts = management_network_ipv6.build_java_ip_stack_opts(
+                management_ip_properties.get('management.server.ip6') or
+                management_ip_properties.get('management.server.vip6') or
+                management_ip_properties.get('management.server.ip'),
+                [],
+            )
+            shell('JAVA_OPTS="$JAVA_OPTS %s" bash %s' % (
+                ' '.join(stop_java_opts),
+                shell_quote(stop_script),
+            ))
             if wait_stop():
                 clear_management_node_leftovers()
                 info_and_debug('successfully stopped management node')
@@ -3695,26 +4336,30 @@ class InstallDbCmd(Command):
       set_fact:
         ansible_distribution_version: "{{ ansible_distribution_version | regex_replace('[^0-9.]', '') }}"
 
+    - name: set Alibaba Cloud Linux 4 fact
+      set_fact:
+        is_alibaba_cloud_linux_4: "{{ (ansible_distribution == 'Alibaba' or (ansible_distribution == 'Alibaba Cloud Linux' and ansible_architecture in ['aarch64', 'arm64'])) and (ansible_distribution_major_version | int) == 4 }}"
+
     - name: pre-install script
       script: $pre_install_script
 
     - name: install MySQL for Alibaba Cloud Linux 4 from local
-      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4 and yum_repo != 'false'
+      when: is_alibaba_cloud_linux_4 | bool and yum_repo != 'false'
       shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y  mariadb mariadb-server iptables-services
       register: install_result
 
     - name: install MySQL for Alibaba Cloud Linux 4
-      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4 and yum_repo == 'false'
+      when: is_alibaba_cloud_linux_4 | bool and yum_repo == 'false'
       shell: yum clean metadata; yum --nogpgcheck install -y  mariadb mariadb-server iptables-services
       register: install_result
 
     - name: install MySQL for RedHat 6 through user defined repos
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and yum_repo != 'false'
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (is_alibaba_cloud_linux_4 | bool) and yum_repo != 'false'
       shell: yum clean metadata; yum --disablerepo=* --enablerepo={{yum_repo}} --nogpgcheck install -y mysql mysql-server
       register: install_result
 
     - name: install MySQL for RedHat 6 through system defined repos
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and yum_repo == 'false'
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (is_alibaba_cloud_linux_4 | bool) and yum_repo == 'false'
       shell: "yum clean metadata; yum --nogpgcheck install -y mysql mysql-server "
       register: install_result
 
@@ -3757,20 +4402,20 @@ class InstallDbCmd(Command):
 
     - name: open 3306 port on RedHat 7/Helix 8/Alibaba/Alibaba Cloud Linux/Kylin10/openEuler/UnionTech/Nfs
       when: ansible_os_family == 'RedHat' or ansible_os_family == 'Helix' or ansible_os_family == 'Alibaba'
-            or (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) 
+            or (is_alibaba_cloud_linux_4 | bool)
             or (ansible_os_family == 'Kylin' and ansible_distribution_version == '10')
             or ansible_os_family == 'Openeuler' or ansible_os_family == 'Nfs' or ansible_os_family == 'UnionTech'
       shell: iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport 3306 -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport 3306 -j ACCEPT && service iptables save)
 
     - name: open 3306 port
-      when: ansible_os_family != 'RedHat' and ansible_os_family != 'Alibaba' and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and (ansible_os_family == 'Kylin' and ansible_distribution_version == '4.0.2')
+      when: ansible_os_family != 'RedHat' and ansible_os_family != 'Alibaba' and not (is_alibaba_cloud_linux_4 | bool) and (ansible_os_family == 'Kylin' and ansible_distribution_version == '4.0.2')
       shell: iptables-save | grep -- "-A INPUT -p tcp -m tcp --dport 3306 -j ACCEPT" > /dev/null || (iptables -I INPUT -p tcp -m tcp --dport 3306 -j ACCEPT && /etc/init.d/netfilter-persistent save)
 
     - name: run post-install script
       script: $post_install_script
 
     - name: enable MySQL daemon on RedHat 6
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4)
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (is_alibaba_cloud_linux_4 | bool)
       service: name=mysqld state=restarted enabled=yes
 
     - name: enable MySQL daemon on RedHat 7/Helix 8/Kylin10/openEuler/UnionTech/Nfs
@@ -3785,7 +4430,7 @@ class InstallDbCmd(Command):
       service: name=mariadb state=restarted enabled=yes
 
     - name: enable MySQL daemon on Alibaba Cloud Linux 4
-      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4
+      when: is_alibaba_cloud_linux_4 | bool
       service: name=mariadb state=restarted enabled=yes
 
     - name: enable MySQL on Ubuntu
@@ -3806,7 +4451,7 @@ class InstallDbCmd(Command):
       shell: $grant_access_cmd
 
     - name: rollback MySQL installation on RedHat 6
-      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4) and change_root_result.rc != 0 and install_result.changed == True
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version < 7 and not (is_alibaba_cloud_linux_4 | bool) and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mysql mysql-server
 
     - name: rollback MySQL installation on RedHat 7/ Helix 8
@@ -3814,7 +4459,7 @@ class InstallDbCmd(Command):
             and ansible_distribution_major_version >= 7 \
             and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mariadb mariadb-server
-      
+
     - name: rollback MySQL installation on Kylin10
       when: ansible_os_family == 'Kylin' and ansible_distribution_major_version == 10 and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mariadb mariadb-server
@@ -3824,7 +4469,7 @@ class InstallDbCmd(Command):
       shell: rpm -ev mariadb mariadb-server
 
     - name: rollback MySQL installation on Alibaba Cloud Linux 4
-      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version | int == 4 and change_root_result.rc != 0 and install_result.changed == True
+      when: is_alibaba_cloud_linux_4 | bool and change_root_result.rc != 0 and install_result.changed == True
       shell: rpm -ev mariadb mariadb-server
       
     - name: rollback MySQL installation on UnionTech/openEuler/Nfs
@@ -3878,23 +4523,27 @@ class InstallDbCmd(Command):
       set_fact:
         ansible_distribution_version: "{{ ansible_distribution_version | regex_replace('[^0-9.]', '') }}"
 
+    - name: set Alibaba Cloud Linux 4-or-later fact
+      set_fact:
+        is_alibaba_cloud_linux_4_or_later: "{{ (ansible_distribution == 'Alibaba' or (ansible_distribution == 'Alibaba Cloud Linux' and ansible_architecture in ['aarch64', 'arm64'])) and (ansible_distribution_major_version | int) >= 4 }}"
+
     - name: pre install script
       script: $pre_install_script
-      
+
     - name: install readline needed by greatdb-client, greatdb-server
       when: >
         (ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
         or (ansible_os_family == 'Kylin' and ansible_distribution_version == '10')
-        or (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
+        or (is_alibaba_cloud_linux_4_or_later | bool)
       shell: yum clean all; yum --disablerepo="*" --enablerepo=zstack-local-greatdb install -y readline
 
     - name: fail fast when GreatDB repo is missing on Alibaba Cloud Linux 4
-      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4 and yum_repo == 'false'
+      when: is_alibaba_cloud_linux_4_or_later | bool and yum_repo == 'false'
       fail:
         msg: "GreatDB on Alibaba Cloud Linux 4 requires a configured yum repo"
 
     - name: record mariadb-connector-c-config state on Alibaba Cloud Linux 4
-      when: ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4
+      when: is_alibaba_cloud_linux_4_or_later | bool
       shell: rpm -q mariadb-connector-c-config
       register: alinux4_mariadb_config_state
       failed_when: false
@@ -3902,7 +4551,7 @@ class InstallDbCmd(Command):
 
     - name: install GreatDB on Alibaba Cloud Linux 4
       when: >
-        (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
+        (is_alibaba_cloud_linux_4_or_later | bool)
         and yum_repo != 'false'
       shell: |
         yum clean all &&
@@ -3918,13 +4567,13 @@ class InstallDbCmd(Command):
         ((ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
         or
         (ansible_os_family == 'Kylin' and ansible_distribution_version == '10'))
-        and not (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
+        and not (is_alibaba_cloud_linux_4_or_later | bool)
         and yum_repo != 'false'
       shell: yum clean all; yum --disablerepo="*" --enablerepo={{ yum_repo }} install -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
       register: install_result
 
     - name: set GreatDB install result on Alibaba Cloud Linux 4
-      when: ansible_distribution == "Alibaba" and ansible_distribution_major_version|int >= 4
+      when: is_alibaba_cloud_linux_4_or_later | bool
       set_fact:
         install_result: "{{ alinux4_install_result }}"
 
@@ -3938,7 +4587,7 @@ class InstallDbCmd(Command):
     - name: start GreatDB service
       when: >
         (ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
-        or (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
+        or (is_alibaba_cloud_linux_4_or_later | bool)
       service: name=mysql state=restarted enabled=yes
 
     - name: update root password
@@ -3953,13 +4602,13 @@ class InstallDbCmd(Command):
     - name: rollback GreatDB
       when: >
         ((ansible_os_family == 'RedHat' and ansible_distribution_major_version|int >= 8)
-        or (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4))
+        or (is_alibaba_cloud_linux_4_or_later | bool))
         and change_root_result.rc != 0 and install_result.changed == True
       shell: yum remove -y greatsql-client greatsql-devel greatsql-icu-data-files greatsql-mysql-router greatsql-server greatsql-shared
 
     - name: restore mariadb-connector-c-config on Alibaba Cloud Linux 4 rollback
       when: >
-        (ansible_distribution == 'Alibaba' and ansible_distribution_major_version|int >= 4)
+        (is_alibaba_cloud_linux_4_or_later | bool)
         and change_root_result.rc != 0 and install_result.changed == True
         and alinux4_mariadb_config_state.rc == 0
       shell: yum --disablerepo="*" --enablerepo=zstack-local install -y mariadb-connector-c-config
@@ -4751,6 +5400,11 @@ class InstallHACmd(Command):
             host3_connect_info_list = check_host_info_format(host3_info)
             args.host3 = host3_connect_info_list[2]
             args.host3_password = host3_connect_info_list[1]
+
+        ha_ips = [args.host1, args.host2, args.vip]
+        if args.host3_info is not False:
+            ha_ips.append(args.host3)
+        validate_ha_ip_versions(ha_ips)
 
         # check root password is available
         if args.host1_password != args.host2_password:
@@ -6063,7 +6717,7 @@ class MysqlRestrictConnection(Command):
         mn_ip = ctl.read_property('management.server.ip')
         if not mn_ip:
             error("management.server.ip not configured")
-        if 0 != shell_return("ip a | grep 'inet ' | grep -w '%s'" % mn_ip):
+        if not local_ip_exists(mn_ip):
             error("management.server.ip[%s] is not found on any device" % mn_ip)
 
         return mn_ip
@@ -6826,7 +7480,7 @@ class MysqlRestorer(object):
 
     def is_local_ip(self, db_hostname):
         raise Exception('function all_local_ip not be implemented')
- 
+
     def start_extra_services(self, args, service_name):
         info("starting %s service..." % service_name)
         shell("systemctl start %s" % service_name)
@@ -7857,6 +8511,31 @@ class ConfiguredCollectLogCmd(Command):
 
 
 class ChangeIpCmd(Command):
+    LICENSE_SERVER_UNIT_NAME = 'zstack-license-server.service'
+    UNSPECIFIED_MANAGEMENT_IPS = ('0.0.0.0', '::')
+    DUAL_STACK_LEGACY_IP_ERROR = (
+        'current management node is dual-stack; use --ipv4 and/or --ipv6 to change '
+        'the IPv4 and IPv6 management address explicitly'
+    )
+    NO_CHANGE_IP_ERROR = 'one of --ip, --ipv4 or --ipv6 must be specified'
+    MIXED_CHANGE_IP_ERROR = '--ip cannot be used together with --ipv4 or --ipv6'
+    MISSING_MANAGEMENT_IP_ERROR = (
+        'cannot change %s management address because current %s is not configured; '
+        'use add_ip to add a secondary management address first'
+    )
+    ADDRESS_FAMILY_CHANGE_ERROR = (
+        'changing management address family is not supported by change_ip: old_ip=%s, new_ip=%s'
+    )
+    ADDRESS_FAMILY_CHANGE_RISK = (
+        'Changing management address family is only safe before adding any resources. '
+        'Hosts, primary storage, backup storage, VPC routers, console proxy, and external '
+        'agents that still use the old IP version may disconnect or become unmanaged.'
+    )
+    ADDRESS_FAMILY_CHANGE_CONFIRMATION_HINT = (
+        'Re-run with --allow-management-ip-family-change and '
+        '--yes-i-understand-management-network-risk if you have verified the risk.'
+    )
+
     def __init__(self):
         super(ChangeIpCmd, self).__init__()
         self.name = "change_ip"
@@ -7868,15 +8547,103 @@ class ChangeIpCmd(Command):
     def install_argparse_arguments(self, parser):
         parser.add_argument('--ip', help='The new IP address of management node.'
                                          'This operation will update the new ip address to '
-                                         'zstack config file' , required=True)
+                                         'zstack config file' , required=False)
+        parser.add_argument('--ipv4', '--ip4', dest='ip4',
+                            help='The new IPv4 management address of management node.', required=False)
+        parser.add_argument('--ipv6', '--ip6', dest='ip6',
+                            help='The new IPv6 management address of management node.', required=False)
         parser.add_argument('--cloudbus_server_ip', help='The new IP address of CloudBus.serverIp.0, default will use value from --ip', required=False)
         parser.add_argument('--mysql_ip', help='The new IP address of DB.url, default will use value from --ip', required=False)
         parser.add_argument('--root-password',
                             help='When mysql_restrict_connection is enabled, --root-password needs to be set ',
                             required=False)
+        parser.add_argument('--allow-management-ip-family-change',
+                            help='Allow high-risk management.server.ip IPv4/IPv6 family switch.',
+                            action='store_true', default=False)
+        parser.add_argument('--yes-i-understand-management-network-risk',
+                            help='Confirm that resources using the old IP version may disconnect after change_ip.',
+                            action='store_true', default=False)
 
     def isVirtualIp(self, ip):
         return shell("ip a | grep -w %s" % ip, False).strip().endswith("zs")
+
+    def parse_license_server_systemd_show(self, output):
+        fields = {}
+        for line in output.splitlines():
+            line = line.strip()
+            if not line or '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            fields[key] = value
+        return fields
+
+    def clean_license_server_exec_field(self, value):
+        value = value.strip()
+        value = value.strip(';')
+        value = value.strip('"\'')
+        return value.strip(';')
+
+    def parse_license_server_binary_path(self, exec_start):
+        fallback = None
+        for field in exec_start.split():
+            field = self.clean_license_server_exec_field(field)
+            if field.startswith('argv[]='):
+                binary = self.clean_license_server_exec_field(field[len('argv[]='):])
+                if binary:
+                    return binary
+            if field.startswith('path='):
+                fallback = self.clean_license_server_exec_field(field[len('path='):])
+                continue
+            if fallback is None and os.path.basename(field) == 'zstack-license-server':
+                fallback = field
+        return fallback
+
+    def discover_license_server_binary(self):
+        status, stdout, stderr = shell_return_stdout_stderr(
+            'SYSTEMD_PAGER=cat systemctl --no-pager show %s -p LoadState -p UnitFileState -p ExecStart'
+            % shell_quote(self.LICENSE_SERVER_UNIT_NAME)
+        )
+        if status != 0:
+            raise CtlError('discover License Server failed: %s' % stderr)
+
+        fields = self.parse_license_server_systemd_show(stdout)
+        load_state = fields.get('LoadState', '')
+        unit_file_state = fields.get('UnitFileState', '')
+        exec_start = fields.get('ExecStart', '')
+        if load_state == 'not-found' or load_state.startswith('masked') or unit_file_state.startswith('masked') or not exec_start:
+            info('Skip License Server management_ip update: %s is not installed or enabled' %
+                 self.LICENSE_SERVER_UNIT_NAME)
+            return None
+
+        binary = self.parse_license_server_binary_path(exec_start)
+        if not binary:
+            info('Skip License Server management_ip update: cannot find zstack-license-server binary')
+        return binary
+
+    def update_license_server_management_ip(self, management_ip):
+        binary = self.discover_license_server_binary()
+        if not binary:
+            return
+
+        database_url = build_url_host_port(management_ip, DEFAULT_MYSQL_PORT)
+        fd, patch_path = tempfile.mkstemp(prefix='.zstack-license-server-', suffix='.yaml')
+        try:
+            with os.fdopen(fd, 'w') as patch:
+                patch.write('server:\n  management_ip: "%s"\ndatabase:\n  url: "%s"\n' % (
+                    management_ip,
+                    database_url,
+                ))
+            shell_no_pipe('%s configure --file %s' % (
+                shell_quote(binary),
+                shell_quote(patch_path),
+            ))
+            info('Update License Server management_ip %s and database url %s successfully' % (
+                management_ip,
+                database_url,
+            ))
+        finally:
+            if os.path.exists(patch_path):
+                os.remove(patch_path)
 
     def check_mysql_password(self, user, password):
         cmd = ShellCmd("mysql -u%s -p%s -e 'show databases;'" % (user, password))
@@ -7930,7 +8697,7 @@ class ChangeIpCmd(Command):
         if status != 0 or (output != "non-root" and output != "root"):
             return
 
-        if shell_return("ip a | grep 'inet ' | grep -w '%s'" % mysql_ip) != 0:
+        if not local_ip_exists(mysql_ip):
             return
 
         if root_password is None:
@@ -8012,28 +8779,330 @@ class ChangeIpCmd(Command):
         else:
             info("morph cannot find skip")
 
+    def current_management_ip_model(self):
+        primary_ip = ctl.read_property(management_network_ipv6.MANAGEMENT_IP_PROPERTY_KEY)
+        ip4 = ctl.read_property(management_network_ipv6.MANAGEMENT_IP4_PROPERTY_KEY)
+        ip6 = ctl.read_property(management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY)
+        primary_version = get_ip_version(primary_ip)
+
+        model = {
+            management_network_ipv6.IPV4_VERSION: {
+                'ip': ip4,
+                'property': management_network_ipv6.MANAGEMENT_IP4_PROPERTY_KEY,
+                'primary': False,
+            },
+            management_network_ipv6.IPV6_VERSION: {
+                'ip': ip6,
+                'property': management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY,
+                'primary': False,
+            },
+        }
+
+        if primary_version in model:
+            model[primary_version] = {
+                'ip': primary_ip,
+                'property': management_network_ipv6.MANAGEMENT_IP_PROPERTY_KEY,
+                'primary': True,
+            }
+
+        return model
+
+    def is_dual_stack_management_ip(self, model):
+        return (
+            get_ip_version(model[management_network_ipv6.IPV4_VERSION]['ip']) == management_network_ipv6.IPV4_VERSION
+            and get_ip_version(model[management_network_ipv6.IPV6_VERSION]['ip']) == management_network_ipv6.IPV6_VERSION
+        )
+
+    def check_management_ip_family_change(self, args, old_ip, new_ip):
+        if management_network_ipv6.is_same_ip_version_transition(old_ip, new_ip):
+            return False
+
+        if not (
+                getattr(args, 'allow_management_ip_family_change', False)
+                and getattr(args, 'yes_i_understand_management_network_risk', False)):
+            error('%s. %s %s' % (
+                self.ADDRESS_FAMILY_CHANGE_ERROR % (old_ip, new_ip),
+                self.ADDRESS_FAMILY_CHANGE_RISK,
+                self.ADDRESS_FAMILY_CHANGE_CONFIRMATION_HINT))
+
+        info(self.ADDRESS_FAMILY_CHANGE_RISK)
+        return True
+
+    def management_ip_property_for_version(self, version):
+        if version == management_network_ipv6.IPV4_VERSION:
+            return management_network_ipv6.MANAGEMENT_IP4_PROPERTY_KEY
+        if version == management_network_ipv6.IPV6_VERSION:
+            return management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY
+        error('management ip version[%s] is not supported' % version)
+
+    def validate_change_ip_inputs(self, args, model):
+        ip4 = getattr(args, 'ip4', None)
+        ip6 = getattr(args, 'ip6', None)
+
+        if args.ip and (ip4 or ip6):
+            error(self.MIXED_CHANGE_IP_ERROR)
+        if not args.ip and not ip4 and not ip6:
+            error(self.NO_CHANGE_IP_ERROR)
+
+        dual_stack = self.is_dual_stack_management_ip(model)
+        targets = []
+        if args.ip:
+            if dual_stack:
+                error(self.DUAL_STACK_LEGACY_IP_ERROR)
+            new_version = get_ip_version(args.ip)
+            old_version = None
+            for version, current in model.items():
+                if get_ip_version(current['ip']) == version:
+                    old_version = version
+                    break
+            if old_version is None:
+                error('current management.server.ip is not configured')
+            if new_version != old_version:
+                self.check_management_ip_family_change(args, model[old_version]['ip'], args.ip)
+                targets.append({
+                    'version': new_version,
+                    'old_version': old_version,
+                    'new_ip': args.ip,
+                    'old_ip': model[old_version]['ip'],
+                    'property': management_network_ipv6.MANAGEMENT_IP_PROPERTY_KEY,
+                    'primary': True,
+                    'family_switch': True,
+                    'follow_version': old_version,
+                    'old_primary_secondary_property': self.management_ip_property_for_version(old_version),
+                    'stale_secondary_property': self.management_ip_property_for_version(new_version),
+                })
+            else:
+                targets.append({
+                    'version': old_version,
+                    'new_ip': args.ip,
+                    'old_ip': model[old_version]['ip'],
+                    'property': model[old_version]['property'],
+                    'primary': model[old_version]['primary'],
+                })
+
+        if ip4:
+            targets.append({
+                'version': management_network_ipv6.IPV4_VERSION,
+                'new_ip': ip4,
+                'old_ip': model[management_network_ipv6.IPV4_VERSION]['ip'],
+                'property': model[management_network_ipv6.IPV4_VERSION]['property'],
+                'primary': model[management_network_ipv6.IPV4_VERSION]['primary'],
+            })
+        if ip6:
+            targets.append({
+                'version': management_network_ipv6.IPV6_VERSION,
+                'new_ip': ip6,
+                'old_ip': model[management_network_ipv6.IPV6_VERSION]['ip'],
+                'property': model[management_network_ipv6.IPV6_VERSION]['property'],
+                'primary': model[management_network_ipv6.IPV6_VERSION]['primary'],
+            })
+
+        changes = []
+        for target in targets:
+            version = target['version']
+            new_ip = target['new_ip']
+            old_ip = target['old_ip']
+            family_name = 'IPv4' if version == management_network_ipv6.IPV4_VERSION else 'IPv6'
+            if get_ip_version(new_ip) != version:
+                error('new %s management address[%s] is not a valid %s address' % (
+                    family_name, new_ip, family_name))
+            if new_ip in self.UNSPECIFIED_MANAGEMENT_IPS:
+                raise CtlError('for your data safety, please do NOT use %s as the listen address' % new_ip)
+            if not target.get('family_switch') and get_ip_version(old_ip) != version:
+                error(self.MISSING_MANAGEMENT_IP_ERROR % (family_name, family_name))
+            if self.isVirtualIp(new_ip):
+                info("The ip address you input: %s is a virtual ip" % new_ip)
+                return None
+            change = {
+                'version': version,
+                'family': family_name,
+                'old_ip': old_ip,
+                'new_ip': new_ip,
+                'property': target['property'],
+                'primary': target['primary'],
+            }
+            for key in (
+                    'old_version',
+                    'family_switch',
+                    'follow_version',
+                    'old_primary_secondary_property',
+                    'stale_secondary_property'):
+                if key in target:
+                    change[key] = target[key]
+            changes.append(change)
+
+        changed_versions = set([change['version'] for change in changes])
+        for option_name, input_ip in [
+                ('--cloudbus_server_ip', args.cloudbus_server_ip),
+                ('--mysql_ip', args.mysql_ip)]:
+            if input_ip and get_ip_version(input_ip) not in changed_versions:
+                error('%s address family must match one of --ip, --ipv4 or --ipv6' % option_name)
+
+        return changes
+
+    def should_follow_change(self, current_ip, change):
+        return get_ip_version(current_ip) == change.get('follow_version', change['version'])
+
+    def console_proxy_property_for_version(self, version):
+        if version == management_network_ipv6.IPV4_VERSION:
+            return CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY
+        if version == management_network_ipv6.IPV6_VERSION:
+            return CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY
+        raise CtlError('unsupported management IP version[%s]' % version)
+
+    def update_console_proxy_properties(self, change, zstack_conf_file):
+        new_ip = change['new_ip']
+        old_ip = change['old_ip']
+        family_property = self.console_proxy_property_for_version(change['version'])
+        legacy_ip = ctl.read_property(CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY)
+        family_ip = ctl.read_property(family_property)
+        writes = []
+
+        if change.get('family_switch'):
+            old_family_property = self.console_proxy_property_for_version(change['old_version'])
+            if not family_ip or family_ip == new_ip:
+                writes.append((family_property, new_ip))
+            if legacy_ip == old_ip:
+                writes.append((CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, ''))
+        else:
+            if family_ip == old_ip:
+                writes.append((family_property, new_ip))
+            elif (family_ip is None or family_ip == '') and legacy_ip == old_ip:
+                writes.append((family_property, new_ip))
+            elif (family_ip is None or family_ip == '') and (legacy_ip is None or legacy_ip == '') and change['primary']:
+                writes.append((family_property, new_ip))
+            if legacy_ip == old_ip:
+                writes.append((CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, ''))
+
+        if writes:
+            ctl.write_properties(writes)
+            info("Update console proxy address fields %s in %s " % (writes, zstack_conf_file))
+        if change.get('family_switch'):
+            ctl.delete_properties([old_family_property])
+
+    def update_hosts_for_change(self, change, zstack_conf_file):
+        old_ip = change['old_ip']
+        new_ip = change['new_ip']
+
+        if not validate_ip(old_ip):
+            info("The ip address[%s] read from [%s] seems not a valid ip" % (old_ip, zstack_conf_file))
+            return False
+
+        old_hostname = shell("hostname").replace("\n", "")
+        new_hostname = ip_to_hostname(new_ip)
+        if old_hostname != "localhost" and old_hostname != "localhost.localdomain":
+            new_hostname = old_hostname
+
+        shell('sed -i "/^%s .*$/d" /etc/hosts' % old_ip)
+        shell('echo "%s %s" >> /etc/hosts' % (new_ip, new_hostname))
+        if change['primary']:
+            shell('hostnamectl set-hostname %s' % new_hostname)
+            shell('export HOSTNAME=%s' % new_hostname)
+
+        info("Update /etc/hosts, old_ip:%s, new_ip:%s" % (old_ip, new_ip))
+        return True
+
+    def is_management_vip(self, ip):
+        return ip in (
+            ctl.read_property(management_network_ipv6.MANAGEMENT_VIP6_PROPERTY_KEY),
+            ctl.read_property('management.server.vip'),
+        )
+
+    def update_db_url_property(self, property_name, db_url, mysql_ip, change, writer, conf_file, force=False):
+        if not db_url:
+            return False
+
+        db_old_ip = extract_db_url_host(db_url)
+        if db_old_ip is None or self.isVirtualIp(db_old_ip) or self.is_management_vip(db_old_ip):
+            return False
+        if not force and db_old_ip != change['old_ip']:
+            return False
+
+        db_new_url = replace_db_url_host(db_url, mysql_ip)
+        writer([(property_name, db_new_url)])
+        info("Update mysql new url %s in %s " % (db_new_url, conf_file))
+        return True
+
+    def update_family_scoped_properties(self, args, change, zstack_conf_file, console_proxy_updated):
+        new_ip = change['new_ip']
+        old_ip = change['old_ip']
+
+        ctl.write_properties([(change['property'], new_ip)])
+        info("Update %s %s in %s " % (change['property'], new_ip, zstack_conf_file))
+
+        if change.get('family_switch'):
+            ctl.delete_properties([
+                change['old_primary_secondary_property'],
+                change['stale_secondary_property'],
+            ])
+            info("Clean old family-scoped management ip fields %s in %s" % (
+                [change['old_primary_secondary_property'], change['stale_secondary_property']],
+                zstack_conf_file))
+
+        cloudbus_ip = ctl.read_property('CloudBus.serverIp.0')
+        target_cloudbus_ip = args.cloudbus_server_ip if args.cloudbus_server_ip else new_ip
+        if args.cloudbus_server_ip:
+            if get_ip_version(target_cloudbus_ip) != change['version']:
+                target_cloudbus_ip = None
+        elif cloudbus_ip != old_ip:
+            target_cloudbus_ip = None
+
+        if target_cloudbus_ip:
+            ctl.write_properties([('CloudBus.serverIp.0', target_cloudbus_ip)])
+            info("Update cloudbus server ip %s in %s " % (target_cloudbus_ip, zstack_conf_file))
+
+        self.update_console_proxy_properties(change, zstack_conf_file)
+
+        old_chrony_ips = ctl.read_property_list('chrony.serverIp.')
+        if len(old_chrony_ips) == 1 and old_chrony_ips[0][1] == old_ip:
+            ctl.write_property(old_chrony_ips[0][0], new_ip)
+            info("Update chrony server ip %s in %s " % (new_ip, zstack_conf_file))
+
+        mysql_ip_explicit = bool(args.mysql_ip)
+        mysql_ip = args.mysql_ip if mysql_ip_explicit else new_ip
+        db_updated = False
+        if args.mysql_ip and get_ip_version(args.mysql_ip) != change['version']:
+            mysql_ip = None
+
+        if mysql_ip:
+            db_url = ctl.read_property('DB.url')
+            db_updated = self.update_db_url_property('DB.url', db_url, mysql_ip, change,
+                                                     ctl.write_properties, zstack_conf_file,
+                                                     force=mysql_ip_explicit)
+
+            if os.path.isfile(ctl.ui_properties_file_path):
+                ui_db_url = ctl.read_ui_property('db_url')
+                self.update_db_url_property('db_url', ui_db_url, mysql_ip, change,
+                                            ctl.write_ui_properties, ctl.ui_properties_file_path,
+                                            force=mysql_ip_explicit)
+
+        if db_updated:
+            self.checkMysqlConnection(mysql_ip, args.root_password)
+
+        firewall_mysql_ip = mysql_ip if db_updated else None
+        update_change_ip_firewall_rules(new_ip, firewall_mysql_ip, old_ip, {DEFAULT_MYSQL_PORT})
+
+        if change['primary']:
+            self.update_morph_config(new_ip)
+            self.update_license_server_management_ip(new_ip)
+
+        return console_proxy_updated
+
     def run(self, args):
-        if args.ip == '0.0.0.0':
-            raise CtlError('for your data safety, please do NOT use 0.0.0.0 as the listen address')
-        if args.cloudbus_server_ip is not None:
-            cloudbus_server_ip = args.cloudbus_server_ip
-        else:
-            cloudbus_server_ip = args.ip
-        if args.mysql_ip is not None:
-            mysql_ip = args.mysql_ip
-        else:
-            mysql_ip = args.ip
         if args.root_password is not None:
             root_password_ = ''.join(map(check_special_root, args.root_password))
             self.check_mysql_password("root", root_password_)
 
-        if check_ha():
-            error("please change to single management before change ip")
-
         zstack_conf_file = ctl.properties_file_path
-        ip_check = re.compile('^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
-        for input_ip in [cloudbus_server_ip, mysql_ip]:
-            if not ip_check.match(input_ip):
+        input_ips = [
+            args.ip,
+            getattr(args, 'ip4', None),
+            getattr(args, 'ip6', None),
+            args.cloudbus_server_ip,
+            args.mysql_ip,
+        ]
+        for input_ip in [ip for ip in input_ips if ip]:
+            if not validate_ip(input_ip):
                 info("The ip address you input: %s seems not a valid ip" % input_ip)
                 return 1
             if self.isVirtualIp(input_ip):
@@ -8042,31 +9111,13 @@ class ChangeIpCmd(Command):
 
         # Update /etc/hosts
         if os.path.isfile(zstack_conf_file):
-            old_ip = ctl.read_property('management.server.ip')
-            if old_ip is not None:
-                if not ip_check.match(old_ip):
-                    info("The ip address[%s] read from [%s] seems not a valid ip" % (old_ip, zstack_conf_file))
+            model = self.current_management_ip_model()
+            changes = self.validate_change_ip_inputs(args, model)
+            if changes is None:
+                return 1
+            for change in changes:
+                if not self.update_hosts_for_change(change, zstack_conf_file):
                     return 1
-
-            # read from env other than /etc/hostname in case of impact of DHCP SERVER
-            old_hostname = shell("hostname").replace("\n","")
-            new_hostname = args.ip.replace(".","-")
-            if old_hostname != "localhost" and old_hostname != "localhost.localdomain":
-               new_hostname = old_hostname
-
-            if old_ip != None:
-                shell('sed -i "/^%s .*$/d" /etc/hosts' % old_ip)
-            else:
-                shell('sed -i "/^.* %s$/d" /etc/hosts' % new_hostname)
-
-            shell('echo "%s %s" >> /etc/hosts' % (args.ip, new_hostname))
-            shell('hostnamectl set-hostname %s' % new_hostname)
-            shell('export HOSTNAME=%s' % new_hostname)
-
-            if old_ip != None:
-                info("Update /etc/hosts, old_ip:%s, new_ip:%s" % (old_ip, args.ip))
-            else:
-                info("Update /etc/hosts, new_ip:%s" % args.ip)
 
         else:
             info("Didn't find %s, skip update new ip" % zstack_conf_file  )
@@ -8075,89 +9126,104 @@ class ChangeIpCmd(Command):
        # Update zstack config file
         if os.path.isfile(zstack_conf_file):
             shell("yes | cp %s %s.bak" % (zstack_conf_file, zstack_conf_file))
-            ctl.write_properties([
-              ('CloudBus.serverIp.0', cloudbus_server_ip),
-            ])
-            info("Update cloudbus server ip %s in %s " % (cloudbus_server_ip, zstack_conf_file))
-            ctl.write_properties([
-              ('management.server.ip', args.ip),
-            ])
-            info("Update management server ip %s in %s " % (args.ip, zstack_conf_file))
-
-            cpo_ip = ctl.read_property('consoleProxyOverriddenIp')
-            if cpo_ip is None or cpo_ip == '' or cpo_ip == old_ip:
-                ctl.write_properties([
-                    ('consoleProxyOverriddenIp', args.ip),
-                ])
-                info("Update console proxy overridden ip %s in %s " % (args.ip, zstack_conf_file))
-
-            old_chrony_ips = ctl.read_property_list('chrony.serverIp.')
-            if len(old_chrony_ips) == 1 and old_chrony_ips[0][1] == old_ip:
-                # management.server.ip has been setted when zstack install
-                ctl.write_property(old_chrony_ips[0][0], args.ip)
-                info("Update chrony server ip %s in %s " % (args.ip, zstack_conf_file))
-
-            # update zstack db url
-            db_url = ctl.read_property('DB.url')
-            db_old_ip = re.findall(r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost', db_url)
-            if not self.isVirtualIp(db_old_ip[0]) and not db_old_ip[0] == ctl.read_property('management.server.vip'):
-                db_new_url = db_url.split(db_old_ip[0])[0] + mysql_ip + db_url.split(db_old_ip[0])[1]
-                ctl.write_properties([
-                    ('DB.url', db_new_url),
-                ])
-                info("Update mysql new url %s in %s " % (db_new_url, zstack_conf_file))
-
-            # update zstack_ui db url
-            if os.path.isfile(ctl.ui_properties_file_path):
-                db_url = ctl.read_ui_property('db_url')
-                db_old_ip = re.findall(r'[0-9]+(?:\.[0-9]{1,3}){3}|localhost', db_url)
-                if not self.isVirtualIp(db_old_ip[0]) and not db_old_ip[0] == ctl.read_property('management.server.vip'):
-                    db_new_url = db_url.split(db_old_ip[0])[0] + mysql_ip + db_url.split(db_old_ip[0])[1]
-                    ctl.write_ui_properties([
-                        ('db_url', db_new_url),
-                    ])
-                    info("Update mysql new url %s in %s " % (db_new_url, ctl.ui_properties_file_path))
-
-            # update mysql restrict connection configuration
-            self.checkMysqlConnection(args.ip, args.root_password)
+            console_proxy_updated = False
+            for change in changes:
+                console_proxy_updated = self.update_family_scoped_properties(
+                    args, change, zstack_conf_file, console_proxy_updated)
         else:
             info("Didn't find %s, skip update new ip" % zstack_conf_file  )
             return 1
 
-        # Update iptables
-        mysql_ports = {3306}
-        ports = mysql_ports
-
-        cmd = "/sbin/iptables-save | grep INPUT | grep '%s'" % '\\|'.join('dport %s ' % port for port in ports)
-        o = ShellCmd(cmd)
-        o(False)
-        if o.return_code == 0:
-            old_rules = o.stdout.splitlines()
-        else:
-            old_rules = []
-
-        iptstrs = shell("/sbin/iptables-save").splitlines()
-        for rule in old_rules:
-            iptstrs.remove(rule)
-
-        (tmp_fd, tmp_path) = tempfile.mkstemp()
-        tmp_fd = os.fdopen(tmp_fd, 'w')
-        tmp_fd.write('\n'.join(iptstrs))
-        tmp_fd.close()
-        shell('/sbin/iptables-restore < %s' % tmp_path)
-        os.remove(tmp_path)
-
-        if mysql_ip != args.ip:
-            ports -= mysql_ports
-        for port in ports:
-            shell('iptables -A INPUT -p tcp --dport %s -j REJECT' % port)
-            shell('iptables -I INPUT -p tcp --dport %s -d %s -j ACCEPT' % (port, args.ip))
-            shell('iptables -I INPUT -p tcp --dport %s -d 127.0.0.1 -j ACCEPT' % port)
-
-        self.update_morph_config(args.ip)
-
         info("update iptables rules successfully")
         info("Change ip successfully")
+
+
+class AddIpCmd(Command):
+    def __init__(self):
+        super(AddIpCmd, self).__init__()
+        self.name = "add_ip"
+        self.description = "add a secondary management address to the current management node"
+        ctl.register_command(self)
+
+    def install_argparse_arguments(self, parser):
+        parser.add_argument('--ip', help='The secondary management address to add to the current management node.', required=True)
+        parser.add_argument('--prefix', help='Deprecated compatibility option. add_ip no longer configures OS network addresses.', required=False)
+        parser.add_argument('--nic', help='Deprecated compatibility option. add_ip no longer configures OS network interfaces.', required=False)
+
+    def secondary_management_ip_property_for(self, ip):
+        ip_version = get_ip_version(ip)
+        if ip_version == management_network_ipv6.IPV4_VERSION:
+            return management_network_ipv6.MANAGEMENT_IP4_PROPERTY_KEY
+        if ip_version == management_network_ipv6.IPV6_VERSION:
+            return management_network_ipv6.MANAGEMENT_IP6_PROPERTY_KEY
+        error('add_ip requires a valid IP address')
+
+    def console_proxy_property_for_ip(self, ip):
+        ip_version = get_ip_version(ip)
+        if ip_version == management_network_ipv6.IPV4_VERSION:
+            return CONSOLE_PROXY_OVERRIDDEN_IPV4_PROPERTY
+        if ip_version == management_network_ipv6.IPV6_VERSION:
+            return CONSOLE_PROXY_OVERRIDDEN_IPV6_PROPERTY
+        error('add_ip requires a valid IP address')
+
+    def console_proxy_properties_for_add_ip(self, primary_ip, secondary_ip):
+        legacy_ip = ctl.read_property(CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY)
+        primary_property = self.console_proxy_property_for_ip(primary_ip)
+        secondary_property = self.console_proxy_property_for_ip(secondary_ip)
+        primary_console_ip = ctl.read_property(primary_property)
+        secondary_console_ip = ctl.read_property(secondary_property)
+        writes = []
+
+        legacy_console_default = legacy_ip is None or legacy_ip == '' or legacy_ip in (primary_ip, secondary_ip)
+        if not legacy_console_default:
+            return writes
+
+        primary_console_empty = primary_console_ip is None or primary_console_ip == ''
+        if primary_console_empty:
+            writes.append((primary_property, primary_ip))
+        if secondary_console_ip is None or secondary_console_ip == '':
+            writes.append((secondary_property, secondary_ip))
+        if legacy_ip == primary_ip or legacy_ip == secondary_ip:
+            writes.append((CONSOLE_PROXY_OVERRIDDEN_IP_PROPERTY, ''))
+        return writes
+
+    def add_management_server_ip_under_lock(self, ip):
+        primary_ip = ctl.read_property(management_network_ipv6.MANAGEMENT_IP_PROPERTY_KEY)
+        if primary_ip is None or not validate_ip(primary_ip):
+            error('management.server.ip is not configured with a valid IP address')
+
+        primary_version = get_ip_version(primary_ip)
+        ip_version = get_ip_version(ip)
+        if primary_version == ip_version:
+            error('management.server.ip is already IPv%s, cannot add another IPv%s management address'
+                  % (primary_version, ip_version))
+
+        property_key = self.secondary_management_ip_property_for(ip)
+        existing_ip = ctl.read_property(property_key)
+        if existing_ip:
+            if existing_ip == ip:
+                info('%s %s already configured, skip' % (property_key, ip))
+                return False
+            error('%s already configured as %s, cannot add %s' % (property_key, existing_ip, ip))
+
+        if not local_ip_exists(ip):
+            error('IP address %s is not found on any device; please configure the OS network address before running add_ip' % ip)
+
+        writes = [(property_key, ip)]
+        writes.extend(self.console_proxy_properties_for_add_ip(primary_ip, ip))
+        ctl.write_properties(writes)
+        return True
+
+    @lock.file_lock('/run/zstack.properties.lock')
+    def add_management_server_ip(self, ip):
+        return self.add_management_server_ip_under_lock(ip)
+
+    def run(self, args):
+        if not validate_ip(args.ip):
+            error('add_ip requires a valid IP address')
+
+        if self.add_management_server_ip(args.ip):
+            info('Add secondary management address %s successfully; restart management node to enable dual-stack' % args.ip)
 
 
 class InstallManagementNodeCmd(Command):
@@ -9446,9 +10512,14 @@ class UpgradeDbCmd(Command):
         if not os.path.exists(flyway_path):
             raise CtlError('cannot find %s. Have you run upgrade_management_node?' % flyway_path)
 
-        upgrading_schema_dir = os.path.join(ctl.zstack_home, 'WEB-INF/classes/db/upgrade/')
-        if not os.path.exists(upgrading_schema_dir):
-            raise CtlError('cannot find %s. Have you run upgrade_management_node?' % upgrading_schema_dir)
+        upgrading_schema_dirs = [
+            os.path.join(ctl.zstack_home, 'WEB-INF/classes/db/upgrade/'),
+            os.path.join(ctl.zstack_home, 'WEB-INF/classes/db/zsv/'),
+        ]
+
+        for upgrading_schema_dir in upgrading_schema_dirs:
+            if not os.path.exists(upgrading_schema_dir):
+                raise CtlError('cannot find %s. Have you run upgrade_management_node?' % upgrading_schema_dir)
 
         ctl.check_if_management_node_has_stopped(args.force)
 
@@ -9520,14 +10591,13 @@ class UpgradeDbCmd(Command):
             # init_sql = "set wait_timeout=28800; set interactive_timeout=28800;"
 
             try:
-                schema_path = 'filesystem:%s' % upgrading_schema_dir
-
-                if db_password:
-                    shell_no_pipe('bash %s migrate -outOfOrder=true -user=%s -password=%s -url=%s -locations=%s' % (
-                    flyway_path, db_user, db_password, db_url, schema_path))
-                else:
-                    shell_no_pipe('bash %s migrate -outOfOrder=true -user=%s -url=%s -locations=%s' % (
-                    flyway_path, db_user, db_url, schema_path))
+                for upgrading_schema_dir in upgrading_schema_dirs:
+                    if db_password:
+                        shell_no_pipe('bash %s migrate -outOfOrder=true -user=%s -password=%s -url=%s -locations=filesystem:%s' % (
+                            flyway_path, db_user, db_password, db_url, upgrading_schema_dir))
+                    else:
+                        shell_no_pipe('bash %s migrate -outOfOrder=true -user=%s -url=%s -locations=filesystem:%s' % (
+                            flyway_path, db_user, db_url, upgrading_schema_dir))
             except Exception as e:
                 sql = "update schema_version set checksum = 249136114 where script = 'V3.5.0.1__schema.sql' and checksum = -1670610242"
                 execute_sql(sql)
@@ -10093,7 +11163,7 @@ class DashboardStatusCmd(Command):
                         with open(ha_info_file, 'r') as fd2:
                             ha_conf = yaml.load(fd2)
                             if check_ip_port(ha_conf['vip'], 8888):
-                                info('UI status: %s [PID:%s] http://%s:8888' % (colored('Running', 'green'), pid, ha_conf['vip']))
+                                info('UI status: %s [PID:%s] http://%s:8888' % (colored('Running', 'green'), pid, format_url_host(ha_conf['vip'])))
                             else:
                                 info('UI status: %s' % colored('Unknown', 'yellow'))
                             return
@@ -10107,7 +11177,7 @@ class DashboardStatusCmd(Command):
                                 port = port.strip()
                         else:
                             port = 5000
-                        info('UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, default_ip, port))
+                        info('UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, format_url_host(default_ip), port))
                     return
 
         pid = find_process_by_cmdline('zstack_dashboard')
@@ -10189,21 +11259,21 @@ class UiStatusCmd(Command):
                     write_status(
                         '%s, the ui seems to become zombie as it stops responding APIs but the '
                         'process(PID: %s) is still running. Please stop the node using zstack-ctl stop_ui' %
-                        (colored('Zombie', 'yellow'), pid))
+                        (colorize_output('Zombie', 'yellow'), pid))
                 else:
-                    write_status(colored('Stopped', 'red'))
+                    write_status(colorize_output('Stopped', 'red'))
                 return False
             elif 'UP' in cmd.stdout:
                 default_ip = get_ui_address()
 
                 if not default_ip:
-                    info('UI status: %s [PID:%s]' % (colored('Running', 'green'), pid))
+                    info('UI status: %s [PID:%s]' % (colorize_output('Running', 'green'), pid))
                 else:
                     http = 'https' if '--ssl.enabled=true' in output else 'http'
                     info('UI status: %s [PID:%s] %s://%s:%s' % (
-                        colored('Running', 'green'), pid, http, default_ip, port))
+                        colorize_output('Running', 'green'), pid, http, format_url_host(default_ip), port))
             else:
-                write_status(colored('Unknown', 'yellow'))
+                write_status(colorize_output('Unknown', 'yellow'))
             return True
         default_protcol='http'
         if os.path.exists(StartUiCmd.HTTP_FILE):
@@ -10222,14 +11292,14 @@ class UiStatusCmd(Command):
                 "systemctl show --property MainPID  zstack-ui-nginx.service | awk -F= '{printf $2}'")
             output = output[1]
             if not default_ip:
-                info('UI status: %s [PID:%s] ' % (colored('Running', 'green'),output))
+                info('UI status: %s [PID:%s] ' % (colorize_output('Running', 'green'),output))
             else:
                 if os.path.exists(StartUiCmd.HTTP_FILE):
                     with open(StartUiCmd.HTTP_FILE, 'r') as fd2:
                         protcol = fd2.readline()
                         protcol = protcol.strip()
                         info('UI status: %s [PID:%s] %s://%s:%s' % (
-                            colored('Running', 'green'),output, protcol, default_ip, port))
+                            colorize_output('Running', 'green'),output, protcol, format_url_host(default_ip), port))
 
 # For VDI UI 2.1
 class VDIUiStatusCmd(Command):
@@ -10256,13 +11326,13 @@ class VDIUiStatusCmd(Command):
                 if check_pid_cmd.return_code == 0:
                     default_ip = get_default_ip()
                     if not default_ip:
-                        info('VDI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, default_ip,port))
+                        info('VDI status: %s [PID:%s]' % (colored('Running', 'green'), pid))
                     else:
                         if os.path.exists(portfile):
                             with open(portfile, 'r') as fd2:
                                 port = fd2.readline()
                                 port = port.strip()
-                        info('VDI UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, default_ip,port))
+                        info('VDI UI status: %s [PID:%s] http://%s:%s' % (colored('Running', 'green'), pid, format_url_host(default_ip),port))
                     return
 
         pid = find_process_by_cmdline('zstack-vdi')
@@ -10652,7 +11722,7 @@ class StartDashboardCmd(Command):
                     if not default_ip:
                         info('UI server is still running[PID:%s]' % pid)
                     else:
-                        info('UI server is still running[PID:%s], http://%s:%s' % (pid, default_ip, port))
+                        info('UI server is still running[PID:%s], http://%s:%s' % (pid, format_url_host(default_ip), port))
 
                     return False
 
@@ -10729,11 +11799,76 @@ class StartDashboardCmd(Command):
         if not default_ip:
             info('successfully started UI server on the local host, PID[%s]' % pid)
         else:
-            info('successfully started UI server on the local host, PID[%s], http://%s:%s' % (pid, default_ip, args.port))
+            info('successfully started UI server on the local host, PID[%s], http://%s:%s' % (pid, format_url_host(default_ip), args.port))
 
         os.system('mkdir -p /var/run/zstack/')
         with open('/var/run/zstack/zstack-dashboard.port', 'w') as fd:
             fd.write(args.port)
+
+def gen_default_ui_ssl_keystore():
+    key = OpenSSL.crypto.PKey()
+    key.generate_key(OpenSSL.crypto.TYPE_RSA, 2048)
+    cert = OpenSSL.crypto.X509()
+    cert.set_serial_number(0)
+    cert.get_subject().CN = "localhost"
+    cert.set_issuer(cert.get_subject())
+    cert.gmtime_adj_notBefore(0)
+    cert.gmtime_adj_notAfter(10*365*24*60*60)
+    cert.set_pubkey(key)
+    cert.sign(key, 'sha256')  # type: ignore
+    p12 = OpenSSL.crypto.PKCS12()
+    p12.set_privatekey(key)
+    p12.set_certificate(cert)
+    p12.set_friendlyname('zstackui'.encode())
+    with open(ctl.ZSTACK_UI_KEYSTORE, 'wb') as f:
+        f.write(p12.export(b'password'))
+
+
+def gen_ui_ssl_keystore_pem_from_pkcs12(ssl_keystore: str, ssl_keystore_password: str):
+    try:
+        private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(open(ssl_keystore, 'rb').read(), ssl_keystore_password.encode())
+    except Exception as e:
+        raise CtlError('failed to convert %s to %s because %s' % (ssl_keystore, ctl.ZSTACK_UI_KEYSTORE_PEM, str(e)))
+    cert_pem = certificate.public_bytes(serialization.Encoding.PEM)
+    pkey_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+    with open(ctl.ZSTACK_UI_KEYSTORE_PEM, 'wb') as f:
+        f.write(cert_pem + pkey_pem)
+
+
+def prepare_ui_ssl_cert(ssl_keystore_type: str, ssl_keystore: str = None, ssl_keystore_password: str = None,
+                        require_pem_for_non_pkcs12: bool = False):
+    if not ssl_keystore:
+        ssl_keystore = ctl.ZSTACK_UI_KEYSTORE
+    if not ssl_keystore_password:
+        ssl_keystore_password = 'password'
+
+    if not os.path.exists(ctl.ZSTACK_UI_KEYSTORE):
+        gen_default_ui_ssl_keystore()
+
+    if not os.path.exists(ssl_keystore):
+        raise CtlError('%s not found.' % ssl_keystore)
+
+    if ssl_keystore != ctl.ZSTACK_UI_KEYSTORE and ssl_keystore != ctl.ZSTACK_UI_KEYSTORE_CP:
+        copyfile(ssl_keystore, ctl.ZSTACK_UI_KEYSTORE_CP)
+        ssl_keystore = ctl.ZSTACK_UI_KEYSTORE_CP
+
+    if ssl_keystore_type != 'PKCS12':
+        if require_pem_for_non_pkcs12 and not os.path.exists(ctl.ZSTACK_UI_KEYSTORE_PEM):
+            raise CtlError('%s not found.' % ctl.ZSTACK_UI_KEYSTORE_PEM)
+        return ssl_keystore
+
+    if not os.path.exists(ctl.ZSTACK_UI_KEYSTORE_PEM):
+        gen_ui_ssl_keystore_pem_from_pkcs12(ssl_keystore, ssl_keystore_password)
+
+    if not ctl.read_property('consoleProxyCertFile'):
+        ctl.write_property('consoleProxyCertFile', ctl.ZSTACK_UI_KEYSTORE_PEM)
+
+    return ssl_keystore
+
 
 # For UI 2.0
 class StartUiCmd(Command):
@@ -10802,42 +11937,16 @@ class StartUiCmd(Command):
                 info('UI status: %s ' % (colored('Running', 'green')))
             else:
                 info('UI status: %s  //%s:%s' % (
-                    colored('Running', 'green'), default_ip, "5000"))
+                    colored('Running', 'green'), format_url_host(default_ip), "5000"))
 
                 return False
         return True
 
     def _gen_default_ssl_keystore(self):
-        key = OpenSSL.crypto.PKey()
-        key.generate_key(OpenSSL.crypto.TYPE_RSA, 2048)
-        cert = OpenSSL.crypto.X509()
-        cert.set_serial_number(0)
-        cert.get_subject().CN = "localhost"
-        cert.set_issuer(cert.get_subject())
-        cert.gmtime_adj_notBefore(0)
-        cert.gmtime_adj_notAfter(10*365*24*60*60)
-        cert.set_pubkey(key)
-        cert.sign(key, 'sha256')  # type: ignore
-        p12 = OpenSSL.crypto.PKCS12()
-        p12.set_privatekey(key)
-        p12.set_certificate(cert)
-        p12.set_friendlyname('zstackui'.encode())
-        with open(ctl.ZSTACK_UI_KEYSTORE, 'wb') as f:
-            f.write(p12.export(b'password'))
+        gen_default_ui_ssl_keystore()
 
     def _gen_ssl_keystore_pem_from_pkcs12(self, ssl_keystore: str, ssl_keystore_password: str):
-        try:
-            private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(open(ssl_keystore, 'rb').read(), ssl_keystore_password.encode())
-        except Exception as e:
-            raise CtlError('failed to convert %s to %s because %s' % (ssl_keystore, ctl.ZSTACK_UI_KEYSTORE_PEM, str(e)))
-        cert_pem = certificate.public_bytes(serialization.Encoding.PEM)
-        pkey_pem = private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()
-        )
-        with open(ctl.ZSTACK_UI_KEYSTORE_PEM, 'wb') as f:
-            f.write(cert_pem + pkey_pem)
+        gen_ui_ssl_keystore_pem_from_pkcs12(ssl_keystore, ssl_keystore_password)
 
     def _get_db_info(self):
         # get default db_url, db_username, db_password etc.
@@ -10855,7 +11964,12 @@ class StartUiCmd(Command):
         if not mn_port:
             mn_port = 8080
         content_json = simplejson.dumps(sns_cmd)
-        http_cmd = 'curl -X POST -H "Content-Type:application/json" -H "commandpath:/sns/globalpropertyupdated" -d \'%s\' --retry 5 http://%s:%s/zstack/asyncrest/sendcommand' % (content_json, mn_ip, mn_port)
+        http_cmd = 'curl -X POST -H "Content-Type:application/json" ' \
+                   '-H "commandpath:/sns/globalpropertyupdated" ' \
+                   '-d \'%s\' --retry 5 "%s"' % (
+                       content_json,
+                       build_mn_sendcommand_url(mn_ip, mn_port),
+                   )
         logger.debug('report sns global property updated')
         ShellCmd(http_cmd)
 
@@ -10888,6 +12002,7 @@ class StartUiCmd(Command):
         cfg_ssl_keystore_password = ctl.read_ui_property("ssl_keystore_password")
         cfg_catalina_opts = ctl.read_ui_property("catalina_opts")
         cfg_redis_password = ctl.read_ui_property("redis_password")
+        cfg_listen_host = ctl.read_ui_property(UI_LISTEN_HOST_PROPERTY)
 
         custom_props = ""
         predefined_props = ["db_url", "db_username", "db_password", "mn_host", "mn_port", "webhook_host", "webhook_port", "server_port", "log", "enable_ssl", "ssl_keyalias", "ssl_keystore", "ssl_keystore_type", "ssl_keystore_password", "catalina_opts"]
@@ -10925,10 +12040,6 @@ class StartUiCmd(Command):
             args.catalina_opts = cfg_catalina_opts
         args.catalina_opts = ' '.join(args.catalina_opts.split(','))
 
-        # create default ssl keystore anyway
-        if not os.path.exists(ctl.ZSTACK_UI_KEYSTORE):
-            self._gen_default_ssl_keystore()
-
         # server_port default value is 5443 if enable_ssl is True
         # if args.enable_ssl and args.webhook_port == '5000':
         #     args.webhook_port = '5443'
@@ -10939,14 +12050,7 @@ class StartUiCmd(Command):
         webhook_ip = ctl.read_property('management.server.vip')
         if not webhook_ip:
             webhook_ip = 'localhost'
-        system_webhook_url = '%s:%s/webhook/zwatch' % (webhook_ip, args.server_port)
-        ticket_webhook_url = '%s:%s/webhook/ticket' % (webhook_ip, args.server_port)
-        if args.enable_ssl:
-            system_webhook_url = 'https://' + system_webhook_url
-            ticket_webhook_url = 'https://' + ticket_webhook_url
-        else:
-            system_webhook_url = 'http://' + system_webhook_url
-            ticket_webhook_url = 'http://' + ticket_webhook_url
+        ticket_webhook_url, system_webhook_url = build_ui_webhook_urls(webhook_ip, args.server_port, args.enable_ssl)
 
         ctl.write_property('ticket.sns.topic.http.url', ticket_webhook_url)
         ctl.write_property('sns.systemTopic.endpoints.http.url', system_webhook_url)
@@ -10957,24 +12061,12 @@ class StartUiCmd(Command):
         sns_cmd.systemTopicHttpEndpointURL = system_webhook_url
         self._report_sns_global_property_updated(sns_cmd)
 
-        if not os.path.exists(args.ssl_keystore):
-            raise CtlError('%s not found.' % args.ssl_keystore)
-        # copy args.ssl_keystore to ctl.ZSTACK_UI_KEYSTORE_CP
-        if args.ssl_keystore != ctl.ZSTACK_UI_KEYSTORE and args.ssl_keystore != ctl.ZSTACK_UI_KEYSTORE_CP:
-            copyfile(args.ssl_keystore, ctl.ZSTACK_UI_KEYSTORE_CP)
-            args.ssl_keystore = ctl.ZSTACK_UI_KEYSTORE_CP
-
-        # convert args.ssl_keystore to .pem
-        #if args.ssl_keystore_type == 'PKCS12' and os.path.exists(ctl.ZSTACK_UI_KEYSTORE_PEM):
-        #    (status, output) = commands.getstatusoutput('mv %s ' % ctl.ZSTACK_UI_KEYSTORE_PEM_OLD)
-        if args.ssl_keystore_type != 'PKCS12' and not os.path.exists(ctl.ZSTACK_UI_KEYSTORE_PEM):
-            raise CtlError('%s not found.' % ctl.ZSTACK_UI_KEYSTORE_PEM)
-        if args.ssl_keystore_type == 'PKCS12' and not os.path.exists(ctl.ZSTACK_UI_KEYSTORE_PEM):
-            self._gen_ssl_keystore_pem_from_pkcs12(args.ssl_keystore, args.ssl_keystore_password)
-
-        # auto configure consoleProxyCertFile if not configured already
-        if args.ssl_keystore_type == 'PKCS12' and not ctl.read_property('consoleProxyCertFile'):
-            ctl.write_property('consoleProxyCertFile', ctl.ZSTACK_UI_KEYSTORE_PEM)
+        args.ssl_keystore = prepare_ui_ssl_cert(
+            args.ssl_keystore_type,
+            args.ssl_keystore,
+            args.ssl_keystore_password,
+            require_pem_for_non_pkcs12=True
+        )
 
         # ui_db use encrypted db_password in args
         self._get_db_info()
@@ -11027,6 +12119,7 @@ class StartUiCmd(Command):
 
         shell("ps aux| grep zstack-ui/scripts/start.sh | awk '{print $2}'|xargs kill -9",is_exception=False)
         script(scmd, no_pipe=True)
+        self._configure_nginx_ipv6_listen(args.server_port, args.enable_ssl, args.enable_http2, cfg_listen_host)
         os.system('mkdir -p /var/run/zstack/')
         with open(StartUiCmd.PORT_FILE, 'w') as fd:
             fd.write(args.server_port)
@@ -11052,11 +12145,31 @@ class StartUiCmd(Command):
             UiStatusCmd.ZSTACK_UI_SSL = 'http'
 
 
-        default_ip = get_default_ip()
-        if not default_ip:
+        ui_address = get_ui_address()
+        if not ui_address:
             info('successfully started UI server on the local host')
         else:
-            info('successfully started UI server on the local host %s://%s:%s' % ('https' if args.enable_ssl else 'http', default_ip, args.server_port))
+            info('successfully started UI server on the local host %s://%s:%s' % (
+                'https' if args.enable_ssl else 'http',
+                format_url_host(ui_address),
+                args.server_port,
+            ))
+
+    def _configure_nginx_ipv6_listen(self, server_port, enable_ssl, enable_http2, listen_host):
+        if not ui_should_listen_ipv6(listen_host):
+            return
+
+        conf_path = os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'extend.server.nginx.conf')
+        if ensure_ui_nginx_ipv6_listen_conf(conf_path, server_port, enable_ssl, enable_http2, listen_host):
+            shell('/usr/sbin/nginx -c %s -t && /usr/sbin/nginx -c %s -s reload' %
+                  (os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'nginx.conf'),
+                   os.path.join(ctl.ZSTACK_UI_HOME, 'configs', 'nginx.conf')))
+
+        if shell_return('which ip6tables >/dev/null 2>&1') == 0:
+            shell(build_ui_ipv6_firewall_accept_command(
+                server_port,
+                map_distro_id(platform.freedesktop_os_release()),
+            ))
 
     def run_mini_ui(self):
         shell_return("systemctl start zstack-mini")
@@ -11078,7 +12191,7 @@ class StartUiCmd(Command):
         default_ip = get_default_ip()
         mini_pid = get_ui_pid('mini')
         mini_port = 8200
-        ui_addr = ", http://{}:{}".format(default_ip, mini_port) if default_ip else ""
+        ui_addr = ", http://{}:{}".format(format_url_host(default_ip), mini_port) if default_ip else ""
         info('successfully started MINI UI server on the local host, PID[{}]{}'.format(mini_pid, ui_addr))
 
 
@@ -11103,6 +12216,28 @@ class StartUiCmd(Command):
         else :
             raise CtlError("Unknown ui_mode {}, please make sure your configuration is correct.".format(ui_mode))
 
+
+class PrepareUiSslCertCmd(Command):
+    def __init__(self):
+        super(PrepareUiSslCertCmd, self).__init__()
+        self.name = "prepare_ui_ssl_cert"
+        self.description = "prepare ZStack UI PKCS12 pem file for console proxy"
+        ctl.register_command(self)
+
+    def run(self, args):
+        ctl.internal_run('config_ui', '--init')
+
+        ssl_keystore_type = ctl.read_ui_property("ssl_keystore_type")
+        if ssl_keystore_type != 'PKCS12':
+            return
+
+        prepare_ui_ssl_cert(
+            ssl_keystore_type,
+            ctl.read_ui_property("ssl_keystore"),
+            ctl.read_ui_property("ssl_keystore_password")
+        )
+
+
 # For UI 2.0
 class ConfigUiCmd(Command):
     def __init__(self):
@@ -11123,6 +12258,7 @@ class ConfigUiCmd(Command):
         parser.add_argument('--webhook-port', help="Webhook Host port. [DEFAULT] 5001")
         parser.add_argument('--server-port', help="UI server port. [DEFAULT] 5000")
         parser.add_argument('--ui-address', help="ZStack UI Address.")
+        parser.add_argument('--listen-host', '--listen.host', dest='listen_host', help="UI listen host.")
         parser.add_argument('--log', help="UI log folder. [DEFAULT] %s" % ui_logging_path)
         parser.add_argument('--catalina-opts', help="UI catalina options, seperated by `,`")
 
@@ -11175,11 +12311,13 @@ class ConfigUiCmd(Command):
             """
             if check_ha():
                 zsha2_utils = Zsha2Utils()
-                return zsha2_utils.config['dbvip'], zsha2_utils.config['nodeip']
-            return get_default_ip(), '127.0.0.1'
+                return build_default_ui_db_and_webhook_hosts(
+                    True, ha_db_vip=zsha2_utils.config['dbvip'])
+            return build_default_ui_db_and_webhook_hosts(False, default_ip=get_management_or_default_ip())
 
         # init zstack.ui.properties
         if args.init:
+            management_ip = ctl.read_property('management.server.ip')
             default_db_ip, default_webhook_host = get_default_webhook_and_db_ips()
             if not ctl.read_ui_property("mn_host"):
                 ctl.write_ui_property("mn_host", '127.0.0.1')
@@ -11215,7 +12353,7 @@ class ConfigUiCmd(Command):
             if not ctl.read_ui_property("server.ssl.enabled-protocols"):
                 ctl.write_ui_property("server.ssl.enabled-protocols", 'TLSv1.2')
             if not ctl.read_ui_property("db_url"):
-                ctl.write_ui_property("db_url", 'jdbc:mysql://%s:3306' % default_db_ip)
+                ctl.write_ui_property("db_url", build_default_ui_db_url(default_db_ip))
             if not ctl.read_ui_property("db_username"):
                 ctl.write_ui_property("db_username", 'zstack_ui')
             if not ctl.read_ui_property("db_password"):
@@ -11224,10 +12362,15 @@ class ConfigUiCmd(Command):
                 ctl.write_ui_property("redis_password", 'zstack.redis.password')
             if not ctl.read_ui_property("catalina_opts"):
                 ctl.write_ui_property("catalina_opts", ctl.ZSTACK_UI_CATALINA_OPTS)
+            if not ctl.read_ui_property("ui_address") and is_ipv6_literal(management_ip):
+                ctl.write_ui_property("ui_address", management_ip)
+            if not ctl.read_ui_property(UI_LISTEN_HOST_PROPERTY) and is_ipv6_literal(management_ip):
+                ctl.write_ui_property(UI_LISTEN_HOST_PROPERTY, UI_IPV6_ANY_LISTEN_HOSTS[0])
             return
 
         # restore to default values
         if args.restore:
+            management_ip = ctl.read_property('management.server.ip')
             default_db_ip, default_webhook_host = get_default_webhook_and_db_ips()
             ctl.clear_ui_properties()
             ctl.write_ui_property("mn_host", '127.0.0.1')
@@ -11243,11 +12386,14 @@ class ConfigUiCmd(Command):
             ctl.write_ui_property("ssl_keystore_type", 'PKCS12')
             ctl.write_ui_property("ssl_keystore_password", 'password')
             ctl.write_ui_property("server.ssl.enabled-protocols", 'TLSv1.2')
-            ctl.write_ui_property("db_url", 'jdbc:mysql://%s:3306' % default_db_ip)
+            ctl.write_ui_property("db_url", build_default_ui_db_url(default_db_ip))
             ctl.write_ui_property("db_username", 'zstack_ui')
             ctl.write_ui_property("db_password", 'zstack.ui.password')
             ctl.write_ui_property("redis_password", 'zstack.redis.password')
             ctl.write_ui_property("catalina_opts", ctl.ZSTACK_UI_CATALINA_OPTS)
+            if is_ipv6_literal(management_ip):
+                ctl.write_ui_property("ui_address", management_ip)
+                ctl.write_ui_property(UI_LISTEN_HOST_PROPERTY, UI_IPV6_ANY_LISTEN_HOSTS[0])
             return
 
         # `--key=value` type of params
@@ -11321,6 +12467,8 @@ class ConfigUiCmd(Command):
         # ui_address
         if args.ui_address:
             ctl.write_ui_property("ui_address", args.ui_address.strip())
+        if args.listen_host or args.listen_host == '':
+            ctl.write_ui_property(UI_LISTEN_HOST_PROPERTY, args.listen_host.strip())
 
         # catalina opts
         if args.catalina_opts:
@@ -11380,7 +12528,7 @@ class StartVDIUICmd(Command):
                     if not default_ip:
                         info('VDI UI is still running[PID:%s]' % pid)
                     else:
-                        info('VDI UI is still running[PID:%s], http://%s:%s' % (pid, default_ip, VDI_UI_PORT))
+                        info('VDI UI is still running[PID:%s], http://%s:%s' % (pid, format_url_host(default_ip), VDI_UI_PORT))
                     return False
 
         pid = find_process_by_cmdline('zstack-vdi')
@@ -11434,7 +12582,7 @@ class StartVDIUICmd(Command):
         if not default_ip:
             info('successfully started VDI UI server on the local host, PID[%s]' % pid)
         else:
-            info('successfully started VDI UI server on the local host, PID[%s], http://%s:%s' % (pid, default_ip, args.server_port))
+            info('successfully started VDI UI server on the local host, PID[%s], http://%s:%s' % (pid, format_url_host(default_ip), args.server_port))
 
         os.system('mkdir -p /var/run/zstack/')
         with open('/var/run/zstack/zstack-vdi.port', 'w') as fd:
@@ -12002,7 +13150,7 @@ class IamService(ExtraService):
 
         with open(template_path, "r") as f:
             content = f.read()
-        content = content.replace("{{MN1_IP}}", self.zsha2_utils.config['nodeip']).replace("{{MN2_IP}}", self.zsha2_utils.config['peerip']).replace("{{LISTEN_PORT}}", str(self.default_nginx_port))
+        content = content.replace("{{MN1_IP}}", format_url_host(self.zsha2_utils.config['nodeip'])).replace("{{MN2_IP}}", format_url_host(self.zsha2_utils.config['peerip'])).replace("{{LISTEN_PORT}}", str(self.default_nginx_port))
 
         with open(conf_path, "w") as f:
             f.write(content)
@@ -12025,9 +13173,9 @@ class IamService(ExtraService):
 
     def post_start_log(self):
         if self.zsha2_utils:
-            info("IAM service has been started in HA mode. Access it at: http://%s:%s" % (self.zsha2_utils.config['dbvip'], self.default_nginx_port))
+            info("IAM service has been started in HA mode. Access it at: http://%s:%s" % (format_url_host(self.zsha2_utils.config['dbvip']), self.default_nginx_port))
         else:
-            info("IAM service has been started. Access it at: http://%s:%s" % (get_default_ip(), self.default_port))
+            info("IAM service has been started. Access it at: http://%s:%s" % (format_url_host(get_default_ip()), self.default_port))
 
     def _wait_for_keycloak(self, url, timeout=600):
         info_and_debug("Waiting for %s to become available at: %s" % (self.service_name(), url))
@@ -12193,7 +13341,7 @@ WantedBy=multi-user.target
 
     def start(self, do_init=False):
         shell_no_pipe("systemctl start %s" % self.service_name())
-        self._wait_for_morph("http://%s:%d/actuator/health" % (self.default_ip, self.default_port))
+        self._wait_for_morph("http://%s:%d/actuator/health" % (format_url_host(self.default_ip), self.default_port))
         if self.zsha2_utils:
             self.zsha2_utils.execute_on_peer("systemctl start %s" % self.service_name())
 
@@ -12215,18 +13363,59 @@ WantedBy=multi-user.target
         return False
 
 
+class LicenseServerService(ExtraService):
+    default_port = 8201
+    https_health_url = "https://127.0.0.1:%d/healthz" % default_port
+    http_health_url = "http://127.0.0.1:%d/healthz" % default_port
+    ready_url = None
+
+    def service_name(self):
+        return "zstack-license-server"
+
+    def start(self, do_init=False):
+        shell_no_pipe("systemctl enable --now %s" % self.service_name())
+        self.ready_url = self._wait_for_license_server([self.https_health_url, self.http_health_url])
+        if self.zsha2_utils:
+            self.zsha2_utils.execute_on_peer("systemctl enable --now %s" % self.service_name())
+
+    def post_start_log(self):
+        scheme = "https"
+        if self.ready_url and self.ready_url.startswith("http://"):
+            scheme = "http"
+        info("License Server service has been started. Access it at: %s://%s:%s" % (scheme, format_url_host(get_default_ip()), self.default_port))
+
+    def _wait_for_license_server(self, urls, timeout=120):
+        info_and_debug("Waiting for %s to become available at: %s" % (self.service_name(), ", ".join(urls)))
+        begin = time.time()
+
+        while time.time() - begin < timeout:
+            for url in urls:
+                try:
+                    result = shell("curl -k -s -o /dev/null -w '%%{http_code}' %s" % url)
+                    if result.strip() == "200":
+                        info_and_debug("%s is ready at %s." % (self.service_name(), url))
+                        return url
+                except Exception as e:
+                    logger.debug("%s health check failed at %s: %s" % (self.service_name(), url, str(e)))
+            time.sleep(2)
+
+        error("%s did not become ready within %d seconds." % (self.service_name(), timeout))
+        return None
+
+
 
 
 class StartExtraServicesCmd(Command):
     EXTRA_SERVICE_REGISTRY = {
         "iam": IamService,
         "morph": MorphService,
+        "license-server": LicenseServerService,
     }
 
     def __init__(self):
         super(StartExtraServicesCmd, self).__init__()
         self.name = 'start-extra-service'
-        self.description = 'Start extra services like iam, morph, etc.'
+        self.description = 'Start extra services like iam, morph, license-server, etc.'
         ctl.register_command(self)
 
     def install_argparse_arguments(self, parser):
@@ -12486,6 +13675,7 @@ class AIOSSetUpSystemServicesCmd(Command):
 
 
 def main():
+    AddIpCmd()
     AddManagementNodeCmd()
     BootstrapCmd()
     ChangeIpCmd()
@@ -12558,6 +13748,7 @@ def main():
     ctl.locate_zstack_home()
     InstallZstackUiCmd()
     StartUiCmd()
+    PrepareUiSslCertCmd()
     StopUiCmd()
     UiStatusCmd()
     ConfigUiCmd()

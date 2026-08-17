@@ -7,6 +7,7 @@ from kvmagent import kvmagent
 from zstacklib.utils import jsonobject
 from zstacklib.utils import shell
 from zstacklib.utils import traceable_shell
+from zstacklib.utils import network_ipv6
 from zstacklib.utils.bash import bash_progress_1, in_bash, bash_r, bash_roe
 from zstacklib.utils.report import *
 
@@ -46,6 +47,9 @@ class ImageStoreClient(object):
     def _build_install_path(self, name, imgid):
         return "{0}{1}/{2}".format(self.ZSTORE_PROTOSTR, name, imgid)
 
+    def _build_registry_url(self, hostname):
+        return network_ipv6.format_host_port(hostname, self.ZSTORE_DEF_PORT)
+
     def upload_image(self, hostname, fpath, concurrency=None):
         imf = self.commit_image(fpath)
 
@@ -53,7 +57,7 @@ class ImageStoreClient(object):
         if concurrency and concurrency > 1:
             extra_param += "-concurrency=%d " % concurrency
 
-        cmdstr = '%s -url %s:%s push %s %s' % (self.ZSTORE_CLI_PATH, hostname, self.ZSTORE_DEF_PORT, extra_param, fpath)
+        cmdstr = '%s -url %s push %s %s' % (self.ZSTORE_CLI_PATH, self._build_registry_url(hostname), extra_param, fpath)
         logger.debug('pushing %s to image store' % fpath)
         shell.check_run(cmdstr)
         logger.debug('%s pushed to image store' % fpath)
@@ -284,7 +288,7 @@ class ImageStoreClient(object):
             return mode.strip()
 
     def image_already_pushed(self, hostname, imf):
-        cmdstr = '%s -url %s:%s info %s' % (self.ZSTORE_CLI_PATH, hostname, self.ZSTORE_DEF_PORT, self._build_install_path(imf.name, imf.id))
+        cmdstr = '%s -url %s info %s' % (self.ZSTORE_CLI_PATH, self._build_registry_url(hostname), self._build_install_path(imf.name, imf.id))
         if shell.run(cmdstr) != 0:
             return False
         return True
@@ -306,8 +310,8 @@ class ImageStoreClient(object):
         if cmd.concurrency and cmd.concurrency > 1:
             push_ext_param += " -concurrency %d" % cmd.concurrency
 
-        cmdstr = '%s -url %s:%s -callbackurl %s -taskid %s -imageUuid %s %s push %s %s' % (
-            self.ZSTORE_CLI_PATH, cmd.hostname, self.ZSTORE_DEF_PORT, req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
+        cmdstr = '%s -url %s -callbackurl %s -taskid %s -imageUuid %s %s push %s %s' % (
+            self.ZSTORE_CLI_PATH, self._build_registry_url(cmd.hostname), req[http.REQUEST_HEADER].get(http.CALLBACK_URI),
             taskid, cmd.imageUuid, extpara, push_ext_param, cmd.primaryStorageInstallPath)
         logger.debug('pushing %s to image store' % cmd.primaryStorageInstallPath)
         shell = traceable_shell.get_shell(cmd)
@@ -354,8 +358,8 @@ class ImageStoreClient(object):
         pull_extra_param = ""
         if concurrency and concurrency > 1:
             pull_extra_param += " -concurrency=%d" % concurrency
-        cmdstr = '%s -url %s:%s %s pull %s -installpath %s %s:%s' % \
-                 (self.ZSTORE_CLI_PATH, host, self.ZSTORE_DEF_PORT, extra_param, pull_extra_param, ps_path, name, imageid)
+        cmdstr = '%s -url %s %s pull %s -installpath %s %s:%s' % \
+                 (self.ZSTORE_CLI_PATH, self._build_registry_url(host), extra_param, pull_extra_param, ps_path, name, imageid)
         logger.debug('pulling %s:%s from image store' % (name, imageid))
 
         try:
@@ -373,7 +377,7 @@ class ImageStoreClient(object):
     def image_info(self, host, install_path):
         self._check_zstore_cli()
         name, imageid = self._parse_image_reference(install_path)
-        cmd = "%s -url %s:%s -json info %s:%s" % (self.ZSTORE_CLI_PATH, host, self.ZSTORE_DEF_PORT, name, imageid)
+        cmd = "%s -url %s -json info %s:%s" % (self.ZSTORE_CLI_PATH, self._build_registry_url(host), name, imageid)
         s = shell.ShellCmd(cmd)
         s(False)
         if s.return_code == 0:

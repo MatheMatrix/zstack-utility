@@ -192,8 +192,8 @@ def cancel_job(cmd, rsp):
 
 def _cancel_job(cmd, rsp, times=1, interval=3):
     for i in range(times):
-        process_canceled = traceable_shell.cancel_job(cmd)
         canceled_task_count = TaskManager.cancel_task(cmd.cancellationApiId)
+        process_canceled = traceable_shell.cancel_job(cmd)
         if process_canceled or canceled_task_count:
             return rsp
 

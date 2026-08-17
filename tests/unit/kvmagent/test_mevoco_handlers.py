@@ -990,6 +990,18 @@ class TestMevocoDhcpEnvPrepare:
 
 @pytest.mark.kvmagent
 class TestMevocoApplyUserdataInternals:
+    def test_write_file_if_changed_rewrites_invalid_utf8_file(self, tmp_path: object):
+        path = os.path.join(str(tmp_path), "user-data")
+        content = "#cloud-config\nhostname: 测试虚机\n"
+
+        with open(path, "wb") as fd:
+            fd.write(b"\xff\xfeold-userdata")
+
+        assert mevoco.write_file_if_changed(path, content, encoding="utf-8")
+        with open(path, encoding="utf-8") as fd:
+            assert fd.read() == content
+        assert not mevoco.write_file_if_changed(path, content, encoding="utf-8")
+
     def test_apply_userdata_xtables_vmdata_restart_httpd(self, tmp_path: object):
         plugin = _make_plugin()
         _ensure_http()
@@ -1087,7 +1099,7 @@ class TestMevocoApplyUserdataInternals:
             netmask="255.255.255.0",
             port=80,
             metadata=metadata,
-            userdataList=["#cloud-config\n"],
+            userdataList=["#cloud-config\nhostname: 测试虚机\n"],
             agentConfig=_Obj(pvpanic="enable"),
             networkInterfaces=network_interfaces,
         )
@@ -1121,19 +1133,124 @@ class TestMevocoApplyUserdataInternals:
 
             return _Template(text)
 
+        real_open = open
+        open_encodings: dict[str, str | None] = {}
+
+        def _track_open(file: object, mode: str = "r", *args: object, **kwargs: object):
+            path = os.fspath(file)
+            if path.endswith("/user-data") or path.endswith("/user_data"):
+                open_encodings[path] = cast(str | None, kwargs.get("encoding"))
+            return real_open(file, mode, *args, **kwargs)
+
         with patch("os.path.exists", side_effect=_exists), patch("os.path.islink", return_value=False), \
                 patch.object(mevoco, "Template", side_effect=_template_factory), \
                 patch.object(mevoco, 'EBTABLES_CMD', 'ebtables', create=True), \
-                patch.object(mevoco, 'is_ebtables_nf_tables', return_value=False):
+                patch.object(mevoco, 'is_ebtables_nf_tables', return_value=False), \
+                patch("builtins.open", side_effect=_track_open):
             plugin._apply_userdata_xtables(to)
             plugin._apply_userdata_vmdata(to)
             plugin._apply_userdata_restart_httpd(to)
 
+        userdata_root = os.path.join(http_root, cast(str, to.vmIp))
+        user_data_path = os.path.join(userdata_root, "user-data")
+        windows_user_data_path = os.path.join(userdata_root, "user_data")
+
         assert linux.mkdir.called
+        assert open_encodings[user_data_path] == "utf-8"
+        assert open_encodings[windows_user_data_path] == "utf-8"
+        with open(user_data_path, encoding="utf-8") as fd:
+            assert fd.read() == "#cloud-config\nhostname: 测试虚机\n"
+        with open(windows_user_data_path, encoding="utf-8") as fd:
+            assert fd.read() == "#cloud-config\nhostname: 测试虚机\n"
 
 
 @pytest.mark.kvmagent
 class TestMevocoDoApplyDhcp:
+    def test_make_dhcpv6_duid_uuid_from_vm_uuid(self):
+        duid = mevoco.make_dhcpv6_duid_uuid("85b7d88b-374f-447b-b74a-7cf6fd8e0d4d")
+
+        assert duid == "00:04:85:b7:d8:8b:37:4f:44:7b:b7:4a:7c:f6:fd:8e:0d:4d"
+        assert mevoco.make_dhcpv6_duid_uuid("not-a-uuid") is None
+
+    def test_do_apply_dhcp_writes_duid_uuid_static_host_for_dhcpv6(self, tmp_path: object):
+        plugin = _make_plugin()
+        plugin.DNSMASQ_CONF_FOLDER = str(tmp_path)
+        plugin.DNSMASQ_LOG_LOGROTATE_PATH = os.path.join(str(tmp_path), "logrotate")
+        plugin._restart_dnsmasq = MagicMock()
+
+        linux = cast(MagicMock, importlib.import_module("zstacklib.utils.linux"))
+        linux.mkdir = MagicMock(side_effect=lambda path, _mode=None: os.makedirs(path, exist_ok=True))
+        linux.touch_file = MagicMock(side_effect=lambda path: open(path, "a", encoding="utf-8").close())
+
+        shell = cast(MagicMock, importlib.import_module("zstacklib.utils.shell"))
+        shell.call = MagicMock(return_value="5")
+
+        dhcp_v6 = _Obj(
+            namespaceName="ns6",
+            bridgeName="br1",
+            mac="fa:70:fd:24:dc:00",
+            ip="",
+            ip6="2026:6:9:1::5d:c9c3",
+            ipVersion=6,
+            nicType="VNIC",
+            dns=[],
+            dns6=[],
+            dnsDomain=[],
+            gateway=None,
+            netmask="",
+            hostname="2026-6-9-1--5d-c9c3",
+            mtu=None,
+            isDefaultL3Network=True,
+            hostRoutes=[],
+            vmMultiGateway=False,
+            enableRa=False,
+            firstIp="2026:6:9:1::2",
+            endIp="2026:6:9:1:ffff:ffff:ffff:ffff",
+            prefixLength=64,
+            vmUuid="85b7d88b-374f-447b-b74a-7cf6fd8e0d4d",
+        )
+
+        def _template_factory(text: object) -> object:
+            class _Template:
+                _value: str
+
+                def __init__(self, value: object) -> None:
+                    self._value = str(value)
+
+                def render(self, context: object | None = None, **_kwargs: object) -> str:
+                    data = context or {}
+                    if isinstance(data, dict) and isinstance(data.get("dhcp"), list):
+                        lines = []
+                        for d in data["dhcp"]:
+                            lines.append("%s,set:%s,[%s],%s,infinite" % (
+                                d["mac"], d["tag"], d["ip6"], d["hostname"]
+                            ))
+                            if d.get("dhcp6Duid"):
+                                lines.append("id:%s,set:%s,[%s],%s,infinite" % (
+                                    d["dhcp6Duid"], d["tag"], d["ip6"], d["hostname"]
+                                ))
+                        return "\n".join(lines) + "\n"
+                    if isinstance(data, dict) and "hostnames" in data:
+                        return "\n".join(
+                            "%s %s" % (h["ip6"], h["hostname"])
+                            for h in data["hostnames"]
+                            if h.get("isDefaultL3Network") and h.get("hostname")
+                        ) + "\n"
+                    return self._value
+
+            return _Template(text)
+
+        with patch.object(mevoco, "Template", side_effect=_template_factory):
+            plugin.do_apply_dhcp(_IterDict({"ns6": [dhcp_v6]}), rebuild=True)
+
+        dhcp_path = os.path.join(str(tmp_path), "ns6", "hosts.dhcp")
+        with open(dhcp_path, encoding="utf-8") as fd:
+            dhcp_conf = fd.read()
+
+        assert "fa:70:fd:24:dc:00,set:fa70fd24dc00,[2026:6:9:1::5d:c9c3]" in dhcp_conf
+        assert "id:00:04:85:b7:d8:8b:37:4f:44:7b:b7:4a:7c:f6:fd:8e:0d:4d" in dhcp_conf
+        assert "[2026:6:9:1::5d:c9c3],2026-6-9-1--5d-c9c3,infinite" in dhcp_conf
+
     def test_do_apply_dhcp_writes_configs_for_v4_and_v6(self, tmp_path: object):
         plugin = _make_plugin()
         plugin.DNSMASQ_CONF_FOLDER = str(tmp_path)

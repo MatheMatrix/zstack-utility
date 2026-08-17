@@ -43,6 +43,7 @@ zstack_lib_dir = "/var/lib/zstack"
 zstack_libvirt_nwfilter_dir = "%s/nwfilter" % zstack_lib_dir
 disableIp6Tables = 'false'
 bridgeDisableIptables = 'false'
+enableIpv6 = 'true'
 isBareMetal2Gateway='false'
 releasever = ''
 unsupported_iproute_list = ["nfs4", "alinux4"]
@@ -380,7 +381,7 @@ def install_kvm_pkg():
             'h79c': ('%s qemu-kvm libvirt-admin seabios-bin nping freeipmi '
                      'elfutils-libelf-devel vconfig OVMF libicu %s') % (helix_rhel_rpms, py3_rpms),
             'h84r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm freeipmi '
-                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump %s') % (helix_rhel_rpms, py3_rpms),
+                     'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump key-manager %s') % (helix_rhel_rpms, py3_rpms),
             'uos20r': ('%s qemu-kvm libvirt-daemon libvirt-daemon-kvm freeipmi '
                      'seabios-bin elfutils-libelf-devel collectd-disk lldpd tcpdump %s') % (helix_rhel_rpms, py3_rpms),
             'rl84': 'qemu-kvm libvirt-daemon libvirt-daemon-kvm seabios-bin elfutils-libelf-devel lldpd',
@@ -403,7 +404,7 @@ def install_kvm_pkg():
         arch_exclude_mapping = {
             'loongarch64': 'edac-utils freeipmi lldpd libcbd',
             'x86_64_alinux4': 'usbredir-server storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils',
-            'aarch64_alinux4': 'usbredir-server collectd-virt storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils collectd-disk lldpd edk2.git-ovmf-x64'
+            'aarch64_alinux4': 'usbredir-server storcli pv OpenIPMI-modalias MegaCli Arcconf edac-utils lldpd edk2-ovmf edk2.git-ovmf-x64 mcelog seabios-bin'
         }
 
         arch_release_mapping = {
@@ -421,14 +422,20 @@ def install_kvm_pkg():
             'uos20r': "lm_sensors"
         }
 
+        releasever_arch_rpms = {
+            'ky10sp3': {'x86_64': 'key-manager'},
+            'ky10sp3.2403': {'x86_64': 'key-manager'}
+        }
+
         # handle zstack_repo
         if zstack_repo != 'false':
             distro_head = host_info.distro.split("_")[0] if releasever in kylin or releasever in uos else host_info.distro
             arch_release = "%s_%s" % (host_info.host_arch, releasever)
-            common_dep_list = "%s %s %s %s %s" % (
+            common_dep_list = "%s %s %s %s %s %s" % (
                 os_base_dep,
                 distro_mapping.get(distro_head, ''),
                 releasever_mapping.get(releasever, ''),
+                releasever_arch_rpms.get(releasever, {}).get(host_info.host_arch, ''),
                 edk2_mapping.get(host_info.host_arch, ''),
                 arch_release_mapping.get(arch_release, ''))
             # common kvmagent deps of x86 and arm that need to update
@@ -733,9 +740,12 @@ def copy_kvm_files():
             add_infiniband_devices_args = "regexp='(cgroup_device_acl\s*=\s*\[[^\]]*?,\s*)' replace='\\1" + formatted_devices + ",\\n    '"
             replace_content(qemu_conf_dst, add_infiniband_devices_args, host_post_info)
 
-        # Add Hygon vfio and mdev devices to cgroup_device_acl (only for Hygon hosts)
-        # Check if /dev/hygon_psp_config exists to determine if this is a Hygon host
-        (is_hygon_host, _) = run_remote_command("test -e /dev/hygon_psp_config", host_post_info, return_status=True, return_output=True)
+        # Add Hygon vfio and mdev devices to cgroup_device_acl (only for Hygon SE hosts).
+        # Newer Hygon SE hosts may not expose /dev/hygon_psp_config, but still
+        # expose the /dev/hct_share device that must be whitelisted.
+        (is_hygon_host, _) = run_remote_command(
+            "test -e /dev/hygon_psp_config || test -e /dev/hct_share",
+            host_post_info, return_status=True, return_output=True)
         if is_hygon_host is True:
             # Pre-write a fixed range of /dev/vfio/1 to /dev/vfio/5000 to cover all possible iommu_group numbers
             # This avoids the chicken-and-egg problem where mdev devices don't exist yet during ansible deploy
@@ -786,6 +796,15 @@ def copy_kvm_files():
 
     command = 'sysctl -w net.ipv4.ip_local_reserved_ports=%s,`cat /proc/sys/net/ipv4/ip_local_reserved_ports`' % reserved_ports
     run_remote_command(command, host_post_info)
+
+
+def configure_host_ipv6():
+    disable_ipv6 = '0' if enableIpv6 == 'true' else '1'
+
+    update_file("/etc/sysctl.conf", "regexp='^net.ipv6.conf.all.disable_ipv6\\s*=.*' line='net.ipv6.conf.all.disable_ipv6 = %s'" % disable_ipv6, host_post_info)
+    update_file("/etc/sysctl.conf", "regexp='^net.ipv6.conf.default.disable_ipv6\\s*=.*' line='net.ipv6.conf.default.disable_ipv6 = %s'" % disable_ipv6, host_post_info)
+    run_remote_command("sysctl -w net.ipv6.conf.all.disable_ipv6=%s" % disable_ipv6, host_post_info)
+    run_remote_command("sysctl -w net.ipv6.conf.default.disable_ipv6=%s" % disable_ipv6, host_post_info)
 
 def copy_gpudriver():
     """copy mxgpu driver"""
@@ -1204,6 +1223,17 @@ def set_gpu_blacklist():
         || echo \"install ${gpu_name} /bin/false\" >> /etc/modprobe.d/${gpu_name}-blacklist.conf; done" % gpu_name_list
     run_remote_command(command, host_post_info)
 
+def start_key_agent():
+    if host_info.host_arch != 'x86_64':
+        return
+    if chroot_env != 'false':
+        return
+    command = "if systemctl list-unit-files key-agent.service 2>/dev/null | grep -q '^key-agent\\.service'; then " \
+              "systemctl enable key-agent && systemctl start key-agent; " \
+              "fi"
+    host_post_info.post_label = "ansible.shell.start.key_agent"
+    host_post_info.post_label_param = None
+    run_remote_command(command, host_post_info)
 
 def check_is_remote_cube():
     command = "ls /usr/local/hyperconverged"
@@ -1232,6 +1262,7 @@ create_virtio_driver_directory()
 set_max_performance()
 do_libvirt_qemu_config()
 do_network_config()
+configure_host_ipv6()
 copy_spice_certificates_to_host()
 install_virtualenv()
 set_legacy_iptables_ebtables()
@@ -1243,6 +1274,7 @@ do_ksm_config()
 modprobe_usb_module()
 modprobe_mpci_module()
 set_gpu_blacklist()
+start_key_agent()
 start_kvmagent()
 
 host_post_info.start_time = start_time

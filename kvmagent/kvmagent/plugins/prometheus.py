@@ -1,4 +1,5 @@
 import functools
+import json
 import os.path
 import re
 
@@ -209,6 +210,29 @@ def send_cpu_status_alarm_to_mn(cpu_id, status):
 def send_physical_gpu_status_alarm_to_mn(pcideviceAddress, status):
     send_alarm_to_mn('gpu', pcideviceAddress,
                      pcideviceAddress=pcideviceAddress, status=status)
+
+
+@thread.AsyncThread
+def send_gpu_xid_alarm_to_mn(pcideviceAddress, xidCode, message):
+    # GPU XID errors are transient events — bypass hw_status_abnormal_list_record
+    # dedup since collect_gpu_xid_errors() already handles cooldown
+    if ALARM_CONFIG is None:
+        return
+
+    url = ALARM_CONFIG.get(kvmagent.SEND_COMMAND_URL)
+    if not url:
+        logger.warn("Cannot find SEND_COMMAND_URL, unable to transmit gpu_xid alarm info to management node")
+        return
+
+    alarm = PhysicalStatusAlarm(
+        host=ALARM_CONFIG.get(kvmagent.HOST_UUID),
+        alarm_type='gpu_xid',
+        pcideviceAddress=pcideviceAddress,
+        xidCode=str(xidCode),
+        message=message
+    )
+    http.json_dump_post(url, alarm.to_dict(), {
+                        'commandpath': '/host/physical/hardware/status/alarm'})
 
 
 @thread.AsyncThread
@@ -1165,43 +1189,11 @@ def collect_ipmi_state():
     return collect_equipment_state_last_result
 
 
-@thread.AsyncThread
-def check_equipment_state_from_ipmitool(metrics):
-    sensor_handlers = {
-        "Memory": send_physical_memory_status_alarm_to_mn,
-        "Fan": send_physical_fan_status_alarm_to_mn,
-        "Power Supply": send_physical_power_supply_status_alarm_to_mn
-    }
-
-    r, sensor_infos = bash_ro(
-        "ipmi-sensors --sensor-types=Memory,fan,Power_Supply -Q --ignore-unrecognized-events --comma-separated-output "
-        "--no-header-output --sdr-cache-recreate --output-sensor-state")
-    if r == 0:
-        for sensor_info in sensor_infos.splitlines():
-            sensor = sensor_info.split(",")
-            sensor_name = sensor[1].strip()
-            sensor_type = sensor[2].strip()
-            sensor_state = sensor[3].strip()
-            sensor_event = sensor[6].strip()
-
-            if sensor_type == "Memory" and "Presence detected" in sensor_event:
-                metrics['ipmi_memory_status'].add_metric([sensor_name, sensor_type],
-                                                         0 if sensor_state == 'Nominal' else 1)
-
-            if sensor_state.lower() == "critical" and sensor_type in sensor_handlers:
-                sensor_handlers[sensor_type](sensor_name, sensor_state)
-            else:
-                remove_fan_status_abnormal(sensor_name)
-                remove_power_supply_status_abnormal(sensor_name)
-                remove_memory_status_abnormal(sensor_name)
-
-
 def collect_equipment_state_from_ipmi():
     metrics = {
         "ipmi_status": GaugeMetricFamily('ipmi_status', 'ipmi status', None, []),
         "cpu_temperature": GaugeMetricFamily('cpu_temperature', 'cpu temperature', None, ['cpu']),
         "cpu_status": GaugeMetricFamily('cpu_status', 'cpu status', None, ['cpu']),
-        "ipmi_memory_status": GaugeMetricFamily('ipmi_memory_status', 'ipmi memory status', None, ['name', 'type']),
     }
     metrics['ipmi_status'].add_metric([], bash_r("ipmitool mc info"))
 
@@ -1209,8 +1201,6 @@ def collect_equipment_state_from_ipmi():
         "ipmitool sdr elist | grep -i cpu")  # type: (int, str)
     if r != 0:
         return list(metrics.values())
-
-    check_equipment_state_from_ipmitool(metrics)
 
     '''
         ================
@@ -1307,6 +1297,47 @@ def find_vm_uuid_from_vm_qemu_process(process):
         return None
 
 
+def _parse_qemu_ioport(value):
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value, 0)
+        except ValueError:
+            return None
+    return None
+
+
+def _is_pvpanic_isa_device_arg(word):
+    if word.startswith('pvpanic,'):
+        for option in word.split(',')[1:]:
+            key, separator, value = option.partition('=')
+            if separator and key == 'ioport':
+                return _parse_qemu_ioport(value) == 0x505
+        return False
+
+    if not word.startswith('{'):
+        return False
+
+    try:
+        device = json.loads(word)
+    except (TypeError, ValueError):
+        return False
+
+    return (
+        isinstance(device, dict)
+        and device.get('driver') == 'pvpanic'
+        and _parse_qemu_ioport(device.get('ioport')) == 0x505
+    )
+
+
+def is_pvpanic_enabled_in_qemu_cmdline(cmdline):
+    return any(
+        word == '-device' and _is_pvpanic_isa_device_arg(cmdline[index + 1])
+        for index, word in enumerate(cmdline[:-1])
+    )
+
+
 def collect_vm_statistics():
     metrics = {
         'cpu_occupied_by_vm': GaugeMetricFamily('cpu_occupied_by_vm',
@@ -1362,17 +1393,16 @@ def collect_vm_pvpanic_enable_in_domain_xml():
     if len(processes) == 0:
         return list(metrics.values())
 
-    # if pvpanic enable in domain xml (qemu process cmdline has 'pvpanic,ioport'), collect '1'
-    # if not, collect '0'
+    # If the QEMU command line contains an ISA pvpanic device, collect 1.
+    # Otherwise, collect 0.
     for process in processes:
         vm_uuid = find_vm_uuid_from_vm_qemu_process(process)
-        r = ""
+        enable = 0
         try:
-            r = [word for word in process.cmdline() if word == 'pvpanic,ioport=1285']
+            enable = 1 if is_pvpanic_enabled_in_qemu_cmdline(process.cmdline()) else 0
         except psutil.NoSuchProcess:
             pass
 
-        enable = 1 if len(r) > 0 else 0
         metrics[KEY].add_metric([vm_uuid], enable)
 
     return list(metrics.values())
@@ -1633,6 +1663,150 @@ def calculate_percentage(part, total):
     return round(percentage, 1)
 
 
+# --- GPU XID Error Detection via dmesg ---
+_XID_STATE_FILE = '/var/run/zstack/gpu_xid_state'
+_xid_last_seq = 0   # dmesg sequence watermark
+_xid_cooldown = {}   # key=(pci_addr, xid_code) -> last_report_time
+_xid_boot_id = None  # tracks current boot session for fallback dedup
+_xid_seen_lines = set()  # fingerprints of already-processed lines (fallback mode)
+_xid_state_loaded = False
+
+_xid_raw_pattern = re.compile(
+    r'(\d+),(\d+),(\d+),-;.*NVRM:\s*Xid\s*\(PCI:([0-9a-fA-F:\.]+)\):\s*(\d+),\s*(.*)'
+)
+_xid_fallback_pattern = re.compile(
+    r'NVRM:\s*Xid\s*\(PCI:([0-9a-fA-F:\.]+)\):\s*(\d+),\s*(.*)'
+)
+
+
+def _get_boot_id():
+    try:
+        with open('/proc/sys/kernel/random/boot_id', 'r') as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+
+def _load_xid_state():
+    """Load persisted XID state from disk."""
+    global _xid_last_seq, _xid_boot_id, _xid_seen_lines, _xid_state_loaded
+    if _xid_state_loaded:
+        return
+    _xid_state_loaded = True
+    try:
+        import json
+        content = linux.read_file(_XID_STATE_FILE)
+        if not content:
+            return
+        state = json.loads(content)
+        saved_boot_id = state.get('boot_id', '')
+        current_boot_id = _get_boot_id() or ''
+        if saved_boot_id and saved_boot_id == current_boot_id:
+            _xid_last_seq = state.get('last_seq', 0)
+            _xid_boot_id = saved_boot_id
+            _xid_seen_lines = set(state.get('seen_lines', []))
+        else:
+            # Different boot — state is stale, start fresh
+            _xid_boot_id = current_boot_id
+    except Exception as e:
+        logger.debug("Failed to load XID state: %s" % str(e))
+
+
+def _save_xid_state():
+    """Persist XID state to disk."""
+    try:
+        import json
+        state = {
+            'last_seq': _xid_last_seq,
+            'boot_id': _xid_boot_id or _get_boot_id() or '',
+            'seen_lines': list(_xid_seen_lines)
+        }
+        d = os.path.dirname(_XID_STATE_FILE)
+        os.makedirs(d, 0o755, exist_ok=True)
+        linux.write_file(_XID_STATE_FILE, json.dumps(state), True)
+    except Exception as e:
+        logger.debug("Failed to save XID state: %s" % str(e))
+
+
+def collect_gpu_xid_errors():
+    """Parse dmesg for NVIDIA XID errors, with seq-based dedup + cooldown."""
+    global _xid_last_seq, _xid_cooldown, _xid_boot_id, _xid_seen_lines
+
+    _load_xid_state()
+
+    r, output = bash_ro("dmesg --raw 2>/dev/null")
+    use_raw = (r == 0 and output.strip())
+    if not use_raw:
+        r, output = bash_ro("dmesg 2>/dev/null")
+        if r != 0:
+            return []
+
+    # For fallback mode: detect reboot and reset state
+    if not use_raw:
+        current_boot_id = _get_boot_id()
+        if current_boot_id and current_boot_id != _xid_boot_id:
+            _xid_cooldown = {}
+            _xid_seen_lines = set()
+            _xid_boot_id = current_boot_id
+
+    events = []
+    max_seq = _xid_last_seq
+    now = time.time()
+    cooldown_seconds = 600  # 10 minutes
+
+    for line in output.splitlines():
+        if 'NVRM' not in line or 'Xid' not in line:
+            continue
+
+        if use_raw:
+            m = _xid_raw_pattern.search(line)
+            if not m:
+                continue
+            seq = int(m.group(2))
+            if seq <= _xid_last_seq:
+                continue  # Layer 1: already processed
+            pci_addr = m.group(4).lower()
+            xid_code = int(m.group(5))
+            message = m.group(6).strip()
+            if seq > max_seq:
+                max_seq = seq
+        else:
+            m = _xid_fallback_pattern.search(line)
+            if not m:
+                continue
+            pci_addr = m.group(1).lower()
+            xid_code = int(m.group(2))
+            message = m.group(3).strip()
+            # Fallback has no seq cursor — use line fingerprint to avoid re-processing
+            fingerprint = '%s|%d|%s' % (pci_addr, xid_code, message)
+            if fingerprint in _xid_seen_lines:
+                continue
+            _xid_seen_lines.add(fingerprint)
+
+        cooldown_key = (pci_addr, xid_code)
+        last_report = _xid_cooldown.get(cooldown_key, 0)
+        if now - last_report < cooldown_seconds:
+            continue  # Layer 2: cooldown
+
+        _xid_cooldown[cooldown_key] = now
+        events.append({
+            'pciDeviceAddress': pci_addr,
+            'xidCode': xid_code,
+            'message': message
+        })
+
+    _xid_last_seq = max_seq
+
+    # Clean expired cooldown entries (older than 30 minutes)
+    expired = [k for k, t in _xid_cooldown.items() if now - t > 1800]
+    for k in expired:
+        del _xid_cooldown[k]
+
+    _save_xid_state()
+
+    return events
+
+
 def collect_gpu_metrics_via_plugin():
     """
     Unified GPU metrics collector using the plugin system.
@@ -1711,6 +1885,15 @@ def collect_gpu_metrics_via_plugin():
 
             # 3. Run status check (alarms)
             check_gpu_status_and_save_gpu_status(vendor_name, metrics)
+
+            # 4. Collect GPU XID errors from dmesg (NVIDIA only)
+            if vendor_name == 'NVIDIA':
+                for xid_event in collect_gpu_xid_errors():
+                    send_gpu_xid_alarm_to_mn(
+                        xid_event['pciDeviceAddress'],
+                        xid_event['xidCode'],
+                        xid_event['message']
+                    )
 
         except Exception as e:
             logger.error("Failed to collect metrics for GPU vendor %s: %s" % (
@@ -2105,6 +2288,7 @@ class SetServiceTypeOnHostNetworkInterfaceRsp(kvmagent.AgentResponse):
 class PrometheusPlugin(kvmagent.KvmAgent):
     COLLECTD_PATH = "/prometheus/collectdexporter/start"
     SET_SERVICE_TYPE_ON_HOST_NETWORK_INTERFACE = "/host/setservicetype/networkinterface"
+    VM_EVENT_ALARM_PATH = "/host/vm/event/alarm"
 
     @kvmagent.replyerror
     @in_bash
@@ -2619,12 +2803,65 @@ modules:
 
         return jsonobject.dumps(rsp)
 
+    @kvmagent.replyerror
+    def handle_vm_event_alarm(self, req):
+        """Generic handler for VM-internal events pushed by zwatch-vm-agent.
+        Attaches hostUuid and forwards to management node."""
+        import json as _json
+        body = req[http.REQUEST_BODY]
+        try:
+            evt = _json.loads(body)
+        except Exception:
+            logger.warn("handle_vm_event_alarm: invalid JSON body")
+            rsp = kvmagent.AgentResponse()
+            rsp.success = False
+            rsp.error = "invalid JSON"
+            return jsonobject.dumps(rsp)
+
+        vm_uuid = evt.get('vmUuid', '')
+        event_type = evt.get('eventType', '')
+        if not vm_uuid or not event_type:
+            logger.warn("handle_vm_event_alarm: missing vmUuid or eventType")
+            rsp = kvmagent.AgentResponse()
+            rsp.success = False
+            rsp.error = "missing vmUuid or eventType"
+            return jsonobject.dumps(rsp)
+
+        if ALARM_CONFIG is None:
+            logger.warn("handle_vm_event_alarm: ALARM_CONFIG not ready")
+            rsp = kvmagent.AgentResponse()
+            rsp.success = False
+            rsp.error = "agent not configured"
+            return jsonobject.dumps(rsp)
+
+        url = ALARM_CONFIG.get(kvmagent.SEND_COMMAND_URL)
+        if not url:
+            logger.warn("handle_vm_event_alarm: no SEND_COMMAND_URL")
+            rsp = kvmagent.AgentResponse()
+            rsp.success = False
+            rsp.error = "no SEND_COMMAND_URL"
+            return jsonobject.dumps(rsp)
+
+        payload = {
+            'hostUuid': ALARM_CONFIG.get(kvmagent.HOST_UUID),
+            'vmUuid': vm_uuid,
+            'eventType': event_type,
+            'properties': evt.get('properties', {})
+        }
+        http.json_dump_post(url, payload, {'commandpath': '/host/vm/event/alarm'})
+
+        rsp = kvmagent.AgentResponse()
+        rsp.success = True
+        return jsonobject.dumps(rsp)
+
     def start(self):
         http_server = kvmagent.get_http_server()
         http_server.register_async_uri(
             self.COLLECTD_PATH, self.start_prometheus_exporter)
         http_server.register_async_uri(self.SET_SERVICE_TYPE_ON_HOST_NETWORK_INTERFACE,
                                        self.set_service_type_on_host_network_interface)
+        http_server.register_async_uri(self.VM_EVENT_ALARM_PATH,
+                                       self.handle_vm_event_alarm)
 
         self.init_global_config()
         self.install_colletor()

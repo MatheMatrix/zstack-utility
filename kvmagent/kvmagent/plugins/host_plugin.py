@@ -26,10 +26,11 @@ except ImportError:
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
-from zstacklib.utils import http, lvm, ceph, pci, gpu
+from zstacklib.utils import http, lvm, ceph, pci, gpu, linux
 from zstacklib.utils import qemu
 from zstacklib.utils import iptables
 from zstacklib.utils import iproute
+from zstacklib.utils import network_ipv6
 from zstacklib.utils import ebtables
 from zstacklib.utils import jsonobject
 from zstacklib.utils import lock
@@ -53,6 +54,14 @@ os_info = platform.freedesktop_os_release()
 DIST_NAME = os_info.get('ID', '').lower()
 # FIXME(py3): remove it
 DIST_NAME = 'centos' if DIST_NAME == 'helix' else DIST_NAME
+
+try:
+    import grpc
+    from kvmagent.keyagent import key_agent_pb2
+    from kvmagent.keyagent import key_agent_pb2_grpc
+    KEY_AGENT_GRPC_AVAILABLE = True
+except Exception:
+    KEY_AGENT_GRPC_AVAILABLE = False
 
 host_arch = platform.machine()
 IS_AARCH64 = host_arch == 'aarch64'
@@ -94,6 +103,10 @@ KVMAGENT_VERSION_PATH = '/var/lib/zstack/kvmagent_version'
 KVMAGENT_SHUTDOWN_PATH = '/var/lib/zstack/kvm/shutdown_vm'
 KVMAGENT_SHUTDOWN_INIT_PATH = '/etc/init.d/shutdown_vm'
 
+KEY_AGENT_UNIX_SOCKET = 'unix:///var/run/key-agent/key-agent.sock'
+KEY_AGENT_ERR_KEYS_NOT_ON_DISK = 'KEY_AGENT_KEYS_NOT_ON_DISK'
+KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH = 'KEY_AGENT_KEY_FILES_INTEGRITY_MISMATCH'
+
 BOND_MODE_ACTIVE_0 = "balance-rr"
 BOND_MODE_ACTIVE_1 = "active-backup"
 BOND_MODE_ACTIVE_2 = "balance-xor"
@@ -132,6 +145,7 @@ class HostFactResponse(kvmagent.AgentResponse):
         self.osVersion = None
         self.osRelease = None
         self.qemuImgVersion = None
+        self.qemuKvmPackageVersion = None
         self.libvirtVersion = None
         self.hvmCpuFlag = None
         self.cpuModelName = None
@@ -172,6 +186,12 @@ class GetUsbDevicesRsp(kvmagent.AgentResponse):
     def __init__(self):
         super(GetUsbDevicesRsp, self).__init__()
         self.usbDevicesInfo = None
+
+
+class GetBlockDevicesRsp(kvmagent.AgentResponse):
+    def __init__(self):
+        super(GetBlockDevicesRsp, self).__init__()
+        self.blockDevices = None
 
 
 class StartUsbRedirectServerRsp(kvmagent.AgentResponse):
@@ -247,6 +267,7 @@ class SetIpOnHostNetworkInterfaceCmd(kvmagent.AgentCommand):
         self.oldGateway = None
         self.ipAddress = None
         self.netmask = None
+        self.prefixLength = None
         self.gateway = None
 
 
@@ -489,13 +510,7 @@ class HostNetworkBondingInventory(object):
         output = subprocess.check_output(
             ['ip', 'r', 'get', ip_addr]).decode('utf-8')
 
-        pattern = r'src ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
-        match = re.search(pattern, output)
-        if match:
-            src_addr = match.group(1)
-            return src_addr
-        else:
-            return None
+        return network_ipv6.extract_route_source_address(output)
 
 
 class HostNetworkInterfaceInventory(object):
@@ -695,13 +710,7 @@ class HostNetworkInterfaceInventory(object):
         output = subprocess.check_output(
             ['ip', 'r', 'get', ip_addr]).decode('utf-8')
 
-        pattern = r'src ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
-        match = re.search(pattern, output)
-        if match:
-            src_addr = match.group(1)
-            return src_addr
-        else:
-            return None
+        return network_ipv6.extract_route_source_address(output)
 
 
 class GetNumaTopologyResponse(kvmagent.AgentResponse):
@@ -716,6 +725,12 @@ class GetPciDevicesCmd(kvmagent.AgentCommand):
         self.filterString = None
         self.enableIommu = True
         self.skipGrubConfig = False
+
+
+class GetBlockDevicesCmd(kvmagent.AgentCommand):
+    def __init__(self):
+        super(GetBlockDevicesCmd, self).__init__()
+        self.includeInUse = False
 
 
 class GetPciDevicesResponse(kvmagent.AgentResponse):
@@ -1537,6 +1552,11 @@ class HostPlugin(kvmagent.KvmAgent):
     ECHO_PATH = '/host/echo'
     FACT_PATH = '/host/fact'
     PING_PATH = "/host/ping"
+    CREATE_ENVELOPE_KEY_PATH = '/host/key/envelope/createEnvelopeKey'
+    ROTATE_ENVELOPE_KEY_PATH = '/host/key/envelope/rotateEnvelopeKey'
+    GET_ENVELOPE_PUBLIC_KEY_PATH = '/host/key/envelope/getEnvelopePublicKey'
+    CHECK_ENVELOPE_KEY_PATH = '/host/key/envelope/checkEnvelopeKey'
+    ENSURE_SECRET_PATH = '/host/key/envelope/ensureSecret'
     CHECK_FILE_ON_HOST_PATH = '/host/checkfile'
     GET_USB_DEVICES_PATH = "/host/usbdevice/get"
     SETUP_MOUNTABLE_PRIMARY_STORAGE_HEARTBEAT = "/host/mountableprimarystorageheartbeat"
@@ -1590,6 +1610,7 @@ class HostPlugin(kvmagent.KvmAgent):
     UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH = "/host/vm/updateConsolePassword/live"
     SETUP_VM_HA_ENABLED_METADATA_LIVE_PATH = '/host/vm/setupHaEnabledMetadata/live'
     RECONCILE_VM_HA_ENABLED_METADATA_LIVE_PATH = '/host/vm/reconcileHaEnabledMetadata/live'
+    GET_BLOCK_DEVICES_PATH = "/host/blockdevices"
 
     def __init__(self):
         self.IS_YUM = False
@@ -1636,6 +1657,154 @@ class HostPlugin(kvmagent.KvmAgent):
                     raise Exception('check iptables rule: %s failed' % rule)
         return True
 
+    def _create_key_via_key_agent(self):
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            return (False, None, None)
+        try:
+            if not os.path.exists('/var/run/key-agent/key-agent.sock'):
+                logger.debug('key-agent unix socket not found, skip create key')
+                return (False, None, None)
+            channel = grpc.insecure_channel(KEY_AGENT_UNIX_SOCKET)
+            try:
+                stub = key_agent_pb2_grpc.KeyAgentServiceStub(channel)
+                req = key_agent_pb2.CreateEnvelopeKeyRequest()
+                stub.CreateEnvelopeKey(req, timeout=5)
+                return (True, None, None)
+            finally:
+                channel.close()
+        except grpc.RpcError as e:
+            details = e.details() if hasattr(e, 'details') and callable(getattr(e, 'details')) else str(e)
+            logger.debug('key-agent CreateEnvelopeKey gRPC error: %s' % details)
+            if KEY_AGENT_ERR_KEYS_NOT_ON_DISK in details:
+                return (False, KEY_AGENT_ERR_KEYS_NOT_ON_DISK, details)
+            if KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH in details:
+                return (False, KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH, details)
+            return (False, None, details or str(e))
+        except Exception as e:
+            logger.debug('key-agent CreateEnvelopeKey failed: %s' % e)
+            return (False, None, None)
+
+    def _rotate_key_via_key_agent(self):
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            return (False, None, None)
+        try:
+            if not os.path.exists('/var/run/key-agent/key-agent.sock'):
+                logger.debug('key-agent unix socket not found, skip rotate key')
+                return (False, None, None)
+            channel = grpc.insecure_channel(KEY_AGENT_UNIX_SOCKET)
+            try:
+                stub = key_agent_pb2_grpc.KeyAgentServiceStub(channel)
+                req = key_agent_pb2.RotateEnvelopeKeyRequest()
+                stub.RotateEnvelopeKey(req, timeout=5)
+                return (True, None, None)
+            finally:
+                channel.close()
+        except grpc.RpcError as e:
+            details = e.details() if hasattr(e, 'details') and callable(getattr(e, 'details')) else str(e)
+            logger.debug('key-agent RotateEnvelopeKey gRPC error: %s' % details)
+            if KEY_AGENT_ERR_KEYS_NOT_ON_DISK in details:
+                return (False, KEY_AGENT_ERR_KEYS_NOT_ON_DISK, details)
+            if KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH in details:
+                return (False, KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH, details)
+            return (False, None, details or str(e))
+        except Exception as e:
+            logger.debug('key-agent RotateKey failed: %s' % e)
+            return (False, None, None)
+
+    def _get_public_key_from_key_agent(self):
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            return (None, None, None)
+        try:
+            if not os.path.exists('/var/run/key-agent/key-agent.sock'):
+                logger.debug('key-agent unix socket not found, skip get public key')
+                return (None, None, None)
+            channel = grpc.insecure_channel(KEY_AGENT_UNIX_SOCKET)
+            try:
+                stub = key_agent_pb2_grpc.KeyAgentServiceStub(channel)
+                req = key_agent_pb2.GetPublicKeyRequest()
+                resp = stub.GetPublicKey(req, timeout=5)
+                if resp and getattr(resp, 'public_key', None):
+                    pk = resp.public_key
+                    if isinstance(pk, bytes):
+                        pk = base64.b64encode(pk).decode('ascii')
+                    return (pk, None, None)
+                return (None, None, None)
+            finally:
+                channel.close()
+        except grpc.RpcError as e:
+            details = e.details() if hasattr(e, 'details') and callable(getattr(e, 'details')) else str(e)
+            logger.debug('key-agent GetPublicKey gRPC error: %s' % details)
+            if KEY_AGENT_ERR_KEYS_NOT_ON_DISK in details:
+                return (None, KEY_AGENT_ERR_KEYS_NOT_ON_DISK, details)
+            if KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH in details:
+                return (None, KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH, details)
+            return (None, None, details or str(e))
+        except Exception as e:
+            logger.debug('key-agent GetPublicKey failed: %s' % e)
+            return (None, None, None)
+
+    def _check_envelope_key_via_key_agent(self):
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            return (False, None, None)
+        try:
+            if not os.path.exists('/var/run/key-agent/key-agent.sock'):
+                logger.debug('key-agent unix socket not found, skip check envelope key')
+                return (False, None, None)
+            channel = grpc.insecure_channel(KEY_AGENT_UNIX_SOCKET)
+            try:
+                stub = key_agent_pb2_grpc.KeyAgentServiceStub(channel)
+                req = key_agent_pb2.CheckEnvelopeKeyRequest()
+                stub.CheckEnvelopeKey(req, timeout=5)
+                return (True, None, None)
+            finally:
+                channel.close()
+        except grpc.RpcError as e:
+            details = e.details() if hasattr(e, 'details') and callable(getattr(e, 'details')) else str(e)
+            logger.debug('key-agent CheckEnvelopeKey gRPC error: %s' % details)
+            if KEY_AGENT_ERR_KEYS_NOT_ON_DISK in details:
+                return (False, KEY_AGENT_ERR_KEYS_NOT_ON_DISK, details)
+            if KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH in details:
+                return (False, KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH, details)
+            return (False, None, details or str(e))
+        except Exception as e:
+            logger.debug('key-agent CheckEnvelopeKey failed: %s' % e)
+            return (False, None, None)
+
+    def _ensure_secret_via_key_agent(self, encrypted_dek, vm_uuid, purpose, provider_name, description=None):
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            return (None, None, 'key_agent grpc not available')
+        try:
+            if not os.path.exists('/var/run/key-agent/key-agent.sock'):
+                logger.debug('key-agent unix socket not found, skip ensure secret')
+                return (None, None, 'key-agent socket not found')
+            channel = grpc.insecure_channel(KEY_AGENT_UNIX_SOCKET)
+            try:
+                stub = key_agent_pb2_grpc.KeyAgentServiceStub(channel)
+                req = key_agent_pb2.EnsureSecretRequest(
+                    encrypted_dek=encrypted_dek,
+                    description=description or '',
+                    vm_uuid=vm_uuid,
+                    purpose=purpose,
+                    provider_name=provider_name,
+                )
+                resp = stub.EnsureSecret(req, timeout=5)
+                if resp and getattr(resp, 'secret_uuid', None):
+                    return (resp.secret_uuid, None, None)
+                return (None, None, 'key-agent EnsureSecret returned no secret_uuid')
+            finally:
+                channel.close()
+        except grpc.RpcError as e:
+            details = e.details() if hasattr(e, 'details') and callable(getattr(e, 'details')) else str(e)
+            logger.debug('key-agent EnsureSecret gRPC error: %s' % details)
+            if KEY_AGENT_ERR_KEYS_NOT_ON_DISK in details:
+                return (None, KEY_AGENT_ERR_KEYS_NOT_ON_DISK, details)
+            if KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH in details:
+                return (None, KEY_AGENT_ERR_KEY_FILES_INTEGRITY_MISMATCH, details)
+            return (None, None, details or str(e))
+        except Exception as e:
+            logger.debug('key-agent EnsureSecret failed: %s' % e)
+            return (None, None, str(e))
+
     @kvmagent.replyerror
     def connect(self, req):
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -1680,18 +1849,16 @@ class HostPlugin(kvmagent.KvmAgent):
 
         if self.host_socket is not None:
             self.host_socket.close()
-
-        try:
-            self.host_socket = socket.socket()
-        except socket.error as e:
             self.host_socket = None
 
-        ip_address = cmd.sendCommandUrl.split('/')[2].split(':')[0]
+        ip_address = network_ipv6.extract_url_host(cmd.sendCommandUrl)
         try:
+            self.host_socket = network_ipv6.create_tcp_socket_for_host(ip_address)
             self.host_socket.connect((ip_address, cmd.tcpServerPort))
 
         except socket.error as msg:
-            self.host_socket.close()
+            if self.host_socket is not None:
+                self.host_socket.close()
             self.host_socket = None
 
         self.start_write_to_server()
@@ -1758,6 +1925,140 @@ class HostPlugin(kvmagent.KvmAgent):
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    def create_envelope_key(self, req):
+        rsp = kvmagent.AgentResponse()
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            rsp.success = False
+            rsp.error = 'key_agent grpc not available'
+            return jsonobject.dumps(rsp)
+        success, err_code, err_msg = self._create_key_via_key_agent()
+        if err_code:
+            rsp.success = False
+            rsp.errorCode = err_code
+            rsp.error = err_msg or err_code
+            return jsonobject.dumps(rsp)
+        if success:
+            rsp.success = True
+        else:
+            rsp.success = False
+            rsp.error = 'key-agent CreateEnvelopeKey failed or key-agent not running'
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def rotate_envelope_key(self, req):
+        rsp = kvmagent.AgentResponse()
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            rsp.success = False
+            rsp.error = 'key_agent grpc not available'
+            return jsonobject.dumps(rsp)
+        success, err_code, err_msg = self._rotate_key_via_key_agent()
+        if err_code:
+            rsp.success = False
+            rsp.errorCode = err_code
+            rsp.error = err_msg or err_code
+            return jsonobject.dumps(rsp)
+        if success:
+            rsp.success = True
+        else:
+            rsp.success = False
+            rsp.error = 'key-agent RotateKey failed or key-agent not running'
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def get_envelope_public_key(self, req):
+        rsp = kvmagent.AgentResponse()
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            rsp.success = False
+            rsp.error = 'key_agent grpc not available'
+            return jsonobject.dumps(rsp)
+        public_key, err_code, err_msg = self._get_public_key_from_key_agent()
+        if err_code:
+            rsp.success = False
+            rsp.errorCode = err_code
+            rsp.error = err_msg or err_code
+            return jsonobject.dumps(rsp)
+        if public_key is not None:
+            rsp.success = True
+            rsp.publicKey = public_key
+        else:
+            rsp.success = False
+            rsp.error = 'key-agent GetPublicKey failed or no public key'
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def check_envelope_key(self, req):
+        rsp = kvmagent.AgentResponse()
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            rsp.success = False
+            rsp.error = 'key_agent grpc not available'
+            return jsonobject.dumps(rsp)
+        ok, err_code, err_msg = self._check_envelope_key_via_key_agent()
+        if err_code:
+            rsp.success = False
+            rsp.errorCode = err_code
+            rsp.error = err_msg or err_code
+            return jsonobject.dumps(rsp)
+        if ok:
+            rsp.success = True
+        else:
+            rsp.success = False
+            rsp.error = err_msg or 'key-agent CheckEnvelopeKey failed or key-agent not running'
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def ensure_secret(self, req):
+        rsp = kvmagent.AgentResponse()
+        if not KEY_AGENT_GRPC_AVAILABLE:
+            rsp.success = False
+            rsp.error = 'key_agent grpc not available'
+            return jsonobject.dumps(rsp)
+        try:
+            cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        except Exception as e:
+            rsp.success = False
+            rsp.error = 'invalid request body: %s' % e
+            return jsonobject.dumps(rsp)
+        encrypted_dek_b64 = getattr(cmd, 'encryptedDek', None)
+        vm_uuid = getattr(cmd, 'vmUuid', None)
+        purpose = getattr(cmd, 'purpose', None)
+        provider_name = getattr(cmd, 'providerName', None)
+        description = getattr(cmd, 'description', None) or ''
+        if not encrypted_dek_b64 or not vm_uuid or not purpose or not provider_name:
+            rsp.success = False
+            rsp.error = 'missing encryptedDek, vmUuid, purpose or providerName'
+            return jsonobject.dumps(rsp)
+        normalized_b64 = encrypted_dek_b64.strip()
+        if not re.match(r'^[A-Za-z0-9+/]+={0,2}$', normalized_b64) or len(normalized_b64) % 4 != 0:
+            rsp.success = False
+            rsp.error = 'encryptedDek must be valid base64'
+            return jsonobject.dumps(rsp)
+        try:
+            encrypted_dek = base64.b64decode(normalized_b64)
+            enc_again = base64.b64encode(encrypted_dek)
+            if not isinstance(enc_again, str):
+                enc_again = enc_again.decode('ascii')
+            if enc_again.rstrip('=') != normalized_b64.rstrip('='):
+                raise ValueError('non-canonical base64 input')
+        except Exception as e:
+            rsp.success = False
+            rsp.error = 'encryptedDek must be base64: %s' % e
+            return jsonobject.dumps(rsp)
+        secret_uuid, err_code, err_msg = self._ensure_secret_via_key_agent(
+            encrypted_dek, vm_uuid, purpose, provider_name, description,
+        )
+        if secret_uuid:
+            rsp.success = True
+            rsp.secretUuid = secret_uuid
+        else:
+            rsp.success = False
+            if err_code:
+                rsp.errorCode = err_code
+                rsp.error = err_msg or err_code
+            else:
+                rsp.error = err_msg or 'key-agent EnsureSecret failed or no secret_uuid'
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
     def echo(self, req):
         logger.debug('get echoed')
         loop = 0
@@ -1791,8 +2092,7 @@ class HostPlugin(kvmagent.KvmAgent):
         qemu_img_version = shell.call(
             "qemu-img --version | grep 'qemu-img version' | cut -d ' ' -f 3 | cut -d '(' -f 1")
         qemu_img_version = qemu_img_version.strip('\t\r\n ,')
-        ipV4Addrs = [chunk.address for chunk in [x for x in iproute.query_addresses(ip_version=4) if
-                                         x.address != '127.0.0.1' and not x.ifname.endswith('zs')]]
+        ip_addrs = network_ipv6.collect_reportable_agent_addresses(iproute)
 
 
         def run_dmidecode(cmd, default=''):
@@ -1836,9 +2136,18 @@ class HostPlugin(kvmagent.KvmAgent):
                 rsp.powerSupplyMaxPowerCapacity = ''.join(re.findall(r'\d+', power_supply_max_power_capacity.strip()))
 
         rsp.qemuImgVersion = qemu_img_version
+        qemu_package_name = "qemu" if IS_AARCH64 else "qemu-kvm"
+        if self.IS_YUM:
+            try:
+                rsp.qemuKvmPackageVersion = linux.get_rpm_version(qemu_package_name)
+            except Exception as e:
+                logger.error("failed to get %s rpm version for host[uuid:%s]: %s" % (qemu_package_name, self.host_uuid, str(e)))
+                rsp.qemuKvmPackageVersion = None
+        else:
+            logger.debug("%s package version is only reported on RPM-based host[uuid:%s]; automatic IOThread VQ mapping capability will not be enabled" % (qemu_package_name, self.host_uuid))
         rsp.libvirtVersion = self.libvirt_version
         rsp.libvirtPackageVersion = linux.get_libvirt_package_version()
-        rsp.ipAddresses = ipV4Addrs
+        rsp.ipAddresses = ip_addrs
         rsp.cpuArchitecture = platform.machine()
         rsp.uptime = shell.call('uptime -s').strip()
         rsp.iscsiInitiatorName = linux.get_iscsi_initiator_name()
@@ -2960,26 +3269,35 @@ done
             rsp.success = False
             return jsonobject.dumps(rsp)
 
+        is_ipv6_address = cmd.ipAddress is not None and ':' in cmd.ipAddress
+        old_is_ipv6_address = cmd.oldIpAddress is not None and ':' in cmd.oldIpAddress
         if cmd.ipAddress is not None:
             try:
-                # zs-network-setting -i eth0 192.168.1.10 255.255.255.0
-                # 192.168.1.1
-                if cmd.gateway is not None:
-                    shell.call('/usr/local/bin/zs-network-setting -i %s %s %s %s' %
-                               (cmd.interfaceName, cmd.ipAddress, cmd.netmask, cmd.gateway))
+                if is_ipv6_address:
+                    prefix_length = cmd.prefixLength if cmd.prefixLength is not None else cmd.netmask
+                    shell.call('ip -6 addr flush dev %s scope global' % shell_quote(cmd.interfaceName))
+                    shell.call('ip -6 addr add %s/%s dev %s' %
+                               (shell_quote(cmd.ipAddress), prefix_length, shell_quote(cmd.interfaceName)))
+                    shell.call('ip link set dev %s up' % shell_quote(cmd.interfaceName))
                 else:
-                    # zs-network-setting -d eth0
-                    shell.call('/usr/local/bin/zs-network-setting -d %s' %
-                               cmd.interfaceName)
-                    bash_o('/usr/local/bin/zs-network-setting -i %s %s %s' %
-                           (cmd.interfaceName, cmd.ipAddress, cmd.netmask))
+                    # zs-network-setting -i eth0 192.168.1.10 255.255.255.0
+                    # 192.168.1.1
+                    if cmd.gateway is not None:
+                        shell.call('/usr/local/bin/zs-network-setting -i %s %s %s %s' %
+                                   (cmd.interfaceName, cmd.ipAddress, cmd.netmask, cmd.gateway))
+                    else:
+                        # zs-network-setting -d eth0
+                        shell.call('/usr/local/bin/zs-network-setting -d %s' %
+                                   cmd.interfaceName)
+                        bash_o('/usr/local/bin/zs-network-setting -i %s %s %s' %
+                               (cmd.interfaceName, cmd.ipAddress, cmd.netmask))
             except Exception as e:
                 rsp.error = 'unable to add ip on %s, because %s' % (
                     cmd.interfaceName, str(e))
                 rsp.success = False
 
             # After configuring the ip, check the connectivity
-            if cmd.gateway is not None and shell.run(
+            if not is_ipv6_address and cmd.gateway is not None and shell.run(
                     'ping -c 5 -W 1 %s > /dev/null 2>&1' % cmd.gateway) != 0:
                 shell.call('/usr/local/bin/zs-network-setting -d %s' %
                            cmd.interfaceName)
@@ -2999,6 +3317,8 @@ done
                 # mv ip on interface
                 shell.call('/usr/local/bin/zs-network-setting -d %s' %
                            cmd.interfaceName)
+                if old_is_ipv6_address:
+                    shell.call('ip -6 addr flush dev %s scope global' % shell_quote(cmd.interfaceName))
             except Exception as e:
                 rsp.error = 'unable to delete ip on %s, because %s' % (
                     cmd.interfaceName, str(e))
@@ -3221,6 +3541,8 @@ done
 
     def _get_nvidia_vfio_mdev_info(self, to):
         addr = to.pciDeviceAddress
+        if to.type == "Audio_Controller":
+            return False
         check_mdev_folder = '/sys/bus/pci/devices/%s/mdev_supported_types' % addr
         legacy_mdev_dir_exists = os.path.isdir(check_mdev_folder)
         check_virtfn_folder = '/sys/bus/pci/devices/%s/virtfn0/mdev_supported_types' % addr
@@ -3648,15 +3970,7 @@ done
         device_ids, device_names, pci_device_mapper = result
 
         if pci_device_addresses:
-            normalized_addresses = set()
-            for address in pci_device_addresses:
-                normalized = pci.normalize_pci_address(address)
-                normalized_addresses.add(normalized or address)
-
-            device_ids = {
-                slot: info for slot, info in device_ids.items()
-                if slot in normalized_addresses
-            }
+            device_ids = self._filter_pci_device_ids_by_addresses(device_ids, pci_device_addresses)
 
         pci_devices_dict = {}
 
@@ -3729,6 +4043,29 @@ done
         pci.update_cache_devices(pci_devices_dict)
         pci.calculate_max_addressable_memory(rsp.pciDevicesInfo)
         rsp.mdevDeviceInfos = self.get_all_vm_mdev_mappings()
+
+    def _filter_pci_device_ids_by_addresses(self, device_ids, pci_device_addresses):
+        normalized_addresses = set()
+        for address in pci_device_addresses:
+            normalized = pci.normalize_pci_address(address)
+            normalized_addresses.add(address)
+            if normalized:
+                normalized_addresses.add(normalized)
+
+        return {
+            slot: info for slot, info in device_ids.items()
+            if slot in normalized_addresses
+            or (pci.normalize_pci_address(slot) or slot) in normalized_addresses
+            or self._get_pci_parent_address(slot) in normalized_addresses
+        }
+
+    def _get_pci_parent_address(self, slot):
+        physfn = os.path.join("/sys/bus/pci/devices/", slot, "physfn")
+        if not os.path.exists(physfn):
+            return None
+
+        parent = os.readlink(physfn).split('/')[-1]
+        return pci.normalize_pci_address(parent) or parent
 
     def list_vm_uuids(self):
         r, o, e = bash_roe(
@@ -4702,6 +5039,17 @@ done
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    def get_block_devices(self, req):
+        rsp = GetBlockDevicesRsp()
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+
+        all_devices = lvm.get_block_devices() # type: list[lvm.SharedBlockCandidateStruct]
+        if not cmd.includeInUse:
+            all_devices = list(filter(lambda dev: not linux.is_block_device_mounted(dev.name), all_devices))
+        rsp.blockDevices = all_devices
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
     def get_dev_capacity(self, req):
         rsp = GetDevCapacityRsp()
         cmd = jsonobject.loads(req[http.REQUEST_BODY])
@@ -5156,6 +5504,13 @@ done
             self.SETUP_VM_HA_ENABLED_METADATA_LIVE_PATH, self.setup_vm_ha_enabled_metadata_live)
         http_server.register_async_uri(
             self.RECONCILE_VM_HA_ENABLED_METADATA_LIVE_PATH, self.reconcile_vm_ha_enabled_metadata_live)
+        http_server.register_async_uri(
+            self.GET_BLOCK_DEVICES_PATH, self.get_block_devices)
+        http_server.register_async_uri(self.CREATE_ENVELOPE_KEY_PATH, self.create_envelope_key)
+        http_server.register_async_uri(self.ROTATE_ENVELOPE_KEY_PATH, self.rotate_envelope_key)
+        http_server.register_async_uri(self.GET_ENVELOPE_PUBLIC_KEY_PATH, self.get_envelope_public_key)
+        http_server.register_async_uri(self.CHECK_ENVELOPE_KEY_PATH, self.check_envelope_key)
+        http_server.register_async_uri(self.ENSURE_SECRET_PATH, self.ensure_secret)
 
         self.heartbeat_timer = {}
         filepath = r'/etc/libvirt/qemu/networks/autostart/default.xml'

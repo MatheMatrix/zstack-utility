@@ -34,6 +34,8 @@ LVM_CONFIG_PATH = "/etc/lvm"
 LVM_CONFIG_FILE = '/etc/lvm/lvm.conf'
 LVM_LOCAL_CONFIG_FILE = '/etc/lvm/lvmlocal.conf'
 LVM_CONFIG_TMP_FILE = '/etc/lvm/lvm.conf.tmp'
+LVM_FILTER_KEYS = ("filter", "global_filter")
+LVM_CONFIG_LOCK_FILE = "/var/run/zstack/lvm-config.lock"
 SANLOCK_CONFIG_FILE_PATH = "/etc/sanlock/sanlock.conf"
 DEB_SANLOCK_CONFIG_FILE_PATH = "/etc/default/sanlock"
 LIVE_LIBVIRT_XML_DIR = "/var/run/libvirt/qemu"
@@ -62,7 +64,7 @@ LVM_LOCKSPACE_BACKUP_PATH = "/var/lib/lvm/"
 
 '''
 If the lvm command with locking is hung, it will always occupy the lock and cannot be released.
-And in scenarios where storage IO is slow and lock contention occurs, it may take longer to execute, 
+And in scenarios where storage IO is slow and lock contention occurs, it may take longer to execute,
 so we need to set a timeout that can tolerate this scenario.
 '''
 lvm_cmd_timeout_with_locking = 210
@@ -158,6 +160,7 @@ class RetryException(Exception):
 
 class SharedBlockCandidateStruct:
     def __init__(self):
+        self.name = None  # type: str
         self.wwid = None  # type: str
         self.vendor = None  # type: str
         self.model = None  # type: str
@@ -534,7 +537,9 @@ def lsblk_info(dev_name):
         return e.split("=")[1].strip().strip('"')
 
     for entry in o.strip().split("\n")[0].split('" '):  # type: str
-        if entry.startswith("VENDOR"):
+        if entry.startswith("NAME"):
+            s.name = get_data(entry)
+        elif entry.startswith("VENDOR"):
             s.vendor = get_data(entry)
         elif entry.startswith("MODEL"):
             s.model = get_data(entry)
@@ -606,6 +611,7 @@ def backup_lvm_config():
     logger.debug("backup lvm config file success")
 
 
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
 def reset_lvm_conf_default():
     if not os.path.exists(LVM_CONFIG_PATH):
         raise Exception("can not find lvm config path: %s, reset lvm config failed" % LVM_CONFIG_PATH)
@@ -636,6 +642,7 @@ def get_lvm_default_config():
     return Config(_get_config())
 
 
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
 def config_lvm_by_sed(keyword, entry, files):
     warnings.warn("config_lvm_by_sed() is deprecated", DeprecationWarning)
     if not os.path.exists(LVM_CONFIG_PATH):
@@ -648,13 +655,19 @@ def config_lvm_by_sed(keyword, entry, files):
     logger.debug(bash.bash_o("lvmconfig --type diff"))
 
 
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
 @bash.in_bash
 def config_lvm_filter(files, no_drbd=False, preserve_disks=None):
+    # type: (list[str], bool, set[str]) -> object
+    _config_lvm_filter(files, no_drbd, preserve_disks)
+
+
+def _config_lvm_filter(files, no_drbd=False, preserve_disks=None):
     # type: (list[str], bool, set[str]) -> object
     if not os.path.exists(LVM_CONFIG_PATH):
         raise Exception("can not find lvm config path: %s, config lvm failed" % LVM_CONFIG_PATH)
 
-    if preserve_disks is not None and len(preserve_disks) != 0:
+    if preserve_disks is not None:
         filter_str = 'filter=['
         for disk in preserve_disks:
             filter_str += '"a|^%s$|", ' % disk.replace("/", "\\/")
@@ -678,6 +691,76 @@ def config_lvm_filter(files, no_drbd=False, preserve_disks=None):
     for f in files:
         bash.bash_r("sed -i 's/.*\\b%s.*/%s/g' %s/%s" % ("filter", filter_str, LVM_CONFIG_PATH, f))
         linux.sync_file(os.path.join(LVM_CONFIG_PATH, f))
+
+
+def _existing_lvm_filter_files():
+    files = ("lvm.conf", "lvmlocal.conf")
+    return [f for f in files if os.path.exists(os.path.join(LVM_CONFIG_PATH, f))]
+
+
+def _normalize_lvm_filter_devices(devices):
+    return list(set(str(device).strip() for device in devices or [] if device and str(device).strip()))
+
+
+def _get_lvm_filter_rules(config, key):
+    pattern = re.compile(r"(?m)^\s*%s\s*=\s*\[(.*?)\]\s*$" % re.escape(key))
+    rules = []
+    for filter_body in pattern.findall(config):
+        rules.extend(re.findall(r'"((?:\\.|[^"\\])*)"', filter_body))
+    return rules
+
+
+def _exact_device_from_lvm_accept_rule(rule):
+    if rule.startswith("a|^") and rule.endswith("$|"):
+        return rule[3:-2].replace("\\/", "/")
+
+
+def _read_lvm_accept_rules(config_files):
+    accept_rules = []
+    for path in config_files:
+        with open(os.path.join(LVM_CONFIG_PATH, path), "r") as stream:
+            config = stream.read()
+        for key in LVM_FILTER_KEYS:
+            accept_rules.extend([
+                rule for rule in _get_lvm_filter_rules(config, key)
+                if rule.startswith("a")
+            ])
+    return accept_rules
+
+
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
+@bash.in_bash
+def append_lvm_filter_devices(devices):
+    devices = _normalize_lvm_filter_devices(devices)
+    if not devices:
+        return set()
+
+    config_files = _existing_lvm_filter_files()
+    if not config_files:
+        raise Exception("No LVM config file found to append filter devices")
+
+    accepted_devices = set(filter(None, [_exact_device_from_lvm_accept_rule(rule)
+                                         for rule in _read_lvm_accept_rules(config_files)]))
+    appended_devices = set(devices) - accepted_devices
+    accepted_devices.update(devices)
+    _config_lvm_filter(config_files, preserve_disks=accepted_devices)
+    return appended_devices
+
+
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
+@bash.in_bash
+def remove_lvm_filter_devices(devices):
+    devices = _normalize_lvm_filter_devices(devices)
+    if not devices:
+        return
+
+    config_files = _existing_lvm_filter_files()
+    if not config_files:
+        return
+
+    accepted_devices = set(filter(None, [_exact_device_from_lvm_accept_rule(rule)
+                                         for rule in _read_lvm_accept_rules(config_files)]))
+    _config_lvm_filter(config_files, preserve_disks=accepted_devices - set(devices))
 
 
 def modify_sanlock_config(key, value):
@@ -748,7 +831,7 @@ WantedBy=multi-user.target
     os.chmod(lvmlockd_service_path, 0o644)
 
     if os.path.exists("/etc/rsyslog.d") and not os.path.exists(LVMLOCKD_LOG_RSYSLOG_PATH):
-        content = """if $programname == 'lvmlockd' then %s 
+        content = """if $programname == 'lvmlockd' then %s
 & stop
 """ % LVMLOCKD_LOG_FILE_PATH
         with open(LVMLOCKD_LOG_RSYSLOG_PATH, 'w') as f:
@@ -762,11 +845,13 @@ WantedBy=multi-user.target
     cmd(is_exception=False)
 
 
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
 def config_lvm_conf(node, value):
     cmd = shell.ShellCmd("lvmconfig --mergedconfig --config %s=%s -f /etc/lvm/lvm.conf" % (node, value))
     cmd(is_exception=True)
 
 
+@lock.file_lock(LVM_CONFIG_LOCK_FILE)
 def config_lvmlocal_conf(node, value):
     cmd = shell.ShellCmd("lvmconfig --mergedconfig --config %s=%s -f /etc/lvm/lvmlocal.conf" % (node, value))
     cmd(is_exception=True)
@@ -1001,6 +1086,111 @@ def check_missing_pv(vgUuid):
                 raise Exception("vg %s was missing pv[name:%s, uuid:%s] , unable to restore" % (vgUuid, pv_name, pv_uuid))
             restore_missing_pv(pv_name)
 
+def list_lvs_expected_devices(vgUuid):
+    cmd = ("%s --segments --reportformat json --config report/mark_hidden_devices=0 "
+           "-o vg_name,pv_name,pv_major,pv_minor,lv_name,segtype -S %s" %
+           (subcmd("pvs"), linux.shellquote("lv_active=active && vg_name=%s" % vgUuid)))
+    return_code, output, _ = bash.bash_roe(cmd)
+    if return_code != 0:
+        logger.warn("failed to query LVM PV segments for VG %s, return code: %s" % (vgUuid, return_code))
+        return
+
+    reports = simplejson.loads(output).get("report") or []
+    rows = reports[0].get("pvseg") or [] if reports else []
+    if not rows:
+        logger.warn("skip LVM device mismatch detection because the PV segment report for VG %s is empty" % vgUuid)
+        return
+
+    lvs = {}
+    for row in rows:
+        lv_name = str(row.get("lv_name") or "").strip()
+        if not lv_name:
+            continue
+        vg_name = str(row.get("vg_name") or "").strip()
+        if not vg_name:
+            logger.warn("skip incomplete LVM PV segment in VG %s" % vgUuid)
+            continue
+
+        dm_name = "%s-%s" % (vg_name.replace("-", "--"), lv_name.replace("-", "--"))
+        lv = lvs.setdefault(dm_name, {
+            "path": "%s/%s" % (vg_name, lv_name),
+            "expected_devices": {},
+            "segtypes": set(),
+            "incomplete": False,
+        })
+        lv["segtypes"].add(str(row.get("segtype") or "").strip())
+        pv_name = str(row.get("pv_name") or "").strip()
+        device = "%s:%s" % (str(row.get("pv_major") or "").strip(),
+                             str(row.get("pv_minor") or "").strip())
+        if pv_name and device != "0:0" and re.match(r"^\d+:\d+$", device):
+            lv["expected_devices"][device] = pv_name
+        else:
+            lv["incomplete"] = True
+    return lvs
+
+def list_dm_actual_devices():
+    return_code, output, _ = bash.bash_roe("timeout -s SIGKILL 30 dmsetup table --concise")
+    if return_code != 0:
+        logger.warn("failed to query device-mapper tables, return code: %s" % return_code)
+        return
+
+    dm_tables = {}
+    for entry in (output or "").split(";"):
+        fields = entry.strip().split(",", 4)
+        if len(fields) != 5:
+            continue
+        devices = set()
+        complete = True
+        for segment in fields[4].split(","):
+            tokens = segment.split()
+            if len(tokens) < 4 or tokens[2] != "linear" or not re.match(r"^\d+:\d+$", tokens[3]):
+                complete = False
+                continue
+            devices.add(tokens[3])
+        dm_tables[fields[0].strip()] = (devices, complete)
+    return dm_tables
+
+def find_mismatched_lvs(lvs, dm_tables):
+    mismatched_lvs = []
+    for dm_name, lv in lvs.items():
+        if lv["segtypes"] != {"linear"}:
+            continue
+        if lv["incomplete"] or not lv["expected_devices"]:
+            logger.warn("skip %s because its LVM PV device report is incomplete" % lv["path"])
+            continue
+        dm_table = dm_tables.get(dm_name)
+        if not dm_table or not dm_table[0] or not dm_table[1]:
+            logger.warn("skip %s because its device-mapper table is missing or incomplete" % lv["path"])
+            continue
+        if not dm_table[0].issubset(set(lv["expected_devices"])):
+            logger.warn("LVM device mismatch for %s, dm table devices: [%s], expected devices: [%s]" %
+                        (lv["path"], ", ".join(sorted(dm_table[0])),
+                         ", ".join("%s(%s)" % (pv_name, device) for device, pv_name
+                                   in sorted(lv["expected_devices"].items()))))
+            mismatched_lvs.append(lv["path"])
+    return sorted(mismatched_lvs)
+
+@linux.ignoreerror
+def refresh_mismatched_lvs(vgUuid):
+    lvs = list_lvs_expected_devices(vgUuid)
+    if not lvs:
+        return
+    dm_tables = list_dm_actual_devices()
+    if dm_tables is None:
+        return
+    mismatched_lvs = find_mismatched_lvs(lvs, dm_tables)
+    if not mismatched_lvs:
+        return
+
+    cmd = "%s --refresh %s" % (subcmd("lvchange"),
+                                " ".join(linux.shellquote(path) for path in mismatched_lvs))
+    logger.warn("refresh mismatched LVs with command: %s" % cmd)
+    return_code, stdout, stderr = bash.bash_roe(cmd)
+    if return_code != 0:
+        logger.warn("failed to refresh mismatched LVs %s: %s" %
+                    (", ".join(mismatched_lvs),
+                     (stderr or "").strip() or (stdout or "").strip() or return_code))
+
 def stop_vg_lock(vgUuid):
     @linux.retry(times=3, sleep_time=random.uniform(0.1, 1))
     def vg_lock_not_exists(vgUuid):
@@ -1093,6 +1283,23 @@ def backup_super_block(disk_path):
 
 
 @bash.in_bash
+def is_running_vm_using_lun_passthrough():
+    return bash.bash_r('''grep -rlF "<disk type='block' device='lun'" %s/*''' % LIVE_LIBVIRT_XML_DIR) == 0
+
+
+@bash.in_bash
+def flush_mpath(disk):
+    wwid = get_dm_wwid(disk)
+    bash.bash_roe("multipath -f %s" % disk)
+    if is_running_vm_using_lun_passthrough() and wwid:
+        # re-create only this disk's map; a host-wide multipathd reload would
+        # suspend in-use maps and abort in-flight IO on LUN-passthrough guests
+        bash.bash_roe("multipath %s && sleep 1" % wwid)
+    else:
+        bash.bash_roe("systemctl reload multipathd.service && sleep 1")
+
+
+@bash.in_bash
 def wipe_fs(disks, expected_vg=None, with_lock=True):
     @bash.in_bash
     def clear_lvmlock(vg_name):
@@ -1105,7 +1312,7 @@ def wipe_fs(disks, expected_vg=None, with_lock=True):
         if r == 0 and o.strip() != "":
             exists_vg = o.strip()
 
-        if expected_vg in o.strip():
+        if expected_vg and expected_vg in o.strip():
             continue
 
         backup = backup_super_block(disk)
@@ -1131,7 +1338,7 @@ def wipe_fs(disks, expected_vg=None, with_lock=True):
             bash.bash_roe("dmsetup remove /dev/%s" % holder)
 
         if need_flush_mpath:
-            bash.bash_roe("multipath -f %s && systemctl reload multipathd.service && sleep 1" % disk)
+            flush_mpath(disk)
 
         if exists_vg is not None:
             bash.bash_r("grep -l %s /etc/drbd.d/* | xargs rm" % exists_vg)
@@ -1238,6 +1445,11 @@ def get_all_vg_size():
 
 def add_vg_tag(vgUuid, tag):
     cmd = shell.ShellCmd("vgchange --addtag %s %s" % (tag, vgUuid))
+    cmd(is_exception=True)
+
+
+def add_pv_tag(pvName, tag):
+    cmd = shell.ShellCmd("pvchange --addtag %s %s" % (tag, pvName))
     cmd(is_exception=True)
 
 
@@ -2814,8 +3026,8 @@ def report_config_changed():
 
 
 NOLOCK_CMDS = {"lvs", "pvs", "vgs"}
-TIMEOUT_CMDS = {"lvchange", "lvcreate", "lvrename", "lvresize", "lvextend", "lvremove"}
-REPAIR_LV_CMDS = TIMEOUT_CMDS - {"lvcreate"}
+TIMEOUT_CMDS = {"lvchange", "lvcreate", "lvrename", "lvresize", "lvextend", "lvremove", "pvck", "vgck"}
+REPAIR_LV_CMDS = {"lvchange", "lvrename", "lvresize", "lvextend", "lvremove"}
 REPAIR_VG_CMDS = {"vgchange"}
 def subcmd(cmd, timeout=lvm_cmd_timeout_with_locking, lockopts: list[str] | None = None):
     argv = [cmd]
@@ -2837,3 +3049,129 @@ def subcmd(cmd, timeout=lvm_cmd_timeout_with_locking, lockopts: list[str] | None
         argv += ["--lockopt", ",".join(lockopts)]
 
     return " ".join(argv)
+
+
+def get_lvm_objects(object_type, fields=None, uuid=None, name=None, tag=None, first=False):
+    sub_cmd = {
+        "physical_volume": subcmd("pvs"),
+        "volume_group": subcmd("vgs"),
+        "logical_volume": subcmd("lvs"),
+    }.get(object_type)
+    if not sub_cmd:
+        raise Exception("Unsupported LVM object type: %s" % object_type)
+
+    selected_fields = ["all"] if fields is None else fields
+    args = ["--units", "B", "--options", ",".join(selected_fields), "--reportformat", "json"]
+    selectors = []
+    if uuid:
+        selectors.append("uuid=%s" % uuid)
+    if tag:
+        selectors.append("tags=%s" % tag)
+    if selectors:
+        args.extend(["--select", linux.shellquote(" && ".join(selectors))])
+    if name:
+        args.append(linux.shellquote(name))
+    cmd = shell.ShellCmd("%s %s" % (sub_cmd, " ".join(args)))
+    cmd(is_exception=False)
+    if not cmd.stdout.strip():
+        return None
+
+    reports = simplejson.loads(cmd.stdout.strip()).get("report")
+    if not reports:
+        return None
+    objects = reports.pop().popitem()[1] or None
+    if first:
+        return objects.pop() if objects else None
+    return objects
+
+
+class LvmObjectInfo(object):
+    _object_type = None # type: str | None
+
+    def __init__(self, uuid):
+        # type: (str) -> None
+        self._uuid = uuid
+        self._info = None # type: dict[str, str] | None
+
+    def reload(self):
+        # type: () -> None
+        self._info = None
+
+    def _load(self):
+        # type: () -> dict[str, str]
+        info = get_lvm_objects(self._object_type, uuid=self._uuid, first=True)
+
+        if not info:
+            raise Exception("No such LVM object with UUID: %s" % self._uuid)
+
+        return info
+
+    def __getitem__(self, name):
+        # type: (str) -> str
+        if self._info is None:
+            self._info = self._load()
+        return self._info.get(name, "")
+
+class PVInfo(LvmObjectInfo):
+    _object_type = "physical_volume"
+
+class VGInfo(LvmObjectInfo):
+    _object_type = "volume_group"
+
+class LVInfo(LvmObjectInfo):
+    _object_type = "logical_volume"
+
+
+def create_pv(device_path, metadata_size=None, force=True):
+    args = ["-qq", "--yes"]
+    if metadata_size is not None:
+        args.extend(["--metadatasize", metadata_size])
+    if force:
+        args.append("--force")
+    args.append(device_path)
+    shell.ShellCmd("%s %s" % (subcmd("pvcreate"), ' '.join(args)))(is_exception=True)
+    pv_created = get_lvm_objects("physical_volume", name=device_path, fields=["pv_uuid"], first=True)
+    if pv_created is None:
+        raise Exception("Failed to create PV on device %s" % device_path)
+    return pv_created.get("pv_uuid")
+
+
+def remove_pv(pv_name, force=True):
+    args = ["-qq", "--yes"]
+    if force:
+        args.append("--force")
+    args.append(pv_name)
+    shell.ShellCmd("%s %s" % (subcmd("pvremove"), ' '.join(args)))(is_exception=True)
+
+
+def check_pv(pv_name):
+    cmd = shell.ShellCmd("%s -qq --yes %s" % (subcmd("pvck", timeout=5), pv_name))
+    cmd(is_exception=False)
+    return cmd.return_code == 0
+
+
+def create_vg(vg_name, pv_names, metadata_size=None):
+    args = ["-qq", "--yes"]
+    if metadata_size is not None:
+        args.extend(["--metadatasize", metadata_size])
+    args.append(vg_name)
+    args.extend(pv_names)
+    shell.ShellCmd("%s %s" % (subcmd("vgcreate"), ' '.join(args)))(is_exception=True)
+    vg_created = get_lvm_objects("volume_group", name=vg_name, fields=["vg_uuid"], first=True)
+    if vg_created is None:
+        raise Exception("Failed to create VG %s on PVs %s" % (vg_name, ','.join(pv_names)))
+    return vg_created.get("vg_uuid")
+
+
+def remove_vg(vg_name, force=True):
+    args = ["-qq", "--yes"]
+    if force:
+        args.append("--force")
+    args.append(vg_name)
+    shell.ShellCmd("%s %s" % (subcmd("vgremove"), ' '.join(args)))(is_exception=True)
+
+
+def rescan_lvm():
+    shell.ShellCmd("%s --cache -qq --yes" % subcmd("pvscan"))(is_exception=True)
+    shell.ShellCmd("%s -qq --yes --ignorelockingfailure" % subcmd("vgscan"))(is_exception=True)
+    shell.ShellCmd("%s -qq --yes --ignorelockingfailure --all" % subcmd("lvscan"))(is_exception=True)

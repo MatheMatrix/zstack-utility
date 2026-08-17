@@ -648,7 +648,8 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
                 "reserved_stack": 256,
                 "reserved_memory": 131072,
                 "use_devicesfile": 0,
-                "use_lvmetad": 1 if enableLvmetad else 0
+                "use_lvmetad": 1 if enableLvmetad else 0,
+                "notify_dbus": 0
             })
             if kvmagent.get_host_os_type() == "debian":
                 config.modify({"udev_rules": 0, "udev_sync": 0})
@@ -735,6 +736,7 @@ class SharedBlockPlugin(kvmagent.KvmAgent):
         # lvm.add_vg_tag(cmd.vgUuid, "%s::%s::%s::%s" % (HEARTBEAT_TAG, cmd.hostUuid, time.time(), linux.get_hostname()))
         self.clear_stalled_qmp_socket()
         lvm.check_missing_pv(cmd.vgUuid)
+        lvm.refresh_mismatched_lvs(cmd.vgUuid)
         lvm.update_lockspace_io_timeout_if_need(cmd.vgUuid, cmd.ioTimeout)
 
         self.connected(cmd.vgUuid)

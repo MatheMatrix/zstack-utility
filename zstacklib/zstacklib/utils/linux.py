@@ -40,6 +40,7 @@ from zstacklib.utils import xmlobject
 from zstacklib.utils import shell
 from zstacklib.utils import log
 from zstacklib.utils import iproute
+from zstacklib.utils import network_ipv6
 
 
 logger = log.get_logger(__name__)
@@ -51,6 +52,7 @@ SUPPORTED_ARCH = ['x86_64', 'aarch64', 'mips64el', 'loongarch64']
 DIST_WITH_RPM_DEB = ['kylin']
 HOST_ARCH = platform.machine()
 tcp_port_lock = threading.Lock()
+LOONGSON_3C5000L_CORES_PER_SOCKET = 16
 
 
 '''
@@ -68,6 +70,9 @@ KVM_CHECK_EXTENSION = 44547
 DEFAULT_VM_IPA_SIZE = 40
 LIVE_LIBVIRT_XML_DIR = "/var/run/libvirt/qemu"
 MAX_NBD_READ_SIZE = 32768000
+NFS_URL_SEPARATOR = ':'
+IPV6_HOST_PREFIX = '['
+IPV6_HOST_SUFFIX = ']'
 
 def ignoreerror(func):
     @functools.wraps(func)
@@ -322,7 +327,11 @@ def rm_file_checked(fpath):
         return
 
     exception_on_opened_file(fpath)
-    os.remove(fpath)
+    try:
+        os.remove(fpath)
+    except OSError as e:
+        if e.errno != errno.ENOENT: # errno.ENOENT: file is already been deleted
+            raise
 
 def rm_dir_checked(dpath):
     if not os.path.exists(dpath):
@@ -504,11 +513,11 @@ def is_mounted(path=None, url=None):
         url = re.sub(r'/{2,}','/',url.rstrip('/'))
 
     if url and path:
-        cmdstr = "mount | grep -E '%s[ /]+on' | grep '%s ' " % (url, path)
+        cmdstr = "mount | grep -F '%s on ' | grep -F '%s ' " % (url, path)
     elif not url:
-        cmdstr = "mount | grep '%s '" % path
+        cmdstr = "mount | grep -F '%s '" % path
     elif not path:
-        cmdstr = "mount | grep -E '%s[ /]+on'" % url
+        cmdstr = "mount | grep -F '%s on '" % url
     else:
         raise Exception('path and url cannot both be None')
 
@@ -610,24 +619,28 @@ def fumount(mountpoint, timeout = 10):
     return shell.run("timeout %s fusermount -u %s" % (timeout, mountpoint))
 
 def is_valid_address(address):
-    try:
-        socket.inet_aton(address)
-        return True
-    except socket.error:
-        return False
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            socket.inet_pton(family, address)
+            return True
+        except socket.error:
+            pass
+    return False
 
 def is_valid_hostname(hostname):
     if is_valid_address(hostname):
         return True
 
     try:
-        socket.gethostbyname(hostname)
+        socket.getaddrinfo(hostname, None)
         return True
     except socket.error:
         return False
 
 def get_host_by_name(host):
-    return socket.gethostbyname(host)
+    if is_valid_address(host):
+        return host
+    return socket.getaddrinfo(host, None)[0][4][0]
 
 def get_hostname():
     return socket.gethostname()
@@ -638,13 +651,30 @@ def get_hostname_fqdn():
         return socket.getaddrinfo(socket.gethostname(), 0, 0, 0, 0, socket.AI_CANONNAME)[0][3]
     return socket.getaddrinfo(socket.gethostname(), 0, flags=socket.AI_CANONNAME)[0][3]
 
+def parse_nfs_url(url):
+    if url.startswith(IPV6_HOST_PREFIX):
+        end = url.find(IPV6_HOST_SUFFIX)
+        if end <= 0:
+            raise InvalidNfsUrlError(url, 'IPv6 host must be enclosed by []')
+
+        host = url[len(IPV6_HOST_PREFIX):end]
+        suffix = url[end + len(IPV6_HOST_SUFFIX):]
+        if not suffix.startswith(NFS_URL_SEPARATOR):
+            raise InvalidNfsUrlError(url, 'url should be [IPv6]:/absolute/path')
+
+        return host, suffix[len(NFS_URL_SEPARATOR):]
+
+    ts = url.split(NFS_URL_SEPARATOR)
+    if len(ts) != 2:
+        raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
+
+    return ts[0], ts[1]
+
+
 def is_valid_nfs_url(url):
-    ts = url.split(':')
-    if len(ts) != 2: raise InvalidNfsUrlError(url, 'url should have one and only one ":"')
-    host = ts[0]
-    path = ts[1]
+    host, path = parse_nfs_url(url)
     try:
-        socket.gethostbyname(host)
+        socket.getaddrinfo(host, None)
     except socket.gaierror:
         raise InvalidNfsUrlError(url, '%s cannont resolve to ip address' % host)
 
@@ -828,18 +858,21 @@ def ssh(hostname, sshkey, cmd, user='root', sshPort=22):
     os.chmod(sshkey_file, 0o600)
 
     try:
-        return shell.call('ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s@%s "%s"' % (sshPort, sshkey_file, user, hostname, cmd))
+        return shell.call('ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s "%s"' % (sshPort, sshkey_file, format_ssh_target(user, hostname), cmd))
     finally:
         if sshkey_file:
             os.remove(sshkey_file)
+
+def format_ssh_target(user, hostname):
+    return '%s@%s' % (user, network_ipv6.format_url_host(hostname))
 
 def sshpass_run(hostname, password, cmd, user='root', port=22):
     sshpass_file = write_to_temp_file(password)
     os.chmod(sshpass_file, 0o600)
 
     try:
-        s = shell.ShellCmd('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s@%s "%s"' % (
-            sshpass_file, port, user, hostname, cmd))
+        s = shell.ShellCmd('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s "%s"' % (
+            sshpass_file, port, format_ssh_target(user, hostname), cmd))
         s(False)
         return s.return_code, s.stdout, s.stderr
     finally:
@@ -850,8 +883,8 @@ def sshpass_call(hostname, password, cmd, user='root', port=22):
     os.chmod(sshpass_file, 0o600)
 
     try:
-        return shell.call('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s@%s "%s"' % (
-            sshpass_file, port, user, hostname, cmd))
+        return shell.call('sshpass -f %s ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s "%s"' % (
+            sshpass_file, port, format_ssh_target(user, hostname), cmd))
     finally:
         rm_file_force(sshpass_file)
 
@@ -892,8 +925,8 @@ def scp_download(hostname, sshkey, src_filepath, dst_filepath, host_account='roo
         dst_dir = os.path.dirname(dst_filepath)
         if not os.path.exists(dst_dir):
             os.makedirs(dst_dir)
-        scp_cmd = 'scp {7} {6} -P {0} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {1} {2}@{3}:{4} {5}'\
-            .format(sshPort, sshkey_file, host_account, hostname, shellquote(src_filepath).replace(" ", "\\ "), dst_filepath, bandWidth, filename_check_option)
+        scp_cmd = 'scp {6} {5} -P {0} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {1} {2}:{3} {4}'\
+            .format(sshPort, sshkey_file, format_ssh_target(host_account, hostname), shellquote(src_filepath).replace(" ", "\\ "), dst_filepath, bandWidth, filename_check_option)
         shell.call(scp_cmd)
         os.chmod(dst_filepath, 0o664)
     finally:
@@ -911,9 +944,9 @@ def scp_upload(hostname, sshkey, src_filepath, dst_filepath, host_account='root'
     os.chmod(sshkey_file, 0o600)
     try:
         dst_dir = os.path.dirname(dst_filepath)
-        ssh_cmd = 'ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s@%s "mkdir -m 777 -p %s"' % (sshPort, sshkey_file, host_account, hostname, dst_dir)
+        ssh_cmd = 'ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s "mkdir -m 777 -p %s"' % (sshPort, sshkey_file, format_ssh_target(host_account, hostname), dst_dir)
         shell.call(ssh_cmd)
-        scp_cmd = 'scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s %s@%s:%s' % (sshPort, sshkey_file, src_filepath, host_account, hostname, dst_filepath)
+        scp_cmd = 'scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s %s:%s' % (sshPort, sshkey_file, src_filepath, format_ssh_target(host_account, hostname), dst_filepath)
         shell.call(scp_cmd)
     finally:
         if sshkey_file:
@@ -1135,7 +1168,7 @@ def create_template(src, dst, dst_format='qcow2', compress=False, shell=shell, p
     raise Exception('unknown format[%s] of the image file[%s]' % (fmt, src))
 
 
-def qcow2_create_template(src, dst, compress, dst_format='qcow2', shell=shell, progress_output=None, opts=None):
+def qcow2_create_template(src, dst, compress, dst_format='qcow2', shell=shell, progress_output=None, opts=None, bitmap=None):
     redirect, ext_opts = "", []
     if progress_output:
         redirect = " > " + progress_output
@@ -1146,6 +1179,9 @@ def qcow2_create_template(src, dst, compress, dst_format='qcow2', shell=shell, p
 
     if opts:
         ext_opts.append(opts)
+
+    if bitmap:
+        ext_opts.extend(["--bitmap", shellquote(bitmap)])
 
     shell.call('%s %s -f qcow2 -O %s %s %s %s' % (qemu_img.subcmd('convert'), " ".join(ext_opts), dst_format, src, dst, redirect))
 
@@ -1159,6 +1195,20 @@ def raw_create_template(src, dst, dst_format='qcow2', shell=shell, progress_outp
 
 def qcow2_convert_to_raw(src, dst):
     shell.call('%s -f qcow2 -O raw %s %s' % (qemu_img.subcmd('convert'), src, dst))
+
+def qcow2_convert(src, dst, dst_format='qcow2', shell=shell, progress_output=None, opts=None, bitmap=None):
+    redirect, ext_opts = "", []
+    if progress_output:
+        redirect = " > " + progress_output
+        ext_opts.append("-p")
+
+    if opts:
+        ext_opts.append(opts)
+
+    if bitmap:
+        ext_opts.extend(["--bitmap", shellquote(bitmap)])
+
+    shell.call('qemu-img convert %s -f qcow2 -O %s %s %s %s' % (" ".join(ext_opts), dst_format, src, dst, redirect))
 
 def qcow2_commit(top, base):
     shell.call('%s -f qcow2 -b %s %s' % (qemu_img.subcmd('commit'), base, top))
@@ -1717,6 +1767,8 @@ def create_bridge(bridge_name, interface, move_route=True):
     if br_name and br_name != bridge_name:
         raise Exception('failed to create bridge[{0}], physical interface[{1}] has been occupied by bridge[{2}]'.format(bridge_name, interface, br_name))
 
+    route_info = _get_dev_route_info(interface) if move_route else None
+
     if not is_bridge(bridge_name):
         shell.call("brctl addbr %s" % bridge_name)
     else:
@@ -1739,11 +1791,24 @@ def create_bridge(bridge_name, interface, move_route=True):
     # MAC address.
     shell.call("ip link set %s address `cat /sys/class/net/%s/address`" % (bridge_name, interface))
 
-    if move_route:
-        move_dev_route(interface, bridge_name)
+    if move_route and route_info is not None:
+        try:
+            move_dev_route(interface, bridge_name, route_info, ignore_missing_source=True)
+        except Exception:
+            if br_name != bridge_name:
+                try:
+                    shell.call("ip link set %s nomaster" % interface, exception=False)
+                    shell.call("ip link set %s up" % interface, exception=False)
+                    _restore_dev_route(interface, route_info)
+                except Exception:
+                    logger.warning("failed to rollback routes from bridge %s to interface %s: %s" %
+                                   (bridge_name, interface, traceback.format_exc()))
+            raise
+    elif move_route:
+        logger.debug("Source device %s doesn't have an IP address set. No need to move routes." % interface)
 
 
-def move_dev_route(src_dev, dest_dev):
+def move_dev_route(src_dev, dest_dev, route_info=None, ignore_missing_source=False):
     """
     Move IP address and routes from one network device (src_dev) to another (dest_dev).
 
@@ -1751,30 +1816,14 @@ def move_dev_route(src_dev, dest_dev):
     - src_dev: The source device from which the IP and routes will be moved.
     - dest_dev: The destination device to which the IP and routes will be moved.
     """
-    # Check if the source device has an IP address set
-    out = shell.call('ip addr show dev %s | grep "inet "' % src_dev, exception=False)
-    if not out:
+    if route_info is None:
+        route_info = _get_dev_route_info(src_dev)
+    if route_info is None:
         logger.debug("Source device %s doesn't have an IP address set. No need to move routes." % src_dev)
         return
 
-    # Record old routes associated with the source device
-    routes = []
-    r_out = shell.call("ip route show dev %s | grep via | sed 's/onlink//g'" % src_dev)
-    for line in r_out.split('\n'):
-        if line != "":
-            routes.append(line)
-            shell.call('ip route del %s' % line)
-
-    # Move IP address from the source device to the destination device
-    ip = out.strip().split()[1]
-    shell.call('ip addr del %s dev %s' % (ip, src_dev))
-    r_out = shell.call('ip addr show dev %s | grep "inet %s"' % (dest_dev, ip), exception=False)
-    if not r_out:
-        shell.call('ip addr add %s dev %s' % (ip, dest_dev))
-
-    # Restore routes on the destination device
-    for r in routes:
-        shell.call('ip route add %s' % r)
+    _delete_dev_route(src_dev, route_info, ignore_missing_source)
+    _restore_dev_route(dest_dev, route_info)
 
     # Migrate DNS settings for systems using systemd-resolved (e.g. alinux4).
     # On these systems DNS servers are bound per-link; after bridging, the
@@ -1782,6 +1831,115 @@ def move_dev_route(src_dev, dest_dev):
     # unreachable.  We read DNS servers from the source device and apply them
     # to the destination bridge device.
     _migrate_resolved_dns(src_dev, dest_dev)
+
+
+def _get_dev_route_info(src_dev):
+    ipv4_out = shell.call('ip addr show dev %s | grep "inet "' % src_dev, exception=False)
+    ipv6_out = shell.call('ip addr show dev %s | grep "inet6 " | grep -v " scope link"' % src_dev, exception=False)
+    if not ipv4_out and not ipv6_out:
+        return None
+
+    routes = []
+    r_out = shell.call("ip route show dev %s | grep via | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            routes.append(line)
+
+    routes6 = []
+    r_out = shell.call("ip -6 route show dev %s | grep via | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            routes6.append(line)
+
+    direct_routes6 = []
+    r_out = shell.call("ip -6 route show dev %s | grep -v via | grep -v ' proto kernel ' | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            direct_routes6.append(line)
+
+    connected_routes6 = []
+    r_out = shell.call("ip -6 route show dev %s proto kernel | grep -v '^fe80::' | sed 's/onlink//g'" % src_dev)
+    for line in r_out.split('\n'):
+        if line != "":
+            connected_routes6.append(line)
+
+    return {
+        'ipv4_addresses': _parse_ip_addresses(ipv4_out),
+        'ipv6_addresses': _parse_ip_addresses(ipv6_out),
+        'routes': routes,
+        'routes6': routes6,
+        'direct_routes6': direct_routes6,
+        'connected_routes6': connected_routes6,
+    }
+
+
+def _delete_dev_route(src_dev, route_info, ignore_missing_source=False):
+    exception = not ignore_missing_source
+    for r in route_info['routes']:
+        shell.call('ip route del %s' % r, exception=exception)
+    for r in route_info['routes6']:
+        shell.call('ip -6 route del %s' % r, exception=exception)
+    for r in route_info['direct_routes6']:
+        shell.call('ip -6 route del %s' % _route_with_dev(r, src_dev), exception=exception)
+
+    for ip in route_info['ipv4_addresses']:
+        _move_ip_address(ip, src_dev, None, "inet")
+
+    for ip in route_info['ipv6_addresses']:
+        _move_ip_address(ip, src_dev, None, "inet6")
+    for r in route_info['connected_routes6']:
+        shell.call('ip -6 route del %s' % _route_with_dev(r, src_dev), exception=False)
+
+
+def _restore_dev_route(dest_dev, route_info):
+    if route_info is None:
+        return
+
+    for ip in route_info['ipv4_addresses']:
+        _add_ip_address(ip, dest_dev, "inet")
+
+    for ip in route_info['ipv6_addresses']:
+        _add_ip_address(ip, dest_dev, "inet6")
+
+    for r in route_info['routes']:
+        shell.call('ip route add %s' % _route_with_dev(r, dest_dev))
+    for r in route_info['direct_routes6']:
+        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
+    for r in route_info['routes6']:
+        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
+
+
+def _parse_ip_addresses(ip_addr_output):
+    return [line.strip().split()[1] for line in ip_addr_output.split('\n') if line.strip()]
+
+
+def _move_ip_address(ip, src_dev, dest_dev, family):
+    shell.call('ip addr del %s dev %s' % (ip, src_dev), exception=False)
+    if dest_dev is None:
+        return
+    _add_ip_address(ip, dest_dev, family)
+
+
+def _add_ip_address(ip, dest_dev, family):
+    r_out = shell.call('ip addr show dev %s | grep "%s %s"' % (dest_dev, family, ip), exception=False)
+    if not r_out:
+        shell.call('ip addr add %s dev %s' % (ip, dest_dev))
+
+
+def _route_with_dev(route, dev):
+    parts = route.split()
+    if not parts:
+        return route
+    if 'dev' in parts:
+        index = parts.index('dev')
+        if index + 1 < len(parts):
+            parts[index + 1] = dev
+        return ' '.join(parts)
+    if 'via' in parts:
+        index = parts.index('via')
+        if index + 1 < len(parts):
+            return ' '.join(parts[:index + 2] + ['dev', dev] + parts[index + 2:])
+    return ' '.join([parts[0], 'dev', dev] + parts[1:])
 
 
 def _migrate_resolved_dns(src_dev, dest_dev):
@@ -1907,6 +2065,9 @@ def get_cpu_num():
 
 def get_cpu_core_num():
     sockets = get_socket_num()
+    if is_loongson_3c5000l_cpu():
+        return LOONGSON_3C5000L_CORES_PER_SOCKET * sockets
+
     cpu_cores_per_socket = shell.call("lscpu | awk -F':' '/per socket/{print $NF}'")
     return int(cpu_cores_per_socket.strip()) * sockets
 
@@ -1915,7 +2076,19 @@ def get_cpu_model():
     model_name = shell.call("lscpu |awk -F':' '{IGNORECASE=1}/^ *Model name/{print $2}'").strip()
     return vendor_id, model_name
 
+def is_loongson_3c5000l_cpu(model_name=None):
+    if model_name is None:
+        _, model_name = get_cpu_model()
+    return "3C5000L" in (model_name or "").upper()
+
+def get_loongson_3c5000l_socket_num():
+    cpu_num = get_cpu_num()
+    return max(1, (cpu_num + LOONGSON_3C5000L_CORES_PER_SOCKET - 1) // LOONGSON_3C5000L_CORES_PER_SOCKET)
+
 def get_socket_num():
+    if is_loongson_3c5000l_cpu():
+        return get_loongson_3c5000l_socket_num()
+
     num_dmidecode = int(shell.call("dmidecode -t processor | grep 'Socket Designation' | wc -l").strip())
     num_lscpu = int(shell.call("lscpu | awk '/Socket\(s\)/{print $2}'").strip())
     num_cpuinfo = int(shell.call("grep 'physical id' /proc/cpuinfo | sort -u | wc -l").strip())
@@ -2185,10 +2358,11 @@ def enable_process_coredump(pid):
     shell.run('prlimit --core=%d --pid %s' % (memsize, pid))
 
 def set_vm_priority(pid, priorityConfig):
-    cmd = shell.ShellCmd("virsh schedinfo %s --set cpu_shares=%s --live" % (priorityConfig.vmUuid, priorityConfig.cpuShares))
-    cmd(is_exception=False)
-    if cmd.return_code != 0:
-        logger.warn("set vm %s cpu_shares failed" % priorityConfig.vmUuid)
+    for scope in ["--live", "--config"]:
+        cmd = shell.ShellCmd("virsh schedinfo %s --set cpu_shares=%s %s" % (priorityConfig.vmUuid, priorityConfig.cpuShares, scope))
+        cmd(is_exception=False)
+        if cmd.return_code != 0:
+            logger.warn("set vm %s %s cpu_shares failed" % (priorityConfig.vmUuid, scope[2:]))
 
     oom_score_adj_path = "/proc/%s/oom_score_adj" % pid
     if write_file(oom_score_adj_path, priorityConfig.oomScoreAdj) is None:
@@ -2528,14 +2702,29 @@ def get_free_port_in_range(start_port, end_port):
     raise Exception("no free port found in range[%d, %d]" % (start_port, end_port))
 
 def tcp_port_is_free(port):
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        network_ipv6.bind_dual_stack_probe_socket(sock, port)
+        return True
+    except socket.error:
+        pass
+    finally:
+        if sock is not None:
+            sock.close()
+
+    sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(('', port))
-        sock.close()
+        network_ipv6.bind_ipv4_probe_socket(sock, port)
         return True
     except socket.error:
         return False
+    finally:
+        if sock is not None:
+            sock.close()
 
 def find_free_port_with_locking(start_port, end_port):
     keep_lock = False
@@ -2558,7 +2747,7 @@ def check_socket_available(host, port, timeout=10):
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock = network_ipv6.create_tcp_socket_for_host(host)
             result = sock.connect_ex((host, port))
             sock.close()
             if result == 0:
@@ -2569,12 +2758,17 @@ def check_socket_available(host, port, timeout=10):
     return False
 
 def is_port_available(port):
-    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+    with contextlib.closing(socket.socket(socket.AF_INET6, socket.SOCK_STREAM)) as s:
         try:
-            s.bind(('', int(port)))
+            network_ipv6.bind_dual_stack_probe_socket(s, port)
             return True
-        except:
-            return False
+        except (socket.error, OSError):
+            with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as ipv4_sock:
+                try:
+                    network_ipv6.bind_ipv4_probe_socket(ipv4_sock, port)
+                    return True
+                except (socket.error, OSError):
+                    return False
 
 def get_all_ethernet_device_names():
     return os.listdir('/sys/class/net/')
@@ -2674,14 +2868,14 @@ def kill_process(pid, timeout=5, is_exception=True, is_graceful=True):
         raise Exception('cannot kill -9 process[pid:%s];the process still exists after %s seconds' % (pid, timeout))
 
 
-def kill_all_child_process(ppid, timeout=5):
+def kill_all_child_process(ppid, timeout=5, sig=15):
     def check(_):
         return not os.path.exists('/proc/%s' % ppid)
 
     if check(None):
         return
 
-    shell.run("pkill -15 -P %s" % ppid)
+    shell.run("pkill -%s -P %s" % (sig, ppid))
     if wait_callback_success(check, None, timeout):
         return
 
@@ -2726,18 +2920,24 @@ class Interface(object):
                 'name':self.name,
                 'ips':self.ips})
 
+IP_ADDR_INTERFACE_MARKER = 'mtu'
+IP_ADDR_ADDRESS_FAMILIES = ('inet', 'inet6')
+IP_ADDR_LIST_CMD = "ip a | grep -E 'mtu| inet | inet6 '"
+
+
 def get_eth_ips():
-    nics = shell.call("ip a | grep -E 'mtu| inet '")
+    nics = shell.call(IP_ADDR_LIST_CMD)
     result = dict()
     interf = ''
 
     for i in nics.splitlines():
-        if i.find('mtu') >= 0:
+        fields = i.strip().split()
+        if i.find(IP_ADDR_INTERFACE_MARKER) >= 0:
             interf = re.findall(r':\ .*:\ ', i)[0].split(': ')[1]
             status = True if re.findall(r'UP', i) else False
             result[interf] = Interface({'name':interf, 'status':status, 'ips':list()})
-        elif i.find('inet') >= 0:
-            result[interf].ips.append(re.findall(r'inet\ .*\ scope', i)[0].split(' ')[1].split('/')[0])
+        elif fields and fields[0] in IP_ADDR_ADDRESS_FAMILIES:
+            result[interf].ips.append(fields[1].split('/')[0])
 
     return result
 
@@ -3604,3 +3804,112 @@ def get_dev_sector_size(dev_path):
         buf = fcntl.ioctl(fd, BLKSSZGET, "    ")
         sector_size = struct.unpack('I', buf)[0]
         return sector_size
+
+
+class FileSystemInfo(object):
+    def __init__(self, block_device):
+        # type: (str) -> None
+        self.block_device = block_device
+        self._info = None # type: dict[str, str] | None
+
+    def reload(self):
+        # type: () -> None
+        self._info = None
+
+    def _load(self):
+        # type: () -> dict[str, str]
+        if not self.block_device:
+            raise Exception("Block device is not specified for FileSystemInfo")
+        info = _get_filesystem_object(self.block_device)
+        if not info:
+            raise Exception("No filesystem found on block device: %s" % self.block_device)
+        return info
+
+    def __getitem__(self, name):
+        # type: (str) -> str
+        if self._info is None:
+            self._info = self._load()
+        return self._info.get(name, "")
+
+
+class MountPointInfo(object):
+    def __init__(self, filesystem_uuid, mount_path):
+        # type: (str, str) -> None
+        self.filesystem_uuid = filesystem_uuid
+        self.mount_path = mount_path
+        self._info = None # type: dict[str, str] | None
+
+    def reload(self):
+        # type: () -> None
+        self._info = None
+
+    def _load(self):
+        # type: () -> dict[str, str]
+        if not self.filesystem_uuid or not self.mount_path:
+            raise Exception("Block device or mount path is not specified for MountPointInfo")
+        if not is_mounted(path=self.mount_path):
+            raise Exception("No mount point found for device %s on mount path: %s" % (self.filesystem_uuid, self.mount_path))
+        stat = os.statvfs(self.mount_path)
+        size = stat.f_frsize * stat.f_blocks
+        return {
+            "target": self.mount_path,
+            "size": size,
+            "avail": stat.f_frsize * stat.f_bavail,
+            "used": size - stat.f_frsize * stat.f_bfree,
+        }
+
+    def __getitem__(self, name):
+        # type: (str) -> str
+        if self._info is None:
+            self._info = self._load()
+        return self._info.get(name, "")
+
+
+def wipe_block_device_superblock(device_path, force=False):
+    if not os.path.exists(device_path):
+        raise Exception("Device path %s does not exist" % device_path)
+    if not force:
+        cmd = shell.ShellCmd("wipefs --noheadings --no-act --output TYPE %s" % shellquote(device_path))
+        cmd(is_exception=True)
+        if cmd.stdout.strip():
+            raise Exception("Device %s has existing filesystem signatures, refuse to wipe without force" % device_path)
+    shell.ShellCmd("wipefs --all --force %s" % shellquote(device_path))(is_exception=True)
+
+
+def _get_filesystem_object(device_path):
+    cmd = shell.ShellCmd("wipefs --json --no-act --output uuid,usage %s" % shellquote(device_path))
+    cmd(is_exception=True)
+    filesystems = json.loads(cmd.stdout.strip()).get("signatures", []) if cmd.stdout.strip() else []
+    if not filesystems:
+        return None
+    obj = filesystems.pop()
+    return obj if obj.get("usage") == "filesystem" else None
+
+
+def create_xfs_filesystem(device_path, force=False):
+    args = ["-t", "xfs"]
+    if force:
+        args.append("-f")
+    args.append(device_path)
+    shell.ShellCmd("mkfs %s" % ' '.join(shellquote(arg) for arg in args))(is_exception=True)
+    return device_path
+
+
+def extend_xfs_filesystem(device_path):
+    cmd = shell.ShellCmd("xfs_growfs %s" % shellquote(device_path))
+    cmd()
+    if cmd.return_code != 0:
+        raise Exception("Failed to extend filesystem on device %s: %s" % (device_path, cmd.stderr))
+
+
+def check_filesystem(directory, tmp_file=None, timeout=5):
+    tmp_file_path = os.path.join(directory, tmp_file or ".tmp")
+    cmd = shell.ShellCmd("timeout %s touch %s" % (int(timeout), shellquote(tmp_file_path)))
+    cmd(is_exception=False)
+    return cmd.return_code == 0
+
+
+def is_block_device_mounted(device_path):
+    cmd = shell.ShellCmd("lsblk -nr -o MOUNTPOINT %s" % shellquote(device_path))
+    cmd(is_exception=True)
+    return bool(cmd.stdout.strip())

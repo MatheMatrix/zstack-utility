@@ -20,6 +20,7 @@ from unittest.mock import patch, MagicMock
 from xml.etree import ElementTree as ET
 
 from zstacklib.utils import http, jsonobject
+from kvmagent.plugins import vm_artifact
 from kvmagent.plugins import vm_plugin
 
 
@@ -32,10 +33,89 @@ vm_plugin.http = http
 vm_plugin.jsonobject = jsonobject
 
 
+def test_console_listen_address_uses_ipv4_default_for_ipv4_host():
+    assert vm_plugin.get_console_listen_address('192.168.1.10') == '0.0.0.0'
+
+
+def test_console_listen_address_uses_dual_stack_for_ipv6_host():
+    assert vm_plugin.get_console_listen_address('2001:db8::10') == '::'
+
+
+def test_build_migration_hostname_supports_ipv4():
+    assert vm_plugin.build_migration_hostname('172.24.1.2') == '172-24-1-2.zstack.org'
+
+
+def test_build_migration_hostname_supports_ipv6():
+    assert vm_plugin.build_migration_hostname('fd00:5:5:28::62:d0e5') == \
+        'fd00-5-5-28--62-d0e5.zstack.org'
+
+
+def test_build_migration_hostname_supports_bracketed_ipv6():
+    assert vm_plugin.build_migration_hostname('[fd00:5:5:28::62:d0e5]') == \
+        'fd00-5-5-28--62-d0e5.zstack.org'
+
+
+def test_build_nbd_url_wraps_ipv6_host():
+    assert vm_plugin.build_nbd_url('192.168.10.10', 10401) == 'nbd://192.168.10.10:10401'
+    assert vm_plugin.build_nbd_url('fd00:5:5:28::5e:508b', 10401) == 'nbd://[fd00:5:5:28::5e:508b]:10401'
+    assert vm_plugin.build_nbd_url('fd00:5:5:28::5e:508b', 10401, 'parent0') == \
+        'nbd://[fd00:5:5:28::5e:508b]:10401/parent0'
+
+
 def _make_vm_plugin():
     plugin = vm_plugin.VmPlugin.__new__(vm_plugin.VmPlugin)
     plugin.config = {}
     return plugin
+
+
+@pytest.mark.kvmagent
+class TestMigrateVmFalseFailure:
+    def test_destination_running_confirms_false_migration_failure(self, monkeypatch):
+        conn = MagicMock()
+        cmd = MagicMock(
+            vmUuid='vm-uuid',
+            destHostManagementIp='10.0.0.2',
+            destHostIp='172.24.0.2',
+            useTls=False,
+        )
+        dst_vm = MagicMock(state=vm_plugin.Vm.VM_STATE_RUNNING)
+        get_connect = MagicMock(return_value=conn)
+        get_vm_by_uuid = MagicMock(return_value=dst_vm)
+
+        monkeypatch.setattr(vm_plugin, 'get_connect', get_connect)
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', get_vm_by_uuid)
+
+        assert vm_plugin.Vm.is_running_on_destination(cmd) is True
+        get_connect.assert_called_once_with('10.0.0.2', False)
+        get_vm_by_uuid.assert_called_once_with('vm-uuid', False, conn)
+        conn.close.assert_called_once()
+
+    def test_destination_not_running_keeps_migration_failure(self, monkeypatch):
+        conn = MagicMock()
+        cmd = MagicMock(
+            vmUuid='vm-uuid',
+            destHostManagementIp='10.0.0.2',
+            destHostIp='172.24.0.2',
+            useTls=False,
+        )
+        dst_vm = MagicMock(state=vm_plugin.Vm.VM_STATE_PAUSED)
+
+        monkeypatch.setattr(vm_plugin, 'get_connect', MagicMock(return_value=conn))
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=dst_vm))
+
+        assert vm_plugin.Vm.is_running_on_destination(cmd) is False
+
+    def test_destination_verify_error_confirms_false_migration_failure(self, monkeypatch):
+        cmd = MagicMock(
+            vmUuid='vm-uuid',
+            destHostManagementIp='10.0.0.2',
+            destHostIp='172.24.0.2',
+            useTls=False,
+        )
+
+        monkeypatch.setattr(vm_plugin, 'get_connect', MagicMock(side_effect=Exception('connect failed')))
+
+        assert vm_plugin.Vm.is_running_on_destination(cmd) is True
 
 
 @pytest.mark.kvmagent
@@ -282,14 +362,26 @@ class TestDeleteConsoleFirewallRuleHandler:
     def test_delete_console_firewall_rule(self):
         plugin = _make_vm_plugin()
         mock_rule = MagicMock()
-        vm_plugin.VncPortIptableRule = MagicMock(return_value=mock_rule)
 
-        req = _make_req({'vmInternalId': 123, 'hostManagementIp': '10.0.0.2'})
-        result = plugin.delete_console_firewall_rule(req)
+        with patch.object(vm_plugin, 'VncPortIptableRule', return_value=mock_rule):
+            req = _make_req({'vmInternalId': 123, 'hostManagementIp': '10.0.0.2'})
+            result = plugin.delete_console_firewall_rule(req)
         rsp = json.loads(result)
 
         assert rsp['success'] is True
         mock_rule.delete.assert_called_once()
+
+
+@pytest.mark.kvmagent
+class TestVncPortIptableRule:
+    def test_cleanup_iptables_skips_missing_ip6tables(self):
+        ipv4_iptables = MagicMock()
+
+        with patch.object(vm_plugin.iptables, 'from_iptables_save', return_value=ipv4_iptables), \
+                patch.object(vm_plugin.iptables, 'from_ip6tables_save', side_effect=RuntimeError('no ip6tables')):
+            rule = vm_plugin.VncPortIptableRule()
+
+            assert rule._load_cleanup_iptables() == [ipv4_iptables]
 
 
 @pytest.mark.kvmagent
@@ -313,9 +405,6 @@ class TestGetIothreadPinHandler:
 class TestQueryBlockJobStatusHandler:
     def test_query_block_job_status(self):
         plugin = _make_vm_plugin()
-        # return [] so the empty-result retry loop in query_block_job_status
-        # is actually exercised; bare MagicMock() returns a truthy mock which
-        # would break out of the loop on the first iteration (call_count=1).
         vm_plugin.qmp.execute_qmp_command = MagicMock(return_value=[])
         with patch('time.sleep', return_value=None):
             req = _make_req({'vmUuid': 'vm-uuid'})
@@ -323,6 +412,8 @@ class TestQueryBlockJobStatusHandler:
             rsp = json.loads(result)
 
         assert rsp['success'] is True
+        assert rsp['status'] == 'completed'
+        assert rsp['percent'] == 100
         assert vm_plugin.qmp.execute_qmp_command.call_count == 6
 
 
@@ -952,10 +1043,15 @@ class TestBlockPullHandler:
 
 @pytest.mark.kvmagent
 class TestCheckRecoverHandler:
-    def test_check_recover(self):
+    @pytest.mark.parametrize(('state', 'expected'), [
+        (vm_plugin.Vm.VM_STATE_RUNNING, 'done'),
+        (vm_plugin.Vm.VM_STATE_PAUSED, 'interrupted'),
+    ])
+    def test_check_recover(self, state, expected):
         plugin = _make_vm_plugin()
-        mock_vm = MagicMock()
+        mock_vm = MagicMock(state=state)
         mock_vm.domain_xmlobject.devices.get_child_node_as_list = MagicMock(return_value=[])
+        vm_plugin.VM_RECOVER_TASKS = {}
         vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
         vm_plugin.is_nbd_disk = MagicMock(return_value=False)
 
@@ -964,7 +1060,7 @@ class TestCheckRecoverHandler:
         rsp = json.loads(result)
 
         assert rsp['success'] is True
-        assert rsp['status'] == 'done'
+        assert rsp['status'] == expected
 
 
 @pytest.mark.kvmagent
@@ -1100,14 +1196,13 @@ class TestDelScsiControllerHandler:
         controller.alias.name_ = 'scsi1'
         mock_vm.domain_xmlobject.devices.get_child_node_as_list = MagicMock(return_value=[controller])
         vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
-        plugin.detach_controller_by_alias = MagicMock()
 
         req = _make_req({'vmUuid': 'vm-uuid', 'ioThreadId': 1})
         result = plugin.del_scsi_controller(req)
         rsp = json.loads(result)
 
         assert rsp['success'] is True
-        plugin.detach_controller_by_alias.assert_called_once_with('vm-uuid', 'scsi1')
+        mock_vm.detach_controller_by_alias.assert_called_once_with('scsi1')
 
 
 @pytest.mark.kvmagent
@@ -1922,23 +2017,28 @@ class TestQueryVolumeMirrorHandler:
 class TestRecoverVolumesHandler:
     def test_recover_volumes(self):
         plugin = _make_vm_plugin()
+        events = []
         vm_plugin.VM_RECOVER_DICT = {'vm-uuid': MagicMock()}
         vm_plugin.VM_RECOVER_TASKS = {}
         vm_plugin.parse_url = MagicMock(return_value=MagicMock(scheme=None))
         task = MagicMock()
         task.__enter__.return_value = task
         task.__exit__.return_value = None
-        task.recover_vm_volumes = MagicMock()
+        task.recover_vm_volumes = MagicMock(side_effect=lambda: events.append('recover'))
         vm_plugin.VmVolumesRecoveryTask = MagicMock(return_value=task)
-        vm_plugin.linux.wait_callback_success = MagicMock(return_value=True)
-        vm_plugin.get_vm_by_uuid = MagicMock(return_value=MagicMock())
+        mock_vm = MagicMock()
+        mock_vm.pause.side_effect = lambda: events.append('pause')
+        mock_vm.resume.side_effect = lambda: events.append('resume')
+        vm_plugin.linux.wait_callback_success = MagicMock(
+            side_effect=lambda *_args, **_kwargs: events.append('check') or True)
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
 
         req = _make_req({'vmUuid': 'vm-uuid', 'volumes': [{'installPath': '/path/vol'}]})
         result = plugin.recover_volumes(req)
         rsp = json.loads(result)
 
         assert rsp['success'] is True
-        task.recover_vm_volumes.assert_called_once()
+        assert events == ['pause', 'recover', 'check', 'resume']
 
 
 @pytest.mark.kvmagent
@@ -2838,7 +2938,40 @@ class TestVmStartCmdXmlBuild:
                 ]
         return jsonobject.loads(json.dumps(cmd_dict))
 
-    def test_from_start_vm_cmd_builds_xml_with_features(self):
+    def _driver_by_target(self, root, dev):
+        for disk in root.findall('./devices/disk'):
+            target = disk.find('target')
+            if target is not None and target.get('dev') == dev:
+                return disk.find('driver')
+        raise AssertionError("disk target %s not found" % dev)
+
+    def _driver_by_bus(self, root, bus):
+        for disk in root.findall('./devices/disk'):
+            target = disk.find('target')
+            if target is not None and target.get('bus') == bus:
+                return disk.find('driver')
+        raise AssertionError("disk bus %s not found" % bus)
+
+    def _driver_by_serial(self, root, serial_text):
+        for disk in root.findall('./devices/disk'):
+            serial = disk.find('serial')
+            if serial is not None and serial.text == serial_text:
+                return disk.find('driver')
+        raise AssertionError("disk serial %s not found" % serial_text)
+
+    def _scsi_controller_driver(self, root):
+        for controller in root.findall('./devices/controller'):
+            if controller.get('type') == 'scsi' and controller.find('driver') is not None:
+                return controller.find('driver')
+        raise AssertionError("virtio-scsi controller driver not found")
+
+    def _iothread_queue_mapping(self, driver):
+        return [
+            (iothread.get('id'), [queue.get('id') for queue in iothread.findall('queue')])
+            for iothread in driver.findall('./iothreads/iothread')
+        ]
+
+    def _build_start_vm_xml(self, cmd):
         vm_plugin.ovs.OvsDpdkSupportVnic = []
         vm_plugin.pci.need_config_pcimmio = MagicMock(return_value=True)
         vm_plugin.pci.get_bars_max_addressable_memory = MagicMock(return_value=256)
@@ -2875,6 +3008,144 @@ class TestVmStartCmdXmlBuild:
                 patch.object(vm_plugin, 'range', self._RangeCompat), \
                 patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
                 patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
+            vm = vm_plugin.Vm.from_StartVmCmd(cmd)
+        return vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
+
+    def _add_vm_artifact_view(self, cmd, tmp_path, monkeypatch):
+        view_root = tmp_path / 'vm-views'
+        view_path = view_root / cmd.vmInstanceUuid
+        view_path.mkdir(parents=True)
+        monkeypatch.setattr(vm_artifact, 'VM_VIEW_ROOT', str(view_root))
+        cmd.addons.vmArtifactViews = [{
+            'vmInstanceUuid': cmd.vmInstanceUuid,
+            'tag': 'artifact-view',
+            'sourcePath': str(view_path),
+        }]
+        return view_path
+
+    def test_memory_backing_shared_memaccess_only(self):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.MemAccess = 'shared'
+        cmd.useHugePage = False
+        cmd.noSharePages = False
+
+        xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<memoryBacking>' in xml_str
+        assert '<source type="memfd"' in xml_str
+        assert '<access mode="shared"' in xml_str
+        assert '<hugepages' not in xml_str
+        assert '<nosharepages' not in xml_str
+
+    def test_memory_backing_memaccess_does_not_substring_match(self):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.MemAccess = 'sh'
+        cmd.useHugePage = False
+        cmd.noSharePages = False
+
+        xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<memoryBacking>' not in xml_str
+        assert '<access mode="shared"' not in xml_str
+
+    def test_vm_artifact_views_force_shared_memory_backing(self, tmp_path, monkeypatch):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.MemAccess = 'private'
+        cmd.useHugePage = False
+        cmd.noSharePages = False
+        self._add_vm_artifact_view(cmd, tmp_path, monkeypatch)
+
+        xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<filesystem type="mount" accessmode="passthrough">' in xml_str
+        assert '<target dir="artifact-view"' in xml_str
+        assert '<memoryBacking>' in xml_str
+        assert '<source type="memfd"' in xml_str
+        assert '<access mode="shared"' in xml_str
+
+    def test_vm_artifact_views_keep_explicit_shared_memory_backing(self, tmp_path, monkeypatch):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.MemAccess = 'shared'
+        cmd.useHugePage = False
+        cmd.noSharePages = False
+        self._add_vm_artifact_view(cmd, tmp_path, monkeypatch)
+
+        xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<filesystem type="mount" accessmode="passthrough">' in xml_str
+        assert '<driver type="virtiofs" queue="1024"' in xml_str
+        assert '<cache mode="none"' in xml_str
+        assert '<readonly' in xml_str
+        assert '<memoryBacking>' in xml_str
+        assert '<access mode="shared"' in xml_str
+
+    def test_memory_backing_hugepage_only(self):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.MemAccess = 'private'
+        cmd.useHugePage = True
+        cmd.noSharePages = False
+
+        xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<memoryBacking>' in xml_str
+        assert '<hugepages' in xml_str
+        assert '<allocation mode="immediate"' in xml_str
+        assert '<nosharepages' in xml_str
+        assert '<access mode="shared"' not in xml_str
+        assert '<source type="memfd"' not in xml_str
+
+    def test_memory_backing_nosharepages_only(self):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.MemAccess = 'private'
+        cmd.useHugePage = False
+        cmd.noSharePages = True
+
+        xml_str = self._build_start_vm_xml(cmd)
+
+        assert '<memoryBacking>' in xml_str
+        assert '<nosharepages' in xml_str
+        assert '<hugepages' not in xml_str
+        assert '<access mode="shared"' not in xml_str
+        assert '<source type="memfd"' not in xml_str
+
+    def test_from_start_vm_cmd_builds_xml_with_features(self):
+        vm_plugin.ovs.OvsDpdkSupportVnic = []
+        vm_plugin.pci.need_config_pcimmio = MagicMock(return_value=True)
+        vm_plugin.pci.get_bars_max_addressable_memory = MagicMock(return_value=256)
+        vm_plugin.linux.get_cpu_model = MagicMock(return_value=('GenuineIntel', 'Intel'))
+        vm_plugin.is_hv_freq_supported = MagicMock(return_value=True)
+        vm_plugin.is_hv_synic_supported = MagicMock(return_value=True)
+        vm_plugin.is_ioapic_supported = MagicMock(return_value=True)
+        vm_plugin.is_spice_tls = MagicMock(return_value=0)
+        vm_plugin.is_spiceport_driver_supported = MagicMock(return_value=True)
+        vm_plugin.notify_vrouter = MagicMock()
+        vm_plugin.VmPlugin.clean_vm_firmware_flash = MagicMock()
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        vm_plugin.linux.VmUsbManager = MagicMock(return_value=MagicMock(request_slot=MagicMock(return_value=1)))
+        vm_plugin.netaddr.IPAddress = MagicMock(side_effect=lambda addr: MagicMock(version=4))
+        vm_plugin.uuidhelper.to_full_uuid = MagicMock(side_effect=lambda value: value)
+        def _real_parse_url(uri):
+            normalized = vm_plugin.re.sub(r'^([a-zA-Z]+:)(?!/{2})', r'\1//', uri, count=1)
+            return urllib.parse.urlparse(normalized)
+
+        def _e_with_text(parent, tag, value=None, attrib=None, usenamesapce=False):
+            _ = usenamesapce
+            if attrib is None:
+                attrib = {}
+            attrib = {k: str(v) for k, v in attrib.items()}
+            elem = vm_plugin.etree.SubElement(parent, tag, attrib)
+            if value:
+                elem.text = str(value)
+            return elem
+
+        orig_tostring = vm_plugin.etree.tostring
+        with patch('os.path.exists', return_value=True), \
+                patch.object(vm_plugin, 'parse_url', side_effect=_real_parse_url), \
+                patch.object(vm_plugin, 'xrange', range, create=True), \
+                patch.object(vm_plugin, 'range', self._RangeCompat), \
+                patch.object(vm_plugin.kvmagent, 'get_host_os_type', return_value='ky10'), \
+                patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
+                patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
             cmd = self._build_start_cmd(use_numa=False)
             vm = vm_plugin.Vm.from_StartVmCmd(cmd)
         xml_str = vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
@@ -2887,6 +3158,10 @@ class TestVmStartCmdXmlBuild:
         assert 'protocol="rbd"' in xml_str
         assert 'clean-traffic' in xml_str
         assert 'net0-slave1' in xml_str
+        root = vm_plugin.etree.fromstring(xml_str)
+        iothread_ids = {iothread.get('id') for iothread in root.findall('./iothreadids/iothread')}
+        assert iothread_ids == {'1', '2'}
+        assert root.find('iothreads').text == '2'
 
     def test_from_start_vm_cmd_builds_xml_with_numa(self):
         vm_plugin.ovs.OvsDpdkSupportVnic = []
@@ -2920,6 +3195,7 @@ class TestVmStartCmdXmlBuild:
                 patch.object(vm_plugin, 'is_hv_freq_supported', return_value=False), \
                 patch.object(vm_plugin, 'is_hv_synic_supported', return_value=False), \
                 patch.object(vm_plugin, 'range', self._RangeCompat), \
+                patch.object(vm_plugin.kvmagent, 'get_host_os_type', return_value='ky10'), \
                 patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
                 patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
             cmd = self._build_start_cmd(use_numa=True)
@@ -2930,6 +3206,147 @@ class TestVmStartCmdXmlBuild:
         xml_str = vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
         assert '<vcpu' in xml_str
         assert 'numa' in xml_str
+
+    def test_cdp_cbd_recover_nbd_disk_keeps_iothread_vq_mapping(self):
+        vm_plugin.ovs.OvsDpdkSupportVnic = []
+        vm_plugin.linux.get_cpu_model = MagicMock(return_value=('GenuineIntel', 'Intel'))
+        vm_plugin.is_ioapic_supported = MagicMock(return_value=True)
+        vm_plugin.is_spice_tls = MagicMock(return_value=0)
+        vm_plugin.VmPlugin.clean_vm_firmware_flash = MagicMock()
+        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        vm_plugin.uuidhelper.to_full_uuid = MagicMock(side_effect=lambda value: value)
+        vm_plugin.VM_RECOVER_DICT = {}
+
+        def _real_parse_url(uri):
+            normalized = vm_plugin.re.sub(r'^([a-zA-Z]+:)(?!/{2})', r'\1//', uri, count=1)
+            return urllib.parse.urlparse(normalized)
+
+        def _e_with_text(parent, tag, value=None, attrib=None, usenamesapce=False):
+            _ = usenamesapce
+            if attrib is None:
+                attrib = {}
+            attrib = {k: str(v) for k, v in attrib.items()}
+            elem = vm_plugin.etree.SubElement(parent, tag, attrib)
+            if value:
+                elem.text = str(value)
+            return elem
+
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.addons.ioThreadNum = 0
+        cmd.addons.ioThreadPins = []
+        cmd.addons.VolumeQos = None
+        cmd.addons.NicQos = None
+        cmd.addons.pciDevice = []
+        cmd.addons.mdevDevice = []
+        cmd.addons.storageDevice = []
+        cmd.addons.usbDevice = []
+        cmd.cdRoms = []
+        cmd.nics = []
+        cmd.rootVolume.deviceType = 'cbd'
+        cmd.rootVolume.installPath = 'cbd://pool/root-volume?r=nbd://127.0.0.1:10809/root'
+        cmd.rootVolume.volumeUuid = 'vol-root-cbd'
+        cmd.rootVolume.multiQueues = 4
+        cmd.rootVolume.ioThreads = 4
+        cmd.rootVolume.ioThreadId = None
+        cmd.rootVolume.physicalBlockSize = None
+        cmd.dataVolumes = jsonobject.loads(json.dumps([
+            {
+                'deviceId': 1,
+                'deviceType': 'cbd',
+                'installPath': 'cbd://pool/data-volume?r=nbd://127.0.0.1:10810/data',
+                'useVirtio': True,
+                'useVirtioSCSI': False,
+                'volumeUuid': 'vol-data-cbd',
+                'shareable': False,
+                'multiQueues': 4,
+                'ioThreads': 4,
+                'ioThreadId': None,
+                'physicalBlockSize': None,
+            },
+            {
+                'deviceId': 2,
+                'deviceType': 'cbd',
+                'installPath': 'cbd://pool/scsi-volume?r=nbd://127.0.0.1:10811/scsi',
+                'useVirtio': True,
+                'useVirtioSCSI': True,
+                'volumeUuid': 'vol-scsi-cbd',
+                'shareable': False,
+                'multiQueues': 4,
+                'ioThreads': 4,
+                'ioThreadId': None,
+                'physicalBlockSize': None,
+                'wwn': 'wwn-scsi-cbd',
+            },
+            {
+                'deviceId': 3,
+                'deviceType': 'ceph',
+                'installPath': 'ceph://pool/non-cbd-volume?r=nbd://127.0.0.1:10812/non-cbd',
+                'useVirtio': True,
+                'useVirtioSCSI': False,
+                'volumeUuid': 'vol-non-cbd',
+                'shareable': False,
+                'multiQueues': 4,
+                'ioThreads': 4,
+                'ioThreadId': None,
+                'physicalBlockSize': None,
+                'secretUuid': 'ceph-secret',
+                'monInfo': [{'hostname': '10.0.0.2', 'port': 6789}],
+            },
+            {
+                'deviceId': 4,
+                'deviceType': 'cbd',
+                'installPath': 'cbd://pool/manual-iothread-volume?r=nbd://127.0.0.1:10813/manual',
+                'useVirtio': True,
+                'useVirtioSCSI': False,
+                'volumeUuid': 'vol-manual-cbd',
+                'shareable': False,
+                'multiQueues': 4,
+                'ioThreads': 4,
+                'ioThreadId': 9,
+                'physicalBlockSize': None,
+            },
+        ]))
+
+        orig_tostring = vm_plugin.etree.tostring
+        with patch('os.path.exists', return_value=True), \
+                patch.object(vm_plugin, 'parse_url', side_effect=_real_parse_url), \
+                patch.object(vm_plugin, 'xrange', range, create=True), \
+                patch.object(vm_plugin, 'range', self._RangeCompat), \
+                patch.object(vm_plugin, 'e', side_effect=_e_with_text), \
+                patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
+            vm = vm_plugin.Vm.from_StartVmCmd(cmd)
+
+        assert cmd.createPaused is True
+        xml_str = vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
+        root = vm_plugin.etree.fromstring(xml_str)
+        root_driver = self._driver_by_target(root, 'vda')
+        data_driver = self._driver_by_target(root, 'vdb')
+        scsi_driver = self._driver_by_bus(root, 'scsi')
+        non_cbd_driver = self._driver_by_serial(root, 'vol-non-cbd')
+        manual_cbd_driver = self._driver_by_serial(root, 'vol-manual-cbd')
+
+        assert root_driver.get('queues') == '4'
+        assert data_driver.get('queues') == '4'
+        assert non_cbd_driver.get('queues') == '4'
+        assert manual_cbd_driver.get('queues') == '4'
+        assert self._iothread_queue_mapping(root_driver) == [
+            ('101', ['0']), ('102', ['1']), ('103', ['2']), ('104', ['3'])
+        ]
+        assert self._iothread_queue_mapping(data_driver) == [
+            ('105', ['0']), ('106', ['1']), ('107', ['2']), ('108', ['3'])
+        ]
+        assert scsi_driver.find('iothreads') is None
+        assert self._scsi_controller_driver(root).get('queues') == '4'
+        assert self._iothread_queue_mapping(self._scsi_controller_driver(root)) == [
+            ('109', ['0']), ('110', ['1']), ('111', ['2']), ('112', ['3'])
+        ]
+        assert non_cbd_driver.find('iothreads') is None
+        assert manual_cbd_driver.find('iothreads') is None
+
+        recover_root_driver = vm_plugin.VM_RECOVER_DICT['vm-uuid']['vda'].find('driver')
+        recover_data_driver = vm_plugin.VM_RECOVER_DICT['vm-uuid']['vdb'].find('driver')
+        assert self._iothread_queue_mapping(recover_root_driver) == self._iothread_queue_mapping(root_driver)
+        assert self._iothread_queue_mapping(recover_data_driver) == self._iothread_queue_mapping(data_driver)
 
 
 @pytest.mark.kvmagent
@@ -3201,6 +3618,55 @@ class TestVmAttachDetachDataVolume:
         assert vm.domain.detachDeviceFlags.called
         vm_plugin.BlkIscsi.logout_portal.assert_called_once_with('/dev/iscsi/vol-uuid')
         assert volume.installPath + '-' + vm.uuid not in vm_plugin.Vm.timeout_detached_vol
+
+    def test_detach_data_volume_accepts_completed_async_unplug(self, monkeypatch):
+        class _LibvirtError(Exception):
+            pass
+
+        vm = vm_plugin.Vm.__new__(vm_plugin.Vm)
+        vm.uuid = 'vm-uuid'
+        vm.domain = MagicMock()
+        vm.domain.detachDeviceFlags = MagicMock(side_effect=_LibvirtError(
+            "internal error: unable to execute QEMU command 'device_del': "
+            "Hot-unplug failed: guest is busy (power indicator blinking)"
+        ))
+
+        target_disk = MagicMock(source=MagicMock(dev_='/path/data.qcow2'))
+        target_disk.dump = MagicMock(return_value=(
+            "<disk type='file' device='disk'>"
+            "<source file='/path/data.qcow2'/>"
+            "<target dev='vdb' bus='virtio'/>"
+            "</disk>"
+        ))
+
+        volume = jsonobject.loads(json.dumps({
+            'deviceId': 1,
+            'deviceType': 'file',
+            'installPath': '/path/data.qcow2',
+            'volumeUuid': 'vol-uuid',
+            'useVirtio': True,
+        }))
+
+        vm._get_target_disk = MagicMock(side_effect=[
+            (target_disk, 'vdb'),
+            (target_disk, 'vdb'),
+            (None, None),
+        ])
+        record = volume.installPath + '-' + vm.uuid
+        vm_plugin.Vm.timeout_detached_vol.discard(record)
+
+        monkeypatch.setattr(vm_plugin.libvirt, 'libvirtError', _LibvirtError)
+        monkeypatch.setattr(vm_plugin.linux, 'retry', self._identity_retry)
+        monkeypatch.setattr(vm_plugin, 'get_vm_by_uuid', MagicMock(return_value=vm))
+        monkeypatch.setattr(vm_plugin, 'is_libvirt_support_blockdev', MagicMock(return_value=True))
+
+        try:
+            vm._detach_data_volume(volume)
+        finally:
+            vm_plugin.Vm.timeout_detached_vol.discard(record)
+
+        assert vm.domain.detachDeviceFlags.called
+        assert record not in vm_plugin.Vm.timeout_detached_vol
 
 
 @pytest.mark.kvmagent

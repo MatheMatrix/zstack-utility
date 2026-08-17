@@ -37,6 +37,20 @@ from zstacklib.utils.thread import AsyncThread
 
 logger = log.get_logger(__name__)
 BUFFER_SIZE = 16 * 1024 ** 2
+SFTP_SCP_TO_PIPE_CMD_FORMAT = "scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s:%s %s"
+SFTP_BATCH_CMD_FORMAT = "sftp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=no -P %s -b /dev/stdin %s"
+
+
+def build_sftp_target(username, hostname):
+    return linux.format_ssh_target(username, hostname)
+
+
+def build_sftp_scp_to_pipe_cmd(port, username, hostname, path, pipe_path):
+    return SFTP_SCP_TO_PIPE_CMD_FORMAT % (port, build_sftp_target(username, hostname), path, pipe_path)
+
+
+def build_sftp_batch_cmd(port, username, hostname):
+    return SFTP_BATCH_CMD_FORMAT % (port, build_sftp_target(username, hostname))
 
 
 class CephPoolCapacity(object):
@@ -1073,8 +1087,8 @@ class CephAgent(object):
             PFILE = linux.create_temp_file()
             ssh_pswd_file = None
             pipe_path = PFILE + "fifo"
-            scp_to_pipe_cmd = "scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s@%s:%s %s" % (port, url.username, url.hostname, url.path, pipe_path)
-            sftp_command = "sftp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=no -P %s -b /dev/stdin %s@%s" % (port, url.username, url.hostname) + " <<EOF\n%s\nEOF\n"
+            scp_to_pipe_cmd = build_sftp_scp_to_pipe_cmd(port, url.username, url.hostname, url.path, pipe_path)
+            sftp_command = build_sftp_batch_cmd(port, url.username, url.hostname) + " <<EOF\n%s\nEOF\n"
             if url.password is not None:
                 ssh_pswd_file = linux.write_to_temp_file(url.password)
                 scp_to_pipe_cmd = 'sshpass -f %s %s' % (ssh_pswd_file, scp_to_pipe_cmd)

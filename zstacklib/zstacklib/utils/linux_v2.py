@@ -1,4 +1,4 @@
-import socket
+from zstacklib.utils import network_ipv6
 
 
 def check_remote_port_whether_open(remote_addr, remote_port):
@@ -12,7 +12,7 @@ def check_remote_port_whether_open(remote_addr, remote_port):
     :rtype: boolean
     """
 
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s = network_ipv6.create_tcp_socket_for_host(remote_addr)
     ret = s.connect_ex((remote_addr, remote_port))
 
     return ret == 0

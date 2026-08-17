@@ -7,6 +7,7 @@ import re
 from oslo_concurrency import processutils
 from oslo_log import log as logging
 from stevedore import driver
+from zstacklib.utils import network_ipv6
 
 from .__init__ import __version__
 from bm_instance_agent.common import utils as bm_utils
@@ -54,7 +55,7 @@ class AgentManager(object):
                 exist_instance_uuid=BM_INSTANCE_UUID)
 
     def _check_gateway_ip(self, instance_obj):
-        push_gateway_url = "http://%s:9092" % instance_obj.gateway_ip
+        push_gateway_url = self.build_push_gateway_url(instance_obj.gateway_ip)
         with open(ZWATCH_AGENT_CONF_PATH) as f:
             doc = yaml.load(f)
 
@@ -75,6 +76,10 @@ class AgentManager(object):
 
         cmd = 'service zwatch-vm-agent restart'
         processutils.execute(cmd, shell=True)
+
+    @staticmethod
+    def build_push_gateway_url(gateway_ip):
+        return "http://%s:9092" % network_ipv6.format_url_host(gateway_ip)
 
     def ping(self, bm_instance, iqn_target_ip_map):
         instance_obj = BmInstanceObj.from_json(bm_instance)

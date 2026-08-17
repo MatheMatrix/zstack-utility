@@ -33,6 +33,12 @@ class TestGPUBase(unittest.TestCase):
         
         result = GPUBase.normalize_pci_address("0000:3B:00.0")
         self.assertEqual(result, "0000:3b:00.0")
+
+    def test_normalize_pci_address_with_hygon_suffix(self):
+        from zstacklib.gpu.base import GPUBase
+
+        result = GPUBase.normalize_pci_address("0000:06:00.0 --> SN: TRCW390010030401")
+        self.assertEqual(result, "0000:06:00.0")
     
     def test_parse_unit_value(self):
         """Test unit value parsing"""
@@ -255,7 +261,8 @@ class TestNVIDIA(unittest.TestCase):
             return 1, '', 'error'
 
         with patch('zstacklib.gpu.vendors.nvidia.bash_roe', side_effect=fake_bash_roe), \
-             patch('os.path.isdir', return_value=False):
+             patch('os.path.isdir', return_value=False), \
+             patch('os.path.exists', return_value=True):
             supported, info = NVIDIA.detect_vfio_mdev_capability(pci_to)
 
         self.assertFalse(supported)
@@ -278,7 +285,8 @@ class TestNVIDIA(unittest.TestCase):
             return 0, '', ''
 
         with patch('zstacklib.gpu.vendors.nvidia.bash_roe', side_effect=fake_bash_roe), \
-             patch('os.path.isdir', return_value=False):
+             patch('os.path.isdir', return_value=False), \
+             patch('os.path.exists', return_value=True):
             supported, info = NVIDIA.detect_vfio_mdev_capability(pci_to)
 
         self.assertTrue(supported)
@@ -298,7 +306,8 @@ class TestNVIDIA(unittest.TestCase):
             return 0, '', ''
 
         with patch('zstacklib.gpu.vendors.nvidia.bash_roe', side_effect=fake_bash_roe), \
-             patch('os.path.isdir', return_value=False):
+             patch('os.path.isdir', return_value=False), \
+             patch('os.path.exists', return_value=True):
             supported, info = NVIDIA.detect_vfio_mdev_capability(pci_to)
 
         self.assertTrue(supported)
@@ -314,9 +323,17 @@ class TestNVIDIA(unittest.TestCase):
 
         pci_device = type('PciDeviceTO', (), {'pciDeviceAddress': '0000:3b:00.0'})()
 
-        with patch("zstacklib.gpu.vendors.nvidia.bash_roe",
-                   return_value=(0, "00000000:3B:00.0, 570.124.06\n", "")), \
-             patch("zstacklib.gpu.vendors.nvidia.os.path.exists", return_value=True):
+        def run_command(command):
+            if '--query-gpu=pci.bus_id,driver_version' in command:
+                return 0, "00000000:3B:00.0, 570.124.06\n", ""
+            if command in ('which docker', 'which nvidia-ctk',
+                           'docker image inspect tf-worker:latest'):
+                return 0, '', ''
+            return 1, '', 'unexpected command'
+
+        with patch("zstacklib.gpu.vendors.nvidia.bash_roe", side_effect=run_command), \
+             patch.object(NVIDIA, "_is_bound_to_vfio", return_value=False), \
+             patch("zstacklib.gpu.vendors.nvidia.os.path.exists", return_value=False):
             supported, info = NVIDIA.detect_tensorfusion_capability(pci_device)
 
         self.assertTrue(supported)
@@ -335,15 +352,16 @@ class TestNVIDIA(unittest.TestCase):
 
         with patch("zstacklib.gpu.vendors.nvidia.bash_roe",
                    return_value=(0, "00000000:3B:00.0, 565.43.01\n", "")), \
-             patch("zstacklib.gpu.vendors.nvidia.os.path.exists", return_value=True):
+             patch.object(NVIDIA, "_is_bound_to_vfio", return_value=False), \
+             patch("zstacklib.gpu.vendors.nvidia.os.path.exists", return_value=False):
             supported, info = NVIDIA.detect_tensorfusion_capability(pci_device)
 
         self.assertFalse(supported)
         self.assertEqual(info.get("virtStatus"), "TENSORFUSION_NOT_SUPPORTED")
         self.assertIn("570.x", info.get("reason", ""))
 
-    def test_detect_tensorfusion_capability_rejects_missing_worker_binary(self):
-        """TensorFusion capability should reject hosts without tensor-fusion-worker installed."""
+    def test_detect_tensorfusion_capability_rejects_missing_worker_image(self):
+        """TensorFusion capability should reject hosts without the worker image."""
         from zstacklib.gpu.vendors.nvidia import NVIDIA
         try:
             from unittest.mock import patch
@@ -352,14 +370,23 @@ class TestNVIDIA(unittest.TestCase):
 
         pci_device = type('PciDeviceTO', (), {'pciDeviceAddress': '0000:3b:00.0'})()
 
-        with patch("zstacklib.gpu.vendors.nvidia.bash_roe",
-                   return_value=(0, "00000000:3B:00.0, 570.124.06\n", "")), \
+        def run_command(command):
+            if '--query-gpu=pci.bus_id,driver_version' in command:
+                return 0, "00000000:3B:00.0, 570.124.06\n", ""
+            if command in ('which docker', 'which nvidia-ctk'):
+                return 0, '', ''
+            if command == 'docker image inspect tf-worker:latest':
+                return 1, '', 'image not found'
+            return 1, '', 'unexpected command'
+
+        with patch("zstacklib.gpu.vendors.nvidia.bash_roe", side_effect=run_command), \
+             patch.object(NVIDIA, "_is_bound_to_vfio", return_value=False), \
              patch("zstacklib.gpu.vendors.nvidia.os.path.exists", return_value=False):
             supported, info = NVIDIA.detect_tensorfusion_capability(pci_device)
 
         self.assertFalse(supported)
         self.assertEqual(info.get("virtStatus"), "TENSORFUSION_NOT_SUPPORTED")
-        self.assertIn("tensor-fusion-worker", info.get("reason", ""))
+        self.assertIn("tf-worker:latest", info.get("reason", ""))
 
 class TestAMD(unittest.TestCase):
     """Test AMD vendor implementation"""
@@ -495,6 +522,107 @@ Power Dissipation : 150 W
         candidates = Huawei.get_pci_only_candidates(device_ids, device_names)
         self.assertEqual(candidates, [])
 
+    def test_detect_sriov_capability_for_pf_with_vfs(self):
+        from io import StringIO
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        class PciDevice(object):
+            pciDeviceAddress = "0000:42:00.0"
+
+        def open_sysfs(path, mode='r'):
+            value = "12" if path.endswith("sriov_totalvfs") else "8"
+            return StringIO(value)
+
+        with patch("zstacklib.gpu.vendors.huawei.os.path.exists",
+                   side_effect=lambda path: path.endswith(("sriov_totalvfs", "sriov_numvfs"))), \
+                patch("zstacklib.gpu.vendors.huawei.open",
+                      side_effect=open_sysfs, create=True):
+            supported, info = Huawei.detect_sriov_capability(PciDevice())
+
+        self.assertTrue(supported)
+        self.assertEqual(info["maxPartNum"], "12")
+        self.assertEqual(info["virtStatus"], "SRIOV_VIRTUALIZED")
+        self.assertEqual(info["virtState"], "VIRTUALIZED")
+        self.assertEqual(info["virtMode"], "SRIOV")
+        self.assertEqual(info["virtCapabilities"], ["SRIOV"])
+
+    def test_detect_sriov_capability_for_pf_without_vfs(self):
+        from io import StringIO
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        class PciDevice(object):
+            pciDeviceAddress = "0000:42:00.0"
+
+        def open_sysfs(path, mode='r'):
+            value = "12" if path.endswith("sriov_totalvfs") else "0"
+            return StringIO(value)
+
+        with patch("zstacklib.gpu.vendors.huawei.os.path.exists",
+                   side_effect=lambda path: path.endswith(("sriov_totalvfs", "sriov_numvfs"))), \
+                patch("zstacklib.gpu.vendors.huawei.open",
+                      side_effect=open_sysfs, create=True):
+            supported, info = Huawei.detect_sriov_capability(PciDevice())
+
+        self.assertTrue(supported)
+        self.assertEqual(info["maxPartNum"], "12")
+        self.assertEqual(info["virtStatus"], "SRIOV_VIRTUALIZABLE")
+        self.assertEqual(info["virtState"], "VIRTUALIZABLE")
+        self.assertEqual(info["virtMode"], "")
+        self.assertEqual(info["virtCapabilities"], ["SRIOV"])
+
+    def test_detect_sriov_capability_for_vf(self):
+        from io import StringIO
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        class PciDevice(object):
+            pciDeviceAddress = "0000:42:01.0"
+
+        def path_exists(path):
+            return path.endswith("physfn") or path.endswith("physfn/sriov_numvfs")
+
+        with patch("zstacklib.gpu.vendors.huawei.os.path.exists", side_effect=path_exists), \
+                patch("zstacklib.gpu.vendors.huawei.os.readlink",
+                      return_value="../0000:42:00.0"), \
+                patch("zstacklib.gpu.vendors.huawei.open",
+                      return_value=StringIO("8"), create=True):
+            supported, info = Huawei.detect_sriov_capability(PciDevice())
+
+        self.assertTrue(supported)
+        self.assertEqual(info["maxPartNum"], "8")
+        self.assertEqual(info["parentAddress"], "0000:42:00.0")
+        self.assertEqual(info["virtStatus"], "SRIOV_VIRTUAL")
+        self.assertEqual(info["virtState"], "VIRTUAL")
+        self.assertEqual(info["virtMode"], "SRIOV")
+        self.assertEqual(info["virtCapabilities"], [])
+
+    def test_detect_sriov_capability_for_physical_device(self):
+        try:
+            from unittest.mock import patch
+        except ImportError:
+            from mock import patch
+        from zstacklib.gpu.vendors.huawei import Huawei
+
+        class PciDevice(object):
+            pciDeviceAddress = "0000:01:00.0"
+
+        with patch("zstacklib.gpu.vendors.huawei.os.path.exists", return_value=False):
+            supported, info = Huawei.detect_sriov_capability(PciDevice())
+
+        self.assertFalse(supported)
+        self.assertEqual(info, {})
+
     def test_post_process_preserves_product_name_in_device(self):
         """ZSTAC-83466: When productName is available, device should keep productName
         after post_process_pci_device_by_vendor (not be overwritten to '-').
@@ -570,6 +698,56 @@ class TestHaiguangGetPciOnlyCandidates(unittest.TestCase):
         device_names = {"0000:18:00.1": {"Class": "3D controller", "Vendor": "Haiguang", "Device": "DCU"}}
         candidates = Haiguang.get_pci_only_candidates(device_ids, device_names)
         self.assertEqual(candidates, [])
+
+
+class TestHaiguang(unittest.TestCase):
+    """Test Haiguang vendor implementation."""
+
+    def test_parse_basic_info_accepts_pci_bus_with_serial_suffix(self):
+        from zstacklib.gpu.vendors.haiguang import Haiguang
+
+        output = """
+{
+  "card0": {
+    "Serial Number": "TRCW390010030401",
+    "PCI Bus": "0000:06:00.0 --> SN: TRCW390010030401",
+    "Max Graphics Package Power (W)": "300.0",
+    "Available memory size (MiB)": "65536"
+  }
+}
+"""
+        infos = Haiguang.parse_basic_info(output)
+
+        self.assertEqual(len(infos), 1)
+        self.assertEqual(infos[0].pci_address, "0000:06:00.0")
+        self.assertEqual(infos[0].serial_number, "TRCW390010030401")
+        self.assertEqual(infos[0].power, "300.0")
+        self.assertEqual(infos[0].memory, "65536 MiB")
+
+    def test_parse_metrics_accepts_pci_bus_with_serial_suffix(self):
+        from zstacklib.gpu.vendors.haiguang import Haiguang
+
+        output = """
+{
+  "card0": {
+    "Serial Number": "TRCW390010030401",
+    "PCI Bus": "0000:06:00.0 --> SN: TRCW390010030401",
+    "Average Graphics Package Power (W)": "108.0",
+    "Temperature (Sensor junction) (C)": "70.0",
+    "HCU use (%)": "3.0",
+    "HCU memory use (%)": "5"
+  }
+}
+"""
+        metrics = Haiguang.parse_metrics(output)
+
+        self.assertEqual(len(metrics), 1)
+        self.assertEqual(metrics[0].pci_address, "0000:06:00.0")
+        self.assertEqual(metrics[0].serial_number, "TRCW390010030401")
+        self.assertEqual(metrics[0].power_draw, 108.0)
+        self.assertEqual(metrics[0].temperature, 70.0)
+        self.assertEqual(metrics[0].utilization, 3.0)
+        self.assertEqual(metrics[0].memory_utilization, 5.0)
 
 
 class TestKunlunxinGetPciOnlyCandidates(unittest.TestCase):
