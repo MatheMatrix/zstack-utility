@@ -672,6 +672,69 @@ class TestZrmPluginReplicationStop(unittest.TestCase):
         self.assertEqual("query-block-jobs lost after cancel", body["queryBlockJobsError"])
         self.assertEqual(["zrm-mirror-volquery"], body["cancelRequestedDevices"])
 
+    def test_pending_job_is_finalized_then_dismissed(self):
+        query_results = iter([
+            {"zrm-mirror-volpending": {"status": "running"}},
+            {"zrm-mirror-volpending": {"status": "pending", "auto-finalize": False}},
+            {"zrm-mirror-volpending": {"status": "concluded"}},
+            {},
+            {},
+        ])
+        qmp_commands = []
+
+        zrm_plugin.qmp.query_block_jobs_by_device = lambda vm_uuid: next(query_results)
+        zrm_plugin.qmp.block_job_cancel = lambda vm_uuid, device: None
+
+        def fake_execute_qmp_command(vm_uuid, command, raise_exception=True, **kwargs):
+            qmp_commands.append((command, kwargs.get("id")))
+
+        with mock.patch.object(zrm_plugin.qmp, "execute_qmp_command",
+                               side_effect=fake_execute_qmp_command), \
+             mock.patch.object(zrm_plugin.time, "sleep"):
+            body = self._load_rsp(self.plugin._replication_stop(
+                self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
+
+        self.assertTrue(body["success"])
+        self.assertNotIn("staleJobs", body)
+        self.assertEqual([
+            ("job-finalize", "zrm-mirror-volpending"),
+            ("job-dismiss", "zrm-mirror-volpending"),
+        ], qmp_commands)
+
+    def _assert_settlement_failure_returns_error(self, status, expected_command):
+        device = "zrm-mirror-volstale"
+        query_results = iter([
+            {device: {"status": "running"}},
+            {device: {"status": status}},
+            {device: {"status": status}},
+        ])
+        qmp_commands = []
+
+        zrm_plugin.qmp.query_block_jobs_by_device = lambda vm_uuid: next(query_results)
+        zrm_plugin.qmp.block_job_cancel = lambda vm_uuid, job_id: None
+
+        def fake_execute_qmp_command(vm_uuid, command, raise_exception=True, **kwargs):
+            qmp_commands.append((command, kwargs.get("id")))
+            raise RuntimeError("QMP %s failed" % command)
+
+        with mock.patch.object(zrm_plugin.qmp, "execute_qmp_command",
+                               side_effect=fake_execute_qmp_command), \
+             mock.patch.object(zrm_plugin, "time") as fake_time:
+            fake_time.time.side_effect = [0, 0, 11]
+            body = self._load_rsp(self.plugin._replication_stop(
+                self._make_req({"vmUuid": "vm-1", "sessionUuid": "sess-1"})))
+
+        self.assertFalse(body["success"])
+        self.assertIn("stale ZRM mirror jobs remain after cancel deadline", body["error"])
+        self.assertEqual([{"device": device, "status": status}], body["staleJobs"])
+        self.assertEqual([(expected_command, device)], qmp_commands)
+
+    def test_finalize_failure_returns_error_with_stale_job(self):
+        self._assert_settlement_failure_returns_error("pending", "job-finalize")
+
+    def test_dismiss_failure_returns_error_with_stale_job(self):
+        self._assert_settlement_failure_returns_error("concluded", "job-dismiss")
+
 
 class TestZrmPluginRecoveryPrepare(unittest.TestCase):
     def setUp(self):

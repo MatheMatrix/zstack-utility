@@ -1023,7 +1023,10 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     err_msg = str(cancel_err)
                     cancel_failed_jobs.append({"device": device, "error": err_msg})
                     logger.warn("ZRM replication stop: cancel failed for %s: %s" % (device, err_msg))
-            # Wait for cancelled jobs to disappear or reach concluded state, then dismiss.
+            # Wait for cancelled jobs to disappear.  ZR mirrors are created with
+            # auto-finalize=False, so a successful cancel can legitimately leave
+            # the job in pending until job-finalize is issued.  A finalized job
+            # then remains concluded because auto-dismiss is also disabled.
             # block_job_cancel suppresses QMP command errors, so the post-cancel
             # query is the authoritative proof that recovery can safely continue.
             stale_jobs = []
@@ -1035,17 +1038,35 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     if query_error:
                         post_cancel_query_error = query_error
                         break
-                    still_active = [d for d in cancelled_devices if d in remaining
-                                    and (remaining[d].get("status") or "").lower() not in ("concluded", "null")]
-                    # Dismiss any concluded jobs immediately.
+                    unsettled = []
                     for d in cancelled_devices:
-                        if d in remaining and (remaining[d].get("status") or "").lower() == "concluded":
+                        if d not in remaining:
+                            continue
+                        status = (remaining[d].get("status") or "").lower()
+                        if status == "null":
+                            continue
+                        unsettled.append(d)
+                        if status == "pending":
                             try:
-                                qmp.execute_qmp_command(vm_uuid, "block-job-dismiss",
-                                                        raise_exception=False, id=d)
-                            except Exception:
-                                pass
-                    if not still_active:
+                                qmp.execute_qmp_command(vm_uuid, "job-finalize",
+                                                        raise_exception=True, id=d)
+                                logger.info("ZRM replication stop: finalized pending job %s on vm %s" %
+                                            (d, vm_uuid))
+                            except Exception as finalize_err:
+                                # The job can change state between query and command;
+                                # the next query remains the source of truth.
+                                logger.debug("ZRM replication stop: finalize pending job %s on vm %s failed: %s" %
+                                             (d, vm_uuid, finalize_err))
+                        elif status == "concluded":
+                            try:
+                                qmp.execute_qmp_command(vm_uuid, "job-dismiss",
+                                                        raise_exception=True, id=d)
+                                logger.info("ZRM replication stop: dismissed concluded job %s on vm %s" %
+                                            (d, vm_uuid))
+                            except Exception as dismiss_err:
+                                logger.debug("ZRM replication stop: dismiss concluded job %s on vm %s failed: %s" %
+                                             (d, vm_uuid, dismiss_err))
+                    if not unsettled:
                         break
                     time.sleep(0.5)
                 if post_cancel_query_error:
@@ -1067,6 +1088,8 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 for d in cancelled_devices:
                     if d in remaining:
                         st = (remaining[d].get("status") or "unknown").lower()
+                        if st == "null":
+                            continue
                         stale_jobs.append({"device": d, "status": st})
                         logger.warn("ZRM replication stop: stale job %s (status=%s) on vm %s after cancel deadline" %
                                     (d, st, vm_uuid))
@@ -1078,6 +1101,9 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 rsp.error = "failed to cancel ZRM mirror jobs: %s" % cancel_failed_jobs
                 rsp.cancelFailedJobs = cancel_failed_jobs
             if stale_jobs:
+                rsp.success = False
+                stale_error = "stale ZRM mirror jobs remain after cancel deadline: %s" % stale_jobs
+                rsp.error = "%s; %s" % (rsp.error, stale_error) if rsp.error else stale_error
                 rsp.staleJobs = stale_jobs
             return jsonobject.dumps(rsp)
         except Exception as e:
