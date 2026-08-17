@@ -2,6 +2,7 @@
 
 import itertools
 import json
+import threading
 import unittest
 
 try:
@@ -13,6 +14,31 @@ from zstacklib.utils import http
 from zstacklib.utils import jsonobject
 
 from kvmagent.plugins import zrm_plugin
+
+
+class _ControllableTimer(object):
+    created = []
+
+    def __init__(self, delay, function, args=None):
+        self.delay = delay
+        self.function = function
+        self.args = args or []
+        self.daemon = False
+        self.cancelled = False
+        self.__class__.created.append(self)
+
+    @classmethod
+    def reset(cls):
+        cls.created = []
+
+    def start(self):
+        pass
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        self.function(*self.args)
 
 
 class TestZrmPluginWaitInitial(unittest.TestCase):
@@ -1001,6 +1027,19 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
         self.assertTrue(self.plugin._job_matches_session(job_a, "session-a"))
         self.assertFalse(self.plugin._job_matches_session(job_a, "session-b"))
 
+    def test_target_node_uses_complete_job_hash_within_qemu_limit(self):
+        volume_uuid = "0123456789abcdef0123456789abcdef"
+        job_a = self.plugin._mirror_job_id(
+            volume_uuid, "session-a", "nbd://target-a:10809")
+        job_b = self.plugin._mirror_job_id(
+            volume_uuid, "session-b", "nbd://target-a:10809")
+
+        node_a = self.plugin._target_node_for_job(job_a)
+        self.assertEqual(31, len(node_a))
+        self.assertTrue(node_a.startswith("zrm-tgt-"))
+        self.assertEqual(node_a, self.plugin._target_node_for_job(job_a))
+        self.assertNotEqual(node_a, self.plugin._target_node_for_job(job_b))
+
     def test_start_replaces_job_owned_by_another_session(self):
         volume_uuid = "0123456789abcdef0123456789abcdef"
         old_job = self.plugin._mirror_job_id(
@@ -1054,13 +1093,84 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
                 return []
 
         with mock.patch.object(zrm_plugin, "execute_qmp_command_raw", side_effect=fake_raw), \
-             mock.patch.object(zrm_plugin.qmp, "execute_qmp_command", side_effect=fake_execute):
-            self.assertFalse(self.plugin._try_blockdev_mirror_to_nbd(
+             mock.patch.object(zrm_plugin.qmp, "execute_qmp_command", side_effect=fake_execute), \
+             mock.patch.object(zrm_plugin.qmp, "query_block_jobs_by_device", return_value={}):
+            success, error = self.plugin._try_blockdev_mirror_to_nbd(
                 "vm-a", "node-a", "nbd://target-a:10809/vol-a",
-                "zrm-mirror-vol-a", "full", None))
+                "zrm-mirror-vol-a", "full", None)
 
+        self.assertFalse(success)
+        self.assertIn("mirror failed", error)
         self.assertEqual("blockdev-add", raw_commands[1]["execute"])
         self.assertEqual("blockdev-del", raw_commands[-1]["execute"])
+        self.assertNotIn(
+            ("vm-a", "zrm-mirror-vol-a"), self.plugin._mirror_target_nodes)
+
+    def test_blockdev_cleanup_failure_keeps_ownership_and_retries_bounded(self):
+        job_id = "zrm-mirror-vol-a"
+        target_node = self.plugin._target_node_for_job(job_id)
+        raw_commands = []
+
+        def fake_raw(vm_uuid, command, raise_exception=False):
+            qmp_command = json.loads(command)
+            raw_commands.append(qmp_command)
+            if qmp_command["execute"] == "blockdev-del" and raise_exception:
+                raise RuntimeError("node is busy")
+
+        def fake_execute(vm_uuid, command, raise_exception=True, **kwargs):
+            if command == "blockdev-mirror":
+                raise RuntimeError("mirror failed")
+            if command == "query-named-block-nodes":
+                return [{"node-name": target_node}]
+            raise AssertionError(command)
+
+        _ControllableTimer.reset()
+        with mock.patch.object(zrm_plugin.threading, "Timer", _ControllableTimer), \
+             mock.patch.object(zrm_plugin, "execute_qmp_command_raw", side_effect=fake_raw), \
+             mock.patch.object(zrm_plugin.qmp, "execute_qmp_command", side_effect=fake_execute), \
+             mock.patch.object(zrm_plugin.qmp, "query_block_jobs_by_device", return_value={}):
+            success, error = self.plugin._try_blockdev_mirror_to_nbd(
+                "vm-a", "node-a", "nbd://target-a:10809/vol-a",
+                job_id, "full", None)
+
+            self.assertFalse(success)
+            self.assertIn("target node cleanup failed", error)
+            self.assertEqual(
+                target_node, self.plugin._mirror_target_nodes[("vm-a", job_id)])
+            self.assertIn(("vm-a", job_id), self.plugin._mirror_target_cleanup_retries)
+
+            retry_count = 0
+            while ("vm-a", job_id) in self.plugin._mirror_target_cleanup_retries:
+                retry_timer = self.plugin._mirror_target_cleanup_retries[
+                    ("vm-a", job_id)]["timer"]
+                retry_timer.fire()
+                retry_count += 1
+
+        self.assertEqual(zrm_plugin._MIRROR_TARGET_CLEANUP_RETRIES, retry_count)
+        self.assertNotIn(("vm-a", job_id), self.plugin._mirror_target_cleanup_retries)
+        self.assertEqual(
+            target_node, self.plugin._mirror_target_nodes[("vm-a", job_id)])
+
+    def test_start_surfaces_fallback_cleanup_error(self):
+        self.plugin._query_blocks_for_vm = lambda vm_uuid: [{}]
+        self.plugin._get_zrm_block_jobs = lambda vm_uuid: {}
+        self.plugin._find_block_entry_for_volume = lambda blocks, volume_uuid: (
+            "drive-vda", "node-vda")
+        self.plugin._build_mirror_candidates = lambda *args: ["drive-vda"]
+        self.plugin._has_dirty_bitmap = lambda *args: False
+        self.plugin._add_dirty_bitmap = lambda *args: True
+        self.plugin._diagnose_block_topology = lambda *args: (None, "test topology")
+        self.plugin._try_blockdev_mirror_to_nbd = lambda *args: (
+            False, "target node cleanup failed: node is busy")
+
+        with mock.patch.object(
+                zrm_plugin.qmp, "execute_qmp_command",
+                side_effect=RuntimeError("drive-mirror failed")):
+            error = self.plugin._start_mirrors_for_zr(
+                "vm-a", ["vol-a"], "nbd://target-a:10809",
+                session_uuid="session-a")
+
+        self.assertIn("target node cleanup failed: node is busy", error)
 
     def test_throttle_fails_when_expected_job_disappears(self):
         device = "zrm-mirror-vol-a"
@@ -1090,23 +1200,6 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
         self.assertTrue(body["queryBlockJobsFailed"])
 
     def test_linux_freeze_lease_auto_thaws(self):
-        class FakeTimer(object):
-            created = []
-
-            def __init__(self, delay, function, args=None):
-                self.delay = delay
-                self.function = function
-                self.args = args or []
-                self.daemon = False
-                self.cancelled = False
-                self.__class__.created.append(self)
-
-            def start(self):
-                pass
-
-            def cancel(self):
-                self.cancelled = True
-
         class FakeQga(object):
             vm_uuid = "vm-freeze"
             os = "linux"
@@ -1132,7 +1225,8 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
 
         qga = FakeQga()
         self.plugin._get_vm_qga = lambda vm_uuid: (qga, None)
-        with mock.patch.object(zrm_plugin.threading, "Timer", FakeTimer):
+        _ControllableTimer.reset()
+        with mock.patch.object(zrm_plugin.threading, "Timer", _ControllableTimer):
             body = json.loads(self.plugin._replication_guest_fsfreeze(self._make_req({
                 "vmUuid": qga.vm_uuid,
                 "action": "freeze",
@@ -1142,10 +1236,133 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
             self.assertTrue(body["success"])
             self.assertEqual("frozen", qga.status)
             watchdog = self.plugin._fsfreeze_watchdogs[qga.vm_uuid]["timer"]
-            watchdog.function(*watchdog.args)
+            watchdog.fire()
 
         self.assertEqual("thawed", qga.status)
         self.assertNotIn(qga.vm_uuid, self.plugin._fsfreeze_watchdogs)
+
+    def test_freeze_lease_is_persisted_before_qga_freeze(self):
+        class SimulatedProcessExit(BaseException):
+            pass
+
+        events = []
+
+        class FakeQga(object):
+            vm_uuid = "vm-freeze-crash"
+            os = "linux"
+            supported_commands = {
+                "guest-fsfreeze-freeze": True,
+                "guest-fsfreeze-thaw": True,
+                "guest-fsfreeze-status": True,
+            }
+
+            def __init__(self):
+                self.status_calls = 0
+
+            def call_qga_command(self, command, args=None, timeout=3):
+                if command == "guest-fsfreeze-status":
+                    self.status_calls += 1
+                    if self.status_calls == 1:
+                        return "thawed"
+                    raise SimulatedProcessExit()
+                if command == "guest-fsfreeze-freeze":
+                    events.append("freeze")
+                    return 2
+                raise AssertionError(command)
+
+        def fake_persist(vm_uuid, lease_id, deadline):
+            events.append("persist")
+
+        _ControllableTimer.reset()
+        with mock.patch.object(zrm_plugin.threading, "Timer", _ControllableTimer), \
+             mock.patch.object(self.plugin, "_persist_fsfreeze_lease",
+                               side_effect=fake_persist):
+            with self.assertRaises(SimulatedProcessExit):
+                self.plugin._linux_guest_fsfreeze(
+                    FakeQga(), "freeze", 5, lease_timeout_seconds=30)
+
+        self.assertEqual(["persist", "freeze"], events)
+        self.assertIn("vm-freeze-crash", self.plugin._fsfreeze_watchdogs)
+
+    def test_freeze_is_not_issued_when_lease_persistence_fails(self):
+        freeze_calls = []
+
+        class FakeQga(object):
+            vm_uuid = "vm-freeze-persist-failure"
+            os = "linux"
+            supported_commands = {
+                "guest-fsfreeze-freeze": True,
+                "guest-fsfreeze-thaw": True,
+                "guest-fsfreeze-status": True,
+            }
+
+            def call_qga_command(self, command, args=None, timeout=3):
+                if command == "guest-fsfreeze-status":
+                    return "thawed"
+                if command == "guest-fsfreeze-freeze":
+                    freeze_calls.append(command)
+                    return 1
+                raise AssertionError(command)
+
+        with mock.patch.object(
+                self.plugin, "_persist_fsfreeze_lease",
+                side_effect=IOError("disk full")):
+            body = json.loads(self.plugin._linux_guest_fsfreeze(
+                FakeQga(), "freeze", 5, lease_timeout_seconds=30))
+
+        self.assertFalse(body["success"])
+        self.assertEqual([], freeze_calls)
+        self.assertNotIn(
+            "vm-freeze-persist-failure",
+            getattr(self.plugin, "_fsfreeze_watchdogs", {}))
+
+    def test_stale_fsfreeze_timer_does_not_thaw_or_remove_new_lease(self):
+        vm_uuid = "vm-renewed-freeze"
+        old_lease_id = "old-lease"
+        new_lease_id = "new-lease"
+        entered = threading.Event()
+        release = threading.Event()
+        qga_lookups = []
+
+        class GateLock(object):
+            def __enter__(self):
+                entered.set()
+                release.wait(2)
+                return self
+
+            def __exit__(self, unused_type, unused_value, unused_traceback):
+                return False
+
+        self.plugin._ensure_runtime_state()
+        old_timer = _ControllableTimer(1, lambda: None)
+        new_timer = _ControllableTimer(1, lambda: None)
+        self.plugin._fsfreeze_watchdogs[vm_uuid] = {
+            "leaseId": old_lease_id, "deadline": 1, "timer": old_timer}
+        self.plugin._get_fsfreeze_vm_lock = lambda unused_vm_uuid: GateLock()
+        self.plugin._get_vm_qga = lambda unused_vm_uuid: (
+            qga_lookups.append(unused_vm_uuid), None)
+
+        with mock.patch.object(
+                self.plugin, "_remove_fsfreeze_lease_file") as remove_lease:
+            callback = threading.Thread(
+                target=self.plugin._auto_thaw_linux_guest,
+                args=(vm_uuid, old_lease_id))
+            callback.start()
+            entered.wait(2)
+            self.assertTrue(entered.is_set())
+            self.plugin._fsfreeze_watchdogs[vm_uuid] = {
+                "leaseId": new_lease_id, "deadline": 2, "timer": new_timer}
+            release.set()
+            callback.join(2)
+
+            self.assertFalse(callback.is_alive())
+            self.assertEqual([], qga_lookups)
+            self.assertEqual(
+                new_lease_id,
+                self.plugin._fsfreeze_watchdogs[vm_uuid]["leaseId"])
+            self.assertFalse(
+                self.plugin._cancel_fsfreeze_watchdog(vm_uuid, old_lease_id))
+            remove_lease.assert_not_called()
 
 
 if __name__ == '__main__':
