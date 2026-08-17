@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 
 import itertools
+import io
 import json
+import sys
 import threading
+import types
 import unittest
 
 try:
@@ -727,6 +730,7 @@ class TestZrmPluginReplicationStop(unittest.TestCase):
         self.assertEqual([
             ("job-finalize", "zrm-mirror-volpending"),
             ("job-dismiss", "zrm-mirror-volpending"),
+            ("query-named-block-nodes", None),
         ], qmp_commands)
 
     def _assert_settlement_failure_returns_error(self, status, expected_command):
@@ -1040,6 +1044,103 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
         self.assertEqual(node_a, self.plugin._target_node_for_job(job_a))
         self.assertNotEqual(node_a, self.plugin._target_node_for_job(job_b))
 
+    def test_start_finishes_runtime_recovery_before_registering_endpoints(self):
+        events = []
+
+        class FakeHttpServer(object):
+            def register_async_uri(self, path, handler):
+                events.append("register:" + path)
+
+        self.plugin._recover_fsfreeze_leases = lambda: events.append(
+            "recover-fsfreeze")
+        self.plugin._recover_mirror_target_nodes = lambda: events.append(
+            "recover-targets")
+
+        with mock.patch.object(
+                zrm_plugin.kvmagent, "get_http_server",
+                return_value=FakeHttpServer()):
+            self.plugin.start()
+
+        self.assertEqual(
+            ["recover-fsfreeze", "recover-targets"], events[:2])
+        self.assertTrue(events[2].startswith("register:"))
+
+    def test_recovery_binds_legacy_target_to_live_job_for_cleanup(self):
+        vm_uuid = "vm-legacy"
+        job_id = "zrm-mirror-12345678"
+        legacy_node = self.plugin._legacy_target_node_for_job(job_id)
+        fake_vm_plugin = types.ModuleType("kvmagent.plugins.vm_plugin")
+        fake_vm_plugin.get_all_vm_states = lambda: {vm_uuid: "running"}
+        job_queries = iter([
+            ({job_id: {"status": "running"}}, None),
+            ({job_id: {"status": "running"}}, None),
+            ({}, None),
+            ({}, None),
+            ({}, None),
+        ])
+        node_queries = iter([
+            [{"node-name": legacy_node}],
+            [],
+        ])
+        self.plugin._query_zrm_block_jobs = lambda unused_vm_uuid: next(
+            job_queries)
+        with mock.patch.dict(
+                sys.modules,
+                {"kvmagent.plugins.vm_plugin": fake_vm_plugin}), \
+             mock.patch.object(
+                 zrm_plugin.qmp, "execute_qmp_command",
+                 side_effect=lambda *args, **kwargs: next(node_queries)):
+            self.plugin._recover_mirror_target_nodes()
+
+            self.assertEqual(
+                legacy_node,
+                self.plugin._mirror_target_nodes[(vm_uuid, job_id)])
+
+            raw_commands = []
+            with mock.patch.object(
+                    zrm_plugin, "execute_qmp_command_raw",
+                    side_effect=lambda unused_vm_uuid, command,
+                    raise_exception=False: raw_commands.append(
+                        json.loads(command))), \
+                 mock.patch.object(zrm_plugin.qmp, "block_job_cancel"):
+                body = json.loads(self.plugin._replication_stop(
+                    self._make_req({"vmUuid": vm_uuid})))
+
+        self.assertTrue(body["success"])
+        self.assertEqual("blockdev-del", raw_commands[0]["execute"])
+        self.assertEqual(
+            legacy_node,
+            raw_commands[0]["arguments"]["node-name"])
+
+    def test_cleanup_discovers_target_when_runtime_map_is_empty(self):
+        vm_uuid = "vm-map-miss"
+        job_id = self.plugin._mirror_job_id(
+            "0123456789abcdef0123456789abcdef",
+            "session-a", "nbd://target-a:10809")
+        target_node = self.plugin._target_node_for_job(job_id)
+        node_queries = iter([
+            [{"node-name": target_node}],
+            [],
+        ])
+        raw_commands = []
+
+        self.plugin._query_zrm_block_jobs = lambda unused_vm_uuid: ({}, None)
+        with mock.patch.object(
+                zrm_plugin.qmp, "execute_qmp_command",
+                side_effect=lambda *args, **kwargs: next(node_queries)), \
+             mock.patch.object(
+                 zrm_plugin, "execute_qmp_command_raw",
+                 side_effect=lambda unused_vm_uuid, command,
+                 raise_exception=False: raw_commands.append(json.loads(command))):
+            cleaned, cleanup_error = self.plugin._cleanup_mirror_target_node(
+                vm_uuid, job_id)
+
+        self.assertTrue(cleaned, cleanup_error)
+        self.assertEqual("blockdev-del", raw_commands[0]["execute"])
+        self.assertEqual(
+            target_node,
+            raw_commands[0]["arguments"]["node-name"])
+
     def test_start_replaces_job_owned_by_another_session(self):
         volume_uuid = "0123456789abcdef0123456789abcdef"
         old_job = self.plugin._mirror_job_id(
@@ -1110,17 +1211,24 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
         job_id = "zrm-mirror-vol-a"
         target_node = self.plugin._target_node_for_job(job_id)
         raw_commands = []
+        delete_calls = {"count": 0}
+        node_queries = {"count": 0}
 
         def fake_raw(vm_uuid, command, raise_exception=False):
             qmp_command = json.loads(command)
             raw_commands.append(qmp_command)
             if qmp_command["execute"] == "blockdev-del" and raise_exception:
-                raise RuntimeError("node is busy")
+                delete_calls["count"] += 1
+                if delete_calls["count"] > 1:
+                    raise RuntimeError("node is busy")
 
         def fake_execute(vm_uuid, command, raise_exception=True, **kwargs):
             if command == "blockdev-mirror":
                 raise RuntimeError("mirror failed")
             if command == "query-named-block-nodes":
+                node_queries["count"] += 1
+                if node_queries["count"] == 1:
+                    return []
                 return [{"node-name": target_node}]
             raise AssertionError(command)
 
@@ -1150,6 +1258,48 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
         self.assertNotIn(("vm-a", job_id), self.plugin._mirror_target_cleanup_retries)
         self.assertEqual(
             target_node, self.plugin._mirror_target_nodes[("vm-a", job_id)])
+
+    def test_retry_start_keeps_cleanup_queued_until_old_node_is_absent(self):
+        vm_uuid = "vm-retry-start"
+        job_id = "zrm-mirror-vol-retry"
+        target_node = self.plugin._target_node_for_job(job_id)
+        raw_commands = []
+
+        def fake_raw(unused_vm_uuid, command, raise_exception=False):
+            qmp_command = json.loads(command)
+            raw_commands.append(qmp_command)
+            if qmp_command["execute"] == "blockdev-del":
+                raise RuntimeError("node is busy")
+
+        _ControllableTimer.reset()
+        self.plugin._ensure_runtime_state()
+        self.plugin._mirror_target_nodes[(vm_uuid, job_id)] = target_node
+        with mock.patch.object(
+                zrm_plugin.threading, "Timer", _ControllableTimer):
+            self.plugin._schedule_mirror_target_cleanup_retry(
+                vm_uuid, job_id, target_node)
+
+            with mock.patch.object(
+                    zrm_plugin, "execute_qmp_command_raw",
+                    side_effect=fake_raw), \
+                 mock.patch.object(
+                     zrm_plugin.qmp, "query_block_jobs_by_device",
+                     return_value={}), \
+                 mock.patch.object(
+                     zrm_plugin.qmp, "execute_qmp_command",
+                     return_value=[{"node-name": target_node}]):
+                success, error = self.plugin._try_blockdev_mirror_to_nbd(
+                    vm_uuid, "source-node",
+                    "nbd://target-a:10809/vol-a",
+                    job_id, "full", None)
+
+        self.assertFalse(success)
+        self.assertIn("cannot prepare blockdev-mirror target", error)
+        self.assertIn(
+            (vm_uuid, job_id), self.plugin._mirror_target_cleanup_retries)
+        self.assertFalse(any(
+            command["execute"] == "blockdev-add"
+            for command in raw_commands))
 
     def test_start_surfaces_fallback_cleanup_error(self):
         self.plugin._query_blocks_for_vm = lambda vm_uuid: [{}]
@@ -1315,6 +1465,57 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
         self.assertNotIn(
             "vm-freeze-persist-failure",
             getattr(self.plugin, "_fsfreeze_watchdogs", {}))
+
+    def test_fsfreeze_recovery_does_not_overwrite_concurrent_new_lease(self):
+        vm_uuid = "vm-recovery-race"
+        old_lease = {
+            "vmUuid": vm_uuid,
+            "leaseId": "lease-a",
+            "deadline": 100,
+        }
+        new_lease = {
+            "vmUuid": vm_uuid,
+            "leaseId": "lease-b",
+            "deadline": 200,
+        }
+        disk_lease = {"value": old_lease}
+        new_timer = _ControllableTimer(1, lambda: None)
+
+        class InstallNewLeaseLock(object):
+            def __enter__(unused_self):
+                self.plugin._ensure_runtime_state()
+                disk_lease["value"] = new_lease
+                self.plugin._fsfreeze_watchdogs[vm_uuid] = {
+                    "leaseId": new_lease["leaseId"],
+                    "deadline": new_lease["deadline"],
+                    "timer": new_timer,
+                }
+                return unused_self
+
+            def __exit__(unused_self, unused_type, unused_value,
+                         unused_traceback):
+                return False
+
+        def fake_open(unused_path, unused_mode):
+            return io.StringIO(json.dumps(disk_lease["value"]))
+
+        self.plugin._get_fsfreeze_vm_lock = lambda unused_vm_uuid: (
+            InstallNewLeaseLock())
+        with mock.patch.object(zrm_plugin.os, "name", "posix"), \
+             mock.patch.object(zrm_plugin.os.path, "isdir", return_value=True), \
+             mock.patch.object(zrm_plugin.os, "listdir",
+                               return_value=["lease.json"]), \
+             mock.patch.object(zrm_plugin, "open", side_effect=fake_open,
+                               create=True), \
+             mock.patch.object(
+                 self.plugin, "_arm_fsfreeze_watchdog") as arm_watchdog:
+            self.plugin._recover_fsfreeze_leases()
+
+        arm_watchdog.assert_not_called()
+        self.assertFalse(new_timer.cancelled)
+        self.assertEqual(
+            new_lease["leaseId"],
+            self.plugin._fsfreeze_watchdogs[vm_uuid]["leaseId"])
 
     def test_stale_fsfreeze_timer_does_not_thaw_or_remove_new_lease(self):
         vm_uuid = "vm-renewed-freeze"

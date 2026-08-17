@@ -157,6 +157,10 @@ class ZrmPlugin(kvmagent.KvmAgent):
 
     def start(self):
         self._ensure_runtime_state()
+        # Rebuild persisted ownership before accepting lifecycle requests.
+        # Otherwise stop/freeze can race a recovery thread that still holds an
+        # obsolete snapshot and overwrite or miss the new runtime state.
+        self._start_runtime_recovery()
         http_server = kvmagent.get_http_server()
         # All ZRM paths are invoked via KVMHostAsyncHttpCallMsg and must be registered as async URIs.
         http_server.register_async_uri(self.PATH_REPLICATION_START, self.zrm_replication_start)
@@ -170,7 +174,6 @@ class ZrmPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.PATH_RECOVERY_PREPARE, self.zrm_recovery_prepare)
         http_server.register_async_uri(self.PATH_REPLICATION_THROTTLE, self.zrm_replication_throttle)
         http_server.register_async_uri(self.PATH_REPLICATION_GUEST_FSFREEZE, self.zrm_replication_guest_fsfreeze)
-        self._start_runtime_recovery()
         logger.info("ZRM plugin started: registered /zrm/* paths as async URIs")
 
     def stop(self):
@@ -383,6 +386,28 @@ class ZrmPlugin(kvmagent.KvmAgent):
             _MIRROR_TARGET_NODE_PREFIX,
             cls._hash_text(job_id or "", digest_length))
 
+    @staticmethod
+    def _legacy_target_node_for_job(job_id):
+        """Return the target-node name used before job IDs were hashed."""
+        suffix = (job_id[len(_MIRROR_JOB_PREFIX):]
+                  if job_id and job_id.startswith(_MIRROR_JOB_PREFIX)
+                  else job_id)
+        return "%s%s" % (_MIRROR_TARGET_NODE_PREFIX, suffix or "")
+
+    @classmethod
+    def _target_node_candidates_for_job(cls, job_id):
+        current_node = cls._target_node_for_job(job_id)
+        legacy_node = cls._legacy_target_node_for_job(job_id)
+        is_current_job_id = bool(re.search(
+            r"-s[0-9a-f]{12}-t[0-9a-f]{12}$", job_id or ""))
+        candidates = ([current_node, legacy_node] if is_current_job_id
+                      else [legacy_node, current_node])
+        result = []
+        for candidate in candidates:
+            if candidate not in result:
+                result.append(candidate)
+        return result
+
     def _get_mirror_target_lock(self, vm_uuid, node_name):
         self._ensure_runtime_state()
         lock_key = "%s\0%s" % (vm_uuid, node_name)
@@ -479,6 +504,33 @@ class ZrmPlugin(kvmagent.KvmAgent):
         key = (vm_uuid, job_id)
         target_node = node_name or self._mirror_target_nodes.get(key)
         if not target_node:
+            try:
+                nodes = qmp.execute_qmp_command(
+                    vm_uuid, "query-named-block-nodes",
+                    raise_exception=True) or []
+            except Exception as ex:
+                return False, "cannot discover target block node for %s: %s" % (
+                    job_id, ex)
+            node_names = set(
+                (node or {}).get("node-name") for node in nodes)
+            existing_candidates = [
+                candidate
+                for candidate in self._target_node_candidates_for_job(job_id)
+                if candidate in node_names]
+            if not existing_candidates:
+                return True, None
+
+            cleanup_errors = []
+            for candidate in existing_candidates:
+                self._remember_mirror_target_node(
+                    vm_uuid, job_id, candidate)
+                cleaned, cleanup_error = self._cleanup_mirror_target_node(
+                    vm_uuid, job_id, node_name=candidate,
+                    queue_retry=queue_retry)
+                if not cleaned:
+                    cleanup_errors.append(cleanup_error)
+            if cleanup_errors:
+                return False, "; ".join(cleanup_errors)
             return True, None
         with self._get_mirror_target_lock(vm_uuid, target_node):
             jobs, job_query_error = self._query_zrm_block_jobs(vm_uuid)
@@ -570,13 +622,17 @@ class ZrmPlugin(kvmagent.KvmAgent):
         # cannot delete a newly-created target node.
         tgt_node = self._target_node_for_job(job_id)
         with self._get_mirror_target_lock(vm_uuid, tgt_node):
-            self._cancel_mirror_target_cleanup_retries_for_node(
-                vm_uuid, tgt_node)
+            cleaned, cleanup_error = self._cleanup_mirror_target_node(
+                vm_uuid, job_id, node_name=tgt_node)
+            if not cleaned:
+                fallback_error = (
+                    "cannot prepare blockdev-mirror target %s: %s" %
+                    (tgt_node, cleanup_error))
+                logger.warn(fallback_error)
+                return False, fallback_error
             target_created = False
+            target_add_attempted = False
             try:
-                # Best-effort removal of any previous node with the same name to avoid duplicate nodes.
-                blockdev_del = {"execute": "blockdev-del", "arguments": {"node-name": tgt_node}}
-                execute_qmp_command_raw(vm_uuid, json.dumps(blockdev_del), raise_exception=False)
                 # blockdev-add: wrap the NBD client with a raw node; QEMU requires the target to be an existing node.
                 blockdev_add = {
                     "execute": "blockdev-add",
@@ -590,6 +646,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                         }
                     }
                 }
+                target_add_attempted = True
                 execute_qmp_command_raw(vm_uuid, json.dumps(blockdev_add), raise_exception=True)
                 target_created = True
                 # Record ownership immediately.  If the subsequent mirror or
@@ -612,7 +669,9 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 return True, None
             except Exception as e:
                 fallback_error = "blockdev-mirror fallback failed: %s" % e
-                if target_created:
+                if target_created or target_add_attempted:
+                    self._remember_mirror_target_node(
+                        vm_uuid, job_id, tgt_node)
                     cleaned, cleanup_error = self._cleanup_mirror_target_node(
                         vm_uuid, job_id, node_name=tgt_node)
                     if not cleaned:
@@ -2406,26 +2465,58 @@ class ZrmPlugin(kvmagent.KvmAgent):
     def _recover_fsfreeze_leases(self):
         if os.name == "nt" or not os.path.isdir(_FSFREEZE_LEASE_DIR):
             return
+
+        def read_lease(path):
+            with open(path, "r") as lease_file:
+                lease = json.load(lease_file)
+            vm_uuid = (lease.get("vmUuid") or "").strip()
+            lease_id = (lease.get("leaseId") or "").strip()
+            deadline = float(lease.get("deadline"))
+            if not vm_uuid or not lease_id:
+                raise ValueError("invalid fsfreeze lease")
+            return vm_uuid, lease_id, deadline
+
         for filename in os.listdir(_FSFREEZE_LEASE_DIR):
             if not filename.endswith(".json"):
                 continue
             path = os.path.join(_FSFREEZE_LEASE_DIR, filename)
             try:
-                with open(path, "r") as lease_file:
-                    lease = json.load(lease_file)
-                vm_uuid = (lease.get("vmUuid") or "").strip()
-                lease_id = (lease.get("leaseId") or "").strip()
-                deadline = float(lease.get("deadline"))
-                if not vm_uuid or not lease_id:
-                    raise ValueError("invalid fsfreeze lease")
-                self._arm_fsfreeze_watchdog(
-                    vm_uuid, lease_id=lease_id, deadline=deadline, persist=False)
+                initial_vm_uuid = read_lease(path)[0]
             except Exception as ex:
                 logger.warn("ZRM failed to recover fsfreeze lease %s: %s" % (path, ex))
                 try:
                     os.remove(path)
                 except OSError:
                     pass
+                continue
+
+            # The initial read only identifies the lock.  Re-read under that
+            # lock so a concurrent freeze that replaced lease A with B cannot
+            # be overwritten by stale recovery state.
+            with self._get_fsfreeze_vm_lock(initial_vm_uuid):
+                try:
+                    vm_uuid, lease_id, deadline = read_lease(path)
+                except Exception as ex:
+                    logger.warn("ZRM failed to re-read fsfreeze lease %s: %s" %
+                                (path, ex))
+                    continue
+                if vm_uuid != initial_vm_uuid:
+                    logger.warn("ZRM fsfreeze lease VM changed during recovery path=%s old=%s new=%s" %
+                                (path, initial_vm_uuid, vm_uuid))
+                    continue
+                current_state = self._fsfreeze_watchdogs.get(vm_uuid)
+                if current_state:
+                    if current_state.get("leaseId") != lease_id:
+                        logger.warn("ZRM ignored stale fsfreeze recovery vm=%s diskLease=%s activeLease=%s" %
+                                    (vm_uuid, lease_id, current_state.get("leaseId")))
+                    continue
+                try:
+                    self._arm_fsfreeze_watchdog(
+                        vm_uuid, lease_id=lease_id,
+                        deadline=deadline, persist=False)
+                except Exception as ex:
+                    logger.warn("ZRM failed to arm recovered fsfreeze lease %s: %s" %
+                                (path, ex))
 
     def _recover_mirror_target_nodes(self):
         """Rebuild fallback-node ownership and remove orphaned zrm-tgt nodes."""
@@ -2447,10 +2538,12 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     if (node.get("node-name") or "").startswith("zrm-tgt-"))
                 owned_nodes = set()
                 for job_id in jobs:
-                    target_node = self._target_node_for_job(job_id)
-                    if target_node in target_nodes:
-                        self._remember_mirror_target_node(vm_uuid, job_id, target_node)
-                        owned_nodes.add(target_node)
+                    for target_node in self._target_node_candidates_for_job(job_id):
+                        if target_node in target_nodes:
+                            self._remember_mirror_target_node(
+                                vm_uuid, job_id, target_node)
+                            owned_nodes.add(target_node)
+                            break
                 for orphan_node in target_nodes.difference(owned_nodes):
                     orphan_job_id = "orphan-%s" % self._hash_text(orphan_node)
                     self._remember_mirror_target_node(
@@ -2468,9 +2561,10 @@ class ZrmPlugin(kvmagent.KvmAgent):
         for name, target in (
                 ("zrm-fsfreeze-recovery", self._recover_fsfreeze_leases),
                 ("zrm-target-node-recovery", self._recover_mirror_target_nodes)):
-            recovery_thread = threading.Thread(target=target, name=name)
-            recovery_thread.daemon = True
-            recovery_thread.start()
+            try:
+                target()
+            except Exception as ex:
+                logger.warn("ZRM startup recovery %s failed: %s" % (name, ex))
 
     def _linux_guest_fsfreeze(self, qga, action, timeout_seconds,
                               lease_timeout_seconds=None):
