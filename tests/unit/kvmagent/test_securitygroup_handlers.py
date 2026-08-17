@@ -39,6 +39,8 @@ class _IptablesModule(Protocol):
 class _SecurityGroupPluginProto(Protocol):
     config: dict[str, object]
     ZSTACK_DEFAULT_CHAIN: str
+    ZSTACK_DEFAULT_OUT_CHAIN: str
+    ZSTACK_DEFAULT_IN_CHAIN: str
 
     def cleanup_unused_rules_on_host(self, req: dict[str, object]) -> str: ...
     def check_default_sg_rules(self, req: dict[str, object]) -> str: ...
@@ -123,10 +125,11 @@ class _FakeChain:
         self.user_defined_rules: list[_FakeRule] = []
 
     def add_rule(self, rule: str) -> None:
-        self.rules.append(rule)
+        if rule not in self.rules:
+            self.rules.append(rule)
 
     def add_default_rule(self, rule: str) -> None:
-        self.default_rules.append(rule)
+        self.default_rules = [rule]
 
     def flush_chain(self) -> None:
         self.rules = []
@@ -138,7 +141,6 @@ class _FakeChain:
     def delete_rule(self, rule_name: str) -> None:
         self.deleted_rules.append(rule_name)
         self.user_defined_rules = [rule for rule in self.user_defined_rules if rule.name != rule_name]
-
 
 class _FakeTable:
     def __init__(self, chains: list[_FakeChain] | None = None) -> None:
@@ -245,8 +247,10 @@ class TestSecurityGroupCleanupUnusedRulesOnHost:
         securitygroup_plugin.ipset.IPSetManager = MagicMock(return_value=ipset_manager)
 
         default_chain = _FakeChain(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_CHAIN)
+        default_out_chain = _FakeChain(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_OUT_CHAIN)
+        default_in_chain = _FakeChain(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_IN_CHAIN)
         vnic_chain = _FakeChain("sg-vnic0-in")
-        table4 = _FakeTable([default_chain, vnic_chain])
+        table4 = _FakeTable([default_chain, default_out_chain, default_in_chain, vnic_chain])
         securitygroup_plugin.iptables.FORWARD_CHAIN_NAME = "FORWARD"
         securitygroup_plugin.iptables.get_iptables_cmd = MagicMock(return_value="iptables")
         securitygroup_plugin.iptables.get_ip6tables_cmd = MagicMock(return_value="ip6tables")
@@ -258,6 +262,8 @@ class TestSecurityGroupCleanupUnusedRulesOnHost:
         assert rsp['success'] is True
         assert "sg-vnic0-in" in table4.deleted_chains
         assert default_chain.deleted_targets
+        assert default_out_chain.deleted_targets
+        assert default_in_chain.deleted_targets
         assert securitygroup_plugin.shell.run.call_count >= 1
 
 
@@ -274,9 +280,80 @@ class TestSecurityGroupCheckDefaultRules:
         rsp = _load_rsp(result)
         assert rsp['success'] is True
         sg_chain = table4.get_chain_by_name(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_CHAIN)
+        sg_out_chain = table4.get_chain_by_name(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_OUT_CHAIN)
+        sg_in_chain = table4.get_chain_by_name(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_IN_CHAIN)
         assert sg_chain is not None
+        assert sg_out_chain is not None
+        assert sg_in_chain is not None
         assert any('RELATED,ESTABLISHED' in rule for rule in sg_chain.rules + sg_chain.default_rules)
+        assert sg_chain.rules[-2:] == [
+            '-A sg-default -j sg-default-out',
+            '-A sg-default -j sg-default-in',
+        ]
+        assert sg_in_chain.default_rules == ['-A sg-default-in -j ACCEPT']
+        assert table4.restore_called is False
 
+    def test_check_default_sg_rules_skips_restore_for_healthy_layout(self):
+        plugin = _make_plugin()
+        securitygroup_plugin.iptables.FORWARD_CHAIN_NAME = "FORWARD"
+        table4 = _FakeTable([])
+        plugin._check_sg_default_rules(table4, plugin.IPV4)
+        securitygroup_plugin.iptables.from_iptables_save = MagicMock(return_value=table4)
+
+        result = plugin.check_default_sg_rules(_make_req({'disableIp6Tables': True}))
+
+        assert _load_rsp(result)['success'] is True
+        assert table4.restore_called is False
+
+    def test_check_default_sg_rules_repairs_fixed_layout(self):
+        plugin = _make_plugin()
+        securitygroup_plugin.iptables.FORWARD_CHAIN_NAME = "FORWARD"
+        root_chain = _FakeChain(plugin.ZSTACK_DEFAULT_CHAIN)
+        out_chain = _FakeChain(plugin.ZSTACK_DEFAULT_OUT_CHAIN)
+        in_chain = _FakeChain(plugin.ZSTACK_DEFAULT_IN_CHAIN)
+        out_chain.rules = ['-A sg-default-out -m physdev --physdev-in vnic0 -j sg-vnic0-out']
+        in_chain.rules = ['-A sg-default-in -m physdev --physdev-out vnic0 -j sg-vnic0-in']
+        table4 = _FakeTable([root_chain, out_chain, in_chain])
+        securitygroup_plugin.iptables.from_iptables_save = MagicMock(return_value=table4)
+
+        result = plugin.check_default_sg_rules(_make_req({'disableIp6Tables': True}))
+
+        assert _load_rsp(result)['success'] is True
+        assert root_chain.rules[-2:] == [
+            '-A sg-default -j sg-default-out',
+            '-A sg-default -j sg-default-in',
+        ]
+        assert in_chain.default_rules == ['-A sg-default-in -j ACCEPT']
+        assert out_chain.rules == ['-A sg-default-out -m physdev --physdev-in vnic0 -j sg-vnic0-out']
+        assert in_chain.rules == ['-A sg-default-in -m physdev --physdev-out vnic0 -j sg-vnic0-in']
+        assert table4.restore_called is False
+
+    def test_check_default_sg_rules_repairs_missing_root_without_losing_vnic_refs(self):
+        plugin = _make_plugin()
+        securitygroup_plugin.iptables.FORWARD_CHAIN_NAME = "FORWARD"
+        out_chain = _FakeChain(plugin.ZSTACK_DEFAULT_OUT_CHAIN)
+        in_chain = _FakeChain(plugin.ZSTACK_DEFAULT_IN_CHAIN)
+        out_chain.rules = ['-A sg-default-out -m physdev --physdev-in vnic0 -j sg-vnic0-out']
+        in_chain.rules = ['-A sg-default-in -m physdev --physdev-out vnic0 -j sg-vnic0-in']
+        table4 = _FakeTable([
+            out_chain,
+            in_chain,
+            _FakeChain('sg-vnic0-in'),
+            _FakeChain('sg-vnic0-out'),
+        ])
+        securitygroup_plugin.iptables.from_iptables_save = MagicMock(return_value=table4)
+
+        result = plugin.check_default_sg_rules(_make_req({'disableIp6Tables': True}))
+
+        assert _load_rsp(result)['success'] is True
+        root_chain = table4.get_chain_by_name(plugin.ZSTACK_DEFAULT_CHAIN)
+        assert root_chain is not None
+        assert root_chain.rules[-2:] == [
+            '-A sg-default -j sg-default-out',
+            '-A sg-default -j sg-default-in',
+        ]
+        assert out_chain.rules == ['-A sg-default-out -m physdev --physdev-in vnic0 -j sg-vnic0-out']
+        assert in_chain.rules == ['-A sg-default-in -m physdev --physdev-out vnic0 -j sg-vnic0-in']
 
 @pytest.mark.kvmagent
 class TestSecurityGroupApplyRules:
@@ -287,7 +364,12 @@ class TestSecurityGroupApplyRules:
 
         securitygroup_plugin.ip.is_ipv4 = MagicMock(side_effect=_is_ipv4)
         securitygroup_plugin.shell.run = MagicMock()
+        linux = cast(_LinuxModule, cast(object, importlib.import_module("zstacklib.utils.linux")))
+        linux.get_all_ethernet_device_names = MagicMock(return_value=['vnic0', 'vnic2'])
         _setup_bash_for_cleanup()
+        securitygroup_plugin.bash.bash_o = MagicMock(
+            side_effect=lambda cmd: '' if cmd.startswith('ipset list') else 'sg-vnic0-in 1\nsg-vnic0-out 1\nsg-vnic2-in 1\nsg-vnic2-out 1'
+        )
 
         default_chain4 = _FakeChain(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_CHAIN)
         default_chain6 = _FakeChain(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_CHAIN)
@@ -314,7 +396,7 @@ class TestSecurityGroupApplyRules:
                     'ingressPolicy': 'ALLOW',
                     'egressPolicy': 'DENY',
                     'actionCode': 'applyChain',
-                    'securityGroupRefs': {'sg-uuid-1': 1, 'sg-uuid-2': 0},
+                    'securityGroupRefs': {'sg-uuid-1': 1},
                 },
                 {
                     'internalName': 'vnic1',
@@ -325,6 +407,16 @@ class TestSecurityGroupApplyRules:
                     'egressPolicy': 'ALLOW',
                     'actionCode': 'deleteChain',
                     'securityGroupRefs': {},
+                },
+                {
+                    'internalName': 'vnic2',
+                    'vmNicUuid': 'nic-3',
+                    'mac': '00:11:22:33:44:77',
+                    'vmNicIps': ['10.0.0.12'],
+                    'ingressPolicy': 'DENY',
+                    'egressPolicy': 'ALLOW',
+                    'actionCode': 'applyChain',
+                    'securityGroupRefs': {'sg-uuid-1': 1},
                 },
             ],
             'ruleTOs': {
@@ -338,6 +430,19 @@ class TestSecurityGroupApplyRules:
                         'srcIpRange': '10.0.0.1,10.0.0.2',
                         'dstIpRange': '',
                         'dstPortRange': '22-23',
+                        'action': 'ACCEPT',
+                        'remoteGroupUuid': '',
+                        'remoteGroupVmIps': [],
+                    },
+                    {
+                        'priority': 1,
+                        'ruleType': 'Egress',
+                        'state': 'Enabled',
+                        'ipVersion': 4,
+                        'protocol': 'TCP',
+                        'srcIpRange': '',
+                        'dstIpRange': '10.0.0.11',
+                        'dstPortRange': '22',
                         'action': 'ACCEPT',
                         'remoteGroupUuid': '',
                         'remoteGroupVmIps': [],
@@ -372,6 +477,19 @@ class TestSecurityGroupApplyRules:
                         'remoteGroupUuid': '',
                         'remoteGroupVmIps': [],
                     },
+                    {
+                        'priority': 1,
+                        'ruleType': 'Egress',
+                        'state': 'Enabled',
+                        'ipVersion': 6,
+                        'protocol': 'TCP',
+                        'srcIpRange': '',
+                        'dstIpRange': 'fd00::11',
+                        'dstPortRange': '22',
+                        'action': 'ACCEPT',
+                        'remoteGroupUuid': '',
+                        'remoteGroupVmIps': [],
+                    },
                 ],
             },
         })
@@ -381,6 +499,46 @@ class TestSecurityGroupApplyRules:
         assert table4.restore_called is True
         assert table6.restore_called is True
         assert ipset_manager.refresh_called == 1
+
+        root_chain = table4.get_chain_by_name(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_CHAIN)
+        out_dispatch = table4.get_chain_by_name(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_OUT_CHAIN)
+        in_dispatch = table4.get_chain_by_name(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_IN_CHAIN)
+        assert root_chain is not None
+        assert out_dispatch is not None
+        assert in_dispatch is not None
+        assert root_chain.rules[-2:] == [
+            '-A sg-default -j sg-default-out',
+            '-A sg-default -j sg-default-in',
+        ]
+        assert any('--physdev-in vnic0 -j sg-vnic0-out' in rule for rule in out_dispatch.rules)
+        assert any('--physdev-out vnic0 -j sg-vnic0-in' in rule for rule in in_dispatch.rules)
+        assert in_dispatch.default_rules == ['-A sg-default-in -j ACCEPT']
+
+        vnic_in_chain = table4.get_chain_by_name('sg-vnic0-in')
+        vnic_out_chain = table4.get_chain_by_name('sg-vnic0-out')
+        assert vnic_in_chain is not None
+        assert vnic_out_chain is not None
+        assert vnic_in_chain.default_rules == ['-A sg-vnic0-in -j RETURN']
+        assert vnic_out_chain.default_rules == ['-A sg-vnic0-out -j DROP']
+
+        vnic2_in_chain = table4.get_chain_by_name('sg-vnic2-in')
+        vnic2_out_chain = table4.get_chain_by_name('sg-vnic2-out')
+        assert vnic2_in_chain is not None
+        assert vnic2_out_chain is not None
+        assert vnic2_in_chain.default_rules == ['-A sg-vnic2-in -j DROP']
+        assert vnic2_out_chain.default_rules == ['-A sg-vnic2-out -j RETURN']
+
+        sg_in_chain = table4.get_chain_by_name(plugin._make_sg_in_chain_name('sg-uuid-1'))
+        sg_out_chain = table4.get_chain_by_name(plugin._make_sg_out_chain_name('sg-uuid-1'))
+        assert sg_in_chain is not None
+        assert sg_out_chain is not None
+        assert any('-j ACCEPT' in rule for rule in sg_in_chain.rules)
+        assert any('-j sg-default-in' in rule for rule in sg_out_chain.rules)
+        assert any('-j DROP' in rule for rule in sg_out_chain.rules)
+
+        sg6_out_chain = table6.get_chain_by_name(plugin._make_sg_out_chain_name('sg-uuid-1'))
+        assert sg6_out_chain is not None
+        assert any('-j sg-default-in' in rule for rule in sg6_out_chain.rules)
 
 
 @pytest.mark.kvmagent
@@ -417,6 +575,10 @@ class TestSecurityGroupRefreshRulesOnHost:
         assert rsp['success'] is True
         assert table4.deleted_chains
         assert table6.deleted_chains
+        assert table4.get_chain_by_name(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_OUT_CHAIN) is not None
+        assert table4.get_chain_by_name(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_IN_CHAIN) is not None
+        assert table6.get_chain_by_name(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_OUT_CHAIN) is not None
+        assert table6.get_chain_by_name(securitygroup_plugin.SecurityGroupPlugin.ZSTACK_DEFAULT_IN_CHAIN) is not None
 
 
 @pytest.mark.kvmagent
