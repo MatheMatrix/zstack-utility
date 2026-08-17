@@ -1044,26 +1044,131 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
         self.assertEqual(node_a, self.plugin._target_node_for_job(job_a))
         self.assertNotEqual(node_a, self.plugin._target_node_for_job(job_b))
 
-    def test_start_finishes_runtime_recovery_before_registering_endpoints(self):
+    def test_start_registers_endpoints_before_background_target_recovery(self):
         events = []
+        registered_handlers = {}
 
         class FakeHttpServer(object):
             def register_async_uri(self, path, handler):
                 events.append("register:" + path)
+                registered_handlers[path] = handler
+
+        class DeferredThread(object):
+            def __init__(self, target, name=None):
+                self.target = target
+                self.name = name
+                self.daemon = False
+
+            def start(self):
+                events.append("thread-start:" + self.name)
 
         self.plugin._recover_fsfreeze_leases = lambda: events.append(
             "recover-fsfreeze")
-        self.plugin._recover_mirror_target_nodes = lambda: events.append(
-            "recover-targets")
 
         with mock.patch.object(
                 zrm_plugin.kvmagent, "get_http_server",
-                return_value=FakeHttpServer()):
+                return_value=FakeHttpServer()), \
+             mock.patch.object(
+                 zrm_plugin.threading, "Thread", DeferredThread):
             self.plugin.start()
 
+        self.assertEqual("recover-fsfreeze", events[0])
+        self.assertTrue(events[1].startswith("register:"))
+        self.assertTrue(events[-1].startswith("thread-start:"))
+        self.assertEqual(11, len(registered_handlers))
+
+    def test_recovery_guard_blocks_only_unreconciled_vm(self):
+        self.plugin._ensure_runtime_state()
+        self.plugin._target_recovery_discovery_complete = True
+        self.plugin._target_recovery_pending_vms = set(["vm-pending"])
+        self.plugin._target_recovery_errors = {
+            "vm-pending": "QMP command timed out"}
+        handled = []
+
+        def handler(req):
+            handled.append(self.plugin._request_vm_uuid(req))
+            return json.dumps({"success": True})
+
+        guarded = self.plugin._guard_target_recovery(handler)
+        pending_rsp = json.loads(guarded(self._make_req({
+            "vmUuid": "vm-pending"})))
+        ready_rsp = json.loads(guarded(self._make_req({
+            "vmUuid": "vm-ready"})))
+
+        self.assertFalse(pending_rsp["success"])
         self.assertEqual(
-            ["recover-fsfreeze", "recover-targets"], events[:2])
-        self.assertTrue(events[2].startswith("register:"))
+            "ZRM_RUNTIME_RECOVERY_IN_PROGRESS",
+            pending_rsp["errorCode"])
+        self.assertTrue(pending_rsp["retryable"])
+        self.assertTrue(ready_rsp["success"])
+        self.assertEqual(["vm-ready"], handled)
+
+    def test_background_recovery_retries_bad_vm_without_blocking_good_vm(self):
+        attempts = {"vm-bad": 0, "vm-good": 0}
+        self.plugin._ensure_runtime_state()
+        self.plugin._runtime_stopping = False
+        self.plugin._target_recovery_vm_uuids = lambda: [
+            "vm-bad", "vm-good"]
+
+        def recover(vm_uuid):
+            attempts[vm_uuid] += 1
+            if vm_uuid == "vm-bad":
+                raise RuntimeError("monitor timeout")
+
+        self.plugin._recover_mirror_target_nodes_for_vm = recover
+        with mock.patch.object(zrm_plugin.time, "sleep"):
+            self.plugin._run_mirror_target_recovery()
+
+        self.assertTrue(self.plugin._target_recovery_discovery_complete)
+        self.assertNotIn(
+            "vm-good", self.plugin._target_recovery_pending_vms)
+        self.assertIn("vm-bad", self.plugin._target_recovery_pending_vms)
+        self.assertEqual(1, attempts["vm-good"])
+        self.assertEqual(zrm_plugin._TARGET_RECOVERY_RETRIES,
+                         attempts["vm-bad"])
+
+    def test_target_recovery_qmp_calls_have_deadline(self):
+        query_timeouts = []
+        execute_timeouts = []
+        raw_timeouts = []
+        orphan_node = "zrm-tgt-orphan-node"
+        node_queries = iter([
+            [{"node-name": orphan_node}],
+            [],
+        ])
+
+        def query_jobs(unused_vm_uuid, command_timeout=None):
+            query_timeouts.append(command_timeout)
+            return {}, None
+
+        def execute(unused_vm_uuid, command, raise_exception=True, **kwargs):
+            self.assertEqual("query-named-block-nodes", command)
+            execute_timeouts.append(kwargs.get("command_timeout"))
+            return next(node_queries)
+
+        def execute_raw(unused_vm_uuid, command, raise_exception=False,
+                        **kwargs):
+            self.assertEqual("blockdev-del", json.loads(command)["execute"])
+            raw_timeouts.append(kwargs.get("command_timeout"))
+
+        self.plugin._query_zrm_block_jobs = query_jobs
+        with mock.patch.object(
+                zrm_plugin.qmp, "execute_qmp_command",
+                side_effect=execute), \
+             mock.patch.object(
+                 zrm_plugin, "execute_qmp_command_raw",
+                 side_effect=execute_raw):
+            self.plugin._recover_mirror_target_nodes_for_vm("vm-timeout")
+
+        self.assertEqual(
+            [zrm_plugin._TARGET_RECOVERY_QMP_TIMEOUT_SECONDS] * 2,
+            query_timeouts)
+        self.assertEqual(
+            [zrm_plugin._TARGET_RECOVERY_QMP_TIMEOUT_SECONDS] * 2,
+            execute_timeouts)
+        self.assertEqual(
+            [zrm_plugin._TARGET_RECOVERY_QMP_TIMEOUT_SECONDS],
+            raw_timeouts)
 
     def test_recovery_binds_legacy_target_to_live_job_for_cleanup(self):
         vm_uuid = "vm-legacy"
@@ -1082,8 +1187,8 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
             [{"node-name": legacy_node}],
             [],
         ])
-        self.plugin._query_zrm_block_jobs = lambda unused_vm_uuid: next(
-            job_queries)
+        self.plugin._query_zrm_block_jobs = lambda unused_vm_uuid, \
+            command_timeout=None: next(job_queries)
         with mock.patch.dict(
                 sys.modules,
                 {"kvmagent.plugins.vm_plugin": fake_vm_plugin}), \

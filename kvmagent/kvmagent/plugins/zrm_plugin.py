@@ -61,6 +61,9 @@ _QEMU_BLOCK_NODE_NAME_MAX = 31
 _MIRROR_TARGET_CLEANUP_RETRIES = 3
 _MIRROR_TARGET_CLEANUP_RETRY_SECONDS = 1
 _MIRROR_TARGET_LOCK_STRIPES = 64
+_TARGET_RECOVERY_QMP_TIMEOUT_SECONDS = 5
+_TARGET_RECOVERY_RETRIES = 3
+_TARGET_RECOVERY_RETRY_SECONDS = 1
 
 # A frozen guest must never depend on the management plane delivering a thaw
 # request.  The lease survives a kvmagent restart under /var/run and is
@@ -93,7 +96,8 @@ def _to_long(v):
             return None
 
 
-def execute_qmp_command_raw(domain_id, command, raise_exception=False):
+def execute_qmp_command_raw(domain_id, command, raise_exception=False,
+                            command_timeout=None):
     """
     Execute a raw QMP command represented as a full JSON *string*.
 
@@ -102,8 +106,18 @@ def execute_qmp_command_raw(domain_id, command, raise_exception=False):
     default ``raise_exception=False`` used by ZRM bitmap operations.
     """
     if hasattr(qmp, 'execute_qmp_command_raw'):
-        return qmp.execute_qmp_command_raw(domain_id, command, raise_exception=raise_exception)
-    return qmp._execute_qmp_command(domain_id, command, raise_exception=raise_exception)
+        if command_timeout is None:
+            return qmp.execute_qmp_command_raw(
+                domain_id, command, raise_exception=raise_exception)
+        return qmp.execute_qmp_command_raw(
+            domain_id, command, raise_exception=raise_exception,
+            command_timeout=command_timeout)
+    if command_timeout is None:
+        return qmp._execute_qmp_command(
+            domain_id, command, raise_exception=raise_exception)
+    return qmp._execute_qmp_command(
+        domain_id, command, raise_exception=raise_exception,
+        command_timeout=command_timeout)
 
 
 class ZrmAgentRsp(object):
@@ -154,30 +168,53 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     for unused_index in range(_MIRROR_TARGET_LOCK_STRIPES)]
             if not hasattr(self, "_mirror_target_cleanup_retries"):
                 self._mirror_target_cleanup_retries = {}
+            if not hasattr(self, "_target_recovery_pending_vms"):
+                self._target_recovery_pending_vms = set()
+            if not hasattr(self, "_target_recovery_errors"):
+                self._target_recovery_errors = {}
+            if not hasattr(self, "_target_recovery_discovery_complete"):
+                self._target_recovery_discovery_complete = False
+            if not hasattr(self, "_target_recovery_discovery_error"):
+                self._target_recovery_discovery_error = None
+            if not hasattr(self, "_target_recovery_thread"):
+                self._target_recovery_thread = None
+            if not hasattr(self, "_runtime_stopping"):
+                self._runtime_stopping = False
 
     def start(self):
         self._ensure_runtime_state()
-        # Rebuild persisted ownership before accepting lifecycle requests.
-        # Otherwise stop/freeze can race a recovery thread that still holds an
-        # obsolete snapshot and overwrite or miss the new runtime state.
-        self._start_runtime_recovery()
+        self._runtime_stopping = False
+        # Lease recovery does not invoke QMP and must finish before the
+        # fsfreeze endpoint becomes reachable, otherwise a stale lease can
+        # overwrite a concurrent new freeze window.
+        self._recover_fsfreeze_leases()
         http_server = kvmagent.get_http_server()
-        # All ZRM paths are invoked via KVMHostAsyncHttpCallMsg and must be registered as async URIs.
-        http_server.register_async_uri(self.PATH_REPLICATION_START, self.zrm_replication_start)
-        http_server.register_async_uri(self.PATH_REPLICATION_STOP, self.zrm_replication_stop)
-        http_server.register_async_uri(self.PATH_REPLICATION_PAUSE, self.zrm_replication_pause)
-        http_server.register_async_uri(self.PATH_REPLICATION_RESUME, self.zrm_replication_resume)
-        http_server.register_async_uri(self.PATH_REPLICATION_SYNC, self.zrm_replication_sync)
-        http_server.register_async_uri(self.PATH_REPLICATION_WAIT_INITIAL, self.zrm_replication_wait_initial)
-        http_server.register_async_uri(self.PATH_BITMAP_CREATE, self.zrm_bitmap_create)
-        http_server.register_async_uri(self.PATH_CHECKPOINT_CREATE, self.zrm_checkpoint_create)
-        http_server.register_async_uri(self.PATH_RECOVERY_PREPARE, self.zrm_recovery_prepare)
-        http_server.register_async_uri(self.PATH_REPLICATION_THROTTLE, self.zrm_replication_throttle)
-        http_server.register_async_uri(self.PATH_REPLICATION_GUEST_FSFREEZE, self.zrm_replication_guest_fsfreeze)
+        # Register first so a stuck VM cannot make the whole ZRM API surface
+        # disappear.  The wrapper fails closed only for VMs whose target-node
+        # ownership has not been reconciled yet.
+        for path, handler in (
+                (self.PATH_REPLICATION_START, self.zrm_replication_start),
+                (self.PATH_REPLICATION_STOP, self.zrm_replication_stop),
+                (self.PATH_REPLICATION_PAUSE, self.zrm_replication_pause),
+                (self.PATH_REPLICATION_RESUME, self.zrm_replication_resume),
+                (self.PATH_REPLICATION_SYNC, self.zrm_replication_sync),
+                (self.PATH_REPLICATION_WAIT_INITIAL,
+                 self.zrm_replication_wait_initial),
+                (self.PATH_BITMAP_CREATE, self.zrm_bitmap_create),
+                (self.PATH_CHECKPOINT_CREATE, self.zrm_checkpoint_create),
+                (self.PATH_RECOVERY_PREPARE, self.zrm_recovery_prepare),
+                (self.PATH_REPLICATION_THROTTLE,
+                 self.zrm_replication_throttle),
+                (self.PATH_REPLICATION_GUEST_FSFREEZE,
+                 self.zrm_replication_guest_fsfreeze)):
+            http_server.register_async_uri(
+                path, self._guard_target_recovery(handler))
+        self._start_runtime_recovery()
         logger.info("ZRM plugin started: registered /zrm/* paths as async URIs")
 
     def stop(self):
         self._ensure_runtime_state()
+        self._runtime_stopping = True
         leases = [(vm_uuid, state.get("leaseId"))
                   for vm_uuid, state in list(self._fsfreeze_watchdogs.items())]
         for vm_uuid, lease_id in leases:
@@ -189,6 +226,45 @@ class ZrmPlugin(kvmagent.KvmAgent):
 
     def configure(self, config):
         self.config = config
+
+    @staticmethod
+    def _request_vm_uuid(req):
+        try:
+            body = req.get(http.REQUEST_BODY) if req else None
+            if not body:
+                return None
+            parsed = json.loads(body) if isinstance(body, _str_types) else body
+            if isinstance(parsed, dict):
+                return (parsed.get("vmUuid") or "").strip() or None
+            return (getattr(parsed, "vmUuid", None) or "").strip() or None
+        except Exception:
+            # Preserve each handler's existing validation/error response for
+            # malformed requests instead of replacing it in the guard.
+            return None
+
+    def _is_target_recovery_ready(self, vm_uuid):
+        self._ensure_runtime_state()
+        with self._runtime_state_init_lock:
+            if not self._target_recovery_discovery_complete:
+                return False
+            return vm_uuid not in self._target_recovery_pending_vms
+
+    def _guard_target_recovery(self, handler):
+        def guarded(req):
+            vm_uuid = self._request_vm_uuid(req)
+            if vm_uuid and not self._is_target_recovery_ready(vm_uuid):
+                recovery_error = (self._target_recovery_errors.get(vm_uuid)
+                                  or self._target_recovery_discovery_error)
+                error = "ZRM runtime recovery is still in progress for vm %s" % vm_uuid
+                if recovery_error:
+                    error = "%s: %s" % (error, recovery_error)
+                return jsonobject.dumps(ZrmAgentRsp(
+                    success=False,
+                    error=error,
+                    errorCode="ZRM_RUNTIME_RECOVERY_IN_PROGRESS",
+                    retryable=True))
+            return handler(req)
+        return guarded
 
 
 
@@ -498,16 +574,18 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 attempts_remaining=attempts_remaining, token=token)
 
     def _cleanup_mirror_target_node(self, vm_uuid, job_id, node_name=None,
-                                    queue_retry=True):
+                                    queue_retry=True, command_timeout=None):
         """Delete a fallback block node after its mirror job has settled."""
         self._ensure_runtime_state()
         key = (vm_uuid, job_id)
         target_node = node_name or self._mirror_target_nodes.get(key)
         if not target_node:
             try:
+                qmp_kwargs = ({"command_timeout": command_timeout}
+                              if command_timeout is not None else {})
                 nodes = qmp.execute_qmp_command(
                     vm_uuid, "query-named-block-nodes",
-                    raise_exception=True) or []
+                    raise_exception=True, **qmp_kwargs) or []
             except Exception as ex:
                 return False, "cannot discover target block node for %s: %s" % (
                     job_id, ex)
@@ -526,14 +604,19 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     vm_uuid, job_id, candidate)
                 cleaned, cleanup_error = self._cleanup_mirror_target_node(
                     vm_uuid, job_id, node_name=candidate,
-                    queue_retry=queue_retry)
+                    queue_retry=queue_retry,
+                    command_timeout=command_timeout)
                 if not cleaned:
                     cleanup_errors.append(cleanup_error)
             if cleanup_errors:
                 return False, "; ".join(cleanup_errors)
             return True, None
         with self._get_mirror_target_lock(vm_uuid, target_node):
-            jobs, job_query_error = self._query_zrm_block_jobs(vm_uuid)
+            if command_timeout is None:
+                jobs, job_query_error = self._query_zrm_block_jobs(vm_uuid)
+            else:
+                jobs, job_query_error = self._query_zrm_block_jobs(
+                    vm_uuid, command_timeout=command_timeout)
             if job_query_error:
                 cleanup_error = (
                     "cannot verify target block node %s is orphaned: %s" %
@@ -557,14 +640,24 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 blockdev_del = {
                     "execute": "blockdev-del",
                     "arguments": {"node-name": target_node}}
-                execute_qmp_command_raw(
-                    vm_uuid, json.dumps(blockdev_del), raise_exception=True)
+                if command_timeout is None:
+                    execute_qmp_command_raw(
+                        vm_uuid, json.dumps(blockdev_del),
+                        raise_exception=True)
+                else:
+                    execute_qmp_command_raw(
+                        vm_uuid, json.dumps(blockdev_del),
+                        raise_exception=True,
+                        command_timeout=command_timeout)
             except Exception as ex:
                 delete_error = str(ex)
 
             try:
+                qmp_kwargs = ({"command_timeout": command_timeout}
+                              if command_timeout is not None else {})
                 nodes = qmp.execute_qmp_command(
-                    vm_uuid, "query-named-block-nodes", raise_exception=True) or []
+                    vm_uuid, "query-named-block-nodes", raise_exception=True,
+                    **qmp_kwargs) or []
                 target_exists = any(
                     (node or {}).get("node-name") == target_node for node in nodes)
             except Exception as ex:
@@ -630,7 +723,6 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     (tgt_node, cleanup_error))
                 logger.warn(fallback_error)
                 return False, fallback_error
-            target_created = False
             target_add_attempted = False
             try:
                 # blockdev-add: wrap the NBD client with a raw node; QEMU requires the target to be an existing node.
@@ -648,7 +740,6 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 }
                 target_add_attempted = True
                 execute_qmp_command_raw(vm_uuid, json.dumps(blockdev_add), raise_exception=True)
-                target_created = True
                 # Record ownership immediately.  If the subsequent mirror or
                 # cleanup fails, stop/recovery and the retry queue can still
                 # discover this node.
@@ -669,7 +760,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 return True, None
             except Exception as e:
                 fallback_error = "blockdev-mirror fallback failed: %s" % e
-                if target_created or target_add_attempted:
+                if target_add_attempted:
                     self._remember_mirror_target_node(
                         vm_uuid, job_id, tgt_node)
                     cleaned, cleanup_error = self._cleanup_mirror_target_node(
@@ -907,7 +998,7 @@ class ZrmPlugin(kvmagent.KvmAgent):
             return {}
         return {k: v for k, v in by_dev.items() if k and (k.startswith("zrm-mirror-"))}
 
-    def _query_zrm_block_jobs(self, vm_uuid):
+    def _query_zrm_block_jobs(self, vm_uuid, command_timeout=None):
         """
         Query all ZR mirror jobs and preserve observation failures.
 
@@ -916,7 +1007,11 @@ class ZrmPlugin(kvmagent.KvmAgent):
         infer that from an empty map.
         """
         try:
-            by_dev = qmp.query_block_jobs_by_device(vm_uuid)
+            if command_timeout is None:
+                by_dev = qmp.query_block_jobs_by_device(vm_uuid)
+            else:
+                by_dev = qmp.query_block_jobs_by_device(
+                    vm_uuid, command_timeout=command_timeout)
         except Exception as e:
             err = str(e)
             logger.debug("ZRM query-block-jobs failed for vm %s: %s" % (vm_uuid, err))
@@ -2518,53 +2613,141 @@ class ZrmPlugin(kvmagent.KvmAgent):
                     logger.warn("ZRM failed to arm recovered fsfreeze lease %s: %s" %
                                 (path, ex))
 
+    @staticmethod
+    def _target_recovery_vm_uuids():
+        from kvmagent.plugins.vm_plugin import get_all_vm_states
+        return sorted(list((get_all_vm_states() or {}).keys()))
+
+    def _recover_mirror_target_nodes_for_vm(self, vm_uuid):
+        """Reconcile one VM using only QMP calls with a hard deadline."""
+        command_timeout = _TARGET_RECOVERY_QMP_TIMEOUT_SECONDS
+        jobs, query_error = self._query_zrm_block_jobs(
+            vm_uuid, command_timeout=command_timeout)
+        if query_error:
+            raise RuntimeError(query_error)
+
+        nodes = qmp.execute_qmp_command(
+            vm_uuid, "query-named-block-nodes", raise_exception=True,
+            command_timeout=command_timeout) or []
+        target_nodes = set(
+            node.get("node-name") for node in nodes
+            if (node.get("node-name") or "").startswith("zrm-tgt-"))
+        owned_nodes = set()
+        for job_id in jobs:
+            for target_node in self._target_node_candidates_for_job(job_id):
+                if target_node in target_nodes:
+                    self._remember_mirror_target_node(
+                        vm_uuid, job_id, target_node)
+                    owned_nodes.add(target_node)
+                    break
+
+        cleanup_errors = []
+        for orphan_node in target_nodes.difference(owned_nodes):
+            orphan_job_id = "orphan-%s" % self._hash_text(orphan_node)
+            self._remember_mirror_target_node(
+                vm_uuid, orphan_job_id, orphan_node)
+            cleaned, cleanup_error = self._cleanup_mirror_target_node(
+                vm_uuid, orphan_job_id, node_name=orphan_node,
+                queue_retry=False, command_timeout=command_timeout)
+            if not cleaned:
+                cleanup_errors.append("%s: %s" %
+                                      (orphan_node, cleanup_error))
+        if cleanup_errors:
+            raise RuntimeError("; ".join(cleanup_errors))
+
     def _recover_mirror_target_nodes(self):
-        """Rebuild fallback-node ownership and remove orphaned zrm-tgt nodes."""
+        """Synchronously reconcile all VMs; retained for diagnostics/tests."""
         try:
-            from kvmagent.plugins.vm_plugin import get_all_vm_states
-            vm_uuids = list((get_all_vm_states() or {}).keys())
+            vm_uuids = self._target_recovery_vm_uuids()
         except Exception as ex:
             logger.debug("ZRM mirror target recovery skipped: %s" % ex)
-            return
+            return {"discovery": str(ex)}
+        failures = {}
         for vm_uuid in vm_uuids:
             try:
-                jobs, query_error = self._query_zrm_block_jobs(vm_uuid)
-                if query_error:
-                    continue
-                nodes = qmp.execute_qmp_command(
-                    vm_uuid, "query-named-block-nodes", raise_exception=True) or []
-                target_nodes = set(
-                    node.get("node-name") for node in nodes
-                    if (node.get("node-name") or "").startswith("zrm-tgt-"))
-                owned_nodes = set()
-                for job_id in jobs:
-                    for target_node in self._target_node_candidates_for_job(job_id):
-                        if target_node in target_nodes:
-                            self._remember_mirror_target_node(
-                                vm_uuid, job_id, target_node)
-                            owned_nodes.add(target_node)
-                            break
-                for orphan_node in target_nodes.difference(owned_nodes):
-                    orphan_job_id = "orphan-%s" % self._hash_text(orphan_node)
-                    self._remember_mirror_target_node(
-                        vm_uuid, orphan_job_id, orphan_node)
-                    cleaned, cleanup_error = self._cleanup_mirror_target_node(
-                        vm_uuid, orphan_job_id,
-                        node_name=orphan_node)
-                    if not cleaned:
-                        logger.warn("ZRM orphan target node cleanup failed vm=%s node=%s: %s" %
-                                    (vm_uuid, orphan_node, cleanup_error))
+                self._recover_mirror_target_nodes_for_vm(vm_uuid)
             except Exception as ex:
+                failures[vm_uuid] = str(ex)
                 logger.debug("ZRM mirror target recovery failed for vm=%s: %s" % (vm_uuid, ex))
+        return failures
+
+    def _run_mirror_target_recovery(self):
+        vm_uuids = None
+        for attempt in range(_TARGET_RECOVERY_RETRIES):
+            if self._runtime_stopping:
+                return
+            try:
+                vm_uuids = self._target_recovery_vm_uuids()
+                break
+            except Exception as ex:
+                with self._runtime_state_init_lock:
+                    self._target_recovery_discovery_error = str(ex)
+                logger.warn(
+                    "ZRM target recovery VM discovery failed attempt=%s/%s: %s" %
+                    (attempt + 1, _TARGET_RECOVERY_RETRIES, ex))
+                if attempt + 1 < _TARGET_RECOVERY_RETRIES:
+                    time.sleep(_TARGET_RECOVERY_RETRY_SECONDS)
+
+        if vm_uuids is None or self._runtime_stopping:
+            return
+
+        with self._runtime_state_init_lock:
+            self._target_recovery_pending_vms = set(vm_uuids)
+            self._target_recovery_errors = {}
+            self._target_recovery_discovery_error = None
+            self._target_recovery_discovery_complete = True
+
+        # Retry in rounds so one unhealthy VM does not prevent other VMs from
+        # becoming ready during the same pass.
+        for attempt in range(_TARGET_RECOVERY_RETRIES):
+            if self._runtime_stopping:
+                return
+            with self._runtime_state_init_lock:
+                pending_vms = sorted(self._target_recovery_pending_vms)
+            if not pending_vms:
+                return
+
+            for vm_uuid in pending_vms:
+                if self._runtime_stopping:
+                    return
+                try:
+                    self._recover_mirror_target_nodes_for_vm(vm_uuid)
+                except Exception as ex:
+                    with self._runtime_state_init_lock:
+                        self._target_recovery_errors[vm_uuid] = str(ex)
+                    logger.warn(
+                        "ZRM target recovery failed vm=%s attempt=%s/%s: %s" %
+                        (vm_uuid, attempt + 1,
+                         _TARGET_RECOVERY_RETRIES, ex))
+                else:
+                    with self._runtime_state_init_lock:
+                        self._target_recovery_pending_vms.discard(vm_uuid)
+                        self._target_recovery_errors.pop(vm_uuid, None)
+
+            with self._runtime_state_init_lock:
+                still_pending = bool(self._target_recovery_pending_vms)
+            if still_pending and attempt + 1 < _TARGET_RECOVERY_RETRIES:
+                time.sleep(_TARGET_RECOVERY_RETRY_SECONDS)
+
+        with self._runtime_state_init_lock:
+            exhausted = sorted(self._target_recovery_pending_vms)
+        if exhausted:
+            logger.warn(
+                "ZRM target recovery retries exhausted; requests remain blocked for vms=%s" %
+                ",".join(exhausted))
 
     def _start_runtime_recovery(self):
-        for name, target in (
-                ("zrm-fsfreeze-recovery", self._recover_fsfreeze_leases),
-                ("zrm-target-node-recovery", self._recover_mirror_target_nodes)):
-            try:
-                target()
-            except Exception as ex:
-                logger.warn("ZRM startup recovery %s failed: %s" % (name, ex))
+        with self._runtime_state_init_lock:
+            self._target_recovery_pending_vms = set()
+            self._target_recovery_errors = {}
+            self._target_recovery_discovery_complete = False
+            self._target_recovery_discovery_error = None
+        recovery_thread = threading.Thread(
+            target=self._run_mirror_target_recovery,
+            name="zrm-target-node-recovery")
+        recovery_thread.daemon = True
+        self._target_recovery_thread = recovery_thread
+        recovery_thread.start()
 
     def _linux_guest_fsfreeze(self, qga, action, timeout_seconds,
                               lease_timeout_seconds=None):
