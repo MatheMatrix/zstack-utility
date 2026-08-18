@@ -8,6 +8,10 @@ VmStruct so XML-based bridge detection tests exercise actual parsing logic.
 """
 import sys
 import types
+import json
+import threading
+import time
+import traceback
 from unittest.mock import MagicMock
 from xml.etree import ElementTree as etree
 
@@ -75,6 +79,7 @@ for _mod in ['rados', 'rbd', 'libvirt']:
 # zstacklib.utils.log - needs a real get_logger returning a mock logger
 _mock_log = types.ModuleType('zstacklib.utils.log')
 _mock_log.get_logger = lambda name: MagicMock()
+_mock_log.sensitive_fields = lambda *fields: (lambda cls: cls)
 sys.modules['log'] = _mock_log
 sys.modules['zstacklib.utils.log'] = _mock_log
 
@@ -89,6 +94,7 @@ sys.modules['zstacklib.utils.bash'] = _mock_bash
 # zstacklib.utils.linux - mock everything but provide real VmStruct
 _mock_linux = MagicMock()
 _mock_linux.VmStruct = _VmStruct
+_mock_linux.monotime = time.monotonic
 sys.modules['zstacklib.utils.linux'] = _mock_linux
 
 # All other zstacklib.utils modules
@@ -116,6 +122,7 @@ _SIMPLE_MOCKS = [
     'zstacklib.utils.iscsi',
     'zstacklib.utils.ipmitool',
     'zstacklib.utils.ipUtils',
+    'zstacklib.utils.version',
 ]
 for _mod_name in _SIMPLE_MOCKS:
     sys.modules[_mod_name] = MagicMock()
@@ -149,6 +156,74 @@ setattr(_mock_zstacklib_utils, 'log', _mock_log)
 setattr(_mock_zstacklib_utils, 'bash', _mock_bash)
 setattr(_mock_zstacklib_utils, 'linux', _mock_linux)
 
-# kvmagent package itself
-_mock_kvmagent_mod = MagicMock()
+# Provide the small amount of real threading used by fencer setup tests.
+_mock_thread = sys.modules['zstacklib.utils.thread']
+_mock_thread.started_threads = []
+_mock_thread.worker_errors = []
+
+
+class _AsyncThread(object):
+    def __init__(self, func):
+        self.func = func
+
+    def __get__(self, obj, owner=None):
+        return self.__class__(self.func.__get__(obj, owner))
+
+    def __call__(self, *args, **kwargs):
+        def safe_run():
+            try:
+                self.func(*args, **kwargs)
+            except Exception as error:
+                _mock_thread.worker_errors.append(
+                    (self.func.__name__, error, traceback.format_exc()))
+
+        worker = threading.Thread(target=safe_run)
+        worker.daemon = True
+        _mock_thread.started_threads.append(worker)
+        worker.start()
+        return worker
+
+
+_mock_thread.AsyncThread = _AsyncThread
+
+# JSON and HTTP helpers used by handler-level tests.
+_mock_http = sys.modules['zstacklib.utils.http']
+_mock_http.REQUEST_BODY = 'body'
+
+_mock_jsonobject = sys.modules['zstacklib.utils.jsonobject']
+
+
+class _JsonObject(object):
+    def __getattr__(self, _name):
+        return None
+
+
+def _to_json_object(value):
+    if isinstance(value, dict):
+        obj = _JsonObject()
+        for key, item in value.items():
+            setattr(obj, key, _to_json_object(item))
+        return obj
+    if isinstance(value, list):
+        return [_to_json_object(item) for item in value]
+    return value
+
+
+def _json_default(value):
+    return value.__dict__
+
+
+_mock_jsonobject.loads = lambda value: _to_json_object(json.loads(value))
+_mock_jsonobject.dumps = lambda value: json.dumps(value, default=_json_default)
+
+# kvmagent package itself. Keep decorators transparent so handler behavior is
+# directly testable; unexpected exceptions should fail the test.
+_mock_kvmagent_mod = types.ModuleType('kvmagent.kvmagent')
+_mock_kvmagent_mod.AgentCommand = object
+_mock_kvmagent_mod.KvmAgent = object
+_mock_kvmagent_mod.replyerror = lambda func: func
+_mock_kvmagent_mod.ha_cleanup_handlers = []
+_mock_kvmagent_mod.HOST_UUID = 'hostUuid'
+_mock_kvmagent_mod.SEND_COMMAND_URL = 'sendCommandUrl'
+_mock_kvmagent_mod.get_http_server = lambda: MagicMock()
 sys.modules['kvmagent.kvmagent'] = _mock_kvmagent_mod
