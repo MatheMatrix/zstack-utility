@@ -1124,12 +1124,26 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
 
     def test_stop_cancels_background_target_recovery(self):
         stop_event = _ControllableStopEvent()
+        joined = []
+
+        class RunningRecoveryThread(object):
+            @staticmethod
+            def is_alive():
+                return True
+
+            @staticmethod
+            def join(timeout):
+                joined.append(timeout)
+
         self.plugin._ensure_runtime_state()
         self.plugin._target_recovery_stop_event = stop_event
+        self.plugin._target_recovery_thread = RunningRecoveryThread()
 
         self.plugin.stop()
 
         self.assertTrue(stop_event.is_set())
+        self.assertEqual(
+            [zrm_plugin._TARGET_RECOVERY_STOP_JOIN_SECONDS], joined)
 
     def test_recovery_guard_blocks_only_unreconciled_vm(self):
         self.plugin._ensure_runtime_state()
@@ -1230,6 +1244,192 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
         self.assertLessEqual(
             state["max_active"], zrm_plugin._TARGET_RECOVERY_WORKERS)
         self.assertEqual(set(), self.plugin._target_recovery_pending_vms)
+
+    def test_stale_recovery_generation_cannot_update_new_state(self):
+        vm_uuids = ["vm-old-success", "vm-old-error"]
+        entered = threading.Event()
+        release = threading.Event()
+        entered_lock = threading.Lock()
+        entered_count = [0]
+        old_stop_event = threading.Event()
+        self.plugin._ensure_runtime_state()
+        with self.plugin._runtime_state_init_lock:
+            self.plugin._target_recovery_generation = 1
+            self.plugin._target_recovery_stop_event = old_stop_event
+            self.plugin._target_recovery_pending_vms = set(vm_uuids)
+            self.plugin._target_recovery_errors = {}
+
+        def recover(vm_uuid):
+            with entered_lock:
+                entered_count[0] += 1
+                if entered_count[0] == len(vm_uuids):
+                    entered.set()
+            if not release.wait(1):
+                raise AssertionError("stale recovery worker was not released")
+            if vm_uuid == "vm-old-error":
+                raise RuntimeError("old generation failure")
+
+        self.plugin._recover_mirror_target_nodes_for_vm = recover
+        supervisor = threading.Thread(target=lambda:
+            self.plugin._recover_pending_target_vms(
+                vm_uuids, old_stop_event, generation=1))
+        supervisor.start()
+        self.assertTrue(entered.wait(1))
+
+        new_stop_event = threading.Event()
+        with self.plugin._runtime_state_init_lock:
+            self.plugin._target_recovery_generation = 2
+            self.plugin._target_recovery_stop_event = new_stop_event
+            self.plugin._target_recovery_pending_vms = set(vm_uuids)
+            self.plugin._target_recovery_errors = {"new-generation": "keep"}
+        release.set()
+        supervisor.join(2)
+
+        self.assertFalse(supervisor.is_alive())
+        self.assertEqual(set(vm_uuids), self.plugin._target_recovery_pending_vms)
+        self.assertEqual(
+            {"new-generation": "keep"}, self.plugin._target_recovery_errors)
+
+    def test_new_generation_waits_for_inflight_old_vm_recovery(self):
+        vm_uuid = "vm-generation-serialization"
+        old_entered = threading.Event()
+        release_old = threading.Event()
+        new_entered = threading.Event()
+        invocation_lock = threading.Lock()
+        invocation_count = [0]
+        old_stop_event = threading.Event()
+        new_stop_event = threading.Event()
+        self.plugin._ensure_runtime_state()
+        with self.plugin._runtime_state_init_lock:
+            self.plugin._target_recovery_generation = 1
+            self.plugin._target_recovery_stop_event = old_stop_event
+            self.plugin._target_recovery_pending_vms = set([vm_uuid])
+
+        def recover(unused_vm_uuid):
+            with invocation_lock:
+                invocation_count[0] += 1
+                invocation = invocation_count[0]
+            if invocation == 1:
+                old_entered.set()
+                release_old.wait(1)
+            else:
+                new_entered.set()
+
+        self.plugin._recover_mirror_target_nodes_for_vm = recover
+        old_supervisor = threading.Thread(target=lambda:
+            self.plugin._recover_pending_target_vms(
+                [vm_uuid], old_stop_event, generation=1))
+        old_supervisor.start()
+        self.assertTrue(old_entered.wait(1))
+
+        with self.plugin._runtime_state_init_lock:
+            self.plugin._target_recovery_generation = 2
+            self.plugin._target_recovery_stop_event = new_stop_event
+            self.plugin._target_recovery_pending_vms = set([vm_uuid])
+        new_supervisor = threading.Thread(target=lambda:
+            self.plugin._recover_pending_target_vms(
+                [vm_uuid], new_stop_event, generation=2))
+        new_supervisor.start()
+        self.assertFalse(new_entered.wait(0.05))
+        self.assertIn(vm_uuid, self.plugin._target_recovery_pending_vms)
+
+        release_old.set()
+        old_supervisor.join(2)
+        new_supervisor.join(2)
+
+        self.assertTrue(new_entered.is_set())
+        self.assertFalse(old_supervisor.is_alive())
+        self.assertFalse(new_supervisor.is_alive())
+        self.assertNotIn(vm_uuid, self.plugin._target_recovery_pending_vms)
+
+    def test_mirror_target_map_iteration_is_serialized_with_writers(self):
+        iteration_started = threading.Event()
+        release_iteration = threading.Event()
+        writer_started = threading.Event()
+        writer_done = threading.Event()
+        cleanup_result = []
+        thread_errors = []
+        vm_uuid = "vm-map-lock"
+        target_node = "zrm-tgt-map-lock"
+        self.plugin._ensure_runtime_state()
+
+        class BlockingItemsDict(dict):
+            def __init__(self, *args, **kwargs):
+                dict.__init__(self, *args, **kwargs)
+                self.items_calls = 0
+
+            def items(self):
+                self.items_calls += 1
+                if self.items_calls != 1:
+                    return dict.items(self)
+                live_iterator = iter(dict.items(self))
+
+                def blocking_iterator():
+                    first = next(live_iterator)
+                    iteration_started.set()
+                    if not release_iteration.wait(1):
+                        raise AssertionError("map iteration was not released")
+                    yield first
+                    for item in live_iterator:
+                        yield item
+
+                return blocking_iterator()
+
+        self.plugin._mirror_target_nodes = BlockingItemsDict({
+            (vm_uuid, "job-a"): target_node,
+            (vm_uuid, "job-b"): target_node,
+        })
+        self.plugin._query_zrm_block_jobs = lambda unused_vm_uuid, \
+            command_timeout=None: ({}, None)
+
+        writer_node = "zrm-tgt-writer"
+        target_lock = self.plugin._get_mirror_target_lock(
+            vm_uuid, target_node)
+        while self.plugin._get_mirror_target_lock(
+                vm_uuid, writer_node) is target_lock:
+            writer_node += "x"
+
+        def cleanup():
+            try:
+                cleanup_result.append(self.plugin._cleanup_mirror_target_node(
+                    vm_uuid, "job-a", node_name=target_node,
+                    queue_retry=False))
+            except Exception as ex:
+                thread_errors.append(ex)
+
+        def write_other_node():
+            writer_started.set()
+            try:
+                self.plugin._remember_mirror_target_node(
+                    vm_uuid, "writer-job", writer_node)
+            except Exception as ex:
+                thread_errors.append(ex)
+            finally:
+                writer_done.set()
+
+        with mock.patch.object(
+                zrm_plugin, "execute_qmp_command_raw"), \
+             mock.patch.object(
+                 zrm_plugin.qmp, "execute_qmp_command", return_value=[]):
+            cleanup_thread = threading.Thread(target=cleanup)
+            cleanup_thread.start()
+            self.assertTrue(iteration_started.wait(1))
+            writer_thread = threading.Thread(target=write_other_node)
+            writer_thread.start()
+            self.assertTrue(writer_started.wait(1))
+            writer_was_blocked = not writer_done.wait(0.05)
+            release_iteration.set()
+            cleanup_thread.join(2)
+            writer_thread.join(2)
+
+        self.assertTrue(writer_was_blocked)
+        self.assertFalse(cleanup_thread.is_alive())
+        self.assertFalse(writer_thread.is_alive())
+        self.assertEqual([], thread_errors)
+        self.assertEqual([(True, None)], cleanup_result)
+        self.assertEqual(
+            writer_node,
+            self.plugin._mirror_target_nodes[(vm_uuid, "writer-job")])
 
     def test_target_recovery_qmp_calls_have_deadline(self):
         query_timeouts = []
