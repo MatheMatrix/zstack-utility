@@ -44,6 +44,25 @@ class _ControllableTimer(object):
         self.function(*self.args)
 
 
+class _ControllableStopEvent(object):
+    def __init__(self):
+        self.stopped = False
+        self.waits = []
+
+    def is_set(self):
+        return self.stopped
+
+    def isSet(self):
+        return self.stopped
+
+    def set(self):
+        self.stopped = True
+
+    def wait(self, delay):
+        self.waits.append(delay)
+        return self.stopped
+
+
 class TestZrmPluginWaitInitial(unittest.TestCase):
     def setUp(self):
         self.plugin = object.__new__(zrm_plugin.ZrmPlugin)
@@ -1064,6 +1083,12 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
 
         self.plugin._recover_fsfreeze_leases = lambda: events.append(
             "recover-fsfreeze")
+        self.plugin.zrm_replication_guest_fsfreeze = lambda req: json.dumps({
+            "success": True, "handler": "guest-fsfreeze"})
+        self.plugin.zrm_replication_pause = lambda req: json.dumps({
+            "success": True, "handler": "pause"})
+        self.plugin.zrm_replication_start = lambda req: json.dumps({
+            "success": True, "handler": "start"})
 
         with mock.patch.object(
                 zrm_plugin.kvmagent, "get_http_server",
@@ -1076,6 +1101,35 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
         self.assertTrue(events[1].startswith("register:"))
         self.assertTrue(events[-1].startswith("thread-start:"))
         self.assertEqual(11, len(registered_handlers))
+        self.assertEqual(set((
+            self.plugin.PATH_REPLICATION_START,
+            self.plugin.PATH_REPLICATION_STOP,
+            self.plugin.PATH_RECOVERY_PREPARE,
+        )), set(self.plugin._TARGET_RECOVERY_GUARDED_PATHS))
+
+        guest_rsp = json.loads(registered_handlers[
+            self.plugin.PATH_REPLICATION_GUEST_FSFREEZE](self._make_req({
+                "vmUuid": "vm-pending", "action": "thaw"})))
+        pause_rsp = json.loads(registered_handlers[
+            self.plugin.PATH_REPLICATION_PAUSE](self._make_req({
+                "vmUuid": "vm-pending"})))
+        start_rsp = json.loads(registered_handlers[
+            self.plugin.PATH_REPLICATION_START](self._make_req({
+                "vmUuid": "vm-pending"})))
+        self.assertEqual("guest-fsfreeze", guest_rsp["handler"])
+        self.assertEqual("pause", pause_rsp["handler"])
+        self.assertFalse(start_rsp["success"])
+        self.assertEqual(
+            "ZRM_RUNTIME_RECOVERY_IN_PROGRESS", start_rsp["errorCode"])
+
+    def test_stop_cancels_background_target_recovery(self):
+        stop_event = _ControllableStopEvent()
+        self.plugin._ensure_runtime_state()
+        self.plugin._target_recovery_stop_event = stop_event
+
+        self.plugin.stop()
+
+        self.assertTrue(stop_event.is_set())
 
     def test_recovery_guard_blocks_only_unreconciled_vm(self):
         self.plugin._ensure_runtime_state()
@@ -1105,6 +1159,7 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
 
     def test_background_recovery_retries_bad_vm_without_blocking_good_vm(self):
         attempts = {"vm-bad": 0, "vm-good": 0}
+        stop_event = _ControllableStopEvent()
         self.plugin._ensure_runtime_state()
         self.plugin._runtime_stopping = False
         self.plugin._target_recovery_vm_uuids = lambda: [
@@ -1113,19 +1168,68 @@ class TestZrmPluginReviewFixes(unittest.TestCase):
         def recover(vm_uuid):
             attempts[vm_uuid] += 1
             if vm_uuid == "vm-bad":
+                if attempts[vm_uuid] == 4:
+                    stop_event.set()
                 raise RuntimeError("monitor timeout")
 
         self.plugin._recover_mirror_target_nodes_for_vm = recover
-        with mock.patch.object(zrm_plugin.time, "sleep"):
-            self.plugin._run_mirror_target_recovery()
+        self.plugin._run_mirror_target_recovery(stop_event)
 
         self.assertTrue(self.plugin._target_recovery_discovery_complete)
         self.assertNotIn(
             "vm-good", self.plugin._target_recovery_pending_vms)
         self.assertIn("vm-bad", self.plugin._target_recovery_pending_vms)
         self.assertEqual(1, attempts["vm-good"])
-        self.assertEqual(zrm_plugin._TARGET_RECOVERY_RETRIES,
-                         attempts["vm-bad"])
+        self.assertEqual(4, attempts["vm-bad"])
+        self.assertEqual([1, 2, 4], stop_event.waits)
+
+    def test_background_recovery_keeps_retrying_vm_discovery(self):
+        stop_event = _ControllableStopEvent()
+        discovery_attempts = []
+        recovered = []
+        self.plugin._ensure_runtime_state()
+
+        def discover():
+            discovery_attempts.append(len(discovery_attempts) + 1)
+            if len(discovery_attempts) <= 3:
+                raise RuntimeError("libvirt temporarily unavailable")
+            return ["vm-ready"]
+
+        self.plugin._target_recovery_vm_uuids = discover
+        self.plugin._recover_mirror_target_nodes_for_vm = recovered.append
+        self.plugin._run_mirror_target_recovery(stop_event)
+
+        self.assertEqual([1, 2, 3, 4], discovery_attempts)
+        self.assertEqual([1, 2, 4], stop_event.waits)
+        self.assertEqual(["vm-ready"], recovered)
+        self.assertTrue(self.plugin._target_recovery_discovery_complete)
+        self.assertEqual(set(), self.plugin._target_recovery_pending_vms)
+
+    def test_target_recovery_uses_bounded_vm_concurrency(self):
+        vm_uuids = ["vm-%s" % index for index in range(8)]
+        state_lock = threading.Lock()
+        state = {"active": 0, "max_active": 0}
+        self.plugin._ensure_runtime_state()
+        self.plugin._target_recovery_pending_vms = set(vm_uuids)
+        self.plugin._target_recovery_errors = {}
+
+        def recover(unused_vm_uuid):
+            with state_lock:
+                state["active"] += 1
+                state["max_active"] = max(
+                    state["max_active"], state["active"])
+            threading.Event().wait(0.02)
+            with state_lock:
+                state["active"] -= 1
+
+        self.plugin._recover_mirror_target_nodes_for_vm = recover
+        self.plugin._recover_pending_target_vms(
+            vm_uuids, threading.Event())
+
+        self.assertGreater(state["max_active"], 1)
+        self.assertLessEqual(
+            state["max_active"], zrm_plugin._TARGET_RECOVERY_WORKERS)
+        self.assertEqual(set(), self.plugin._target_recovery_pending_vms)
 
     def test_target_recovery_qmp_calls_have_deadline(self):
         query_timeouts = []

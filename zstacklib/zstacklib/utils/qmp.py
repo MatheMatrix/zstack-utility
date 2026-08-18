@@ -1,5 +1,6 @@
 import errno
 import json
+import math
 import re
 import socket
 import sys
@@ -85,6 +86,18 @@ def block_job_set_speed(vm, device, bandwidth):
     execute_qmp_command(vm, "block-job-set-speed", device=device, speed=bandwidth)
 
 
+def _normalize_command_timeout(timeout):
+    if timeout is None:
+        return None
+    try:
+        normalized = float(timeout)
+    except (TypeError, ValueError):
+        raise ValueError("QMP command timeout must be a positive finite number")
+    if normalized <= 0 or math.isnan(normalized) or math.isinf(normalized):
+        raise ValueError("QMP command timeout must be a positive finite number")
+    return normalized
+
+
 def _communicate_with_timeout(process, timeout):
     """Communicate with a subprocess and kill it when the deadline expires.
 
@@ -96,9 +109,7 @@ def _communicate_with_timeout(process, timeout):
         output, error = process.communicate()
         return output, error, False
 
-    timeout = float(timeout)
-    if timeout <= 0:
-        raise ValueError("QMP command timeout must be greater than zero")
+    timeout = _normalize_command_timeout(timeout)
 
     state = {"expired": False}
 
@@ -111,9 +122,23 @@ def _communicate_with_timeout(process, timeout):
             # timer cancellation.  In that race there is nothing left to kill.
             pass
 
-    timer = threading.Timer(timeout, kill_on_timeout)
-    timer.daemon = True
-    timer.start()
+    timer = None
+    try:
+        timer = threading.Timer(timeout, kill_on_timeout)
+        timer.daemon = True
+        timer.start()
+    except Exception:
+        # A timer infrastructure failure must not strand the already-created
+        # virsh process.  Reap it before preserving the original exception.
+        try:
+            process.kill()
+        except Exception:
+            pass
+        try:
+            process.communicate()
+        except Exception:
+            pass
+        raise
     try:
         output, error = process.communicate()
     finally:
@@ -124,6 +149,9 @@ def _communicate_with_timeout(process, timeout):
 @bash.in_bash
 def _execute_qmp_command(domain_id, command, raise_exception=True,
                          command_timeout=None):
+    # Validate before spawning virsh.  Invalid deadlines must not create a
+    # child process that no caller will communicate with or reap.
+    command_timeout = _normalize_command_timeout(command_timeout)
     if isinstance(command, bytes):
         command = command.decode('utf-8')
     if isinstance(domain_id, bytes):

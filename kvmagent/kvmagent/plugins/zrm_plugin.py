@@ -19,6 +19,10 @@ import socket
 import threading
 import uuid
 try:
+    import Queue as queue
+except ImportError:
+    import queue
+try:
     from urllib.parse import urlsplit
 except ImportError:
     from urlparse import urlsplit
@@ -62,8 +66,9 @@ _MIRROR_TARGET_CLEANUP_RETRIES = 3
 _MIRROR_TARGET_CLEANUP_RETRY_SECONDS = 1
 _MIRROR_TARGET_LOCK_STRIPES = 64
 _TARGET_RECOVERY_QMP_TIMEOUT_SECONDS = 5
-_TARGET_RECOVERY_RETRIES = 3
-_TARGET_RECOVERY_RETRY_SECONDS = 1
+_TARGET_RECOVERY_WORKERS = 4
+_TARGET_RECOVERY_INITIAL_BACKOFF_SECONDS = 1
+_TARGET_RECOVERY_MAX_BACKOFF_SECONDS = 30
 
 # A frozen guest must never depend on the management plane delivering a thaw
 # request.  The lease survives a kvmagent restart under /var/run and is
@@ -144,6 +149,15 @@ class ZrmPlugin(kvmagent.KvmAgent):
     PATH_REPLICATION_THROTTLE = "/zrm/replication/throttle"
     PATH_REPLICATION_GUEST_FSFREEZE = "/zrm/replication/guest-fsfreeze"
 
+    # Only operations that create/remove mirror target nodes need to wait for
+    # startup ownership reconciliation.  In particular, guest thaw must never
+    # be blocked by an unrelated target-node recovery failure.
+    _TARGET_RECOVERY_GUARDED_PATHS = frozenset((
+        PATH_REPLICATION_START,
+        PATH_REPLICATION_STOP,
+        PATH_RECOVERY_PREPARE,
+    ))
+
     # QGA fsfreeze command names (Linux application-consistent quiesce).
     _FSFREEZE_CMD_FREEZE = "guest-fsfreeze-freeze"
     _FSFREEZE_CMD_THAW = "guest-fsfreeze-thaw"
@@ -178,6 +192,8 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 self._target_recovery_discovery_error = None
             if not hasattr(self, "_target_recovery_thread"):
                 self._target_recovery_thread = None
+            if not hasattr(self, "_target_recovery_stop_event"):
+                self._target_recovery_stop_event = threading.Event()
             if not hasattr(self, "_runtime_stopping"):
                 self._runtime_stopping = False
 
@@ -207,14 +223,17 @@ class ZrmPlugin(kvmagent.KvmAgent):
                  self.zrm_replication_throttle),
                 (self.PATH_REPLICATION_GUEST_FSFREEZE,
                  self.zrm_replication_guest_fsfreeze)):
-            http_server.register_async_uri(
-                path, self._guard_target_recovery(handler))
+            registered_handler = handler
+            if path in self._TARGET_RECOVERY_GUARDED_PATHS:
+                registered_handler = self._guard_target_recovery(handler)
+            http_server.register_async_uri(path, registered_handler)
         self._start_runtime_recovery()
         logger.info("ZRM plugin started: registered /zrm/* paths as async URIs")
 
     def stop(self):
         self._ensure_runtime_state()
         self._runtime_stopping = True
+        self._target_recovery_stop_event.set()
         leases = [(vm_uuid, state.get("leaseId"))
                   for vm_uuid, state in list(self._fsfreeze_watchdogs.items())]
         for vm_uuid, lease_id in leases:
@@ -2671,11 +2690,71 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 logger.debug("ZRM mirror target recovery failed for vm=%s: %s" % (vm_uuid, ex))
         return failures
 
-    def _run_mirror_target_recovery(self):
-        vm_uuids = None
-        for attempt in range(_TARGET_RECOVERY_RETRIES):
-            if self._runtime_stopping:
-                return
+    def _target_recovery_should_stop(self, stop_event=None):
+        if stop_event is not None:
+            if hasattr(stop_event, "is_set"):
+                return stop_event.is_set()
+            return stop_event.isSet()
+        return self._runtime_stopping
+
+    def _wait_for_target_recovery_retry(self, delay, stop_event=None):
+        if stop_event is not None:
+            stop_event.wait(delay)
+        else:
+            time.sleep(delay)
+        return self._target_recovery_should_stop(stop_event)
+
+    def _recover_pending_target_vms(self, vm_uuids, stop_event=None):
+        """Recover a batch with bounded concurrency and per-VM readiness."""
+        if not vm_uuids:
+            return
+
+        work_queue = queue.Queue()
+        for vm_uuid in vm_uuids:
+            work_queue.put(vm_uuid)
+
+        def recover_worker():
+            while not self._target_recovery_should_stop(stop_event):
+                try:
+                    vm_uuid = work_queue.get_nowait()
+                except queue.Empty:
+                    return
+                try:
+                    self._recover_mirror_target_nodes_for_vm(vm_uuid)
+                except Exception as ex:
+                    with self._runtime_state_init_lock:
+                        self._target_recovery_errors[vm_uuid] = str(ex)
+                    logger.warn(
+                        "ZRM target recovery failed vm=%s: %s" %
+                        (vm_uuid, ex))
+                else:
+                    # Clear readiness immediately for this VM; other workers
+                    # may still be reconciling unhealthy VMs.
+                    with self._runtime_state_init_lock:
+                        self._target_recovery_pending_vms.discard(vm_uuid)
+                        self._target_recovery_errors.pop(vm_uuid, None)
+
+        worker_count = min(_TARGET_RECOVERY_WORKERS, len(vm_uuids))
+        workers = []
+        for worker_index in range(worker_count):
+            worker = threading.Thread(
+                target=recover_worker,
+                name="zrm-target-node-recovery-%s" % worker_index)
+            worker.daemon = True
+            try:
+                worker.start()
+            except Exception as ex:
+                logger.warn("ZRM target recovery worker failed to start: %s" % ex)
+                continue
+            workers.append(worker)
+        for worker in workers:
+            worker.join()
+
+    def _run_mirror_target_recovery(self, stop_event=None):
+        discovery_attempt = 0
+        retry_delay = _TARGET_RECOVERY_INITIAL_BACKOFF_SECONDS
+        while not self._target_recovery_should_stop(stop_event):
+            discovery_attempt += 1
             try:
                 vm_uuids = self._target_recovery_vm_uuids()
                 break
@@ -2683,12 +2762,18 @@ class ZrmPlugin(kvmagent.KvmAgent):
                 with self._runtime_state_init_lock:
                     self._target_recovery_discovery_error = str(ex)
                 logger.warn(
-                    "ZRM target recovery VM discovery failed attempt=%s/%s: %s" %
-                    (attempt + 1, _TARGET_RECOVERY_RETRIES, ex))
-                if attempt + 1 < _TARGET_RECOVERY_RETRIES:
-                    time.sleep(_TARGET_RECOVERY_RETRY_SECONDS)
+                    "ZRM target recovery VM discovery failed attempt=%s: %s" %
+                    (discovery_attempt, ex))
+                if self._wait_for_target_recovery_retry(
+                        retry_delay, stop_event):
+                    return
+                retry_delay = min(
+                    retry_delay * 2,
+                    _TARGET_RECOVERY_MAX_BACKOFF_SECONDS)
+        else:
+            return
 
-        if vm_uuids is None or self._runtime_stopping:
+        if self._target_recovery_should_stop(stop_event):
             return
 
         with self._runtime_state_init_lock:
@@ -2697,53 +2782,39 @@ class ZrmPlugin(kvmagent.KvmAgent):
             self._target_recovery_discovery_error = None
             self._target_recovery_discovery_complete = True
 
-        # Retry in rounds so one unhealthy VM does not prevent other VMs from
-        # becoming ready during the same pass.
-        for attempt in range(_TARGET_RECOVERY_RETRIES):
-            if self._runtime_stopping:
-                return
+        # Retry for the plugin lifetime with capped backoff.  A transient
+        # monitor failure must not leave a VM permanently pending while the
+        # response still claims the operation is retryable.
+        retry_delay = _TARGET_RECOVERY_INITIAL_BACKOFF_SECONDS
+        while not self._target_recovery_should_stop(stop_event):
             with self._runtime_state_init_lock:
                 pending_vms = sorted(self._target_recovery_pending_vms)
             if not pending_vms:
                 return
-
-            for vm_uuid in pending_vms:
-                if self._runtime_stopping:
-                    return
-                try:
-                    self._recover_mirror_target_nodes_for_vm(vm_uuid)
-                except Exception as ex:
-                    with self._runtime_state_init_lock:
-                        self._target_recovery_errors[vm_uuid] = str(ex)
-                    logger.warn(
-                        "ZRM target recovery failed vm=%s attempt=%s/%s: %s" %
-                        (vm_uuid, attempt + 1,
-                         _TARGET_RECOVERY_RETRIES, ex))
-                else:
-                    with self._runtime_state_init_lock:
-                        self._target_recovery_pending_vms.discard(vm_uuid)
-                        self._target_recovery_errors.pop(vm_uuid, None)
-
+            self._recover_pending_target_vms(pending_vms, stop_event)
             with self._runtime_state_init_lock:
                 still_pending = bool(self._target_recovery_pending_vms)
-            if still_pending and attempt + 1 < _TARGET_RECOVERY_RETRIES:
-                time.sleep(_TARGET_RECOVERY_RETRY_SECONDS)
-
-        with self._runtime_state_init_lock:
-            exhausted = sorted(self._target_recovery_pending_vms)
-        if exhausted:
-            logger.warn(
-                "ZRM target recovery retries exhausted; requests remain blocked for vms=%s" %
-                ",".join(exhausted))
+            if not still_pending:
+                return
+            if self._target_recovery_should_stop(stop_event):
+                return
+            if self._wait_for_target_recovery_retry(
+                    retry_delay, stop_event):
+                return
+            retry_delay = min(
+                retry_delay * 2,
+                _TARGET_RECOVERY_MAX_BACKOFF_SECONDS)
 
     def _start_runtime_recovery(self):
+        stop_event = threading.Event()
         with self._runtime_state_init_lock:
             self._target_recovery_pending_vms = set()
             self._target_recovery_errors = {}
             self._target_recovery_discovery_complete = False
             self._target_recovery_discovery_error = None
+            self._target_recovery_stop_event = stop_event
         recovery_thread = threading.Thread(
-            target=self._run_mirror_target_recovery,
+            target=lambda: self._run_mirror_target_recovery(stop_event),
             name="zrm-target-node-recovery")
         recovery_thread.daemon = True
         self._target_recovery_thread = recovery_thread
