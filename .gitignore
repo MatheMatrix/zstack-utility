@@ -16,6 +16,9 @@ develop-eggs
 zstack.log
 *~
 
+# Review worktrees (created by AI reviewer, not source code)
+worktrees/
+
 # Installer logs
 pip-log.txt
 
