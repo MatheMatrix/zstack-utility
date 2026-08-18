@@ -409,6 +409,25 @@ sys.modules['zstacklib.utils.ip'].get_nic_driver_type = MagicMock(return_value='
 _mock_imagestore = sys.modules.get('kvmagent.plugins.imagestore')
 if _mock_imagestore is not None:
     _mock_imagestore.ImageStoreClient = MagicMock()
+    _cbd_config_suffix = '_zbs_:/etc/zbs/client.conf'
+
+    def _get_cbd_actual_path(path):
+        if path.startswith('cbd:') and not path.endswith(_cbd_config_suffix):
+            return path + _cbd_config_suffix
+        return path
+
+    def _get_zbs_cli_path(path):
+        if path.startswith('zbs://'):
+            return path[len('zbs://'):]
+        cbd_path = path[len('cbd:'):]
+        if cbd_path.endswith(_cbd_config_suffix):
+            cbd_path = cbd_path[:-len(_cbd_config_suffix)]
+        return cbd_path.partition('/')[2]
+
+    _mock_imagestore.get_cbd_actual_path = _get_cbd_actual_path
+    _mock_imagestore.get_zbs_cli_path = _get_zbs_cli_path
+    _mock_imagestore.is_zbs_install_path = lambda path: bool(path) and (
+        path.startswith('cbd:') or path.startswith('zbs://'))
 
 # --- New agent mocks (rollback, traceable_shell, Queue, imagestore, ceph drivers) ---
 

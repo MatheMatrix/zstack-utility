@@ -9,6 +9,7 @@ from . import qemu_img
 from . import log
 from . import jsonobject
 from . import shell
+from . import linux
 from .linux import get_vm_pid, get_process_start_time, HOST_ARCH
 
 logger = log.get_logger(__name__)
@@ -171,39 +172,110 @@ def read_image_content(image_path, offset, length, format):
 
 
 def get_device_map(path, option=""):
-    out = shell.call("%s --output=json %s %s" % (qemu_img.subcmd('map'), option, path))
+    out = shell.call("%s --output=json %s %s" % (qemu_img.subcmd('map'), option, linux.shellquote(path)))
     return out.strip()
 
 
-def get_data_bitmap(path, max_length, zero, data, qemu_img_command_option=""):
+def get_data_bitmap(path, max_length, zero, data, qemu_img_command_option="", depth=None):
     map = get_device_map(path, qemu_img_command_option)
     json_map = jsonobject.loads(map)
     result = {}
     for item in json_map:
-        if item['zero'] is zero and item['data'] is data:
+        item_depth = item['depth'] if depth is not None else None
+        if depth is not None and item_depth is None:
+            raise ValueError("qemu-img map response does not contain allocation depth")
+        if item['zero'] is zero and item['data'] is data and (depth is None or item_depth == depth):
             if item['length'] > max_length:
-                result.update(split_large_blocks(item, max_length))
+                result.update(split_bitmap_extent(item['start'], item['length'], max_length))
             else:
                 result[item['start']] = item['length']
     return result
 
 
 def get_rbd_data_bitmap(path, max_length):
-    o = shell.call("""rbd diff %s --format json""" % (path))
+    o = shell.call("""rbd diff %s --format json""" % linux.shellquote(path))
     o = jsonobject.loads(o.strip())
     result = {}
     for item in o:
         if item['exists'] == 'true':
             if item['length'] > max_length:
-                result.update(split_large_blocks(item, max_length))
+                result.update(split_bitmap_extent(item['offset'], item['length'], max_length))
             else:
                 result[item['offset']] = item['length']
     return result
 
 
+def get_zbs_data_bitmap(path, max_length):
+    output = shell.call("zbs query diff --path %s --format json" % linux.shellquote(path))
+    response = json.loads(output.strip())
+    if not isinstance(response, dict):
+        raise ValueError("invalid zbs query diff response: expected an object")
+
+    error = response.get('error')
+    if error:
+        if isinstance(error, dict):
+            code = error.get('code')
+            message = error.get('message') or str(error)
+        else:
+            code = None
+            message = str(error)
+        raise RuntimeError("zbs query diff failed for %s: code=%s, message=%s" % (path, code, message))
+
+    extents = response.get('result')
+    if not isinstance(extents, list):
+        raise ValueError("invalid zbs query diff response: result must be a list")
+
+    result = {}
+    for item in extents:
+        exists = item.get('exists')
+        if not (exists is True or str(exists).lower() == 'true'):
+            continue
+        start = int(item['offset'])
+        length = int(item['length'])
+        if start < 0 or length <= 0:
+            raise ValueError("invalid zbs query diff extent: offset must be non-negative and length must be positive")
+        result.update(split_bitmap_extent(start, length, max_length))
+    return result
+
+
+def merge_data_bitmaps(bitmap_maps, max_length):
+    intervals = []
+    for bitmap_map in bitmap_maps:
+        for start, length in bitmap_map.items():
+            start = int(start)
+            length = int(length)
+            if start < 0 or length <= 0:
+                raise ValueError("invalid bitmap extent: start must be non-negative and length must be positive")
+            intervals.append((start, start + length))
+
+    if not intervals:
+        return {}
+
+    intervals.sort(key=lambda interval: interval[0])
+    merged = []
+    current_start, current_end = intervals[0]
+    for start, end in intervals[1:]:
+        if start <= current_end:
+            current_end = max(current_end, end)
+            continue
+        merged.append((current_start, current_end))
+        current_start, current_end = start, end
+    merged.append((current_start, current_end))
+
+    result = {}
+    for start, end in merged:
+        result.update(split_bitmap_extent(start, end - start, max_length))
+    return result
+
+
 def split_large_blocks(item, max_length):
-    start = item['start']
-    length = item['length']
+    start = item['start'] if 'start' in item else item['offset']
+    return split_bitmap_extent(start, item['length'], max_length)
+
+
+def split_bitmap_extent(start, length, max_length):
+    if max_length <= 0:
+        raise ValueError("max bitmap extent length must be positive")
     result = {}
 
     while length > 0:
@@ -218,6 +290,3 @@ def compress_and_encode_bitmap(bitmap_map):
     bitmap_json = json.dumps(bitmap_map)
     compressed_data = zlib.compress(bitmap_json.encode('utf-8'))
     return base64.b64encode(compressed_data).decode('utf-8')
-
-
-

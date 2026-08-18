@@ -13,6 +13,45 @@ from zstacklib.utils.report import *
 
 logger = log.get_logger(__name__)
 HOST_ARCH = platform.machine()
+CBD_PREFIX = "cbd:"
+ZBS_PREFIX = "zbs://"
+CBD_CLIENT_CONFIG_SUFFIX = "_zbs_:/etc/zbs/client.conf"
+CBD_PROTOCOL_DELIMITERS = (',', ';', '\x00', '\n', '\r')
+
+
+def get_cbd_actual_path(path):
+    if path.startswith(CBD_PREFIX):
+        if any(delimiter in path for delimiter in CBD_PROTOCOL_DELIMITERS):
+            raise ValueError("invalid CBD path: protocol delimiters are not allowed")
+        if not path.endswith(CBD_CLIENT_CONFIG_SUFFIX):
+            return path + CBD_CLIENT_CONFIG_SUFFIX
+    return path
+
+
+def is_zbs_install_path(path):
+    return bool(path) and hasattr(path, 'startswith') and (
+        path.startswith(CBD_PREFIX) or path.startswith(ZBS_PREFIX))
+
+
+def get_zbs_cli_path(path):
+    if not is_zbs_install_path(path):
+        raise ValueError("invalid ZBS path: expected cbd: or zbs:// protocol")
+    if any(delimiter in path for delimiter in CBD_PROTOCOL_DELIMITERS):
+        raise ValueError("invalid ZBS path: protocol delimiters are not allowed")
+
+    if path.startswith(ZBS_PREFIX):
+        zbs_path = path[len(ZBS_PREFIX):]
+    else:
+        cbd_path = path[len(CBD_PREFIX):]
+        if cbd_path.endswith(CBD_CLIENT_CONFIG_SUFFIX):
+            cbd_path = cbd_path[:-len(CBD_CLIENT_CONFIG_SUFFIX)]
+        physical_pool, separator, zbs_path = cbd_path.partition('/')
+        if not physical_pool or not separator:
+            raise ValueError("invalid CBD path: expected physical/logical/volume")
+
+    if not zbs_path or zbs_path.startswith('/') or '/' not in zbs_path:
+        raise ValueError("invalid ZBS path: expected logical/volume")
+    return zbs_path
 
 
 class ImageStoreClient(object):
@@ -162,13 +201,14 @@ class ImageStoreClient(object):
             target_disk, _ = vm._get_target_disk(volume_info.volume)
             node_name = self.get_disk_device_name(target_disk)
 
-            target_install_path = volume_info.target
+            target_install_path = get_cbd_actual_path(volume_info.target)
             volumes += ",".join([node_name, target_install_path]) + ";"
 
         PFILE = linux.create_temp_file()
         with linux.ShowLibvirtErrorOnException(vm):
-            cmdstr = '%s cbtbak -domain %s -volumes "%s" -bitmap "%s" -portrange "%s" > %s' % \
-                     (self.ZSTORE_CLI_PATH, vm.uuid, volumes, bitmapTimestamp, portRange, PFILE)
+            cmdstr = '%s cbtbak -domain %s -volumes %s -bitmap %s -portrange %s > %s' % \
+                     (self.ZSTORE_CLI_PATH, linux.shellquote(str(vm.uuid)), linux.shellquote(volumes),
+                      linux.shellquote(bitmapTimestamp), linux.shellquote(portRange), linux.shellquote(PFILE))
             shell.call(cmdstr)
             with open(PFILE) as fd:
                 linux.rm_file_force(PFILE)
@@ -176,16 +216,46 @@ class ImageStoreClient(object):
                 return  _parse_json_and_update_mode(volume_infos, json_data)
 
     def stop_vm_cbt_backup_jobs(self, vm, records, force=False):
-        infos = ""
-        bitmapName = ""
-        for record in records:
-            infos += ",".join([record.scratchNodeName, record.target]) + ";"
-            if record.lastBitmapName:
-                bitmapName = record.lastBitmapName
+        infos, bitmapName, _ = self._build_cbt_record_args(records)
         with linux.ShowLibvirtErrorOnException(vm):
-            cmdstr = '%s stopcbtbak -force=%s -domain %s -volumes "%s" -bitmap "%s"' % \
-                     (self.ZSTORE_CLI_PATH, force, vm, infos, bitmapName)
+            cmdstr = '%s stopcbtbak -force=%s -domain %s -volumes %s -bitmap %s' % \
+                     (self.ZSTORE_CLI_PATH, force, linux.shellquote(str(vm)),
+                      linux.shellquote(infos), linux.shellquote(bitmapName))
             return shell.call(cmdstr).strip()
+
+    def rollback_vm_cbt_backup_jobs(self, vm, records):
+        infos, previous_bitmap, new_bitmap = self._build_cbt_record_args(records)
+        if not new_bitmap:
+            raise ValueError("missing new bitmap for CBT rollback")
+        with linux.ShowLibvirtErrorOnException(vm):
+            cmdstr = '%s stopcbtbak -rollback=true -domain %s -volumes %s -bitmap %s -newbitmap %s' % \
+                     (self.ZSTORE_CLI_PATH, linux.shellquote(str(vm)), linux.shellquote(infos),
+                      linux.shellquote(previous_bitmap), linux.shellquote(new_bitmap))
+            return shell.call(cmdstr).strip()
+
+    def get_cbt_capabilities(self):
+        output = shell.call('%s cbtcapabilities' % self.ZSTORE_CLI_PATH)
+        capabilities = json.loads(output)
+        if not isinstance(capabilities, dict):
+            raise ValueError("invalid CBT capabilities response")
+        return capabilities
+
+    @staticmethod
+    def _build_cbt_record_args(records):
+        infos = ""
+        previous_bitmap = ""
+        new_bitmap = ""
+        for record in records:
+            infos += ",".join([record.scratchNodeName, get_cbd_actual_path(record.target)]) + ";"
+            if record.lastBitmapName:
+                if previous_bitmap and previous_bitmap != record.lastBitmapName:
+                    raise ValueError("inconsistent previous bitmaps in CBT records")
+                previous_bitmap = record.lastBitmapName
+            if getattr(record, 'bitmapName', None):
+                if new_bitmap and new_bitmap != record.bitmapName:
+                    raise ValueError("inconsistent new bitmaps in CBT records")
+                new_bitmap = record.bitmapName
+        return infos, previous_bitmap, new_bitmap
 
     def query_vm_mirror_latencies_boundary(self, vm, times):
         with linux.ShowLibvirtErrorOnException(vm):
