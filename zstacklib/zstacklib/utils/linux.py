@@ -1515,7 +1515,12 @@ def is_network_device_existing(dev):
     return os.path.exists("/sys/class/net/%s" % dev)
 
 def is_network_ip_using(interface):
-    return len(get_interface_ip_addresses(interface)) != 0
+    if not is_network_device_existing(interface):
+        return False
+
+    ipv4_out = shell.call('ip -4 addr show dev %s | grep "inet "' % interface, exception=False)
+    ipv6_out = shell.call('ip -6 addr show dev %s | grep "inet6 " | grep -v " scope link" | grep -v "inet6 fe80:"' % interface, exception=False)
+    return bool(ipv4_out.strip() or ipv6_out.strip())
 
 def is_bridge(dev):
     path = "/sys/class/net/%s/bridge" % dev
@@ -1710,33 +1715,14 @@ def delete_novlan_bridge(bridge_name, interface, move_route=True):
         logger.debug("can not find bridge %s" % bridge_name)
         return
 
-    if is_network_ip_using(bridge_name):
-        logger.debug("can not delete bridge %s, this interface ip was using" % bridge_name)
-        return
-
     if is_vif_on_bridge(bridge_name, interface):
-        #recode bridge ip
-        out = shell.call('ip addr show dev %s | grep "inet "' % bridge_name, exception=False)
-
-        #record old routes
-        routes = []
-        r_out = shell.call("ip route show dev %s | grep via | sed 's/onlink//g'" % bridge_name)
-        for line in r_out.split('\n'):
-            if line != "":
-                routes.append(line)
+        route_info = _get_dev_route_info(bridge_name) if move_route else None
 
         delete_bridge(bridge_name)
 
-        #mv ip on bridge to interface
         shell.call("ip link set %s up" % interface)
-        if len(out.strip()) != 0:
-            ip = out.strip().split()[1]
-            shell.call('ip addr add %s dev %s' % (ip, interface))
-
-        #restore routes on bridge
-        if move_route:
-            for r in routes:
-                shell.call('ip route add %s' % r)
+        if route_info is not None:
+            _restore_dev_route(interface, route_info)
 
     else:
         logger.debug("bridge %s do not have interface %s. only delete bridge. " % (bridge_name,interface))
@@ -1890,9 +1876,9 @@ def _restore_dev_route(dest_dev, route_info):
     for r in route_info['routes']:
         shell.call('ip route add %s' % _route_with_dev(r, dest_dev))
     for r in route_info['direct_routes6']:
-        shell.call('ip -6 route add %s' % _route_with_dev(_route_without_expires(r), dest_dev))
+        shell.call('ip -6 route add %s' % _build_ipv6_route(r, dest_dev))
     for r in route_info['routes6']:
-        shell.call('ip -6 route add %s' % _route_with_dev(_route_without_expires(r), dest_dev))
+        shell.call('ip -6 route add %s' % _build_ipv6_route(r, dest_dev))
 
 
 def _parse_ip_addresses(ip_addr_output):
@@ -1928,15 +1914,29 @@ def _route_with_dev(route, dev):
     return ' '.join([parts[0], 'dev', dev] + parts[1:])
 
 
-def _route_without_expires(route):
-    """Remove the runtime-only IPv6 route expiration from an ip route dump."""
+def _build_ipv6_route(route, dev):
+    """Build an IPv6 route from the stable values supported by ip route add."""
     parts = route.split()
-    if 'expires' not in parts:
+    if not parts:
         return route
 
-    index = parts.index('expires')
-    del parts[index:index + 2]
-    return ' '.join(parts)
+    route_parts = [parts[0]]
+    value_fields = {'via', 'proto', 'metric', 'hoplimit', 'pref'}
+    index = 1
+    while index < len(parts):
+        field = parts[index]
+        if field == 'dev':
+            route_parts.extend(['dev', dev])
+            index += 2
+        elif field in value_fields and index + 1 < len(parts):
+            route_parts.extend([field, parts[index + 1]])
+            index += 2
+        else:
+            index += 2 if field == 'expires' else 1
+
+    if 'dev' not in route_parts:
+        route_parts[1:1] = ['dev', dev]
+    return ' '.join(route_parts)
 
 
 def _migrate_resolved_dns(src_dev, dest_dev):
