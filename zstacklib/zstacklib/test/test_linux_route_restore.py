@@ -60,8 +60,9 @@ class TestIpv6RouteRestore(unittest.TestCase):
     @patch.object(linux, 'delete_bridge')
     @patch.object(linux, '_get_dev_route_info')
     @patch.object(linux, '_restore_dev_route')
+    @patch.object(linux.shell, 'call')
     def test_delete_novlan_bridge_restores_ipv6_route_info(
-            self, restore_route, get_route_info, delete_bridge, is_vif, is_existing):
+            self, shell_call, restore_route, get_route_info, delete_bridge, is_vif, is_existing):
         route_info = {
             'ipv4_addresses': [],
             'ipv6_addresses': ['2001:db8::10/64'],
