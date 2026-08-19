@@ -3796,11 +3796,20 @@ class CrashSafeFileEditor(object):
                 except OSError:
                     pass
 
-BLKSSZGET = 0x1268  # get dev sector size
-def get_dev_sector_size(dev_path):
+BLKSSZGET = 0x1268
+BLKPBSZGET = 0x127B
+
+def get_dev_logical_sector_size(dev_path):
     with open(dev_path, 'rb') as f:
         fd = f.fileno()
         buf = fcntl.ioctl(fd, BLKSSZGET, "    ")
+        sector_size = struct.unpack('I', buf)[0]
+        return sector_size
+
+def get_dev_physical_sector_size(dev_path):
+    with open(dev_path, 'rb') as f:
+        fd = f.fileno()
+        buf = fcntl.ioctl(fd, BLKPBSZGET, "    ")
         sector_size = struct.unpack('I', buf)[0]
         return sector_size
 
