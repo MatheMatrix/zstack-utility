@@ -1890,9 +1890,9 @@ def _restore_dev_route(dest_dev, route_info):
     for r in route_info['routes']:
         shell.call('ip route add %s' % _route_with_dev(r, dest_dev))
     for r in route_info['direct_routes6']:
-        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
+        shell.call('ip -6 route add %s' % _route_with_dev(_route_without_expires(r), dest_dev))
     for r in route_info['routes6']:
-        shell.call('ip -6 route add %s' % _route_with_dev(r, dest_dev))
+        shell.call('ip -6 route add %s' % _route_with_dev(_route_without_expires(r), dest_dev))
 
 
 def _parse_ip_addresses(ip_addr_output):
@@ -1926,6 +1926,17 @@ def _route_with_dev(route, dev):
         if index + 1 < len(parts):
             return ' '.join(parts[:index + 2] + ['dev', dev] + parts[index + 2:])
     return ' '.join([parts[0], 'dev', dev] + parts[1:])
+
+
+def _route_without_expires(route):
+    """Remove the runtime-only IPv6 route expiration from an ip route dump."""
+    parts = route.split()
+    if 'expires' not in parts:
+        return route
+
+    index = parts.index('expires')
+    del parts[index:index + 2]
+    return ' '.join(parts)
 
 
 def _migrate_resolved_dns(src_dev, dest_dev):
