@@ -88,8 +88,23 @@ class Eip(object):
 
         return None
 
+    def find_namespace_name_by_eip(self, ipaddr, version, eip_uuid):
+        public_interface = "%s_ei" % eip_uuid[-9:]
+        if version == 4:
+            ns_name_suffix = ipaddr.replace('.', '_')
+        else:
+            ns_name_suffix = ipaddr
+
+        for ns_name in iproute.IpNetnsShell.list_netns():
+            if not ns_name.endswith(ns_name_suffix):
+                continue
+            if iproute.IpNetnsShell(ns_name).get_mac(public_interface) is not None:
+                return ns_name
+
+        return None
+
     def set_public_interface_state(self, ns_name, eip_uuid, vip, version, active,
-                                   fail_if_missing=True, vip_gateway=None):
+                                   fail_if_missing=True, vip_gateway=None, announce=True):
         if ns_name not in iproute.IpNetnsShell.list_netns():
             if active and fail_if_missing:
                 raise Exception("cannot find EIP namespace[%s] for vip[%s]" % (ns_name, vip))
@@ -118,36 +133,32 @@ class Eip(object):
                           "grep -w default > /dev/null") != 0:
                     bash_errorout("ip netns exec {{ns_name}} {{ip_cmd}} route add "
                                   "default via {{vip_gateway}}")
-            if int(version) == 4:
-                private_gateway = bash_o(
-                    "ip netns exec {{ns_name}} ip -o -4 addr show dev {{private_interface}} "
-                    "| awk '/scope global/ {print $4}' | cut -d/ -f1"
-                ).strip()
-                announce_commands = [
-                    ("ip netns exec %s arping -q -A -w 2 -c 3 "
-                     "-I %s %s > /dev/null" % (ns_name, public_interface, vip))
-                ]
-                if private_gateway:
-                    announce_commands.append(
-                        ("ip netns exec %s arping -q -U -w 2 -c 3 "
-                         "-I %s %s > /dev/null" %
-                         (ns_name, private_interface, private_gateway))
-                    )
-                bash_r(" & ".join(announce_commands) + " & wait")
+            if announce:
+                self.announce_public_interface(ns_name, eip_uuid, vip, version)
         else:
             bash_errorout("ip netns exec {{ns_name}} ip link set {{public_interface}} down")
 
-    def set_eip_public_interface_state(self, eip, active):
-        ns_name = self.generate_namespace_name(eip.publicBridgeName, eip.vip)
-        self.set_public_interface_state(
-            ns_name,
-            eip.eipUuid,
-            eip.vip,
-            eip.ipVersion,
-            active,
-            active,
-            eip.vipGateway,
-        )
+    def announce_public_interface(self, ns_name, eip_uuid, vip, version):
+        if int(version) != 4:
+            return
+
+        public_interface = "%s_ei" % eip_uuid[-9:]
+        private_interface = "%s_i" % eip_uuid[-9:]
+        private_gateway = bash_o(
+            "ip netns exec {{ns_name}} ip -o -4 addr show dev {{private_interface}} "
+            "| awk '/scope global/ {print $4}' | cut -d/ -f1"
+        ).strip()
+        announce_commands = [
+            ("ip netns exec %s arping -q -A -w 2 -c 3 "
+             "-I %s %s > /dev/null" % (ns_name, public_interface, vip))
+        ]
+        if private_gateway:
+            announce_commands.append(
+                ("ip netns exec %s arping -q -U -w 2 -c 3 "
+                 "-I %s %s > /dev/null" %
+                 (ns_name, private_interface, private_gateway))
+            )
+        bash_r(" & ".join(announce_commands) + " & wait")
 
     @bash.in_bash
     @lock.file_lock('/run/xtables.lock')
@@ -584,8 +595,6 @@ class Eip(object):
             if active:
                 bash_r('eval {{NS}} arping -q -A -w 2 -c 3 -I {{PUB_IDEV}} {{VIP}} > /dev/null')
             set_gateway_arp_if_needed()
-            # send gratuitous ARP to update VM's gateway MAC cache,
-            # because the VM may have learned the physical gateway's MAC before EIP was applied
             if active:
                 bash_r('eval {{NS}} arping -q -U -w 2 -c 3 -I {{PRI_IDEV}} {{NIC_GATEWAY}} > /dev/null')
             set_eip_rules()
@@ -817,31 +826,42 @@ class DEip(kvmagent.KvmAgent):
             (dom.name(), active),
         )
 
-    @lock.lock('eip')
     def _set_eips_public_interface_state_by_vm_uuid(self, vm_uuid, active):
         eip_cmd = Eip()
         normalized_vm_uuid = vm_uuid.replace('-', '')
-        aliases = [word for word in bash_o('ip -o -d link').split() if word.startswith('eip:')]
-        handled_eips = set()
+        activated_eips = []
 
-        for alias in aliases:
-            vip, _, _, version, alias_vm_uuid, eip_uuid, _ = \
-                eip_cmd.parse_eip_string(alias)
-            if not alias_vm_uuid or alias_vm_uuid.replace('-', '') != normalized_vm_uuid:
-                continue
-            if not vip or not eip_uuid or (eip_uuid, vip) in handled_eips:
-                continue
+        with lock.NamedLock('eip'):
+            aliases = [word for word in bash_o('ip -o -d link').split() if word.startswith('eip:')]
+            handled_eips = set()
 
-            ns_name = eip_cmd.find_namespace_name_by_ip(vip, version)
-            if not ns_name:
-                continue
+            for alias in aliases:
+                vip, _, _, version, alias_vm_uuid, eip_uuid, _ = \
+                    eip_cmd.parse_eip_string(alias)
+                if not alias_vm_uuid or alias_vm_uuid.replace('-', '') != normalized_vm_uuid:
+                    continue
+                if not vip or not eip_uuid or (eip_uuid, vip) in handled_eips:
+                    continue
 
-            handled_eips.add((eip_uuid, vip))
-            eip_cmd.set_public_interface_state(
-                ns_name,
-                eip_uuid,
-                vip,
-                version,
-                active,
-                False,
+                ns_name = eip_cmd.find_namespace_name_by_eip(vip, version, eip_uuid)
+                if not ns_name:
+                    continue
+
+                handled_eips.add((eip_uuid, vip))
+                eip_cmd.set_public_interface_state(
+                    ns_name,
+                    eip_uuid,
+                    vip,
+                    version,
+                    active,
+                    False,
+                    announce=False,
+                )
+                if active:
+                    activated_eips.append((ns_name, eip_uuid, vip, version))
+
+        for eip in activated_eips:
+            thread.ThreadFacade.run_in_thread(
+                eip_cmd.announce_public_interface,
+                eip,
             )
