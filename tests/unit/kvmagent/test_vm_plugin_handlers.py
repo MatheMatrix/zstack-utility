@@ -68,6 +68,16 @@ def _make_vm_plugin():
     return plugin
 
 
+def _make_vm_device_info(nic_infos=None, virtual_device_info=None, mem_balloon_info=None):
+    return {
+        'nicInfos': nic_infos or [],
+        'virtualDeviceInfoList': virtual_device_info or [],
+        'memBalloonInfo': mem_balloon_info,
+        'vmXml': '<domain/>',
+        'edkRpm': '',
+    }
+
+
 @pytest.mark.kvmagent
 class TestMigrateVmFalseFailure:
     def test_destination_running_confirms_false_migration_failure(self, monkeypatch):
@@ -257,14 +267,17 @@ class TestCleanFirmwareFlashHandler:
     def test_clean_firmware_flash(self):
         plugin = _make_vm_plugin()
         vm_plugin.get_vm_by_uuid_no_retry = MagicMock(return_value=None)
-        plugin.clean_vm_firmware_flash = MagicMock()
+        extension = MagicMock()
 
-        req = _make_req({'vmUuid': 'vm-uuid'})
-        result = plugin.clean_firmware_flash(req)
+        with patch.object(vm_plugin.nvram, 'NvRamVmExtensions', return_value=extension) as nvram_extension:
+            req = _make_req({'vmUuid': 'vm-uuid'})
+            result = plugin.clean_firmware_flash(req)
         rsp = json.loads(result)
 
         assert rsp['success'] is True
-        plugin.clean_vm_firmware_flash.assert_called_once_with('vm-uuid')
+        nvram_extension.assert_called_once_with()
+        assert extension.vm_uuid == 'vm-uuid'
+        extension.cleanup.assert_called_once_with()
 
 
 @pytest.mark.kvmagent
@@ -494,7 +507,7 @@ class TestSyncVmDeviceinfoHandler:
         plugin = _make_vm_plugin()
         mock_vm = MagicMock()
         vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
-        plugin.get_vm_device_info = MagicMock(return_value=(['nic'], ['dev'], None))
+        plugin.get_vm_device_info = MagicMock(return_value=_make_vm_device_info(['nic'], ['dev']))
         plugin.collect_vm_virtualizer_info = MagicMock()
         vm_plugin.pci.get_pci_passthrough_mapping = MagicMock(return_value={'host': 'guest'})
         vm_plugin.pci.get_mdev_passthrough_mapping = MagicMock(return_value={'mdev': 'info'})
@@ -2436,8 +2449,9 @@ class TestStartVmHandler:
         plugin = _make_vm_plugin()
         plugin._record_operation = MagicMock()
         plugin._start_vm = MagicMock()
-        plugin.get_vm_device_info = MagicMock(return_value=([], [], None))
+        plugin.get_vm_device_info = MagicMock(return_value=_make_vm_device_info())
         plugin.collect_vm_virtualizer_info = MagicMock()
+        plugin._register_vm_host_file_monitor = MagicMock()
         vm_plugin.linux.find_vm_pid_by_uuid = MagicMock(return_value=123)
         vm_plugin.linux.enable_process_coredump = MagicMock()
         vm_plugin.linux.set_vm_priority = MagicMock()
