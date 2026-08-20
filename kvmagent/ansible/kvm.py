@@ -7,6 +7,7 @@ import os
 import re
 from uuid import uuid4
 
+from gpu_tools import build_npu_smi_link_command
 from zstacklib import *
 
 # create log
@@ -979,6 +980,14 @@ def install_virtualenv():
         host_post_info.post_label_param = None
         run_remote_command(command, host_post_info)
 
+
+def link_npu_smi():
+    command = build_npu_smi_link_command(virtenv_path)
+    host_post_info.post_label = "ansible.shell.link.npu-smi"
+    host_post_info.post_label_param = None
+    run_remote_command(command, host_post_info)
+
+
 def install_agent_pkg():
     """install zstacklib and kvmagent on host"""
 
@@ -1234,6 +1243,7 @@ do_libvirt_qemu_config()
 do_network_config()
 copy_spice_certificates_to_host()
 install_virtualenv()
+link_npu_smi()
 set_legacy_iptables_ebtables()
 create_ovmf_symlinks()
 install_agent_pkg()
