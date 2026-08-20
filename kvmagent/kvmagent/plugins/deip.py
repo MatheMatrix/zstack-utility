@@ -112,6 +112,7 @@ class Eip(object):
 
         netns = iproute.IpNetnsShell(ns_name)
         public_interface = "%s_ei" % eip_uuid[-9:]
+        public_outer_interface = "%s_eo" % eip_uuid[-9:]
         if netns.get_mac(public_interface) is None:
             if active and fail_if_missing:
                 raise Exception("cannot find EIP public interface[%s] in namespace[%s]" %
@@ -125,8 +126,14 @@ class Eip(object):
                                 (private_interface, ns_name))
             return
 
+        if not linux.is_network_device_existing(public_outer_interface):
+            if active and fail_if_missing:
+                raise Exception("cannot find EIP public outer interface[%s]" %
+                                public_outer_interface)
+            return
+
         if active:
-            netns.set_link_up(public_interface)
+            iproute.set_link_up(public_outer_interface)
             if vip_gateway:
                 ip_cmd = "ip" if int(version) == 4 else "ip -6"
                 if bash_r("ip netns exec {{ns_name}} {{ip_cmd}} route | "
@@ -136,7 +143,7 @@ class Eip(object):
             if announce:
                 self.announce_public_interface(ns_name, eip_uuid, vip, version)
         else:
-            bash_errorout("ip netns exec {{ns_name}} ip link set {{public_interface}} down")
+            iproute.set_link_down(public_outer_interface)
 
     def announce_public_interface(self, ns_name, eip_uuid, vip, version):
         if int(version) != 4:
@@ -327,7 +334,8 @@ class Eip(object):
             if mac is None:
                 iproute.delete_link_no_error(outer_dev)
 
-        def create_dev_if_needed(outer_dev, outer_dev_desc, inner_dev, inner_dev_desc):
+        def create_dev_if_needed(outer_dev, outer_dev_desc, inner_dev, inner_dev_desc,
+                                 link_up=True):
             if not linux.is_network_device_existing(outer_dev):
                 iproute.add_link(outer_dev, 'veth', peer=inner_dev)
                 iproute.set_link_attribute(outer_dev, alias=outer_dev_desc)
@@ -335,7 +343,8 @@ class Eip(object):
                 iproute.set_link_attribute(outer_dev, mtu=linux.MAX_MTU_OF_VNIC)
                 iproute.set_link_attribute(inner_dev, mtu=linux.MAX_MTU_OF_VNIC)
 
-            iproute.set_link_up(outer_dev)
+            if link_up:
+                iproute.set_link_up(outer_dev)
 
         @bash.in_bash
         def add_dev_to_br_if_needed(bridge, device):
@@ -564,10 +573,13 @@ class Eip(object):
             delete_orphan_outer_dev(OLD_PUB_IDEVS[i], OLD_PUB_ODEVS[i])
             delete_orphan_outer_dev(OLD_PRI_IDEVS[i], OLD_PRI_ODEVS[i])
 
+        if not active and linux.is_network_device_existing(PUB_ODEV):
+            iproute.set_link_down(PUB_ODEV)
+
         delete_orphan_outer_dev(PUB_IDEV, PUB_ODEV)
         delete_orphan_outer_dev(PRI_IDEV, PRI_ODEV)
 
-        create_dev_if_needed(PUB_ODEV, EIP_DESC, PUB_IDEV, EIP_DESC)
+        create_dev_if_needed(PUB_ODEV, EIP_DESC, PUB_IDEV, EIP_DESC, active)
         create_dev_if_needed(PRI_ODEV, EIP_DESC, PRI_IDEV, EIP_DESC)
 
         if active:
@@ -610,7 +622,6 @@ class Eip(object):
             create_ipv6_perf_monitor()
 
         if not active:
-            bash_errorout("ip netns exec {{NS_NAME}} ip link set {{PUB_IDEV}} down")
             add_dev_to_br_if_needed(PUB_BR, PUB_ODEV)
 
 

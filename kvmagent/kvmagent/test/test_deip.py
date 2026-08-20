@@ -206,16 +206,39 @@ class TestPrepareEip(_ApplyEipTestBase):
         self.assertTrue(aliases)
         self.assertFalse(any("vip_gateway:" in alias for alias in aliases))
 
-    def test_public_interface_is_attached_after_configuration_then_disabled(self):
+    def test_prepare_keeps_inner_up_and_public_outer_down(self):
         namespace = self.mock_iproute.IpNetnsShell.return_value
         self.assertIn(mock.call("123456789_ei"), namespace.set_link_up.call_args_list)
-        self.assertTrue(
-            any(
-                "ip link set {{PUB_IDEV}} down" in call[0][0]
-                for call in self.mock_bash_errorout.call_args_list
-            ),
-            "Passive prepare did not disable the public interface",
+        self.assertNotIn(
+            mock.call("123456789_eo"),
+            self.mock_iproute.set_link_up.call_args_list,
+            "Passive prepare must not activate the public outer interface",
         )
+        self.assertFalse(
+            any("PUB_IDEV}} down" in call[0][0]
+                for call in self.mock_bash_errorout.call_args_list),
+            "Passive prepare must keep the namespace interface configured",
+        )
+
+    def test_repeated_prepare_never_activates_existing_public_outer(self):
+        self.mock_iproute.IpNetnsShell.list_netns.return_value = [
+            "br_eth0_192_168_1_100"
+        ]
+        self.mock_iproute.IpNetnsShell.return_value.get_mac.return_value = (
+            "aa:bb:cc:dd:ee:ff"
+        )
+        self.mock_linux.is_network_device_existing.return_value = True
+        self.mock_iproute.set_link_up.reset_mock()
+        self.mock_iproute.set_link_down.reset_mock()
+
+        self._apply_eip(Eip(), _make_eip())
+
+        self.mock_iproute.set_link_down.assert_any_call("123456789_eo")
+        self.assertNotIn(
+            mock.call("123456789_eo"),
+            self.mock_iproute.set_link_up.call_args_list,
+        )
+
     def test_does_not_announce_public_vip(self):
         self.assertFalse(
             self._has_cmd("arping -q -A"),
@@ -235,6 +258,9 @@ class TestEipPublicInterfaceState(unittest.TestCase):
         self.executed_cmds = []
         self.iproute_patcher = mock.patch("kvmagent.plugins.deip.iproute")
         self.mock_iproute = self.iproute_patcher.start()
+        self.linux_patcher = mock.patch("kvmagent.plugins.deip.linux")
+        self.mock_linux = self.linux_patcher.start()
+        self.mock_linux.is_network_device_existing.return_value = True
         self.process_patcher = mock.patch(
             "zstacklib.utils.shell.get_process",
             side_effect=_make_fake_process(self.executed_cmds),
@@ -248,6 +274,7 @@ class TestEipPublicInterfaceState(unittest.TestCase):
     def tearDown(self):
         self.bash_o_patcher.stop()
         self.process_patcher.stop()
+        self.linux_patcher.stop()
         self.iproute_patcher.stop()
 
     def _set_state(self, active):
@@ -271,9 +298,7 @@ class TestEipPublicInterfaceState(unittest.TestCase):
 
         self._set_state(True)
 
-        self.mock_iproute.IpNetnsShell.return_value.set_link_up.assert_called_once_with(
-            "123456789_ei"
-        )
+        self.mock_iproute.set_link_up.assert_called_once_with("123456789_eo")
         self.assertTrue(any("arping -q -A" in cmd for cmd in self.executed_cmds))
         self.assertTrue(any("arping -q -U" in cmd for cmd in self.executed_cmds))
 
@@ -301,8 +326,20 @@ class TestEipPublicInterfaceState(unittest.TestCase):
         self._set_state(False)
 
         self.assertFalse(
-            any("ip link set 123456789_ei down" in cmd for cmd in self.executed_cmds)
+            self.mock_iproute.set_link_down.called
         )
+
+    def test_disable_sets_public_outer_down(self):
+        self.mock_iproute.IpNetnsShell.list_netns.return_value = [
+            "br_eth0_192_168_1_100"
+        ]
+        self.mock_iproute.IpNetnsShell.return_value.get_mac.return_value = (
+            "aa:bb:cc:dd:ee:ff"
+        )
+
+        self._set_state(False)
+
+        self.mock_iproute.set_link_down.assert_called_once_with("123456789_eo")
 
     def test_enable_missing_namespace_fails(self):
         self.mock_iproute.IpNetnsShell.list_netns.return_value = []
@@ -322,7 +359,7 @@ class TestEipPublicInterfaceState(unittest.TestCase):
         with self.assertRaisesRegexp(Exception, "cannot find EIP private interface"):
             self._set_state(True)
 
-        self.mock_iproute.IpNetnsShell.return_value.set_link_up.assert_not_called()
+        self.mock_iproute.set_link_up.assert_not_called()
 
 
 class TestEipMigrationEvent(unittest.TestCase):
