@@ -1,7 +1,10 @@
 import inspect
 import sys
 import unittest
-import mock
+try:
+    import mock
+except ImportError:
+    from unittest import mock
 try:
     from types import SimpleNamespace
 except ImportError:
