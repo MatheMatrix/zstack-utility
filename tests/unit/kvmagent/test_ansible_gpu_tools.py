@@ -44,3 +44,20 @@ def test_npu_smi_link_command_skips_missing_executable(tmp_path):
     subprocess.check_call(command, shell=True)
 
     assert not (virtualenv / "bin/npu-smi").exists()
+
+
+def test_npu_smi_link_command_skips_non_executable_source(tmp_path):
+    gpu_tools = _load_gpu_tools()
+    source = tmp_path / "usr/local/sbin/npu-smi"
+    virtualenv = tmp_path / "virtualenv/kvm"
+    source.parent.mkdir(parents=True)
+    (virtualenv / "bin").mkdir(parents=True)
+    source.write_text("#!/bin/sh\n")
+    source.chmod(0o644)
+
+    command = gpu_tools.build_npu_smi_link_command(
+        str(virtualenv), str(source))
+
+    subprocess.check_call(command, shell=True)
+
+    assert not (virtualenv / "bin/npu-smi").exists()
