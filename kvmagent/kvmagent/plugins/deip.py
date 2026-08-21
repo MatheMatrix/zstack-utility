@@ -958,16 +958,14 @@ class DEip(kvmagent.KvmAgent):
     def _announce_public_interfaces(self, eip_cmd, announcements):
         failures = []
 
+        @thread.AsyncThread
         def announce(args):
             try:
                 eip_cmd.announce_public_interface(*args)
             except Exception as error:
                 failures.append(error)
 
-        threads = [
-            thread.ThreadFacade.run_in_thread(announce, (announcement,))
-            for announcement in announcements
-        ]
+        threads = [announce(announcement) for announcement in announcements]
         for worker in threads:
             worker.join()
 

@@ -452,7 +452,7 @@ class TestZSTAC86874EipMigrationEvent(unittest.TestCase):
         run_in_thread.assert_called_once()
         self.assertEqual(
             (("br_eth0_192_168_1_100", "abcdef123456789", "192.168.1.100", 4),),
-            run_in_thread.call_args[0][1],
+            run_in_thread.call_args.kwargs["args"],
         )
 
     def test_all_eips_switch_before_parallel_announcement(self):
@@ -471,7 +471,7 @@ class TestZSTAC86874EipMigrationEvent(unittest.TestCase):
         ):
             with mock.patch(
                 "kvmagent.plugins.deip.thread.ThreadFacade.run_in_thread",
-                side_effect=lambda func, args: (
+                side_effect=lambda func, args, kwargs: (
                     calls.append(("announce", args[0][1])) or mock.MagicMock()
                 ),
             ):
@@ -486,8 +486,8 @@ class TestZSTAC86874EipMigrationEvent(unittest.TestCase):
         eip_cmd = mock.MagicMock()
         eip_cmd.announce_public_interface.side_effect = Exception("DAD failed")
 
-        def run_worker(worker, args):
-            worker(*args)
+        def run_worker(worker, args, kwargs):
+            worker(*args, **kwargs)
             thread = mock.MagicMock()
             return thread
 
