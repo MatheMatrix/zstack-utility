@@ -84,6 +84,12 @@ from zstacklib.utils.libvirt_singleton import LibvirtSingleton
 logger = log.get_logger(__name__)
 
 HOST_ARCH = platform.machine()
+
+# CPU hotplug auto-online constants
+_CPU_HOTPLUG_OS_WHITELIST = ('ubuntu', 'debian')
+_SMBIOS_MANUFACTURER = 'Microsoft Corporation'
+_SMBIOS_PRODUCT = 'Virtual Machine'
+
 DIST = platform.dist()
 DIST_NAME = DIST[0]
 DIST_NAME_VERSION = "%s%s" % (DIST[0], DIST[1])
@@ -4779,6 +4785,99 @@ class Vm(object):
             raise kvmagent.KvmError(err)
         return
 
+    def _has_smbios_cpu_hotplug(self):
+        """Check if SMBIOS manufacturer+product are set for CPU hotplug auto-online."""
+        try:
+            sysinfo = self.domain_xmlobject.get_child_node('sysinfo')
+            if sysinfo is None:
+                return False
+            system = sysinfo.get_child_node('system')
+            if system is None:
+                return False
+            entries = {e.name_: e.text_ for e in system.get_child_node_as_list('entry')}
+            return (entries.get('manufacturer') == _SMBIOS_MANUFACTURER
+                    and entries.get('product') == _SMBIOS_PRODUCT)
+        except Exception as ex:
+            logger.debug('failed to check SMBIOS for vm[uuid:%s]: %s' % (self.uuid, str(ex)))
+            return False
+
+    def _qga_online_hotplugged_cpus(self, prev_cpu_num):
+        """After CPU hotplug, use QGA to online newly added CPUs for whitelisted guests.
+
+        Only x86_64 Ubuntu/Debian guests without the SMBIOS auto-online marker
+        are handled. Any QGA or parsing failure is a safe no-op so a completed
+        libvirt hotplug is not turned into an API failure.
+        """
+        if HOST_ARCH != 'x86_64':
+            return
+
+        try:
+            qga = VmQga(self.domain)
+            if qga.state != VmQga.QGA_STATE_RUNNING:
+                logger.debug('QGA not running for vm[uuid:%s], skip cpu online' % self.uuid)
+                return
+
+            guest_os = (qga.os or '').lower()
+            if not any(os_name in guest_os for os_name in _CPU_HOTPLUG_OS_WHITELIST):
+                logger.debug('guest OS [%s] not in whitelist for vm[uuid:%s], skip cpu online'
+                             % (guest_os, self.uuid))
+                return
+
+            if self._has_smbios_cpu_hotplug():
+                logger.debug('SMBIOS already set for vm[uuid:%s], '
+                             'skip QGA cpu online' % self.uuid)
+                return
+
+            vcpus_info = qga.call_qga_command('guest-get-vcpus')
+            if not vcpus_info:
+                return
+
+            offline_cpus = []
+            for vcpu in vcpus_info:
+                if isinstance(vcpu, dict) and not vcpu.get('online', True) \
+                        and vcpu.get('logical-id', 0) >= prev_cpu_num:
+                    offline_cpus.append({
+                        'logical-id': vcpu['logical-id'],
+                        'online': True
+                    })
+
+            if not offline_cpus:
+                logger.debug('no newly hotplugged offline vCPUs for vm[uuid:%s]' % self.uuid)
+                return
+
+            # QGA returns the length of the successfully processed input prefix.
+            # Every retry removes at least one CPU, bounding calls by the list size.
+            remaining_cpus = offline_cpus
+            while remaining_cpus:
+                try:
+                    result = qga.call_qga_command(
+                        'guest-set-vcpus', args={'vcpus': remaining_cpus})
+                except Exception as e:
+                    logger.warning('failed to online CPUs via QGA for vm[uuid:%s], '
+                                   'remaining CPUs %s: %s'
+                                   % (self.uuid,
+                                      [c['logical-id'] for c in remaining_cpus],
+                                      str(e)))
+                    return
+
+                if isinstance(result, bool) or not isinstance(result, (int, long)) \
+                        or result <= 0 or result > len(remaining_cpus):
+                    logger.warning('invalid QGA guest-set-vcpus result for vm[uuid:%s], '
+                                   'remaining CPUs %s, result=%s'
+                                   % (self.uuid,
+                                      [c['logical-id'] for c in remaining_cpus],
+                                      result))
+                    return
+
+                logger.debug('QGA guest-set-vcpus for vm[uuid:%s]: '
+                             'processed CPUs %s, result=%s'
+                             % (self.uuid,
+                                [c['logical-id'] for c in remaining_cpus[:result]],
+                                result))
+                remaining_cpus = remaining_cpus[result:]
+        except Exception as e:
+            logger.warning('failed to online CPUs via QGA for vm[uuid:%s]: %s' % (self.uuid, str(e)))
+
     @linux.retry(times=3, sleep_time=5)
     def _attach_nic(self, cmd):
         def check_device(_):
@@ -5551,21 +5650,39 @@ class Vm(object):
 
                 e(os, 'bootmenu', attrib=boot_menu_attrib)
 
-            if cmd.systemSerialNumber and HOST_ARCH != 'mips64el':
+            guest_os = getattr(cmd, 'guestOsType', None) or ''
+            needs_smbios_for_hotplug = HOST_ARCH == 'x86_64' and any(
+                os_name in guest_os.lower() for os_name in _CPU_HOTPLUG_OS_WHITELIST
+            )
+            if (cmd.systemSerialNumber or needs_smbios_for_hotplug) and HOST_ARCH != 'mips64el':
                 e(os, 'smbios', attrib={'mode': 'sysinfo'})
 
         def make_sysinfo():
-            if not cmd.systemSerialNumber:
+            guest_os = getattr(cmd, 'guestOsType', None) or ''
+            needs_smbios_for_cpu_hotplug = HOST_ARCH == 'x86_64' and any(
+                os_name in guest_os.lower() for os_name in _CPU_HOTPLUG_OS_WHITELIST
+            )
+
+            if not cmd.systemSerialNumber and not needs_smbios_for_cpu_hotplug:
                 return
 
             root = elements['root']
             sysinfo = e(root, 'sysinfo', attrib={'type': 'smbios'})
             system = e(sysinfo, 'system')
-            e(system, 'entry', cmd.systemSerialNumber, attrib={'name': 'serial'})
+
+            if cmd.systemSerialNumber:
+                e(system, 'entry', cmd.systemSerialNumber, attrib={'name': 'serial'})
 
             if cmd.chassisAssetTag is not None:
                 chassis = e(sysinfo, 'chassis')
                 e(chassis, 'entry', cmd.chassisAssetTag, attrib={'name': 'asset'})
+
+            if needs_smbios_for_cpu_hotplug:
+                existing_entries = [child.attrib.get('name') for child in system]
+                if 'manufacturer' not in existing_entries:
+                    e(system, 'entry', _SMBIOS_MANUFACTURER, attrib={'name': 'manufacturer'})
+                if 'product' not in existing_entries:
+                    e(system, 'entry', _SMBIOS_PRODUCT, attrib={'name': 'product'})
 
             if cmd.oemStrings is not None:
                 oem_strings = e(sysinfo, 'oemStrings')
@@ -8092,8 +8209,10 @@ class VmPlugin(kvmagent.KvmAgent):
 
         try:
             vm = get_vm_by_uuid(cmd.vmUuid)
+            prev_cpu_num = vm.get_cpu_num()
             cpu_num = cmd.cpuNum
             vm.hotplug_cpu(cpu_num)
+            vm._qga_online_hotplugged_cpus(prev_cpu_num)
             vm = get_vm_by_uuid(cmd.vmUuid)
             rsp.cpuNum = vm.get_cpu_num()
             logger.debug('successfully increase cpu number of vm[uuid:%s] to %s' % (cmd.vmUuid, vm.get_cpu_num()))
@@ -8110,10 +8229,13 @@ class VmPlugin(kvmagent.KvmAgent):
         rsp = ChangeCpuMemResponse()
         try:
             vm = get_vm_by_uuid(cmd.vmUuid)
+            prev_cpu_num = vm.get_cpu_num()
             cpu_num = cmd.cpuNum
             memory_size = cmd.memorySize
             vm.hotplug_mem(memory_size)
             vm.hotplug_cpu(cpu_num)
+            if cpu_num > prev_cpu_num:
+                vm._qga_online_hotplugged_cpus(prev_cpu_num)
             vm = get_vm_by_uuid(cmd.vmUuid)
             rsp.cpuNum = vm.get_cpu_num()
             rsp.memorySize = vm.get_memory()
