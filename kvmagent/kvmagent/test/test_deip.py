@@ -169,15 +169,14 @@ class TestZSTAC86874PrepareEip(_ApplyEipTestBase):
         self.assertTrue(aliases)
         self.assertFalse(any("vip_gateway:" in alias for alias in aliases))
 
-    def test_public_interface_is_attached_after_configuration_then_disabled(self):
+    def test_public_outer_interface_stays_disabled_during_prepare(self):
         namespace = self.mock_iproute.IpNetnsShell.return_value
         self.assertIn(mock.call("123456789_ei"), namespace.set_link_up.call_args_list)
-        self.assertTrue(
-            self._has_cmd(
-                "ip netns exec br_eth0_192_168_1_100 "
-                "ip link set 123456789_ei down"
-            )
+        self.assertNotIn(
+            mock.call("123456789_eo"),
+            self.mock_iproute.set_link_up.call_args_list,
         )
+        self.mock_iproute.set_link_down.assert_called_with("123456789_eo")
         route_index = next(
             i for i, cmd in enumerate(self.executed_cmds)
             if "route add default via 192.168.1.1" in cmd
@@ -187,6 +186,19 @@ class TestZSTAC86874PrepareEip(_ApplyEipTestBase):
             if "brctl addif br_eth0 123456789_eo" in cmd
         )
         self.assertLess(route_index, bridge_index)
+
+    def test_repeated_prepare_disables_existing_public_outer_interface_first(self):
+        self.mock_linux.is_network_device_existing.return_value = True
+        self.mock_iproute.reset_mock()
+        self.executed_cmds.clear()
+
+        self._call_unwrapped_method(Eip(), "apply_eip", _make_eip(), False)
+
+        self.mock_iproute.set_link_down.assert_any_call("123456789_eo")
+        self.assertNotIn(
+            mock.call("123456789_eo"),
+            self.mock_iproute.set_link_up.call_args_list,
+        )
 
     def test_does_not_announce_public_vip(self):
         self.assertFalse(
@@ -207,6 +219,9 @@ class TestZSTAC86874EipPublicInterfaceState(unittest.TestCase):
         self.executed_cmds = []
         self.iproute_patcher = mock.patch("kvmagent.plugins.deip.iproute")
         self.mock_iproute = self.iproute_patcher.start()
+        self.linux_patcher = mock.patch("kvmagent.plugins.deip.linux")
+        self.mock_linux = self.linux_patcher.start()
+        self.mock_linux.is_network_device_existing.return_value = True
         self.process_patcher = mock.patch(
             "zstacklib.utils.shell.get_process",
             side_effect=_make_fake_process(self.executed_cmds),
@@ -215,6 +230,7 @@ class TestZSTAC86874EipPublicInterfaceState(unittest.TestCase):
 
     def tearDown(self):
         self.process_patcher.stop()
+        self.linux_patcher.stop()
         self.iproute_patcher.stop()
 
     def test_enable_is_idempotent_and_announces_vip(self):
@@ -227,9 +243,8 @@ class TestZSTAC86874EipPublicInterfaceState(unittest.TestCase):
 
         Eip().set_eip_public_interface_state(self.eip, True)
 
-        self.mock_iproute.IpNetnsShell.return_value.set_link_up.assert_called_once_with(
-            "123456789_ei"
-        )
+        self.mock_iproute.set_link_up.assert_called_once_with("123456789_eo")
+        self.mock_iproute.IpNetnsShell.return_value.set_link_up.assert_not_called()
         self.assertTrue(any("arping -q -A" in cmd for cmd in self.executed_cmds))
         self.assertTrue(any("arping -q -U" in cmd for cmd in self.executed_cmds))
         self.assertTrue(
@@ -285,6 +300,38 @@ class TestZSTAC86874EipPublicInterfaceState(unittest.TestCase):
             Eip().set_eip_public_interface_state(self.eip, True)
 
         self.mock_iproute.IpNetnsShell.return_value.set_link_up.assert_not_called()
+
+    def test_ipv6_enable_configures_neighbor_notify_and_waits_for_dad(self):
+        self.eip = _make_eip(6)
+        self.mock_iproute.IpNetnsShell.list_netns.return_value = [
+            "br_eth0_fd00:1::100"
+        ]
+        self.mock_iproute.IpNetnsShell.return_value.get_mac.return_value = (
+            "aa:bb:cc:dd:ee:ff"
+        )
+        self.mock_linux.wait_callback_success.return_value = True
+
+        Eip().set_eip_public_interface_state(self.eip, True)
+
+        self.assertTrue(any(
+            "sysctl -w net.ipv6.conf.123456789_ei.ndisc_notify=1" in cmd
+            for cmd in self.executed_cmds
+        ))
+        self.mock_iproute.set_link_up.assert_called_once_with("123456789_eo")
+        self.mock_linux.wait_callback_success.assert_called_once()
+
+    def test_ipv6_enable_fails_when_dad_does_not_finish(self):
+        self.eip = _make_eip(6)
+        self.mock_iproute.IpNetnsShell.list_netns.return_value = [
+            "br_eth0_fd00:1::100"
+        ]
+        self.mock_iproute.IpNetnsShell.return_value.get_mac.return_value = (
+            "aa:bb:cc:dd:ee:ff"
+        )
+        self.mock_linux.wait_callback_success.return_value = False
+
+        with self.assertRaisesRegex(Exception, "DAD"):
+            Eip().set_eip_public_interface_state(self.eip, True)
 
 
 class TestZSTAC86874EipMigrationEvent(unittest.TestCase):
@@ -384,13 +431,14 @@ class TestZSTAC86874EipMigrationEvent(unittest.TestCase):
 
         with mock.patch.object(Eip, "find_namespace_name_by_ip",
                                return_value="br_eth0_192_168_1_100"):
-            with mock.patch.object(
-                Eip,
-                "set_public_interface_state",
-            ) as set_state:
-                self.plugin._set_eips_public_interface_state_by_vm_uuid(
-                    "vm-uuid-1234", True
-                )
+            with mock.patch.object(Eip, "set_public_interface_state") as set_state:
+                with mock.patch.object(Eip, "announce_public_interface") as announce:
+                    with mock.patch(
+                        "kvmagent.plugins.deip.thread.ThreadFacade.run_in_thread"
+                    ) as run_in_thread:
+                        self.plugin._set_eips_public_interface_state_by_vm_uuid(
+                            "vm-uuid-1234", True
+                        )
 
         set_state.assert_called_once_with(
             "br_eth0_192_168_1_100",
@@ -399,6 +447,80 @@ class TestZSTAC86874EipMigrationEvent(unittest.TestCase):
             4,
             True,
             False,
+            announce=False,
+        )
+        run_in_thread.assert_called_once()
+        self.assertEqual(
+            (("br_eth0_192_168_1_100", "abcdef123456789", "192.168.1.100", 4),),
+            run_in_thread.call_args[0][1],
+        )
+
+    def test_all_eips_switch_before_parallel_announcement(self):
+        first = _make_eip()
+        second = _make_eip()
+        second.eipUuid = "abcdef987654321"
+        second.vip = "192.168.1.101"
+        calls = []
+
+        with mock.patch.object(
+            Eip,
+            "set_eip_public_interface_state",
+            side_effect=lambda eip, active, announce=True: calls.append(
+                ("switch", eip.eipUuid, active, announce)
+            ) or True,
+        ):
+            with mock.patch(
+                "kvmagent.plugins.deip.thread.ThreadFacade.run_in_thread",
+                side_effect=lambda func, args: (
+                    calls.append(("announce", args[0][1])) or mock.MagicMock()
+                ),
+            ):
+                self.plugin._set_eips_public_interface_state([first, second], True)
+
+        self.assertEqual(
+            ["switch", "switch", "announce", "announce"],
+            [call[0] for call in calls],
+        )
+
+    def test_batch_enable_waits_and_propagates_announcement_failure(self):
+        eip_cmd = mock.MagicMock()
+        eip_cmd.announce_public_interface.side_effect = Exception("DAD failed")
+
+        def run_worker(worker, args):
+            worker(*args)
+            thread = mock.MagicMock()
+            return thread
+
+        with mock.patch(
+            "kvmagent.plugins.deip.thread.ThreadFacade.run_in_thread",
+            side_effect=run_worker,
+        ):
+            with self.assertRaisesRegex(Exception, "DAD failed"):
+                self.plugin._announce_public_interfaces(
+                    eip_cmd,
+                    [("namespace", "eip-uuid", "fd00::10", 6)],
+                )
+
+    def test_batch_enable_returns_all_eips_to_passive_on_announcement_failure(self):
+        eip = _make_eip(6)
+
+        with mock.patch.object(
+            Eip,
+            "set_eip_public_interface_state",
+            side_effect=[True, True],
+        ) as set_state:
+            with mock.patch.object(
+                self.plugin,
+                "_announce_public_interfaces",
+                side_effect=Exception("DAD failed"),
+            ):
+                with self.assertRaisesRegex(Exception, "DAD failed"):
+                    self.plugin._set_eips_public_interface_state([eip], True)
+
+        self.assertEqual(
+            [mock.call(eip, True, announce=False),
+             mock.call(eip, False, announce=False)],
+            set_state.call_args_list,
         )
 
 
