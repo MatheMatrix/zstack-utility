@@ -523,6 +523,71 @@ class TestZSTAC86874EipMigrationEvent(unittest.TestCase):
             set_state.call_args_list,
         )
 
+    def test_batch_enable_returns_current_eip_to_passive_on_switch_failure(self):
+        eip = _make_eip()
+
+        with mock.patch.object(
+            Eip,
+            "set_eip_public_interface_state",
+            side_effect=[Exception("route setup failed"), True],
+        ) as set_state:
+            with self.assertRaisesRegex(Exception, "route setup failed"):
+                self.plugin._set_eips_public_interface_state([eip], True)
+
+        self.assertEqual(
+            [mock.call(eip, True, announce=False),
+             mock.call(eip, False, announce=False)],
+            set_state.call_args_list,
+        )
+
+    @mock.patch("kvmagent.plugins.deip.bash_o")
+    def test_lifecycle_enable_returns_current_eip_to_passive_on_switch_failure(
+            self, bash_o):
+        bash_o.return_value = (
+            "eip:abcdef123456789,eip_addr:192.168.1.100,"
+            "vnic:vnic1.0,vnic_ip:10.0.0.100,"
+            "vm:vm-uuid-1234,vip:vip-uuid-5678"
+        )
+
+        with mock.patch.object(
+            Eip,
+            "find_namespace_name_by_ip",
+            return_value="br_eth0_192_168_1_100",
+        ):
+            with mock.patch.object(
+                Eip,
+                "set_public_interface_state",
+                side_effect=[Exception("route setup failed"), True],
+            ) as set_state:
+                with self.assertRaisesRegex(Exception, "route setup failed"):
+                    self.plugin._set_eips_public_interface_state_by_vm_uuid(
+                        "vm-uuid-1234", True
+                    )
+
+        self.assertEqual(
+            [
+                mock.call(
+                    "br_eth0_192_168_1_100",
+                    "abcdef123456789",
+                    "192.168.1.100",
+                    4,
+                    True,
+                    False,
+                    announce=False,
+                ),
+                mock.call(
+                    "br_eth0_192_168_1_100",
+                    "abcdef123456789",
+                    "192.168.1.100",
+                    4,
+                    False,
+                    False,
+                    announce=False,
+                ),
+            ],
+            set_state.call_args_list,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Test: eip- prefix on chain names

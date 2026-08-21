@@ -972,21 +972,47 @@ class DEip(kvmagent.KvmAgent):
         if failures:
             raise failures[0]
 
+    def _return_eips_to_passive(self, eip_cmd, eips):
+        with lock.NamedLock('eip'):
+            for eip in eips:
+                try:
+                    eip_cmd.set_eip_public_interface_state(
+                        eip, False, announce=False)
+                except Exception as error:
+                    logger.warn(
+                        "failed to return EIP[%s] to passive: %s" %
+                        (eip.eipUuid, error)
+                    )
+
+    def _return_public_interfaces_to_passive(self, eip_cmd, interfaces):
+        with lock.NamedLock('eip'):
+            for ns_name, eip_uuid, vip, version in interfaces:
+                try:
+                    eip_cmd.set_public_interface_state(
+                        ns_name, eip_uuid, vip, version, False, False,
+                        announce=False,
+                    )
+                except Exception as error:
+                    logger.warn(
+                        "failed to return EIP[%s] public interface to passive: %s" %
+                        (eip_uuid, error)
+                    )
+
     def _set_eips_public_interface_state(self, eips, active):
         eip_cmd = Eip()
         switched_eips = []
         try:
             with lock.NamedLock('eip'):
                 for eip in eips:
-                    if eip_cmd.set_eip_public_interface_state(
-                            eip, active, announce=False):
+                    if active:
                         switched_eips.append(eip)
+                    switched = eip_cmd.set_eip_public_interface_state(
+                        eip, active, announce=False)
+                    if active and not switched:
+                        switched_eips.pop()
         except Exception:
             if active:
-                with lock.NamedLock('eip'):
-                    for eip in switched_eips:
-                        eip_cmd.set_eip_public_interface_state(
-                            eip, False, announce=False)
+                self._return_eips_to_passive(eip_cmd, switched_eips)
             raise
 
         if active:
@@ -998,10 +1024,7 @@ class DEip(kvmagent.KvmAgent):
             try:
                 self._announce_public_interfaces(eip_cmd, announcements)
             except Exception:
-                with lock.NamedLock('eip'):
-                    for eip in switched_eips:
-                        eip_cmd.set_eip_public_interface_state(
-                            eip, False, announce=False)
+                self._return_eips_to_passive(eip_cmd, switched_eips)
                 raise
 
     def _register_vm_lifecycle_hook(self):
@@ -1046,40 +1069,46 @@ class DEip(kvmagent.KvmAgent):
         aliases = [word for word in bash_o('ip -o -d link').split() if word.startswith('eip:')]
         handled_eips = set()
 
-        announcements = []
-        with lock.NamedLock('eip'):
-            for alias in aliases:
-                vip, _, _, version, alias_vm_uuid, eip_uuid, _ = \
-                    eip_cmd.parse_eip_string(alias)
-                if not alias_vm_uuid or alias_vm_uuid.replace('-', '') != normalized_vm_uuid:
-                    continue
-                if not vip or not eip_uuid or (eip_uuid, vip) in handled_eips:
-                    continue
-
-                ns_name = eip_cmd.find_namespace_name_by_ip(vip, version)
-                if not ns_name:
-                    continue
-
-                handled_eips.add((eip_uuid, vip))
-                switched = eip_cmd.set_public_interface_state(
-                    ns_name,
-                    eip_uuid,
-                    vip,
-                    version,
-                    active,
-                    False,
-                    announce=False,
-                )
-                if active and switched:
-                    announcements.append((ns_name, eip_uuid, vip, version))
-
+        switched_interfaces = []
         try:
-            self._announce_public_interfaces(eip_cmd, announcements)
-        except Exception:
             with lock.NamedLock('eip'):
-                for ns_name, eip_uuid, vip, version in announcements:
-                    eip_cmd.set_public_interface_state(
-                        ns_name, eip_uuid, vip, version, False, False,
+                for alias in aliases:
+                    vip, _, _, version, alias_vm_uuid, eip_uuid, _ = \
+                        eip_cmd.parse_eip_string(alias)
+                    if not alias_vm_uuid or alias_vm_uuid.replace('-', '') != normalized_vm_uuid:
+                        continue
+                    if not vip or not eip_uuid or (eip_uuid, vip) in handled_eips:
+                        continue
+
+                    ns_name = eip_cmd.find_namespace_name_by_ip(vip, version)
+                    if not ns_name:
+                        continue
+
+                    handled_eips.add((eip_uuid, vip))
+                    interface = (ns_name, eip_uuid, vip, version)
+                    if active:
+                        switched_interfaces.append(interface)
+                    switched = eip_cmd.set_public_interface_state(
+                        ns_name,
+                        eip_uuid,
+                        vip,
+                        version,
+                        active,
+                        False,
                         announce=False,
                     )
+                    if active and not switched:
+                        switched_interfaces.pop()
+        except Exception:
+            if active:
+                self._return_public_interfaces_to_passive(
+                    eip_cmd, switched_interfaces)
             raise
+
+        if active:
+            try:
+                self._announce_public_interfaces(eip_cmd, switched_interfaces)
+            except Exception:
+                self._return_public_interfaces_to_passive(
+                    eip_cmd, switched_interfaces)
+                raise
