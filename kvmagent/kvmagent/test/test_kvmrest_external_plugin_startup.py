@@ -60,15 +60,23 @@ def _load_service_class():
     previous = dict((name, sys.modules.get(name)) for name in replacements)
     previous_reload = getattr(builtins, "reload", None)
     previous_encoding = getattr(sys, "setdefaultencoding", None)
+    kvmagent_package_root = os.path.realpath(os.path.join(
+        os.path.dirname(__file__), "..", ".."))
+    zstacklib_package_root = os.path.realpath(os.path.join(
+        kvmagent_package_root, "..", "zstacklib"))
+    previous_sys_path = list(sys.path)
     builtins.reload = lambda module: module
     sys.setdefaultencoding = lambda unused_encoding: None
     try:
         sys.modules.update(replacements)
+        sys.path[0:0] = [kvmagent_package_root, zstacklib_package_root]
         source_path = os.path.realpath(os.path.join(
             os.path.dirname(__file__), "..", "kvmagent.py"))
-        namespace = runpy.run_path(source_path)
+        namespace = runpy.run_path(
+            source_path, run_name="kvmagent._startup_test_entrypoint")
         return namespace["KvmRESTService"]
     finally:
+        sys.path[:] = previous_sys_path
         for name, module in previous.items():
             if module is None:
                 sys.modules.pop(name, None)

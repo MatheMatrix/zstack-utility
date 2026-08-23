@@ -10,7 +10,7 @@ from zstacklib.utils import jsonobject
 from zstacklib.utils import daemon
 from zstacklib.utils import linux
 from zstacklib.utils import qemu
-from kvmagent import external_plugin
+from . import external_plugin
 
 import functools
 import os.path
