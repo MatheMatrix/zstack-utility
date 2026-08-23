@@ -1168,15 +1168,13 @@ def start_kvmagent():
         # take effects
         service_status("libvirtd", "state=restarted enabled=yes", host_post_info)
 
-    # name: restart kvmagent, do not use ansible systemctl due to kvmagent can start by itself, so systemctl will not know
-    # the kvm agent status when we want to restart it to use the latest kvm agent code
     if host_info.distro in RPM_BASED_OS and host_info.major_version >= 7:
         # NOTE(weiw): dump threads and wait 1 second for dumping
         command = "pkill -USR2 -P 1 -ef 'kvmagent import kdaemon' || true && sleep 1"
         host_post_info.post_label = "ansible.shell.dump.service"
         host_post_info.post_label_param = "zstack-kvmagent"
         run_remote_command(command, host_post_info)
-        command = "service zstack-kvmagent stop && service zstack-kvmagent start && chkconfig zstack-kvmagent on"
+        command = "systemctl restart zstack-kvmagent.service && systemctl enable zstack-kvmagent.service"
     elif host_info.distro in RPM_BASED_OS:
         command = "service zstack-kvmagent stop && service zstack-kvmagent start && chkconfig zstack-kvmagent on"
     elif host_info.distro in DEB_BASED_OS:

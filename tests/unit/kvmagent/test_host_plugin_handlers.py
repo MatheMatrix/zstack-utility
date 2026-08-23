@@ -178,7 +178,9 @@ class TestHostPluginCapacity:
         vm_plugin.get_cpu_memory_used_by_running_vms = MagicMock(return_value=(200, 1024 * 1024 * 1024))
 
         # Mock _get_total_memory (reads /proc/meminfo via shell)
-        with patch.object(host_plugin, '_get_total_memory', return_value=8 * 1024 * 1024 * 1024):
+        with patch.object(host_plugin, '_get_total_memory', return_value=8 * 1024 * 1024 * 1024), \
+             patch.object(host_plugin.resource_control.ResourceControlManager,
+                          'get_shared_cpu_num', return_value=8):
             req = _make_req()
             result = plugin.capacity(req)
             rsp = json.loads(result)
@@ -191,6 +193,177 @@ class TestHostPluginCapacity:
             assert rsp['usedMemory'] == 1024 * 1024 * 1024
             assert rsp['cpuSockets'] == 2
             assert rsp['cpuCoreNum'] == 4
+
+
+@pytest.mark.kvmagent
+class TestHostPluginResourceControl:
+    def _command(self):
+        consumer = 'host-agent:' + 'a' * 32
+        return {
+            'roleType': 'COMPUTE',
+            'sliceName': 'zstack-compute.slice',
+            'cpuSet': '0-1',
+            'operation': 'APPLY',
+            'memory': 0,
+            'handles': [
+                {
+                    'handleType': 'SYSTEMD_UNIT',
+                    'value': 'zstack-kvmagent.service',
+                    'serviceName': 'kvmagent',
+                    'consumerKey': consumer,
+                    'optional': False,
+                    'restartable': False,
+                },
+                {
+                    'handleType': 'SYSTEMD_UNIT',
+                    'value': 'virtlogd.service',
+                    'serviceName': 'virtlogd',
+                    'consumerKey': consumer,
+                    'optional': True,
+                    'restartable': False,
+                },
+            ],
+        }
+
+    def test_valid_command_is_applied_once(self):
+        plugin = _make_plugin()
+        manager = MagicMock()
+        manager.apply.return_value = {
+            'cpuSet': '0-1',
+            'coveredServiceCount': 2,
+            'expectedServiceCount': 2,
+            'results': [],
+        }
+
+        with patch.object(host_plugin.resource_control, 'ResourceControlManager',
+                          return_value=manager):
+            rsp = json.loads(plugin.apply_resource_control(
+                _make_req(self._command())))
+
+        assert rsp['success'] is True
+        manager.apply.assert_called_once()
+
+    def test_unsafe_handles_are_rejected_before_apply(self):
+        cases = []
+
+        command = self._command()
+        command['roleType'] = 'MANAGEMENT'
+        cases.append((command, 'ROLE_TYPE_UNSUPPORTED'))
+
+        command = self._command()
+        command['sliceName'] = '../../attacker.slice'
+        cases.append((command, 'SLICE_NAME_INVALID'))
+
+        command = self._command()
+        command['handles'][1]['value'] = '../../attacker.service'
+        cases.append((command, 'SERVICE_HANDLE_UNSUPPORTED'))
+
+        command = self._command()
+        command['handles'][1]['consumerKey'] = 'host-agent:' + 'b' * 32
+        cases.append((command, 'SERVICE_HANDLE_SET_INVALID'))
+
+        command = self._command()
+        command['handles'].append(dict(command['handles'][1]))
+        cases.append((command, 'SERVICE_HANDLE_DUPLICATED'))
+
+        for command, reason in cases:
+            manager = MagicMock()
+            with patch.object(host_plugin.resource_control,
+                              'ResourceControlManager', return_value=manager):
+                rsp = json.loads(plugin_response := _make_plugin().apply_resource_control(
+                    _make_req(command)))
+
+            assert rsp['success'] is False, plugin_response
+            assert reason in rsp['error'], plugin_response
+            manager.apply.assert_not_called()
+
+    def test_new_manifest_service_does_not_require_agent_code_change(self):
+        command = self._command()
+        command['handles'] = [{
+            'handleType': 'SYSTEMD_UNIT',
+            'value': 'image-store-agent.service',
+            'serviceName': 'image-store-agent',
+            'consumerKey': 'host-agent:' + 'a' * 32,
+            'optional': True,
+            'restartable': True,
+        }]
+        manager = MagicMock()
+        manager.apply.return_value = {
+            'cpuSet': '0-1',
+            'coveredServiceCount': 1,
+            'expectedServiceCount': 1,
+            'results': [],
+        }
+
+        with patch.object(host_plugin.resource_control, 'ResourceControlManager',
+                          return_value=manager):
+            rsp = json.loads(_make_plugin().apply_resource_control(
+                _make_req(command)))
+
+        assert rsp['success'] is True
+        manager.apply.assert_called_once()
+
+    def test_managed_service_usage_is_collected_from_manifest_handles(self):
+        command = self._command()
+        manager = MagicMock()
+        manager.inspect.return_value = [{
+            'serviceName': 'kvmagent',
+            'restartable': False,
+            'state': 'RUNNING',
+            'cpuSet': '0-1',
+            'cpuTime': 1000,
+            'memory': 4096,
+            'memoryLimit': 0,
+        }]
+
+        with patch.object(host_plugin.resource_control, 'ResourceControlManager',
+                          return_value=manager):
+            rsp = json.loads(_make_plugin().get_managed_service_usage(
+                _make_req(command)))
+
+        assert rsp['success'] is True
+        assert rsp['services'][0]['serviceName'] == 'kvmagent'
+        manager.inspect.assert_called_once()
+        role_type, handles = manager.inspect.call_args.args
+        assert role_type == 'COMPUTE'
+        assert [item.serviceName for item in handles] == ['kvmagent', 'virtlogd']
+
+    def test_only_explicitly_selected_restartable_services_are_restarted(self):
+        command = self._command()
+        command['handles'] = [{
+            'handleType': 'SYSTEMD_UNIT',
+            'value': 'node_exporter.service',
+            'serviceName': 'node-exporter',
+            'consumerKey': 'host-agent:' + 'a' * 32,
+            'optional': True,
+            'restartable': True,
+        }]
+        manager = MagicMock()
+
+        with patch.object(host_plugin.resource_control, 'ResourceControlManager',
+                          return_value=manager):
+            rsp = json.loads(_make_plugin().restart_managed_services(
+                _make_req(command)))
+
+        assert rsp['success'] is True
+        manager.restart.assert_called_once()
+        handles = manager.restart.call_args.args[0]
+        assert [item.serviceName for item in handles] == ['node-exporter']
+
+    def test_extreme_cpu_range_is_rejected_without_apply(self):
+        command = self._command()
+        command['cpuSet'] = '0-2147483647'
+        manager = host_plugin.resource_control.ResourceControlManager()
+
+        with patch.object(host_plugin.resource_control, 'ResourceControlManager',
+                          return_value=manager), \
+             patch.object(manager, 'apply') as apply:
+            rsp = json.loads(_make_plugin().apply_resource_control(
+                _make_req(command)))
+
+        assert rsp['success'] is False
+        assert 'CPUSET_OUT_OF_RANGE' in rsp['error']
+        apply.assert_not_called()
 
 
 @pytest.mark.kvmagent

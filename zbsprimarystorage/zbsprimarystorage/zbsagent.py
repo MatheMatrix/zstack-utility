@@ -10,11 +10,13 @@ import zstacklib.utils.jsonobject as jsonobject
 from zstacklib.utils import daemon
 from zstacklib.utils import iproute
 from zstacklib.utils import plugin
+from zstacklib.utils import shell
 from zstacklib.utils import traceable_shell
 from zstacklib.utils.bash import *
 from zstacklib.utils.report import *
 
 logger = log.get_logger(__name__)
+_physical_server_serial_number = None
 
 
 class AgentResponse(object):
@@ -37,6 +39,31 @@ class SyncMetadataRsp(AgentResponse):
     def __init__(self):
         super(SyncMetadataRsp, self).__init__()
         self.externalAddr = None
+        self.physicalServerSerialNumber = None
+
+
+def read_physical_server_serial_number():
+    global _physical_server_serial_number
+    if _physical_server_serial_number is not None:
+        return _physical_server_serial_number
+
+    try:
+        with open('/sys/class/dmi/id/product_serial') as serial_file:
+            serial_number = serial_file.read().strip()
+            if serial_number:
+                _physical_server_serial_number = serial_number
+                return _physical_server_serial_number
+    except (IOError, OSError):
+        pass
+
+    try:
+        serial_number = shell.call('dmidecode -s system-serial-number').strip()
+        if serial_number:
+            _physical_server_serial_number = serial_number
+        return _physical_server_serial_number
+    except Exception as error:
+        logger.warn('failed to read physical server serial number: %s' % error)
+        return None
 
 
 class CbdToNbdRsp(AgentResponse):
@@ -293,6 +320,7 @@ class ZbsAgent(plugin.TaskManager):
             rsp.error = 'cannot found external address of mds[%s]' % cmd.addr
             return jsonobject.dumps(rsp)
 
+        rsp.physicalServerSerialNumber = read_physical_server_serial_number()
         self.SUPPORT_GET_VOLUME_CLIENTS = zbsutils.is_support_get_volume_clients()
         self.agent_version = cmd.agentVersion
         return jsonobject.dumps(rsp)
