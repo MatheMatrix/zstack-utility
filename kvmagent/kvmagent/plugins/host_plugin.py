@@ -26,7 +26,7 @@ except ImportError:
 from kvmagent import kvmagent
 from kvmagent.plugins import vm_plugin
 from kvmagent.plugins.imagestore import ImageStoreClient
-from zstacklib.utils import http, lvm, ceph, pci, gpu, linux, cpu_frequency
+from zstacklib.utils import http, lvm, ceph, pci, gpu, linux, cpu_frequency, resource_control
 from zstacklib.utils import qemu
 from zstacklib.utils import iptables
 from zstacklib.utils import iproute
@@ -1588,6 +1588,21 @@ class HostPlugin(kvmagent.KvmAgent):
     DEPLOY_COLO_QEMU_PATH = "/deploy/colo/qemu"
     UPDATE_CONFIGURATION_PATH = "/host/update/configuration"
     GET_NUMA_TOPOLOGY_PATH = "/numa/topology"
+    APPLY_RESOURCE_CONTROL_PATH = "/host/resourcecontrol/apply"
+    GET_MANAGED_SERVICE_USAGE_PATH = "/host/resourcecontrol/services"
+    RESTART_MANAGED_SERVICES_PATH = "/host/resourcecontrol/restart"
+    RESOURCE_CONTROL_ROLE_TYPE = "COMPUTE"
+    RESOURCE_CONTROL_MAX_HANDLES = 64
+    RESOURCE_CONTROL_SYSTEMD_UNIT_PATTERN = re.compile(
+        r'^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,248}\.service$')
+    RESOURCE_CONTROL_PID_FILE_PATTERN = re.compile(
+        r'^/(?:var/)?run/[A-Za-z0-9_.@+:/-]+$')
+    RESOURCE_CONTROL_COMMAND_TOKEN_PATTERN = re.compile(
+        r'^[A-Za-z0-9_./:@+-]{1,128}$')
+    RESOURCE_CONTROL_SERVICE_NAME_PATTERN = re.compile(
+        r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
+    RESOURCE_CONTROL_SLICE_PATTERN = re.compile(
+        r'^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,248}\.slice$')
     ATTACH_VOLUME_PATH = "/host/volume/attach"
     DETACH_VOLUME_PATH = "/host/volume/detach"
     UPDATE_VM_CONSOLE_PASSWORD_LIVE_PATH = "/host/vm/updateConsolePassword/live"
@@ -2060,7 +2075,14 @@ class HostPlugin(kvmagent.KvmAgent):
     @in_bash
     def capacity(self, req):
         rsp = HostCapacityResponse()
-        rsp.cpuNum = linux.get_cpu_num()
+        try:
+            shared_cpu_num = resource_control.ResourceControlManager().get_shared_cpu_num()
+        except resource_control.ResourceControlError as error:
+            logger.warn(
+                "failed to get shared cpu count, fallback to host cpu count: %s"
+                % error)
+            shared_cpu_num = None
+        rsp.cpuNum = shared_cpu_num if shared_cpu_num is not None else linux.get_cpu_num()
         rsp.cpuSpeed = linux.get_cpu_speed()
         (used_cpu, used_memory) = vm_plugin.get_cpu_memory_used_by_running_vms()
         rsp.usedCpu = used_cpu
@@ -4793,10 +4815,112 @@ done
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
+    def apply_resource_control(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        manager = resource_control.ResourceControlManager()
+        self._validate_resource_control_command(cmd, manager)
+        rsp = kvmagent.AgentResponse()
+        result = manager.apply(
+            cmd.roleType, cmd.cpuSet, cmd.handles, cmd.operation,
+            getattr(cmd, 'memory', None), cmd.sliceName)
+        for key, value in result.items():
+            setattr(rsp, key, value)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def get_managed_service_usage(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        manager = resource_control.ResourceControlManager()
+        self._validate_managed_service_command(cmd)
+        rsp = kvmagent.AgentResponse()
+        rsp.services = manager.inspect(cmd.roleType, cmd.handles)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def restart_managed_services(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        manager = resource_control.ResourceControlManager()
+        self._validate_managed_service_command(cmd, restart=True)
+        manager.restart(cmd.handles)
+        return jsonobject.dumps(kvmagent.AgentResponse())
+
+    def _validate_resource_control_command(self, cmd, manager):
+        self._validate_managed_service_command(cmd)
+        operation = getattr(cmd, 'operation', None)
+        if operation not in ('APPLY', 'RELEASE'):
+            raise resource_control.ResourceControlError('RESOURCE_CONTROL_COMMAND_INVALID')
+        manager.validate_cpu_set(
+            getattr(cmd, 'cpuSet', None), operation != 'RELEASE')
+        manager.validate_memory_limit(getattr(cmd, 'memory', None))
+
+    def _validate_managed_service_command(self, cmd, restart=False):
+        if getattr(cmd, 'roleType', None) != self.RESOURCE_CONTROL_ROLE_TYPE:
+            raise resource_control.ResourceControlError('ROLE_TYPE_UNSUPPORTED')
+        slice_name = getattr(cmd, 'sliceName', None)
+        if (not isinstance(slice_name, str)
+                or not self.RESOURCE_CONTROL_SLICE_PATTERN.match(slice_name)):
+            raise resource_control.ResourceControlError('SLICE_NAME_INVALID')
+        handles = getattr(cmd, 'handles', None)
+        if not handles or len(handles) > self.RESOURCE_CONTROL_MAX_HANDLES:
+            raise resource_control.ResourceControlError('SERVICE_HANDLE_SET_INVALID')
+
+        consumers = set()
+        identities = set()
+        for handle in handles:
+            handle_type = getattr(handle, 'handleType', None)
+            value = getattr(handle, 'value', None)
+            consumer = getattr(handle, 'consumerKey', None)
+            optional = getattr(handle, 'optional', None)
+            service_name = getattr(handle, 'serviceName', None)
+            restartable = getattr(handle, 'restartable', None)
+            token = getattr(handle, 'expectedCommandToken', None)
+            if not consumer or not re.match(r'^host-agent:[0-9a-fA-F]{32}$', consumer):
+                raise resource_control.ResourceControlError('CONSUMER_KEY_INVALID')
+            if not isinstance(optional, bool):
+                raise resource_control.ResourceControlError('SERVICE_HANDLE_UNSUPPORTED')
+            if (not isinstance(service_name, str)
+                    or not self.RESOURCE_CONTROL_SERVICE_NAME_PATTERN.match(
+                        service_name)
+                    or not isinstance(restartable, bool)):
+                raise resource_control.ResourceControlError('SERVICE_HANDLE_UNSUPPORTED')
+            consumers.add(consumer)
+            identity = (handle_type, value)
+            if identity in identities:
+                raise resource_control.ResourceControlError('SERVICE_HANDLE_DUPLICATED')
+            identities.add(identity)
+
+            if handle_type == 'OWNER_PID_FILE':
+                if (not isinstance(value, str)
+                        or os.path.normpath(value) != value
+                        or not self.RESOURCE_CONTROL_PID_FILE_PATTERN.match(value)
+                        or not isinstance(token, str)
+                        or not self.RESOURCE_CONTROL_COMMAND_TOKEN_PATTERN.match(token)
+                        or restartable):
+                    raise resource_control.ResourceControlError('SERVICE_HANDLE_UNSUPPORTED')
+                continue
+            if handle_type == 'SYSTEMD_UNIT':
+                if (not isinstance(value, str)
+                        or not self.RESOURCE_CONTROL_SYSTEMD_UNIT_PATTERN.match(value)
+                        or token not in (None, '')):
+                    raise resource_control.ResourceControlError('SERVICE_HANDLE_UNSUPPORTED')
+                continue
+            raise resource_control.ResourceControlError('HANDLE_TYPE_UNSUPPORTED')
+
+        if len(consumers) != 1:
+            raise resource_control.ResourceControlError('SERVICE_HANDLE_SET_INVALID')
+        if restart and any(
+                getattr(handle, 'handleType', None) != 'SYSTEMD_UNIT'
+                or not getattr(handle, 'restartable', False)
+                for handle in handles):
+            raise resource_control.ResourceControlError(
+                'SERVICE_RESTART_NOT_ALLOWED')
+
+    @kvmagent.replyerror
     def get_numa_topology(self, req):
         class NumaTopology:
             def __init__(self):
                 self.nodes = {}
+                self.online_cpus = set(self.get_cpu_list('/sys/devices/system/cpu/online'))
                 self.get_topology()
 
             def __call__(self, *args, **kwargs):
@@ -4815,8 +4939,13 @@ done
                     distance_path = os.path.join(node_path, "distance")
 
                     size, free = self.get_meminfo(meminfo_path)
+                    cpus = self.get_cpu_list(cpulist_path)
+                    online_cpus = sorted(
+                        [cpu for cpu in cpus if cpu in self.online_cpus], key=int)
                     self.nodes[str(node_id)] = {
-                        "cpus": self.get_cpu_list(cpulist_path),
+                        "cpus": cpus,
+                        "onlineCpus": online_cpus,
+                        "coreGroups": self.get_core_groups(online_cpus),
                         "free": free,
                         "size": size,
                         "distance": self.get_distance(distance_path)
@@ -4831,7 +4960,7 @@ done
                     data = f.read()
 
                 if data is None or (not data):
-                    return
+                    return []
 
                 data = data.strip()
                 cpu_list = []
@@ -4846,6 +4975,24 @@ done
                     else:
                         cpu_list.append(i)
                 return cpu_list
+
+            def get_core_groups(self, online_cpus):
+                core_groups = set()
+                online_cpu_set = set(online_cpus)
+                for cpu in online_cpus:
+                    siblings_path = os.path.join(
+                        '/sys/devices/system/cpu', 'cpu{}'.format(cpu),
+                        'topology', 'thread_siblings_list')
+                    if not os.path.isfile(siblings_path):
+                        return []
+                    siblings = tuple(sorted(
+                        [sibling for sibling in self.get_cpu_list(siblings_path)
+                         if sibling in online_cpu_set], key=int))
+                    if not siblings:
+                        return []
+                    core_groups.add(siblings)
+                return [list(group) for group in sorted(
+                    core_groups, key=lambda group: int(group[0]))]
 
             @staticmethod
             def get_meminfo(info_path):
@@ -5193,6 +5340,14 @@ done
             self.UPDATE_CONFIGURATION_PATH, self.update_host_configuration)
         http_server.register_async_uri(
             self.GET_NUMA_TOPOLOGY_PATH, self.get_numa_topology)
+        http_server.register_async_uri(
+            self.APPLY_RESOURCE_CONTROL_PATH, self.apply_resource_control)
+        http_server.register_async_uri(
+            self.GET_MANAGED_SERVICE_USAGE_PATH,
+            self.get_managed_service_usage)
+        http_server.register_async_uri(
+            self.RESTART_MANAGED_SERVICES_PATH,
+            self.restart_managed_services)
         http_server.register_async_uri(
             self.ATTACH_VOLUME_PATH, self.attach_volume_path)
         http_server.register_async_uri(

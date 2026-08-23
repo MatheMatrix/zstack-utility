@@ -53,6 +53,7 @@ isEnableKsm = 'none'
 restart_libvirtd = 'false'
 enable_spice_tls = None
 enable_cgroup_device_acl = None
+resource_assignment_enabled = 'false'
 isRemoteCube = False
 reserved_ports = "49152-49215"
 
@@ -1158,6 +1159,27 @@ def do_systemd_config():
     host_post_info.post_label_param = None
     run_remote_command(command, host_post_info)
 
+def configure_resource_assignment():
+    drop_in_dir = '/etc/systemd/system/zstack-kvmagent.service.d'
+    drop_in = '%s/50-zstack-resource-assignment.conf' % drop_in_dir
+    if resource_assignment_enabled == 'true':
+        command = "if command -v systemctl >/dev/null 2>&1; then " \
+                  "if test -f /sys/fs/cgroup/cgroup.controllers; then " \
+                  "systemctl stop zstack-kvmagent.service; " \
+                  "mkdir -p %s; " \
+                  "printf '[Service]\\nSlice=zstack-compute.slice\\n' > %s; " \
+                  "fi; " \
+                  "systemctl daemon-reload; fi" % \
+                  (drop_in_dir, drop_in)
+    else:
+        command = "if command -v systemctl >/dev/null 2>&1; then " \
+                  "systemctl stop zstack-kvmagent.service; " \
+                  "rm -f %s; rmdir %s 2>/dev/null || true; " \
+                  "systemctl daemon-reload; fi" % (drop_in, drop_in_dir)
+    host_post_info.post_label = "ansible.shell.resource-assignment"
+    host_post_info.post_label_param = "zstack-kvmagent"
+    run_remote_command(command, host_post_info)
+
 def start_kvmagent():
     if chroot_env != 'false':
         return
@@ -1168,15 +1190,13 @@ def start_kvmagent():
         # take effects
         service_status("libvirtd", "state=restarted enabled=yes", host_post_info)
 
-    # name: restart kvmagent, do not use ansible systemctl due to kvmagent can start by itself, so systemctl will not know
-    # the kvm agent status when we want to restart it to use the latest kvm agent code
     if host_info.distro in RPM_BASED_OS and host_info.major_version >= 7:
         # NOTE(weiw): dump threads and wait 1 second for dumping
         command = "pkill -USR2 -P 1 -ef 'kvmagent import kdaemon' || true && sleep 1"
         host_post_info.post_label = "ansible.shell.dump.service"
         host_post_info.post_label_param = "zstack-kvmagent"
         run_remote_command(command, host_post_info)
-        command = "service zstack-kvmagent stop && service zstack-kvmagent start && chkconfig zstack-kvmagent on"
+        command = "systemctl restart zstack-kvmagent.service && systemctl enable zstack-kvmagent.service"
     elif host_info.distro in RPM_BASED_OS:
         command = "service zstack-kvmagent stop && service zstack-kvmagent start && chkconfig zstack-kvmagent on"
     elif host_info.distro in DEB_BASED_OS:
@@ -1267,6 +1287,7 @@ do_ksm_config()
 modprobe_usb_module()
 modprobe_mpci_module()
 set_gpu_blacklist()
+configure_resource_assignment()
 start_kvmagent()
 
 host_post_info.start_time = start_time
