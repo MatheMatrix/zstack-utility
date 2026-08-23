@@ -7,6 +7,7 @@ import os
 import re
 from uuid import uuid4
 
+import external_plugin_layout
 import libvirt_control
 from zstacklib import *
 
@@ -584,6 +585,12 @@ def copy_kvm_files():
     kvmagt_svc_dst = "/etc/init.d/"
     args = "mode=755"
     copy_to_remote(kvmagt_svc_src, kvmagt_svc_dst, args, host_post_info)
+
+    # The external loader treats a missing registry as an empty registry, but
+    # managed plugin deployment requires the fixed root to exist before its
+    # read-only preflight can validate ownership and permissions.
+    external_plugin_layout.install_registry_root(
+        host_post_info, run_remote_command)
 
     # Order KVM Agent after the active libvirt control endpoint without making
     # a permanent libvirt failure prevent the base Agent from starting.  The

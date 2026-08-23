@@ -17,6 +17,9 @@ CLASS = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RUNTIME_DEPENDENCIES = ("python", "kvmAgent", "zstacklib", "qemu", "libvirt")
 MEMBERSHIP_DIMENSIONS = ("os", "architectures")
 COMPATIBILITY_DIMENSIONS = RUNTIME_DEPENDENCIES + MEMBERSHIP_DIMENSIONS
+DEPLOYMENT_VERIFICATION_MARKERS = frozenset((
+    ".artifact-sha256", ".content-sha256"))
+CANONICAL_RELEASE_MODES = frozenset((0o444, 0o555, 0o644, 0o755))
 VERSION_CONSTRAINT = re.compile(r"^(==|!=|>=|<=|>|<)[^,\s]+$")
 DIMENSION_VALUE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 try:
@@ -29,6 +32,14 @@ class ManifestError(Exception):
     def __init__(self, message, code="PLUGIN_MANIFEST_MISMATCH"):
         super(ManifestError, self).__init__(message)
         self.code = code
+
+
+def _canonical_release_mode(mode, relative):
+    if os.name != "nt" and mode not in CANONICAL_RELEASE_MODES:
+        raise ManifestError(
+            "release member mode is invalid: %s mode=%04o" %
+            (relative, mode))
+    return 0o755 if mode & 0o111 else 0o644
 
 
 def _required_map(source, name):
@@ -52,12 +63,16 @@ def _canonical_content_sha256(release_root):
         for name in sorted(files):
             path = os.path.join(root, name)
             relative = os.path.relpath(path, release_root).replace(os.sep, "/")
-            if relative == "manifest.yaml":
+            if (relative == "manifest.yaml" or
+                    relative in DEPLOYMENT_VERIFICATION_MARKERS):
                 continue
             metadata = os.lstat(path)
             if not stat.S_ISREG(metadata.st_mode):
                 raise ManifestError("release member is not a regular file: %s" % relative)
-            entries.append((relative, path, stat.S_IMODE(metadata.st_mode)))
+            entries.append((
+                relative, path,
+                _canonical_release_mode(stat.S_IMODE(metadata.st_mode),
+                                        relative)))
     digest = hashlib.sha256()
     for relative, path, mode in sorted(entries):
         with open(path, "rb") as stream:

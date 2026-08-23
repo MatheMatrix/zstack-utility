@@ -5,6 +5,7 @@ import datetime
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -203,6 +204,34 @@ class ExternalPluginRegistryTest(unittest.TestCase):
             sleep=kwargs.get("sleep"), monotonic=kwargs.get("monotonic"),
             stop_timeout_seconds=kwargs.get("stop_timeout_seconds", 1),
             utcnow=kwargs.get("utcnow"))
+
+    def test_deployment_verification_markers_are_outside_content_digest(self):
+        release = self._release()
+        manifest = external_plugin_manifest.load_manifest(
+            os.path.join(release, "manifest.yaml"))
+
+        _write(os.path.join(release, ".artifact-sha256"), "1" * 64 + "\n")
+        _write(os.path.join(release, ".content-sha256"),
+               manifest.content_sha256 + "\n")
+        hardened = []
+        try:
+            for root, unused_dirs, files in os.walk(release):
+                for name in files:
+                    if name in ("manifest.yaml", ".artifact-sha256",
+                                ".content-sha256"):
+                        continue
+                    path = os.path.join(root, name)
+                    mode = stat.S_IMODE(os.lstat(path).st_mode)
+                    hardened.append((path, mode))
+                    os.chmod(path, 0o555 if mode & 0o111 else 0o444)
+
+            self.assertEqual(
+                manifest.content_sha256,
+                external_plugin_manifest._canonical_content_sha256(release))
+            manifest.verify_content(release)
+        finally:
+            for path, mode in hardened:
+                os.chmod(path, mode)
 
     def test_blocked_probe_is_bounded_and_does_not_stall_follow_on_plugin(self):
         release_wait = threading.Event()
