@@ -7,6 +7,7 @@ import os
 import re
 from uuid import uuid4
 
+import libvirt_control
 from zstacklib import *
 
 # create log
@@ -583,6 +584,15 @@ def copy_kvm_files():
     kvmagt_svc_dst = "/etc/init.d/"
     args = "mode=755"
     copy_to_remote(kvmagt_svc_src, kvmagt_svc_dst, args, host_post_info)
+
+    # Order KVM Agent after the active libvirt control endpoint without making
+    # a permanent libvirt failure prevent the base Agent from starting.  The
+    # loader still performs bounded readiness checks because After=/Wants=
+    # only order unit activation; they do not prove API readiness.
+    if ((host_info.distro in RPM_BASED_OS and host_info.major_version >= 7)
+            or host_info.distro in DEB_BASED_OS):
+        libvirt_control.install_ordering_dropin(
+            file_root, host_post_info, run_remote_command, copy_to_remote)
 
     # copy sysctl file
     sysctl_src = os.path.join(file_root, "sysctl")

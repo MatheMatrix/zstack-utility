@@ -36,6 +36,7 @@ kvmagent/puppet/kvmpuppet/files/*
 *management-server.log
 test-result
 .idea/*
+.omc/*
 *.iml
 zstackbuild/centos6_repo.tgz
 zstackbuild/centos6_repo/
