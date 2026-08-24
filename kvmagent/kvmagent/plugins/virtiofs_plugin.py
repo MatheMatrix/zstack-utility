@@ -117,6 +117,12 @@ class VirtiofsStatusResponse(jsonobject.JsonObject):
     virtiofsHotplugSupported = bool
 
 
+class PrepareHostModelCacheCmd(object):
+    @log.sensitive_fields("storageUrl")
+    def __init__(self):
+        pass
+
+
 def check_libvirt_version():
     """Check if libvirt version supports virtiofs hotplug (>= 7.9.0)"""
     try:
@@ -201,6 +207,22 @@ def _get_cmd_attr(obj, name, default=None):
     except Exception:
         pass
     return getattr(obj, name, default)
+
+
+def _classify_host_model_cache_failure(error):
+    error = str(error or '')
+    lowered = error.lower()
+    if 'mount model center' in lowered or 'model center mount' in lowered:
+        return 'ModelSourceMount', 'JuicefsMountFailed'
+    if 'capacity' in lowered or 'available' in lowered:
+        return 'CapacityCheck', 'InsufficientHostCacheStorage'
+    if 'permission' in lowered or 'denied' in lowered:
+        return 'AgentExecution', 'PermissionDenied'
+    if 'outside allowed' in lowered or 'must be absolute' in lowered or 'does not exist' in lowered or 'not a directory' in lowered:
+        return 'PreparedSourceValidation', 'SourcePathInvalid'
+    if 'timeout' in lowered:
+        return 'AgentExecution', 'AgentTimeout'
+    return 'AgentExecution', 'Unknown'
 
 
 def get_vm_domain(vm_uuid):
@@ -480,6 +502,9 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
     ATTACH_VIRTIOFS_PATH = "/virtiofs/attach"
     DETACH_VIRTIOFS_PATH = "/virtiofs/detach"
     STATUS_VIRTIOFS_PATH = "/virtiofs/status"
+    HOST_MODEL_CACHE_REPORT_PATH = "/virtiofs/host-model-cache/report"
+    HOST_MODEL_CACHE_PREPARE_PATH = "/virtiofs/host-model-cache/prepare"
+    HOST_MODEL_CACHE_CLEANUP_PATH = "/virtiofs/host-model-cache/cleanup"
 
     def start(self):
         """Initialize virtiofsd path and register HTTP endpoints."""
@@ -489,6 +514,12 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
         http_server.register_async_uri(self.ATTACH_VIRTIOFS_PATH, self.attach_virtiofs)
         http_server.register_async_uri(self.DETACH_VIRTIOFS_PATH, self.detach_virtiofs)
         http_server.register_async_uri(self.STATUS_VIRTIOFS_PATH, self.virtiofs_status)
+        http_server.register_async_uri(self.HOST_MODEL_CACHE_REPORT_PATH, self.report_host_model_cache)
+        http_server.register_async_uri(
+            self.HOST_MODEL_CACHE_PREPARE_PATH,
+            self.prepare_host_model_cache,
+            cmd=PrepareHostModelCacheCmd())
+        http_server.register_async_uri(self.HOST_MODEL_CACHE_CLEANUP_PATH, self.cleanup_host_model_cache)
 
     def stop(self):
         """No-op; virtiofs plugin has no background resources to clean up."""
@@ -661,4 +692,104 @@ class VirtiofsPlugin(kvmagent.KvmAgent):
         supported, version = check_libvirt_version()
         rsp.libvirtVersion = version
         rsp.virtiofsHotplugSupported = supported
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def report_host_model_cache(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = jsonobject.JsonObject()
+        rsp.success = False
+        try:
+            source_root = _get_cmd_attr(cmd, 'sourceRoot', _get_cmd_attr(cmd, 'sourceRootPath', None))
+            report = virtiofs_source.report_source_root(source_root)
+            rsp.sourceRoot = report.get('sourceRoot')
+            rsp.physicalTotalBytes = report.get('physicalTotalBytes')
+            rsp.physicalAvailableBytes = report.get('physicalAvailableBytes')
+            rsp.cacheEntries = report.get('cacheEntries', [])
+            rsp.success = True
+            logger.info("Reported host model cache root[%s], entries=%s, available=%s" % (
+                rsp.sourceRoot, len(rsp.cacheEntries), rsp.physicalAvailableBytes))
+        except Exception as e:
+            logger.warning("Failed to report host model cache: %s" % str(e))
+            rsp.error = str(e)
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def prepare_host_model_cache(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = jsonobject.JsonObject()
+        rsp.success = False
+        try:
+            source_root = _get_cmd_attr(cmd, 'sourceRoot', _get_cmd_attr(cmd, 'sourceRootPath', None))
+            source_path = _get_cmd_attr(cmd, 'sourcePath', None)
+            required_capacity = _get_cmd_attr(cmd, 'requiredCapacityBytes', None)
+            source_type = _get_cmd_attr(cmd, 'sourceType', 'preparedPath')
+            if source_type == 'juicefsModelCenter':
+                artifact_relative_path = _get_cmd_attr(cmd, 'artifactRelativePath', None)
+                if not artifact_relative_path:
+                    artifact_relative_path = _get_cmd_attr(cmd, 'modelRelativePath', None)
+                storage_subdir = _get_cmd_attr(cmd, 'storageSubdir', None) or 'models'
+                register_cache = _get_cmd_attr(cmd, 'registerCache', None)
+                if register_cache is None:
+                    register_cache = True
+                entry = virtiofs_source.prepare_model_center_cache(
+                    source_root,
+                    source_path,
+                    _get_cmd_attr(cmd, 'modelCenterUuid', None),
+                    _get_cmd_attr(cmd, 'storageUrl', None),
+                    artifact_relative_path,
+                    required_capacity,
+                    storage_subdir,
+                    register_cache,
+                    _get_cmd_attr(cmd, 'contentVersion', None))
+            else:
+                entry = virtiofs_source.prepare_host_model_cache(source_root, source_path, required_capacity)
+            rsp.cacheEntry = entry
+            if isinstance(entry, dict):
+                rsp.prepareDecision = entry.get('prepareDecision')
+                rsp.prepareReason = entry.get('prepareReason')
+            rsp.success = True
+            logger.info(
+                "[host-model-cache-prepare] path=%s size=%s decision=%s reason=%s "
+                "contentVersion=%s actions=%s" % (
+                    entry.get('sourcePath') if isinstance(entry, dict) else None,
+                    entry.get('sizeBytes') if isinstance(entry, dict) else None,
+                    entry.get('prepareDecision') if isinstance(entry, dict) else None,
+                    entry.get('prepareReason') if isinstance(entry, dict) else None,
+                    entry.get('contentVersion') if isinstance(entry, dict) else None,
+                    entry.get('prepareActions') if isinstance(entry, dict) else None,
+                ))
+        except Exception as e:
+            phase, code = _classify_host_model_cache_failure(e)
+            rsp.failurePhase = phase
+            rsp.failureCode = code
+            rsp.failureMessage = str(e)
+            rsp.error = str(e)
+            logger.warning(
+                "[host-model-cache-prepare] failed phase=%s code=%s path=%s error=%s" % (
+                    phase, code, _get_cmd_attr(cmd, 'sourcePath', None), str(e)))
+        return jsonobject.dumps(rsp)
+
+    @kvmagent.replyerror
+    def cleanup_host_model_cache(self, req):
+        cmd = jsonobject.loads(req[http.REQUEST_BODY])
+        rsp = jsonobject.JsonObject()
+        rsp.success = False
+        try:
+            source_root = _get_cmd_attr(cmd, 'sourceRoot', _get_cmd_attr(cmd, 'sourceRootPath', None))
+            source_path = _get_cmd_attr(cmd, 'sourcePath', None)
+            result = virtiofs_source.cleanup_host_model_cache(source_root, source_path)
+            rsp.sourcePath = result.get('sourcePath')
+            rsp.bytesReclaimed = result.get('bytesReclaimed')
+            rsp.success = True
+            logger.info("Cleaned host model cache path[%s], bytesReclaimed=%s" % (
+                rsp.sourcePath, rsp.bytesReclaimed))
+        except Exception as e:
+            phase, code = _classify_host_model_cache_failure(e)
+            rsp.failurePhase = phase
+            rsp.failureCode = code
+            rsp.failureMessage = str(e)
+            rsp.error = str(e)
+            logger.warning("Failed to cleanup host model cache, phase=%s code=%s error=%s" % (
+                phase, code, str(e)))
         return jsonobject.dumps(rsp)
