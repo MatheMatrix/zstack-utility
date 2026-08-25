@@ -9,7 +9,13 @@ import time
 import types
 import unittest
 
+try:
+    from unittest import mock
+except ImportError:
+    import mock
+
 from kvmagent import external_plugin_restart_fence
+from zstacklib.utils import restart_fence
 from zstacklib.utils.restart_fence import AgentRestartFence
 
 
@@ -120,6 +126,35 @@ class AgentRestartFenceTest(unittest.TestCase):
         self.assertEqual("BUSY", snapshot["state"])
         self.assertTrue(snapshot["acceptingNewRequests"])
         AgentRestartFence.leave_request()
+
+    def test_wall_clock_jump_does_not_expire_drain_deadline(self):
+        self.assertTrue(AgentRestartFence.enter_request())
+        release_request = threading.Timer(
+            0.02, AgentRestartFence.leave_request)
+        release_request.daemon = True
+        release_request.start()
+        wall_clock_calls = []
+
+        def jumped_wall_clock():
+            wall_clock_calls.append(True)
+            return 1000.0 if len(wall_clock_calls) == 1 else 1100.0
+
+        with mock.patch.object(
+                restart_fence.time, "time", side_effect=jumped_wall_clock):
+            acquired, snapshot = AgentRestartFence.acquire(30, 60)
+
+        self.assertTrue(acquired)
+        self.assertEqual("FENCED", snapshot["state"])
+
+    def test_monotonic_clock_falls_back_to_os_elapsed_time(self):
+        with mock.patch.object(
+                restart_fence.time, "monotonic", None, create=True), \
+             mock.patch.object(
+                 restart_fence.os, "times",
+                 return_value=(0, 0, 0, 0, 123.5)):
+            current = restart_fence.monotonic_time()
+
+        self.assertEqual(123.5, current)
 
     def test_lease_releases_fence_when_restart_does_not_happen(self):
         acquired, unused_snapshot = AgentRestartFence.acquire(0.02, 0.05)

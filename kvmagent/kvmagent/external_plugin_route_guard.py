@@ -29,3 +29,20 @@ def guard_mutation(handler, allowed, compatibility_state):
             }, sort_keys=True)
         return handler(*args, **kwargs)
     return guarded
+
+
+def guard_restart_fence(handler, enter_request, leave_request):
+    """Track a synchronous mutation in the Agent restart fence."""
+    @functools.wraps(handler)
+    def guarded(*args, **kwargs):
+        if not enter_request():
+            return json.dumps({
+                "success": False,
+                "errorCode": "HOST_OPERATION_IN_PROGRESS",
+                "error": "KVM Agent restart fence is active",
+            }, sort_keys=True)
+        try:
+            return handler(*args, **kwargs)
+        finally:
+            leave_request()
+    return guarded

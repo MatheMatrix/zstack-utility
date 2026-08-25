@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-from kvmagent.external_plugin_route_guard import guard_mutation
+from kvmagent.external_plugin_route_guard import (
+    guard_mutation,
+    guard_restart_fence,
+)
+from zstacklib.utils.restart_fence import AgentRestartFence
 
 
 class ExternalPluginContext(object):
@@ -18,14 +22,20 @@ class ExternalPluginContext(object):
     def set_capabilities(self, capabilities):
         self._record.capabilities = capabilities
 
-    def _guard(self, handler, mutable):
+    def _guard(self, kind, handler, mutable):
         if not mutable:
             return handler
 
-        return guard_mutation(
+        guarded = guard_mutation(
             handler,
             lambda: self._registry.can_mutate(self._record.plugin_id),
             lambda: self._record.compatibility_state)
+        if kind == "sync":
+            guarded = guard_restart_fence(
+                guarded,
+                AgentRestartFence.enter_request,
+                AgentRestartFence.leave_request)
+        return guarded
 
     def _publish(self, kind, path, handler):
         try:
@@ -43,7 +53,7 @@ class ExternalPluginContext(object):
                     self._record.context is not self):
                 raise RuntimeError("external plugin route registration was cancelled")
             path = self._registry.claim_route(self._record.plugin_id, path)
-            guarded = self._guard(handler, mutable)
+            guarded = self._guard(kind, handler, mutable)
             try:
                 if self._active:
                     self._publish(kind, path, guarded)

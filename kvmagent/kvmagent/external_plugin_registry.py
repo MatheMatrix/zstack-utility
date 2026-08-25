@@ -37,12 +37,14 @@ from kvmagent.external_plugin_restart_fence import (
     restart_fence_handler,
     status_handler as host_operations_status_handler,
 )
+from zstacklib.utils.restart_fence import monotonic_time
 
 
 logger = logging.getLogger(__name__)
 DEFAULT_REGISTRY_ROOT = "/etc/zstack/kvmagent/plugins.d"
 DEFAULT_MANAGED_ROOT = "/var/lib/zstack/zlr"
 DEFAULT_STATUS_RECONCILE_DEADLINE = 1
+DEFAULT_STATUS_RECONCILE_INTERVAL = 5
 SUPPORTED_PLUGIN_APIS = frozenset((1,))
 try:
     _string_types = (basestring,)
@@ -142,11 +144,14 @@ class ExternalPluginRegistry(object):
         self.protected_namespaces = set(protected_namespaces or (
             "kvmagent", "zstacklib", "libvirt", "yaml", "requests"))
         self.sleep = sleep
-        self.monotonic = monotonic
+        self.monotonic = monotonic or monotonic_time
         self.utcnow = utcnow or datetime.datetime.utcnow
         self.stop_timeout_seconds = max(0, float(stop_timeout_seconds))
         self.status_reconcile_deadline = max(
             0, float(status_reconcile_deadline))
+        self.status_reconcile_interval = DEFAULT_STATUS_RECONCILE_INTERVAL
+        self._last_status_reconcile_at = None
+        self._status_reconcile_lock = threading.Lock()
         self.records = []
         self._by_id = {}
         self._route_owners = {STATUS_PATH: "kvmagent"}
@@ -430,7 +435,7 @@ class ExternalPluginRegistry(object):
     def _on_wait(self, record, retry_count, deadline, detail):
         wait_deadline = record.dependency.get("waitDeadline")
         if wait_deadline is None:
-            monotonic = self.monotonic or getattr(time, "monotonic", time.time)
+            monotonic = self.monotonic or monotonic_time
             remaining = max(0, deadline - monotonic())
             wait_deadline = (self.utcnow() + datetime.timedelta(
                 seconds=remaining)).replace(
@@ -684,15 +689,28 @@ class ExternalPluginRegistry(object):
 
     def status_response(self, reconcile=True):
         if reconcile:
-            monotonic = self.monotonic or getattr(time, "monotonic", time.time)
+            monotonic = self.monotonic or monotonic_time
             deadline = monotonic() + self.status_reconcile_deadline
             for record in self.records:
                 self._reconcile_record(record, deadline)
         return status_envelope(self.records, _utc_now())
 
+    def _status_response_for_poll(self):
+        with self._status_reconcile_lock:
+            monotonic = self.monotonic or monotonic_time
+            now = monotonic()
+            reconcile = (
+                self._last_status_reconcile_at is None or
+                now - self._last_status_reconcile_at >=
+                self.status_reconcile_interval)
+            response = self.status_response(reconcile=reconcile)
+            if reconcile:
+                self._last_status_reconcile_at = now
+            return response
+
     def register_status_endpoint(self):
         def status_handler(unused_request):
-            return json.dumps(self.status_response(reconcile=True), sort_keys=True)
+            return json.dumps(self._status_response_for_poll(), sort_keys=True)
         self.http_server.register_sync_uri(STATUS_PATH, status_handler)
         self.http_server.register_sync_uri(
             HOST_OPERATIONS_STATUS_PATH, host_operations_status_handler)

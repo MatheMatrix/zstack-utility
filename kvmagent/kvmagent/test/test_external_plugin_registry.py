@@ -12,8 +12,15 @@ import threading
 import time
 import unittest
 
+try:
+    from unittest import mock
+except ImportError:
+    import mock
+
 from kvmagent import external_plugin_manifest
 from kvmagent import external_plugin_registry
+from zstacklib.utils import restart_fence
+from zstacklib.utils.restart_fence import AgentRestartFence
 
 
 VERSIONS = {
@@ -104,6 +111,7 @@ def _write(path, content):
 
 class ExternalPluginRegistryTest(unittest.TestCase):
     def setUp(self):
+        AgentRestartFence.reset_for_test()
         self.root = tempfile.mkdtemp()
         self.registry_root = os.path.join(self.root, "registry")
         self.managed_root = os.path.join(self.root, "managed")
@@ -112,6 +120,7 @@ class ExternalPluginRegistryTest(unittest.TestCase):
         self.http = _HttpServer()
 
     def tearDown(self):
+        AgentRestartFence.reset_for_test()
         for name in list(sys.modules):
             if name == "sample_plugin" or name.startswith("sample_plugin."):
                 sys.modules.pop(name, None)
@@ -426,6 +435,123 @@ class ExternalPluginRegistryTest(unittest.TestCase):
         self.assertEqual(0, collector.collect_count)
         self.assertTrue(status["transitioning"])
 
+    def test_status_endpoint_reuses_reconciliation_until_interval_expires(self):
+        clock = [100.0]
+        collector = _Collector()
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        registry = self._registry(
+            runtime_collector=collector, monotonic=lambda: clock[0])
+        registry.status_reconcile_interval = 5
+        registry.discover()
+        registry.load_and_start()
+        registry.register_status_endpoint()
+        collector.collect_count = 0
+
+        first = json.loads(
+            self.http.sync[external_plugin_registry.STATUS_PATH]({}))
+        second = json.loads(
+            self.http.sync[external_plugin_registry.STATUS_PATH]({}))
+
+        self.assertTrue(first["success"])
+        self.assertTrue(second["success"])
+        self.assertEqual(1, collector.collect_count)
+
+        clock[0] += 5
+        json.loads(self.http.sync[external_plugin_registry.STATUS_PATH]({}))
+        self.assertEqual(2, collector.collect_count)
+
+    def test_status_poll_python2_fallback_ignores_backward_wall_clock_jump(self):
+        registry = self._registry()
+        registry.status_reconcile_interval = 5
+        reconciliations = []
+        registry.status_response = lambda reconcile=True: (
+            reconciliations.append(reconcile) or {})
+        original_monotonic = getattr(time, "monotonic", None)
+
+        try:
+            if original_monotonic is not None:
+                delattr(time, "monotonic")
+            with mock.patch.object(time, "time", side_effect=(100.0, 90.0)), \
+                 mock.patch.object(
+                     restart_fence.os, "times",
+                     side_effect=((0, 0, 0, 0, 100.0),
+                                  (0, 0, 0, 0, 105.0))):
+                registry._status_response_for_poll()
+                registry._status_response_for_poll()
+        finally:
+            if original_monotonic is not None:
+                time.monotonic = original_monotonic
+
+        self.assertEqual([True, True], reconciliations)
+
+    def test_status_reconciliation_uses_restart_fence_monotonic_clock(self):
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+
+        with mock.patch.object(
+                external_plugin_registry, "monotonic_time",
+                return_value=100.0) as clock:
+            registry = self._registry()
+            registry.discover()
+            registry.load_and_start()
+            status = registry.status_response(reconcile=True)["plugins"][0]
+
+        self.assertIs(clock, registry.monotonic)
+        self.assertEqual("COMPATIBLE", status["compatibilityState"])
+        self.assertFalse(status["stale"])
+
+    def test_concurrent_status_polls_share_one_reconciliation(self):
+        class BlockingCollector(_Collector):
+            def __init__(self):
+                super(BlockingCollector, self).__init__()
+                self.block = False
+                self.first_probe_entered = threading.Event()
+                self.second_probe_entered = threading.Event()
+                self.release_probe = threading.Event()
+
+            def collect(self):
+                self.collect_count += 1
+                if self.block:
+                    if self.collect_count == 1:
+                        self.first_probe_entered.set()
+                    elif self.collect_count == 2:
+                        self.second_probe_entered.set()
+                    self.release_probe.wait(1)
+                return dict(self.versions)
+
+        collector = BlockingCollector()
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        registry = self._registry(runtime_collector=collector)
+        registry.discover()
+        registry.load_and_start()
+        registry.register_status_endpoint()
+        collector.collect_count = 0
+        collector.block = True
+        responses = []
+        status_handler = self.http.sync[external_plugin_registry.STATUS_PATH]
+        first = threading.Thread(target=lambda: responses.append(
+            json.loads(status_handler({}))))
+        second = threading.Thread(target=lambda: responses.append(
+            json.loads(status_handler({}))))
+
+        first.start()
+        self.assertTrue(collector.first_probe_entered.wait(1))
+        second.start()
+        try:
+            self.assertFalse(collector.second_probe_entered.wait(0.05))
+            self.assertEqual(1, collector.collect_count)
+        finally:
+            collector.release_probe.set()
+            first.join(1)
+            second.join(1)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(2, len(responses))
+        self.assertTrue(all(response["success"] for response in responses))
+
     def test_runtime_reconciliation_fences_mutations_but_keeps_read_only_route(self):
         release = self._release()
         self._register("sample", "sample-plugin", release, "sample_plugin")
@@ -443,6 +569,103 @@ class ExternalPluginRegistryTest(unittest.TestCase):
         self.assertFalse(fenced["success"])
         self.assertEqual("PLUGIN_RUNTIME_INCOMPATIBLE", fenced["errorCode"])
         self.assertEqual("{}", self.http.sync["/sample/status"]({}))
+
+    def test_restart_fence_rejects_new_mutable_sync_route_request(self):
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        registry = self._registry()
+        registry.discover()
+        registry.load_and_start()
+        context = registry.records[0].instance.context
+        context.register_sync_uri(
+            "/sample/mutate-sync", lambda req: "changed", mutable=True)
+        acquired, unused_snapshot = AgentRestartFence.acquire(0.1, 1)
+        self.assertTrue(acquired)
+
+        raw_response = self.http.sync["/sample/mutate-sync"]({})
+        self.assertNotEqual("changed", raw_response)
+        response = json.loads(raw_response)
+
+        self.assertFalse(response["success"])
+        self.assertEqual("HOST_OPERATION_IN_PROGRESS", response["errorCode"])
+
+    def test_restart_fence_drains_inflight_mutable_sync_route_request(self):
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        registry = self._registry()
+        registry.discover()
+        registry.load_and_start()
+        context = registry.records[0].instance.context
+        entered = threading.Event()
+        release_handler = threading.Event()
+
+        def mutate(unused_request):
+            entered.set()
+            release_handler.wait(1)
+            return "changed"
+
+        context.register_sync_uri("/sample/mutate-sync", mutate, mutable=True)
+        handler_worker = threading.Thread(
+            target=lambda: self.http.sync["/sample/mutate-sync"]({}))
+        handler_worker.start()
+        self.assertTrue(entered.wait(1))
+        acquire_result = []
+        acquire_worker = threading.Thread(
+            target=lambda: acquire_result.append(
+                AgentRestartFence.acquire(0.5, 1)))
+        acquire_worker.start()
+        try:
+            deadline = time.time() + 1
+            while AgentRestartFence.snapshot()["state"] != "FENCED":
+                self.assertLess(time.time(), deadline)
+                time.sleep(0.01)
+
+            self.assertEqual(
+                1, AgentRestartFence.snapshot()["activeRequestCount"])
+            self.assertTrue(acquire_worker.is_alive())
+        finally:
+            release_handler.set()
+            handler_worker.join(1)
+            acquire_worker.join(1)
+
+        self.assertFalse(handler_worker.is_alive())
+        self.assertFalse(acquire_worker.is_alive())
+        self.assertTrue(acquire_result[0][0])
+
+    def test_mutable_async_route_leaves_restart_counting_to_http_layer(self):
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        registry = self._registry()
+        registry.discover()
+        registry.load_and_start()
+        context = registry.records[0].instance.context
+        context.register_async_uri(
+            "/sample/mutate-async", lambda req: "changed", mutable=True)
+
+        with mock.patch.object(
+                AgentRestartFence, "enter_request",
+                wraps=AgentRestartFence.enter_request) as enter_request:
+            response = self.http.async_["/sample/mutate-async"]({})
+
+        self.assertEqual("changed", response)
+        enter_request.assert_not_called()
+        self.assertEqual(
+            0, AgentRestartFence.snapshot()["activeRequestCount"])
+
+    def test_read_only_sync_route_is_not_counted_or_blocked_by_restart_fence(self):
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        registry = self._registry()
+        registry.discover()
+        registry.load_and_start()
+        acquired, unused_snapshot = AgentRestartFence.acquire(0.1, 1)
+        self.assertTrue(acquired)
+
+        response = self.http.sync["/sample/status"]({})
+
+        self.assertEqual("{}", response)
+        self.assertEqual(
+            0, AgentRestartFence.snapshot()["activeRequestCount"])
 
     def test_next_start_query_failure_cannot_mask_live_incompatibility(self):
         release = self._release()

@@ -1,8 +1,19 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
+import os
 import threading
 import time
+
+
+def monotonic_time():
+    monotonic = getattr(time, 'monotonic', None)
+    if monotonic is not None:
+        return monotonic()
+    # Python 2 has no time.monotonic().  KVM Agent runs on Unix, where the
+    # elapsed field from os.times() advances independently of wall-clock
+    # adjustments.
+    return os.times()[4]
 
 
 class AgentRestartFence(object):
@@ -44,7 +55,7 @@ class AgentRestartFence(object):
 
     @classmethod
     def acquire(cls, drain_timeout_seconds, lease_seconds):
-        deadline = time.time() + drain_timeout_seconds
+        deadline = monotonic_time() + drain_timeout_seconds
         with cls._condition:
             if cls._fenced:
                 if cls._active_requests:
@@ -59,7 +70,7 @@ class AgentRestartFence(object):
                 generation = cls._generation
 
             while cls._active_requests:
-                remaining = deadline - time.time()
+                remaining = deadline - monotonic_time()
                 if remaining <= 0:
                     cls._fenced = False
                     cls._notify_waiters()
