@@ -69,16 +69,20 @@ class Test(unittest.TestCase):
                 self.daemon = False
                 self.cancelled = False
                 self.start_called = False
+                self.worker = None
                 timers.append(self)
 
             def start(self):
                 self.start_called = True
-                worker = threading.Thread(target=self.function)
-                worker.daemon = True
-                worker.start()
+                self.worker = threading.Thread(target=self.function)
+                self.worker.daemon = True
+                self.worker.start()
 
             def cancel(self):
                 self.cancelled = True
+
+            def join(self):
+                self.worker.join()
 
         class StuckProcess(object):
             def __init__(self):
@@ -90,6 +94,9 @@ class Test(unittest.TestCase):
                 if not self.kill_event.wait(1):
                     raise AssertionError("communicate returned before timeout killed the process")
                 return b'', b''
+
+            def poll(self):
+                return self.returncode
 
             def kill(self):
                 self.killed = True
@@ -109,6 +116,87 @@ class Test(unittest.TestCase):
         self.assertEqual(2.0, timers[0].delay)
         self.assertTrue(timers[0].start_called)
         self.assertTrue(timers[0].cancelled)
+
+    def test_completed_process_is_not_marked_timed_out_by_late_callback(self):
+        class LateTimer(object):
+            def __init__(self, unused_delay, function):
+                self.function = function
+                self.daemon = False
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                # Model a timer callback that has already been dispatched and
+                # races with cancellation after communicate() completed.
+                self.function()
+
+        class CompletedProcess(object):
+            def __init__(self):
+                self.returncode = None
+                self.kill_called = False
+
+            def communicate(self):
+                self.returncode = 0
+                return b'complete', b''
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.kill_called = True
+                raise OSError("process already exited")
+
+        process = CompletedProcess()
+        with mock.patch.object(qmp.threading, "Timer", LateTimer):
+            output, error, timed_out = qmp._communicate_with_timeout(
+                process, 2)
+
+        self.assertEqual(b'complete', output)
+        self.assertEqual(b'', error)
+        self.assertFalse(timed_out)
+        self.assertFalse(process.kill_called)
+
+    def test_process_exiting_between_poll_and_kill_is_not_marked_timed_out(self):
+        class LateTimer(object):
+            def __init__(self, unused_delay, function):
+                self.function = function
+                self.daemon = False
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                self.function()
+
+        class RacingProcess(object):
+            def __init__(self):
+                self.returncode = None
+                self.kill_called = False
+
+            def communicate(self):
+                return b'complete', b''
+
+            def poll(self):
+                # The process exits normally immediately after poll observes
+                # it as running, before the timeout callback can kill it.
+                self.returncode = 0
+                return None
+
+            def kill(self):
+                self.kill_called = True
+                raise OSError("process already exited")
+
+        process = RacingProcess()
+        with mock.patch.object(qmp.threading, "Timer", LateTimer):
+            output, error, timed_out = qmp._communicate_with_timeout(
+                process, 2)
+
+        self.assertEqual(b'complete', output)
+        self.assertEqual(b'', error)
+        self.assertFalse(timed_out)
+        self.assertTrue(process.kill_called)
+        self.assertEqual(0, process.returncode)
 
     def test_execute_qmp_rejects_invalid_timeout_before_spawning_virsh(self):
         invalid_timeouts = [0, -1, "invalid", float("nan"), float("inf")]

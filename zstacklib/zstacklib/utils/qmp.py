@@ -2,6 +2,7 @@ import errno
 import json
 import math
 import re
+import signal
 import socket
 import sys
 import threading
@@ -111,16 +112,17 @@ def _communicate_with_timeout(process, timeout):
 
     timeout = _normalize_command_timeout(timeout)
 
-    state = {"expired": False}
+    state = {"kill_sent": False}
 
     def kill_on_timeout():
-        state["expired"] = True
+        if process.poll() is not None:
+            return
         try:
             process.kill()
         except OSError:
-            # The process may have exited between communicate() returning and
-            # timer cancellation.  In that race there is nothing left to kill.
-            pass
+            # The process may have exited between poll() and kill().
+            return
+        state["kill_sent"] = True
 
     timer = None
     try:
@@ -143,7 +145,14 @@ def _communicate_with_timeout(process, timeout):
         output, error = process.communicate()
     finally:
         timer.cancel()
-    return output, error, state["expired"]
+        # cancel() cannot stop a callback that has already started.  Wait for
+        # it to finish before inspecting state and the reaped return code.
+        join = getattr(timer, "join", None)
+        if join is not None:
+            join()
+    sigkill = getattr(signal, "SIGKILL", 9)
+    timed_out = state["kill_sent"] and process.returncode == -sigkill
+    return output, error, timed_out
 
 
 @bash.in_bash
