@@ -1206,6 +1206,35 @@ class ExternalPluginRegistryTest(unittest.TestCase):
         finally:
             release_stop.set()
 
+    def test_plugin_stop_timeout_uses_monotonic_clock_when_wall_clock_moves_backward(self):
+        stop_entered = threading.Event()
+        release_stop = threading.Event()
+
+        class BlockingPlugin(object):
+            def stop(self):
+                stop_entered.set()
+                release_stop.wait(0.4)
+
+        monotonic_values = iter((10.0, 10.01))
+        registry = self._registry(
+            stop_timeout_seconds=0.05,
+            monotonic=lambda: next(monotonic_values))
+
+        started_at = time.time()
+        try:
+            with mock.patch.object(
+                    external_plugin_registry.time, "time",
+                    side_effect=(100.0, 99.0)):
+                failures = registry._stop_instances_bounded(
+                    [BlockingPlugin()])
+            elapsed = time.time() - started_at
+        finally:
+            release_stop.set()
+
+        self.assertTrue(stop_entered.wait(1))
+        self.assertLess(elapsed, 0.25)
+        self.assertEqual("PLUGIN_STOP_TIMEOUT", failures[0]["code"])
+
     def test_partial_routes_are_removed_when_configure_fails(self):
         release = self._release()
         self._replace_plugin_source(

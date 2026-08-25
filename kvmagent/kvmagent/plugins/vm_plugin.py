@@ -2408,41 +2408,6 @@ def _block_struct_contains_volume_uuid(obj, volume_uuid):
     return False
 
 
-# Cached capability flag for ``x-debug-query-block-graph``.
-# This is an experimental (``x-`` prefix) QEMU command available since
-# QEMU 4.0+ for inspecting the internal block driver graph.  It may be
-# removed or renamed in future QEMU releases without notice.
-#
-# The cache avoids repeated QMP round-trips on QEMU versions that do not
-# support the command.  It is a module-global dict keyed by vm_uuid so
-# each running domain is probed at most once.  A ``True`` value means the
-# command succeeded at least once; ``False`` means it returned an error
-# (typically ``CommandNotFound``).  Entries are *not* evicted -- the dict
-# lives for the lifetime of the kvmagent process, and the number of
-# concurrent VMs on a single host is small enough that this is acceptable.
-_BLOCK_GRAPH_CAPABILITY = {}  # type: dict[str, bool]
-
-
-def _block_graph_available(vm_uuid):
-    """Return True if x-debug-query-block-graph is supported on *vm_uuid*.
-
-    On the first call per VM, issues a probe QMP command and caches the
-    result.  Subsequent calls return the cached value without network I/O.
-    """
-    cached = _BLOCK_GRAPH_CAPABILITY.get(vm_uuid)
-    if cached is not None:
-        return cached
-    try:
-        result = qmp.execute_qmp_command(vm_uuid, "x-debug-query-block-graph", raise_exception=False)
-        available = result is not None
-    except Exception:
-        available = False
-    _BLOCK_GRAPH_CAPABILITY[vm_uuid] = available
-    if not available:
-        logger.debug("x-debug-query-block-graph not available on vm %s (QEMU may not support it)" % vm_uuid)
-    return available
-
-
 def _find_root_block_node(vm_uuid, start_node_name):
     """
     Use x-debug-query-block-graph to walk upwards from the given node name
@@ -2450,21 +2415,21 @@ def _find_root_block_node(vm_uuid, start_node_name):
 
     **Note**: ``x-debug-query-block-graph`` is an experimental QEMU command
     (``x-`` prefix = unstable API, available since QEMU 4.0).  The
-    capability is probed and cached per VM at first use; if the command is
-    unavailable this function returns ``start_node_name`` immediately.
+    command is queried once for each resolution; if it is unavailable this
+    function returns ``start_node_name`` immediately.  Failures are not
+    cached because a VM UUID may be reused and transport errors are transient.
 
     If the graph is unavailable or cannot be parsed, falls back to
     ``start_node_name``.
     """
     if not vm_uuid or not start_node_name:
         return start_node_name
-    if not _block_graph_available(vm_uuid):
-        return start_node_name
     try:
         graph = qmp.execute_qmp_command(vm_uuid, "x-debug-query-block-graph", raise_exception=False)
     except Exception:
         return start_node_name
     if not graph or not isinstance(graph, dict):
+        logger.debug("x-debug-query-block-graph not available on vm %s (QEMU may not support it)" % vm_uuid)
         return start_node_name
 
     nodes_list = graph.get("nodes")

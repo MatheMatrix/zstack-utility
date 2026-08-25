@@ -308,6 +308,8 @@ def _next_process_versions(command_runner=None, timeout_seconds=None):
         output = _command_output(
             [sys.executable, "-c", script], command_runner, timeout_seconds)
         result = json.loads(output)
+    except RuntimeQueryError:
+        raise
     except Exception as error:
         raise RuntimeQueryError(
             "next-start Python package versions are unavailable: %s" % error,
@@ -334,6 +336,8 @@ def _next_hypervisor_versions(command_runner=None, timeout_seconds=None):
     try:
         virsh = _command_output(
             ["virsh", "version"], command_runner, timeout_seconds)
+    except RuntimeQueryError:
+        raise
     except Exception as error:
         raise RuntimeQueryError(
             "next-start libvirt version is unavailable: %s" % error,
@@ -352,6 +356,8 @@ def _next_hypervisor_versions(command_runner=None, timeout_seconds=None):
     try:
         qemu_output = _command_output(
             [qemu_binary, "--version"], command_runner, timeout_seconds)
+    except RuntimeQueryError:
+        raise
     except Exception as error:
         raise RuntimeQueryError(
             "next-start QEMU version is unavailable: %s" % error,

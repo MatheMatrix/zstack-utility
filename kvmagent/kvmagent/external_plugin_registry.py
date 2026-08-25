@@ -369,9 +369,10 @@ class ExternalPluginRegistry(object):
             worker.start()
             workers.append((worker, outcome))
 
-        deadline = time.time() + self.stop_timeout_seconds
+        monotonic = self.monotonic or monotonic_time
+        deadline = monotonic() + self.stop_timeout_seconds
         for worker, unused_outcome in workers:
-            remaining = deadline - time.time()
+            remaining = deadline - monotonic()
             if remaining > 0:
                 worker.join(remaining)
 

@@ -244,13 +244,18 @@ def execute_qmp_command_raw(domain_id, command_json, raise_exception=True,
     ``name`` parameter).
 
     :param domain_id: VM UUID / libvirt domain ID
-    :param command_json: complete QMP command as JSON str (not bytes)
+    :param command_json: complete QMP command as JSON text or UTF-8 bytes
     :param raise_exception: raise on error if True (default True)
     :param command_timeout: subprocess deadline in seconds, or None
     :return: the 'return' value from QMP response, or None on suppressed error
     """
-    if not isinstance(command_json, str):
-        command_json = command_json.decode("utf-8") if hasattr(command_json, "decode") else str(command_json)
+    if sys.version_info[0] >= 3 and isinstance(command_json, bytes):
+        command_json = command_json.decode("utf-8")
+    elif sys.version_info[0] < 3:
+        if not isinstance(command_json, (str, unicode)):
+            command_json = str(command_json)
+    elif not isinstance(command_json, str):
+        command_json = str(command_json)
     if command_timeout is None:
         return _execute_qmp_command(
             domain_id, command_json, raise_exception=raise_exception)

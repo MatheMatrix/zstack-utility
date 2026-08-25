@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import unittest
 import re
 import json
@@ -28,6 +29,12 @@ test_qmp_command2 = '{"execute": "object-add", "arguments":{ "qom-type": "filter
 
 
 class Test(unittest.TestCase):
+    def setUp(self):
+        self.qemu_version = mock.patch.object(
+            qmp, "QEMU_VERSION", "6.2.0")
+        self.qemu_version.start()
+        self.addCleanup(self.qemu_version.stop)
+
     def test_function_is_bad_vm_root_volume(self):
         def remove_command_props_parameter(cmd):
             if re.match(r'.*object-add.*arguments.*props.*', cmd):
@@ -239,6 +246,25 @@ class Test(unittest.TestCase):
         command = json.loads(execute.call_args[0][1].decode("utf-8"))
         self.assertEqual({"sample-value": 7}, command["arguments"])
         self.assertEqual(3, execute.call_args[1]["command_timeout"])
+
+    def test_execute_qmp_raw_accepts_utf8_bytes(self):
+        command = u'{"execute":"human-monitor-command","arguments":{"command-line":"info 测试"}}'
+
+        with mock.patch.object(
+                qmp, "_execute_qmp_command", return_value={}) as execute:
+            qmp.execute_qmp_command_raw(
+                "vm-uuid", command.encode("utf-8"))
+
+        self.assertEqual(command, execute.call_args[0][1])
+
+    def test_execute_qmp_raw_preserves_unicode_text(self):
+        command = u'{"execute":"human-monitor-command","arguments":{"command-line":"info 测试"}}'
+
+        with mock.patch.object(
+                qmp, "_execute_qmp_command", return_value={}) as execute:
+            qmp.execute_qmp_command_raw("vm-uuid", command)
+
+        self.assertIs(command, execute.call_args[0][1])
 
 
 if __name__ == "__main__":

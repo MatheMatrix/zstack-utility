@@ -225,6 +225,59 @@ class ExternalPluginRuntimeTest(unittest.TestCase):
                 timeout_seconds=0.05)
         self.assertLess(time.time() - started, 0.25)
 
+    def test_next_process_probe_preserves_runtime_query_error(self):
+        expected = runtime.RuntimeQueryError(
+            "package probe timed out", transient=True,
+            reason="DEPENDENCY_NOT_READY")
+
+        def command_runner(unused_command, stderr=None):
+            raise expected
+
+        with self.assertRaises(runtime.RuntimeQueryError) as raised:
+            runtime._next_process_versions(command_runner=command_runner)
+
+        self.assertIs(expected, raised.exception)
+        self.assertEqual("DEPENDENCY_NOT_READY", raised.exception.reason)
+        self.assertTrue(raised.exception.transient)
+
+    def test_next_virsh_probe_preserves_runtime_query_error(self):
+        expected = runtime.RuntimeQueryError(
+            "virsh probe timed out", transient=True,
+            reason="DEPENDENCY_NOT_READY")
+
+        def command_runner(unused_command, stderr=None):
+            raise expected
+
+        with self.assertRaises(runtime.RuntimeQueryError) as raised:
+            runtime._next_hypervisor_versions(command_runner=command_runner)
+
+        self.assertIs(expected, raised.exception)
+        self.assertEqual("DEPENDENCY_NOT_READY", raised.exception.reason)
+        self.assertTrue(raised.exception.transient)
+
+    def test_next_qemu_probe_preserves_runtime_query_error(self):
+        expected = runtime.RuntimeQueryError(
+            "qemu probe timed out", transient=True,
+            reason="DEPENDENCY_NOT_READY")
+
+        def command_runner(command, stderr=None):
+            if command[0] == "virsh":
+                return b"Using library: libvirt 9.0.0\n"
+            raise expected
+
+        original_find = runtime._find_executable
+        runtime._find_executable = lambda unused: "qemu-test"
+        try:
+            with self.assertRaises(runtime.RuntimeQueryError) as raised:
+                runtime._next_hypervisor_versions(
+                    command_runner=command_runner)
+        finally:
+            runtime._find_executable = original_find
+
+        self.assertIs(expected, raised.exception)
+        self.assertEqual("DEPENDENCY_NOT_READY", raised.exception.reason)
+        self.assertTrue(raised.exception.transient)
+
     def test_permanent_error_after_block_is_still_bounded_by_deadline(self):
         calls = []
 

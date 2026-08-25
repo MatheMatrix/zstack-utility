@@ -31,10 +31,13 @@ class _HttpError(Exception):
 
 
 def _request(remote_ip="127.0.0.1", method="POST", body=None):
+    body = body or "{}"
+    if isinstance(body, bytes):
+        body = body.decode("utf-8")
     return _Namespace(
         remote=_Namespace(ip=remote_ip),
         method=method,
-        body=_Namespace(fp=io.StringIO(body or "{}")))
+        body=_Namespace(fp=io.StringIO(body)))
 
 
 class AgentRestartFenceTest(unittest.TestCase):
@@ -64,6 +67,12 @@ class AgentRestartFenceTest(unittest.TestCase):
                     sys.modules.pop(name, None)
                 else:
                     sys.modules[name] = module
+
+    def test_request_helper_accepts_utf8_bytes_for_text_stream(self):
+        request = _request(body=b'{"operationId":"restart-1"}')
+
+        self.assertEqual(
+            '{"operationId":"restart-1"}', request.body.fp.read())
 
     def test_restart_endpoint_rejects_non_loopback_request(self):
         with self.assertRaises(_HttpError) as raised:
