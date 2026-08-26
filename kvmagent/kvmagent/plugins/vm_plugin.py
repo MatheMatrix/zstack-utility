@@ -12146,6 +12146,12 @@ host side snapshot files chian:
 
         return True, None
 
+    @linux.retry(times=5, sleep_time=1)
+    def _attach_usb_by_libvirt_with_retry(self, cmd):
+        attached, error = self._attach_usb_by_libvirt(cmd)
+        if not attached:
+            raise RetryException(error)
+
     # deprecated
     def _attach_usb(self, cmd, bus):
         vm = get_vm_by_uuid(cmd.vmUuid)
@@ -12221,10 +12227,11 @@ host side snapshot files chian:
 
         self._detach_usb_by_libvirt(cmd)
         bus = int(cmd.usbVersion[0]) - 1
-        r, ex = self._attach_usb_by_libvirt(cmd)
-        if not r:
+        try:
+            self._attach_usb_by_libvirt_with_retry(cmd)
+        except RetryException as ex:
             rsp.success = False
-            rsp.error = ex
+            rsp.error = str(ex)
         return jsonobject.dumps(rsp)
 
     @kvmagent.replyerror
