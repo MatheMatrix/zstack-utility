@@ -240,6 +240,18 @@ class ExternalPluginRuntimeTest(unittest.TestCase):
         self.assertEqual("DEPENDENCY_NOT_READY", raised.exception.reason)
         self.assertTrue(raised.exception.transient)
 
+    def test_next_process_probe_rejects_non_object_json(self):
+        for payload in (b"[]", b"null", b'"versions"'):
+            def command_runner(unused_command, stderr=None,
+                               response=payload):
+                return response
+
+            with self.assertRaises(runtime.RuntimeQueryError) as raised:
+                runtime._next_process_versions(command_runner=command_runner)
+
+            self.assertEqual("RUNTIME_QUERY_INVALID", raised.exception.reason)
+            self.assertFalse(raised.exception.transient)
+
     def test_next_virsh_probe_preserves_runtime_query_error(self):
         expected = runtime.RuntimeQueryError(
             "virsh probe timed out", transient=True,

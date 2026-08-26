@@ -308,6 +308,10 @@ def _next_process_versions(command_runner=None, timeout_seconds=None):
         output = _command_output(
             [sys.executable, "-c", script], command_runner, timeout_seconds)
         result = json.loads(output)
+        if not isinstance(result, dict):
+            raise RuntimeQueryError(
+                "next-start Python package version response is not an object",
+                reason="RUNTIME_QUERY_INVALID")
     except RuntimeQueryError:
         raise
     except Exception as error:

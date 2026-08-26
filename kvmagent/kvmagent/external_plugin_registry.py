@@ -222,6 +222,11 @@ class ExternalPluginRegistry(object):
         digest.update("\0".join(str(value) for value in values).encode("utf-8"))
         digest.update(b"\0")
 
+    def _path_metadata_fingerprint(self, label, path):
+        digest = hashlib.sha256()
+        self._update_metadata_fingerprint(digest, label, path)
+        return digest.hexdigest()
+
     def _disk_metadata_fingerprint(self, registry_path, release_root):
         digest = hashlib.sha256()
         self._update_metadata_fingerprint(digest, "registry", registry_path)
@@ -262,6 +267,8 @@ class ExternalPluginRegistry(object):
         plugin_id = os.path.splitext(os.path.basename(path))[0]
         record = ExternalPluginRecord(plugin_id, path)
         try:
+            registry_fingerprint = self._path_metadata_fingerprint(
+                "registry", path)
             self._check_secure_regular_file(path, "plugin registry")
             parser_class = getattr(configparser, "SafeConfigParser",
                                    configparser.ConfigParser)
@@ -284,12 +291,22 @@ class ExternalPluginRegistry(object):
             record.plugin_id = plugin_id
             record.enabled = parser.getboolean(section, "enabled")
             if not record.enabled:
+                if registry_fingerprint != self._path_metadata_fingerprint(
+                        "registry", path):
+                    raise ManifestError(
+                        "plugin registry metadata changed during parsing")
                 record.state = "DISABLED"
                 return record
             release_root = parser.get(section, "release_root").strip()
             manifest_path = parser.get(section, "manifest").strip()
             resolved_release = self._resolve_managed_path(release_root, "release_root")
             resolved_manifest = self._resolve_managed_path(manifest_path, "manifest")
+            fingerprint_before = self._disk_metadata_fingerprint(
+                path, release_root)
+            if registry_fingerprint != self._path_metadata_fingerprint(
+                    "registry", path):
+                raise ManifestError(
+                    "plugin registry metadata changed during parsing")
             if not os.path.isdir(resolved_release):
                 raise ValueError("release_root is not a directory")
             self._check_release_tree(resolved_release)
@@ -311,8 +328,6 @@ class ExternalPluginRegistry(object):
                 raise ManifestError(
                     "unsupported external plugin API: %s" % manifest.plugin_api,
                     code="PLUGIN_API_UNSUPPORTED")
-            fingerprint_before = self._disk_metadata_fingerprint(
-                path, release_root)
             manifest.verify_content(resolved_release)
             fingerprint_after = self._disk_metadata_fingerprint(
                 path, release_root)
@@ -332,12 +347,16 @@ class ExternalPluginRegistry(object):
         return record
 
     def discover(self):
+        self._discovery_completed = False
         self.initialization_state = "DISCOVERING"
         try:
-            return self._discover_records()
-        finally:
-            self._discovery_completed = True
-            self.initialization_state = "LOADING"
+            records = self._discover_records()
+        except Exception:
+            self.initialization_state = "FAILED"
+            raise
+        self._discovery_completed = True
+        self.initialization_state = "LOADING"
+        return records
 
     def _discover_records(self):
         self.records = []
@@ -368,7 +387,9 @@ class ExternalPluginRegistry(object):
 
     def _validate_namespaces(self):
         namespaces = {}
-        loaded_top_levels = set(name.split(".", 1)[0] for name in sys.modules)
+        loaded_modules = sys.modules.copy()
+        loaded_top_levels = set(
+            name.split(".", 1)[0] for name in loaded_modules)
         for record in self.records:
             if not record.enabled or record.manifest is None:
                 continue
@@ -605,17 +626,30 @@ class ExternalPluginRegistry(object):
                  else "PLUGIN_START_FAILED"),
                 error, **self._cleanup_failure_details(cleanup))
 
+    def _verify_record_snapshot(self, record):
+        if (record.disk_fingerprint is None or not record.registry_path or
+                not record.release_root):
+            return
+        current = self._disk_metadata_fingerprint(
+            record.registry_path, record.release_root)
+        if current != record.disk_fingerprint:
+            raise ManifestError(
+                "plugin registry or release metadata changed before import")
+
     def load_and_start(self, config=None):
-        if not self._discovery_completed:
-            if self.records:
-                self._discovery_completed = True
-            else:
-                self.discover()
-        self.initialization_state = "LOADING"
         try:
-            return self._load_discovered(config)
-        finally:
-            self.initialization_state = "READY"
+            if not self._discovery_completed:
+                if self.records:
+                    self._discovery_completed = True
+                else:
+                    self.discover()
+            self.initialization_state = "LOADING"
+            records = self._load_discovered(config)
+        except Exception:
+            self.initialization_state = "FAILED"
+            raise
+        self.initialization_state = "READY"
+        return records
 
     def _load_discovered(self, config=None):
         for record in self.records:
@@ -645,7 +679,10 @@ class ExternalPluginRegistry(object):
                 record.failure = None
                 if self.is_stop_requested():
                     break
+                self._verify_record_snapshot(record)
                 self._import_record(record, config)
+            except ManifestError as error:
+                record.fail("PRE_IMPORT_VALIDATION", error.code, error)
             except CompatibilityError as error:
                 record.dependency["state"] = (
                     "UNAVAILABLE" if error.code == "PLUGIN_RUNTIME_VERSION_UNAVAILABLE"

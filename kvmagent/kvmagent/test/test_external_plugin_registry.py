@@ -266,6 +266,31 @@ class ExternalPluginRegistryTest(unittest.TestCase):
         self.assertEqual("PRE_IMPORT_VALIDATION", record.failure["stage"])
         self.assertEqual("PLUGIN_MANIFEST_MISMATCH", record.failure["code"])
 
+    def test_discovery_rejects_registry_replaced_during_manifest_load(self):
+        first = self._release(
+            "sample-plugin", "sample_plugin", "2.0.0")
+        second = self._release(
+            "sample-plugin", "sample_plugin_next", "3.0.0")
+        self._register(
+            "sample", "sample-plugin", first, "sample_plugin")
+        original_load = external_plugin_registry.load_manifest
+
+        def load_then_replace(path):
+            manifest = original_load(path)
+            self._register(
+                "sample", "sample-plugin", second, "sample_plugin_next")
+            return manifest
+
+        external_plugin_registry.load_manifest = load_then_replace
+        try:
+            record = self._registry().discover()[0]
+        finally:
+            external_plugin_registry.load_manifest = original_load
+
+        self.assertEqual("FAILED", record.state)
+        self.assertEqual("PRE_IMPORT_VALIDATION", record.failure["stage"])
+        self.assertEqual("PLUGIN_MANIFEST_MISMATCH", record.failure["code"])
+
     def test_blocked_probe_is_bounded_and_does_not_stall_follow_on_plugin(self):
         release_wait = threading.Event()
         entered = threading.Event()
@@ -342,6 +367,30 @@ class ExternalPluginRegistryTest(unittest.TestCase):
         self.assertIn("/kvmagent/operations/status", self.http.sync)
         self.assertIn("/kvmagent/operations/restart-fence", self.http.raw)
 
+    def test_load_rejects_release_changed_after_discovery_before_import(self):
+        marker = os.path.join(self.root, "marker")
+        release = self._release(marker=marker)
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        source_path = os.path.join(release, "sample_plugin", "plugin.py")
+        with open(source_path, "r") as stream:
+            source = stream.read()
+
+        class MutatingCollector(_Collector):
+            def collect(self):
+                _write(source_path, source + "\n# changed before import\n")
+                return super(MutatingCollector, self).collect()
+
+        registry = self._registry(runtime_collector=MutatingCollector())
+        registry.discover()
+        registry.load_and_start()
+        status = registry.status_response(reconcile=False)["plugins"][0]
+
+        self.assertEqual("FAILED", status["state"])
+        self.assertEqual("PRE_IMPORT_VALIDATION", status["failure"]["stage"])
+        self.assertEqual("PLUGIN_MANIFEST_MISMATCH",
+                         status["failure"]["code"])
+        self.assertFalse(os.path.exists(marker))
+
     def test_registry_scan_failure_does_not_abort_base_agent(self):
         registry = self._registry()
         original_listdir = external_plugin_registry.os.listdir
@@ -357,6 +406,36 @@ class ExternalPluginRegistryTest(unittest.TestCase):
 
         self.assertEqual([], records)
         self.assertEqual([], registry.status_response(False)["plugins"])
+
+    def test_namespace_validation_uses_stable_module_snapshot(self):
+        class ConcurrentModules(dict):
+            def __iter__(self):
+                raise RuntimeError("dictionary changed size during iteration")
+
+        class SysProxy(object):
+            modules = ConcurrentModules({"existing.module": object()})
+
+        registry = self._registry()
+        original_sys = external_plugin_registry.sys
+        external_plugin_registry.sys = SysProxy()
+        try:
+            registry._validate_namespaces()
+        finally:
+            external_plugin_registry.sys = original_sys
+
+    def test_discovery_exception_leaves_explicit_failed_state(self):
+        registry = self._registry()
+        registry._discovery_completed = True
+
+        def fail_discovery():
+            raise RuntimeError("unexpected discovery failure")
+
+        registry._discover_records = fail_discovery
+        with self.assertRaises(RuntimeError):
+            registry.discover()
+
+        self.assertEqual("FAILED", registry.initialization_state)
+        self.assertFalse(registry._discovery_completed)
 
     def test_empty_completed_discovery_is_not_repeated_during_load(self):
         registry = self._registry()
