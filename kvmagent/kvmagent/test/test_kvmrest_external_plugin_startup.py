@@ -27,6 +27,18 @@ class _ClassHttpServer(object):
         self.logfile_path = None
 
 
+class _ConstructorExternalRegistry(object):
+    def __init__(self, *unused_args, **unused_kwargs):
+        self.status_endpoint_registered = False
+
+    def discover(self):
+        raise AssertionError(
+            "external plugin discovery must not run in service construction")
+
+    def register_status_endpoint(self):
+        self.status_endpoint_registered = True
+
+
 def _module(name, **attributes):
     result = types.ModuleType(name)
     for key, value in attributes.items():
@@ -172,6 +184,29 @@ class KvmRestExternalPluginStartupTest(unittest.TestCase):
             entered, release)
         service.http_server = _HttpServer(http_started)
         return service
+
+    def test_constructor_does_not_discover_external_plugins_before_http_start(self):
+        initializer = self.service_class.__init__
+        initializer_globals = getattr(initializer, "__globals__", None)
+        if initializer_globals is None:
+            initializer_globals = initializer.func_globals
+        external_plugin = initializer_globals["external_plugin"]
+        original_registry = external_plugin.ExternalPluginRegistry
+        created = []
+
+        def registry_factory(*args, **kwargs):
+            registry = _ConstructorExternalRegistry(*args, **kwargs)
+            created.append(registry)
+            return registry
+
+        external_plugin.ExternalPluginRegistry = registry_factory
+        try:
+            self.service_class({})
+        finally:
+            external_plugin.ExternalPluginRegistry = original_registry
+
+        self.assertEqual(1, len(created))
+        self.assertTrue(created[0].status_endpoint_registered)
 
     def _assert_http_starts_while_external_plugin_is_blocked(self, in_thread):
         entered = threading.Event()

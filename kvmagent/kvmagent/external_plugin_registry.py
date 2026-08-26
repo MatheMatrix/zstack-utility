@@ -2,6 +2,7 @@
 from __future__ import absolute_import
 
 import datetime
+import hashlib
 import importlib
 import json
 import logging
@@ -76,6 +77,8 @@ class ExternalPluginRecord(object):
         self.manifest_path = None
         self.manifest = None
         self.loaded_manifest_digest = None
+        self.disk_fingerprint = None
+        self.disk_drifted = False
         self.state = "DISCOVERED"
         self.failure = None
         self.dependency = {
@@ -152,6 +155,8 @@ class ExternalPluginRegistry(object):
         self.status_reconcile_interval = DEFAULT_STATUS_RECONCILE_INTERVAL
         self._last_status_reconcile_at = None
         self._status_reconcile_lock = threading.Lock()
+        self.initialization_state = "PENDING"
+        self._discovery_completed = False
         self.records = []
         self._by_id = {}
         self._route_owners = {STATUS_PATH: "kvmagent"}
@@ -189,6 +194,60 @@ class ExternalPluginRegistry(object):
             for name in files:
                 self._check_secure_regular_file(
                     os.path.join(root, name), "release file")
+
+    @staticmethod
+    def _metadata_timestamp_ns(metadata, name):
+        nanoseconds = getattr(metadata, name + "_ns", None)
+        if nanoseconds is not None:
+            return int(nanoseconds)
+        return int(getattr(metadata, name) * 1000000000)
+
+    def _update_metadata_fingerprint(self, digest, label, path):
+        try:
+            metadata = os.lstat(path)
+            values = (
+                label,
+                stat.S_IFMT(metadata.st_mode),
+                stat.S_IMODE(metadata.st_mode),
+                getattr(metadata, "st_dev", -1),
+                getattr(metadata, "st_ino", -1),
+                getattr(metadata, "st_uid", -1),
+                getattr(metadata, "st_gid", -1),
+                metadata.st_size,
+                self._metadata_timestamp_ns(metadata, "st_mtime"),
+                self._metadata_timestamp_ns(metadata, "st_ctime"),
+            )
+        except OSError as error:
+            values = (label, "ERROR", getattr(error, "errno", None))
+        digest.update("\0".join(str(value) for value in values).encode("utf-8"))
+        digest.update(b"\0")
+
+    def _disk_metadata_fingerprint(self, registry_path, release_root):
+        digest = hashlib.sha256()
+        self._update_metadata_fingerprint(digest, "registry", registry_path)
+        self._update_metadata_fingerprint(digest, "release-pointer", release_root)
+        resolved_release = os.path.realpath(release_root)
+        digest.update(resolved_release.encode("utf-8") + b"\0")
+        self._update_metadata_fingerprint(digest, "release/.", resolved_release)
+
+        def record_walk_error(error):
+            label = "release-error/%s" % getattr(error, "filename", "")
+            values = (label, "ERROR", getattr(error, "errno", None))
+            digest.update(
+                "\0".join(str(value) for value in values).encode("utf-8"))
+            digest.update(b"\0")
+
+        for root, directories, files in os.walk(
+                resolved_release, topdown=True, onerror=record_walk_error):
+            directories.sort()
+            files.sort()
+            for name in directories + files:
+                path = os.path.join(root, name)
+                relative = os.path.relpath(path, resolved_release).replace(
+                    os.sep, "/")
+                self._update_metadata_fingerprint(
+                    digest, "release/%s" % relative, path)
+        return digest.hexdigest()
 
     def _resolve_managed_path(self, path, label):
         if not os.path.isabs(path):
@@ -252,12 +311,20 @@ class ExternalPluginRegistry(object):
                 raise ManifestError(
                     "unsupported external plugin API: %s" % manifest.plugin_api,
                     code="PLUGIN_API_UNSUPPORTED")
+            fingerprint_before = self._disk_metadata_fingerprint(
+                path, release_root)
             manifest.verify_content(resolved_release)
+            fingerprint_after = self._disk_metadata_fingerprint(
+                path, release_root)
+            if fingerprint_before != fingerprint_after:
+                raise ManifestError(
+                    "release metadata changed during content verification")
             record.release_root = release_root
             record.resolved_release_root = resolved_release
             record.manifest_path = resolved_manifest
             record.manifest = manifest
             record.loaded_manifest_digest = manifest.manifest_digest
+            record.disk_fingerprint = fingerprint_after
         except ManifestError as error:
             record.fail("PRE_IMPORT_VALIDATION", error.code, error)
         except Exception as error:
@@ -265,6 +332,14 @@ class ExternalPluginRegistry(object):
         return record
 
     def discover(self):
+        self.initialization_state = "DISCOVERING"
+        try:
+            return self._discover_records()
+        finally:
+            self._discovery_completed = True
+            self.initialization_state = "LOADING"
+
+    def _discover_records(self):
         self.records = []
         self._by_id = {}
         if not os.path.isdir(self.registry_root):
@@ -531,8 +606,18 @@ class ExternalPluginRegistry(object):
                 error, **self._cleanup_failure_details(cleanup))
 
     def load_and_start(self, config=None):
-        if not self.records:
-            self.discover()
+        if not self._discovery_completed:
+            if self.records:
+                self._discovery_completed = True
+            else:
+                self.discover()
+        self.initialization_state = "LOADING"
+        try:
+            return self._load_discovered(config)
+        finally:
+            self.initialization_state = "READY"
+
+    def _load_discovered(self, config=None):
         for record in self.records:
             if self.is_stop_requested():
                 break
@@ -601,6 +686,45 @@ class ExternalPluginRegistry(object):
         return bool(record and record.state == "STARTED" and
                     record.compatibility_state == "COMPATIBLE")
 
+    @staticmethod
+    def _records_have_disk_drift(loaded_record, disk_record):
+        drift = disk_record.failure is not None or not disk_record.enabled
+        if disk_record.manifest is not None:
+            drift = drift or any((
+                disk_record.plugin_id != loaded_record.plugin_id,
+                disk_record.resolved_release_root !=
+                loaded_record.resolved_release_root,
+                disk_record.manifest.content_sha256 !=
+                loaded_record.manifest.content_sha256,
+                disk_record.manifest.manifest_digest !=
+                loaded_record.loaded_manifest_digest,
+                disk_record.manifest.entry_module !=
+                loaded_record.manifest.entry_module,
+                disk_record.manifest.entry_class !=
+                loaded_record.manifest.entry_class,
+                disk_record.manifest.plugin_api !=
+                loaded_record.manifest.plugin_api,
+            ))
+        return drift
+
+    def _reconcile_disk_drift(self, record):
+        fingerprint = self._disk_metadata_fingerprint(
+            record.registry_path, record.release_root)
+        if fingerprint == record.disk_fingerprint:
+            return record.disk_drifted
+
+        drift = (os.path.realpath(record.release_root) !=
+                 record.resolved_release_root)
+        try:
+            disk_record = self._parse_registry(record.registry_path)
+            drift = drift or self._records_have_disk_drift(
+                record, disk_record)
+        except Exception:
+            drift = True
+        record.disk_fingerprint = fingerprint
+        record.disk_drifted = drift
+        return drift
+
     def _reconcile_record(self, record, deadline):
         if (not record.enabled or record.manifest is None or
                 record.transitioning):
@@ -636,20 +760,7 @@ class ExternalPluginRegistry(object):
             except CompatibilityError:
                 drift = True
             try:
-                drift = drift or os.path.realpath(record.release_root) != record.resolved_release_root
-                disk_record = self._parse_registry(record.registry_path)
-                drift = drift or disk_record.failure is not None or not disk_record.enabled
-                if disk_record.manifest is not None:
-                    drift = drift or any((
-                        disk_record.plugin_id != record.plugin_id,
-                        disk_record.resolved_release_root != record.resolved_release_root,
-                        disk_record.manifest.content_sha256 != record.manifest.content_sha256,
-                        disk_record.manifest.manifest_digest !=
-                        record.loaded_manifest_digest,
-                        disk_record.manifest.entry_module != record.manifest.entry_module,
-                        disk_record.manifest.entry_class != record.manifest.entry_class,
-                        disk_record.manifest.plugin_api != record.manifest.plugin_api,
-                    ))
+                drift = drift or self._reconcile_disk_drift(record)
             except Exception:
                 drift = True
             record.compatibility_state = (
@@ -689,12 +800,13 @@ class ExternalPluginRegistry(object):
                                       "lastResult": _safe_diagnostic(error)})
 
     def status_response(self, reconcile=True):
-        if reconcile:
+        if reconcile and self.initialization_state == "READY":
             monotonic = self.monotonic or monotonic_time
             deadline = monotonic() + self.status_reconcile_deadline
             for record in self.records:
                 self._reconcile_record(record, deadline)
-        return status_envelope(self.records, _utc_now())
+        return status_envelope(
+            self.records, _utc_now(), self.initialization_state)
 
     def _status_response_for_poll(self):
         with self._status_reconcile_lock:

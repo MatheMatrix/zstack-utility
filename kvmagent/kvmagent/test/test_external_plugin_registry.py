@@ -242,6 +242,30 @@ class ExternalPluginRegistryTest(unittest.TestCase):
             for path, mode in hardened:
                 os.chmod(path, mode)
 
+    def test_discovery_rejects_release_changed_during_content_verification(self):
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        original_verify = (
+            external_plugin_manifest.ExternalPluginManifest.verify_content)
+
+        def verify_then_mutate(manifest, release_root):
+            result = original_verify(manifest, release_root)
+            _write(os.path.join(release_root, "sample_plugin", "plugin.py"),
+                   "# changed while validation was in progress\n")
+            return result
+
+        external_plugin_manifest.ExternalPluginManifest.verify_content = (
+            verify_then_mutate)
+        try:
+            record = self._registry().discover()[0]
+        finally:
+            external_plugin_manifest.ExternalPluginManifest.verify_content = (
+                original_verify)
+
+        self.assertEqual("FAILED", record.state)
+        self.assertEqual("PRE_IMPORT_VALIDATION", record.failure["stage"])
+        self.assertEqual("PLUGIN_MANIFEST_MISMATCH", record.failure["code"])
+
     def test_blocked_probe_is_bounded_and_does_not_stall_follow_on_plugin(self):
         release_wait = threading.Event()
         entered = threading.Event()
@@ -333,6 +357,26 @@ class ExternalPluginRegistryTest(unittest.TestCase):
 
         self.assertEqual([], records)
         self.assertEqual([], registry.status_response(False)["plugins"])
+
+    def test_empty_completed_discovery_is_not_repeated_during_load(self):
+        registry = self._registry()
+        scans = []
+        original_listdir = external_plugin_registry.os.listdir
+
+        def counted_listdir(path):
+            if path == self.registry_root:
+                scans.append(path)
+            return original_listdir(path)
+
+        external_plugin_registry.os.listdir = counted_listdir
+        try:
+            registry.discover()
+            registry.load_and_start()
+        finally:
+            external_plugin_registry.os.listdir = original_listdir
+
+        self.assertEqual(1, len(scans))
+        self.assertEqual("READY", registry.initialization_state)
 
     def test_incompatible_runtime_prevents_any_plugin_code_execution(self):
         marker = os.path.join(self.root, "marker")
@@ -435,6 +479,54 @@ class ExternalPluginRegistryTest(unittest.TestCase):
         self.assertEqual(0, collector.collect_count)
         self.assertTrue(status["transitioning"])
 
+    def test_status_reports_background_initialization_lifecycle(self):
+        entered = threading.Event()
+        release_load = threading.Event()
+
+        class BlockingCollector(_Collector):
+            def collect(self):
+                entered.set()
+                release_load.wait(2)
+                return super(BlockingCollector, self).collect()
+
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        registry = self._registry(runtime_collector=BlockingCollector())
+
+        self.assertEqual(
+            "PENDING",
+            registry.status_response(reconcile=False)["initializationState"])
+        registry.discover()
+        self.assertEqual(
+            "LOADING",
+            registry.status_response(reconcile=False)["initializationState"])
+
+        worker = threading.Thread(target=registry.load_and_start)
+        worker.start()
+        self.assertTrue(entered.wait(1))
+        loading = registry.status_response(reconcile=False)
+        self.assertEqual("LOADING", loading["initializationState"])
+        self.assertTrue(loading["plugins"][0]["transitioning"])
+
+        release_load.set()
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(
+            "READY",
+            registry.status_response(reconcile=False)["initializationState"])
+
+    def test_status_does_not_reconcile_before_initialization_is_ready(self):
+        collector = _Collector()
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        registry = self._registry(runtime_collector=collector)
+        registry.discover()
+
+        status = registry.status_response(reconcile=True)
+
+        self.assertEqual("LOADING", status["initializationState"])
+        self.assertEqual(0, collector.collect_count)
+
     def test_status_endpoint_reuses_reconciliation_until_interval_expires(self):
         clock = [100.0]
         collector = _Collector()
@@ -460,6 +552,80 @@ class ExternalPluginRegistryTest(unittest.TestCase):
         clock[0] += 5
         json.loads(self.http.sync[external_plugin_registry.STATUS_PATH]({}))
         self.assertEqual(2, collector.collect_count)
+
+    def test_status_reuses_content_verification_when_metadata_is_unchanged(self):
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        registry = self._registry()
+        registry.discover()
+        registry.load_and_start()
+        original_digest = external_plugin_manifest._canonical_content_sha256
+        digest_calls = []
+
+        def counted_digest(release_root):
+            digest_calls.append(release_root)
+            return original_digest(release_root)
+
+        external_plugin_manifest._canonical_content_sha256 = counted_digest
+        try:
+            first = registry.status_response(reconcile=True)["plugins"][0]
+            second = registry.status_response(reconcile=True)["plugins"][0]
+        finally:
+            external_plugin_manifest._canonical_content_sha256 = original_digest
+
+        self.assertEqual("COMPATIBLE", first["compatibilityState"])
+        self.assertEqual("COMPATIBLE", second["compatibilityState"])
+        self.assertEqual([], digest_calls)
+
+    def test_status_revalidates_changed_release_once_and_caches_drift(self):
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        registry = self._registry()
+        registry.discover()
+        registry.load_and_start()
+        _write(os.path.join(release, "sample_plugin", "plugin.py"),
+               "# changed release content\n")
+        original_digest = external_plugin_manifest._canonical_content_sha256
+        digest_calls = []
+
+        def counted_digest(release_root):
+            digest_calls.append(release_root)
+            return original_digest(release_root)
+
+        external_plugin_manifest._canonical_content_sha256 = counted_digest
+        try:
+            first = registry.status_response(reconcile=True)["plugins"][0]
+            second = registry.status_response(reconcile=True)["plugins"][0]
+        finally:
+            external_plugin_manifest._canonical_content_sha256 = original_digest
+
+        self.assertEqual("DRIFTED_NEXT_START", first["compatibilityState"])
+        self.assertEqual("DRIFTED_NEXT_START", second["compatibilityState"])
+        self.assertEqual(1, len(digest_calls))
+
+    def test_status_revalidates_changed_registry_once(self):
+        release = self._release()
+        self._register("sample", "sample-plugin", release, "sample_plugin")
+        registry = self._registry()
+        registry.discover()
+        registry.load_and_start()
+        registry_path = os.path.join(self.registry_root, "sample.ini")
+        with open(registry_path, "a") as stream:
+            stream.write("\n")
+        parse_calls = []
+        original_parse = registry._parse_registry
+
+        def counted_parse(path):
+            parse_calls.append(path)
+            return original_parse(path)
+
+        registry._parse_registry = counted_parse
+        first = registry.status_response(reconcile=True)["plugins"][0]
+        second = registry.status_response(reconcile=True)["plugins"][0]
+
+        self.assertEqual("COMPATIBLE", first["compatibilityState"])
+        self.assertEqual("COMPATIBLE", second["compatibilityState"])
+        self.assertEqual(1, len(parse_calls))
 
     def test_status_poll_python2_fallback_ignores_backward_wall_clock_jump(self):
         registry = self._registry()

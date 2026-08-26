@@ -28,10 +28,11 @@ def plugin_status(record):
     }
 
 
-def status_envelope(records, observed_at):
+def status_envelope(records, observed_at, initialization_state="READY"):
     return {
         "success": True,
         "schemaVersion": SCHEMA_VERSION,
         "observedAt": observed_at,
+        "initializationState": initialization_state,
         "plugins": [plugin_status(record) for record in records],
     }

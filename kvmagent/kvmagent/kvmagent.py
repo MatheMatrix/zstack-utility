@@ -143,7 +143,6 @@ class KvmRESTService(object):
             expected_uid=self.config.get(self.EXTERNAL_PLUGIN_EXPECTED_UID, 0),
             dependency_ready_deadline=int(
                 self._get_config(self.PLUGIN_DEPENDENCY_READY_DEADLINE) or 30))
-        self.external_plugin_rgty.discover()
         self.plugin_rgty = plugin.PluginRegistry(self.plugin_path)
         self.external_plugin_rgty.register_status_endpoint()
     
