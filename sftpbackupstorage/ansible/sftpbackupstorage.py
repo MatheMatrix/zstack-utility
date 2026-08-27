@@ -139,7 +139,7 @@ copy_arg.dest = "%s/" % sftp_root
 zstacklib_copy_result = copy(copy_arg, host_post_info)
 
 # name: install zstacklib
-if zstacklib_copy_result != "changed:False":
+if not py_version or zstacklib_copy_result != "changed:False":
     agent_install_arg = AgentInstallArg(trusted_host, pip_url, virtenv_path, init_install)
     agent_install_arg.agent_name = "zstacklib"
     agent_install_arg.agent_root = sftp_root
@@ -162,10 +162,10 @@ copy(copy_arg, host_post_info)
 copy_arg = CopyArg()
 copy_arg.src = "%s/sftp-iptables" % file_root
 copy_arg.dest = "%s/sftp-iptables" % sftp_root
-sftp_copy_result = copy(copy_arg, host_post_info)
+copy(copy_arg, host_post_info)
 
 # name: install sftp
-if sftp_copy_result != "changed:False":
+if not py_version or sftp_copy_result != "changed:False":
     agent_install_arg = AgentInstallArg(trusted_host, pip_url, virtenv_path, init_install)
     agent_install_arg.agent_name = "sftpbackupstorage"
     agent_install_arg.agent_root = sftp_root
