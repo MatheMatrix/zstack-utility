@@ -4988,6 +4988,16 @@ class Vm(object):
                         and cmd.vmCpuModel == 'Hygon_Customized'):
                     e(cpu, 'feature', attrib={'name': 'hypervisor', 'policy': 'disable'})
 
+                # ZSTAC-79117 / TIC-4548: Sapphire Rapids and newer expose WAITPKG;
+                # a Windows guest that starts its own hypervisor (Hyper-V role, or
+                # VBS/Credential Guard) then resets during winload and loops into
+                # WinRE.  Plain no-op on CPUs that never had the feature.
+                # The model check is required: libvirt rejects "Non-empty feature
+                # list specified without CPU model", and Hygon_Customized builds
+                # a <cpu> with no model (its model goes in qemu:commandline).
+                if cpu.find('model') is not None:
+                    e(cpu, 'feature', attrib={'name': 'waitpkg', 'policy': 'disable'})
+
             make_cpu_features()
 
         def make_memory():
