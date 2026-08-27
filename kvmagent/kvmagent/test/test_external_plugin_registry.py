@@ -291,6 +291,46 @@ class ExternalPluginRegistryTest(unittest.TestCase):
         self.assertEqual("PRE_IMPORT_VALIDATION", record.failure["stage"])
         self.assertEqual("PLUGIN_MANIFEST_MISMATCH", record.failure["code"])
 
+    def test_discovery_rejects_release_pointer_changed_before_snapshot(self):
+        first = self._release(
+            "sample-plugin", "sample_plugin", "2.0.0")
+        second = self._release(
+            "sample-plugin", "sample_plugin_next", "3.0.0")
+        pointer = os.path.join(self.managed_root, "sample-plugin-current")
+
+        def point_to(target):
+            if os.path.lexists(pointer):
+                os.unlink(pointer)
+            if os.name == "nt":
+                os.symlink(target, pointer, target_is_directory=True)
+            else:
+                os.symlink(target, pointer)
+
+        try:
+            point_to(first)
+        except (AttributeError, OSError) as error:
+            self.skipTest("directory symlinks unavailable: %s" % error)
+        self._register(
+            "sample", "sample-plugin", pointer, "sample_plugin")
+        registry = self._registry()
+        original_fingerprint = registry._disk_metadata_fingerprint
+        switched = [False]
+
+        def fingerprint_after_switch(registry_path, release_root,
+                                     resolved_release=None):
+            if not switched[0]:
+                switched[0] = True
+                point_to(second)
+            return original_fingerprint(
+                registry_path, release_root, resolved_release)
+
+        registry._disk_metadata_fingerprint = fingerprint_after_switch
+        record = registry.discover()[0]
+
+        self.assertEqual("FAILED", record.state)
+        self.assertEqual("PRE_IMPORT_VALIDATION", record.failure["stage"])
+        self.assertEqual("PLUGIN_MANIFEST_MISMATCH", record.failure["code"])
+
     def test_blocked_probe_is_bounded_and_does_not_stall_follow_on_plugin(self):
         release_wait = threading.Event()
         entered = threading.Event()

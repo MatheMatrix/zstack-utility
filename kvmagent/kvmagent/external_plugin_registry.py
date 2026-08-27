@@ -227,11 +227,13 @@ class ExternalPluginRegistry(object):
         self._update_metadata_fingerprint(digest, label, path)
         return digest.hexdigest()
 
-    def _disk_metadata_fingerprint(self, registry_path, release_root):
+    def _disk_metadata_fingerprint(self, registry_path, release_root,
+                                   resolved_release=None):
         digest = hashlib.sha256()
         self._update_metadata_fingerprint(digest, "registry", registry_path)
         self._update_metadata_fingerprint(digest, "release-pointer", release_root)
-        resolved_release = os.path.realpath(release_root)
+        if resolved_release is None:
+            resolved_release = os.path.realpath(release_root)
         digest.update(resolved_release.encode("utf-8") + b"\0")
         self._update_metadata_fingerprint(digest, "release/.", resolved_release)
 
@@ -302,11 +304,15 @@ class ExternalPluginRegistry(object):
             resolved_release = self._resolve_managed_path(release_root, "release_root")
             resolved_manifest = self._resolve_managed_path(manifest_path, "manifest")
             fingerprint_before = self._disk_metadata_fingerprint(
-                path, release_root)
+                path, release_root, resolved_release)
             if registry_fingerprint != self._path_metadata_fingerprint(
                     "registry", path):
                 raise ManifestError(
                     "plugin registry metadata changed during parsing")
+            if (resolved_release != os.path.realpath(release_root) or
+                    resolved_manifest != os.path.realpath(manifest_path)):
+                raise ManifestError(
+                    "plugin release pointer changed during parsing")
             if not os.path.isdir(resolved_release):
                 raise ValueError("release_root is not a directory")
             self._check_release_tree(resolved_release)
@@ -330,7 +336,7 @@ class ExternalPluginRegistry(object):
                     code="PLUGIN_API_UNSUPPORTED")
             manifest.verify_content(resolved_release)
             fingerprint_after = self._disk_metadata_fingerprint(
-                path, release_root)
+                path, release_root, resolved_release)
             if fingerprint_before != fingerprint_after:
                 raise ManifestError(
                     "release metadata changed during content verification")
