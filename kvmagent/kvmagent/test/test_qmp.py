@@ -257,6 +257,18 @@ class Test(unittest.TestCase):
 
         self.assertEqual(command, execute.call_args[0][1])
 
+    def test_execute_qmp_raw_decodes_bytes_on_python2_branch(self):
+        command = u'{"execute":"human-monitor-command","arguments":{"command-line":"info \u6d4b\u8bd5"}}'
+
+        with mock.patch.object(qmp.sys, "version_info", (2, 7, 18)), \
+             mock.patch.object(qmp, "unicode", str, create=True), \
+             mock.patch.object(
+                 qmp, "_execute_qmp_command", return_value={}) as execute:
+            qmp.execute_qmp_command_raw(
+                "vm-uuid", command.encode("utf-8"))
+
+        self.assertEqual(command, execute.call_args[0][1])
+
     def test_execute_qmp_raw_preserves_unicode_text(self):
         command = u'{"execute":"human-monitor-command","arguments":{"command-line":"info 测试"}}'
 

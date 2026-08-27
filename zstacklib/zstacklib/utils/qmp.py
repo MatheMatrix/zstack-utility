@@ -249,7 +249,7 @@ def execute_qmp_command_raw(domain_id, command_json, raise_exception=True,
     :param command_timeout: subprocess deadline in seconds, or None
     :return: the 'return' value from QMP response, or None on suppressed error
     """
-    if sys.version_info[0] >= 3 and isinstance(command_json, bytes):
+    if isinstance(command_json, bytes):
         command_json = command_json.decode("utf-8")
     elif sys.version_info[0] < 3:
         if not isinstance(command_json, (str, unicode)):

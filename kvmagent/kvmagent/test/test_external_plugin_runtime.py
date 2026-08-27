@@ -4,6 +4,11 @@ from __future__ import absolute_import
 import time
 import unittest
 
+try:
+    from unittest import mock
+except ImportError:
+    import mock
+
 from kvmagent import external_plugin_runtime as runtime
 
 
@@ -187,6 +192,78 @@ class ExternalPluginRuntimeTest(unittest.TestCase):
         self.assertEqual("DEPENDENCY_NOT_READY", raised.exception.reason)
         self.assertTrue(raised.exception.transient)
         self.assertLess(elapsed, 0.25)
+
+    def test_subprocess_deadlines_use_monotonic_clock(self):
+        class HungProcess(object):
+            def __init__(self):
+                self.killed = False
+                self.waited = False
+
+            def poll(self):
+                return -9 if self.killed else None
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self):
+                self.waited = True
+                return -9
+
+        process = HungProcess()
+        monotonic_values = (0.0, 1.0, 1.0, 1.2)
+        with mock.patch.object(runtime.subprocess, "Popen",
+                               return_value=process), \
+             mock.patch.object(runtime, "monotonic_time",
+                               side_effect=monotonic_values,
+                               create=True), \
+             mock.patch.object(runtime.time, "time",
+                               side_effect=AssertionError(
+                                   "deadlines must not use wall clock")), \
+             mock.patch.object(runtime.time, "sleep"):
+            with self.assertRaises(runtime.RuntimeQueryError):
+                runtime._popen_output(["blocked-command"],
+                                      timeout_seconds=0.1)
+
+        self.assertTrue(process.killed)
+        self.assertTrue(process.waited)
+
+    def test_collect_deadline_uses_project_monotonic_clock_by_default(self):
+        observed_timeouts = []
+        versions = dict(self.versions)
+
+        class Collector(object):
+            def collect(self, timeout_seconds=None):
+                observed_timeouts.append(timeout_seconds)
+                return versions
+
+        with mock.patch.object(runtime, "monotonic_time",
+                               return_value=10.0, create=True), \
+             mock.patch.object(runtime.time, "monotonic",
+                               side_effect=AssertionError(
+                                   "project monotonic clock was bypassed"),
+                               create=True):
+            result = runtime.collect_with_deadline(
+                Collector(), "collect", deadline=11.0)
+
+        self.assertEqual(versions, result)
+        self.assertEqual([1.0], observed_timeouts)
+
+    def test_startup_retry_uses_project_monotonic_clock_by_default(self):
+        with mock.patch.object(runtime, "monotonic_time",
+                               side_effect=(10.0, 10.0), create=True), \
+             mock.patch.object(runtime.time, "monotonic",
+                               side_effect=AssertionError(
+                                   "project monotonic clock was bypassed"),
+                               create=True):
+            versions, retries = runtime.collect_with_startup_retry(
+                _Collector([self.versions]), deadline_seconds=1,
+                sleep=lambda unused: None)
+
+        self.assertEqual(self.versions, versions)
+        self.assertEqual(0, retries)
 
     def test_blocking_injected_collector_is_bounded_by_overall_deadline(self):
         observed_timeouts = []

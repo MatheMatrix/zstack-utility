@@ -12,6 +12,8 @@ import tempfile
 import threading
 import time
 
+from zstacklib.utils.restart_fence import monotonic_time
+
 
 DEPENDENCIES = ("python", "kvmAgent", "zstacklib", "qemu", "libvirt")
 MEMBERSHIP_DIMENSIONS = ("os", "architectures")
@@ -207,8 +209,8 @@ def _terminate_and_reap(process):
             process.terminate()
         except Exception:
             pass
-    grace_deadline = time.time() + 0.1
-    while process.poll() is None and time.time() < grace_deadline:
+    grace_deadline = monotonic_time() + 0.1
+    while process.poll() is None and monotonic_time() < grace_deadline:
         time.sleep(0.005)
     if process.poll() is None:
         try:
@@ -229,9 +231,9 @@ def _popen_output(command, timeout_seconds=None):
             command, stdout=output_stream, stderr=subprocess.STDOUT)
         deadline = None
         if timeout_seconds is not None:
-            deadline = time.time() + max(0, float(timeout_seconds))
+            deadline = monotonic_time() + max(0, float(timeout_seconds))
         while process.poll() is None:
-            if deadline is not None and time.time() >= deadline:
+            if deadline is not None and monotonic_time() >= deadline:
                 _terminate_and_reap(process)
                 output_stream.seek(0)
                 detail = output_stream.read()
@@ -567,7 +569,7 @@ def _collector_method_with_timeout(collector, method_name, timeout_seconds):
 
 
 def collect_with_deadline(collector, method_name, deadline, monotonic=None):
-    monotonic = monotonic or getattr(time, "monotonic", time.time)
+    monotonic = monotonic or monotonic_time
     remaining = deadline - monotonic()
     if remaining <= 0:
         raise _timeout_error("runtime %s probe deadline expired" % method_name)
@@ -583,7 +585,7 @@ def _collect_with_timeout(collector, timeout_seconds):
 def collect_with_startup_retry(collector, deadline_seconds=30, sleep=None,
                                monotonic=None, on_wait=None):
     sleep = sleep or time.sleep
-    monotonic = monotonic or getattr(time, "monotonic", time.time)
+    monotonic = monotonic or monotonic_time
     deadline = monotonic() + deadline_seconds
     delay = 0.25
     retry_count = 0
