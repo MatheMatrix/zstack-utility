@@ -238,6 +238,52 @@ class TestLvRangeDescriptor(unittest.TestCase):
                  self.block_device("/dev/mapper/lun-b", "wwid-b")],
                 self.targets)
 
+    def test_rejects_unfiltered_duplicate_for_target_pvid(self):
+        target_report = self.pv_report(
+            self.pv_row("/dev/mapper/lun-a", "pv-a"))
+        duplicate = dict(
+            self.pv_row("/dev/sdd", "pv-a"), pv_duplicate="duplicate",
+            vg_uuid="")
+        audit_report = self.pv_report(
+            self.pv_row("/dev/mapper/lun-a", "pv-a"), duplicate)
+
+        with self.assertRaisesPattern(
+                ValueError, "LVM_RANGE_PVID_DUPLICATE"):
+            lvm_range.validate_pv_duplicate_audit(
+                target_report, audit_report)
+
+    def test_rejects_conflicting_pvid_for_target_pv_path(self):
+        target_report = self.pv_report(
+            self.pv_row("/dev/mapper/lun-a", "pv-a"))
+        audit_report = self.pv_report(
+            self.pv_row("/dev/mapper/lun-a", "pv-b"))
+
+        with self.assertRaisesPattern(
+                ValueError, "LVM_RANGE_PVID_CONFLICT"):
+            lvm_range.validate_pv_duplicate_audit(
+                target_report, audit_report)
+
+    def test_ignores_unrelated_duplicate_pvid(self):
+        target_report = self.pv_report(
+            self.pv_row("/dev/mapper/lun-a", "pv-a"))
+        unrelated = dict(
+            self.pv_row("/dev/sdd", "pv-b"), pv_duplicate="duplicate",
+            vg_uuid="")
+        audit_report = self.pv_report(
+            self.pv_row("/dev/mapper/lun-a", "pv-a"), unrelated)
+
+        lvm_range.validate_pv_duplicate_audit(
+            target_report, audit_report)
+
+    def test_rejects_missing_target_pvid_from_unfiltered_audit(self):
+        target_report = self.pv_report(
+            self.pv_row("/dev/mapper/lun-a", "pv-a"))
+
+        with self.assertRaisesPattern(
+                ValueError, "LVM_RANGE_PVID_AUDIT_INCOMPLETE"):
+            lvm_range.validate_pv_duplicate_audit(
+                target_report, self.pv_report())
+
     def test_rejects_partial_or_missing_vg(self):
         for vg_report in (
                 self.vg_report_for(vg_attr="wz-pns"),

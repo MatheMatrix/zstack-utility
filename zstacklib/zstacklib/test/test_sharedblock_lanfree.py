@@ -2,7 +2,16 @@ import unittest
 import sys
 import types
 
-import mock
+try:
+    import mock
+except ImportError:
+    from unittest import mock
+try:
+    import simplejson  # noqa: F401
+except ImportError:
+    import json
+    import sys
+    sys.modules["simplejson"] = json
 from zstacklib import utils as zstack_utils
 
 from zstacklib.utils import sharedblock_lanfree as lanfree
@@ -104,6 +113,34 @@ class TestSharedBlockLanFree(unittest.TestCase):
 
         fake_shell.ShellCmd.assert_called_once_with(
             "timeout %s %s" % (lanfree.LVM_REPORT_TIMEOUT_SECONDS, command))
+
+    def test_target_pv_geometry_query_remains_vg_scoped(self):
+        fake_linux = types.ModuleType("zstacklib.utils.linux")
+        fake_linux.shellquote = lambda value: "'%s'" % value
+        with mock.patch.dict(
+                sys.modules, {"zstacklib.utils.linux": fake_linux}):
+            with mock.patch.object(
+                    zstack_utils, "linux", fake_linux, create=True):
+                with mock.patch.object(
+                        lanfree, "_run_lvm_json_report",
+                        return_value={"report": []}) as report:
+                    lanfree._get_pv_range_report("vg-uuid")
+
+        command = report.call_args[0][0]
+        self.assertNotIn("--all", command)
+        self.assertIn("-S 'vg_name=vg-uuid'", command)
+
+    def test_duplicate_pvid_audit_is_unfiltered_and_includes_all_pvs(self):
+        with mock.patch.object(
+                lanfree, "_run_lvm_json_report",
+                return_value={"report": []}) as report:
+            lanfree._get_pv_duplicate_audit_report()
+
+        command = report.call_args[0][0]
+        self.assertIn("pvs --readonly --nolocking -t --all", command)
+        self.assertNotIn(" -S ", command)
+        self.assertIn(
+            "-o vg_uuid,pv_uuid,pv_name,pv_duplicate", command)
 
     def test_source_layout_returns_every_layer_source_path_and_parent(self):
         target = {

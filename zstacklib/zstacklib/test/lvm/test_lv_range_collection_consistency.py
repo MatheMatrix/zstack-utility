@@ -67,28 +67,30 @@ class TestLvRangeCollectionConsistency(unittest.TestCase):
         ])
         lv = ConstantCall({"report": []})
         pv = ConstantCall(self.pv_report())
+        pv_audit = ConstantCall(self.pv_report())
         devices = ConstantCall([])
         builder = ConstantCall({"luns": [], "descriptors": []})
         retries = []
-        return vg, lv, pv, devices, builder, retries
+        return vg, lv, pv, pv_audit, devices, builder, retries
 
     def collect(self, collectors):
-        vg, lv, pv, devices, builder, retries = collectors
+        vg, lv, pv, pv_audit, devices, builder, retries = collectors
         result = lvm_range.collect_consistent_lv_range_descriptors(
             "ps-uuid", ["/dev/ps-uuid/lv-1"], [{
                 "resourceUuid": "snapshot-1",
                 "absoluteInstallPath": "/dev/ps-uuid/lv-1"
-            }], vg, lv, pv, devices, builder, retries.append)
+            }], vg, lv, pv, pv_audit, devices, builder, retries.append)
         return result, collectors
 
     def test_retries_transient_vg_metadata_change(self):
         result, collectors = self.collect(
             self.install_collectors([17, 18, 18, 18, 18]))
-        vg, lv, _unused_pv, devices, builder, retries = collectors
+        vg, lv, _unused_pv, pv_audit, devices, builder, retries = collectors
 
         self.assertEqual([], result["descriptors"])
         self.assertEqual(5, vg.call_count)
         self.assertEqual(2, lv.call_count)
+        self.assertEqual(1, pv_audit.call_count)
         self.assertEqual(1, devices.call_count)
         self.assertEqual(1, builder.call_count)
         self.assertEqual(1, len(retries))
@@ -96,24 +98,26 @@ class TestLvRangeCollectionConsistency(unittest.TestCase):
     def test_retries_vg_change_during_device_collection(self):
         result, collectors = self.collect(
             self.install_collectors([17, 17, 18, 18, 18, 18]))
-        vg, lv, _unused_pv, devices, builder, retries = collectors
+        vg, lv, _unused_pv, pv_audit, devices, builder, retries = collectors
 
         self.assertEqual([], result["descriptors"])
         self.assertEqual(6, vg.call_count)
         self.assertEqual(2, lv.call_count)
+        self.assertEqual(2, pv_audit.call_count)
         self.assertEqual(2, devices.call_count)
         self.assertEqual(1, builder.call_count)
         self.assertEqual(1, len(retries))
 
     def test_rejects_continuous_vg_metadata_change(self):
         collectors = self.install_collectors([17, 18, 19, 20, 21, 22])
-        vg, _unused_lv, _unused_pv, devices, builder, retries = collectors
+        vg, _unused_lv, _unused_pv, pv_audit, devices, builder, retries = collectors
 
         with self.assertRaisesPattern(
                 ValueError, "LVM_RANGE_METADATA_CHANGED"):
             self.collect(collectors)
 
         self.assertEqual(6, vg.call_count)
+        self.assertEqual(0, pv_audit.call_count)
         self.assertEqual(0, devices.call_count)
         self.assertEqual(0, builder.call_count)
         self.assertEqual(3, len(retries))
@@ -121,14 +125,33 @@ class TestLvRangeCollectionConsistency(unittest.TestCase):
     def test_rejects_partial_vg_before_device_collection(self):
         collectors = self.install_collectors(
             [17, 17], missing_pv_count=1)
-        _unused_vg, _unused_lv, _unused_pv, devices, builder, retries = collectors
+        (_unused_vg, _unused_lv, _unused_pv, pv_audit,
+         devices, builder, retries) = collectors
 
         with self.assertRaisesPattern(ValueError, "LVM_RANGE_VG_PARTIAL"):
             self.collect(collectors)
 
+        self.assertEqual(0, pv_audit.call_count)
         self.assertEqual(0, devices.call_count)
         self.assertEqual(0, builder.call_count)
         self.assertEqual([], retries)
+
+    def test_rejects_duplicate_pvid_audit_before_device_collection(self):
+        collectors = list(self.install_collectors([17, 17]))
+        duplicate = dict(
+            self.pv_report()["report"][0]["pv"][0],
+            pv_name="/dev/sdd", pv_duplicate="duplicate", vg_uuid="")
+        collectors[3] = ConstantCall({
+            "report": [{"pv":
+                self.pv_report()["report"][0]["pv"] + [duplicate]}]})
+
+        with self.assertRaisesPattern(
+                ValueError, "LVM_RANGE_PVID_DUPLICATE"):
+            self.collect(tuple(collectors))
+
+        self.assertEqual(1, collectors[3].call_count)
+        self.assertEqual(0, collectors[4].call_count)
+        self.assertEqual(0, collectors[5].call_count)
 
 
 if __name__ == "__main__":

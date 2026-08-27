@@ -16,6 +16,8 @@ VG_RANGE_REPORT_FIELDS = (
 PV_RANGE_REPORT_FIELDS = (
     "vg_uuid", "pv_uuid", "pv_name", "pv_size", "dev_size", "pe_start",
     "pv_pe_count", "pv_attr", "pv_missing", "pv_duplicate")
+PV_DUPLICATE_AUDIT_FIELDS = (
+    "vg_uuid", "pv_uuid", "pv_name", "pv_duplicate")
 
 
 def _value(item, name, default=None):
@@ -262,6 +264,57 @@ def pv_names_for_device_resolution(pv_report):
     return names
 
 
+def validate_pv_duplicate_audit(target_pv_report, audit_report):
+    target_rows = _report_rows(target_pv_report, "pv")
+    audit_rows = _report_rows(audit_report, "pv")
+    audit_by_pvid = {}
+    audit_by_name = {}
+    for row in audit_rows:
+        pvid = _text(row.get("pv_uuid"))
+        name = _text(row.get("pv_name"))
+        if pvid:
+            audit_by_pvid.setdefault(pvid, []).append(row)
+        if name:
+            audit_by_name.setdefault(name, []).append(row)
+
+    for target in target_rows:
+        target_pvid = _required_text(target.get("pv_uuid"), "pv_uuid")
+        target_name = _required_text(target.get("pv_name"), "pv_name")
+        matches = audit_by_pvid.get(target_pvid, [])
+        conflicting_rows = [
+            row for row in audit_by_name.get(target_name, [])
+            if _text(row.get("pv_uuid")) != target_pvid
+        ]
+        if conflicting_rows:
+            _error(
+                "LVM_RANGE_PVID_CONFLICT",
+                "target PV[%s] maps to another PVID in the unfiltered "
+                "PV audit" % target_name)
+        if not matches:
+            _error(
+                "LVM_RANGE_PVID_AUDIT_INCOMPLETE",
+                "target PVID[%s] is absent from the unfiltered PV audit" %
+                target_pvid)
+        if not any(
+                _text(row.get("pv_name")) == target_name
+                for row in matches):
+            _error(
+                "LVM_RANGE_PVID_CONFLICT",
+                "target PV[%s] does not map uniquely to PVID[%s] in the "
+                "unfiltered PV audit" % (target_name, target_pvid))
+
+        if (len(matches) != 1 or
+                any(_flag_is_set(row.get("pv_duplicate"))
+                    for row in matches)):
+            paths = sorted(set(
+                _text(row.get("pv_name")) or "<unknown>"
+                for row in matches))
+            _error(
+                "LVM_RANGE_PVID_DUPLICATE",
+                "target PVID[%s] occurs on devices[%s] in the unfiltered "
+                "PV audit" % (target_pvid, ",".join(paths)))
+
+
 def _validate_vg(vg, pv_rows):
     try:
         vg_name = _required_text(vg.get("vg_name"), "vg_name")
@@ -363,7 +416,8 @@ def vg_seqno(vg_report):
 
 def collect_consistent_lv_range_descriptors(
         vg_uuid, absolute_install_paths, targets, vg_collector, lv_collector,
-        pv_collector, device_collector, builder, retry_observer=None):
+        pv_collector, pv_audit_collector, device_collector, builder,
+        retry_observer=None):
     retry_observer = retry_observer or (lambda unused_message: None)
     for attempt in range(3):
         vg_report_before = vg_collector(vg_uuid)
@@ -380,6 +434,8 @@ def collect_consistent_lv_range_descriptors(
             continue
 
         validate_lvm_metadata(vg_report_metadata_after, pv_report)
+        pv_audit_report = pv_audit_collector()
+        validate_pv_duplicate_audit(pv_report, pv_audit_report)
         block_devices = device_collector(pv_report)
         vg_report_device_after = vg_collector(vg_uuid)
         device_after_seqno = vg_seqno(vg_report_device_after)

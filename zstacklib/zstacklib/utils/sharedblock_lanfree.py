@@ -65,6 +65,13 @@ def _get_pv_range_report(vg_uuid):
             linux.shellquote("vg_name=%s" % vg_uuid)))
 
 
+def _get_pv_duplicate_audit_report():
+    return _run_lvm_json_report(
+        "pvs --readonly --nolocking -t --all --units b --nosuffix "
+        "--reportformat json -o %s" % (
+            ",".join(lvm_range.PV_DUPLICATE_AUDIT_FIELDS)))
+
+
 def _candidate_paths(candidate):
     paths = []
     dev_name = getattr(candidate, "dev_name", None)
@@ -161,7 +168,8 @@ def get_lv_range_descriptors(vg_uuid, targets):
     return lvm_range.collect_consistent_lv_range_descriptors(
         vg_uuid, absolute_install_paths, normalized_targets,
         _get_vg_range_report, _get_lv_range_report, _get_pv_range_report,
-        _get_lv_range_block_devices, lvm_range.build_lv_range_descriptors,
+        _get_pv_duplicate_audit_report, _get_lv_range_block_devices,
+        lvm_range.build_lv_range_descriptors,
         log.get_logger(__name__).warning)
 
 
