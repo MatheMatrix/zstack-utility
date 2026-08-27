@@ -187,6 +187,7 @@ class KvmRestExternalPluginStartupTest(unittest.TestCase):
 
     def test_constructor_does_not_discover_external_plugins_before_http_start(self):
         initializer = self.service_class.__init__
+        initializer = getattr(initializer, "im_func", initializer)
         initializer_globals = getattr(initializer, "__globals__", None)
         if initializer_globals is None:
             initializer_globals = initializer.func_globals
