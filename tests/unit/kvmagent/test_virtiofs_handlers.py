@@ -28,6 +28,45 @@ from zstacklib.utils import http
 from kvmagent.plugins import virtiofs_plugin
 
 
+@patch('kvmagent.plugins.virtiofs_plugin._init_virtiofsd_path')
+@patch('kvmagent.plugins.virtiofs_plugin.kvmagent.get_http_server')
+def test_prepare_host_model_cache_registers_sensitive_command(
+        mock_get_http_server, _mock_init_virtiofsd_path):
+    server = MagicMock()
+    mock_get_http_server.return_value = server
+
+    virtiofs_plugin.VirtiofsPlugin().start()
+
+    prepare_call = next(
+        call for call in server.register_async_uri.call_args_list
+        if call.args[0] == virtiofs_plugin.VirtiofsPlugin.HOST_MODEL_CACHE_PREPARE_PATH)
+    assert isinstance(
+        prepare_call.kwargs["cmd"],
+        virtiofs_plugin.PrepareHostModelCacheCmd)
+
+
+def test_report_host_model_cache_reports_missing_cache_leaf_without_creating_it(tmp_path, monkeypatch):
+    parent = tmp_path / 'primary-storage'
+    parent.mkdir()
+    source_root = parent / 'ai-model-cache'
+    monkeypatch.setattr(
+        virtiofs_plugin.virtiofs_source,
+        'statvfs_capacity',
+        lambda path: {'physicalTotalBytes': 100, 'physicalAvailableBytes': 80})
+
+    req = {
+        http.REQUEST_BODY: json.dumps({'sourceRoot': str(source_root)})
+    }
+    rsp = json.loads(virtiofs_plugin.VirtiofsPlugin().report_host_model_cache(req))
+
+    assert rsp['success'] is True
+    assert not source_root.exists()
+    assert rsp['sourceRoot'] == os.path.realpath(str(source_root))
+    assert rsp['physicalTotalBytes'] == 100
+    assert rsp['physicalAvailableBytes'] == 80
+    assert rsp['cacheEntries'] == []
+
+
 class TestVerifySourcePath:
     """Test verify_source_path() security validation."""
 
@@ -290,6 +329,90 @@ class TestVerifySourcePath:
 
 
 @pytest.mark.kvmagent
+class TestHostModelCachePrepareHandler:
+
+    def test_dispatches_juicefs_model_center_source(self, monkeypatch):
+        captured = {}
+
+        def prepare(source_root, source_path, model_center_uuid, storage_url,
+                    artifact_relative_path, required_capacity, storage_subdir,
+                    register_cache, content_version=None):
+            captured.update({
+                'sourceRoot': source_root,
+                'sourcePath': source_path,
+                'modelCenterUuid': model_center_uuid,
+                'storageUrl': storage_url,
+                'artifactRelativePath': artifact_relative_path,
+                'requiredCapacityBytes': required_capacity,
+                'storageSubdir': storage_subdir,
+                'registerCache': register_cache,
+                'contentVersion': content_version,
+            })
+            return {'sourcePath': source_path, 'sizeBytes': 1024, 'contentVersion': 'v:abc'}
+
+        monkeypatch.setattr(virtiofs_plugin.virtiofs_source, 'prepare_model_center_cache', prepare)
+        plugin = virtiofs_plugin.VirtiofsPlugin()
+        response = json.loads(plugin.prepare_host_model_cache({
+            http.REQUEST_BODY: json.dumps({
+                'sourceType': 'juicefsModelCenter',
+                'sourceRoot': '/cache',
+                'sourcePath': '/cache/models/model/v1',
+                'modelCenterUuid': 'mc',
+                'storageUrl': 'redis://model-center',
+                'modelRelativePath': 'qwen/v1',
+                'requiredCapacityBytes': 1024,
+                'contentVersion': 'abc',
+            })
+        }))
+
+        assert response['success'] is True
+        assert response['cacheEntry']['sourcePath'] == '/cache/models/model/v1'
+        assert captured['artifactRelativePath'] == 'qwen/v1'
+        assert captured['storageSubdir'] == 'models'
+        assert captured['registerCache'] is True
+        assert captured['storageUrl'] == 'redis://model-center'
+        assert captured['contentVersion'] == 'abc'
+
+    def test_dispatches_non_model_artifact_source(self, monkeypatch):
+        captured = {}
+
+        def prepare(source_root, source_path, model_center_uuid, storage_url,
+                    artifact_relative_path, required_capacity, storage_subdir,
+                    register_cache, content_version=None):
+            captured.update({
+                'artifactRelativePath': artifact_relative_path,
+                'storageSubdir': storage_subdir,
+                'registerCache': register_cache,
+                'contentVersion': content_version,
+            })
+            return {'sourcePath': source_path, 'sizeBytes': 256}
+
+        monkeypatch.setattr(virtiofs_plugin.virtiofs_source, 'prepare_model_center_cache', prepare)
+        plugin = virtiofs_plugin.VirtiofsPlugin()
+        response = json.loads(plugin.prepare_host_model_cache({
+            http.REQUEST_BODY: json.dumps({
+                'sourceType': 'juicefsModelCenter',
+                'sourceRoot': '/sources',
+                'sourcePath': '/sources/model-centers/mc/root/datasets/eval',
+                'modelCenterUuid': 'mc',
+                'storageUrl': 'redis://model-center',
+                'storageSubdir': 'datasets',
+                'artifactRelativePath': 'eval',
+                'registerCache': False,
+                'requiredCapacityBytes': 256,
+                'contentVersion': 'tpl-v2',
+            })
+        }))
+
+        assert response['success'] is True
+        assert captured == {
+            'artifactRelativePath': 'eval',
+            'storageSubdir': 'datasets',
+            'registerCache': False,
+            'contentVersion': 'tpl-v2',
+        }
+
+
 class TestVirtiofsAttachHandler:
     """Test virtiofs attach handler."""
 
