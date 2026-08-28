@@ -562,6 +562,97 @@ class TestStopVmHandler:
         vm_plugin.delVnicFromOvsByVmUuidIfExist.assert_called_once_with('vm-uuid')
         plugin.kill_vm.assert_called_once_with('vm-uuid')
 
+    def test_stop_vm_reports_failure_when_stop_raises_kvm_error(self):
+        """ZSTAC-87977: a failed Vm.stop must not be reported as success."""
+        plugin = _make_vm_plugin()
+        plugin._dump = MagicMock()
+        plugin._record_operation = MagicMock()
+        plugin.kill_vm = MagicMock()
+
+        mock_vm = MagicMock()
+        mock_vm.stop.side_effect = vm_plugin.kvmagent.KvmError(
+            'failed to stop vm, timeout after 60 secs')
+        vm_plugin.get_vm_by_uuid = MagicMock(return_value=mock_vm)
+        vm_plugin.ovs.isVmUseOpenvSwitch = MagicMock(return_value=False)
+        vm_plugin.delVnicFromOvsByVmUuidIfExist = MagicMock()
+
+        req = _make_req({
+            'uuid': 'vm-uuid',
+            'debug': False,
+            'timeout': 120,
+            'type': 'grace',
+            'vmNics': [],
+        })
+        result = plugin.stop_vm(req)
+        rsp = json.loads(result)
+
+        assert rsp['success'] is False
+        assert 'failed to stop vm' in rsp.get('error', '')
+        plugin.kill_vm.assert_called_once_with('vm-uuid')
+
+
+def _empty_devices():
+    devices = MagicMock()
+    devices.get_child_node_as_list.return_value = []
+    return devices
+
+
+def _invoke_wait_callback(callback, callback_data=None, timeout=60, interval=1):
+    return bool(callback(callback_data))
+
+
+def _make_stop_vm(info_state, persistent=True):
+    vm = vm_plugin.Vm()
+    vm.uuid = 'vm-uuid'
+    vm.domain = MagicMock()
+    vm.domain.info.return_value = (info_state, 0, 0, 0, 0)
+    vm.domain.isPersistent.return_value = persistent
+    vm.domain_xmlobject = MagicMock()
+    vm.domain_xmlobject.devices = _empty_devices()
+    return vm
+
+
+@pytest.mark.kvmagent
+class TestVmStopInShutdown:
+    def test_in_shutdown_is_not_powered_off(self):
+        vm = _make_stop_vm(vm_plugin.Vm.VIR_DOMAIN_SHUTDOWN)
+        assert vm.is_powered_off() is False
+
+    def test_shutoff_is_powered_off(self):
+        vm = _make_stop_vm(vm_plugin.Vm.VIR_DOMAIN_SHUTOFF)
+        assert vm.is_powered_off() is True
+
+    def test_grace_stop_destroys_domain_stuck_in_shutdown(self):
+        """libvirt in-shutdown is not powered off; grace stop must destroy."""
+        vm = _make_stop_vm(vm_plugin.Vm.VIR_DOMAIN_SHUTDOWN, persistent=False)
+
+        def destroy_powers_off():
+            vm.domain.info.return_value = (vm_plugin.Vm.VIR_DOMAIN_SHUTOFF, 0, 0, 0, 0)
+
+        vm.domain.destroy.side_effect = destroy_powers_off
+
+        with patch.object(vm_plugin.linux, 'wait_callback_success', side_effect=_invoke_wait_callback):
+            vm.stop(strategy='grace')
+
+        vm.domain.destroy.assert_called()
+
+    def test_undefine_of_transient_domain_destroys_instead_of_spinning(self, monkeypatch):
+        """cannot undefine transient domain must fall back to destroy, not fail stop."""
+        class TransientDomainError(Exception):
+            def get_error_code(self):
+                return 1
+
+        monkeypatch.setattr(vm_plugin.libvirt, 'libvirtError', TransientDomainError)
+        vm = _make_stop_vm(vm_plugin.Vm.VIR_DOMAIN_SHUTOFF, persistent=True)
+        vm.domain.undefineFlags.side_effect = TransientDomainError(
+            'cannot undefine transient domain')
+
+        with patch.object(vm_plugin.linux, 'wait_callback_success', side_effect=_invoke_wait_callback):
+            with patch.object(vm_plugin.linux, 'find_process_by_cmdline', return_value=None):
+                vm.stop(strategy='cold')
+
+        vm.domain.destroy.assert_called()
+
 
 @pytest.mark.kvmagent
 class TestPauseVmHandler:
