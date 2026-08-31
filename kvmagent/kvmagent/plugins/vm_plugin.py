@@ -2,6 +2,7 @@
 @author: Frank
 '''
 import contextlib
+import copy
 import difflib
 import functools
 import os.path
@@ -8105,7 +8106,13 @@ class Vm(object):
                 return
 
             root = elements['root']
-            libvirtXml = etree.tostring(root, encoding="unicode")
+            cpu_probe_root = copy.deepcopy(root)
+            devices = cpu_probe_root.find('devices')
+            for device in list(devices):
+                if device.tag == 'hostdev' or (device.tag == 'interface' and device.get('type') == 'hostdev'):
+                    devices.remove(device)
+
+            libvirtXml = etree.tostring(cpu_probe_root, encoding="unicode")
             cpuFlags = get_cpu_flags_from_xml(libvirtXml)
 
             # qemu64 is used for x86_64 guests, when no -cpu argument is given to QEMU,

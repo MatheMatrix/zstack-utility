@@ -3329,7 +3329,7 @@ class TestVmStartCmdXmlBuild:
             for iothread in driver.findall('./iothreads/iothread')
         ]
 
-    def _build_start_vm_xml(self, cmd):
+    def _build_start_vm_xml(self, cmd, bash_roe=None):
         vm_plugin.ovs.OvsDpdkSupportVnic = []
         vm_plugin.pci.need_config_pcimmio = MagicMock(return_value=True)
         vm_plugin.pci.get_bars_max_addressable_memory = MagicMock(return_value=256)
@@ -3341,7 +3341,7 @@ class TestVmStartCmdXmlBuild:
         vm_plugin.is_spiceport_driver_supported = MagicMock(return_value=True)
         vm_plugin.notify_vrouter = MagicMock()
         vm_plugin.VmPlugin.clean_vm_firmware_flash = MagicMock()
-        vm_plugin.bash.bash_roe = MagicMock(return_value=(0, '', ''))
+        vm_plugin.bash.bash_roe = bash_roe or MagicMock(return_value=(0, '', ''))
         vm_plugin.linux.VmUsbManager = MagicMock(return_value=MagicMock(request_slot=MagicMock(return_value=1)))
         vm_plugin.netaddr.IPAddress = MagicMock(side_effect=lambda addr: MagicMock(version=4))
         vm_plugin.uuidhelper.to_full_uuid = MagicMock(side_effect=lambda value: value)
@@ -3368,6 +3368,139 @@ class TestVmStartCmdXmlBuild:
                 patch.object(vm_plugin.etree, 'tostring', side_effect=orig_tostring):
             vm = vm_plugin.Vm.from_StartVmCmd(cmd)
         return vm.domain_xml.decode() if isinstance(vm.domain_xml, bytes) else vm.domain_xml
+
+    def test_zstac_88044_cpu_vendor_probe_excludes_hostdev_only_from_probe_xml(self):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.nestedVirtualization = 'host-passthrough'
+        cmd.vmCpuVendorId = 'AuthenticAMD'
+        probe_xmls = []
+
+        def capture_cpu_probe(command, *_args, **_kwargs):
+            if 'domxml-to-native' not in command:
+                return 0, '', ''
+            probe_path = command.split('--xml ', 1)[1].split(' ', 1)[0]
+            with open(probe_path) as probe_file:
+                probe_xmls.append(probe_file.read())
+            return 0, 'host,migratable=on', ''
+
+        xml_str = self._build_start_vm_xml(
+            cmd,
+            MagicMock(side_effect=capture_cpu_probe),
+        )
+
+        assert len(probe_xmls) == 1
+        probe_root = vm_plugin.etree.fromstring(probe_xmls[0])
+        assert probe_root.findall("./devices/interface[@type='hostdev']") == []
+        assert probe_root.findall('./devices/hostdev') == []
+        assert probe_root.find("./devices/interface[@type='bridge']") is not None
+        assert probe_root.find('./cpu/topology') is not None
+        assert probe_root.find('./os/type').get('machine') == 'q35'
+
+        final_root = vm_plugin.etree.fromstring(xml_str)
+        vf_interfaces = final_root.findall("./devices/interface[@type='hostdev']")
+        assert len(vf_interfaces) == 2
+        primary_vf = next(
+            interface
+            for interface in vf_interfaces
+            if interface.find('mac').get('address') == '00:11:22:33:44:66'
+        )
+        assert primary_vf.get('managed') == 'yes'
+        assert primary_vf.find('driver').get('name') == 'vfio'
+        vf_address = primary_vf.find('./source/address')
+        assert vf_address.attrib == {
+            'type': 'pci',
+            'domain': '0x0000',
+            'bus': '0x00',
+            'slot': '0x05',
+            'function': '0x0',
+        }
+        assert len(final_root.findall('./devices/hostdev')) == 3
+        assert 'host,migratable=on,vendor=AuthenticAMD' in xml_str
+
+    def test_zstac_88044_cpu_vendor_probe_keeps_none_mode_fallback(self):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.nestedVirtualization = 'none'
+        cmd.vmCpuVendorId = 'AuthenticAMD'
+        probe_xmls = []
+
+        def fail_cpu_probe(command, *_args, **_kwargs):
+            if 'domxml-to-native' not in command:
+                return 0, '', ''
+            probe_path = command.split('--xml ', 1)[1].split(' ', 1)[0]
+            with open(probe_path) as probe_file:
+                probe_xmls.append(probe_file.read())
+            return 1, '', 'conversion failed'
+
+        xml_str = self._build_start_vm_xml(
+            cmd,
+            MagicMock(side_effect=fail_cpu_probe),
+        )
+
+        assert len(probe_xmls) == 1
+        probe_root = vm_plugin.etree.fromstring(probe_xmls[0])
+        assert probe_root.findall("./devices/interface[@type='hostdev']") == []
+        assert probe_root.findall('./devices/hostdev') == []
+        assert 'qemu64,vendor=AuthenticAMD' in xml_str
+
+    def test_zstac_88044_cpu_vendor_probe_keeps_normal_interface(self):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.nestedVirtualization = 'host-passthrough'
+        cmd.vmCpuVendorId = 'AuthenticAMD'
+        cmd.nics = [cmd.nics[0]]
+        cmd.addons.pciDevice = []
+        cmd.addons.mdevDevice = []
+        cmd.addons.usbDevice = []
+        probe_xmls = []
+
+        def capture_cpu_probe(command, *_args, **_kwargs):
+            if 'domxml-to-native' not in command:
+                return 0, '', ''
+            probe_path = command.split('--xml ', 1)[1].split(' ', 1)[0]
+            with open(probe_path) as probe_file:
+                probe_xmls.append(probe_file.read())
+            return 0, 'host,migratable=on', ''
+
+        xml_str = self._build_start_vm_xml(
+            cmd,
+            MagicMock(side_effect=capture_cpu_probe),
+        )
+
+        probe_root = vm_plugin.etree.fromstring(probe_xmls[0])
+        final_root = vm_plugin.etree.fromstring(xml_str)
+        assert len(probe_root.findall("./devices/interface[@type='bridge']")) == 1
+        assert len(final_root.findall("./devices/interface[@type='bridge']")) == 1
+        assert 'host,migratable=on,vendor=AuthenticAMD' in xml_str
+
+    @pytest.mark.parametrize('cpu_mode', ['host-model', 'custom'])
+    def test_zstac_88044_model_cpu_modes_do_not_use_native_probe(self, cpu_mode):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.nestedVirtualization = cpu_mode
+        cmd.vmCpuVendorId = 'AuthenticAMD'
+        bash_roe = MagicMock(return_value=(0, '', ''))
+
+        xml_str = self._build_start_vm_xml(cmd, bash_roe)
+
+        assert all(
+            'domxml-to-native' not in call.args[0]
+            for call in bash_roe.call_args_list
+        )
+        root = vm_plugin.etree.fromstring(xml_str)
+        assert root.find('./cpu/model').get('vendor_id') == 'AuthenticAMD'
+
+    @pytest.mark.parametrize('vendor_id', [None, 'None'])
+    def test_zstac_88044_missing_cpu_vendor_does_not_use_native_probe(self, vendor_id):
+        cmd = self._build_start_cmd(use_numa=False)
+        cmd.nestedVirtualization = 'host-passthrough'
+        cmd.vmCpuVendorId = vendor_id
+        bash_roe = MagicMock(return_value=(0, '', ''))
+
+        xml_str = self._build_start_vm_xml(cmd, bash_roe)
+
+        assert all(
+            'domxml-to-native' not in call.args[0]
+            for call in bash_roe.call_args_list
+        )
+        assert 'vendor=AuthenticAMD' not in xml_str
 
     def _add_vm_artifact_view(self, cmd, tmp_path, monkeypatch):
         view_root = tmp_path / 'vm-views'
