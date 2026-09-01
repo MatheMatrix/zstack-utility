@@ -1724,6 +1724,7 @@ def active_lv(path, shared=False):
 
 def _need_retry_active_lv(arg, exception):
     path = arg[0]
+
     def check_lv_lock_on_client():
         LV_UUID = lv_uuid(path)
         if not LV_UUID:
@@ -1732,7 +1733,7 @@ def _need_retry_active_lv(arg, exception):
         cmd = "sanlock client status | grep %s" % LV_UUID
         return bash.bash_r(cmd) == 0
 
-    def get_lock_hold_by_us():
+    def get_lv_lock():
         LV_UUID = lv_uuid(path)
         if not LV_UUID:
             logger.warn("cannot get lv uuid of path[%s]" % path)
@@ -1750,31 +1751,116 @@ def _need_retry_active_lv(arg, exception):
         LV_START = lv_offset.get(path) if lv_offset.get(path) is not None else "0"
         LV_END = "1048576" if lv_offset.get(path) is not None else get_lv_size("/dev/%s/lvmlock" % VG_UUID)
 
-        cmd = "sanlock direct dump %s:%s:%s | grep %s -m1 | awk '{print $1,$4,$5}'" % (LVMLOCK_PATH, LV_START, LV_END, LV_UUID)
+        cmd = "sanlock direct dump %s:%s:%s | grep %s -m1 | awk '{print $1,$4,$5,$6}'" % (LVMLOCK_PATH, LV_START, LV_END, LV_UUID)
         r, o, e = bash.bash_roe(cmd)
         if r == 0 and o is not None and o.strip() != "":
             res = o.strip().split()
-            offset = int(res[0])
-            timestamp = int(res[1])
-            host_id = int(res[2])
+            try:
+                offset = int(res[0])
+                timestamp = int(res[1])
+                owner_host_id = int(res[2])
+                owner_generation = int(res[3]) if len(res) > 3 else 0
+            except (IndexError, ValueError):
+                logger.warn("unexpected lv lock record for path[%s]: %s" % (path, o))
+                return None
             lv_offset.update({path:str(offset)})
-            if timestamp != 0 and host_id == int(HOST_ID):
-                lock = "{}:{}:{}:{}".format(LOCKSPACE_NAME, LV_UUID, LVMLOCK_PATH, offset)
-                return lock
-            else:
-                logger.debug("lv[path:%s] lockd by other host" % path)
+            return {
+                "lock": "{}:{}:{}:{}".format(LOCKSPACE_NAME, LV_UUID, LVMLOCK_PATH, offset),
+                "lockspace_name": LOCKSPACE_NAME,
+                "local_host_id": int(HOST_ID),
+                "owner_host_id": owner_host_id,
+                "owner_generation": owner_generation,
+                "timestamp": timestamp,
+                "vg_uuid": VG_UUID,
+            }
 
         return None
+
+    def get_host_status(lockspace_name, host_id):
+        cmd = "timeout 30 sanlock client host_status -s %s -D" % lockspace_name
+        r, o, e = bash.bash_roe(cmd)
+        if r != 0:
+            logger.warn("cannot get host status[hostId:%s] from lockspace[%s]: %s" % (host_id, lockspace_name, e))
+            return None
+        try:
+            return sanlock.SanlockHostStatusParser(o).get_record(host_id)
+        except Exception as e:
+            logger.warn("cannot parse host status[hostId:%s] from lockspace[%s]: %s" % (host_id, lockspace_name, e))
+            return None
+
+    def wait_host_dead(lock_info, host_status):
+        if host_status.get_owner_id() != lock_info["owner_host_id"] or \
+                host_status.get_owner_generation() != lock_info["owner_generation"]:
+            return False
+
+        if host_status.get_last_check() <= host_status.get_last_live():
+            return False
+
+        check_interval = 10
+        initial_timestamp = host_status.get_timestamp()
+        initial_last_live = host_status.get_last_live()
+        deadline = initial_last_live + sanlock.calc_host_dead_seconds(host_status.get_io_timeout()) + 1
+        logger.info("wait lv[path:%s] lock owner[hostId:%s, generation:%s] dead from last live[%s] to deadline[%s]" %
+                    (path, lock_info["owner_host_id"], lock_info["owner_generation"], initial_last_live, deadline))
+
+        while True:
+            hosts_state = sanlock.get_hosts_state(lock_info["lockspace_name"])
+            if not hosts_state or str(lock_info["owner_host_id"]) not in hosts_state.hosts:
+                return False
+            if hosts_state.is_host_dead(lock_info["owner_host_id"]):
+                logger.info("lv[path:%s] lock owner[hostId:%s, generation:%s] is dead" %
+                            (path, lock_info["owner_host_id"], lock_info["owner_generation"]))
+                return True
+
+            current_lock = get_lv_lock()
+            if not current_lock:
+                return False
+            if current_lock["timestamp"] == 0 or \
+                    current_lock["owner_host_id"] != lock_info["owner_host_id"] or \
+                    current_lock["owner_generation"] != lock_info["owner_generation"]:
+                logger.info("lv[path:%s] lock owner changed or released" % path)
+                return True
+
+            current_status = get_host_status(lock_info["lockspace_name"], lock_info["owner_host_id"])
+            if not current_status:
+                return False
+            if current_status.get_owner_id() != lock_info["owner_host_id"]:
+                return False
+            if current_status.get_owner_generation() > lock_info["owner_generation"]:
+                return True
+            if current_status.get_owner_generation() != lock_info["owner_generation"]:
+                return False
+            if current_status.get_timestamp() != initial_timestamp or \
+                    current_status.get_last_live() > initial_last_live or \
+                    current_status.get_last_check() == current_status.get_last_live():
+                logger.info("stop waiting lv[path:%s] lock because owner[hostId:%s, generation:%s] is alive" %
+                            (path, lock_info["owner_host_id"], lock_info["owner_generation"]))
+                return False
+
+            now = int(linux.monotime())
+            if now >= deadline:
+                logger.warn("stop waiting lv[path:%s] lock owner because deadline[%s] is reached" % (path, deadline))
+                return False
+            time.sleep(min(check_interval, deadline - now))
 
     if "LV locked by other host" not in str(exception) or check_lv_lock_on_client():
         return False
 
-    lock = get_lock_hold_by_us()
-    if lock is not None:
+    lock_info = get_lv_lock()
+    if not lock_info:
+        return False
+    if lock_info["timestamp"] == 0:
+        return True
+    if lock_info["owner_host_id"] == lock_info["local_host_id"]:
         logger.debug("find lv lock hold by us on lockspace but not on client, directly init lv[path:%s]" % path)
-        return sanlock.direct_init_resource(lock, get_vg_uuid(path)) == 0
+        return sanlock.direct_init_resource(lock_info["lock"], lock_info["vg_uuid"]) == 0
 
-    return False
+    if not lock_info["owner_generation"]:
+        return False
+    host_status = get_host_status(lock_info["lockspace_name"], lock_info["owner_host_id"])
+    if not host_status:
+        return False
+    return wait_host_dead(lock_info, host_status)
 
 @linux.retry_with_check(handler=_need_retry_active_lv)
 def active_lv_with_check(path, shared=False):
