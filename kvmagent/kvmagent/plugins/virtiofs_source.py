@@ -484,18 +484,11 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
                 else:
                     decision, reason = 'meta_hit', 'meta_match'
             else:
-                if os.path.exists(target):
-                    if not os.path.isdir(target):
-                        raise Exception('sourcePath[%s] exists but is not a directory' % source_path)
-                    shutil.rmtree(target)
-                check_available_capacity(root, required_capacity_bytes)
-                prepare_copy_source(
-                    target,
-                    (root,),
-                    remote_source,
-                    (mount_path,),
-                    required_capacity_bytes)
-                write_local_content_version(target, expected_version)
+                # Never rmtree first: keep usable cache until new copy is ready.
+                # Rename old aside → copy into target → drop backup; on failure restore.
+                _refresh_model_center_cache_from_remote(
+                    target, root, remote_source, mount_path,
+                    required_capacity_bytes, expected_version)
                 aligned_version = expected_version
                 copied = True
                 if not had_local:
@@ -527,18 +520,59 @@ def prepare_model_center_cache(source_root, source_path, model_center_uuid, stor
             lock_fd.close()
 
 
+def _refresh_model_center_cache_from_remote(target, root, remote_source, mount_path,
+                                           required_capacity_bytes, expected_version):
+    """Copy remote into target without dropping usable local cache until success.
+
+    If target exists, rename it to a sibling backup first. On any failure, restore
+    the backup so in-use hosts keep a readable path. Backup and new copy coexist
+    briefly, so free space must cover one extra full artifact until cleanup.
+    """
+    backup = None
+    if os.path.exists(target):
+        if not os.path.isdir(target):
+            raise Exception('sourcePath[%s] exists but is not a directory' % target)
+        backup = '%s.old.%s.%s' % (target, os.getpid(), int(time.time() * 1000))
+        if os.path.exists(backup):
+            shutil.rmtree(backup, ignore_errors=True)
+        os.rename(target, backup)
+
+    try:
+        check_available_capacity(root, required_capacity_bytes)
+        prepare_copy_source(
+            target,
+            (root,),
+            remote_source,
+            (mount_path,),
+            required_capacity_bytes)
+        write_local_content_version(target, expected_version)
+    except Exception:
+        if os.path.exists(target):
+            shutil.rmtree(target, ignore_errors=True)
+        if backup and os.path.exists(backup) and not os.path.exists(target):
+            try:
+                os.rename(backup, target)
+                backup = None
+            except (IOError, OSError) as restore_err:
+                logger.warning(
+                    '[host-model-cache-prepare] failed to restore backup[%s] to target[%s]: %s' % (
+                        backup, target, restore_err))
+        raise
+    if backup and os.path.exists(backup):
+        shutil.rmtree(backup, ignore_errors=True)
+
+
 def cleanup_host_model_cache(source_root, source_path):
     root = _normalize_root(source_root or HOST_SOURCE_ROOT)
     path = ensure_under(source_path, root, 'sourcePath', allow_root=False)
-    if not os.path.exists(path):
-        return {
-            'sourcePath': path,
-            'bytesReclaimed': 0,
-        }
-    if not os.path.isdir(path):
-        raise Exception('sourcePath[%s] is not a directory' % source_path)
-    bytes_reclaimed = directory_size(path)
-    shutil.rmtree(path)
+    bytes_reclaimed = 0
+    if os.path.exists(path):
+        if not os.path.isdir(path):
+            raise Exception('sourcePath[%s] is not a directory' % source_path)
+        bytes_reclaimed = directory_size(path)
+        shutil.rmtree(path)
+    # Always drop matching registry entries so "dir gone but Ready remains" cannot persist.
+    _unregister_model_center_cache(root, path)
     return {
         'sourcePath': path,
         'bytesReclaimed': bytes_reclaimed,
@@ -757,13 +791,42 @@ class SourceRegistry(object):
                 os.makedirs(parent)
             data = self.load()
             data[host_source.sourceUuid] = host_source.to_registry_entry()
-            tmp_path = self.path + '.tmp'
-            with open(tmp_path, 'w') as fd:
-                json.dump(data, fd, indent=2)
-            os.rename(tmp_path, self.path)
-            return True
+            return self._write(data)
         except (IOError, OSError):
             return False
+
+    def remove_by_path(self, source_path):
+        """Remove registry entries whose path matches source_path. Keep the file if other entries remain."""
+        try:
+            real_path = os.path.realpath(source_path)
+            data = self.load()
+            if not data:
+                return True
+            remaining = {}
+            removed = False
+            for key, entry in data.items():
+                entry_path = None
+                if isinstance(entry, dict):
+                    entry_path = entry.get('path')
+                if entry_path and os.path.realpath(entry_path) == real_path:
+                    removed = True
+                    continue
+                remaining[key] = entry
+            if not removed:
+                return True
+            return self._write(remaining)
+        except (IOError, OSError):
+            return False
+
+    def _write(self, data):
+        parent = os.path.dirname(self.path)
+        if parent and not os.path.exists(parent):
+            os.makedirs(parent)
+        tmp_path = self.path + '.tmp'
+        with open(tmp_path, 'w') as fd:
+            json.dump(data, fd, indent=2)
+        os.rename(tmp_path, self.path)
+        return True
 
 
 def _register_model_center_cache(source_root, source_path):
@@ -783,6 +846,20 @@ def _register_model_center_cache(source_root, source_path):
         fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
         if not registry.save_host_source(source):
             raise Exception('failed to register prepared model center cache[%s]' % source_path)
+    finally:
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_fd.close()
+
+
+def _unregister_model_center_cache(source_root, source_path):
+    registry = SourceRegistry(os.path.join(source_root, '.registry'))
+    lock_fd = open(registry.path + '.lock', 'a+')
+    try:
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+        if not registry.remove_by_path(source_path):
+            raise Exception('failed to unregister model center cache[%s]' % source_path)
     finally:
         try:
             fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)

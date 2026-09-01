@@ -544,6 +544,88 @@ def test_prepare_model_center_cache_without_sidecar_refreshes_existing_dir(tmp_p
     assert entry['prepareReason'] == 'no_sidecar'
 
 
+def test_prepare_model_center_cache_refresh_restores_backup_when_copy_fails(tmp_path, monkeypatch):
+    """Refresh must not leave hosts without cache if the new copy fails."""
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    target = source_root / 'models' / 'template' / 'root'
+    target.mkdir(parents=True)
+    (target / 'template.yaml').write_text('usable-old-cache')
+    virtiofs_source.write_local_content_version(str(target), 'meta:1:1')
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+
+    def mount_model_center(storage_url, mount_path, storage_subdir):
+        model_dir = os.path.join(mount_path, 'template-id')
+        os.makedirs(model_dir)
+        with open(os.path.join(model_dir, 'template.yaml'), 'w') as stream:
+            stream.write('new-but-copy-will-fail')
+
+    monkeypatch.setattr(virtiofs_source, '_mount_model_center', mount_model_center)
+    monkeypatch.setattr(virtiofs_source, '_unmount_model_center', lambda mount_path: None)
+    monkeypatch.setattr(
+        virtiofs_source,
+        'prepare_copy_source',
+        lambda *args, **kwargs: (_ for _ in ()).throw(Exception('simulated copy failure')))
+
+    with pytest.raises(Exception) as exc_info:
+        virtiofs_source.prepare_model_center_cache(
+            str(source_root),
+            str(target),
+            'model-center-uuid',
+            'redis://model-center',
+            'template-id',
+            1024,
+            'model_service',
+            False)
+
+    assert 'simulated copy failure' in str(exc_info.value)
+    assert target.is_dir()
+    assert (target / 'template.yaml').read_text() == 'usable-old-cache'
+    assert virtiofs_source.read_local_content_version(str(target)) == 'meta:1:1'
+    leftovers = [p for p in target.parent.iterdir() if p.name.startswith(target.name + '.old.')]
+    assert leftovers == []
+
+
+def test_prepare_model_center_cache_refresh_removes_backup_after_success(tmp_path, monkeypatch):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    target = source_root / 'models' / 'template' / 'root'
+    target.mkdir(parents=True)
+    (target / 'template.yaml').write_text('old')
+    virtiofs_source.write_local_content_version(str(target), 'meta:1:1')
+    provider_root = tmp_path / 'provider-mounts'
+    lock_root = tmp_path / 'provider-locks'
+
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_PROVIDER_ROOT', str(provider_root))
+    monkeypatch.setattr(virtiofs_source, 'MODEL_CENTER_LOCK_ROOT', str(lock_root))
+
+    def mount_model_center(storage_url, mount_path, storage_subdir):
+        model_dir = os.path.join(mount_path, 'template-id')
+        os.makedirs(model_dir)
+        with open(os.path.join(model_dir, 'template.yaml'), 'w') as stream:
+            stream.write('new')
+
+    monkeypatch.setattr(virtiofs_source, '_mount_model_center', mount_model_center)
+    monkeypatch.setattr(virtiofs_source, '_unmount_model_center', lambda mount_path: None)
+
+    entry = virtiofs_source.prepare_model_center_cache(
+        str(source_root),
+        str(target),
+        'model-center-uuid',
+        'redis://model-center',
+        'template-id',
+        1024,
+        'model_service',
+        False)
+
+    assert (target / 'template.yaml').read_text() == 'new'
+    assert entry['prepareDecision'] == 'refresh'
+    leftovers = [p for p in target.parent.iterdir() if p.name.startswith(target.name + '.old.')]
+    assert leftovers == []
+
+
 def test_prepare_path_source_rejects_empty_command_source_root(tmp_path):
     source_dir = tmp_path / 'virtiofs-sources' / 'source-a'
     source_dir.mkdir(parents=True)
@@ -672,3 +754,52 @@ def test_registry_load_ignores_invalid_json(tmp_path):
     registry_file.write_text('{broken')
 
     assert virtiofs_source.SourceRegistry(str(registry_file)).load() == {}
+
+
+def test_cleanup_host_model_cache_removes_matching_registry_entry(tmp_path):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    keep_dir = source_root / 'models' / 'keep' / 'v1'
+    drop_dir = source_root / 'models' / 'drop' / 'v1'
+    keep_dir.mkdir(parents=True)
+    drop_dir.mkdir(parents=True)
+    (drop_dir / 'weights.bin').write_bytes(b'1234')
+
+    virtiofs_source._register_model_center_cache(str(source_root), str(keep_dir))
+    virtiofs_source._register_model_center_cache(str(source_root), str(drop_dir))
+    registry_file = source_root / '.registry'
+    lock_file = source_root / '.registry.lock'
+    before = json.loads(registry_file.read_text())
+    assert len(before) == 2
+
+    result = virtiofs_source.cleanup_host_model_cache(str(source_root), str(drop_dir))
+
+    assert result['sourcePath'] == os.path.realpath(str(drop_dir))
+    assert result['bytesReclaimed'] >= 4
+    assert not drop_dir.exists()
+    assert keep_dir.is_dir()
+    assert registry_file.is_file()
+    assert lock_file.is_file()
+    after = json.loads(registry_file.read_text())
+    assert len(after) == 1
+    assert list(after.values())[0]['path'] == os.path.realpath(str(keep_dir))
+    assert all(os.path.realpath(entry['path']) != os.path.realpath(str(drop_dir))
+               for entry in after.values())
+
+
+def test_cleanup_host_model_cache_clears_registry_when_directory_already_gone(tmp_path):
+    source_root = tmp_path / 'primary-storage' / 'ai-model-cache'
+    missing = source_root / 'models' / 'gone' / 'v1'
+    missing.mkdir(parents=True)
+    virtiofs_source._register_model_center_cache(str(source_root), str(missing))
+    # Simulate prior physical delete that left registry dirty.
+    import shutil
+    shutil.rmtree(str(missing))
+    assert not missing.exists()
+    registry_file = source_root / '.registry'
+    assert json.loads(registry_file.read_text())
+
+    result = virtiofs_source.cleanup_host_model_cache(str(source_root), str(missing))
+
+    assert result['bytesReclaimed'] == 0
+    assert registry_file.is_file()
+    assert json.loads(registry_file.read_text()) == {}
