@@ -35,6 +35,8 @@ def is_lease_corrupted(retcode: int):
 
 class SanlockHostStatus(object):
     def __init__(self, record):
+        self.owner_id = None
+        self.owner_generation = None
         lines = record.strip().splitlines()
         hid, s, ts = lines[0].split()
         if s != 'timestamp':
@@ -48,6 +50,8 @@ class SanlockHostStatus(object):
                 if k == 'io_timeout': self.io_timeout = int(v)
                 elif k == 'last_check': self.last_check = int(v)
                 elif k == 'last_live': self.last_live = int(v)
+                elif k == 'owner_id': self.owner_id = int(v)
+                elif k == 'owner_generation': self.owner_generation = int(v)
                 elif k == 'owner_name': self.owner_name = v
             except ValueError:
                 logger.warn("unexpected sanlock status: %s" % line)
@@ -66,6 +70,12 @@ class SanlockHostStatus(object):
 
     def get_last_live(self):
         return self.last_live
+
+    def get_owner_id(self):
+        return self.owner_id
+
+    def get_owner_generation(self):
+        return self.owner_generation
 
     def get_owner_name(self):
         return self.owner_name
